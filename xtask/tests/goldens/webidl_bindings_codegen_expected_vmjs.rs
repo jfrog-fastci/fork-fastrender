@@ -363,6 +363,35 @@ pub mod window {
     }
   }
 
+  #[allow(dead_code)]
+  fn foo_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn foo_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
   pub fn install_window_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
@@ -411,6 +440,27 @@ pub mod window {
       "takesSequence",
       Value::Object(func),
       DataPropertyAttributes::METHOD,
+    )?;
+    let slots = [Value::Object(proto_foo)];
+    let ctor_foo = rt.alloc_native_function_with_slots(
+      foo_call_without_new,
+      Some(foo_construct),
+      "Foo",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(global, "Foo", Value::Object(ctor_foo), global_var_attrs)?;
+    rt.define_data_property_str(
+      ctor_foo,
+      "prototype",
+      Value::Object(proto_foo),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_foo,
+      "constructor",
+      Value::Object(ctor_foo),
+      global_var_attrs,
     )?;
     Ok(())
   }

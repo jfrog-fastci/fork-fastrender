@@ -1863,13 +1863,7 @@ fn to_uint32_f64(n: f64) -> u32 {
       );
     }
     if !global {
-      let needs_ctor_obj = !iface.constructors.is_empty()
-        || !iface.static_operations.is_empty()
-        || !iface.static_attributes.is_empty()
-        || !iface.constants.is_empty();
-      if needs_ctor_obj {
-        write_constructor_wrapper_vmjs(&mut out, resolved, &iface.name, &iface.constructors);
-      }
+      write_constructor_wrapper_vmjs(&mut out, resolved, &iface.name, &iface.constructors);
     }
   }
 
@@ -1944,26 +1938,19 @@ fn to_uint32_f64(n: f64) -> u32 {
       ));
     }
 
-    let needs_ctor_obj = !iface.constructors.is_empty()
-      || !iface.static_operations.is_empty()
-      || !iface.static_attributes.is_empty()
-      || !iface.constants.is_empty();
-    if !needs_ctor_obj {
-      continue;
-    }
-
     // Constructor function (even for static-only interfaces like URL).
     let ctor_call_fn = ctor_call_without_new_fn_name(&iface.name);
     let ctor_construct_fn = ctor_construct_fn_name(&iface.name);
     let construct_expr = format!("Some({ctor_construct_fn})");
     let length = iface
       .constructors
-      .get(0)
+      .iter()
       .map(|sig| required_arg_count(&sig.arguments) as u32)
+      .min()
       .unwrap_or(0);
 
     out.push_str(&format!(
-      "  let slots = [Value::Object({proto_var})];\n  let ctor_{snake} = rt.alloc_native_function_with_slots({ctor_call_fn}, {construct_expr}, {name_lit}, {length}, &slots)?;\n  rt.define_data_property_str(global, {name_lit}, Value::Object(ctor_{snake}), global_var_attrs)?;\n  rt.define_data_property_str(ctor_{snake}, \"prototype\", Value::Object({proto_var}), ctor_link_attrs)?;\n  rt.define_data_property_str({proto_var}, \"constructor\", Value::Object(ctor_{snake}), ctor_link_attrs)?;\n",
+      "  let slots = [Value::Object({proto_var})];\n  let ctor_{snake} = rt.alloc_native_function_with_slots({ctor_call_fn}, {construct_expr}, {name_lit}, {length}, &slots)?;\n  rt.define_data_property_str(global, {name_lit}, Value::Object(ctor_{snake}), global_var_attrs)?;\n  rt.define_data_property_str(ctor_{snake}, \"prototype\", Value::Object({proto_var}), ctor_link_attrs)?;\n  rt.define_data_property_str({proto_var}, \"constructor\", Value::Object(ctor_{snake}), global_var_attrs)?;\n",
       snake = to_snake_ident(&iface.name),
       ctor_call_fn = ctor_call_fn,
       construct_expr = construct_expr,

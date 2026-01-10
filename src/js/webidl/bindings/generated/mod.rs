@@ -1443,7 +1443,7 @@ pub mod window {
       proto_event_target,
       "constructor",
       Value::Object(ctor_event_target),
-      ctor_link_attrs,
+      global_var_attrs,
     )?;
     let slots = [Value::Object(proto_node)];
     let ctor_node = rt.alloc_native_function_with_slots(
@@ -1464,7 +1464,7 @@ pub mod window {
       proto_node,
       "constructor",
       Value::Object(ctor_node),
-      ctor_link_attrs,
+      global_var_attrs,
     )?;
     rt.define_data_property_str(
       ctor_node,
@@ -1600,7 +1600,7 @@ pub mod window {
       proto_u_r_l,
       "constructor",
       Value::Object(ctor_u_r_l),
-      ctor_link_attrs,
+      global_var_attrs,
     )?;
     let func = rt.alloc_native_function(u_r_l_can_parse, None, "canParse", 1)?;
     rt.define_data_property_str(
@@ -1710,7 +1710,7 @@ pub mod window {
       proto_u_r_l_search_params,
       "constructor",
       Value::Object(ctor_u_r_l_search_params),
-      ctor_link_attrs,
+      global_var_attrs,
     )?;
     let func = rt.alloc_native_function(window_alert, None, "alert", 0)?;
     rt.define_data_property_str(global, "alert", Value::Object(func), global_var_attrs)?;
@@ -2881,7 +2881,7 @@ pub mod worker {
       proto_event_target,
       "constructor",
       Value::Object(ctor_event_target),
-      ctor_link_attrs,
+      global_var_attrs,
     )?;
     let func = rt.alloc_native_function(u_r_l_to_j_s_o_n, None, "toJSON", 0)?;
     rt.define_data_property_str(
@@ -2909,7 +2909,7 @@ pub mod worker {
       proto_u_r_l,
       "constructor",
       Value::Object(ctor_u_r_l),
-      ctor_link_attrs,
+      global_var_attrs,
     )?;
     let func = rt.alloc_native_function(u_r_l_can_parse, None, "canParse", 1)?;
     rt.define_data_property_str(
@@ -3019,7 +3019,7 @@ pub mod worker {
       proto_u_r_l_search_params,
       "constructor",
       Value::Object(ctor_u_r_l_search_params),
-      ctor_link_attrs,
+      global_var_attrs,
     )?;
     Ok(())
   }
