@@ -123,7 +123,7 @@ pub const PAGESET_URLS: &[&str] = &[
   "https://developer.mozilla.org/en-US/docs/Web/CSS/text-orientation",
   "https://developer.mozilla.org/en-US/docs/Web/CSS/text-combine-upright",
   "https://developer.mozilla.org/en-US/docs/Web/CSS/transform",
-  "https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Multicol_layout/Using",
+  "https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_multicol_layout/Using_multi-column_layouts",
   "https://developer.mozilla.org/en-US/docs/Learn/Forms/Your_first_form",
   "https://howtogeek.com",
   "https://macrumors.com",

@@ -23,16 +23,16 @@
     "first_mismatch": {
       "x": 1075,
       "y": 11,
-      "baseline_rgba": [
-        255,
-        255,
-        255,
-        255
-      ],
       "rendered_rgba": [
         215,
         215,
         215,
+        255
+      ],
+      "baseline_rgba": [
+        255,
+        255,
+        255,
         255
       ]
     },
@@ -81,12 +81,23 @@
         "text_rasterize_cpu_ms": 1.338491,
         "encode_ms": null
       },
+      "memory": {
+        "dom_parse": {},
+        "script": {},
+        "css": {},
+        "cascade": {},
+        "box_tree": {},
+        "layout": {},
+        "paint": {}
+      },
       "counts": {
         "dom_nodes": 2566,
         "styled_nodes": 2566,
         "box_nodes": 2960,
         "fragments": 3060,
         "shaped_runs": 266,
+        "font_face_size_adjust_runs": null,
+        "font_face_metric_override_runs": null,
         "glyphs": 5283,
         "color_glyph_rasters": 0,
         "shaping_cache_hits": 123,
@@ -123,6 +134,10 @@
         "rule_candidates_by_tag": null,
         "rule_candidates_by_attr": null,
         "rule_candidates_universal": null,
+        "selector_bloom_built": null,
+        "selector_bloom_time_ms": null,
+        "selector_rightmost_fast_rejects": null,
+        "selector_match_calls": null,
         "selector_attempts_total": null,
         "selector_attempts_after_bloom": null,
         "selector_bloom_fast_rejects": null,

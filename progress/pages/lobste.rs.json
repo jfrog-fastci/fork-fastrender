@@ -9,7 +9,7 @@
   "stages_ms": {
     "fetch": 97.12658985,
     "css": 12.0156606,
-    "cascade": 62.080913100000004,
+    "cascade": 62.0809131,
     "box_tree": 10.0130505,
     "layout": 50.0652525,
     "paint": 29.03784645
@@ -50,11 +50,20 @@
         "layout_ms": 48.400599,
         "text_fallback_cpu_ms": 21.215693999999992,
         "text_shape_cpu_ms": 3.820720000000001,
-        "paint_build_ms": 13.455119999999999,
+        "paint_build_ms": 13.45512,
         "paint_optimize_ms": 0.046981,
         "paint_rasterize_ms": 8.322255,
         "text_rasterize_cpu_ms": 4.9422999999999995,
         "encode_ms": null
+      },
+      "memory": {
+        "dom_parse": {},
+        "script": {},
+        "css": {},
+        "cascade": {},
+        "box_tree": {},
+        "layout": {},
+        "paint": {}
       },
       "counts": {
         "dom_nodes": 2176,
@@ -62,6 +71,8 @@
         "box_nodes": 2851,
         "fragments": 1732,
         "shaped_runs": 783,
+        "font_face_size_adjust_runs": null,
+        "font_face_metric_override_runs": null,
         "glyphs": 4508,
         "color_glyph_rasters": 2,
         "shaping_cache_hits": 583,
@@ -98,6 +109,10 @@
         "rule_candidates_by_tag": null,
         "rule_candidates_by_attr": null,
         "rule_candidates_universal": null,
+        "selector_bloom_built": null,
+        "selector_bloom_time_ms": null,
+        "selector_rightmost_fast_rejects": null,
+        "selector_match_calls": null,
         "selector_attempts_total": null,
         "selector_attempts_after_bloom": null,
         "selector_bloom_fast_rejects": null,

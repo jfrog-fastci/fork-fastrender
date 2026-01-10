@@ -14,7 +14,7 @@
     "layout": 310.982243871334,
     "paint": 57.99668856764428
   },
-  "notes": "Major structure now matches Chrome after fixes to flex used-border-box sizing, avoiding replaced-form-control sizing for icon <button> elements (with element children), and hiding scrollbars in the Chrome-baseline fixture patch (match Chrome `--hide-scrollbars`) so the layout viewport stays at the full 1200×800. Also fixed `color: currentColor` on the `color` property to inherit the parent color (as used by CSS resets like `a { color: currentColor; }`), eliminating incorrect UA blue link coloring. Fixed flex measurement cache snapping for medium widths (>=512px) to avoid quantizing a 550px-wide 16:9 embed to 552px, which created a visible 2px black strip under the hero video placeholder. Remaining diffs are mostly text rasterization/antialiasing (subpixel AA/hinting) plus occasional 1px hairline/border rounding differences.",
+  "notes": "Major structure now matches Chrome after fixes to flex used-border-box sizing, avoiding replaced-form-control sizing for icon <button> elements (with element children), and hiding scrollbars in the Chrome-baseline fixture patch (match Chro…",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 47633,
@@ -65,12 +65,23 @@
         "text_rasterize_cpu_ms": 1.948492,
         "encode_ms": null
       },
+      "memory": {
+        "dom_parse": {},
+        "script": {},
+        "css": {},
+        "cascade": {},
+        "box_tree": {},
+        "layout": {},
+        "paint": {}
+      },
       "counts": {
         "dom_nodes": 13208,
         "styled_nodes": 13208,
         "box_nodes": 11301,
         "fragments": 9380,
         "shaped_runs": 2160,
+        "font_face_size_adjust_runs": null,
+        "font_face_metric_override_runs": null,
         "glyphs": 104263,
         "color_glyph_rasters": 0,
         "shaping_cache_hits": 1827,
@@ -107,6 +118,10 @@
         "rule_candidates_by_tag": null,
         "rule_candidates_by_attr": null,
         "rule_candidates_universal": null,
+        "selector_bloom_built": null,
+        "selector_bloom_time_ms": null,
+        "selector_rightmost_fast_rejects": null,
+        "selector_match_calls": null,
         "selector_attempts_total": null,
         "selector_attempts_after_bloom": null,
         "selector_bloom_fast_rejects": null,

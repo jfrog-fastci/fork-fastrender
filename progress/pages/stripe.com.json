@@ -23,16 +23,16 @@
     "first_mismatch": {
       "x": 0,
       "y": 0,
-      "baseline_rgba": [
-        171,
-        107,
-        232,
-        255
-      ],
       "rendered_rgba": [
         171,
         108,
         233,
+        255
+      ],
+      "baseline_rgba": [
+        171,
+        107,
+        232,
         255
       ]
     },
@@ -81,12 +81,23 @@
         "text_rasterize_cpu_ms": 3.1220060000000007,
         "encode_ms": null
       },
+      "memory": {
+        "dom_parse": {},
+        "script": {},
+        "css": {},
+        "cascade": {},
+        "box_tree": {},
+        "layout": {},
+        "paint": {}
+      },
       "counts": {
         "dom_nodes": 21067,
         "styled_nodes": 21067,
         "box_nodes": 10791,
         "fragments": 8356,
         "shaped_runs": 9910,
+        "font_face_size_adjust_runs": null,
+        "font_face_metric_override_runs": null,
         "glyphs": 198008,
         "color_glyph_rasters": 0,
         "shaping_cache_hits": 9282,
