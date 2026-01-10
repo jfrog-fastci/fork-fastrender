@@ -11895,6 +11895,69 @@ mod tests {
   }
 
   #[test]
+  fn grid_item_continuation_relayout_reduces_physical_width_in_vertical_writing_mode() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let _block_hint = set_fragmentainer_block_size_hint(Some(100.0));
+    let _axes_hint = set_fragmentainer_axes_hint(Some(FragmentAxes::from_writing_mode_and_direction(
+      WritingMode::VerticalLr,
+      Direction::Ltr,
+    )));
+
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    // In vertical writing modes the fragmentation block axis can be physical X. Place the target
+    // item in a later block track so it starts in a continuation fragment (x >= 100px), then
+    // ensure the relayout path constrains the *width* (not height) to the remaining space.
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.writing_mode = WritingMode::VerticalLr;
+    // Rows map to the physical horizontal axis in vertical writing modes.
+    grid_style.grid_template_rows = vec![
+      GridTrack::Length(Length::px(60.0)),
+      GridTrack::Length(Length::px(60.0)),
+      GridTrack::Length(Length::px(90.0)),
+    ];
+    // One inline track so the item's physical height is stable.
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(20.0))];
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_a = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    item_a.id = 501;
+    let mut item_b = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    item_b.id = 502;
+
+    let mut target_style = ComputedStyle::default();
+    target_style.writing_mode = WritingMode::VerticalLr;
+    target_style.width = None;
+    target_style.width_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+    let mut target = BoxNode::new_block(
+      Arc::new(target_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    target.id = 503;
+
+    let grid = BoxNode::new_block(
+      grid_style,
+      FormattingContextType::Grid,
+      vec![item_a, item_b, target],
+    );
+
+    // The fragmentainer block-size hint is 100px. The third row starts at x=120px, so the target
+    // item begins 20px into the continuation fragment, leaving 80px remaining.
+    let fragment = fc
+      .layout(&grid, &LayoutConstraints::definite(500.0, 500.0))
+      .expect("layout should succeed");
+
+    let target_fragment = find_block_fragment(&fragment, 503);
+    assert!(
+      (target_fragment.bounds.width() - 80.0).abs() < 0.5,
+      "expected continuation relayout to clamp item width to remaining fragmentainer space (80px), got {:.2}",
+      target_fragment.bounds.width()
+    );
+  }
+
+  #[test]
   fn grid_content_visibility_auto_in_view_does_not_skip() {
     fn has_text(fragment: &FragmentNode) -> bool {
       matches!(fragment.content, FragmentContent::Text { .. })

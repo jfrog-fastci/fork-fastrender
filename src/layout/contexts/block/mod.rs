@@ -9875,12 +9875,21 @@ fn compute_intrinsic_block_sizes_without_block_size_constraints(
   let mut probe_style = style.clone();
   {
     let s = Arc::make_mut(&mut probe_style);
-    s.height = None;
-    s.height_keyword = None;
-    s.min_height = None;
-    s.min_height_keyword = None;
-    s.max_height = None;
-    s.max_height_keyword = None;
+    if block_axis_is_horizontal(style.writing_mode) {
+      s.width = None;
+      s.width_keyword = None;
+      s.min_width = None;
+      s.min_width_keyword = None;
+      s.max_width = None;
+      s.max_width_keyword = None;
+    } else {
+      s.height = None;
+      s.height_keyword = None;
+      s.min_height = None;
+      s.min_height_keyword = None;
+      s.max_height = None;
+      s.max_height_keyword = None;
+    }
   }
 
   let compute = |node: &BoxNode| -> Result<(f32, f32), LayoutError> {
