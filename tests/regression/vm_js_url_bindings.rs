@@ -1,4 +1,6 @@
-use fastrender::js::{install_url_bindings, install_url_bindings_with_limits, webidl::VmJsRuntime, UrlLimits};
+use fastrender::js::{
+  install_url_bindings, install_url_bindings_with_limits, webidl::legacy::VmJsRuntime, UrlLimits,
+};
 use vm_js::{HeapLimits, PropertyKey, Value, VmError};
 use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use webidl_js_runtime::runtime::JsPropertyKind;

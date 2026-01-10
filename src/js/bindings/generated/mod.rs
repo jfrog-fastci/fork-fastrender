@@ -518,6 +518,72 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_search_params_entries<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let result = host.call_operation(
+        rt,
+        Some(this),
+        "URLSearchParams",
+        "entries",
+        0,
+        converted_args,
+      )?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_search_params_for_each<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        rt.js_undefined()
+      };
+      converted_args.push(BindingValue::Object(v0));
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        rt.js_undefined()
+      };
+      converted_args.push(if rt.is_undefined(v1) {
+        BindingValue::Undefined
+      } else {
+        BindingValue::Object(v1)
+      });
+      let result = host.call_operation(
+        rt,
+        Some(this),
+        "URLSearchParams",
+        "forEach",
+        0,
+        converted_args,
+      )?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_search_params_get<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -621,6 +687,25 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_search_params_keys<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let result =
+        host.call_operation(rt, Some(this), "URLSearchParams", "keys", 0, converted_args)?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_search_params_set<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -653,6 +738,31 @@ pub mod window {
       });
       let result =
         host.call_operation(rt, Some(this), "URLSearchParams", "set", 0, converted_args)?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_search_params_values<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let result = host.call_operation(
+        rt,
+        Some(this),
+        "URLSearchParams",
+        "values",
+        0,
+        converted_args,
+      )?;
       binding_value_to_js::<Host, R>(rt, result)
     }
   }
@@ -876,40 +986,50 @@ pub mod window {
     let proto_u_r_l = rt.create_object()?;
     let proto_u_r_l_search_params = rt.create_object()?;
     let func = rt.create_function(event_target_add_event_listener::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "addEventListener", func, true)?;
+    rt.define_data_property_str(proto_event_target, "addEventListener", func, false)?;
     let func = rt.create_function(event_target_dispatch_event::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "dispatchEvent", func, true)?;
+    rt.define_data_property_str(proto_event_target, "dispatchEvent", func, false)?;
     let func = rt.create_function(event_target_remove_event_listener::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "removeEventListener", func, true)?;
+    rt.define_data_property_str(proto_event_target, "removeEventListener", func, false)?;
     let ctor_event_target = rt.create_function(event_target_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "EventTarget", ctor_event_target, true)?;
+    rt.define_data_property_str(global, "EventTarget", ctor_event_target, false)?;
     rt.define_data_property_str(ctor_event_target, "prototype", proto_event_target, false)?;
     rt.define_data_property_str(proto_event_target, "constructor", ctor_event_target, false)?;
     let func = rt.create_function(u_r_l_to_j_s_o_n::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l, "toJSON", func, true)?;
+    rt.define_data_property_str(proto_u_r_l, "toJSON", func, false)?;
     let ctor_u_r_l = rt.create_function(u_r_l_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "URL", ctor_u_r_l, true)?;
+    rt.define_data_property_str(global, "URL", ctor_u_r_l, false)?;
     rt.define_data_property_str(ctor_u_r_l, "prototype", proto_u_r_l, false)?;
     rt.define_data_property_str(proto_u_r_l, "constructor", ctor_u_r_l, false)?;
     let func = rt.create_function(u_r_l_can_parse::<Host, R>)?;
-    rt.define_data_property_str(ctor_u_r_l, "canParse", func, true)?;
+    rt.define_data_property_str(ctor_u_r_l, "canParse", func, false)?;
     let func = rt.create_function(u_r_l_parse::<Host, R>)?;
-    rt.define_data_property_str(ctor_u_r_l, "parse", func, true)?;
+    rt.define_data_property_str(ctor_u_r_l, "parse", func, false)?;
     let func = rt.create_function(u_r_l_search_params_append::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "append", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "append", func, false)?;
     let func = rt.create_function(u_r_l_search_params_delete::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "delete", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "delete", func, false)?;
+    let func = rt.create_function(u_r_l_search_params_entries::<Host, R>)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "entries", func, false)?;
+    let iterator_key = rt.symbol_iterator()?;
+    rt.define_data_property(proto_u_r_l_search_params, iterator_key, func, false)?;
+    let func = rt.create_function(u_r_l_search_params_for_each::<Host, R>)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "forEach", func, false)?;
     let func = rt.create_function(u_r_l_search_params_get::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "get", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "get", func, false)?;
     let func = rt.create_function(u_r_l_search_params_get_all::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "getAll", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "getAll", func, false)?;
     let func = rt.create_function(u_r_l_search_params_has::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "has", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "has", func, false)?;
+    let func = rt.create_function(u_r_l_search_params_keys::<Host, R>)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "keys", func, false)?;
     let func = rt.create_function(u_r_l_search_params_set::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "set", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "set", func, false)?;
+    let func = rt.create_function(u_r_l_search_params_values::<Host, R>)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "values", func, false)?;
     let ctor_u_r_l_search_params =
       rt.create_function(u_r_l_search_params_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "URLSearchParams", ctor_u_r_l_search_params, true)?;
+    rt.define_data_property_str(global, "URLSearchParams", ctor_u_r_l_search_params, false)?;
     rt.define_data_property_str(
       ctor_u_r_l_search_params,
       "prototype",
@@ -923,15 +1043,15 @@ pub mod window {
       false,
     )?;
     let func = rt.create_function(window_clear_interval::<Host, R>)?;
-    rt.define_data_property_str(global, "clearInterval", func, true)?;
+    rt.define_data_property_str(global, "clearInterval", func, false)?;
     let func = rt.create_function(window_clear_timeout::<Host, R>)?;
-    rt.define_data_property_str(global, "clearTimeout", func, true)?;
+    rt.define_data_property_str(global, "clearTimeout", func, false)?;
     let func = rt.create_function(window_queue_microtask::<Host, R>)?;
-    rt.define_data_property_str(global, "queueMicrotask", func, true)?;
+    rt.define_data_property_str(global, "queueMicrotask", func, false)?;
     let func = rt.create_function(window_set_interval::<Host, R>)?;
-    rt.define_data_property_str(global, "setInterval", func, true)?;
+    rt.define_data_property_str(global, "setInterval", func, false)?;
     let func = rt.create_function(window_set_timeout::<Host, R>)?;
-    rt.define_data_property_str(global, "setTimeout", func, true)?;
+    rt.define_data_property_str(global, "setTimeout", func, false)?;
     let _ = host;
     Ok(())
   }
@@ -1441,6 +1561,72 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_search_params_entries<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let result = host.call_operation(
+        rt,
+        Some(this),
+        "URLSearchParams",
+        "entries",
+        0,
+        converted_args,
+      )?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_search_params_for_each<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        rt.js_undefined()
+      };
+      converted_args.push(BindingValue::Object(v0));
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        rt.js_undefined()
+      };
+      converted_args.push(if rt.is_undefined(v1) {
+        BindingValue::Undefined
+      } else {
+        BindingValue::Object(v1)
+      });
+      let result = host.call_operation(
+        rt,
+        Some(this),
+        "URLSearchParams",
+        "forEach",
+        0,
+        converted_args,
+      )?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_search_params_get<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1544,6 +1730,25 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
+  fn u_r_l_search_params_keys<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let result =
+        host.call_operation(rt, Some(this), "URLSearchParams", "keys", 0, converted_args)?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
   fn u_r_l_search_params_set<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1576,6 +1781,31 @@ pub mod worker {
       });
       let result =
         host.call_operation(rt, Some(this), "URLSearchParams", "set", 0, converted_args)?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_search_params_values<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let result = host.call_operation(
+        rt,
+        Some(this),
+        "URLSearchParams",
+        "values",
+        0,
+        converted_args,
+      )?;
       binding_value_to_js::<Host, R>(rt, result)
     }
   }
@@ -1625,40 +1855,50 @@ pub mod worker {
     let proto_u_r_l = rt.create_object()?;
     let proto_u_r_l_search_params = rt.create_object()?;
     let func = rt.create_function(event_target_add_event_listener::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "addEventListener", func, true)?;
+    rt.define_data_property_str(proto_event_target, "addEventListener", func, false)?;
     let func = rt.create_function(event_target_dispatch_event::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "dispatchEvent", func, true)?;
+    rt.define_data_property_str(proto_event_target, "dispatchEvent", func, false)?;
     let func = rt.create_function(event_target_remove_event_listener::<Host, R>)?;
-    rt.define_data_property_str(proto_event_target, "removeEventListener", func, true)?;
+    rt.define_data_property_str(proto_event_target, "removeEventListener", func, false)?;
     let ctor_event_target = rt.create_function(event_target_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "EventTarget", ctor_event_target, true)?;
+    rt.define_data_property_str(global, "EventTarget", ctor_event_target, false)?;
     rt.define_data_property_str(ctor_event_target, "prototype", proto_event_target, false)?;
     rt.define_data_property_str(proto_event_target, "constructor", ctor_event_target, false)?;
     let func = rt.create_function(u_r_l_to_j_s_o_n::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l, "toJSON", func, true)?;
+    rt.define_data_property_str(proto_u_r_l, "toJSON", func, false)?;
     let ctor_u_r_l = rt.create_function(u_r_l_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "URL", ctor_u_r_l, true)?;
+    rt.define_data_property_str(global, "URL", ctor_u_r_l, false)?;
     rt.define_data_property_str(ctor_u_r_l, "prototype", proto_u_r_l, false)?;
     rt.define_data_property_str(proto_u_r_l, "constructor", ctor_u_r_l, false)?;
     let func = rt.create_function(u_r_l_can_parse::<Host, R>)?;
-    rt.define_data_property_str(ctor_u_r_l, "canParse", func, true)?;
+    rt.define_data_property_str(ctor_u_r_l, "canParse", func, false)?;
     let func = rt.create_function(u_r_l_parse::<Host, R>)?;
-    rt.define_data_property_str(ctor_u_r_l, "parse", func, true)?;
+    rt.define_data_property_str(ctor_u_r_l, "parse", func, false)?;
     let func = rt.create_function(u_r_l_search_params_append::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "append", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "append", func, false)?;
     let func = rt.create_function(u_r_l_search_params_delete::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "delete", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "delete", func, false)?;
+    let func = rt.create_function(u_r_l_search_params_entries::<Host, R>)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "entries", func, false)?;
+    let iterator_key = rt.symbol_iterator()?;
+    rt.define_data_property(proto_u_r_l_search_params, iterator_key, func, false)?;
+    let func = rt.create_function(u_r_l_search_params_for_each::<Host, R>)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "forEach", func, false)?;
     let func = rt.create_function(u_r_l_search_params_get::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "get", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "get", func, false)?;
     let func = rt.create_function(u_r_l_search_params_get_all::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "getAll", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "getAll", func, false)?;
     let func = rt.create_function(u_r_l_search_params_has::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "has", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "has", func, false)?;
+    let func = rt.create_function(u_r_l_search_params_keys::<Host, R>)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "keys", func, false)?;
     let func = rt.create_function(u_r_l_search_params_set::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "set", func, true)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "set", func, false)?;
+    let func = rt.create_function(u_r_l_search_params_values::<Host, R>)?;
+    rt.define_data_property_str(proto_u_r_l_search_params, "values", func, false)?;
     let ctor_u_r_l_search_params =
       rt.create_function(u_r_l_search_params_constructor::<Host, R>)?;
-    rt.define_data_property_str(global, "URLSearchParams", ctor_u_r_l_search_params, true)?;
+    rt.define_data_property_str(global, "URLSearchParams", ctor_u_r_l_search_params, false)?;
     rt.define_data_property_str(
       ctor_u_r_l_search_params,
       "prototype",

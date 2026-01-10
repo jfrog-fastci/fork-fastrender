@@ -55,6 +55,9 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
 
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error>;
 
+  /// Return the property key for `%Symbol.iterator%` in the active realm.
+  fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
+
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error>;
 
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error>;
@@ -62,6 +65,14 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Self::JsValue, Self::Error>;
 
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error>;
+
+  fn define_data_property(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    value: Self::JsValue,
+    enumerable: bool,
+  ) -> Result<(), Self::Error>;
 
   fn define_data_property_str(
     &mut self,
@@ -294,6 +305,11 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     Ok(PropertyKey::from_string(s))
   }
 
+  fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
+    let intr = self.intrinsics()?;
+    Ok(PropertyKey::from_symbol(intr.well_known_symbols().iterator))
+  }
+
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
     let Value::Object(obj) = obj else {
       return Err(self.throw_type_error("get: expected object receiver"));
@@ -354,6 +370,29 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error> {
     self.cx.scope.push_root(Value::Object(self.state.global_object))?;
     Ok(Value::Object(self.state.global_object))
+  }
+
+  fn define_data_property(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    value: Self::JsValue,
+    enumerable: bool,
+  ) -> Result<(), Self::Error> {
+    let Value::Object(obj) = obj else {
+      return Err(self.throw_type_error("define_data_property: expected object receiver"));
+    };
+
+    // Root `obj`, `key`, and `value` across `define_property`, which may allocate and GC.
+    let mut scope = self.cx.scope.reborrow();
+    scope.push_root(Value::Object(obj))?;
+    match key {
+      PropertyKey::String(s) => scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => scope.push_root(Value::Symbol(s))?,
+    };
+    scope.push_root(value)?;
+
+    scope.define_property(obj, key, make_data_descriptor(value, enumerable))
   }
 
   fn define_data_property_str(
@@ -460,6 +499,10 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     )
   }
 
+  fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_iterator(self)
+  }
+
   fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get(self, obj, key)
   }
@@ -476,6 +519,18 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn global_object(&mut self) -> Result<Self::JsValue, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlBindingsRuntime<Host>>::global_object(self)
+  }
+
+  fn define_data_property(
+    &mut self,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+    value: Self::JsValue,
+    enumerable: bool,
+  ) -> Result<(), Self::Error> {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::define_data_property(
+      self, obj, key, value, enumerable,
+    )
   }
 
   fn define_data_property_str(
