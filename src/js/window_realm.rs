@@ -372,6 +372,7 @@ const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
 const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
 const NODE_APPEND_CHILD_KEY: &str = "__fastrender_node_append_child";
+const NODE_CLONE_NODE_KEY: &str = "__fastrender_node_clone_node";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 const ELEMENT_INNER_HTML_GET_KEY: &str = "__fastrender_element_inner_html_get";
@@ -1093,6 +1094,10 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, NODE_APPEND_CHILD_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let clone_node = {
+    let key = alloc_key(scope, NODE_CLONE_NODE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
   let get_attribute = {
     let key = alloc_key(scope, ELEMENT_GET_ATTRIBUTE_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
@@ -1212,6 +1217,11 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = append_child {
     let key = alloc_key(scope, "appendChild")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = clone_node {
+    let key = alloc_key(scope, "cloneNode")?;
     scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
@@ -2459,6 +2469,84 @@ fn node_append_child_native(
   }
 
   Ok(child_value)
+}
+
+fn node_clone_node_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Node.cloneNode must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.cloneNode requires a DOM-backed node",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.cloneNode must be called on a node object",
+      ));
+    }
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.cloneNode requires a DOM-backed node",
+      ));
+    }
+  };
+
+  let deep_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let deep = scope.heap().to_boolean(deep_val)?;
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Node.cloneNode requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Node.cloneNode must be called on a node object"))?;
+
+  let cloned = match dom.clone_node(node_id, deep) {
+    Ok(cloned) => cloned,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+
+  get_or_create_node_wrapper(scope, document_obj, cloned)
 }
 
 fn element_class_name_get_native(
@@ -4015,6 +4103,25 @@ fn init_window_globals(
     data_desc(Value::Object(append_child_func)),
   )?;
 
+  // Store shared Node.cloneNode function on `document` so wrappers can reuse it.
+  let clone_node_call_id = vm.register_native_call(node_clone_node_native)?;
+  let clone_node_name = scope.alloc_string("cloneNode")?;
+  scope.push_root(Value::String(clone_node_name))?;
+  let clone_node_func = scope.alloc_native_function(clone_node_call_id, None, clone_node_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      clone_node_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(clone_node_func))?;
+  let clone_node_key = alloc_key(&mut scope, NODE_CLONE_NODE_KEY)?;
+  scope.define_property(
+    document_obj,
+    clone_node_key,
+    data_desc(Value::Object(clone_node_func)),
+  )?;
+
   // Store shared Element selector traversal APIs on `document` so wrappers can reuse them.
   let element_query_selector_call_id = vm.register_native_call(element_query_selector_native)?;
   let element_query_selector_name = scope.alloc_string("querySelector")?;
@@ -4767,6 +4874,34 @@ mod tests {
       r#"<b><i></i></b><span id="target"></span>"#
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn node_clone_node_clones_subtree_and_preserves_attributes() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=a><span>hello</span></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const div = document.getElementById('a');\n\
+        const deep = div.cloneNode(true);\n\
+        const shallow = div.cloneNode();\n\
+        return deep !== div\n\
+          && deep.outerHTML === '<div id=\"a\"><span>hello</span></div>'\n\
+          && shallow.outerHTML === '<div id=\"a\"></div>';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
