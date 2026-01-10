@@ -2825,6 +2825,136 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn navigate_to_url_executes_parser_inserted_scripts_with_partial_dom() -> Result<()> {
+    struct DomSnapshotExecutor {
+      log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl BrowserTabJsExecutor for DomSnapshotExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        let dom = document.dom();
+        let has_before = dom.get_element_by_id("before").is_some();
+        let has_after = dom.get_element_by_id("after").is_some();
+        self
+          .log
+          .borrow_mut()
+          .push(format!("{script_text}:before={has_before} after={has_after}"));
+        Ok(())
+      }
+    }
+
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = DomSnapshotExecutor { log: Rc::clone(&log) };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+
+    let dir = tempdir().map_err(Error::Io)?;
+    let file_path = dir.path().join("index.html");
+    std::fs::write(
+      &file_path,
+      "<!doctype html><html><body><div id=before></div><script>OBSERVE</script><div id=after></div></body></html>",
+    )
+    .map_err(Error::Io)?;
+    let file_url = Url::from_file_path(&file_path)
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    tab.navigate_to_url(&file_url, RenderOptions::default())?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &["OBSERVE:before=true after=false".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn navigate_to_url_base_href_affects_only_later_scripts() -> Result<()> {
+    struct SpecLoggingExecutor {
+      log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl BrowserTabJsExecutor for SpecLoggingExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        let dom = document.dom();
+        let mut has_base = false;
+        for node_id in dom.subtree_preorder(dom.root()) {
+          let NodeKind::Element { tag_name, .. } = &dom.node(node_id).kind else {
+            continue;
+          };
+          if tag_name.eq_ignore_ascii_case("base") {
+            has_base = true;
+            break;
+          }
+        }
+
+        self.log.borrow_mut().push(format!(
+          "src={};base_present={has_base};text={script_text}",
+          spec.src.as_deref().unwrap_or_default()
+        ));
+        Ok(())
+      }
+    }
+
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = SpecLoggingExecutor { log: Rc::clone(&log) };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+
+    // The `<base>` element appears between two parser-inserted scripts. The first script must run
+    // before the `<base>` element is parsed/inserted, while the second script should observe the
+    // updated base URL.
+    let dir = tempdir().map_err(Error::Io)?;
+    let file_path = dir.path().join("index.html");
+    std::fs::write(
+      &file_path,
+      r#"<!doctype html><html><head>
+        <script src="a.js"></script>
+        <base href="https://example.com/base/">
+        <script src="b.js"></script>
+      </head><body></body></html>"#,
+    )
+    .map_err(Error::Io)?;
+    let file_url = Url::from_file_path(&file_path)
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?;
+    let doc_url = file_url.to_string();
+
+    let a_file_url = file_url.join("a.js").expect("join a.js").to_string();
+    let b_file_url = file_url.join("b.js").expect("join b.js").to_string();
+    let base = Url::parse("https://example.com/base/").expect("base url");
+    let b_base_url = base.join("b.js").expect("join base b.js").to_string();
+
+    tab.register_script_source(a_file_url.clone(), "A_FILE");
+    // Register a fallback `file://` b.js source so the test fails via assertions (not I/O) if the
+    // base URL logic regresses.
+    tab.register_script_source(b_file_url, "B_FILE");
+    tab.register_script_source(b_base_url.clone(), "B_BASE");
+
+    tab.navigate_to_url(&doc_url, RenderOptions::default())?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        format!("src={a_file_url};base_present=false;text=A_FILE"),
+        format!("src={b_base_url};base_present=true;text=B_BASE"),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn non_matching_media_stylesheet_does_not_block_script() -> Result<()> {
     let temp = tempdir().map_err(Error::Io)?;
     std::fs::write(temp.path().join("print.css"), "body { color: green; }")
