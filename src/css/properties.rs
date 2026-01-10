@@ -553,6 +553,13 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "widows",
   "writing-mode",
   "z-index",
+  "-ms-flex-align",
+  "-ms-flex-item-align",
+  "-ms-flex-negative",
+  "-ms-flex-order",
+  "-ms-flex-pack",
+  "-ms-flex-positive",
+  "-ms-flex-preferred-size",
   "-webkit-box-orient",
   "-webkit-line-clamp",
 ];
@@ -2789,7 +2796,6 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     | "-webkit-text-fill-color"
     | "-webkit-text-stroke-color"
     | "background-color"
-    | "border-color"
     | "border-top-color"
     | "border-right-color"
     | "border-bottom-color"
@@ -2799,6 +2805,23 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     | "text-decoration-color"
     | "text-emphasis-color"
     | "column-rule-color" => return Color::parse(raw_value).is_ok(),
+    "border-color" => {
+      // Unlike the other `*-color` properties, `border-color` is a 1-4 value shorthand.
+      let is_color = |value: &PropertyValue| -> bool {
+        match value {
+          PropertyValue::Color(_) => true,
+          PropertyValue::Keyword(kw) => Color::parse(kw).is_ok(),
+          _ => false,
+        }
+      };
+
+      return match parsed {
+        PropertyValue::Multiple(values) => {
+          (1..=4).contains(&values.len()) && values.iter().all(is_color)
+        }
+        other => is_color(other),
+      };
+    }
     "forced-color-adjust" => {
       return keyword_in_list(parsed, &["auto", "none", "preserve-parent-color"])
     }
@@ -2810,8 +2833,21 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "position" => return keyword_parse(parsed, |kw| Position::parse(kw).ok()),
     "float" => return keyword_parse(parsed, |kw| Float::parse(kw).ok()),
     "clear" => return keyword_parse(parsed, |kw| Clear::parse(kw).ok()),
-    "overflow" | "overflow-x" | "overflow-y" => {
+    "overflow-x" | "overflow-y" => {
       return keyword_in_list(parsed, &["visible", "hidden", "scroll", "auto", "clip"])
+    }
+    "overflow" => {
+      fn is_overflow_keyword(value: &PropertyValue) -> bool {
+        keyword_in_list(value, &["visible", "hidden", "scroll", "auto", "clip"])
+      }
+
+      return match parsed {
+        PropertyValue::Keyword(_) => is_overflow_keyword(parsed),
+        PropertyValue::Multiple(values) => {
+          (1..=2).contains(&values.len()) && values.iter().all(is_overflow_keyword)
+        }
+        _ => false,
+      };
     }
     "overflow-clip-margin" => {
       let is_box = |kw: &str| -> bool {
@@ -3047,10 +3083,14 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           "flex-start",
           "flex-end",
           "center",
+          "stretch",
           "normal",
           "space-between",
           "space-around",
           "space-evenly",
+          // Legacy aliases (mapped to start/end in computed style).
+          "left",
+          "right",
         ],
       );
     }
@@ -3065,8 +3105,40 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           "start",
           "end",
           "match-parent",
+          "-webkit-match-parent",
         ],
       )
+    }
+    "-ms-flex-pack" => {
+      return keyword_in_list(parsed, &["start", "end", "center", "justify", "distribute", "stretch"])
+    }
+    "-ms-flex-align" => {
+      return keyword_in_list(parsed, &["start", "end", "center", "baseline", "stretch"])
+    }
+    "-ms-flex-item-align" => {
+      return keyword_in_list(
+        parsed,
+        &["auto", "start", "end", "center", "baseline", "stretch"],
+      )
+    }
+    "-ms-flex-order" => {
+      return match parsed {
+        PropertyValue::Number(n) if n.is_finite() && n.fract() == 0.0 => {
+          let int = *n as i64;
+          i32::try_from(int).is_ok()
+        }
+        _ => false,
+      };
+    }
+    "-ms-flex-positive" | "-ms-flex-negative" => {
+      return matches!(parsed, PropertyValue::Number(n) if n.is_finite() && *n >= 0.0);
+    }
+    "-ms-flex-preferred-size" => {
+      // Legacy IE10 `-ms-flex-preferred-size` maps to modern `flex-basis`.
+      if keyword_in_list(parsed, &["auto", "content"]) {
+        return true;
+      }
+      return matches!(parsed, PropertyValue::Length(_) | PropertyValue::Number(0.0));
     }
     // https://drafts.csswg.org/css-color/#typedef-alpha-value
     // <alpha-value> = <number> | <percentage>

@@ -11349,6 +11349,48 @@ fn apply_declaration_with_base_internal_with_order(
         }
       }
     }
+    "-ms-flex-pack" => {
+      // Legacy IE10 `-ms-flex-pack` maps to modern `justify-content`.
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        styles.justify_content = match kw.to_ascii_lowercase().as_str() {
+          "start" => JustifyContent::FlexStart,
+          "end" => JustifyContent::FlexEnd,
+          "center" => JustifyContent::Center,
+          "justify" => JustifyContent::SpaceBetween,
+          "distribute" => JustifyContent::SpaceAround,
+          // Non-standard but appears in real-world autoprefixer output (e.g. `justify-content: stretch`).
+          "stretch" => JustifyContent::Stretch,
+          _ => styles.justify_content,
+        };
+      }
+    }
+    "-ms-flex-align" => {
+      // Legacy IE10 `-ms-flex-align` maps to modern `align-items`.
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        styles.align_items = match kw.to_ascii_lowercase().as_str() {
+          "start" => AlignItems::FlexStart,
+          "end" => AlignItems::FlexEnd,
+          "center" => AlignItems::Center,
+          "baseline" => AlignItems::Baseline,
+          "stretch" => AlignItems::Stretch,
+          _ => styles.align_items,
+        };
+      }
+    }
+    "-ms-flex-item-align" => {
+      // Legacy IE10 `-ms-flex-item-align` maps to modern `align-self`.
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        styles.align_self = match kw.to_ascii_lowercase().as_str() {
+          "auto" => None,
+          "start" => Some(AlignItems::FlexStart),
+          "end" => Some(AlignItems::FlexEnd),
+          "center" => Some(AlignItems::Center),
+          "baseline" => Some(AlignItems::Baseline),
+          "stretch" => Some(AlignItems::Stretch),
+          _ => styles.align_self,
+        };
+      }
+    }
     "justify-content" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
@@ -11359,6 +11401,10 @@ fn apply_declaration_with_base_internal_with_order(
           "flex-end" => JustifyContent::FlexEnd,
           "normal" => JustifyContent::FlexStart,
           "center" => JustifyContent::Center,
+          "stretch" => JustifyContent::Stretch,
+          // Legacy aliases. See CSS Box Alignment (legacy alignment keywords).
+          "left" => JustifyContent::Start,
+          "right" => JustifyContent::End,
           "space-between" => JustifyContent::SpaceBetween,
           "space-around" => JustifyContent::SpaceAround,
           "space-evenly" => JustifyContent::SpaceEvenly,
@@ -11446,6 +11492,16 @@ fn apply_declaration_with_base_internal_with_order(
         }
       }
     }
+    "-ms-flex-order" => {
+      if let PropertyValue::Number(n) = resolved_value {
+        if n.is_finite() && (n.fract() == 0.0) {
+          let int = *n as i64;
+          if let Ok(val) = i32::try_from(int) {
+            styles.order = val;
+          }
+        }
+      }
+    }
     "flex-grow" => {
       if let PropertyValue::Number(n) = resolved_value {
         if n.is_finite() && *n >= 0.0 {
@@ -11453,7 +11509,21 @@ fn apply_declaration_with_base_internal_with_order(
         }
       }
     }
+    "-ms-flex-positive" => {
+      if let PropertyValue::Number(n) = resolved_value {
+        if n.is_finite() && *n >= 0.0 {
+          styles.flex_grow = *n;
+        }
+      }
+    }
     "flex-shrink" => {
+      if let PropertyValue::Number(n) = resolved_value {
+        if n.is_finite() && *n >= 0.0 {
+          styles.flex_shrink = *n;
+        }
+      }
+    }
+    "-ms-flex-negative" => {
       if let PropertyValue::Number(n) = resolved_value {
         if n.is_finite() && *n >= 0.0 {
           styles.flex_shrink = *n;
@@ -11476,6 +11546,21 @@ fn apply_declaration_with_base_internal_with_order(
         }
       } else if let Some(len) = extract_length(resolved_value) {
         styles.flex_basis = FlexBasis::Length(len);
+      }
+    }
+    "-ms-flex-preferred-size" => {
+      match resolved_value {
+        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => {
+          styles.flex_basis = FlexBasis::Auto
+        }
+        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("content") => {
+          styles.flex_basis = FlexBasis::Content
+        }
+        _ => {
+          if let Some(len) = extract_length(resolved_value) {
+            styles.flex_basis = FlexBasis::Length(len);
+          }
+        }
       }
     }
 
@@ -12596,6 +12681,7 @@ fn apply_declaration_with_base_internal_with_order(
           "justify" => Some(TextAlign::Justify),
           "justify-all" => Some(TextAlign::JustifyAll),
           "match-parent" => Some(TextAlign::MatchParent),
+          "-webkit-match-parent" => Some(TextAlign::MatchParent),
           _ => None,
         };
         if let Some(value) = parsed {
@@ -12615,6 +12701,7 @@ fn apply_declaration_with_base_internal_with_order(
           "justify" => Some(TextAlign::Justify),
           "justify-all" => Some(TextAlign::JustifyAll),
           "match-parent" => Some(TextAlign::MatchParent),
+          "-webkit-match-parent" => Some(TextAlign::MatchParent),
           _ => None,
         };
         if let Some(value) = parsed {
@@ -16399,9 +16486,12 @@ fn parse_place_content_pair(value: &PropertyValue) -> Option<(AlignContent, Just
       "flex-end" => Some(JustifyContent::FlexEnd),
       "normal" => Some(JustifyContent::FlexStart),
       "center" => Some(JustifyContent::Center),
+      "stretch" => Some(JustifyContent::Stretch),
       "space-between" => Some(JustifyContent::SpaceBetween),
       "space-around" => Some(JustifyContent::SpaceAround),
       "space-evenly" => Some(JustifyContent::SpaceEvenly),
+      "left" => Some(JustifyContent::Start),
+      "right" => Some(JustifyContent::End),
       _ => None,
     }
   }

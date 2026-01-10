@@ -4026,6 +4026,7 @@ impl GridFormattingContext {
         }
       }
       JustifyContent::Center => TaffyAlignContent::Center,
+      JustifyContent::Stretch => TaffyAlignContent::Stretch,
       JustifyContent::SpaceBetween => TaffyAlignContent::SpaceBetween,
       JustifyContent::SpaceAround => TaffyAlignContent::SpaceAround,
       JustifyContent::SpaceEvenly => TaffyAlignContent::SpaceEvenly,

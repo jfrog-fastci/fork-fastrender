@@ -8847,7 +8847,7 @@ impl FlexFormattingContext {
         JustifyContent::Center | JustifyContent::SpaceAround | JustifyContent::SpaceEvenly => {
           resolved_main_size / 2.0
         }
-        JustifyContent::FlexStart | JustifyContent::SpaceBetween => {
+        JustifyContent::FlexStart | JustifyContent::Stretch | JustifyContent::SpaceBetween => {
           if main_grows_positive {
             0.0
           } else {
@@ -11755,6 +11755,7 @@ impl FlexFormattingContext {
       JustifyContent::FlexStart => taffy::style::JustifyContent::FlexStart,
       JustifyContent::FlexEnd => taffy::style::JustifyContent::FlexEnd,
       JustifyContent::Center => taffy::style::JustifyContent::Center,
+      JustifyContent::Stretch => taffy::style::JustifyContent::Stretch,
       JustifyContent::SpaceBetween => taffy::style::JustifyContent::SpaceBetween,
       JustifyContent::SpaceAround => taffy::style::JustifyContent::SpaceAround,
       JustifyContent::SpaceEvenly => taffy::style::JustifyContent::SpaceEvenly,

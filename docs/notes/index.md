@@ -23,3 +23,4 @@ Small, durable writeups that explain “why/how” decisions that are worth keep
 - [svg_filters_turbulence_displacement.md](svg_filters_turbulence_displacement.md) — Chrome-aligned `feTurbulence`/`feDisplacementMap` semantics (primitiveUnits/filterRes/CIF).
 - [chrome-headless-viewport-padding.md](chrome-headless-viewport-padding.md) — headless Chrome window-size vs viewport-height mismatch (`88px`) and how we crop baselines.
 - [style-containment.md](style-containment.md) — supported subset of `contain: style` / style containment boundaries.
+- [css_coverage_2026-01-10.md](css_coverage_2026-01-10.md) — evidence-driven fixes for top unsupported fixture CSS.

@@ -20,17 +20,24 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 /// - Whitespace between `!` and `important` is allowed (`! important`).
 fn strip_trailing_important(value: &str) -> &str {
   let trimmed = trim_ascii_whitespace(value);
-  const IMPORTANT: &str = "important";
-  if trimmed.len() < IMPORTANT.len() {
+  const IMPORTANT: &[u8] = b"important";
+  let bytes = trimmed.as_bytes();
+  if bytes.len() < IMPORTANT.len() {
     return trimmed;
   }
 
-  let important_start = trimmed.len() - IMPORTANT.len();
-  if !trimmed[important_start..].eq_ignore_ascii_case(IMPORTANT) {
+  let important_start = bytes.len() - IMPORTANT.len();
+  if !bytes[important_start..].eq_ignore_ascii_case(IMPORTANT) {
     return trimmed;
   }
 
-  let before_ident = trim_ascii_whitespace(&trimmed[..important_start]);
+  let Some(before) = trimmed.get(..important_start) else {
+    // `important_start` is derived from a byte offset. It should always be a char boundary because
+    // we've already validated that the suffix is pure ASCII.
+    return trimmed;
+  };
+
+  let before_ident = trim_ascii_whitespace(before);
   if !before_ident.ends_with('!') {
     return trimmed;
   }
@@ -358,5 +365,13 @@ mod tests {
 
     // `!important` must be at the end of the value to be treated as the important flag.
     assert!(!supports_declaration("color", "red !important bogus"));
+  }
+
+  #[test]
+  fn supports_declaration_does_not_panic_on_non_ascii_values_when_stripping_important() {
+    // `css_coverage` feeds arbitrary declaration values through `supports_declaration`. Ensure
+    // stripping `!important` does not assume the value is ASCII.
+    assert!(!supports_declaration("not-a-real-property", "\"“\" \"”\""));
+    assert!(supports_declaration("font-family", "\"“\" !important"));
   }
 }

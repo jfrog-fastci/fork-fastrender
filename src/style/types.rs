@@ -2429,6 +2429,7 @@ pub enum JustifyContent {
   FlexStart,
   FlexEnd,
   Center,
+  Stretch,
   SpaceBetween,
   SpaceAround,
   SpaceEvenly,

@@ -31,6 +31,7 @@ mod counters_test;
 mod css_nesting_scope_integration_test;
 mod css_nesting_test;
 mod css_numeric_functions;
+mod css_coverage_top_missing_test;
 mod custom_property_inheritance_test;
 mod custom_property_registration_test;
 mod custom_property_registration_union_syntax_test;
