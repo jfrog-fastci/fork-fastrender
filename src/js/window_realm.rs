@@ -199,7 +199,10 @@ impl WindowRealm {
     host: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.runtime.exec_script_with_host(host, source)
+    // `vm-js::JsRuntime::exec_script_with_hooks` routes Promise jobs through `VmHostHooks` instead
+    // of the VM-owned microtask queue. `WindowHost` uses this to integrate Promise jobs into
+    // FastRender's HTML-like event loop microtask checkpoint.
+    self.runtime.exec_script_with_hooks(host, source)
   }
 
   /// Execute a classic script with an explicit source name for stack traces.
