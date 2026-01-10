@@ -4,11 +4,10 @@ use crate::error::Result;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 
 use super::{
-  determine_script_type_dom2, ClassicScriptScheduler, DomHost, EventLoop, ScriptElementSpec,
-  ScriptElementEvent, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
-  trim_ascii_whitespace,
+  determine_script_type_dom2, trim_ascii_whitespace, ClassicScriptScheduler, DomHost, EventLoop,
+  ScriptElementSpec, ScriptElementEvent, ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
+  ScriptType, TaskSource,
 };
-use super::trim_ascii_whitespace;
 
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
 /// `<script>` elements.
