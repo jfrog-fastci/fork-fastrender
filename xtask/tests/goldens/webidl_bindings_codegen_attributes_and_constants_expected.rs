@@ -10,6 +10,8 @@ pub mod window {
 
   use super::{BindingValue, WebHostBindings};
 
+  use crate::js::webidl::DataPropertyAttributes;
+
   fn binding_value_to_js<Host, R>(
     rt: &mut R,
     value: BindingValue<R::JsValue>,
@@ -32,7 +34,12 @@ pub mod window {
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
         }
         Ok(obj)
       }
@@ -40,7 +47,12 @@ pub mod window {
         let obj = rt.create_object()?;
         for (key, item) in map {
           let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
+          rt.define_data_property_str(
+            obj,
+            &key,
+            value,
+            DataPropertyAttributes::new(true, true, true),
+          )?;
         }
         Ok(obj)
       }
