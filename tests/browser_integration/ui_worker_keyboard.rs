@@ -280,10 +280,12 @@ fn delete_edits_focused_input_selection_and_repaints() {
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
 
-  // Selection is worker-local state; it should apply to the subsequent Delete key action.
+  // SelectAll should update the worker's selection state and trigger a repaint so caret/selection
+  // highlights can be rendered.
   ui_tx
     .send(UiToWorker::SelectAll { tab_id })
     .expect("SelectAll");
+  let _ = wait_for_frame_ready(&ui_rx, tab_id);
 
   ui_tx
     .send(key_action(tab_id, KeyAction::Delete))

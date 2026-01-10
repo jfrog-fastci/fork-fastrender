@@ -2041,8 +2041,13 @@ impl BrowserRuntime {
       return;
     };
 
-    // Selecting text is worker-local state and should not invalidate the document pipeline.
-    let _ = doc.mutate_dom(|dom| tab.interaction.clipboard_select_all(dom));
+    // Selecting text updates the focused control's caret/selection data attributes so the painter
+    // can render highlights/caret state, but it should not require a full navigation refresh.
+    let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_select_all(dom));
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
   }
 
   fn handle_copy(&mut self, tab_id: TabId) {

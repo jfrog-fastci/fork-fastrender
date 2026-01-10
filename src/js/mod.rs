@@ -33,13 +33,14 @@
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod dom_scripts;
-// Dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
-// This is not part of the canonical vm-js WindowRealm pipeline, but remains useful while bindings
-// and streaming execution are still being integrated.
-pub mod dom_integration;
 pub mod dom_host;
 pub mod cookie_jar;
 pub mod dom2_bindings;
+// Dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
+//
+// This is not part of the canonical vm-js WindowRealm pipeline, but remains useful while bindings
+// and streaming execution are still being integrated.
+pub mod dom_integration;
 pub mod clock;
 pub mod document_lifecycle;
 pub mod event_loop;
