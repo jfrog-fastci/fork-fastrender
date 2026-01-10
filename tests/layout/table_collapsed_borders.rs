@@ -657,3 +657,129 @@ fn collapsed_table_borders_align_with_repeated_footers_in_multicol() {
     );
   }
 }
+
+#[test]
+fn collapsed_table_borders_align_with_repeated_headers_and_footers_in_multicol() {
+  const EPSILON: f32 = 0.1;
+
+  let body_rows: String = (1..=48)
+    .map(|i| format!(r#"<tr><td>{i}</td></tr>"#))
+    .collect();
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          html, body {{ margin: 0; padding: 0; }}
+          div.columns {{
+            column-count: 2;
+            column-gap: 20px;
+            width: 260px;
+            height: 160px;
+          }}
+          table {{ width: 100%; border-collapse: collapse; box-decoration-break: slice; }}
+          td, th {{ border: 2px solid black; height: 32px; padding: 0; }}
+        </style>
+      </head>
+      <body>
+        <div class="columns">
+          <table>
+            <thead><tr><th>Header</th></tr></thead>
+            <tbody>{body_rows}</tbody>
+            <tfoot><tr><td>Footer</td></tr></tfoot>
+          </table>
+        </div>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let viewport_width: u32 = 320;
+  let viewport_height: u32 = 400;
+  let viewport_width_f = viewport_width as f32;
+  let viewport_height_f = viewport_height as f32;
+  let tree = renderer
+    .layout_document(&dom, viewport_width, viewport_height)
+    .unwrap();
+
+  let mut table_fragments = Vec::new();
+  collect_table_fragments(&tree.root, Point::ZERO, &mut table_fragments);
+  assert!(
+    !table_fragments.is_empty(),
+    "expected to find table fragments with collapsed border metadata"
+  );
+
+  let intersects_viewport = |rect: Rect| {
+    rect.origin.x < viewport_width_f
+      && rect.origin.x + rect.width() > 0.0
+      && rect.origin.y < viewport_height_f
+      && rect.origin.y + rect.height() > 0.0
+  };
+
+  let middle_fragments: Vec<_> = table_fragments
+    .iter()
+    .filter(|(node, rect)| {
+      !node.slice_info.is_first
+        && !node.slice_info.is_last
+        && node.slice_info.slice_offset > EPSILON
+        && intersects_viewport(*rect)
+    })
+    .collect();
+  assert!(
+    !middle_fragments.is_empty(),
+    "expected at least one table fragment that is neither first nor last and intersects the viewport \
+     (table fragments={:?})",
+    table_fragments
+      .iter()
+      .map(|(node, rect)| {
+        (
+          rect.origin.x,
+          rect.origin.y,
+          node.slice_info.slice_offset,
+          node.slice_info.is_first,
+          node.slice_info.is_last
+        )
+      })
+      .collect::<Vec<_>>()
+  );
+
+  let list = DisplayListBuilder::new().build(&tree.root);
+  let collapsed_items: Vec<_> = list
+    .items()
+    .iter()
+    .filter_map(|item| match item {
+      DisplayItem::TableCollapsedBorders(item) => Some(item),
+      _ => None,
+    })
+    .collect();
+  assert!(
+    collapsed_items.len() >= 2,
+    "expected the table to fragment into multiple column slices (got {} TableCollapsedBorders items)",
+    collapsed_items.len()
+  );
+
+  for (table_fragment, table_rect) in middle_fragments {
+    let origin = table_rect.origin;
+    let found = collapsed_items.iter().any(|item| {
+      item.borders.fragment_local
+        && (item.origin.x - origin.x).abs() < EPSILON
+        && (item.origin.y - origin.y).abs() < EPSILON
+    });
+    assert!(
+      found,
+      "expected TableCollapsedBorders item origin to match middle fragment origin ({}, {}) \
+       (slice_offset={}, is_first={}, is_last={}); got origins={:?}",
+      origin.x,
+      origin.y,
+      table_fragment.slice_info.slice_offset,
+      table_fragment.slice_info.is_first,
+      table_fragment.slice_info.is_last,
+      collapsed_items
+        .iter()
+        .map(|item| (item.origin.x, item.origin.y))
+        .collect::<Vec<_>>()
+    );
+  }
+}
