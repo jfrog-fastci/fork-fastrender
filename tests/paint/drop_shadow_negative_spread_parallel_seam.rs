@@ -87,6 +87,7 @@ fn build_display_list() -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: Default::default(),
     mask: None,
+    mask_border: None,
     has_clip_path: false,
   }));
 
@@ -147,4 +148,3 @@ fn drop_shadow_negative_spread_parallel_matches_serial_across_tile_boundaries() 
   }
   assert_pixmap_eq(&serial_pixmap, &parallel.pixmap);
 }
-
