@@ -4684,9 +4684,9 @@ impl DisplayListRenderer {
     }
 
     if transform == Transform::identity() {
-      Self::snap_rect_origin_to_device_pixels(dest_rect)
+      Self::round_rect_origin_to_device_pixels(dest_rect)
     } else {
-      Self::snap_rect_origin_to_device_pixels_with_translation(dest_rect, transform)
+      Self::round_rect_origin_to_device_pixels_with_translation(dest_rect, transform)
     }
   }
 
@@ -15336,7 +15336,7 @@ impl DisplayListRenderer {
               let scale_x = dest_device.width() / src_w;
               let scale_y = dest_device.height() / src_h;
               if (scale_x - 1.0).abs() <= 1e-6 && (scale_y - 1.0).abs() <= 1e-6 {
-                let snapped = Self::snap_rect_origin_to_device_pixels(dest_device);
+                let snapped = Self::round_rect_origin_to_device_pixels(dest_device);
                 Rect::from_xywh(
                   snapped.x() * inv_scale,
                   snapped.y() * inv_scale,
