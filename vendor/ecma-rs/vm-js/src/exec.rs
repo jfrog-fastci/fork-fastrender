@@ -4174,15 +4174,16 @@ impl<'a> Evaluator<'a> {
               new_scope.push_root(iter.iterator)?;
               new_scope.push_root(iter.next_method)?;
 
-              while let Some(value) =
-                iterator::iterator_step_value(self.vm, &mut *self.host, &mut *self.hooks, &mut new_scope, &mut iter)?
-              {
+               while let Some(value) =
+                 iterator::iterator_step_value(self.vm, &mut *self.host, &mut *self.hooks, &mut new_scope, &mut iter)?
+               {
+                 self.tick()?;
+                 new_scope.push_root(value)?;
+                 args.push(value);
+               }
+             } else {
+               let value = self.eval_expr(&mut new_scope, &arg.stx.value)?;
                 new_scope.push_root(value)?;
-                args.push(value);
-              }
-            } else {
-              let value = self.eval_expr(&mut new_scope, &arg.stx.value)?;
-              new_scope.push_root(value)?;
               args.push(value);
             }
           }
@@ -4366,6 +4367,7 @@ impl<'a> Evaluator<'a> {
         while let Some(value) =
           iterator::iterator_step_value(self.vm, &mut *self.host, &mut *self.hooks, &mut call_scope, &mut iter)?
         {
+          self.tick()?;
           call_scope.push_root(value)?;
           args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
           args.push(value);
@@ -4410,6 +4412,7 @@ impl<'a> Evaluator<'a> {
         while let Some(value) =
           iterator::iterator_step_value(self.vm, &mut *self.host, &mut *self.hooks, &mut call_scope, &mut iter)?
         {
+          self.tick()?;
           call_scope.push_root(value)?;
           args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
           args.push(value);

@@ -281,10 +281,42 @@ fn builtins_object_keys_consumes_fuel_in_native_loop() {
 }
 
 #[test]
+fn spread_call_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Spread expansion must tick per iterated element, even for Array fast-path iterators.
+  let err = rt
+    .exec_script("let a=[]; a.length=5000; function f(){}; f(...a);")
+    .unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn spread_new_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt
+    .exec_script("function C(){}; let a=[]; a.length=5000; new C(...a);")
+    .unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn holey_array_literal_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
-
   rt.vm.set_budget(Budget {
     fuel: Some(50),
     deadline: None,
@@ -302,7 +334,6 @@ fn holey_array_literal_consumes_fuel() {
 fn object_literal_methods_or_shorthand_consume_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
-
   rt.vm.set_budget(Budget {
     fuel: Some(50),
     deadline: None,
