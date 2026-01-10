@@ -277,6 +277,12 @@ function __async_test_done() {
   __check_complete();
 }
 //
+// Note: This harness deliberately avoids closures to stay compatible with the in-tree vm-js
+// backend, so `step_func`/`step_func_done` use a single global slot. This means only one wrapped
+// callback per helper may be outstanding at a time.
+//
+// This is sufficient for the curated offline corpus (each test file contains at most one async
+// test and does not schedule multiple wrapped callbacks concurrently).
 var __step_func_test = null;
 var __step_func_callback = null;
 //
