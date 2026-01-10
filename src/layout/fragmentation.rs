@@ -1864,8 +1864,7 @@ pub fn resolve_fragmentation_boundaries_with_axes(
   analyzer.boundaries(fragmentainer_size, total_extent)
 }
 
-/// Fragment a tree using the provided writing mode and direction. Non-default axes currently
-/// defer to the primary fragmentation path while keeping pagination API-compatible.
+/// Fragment a tree using the provided writing mode and direction.
 pub fn fragment_tree_for_writing_mode(
   root: &FragmentNode,
   options: &FragmentationOptions,
@@ -1882,11 +1881,7 @@ pub fn fragment_tree_with_axes(
   options: &FragmentationOptions,
   axes: FragmentAxes,
 ) -> Result<Vec<FragmentNode>, LayoutError> {
-  if axes.block_axis() == PhysicalAxis::Y && axes.block_positive() {
-    return fragment_tree(root, options);
-  }
-
-  fragment_tree(root, options)
+  fragment_tree_impl(root, options, axes)
 }
 
 /// Splits a fragment tree into multiple fragmentainer roots based on the given options.
@@ -1899,11 +1894,19 @@ pub fn fragment_tree(
   root: &FragmentNode,
   options: &FragmentationOptions,
 ) -> Result<Vec<FragmentNode>, LayoutError> {
+  let axes = axes_from_root(root);
+  fragment_tree_impl(root, options, axes)
+}
+
+fn fragment_tree_impl(
+  root: &FragmentNode,
+  options: &FragmentationOptions,
+  axes: FragmentAxes,
+) -> Result<Vec<FragmentNode>, LayoutError> {
   if options.fragmentainer_size <= 0.0 {
     return Ok(vec![root.clone()]);
   }
 
-  let axes = axes_from_root(root);
   let axis = axis_from_fragment_axes(axes);
   let inline_is_horizontal = axes.inline_axis() == PhysicalAxis::X;
   let block_sign = if axis.block_positive { 1.0 } else { -1.0 };
