@@ -415,6 +415,7 @@ impl Intrinsics {
     let string_prototype_char_code_at =
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
     let string_prototype_trim = vm.register_native_call(builtins::string_prototype_trim)?;
+    let string_prototype_substring = vm.register_native_call(builtins::string_prototype_substring)?;
     let string_prototype_to_lower_case =
       vm.register_native_call(builtins::string_prototype_to_lower_case)?;
     let string_prototype_to_upper_case =
@@ -876,6 +877,23 @@ impl Intrinsics {
         scope.push_root(Value::String(trim_s))?;
         let key = PropertyKey::from_string(trim_s);
         let func = scope.alloc_native_function(string_prototype_trim, None, trim_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.substring
+      {
+        let substring_s = scope.alloc_string("substring")?;
+        scope.push_root(Value::String(substring_s))?;
+        let key = PropertyKey::from_string(substring_s);
+        let func = scope.alloc_native_function(string_prototype_substring, None, substring_s, 2)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()

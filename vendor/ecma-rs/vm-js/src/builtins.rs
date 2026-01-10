@@ -5071,6 +5071,41 @@ pub fn string_prototype_trim(
   Ok(Value::String(out))
 }
 
+/// `String.prototype.substring` (ECMA-262) (minimal).
+pub fn string_prototype_substring(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+
+  let start_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let end_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let start = string_position_from_value(vm, &mut scope, host, hooks, start_arg, len, 0)?;
+  let end = string_position_from_value(vm, &mut scope, host, hooks, end_arg, len, len)?;
+
+  let (from, to) = if start > end { (end, start) } else { (start, end) };
+
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units()[from..to].to_vec()
+  };
+  let out = scope.alloc_string_from_u16_vec(units)?;
+  Ok(Value::String(out))
+}
+
 /// `String.prototype.toLowerCase` (ECMA-262) (minimal).
 pub fn string_prototype_to_lower_case(
   vm: &mut Vm,

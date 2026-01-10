@@ -482,6 +482,17 @@ fn string_prototype_trim_works_and_is_generic() {
 }
 
 #[test]
+fn string_prototype_substring_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""abcd".substring(1, 3) === "bc" && "abcd".substring(2) === "cd" && "abcd".substring(-1, 2) === "ab" && "abcd".substring(3, 1) === "bc" && "abcd".substring(1, 1e999) === "bcd" && String.prototype.substring.call({toString:function(){return "ab";}}, 1) === "b""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_prototype_to_lower_upper_case_works() {
   let mut rt = new_runtime();
   let value = rt
