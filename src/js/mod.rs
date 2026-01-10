@@ -33,8 +33,6 @@
 //! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod dom_scripts;
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
 pub mod dom_host;
 pub mod cookie_jar;
 pub mod dom2_bindings;
@@ -134,26 +132,8 @@ pub mod vm_host;
 pub mod quickjs_dom;
 
 // Legacy vm-js DOM bindings (pre-WebIDL scaffolding). Kept for tests/experiments.
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
 #[path = "legacy/vm_dom.rs"]
 pub mod vm_dom;
-
-// Legacy `dom2` DOM mutation → script execution helpers (dynamic `<script>` insertion).
-// Kept for tests/experiments; the canonical execution path is the streaming parser pipeline.
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
-
-// Dynamic `<script>` insertion helpers for the legacy DOM bindings / pipelines.
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
-
-// Legacy DOM mutation script processing helper (prepare dynamic `<script>` elements).
-//
-// This is still used by some DOM/streaming pipeline tests, so keep it available at the historical
-// `crate::js::dom_integration` path.
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
