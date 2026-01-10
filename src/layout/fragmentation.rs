@@ -3399,96 +3399,100 @@ fn collect_break_opportunities(
   let abs_end = abs_start + node_block_size;
   let is_row_flex_container_in_context = is_row_flex_container(style);
 
+  let grid_items = if matches!(style.display, Display::Grid | Display::InlineGrid) {
+    node.grid_fragmentation.as_deref()
+  } else {
+    None
+  };
+
   // When the fragment includes both grid track ranges and per-item placement metadata, break hints
   // on grid items apply to the corresponding grid line boundaries (CSS Grid 2 §Fragmenting Grid
   // Layout).
-  let mut grid_item_count = 0usize;
-  if matches!(style.display, Display::Grid | Display::InlineGrid) {
-    if let (Some(grid_tracks), Some(grid_items)) = (
-      node.grid_tracks.as_deref(),
-      node.grid_fragmentation.as_deref(),
-    ) {
-      let tracks = grid_tracks_in_fragmentation_axis(grid_tracks, axis);
-      if !tracks.is_empty() && !grid_items.items.is_empty() {
-        let in_flow_count = grid_items.items.len().min(node.children.len());
-        grid_item_count = in_flow_count;
+  // Grid fragments may omit `grid_tracks` while retaining `grid_fragmentation` placement info. Use
+  // the placement info alone to identify in-flow grid item children so we still suppress internal
+  // forced breaks (which must not propagate to siblings; CSS Grid 2 §Fragmenting Grid Layout).
+  let grid_item_count = grid_items
+    .as_ref()
+    .map(|grid_items| grid_items.items.len().min(node.children.len()))
+    .unwrap_or(0);
 
-        // One slot per grid line (track_count + 1). Index `i` corresponds to the boundary at line
-        // `i + 1` in the fragmentation axis.
-        let mut boundary_strengths = vec![BreakStrength::Auto; tracks.len() + 1];
+  if let (Some(grid_tracks), Some(grid_items)) = (node.grid_tracks.as_deref(), grid_items) {
+    let tracks = grid_tracks_in_fragmentation_axis(grid_tracks, axis);
+    if !tracks.is_empty() && grid_item_count > 0 {
+      let in_flow_count = grid_item_count;
 
-        for idx in 0..in_flow_count {
-          let child = &node.children[idx];
-          let child_style = child
-            .style
-            .as_ref()
-            .map(|s| s.as_ref())
-            .unwrap_or(default_style);
-          let placement = &grid_items.items[idx];
-          let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
+      // One slot per grid line (track_count + 1). Index `i` corresponds to the boundary at line
+      // `i + 1` in the fragmentation axis.
+      let mut boundary_strengths = vec![BreakStrength::Auto; tracks.len() + 1];
 
-          let mut before_strength =
-            combine_breaks(BreakBetween::Auto, child_style.break_before, context);
-          if suppress_forced_breaks && matches!(before_strength, BreakStrength::Forced) {
-            before_strength = BreakStrength::Auto;
-          }
-          if !matches!(before_strength, BreakStrength::Auto) {
-            let boundary_idx = start_line.saturating_sub(1) as usize;
-            if let Some(slot) = boundary_strengths.get_mut(boundary_idx) {
-              *slot = max_break_strength(*slot, before_strength);
-            }
-          }
+      for idx in 0..in_flow_count {
+        let child = &node.children[idx];
+        let child_style = child
+          .style
+          .as_ref()
+          .map(|s| s.as_ref())
+          .unwrap_or(default_style);
+        let placement = &grid_items.items[idx];
+        let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 
-          let mut after_strength =
-            combine_breaks(child_style.break_after, BreakBetween::Auto, context);
-          if suppress_forced_breaks && matches!(after_strength, BreakStrength::Forced) {
-            after_strength = BreakStrength::Auto;
-          }
-          if !matches!(after_strength, BreakStrength::Auto) {
-            let boundary_idx = end_line.saturating_sub(1) as usize;
-            if let Some(slot) = boundary_strengths.get_mut(boundary_idx) {
-              *slot = max_break_strength(*slot, after_strength);
-            }
+        let mut before_strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+        if suppress_forced_breaks && matches!(before_strength, BreakStrength::Forced) {
+          before_strength = BreakStrength::Auto;
+        }
+        if !matches!(before_strength, BreakStrength::Auto) {
+          let boundary_idx = start_line.saturating_sub(1) as usize;
+          if let Some(slot) = boundary_strengths.get_mut(boundary_idx) {
+            *slot = max_break_strength(*slot, before_strength);
           }
         }
 
-        for (boundary_idx, strength) in boundary_strengths.into_iter().enumerate() {
-          if matches!(strength, BreakStrength::Auto) {
+        let mut after_strength = combine_breaks(child_style.break_after, BreakBetween::Auto, context);
+        if suppress_forced_breaks && matches!(after_strength, BreakStrength::Forced) {
+          after_strength = BreakStrength::Auto;
+        }
+        if !matches!(after_strength, BreakStrength::Auto) {
+          let boundary_idx = end_line.saturating_sub(1) as usize;
+          if let Some(slot) = boundary_strengths.get_mut(boundary_idx) {
+            *slot = max_break_strength(*slot, after_strength);
+          }
+        }
+      }
+
+      for (boundary_idx, strength) in boundary_strengths.into_iter().enumerate() {
+        if matches!(strength, BreakStrength::Auto) {
+          continue;
+        }
+        let mut strength = apply_avoid_penalty(strength, inside_avoid > 0);
+        if suppress_forced_breaks && matches!(strength, BreakStrength::Forced) {
+          strength = BreakStrength::Auto;
+        }
+        if matches!(strength, BreakStrength::Auto) {
+          continue;
+        }
+        let pos = if boundary_idx == 0 {
+          abs_start
+        } else if boundary_idx == tracks.len() {
+          abs_end
+        } else {
+          let Some((track_start, track_end)) = tracks.get(boundary_idx.saturating_sub(1)).copied()
+          else {
             continue;
-          }
-          let mut strength = apply_avoid_penalty(strength, inside_avoid > 0);
-          if suppress_forced_breaks && matches!(strength, BreakStrength::Forced) {
-            strength = BreakStrength::Auto;
-          }
-          if matches!(strength, BreakStrength::Auto) {
-            continue;
-          }
-          let pos = if boundary_idx == 0 {
-            abs_start
-          } else if boundary_idx == tracks.len() {
-            abs_end
-          } else {
-            let Some((track_start, track_end)) =
-              tracks.get(boundary_idx.saturating_sub(1)).copied()
-            else {
-              continue;
-            };
-            let track_size = track_end - track_start;
-            if track_size <= BREAK_EPSILON {
-              continue;
-            }
-            // The gutter belongs to the following band; align the boundary to the end edge of the
-            // preceding track (in the flow direction) so breaks never land after a
-            // `row-gap`/`column-gap`.
-            abs_start + axis.flow_offset(track_start, track_size, node_block_size) + track_size
           };
+          let track_size = track_end - track_start;
+          if track_size <= BREAK_EPSILON {
+            continue;
+          }
+          // The gutter belongs to the following band; align the boundary to the end edge of the
+          // preceding track (in the flow direction) so breaks never land after a
+          // `row-gap`/`column-gap`.
+          abs_start + axis.flow_offset(track_start, track_size, node_block_size) + track_size
+        };
 
-          collection.opportunities.push(BreakOpportunity {
-            pos,
-            strength,
-            kind: BreakKind::BetweenSiblings,
-          });
-        }
+        collection.opportunities.push(BreakOpportunity {
+          pos,
+          strength,
+          kind: BreakKind::BetweenSiblings,
+        });
       }
     }
   }
@@ -3633,12 +3637,6 @@ fn collect_break_opportunities(
       orphans: style.orphans.max(1),
     });
     Some(container_id)
-  } else {
-    None
-  };
-
-  let grid_items = if matches!(style.display, Display::Grid | Display::InlineGrid) {
-    node.grid_fragmentation.as_ref()
   } else {
     None
   };
@@ -5443,6 +5441,75 @@ mod tests {
     assert!(
       (shifted_part2_start - 100.0).abs() < BREAK_EPSILON,
       "expected the continuation content to be shifted to the next fragmentainer boundary (x≈100), got x={shifted_part2_start}"
+    );
+  }
+
+  #[test]
+  fn forced_breaks_inside_grid_items_are_suppressed_without_grid_tracks() {
+    // Some fragment trees carry only `grid_fragmentation` placement info (used to identify in-flow
+    // grid item children) without `grid_tracks` coordinate ranges. Forced breaks inside such items
+    // must still be suppressed so they don't become global forced boundaries.
+    let fragmentainer_size = 40.0;
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut break_style = ComputedStyle::default();
+    break_style.display = Display::Block;
+    break_style.break_before = BreakBetween::Page;
+    let break_style = Arc::new(break_style);
+
+    let first = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 25.0), vec![]);
+    let second = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 25.0, 100.0, 5.0),
+      vec![],
+      break_style,
+    );
+    let item = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
+      1,
+      vec![first, second],
+    );
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
+      vec![item],
+      grid_style,
+    );
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![GridItemFragmentationData {
+        box_id: 1,
+        row_start: 1,
+        row_end: 3,
+        column_start: 1,
+        column_end: 2,
+      }],
+    }));
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &grid,
+      FragmentationContext::Page,
+      default_axes(),
+      true,
+      Some(fragmentainer_size),
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+
+    assert!(
+      boundaries
+        .iter()
+        .all(|b| (*b - 25.0).abs() > BREAK_EPSILON || *b <= BREAK_EPSILON),
+      "expected forced breaks inside grid items not to become global forced boundaries, got {boundaries:?}"
+    );
+    assert!(
+      (boundaries[1] - fragmentainer_size).abs() < BREAK_EPSILON,
+      "expected the first break to fall at the fragmentainer limit when no forced breaks escape, got {boundaries:?}"
+    );
+    assert!(
+      (boundaries.last().copied().unwrap_or(0.0) - 60.0).abs() < BREAK_EPSILON,
+      "expected boundaries to end at the grid content extent (60px), got {boundaries:?}"
     );
   }
 
