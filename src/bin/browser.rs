@@ -1598,6 +1598,54 @@ impl App {
           return;
         };
 
+        // ---------------------------------------------------------------------
+        // Keyboard scrolling (PageUp/PageDown/Space/Home/End)
+        // ---------------------------------------------------------------------
+        //
+        // When the page view is focused and egui is not editing a text field, mimic common browser
+        // keyboard scrolling behaviour. This operates on the viewport scroll container rather than
+        // forwarding key events into the page.
+        if self.open_select_dropdown.is_none() {
+          let viewport_h_css = self
+            .page_viewport_css
+            .map(|(_, h)| h)
+            .or_else(|| {
+              self
+                .browser_state
+                .tab(tab_id)
+                .and_then(|tab| tab.latest_frame_meta.as_ref().map(|m| m.viewport_css.1))
+            })
+            .or_else(|| (self.viewport_cache_tab == Some(tab_id)).then_some(self.viewport_cache_css.1))
+            .unwrap_or(1)
+            .max(1);
+          let step_y_css = (viewport_h_css as f32) * 0.9;
+          let current_scroll_y_css = self
+            .browser_state
+            .tab(tab_id)
+            .map(|tab| tab.scroll_state.viewport.y)
+            .unwrap_or(0.0);
+
+          let scroll_delta_y_css = match key {
+            VirtualKeyCode::PageDown => Some(step_y_css),
+            VirtualKeyCode::PageUp => Some(-step_y_css),
+            VirtualKeyCode::Space => Some(if self.modifiers.shift() { -step_y_css } else { step_y_css }),
+            VirtualKeyCode::Home => current_scroll_y_css.is_finite().then_some(-current_scroll_y_css),
+            // Scroll to the end by applying a large positive delta and letting the worker clamp.
+            VirtualKeyCode::End => Some(1_000_000_000.0),
+            _ => None,
+          };
+          if let Some(delta_y) = scroll_delta_y_css {
+            if delta_y != 0.0 && delta_y.is_finite() {
+              self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                tab_id,
+                delta_css: (0.0, delta_y),
+                pointer_css: None,
+              });
+            }
+            return;
+          }
+        }
+
         let key_action = match key {
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
           VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),

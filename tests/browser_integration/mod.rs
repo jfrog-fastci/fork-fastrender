@@ -93,6 +93,7 @@ mod ui_worker_hover_active;
 mod ui_worker_interaction;
 mod ui_worker_form_submit;
 mod ui_worker_keyboard;
+mod ui_keyboard_scrolling;
 mod ui_worker_navigation_errors;
 mod ui_worker_navigation_messages;
 mod ui_worker_robustness;

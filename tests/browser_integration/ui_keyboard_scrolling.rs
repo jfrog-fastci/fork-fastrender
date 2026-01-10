@@ -1,0 +1,153 @@
+#![cfg(feature = "browser_ui")]
+
+use fastrender::ui::cancel::CancelGens;
+use fastrender::ui::{spawn_browser_worker, NavigationReason, TabId, WorkerToUi};
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
+
+use super::support::{
+  create_tab_msg_with_cancel, format_messages, navigate_msg, scroll_msg, viewport_changed_msg,
+  DEFAULT_TIMEOUT,
+};
+
+fn wait_for_initial_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::RenderedFrame {
+  super::support::recv_for_tab(rx, tab_id, DEFAULT_TIMEOUT * 2, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .and_then(|msg| match msg {
+    WorkerToUi::FrameReady { frame, .. } => Some(frame),
+    _ => None,
+  })
+  .expect("timed out waiting for initial FrameReady")
+}
+
+fn wait_for_scroll_response(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+  mut pred: impl FnMut(f32) -> bool,
+) -> (f32, f32) {
+  let deadline = Instant::now() + timeout;
+  let mut scroll_y: Option<f32> = None;
+  let mut frame_y: Option<f32> = None;
+  let mut seen: Vec<WorkerToUi> = Vec::new();
+
+  while Instant::now() < deadline {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+      Ok(msg) => {
+        match &msg {
+          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+            if pred(scroll.viewport.y) {
+              scroll_y = Some(scroll.viewport.y);
+            }
+          }
+          WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
+            if pred(frame.scroll_state.viewport.y) {
+              frame_y = Some(frame.scroll_state.viewport.y);
+            }
+          }
+          _ => {}
+        }
+        if seen.len() < 64 {
+          seen.push(msg);
+        }
+        if scroll_y.is_some() && frame_y.is_some() {
+          break;
+        }
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  let Some(scroll_y) = scroll_y else {
+    panic!(
+      "timed out waiting for ScrollStateUpdated satisfying predicate\nmessages:\n{}",
+      format_messages(&seen)
+    );
+  };
+  let Some(frame_y) = frame_y else {
+    panic!(
+      "timed out waiting for FrameReady satisfying predicate\nmessages:\n{}",
+      format_messages(&seen)
+    );
+  };
+  (scroll_y, frame_y)
+}
+
+#[test]
+fn keyboard_scroll_actions_update_viewport_scroll_state() {
+  let _lock = super::stage_listener_test_lock();
+
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join } =
+    spawn_browser_worker().expect("spawn browser worker");
+
+  let tab_id = TabId(1);
+  let cancel = CancelGens::new();
+  tx.send(create_tab_msg_with_cancel(tab_id, None, cancel))
+    .unwrap();
+  // Use a round height so viewport-height * 0.9 is easy to reason about (100 -> 90).
+  let viewport_css = (200, 100);
+  tx.send(viewport_changed_msg(tab_id, viewport_css, 1.0))
+    .unwrap();
+  tx.send(navigate_msg(
+    tab_id,
+    "about:test-scroll".to_string(),
+    NavigationReason::TypedUrl,
+  ))
+  .unwrap();
+
+  let initial_frame = wait_for_initial_frame(&rx, tab_id);
+  let mut y = initial_frame.scroll_state.viewport.y;
+
+  // Drain the initial ScrollStateUpdated so subsequent waits don't accidentally match it.
+  let _ = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  });
+
+  assert!(
+    y.abs() < 1e-3,
+    "expected initial scroll y to start at 0, got {y}"
+  );
+
+  let step_y = (viewport_css.1 as f32) * 0.9;
+
+  // PageDown / Space.
+  tx.send(scroll_msg(tab_id, (0.0, step_y), None)).unwrap();
+  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 1.0);
+  assert!(
+    (frame_y - step_y).abs() < 1.0,
+    "expected PageDown to scroll by ~{step_y} (0.9*viewport height), got {frame_y}"
+  );
+  y = frame_y;
+
+  // PageUp / Shift+Space.
+  tx.send(scroll_msg(tab_id, (0.0, -step_y), None)).unwrap();
+  let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next < y - 1.0 || next <= 1.0);
+  assert!(
+    frame_y <= 1.0,
+    "expected PageUp to scroll back toward the top, got {frame_y}"
+  );
+  y = frame_y;
+
+  // End.
+  tx.send(scroll_msg(tab_id, (0.0, 1_000_000_000.0), None))
+    .unwrap();
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 10.0 && next > 3_000.0);
+  assert!(frame_y > 3_000.0, "expected End to scroll near bottom, got {frame_y}");
+  y = frame_y;
+
+  // Home.
+  tx.send(scroll_msg(tab_id, (0.0, -y), None)).unwrap();
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next <= 1.0);
+  assert!(
+    frame_y <= 1.0,
+    "expected Home to scroll to top, got {frame_y}"
+  );
+
+  drop(tx);
+  join.join().unwrap();
+}
