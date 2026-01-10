@@ -4,7 +4,6 @@ use crate::dom::DomNodeType;
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
-use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
 use crate::scroll::ScrollState;
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::BoxNode;
@@ -22,6 +21,7 @@ use url::Url;
 
 use super::dom_mutation;
 use super::fragment_geometry::content_rect_for_border_rect;
+use super::form_submit::{form_submission, FormSubmission, FormSubmissionMethod};
 use super::hit_test::hit_test_dom;
 use super::image_maps;
 
@@ -36,6 +36,8 @@ pub enum InteractionAction {
   None,
   Navigate { href: String },
   OpenInNewTab { href: String },
+  /// Navigation that carries an explicit HTTP method and optional body (used for form POST).
+  NavigateRequest { request: FormSubmission },
   FocusChanged { node_id: Option<usize> },
   OpenSelectDropdown {
     select_node_id: usize,
@@ -1228,220 +1230,6 @@ fn resolve_form_owner(index: &DomIndexMut, control_node_id: usize) -> Option<usi
 // full equivalence relation. Mark it as `Eq` so interaction actions can remain `Eq` as well.
 impl Eq for SelectControl {}
 
-fn form_control_value(node: &DomNode) -> Option<(String, String)> {
-  let name = node
-    .get_attribute_ref("name")
-    .map(trim_ascii_whitespace)
-    .filter(|v| !v.is_empty())?;
-
-  if is_checkbox_input(node) || is_radio_input(node) {
-    let checked = node.get_attribute_ref("checked").is_some();
-    if !checked {
-      return None;
-    }
-    let value = node.get_attribute_ref("value").unwrap_or("on");
-    return Some((name.to_string(), value.to_string()));
-  }
-
-  if is_input(node) {
-    // Skip button-ish inputs.
-    let t = input_type(node);
-    if t.eq_ignore_ascii_case("submit")
-      || t.eq_ignore_ascii_case("button")
-      || t.eq_ignore_ascii_case("reset")
-      || t.eq_ignore_ascii_case("image")
-      || t.eq_ignore_ascii_case("file")
-    {
-      return None;
-    }
-
-    // Match HTML value sanitization rules for specific input types.
-    let value = if t.eq_ignore_ascii_case("range") {
-      crate::dom::input_range_value(node)
-        .map(crate::dom::format_number)
-        .unwrap_or_else(|| node.get_attribute_ref("value").unwrap_or("").to_string())
-    } else if t.eq_ignore_ascii_case("color") {
-      crate::dom::input_color_value_string(node).unwrap_or_default()
-    } else if t.eq_ignore_ascii_case("number") {
-      crate::dom::input_number_value_string(node).unwrap_or_default()
-    } else if t.eq_ignore_ascii_case("date") {
-      crate::dom::input_date_value_string(node).unwrap_or_default()
-    } else if t.eq_ignore_ascii_case("time") {
-      crate::dom::input_time_value_string(node).unwrap_or_default()
-    } else if t.eq_ignore_ascii_case("datetime-local") {
-      crate::dom::input_datetime_local_value_string(node).unwrap_or_default()
-    } else if t.eq_ignore_ascii_case("month") {
-      crate::dom::input_month_value_string(node).unwrap_or_default()
-    } else if t.eq_ignore_ascii_case("week") {
-      crate::dom::input_week_value_string(node).unwrap_or_default()
-    } else {
-      crate::dom::input_text_like_value_string(node)
-        .unwrap_or_else(|| node.get_attribute_ref("value").unwrap_or("").to_string())
-    };
-
-    return Some((name.to_string(), value));
-  }
-
-  if is_textarea(node) {
-    let value = crate::dom::textarea_current_value(node);
-    return Some((name.to_string(), value));
-  }
-
-  None
-}
-
-fn build_get_form_submission_url(
-  index: &DomIndexMut,
-  form_id: usize,
-  submitter_id: Option<usize>,
-  document_url: &str,
-  base_url: &str,
-) -> Option<String> {
-  let form = index.node(form_id)?;
-
-  let method = form.get_attribute_ref("method").unwrap_or("get");
-  if !method.is_empty() && !method.eq_ignore_ascii_case("get") {
-    return None;
-  }
-
-  let action_attr = form
-    .get_attribute_ref("action")
-    .map(trim_ascii_whitespace)
-    .unwrap_or("");
-
-  let action_url = if action_attr.is_empty() {
-    let doc = trim_ascii_whitespace(document_url);
-    if !doc.is_empty() {
-      doc.to_string()
-    } else {
-      let base = trim_ascii_whitespace(base_url);
-      if base.is_empty() {
-        return None;
-      }
-      base.to_string()
-    }
-  } else {
-    resolve_url(base_url, action_attr)?
-  };
-
-  let mut url = Url::parse(&action_url).ok()?;
-  // Form submission discards fragments.
-  url.set_fragment(None);
-
-  // GET submissions set the query to the encoded form data.
-  url.set_query(None);
-  let limits = WebUrlLimits::default();
-  let params = WebUrlSearchParams::new(&limits);
-
-  for id in 1..index.id_to_node.len() {
-    let Some(node) = index.node(id) else {
-      continue;
-    };
-    if !node.is_element() {
-      continue;
-    }
-    if node_or_ancestor_is_inert(index, id) || node_is_disabled(index, id) {
-      continue;
-    }
-
-    if !(is_input(node) || is_textarea(node) || is_select(node)) {
-      continue;
-    }
-    if resolve_form_owner(index, id) != Some(form_id) {
-      continue;
-    }
-
-    if is_select(node) {
-      let Some(name) = node
-        .get_attribute_ref("name")
-        .map(trim_ascii_whitespace)
-        .filter(|v| !v.is_empty())
-      else {
-        continue;
-      };
-
-      let multiple = node.get_attribute_ref("multiple").is_some();
-      let options = collect_select_option_nodes_dom(index, id);
-
-      if multiple {
-        for (opt_id, disabled) in options.iter().copied() {
-          if disabled {
-            continue;
-          }
-          let Some(option) = index.node(opt_id) else {
-            continue;
-          };
-          if option.get_attribute_ref("selected").is_none() {
-            continue;
-          }
-
-          let value = option
-            .get_attribute_ref("value")
-            .map(str::to_string)
-            .unwrap_or_else(|| collect_text_children_value(option));
-          params.append(name, &value).ok()?;
-        }
-      } else {
-        let mut chosen: Option<usize> = None;
-        for (opt_id, disabled) in options.iter() {
-          if *disabled {
-            continue;
-          }
-          if index
-            .node(*opt_id)
-            .and_then(|opt| opt.get_attribute_ref("selected"))
-            .is_some()
-          {
-            // For single-select controls, if multiple `<option>` elements are marked selected (e.g.
-            // from authored markup), the last one in tree order wins.
-            chosen = Some(*opt_id);
-          }
-        }
-        if chosen.is_none() {
-          chosen = options
-            .iter()
-            .find_map(|(opt_id, disabled)| (!*disabled).then_some(*opt_id));
-        }
-
-        if let Some(opt_id) = chosen {
-          if let Some(option) = index.node(opt_id) {
-            let value = option
-              .get_attribute_ref("value")
-              .map(str::to_string)
-              .unwrap_or_else(|| collect_text_children_value(option));
-            params.append(name, &value).ok()?;
-          }
-        }
-      }
-    } else if let Some((name, value)) = form_control_value(node) {
-      params.append(&name, &value).ok()?;
-    }
-  }
-
-  if let Some(submitter_id) = submitter_id {
-    if let Some(submitter) = index.node(submitter_id) {
-      if !(node_or_ancestor_is_inert(index, submitter_id) || node_is_disabled(index, submitter_id))
-      {
-        if let Some(name) = submitter
-          .get_attribute_ref("name")
-          .map(trim_ascii_whitespace)
-          .filter(|v| !v.is_empty())
-        {
-          let value = submitter.get_attribute_ref("value").unwrap_or("");
-          params.append(name, value).ok()?;
-        }
-      }
-    }
-  }
-
-  let query = params.serialize().ok()?;
-  if !query.is_empty() {
-    url.set_query(Some(&query));
-  }
-
-  Some(url.to_string())
-}
-
 fn find_default_form_submitter(index: &DomIndexMut, form_id: usize) -> Option<usize> {
   // Spec-ish: choose the first submit control in tree order whose form owner matches `form_id`.
   // This is used for implicit submission (Enter in a text input).
@@ -2068,11 +1856,14 @@ impl InteractionEngine {
                 dom_changed |= dom_mutation::mark_user_validity(node_mut);
               }
               dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
-              if let Some(form_id) = resolve_form_owner(&index, target_id) {
-                if let Some(url) =
-                  build_get_form_submission_url(&index, form_id, Some(target_id), document_url, base_url)
-                {
-                  action = InteractionAction::Navigate { href: url };
+              if let Some(submission) = form_submission(dom, target_id, document_url, base_url) {
+                match submission.method {
+                  FormSubmissionMethod::Get => {
+                    action = InteractionAction::Navigate { href: submission.url };
+                  }
+                  FormSubmissionMethod::Post => {
+                    action = InteractionAction::NavigateRequest { request: submission };
+                  }
                 }
               }
             }
@@ -3031,10 +2822,14 @@ impl InteractionEngine {
               changed |= dom_mutation::mark_user_validity(node_mut);
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
-            if let Some(form_id) = resolve_form_owner(&index, focused) {
-              if let Some(url) = build_get_form_submission_url(&index, form_id, Some(focused), document_url, base_url)
-              {
-                action = InteractionAction::Navigate { href: url };
+            if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+              match submission.method {
+                FormSubmissionMethod::Get => {
+                  action = InteractionAction::Navigate { href: submission.url };
+                }
+                FormSubmissionMethod::Post => {
+                  action = InteractionAction::NavigateRequest { request: submission };
+                }
               }
             }
           }
@@ -3049,10 +2844,17 @@ impl InteractionEngine {
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
             if let Some(form_id) = resolve_form_owner(&index, focused) {
               let submitter_id = find_default_form_submitter(&index, form_id);
-              if let Some(url) =
-                build_get_form_submission_url(&index, form_id, submitter_id, document_url, base_url)
-              {
-                action = InteractionAction::Navigate { href: url };
+              if let Some(submitter_id) = submitter_id {
+                if let Some(submission) = form_submission(dom, submitter_id, document_url, base_url) {
+                  match submission.method {
+                    FormSubmissionMethod::Get => {
+                      action = InteractionAction::Navigate { href: submission.url };
+                    }
+                    FormSubmissionMethod::Post => {
+                      action = InteractionAction::NavigateRequest { request: submission };
+                    }
+                  }
+                }
               }
             }
           }
@@ -3079,11 +2881,14 @@ impl InteractionEngine {
               changed |= dom_mutation::mark_user_validity(node_mut);
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
-            if let Some(form_id) = resolve_form_owner(&index, focused) {
-              if let Some(url) =
-                build_get_form_submission_url(&index, form_id, Some(focused), document_url, base_url)
-              {
-                action = InteractionAction::Navigate { href: url };
+            if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+              match submission.method {
+                FormSubmissionMethod::Get => {
+                  action = InteractionAction::Navigate { href: submission.url };
+                }
+                FormSubmissionMethod::Post => {
+                  action = InteractionAction::NavigateRequest { request: submission };
+                }
               }
             }
           }
@@ -3096,7 +2901,9 @@ impl InteractionEngine {
 
     if !matches!(
       action,
-      InteractionAction::Navigate { .. } | InteractionAction::OpenInNewTab { .. }
+      InteractionAction::Navigate { .. }
+        | InteractionAction::OpenInNewTab { .. }
+        | InteractionAction::NavigateRequest { .. }
     ) && self.focused != prev_focus
     {
       action = InteractionAction::FocusChanged {

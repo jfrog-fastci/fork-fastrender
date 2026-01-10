@@ -12,8 +12,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::html::{find_document_favicon_url, find_document_title};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{
-  dom_mutation, fragment_tree_with_scroll, hit_test_dom, HitTestKind, InteractionAction,
-  InteractionEngine,
+  dom_mutation, fragment_tree_with_scroll, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind,
+  InteractionAction, InteractionEngine,
 };
 use crate::render_control::{push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard};
 use crate::scroll::ScrollState;
@@ -97,7 +97,7 @@ pub struct BrowserWorkerHandle {
 
 #[derive(Debug, Clone)]
 struct NavigationRequest {
-  url: String,
+  request: FormSubmission,
   apply_fragment_scroll: bool,
 }
 
@@ -896,7 +896,17 @@ impl BrowserRuntime {
           tab.history.go_back().map(|entry| entry.url.clone())
         };
         if let Some(url) = url {
-          self.begin_navigation(tab_id, url, NavigationReason::BackForward, false);
+          self.begin_navigation(
+            tab_id,
+            FormSubmission {
+              url,
+              method: FormSubmissionMethod::Get,
+              headers: Vec::new(),
+              body: None,
+            },
+            NavigationReason::BackForward,
+            false,
+          );
         }
       }
       UiToWorker::GoForward { tab_id } => {
@@ -912,7 +922,17 @@ impl BrowserRuntime {
           tab.history.go_forward().map(|entry| entry.url.clone())
         };
         if let Some(url) = url {
-          self.begin_navigation(tab_id, url, NavigationReason::BackForward, false);
+          self.begin_navigation(
+            tab_id,
+            FormSubmission {
+              url,
+              method: FormSubmissionMethod::Get,
+              headers: Vec::new(),
+              body: None,
+            },
+            NavigationReason::BackForward,
+            false,
+          );
         }
       }
       UiToWorker::Reload { tab_id } => {
@@ -932,7 +952,17 @@ impl BrowserRuntime {
             .or_else(|| tab.last_committed_url.clone())
         };
         if let Some(url) = url {
-          self.begin_navigation(tab_id, url, NavigationReason::Reload, false);
+          self.begin_navigation(
+            tab_id,
+            FormSubmission {
+              url,
+              method: FormSubmissionMethod::Get,
+              headers: Vec::new(),
+              body: None,
+            },
+            NavigationReason::Reload,
+            false,
+          );
         }
       }
       UiToWorker::Tick { tab_id } => {
@@ -1218,12 +1248,32 @@ impl BrowserRuntime {
         // Only normalize user-typed URLs. Back/forward/reload should preserve the exact URL
         // stored in history (the UI sends those URLs verbatim).
         let url = crate::ui::normalize_user_url(&requested_url).unwrap_or(requested_url);
-        self.begin_navigation(tab_id, url, NavigationReason::TypedUrl, true);
+        self.begin_navigation(
+          tab_id,
+          FormSubmission {
+            url,
+            method: FormSubmissionMethod::Get,
+            headers: Vec::new(),
+            body: None,
+          },
+          NavigationReason::TypedUrl,
+          true,
+        );
       }
       NavigationReason::LinkClick => {
         // Link clicks are resolved by the interaction engine against the current document base
         // URL, so we treat them as already-canonical.
-        self.begin_navigation(tab_id, requested_url, NavigationReason::LinkClick, true);
+        self.begin_navigation(
+          tab_id,
+          FormSubmission {
+            url: requested_url,
+            method: FormSubmissionMethod::Get,
+            headers: Vec::new(),
+            body: None,
+          },
+          NavigationReason::LinkClick,
+          true,
+        );
       }
       NavigationReason::Reload => {
         let (nav_url, push_history) = {
@@ -1238,7 +1288,17 @@ impl BrowserRuntime {
             .unwrap_or_else(|| requested_url.clone());
           (nav_url, push_history)
         };
-        self.begin_navigation(tab_id, nav_url, NavigationReason::Reload, push_history);
+        self.begin_navigation(
+          tab_id,
+          FormSubmission {
+            url: nav_url,
+            method: FormSubmissionMethod::Get,
+            headers: Vec::new(),
+            body: None,
+          },
+          NavigationReason::Reload,
+          push_history,
+        );
       }
       NavigationReason::BackForward => {
         let nav_url = {
@@ -1268,7 +1328,47 @@ impl BrowserRuntime {
           return;
         };
 
-        self.begin_navigation(tab_id, nav_url, NavigationReason::BackForward, false);
+        self.begin_navigation(
+          tab_id,
+          FormSubmission {
+            url: nav_url,
+            method: FormSubmissionMethod::Get,
+            headers: Vec::new(),
+            body: None,
+          },
+          NavigationReason::BackForward,
+          false,
+        );
+      }
+    }
+  }
+
+  fn schedule_navigation_request(
+    &mut self,
+    tab_id: TabId,
+    mut request: FormSubmission,
+    reason: NavigationReason,
+  ) {
+    request.url = request.url.trim().to_string();
+    if request.url.is_empty() {
+      return;
+    }
+
+    match reason {
+      NavigationReason::TypedUrl | NavigationReason::LinkClick => {
+        self.begin_navigation(tab_id, request, reason, true);
+      }
+      NavigationReason::Reload => {
+        let push_history = {
+          let Some(tab) = self.tabs.get(&tab_id) else {
+            return;
+          };
+          tab.history.current().is_none()
+        };
+        self.begin_navigation(tab_id, request, reason, push_history);
+      }
+      NavigationReason::BackForward => {
+        self.begin_navigation(tab_id, request, reason, false);
       }
     }
   }
@@ -1276,7 +1376,7 @@ impl BrowserRuntime {
   fn begin_navigation(
     &mut self,
     tab_id: TabId,
-    url: String,
+    request: FormSubmission,
     reason: NavigationReason,
     push_history: bool,
   ) {
@@ -1285,6 +1385,7 @@ impl BrowserRuntime {
     };
     let had_pending_navigation = tab.loading;
     let had_pending_history_entry = tab.pending_history_entry;
+    let url = request.url.clone();
 
     // Fragment-only navigation within the same document: update URL + scroll state in-place.
     //
@@ -1292,7 +1393,10 @@ impl BrowserRuntime {
     // compute a new viewport offset for the fragment target.
     //
     // `Reload` must not take this path because callers expect a full reload.
-    if reason != NavigationReason::Reload {
+    let request_is_plain_get = request.method == FormSubmissionMethod::Get
+      && request.headers.is_empty()
+      && request.body.is_none();
+    if reason != NavigationReason::Reload && request_is_plain_get {
       if !tab.loading {
         if let (Some(current), Some(doc)) =
           (tab.last_committed_url.as_deref(), tab.document.as_mut())
@@ -1375,7 +1479,7 @@ impl BrowserRuntime {
     tab.loading = true;
     tab.needs_repaint = false;
     tab.pending_navigation = Some(NavigationRequest {
-      url: url.clone(),
+      request,
       apply_fragment_scroll: matches!(
         reason,
         NavigationReason::TypedUrl | NavigationReason::LinkClick
@@ -1610,6 +1714,9 @@ impl BrowserRuntime {
         if dom_changed {
           tab.needs_repaint = true;
         }
+      }
+      InteractionAction::NavigateRequest { request } => {
+        self.schedule_navigation_request(tab_id, request, NavigationReason::LinkClick);
       }
       InteractionAction::OpenSelectDropdown {
         select_node_id,
@@ -1892,6 +1999,7 @@ impl BrowserRuntime {
 
   fn handle_key_action(&mut self, tab_id: TabId, key: crate::interaction::KeyAction) {
     let mut navigate_to: Option<String> = None;
+    let mut navigate_request: Option<FormSubmission> = None;
 
     {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -1968,6 +2076,9 @@ impl BrowserRuntime {
             tab.needs_repaint = true;
           }
         }
+        InteractionAction::NavigateRequest { request } => {
+          navigate_request = Some(request);
+        }
         InteractionAction::OpenSelectDropdown {
           select_node_id,
           control,
@@ -2013,6 +2124,8 @@ impl BrowserRuntime {
 
     if let Some(href) = navigate_to {
       self.schedule_navigation(tab_id, href, NavigationReason::LinkClick);
+    } else if let Some(request) = navigate_request {
+      self.schedule_navigation_request(tab_id, request, NavigationReason::LinkClick);
     }
   }
 
@@ -2088,9 +2201,14 @@ impl BrowserRuntime {
     let preempt_cancel_callback = self.preempt_cancel_callback_for_job(tab_id);
     let request_for_retry = request.clone();
 
+    let NavigationRequest {
+      request,
+      apply_fragment_scroll,
+    } = request;
+
     // Pull what we need out of `TabState` so we can release the borrow while running the expensive
     // prepare+paint pipeline (and so we can reinsert the document on all exit paths).
-    let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, apply_fragment_scroll, cancel, doc) = {
+    let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, cancel, doc) = {
       let tab = self.tabs.get_mut(&tab_id)?;
       (
         tab.cancel.snapshot_prepare(),
@@ -2098,7 +2216,6 @@ impl BrowserRuntime {
         tab.viewport_css,
         tab.dpr,
         tab.history.current().map(|e| (e.scroll_x, e.scroll_y)),
-        request.apply_fragment_scroll,
         tab.cancel.clone(),
         tab.document.take(),
       )
@@ -2202,10 +2319,24 @@ impl BrowserRuntime {
         Ok(()) => {
           let report = {
             let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-            doc.navigate_url(&original_url, options.clone())
+            if request.method == FormSubmissionMethod::Get && request.headers.is_empty() && request.body.is_none() {
+              doc
+                .navigate_url(&original_url, options.clone())
+                .map(|report| (report.final_url, report.base_url))
+            } else {
+              doc
+                .navigate_http_request_with_options(
+                  &original_url,
+                  request.method.as_http_method(),
+                  &request.headers,
+                  request.body.as_deref(),
+                  options.clone(),
+                )
+                .map(|(committed_url, base_url)| (Some(committed_url), Some(base_url)))
+            }
           };
           match report {
-            Ok(report) => (report.final_url, report.base_url),
+            Ok((final_url, base_url)) => (final_url, base_url),
             Err(err) => {
               // Restore the document before delegating to the navigation-error renderer.
               let _ = self.reinsert_document(tab_id, doc);

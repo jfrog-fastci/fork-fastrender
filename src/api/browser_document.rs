@@ -429,6 +429,48 @@ impl BrowserDocument {
     Ok((committed_url, base_url))
   }
 
+  /// Navigate this document using an explicit HTTP method, headers, and optional body.
+  ///
+  /// This is primarily used for HTML form submission (POST).
+  pub fn navigate_http_request_with_options(
+    &mut self,
+    url: &str,
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+    options: RenderOptions,
+  ) -> Result<(String, String)> {
+    // Like `navigate_url_with_options`: if prepare fails (e.g. cancellation), restore the previous
+    // URL hints so the existing document continues to have consistent origin/base semantics.
+    let prev_document_url = self.renderer.document_url.clone();
+    let prev_base_url = self.renderer.base_url.clone();
+    let report = match self
+      .renderer
+      .prepare_http_request(url, method, headers, body, options.clone())
+    {
+      Ok(report) => report,
+      Err(err) => {
+        self.set_navigation_urls(prev_document_url, prev_base_url);
+        return Err(err);
+      }
+    };
+
+    let committed_url = report.final_url.clone().unwrap_or_else(|| url.to_string());
+    let base_url = report
+      .base_url
+      .clone()
+      .filter(|base| !super::trim_ascii_whitespace(base).is_empty())
+      .unwrap_or_else(|| committed_url.clone());
+
+    self.document_url =
+      (!super::trim_ascii_whitespace(&committed_url).is_empty()).then_some(committed_url.clone());
+    self.set_navigation_urls(Some(committed_url.clone()), Some(base_url.clone()));
+
+    self.reset_with_prepared(report.document, options);
+
+    Ok((committed_url, base_url))
+  }
+
   /// Returns an immutable reference to the live DOM tree.
   pub fn dom(&self) -> &DomNode {
     &self.dom

@@ -3,6 +3,66 @@ use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
 
 use url::Url;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormSubmissionMethod {
+  Get,
+  Post,
+}
+
+impl FormSubmissionMethod {
+  fn parse(value: &str) -> Self {
+    let value = trim_ascii_whitespace(value);
+    if value.eq_ignore_ascii_case("post") {
+      return Self::Post;
+    }
+    // Includes empty/invalid values (HTML enumerated attribute default).
+    Self::Get
+  }
+
+  pub fn as_http_method(self) -> &'static str {
+    match self {
+      Self::Get => "GET",
+      Self::Post => "POST",
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormSubmissionEnctype {
+  UrlEncoded,
+  MultipartFormData,
+  TextPlain,
+}
+
+impl FormSubmissionEnctype {
+  fn parse(value: &str) -> Self {
+    let value = trim_ascii_whitespace(value);
+    if value.eq_ignore_ascii_case("multipart/form-data") {
+      return Self::MultipartFormData;
+    }
+    if value.eq_ignore_ascii_case("text/plain") {
+      return Self::TextPlain;
+    }
+    // Includes empty/invalid values (HTML enumerated attribute default).
+    Self::UrlEncoded
+  }
+}
+
+/// Result of an HTML form submission attempt.
+///
+/// This is intentionally "spec-shaped" rather than UI-shaped: it preserves method + body encoding
+/// so the navigation layer can perform a real GET/POST request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormSubmission {
+  /// Target URL after applying action resolution and fragment stripping.
+  pub url: String,
+  pub method: FormSubmissionMethod,
+  /// Request headers implied by the submission (notably `Content-Type` for POST).
+  pub headers: Vec<(String, String)>,
+  /// Request body for POST submissions.
+  pub body: Option<Vec<u8>>,
+}
+
 fn trim_ascii_whitespace(value: &str) -> &str {
   // HTML URL-ish attributes strip leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but do not
   // treat all Unicode whitespace as ignorable. Use an explicit trim to avoid incorrectly dropping
@@ -338,11 +398,39 @@ fn append_pair(params: &WebUrlSearchParams, name: &str, value: &str) -> Option<(
   Some(())
 }
 
-fn append_form_controls(
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FormDataEntry {
+  Text { name: String, value: String },
+  File {
+    name: String,
+    filename: String,
+    content_type: String,
+    bytes: Vec<u8>,
+  },
+}
+
+fn entry_name(entry: &FormDataEntry) -> &str {
+  match entry {
+    FormDataEntry::Text { name, .. } => name,
+    FormDataEntry::File { name, .. } => name,
+  }
+}
+
+fn entry_value_for_urlencoded(entry: &FormDataEntry) -> &str {
+  match entry {
+    FormDataEntry::Text { value, .. } => value,
+    // For urlencoded submissions file controls submit the filename (or empty string when no file is
+    // selected). We don't model file selection yet, so treat it as the deterministic "no file
+    // selected" case.
+    FormDataEntry::File { filename, .. } => filename,
+  }
+}
+
+fn collect_form_entries(
   index: &DomIndex<'_>,
   form_node_id: usize,
   submitter_node_id: usize,
-  params: &WebUrlSearchParams,
+  out: &mut Vec<FormDataEntry>,
 ) -> Option<()> {
   // Spec-ish: successful controls are collected in tree order (document order), including form-
   // associated elements outside the `<form>` subtree.
@@ -383,7 +471,10 @@ fn append_form_controls(
           continue;
         }
         let value = node.get_attribute_ref("value").unwrap_or("on");
-        append_pair(params, name, value)?;
+        out.push(FormDataEntry::Text {
+          name: name.to_string(),
+          value: value.to_string(),
+        });
         continue;
       }
 
@@ -396,7 +487,18 @@ fn append_form_controls(
         continue;
       }
 
-      if ty.eq_ignore_ascii_case("file") || ty.eq_ignore_ascii_case("image") {
+      if ty.eq_ignore_ascii_case("image") {
+        continue;
+      }
+
+      if ty.eq_ignore_ascii_case("file") {
+        // File input support is currently stubbed. Treat as "no files selected".
+        out.push(FormDataEntry::File {
+          name: name.to_string(),
+          filename: String::new(),
+          content_type: "application/octet-stream".to_string(),
+          bytes: Vec::new(),
+        });
         continue;
       }
 
@@ -404,7 +506,10 @@ fn append_form_controls(
         let value = crate::dom::input_range_value(node)
           .map(crate::dom::format_number)
           .unwrap_or_else(|| node.get_attribute_ref("value").unwrap_or("").to_string());
-        append_pair(params, name, &value)?;
+        out.push(FormDataEntry::Text {
+          name: name.to_string(),
+          value,
+        });
         continue;
       }
 
@@ -426,13 +531,19 @@ fn append_form_controls(
         crate::dom::input_text_like_value_string(node)
           .unwrap_or_else(|| node.get_attribute_ref("value").unwrap_or("").to_string())
       };
-      append_pair(params, name, &value)?;
+      out.push(FormDataEntry::Text {
+        name: name.to_string(),
+        value,
+      });
       continue;
     }
 
     if is_textarea(node) {
       let value = crate::dom::textarea_current_value(node);
-      append_pair(params, name, &value)?;
+      out.push(FormDataEntry::Text {
+        name: name.to_string(),
+        value,
+      });
       continue;
     }
 
@@ -443,7 +554,10 @@ fn append_form_controls(
       if multiple {
         for option in options {
           if option.selected && !option.disabled {
-            append_pair(params, name, &option.value)?;
+            out.push(FormDataEntry::Text {
+              name: name.to_string(),
+              value: option.value,
+            });
           }
         }
       } else {
@@ -465,7 +579,10 @@ fn append_form_controls(
 
         if let Some(chosen) = chosen {
           if let Some(option) = options.get(chosen) {
-            append_pair(params, name, &option.value)?;
+            out.push(FormDataEntry::Text {
+              name: name.to_string(),
+              value: option.value.clone(),
+            });
           }
         }
       }
@@ -486,28 +603,167 @@ fn append_form_controls(
   }
   if let Some(name) = submitter
     .get_attribute_ref("name")
+    .map(trim_ascii_whitespace)
     .filter(|name| !name.is_empty())
   {
     let value = submitter.get_attribute_ref("value").unwrap_or("");
-    append_pair(params, name, value)?;
+    out.push(FormDataEntry::Text {
+      name: name.to_string(),
+      value: value.to_string(),
+    });
   }
 
   Some(())
 }
 
-/// Build a GET form submission URL for the given submit button/input.
+fn serialize_urlencoded(entries: &[FormDataEntry]) -> Option<String> {
+  let limits = WebUrlLimits::default();
+  let params = WebUrlSearchParams::new(&limits);
+  for entry in entries {
+    append_pair(&params, entry_name(entry), entry_value_for_urlencoded(entry))?;
+  }
+  params.serialize().ok()
+}
+
+fn escape_multipart_value(value: &str) -> String {
+  let mut out = String::new();
+  for ch in value.chars() {
+    if ch == '"' || ch == '\\' {
+      out.push('\\');
+    }
+    out.push(ch);
+  }
+  out
+}
+
+fn serialize_multipart_form_data(entries: &[FormDataEntry]) -> (Vec<u8>, String) {
+  // Deterministic boundary for tests/offline fixtures.
+  const BOUNDARY: &str = "fastrender-form-boundary";
+  let mut body = Vec::new();
+
+  for entry in entries {
+    body.extend_from_slice(b"--");
+    body.extend_from_slice(BOUNDARY.as_bytes());
+    body.extend_from_slice(b"\r\n");
+
+    match entry {
+      FormDataEntry::Text { name, value } => {
+        let name = escape_multipart_value(name);
+        body.extend_from_slice(format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes());
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+      }
+      FormDataEntry::File {
+        name,
+        filename,
+        content_type,
+        bytes,
+      } => {
+        let name = escape_multipart_value(name);
+        let filename = escape_multipart_value(filename);
+        body.extend_from_slice(
+          format!(
+            "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
+          )
+          .as_bytes(),
+        );
+        body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+      }
+    }
+  }
+
+  body.extend_from_slice(b"--");
+  body.extend_from_slice(BOUNDARY.as_bytes());
+  body.extend_from_slice(b"--\r\n");
+  (body, BOUNDARY.to_string())
+}
+
+fn serialize_text_plain(entries: &[FormDataEntry]) -> Vec<u8> {
+  let mut out = String::new();
+  for (idx, entry) in entries.iter().enumerate() {
+    if idx > 0 {
+      out.push_str("\r\n");
+    }
+    out.push_str(entry_name(entry));
+    out.push('=');
+    out.push_str(entry_value_for_urlencoded(entry));
+  }
+  out.into_bytes()
+}
+
+fn action_url_for_submission(
+  form: &DomNode,
+  submitter: &DomNode,
+  document_url: &str,
+  base_url: &str,
+) -> Option<String> {
+  let action_attr = submitter
+    .get_attribute_ref("formaction")
+    .map(trim_ascii_whitespace)
+    .filter(|action| !action.is_empty())
+    .or_else(|| {
+      form
+        .get_attribute_ref("action")
+        .map(trim_ascii_whitespace)
+        .filter(|action| !action.is_empty())
+    });
+
+  match action_attr {
+    Some(action) => resolve_url(base_url, action),
+    None => {
+      let doc = trim_ascii_whitespace(document_url);
+      if !doc.is_empty() {
+        Some(doc.to_string())
+      } else {
+        let base = trim_ascii_whitespace(base_url);
+        (!base.is_empty()).then(|| base.to_string())
+      }
+    }
+  }
+}
+
+fn method_for_submission(form: &DomNode, submitter: &DomNode) -> FormSubmissionMethod {
+  submitter
+    .get_attribute_ref("formmethod")
+    .map(FormSubmissionMethod::parse)
+    .unwrap_or_else(|| {
+      form
+        .get_attribute_ref("method")
+        .map(FormSubmissionMethod::parse)
+        .unwrap_or(FormSubmissionMethod::Get)
+    })
+}
+
+fn enctype_for_submission(form: &DomNode, submitter: &DomNode) -> FormSubmissionEnctype {
+  submitter
+    .get_attribute_ref("formenctype")
+    .map(FormSubmissionEnctype::parse)
+    .unwrap_or_else(|| {
+      form
+        .get_attribute_ref("enctype")
+        .map(FormSubmissionEnctype::parse)
+        .unwrap_or(FormSubmissionEnctype::UrlEncoded)
+    })
+}
+
+/// Compute an HTML form submission request for the given submit button/input.
 ///
-/// MVP implementation:
+/// Spec-shaped implementation:
 /// - Finds the form owner using the submitter's `form` attribute when present, otherwise the
 ///   nearest `<form>` ancestor.
-/// - Only supports method=GET.
-/// - Serializes successful controls in tree order.
-pub fn form_submission_get_url(
+/// - Collects successful controls in tree order (including form-associated elements outside the
+///   `<form>` subtree).
+/// - Supports GET and POST with common `enctype` values.
+/// - Applies `formaction`/`formmethod`/`formenctype` overrides on the submitter.
+/// - Resolves `action` against the document base URL and strips fragments.
+pub fn form_submission(
   dom: &DomNode,
   submitter_node_id: usize,
   document_url: &str,
   base_url: &str,
-) -> Option<String> {
+) -> Option<FormSubmission> {
   let index = DomIndex::new(dom);
 
   let submitter = index.node(submitter_node_id)?;
@@ -521,42 +777,67 @@ pub fn form_submission_get_url(
   let form_id = resolve_form_owner(&index, submitter_node_id)?;
   let form = index.node(form_id)?;
 
-  let method = trim_ascii_whitespace(form.get_attribute_ref("method").unwrap_or("get"));
-  let method = if method.is_empty() { "get" } else { method };
-  if !method.eq_ignore_ascii_case("get") {
-    return None;
-  }
+  let method = method_for_submission(form, submitter);
+  let enctype = enctype_for_submission(form, submitter);
 
-  let action_url = match form
-    .get_attribute_ref("action")
-    .map(trim_ascii_whitespace)
-    .filter(|action| !action.is_empty())
-  {
-    Some(action) => resolve_url(base_url, action)?,
-    None => {
-      let doc = trim_ascii_whitespace(document_url);
-      if doc.is_empty() {
-        base_url.to_string()
-      } else {
-        doc.to_string()
-      }
-    }
-  };
-
+  let action_url = action_url_for_submission(form, submitter, document_url, base_url)?;
   let mut url = Url::parse(&action_url).ok()?;
   // Form submission discards fragments.
   url.set_fragment(None);
 
-  let limits = WebUrlLimits::default();
-  let params = WebUrlSearchParams::new(&limits);
-  append_form_controls(&index, form_id, submitter_node_id, &params)?;
-  let query = params.serialize().ok()?;
+  let mut entries: Vec<FormDataEntry> = Vec::new();
+  collect_form_entries(&index, form_id, submitter_node_id, &mut entries)?;
 
-  if query.is_empty() {
-    url.set_query(None);
-  } else {
-    url.set_query(Some(&query));
+  match method {
+    FormSubmissionMethod::Get => {
+      // GET submissions set the query to the encoded form data.
+      let query = serialize_urlencoded(&entries)?;
+      if query.is_empty() {
+        url.set_query(None);
+      } else {
+        url.set_query(Some(&query));
+      }
+
+      Some(FormSubmission {
+        url: url.to_string(),
+        method,
+        headers: Vec::new(),
+        body: None,
+      })
+    }
+    FormSubmissionMethod::Post => {
+      let (body, content_type) = match enctype {
+        FormSubmissionEnctype::UrlEncoded => {
+          let encoded = serialize_urlencoded(&entries)?;
+          (encoded.into_bytes(), "application/x-www-form-urlencoded".to_string())
+        }
+        FormSubmissionEnctype::MultipartFormData => {
+          let (body, boundary) = serialize_multipart_form_data(&entries);
+          (body, format!("multipart/form-data; boundary={boundary}"))
+        }
+        FormSubmissionEnctype::TextPlain => (serialize_text_plain(&entries), "text/plain".to_string()),
+      };
+
+      Some(FormSubmission {
+        url: url.to_string(),
+        method,
+        headers: vec![("Content-Type".to_string(), content_type)],
+        body: Some(body),
+      })
+    }
   }
+}
 
-  Some(url.to_string())
+/// Build a GET form submission URL for the given submit button/input.
+///
+/// This is a convenience wrapper around [`form_submission`] that only returns a URL for GET
+/// submissions. POST submissions return `None`.
+pub fn form_submission_get_url(
+  dom: &DomNode,
+  submitter_node_id: usize,
+  document_url: &str,
+  base_url: &str,
+) -> Option<String> {
+  let submission = form_submission(dom, submitter_node_id, document_url, base_url)?;
+  (submission.method == FormSubmissionMethod::Get).then_some(submission.url)
 }

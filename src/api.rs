@@ -8205,6 +8205,89 @@ impl FastRender {
     })
   }
 
+  /// Fetches and prepares a document using an explicit HTTP method, headers, and optional body.
+  ///
+  /// This is primarily used for HTML form submission (POST) where navigation cannot be expressed as
+  /// a simple GET URL.
+  pub fn prepare_http_request(
+    &mut self,
+    url: &str,
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+    options: RenderOptions,
+  ) -> Result<PreparedDocumentReport> {
+    let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
+    let previous_sink = self.diagnostics.take();
+    self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
+    let document = (|| -> Result<PreparedDocument> {
+      // Install a root deadline before document fetch so:
+      // - `RenderOptions::timeout` bounds the fetch phase too (not just parse/layout/paint).
+      // - cooperative cancellations can interrupt caching fetcher in-flight waits.
+      let resource = {
+        let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+        let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+        let req = crate::resource::HttpRequest {
+          fetch: FetchRequest::document(url),
+          method,
+          redirect: crate::resource::web_fetch::RequestRedirect::Follow,
+          headers,
+          body,
+        };
+        let resource = match self.fetcher.fetch_http_request(req) {
+          Ok(res) => res,
+          Err(e) => {
+            if let Ok(mut guard) = diagnostics.lock() {
+              guard.record_error(ResourceKind::Document, url, &e);
+              guard.document_error = Some(e.to_string());
+            }
+            // Timeouts/cancellation are not fetch failures; surface them as render errors so callers
+            // can distinguish them from network/IO problems.
+            if matches!(&e, Error::Render(RenderError::Timeout { .. })) {
+              return Err(e);
+            }
+            if options.allow_partial {
+              self.set_document_url(url);
+              self.set_base_url(url);
+              let html = format!(
+                "<!doctype html><html><body style=\"margin:0;background:#ffebee;color:#c62828;display:flex;align-items:center;justify-content:center;font:16px sans-serif;\">Failed to fetch document</body></html>"
+              );
+              return self.prepare_html_internal(&html, options, ReferrerPolicy::default(), None);
+            }
+            let reason = e.to_string();
+            let source = Arc::new(e);
+            return Err(Error::Navigation(NavigationError::FetchFailed {
+              url: url.to_string(),
+              reason,
+              source: Some(source),
+            }));
+          }
+        };
+        self.follow_client_redirects_for_url_render(resource, url, &options, None, &diagnostics)
+      };
+      let hint = resource.final_url.as_deref().unwrap_or(url);
+      let hint = merge_fragment_from_url(hint, url);
+      self.set_document_url(hint.clone());
+      self.set_base_url(hint);
+      let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
+      let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
+      let initial_csp = CspPolicy::from_response_headers(&resource);
+      self.prepare_html_internal(&html, options, initial_referrer_policy, initial_csp)
+    })();
+    self.set_diagnostics_sink(previous_sink);
+    let document = document?;
+    let diagnostics = diagnostics
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    Ok(PreparedDocumentReport {
+      document,
+      diagnostics,
+      final_url: self.document_url.clone(),
+      base_url: self.base_url.clone(),
+    })
+  }
+
   /// Fetches and renders a document from a URL using default options.
   pub fn render_url(&mut self, url: &str) -> Result<RenderResult> {
     self

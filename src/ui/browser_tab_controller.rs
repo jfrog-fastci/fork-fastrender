@@ -1,7 +1,9 @@
 use crate::geometry::{Point, Rect, Size};
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
-use crate::interaction::{fragment_tree_with_scroll, InteractionAction, InteractionEngine};
+use crate::interaction::{
+  fragment_tree_with_scroll, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
+};
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::messages::{
@@ -394,6 +396,9 @@ impl BrowserTabController {
         }
         Ok(out)
       }
+      InteractionAction::NavigateRequest { request } => {
+        return self.handle_navigation_request_action(request, NavigationReason::LinkClick);
+      }
       InteractionAction::OpenSelectDropdown {
         select_node_id,
         control,
@@ -591,6 +596,9 @@ impl BrowserTabController {
           url: href,
         });
       }
+      InteractionAction::NavigateRequest { request } => {
+        return self.handle_navigation_request_action(request, NavigationReason::LinkClick);
+      }
       InteractionAction::OpenSelectDropdown {
         select_node_id,
         control,
@@ -655,6 +663,17 @@ impl BrowserTabController {
       return self.navigate_to_fragment(&href, &fragment);
     }
     self.navigate(&href, reason)
+  }
+
+  fn handle_navigation_request_action(
+    &mut self,
+    request: FormSubmission,
+    reason: NavigationReason,
+  ) -> Result<Vec<WorkerToUi>> {
+    match request.method {
+      FormSubmissionMethod::Get => self.handle_navigation_action(request.url, reason),
+      FormSubmissionMethod::Post => self.navigate_form_submission(request, reason),
+    }
   }
 
   fn navigate_to_fragment(&mut self, href: &str, fragment: &str) -> Result<Vec<WorkerToUi>> {
@@ -734,6 +753,80 @@ impl BrowserTabController {
         .document
         .navigate_url_with_options(url, options.clone())
       {
+        Ok((committed_url, base_url)) => (committed_url, base_url),
+        Err(err) => {
+          out.push(WorkerToUi::NavigationFailed {
+            tab_id: self.tab_id,
+            url: url.to_string(),
+            error: err.to_string(),
+            can_go_back: false,
+            can_go_forward: false,
+          });
+          let html = about_pages::error_page_html("Navigation failed", &err.to_string());
+          self.document.navigate_html_with_options(
+            about_pages::ABOUT_ERROR,
+            &html,
+            Some(about_pages::ABOUT_BASE_URL),
+            options.clone(),
+          )?
+        }
+      }
+    };
+
+    self.current_url = committed_url.clone();
+    self.base_url = strip_fragment(&base_url);
+    self.interaction = InteractionEngine::new();
+    self.scroll_state = ScrollState::default();
+    self.document.set_scroll_state(self.scroll_state.clone());
+
+    // Paint first frame.
+    out.extend(self.force_repaint()?);
+
+    out.push(WorkerToUi::NavigationCommitted {
+      tab_id: self.tab_id,
+      url: self.current_url.clone(),
+      title: find_document_title(self.document.dom()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    Ok(out)
+  }
+
+  fn navigate_form_submission(
+    &mut self,
+    submission: FormSubmission,
+    _reason: NavigationReason,
+  ) -> Result<Vec<WorkerToUi>> {
+    let url = submission.url.trim();
+    let mut out = vec![WorkerToUi::NavigationStarted {
+      tab_id: self.tab_id,
+      url: url.to_string(),
+    }];
+
+    let options = RenderOptions::new()
+      .with_viewport(self.viewport_css.0, self.viewport_css.1)
+      .with_device_pixel_ratio(self.dpr);
+
+    let (committed_url, base_url) = if about_pages::is_about_url(url) {
+      // about: pages are internal; ignore the method/body and treat as a normal navigation.
+      let html = about_pages::html_for_about_url(url).unwrap_or_else(|| {
+        about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
+      });
+      self.document.navigate_html_with_options(
+        url,
+        &html,
+        Some(about_pages::ABOUT_BASE_URL),
+        options.clone(),
+      )?
+    } else {
+      match self.document.navigate_http_request_with_options(
+        url,
+        submission.method.as_http_method(),
+        &submission.headers,
+        submission.body.as_deref(),
+        options.clone(),
+      ) {
         Ok((committed_url, base_url)) => (committed_url, base_url),
         Err(err) => {
           out.push(WorkerToUi::NavigationFailed {

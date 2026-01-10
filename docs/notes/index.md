@@ -5,6 +5,7 @@ Small, durable writeups that explain “why/how” decisions that are worth keep
 - [logical-background-mapping.md](logical-background-mapping.md) — logical `background-position`/`background-size` mapping.
 - [3d-transforms.md](3d-transforms.md) — 3D transform/perspective flattening and backface handling.
 - [form-controls.md](form-controls.md) — replaced form controls, intrinsic sizing, and UA painting.
+- [form-submission.md](form-submission.md) — HTML form submission (GET/POST, enctype, successful controls).
 - [dom-compatibility.md](dom-compatibility.md) — DOM parsing compatibility mode for generic JS bootstrap mirroring (class flips + lazy-load attribute lifting).
 - [dependency-locking.md](dependency-locking.md) — lockfile policy for deterministic builds and CI caching.
 - [no-panics-lint.md](no-panics-lint.md) — CI guardrail to prevent introducing new `panic!`/`unwrap()` sites.
