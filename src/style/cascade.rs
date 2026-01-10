@@ -30059,6 +30059,72 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn svg_pattern_transform_presentation_attribute_applies_to_transform_property() {
+    use crate::css::types::Transform;
+
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "pattern".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![("patternTransform".to_string(), "rotate(45)".to_string())],
+      },
+      children: vec![],
+    };
+
+    let styled = apply_styles(&dom, &StyleSheet::new());
+    assert_eq!(styled.styles.transform, vec![Transform::Rotate(45.0)]);
+  }
+
+  #[test]
+  fn svg_gradient_transform_presentation_attribute_applies_to_transform_property() {
+    use crate::css::types::Transform;
+
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "linearGradient".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![("gradientTransform".to_string(), "rotate(45)".to_string())],
+      },
+      children: vec![],
+    };
+
+    let styled = apply_styles(&dom, &StyleSheet::new());
+    assert_eq!(styled.styles.transform, vec![Transform::Rotate(45.0)]);
+  }
+
+  #[test]
+  fn author_css_transform_none_overrides_svg_pattern_transform_presentation_attribute() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "pattern".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![("patternTransform".to_string(), "rotate(45)".to_string())],
+      },
+      children: vec![],
+    };
+
+    let stylesheet = parse_stylesheet("pattern { transform: none; }").unwrap();
+    let styled = apply_styles(&dom, &stylesheet);
+    assert!(styled.styles.transform.is_empty());
+  }
+
+  #[test]
+  fn author_css_transform_none_overrides_svg_gradient_transform_presentation_attribute() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "radialGradient".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![("gradientTransform".to_string(), "rotate(45)".to_string())],
+      },
+      children: vec![],
+    };
+
+    let stylesheet = parse_stylesheet("radialGradient { transform: none; }").unwrap();
+    let styled = apply_styles(&dom, &stylesheet);
+    assert!(styled.styles.transform.is_empty());
+  }
+
+  #[test]
   fn aria_hidden_does_not_hide_element() {
     let dom = DomNode {
       node_type: DomNodeType::Element {
@@ -37257,10 +37323,26 @@ fn svg_presentation_attribute_hints(
     push_parsed(&mut declarations, "overflow", value);
   }
 
-  // The SVG `transform` attribute is a presentation attribute for the CSS `transform` property and
-  // participates in the cascade as an author-origin, specificity-zero declaration (SVG2 + CSS
-  // Transforms).
-  if let Some(value) = node.get_attribute_ref("transform") {
+  // SVG transform presentation attributes:
+  // - `transform` on most SVG elements
+  // - `patternTransform` on <pattern>
+  // - `gradientTransform` on <linearGradient>/<radialGradient>
+  //
+  // These map to the CSS `transform` property and participate in the cascade as an author-origin,
+  // specificity-zero declaration (SVG2 + CSS Transforms).
+  let transform_attr_value = if let Some(tag) = node.tag_name() {
+    if tag.eq_ignore_ascii_case("pattern") {
+      node.get_attribute_ref("patternTransform")
+    } else if tag.eq_ignore_ascii_case("linearGradient") || tag.eq_ignore_ascii_case("radialGradient")
+    {
+      node.get_attribute_ref("gradientTransform")
+    } else {
+      node.get_attribute_ref("transform")
+    }
+  } else {
+    None
+  };
+  if let Some(value) = transform_attr_value {
     if let Some(transforms) = parse_svg_transform_attribute(value) {
       declarations.push(Declaration {
         property: "transform".into(),
