@@ -223,7 +223,7 @@ fn dry_run_forwards_inspect_custom_property_dump_flags() {
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --inspect-dump-custom-properties --dry-run");
+    .expect("run xtask page-loop --inspect-dump-custom-properties --dry-run");
 
   assert!(
     output.status.success(),

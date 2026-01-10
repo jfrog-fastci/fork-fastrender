@@ -1,4 +1,4 @@
-# WebIDL allowlist for Window-facing bindings generation (`cargo xtask webidl-bindings`).
+# WebIDL allowlist for Window-facing bindings generation (`bash scripts/cargo_agent.sh xtask webidl-bindings`).
 #
 # This controls what gets emitted into:
 # - src/js/bindings/generated/mod.rs
@@ -33,4 +33,3 @@ name = "Window"
 constructors = false
 attributes = []
 operations = ["setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask"]
-
