@@ -102,7 +102,7 @@ fn check_openssl_sys_absent(
     .with_context(|| format!("failed to run {:?}", cmd.get_program()))?;
   if !output.status.success() {
     bail!(
-      "`cargo metadata` ({label}) failed with status {}.\nstdout:\n{}\nstderr:\n{}",
+      "`bash scripts/cargo_agent.sh metadata` ({label}) failed with status {}.\nstdout:\n{}\nstderr:\n{}",
       output.status,
       String::from_utf8_lossy(&output.stdout),
       String::from_utf8_lossy(&output.stderr)
