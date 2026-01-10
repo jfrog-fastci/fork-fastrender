@@ -39,7 +39,7 @@ fn flex_huge_overflow_item_is_not_size_clamped() {
   let mut child_style = ComputedStyle::default();
   child_style.display = Display::Block;
   child_style.width = Some(Length::px(5000.0));
-  child_style.height = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(5000.0));
   child_style.flex_shrink = 0.0;
 
   let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
@@ -62,8 +62,18 @@ fn flex_huge_overflow_item_is_not_size_clamped() {
     "huge flex item should not have its x sanitized",
   );
   assert_approx(
+    child_fragment.bounds.y(),
+    0.0,
+    "huge flex item should not have its y sanitized",
+  );
+  assert_approx(
     child_fragment.bounds.width(),
     5000.0,
     "huge flex item should not have its width clamped",
+  );
+  assert_approx(
+    child_fragment.bounds.height(),
+    5000.0,
+    "huge flex item should not have its height clamped",
   );
 }
