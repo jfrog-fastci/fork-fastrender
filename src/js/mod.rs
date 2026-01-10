@@ -116,13 +116,9 @@ pub mod events_bindings;
 pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
-
-// Legacy DOM script integration helpers (dynamic `<script>` preparation for dom2 mutations).
 //
-// This is still referenced by some integration tests (e.g. streaming pipeline tests) while the
-// newer vm-js/WebIDL plumbing is being rolled out.
-#[path = "legacy/dom_integration.rs"]
-pub mod dom_integration;
+// NOTE: `dom_integration` is declared above (it is still referenced by some integration tests and
+// DOM-mutation plumbing). Do not re-declare it here.
 
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
