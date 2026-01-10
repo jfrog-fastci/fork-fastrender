@@ -143,6 +143,7 @@ mod inline_level_float_after_text_floats_up;
 mod button_inline_flex_children;
 mod form_control_baseline;
 mod form_control_pseudo_elements;
+mod input_height_includes_padding_with_content_box;
 mod progress_meter_intrinsic_sizing;
 mod field_sizing_intrinsic_sizing;
 mod fragmentation;

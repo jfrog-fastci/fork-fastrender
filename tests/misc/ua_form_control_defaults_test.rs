@@ -57,13 +57,15 @@ fn form_control_defaults_come_from_user_agent_stylesheet() {
   assert_eq!(input.styles.border_bottom_style, BorderStyle::Solid);
   assert_eq!(input.styles.border_left_style, BorderStyle::Solid);
 
-  assert_eq!(input.styles.box_sizing, BoxSizing::BorderBox);
+  assert_eq!(input.styles.box_sizing, BoxSizing::ContentBox);
   assert_eq!(input.styles.cursor, CursorKeyword::Text);
 
   let textarea = find_by_id(&styled, "textarea").expect("textarea node");
+  assert_eq!(textarea.styles.box_sizing, BoxSizing::ContentBox);
   assert_eq!(textarea.styles.cursor, CursorKeyword::Text);
 
   let select_default = find_by_id(&styled, "select-default").expect("default select node");
+  assert_eq!(select_default.styles.box_sizing, BoxSizing::ContentBox);
   assert_eq!(select_default.styles.padding_right, Length::px(20.0));
   assert_eq!(select_default.styles.cursor, CursorKeyword::Default);
   assert_eq!(select_default.styles.overflow_x, Overflow::Clip);

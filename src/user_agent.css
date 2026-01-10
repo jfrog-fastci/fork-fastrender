@@ -381,7 +381,7 @@ svg {
 /* Form elements */
 input, textarea, select, button {
     display: inline-block;
-    box-sizing: border-box;
+    box-sizing: content-box;
     margin: 0;
     padding: 4px 6px;
     border: 1px solid #767676;
