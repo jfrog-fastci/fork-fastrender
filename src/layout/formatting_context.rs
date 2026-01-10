@@ -1467,10 +1467,11 @@ impl Drop for FragmentainerBlockOffsetHintGuard {
 /// The coordinate system matches `FragmentationAnalyzer` (monotonic along the fragmentainer block
 /// axis), not viewport scroll space.
 ///
-/// Note: For reversed block progression (`FragmentAxes::block_positive() == false`), converting a
-/// physical origin into this flow coordinate requires the parent's block-size (and often the
-/// child's block-size). Call sites that propagate the offset by simply adding `origin.x`/`origin.y`
-/// therefore only support block-positive axes.
+/// Note: For reversed block progression (`FragmentAxes::block_positive() == false`), do **not**
+/// propagate by naively adding a physical `x`/`y` origin. Converting a rect into this flow
+/// coordinate generally requires the parent's block-size (and the child's block-size); use
+/// `FragmentAxes::block_start`/`abs_block_start` (or an equivalent already-monotonic logical block
+/// cursor) when installing the hint for descendants.
 pub(crate) fn fragmentainer_block_offset_hint() -> f32 {
   FRAGMENTAINER_BLOCK_OFFSET_HINT.with(|hint| hint.get())
 }

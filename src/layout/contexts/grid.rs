@@ -12807,6 +12807,7 @@ mod tests {
   use crate::layout::formatting_context::{
     set_fragmentainer_axes_hint, set_fragmentainer_block_offset_hint, set_fragmentainer_block_size_hint,
   };
+  use crate::layout::contexts::block::BlockFormattingContext;
   use crate::style::display::FormattingContextType;
   use crate::style::properties::apply_content_visibility_implied_containment;
   use crate::style::types::AlignItems;
@@ -13235,6 +13236,7 @@ mod tests {
     let mut grid_style = ComputedStyle::default();
     grid_style.display = CssDisplay::Grid;
     grid_style.writing_mode = WritingMode::VerticalRl;
+    grid_style.width = Some(Length::px(210.0));
     // One inline track so the item's physical height is stable.
     grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(20.0))];
     grid_style.grid_template_rows = vec![
@@ -13280,6 +13282,100 @@ mod tests {
       target_fragment.bounds.x(),
       container_width,
       block_start,
+    );
+  }
+
+  #[test]
+  fn grid_container_fragmentainer_offset_hint_propagates_in_vertical_rl_negative_progression() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let _block_hint = set_fragmentainer_block_size_hint(Some(100.0));
+    let _axes_hint = set_fragmentainer_axes_hint(Some(FragmentAxes::from_writing_mode_and_direction(
+      WritingMode::VerticalRl,
+      Direction::Ltr,
+    )));
+
+    // Offset the grid container 60px into the fragmentainer's block axis. With a 100px
+    // fragmentainer, that leaves 40px in the first fragment, so an item starting at 120px into the
+    // grid's flow will land 80px into the continuation fragment, leaving 20px remaining.
+    let fc = BlockFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut spacer_style = ComputedStyle::default();
+    spacer_style.writing_mode = WritingMode::VerticalRl;
+    spacer_style.width = Some(Length::px(60.0));
+    spacer_style.height = Some(Length::px(20.0));
+    let mut spacer = BoxNode::new_block(
+      Arc::new(spacer_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    spacer.id = 521;
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.writing_mode = WritingMode::VerticalRl;
+    // Make the grid container's block size (physical width) definite so Taffy produces stable
+    // non-zero item widths. This keeps the regression focused on fragmentainer offset propagation
+    // rather than max-content sizing behaviour.
+    grid_style.width = Some(Length::px(210.0));
+    // One inline track so the item's physical height is stable.
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(20.0))];
+    grid_style.grid_template_rows = vec![
+      GridTrack::Length(Length::px(60.0)),
+      GridTrack::Length(Length::px(60.0)),
+      GridTrack::Length(Length::px(90.0)),
+    ];
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_a = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    item_a.id = 522;
+    let mut item_b = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    item_b.id = 523;
+
+    let mut target_style = ComputedStyle::default();
+    target_style.writing_mode = WritingMode::VerticalRl;
+    target_style.width = None;
+    target_style.width_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+    let mut target = BoxNode::new_block(
+      Arc::new(target_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    target.id = 524;
+
+    let mut grid = BoxNode::new_block(
+      grid_style,
+      FormattingContextType::Grid,
+      vec![item_a, item_b, target],
+    );
+    grid.id = 525;
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.writing_mode = WritingMode::VerticalRl;
+    let mut parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![spacer, grid],
+    );
+    parent.id = 520;
+
+    let fragment = fc
+      .layout(&parent, &LayoutConstraints::definite(500.0, 500.0))
+      .expect("layout should succeed");
+
+    let grid_fragment = find_block_fragment(&fragment, 525);
+    let target_fragment = find_block_fragment(&fragment, 524);
+    let parent_width = fragment.bounds.width();
+    let grid_width = grid_fragment.bounds.width();
+    let grid_block_start = parent_width - grid_fragment.bounds.x() - grid_width;
+    let target_block_start = grid_width - target_fragment.bounds.x() - target_fragment.bounds.width();
+    assert!(
+      (target_fragment.bounds.width() - 20.0).abs() < 0.5,
+      "expected continuation relayout to clamp item width to remaining fragmentainer space (20px), got width={:.2} target_bounds={:?} grid_bounds={:?} grid_block_start={:.2} target_block_start={:.2}",
+      target_fragment.bounds.width(),
+      target_fragment.bounds,
+      grid_fragment.bounds,
+      grid_block_start,
+      target_block_start,
     );
   }
 
