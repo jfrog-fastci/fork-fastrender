@@ -138,6 +138,8 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Mouse Back / Mouse Forward (buttons 8/9) | Back / Forward |
 | PageUp (page focus) | Scroll up |
 | PageDown (page focus) | Scroll down |
+| ArrowUp (page focus, no element focused) | Scroll up |
+| ArrowDown (page focus, no element focused) | Scroll down |
 | Space (page focus, no element focused) | Scroll down |
 | Shift+Space (page focus, no element focused) | Scroll up |
 | Home (page focus, no element focused) | Scroll to top |

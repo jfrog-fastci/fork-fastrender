@@ -2606,6 +2606,16 @@ impl BrowserRuntime {
                 tab_id,
                 pos_css: (tab.scroll_state.viewport.x, f32::MAX),
               }),
+              crate::interaction::KeyAction::ArrowDown => Some(UiToWorker::Scroll {
+                tab_id,
+                delta_css: (0.0, 40.0),
+                pointer_css: None,
+              }),
+              crate::interaction::KeyAction::ArrowUp => Some(UiToWorker::Scroll {
+                tab_id,
+                delta_css: (0.0, -40.0),
+                pointer_css: None,
+              }),
               crate::interaction::KeyAction::Space => {
                 let h = tab.viewport_css.1.max(1) as f32;
                 let dy = (h * 0.9).max(1.0);

@@ -217,6 +217,28 @@ fn home_end_space_keys_scroll_when_no_element_is_focused() {
   );
   y = frame_y;
 
+  // ArrowDown / ArrowUp should scroll by a small fixed step when nothing is focused.
+  let arrow_step = 40.0;
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::ArrowDown))
+    .unwrap();
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 1.0);
+  assert!(
+    (frame_y - (y + arrow_step)).abs() < 1.0,
+    "expected ArrowDown to scroll by ~{arrow_step}, got {frame_y} (from {y})"
+  );
+  y = frame_y;
+
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::ArrowUp))
+    .unwrap();
+  let (_scroll_y, frame_y) =
+    wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next < y - 1.0);
+  assert!(
+    (frame_y - step_y).abs() < 1.0,
+    "expected ArrowUp to scroll back to ~{step_y}, got {frame_y}"
+  );
+  y = frame_y;
+
   // `Shift+Space` should scroll back up by ~0.9 * viewport height.
   tx.send(key_action(
     tab_id,
