@@ -1224,6 +1224,22 @@ mod tests {
   }
 
   #[test]
+  fn nomodule_scripts_execute_when_module_scripts_not_supported() -> Result<()> {
+    // When the runtime does not support module scripts, the `nomodule` attribute must have no
+    // effect: browsers without module support still execute these scripts.
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    let mut spec = inline_script("RUN");
+    spec.nomodule_attr = true;
+
+    scheduler.handle_script(&mut host, &mut event_loop, spec)?;
+    assert_eq!(host.log, vec!["RUN".to_string()]);
+    Ok(())
+  }
+
+  #[test]
   fn non_parser_inserted_external_scripts_execute_without_waiting_for_parsing_complete() -> Result<()> {
     let mut host = TestHost::new(false);
     let mut event_loop = EventLoop::<TestHost>::new();
