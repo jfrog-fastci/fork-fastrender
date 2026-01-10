@@ -31264,6 +31264,39 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn tachyons_v_mid_class_sets_vertical_align_middle() {
+    // rust-lang.org (and many Tachyons-based sites) use the `v-mid` utility class to align inline
+    // images with surrounding text. A regression in selector matching or property application can
+    // silently drop `vertical-align: middle` and inflate line box heights.
+    //
+    // Load the (minified) Tachyons bundle shipped with the rust-lang.org fixture to exercise the
+    // real-world selector/tokenization path.
+    let css_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("tests/pages/fixtures/rust-lang.org/assets/93ef2584c48d6f06330cc6f1da5a3317.css");
+    let css = std::fs::read_to_string(css_path).expect("read fixture tachyons css");
+    let stylesheet = parse_stylesheet(&css).expect("parse tachyons stylesheet");
+
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "img".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("class".to_string(), "v-mid".to_string())],
+      },
+      children: vec![],
+    };
+
+    let styled = apply_styles(&dom, &stylesheet);
+    assert!(
+      matches!(
+        styled.styles.vertical_align,
+        crate::style::types::VerticalAlign::Middle
+      ),
+      "expected `v-mid` to set vertical-align: middle, got {:?}",
+      styled.styles.vertical_align
+    );
+  }
+
+  #[test]
   fn author_css_overrides_presentational_image_align() {
     let dom = DomNode {
       node_type: DomNodeType::Element {

@@ -841,7 +841,6 @@ impl InlineFormattingContext {
         child.style.position,
         crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
       ) {
-        self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
         let box_id = ensure_box_id(child);
         let containing_block_id = if matches!(
           child.style.position,
@@ -2050,7 +2049,6 @@ impl InlineFormattingContext {
         child.style.position,
         crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
       ) {
-        self.flush_pending_collapsible_space(whitespace, &mut items)?;
         let box_id = ensure_box_id(child);
         let containing_block_id = if matches!(
           child.style.position,
@@ -3670,8 +3668,15 @@ impl InlineFormattingContext {
         margin_right,
         margin_top,
         margin_bottom,
-        matches!(style.overflow_x, crate::style::types::Overflow::Visible)
-          && matches!(style.overflow_y, crate::style::types::Overflow::Visible),
+        // CSS 2.1: Inline-block baselines use the last in-flow line box only when overflow is
+        // visible; otherwise they fall back to the bottom margin edge.
+        //
+        // Browsers special-case form controls: even when `appearance:none` disables native
+        // replacement, UA styles often set `overflow: clip`, but baseline alignment still follows
+        // the internal text baseline. This matches rust-lang.org's language selector in the nav.
+        (matches!(style.overflow_x, crate::style::types::Overflow::Visible)
+          && matches!(style.overflow_y, crate::style::types::Overflow::Visible))
+          || matches!(style.appearance, crate::style::types::Appearance::None),
       )
       .with_intrinsic_widths(intrinsic_min_width, intrinsic_max_width)
       .with_vertical_align(va),
@@ -8840,15 +8845,20 @@ fn compute_inline_box_line_metrics(
     return fallback;
   }
 
-  // Inline boxes can contain inline-level children whose `vertical-align` affects the line box
-  // extents. For example, an `<a><img style="vertical-align:middle"></a>` should not reserve extra
-  // descent space below the image (the image should contribute descent via its own alignment),
-  // whereas a baseline-aligned replaced element does reserve descent space for the root strut.
+  // Inline box line metrics (used to size line boxes in parent contexts) must account for
+  // `vertical-align` shifts of descendant inline-level children. A common pattern is wrapping an
+  // inline replaced element in a span/a and applying `vertical-align: middle` to the replaced
+  // element so it doesn't sit on the baseline and inflate the line box with extra descender space.
   //
-  // Our line builder treats `InlineItem::InlineBox` as a single positioned item (it isn't flattened
-  // into the parent line), so we must compute a baseline + height that reflects the inline box's
-  // in-flow children after applying their `vertical-align` against this inline box's own strut.
+  // Previously we approximated the baseline using the last baseline-relative child metrics, but
+  // that ignores baseline shifts (e.g. `middle`) and causes inline boxes to report a baseline at
+  // the bottom edge of replaced elements, making parent line boxes too tall (observed on
+  // rust-lang.org's header logo).
+  //
+  // Mirror `LineBuilder`'s baseline accumulator logic to compute a single-line baseline and height
+  // for the inline box's in-flow children.
   let mut acc = LineBaselineAccumulator::new(&fallback);
+
   for child in &effective_children {
     let vertical_align = child.vertical_align();
     let metrics = if vertical_align.is_line_relative() {
@@ -8863,8 +8873,8 @@ fn compute_inline_box_line_metrics(
     }
   }
 
-  let baseline_offset = acc.baseline_position();
-  let height = acc.line_height();
+  let height = acc.line_height().max(0.0);
+  let baseline_offset = acc.baseline_position().max(0.0).min(height);
   let descent = (height - baseline_offset).max(0.0);
 
   BaselineMetrics {
@@ -16181,6 +16191,106 @@ mod tests {
   }
 
   #[test]
+  fn appearance_none_inline_blocks_use_line_baseline_even_when_overflow_clips() {
+    let ifc = InlineFormattingContext::new();
+
+    let text = BoxNode::new_text(default_style(), "Option".to_string());
+
+    let mut overflow_clip_style = ComputedStyle::default();
+    overflow_clip_style.display = Display::InlineBlock;
+    overflow_clip_style.font_size = 16.0;
+    overflow_clip_style.overflow_x = crate::style::types::Overflow::Clip;
+    overflow_clip_style.overflow_y = crate::style::types::Overflow::Clip;
+
+    let inline_block = BoxNode::new_inline_block(
+      Arc::new(overflow_clip_style.clone()),
+      FormattingContextType::Block,
+      vec![text.clone()],
+    );
+    let item = ifc
+      .layout_inline_block(&inline_block, 200.0, None)
+      .expect("layout inline-block");
+    assert!(
+      item.metrics.descent.abs() < 0.01,
+      "expected overflow:clip inline-block to fall back to bottom baseline (descent≈0), got {:.2}",
+      item.metrics.descent
+    );
+
+    overflow_clip_style.appearance = crate::style::types::Appearance::None;
+    let appearance_none_inline_block = BoxNode::new_inline_block(
+      Arc::new(overflow_clip_style),
+      FormattingContextType::Block,
+      vec![text],
+    );
+    let item = ifc
+      .layout_inline_block(&appearance_none_inline_block, 200.0, None)
+      .expect("layout inline-block");
+    assert!(
+      item.metrics.descent > 0.1,
+      "expected appearance:none inline-block to use last line baseline even when overflow clips; got descent {:.2}",
+      item.metrics.descent
+    );
+  }
+
+  #[test]
+  fn inline_box_line_metrics_respect_vertical_align_for_replaced_children() {
+    // Regression: inline boxes must account for `vertical-align` shifts of their in-flow children
+    // when reporting line metrics to parent line boxes.
+    //
+    // Common pattern: wrap an inline image inside a span/a and apply `vertical-align: middle` to
+    // remove the baseline gap. If the inline box ignores the shift, the parent line box will stay
+    // tall and the gap remains (observed on rust-lang.org's header logo).
+    let strut = BaselineMetrics {
+      baseline_offset: 10.0,
+      height: 14.0,
+      ascent: 10.0,
+      descent: 4.0,
+      line_gap: 0.0,
+      line_height: 14.0,
+      x_height: Some(6.0),
+    };
+
+    let make_replaced = |align| {
+      InlineItem::Replaced(
+        ReplacedItem::new(
+          0,
+          Size::new(10.0, 30.0),
+          ReplacedType::Canvas,
+          default_style(),
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+        )
+        .with_vertical_align(align),
+      )
+    };
+
+    let line_height_for_child = |align| {
+      let metrics = compute_inline_box_line_metrics(&[make_replaced(align)], strut);
+      let mut acc = LineBaselineAccumulator::new(&strut);
+      acc.add_baseline_relative(&metrics, VerticalAlign::Baseline, Some(&strut));
+      acc.line_height()
+    };
+
+    let baseline_height = line_height_for_child(VerticalAlign::Baseline);
+    let middle_height = line_height_for_child(VerticalAlign::Middle);
+
+    assert!(
+      (baseline_height - 34.0).abs() < 0.01,
+      "expected baseline-aligned image to preserve descender gap (height≈34), got {baseline_height:.2}"
+    );
+    assert!(
+      (middle_height - 30.0).abs() < 0.01,
+      "expected middle-aligned image to avoid baseline gap (height≈30), got {middle_height:.2}"
+    );
+    assert!(
+      middle_height < baseline_height - 3.0,
+      "expected middle alignment to reduce line height; baseline={baseline_height:.2} middle={middle_height:.2}"
+    );
+  }
+
+  #[test]
   fn inline_block_shrink_to_fit_does_not_double_count_edges() {
     let ifc = InlineFormattingContext::new();
 
@@ -21170,6 +21280,76 @@ mod tests {
       }),
       "trailing collapsible whitespace should not emit a space item"
     );
+  }
+
+  #[test]
+  fn trailing_collapsible_space_before_static_position_anchor_does_not_create_extra_line() {
+    let ifc = InlineFormattingContext::new();
+    let line_width = 100.0;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.white_space = WhiteSpace::Normal;
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.width = Some(Length::px(line_width));
+    inline_block_style.font_size = 16.0;
+    let inline_block_style = Arc::new(inline_block_style);
+
+    let inline_block =
+      BoxNode::new_inline_block(inline_block_style, FormattingContextType::Block, Vec::new());
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.position = Position::Absolute;
+    abs_style.font_size = 16.0;
+    let abs_style = Arc::new(abs_style);
+    let positioned = BoxNode::new_inline(abs_style, Vec::new());
+
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![
+        inline_block,
+        BoxNode::new_text(text_style.clone(), " ".to_string()),
+        positioned,
+      ],
+    );
+    let items = ifc
+      .collect_inline_items(&root, line_width, Some(line_width))
+      .expect("collect items");
+    assert!(
+      items.iter().all(|item| match item {
+        InlineItem::Text(t) => t.text != " ",
+        _ => true,
+      }),
+      "trailing collapsible whitespace should not emit a space item before a static position anchor"
+    );
+
+    let strut = ifc.compute_strut_metrics(text_style.as_ref());
+    let lines = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        line_width,
+        line_width,
+        text_style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        text_style.direction,
+        text_style.unicode_bidi,
+        None,
+        0.0,
+        0.0,
+        None,
+      )
+      .expect("line layout")
+      .lines;
+    assert_eq!(lines.len(), 1);
   }
 
   #[test]

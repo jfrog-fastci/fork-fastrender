@@ -15543,6 +15543,109 @@ mod tests {
   }
 
   #[test]
+  fn intrinsic_width_probes_do_not_round_down_and_trigger_flex_wrapping() {
+    // Regresses: the flex measure intrinsic-width fast path rounded intrinsic border-box widths
+    // to whole pixels and snapped medium-sized widths to coarse quantization steps. When a
+    // wrapping flex container's max-content width was just over an integer boundary, rounding
+    // down made its flex item narrower than the sum of its children and forced an extra wrap.
+    //
+    // This mirrors the rust-lang.org header nav where a fractional max-content width was rounded
+    // down, causing the last item to wrap to the next line and shifting the page vertically.
+    let mut item_style_a = ComputedStyle::default();
+    item_style_a.display = Display::Block;
+    item_style_a.width = Some(Length::px(100.0));
+    item_style_a.width_keyword = None;
+    item_style_a.height = Some(Length::px(10.0));
+    item_style_a.height_keyword = None;
+    item_style_a.flex_shrink = 0.0;
+    let mut item_a = BoxNode::new_block(
+      Arc::new(item_style_a),
+      FormattingContextType::Block,
+      vec![],
+    );
+    item_a.id = 3;
+
+    let mut item_style_b = ComputedStyle::default();
+    item_style_b.display = Display::Block;
+    item_style_b.width = Some(Length::px(100.0));
+    item_style_b.width_keyword = None;
+    item_style_b.height = Some(Length::px(10.0));
+    item_style_b.height_keyword = None;
+    item_style_b.flex_shrink = 0.0;
+    let mut item_b = BoxNode::new_block(
+      Arc::new(item_style_b),
+      FormattingContextType::Block,
+      vec![],
+    );
+    item_b.id = 4;
+
+    let mut item_style_c = ComputedStyle::default();
+    item_style_c.display = Display::Block;
+    item_style_c.width = Some(Length::px(100.25));
+    item_style_c.width_keyword = None;
+    item_style_c.height = Some(Length::px(10.0));
+    item_style_c.height_keyword = None;
+    item_style_c.flex_shrink = 0.0;
+    let mut item_c = BoxNode::new_block(
+      Arc::new(item_style_c),
+      FormattingContextType::Block,
+      vec![],
+    );
+    item_c.id = 5;
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Flex;
+    inner_style.flex_direction = FlexDirection::Row;
+    inner_style.flex_wrap = FlexWrap::Wrap;
+    inner_style.align_items = AlignItems::FlexStart;
+    inner_style.flex_shrink = 0.0;
+    inner_style.flex_grow = 0.0;
+    let mut inner = BoxNode::new_block(
+      Arc::new(inner_style),
+      FormattingContextType::Flex,
+      vec![item_a, item_b, item_c],
+    );
+    inner.id = 2;
+
+    let mut outer_style = ComputedStyle::default();
+    outer_style.display = Display::Flex;
+    outer_style.flex_direction = FlexDirection::Row;
+    outer_style.align_items = AlignItems::FlexStart;
+    outer_style.width = Some(Length::px(500.0));
+    outer_style.width_keyword = None;
+    let mut outer = BoxNode::new_block(
+      Arc::new(outer_style),
+      FormattingContextType::Flex,
+      vec![inner],
+    );
+    outer.id = 1;
+
+    let fc = FlexFormattingContext::new();
+    let fragment = fc
+      .layout(&outer, &LayoutConstraints::definite_width(500.0))
+      .expect("flex layout should succeed");
+
+    fn find_fragment<'a>(node: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+      if matches!(node.content, FragmentContent::Block { box_id: Some(id) } if id == box_id) {
+        return Some(node);
+      }
+      for child in &node.children {
+        if let Some(found) = find_fragment(child, box_id) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let inner_fragment = find_fragment(&fragment, 2).expect("inner flex fragment");
+    assert!(
+      (inner_fragment.bounds.height() - 10.0).abs() < 0.1,
+      "expected inner flex container to lay out on one line (height ≈10px), got {:.2}",
+      inner_fragment.bounds.height()
+    );
+  }
+
+  #[test]
   fn height_depends_on_available_height_ignores_percent_flex_basis_for_row_flex_containers() {
     let mut style = ComputedStyle::default();
     style.flex_basis = FlexBasis::Length(Length::percent(0.0));
