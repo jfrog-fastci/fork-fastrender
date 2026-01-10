@@ -45,6 +45,9 @@ What exists today (in-tree):
   - `src/js/mod.rs`: `ScriptType` + `ScriptElementSpec` (flattened `<script>` record).
   - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`: helpers for building `ScriptElementSpec` at the
     moment a `<script>` finishes parsing.
+- **Import maps parsing/normalization (not yet integrated into script execution):**
+  - `src/js/import_maps/`: `parse_import_map_string(...)` + normalized `ImportMap`/warnings.
+  - Design/spec mapping: [`docs/import_maps.md`](import_maps.md).
 - **Script scheduling + event loop:**
   - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`),
     including an action-based scheduler (`ScriptSchedulerAction`) plus a higher-level helper
