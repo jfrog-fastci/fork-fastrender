@@ -1805,7 +1805,7 @@ impl<'a> Evaluator<'a> {
           "TypeError",
           "prototype cycle",
         )?;
-        Ok(Completion::Throw(err))
+        Ok(Completion::Throw(thrown_at_stmt(err)))
       }
       Err(VmError::PrototypeChainTooDeep) => {
         let intr = self
@@ -1818,7 +1818,7 @@ impl<'a> Evaluator<'a> {
           "TypeError",
           "prototype chain too deep",
         )?;
-        Ok(Completion::Throw(err))
+        Ok(Completion::Throw(thrown_at_stmt(err)))
       }
       Err(VmError::InvalidPropertyDescriptorPatch) => {
         let intr = self
@@ -1831,7 +1831,7 @@ impl<'a> Evaluator<'a> {
           "TypeError",
           "invalid property descriptor patch: cannot mix data and accessor fields",
         )?;
-        Ok(Completion::Throw(err))
+        Ok(Completion::Throw(thrown_at_stmt(err)))
       }
       Err(VmError::NotCallable) => {
         let intr = self

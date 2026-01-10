@@ -34,6 +34,17 @@ browser_ui = [
   "dep:egui-wgpu",
   "dep:pollster",
 ]
+browser_ui_wayland = [
+  # Wayland backend support for the `browser` UI on Linux.
+  #
+  # `browser_ui` defaults to X11-only to avoid pulling in Wayland system deps on
+  # minimal hosts/CI. Enable this feature in addition to `browser_ui` to compile
+  # both X11 + Wayland backends (winit selects at runtime; can be forced via
+  # `WINIT_UNIX_BACKEND=wayland`).
+  "browser_ui",
+  "winit/wayland",
+  "egui-winit/wayland",
+]
 
 [dependencies]
 base64 = "0.22"
@@ -121,7 +132,7 @@ pollster = { version = "0.3", optional = true }
 
 # `winit`/`egui-winit` need a platform backend. On Linux we explicitly enable X11
 # and keep default features off so CI doesn't need additional system packages
-# for Wayland.
+# for Wayland. See the `browser_ui_wayland` feature for optional Wayland support.
 [target.'cfg(target_os = "linux")'.dependencies]
 winit = { version = "0.28", default-features = false, features = ["x11"], optional = true }
 egui-winit = { version = "0.23", default-features = false, features = ["x11"], optional = true }

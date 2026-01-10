@@ -25,6 +25,25 @@ bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 ```
 
+### Wayland (optional, Linux)
+
+On Linux, `browser_ui` builds with the **X11** backend only (so minimal/CI hosts don't need Wayland
+development packages). To build with both **X11 + Wayland** support, enable `browser_ui_wayland`:
+
+```bash
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui,browser_ui_wayland --bin browser
+```
+
+`winit` selects the backend at runtime based on your environment (e.g. `WAYLAND_DISPLAY` / `DISPLAY`).
+You can force a specific backend with:
+
+```bash
+# Force Wayland:
+WINIT_UNIX_BACKEND=wayland bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui,browser_ui_wayland --bin browser
+```
+
 If you run the `browser` binary without the feature, it will print a short message and exit
 (the real implementation is behind the `browser_ui` feature gate; see
 [`src/bin/browser.rs`](../src/bin/browser.rs)).
@@ -338,6 +357,13 @@ sudo apt-get install -y \
   libxrandr-dev libxi-dev libxcursor-dev \
   libxkbcommon-dev libxkbcommon-x11-dev \
   libegl1-mesa-dev libvulkan-dev
+```
+
+For Wayland builds (`--features browser_ui,browser_ui_wayland`) you also need the Wayland
+development headers:
+
+```bash
+sudo apt-get install -y libwayland-dev
 ```
 
 ### macOS

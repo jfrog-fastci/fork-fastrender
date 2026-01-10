@@ -279,17 +279,9 @@ impl Realm {
     })
   }
 
-  pub fn id(&self) -> RealmId {
-    self.id
-  }
-
   /// The realm's global object.
   pub fn global_object(&self) -> GcObject {
     self.global_object
-  }
-
-  pub fn id(&self) -> RealmId {
-    RealmId::from_raw(self.global_object.id().0)
   }
 
   /// The realm's intrinsic objects.
