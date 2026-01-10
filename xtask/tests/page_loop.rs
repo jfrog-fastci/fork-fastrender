@@ -134,6 +134,77 @@ fn dry_run_accepts_pageset_url() {
 }
 
 #[test]
+fn dry_run_with_inspect_dump_json_includes_inspect_frag_dump_json_command() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "page-loop",
+      "--fixture",
+      "example.com",
+      "--inspect-dump-json",
+      "--dry-run",
+    ])
+    .output()
+    .expect("run cargo xtask page-loop --inspect-dump-json --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let expected_out = repo_root().join("target/page_loop/example.com/inspect");
+  let expected_arg = format!("--dump-json {}", expected_out.display());
+  assert!(
+    stdout.contains("--bin inspect_frag"),
+    "expected inspect_frag command in plan; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains(&expected_arg),
+    "expected inspect_frag to include `{}`; got:\n{stdout}",
+    expected_arg
+  );
+}
+
+#[test]
+fn dry_run_forwards_inspect_filters() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "page-loop",
+      "--fixture",
+      "example.com",
+      "--inspect-dump-json",
+      "--inspect-filter-selector",
+      "#main",
+      "--inspect-filter-id",
+      "content",
+      "--dry-run",
+    ])
+    .output()
+    .expect("run cargo xtask page-loop --inspect-*filter --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--filter-selector #main"),
+    "expected inspect selector filter to be forwarded; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("--filter-id content"),
+    "expected inspect id filter to be forwarded; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn from_progress_top_worst_accuracy_prefers_existing_fixtures_and_tiebreaks_perceptual() {
   let temp = tempdir().expect("tempdir");
   let progress_dir = temp.path().join("progress/pages");
@@ -188,16 +259,8 @@ fn from_progress_top_slowest_selects_highest_total_ms() {
   let temp = tempdir().expect("tempdir");
   let progress_dir = temp.path().join("progress/pages");
 
-  write_progress_file(
-    &progress_dir,
-    "example.com",
-    r#"{"status":"ok","total_ms":10.0}"#,
-  );
-  write_progress_file(
-    &progress_dir,
-    "amazon.com",
-    r#"{"status":"ok","total_ms":50.0}"#,
-  );
+  write_progress_file(&progress_dir, "example.com", r#"{"status":"ok","total_ms":10.0}"#);
+  write_progress_file(&progress_dir, "amazon.com", r#"{"status":"ok","total_ms":50.0}"#);
 
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())
@@ -231,16 +294,8 @@ fn from_progress_only_failures_selects_first_failing_stem() {
   let temp = tempdir().expect("tempdir");
   let progress_dir = temp.path().join("progress/pages");
 
-  write_progress_file(
-    &progress_dir,
-    "example.com",
-    r#"{"status":"timeout"}"#,
-  );
-  write_progress_file(
-    &progress_dir,
-    "amazon.com",
-    r#"{"status":"error"}"#,
-  );
+  write_progress_file(&progress_dir, "example.com", r#"{"status":"timeout"}"#);
+  write_progress_file(&progress_dir, "amazon.com", r#"{"status":"error"}"#);
 
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())

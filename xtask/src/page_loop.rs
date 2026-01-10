@@ -123,6 +123,33 @@ pub struct PageLoopArgs {
   #[arg(long)]
   pub overlay: bool,
 
+  /// Dump inspect_frag pipeline stage JSON files into `<out_dir>/inspect`.
+  ///
+  /// This writes `dom.json`, `composed_dom.json`, `styled.json`, `box_tree.json`,
+  /// `fragment_tree.json`, and `display_list.json`.
+  #[arg(long)]
+  pub inspect_dump_json: bool,
+
+  /// Restrict inspect_frag dumps/overlays to the first node matching this selector.
+  #[arg(long, value_name = "SELECTOR")]
+  pub inspect_filter_selector: Option<String>,
+
+  /// Restrict inspect_frag dumps/overlays to the first node matching this id attribute.
+  #[arg(long, value_name = "ID")]
+  pub inspect_filter_id: Option<String>,
+
+  /// Dump custom properties for the inspected subtree into `<out_dir>/inspect/custom_properties.json`.
+  #[arg(long, requires = "inspect_dump_json")]
+  pub inspect_dump_custom_properties: bool,
+
+  /// Only include custom properties whose name starts with this prefix (repeatable).
+  #[arg(long, value_name = "PREFIX", requires = "inspect_dump_custom_properties")]
+  pub inspect_custom_property_prefix: Vec<String>,
+
+  /// Maximum number of custom properties to dump (after filtering/sorting).
+  #[arg(long, value_name = "N", requires = "inspect_dump_custom_properties")]
+  pub inspect_custom_properties_limit: Option<usize>,
+
   /// Run a Chrome baseline render and produce a diff report (Chrome vs FastRender).
   #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_chrome")]
   pub chrome: bool,
@@ -151,6 +178,8 @@ struct Layout {
   overlay_dir: PathBuf,
   overlay_png: PathBuf,
 
+  inspect_dir: PathBuf,
+
   chrome_dir: PathBuf,
   chrome_png: PathBuf,
 
@@ -173,6 +202,8 @@ impl Layout {
     let overlay_dir = out_root.join("overlay");
     let overlay_png = overlay_dir.join(format!("{fixture_stem}.png"));
 
+    let inspect_dir = out_root.join("inspect");
+
     let chrome_dir = out_root.join("chrome");
     let chrome_png = chrome_dir.join(format!("{fixture_stem}.png"));
 
@@ -190,6 +221,7 @@ impl Layout {
       fastrender_snapshot,
       overlay_dir,
       overlay_png,
+      inspect_dir,
       chrome_dir,
       chrome_png,
       report_html,
@@ -217,8 +249,8 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
 
   let run_chrome = args.chrome && !args.no_chrome;
   let render_fixtures_cmd = build_render_fixtures_command(&repo_root, &layout, &args, run_chrome)?;
-  let overlay_cmd = if args.overlay {
-    Some(build_inspect_frag_overlay_command(&repo_root, &layout, &args)?)
+  let inspect_frag_cmd = if args.overlay || args.inspect_dump_json {
+    Some(build_inspect_frag_command(&repo_root, &layout, &args)?)
   } else {
     None
   };
@@ -255,6 +287,9 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     if args.overlay {
       println!("  overlay_png: {}", layout.overlay_png.display());
     }
+    if args.inspect_dump_json {
+      println!("  inspect_dir: {}", layout.inspect_dir.display());
+    }
     if run_chrome {
       println!("  chrome_png: {}", layout.chrome_png.display());
       println!("  report_html: {}", layout.report_html.display());
@@ -263,7 +298,7 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     println!();
 
     crate::print_command(&render_fixtures_cmd);
-    if let Some(cmd) = overlay_cmd.as_ref() {
+    if let Some(cmd) = inspect_frag_cmd.as_ref() {
       crate::print_command(cmd);
     }
     if let Some(cmd) = chrome_cmd.as_ref() {
@@ -289,6 +324,9 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
   if args.overlay {
     clear_dir(&layout.overlay_dir).context("clear overlay output dir")?;
   }
+  if args.inspect_dump_json {
+    clear_dir(&layout.inspect_dir).context("clear inspect output dir")?;
+  }
   if run_chrome {
     clear_dir(&layout.chrome_dir).context("clear Chrome output dir")?;
     remove_file_if_exists(&layout.report_html).context("clear existing report.html")?;
@@ -298,9 +336,14 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
   println!("Rendering fixture with FastRender...");
   crate::run_command(render_fixtures_cmd).context("render_fixtures failed")?;
 
-  if let Some(cmd) = overlay_cmd {
-    println!("Rendering debug overlay...");
-    crate::run_command(cmd).context("inspect_frag overlay failed")?;
+  if let Some(cmd) = inspect_frag_cmd {
+    match (args.overlay, args.inspect_dump_json) {
+      (true, true) => println!("Running inspect_frag (overlay + JSON dumps)..."),
+      (true, false) => println!("Rendering debug overlay..."),
+      (false, true) => println!("Dumping inspect_frag JSON..."),
+      (false, false) => {}
+    }
+    crate::run_command(cmd).context("inspect_frag failed")?;
   }
 
   if let Some(cmd) = chrome_cmd {
@@ -340,6 +383,11 @@ fn validate_args(args: &PageLoopArgs, fixture_stem: &str) -> Result<()> {
   }
   if args.timeout == 0 {
     bail!("--timeout must be > 0");
+  }
+  if (args.inspect_filter_selector.is_some() || args.inspect_filter_id.is_some())
+    && !(args.overlay || args.inspect_dump_json)
+  {
+    bail!("--inspect-filter-selector/--inspect-filter-id require --overlay and/or --inspect-dump-json");
   }
   Ok(())
 }
@@ -670,7 +718,7 @@ fn build_render_fixtures_command(
   Ok(cmd)
 }
 
-fn build_inspect_frag_overlay_command(
+fn build_inspect_frag_command(
   repo_root: &Path,
   layout: &Layout,
   args: &PageLoopArgs,
@@ -683,7 +731,29 @@ fn build_inspect_frag_overlay_command(
     .arg("--release")
     .args(["--bin", "inspect_frag", "--"]);
   cmd.arg(layout.fixture_html.as_os_str());
-  cmd.arg("--render-overlay").arg(&layout.overlay_png);
+  if args.overlay {
+    cmd.arg("--render-overlay").arg(&layout.overlay_png);
+  }
+  if args.inspect_dump_json {
+    cmd.arg("--dump-json").arg(&layout.inspect_dir);
+  }
+  if let Some(selector) = args.inspect_filter_selector.as_deref() {
+    cmd.arg("--filter-selector").arg(selector);
+  }
+  if let Some(id) = args.inspect_filter_id.as_deref() {
+    cmd.arg("--filter-id").arg(id);
+  }
+  if args.inspect_dump_custom_properties {
+    cmd.arg("--dump-custom-properties");
+    for prefix in &args.inspect_custom_property_prefix {
+      cmd.arg("--custom-property-prefix").arg(prefix);
+    }
+    if let Some(limit) = args.inspect_custom_properties_limit {
+      cmd
+        .arg("--custom-properties-limit")
+        .arg(limit.to_string());
+    }
+  }
   cmd
     .arg("--viewport")
     .arg(format!("{}x{}", args.viewport.0, args.viewport.1));
