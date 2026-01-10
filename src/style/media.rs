@@ -3185,7 +3185,6 @@ impl MediaContext {
       LengthUnit::Rcap => Some(length.value * (base_font * 0.7)),
       LengthUnit::Ric => Some(length.value * base_font),
       // Media queries lack access to computed `line-height`; treat `lh`/`rlh` as `normal` (1.2em).
-      // Media queries lack access to computed `line-height`; treat `lh`/`rlh` as `normal` (1.2em).
       LengthUnit::Lh => Some(length.value * (base_font * 1.2)),
       LengthUnit::Rlh => Some(length.value * (base_font * 1.2)),
       // Container query units depend on the nearest query container's content-box size, which is
