@@ -12,6 +12,8 @@ pub use webidl::*;
 /// Canonical `vm-js` adapter for the `webidl` conversion/runtime traits.
 pub use webidl_vm_js::VmJsWebIdlCx;
 
+pub mod conversions;
+
 /// Canonical bindings runtime for installing WebIDL-generated APIs onto a real `vm-js` realm.
 pub use crate::js::webidl_runtime_vmjs::{
   NativeHostFunction, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlBindingsRuntime,

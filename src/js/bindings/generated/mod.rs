@@ -10,6 +10,8 @@ pub mod window {
 
   use super::{BindingValue, WebHostBindings};
 
+  use crate::js::webidl::conversions;
+
   fn binding_value_to_js<Host, R>(
     rt: &mut R,
     value: BindingValue<R::JsValue>,
@@ -702,7 +704,11 @@ pub mod window {
       converted_args.push(if rt.is_undefined(v0) {
         BindingValue::Number(0.0)
       } else {
-        BindingValue::Number(rt.to_number(v0)?)
+        BindingValue::Number(conversions::to_long(
+          rt,
+          v0,
+          conversions::IntegerConversionAttrs::default(),
+        )? as f64)
       });
       let result = host.call_operation(rt, None, "Window", "clearInterval", 0, converted_args)?;
       binding_value_to_js::<Host, R>(rt, result)
@@ -730,7 +736,11 @@ pub mod window {
       converted_args.push(if rt.is_undefined(v0) {
         BindingValue::Number(0.0)
       } else {
-        BindingValue::Number(rt.to_number(v0)?)
+        BindingValue::Number(conversions::to_long(
+          rt,
+          v0,
+          conversions::IntegerConversionAttrs::default(),
+        )? as f64)
       });
       let result = host.call_operation(rt, None, "Window", "clearTimeout", 0, converted_args)?;
       binding_value_to_js::<Host, R>(rt, result)
@@ -788,7 +798,11 @@ pub mod window {
       converted_args.push(if rt.is_undefined(v1) {
         BindingValue::Number(0.0)
       } else {
-        BindingValue::Number(rt.to_number(v1)?)
+        BindingValue::Number(conversions::to_long(
+          rt,
+          v1,
+          conversions::IntegerConversionAttrs::default(),
+        )? as f64)
       });
       let mut rest: Vec<BindingValue<R::JsValue>> = Vec::new();
       for v in args.iter().copied().skip(2) {
@@ -827,7 +841,11 @@ pub mod window {
       converted_args.push(if rt.is_undefined(v1) {
         BindingValue::Number(0.0)
       } else {
-        BindingValue::Number(rt.to_number(v1)?)
+        BindingValue::Number(conversions::to_long(
+          rt,
+          v1,
+          conversions::IntegerConversionAttrs::default(),
+        )? as f64)
       });
       let mut rest: Vec<BindingValue<R::JsValue>> = Vec::new();
       for v in args.iter().copied().skip(2) {
@@ -914,6 +932,8 @@ pub mod worker {
   use std::collections::BTreeMap;
 
   use super::{BindingValue, WebHostBindings};
+
+  use crate::js::webidl::conversions;
 
   fn binding_value_to_js<Host, R>(
     rt: &mut R,

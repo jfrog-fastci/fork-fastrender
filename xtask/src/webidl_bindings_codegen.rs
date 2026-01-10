@@ -11,6 +11,7 @@ use fastrender::webidl::{
 };
 
 use crate::webidl::analyze::AnalyzedWebIdlWorld;
+use crate::webidl::ExtendedAttribute;
 use crate::webidl::ast::{Argument, BuiltinType, IdlLiteral, IdlType, InterfaceMember};
 use crate::webidl::resolve::{ExposureTarget, ResolvedWebIdlWorld};
 
@@ -1326,6 +1327,7 @@ fn generate_bindings_module_for_target_unformatted(
 
   out.push_str("use std::collections::BTreeMap;\n\n");
   out.push_str("use super::{BindingValue, WebHostBindings};\n\n");
+  out.push_str("use crate::js::webidl::conversions;\n\n");
 
   out.push_str("fn binding_value_to_js<Host, R>(\n");
   out.push_str("  rt: &mut R,\n");
@@ -1734,7 +1736,7 @@ fn write_dictionary_converter(
     ));
     out.push_str(&format!(
       "      let converted = {};\n",
-      emit_conversion_expr(resolved, &ty, "v")
+      emit_conversion_expr(resolved, &ty, &member.ext_attrs, "v")
     ));
     out.push_str(&format!(
       "      out_dict.insert({name_lit}.to_string(), converted);\n",
@@ -1885,7 +1887,7 @@ fn emit_overload_call(
     if arg.variadic {
       out.push_str(&format!(
         "    let mut rest: Vec<BindingValue<R::JsValue>> = Vec::new();\n    for v in args.iter().copied().skip({idx}) {{\n      rest.push({});\n    }}\n    converted_args.push(BindingValue::Sequence(rest));\n",
-        emit_conversion_expr(resolved, &arg.type_, "v"),
+        emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, "v"),
       ));
       break;
     }
@@ -1925,7 +1927,7 @@ fn emit_conversion_expr_for_optional(
   // Treat `optional` and `= default` as optional in this generator.
   let is_optional = arg.optional || arg.default.is_some();
   if !is_optional {
-    return emit_conversion_expr(resolved, &arg.type_, value_ident);
+    return emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident);
   }
 
   // If the argument is missing or `undefined`, use the default if present, otherwise `undefined`.
@@ -1949,7 +1951,7 @@ fn emit_conversion_expr_for_optional(
     "if rt.is_undefined({value}) {{ {default_expr} }} else {{ {converted} }}",
     value = value_ident,
     default_expr = default_expr,
-    converted = emit_conversion_expr(resolved, &arg.type_, value_ident),
+    converted = emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, value_ident),
   )
 }
 
@@ -1976,7 +1978,29 @@ fn emit_default_literal(lit: &IdlLiteral) -> String {
   }
 }
 
-fn emit_conversion_expr(resolved: &ResolvedWebIdlWorld, ty: &IdlType, value_ident: &str) -> String {
+fn emit_integer_conversion_attrs(ext_attrs: &[ExtendedAttribute]) -> String {
+  let mut clamp = false;
+  let mut enforce_range = false;
+  for a in ext_attrs {
+    match a.name.as_str() {
+      "Clamp" => clamp = true,
+      "EnforceRange" => enforce_range = true,
+      _ => {}
+    }
+  }
+  if !clamp && !enforce_range {
+    "conversions::IntegerConversionAttrs::default()".to_string()
+  } else {
+    format!("conversions::IntegerConversionAttrs {{ clamp: {clamp}, enforce_range: {enforce_range} }}")
+  }
+}
+
+fn emit_conversion_expr(
+  resolved: &ResolvedWebIdlWorld,
+  ty: &IdlType,
+  ext_attrs: &[ExtendedAttribute],
+  value_ident: &str,
+) -> String {
   match ty {
     IdlType::Builtin(b) => match b {
       BuiltinType::Undefined => "BindingValue::Undefined".to_string(),
@@ -1990,18 +2014,48 @@ fn emit_conversion_expr(resolved: &ResolvedWebIdlWorld, ty: &IdlType, value_iden
         )
       }
       BuiltinType::Object => format!("BindingValue::Object({value_ident})"),
-      BuiltinType::Byte
-      | BuiltinType::Octet
-      | BuiltinType::Short
-      | BuiltinType::UnsignedShort
-      | BuiltinType::Long
-      | BuiltinType::UnsignedLong
-      | BuiltinType::LongLong
-      | BuiltinType::UnsignedLongLong
-      | BuiltinType::Float
-      | BuiltinType::UnrestrictedFloat
-      | BuiltinType::Double
-      | BuiltinType::UnrestrictedDouble => format!("BindingValue::Number(rt.to_number({value_ident})?)"),
+      BuiltinType::Byte => format!(
+        "BindingValue::Number(conversions::to_byte(rt, {value_ident}, {})? as f64)",
+        emit_integer_conversion_attrs(ext_attrs)
+      ),
+      BuiltinType::Octet => format!(
+        "BindingValue::Number(conversions::to_octet(rt, {value_ident}, {})? as f64)",
+        emit_integer_conversion_attrs(ext_attrs)
+      ),
+      BuiltinType::Short => format!(
+        "BindingValue::Number(conversions::to_short(rt, {value_ident}, {})? as f64)",
+        emit_integer_conversion_attrs(ext_attrs)
+      ),
+      BuiltinType::UnsignedShort => format!(
+        "BindingValue::Number(conversions::to_unsigned_short(rt, {value_ident}, {})? as f64)",
+        emit_integer_conversion_attrs(ext_attrs)
+      ),
+      BuiltinType::Long => format!(
+        "BindingValue::Number(conversions::to_long(rt, {value_ident}, {})? as f64)",
+        emit_integer_conversion_attrs(ext_attrs)
+      ),
+      BuiltinType::UnsignedLong => format!(
+        "BindingValue::Number(conversions::to_unsigned_long(rt, {value_ident}, {})? as f64)",
+        emit_integer_conversion_attrs(ext_attrs)
+      ),
+      BuiltinType::LongLong => format!(
+        "BindingValue::Number(conversions::to_long_long(rt, {value_ident}, {})? as f64)",
+        emit_integer_conversion_attrs(ext_attrs)
+      ),
+      BuiltinType::UnsignedLongLong => format!(
+        "BindingValue::Number(conversions::to_unsigned_long_long(rt, {value_ident}, {})? as f64)",
+        emit_integer_conversion_attrs(ext_attrs)
+      ),
+      BuiltinType::Float => {
+        format!("BindingValue::Number(conversions::to_float(rt, {value_ident})? as f64)")
+      }
+      BuiltinType::UnrestrictedFloat => format!(
+        "BindingValue::Number(conversions::to_unrestricted_float(rt, {value_ident})? as f64)"
+      ),
+      BuiltinType::Double => format!("BindingValue::Number(conversions::to_double(rt, {value_ident})?)"),
+      BuiltinType::UnrestrictedDouble => {
+        format!("BindingValue::Number(conversions::to_unrestricted_double(rt, {value_ident})?)")
+      }
     },
     IdlType::Named(name) => {
       if resolved.dictionaries.contains_key(name) {
@@ -2013,7 +2067,7 @@ fn emit_conversion_expr(resolved: &ResolvedWebIdlWorld, ty: &IdlType, value_iden
     }
     IdlType::Nullable(inner) => format!(
       "if rt.is_null({value_ident}) {{ BindingValue::Null }} else {{ {} }}",
-      emit_conversion_expr(resolved, inner, value_ident)
+      emit_conversion_expr(resolved, inner, ext_attrs, value_ident)
     ),
     IdlType::Union(_members) => {
       // Union conversion is non-trivial; for MVP treat as opaque.
@@ -2188,7 +2242,7 @@ fn emit_ctor_overload_call(
     if arg.variadic {
       out.push_str(&format!(
         "    let mut rest: Vec<BindingValue<R::JsValue>> = Vec::new();\n    for v in args.iter().copied().skip({idx}) {{\n      rest.push({});\n    }}\n    converted_args.push(BindingValue::Sequence(rest));\n",
-        emit_conversion_expr(resolved, &arg.type_, "v"),
+        emit_conversion_expr(resolved, &arg.type_, &arg.ext_attrs, "v"),
       ));
       break;
     }

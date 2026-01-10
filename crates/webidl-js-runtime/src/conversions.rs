@@ -152,6 +152,158 @@ pub fn to_byte<R: WebIdlJsRuntime>(
   Ok(v as i8)
 }
 
+/// Convert an ECMAScript value to an IDL `octet`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-octet>
+pub fn to_octet<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  attrs: IntegerConversionAttrs,
+) -> Result<u8, R::Error> {
+  let n = rt.to_number(value)?;
+  let v = convert_to_int(n, 8, false, attrs).map_err(|e| throw_webidl_exception(rt, e))?;
+  Ok(v as u8)
+}
+
+/// Convert an ECMAScript value to an IDL `short`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-short>
+pub fn to_short<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  attrs: IntegerConversionAttrs,
+) -> Result<i16, R::Error> {
+  let n = rt.to_number(value)?;
+  let v = convert_to_int(n, 16, true, attrs).map_err(|e| throw_webidl_exception(rt, e))?;
+  Ok(v as i16)
+}
+
+/// Convert an ECMAScript value to an IDL `unsigned short`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-unsigned-short>
+pub fn to_unsigned_short<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  attrs: IntegerConversionAttrs,
+) -> Result<u16, R::Error> {
+  let n = rt.to_number(value)?;
+  let v = convert_to_int(n, 16, false, attrs).map_err(|e| throw_webidl_exception(rt, e))?;
+  Ok(v as u16)
+}
+
+/// Convert an ECMAScript value to an IDL `long`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-long>
+pub fn to_long<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  attrs: IntegerConversionAttrs,
+) -> Result<i32, R::Error> {
+  let n = rt.to_number(value)?;
+  let v = convert_to_int(n, 32, true, attrs).map_err(|e| throw_webidl_exception(rt, e))?;
+  Ok(v as i32)
+}
+
+/// Convert an ECMAScript value to an IDL `unsigned long`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-unsigned-long>
+pub fn to_unsigned_long<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  attrs: IntegerConversionAttrs,
+) -> Result<u32, R::Error> {
+  let n = rt.to_number(value)?;
+  let v = convert_to_int(n, 32, false, attrs).map_err(|e| throw_webidl_exception(rt, e))?;
+  Ok(v as u32)
+}
+
+/// Convert an ECMAScript value to an IDL `long long`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-long-long>
+pub fn to_long_long<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  attrs: IntegerConversionAttrs,
+) -> Result<i64, R::Error> {
+  let n = rt.to_number(value)?;
+  let v = convert_to_int(n, 64, true, attrs).map_err(|e| throw_webidl_exception(rt, e))?;
+  Ok(v as i64)
+}
+
+/// Convert an ECMAScript value to an IDL `unsigned long long`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-unsigned-long-long>
+pub fn to_unsigned_long_long<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  attrs: IntegerConversionAttrs,
+) -> Result<u64, R::Error> {
+  let n = rt.to_number(value)?;
+  let v = convert_to_int(n, 64, false, attrs).map_err(|e| throw_webidl_exception(rt, e))?;
+  Ok(v as u64)
+}
+
+/// Convert an ECMAScript value to an IDL `float`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-float>
+pub fn to_float<R: WebIdlJsRuntime>(rt: &mut R, value: R::JsValue) -> Result<f32, R::Error> {
+  let x = rt.to_number(value)?;
+  if x.is_nan() || x.is_infinite() {
+    return Err(rt.throw_type_error("float must be a finite number"));
+  }
+  let mut y = x as f32;
+  if y.is_infinite() {
+    return Err(rt.throw_type_error("float is out of range"));
+  }
+  if y == 0.0 && x.is_sign_negative() {
+    y = -0.0;
+  }
+  Ok(y)
+}
+
+/// Convert an ECMAScript value to an IDL `unrestricted float`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-unrestricted-float>
+pub fn to_unrestricted_float<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+) -> Result<f32, R::Error> {
+  let x = rt.to_number(value)?;
+  if x.is_nan() {
+    return Ok(f32::from_bits(0x7fc0_0000));
+  }
+  let mut y = x as f32;
+  if y == 0.0 && x.is_sign_negative() {
+    y = -0.0;
+  }
+  Ok(y)
+}
+
+/// Convert an ECMAScript value to an IDL `double`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-double>
+pub fn to_double<R: WebIdlJsRuntime>(rt: &mut R, value: R::JsValue) -> Result<f64, R::Error> {
+  let x = rt.to_number(value)?;
+  if x.is_nan() || x.is_infinite() {
+    return Err(rt.throw_type_error("double must be a finite number"));
+  }
+  Ok(x)
+}
+
+/// Convert an ECMAScript value to an IDL `unrestricted double`.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-unrestricted-double>
+pub fn to_unrestricted_double<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+) -> Result<f64, R::Error> {
+  let x = rt.to_number(value)?;
+  if x.is_nan() {
+    return Ok(f64::from_bits(0x7ff8_0000_0000_0000));
+  }
+  Ok(x)
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct ConversionState {
   int_attrs: IntegerConversionAttrs,
@@ -597,23 +749,20 @@ fn convert_to_int(
   bit_length: u32,
   signed: bool,
   ext: IntegerConversionAttrs,
-) -> Result<f64, WebIdlException> {
-  let (lower_bound, upper_bound) = if bit_length == 64 {
-    let upper_bound = (1u64 << 53) as f64 - 1.0;
-    let lower_bound = if signed {
-      -((1u64 << 53) as f64) + 1.0
-    } else {
-      0.0
-    };
-    (lower_bound, upper_bound)
-  } else if signed {
-    let lower_bound = -((1u64 << (bit_length - 1)) as f64);
-    let upper_bound = ((1u64 << (bit_length - 1)) as f64) - 1.0;
+) -> Result<i128, WebIdlException> {
+  if ext.clamp && ext.enforce_range {
+    return Err(WebIdlException::type_error(
+      "[Clamp] and [EnforceRange] cannot both apply to the same type",
+    ));
+  }
+
+  let (lower_bound, upper_bound): (i128, i128) = if signed {
+    let lower_bound = -(1i128 << (bit_length - 1));
+    let upper_bound = (1i128 << (bit_length - 1)) - 1;
     (lower_bound, upper_bound)
   } else {
-    let lower_bound = 0.0;
-    let upper_bound = ((1u64 << bit_length) as f64) - 1.0;
-    (lower_bound, upper_bound)
+    let upper_bound = (1i128 << bit_length) - 1;
+    (0, upper_bound)
   };
 
   // `ToNumber(V)` is done by the caller; normalize -0 to +0.
@@ -628,41 +777,48 @@ fn convert_to_int(
         "EnforceRange integer conversion cannot be NaN/Infinity",
       ));
     }
-    x = integer_part(x);
-    if x < lower_bound || x > upper_bound {
+    let x_int = integer_part(x) as i128;
+    if x_int < lower_bound || x_int > upper_bound {
       return Err(WebIdlException::range_error(
         "integer value is outside EnforceRange bounds",
       ));
     }
-    return Ok(x);
+    return Ok(x_int);
   }
 
-  if ext.clamp && !x.is_nan() {
-    x = x.clamp(lower_bound, upper_bound);
-    x = round_ties_even(x);
-    if x == 0.0 && x.is_sign_negative() {
-      x = 0.0;
+  if ext.clamp {
+    if x.is_nan() {
+      return Ok(0);
     }
-    return Ok(x);
+    if x.is_infinite() {
+      return Ok(if x.is_sign_negative() {
+        lower_bound
+      } else {
+        upper_bound
+      });
+    }
+    let mut y = round_ties_even(x);
+    if y == 0.0 && y.is_sign_negative() {
+      y = 0.0;
+    }
+    let y = y as i128;
+    return Ok(y.clamp(lower_bound, upper_bound));
   }
 
+  // Default conversion (wrap).
   if x.is_nan() || x == 0.0 || x.is_infinite() {
-    return Ok(0.0);
+    return Ok(0);
   }
 
-  x = integer_part(x);
+  let modulo = 1u128 << bit_length;
+  let threshold = 1u128 << (bit_length - 1);
+  let r = integer_part_modulo_pow2(x, bit_length);
 
-  let modulo = 2f64.powi(bit_length as i32);
-  x = x.rem_euclid(modulo);
-
-  if signed {
-    let threshold = 2f64.powi((bit_length - 1) as i32);
-    if x >= threshold {
-      return Ok(x - modulo);
-    }
+  if signed && r >= threshold {
+    Ok(r as i128 - modulo as i128)
+  } else {
+    Ok(r as i128)
   }
-
-  Ok(x)
 }
 
 fn integer_part(n: f64) -> f64 {
@@ -689,6 +845,57 @@ fn round_ties_even(n: f64) -> f64 {
   } else {
     floor + 1.0
   }
+}
+
+fn integer_part_modulo_pow2(n: f64, bit_length: u32) -> u128 {
+  debug_assert!((1..=64).contains(&bit_length));
+
+  if n == 0.0 {
+    // Covers `-0.0` too.
+    return 0;
+  }
+
+  let bits = n.to_bits();
+  let sign = (bits >> 63) != 0;
+  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+  let frac_bits = bits & 0x000f_ffff_ffff_ffff;
+
+  // Subnormals (exp_bits == 0) and values with |n| < 1 (exp_unbiased < 0) truncate to 0.
+  // The wrap conversion handles NaN/Infinity before calling into this helper.
+  if exp_bits == 0 || exp_bits == 0x7ff {
+    return 0;
+  }
+
+  let exp_unbiased = exp_bits - 1023;
+  if exp_unbiased < 0 {
+    return 0;
+  }
+
+  // 53-bit significand with implicit leading 1.
+  let sig = ((1u64 << 52) | frac_bits) as u128;
+  let mask = (1u128 << bit_length) - 1;
+
+  // |n| = sig * 2^(exp_unbiased - 52)
+  let shift = exp_unbiased - 52;
+  let abs_rem = if shift >= 0 {
+    let shift = shift as u32;
+    if shift >= bit_length {
+      0
+    } else {
+      (sig << shift) & mask
+    }
+  } else {
+    let rshift = (-shift) as u32;
+    (sig >> rshift) & mask
+  };
+
+  if !sign {
+    return abs_rem;
+  }
+  if abs_rem == 0 {
+    return 0;
+  }
+  (1u128 << bit_length) - abs_rem
 }
 
 fn is_null_or_undefined<R: JsRuntime>(rt: &R, value: R::JsValue) -> bool {
@@ -1635,6 +1842,82 @@ mod tests {
     assert!(
       msg.starts_with("RangeError:"),
       "expected RangeError, got {msg:?}"
+    );
+  }
+
+  fn assert_range_error(rt: &mut VmJsRuntime, err: <VmJsRuntime as JsRuntime>::Error) {
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected thrown error, got {err:?}");
+    };
+    let s = rt.to_string(thrown).unwrap();
+    let msg = as_utf8_lossy(rt, s);
+    assert!(
+      msg.starts_with("RangeError:"),
+      "expected RangeError, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn clamp_unsigned_long_clamps_and_rounds_ties_to_even() {
+    let mut rt = VmJsRuntime::new();
+    let attrs = IntegerConversionAttrs {
+      clamp: true,
+      enforce_range: false,
+    };
+
+    // Negative values clamp to 0.
+    assert_eq!(to_unsigned_long(&mut rt, Value::Number(-5.0), attrs).unwrap(), 0);
+
+    // Values above 2^32-1 clamp to the upper bound.
+    let too_large = (u32::MAX as f64) + 1000.0;
+    assert_eq!(
+      to_unsigned_long(&mut rt, Value::Number(too_large), attrs).unwrap(),
+      u32::MAX
+    );
+
+    // Rounds ties to even (banker's rounding): 2.5 -> 2, not 3.
+    assert_eq!(to_unsigned_long(&mut rt, Value::Number(2.5), attrs).unwrap(), 2);
+  }
+
+  #[test]
+  fn enforce_range_long_rejects_nan_infinity_and_out_of_range() {
+    let mut rt = VmJsRuntime::new();
+    let attrs = IntegerConversionAttrs {
+      clamp: false,
+      enforce_range: true,
+    };
+
+    let err = to_long(&mut rt, Value::Number(f64::NAN), attrs).unwrap_err();
+    assert_range_error(&mut rt, err);
+    let err = to_long(&mut rt, Value::Number(f64::INFINITY), attrs).unwrap_err();
+    assert_range_error(&mut rt, err);
+    let err = to_long(&mut rt, Value::Number((i32::MAX as f64) + 1.0), attrs).unwrap_err();
+    assert_range_error(&mut rt, err);
+  }
+
+  #[test]
+  fn byte_default_integer_conversion_wraps() {
+    let mut rt = VmJsRuntime::new();
+    let attrs = IntegerConversionAttrs::default();
+
+    // Wrap modulo 256 and then interpret as signed.
+    assert_eq!(to_byte(&mut rt, Value::Number(200.0), attrs).unwrap(), -56);
+    assert_eq!(to_byte(&mut rt, Value::Number(128.0), attrs).unwrap(), -128);
+    assert_eq!(to_byte(&mut rt, Value::Number(-129.0), attrs).unwrap(), 127);
+
+    // NaN converts to 0.
+    assert_eq!(to_byte(&mut rt, Value::Number(f64::NAN), attrs).unwrap(), 0);
+  }
+
+  #[test]
+  fn long_long_default_integer_conversion_wraps() {
+    let mut rt = VmJsRuntime::new();
+    let attrs = IntegerConversionAttrs::default();
+
+    assert_eq!(to_long_long(&mut rt, Value::Number(-1.0), attrs).unwrap(), -1);
+    assert_eq!(
+      to_unsigned_long_long(&mut rt, Value::Number(-1.0), attrs).unwrap(),
+      u64::MAX
     );
   }
 }

@@ -51,6 +51,7 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   fn to_string(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
 
   fn throw_type_error(&mut self, message: &str) -> Self::Error;
+  fn throw_range_error(&mut self, message: &str) -> Self::Error;
 
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error>;
 
@@ -276,6 +277,17 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     vm_js::throw_type_error(&mut self.cx.scope, intr, message)
   }
 
+  fn throw_range_error(&mut self, message: &str) -> Self::Error {
+    let intr = match self.intrinsics() {
+      Ok(intr) => intr,
+      Err(err) => return err,
+    };
+    match vm_js::new_range_error(&mut self.cx.scope, intr, message) {
+      Ok(value) => VmError::Throw(value),
+      Err(err) => err,
+    }
+  }
+
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error> {
     let s = self.cx.scope.alloc_string(name)?;
     self.cx.scope.push_root(Value::String(s))?;
@@ -432,6 +444,12 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn throw_type_error(&mut self, message: &str) -> Self::Error {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::throw_type_error(
+      self, message,
+    )
+  }
+
+  fn throw_range_error(&mut self, message: &str) -> Self::Error {
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::throw_range_error(
       self, message,
     )
   }
