@@ -140,6 +140,7 @@ mod grid_baseline_column_sizing;
 mod grid_baseline_row_sizing;
 mod grid_calc_percentage_padding;
 mod grid_calc_percentage_width;
+mod grid_item_padding_calc_percentage;
 mod grid_calc_length_rem;
 mod grid_calc_gap;
 mod grid_column_shorthand_longhand_merge;
