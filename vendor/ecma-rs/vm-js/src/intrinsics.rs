@@ -52,6 +52,7 @@ pub struct Intrinsics {
   array_buffer: GcObject,
   uint8_array: GcObject,
   is_nan: GcObject,
+  math: GcObject,
   json: GcObject,
 
   error: GcObject,
@@ -489,6 +490,18 @@ impl Intrinsics {
     let error_prototype_to_string = vm.register_native_call(builtins::error_prototype_to_string)?;
     let json_parse = vm.register_native_call(builtins::json_parse)?;
     let json_stringify = vm.register_native_call(builtins::json_stringify)?;
+    let math_abs = vm.register_native_call(builtins::math_abs)?;
+    let math_floor = vm.register_native_call(builtins::math_floor)?;
+    let math_ceil = vm.register_native_call(builtins::math_ceil)?;
+    let math_trunc = vm.register_native_call(builtins::math_trunc)?;
+    let math_round = vm.register_native_call(builtins::math_round)?;
+    let math_max = vm.register_native_call(builtins::math_max)?;
+    let math_min = vm.register_native_call(builtins::math_min)?;
+    let math_pow = vm.register_native_call(builtins::math_pow)?;
+    let math_sqrt = vm.register_native_call(builtins::math_sqrt)?;
+    let math_log = vm.register_native_call(builtins::math_log)?;
+    let math_exp = vm.register_native_call(builtins::math_exp)?;
+    let math_random = vm.register_native_call(builtins::math_random)?;
 
     // `%Number%`, `%Boolean%`, `%Date%`, and global functions.
     let number_call = vm.register_native_call(builtins::number_constructor_call)?;
@@ -1986,6 +1999,61 @@ impl Intrinsics {
       )?;
     }
 
+    // `%Math%`
+    let math = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(math, Some(object_prototype))?;
+    {
+      let mut define_const = |name: &str, value: f64| -> Result<(), VmError> {
+        let name_s = scope.alloc_string(name)?;
+        scope.push_root(Value::String(name_s))?;
+        let key = PropertyKey::from_string(name_s);
+        scope.define_property(
+          math,
+          key,
+          data_desc(Value::Number(value), false, false, false),
+        )
+      };
+
+      define_const("E", std::f64::consts::E)?;
+      define_const("LN2", std::f64::consts::LN_2)?;
+      define_const("LN10", std::f64::consts::LN_10)?;
+      define_const("LOG2E", std::f64::consts::LOG2_E)?;
+      define_const("LOG10E", std::f64::consts::LOG10_E)?;
+      define_const("PI", std::f64::consts::PI)?;
+      define_const("SQRT1_2", std::f64::consts::FRAC_1_SQRT_2)?;
+      define_const("SQRT2", std::f64::consts::SQRT_2)?;
+    }
+    {
+      let mut define_method =
+        |name: &str, call: NativeFunctionId, length: u32| -> Result<(), VmError> {
+          let name_s = scope.alloc_string(name)?;
+          scope.push_root(Value::String(name_s))?;
+          let key = PropertyKey::from_string(name_s);
+          let func = scope.alloc_native_function(call, None, name_s, length)?;
+          scope.push_root(Value::Object(func))?;
+          scope
+            .heap_mut()
+            .object_set_prototype(func, Some(function_prototype))?;
+          scope.define_property(math, key, data_desc(Value::Object(func), true, false, true))?;
+          Ok(())
+        };
+
+      define_method("abs", math_abs, 1)?;
+      define_method("floor", math_floor, 1)?;
+      define_method("ceil", math_ceil, 1)?;
+      define_method("trunc", math_trunc, 1)?;
+      define_method("round", math_round, 1)?;
+      define_method("max", math_max, 2)?;
+      define_method("min", math_min, 2)?;
+      define_method("pow", math_pow, 2)?;
+      define_method("sqrt", math_sqrt, 1)?;
+      define_method("log", math_log, 1)?;
+      define_method("exp", math_exp, 1)?;
+      define_method("random", math_random, 0)?;
+    }
+
     // `%JSON%`
     let json = alloc_rooted_object(scope, roots)?;
     scope
@@ -2473,6 +2541,7 @@ impl Intrinsics {
       array_buffer,
       uint8_array,
       is_nan,
+      math,
       json,
       error,
       error_prototype,
@@ -2595,6 +2664,10 @@ impl Intrinsics {
 
   pub fn is_nan(&self) -> GcObject {
     self.is_nan
+  }
+
+  pub fn math(&self) -> GcObject {
+    self.math
   }
 
   pub fn json(&self) -> GcObject {

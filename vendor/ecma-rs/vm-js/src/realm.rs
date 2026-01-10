@@ -201,6 +201,13 @@ impl Realm {
         global_data_desc(Value::Object(intrinsics.is_nan())),
       )?;
 
+      let math_key = PropertyKey::from_string(scope.alloc_string("Math")?);
+      scope.define_property(
+        global_object,
+        math_key,
+        global_data_desc(Value::Object(intrinsics.math())),
+      )?;
+
       let json_key = PropertyKey::from_string(scope.alloc_string("JSON")?);
       scope.define_property(
         global_object,

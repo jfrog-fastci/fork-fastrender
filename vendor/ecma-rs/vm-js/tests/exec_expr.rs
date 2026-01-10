@@ -714,3 +714,28 @@ fn json_parse_works_with_objects_arrays_and_reviver() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn math_methods_work() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"Math.PI > 3
+        && Math.E > 2
+        && Math.abs(-3) === 3
+        && Math.floor(1.9) === 1
+        && Math.ceil(1.1) === 2
+        && Math.trunc(-1.9) === -1
+        && (1 / Math.round(-0.4)) === -1e999
+        && Math.max() === -1e999
+        && Math.min() === 1e999
+        && Math.max(1, 2, 3) === 3
+        && Math.min(1, -2, 3) === -2
+        && Math.pow(2, 3) === 8
+        && Math.sqrt(9) === 3
+        && Math.log(Math.E) === 1
+        && (function(){ var r=Math.random(); return (r >= 0) && (r < 1); })()"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
