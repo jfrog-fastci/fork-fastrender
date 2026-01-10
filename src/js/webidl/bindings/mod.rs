@@ -580,6 +580,40 @@ mod tests {
       panic!("Node constructor should be an object");
     };
 
+    // Interfaces without a WebIDL constructor operation must still expose a constructable interface
+    // object that throws for both `Node()` and `new Node()`.
+    for err in [
+      vm
+        .call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, node_ctor, Value::Undefined, &[])
+        .expect_err("expected Node() to throw"),
+      vm
+        .construct_with_host_and_hooks(&mut host, &mut scope, &mut hooks, node_ctor, &[], node_ctor)
+        .expect_err("expected new Node() to throw"),
+    ] {
+      let thrown = err
+        .thrown_value()
+        .expect("expected a thrown exception value");
+      let Value::Object(thrown_obj) = thrown else {
+        panic!("expected thrown error to be an object");
+      };
+      scope.push_root(thrown)?;
+      let name_key = alloc_key(&mut scope, "name")?;
+      let message_key = alloc_key(&mut scope, "message")?;
+      let name_val = vm.get(&mut scope, thrown_obj, name_key)?;
+      let message_val = vm.get(&mut scope, thrown_obj, message_key)?;
+      let Value::String(name_s) = name_val else {
+        panic!("expected error.name to be a string");
+      };
+      let Value::String(message_s) = message_val else {
+        panic!("expected error.message to be a string");
+      };
+      assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+      assert_eq!(
+        scope.heap().get_string(message_s)?.to_utf8_lossy(),
+        "Illegal constructor"
+      );
+    }
+
     let element_node_key = alloc_key(&mut scope, "ELEMENT_NODE")?;
     let Some(element_node_desc) = scope
       .heap()

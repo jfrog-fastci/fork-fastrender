@@ -1468,10 +1468,12 @@ fn generate_bindings_module_for_target_unformatted(
 
   // Shared illegal constructor stub for WebIDL interface objects.
   //
-  // - For constructible interfaces, this is installed as `[[Call]]` so `Ctor(...)` throws a
-  //   TypeError.
-  // - For non-constructible interfaces that still expose an interface object (e.g. `Node` hosting
-  //   constants), this is installed as the only `[[Call]]` handler.
+  // WebIDL interface objects are *always* function objects. If an interface does not declare a
+  // constructor operation, the interface object must throw a TypeError when called *and* when
+  // constructed (e.g. `Node()` and `new Node()`).
+  //
+  // For interfaces that do declare constructors, this stub is installed as `[[Call]]` so
+  // `Ctor(...)` throws a TypeError, while `[[Construct]]` runs the generated constructor wrapper.
   let needs_illegal_constructor = selected.values().any(|iface| {
     let needs_ctor_obj = !iface.constructors.is_empty()
       || !iface.static_operations.is_empty()
@@ -1614,10 +1616,10 @@ fn generate_bindings_module_for_target_unformatted(
       .min()
       .unwrap_or(0);
 
-    // Constructor function (even for static-only interfaces like URL).
+    // Interface object (constructor function).
     if iface.constructors.is_empty() {
       out.push_str(&format!(
-        "  let ctor_{snake} = rt.create_function(\"{name}\", {length}, illegal_constructor::<Host, R>)?;\n",
+        "  let ctor_{snake} = rt.create_constructor(\"{name}\", {length}, illegal_constructor::<Host, R>, illegal_constructor::<Host, R>)?;\n",
         snake = to_snake_ident(&iface.name),
         name = iface.name.as_str(),
         length = ctor_length,

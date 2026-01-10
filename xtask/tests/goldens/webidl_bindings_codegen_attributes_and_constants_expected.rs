@@ -171,7 +171,12 @@ pub mod window {
     let get = rt.create_function("get size", 0, foo_get_attribute_size::<Host, R>)?;
     let set = rt.js_undefined();
     rt.define_attribute_accessor(proto_foo, "size", get, set)?;
-    let ctor_foo = rt.create_function("Foo", 0, illegal_constructor::<Host, R>)?;
+    let ctor_foo = rt.create_constructor(
+      "Foo",
+      0,
+      illegal_constructor::<Host, R>,
+      illegal_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "Foo", ctor_foo, proto_foo)?;
     let get = rt.create_function("get ok", 0, foo_get_static_attribute_ok::<Host, R>)?;
     let set = rt.js_undefined();

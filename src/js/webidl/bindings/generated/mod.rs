@@ -1161,7 +1161,12 @@ pub mod window {
       event_target_constructor::<Host, R>,
     )?;
     rt.define_constructor(global, "EventTarget", ctor_event_target, proto_event_target)?;
-    let ctor_node = rt.create_function("Node", 0, illegal_constructor::<Host, R>)?;
+    let ctor_node = rt.create_constructor(
+      "Node",
+      0,
+      illegal_constructor::<Host, R>,
+      illegal_constructor::<Host, R>,
+    )?;
     rt.define_constructor(global, "Node", ctor_node, proto_node)?;
     rt.define_constant(ctor_node, "ATTRIBUTE_NODE", rt.js_number(2.0))?;
     rt.define_constant(ctor_node, "CDATA_SECTION_NODE", rt.js_number(4.0))?;
