@@ -1007,76 +1007,83 @@ impl BrowserTab {
     let trace_session = super::TraceSession::from_options(Some(&options));
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
-
     let mut target_url = url.to_string();
     loop {
-    // Replace the document DOM with an empty tree before streaming in the new navigation HTML.
-    //
-    // Unlike `BrowserDocumentDom2::navigate_url` (which goes through `FastRender::prepare_url`), this
-    // path streams HTML through `StreamingHtmlParser` so parser-inserted scripts can execute at
-    // `</script>` boundaries against a partially-built DOM.
-    let options_for_parse = options.clone();
-    self
-      .host
-      .document
-      .reset_with_dom(Document::new(QuirksMode::NoQuirks), options.clone());
-    self.reset_event_loop();
-    self.host.trace = self.trace.clone();
+      // Install a root deadline so `RenderOptions::{timeout,cancel_callback}` bounds:
+      // - the document fetch phase,
+      // - and the subsequent script-aware streaming HTML parse.
+      //
+      // This mirrors `FastRender::prepare_url`'s fetch-time deadline guard, but drives
+      // `StreamingHtmlParser` so parser-inserted scripts execute at `</script>` boundaries against a
+      // partially-built DOM.
+      let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
+      let _deadline_guard = deadline_enabled.then(|| {
+        let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+        DeadlineGuard::install(Some(&deadline))
+      });
 
-    // Keep document fetch + parse cancellable via `RenderOptions::{timeout,cancel_callback}`.
-    let deadline_enabled =
-      options_for_parse.timeout.is_some() || options_for_parse.cancel_callback.is_some();
-    let _deadline_guard = deadline_enabled.then(|| {
-      let deadline = RenderDeadline::new(
-        options_for_parse.timeout,
-        options_for_parse.cancel_callback.clone(),
-      );
-      DeadlineGuard::install(Some(&deadline))
-    });
+      // Fetch the document first so a failed request doesn't clobber the existing navigation's
+      // committed DOM.
+      let fetcher = self.host.document.fetcher();
+      let resource = fetcher.fetch_with_request(FetchRequest::document(&target_url))?;
+      let hint = resource
+        .final_url
+        .as_deref()
+        .unwrap_or_else(|| target_url.as_str());
+      let final_url = super::merge_fragment_from_url(hint, target_url.as_str());
+      let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
 
-    let fetcher = self.host.document.fetcher();
-    let fetched = fetcher.fetch_with_request(FetchRequest::document(&target_url))?;
-    let final_url = fetched
-      .final_url
-      .clone()
-      .unwrap_or_else(|| target_url.clone());
+      let document_referrer_policy =
+        crate::html::referrer_policy::extract_referrer_policy_from_html(&html).unwrap_or_default();
 
-    // Seed navigation URL hints for downstream subresource fetches. Unlike the base URL, the
-    // document URL is used for referrer/origin semantics and must remain stable even if `<base
-    // href>` changes during parsing.
-    {
+      // Seed navigation URL hints for downstream subresource fetches. Unlike the base URL, the
+      // document URL is used for referrer/origin semantics and must remain stable even if `<base
+      // href>` changes during parsing.
+      {
+        let renderer = self.host.document.renderer_mut();
+        renderer.set_document_url(final_url.clone());
+        renderer.set_base_url(final_url.clone());
+      }
+
+      // Replace the document DOM with an empty tree before streaming in the new navigation HTML.
+      // This ensures scripts observe a partially-built DOM (not the previous navigation's tree).
+      let options_for_parse = options.clone();
+      self
+        .host
+        .document
+        .reset_with_dom(Document::new(QuirksMode::NoQuirks), options_for_parse.clone());
+      self.reset_event_loop();
+      self.host.trace = self.trace.clone();
+      self
+        .host
+        .reset_scripting_state(Some(final_url.clone()), document_referrer_policy);
+
+      // Avoid installing a nested deadline: the outer guard already enforces the render budget
+      // across fetch + parse.
+      let mut parse_options = options_for_parse;
+      parse_options.timeout = None;
+      parse_options.cancel_callback = None;
+
+      let base_url = self.parse_html_streaming_and_schedule_scripts(
+        &html,
+        Some(final_url.as_str()),
+        &parse_options,
+      )?;
+
+      if let Some(req) = self.host.pending_navigation.take() {
+        target_url = req.url;
+        continue;
+      }
+
+      // Update the renderer's base URL hint to match the parse-time base URL after processing the
+      // full document.
       let renderer = self.host.document.renderer_mut();
-      renderer.set_document_url(final_url.clone());
-      renderer.set_base_url(final_url.clone());
-    }
+      match base_url {
+        Some(url) => renderer.set_base_url(url),
+        None => renderer.clear_base_url(),
+      }
 
-    let html = decode_html_bytes(&fetched.bytes, fetched.content_type.as_deref());
-    let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(&html)
-      .unwrap_or_default();
-    self
-      .host
-      .reset_scripting_state(Some(final_url.clone()), document_referrer_policy);
-
-    let base_url = self.parse_html_streaming_and_schedule_scripts(
-      &html,
-      Some(final_url.as_str()),
-      &options_for_parse,
-    )?;
-
-    if let Some(req) = self.host.pending_navigation.take() {
-      target_url = req.url;
-      continue;
-    }
-
-    // Update the renderer's base URL hint to match the parse-time base URL after processing the
-    // full document.
-    let renderer = self.host.document.renderer_mut();
-    match base_url {
-      Some(url) => renderer.set_base_url(url),
-      None => renderer.clear_base_url(),
-    }
-
-    return Ok(());
+      return Ok(());
     }
   }
 

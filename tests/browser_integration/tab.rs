@@ -422,3 +422,135 @@ fn browser_tab_navigate_to_url_honors_async_and_defer_scheduling() -> Result<()>
   );
   Ok(())
 }
+
+#[derive(Clone)]
+struct NavigateUrlParseTimeExecutor {
+  log: Arc<Mutex<Vec<String>>>,
+  expected_external_url: String,
+}
+
+impl BrowserTabJsExecutor for NavigateUrlParseTimeExecutor {
+  fn execute_classic_script(
+    &mut self,
+    script_text: &str,
+    spec: &fastrender::js::ScriptElementSpec,
+    _current_script: Option<NodeId>,
+    document: &mut fastrender::BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    let code = script_text.trim().to_string();
+    match code.as_str() {
+      "inline-check" => {
+        assert!(
+          find_element_by_id(document.dom(), "after-inline").is_none(),
+          "markup after inline </script> must not be visible when the inline script executes"
+        );
+        assert!(
+          find_element_by_id(document.dom(), "after-external").is_none(),
+          "markup after the external script must not be visible when the inline script executes"
+        );
+        let body = document
+          .dom()
+          .body()
+          .ok_or_else(|| Error::Other("expected <body> element".to_string()))?;
+        document
+          .dom_mut()
+          .set_attribute(body, "data-inline", "1")
+          .map_err(|e| Error::Other(e.to_string()))?;
+      }
+      "external-check" => {
+        assert_eq!(
+          spec.src.as_deref(),
+          Some(self.expected_external_url.as_str()),
+          "expected external script src to resolve against the navigation URL"
+        );
+        assert!(
+          find_element_by_id(document.dom(), "after-inline").is_some(),
+          "expected parsing to have progressed past the inline script before the external script executes"
+        );
+        assert!(
+          find_element_by_id(document.dom(), "after-external").is_none(),
+          "markup after external </script> must not be visible when the external script executes"
+        );
+        let body = document
+          .dom()
+          .body()
+          .ok_or_else(|| Error::Other("expected <body> element".to_string()))?;
+        document
+          .dom_mut()
+          .set_attribute(body, "data-external", "1")
+          .map_err(|e| Error::Other(e.to_string()))?;
+      }
+      _ => {}
+    }
+    self
+      .log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .push(code);
+    Ok(())
+  }
+}
+
+#[test]
+fn browser_tab_navigate_to_url_executes_inline_and_external_scripts_at_parse_time() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+
+  let site = TempSite::new();
+  let script_url = site.write("external.js", "external-check");
+  let html_url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <body>
+          <div id="before"></div>
+          <script>inline-check</script>
+          <div id="after-inline"></div>
+          <script src="external.js"></script>
+          <div id="after-external"></div>
+        </body>
+      </html>"#,
+  );
+
+  let log = Arc::new(Mutex::new(Vec::<String>::new()));
+  let executor = NavigateUrlParseTimeExecutor {
+    log: Arc::clone(&log),
+    expected_external_url: script_url.clone(),
+  };
+  let options = RenderOptions::new().with_viewport(1, 1);
+
+  let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
+  tab.navigate_to_url(&html_url, options)?;
+
+  assert!(
+    find_element_by_id(tab.dom(), "after-inline").is_some(),
+    "expected parsing to resume after executing the inline script"
+  );
+  assert!(
+    find_element_by_id(tab.dom(), "after-external").is_some(),
+    "expected parsing to resume after executing the external script"
+  );
+
+  let body = tab.dom().body().expect("body element after navigation");
+  assert_eq!(
+    tab
+      .dom()
+      .get_attribute(body, "data-inline")
+      .map_err(|e| Error::Other(e.to_string()))?,
+    Some("1")
+  );
+  assert_eq!(
+    tab
+      .dom()
+      .get_attribute(body, "data-external")
+      .map_err(|e| Error::Other(e.to_string()))?,
+    Some("1")
+  );
+
+  assert_eq!(
+    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    &["inline-check".to_string(), "external-check".to_string()]
+  );
+  Ok(())
+}
