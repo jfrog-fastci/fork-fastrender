@@ -96,6 +96,7 @@ fn cascade_with_container_styles(
       styles,
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let ctx = ContainerQueryContext {
@@ -160,6 +161,7 @@ fn cascade_with_custom_container(
       styles,
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let ctx = ContainerQueryContext {
@@ -253,7 +255,7 @@ fn not_container_query_parses_and_evaluates() {
 fn container_query_or_with_unknown_branch_matches_when_known_branch_true() {
   let css = r#"
     .target { display: block; }
-    @container (min-width: 400px) or scroll-state(stuck: top) {
+    @container (min-width: 400px) or scroll-state(snapped: top) {
       .target { display: inline; }
     }
   "#;
@@ -266,7 +268,7 @@ fn container_query_or_with_unknown_branch_matches_when_known_branch_true() {
 fn not_unknown_container_query_does_not_match() {
   let css = r#"
     .target { display: block; }
-    @container not scroll-state(stuck: top) {
+    @container not scroll-state(snapped: top) {
       .target { display: inline; }
     }
   "#;
@@ -508,6 +510,7 @@ fn container_query_comma_conditions_select_independent_containers() {
           styles: Arc::clone(&outer_styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       ),
       (
@@ -524,6 +527,7 @@ fn container_query_comma_conditions_select_independent_containers() {
           styles: Arc::clone(&inner_styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       ),
     ],
@@ -566,6 +570,7 @@ fn container_query_comma_conditions_allow_distinct_names() {
           styles: Arc::new(ComputedStyle::default()),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       ),
       (
@@ -582,6 +587,7 @@ fn container_query_comma_conditions_allow_distinct_names() {
           styles: Arc::new(ComputedStyle::default()),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       ),
     ],
@@ -697,6 +703,7 @@ fn not_container_query_with_unknown_block_size_does_not_match() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -734,6 +741,7 @@ fn container_style_query_container_units_with_unknown_block_size_do_not_match() 
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -771,6 +779,7 @@ fn container_style_query_cqmin_with_unknown_block_size_do_not_match() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -808,6 +817,7 @@ fn container_style_query_zero_container_unit_with_unknown_block_size_matches() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -845,6 +855,7 @@ fn container_style_query_zero_cqmax_with_unknown_block_size_matches() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -882,6 +893,7 @@ fn not_container_style_query_with_unknown_block_size_does_not_match() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -919,6 +931,7 @@ fn container_style_query_plain_container_units_with_unknown_block_size_do_not_ma
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -956,6 +969,7 @@ fn container_style_query_plain_calc_cancellation_with_unknown_block_size_matches
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -993,6 +1007,7 @@ fn container_style_query_plain_cqmin_with_unknown_block_size_do_not_match() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1030,6 +1045,7 @@ fn not_container_style_query_plain_with_unknown_block_size_does_not_match() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1067,6 +1083,7 @@ fn not_container_style_query_transform_container_units_with_unknown_block_size_d
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1104,6 +1121,7 @@ fn not_container_style_query_box_shadow_container_units_with_unknown_block_size_
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1159,6 +1177,7 @@ fn container_style_query_custom_property_container_units_with_unknown_block_size
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1214,6 +1233,7 @@ fn not_container_style_query_custom_property_with_unknown_block_size_does_not_ma
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1269,6 +1289,7 @@ fn container_style_query_custom_property_cqmin_with_unknown_block_size_do_not_ma
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1324,6 +1345,7 @@ fn container_style_query_custom_property_zero_cqmax_with_unknown_block_size_matc
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1361,6 +1383,7 @@ fn container_query_cqmin_with_unknown_block_size_do_not_match() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1398,6 +1421,7 @@ fn container_query_container_units_with_unknown_block_size_do_not_match() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1435,6 +1459,7 @@ fn container_query_zero_container_unit_with_unknown_block_size_matches() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1472,6 +1497,7 @@ fn container_query_zero_cqmax_with_unknown_block_size_matches() {
         styles,
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1651,6 +1677,7 @@ fn container_query_resolves_lh_against_container_line_height() {
         styles: Arc::clone(&styles),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1693,6 +1720,7 @@ fn container_query_resolves_lh_inside_calc_in_size_features() {
         styles: Arc::clone(&styles),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );
@@ -1736,6 +1764,7 @@ fn container_query_resolves_cap_and_rlh_fallbacks() {
         styles: Arc::clone(&styles),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     )],
   );

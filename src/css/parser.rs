@@ -2245,6 +2245,14 @@ fn parse_scroll_state_feature<'i, 't>(
         });
       }
     }
+    if name == "stuck" {
+      let direction = parse_scroll_state_direction(&value);
+      if let Some(direction) = direction {
+        return Ok(ScrollStateFeature::Stuck {
+          direction: Some(direction),
+        });
+      }
+    }
 
     return Ok(ScrollStateFeature::Unknown {
       name,
@@ -2255,6 +2263,9 @@ fn parse_scroll_state_feature<'i, 't>(
   if parser.is_exhausted() {
     if name == "scrollable" {
       return Ok(ScrollStateFeature::Scrollable { direction: None });
+    }
+    if name == "stuck" {
+      return Ok(ScrollStateFeature::Stuck { direction: None });
     }
     return Ok(ScrollStateFeature::Unknown { name, value: None });
   }

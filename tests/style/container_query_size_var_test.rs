@@ -102,6 +102,7 @@ fn container_size_query_var_resolves_per_container() {
       styles: make_container_style(Some("150px")),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   containers.insert(
@@ -118,6 +119,7 @@ fn container_size_query_var_resolves_per_container() {
       styles: make_container_style(Some("250px")),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let ctx = ContainerQueryContext {
@@ -172,6 +174,7 @@ fn container_size_query_var_fallback_used_when_missing() {
       styles: Arc::new(ComputedStyle::default()),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let ctx = ContainerQueryContext {
@@ -225,6 +228,7 @@ fn container_size_query_var_missing_without_fallback_is_false() {
       styles: Arc::new(ComputedStyle::default()),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let ctx = ContainerQueryContext {
@@ -288,6 +292,7 @@ fn container_size_query_var_rem_uses_root_font_size() {
       styles: Arc::clone(&style),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let ctx = ContainerQueryContext {
@@ -345,6 +350,7 @@ fn container_size_query_var_orientation_parses_and_matches() {
       styles: Arc::clone(&style),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let ctx = ContainerQueryContext {
@@ -401,6 +407,7 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
       styles: Arc::clone(&style),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let ctx = ContainerQueryContext {
@@ -454,6 +461,7 @@ fn container_size_query_var_mixed_feature_placeholders_parse_and_match() {
       styles: make_container_style_with_properties(&[("--min", "150px"), ("--orient", "portrait")]),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let ctx = ContainerQueryContext {

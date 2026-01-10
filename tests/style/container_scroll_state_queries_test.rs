@@ -720,6 +720,52 @@ fn container_scroll_state_scrollable_top_tracks_viewport_scroll_offset() {
 }
 
 #[test]
+fn container_scroll_state_stuck_top_tracks_viewport_scroll_offset() {
+  let html = r#"
+    <style>
+      html, body { margin: 0; }
+      #spacer { height: 200px; }
+      #after { height: 2000px; }
+      #sticky {
+        position: sticky;
+        top: 0;
+        container-name: sticky;
+      }
+      #target { color: rgb(0, 0, 255); }
+      @container sticky scroll-state(stuck: top) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="spacer"></div>
+    <div id="sticky"><div id="target">hello</div></div>
+    <div id="after"></div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(80, 60);
+
+  let prepared_top = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare top");
+  let target_top = find_by_id(prepared_top.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_top.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected stuck: top to be false before scrolling"
+  );
+
+  let prepared_stuck = renderer
+    .prepare_html(html, base_options.clone().with_scroll(0.0, 500.0))
+    .expect("prepare stuck");
+  let target_stuck = find_by_id(prepared_stuck.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_stuck.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected stuck: top to match after scrolling past the sticky element"
+  );
+}
+
+#[test]
 fn container_scroll_state_scrollable_inline_start_in_vertical_writing_mode_respects_rtl_direction() {
   let html = r#"
     <style>

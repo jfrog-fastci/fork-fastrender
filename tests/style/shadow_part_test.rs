@@ -456,6 +456,7 @@ fn part_container_query_is_evaluated_against_the_part_element() {
           styles: Arc::new(ComputedStyle::default()),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -541,6 +542,7 @@ fn part_container_query_uses_flat_tree_ancestors_when_host_is_slotted() {
           styles: Arc::clone(&style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };

@@ -1480,7 +1480,97 @@ fn eval_scroll_state_feature(feature: &ScrollStateFeature, container: &Container
     ScrollStateFeature::Scrollable { direction } => {
       eval_scroll_state_scrollable(*direction, container)
     }
+    ScrollStateFeature::Stuck { direction } => eval_scroll_state_stuck(*direction, container),
     ScrollStateFeature::Unknown { .. } => QueryResult::Unknown,
+  }
+}
+
+pub(crate) const CQ_STUCK_TOP: u8 = 1 << 0;
+pub(crate) const CQ_STUCK_RIGHT: u8 = 1 << 1;
+pub(crate) const CQ_STUCK_BOTTOM: u8 = 1 << 2;
+pub(crate) const CQ_STUCK_LEFT: u8 = 1 << 3;
+
+#[inline]
+fn stuck_mask_for_side(side: crate::style::PhysicalSide) -> u8 {
+  match side {
+    crate::style::PhysicalSide::Top => CQ_STUCK_TOP,
+    crate::style::PhysicalSide::Right => CQ_STUCK_RIGHT,
+    crate::style::PhysicalSide::Bottom => CQ_STUCK_BOTTOM,
+    crate::style::PhysicalSide::Left => CQ_STUCK_LEFT,
+  }
+}
+
+fn eval_scroll_state_stuck(
+  direction: Option<ScrollStateDirection>,
+  container: &ContainerQueryInfo,
+) -> QueryResult {
+  let stuck = container.stuck_mask;
+  let stuck_any = stuck != 0;
+
+  let axis_sides = |inline_axis: bool| {
+    let mode = container.styles.writing_mode;
+    let direction = container.styles.direction;
+    let horizontal = if inline_axis {
+      crate::style::inline_axis_is_horizontal(mode)
+    } else {
+      crate::style::block_axis_is_horizontal(mode)
+    };
+    let positive = if inline_axis {
+      crate::style::inline_axis_positive(mode, direction)
+    } else {
+      crate::style::block_axis_positive(mode)
+    };
+
+    if horizontal {
+      if positive {
+        (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+      } else {
+        (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+      }
+    } else if positive {
+      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+    } else {
+      (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+    }
+  };
+
+  let side_matches = |side: crate::style::PhysicalSide| (stuck & stuck_mask_for_side(side)) != 0;
+
+  let direction_matches = |dir: ScrollStateDirection| -> bool {
+    match dir {
+      ScrollStateDirection::None => !stuck_any,
+      ScrollStateDirection::Top => side_matches(crate::style::PhysicalSide::Top),
+      ScrollStateDirection::Right => side_matches(crate::style::PhysicalSide::Right),
+      ScrollStateDirection::Bottom => side_matches(crate::style::PhysicalSide::Bottom),
+      ScrollStateDirection::Left => side_matches(crate::style::PhysicalSide::Left),
+      ScrollStateDirection::X => (stuck & (CQ_STUCK_LEFT | CQ_STUCK_RIGHT)) != 0,
+      ScrollStateDirection::Y => (stuck & (CQ_STUCK_TOP | CQ_STUCK_BOTTOM)) != 0,
+      ScrollStateDirection::Inline => {
+        let inline_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
+        if inline_horizontal {
+          (stuck & (CQ_STUCK_LEFT | CQ_STUCK_RIGHT)) != 0
+        } else {
+          (stuck & (CQ_STUCK_TOP | CQ_STUCK_BOTTOM)) != 0
+        }
+      }
+      ScrollStateDirection::Block => {
+        let block_horizontal = crate::style::block_axis_is_horizontal(container.styles.writing_mode);
+        if block_horizontal {
+          (stuck & (CQ_STUCK_LEFT | CQ_STUCK_RIGHT)) != 0
+        } else {
+          (stuck & (CQ_STUCK_TOP | CQ_STUCK_BOTTOM)) != 0
+        }
+      }
+      ScrollStateDirection::InlineStart => side_matches(axis_sides(true).0),
+      ScrollStateDirection::InlineEnd => side_matches(axis_sides(true).1),
+      ScrollStateDirection::BlockStart => side_matches(axis_sides(false).0),
+      ScrollStateDirection::BlockEnd => side_matches(axis_sides(false).1),
+    }
+  };
+
+  match direction {
+    None => QueryResult::from_bool(stuck_any),
+    Some(dir) => QueryResult::from_bool(direction_matches(dir)),
   }
 }
 
@@ -3385,6 +3475,7 @@ fn resolve_style_query_container_query_lengths(
       styles: Arc::clone(&container.styles),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   );
   let dummy_ctx = ContainerQueryContext {
@@ -3903,6 +3994,9 @@ fn hash_scroll_state_feature_fingerprint(state: &mut impl Hasher, feature: &Scro
     ScrollStateFeature::Scrollable { direction } => {
       direction.hash(state);
     }
+    ScrollStateFeature::Stuck { direction } => {
+      direction.hash(state);
+    }
     ScrollStateFeature::Unknown { name, value } => {
       name.hash(state);
       value.hash(state);
@@ -3957,6 +4051,7 @@ fn container_query_cache_revision(
   f32_to_canonical_bits(container.font_size).hash(&mut hasher);
   f32_to_canonical_bits(container.scroll_offset.x).hash(&mut hasher);
   f32_to_canonical_bits(container.scroll_offset.y).hash(&mut hasher);
+  container.stuck_mask.hash(&mut hasher);
   match container.scroll_bounds {
     Some(bounds) => {
       1u8.hash(&mut hasher);
@@ -10446,6 +10541,11 @@ pub struct ContainerQueryInfo {
   pub scroll_offset: Point,
   /// Scroll bounds for this container, when it is a scroll container.
   pub scroll_bounds: Option<ScrollBounds>,
+  /// Bitmask of physical sides where this container is currently "stuck" due to sticky positioning.
+  ///
+  /// The mask uses physical directions (top/right/bottom/left) and is consumed by
+  /// `scroll-state(stuck: ...)` container queries.
+  pub stuck_mask: u8,
 }
 
 /// Map of styled-node ids to their resolved container query metrics.
@@ -20703,6 +20803,7 @@ mod tests {
           styles: Arc::clone(&legacy_first.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -20840,6 +20941,7 @@ mod tests {
           styles: Arc::clone(&container_first.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -20917,6 +21019,7 @@ mod tests {
           styles: Arc::clone(&container_first.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -21059,6 +21162,7 @@ mod tests {
           styles: Arc::clone(&first.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -21193,6 +21297,7 @@ mod tests {
           styles: Arc::clone(&first.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -21365,6 +21470,7 @@ mod tests {
           styles: Arc::clone(&first.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -21459,6 +21565,7 @@ mod tests {
           styles: Arc::clone(&base.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -21533,6 +21640,7 @@ mod tests {
           styles: Arc::clone(&base.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -21639,6 +21747,7 @@ mod tests {
           styles: Arc::clone(&legacy_first.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -21822,6 +21931,7 @@ mod tests {
           styles: Arc::clone(&first.styles),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -21943,6 +22053,7 @@ mod tests {
             styles: Arc::clone(&size_style),
             scroll_offset: Point::ZERO,
             scroll_bounds: None,
+            stuck_mask: 0,
           },
         ),
         (
@@ -21959,6 +22070,7 @@ mod tests {
             styles: Arc::clone(&inline_style),
             scroll_offset: Point::ZERO,
             scroll_bounds: None,
+            stuck_mask: 0,
           },
         ),
       ]),
@@ -22035,6 +22147,7 @@ mod tests {
           styles: Arc::clone(&container_style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       )]),
     };
@@ -22077,6 +22190,7 @@ mod tests {
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     containers.insert(
@@ -22093,6 +22207,7 @@ mod tests {
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     let ctx = ContainerQueryContext {
@@ -22145,6 +22260,7 @@ mod tests {
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     containers.insert(
@@ -22161,6 +22277,7 @@ mod tests {
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     let ctx = ContainerQueryContext {
@@ -22201,6 +22318,7 @@ mod tests {
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     containers.insert(
@@ -22217,6 +22335,7 @@ mod tests {
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     let ctx = ContainerQueryContext {
@@ -22257,6 +22376,7 @@ mod tests {
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     containers.insert(
@@ -22273,6 +22393,7 @@ mod tests {
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     let ctx = ContainerQueryContext {
@@ -32497,6 +32618,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -32579,6 +32701,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     containers.insert(
@@ -32595,6 +32718,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -32681,6 +32805,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     containers.insert(
@@ -32697,6 +32822,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -32783,6 +32909,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     containers.insert(
@@ -32799,6 +32926,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     let container_ctx = ContainerQueryContext {
@@ -32878,6 +33006,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     let container_ctx = ContainerQueryContext {

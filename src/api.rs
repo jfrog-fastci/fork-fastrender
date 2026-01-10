@@ -11945,6 +11945,7 @@ impl FastRender {
       };
 
       let mut container_ctx = build_container_query_context(
+        &self.font_context,
         &box_tree,
         &fragment_tree,
         &styled_tree,
@@ -12165,6 +12166,7 @@ impl FastRender {
         layout_fingerprint = next_layout_fingerprint;
 
         let next_container_ctx = build_container_query_context(
+          &self.font_context,
           &box_tree,
           &fragment_tree,
           &styled_tree,
@@ -17496,6 +17498,7 @@ fn container_query_context_fingerprint(
         info.box_id.hash(&mut hasher);
         info.scroll_offset.x.to_bits().hash(&mut hasher);
         info.scroll_offset.y.to_bits().hash(&mut hasher);
+        info.stuck_mask.hash(&mut hasher);
         match info.scroll_bounds {
           Some(bounds) => {
             1u8.hash(&mut hasher);
@@ -18396,6 +18399,7 @@ fn refresh_fragment_tree_styles(
 }
 
 fn build_container_query_context(
+  font_context: &FontContext,
   box_tree: &BoxTree,
   fragments: &FragmentTree,
   styled_tree: &StyledNode,
@@ -18511,6 +18515,111 @@ fn build_container_query_context(
     }
   }
 
+  let mut stuck_by_box_id: HashMap<usize, u8> = HashMap::new();
+  if include_scroll_state {
+    fn box_tree_contains_sticky(node: &BoxNode) -> bool {
+      if node.style.position.is_sticky() {
+        return true;
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        if box_tree_contains_sticky(body) {
+          return true;
+        }
+      }
+      node.children.iter().any(box_tree_contains_sticky)
+    }
+
+    if box_tree_contains_sticky(&box_tree.root) {
+      // Determine sticky "stuck" state by applying the sticky adjustment algorithm to a cloned
+      // fragment tree and comparing the resulting fragment bounds.
+      //
+      // This avoids mutating the real fragment tree used for subsequent layout/paint work.
+      let mut sticky_fragments = fragments.clone();
+      let viewport = sticky_fragments.viewport_size();
+      let viewport_rect = Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height);
+      apply_sticky_offsets_to_root(
+        font_context,
+        &mut sticky_fragments.root,
+        viewport_rect,
+        scroll_state,
+        viewport,
+      );
+      for extra in sticky_fragments.additional_fragments.iter_mut() {
+        apply_sticky_offsets_to_root(font_context, extra, viewport_rect, scroll_state, viewport);
+      }
+
+      fn collect_stuck_masks(
+        original: &FragmentNode,
+        adjusted: &FragmentNode,
+        out: &mut HashMap<usize, u8>,
+      ) {
+        if let Some(box_id) = original.box_id() {
+          let dx = adjusted.bounds.x() - original.bounds.x();
+          let dy = adjusted.bounds.y() - original.bounds.y();
+          let eps = 1e-6;
+          let mut mask = 0u8;
+          if dy > eps {
+            mask |= crate::style::cascade::CQ_STUCK_TOP;
+          }
+          if dy < -eps {
+            mask |= crate::style::cascade::CQ_STUCK_BOTTOM;
+          }
+          if dx > eps {
+            mask |= crate::style::cascade::CQ_STUCK_LEFT;
+          }
+          if dx < -eps {
+            mask |= crate::style::cascade::CQ_STUCK_RIGHT;
+          }
+          if mask != 0 {
+            out
+              .entry(box_id)
+              .and_modify(|existing| *existing |= mask)
+              .or_insert(mask);
+          }
+        }
+
+        match (&original.content, &adjusted.content) {
+          (
+            FragmentContent::RunningAnchor {
+              snapshot: original_snapshot,
+              ..
+            },
+            FragmentContent::RunningAnchor {
+              snapshot: adjusted_snapshot,
+              ..
+            },
+          )
+          | (
+            FragmentContent::FootnoteAnchor {
+              snapshot: original_snapshot,
+            },
+            FragmentContent::FootnoteAnchor {
+              snapshot: adjusted_snapshot,
+            },
+          ) => {
+            collect_stuck_masks(original_snapshot, adjusted_snapshot, out);
+          }
+          _ => {}
+        }
+
+        for (child_original, child_adjusted) in
+          original.children.iter().zip(adjusted.children.iter())
+        {
+          collect_stuck_masks(child_original, child_adjusted, out);
+        }
+      }
+
+      collect_stuck_masks(&fragments.root, &sticky_fragments.root, &mut stuck_by_box_id);
+      for (original_extra, adjusted_extra) in fragments
+        .additional_fragments
+        .iter()
+        .zip(sticky_fragments.additional_fragments.iter())
+      {
+        collect_stuck_masks(original_extra, adjusted_extra, &mut stuck_by_box_id);
+      }
+    }
+  }
+
   fn collect_main_styles(node: &StyledNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
     out.insert(node.node_id, Arc::clone(&node.styles));
     for child in node.children.iter() {
@@ -18587,6 +18696,7 @@ fn build_container_query_context(
           styles: Arc::clone(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
     }
@@ -18597,6 +18707,7 @@ fn build_container_query_context(
     sizes: &HashMap<usize, (f32, f32)>,
     scrollbar_reservations: &HashMap<usize, ScrollbarReservation>,
     scroll_bounds_by_box_id: &HashMap<usize, crate::scroll::ScrollBounds>,
+    stuck_by_box_id: &HashMap<usize, u8>,
     scroll_state: &ScrollState,
     styles: &HashMap<usize, Arc<ComputedStyle>>,
     containers: &mut HashMap<usize, ContainerQueryInfo>,
@@ -18686,7 +18797,13 @@ fn build_container_query_context(
     let scroll_bounds = include_scroll_state
       .then(|| scroll_bounds_by_box_id.get(&node.id).copied())
       .flatten();
-    let is_scroll_state_container = include_scroll_state && scroll_bounds.is_some();
+    let stuck_mask = if include_scroll_state {
+      stuck_by_box_id.get(&node.id).copied().unwrap_or(0)
+    } else {
+      0
+    };
+    let is_sticky_container = include_scroll_state && style.position.is_sticky();
+    let is_scroll_state_container = include_scroll_state && (scroll_bounds.is_some() || is_sticky_container);
     let is_size_container = matches!(style.container_type, ContainerType::Size | ContainerType::InlineSize);
 
     if has_layout_size && (is_size_container || is_scroll_state_container) {
@@ -18735,6 +18852,7 @@ fn build_container_query_context(
             entry.styles = Arc::clone(&style_arc);
             entry.scroll_offset = scroll_offset;
             entry.scroll_bounds = scroll_bounds;
+            entry.stuck_mask |= stuck_mask;
           })
           .or_insert_with(|| ContainerQueryInfo {
             box_id: Some(node.id),
@@ -18748,6 +18866,7 @@ fn build_container_query_context(
             styles: Arc::clone(&style_arc),
             scroll_offset,
             scroll_bounds,
+            stuck_mask,
           });
       }
     }
@@ -18758,6 +18877,7 @@ fn build_container_query_context(
         sizes,
         scrollbar_reservations,
         scroll_bounds_by_box_id,
+        stuck_by_box_id,
         scroll_state,
         styles,
         containers,
@@ -18773,6 +18893,7 @@ fn build_container_query_context(
         sizes,
         scrollbar_reservations,
         scroll_bounds_by_box_id,
+        stuck_by_box_id,
         scroll_state,
         styles,
         containers,
@@ -18789,6 +18910,7 @@ fn build_container_query_context(
     &sizes,
     &scrollbar_reservations,
     &scroll_bounds_by_box_id,
+    &stuck_by_box_id,
     scroll_state,
     &styles,
     &mut containers,
@@ -20958,7 +21080,10 @@ mod tests {
       ));
 
     let scroll_state = ScrollState::default();
+    let font_context =
+      FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
     let ctx = super::build_container_query_context(
+      &font_context,
       &box_tree,
       &fragments,
       &styled,
@@ -21087,7 +21212,10 @@ mod tests {
     );
 
     let scroll_state = ScrollState::default();
+    let font_context =
+      FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
     let ctx = super::build_container_query_context(
+      &font_context,
       &box_tree,
       &fragments,
       &styled,
@@ -23924,6 +24052,7 @@ mod tests {
 
     let scroll_state = ScrollState::default();
     let cq_ctx = build_container_query_context(
+      &renderer.font_context,
       &box_tree,
       &fragments,
       &styled,
@@ -24026,6 +24155,7 @@ mod tests {
 
     let scroll_state = ScrollState::default();
     let cq_ctx = build_container_query_context(
+      &renderer.font_context,
       &box_tree,
       &fragments,
       &styled,
@@ -24101,6 +24231,7 @@ mod tests {
 
     let scroll_state = ScrollState::default();
     let cq_ctx = build_container_query_context(
+      &renderer.font_context,
       &box_tree,
       &fragments,
       &styled,
@@ -24169,6 +24300,7 @@ mod tests {
 
     let scroll_state = ScrollState::default();
     let cq_ctx = build_container_query_context(
+      &renderer.font_context,
       &box_tree,
       &fragments,
       &styled,
@@ -24237,6 +24369,7 @@ mod tests {
 
     let scroll_state = ScrollState::default();
     let cq_ctx = build_container_query_context(
+      &renderer.font_context,
       &box_tree,
       &fragments,
       &styled,
@@ -24306,6 +24439,7 @@ mod tests {
 
     let scroll_state = ScrollState::default();
     let cq_ctx = build_container_query_context(
+      &renderer.font_context,
       &box_tree,
       &fragments,
       &styled,
@@ -24388,6 +24522,7 @@ mod tests {
           styles: Arc::new(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
       ContainerQueryContext {
@@ -24483,6 +24618,7 @@ mod tests {
           styles: Arc::new(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
       ContainerQueryContext {
@@ -24557,6 +24693,7 @@ mod tests {
           styles: Arc::new(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
       ContainerQueryContext {
@@ -24638,6 +24775,7 @@ mod tests {
           styles: Arc::new(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
       ContainerQueryContext {
@@ -24723,6 +24861,7 @@ mod tests {
           styles: Arc::new(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
       ContainerQueryContext {
@@ -24810,6 +24949,7 @@ mod tests {
           styles: Arc::new(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
       ContainerQueryContext {
@@ -24903,6 +25043,7 @@ mod tests {
           styles: Arc::new(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
       ContainerQueryContext {
@@ -24994,6 +25135,7 @@ mod tests {
           styles: Arc::new(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
       ContainerQueryContext {
@@ -25074,6 +25216,7 @@ mod tests {
           styles: Arc::new(style),
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
+          stuck_mask: 0,
         },
       );
       ContainerQueryContext {

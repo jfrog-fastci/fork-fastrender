@@ -1,11 +1,13 @@
 use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::types::{ContainerQuery, CssRule, ScrollStateFeature, ScrollStateQueryExpr};
+use fastrender::css::types::{
+  ContainerQuery, CssRule, ScrollStateDirection, ScrollStateFeature, ScrollStateQueryExpr,
+};
 use fastrender::style::media::MediaContext;
 
 #[test]
 fn unknown_container_queries_do_not_drop_nested_keyframes() {
   let css = r#"
-    @container scroll-state(stuck: top) {
+    @container scroll-state(snapped: top) {
       @keyframes spin {
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
@@ -29,7 +31,7 @@ fn unknown_container_queries_do_not_drop_nested_keyframes() {
       name,
       value,
     }))) => {
-      assert_eq!(name, "stuck");
+      assert_eq!(name, "snapped");
       assert_eq!(value.as_deref(), Some("top"));
     }
     other => panic!("expected scroll-state() query to parse, got {other:?}"),
@@ -37,6 +39,33 @@ fn unknown_container_queries_do_not_drop_nested_keyframes() {
 
   let keyframes = stylesheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
   assert!(keyframes.iter().any(|kf| kf.name == "spin"));
+}
+
+#[test]
+fn stuck_scroll_state_query_parses() {
+  let css = r#"
+    @container scroll-state(stuck: top) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let stylesheet = parse_stylesheet(css).expect("parsed stylesheet");
+  let container_rule = stylesheet
+    .rules
+    .iter()
+    .find_map(|rule| match rule {
+      CssRule::Container(container) => Some(container),
+      _ => None,
+    })
+    .expect("@container rule retained");
+
+  assert_eq!(container_rule.conditions.len(), 1);
+  match container_rule.conditions.first().and_then(|condition| condition.query.as_ref()) {
+    Some(ContainerQuery::ScrollState(ScrollStateQueryExpr::Feature(ScrollStateFeature::Stuck {
+      direction: Some(ScrollStateDirection::Top),
+    }))) => {}
+    other => panic!("expected stuck scroll-state() feature to parse, got {other:?}"),
+  }
 }
 
 #[test]

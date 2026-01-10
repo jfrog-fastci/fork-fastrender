@@ -3759,6 +3759,13 @@ pub enum ScrollStateFeature {
     /// When omitted (boolean context), matches when the container is scrollable in any direction.
     direction: Option<ScrollStateDirection>,
   },
+  /// `stuck` / `stuck: <direction>`
+  ///
+  /// This feature queries the "stuck" state of a sticky-positioned query container.
+  Stuck {
+    /// When omitted (boolean context), matches when the container is stuck in any direction.
+    direction: Option<ScrollStateDirection>,
+  },
   /// Unknown/unsupported feature preserved for forward compatibility.
   Unknown { name: String, value: Option<String> },
 }

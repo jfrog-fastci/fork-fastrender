@@ -73,6 +73,7 @@ fn cascade_with_optional_container(css: &str, inline_size: f32, use_container_ct
         styles: Arc::new(ComputedStyle::default()),
         scroll_offset: Point::ZERO,
         scroll_bounds: None,
+        stuck_mask: 0,
       },
     );
     Some(ContainerQueryContext {

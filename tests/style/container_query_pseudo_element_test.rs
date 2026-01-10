@@ -80,6 +80,7 @@ fn cascade_with_container_inline_size(inline_size: f32) -> StyledNode {
       styles: Arc::new(ComputedStyle::default()),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   )]);
   let ctx = ContainerQueryContext {
@@ -133,6 +134,7 @@ fn cascade_marker_with_container_inline_size(inline_size: f32) -> StyledNode {
       styles: Arc::new(ComputedStyle::default()),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   )]);
   let ctx = ContainerQueryContext {
@@ -186,6 +188,7 @@ fn cascade_first_line_with_container_inline_size(inline_size: f32) -> StyledNode
       styles: Arc::new(ComputedStyle::default()),
       scroll_offset: Point::ZERO,
       scroll_bounds: None,
+      stuck_mask: 0,
     },
   )]);
   let ctx = ContainerQueryContext {
