@@ -6146,6 +6146,8 @@ impl Painter {
   ) {
     // Only paint if there are borders
     let viewport = (self.css_width, self.css_height);
+    let border_bounds_css = Rect::from_xywh(x, y, width, height);
+    let radii_css = resolve_border_radii(Some(style), border_bounds_css);
     let base = width.max(0.0);
     let top_css = resolve_length_for_paint(
       &style.used_border_top_width(),
@@ -6197,6 +6199,7 @@ impl Painter {
     let y = self.device_y(y);
     let width = self.device_length(width);
     let height = self.device_length(height);
+    let radii = self.device_radii(radii_css);
     let gap = gap.map(|gap| {
       let (start, end) = match gap.edge {
         PhysicalSide::Top | PhysicalSide::Bottom => (self.device_x(gap.start), self.device_x(gap.end)),
@@ -6207,6 +6210,69 @@ impl Painter {
 
     if top <= 0.0 && right <= 0.0 && bottom <= 0.0 && left <= 0.0 {
       return;
+    }
+
+    // Rounded borders must follow the corner curves. The legacy border painter draws each side as
+    // a straight stroked segment, which leaves visible gaps near rounded corners.
+    //
+    // When all four sides are identical solid strokes, we can render the border as the (outer
+    // rounded rect) minus (inner rounded rect) region. This matches the CSS border geometry and
+    // produces correct corner arcs.
+    if !radii.is_zero()
+      && gap.is_none()
+      && matches!(
+        (
+          style.border_top_style,
+          style.border_right_style,
+          style.border_bottom_style,
+          style.border_left_style
+        ),
+        (
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid
+        )
+      )
+      && style.border_top_color == style.border_right_color
+      && style.border_top_color == style.border_bottom_color
+      && style.border_top_color == style.border_left_color
+      && !style.border_top_color.is_transparent()
+    {
+      let border_width = top;
+      let eps = 1e-6;
+      let uniform_widths = border_width > 0.0
+        && (border_width - right).abs() <= eps
+        && (border_width - bottom).abs() <= eps
+        && (border_width - left).abs() <= eps;
+      if uniform_widths && width > 0.0 && height > 0.0 {
+        if let Some(path) = crate::paint::rasterize::build_rounded_rect_ring_path(
+          x,
+          y,
+          width,
+          height,
+          &radii,
+          border_width,
+        ) {
+          let mut paint = Paint::default();
+          paint.set_color_rgba8(
+            style.border_top_color.r,
+            style.border_top_color.g,
+            style.border_top_color.b,
+            style.border_top_color.alpha_u8(),
+          );
+          paint.blend_mode = SkiaBlendMode::SourceOver;
+          paint.anti_alias = true;
+          self.pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::EvenOdd,
+            Transform::identity(),
+            None,
+          );
+          return;
+        }
+      }
     }
 
     // Center strokes on the border edges so paint remains within the border box.

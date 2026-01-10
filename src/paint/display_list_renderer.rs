@@ -6348,6 +6348,63 @@ impl DisplayListRenderer {
       ..item.left.clone()
     };
 
+    // Rounded borders must follow the corner curves. The generic edge-stroke approach below draws
+    // straight segments and clips them to the border box, which leaves visible gaps near rounded
+    // corners. When all four sides are identical solid strokes we can render the border as the
+    // (outer rounded rect) minus (inner rounded rect) region, which matches the CSS border
+    // geometry and produces correct corners.
+    if radii.has_radius()
+      && item.image.is_none()
+      && gap.is_none()
+      && matches!(
+        (top.style, right.style, bottom.style, left.style),
+        (
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid
+        )
+      )
+      && top.color == right.color
+      && top.color == bottom.color
+      && top.color == left.color
+      && !top.color.is_transparent()
+    {
+      let border_width = top.width;
+      let eps = 1e-6;
+      let uniform_widths = border_width > 0.0
+        && (border_width - right.width).abs() <= eps
+        && (border_width - bottom.width).abs() <= eps
+        && (border_width - left.width).abs() <= eps;
+      if uniform_widths && rect.width() > 0.0 && rect.height() > 0.0 {
+        if let Some(path) = crate::paint::rasterize::build_rounded_rect_ring_path(
+          rect.x(),
+          rect.y(),
+          rect.width(),
+          rect.height(),
+          &radii,
+          border_width,
+        ) {
+          let mut paint = tiny_skia::Paint::default();
+          set_paint_color(&mut paint, &top.color, opacity);
+          paint.blend_mode = blend_mode;
+          paint.anti_alias = true;
+
+          let clip = self.canvas.clip_mask_rc();
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.fill_path(
+              &path,
+              &paint,
+              tiny_skia::FillRule::EvenOdd,
+              transform,
+              clip.as_deref(),
+            );
+          });
+          return Ok(());
+        }
+      }
+    }
+
     // Dotted borders use round caps, which can extend outside the border box. Clip to the border
     // rect (and any corner radii) so the stroke stays within the border box.
     let wants_stroke_clip = matches!(

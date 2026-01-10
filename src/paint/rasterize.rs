@@ -480,31 +480,30 @@ pub fn stroke_rect(
 // Rounded Rectangle Rendering
 // ============================================================================
 
-/// Builds a path for a rounded rectangle
-///
-/// Creates a path with circular arcs at each corner. The radii are
-/// automatically clamped to prevent overlap.
-pub(crate) fn build_rounded_rect_path(
+fn append_rounded_rect_contour(
+  pb: &mut PathBuilder,
   x: f32,
   y: f32,
   width: f32,
   height: f32,
-  radii: &BorderRadii,
-) -> Option<Path> {
+  radii: BorderRadii,
+) {
   if width <= 0.0 || height <= 0.0 {
-    return None;
+    return;
   }
 
-  // Clamp radii to prevent overlap
-  let radii = radii.clamped(width, height);
-
-  // If no radii, return a simple rectangle
+  // If no radii, append a simple rectangle contour.
   if radii.is_zero() {
-    let rect = tiny_skia::Rect::from_xywh(x, y, width, height)?;
-    return Some(PathBuilder::from_rect(rect));
+    let right = x + width;
+    let bottom = y + height;
+    pb.move_to(x, y);
+    pb.line_to(right, y);
+    pb.line_to(right, bottom);
+    pb.line_to(x, bottom);
+    pb.close();
+    return;
   }
 
-  let mut pb = PathBuilder::new();
   let right = x + width;
   let bottom = y + height;
   let tl = radii.top_left;
@@ -572,6 +571,63 @@ pub(crate) fn build_rounded_rect_path(
   }
 
   pb.close();
+}
+
+/// Builds a path for a rounded rectangle
+///
+/// Creates a path with circular arcs at each corner. The radii are
+/// automatically clamped to prevent overlap.
+pub(crate) fn build_rounded_rect_path(
+  x: f32,
+  y: f32,
+  width: f32,
+  height: f32,
+  radii: &BorderRadii,
+) -> Option<Path> {
+  if width <= 0.0 || height <= 0.0 {
+    return None;
+  }
+
+  // Clamp radii to prevent overlap
+  let radii = radii.clamped(width, height);
+
+  // If no radii, return a simple rectangle
+  if radii.is_zero() {
+    let rect = tiny_skia::Rect::from_xywh(x, y, width, height)?;
+    return Some(PathBuilder::from_rect(rect));
+  }
+
+  let mut pb = PathBuilder::new();
+  append_rounded_rect_contour(&mut pb, x, y, width, height, radii);
+  pb.finish()
+}
+
+/// Builds a path for the "ring" region between an outer rounded rectangle and an inset inner one.
+///
+/// This is useful for solid rounded borders where all four sides share the same width.
+pub(crate) fn build_rounded_rect_ring_path(
+  x: f32,
+  y: f32,
+  width: f32,
+  height: f32,
+  radii: &BorderRadii,
+  inset: f32,
+) -> Option<Path> {
+  if width <= 0.0 || height <= 0.0 {
+    return None;
+  }
+
+  let outer_radii = radii.clamped(width, height);
+  let mut pb = PathBuilder::new();
+  append_rounded_rect_contour(&mut pb, x, y, width, height, outer_radii);
+
+  let inner_w = width - 2.0 * inset;
+  let inner_h = height - 2.0 * inset;
+  if inset > 0.0 && inner_w > 0.0 && inner_h > 0.0 {
+    let inner_radii = outer_radii.shrink(inset).clamped(inner_w, inner_h);
+    append_rounded_rect_contour(&mut pb, x + inset, y + inset, inner_w, inner_h, inner_radii);
+  }
+
   pb.finish()
 }
 
