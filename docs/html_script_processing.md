@@ -45,7 +45,7 @@ What exists today (in-tree):
   - `src/js/mod.rs`: `ScriptType` + `ScriptElementSpec` (flattened `<script>` record).
   - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`: helpers for building `ScriptElementSpec` at the
     moment a `<script>` finishes parsing.
-- **Import maps algorithms (not yet integrated into script execution / module loading):**
+- **Import maps algorithms (not yet integrated into the streaming `<script>` pipeline):**
   - `src/js/import_maps/`: spec-mapped import map parsing + state + merging + resolution:
     - parsing/normalization: `parse_import_map_string(...)` + `create_import_map_parse_result(...)` (`parse.rs`)
     - host-side state: `ImportMapState` + resolved-module-set record types (`types.rs`)
@@ -53,6 +53,8 @@ What exists today (in-tree):
     - full module specifier resolution: `resolve_module_specifier(...)` + `add_module_to_resolved_module_set(...)` (`resolve.rs`)
     - helper: `resolve_imports_match(...)` (`resolve.rs`) — implements the spec’s "resolve an imports match"
       algorithm and throws `ImportMapError` for blocked cases
+    - the host-side module bundler (`ModuleGraphLoader` in `src/js/module_scripts.rs`) can resolve module
+      graphs through import maps via `build_bundle_for_*_with_import_maps(...)`
   - Design/spec mapping: [`docs/import_maps.md`](import_maps.md).
 - **Script scheduling + event loop:**
   - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`),
@@ -149,8 +151,9 @@ we can land a correct classic-script core first:
 - **Module scripts** (`type="module"`) and the module graph (host hooks, `import`, dynamic import)
 - **Import maps** (`type="importmap"`) end-to-end integration:
   - Import map parsing + merge/register/resolve algorithms exist in `src/js/import_maps/` and are documented in
-    [`docs/import_maps.md`](import_maps.md), but are not yet wired into the streaming `<script>` pipeline or
-    the module graph loader.
+    [`docs/import_maps.md`](import_maps.md). Import maps are usable by the host-side module bundler
+    (`ModuleGraphLoader`), but import map scripts are not yet discovered/executed/registered by `BrowserTab`’s
+    streaming `<script>` pipeline.
 - **Content Security Policy (CSP)**: partially implemented for classic scripts in `api::BrowserTab`
   - Enforces `script-src` / `default-src` for external `<script src=...>` URL allowlisting.
   - Enforces nonce/hash-based allowlisting for inline scripts (`nonce=` + `'nonce-...'`, and
