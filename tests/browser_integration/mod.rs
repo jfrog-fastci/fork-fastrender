@@ -46,6 +46,7 @@ static INIT_BROWSER_INTEGRATION_ENV: extern "C" fn() = {
 mod browser_headless_smoke_test;
 mod browser_cli_help;
 mod browser_cli_start_url_scheme;
+mod browser_session_restore;
 mod browser_mem_limit_env;
 mod browser_thread_base_url_across_navigations;
 mod browser_worker_cancel_gens;

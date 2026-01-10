@@ -28,6 +28,9 @@ pub mod zoom;
 #[cfg(feature = "browser_ui")]
 pub mod chrome;
 
+#[cfg(feature = "browser_ui")]
+pub mod session;
+
 pub use messages::{
   NavigationReason, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker,
   WorkerToUi,
@@ -72,5 +75,7 @@ pub use frame_upload::FrameUploadCoalescer;
 
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, ChromeAction};
+#[cfg(feature = "browser_ui")]
+pub use session::{BrowserSession, BrowserSessionTab};
 pub use crate::select_dropdown as select_dropdown;
 pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};

@@ -78,24 +78,87 @@ fn parse_u64_mb(raw: &str) -> Result<u64, String> {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreMode {
+  /// Default behaviour:
+  /// - When `<url>` is omitted, try to restore the previous session.
+  /// - When `<url>` is provided, open that single URL (do not restore).
+  Auto,
+  /// Restore the previous session even when `<url>` is provided.
+  Force,
+  /// Never restore a previous session.
+  Disable,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupSessionSource {
+  Restored,
+  CliUrl,
+  DefaultNewTab,
+  HeadlessOverride,
+}
+
+#[cfg(feature = "browser_ui")]
+fn determine_startup_session(
+  cli_url: Option<String>,
+  restore: RestoreMode,
+  session_path: &std::path::Path,
+) -> (fastrender::ui::BrowserSession, StartupSessionSource) {
+  let wants_restore = match restore {
+    RestoreMode::Disable => false,
+    RestoreMode::Auto => cli_url.is_none(),
+    RestoreMode::Force => true,
+  };
+
+  if wants_restore {
+    match fastrender::ui::session::load_session(session_path) {
+      Ok(Some(session)) => return (session, StartupSessionSource::Restored),
+      Ok(None) => {}
+      Err(err) => {
+        eprintln!("failed to load session from {}: {err}", session_path.display());
+      }
+    }
+  }
+
+  if let Some(url) = cli_url {
+    return (fastrender::ui::BrowserSession::single(url), StartupSessionSource::CliUrl);
+  }
+
+  (
+    fastrender::ui::BrowserSession::single(fastrender::ui::about_pages::ABOUT_NEWTAB.to_string()),
+    StartupSessionSource::DefaultNewTab,
+  )
+}
+
+#[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
   let cli = BrowserCliArgs::parse();
-  let _ = (cli.restore, cli.no_restore);
 
-  let default_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
-  let raw_url = cli.url.unwrap_or(default_url);
-  let initial_url = match fastrender::ui::normalize_user_url(&raw_url).and_then(|url| {
-    fastrender::ui::validate_user_navigation_url_scheme(&url)?;
-    Ok(url)
-  }) {
-    Ok(url) => url,
-    Err(err) => {
-      eprintln!(
-        "invalid start URL {raw_url:?}: {err}; falling back to {}",
-        fastrender::ui::about_pages::ABOUT_NEWTAB
-      );
-      fastrender::ui::about_pages::ABOUT_NEWTAB.to_string()
+  // When the user provides `<url>`, normalize + apply an allowlist (same as the address bar).
+  // This is *not* applied to session restore entries: those are expected to already be normalized.
+  let cli_url = cli.url.as_deref().map(|raw_url| {
+    match fastrender::ui::normalize_user_url(raw_url).and_then(|url| {
+      fastrender::ui::validate_user_navigation_url_scheme(&url)?;
+      Ok(url)
+    }) {
+      Ok(url) => url,
+      Err(err) => {
+        eprintln!(
+          "invalid start URL {raw_url:?}: {err}; falling back to {}",
+          fastrender::ui::about_pages::ABOUT_NEWTAB
+        );
+        fastrender::ui::about_pages::ABOUT_NEWTAB.to_string()
+      }
     }
+  });
+
+  let restore = if cli.restore {
+    RestoreMode::Force
+  } else if cli.no_restore {
+    RestoreMode::Disable
+  } else {
+    RestoreMode::Auto
   };
 
   apply_address_space_limit_from_cli_or_env(cli.mem_limit_mb);
@@ -106,6 +169,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     return Ok(());
   }
 
+  let session_path = fastrender::ui::session::session_path();
+
   // Test/CI hook: run a minimal end-to-end wiring smoke test without creating a window or
   // initialising winit/wgpu.
   //
@@ -114,9 +179,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   //
   // Usage:
   //   cargo run --features browser_ui --bin browser -- --headless-smoke
+  //
+  // Or (legacy):
+  //   FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 cargo run --features browser_ui --bin browser
   if cli.headless_smoke || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
-    return run_headless_smoke_mode(initial_url);
+    const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
+    let (startup_session, source) = match std::env::var(OVERRIDE_ENV) {
+      Ok(raw) if !raw.trim().is_empty() => {
+        let session: fastrender::ui::BrowserSession = serde_json::from_str(&raw)
+          .map_err(|err| format!("{OVERRIDE_ENV}: invalid JSON: {err}"))?;
+        (session, StartupSessionSource::HeadlessOverride)
+      }
+      _ => determine_startup_session(cli_url, restore, &session_path),
+    };
+
+    return run_headless_smoke_mode(startup_session, source, session_path);
   }
+
+  let (startup_session, _source) = determine_startup_session(cli_url, restore, &session_path);
 
   use winit::event::Event;
   use winit::event::StartCause;
@@ -140,7 +220,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     ui_to_worker_tx,
     worker_join,
   ))?;
-  app.startup(initial_url);
+  app.startup(startup_session);
 
   let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
 
@@ -176,6 +256,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // threads) explicitly when the loop is torn down.
     if matches!(event, Event::LoopDestroyed) {
       if let Some(mut app) = app.take() {
+        let session = fastrender::ui::BrowserSession::from_app_state(&app.browser_state);
+        if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
+          eprintln!(
+            "failed to save session to {}: {err}",
+            session_path.display()
+          );
+        }
         app.shutdown();
       }
 
@@ -271,11 +358,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(feature = "browser_ui")]
-fn run_headless_smoke_mode(url: String) -> Result<(), Box<dyn std::error::Error>> {
+fn run_headless_smoke_mode(
+  session: fastrender::ui::BrowserSession,
+  source: StartupSessionSource,
+  session_path: std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
   use std::sync::mpsc::RecvTimeoutError;
   use std::time::{Duration, Instant};
+
+  let session = session.sanitized();
+  let source_label = match source {
+    StartupSessionSource::Restored => "restored",
+    StartupSessionSource::CliUrl => "cli",
+    StartupSessionSource::DefaultNewTab => "default",
+    StartupSessionSource::HeadlessOverride => "override",
+  };
+  let session_json = serde_json::to_string(&session).unwrap_or_else(|_| "<invalid>".to_string());
+  println!("HEADLESS_SESSION source={source_label} {session_json}");
 
   // Keep the smoke test cheap and deterministic: when Rayon is allowed to auto-initialize its
   // global pool it may attempt to spawn one worker per detected CPU (which can be very large on
@@ -299,18 +400,27 @@ fn run_headless_smoke_mode(url: String) -> Result<(), Box<dyn std::error::Error>
   let (ui_to_worker_tx, worker_to_ui_rx, join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
 
-  let tab_id = TabId::new();
-  ui_to_worker_tx.send(UiToWorker::CreateTab {
-    tab_id,
-    initial_url: Some(url.clone()),
-    cancel: CancelGens::new(),
-  })?;
+  let mut tab_ids = Vec::with_capacity(session.tabs.len());
+  for tab in &session.tabs {
+    let tab_id = TabId::new();
+    tab_ids.push(tab_id);
+    ui_to_worker_tx.send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: Some(tab.url.clone()),
+      cancel: CancelGens::new(),
+    })?;
+  }
+
+  let active_idx = session.active_tab_index.min(tab_ids.len().saturating_sub(1));
+  let active_tab_id = tab_ids[active_idx];
   ui_to_worker_tx.send(UiToWorker::ViewportChanged {
-    tab_id,
+    tab_id: active_tab_id,
     viewport_css: VIEWPORT_CSS,
     dpr: DPR,
   })?;
-  ui_to_worker_tx.send(UiToWorker::SetActiveTab { tab_id })?;
+  ui_to_worker_tx.send(UiToWorker::SetActiveTab {
+    tab_id: active_tab_id,
+  })?;
 
   // Close the channel so the worker thread exits after completing the above messages.
   drop(ui_to_worker_tx);
@@ -326,7 +436,7 @@ fn run_headless_smoke_mode(url: String) -> Result<(), Box<dyn std::error::Error>
       Ok(WorkerToUi::FrameReady {
         tab_id: msg_tab,
         frame,
-      }) if msg_tab == tab_id => {
+      }) if msg_tab == active_tab_id => {
         let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
         frames_seen += 1;
         last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
@@ -386,8 +496,17 @@ fn run_headless_smoke_mode(url: String) -> Result<(), Box<dyn std::error::Error>
     Err(_) => return Err("headless smoke worker panicked".into()),
   }
 
+  if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
+    eprintln!("failed to save session to {}: {err}", session_path.display());
+  }
+
+  let active_url = session
+    .tabs
+    .get(active_idx)
+    .map(|t| t.url.as_str())
+    .unwrap_or(fastrender::ui::about_pages::ABOUT_NEWTAB);
   println!(
-    "HEADLESS_SMOKE_OK url={url} viewport_css={}x{} dpr={:.1} pixmap_px={}x{}",
+    "HEADLESS_SMOKE_OK source={source_label} active_url={active_url} viewport_css={}x{} dpr={:.1} pixmap_px={}x{}",
     viewport_css.0, viewport_css.1, dpr, pixmap_w, pixmap_h
   );
 
@@ -707,21 +826,34 @@ impl App {
     })
   }
 
-  fn startup(&mut self, initial_url: String) {
-    let tab_id = fastrender::ui::TabId::new();
-    let tab_state = fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone());
-    let cancel = tab_state.cancel.clone();
-    self.tab_cancel.insert(tab_id, cancel.clone());
+  fn startup(&mut self, session: fastrender::ui::BrowserSession) {
+    use fastrender::ui::UiToWorker;
 
-    self.browser_state.push_tab(tab_state, true);
-    self.browser_state.chrome.address_bar_text = initial_url.clone();
+    let session = session.sanitized();
+    let mut tab_ids = Vec::with_capacity(session.tabs.len());
 
-    self.send_worker_msg(fastrender::ui::UiToWorker::CreateTab {
-      tab_id,
-      initial_url: Some(initial_url),
-      cancel,
+    for tab in session.tabs {
+      let tab_id = fastrender::ui::TabId::new();
+      tab_ids.push(tab_id);
+
+      let tab_state = fastrender::ui::BrowserTabState::new(tab_id, tab.url.clone());
+      let cancel = tab_state.cancel.clone();
+      self.tab_cancel.insert(tab_id, cancel.clone());
+      self.browser_state.push_tab(tab_state, false);
+
+      self.send_worker_msg(UiToWorker::CreateTab {
+        tab_id,
+        initial_url: Some(tab.url),
+        cancel,
+      });
+    }
+
+    let active_idx = session.active_tab_index.min(tab_ids.len().saturating_sub(1));
+    let active_tab_id = tab_ids[active_idx];
+    self.browser_state.set_active_tab(active_tab_id);
+    self.send_worker_msg(UiToWorker::SetActiveTab {
+      tab_id: active_tab_id,
     });
-    self.send_worker_msg(fastrender::ui::UiToWorker::SetActiveTab { tab_id });
 
     self.sync_window_title();
 

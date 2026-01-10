@@ -33,6 +33,7 @@ browser_ui = [
   "dep:egui-winit",
   "dep:egui-wgpu",
   "dep:pollster",
+  "dep:directories",
 ]
 browser_ui_wayland = [
   # Wayland backend support for the `browser` UI on Linux.
@@ -129,6 +130,7 @@ wgpu = { version = "0.17", optional = true }
 egui = { version = "0.23", optional = true }
 egui-wgpu = { version = "0.23", optional = true }
 pollster = { version = "0.3", optional = true }
+directories = { version = "5", optional = true }
 
 # `winit`/`egui-winit` need a platform backend. On Linux we explicitly enable X11
 # and keep default features off so CI doesn't need additional system packages
