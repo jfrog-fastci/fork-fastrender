@@ -56,7 +56,6 @@ use crate::layout::profile::layout_timer;
 use crate::layout::profile::LayoutKind;
 use crate::layout::anchor_positioning::AnchorIndex;
 use crate::layout::utils::content_size_from_box_sizing;
-use crate::layout::utils::resolve_font_relative_length_for_positioned;
 use crate::layout::utils::resolve_offset_for_positioned;
 use crate::style::computed::PositionedStyle;
 use crate::style::position::Position;
@@ -102,29 +101,7 @@ fn resolve_length_for_positioned_size(
   style: &PositionedStyle,
   font_context: &FontContext,
 ) -> Option<f32> {
-  if len.unit == LengthUnit::Calc {
-    return len.resolve_with_context_for_writing_mode(
-      percentage_base,
-      viewport.width,
-      viewport.height,
-      style.font_size,
-      style.root_font_size,
-      style.writing_mode,
-    );
-  }
-  if len.unit.is_percentage() {
-    percentage_base.and_then(|base| len.resolve_against(base))
-  } else if len.unit.is_absolute() {
-    Some(len.to_px())
-  } else if len.unit.is_viewport_relative() {
-    len.resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, style.writing_mode)
-  } else {
-    Some(resolve_font_relative_length_for_positioned(
-      *len,
-      style,
-      font_context,
-    ))
-  }
+  crate::layout::utils::resolve_length_for_positioned_style(*len, percentage_base, viewport, style, font_context)
 }
 
 /// Resolved margin values after auto-margin calculation

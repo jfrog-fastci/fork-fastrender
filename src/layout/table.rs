@@ -75,6 +75,7 @@ use crate::style::values::CalcLength;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
+use crate::text::root_font_metrics::RootFontMetrics;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::MarkerContent;
@@ -1799,8 +1800,15 @@ impl TableStructure {
   /// # Returns
   ///
   /// A fully resolved TableStructure ready for layout
-  #[allow(clippy::cognitive_complexity)]
   pub fn from_box_tree(table_box: &BoxNode) -> Self {
+    Self::from_box_tree_with_root_metrics(table_box, None)
+  }
+
+  #[allow(clippy::cognitive_complexity)]
+  pub fn from_box_tree_with_root_metrics(
+    table_box: &BoxNode,
+    root_metrics: Option<RootFontMetrics>,
+  ) -> Self {
     let mut structure = TableStructure::new();
     let mut percent_sensitive =
       Self::style_has_percent_sensitive_column_constraints(&table_box.style);
@@ -1810,7 +1818,7 @@ impl TableStructure {
     structure.border_collapse = table_box.style.border_collapse;
     structure.border_spacing = match table_box.style.border_collapse {
       BorderCollapse::Collapse => (0.0, 0.0),
-      BorderCollapse::Separate => resolve_border_spacing(&table_box.style),
+      BorderCollapse::Separate => resolve_border_spacing(&table_box.style, root_metrics),
     };
 
     // Check for fixed layout
@@ -1933,16 +1941,19 @@ impl TableStructure {
                 row_child.style.height.as_ref(),
                 row_child.style.font_size,
                 row_child.style.root_font_size,
+                root_metrics,
               );
               let min_h = Self::length_to_specified_height_opt(
                 row_child.style.min_height.as_ref(),
                 row_child.style.font_size,
                 row_child.style.root_font_size,
+                root_metrics,
               );
               let max_h = Self::length_to_specified_height_opt(
                 row_child.style.max_height.as_ref(),
                 row_child.style.font_size,
                 row_child.style.root_font_size,
+                root_metrics,
               );
               let row_visibility = if matches!(group_visibility, Visibility::Collapse) {
                 Visibility::Collapse
@@ -1989,16 +2000,19 @@ impl TableStructure {
               row.style.height.as_ref(),
               row.style.font_size,
               row.style.root_font_size,
+              root_metrics,
             );
             let min_h = Self::length_to_specified_height_opt(
               row.style.min_height.as_ref(),
               row.style.font_size,
               row.style.root_font_size,
+              root_metrics,
             );
             let max_h = Self::length_to_specified_height_opt(
               row.style.max_height.as_ref(),
               row.style.font_size,
               row.style.root_font_size,
+              root_metrics,
             );
             row_visibilities.push(row.style.visibility);
             let row_vertical_align = if row.style.vertical_align_specified {
@@ -2670,8 +2684,24 @@ impl TableStructure {
     length: &crate::style::values::Length,
     font_size: f32,
     root_font_size: f32,
+    root_metrics: Option<RootFontMetrics>,
   ) -> SpecifiedHeight {
     use crate::style::values::LengthUnit;
+    let root_x = root_metrics
+      .map(|m| m.root_x_height_px)
+      .unwrap_or(root_font_size * 0.5);
+    let root_ch = root_metrics
+      .map(|m| m.root_ch_advance_px)
+      .unwrap_or(root_font_size * 0.5);
+    let root_cap = root_metrics
+      .map(|m| m.root_cap_height_px)
+      .unwrap_or(root_font_size * 0.7);
+    let root_ic = root_metrics
+      .map(|m| m.root_ic_advance_px)
+      .unwrap_or(root_font_size);
+    let root_lh = root_metrics
+      .map(|m| m.root_used_line_height_px)
+      .unwrap_or(root_font_size * 1.2);
     match length.unit {
       LengthUnit::Percent => SpecifiedHeight::Percent(length.value),
       LengthUnit::Em => SpecifiedHeight::Fixed(length.value * font_size),
@@ -2679,14 +2709,13 @@ impl TableStructure {
       LengthUnit::Cap => SpecifiedHeight::Fixed(length.value * font_size * 0.7),
       LengthUnit::Ic => SpecifiedHeight::Fixed(length.value * font_size),
       LengthUnit::Rem => SpecifiedHeight::Fixed(length.value * root_font_size),
-      LengthUnit::Rex | LengthUnit::Rch => {
-        SpecifiedHeight::Fixed(length.value * root_font_size * 0.5)
-      }
-      LengthUnit::Rcap => SpecifiedHeight::Fixed(length.value * root_font_size * 0.7),
-      LengthUnit::Ric => SpecifiedHeight::Fixed(length.value * root_font_size),
+      LengthUnit::Rex => SpecifiedHeight::Fixed(length.value * root_x),
+      LengthUnit::Rch => SpecifiedHeight::Fixed(length.value * root_ch),
+      LengthUnit::Rcap => SpecifiedHeight::Fixed(length.value * root_cap),
+      LengthUnit::Ric => SpecifiedHeight::Fixed(length.value * root_ic),
       // Without access to computed `line-height`, fall back to the `normal` approximation.
       LengthUnit::Lh => SpecifiedHeight::Fixed(length.value * font_size * 1.2),
-      LengthUnit::Rlh => SpecifiedHeight::Fixed(length.value * root_font_size * 1.2),
+      LengthUnit::Rlh => SpecifiedHeight::Fixed(length.value * root_lh),
       LengthUnit::Calc => {
         // `Length::resolve_with_context` needs finite viewport dimensions even when the expression
         // has no viewport units. Use 0 as a sentinel and bail out if the calc expression contains
@@ -2697,7 +2726,41 @@ impl TableStructure {
         if calc.has_viewport_relative() || calc.has_container_query_relative() {
           return SpecifiedHeight::Auto;
         }
-        match length.resolve_with_context(None, 0.0, 0.0, font_size, root_font_size) {
+        match crate::style::values::resolve_length_calc_with_resolver(
+          calc,
+          None,
+          0.0,
+          0.0,
+          font_size,
+          root_font_size,
+          &|linear, base, _vw, _vh, font_px, root_px| {
+            let base = base.filter(|b| b.is_finite());
+            let mut resolved = 0.0;
+            for term in linear.terms() {
+              if !term.value.is_finite() {
+                return None;
+              }
+              resolved += match term.unit {
+                LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+                u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+                LengthUnit::Em => Some(term.value * font_px),
+                LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
+                LengthUnit::Cap => Some(term.value * font_px * 0.7),
+                LengthUnit::Ic => Some(term.value * font_px),
+                LengthUnit::Rem => Some(term.value * root_px),
+                LengthUnit::Rex => Some(term.value * root_x),
+                LengthUnit::Rch => Some(term.value * root_ch),
+                LengthUnit::Rcap => Some(term.value * root_cap),
+                LengthUnit::Ric => Some(term.value * root_ic),
+                // Without access to computed `line-height`, fall back to the `normal` approximation.
+                LengthUnit::Lh => Some(term.value * font_px * 1.2),
+                LengthUnit::Rlh => Some(term.value * root_lh),
+                _ => Some(term.value),
+              }?;
+            }
+            Some(resolved)
+          },
+        ) {
           Some(px) => SpecifiedHeight::Fixed(px),
           None => SpecifiedHeight::Auto,
         }
@@ -2711,8 +2774,9 @@ impl TableStructure {
     length: Option<&crate::style::values::Length>,
     font_size: f32,
     root_font_size: f32,
+    root_metrics: Option<RootFontMetrics>,
   ) -> Option<SpecifiedHeight> {
-    length.map(|len| Self::length_to_specified_height(len, font_size, root_font_size))
+    length.map(|len| Self::length_to_specified_height(len, font_size, root_font_size, root_metrics))
   }
 }
 
@@ -2726,25 +2790,109 @@ fn resolve_border_spacing_length(
   length: &crate::style::values::Length,
   font_size: f32,
   root_font_size: f32,
+  root_metrics: Option<RootFontMetrics>,
 ) -> f32 {
-  let resolved = if length.unit.is_absolute() {
-    Some(length.to_px())
-  } else {
+  use crate::style::values::LengthUnit;
+
+  let root_x = root_metrics
+    .map(|m| m.root_x_height_px)
+    .unwrap_or(root_font_size * 0.5);
+  let root_ch = root_metrics
+    .map(|m| m.root_ch_advance_px)
+    .unwrap_or(root_font_size * 0.5);
+  let root_cap = root_metrics
+    .map(|m| m.root_cap_height_px)
+    .unwrap_or(root_font_size * 0.7);
+  let root_ic = root_metrics
+    .map(|m| m.root_ic_advance_px)
+    .unwrap_or(root_font_size);
+  let root_lh = root_metrics
+    .map(|m| m.root_used_line_height_px)
+    .unwrap_or(root_font_size * 1.2);
+
+  let resolved = match length.unit {
+    u if u.is_absolute() => Some(length.to_px()),
     // Border spacing should resolve for absolute and font-relative values even when viewport
-    // dimensions are unavailable; treat percentage/viewport-based spacing as zero in that case.
-    length.resolve_with_context(Some(0.0), 0.0, 0.0, font_size, root_font_size)
+    // dimensions are unavailable; treat percentage/viewport/container-query-based spacing as zero
+    // in that case.
+    LengthUnit::Percent => Some(0.0),
+    u if u.is_viewport_relative() || u.is_container_query_relative() => Some(0.0),
+    LengthUnit::Em => Some(length.value * font_size),
+    LengthUnit::Ex | LengthUnit::Ch => Some(length.value * font_size * 0.5),
+    LengthUnit::Cap => Some(length.value * font_size * 0.7),
+    LengthUnit::Ic => Some(length.value * font_size),
+    LengthUnit::Rem => Some(length.value * root_font_size),
+    LengthUnit::Rex => Some(length.value * root_x),
+    LengthUnit::Rch => Some(length.value * root_ch),
+    LengthUnit::Rcap => Some(length.value * root_cap),
+    LengthUnit::Ric => Some(length.value * root_ic),
+    // Without access to computed `line-height`, fall back to the `normal` approximation.
+    LengthUnit::Lh => Some(length.value * font_size * 1.2),
+    LengthUnit::Rlh => Some(length.value * root_lh),
+    LengthUnit::Calc => length.calc.and_then(|calc| {
+      crate::style::values::resolve_length_calc_with_resolver(
+        calc,
+        Some(0.0),
+        0.0,
+        0.0,
+        font_size,
+        root_font_size,
+        &|linear, base, _vw, _vh, font_px, root_px| {
+          let base = base.filter(|b| b.is_finite());
+          let mut resolved = 0.0;
+          for term in linear.terms() {
+            if !term.value.is_finite() {
+              return None;
+            }
+            resolved += match term.unit {
+              LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+              u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+              u if u.is_viewport_relative() || u.is_container_query_relative() => Some(0.0),
+              LengthUnit::Em => Some(term.value * font_px),
+              LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
+              LengthUnit::Cap => Some(term.value * font_px * 0.7),
+              LengthUnit::Ic => Some(term.value * font_px),
+              LengthUnit::Rem => Some(term.value * root_px),
+              LengthUnit::Rex => Some(term.value * root_x),
+              LengthUnit::Rch => Some(term.value * root_ch),
+              LengthUnit::Rcap => Some(term.value * root_cap),
+              LengthUnit::Ric => Some(term.value * root_ic),
+              // Without access to computed `line-height`, fall back to the `normal` approximation.
+              LengthUnit::Lh => Some(term.value * font_px * 1.2),
+              LengthUnit::Rlh => Some(term.value * root_lh),
+              _ => None,
+            }?;
+          }
+          Some(resolved)
+        },
+      )
+    }),
+    _ => None,
   }
   .unwrap_or(0.0);
 
   resolved.max(0.0)
 }
 
-fn resolve_border_spacing(style: &crate::style::ComputedStyle) -> (f32, f32) {
+fn resolve_border_spacing(
+  style: &crate::style::ComputedStyle,
+  root_metrics: Option<RootFontMetrics>,
+) -> (f32, f32) {
   let font_size = style.font_size;
   let root_font_size = style.root_font_size;
   (
-    resolve_border_spacing_length(&style.border_spacing_horizontal, font_size, root_font_size),
-    resolve_border_spacing_length(&style.border_spacing_vertical, font_size, root_font_size),
+    resolve_border_spacing_length(
+      &style.border_spacing_horizontal,
+      font_size,
+      root_font_size,
+      root_metrics,
+    ),
+    resolve_border_spacing_length(
+      &style.border_spacing_vertical,
+      font_size,
+      root_font_size,
+      root_metrics,
+    ),
   )
 }
 
@@ -2753,7 +2901,24 @@ fn resolve_length_against(
   font_size: f32,
   root_font_size: f32,
   containing_width: Option<f32>,
+  root_metrics: Option<RootFontMetrics>,
 ) -> Option<f32> {
+  let root_x = root_metrics
+    .map(|m| m.root_x_height_px)
+    .unwrap_or(root_font_size * 0.5);
+  let root_ch = root_metrics
+    .map(|m| m.root_ch_advance_px)
+    .unwrap_or(root_font_size * 0.5);
+  let root_cap = root_metrics
+    .map(|m| m.root_cap_height_px)
+    .unwrap_or(root_font_size * 0.7);
+  let root_ic = root_metrics
+    .map(|m| m.root_ic_advance_px)
+    .unwrap_or(root_font_size);
+  let root_lh = root_metrics
+    .map(|m| m.root_used_line_height_px)
+    .unwrap_or(root_font_size * 1.2);
+
   match length.unit {
     LengthUnit::Percent => containing_width.map(|w| (length.value / 100.0) * w),
     LengthUnit::Em => Some(length.value * font_size),
@@ -2761,18 +2926,53 @@ fn resolve_length_against(
     LengthUnit::Cap => Some(length.value * font_size * 0.7),
     LengthUnit::Ic => Some(length.value * font_size),
     LengthUnit::Rem => Some(length.value * root_font_size),
-    LengthUnit::Rex | LengthUnit::Rch => Some(length.value * root_font_size * 0.5),
-    LengthUnit::Rcap => Some(length.value * root_font_size * 0.7),
-    LengthUnit::Ric => Some(length.value * root_font_size),
+    LengthUnit::Rex => Some(length.value * root_x),
+    LengthUnit::Rch => Some(length.value * root_ch),
+    LengthUnit::Rcap => Some(length.value * root_cap),
+    LengthUnit::Ric => Some(length.value * root_ic),
     // Without access to computed `line-height`, fall back to the `normal` approximation.
     LengthUnit::Lh => Some(length.value * font_size * 1.2),
-    LengthUnit::Rlh => Some(length.value * root_font_size * 1.2),
+    LengthUnit::Rlh => Some(length.value * root_lh),
     LengthUnit::Calc => {
       let calc = length.calc?;
       if calc.has_viewport_relative() || calc.has_container_query_relative() {
         return None;
       }
-      length.resolve_with_context(containing_width, 0.0, 0.0, font_size, root_font_size)
+      crate::style::values::resolve_length_calc_with_resolver(
+        calc,
+        containing_width,
+        0.0,
+        0.0,
+        font_size,
+        root_font_size,
+        &|linear, base, _vw, _vh, font_px, root_px| {
+          let base = base.filter(|b| b.is_finite());
+          let mut resolved = 0.0;
+          for term in linear.terms() {
+            if !term.value.is_finite() {
+              return None;
+            }
+            resolved += match term.unit {
+              LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+              u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+              LengthUnit::Em => Some(term.value * font_px),
+              LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
+              LengthUnit::Cap => Some(term.value * font_px * 0.7),
+              LengthUnit::Ic => Some(term.value * font_px),
+              LengthUnit::Rem => Some(term.value * root_px),
+              LengthUnit::Rex => Some(term.value * root_x),
+              LengthUnit::Rch => Some(term.value * root_ch),
+              LengthUnit::Rcap => Some(term.value * root_cap),
+              LengthUnit::Ric => Some(term.value * root_ic),
+              // Without access to computed `line-height`, fall back to the `normal` approximation.
+              LengthUnit::Lh => Some(term.value * font_px * 1.2),
+              LengthUnit::Rlh => Some(term.value * root_lh),
+              _ => Some(term.value),
+            }?;
+          }
+          Some(resolved)
+        },
+      )
     }
     _ if length.unit.is_absolute() => Some(length.to_px()),
     _ => None,
@@ -2784,8 +2984,9 @@ fn resolve_opt_length_against(
   font_size: f32,
   root_font_size: f32,
   containing_width: Option<f32>,
+  root_metrics: Option<RootFontMetrics>,
 ) -> Option<f32> {
-  length.and_then(|l| resolve_length_against(l, font_size, root_font_size, containing_width))
+  length.and_then(|l| resolve_length_against(l, font_size, root_font_size, containing_width, root_metrics))
 }
 
 /// Decide which column distribution algorithm to use for a table.
@@ -4723,10 +4924,14 @@ fn table_structure_cache_key(table_box: &BoxNode) -> Option<TableStructureCacheK
   })
 }
 
-fn table_structure_cached(table_box: &BoxNode) -> Arc<TableStructure> {
+fn table_structure_cached(
+  table_box: &BoxNode,
+  root_metrics: Option<RootFontMetrics>,
+) -> Arc<TableStructure> {
   let epoch = intrinsic_cache_epoch();
   let key = table_structure_cache_key(table_box);
-  let build_structure = || Arc::new(TableStructure::from_box_tree(table_box));
+  let build_structure =
+    || Arc::new(TableStructure::from_box_tree_with_root_metrics(table_box, root_metrics));
   if let Some(key) = key {
     TABLE_STRUCTURE_CACHE.with(|cache| {
       if let Some(entry) = cache.borrow().get(&key) {
@@ -5189,6 +5394,7 @@ impl TableFormattingContext {
   ) -> Result<(), LayoutError> {
     let mut deadline_counter = 0usize;
     let source_rows = collect_source_rows(table_box);
+    let root_metrics = self.factory.font_context().root_font_metrics();
     let cell_bfc = &self.cell_bfc;
     // Column sizing and cell layout can dominate runtime on large tables. Allow these phases to
     // borrow the process thread budget even when subtree fan-out is disabled so a single huge
@@ -5333,7 +5539,15 @@ impl TableFormattingContext {
         if let Some(min_len) = col_info
           .author_min_width
           .as_ref()
-          .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
+          .and_then(|len| {
+            resolve_length_against(
+              len,
+              font_size,
+              table_box.style.root_font_size,
+              percent_base,
+              root_metrics,
+            )
+          })
         {
           constraint.min_width = constraint.min_width.max(min_len);
           constraint.max_width = constraint.max_width.max(constraint.min_width);
@@ -5341,7 +5555,15 @@ impl TableFormattingContext {
         if let Some(max_len) = col_info
           .author_max_width
           .as_ref()
-          .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
+          .and_then(|len| {
+            resolve_length_against(
+              len,
+              font_size,
+              table_box.style.root_font_size,
+              percent_base,
+              root_metrics,
+            )
+          })
         {
           let cap = max_len.max(constraint.min_width);
           constraint.max_width = if constraint.max_width.is_finite() {
@@ -5398,7 +5620,13 @@ impl TableFormattingContext {
           .min_width
           .as_ref()
           .and_then(|len| {
-            resolve_length_against(len, cell_box.style.font_size, cell_box.style.root_font_size, percent_base)
+            resolve_length_against(
+              len,
+              cell_box.style.font_size,
+              cell_box.style.root_font_size,
+              percent_base,
+              root_metrics,
+            )
           })
         {
           min_w = min_w.max(min_len);
@@ -5409,7 +5637,13 @@ impl TableFormattingContext {
           .max_width
           .as_ref()
           .and_then(|len| {
-            resolve_length_against(len, cell_box.style.font_size, cell_box.style.root_font_size, percent_base)
+            resolve_length_against(
+              len,
+              cell_box.style.font_size,
+              cell_box.style.root_font_size,
+              percent_base,
+              root_metrics,
+            )
           })
         {
           let cap = max_len.max(min_w);
@@ -5678,7 +5912,15 @@ impl TableFormattingContext {
         if let Some(min_len) = col_info
           .author_min_width
           .as_ref()
-          .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
+          .and_then(|len| {
+            resolve_length_against(
+              len,
+              font_size,
+              table_box.style.root_font_size,
+              percent_base,
+              root_metrics,
+            )
+          })
         {
           constraint.min_width = constraint.min_width.max(min_len);
           constraint.max_width = constraint.max_width.max(constraint.min_width);
@@ -5686,7 +5928,15 @@ impl TableFormattingContext {
         if let Some(max_len) = col_info
           .author_max_width
           .as_ref()
-          .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
+          .and_then(|len| {
+            resolve_length_against(
+              len,
+              font_size,
+              table_box.style.root_font_size,
+              percent_base,
+              root_metrics,
+            )
+          })
         {
           let cap = max_len.max(constraint.min_width);
           constraint.max_width = if constraint.max_width.is_finite() {
@@ -5747,6 +5997,7 @@ impl TableFormattingContext {
   ) -> Vec<RowGroupConstraints> {
     let mut constraints = Vec::new();
     let mut source_row_idx = 0usize;
+    let root_metrics = self.factory.font_context().root_font_metrics();
     for child in table_box
       .children
       .iter()
@@ -5775,16 +6026,19 @@ impl TableFormattingContext {
                 child.style.height.as_ref(),
                 child.style.font_size,
                 child.style.root_font_size,
+                root_metrics,
               ),
               min_height: TableStructure::length_to_specified_height_opt(
                 child.style.min_height.as_ref(),
                 child.style.font_size,
                 child.style.root_font_size,
+                root_metrics,
               ),
               max_height: TableStructure::length_to_specified_height_opt(
                 child.style.max_height.as_ref(),
                 child.style.font_size,
                 child.style.root_font_size,
+                root_metrics,
               ),
             });
           }
@@ -5837,6 +6091,7 @@ impl FormattingContext for TableFormattingContext {
     let table_root_style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| table_box.style.as_ref());
+    let root_metrics = self.factory.font_context().root_font_metrics();
     let dump = runtime::runtime_toggles().truthy("FASTR_DUMP_TABLE");
     let mut positioned_children: Vec<&BoxNode> = Vec::new();
     let mut running_children: Vec<(usize, &BoxNode)> = Vec::new();
@@ -5855,7 +6110,7 @@ impl FormattingContext for TableFormattingContext {
     }
     let has_running_children = !running_children.is_empty();
 
-    let structure = table_structure_cached(table_box);
+    let structure = table_structure_cached(table_box, root_metrics);
     if dump {
       let cw = match constraints.available_width {
         AvailableSpace::Definite(w) => format!("{:.2}", w),
@@ -5959,6 +6214,7 @@ impl FormattingContext for TableFormattingContext {
 
     // Honor explicit table width if present.
     let font_size = table_root_style.font_size;
+    let root_metrics = self.factory.font_context().root_font_metrics();
     let mut intrinsic_sizes_for_keywords: Option<(f32, f32)> = None;
     let mut compute_intrinsic_sizes_for_keywords = || -> Result<(f32, f32), LayoutError> {
       if let Some(sizes) = intrinsic_sizes_for_keywords {
@@ -5994,16 +6250,17 @@ impl FormattingContext for TableFormattingContext {
           IntrinsicSizeKeyword::FillAvailable => available,
           IntrinsicSizeKeyword::FitContent { limit } => match limit {
             None => intrinsic_max.min(available.max(intrinsic_min)),
-            Some(limit) => {
-              let limit_px = resolve_length_against(
-                &limit,
-                font_size,
-                table_root_style.root_font_size,
-                containing_width,
-              )
-              .unwrap_or(f32::INFINITY);
-              intrinsic_max.min(limit_px.max(intrinsic_min))
-            }
+              Some(limit) => {
+                let limit_px = resolve_length_against(
+                  &limit,
+                  font_size,
+                  table_root_style.root_font_size,
+                  containing_width,
+                  root_metrics,
+                )
+                .unwrap_or(f32::INFINITY);
+                intrinsic_max.min(limit_px.max(intrinsic_min))
+              }
           },
           IntrinsicSizeKeyword::CalcSize(calc) => {
             use crate::style::types::CalcSizeBasis;
@@ -6020,13 +6277,20 @@ impl FormattingContext for TableFormattingContext {
                     font_size,
                     table_root_style.root_font_size,
                     containing_width,
+                    root_metrics,
                   )
                   .unwrap_or(f32::INFINITY);
                   intrinsic_max.min(limit_px.max(intrinsic_min))
                 }
               },
               CalcSizeBasis::Length(len) => {
-                resolve_length_against(&len, font_size, table_root_style.root_font_size, containing_width)
+                resolve_length_against(
+                  &len,
+                  font_size,
+                  table_root_style.root_font_size,
+                  containing_width,
+                  root_metrics,
+                )
                   .unwrap_or(intrinsic_max)
                   .max(0.0)
               }
@@ -6040,6 +6304,7 @@ impl FormattingContext for TableFormattingContext {
                   font_size,
                   table_root_style.root_font_size,
                   containing_width,
+                  root_metrics,
                 )
               })
               .map(|px| px.max(0.0))
@@ -6050,7 +6315,13 @@ impl FormattingContext for TableFormattingContext {
       };
 
     let specified_width = match table_root_style.width.as_ref() {
-      Some(len) => resolve_length_against(len, font_size, table_root_style.root_font_size, containing_width),
+      Some(len) => resolve_length_against(
+        len,
+        font_size,
+        table_root_style.root_font_size,
+        containing_width,
+        root_metrics,
+      ),
       None => match table_root_style.width_keyword {
         Some(keyword) => Some(resolve_size_keyword(keyword)?),
         None => None,
@@ -6064,6 +6335,7 @@ impl FormattingContext for TableFormattingContext {
         font_size,
         table_root_style.root_font_size,
         containing_width,
+        root_metrics,
       ),
     };
     let resolved_max_width = match table_root_style.max_width_keyword {
@@ -6073,6 +6345,7 @@ impl FormattingContext for TableFormattingContext {
         font_size,
         table_root_style.root_font_size,
         containing_width,
+        root_metrics,
       ),
     };
     let resolved_max_width =
@@ -6156,19 +6429,27 @@ impl FormattingContext for TableFormattingContext {
       .height
       .as_ref()
       .and_then(|len| {
-        resolve_length_against(len, font_size, table_root_style.root_font_size, containing_height)
+        resolve_length_against(
+          len,
+          font_size,
+          table_root_style.root_font_size,
+          containing_height,
+          root_metrics,
+        )
       });
     let min_height = resolve_opt_length_against(
       table_root_style.min_height.as_ref(),
       font_size,
       table_root_style.root_font_size,
       containing_height,
+      root_metrics,
     );
     let max_height = resolve_opt_length_against(
       table_root_style.max_height.as_ref(),
       font_size,
       table_root_style.root_font_size,
       containing_height,
+      root_metrics,
     );
     let used_border_box_height = constraints
       .used_border_box_height
@@ -8761,6 +9042,7 @@ impl FormattingContext for TableFormattingContext {
     let table_root_style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| table_box.style.as_ref());
+    let root_metrics = self.factory.font_context().root_font_metrics();
     if table_root_style.containment.isolates_inline_size() {
       let resolve_len_no_pct = |l: &Length| {
         l.resolve_with_context(
@@ -8788,24 +9070,26 @@ impl FormattingContext for TableFormattingContext {
         font_size,
         root_font_size,
         None, /* no containing width */
+        root_metrics,
       );
       let max_w = resolve_opt_length_against(
         table_root_style.max_width.as_ref(),
         font_size,
         root_font_size,
         None, /* no containing width */
+        root_metrics,
       );
       let clamped = clamp_to_min_max(edges, min_w, max_w);
       return Ok(clamped.max(0.0));
     }
-    let structure = table_structure_cached(table_box);
+    let structure = table_structure_cached(table_box, root_metrics);
     let spacing = structure.total_horizontal_spacing();
     let font_size = table_root_style.font_size;
     let root_font_size = table_root_style.root_font_size;
     let authored_width = table_root_style
       .width
       .as_ref()
-      .and_then(|len| resolve_length_against(len, font_size, root_font_size, None));
+      .and_then(|len| resolve_length_against(len, font_size, root_font_size, None, root_metrics));
     let resolve_len_no_pct = |l: &Length| {
       l.resolve_with_context(
         Some(0.0),
@@ -8929,8 +9213,9 @@ impl FormattingContext for TableFormattingContext {
         IntrinsicSizeKeyword::FitContent { limit } => match limit {
           None => intrinsic_max,
           Some(limit) => {
-            let limit_px = resolve_length_against(&limit, font_size, table_root_style.root_font_size, None)
-              .unwrap_or(f32::INFINITY);
+            let limit_px =
+              resolve_length_against(&limit, font_size, table_root_style.root_font_size, None, root_metrics)
+                .unwrap_or(f32::INFINITY);
             intrinsic_max.min(limit_px.max(intrinsic_min))
           }
         },
@@ -8941,25 +9226,26 @@ impl FormattingContext for TableFormattingContext {
             CalcSizeBasis::MinContent => intrinsic_min,
             CalcSizeBasis::MaxContent => intrinsic_max,
             CalcSizeBasis::FillAvailable => intrinsic_max,
-            CalcSizeBasis::FitContent { limit } => match limit {
-              None => intrinsic_max,
-              Some(limit) => {
-                let limit_px = resolve_length_against(
-                  &limit,
-                  font_size,
-                  table_root_style.root_font_size,
-                  None,
-                )
-                .unwrap_or(f32::INFINITY);
-                intrinsic_max.min(limit_px.max(intrinsic_min))
-              }
-            },
-            CalcSizeBasis::Length(len) => {
-              resolve_length_against(&len, font_size, table_root_style.root_font_size, None)
+              CalcSizeBasis::FitContent { limit } => match limit {
+                None => intrinsic_max,
+                Some(limit) => {
+                  let limit_px = resolve_length_against(
+                    &limit,
+                    font_size,
+                    table_root_style.root_font_size,
+                    None,
+                    root_metrics,
+                  )
+                  .unwrap_or(f32::INFINITY);
+                  intrinsic_max.min(limit_px.max(intrinsic_min))
+                }
+              },
+              CalcSizeBasis::Length(len) => {
+              resolve_length_against(&len, font_size, table_root_style.root_font_size, None, root_metrics)
                 .unwrap_or(intrinsic_max)
                 .max(0.0)
-            }
-          };
+              }
+            };
           let basis_border = basis_border.max(0.0);
           crate::style::values::calc_size_expr_with_size(calc.expr, basis_border)
             .and_then(|expr_sum| crate::css::properties::parse_length(&format!("calc({expr_sum})")))
@@ -8969,6 +9255,7 @@ impl FormattingContext for TableFormattingContext {
                 font_size,
                 table_root_style.root_font_size,
                 None,
+                root_metrics,
               )
             })
             .map(|px| px.max(0.0))
@@ -8987,6 +9274,7 @@ impl FormattingContext for TableFormattingContext {
           font_size,
           table_root_style.root_font_size,
           None,
+          root_metrics,
         )
       });
     let max_w = table_root_style
@@ -8998,6 +9286,7 @@ impl FormattingContext for TableFormattingContext {
           font_size,
           table_root_style.root_font_size,
           None,
+          root_metrics,
         )
       });
     let max_w = if let (Some(min_w), Some(max_w)) = (min_w, max_w) {
@@ -9085,14 +9374,28 @@ mod tests {
   fn table_length_helpers_resolve_root_font_relative_units() {
     let font_size = 10.0;
     let root_font_size = 20.0;
+    let root_metrics = Some(RootFontMetrics {
+      root_font_size_px: root_font_size,
+      root_x_height_px: 9.0,
+      root_cap_height_px: 13.0,
+      root_ch_advance_px: 7.0,
+      root_ic_advance_px: 21.0,
+      root_used_line_height_px: 30.0,
+    });
 
     assert_eq!(
-      resolve_length_against(&Length::rem(2.0), font_size, root_font_size, Some(100.0)),
+      resolve_length_against(
+        &Length::rem(2.0),
+        font_size,
+        root_font_size,
+        Some(100.0),
+        root_metrics
+      ),
       Some(40.0)
     );
 
     assert_eq!(
-      TableStructure::length_to_specified_height(&Length::rem(1.0), font_size, root_font_size),
+      TableStructure::length_to_specified_height(&Length::rem(1.0), font_size, root_font_size, root_metrics),
       SpecifiedHeight::Fixed(20.0)
     );
 
@@ -9101,9 +9404,10 @@ mod tests {
         &Length::new(2.0, LengthUnit::Rch),
         font_size,
         root_font_size,
-        Some(100.0)
+        Some(100.0),
+        root_metrics
       ),
-      Some(20.0)
+      Some(14.0)
     );
 
     let rlh = resolve_length_against(
@@ -9111,26 +9415,32 @@ mod tests {
       font_size,
       root_font_size,
       Some(100.0),
+      root_metrics,
     )
     .expect("resolve rlh");
-    assert!((rlh - 24.0).abs() < 0.01);
+    assert!((rlh - 30.0).abs() < 0.01);
 
     match TableStructure::length_to_specified_height(
       &Length::new(1.0, LengthUnit::Rlh),
       font_size,
       root_font_size,
+      root_metrics,
     ) {
-      SpecifiedHeight::Fixed(px) => assert!((px - 24.0).abs() < 0.01),
+      SpecifiedHeight::Fixed(px) => assert!((px - 30.0).abs() < 0.01),
       other => panic!("expected fixed rlh height, got {other:?}"),
     }
 
     let calc_rch = Length::calc(CalcLength::single(LengthUnit::Rch, 2.0));
     assert_eq!(
-      resolve_length_against(&calc_rch, font_size, root_font_size, Some(100.0)),
-      Some(20.0)
+      resolve_length_against(&calc_rch, font_size, root_font_size, Some(100.0), root_metrics),
+      Some(14.0)
     );
 
-    assert!((resolve_border_spacing_length(&Length::rem(1.5), font_size, root_font_size) - 30.0).abs() < 0.01);
+    assert!(
+      (resolve_border_spacing_length(&Length::rem(1.5), font_size, root_font_size, root_metrics) - 30.0)
+        .abs()
+        < 0.01
+    );
   }
 
   #[test]
@@ -9861,12 +10171,12 @@ mod tests {
     intrinsic_cache_use_epoch(starting_epoch.saturating_add(1), true);
 
     let table = BoxTree::new(create_simple_table(1, 1)).root;
-    let first = table_structure_cached(&table);
-    let second = table_structure_cached(&table);
+    let first = table_structure_cached(&table, None);
+    let second = table_structure_cached(&table, None);
     assert!(Arc::ptr_eq(&first, &second));
 
     intrinsic_cache_use_epoch(intrinsic_cache_epoch().saturating_add(1), false);
-    let third = table_structure_cached(&table);
+    let third = table_structure_cached(&table, None);
     assert!(!Arc::ptr_eq(&first, &third));
 
     intrinsic_cache_use_epoch(starting_epoch, true);
@@ -14482,7 +14792,7 @@ mod tests {
   #[test]
   fn border_spacing_calc_is_clamped_to_zero() {
     let len = CalcLength::single(LengthUnit::Px, -5.0);
-    let spacing = resolve_border_spacing_length(&Length::calc(len), 16.0, 16.0);
+    let spacing = resolve_border_spacing_length(&Length::calc(len), 16.0, 16.0, None);
     assert_eq!(spacing, 0.0);
   }
 
@@ -14490,7 +14800,7 @@ mod tests {
   fn border_spacing_calc_requires_viewport_for_vw() {
     let len = CalcLength::single(LengthUnit::Vw, 10.0);
     // No viewport -> unresolved calc treated as zero.
-    let spacing = resolve_border_spacing_length(&Length::calc(len), 16.0, 16.0);
+    let spacing = resolve_border_spacing_length(&Length::calc(len), 16.0, 16.0, None);
     assert_eq!(spacing, 0.0);
 
     // With viewport, 10vw of 200px => 20px spacing.
@@ -18789,7 +19099,7 @@ mod tests {
       "table style vertical spacing unexpected: {}",
       style_v_spacing
     );
-    let resolved_spacing = resolve_border_spacing(&table.style);
+    let resolved_spacing = resolve_border_spacing(&table.style, None);
     assert!(
       (resolved_spacing.0 - 6.0).abs() < f32::EPSILON
         && (resolved_spacing.1 - 4.0).abs() < f32::EPSILON,

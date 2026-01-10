@@ -1169,6 +1169,7 @@ impl BlockFormattingContext {
       self.viewport_size,
       inline_sides,
       inline_positive,
+      &self.font_context,
     );
     let width_auto = inline_length.is_none() && inline_keyword.is_none();
     let inline_edges_for_fit = computed_width.border_left
@@ -1229,6 +1230,7 @@ impl BlockFormattingContext {
           self.viewport_size,
           inline_sides,
           inline_positive,
+          &self.font_context,
         );
       }
     }
@@ -3648,6 +3650,7 @@ impl BlockFormattingContext {
       self.viewport_size,
       inline_sides,
       inline_positive,
+      &self.font_context,
     );
 
     let box_width = computed_width.border_box_width();
@@ -5113,6 +5116,7 @@ impl BlockFormattingContext {
           self.viewport_size,
           inline_sides,
           inline_positive,
+          &self.font_context,
         );
         let width_auto = child.style.width.is_none() && child.style.width_keyword.is_none();
         let inline_edges_for_fit = hypo_width.border_left
@@ -5176,6 +5180,7 @@ impl BlockFormattingContext {
             self.viewport_size,
             inline_sides,
             inline_positive,
+            &self.font_context,
           );
         }
 
@@ -8018,6 +8023,7 @@ impl FormattingContext for BlockFormattingContext {
       self.viewport_size,
       inline_sides,
       inline_positive,
+      &self.font_context,
     );
     let width_auto = style_for_width.width.is_none() && style_for_width.width_keyword.is_none();
     let inline_edges = computed_width.border_left
@@ -8085,6 +8091,7 @@ impl FormattingContext for BlockFormattingContext {
           self.viewport_size,
           inline_sides,
           inline_positive,
+          &self.font_context,
         );
       }
     }
@@ -13737,6 +13744,7 @@ mod tests {
       bfc.viewport_size,
       inline_sides,
       inline_positive,
+      &bfc.font_context,
     );
     let expected_offset = computed_width.border_left + computed_width.padding_left;
 

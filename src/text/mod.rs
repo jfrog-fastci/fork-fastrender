@@ -74,6 +74,7 @@ pub mod font_instance;
 pub mod font_loader;
 pub mod font_resolver;
 pub mod glyph_path;
+pub mod root_font_metrics;
 pub(crate) mod script_fallback;
 
 // Text Shaping Pipeline (Wave 4)

@@ -396,6 +396,7 @@ impl InlineFormattingContext {
       StyleAlign::Top => Align::Top,
       StyleAlign::Bottom => Align::Bottom,
       StyleAlign::Length(len) => {
+        let root_metrics = self.font_context.root_font_metrics();
         let px = if len.unit == LengthUnit::Calc {
           // `Length::resolve_with_context_for_writing_mode` cannot resolve `lh` terms inside
           // calc/min/max/clamp accurately because `CalcLength::resolve` lacks access to the
@@ -424,20 +425,45 @@ impl InlineFormattingContext {
                      u if u.is_absolute() => Some(crate::style::values::Length::new(term.value, u).to_px()),
                      u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
                        .resolve_with_viewport_for_writing_mode(vw, vh, writing_mode),
-                     LengthUnit::Em => Some(term.value * font_px),
-                     LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
-                     LengthUnit::Rem => Some(term.value * root_px),
-                     LengthUnit::Cap => Some(term.value * font_px * 0.7),
-                     LengthUnit::Ic => Some(term.value * font_px),
-                     LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_px * 0.5),
-                     LengthUnit::Rcap => Some(term.value * root_px * 0.7),
-                     LengthUnit::Ric => Some(term.value * root_px),
-                     // Root line-height isn't available in this context; use the "normal" fallback.
-                     LengthUnit::Rlh => Some(term.value * root_px * 1.2),
-                     LengthUnit::Lh => Some(term.value * line_height),
-                     _ => None,
-                   }?;
-                   total += resolved;
+                      LengthUnit::Em => Some(term.value * font_px),
+                      LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
+                      LengthUnit::Rem => Some(term.value * root_px),
+                      LengthUnit::Cap => Some(term.value * font_px * 0.7),
+                      LengthUnit::Ic => Some(term.value * font_px),
+                      LengthUnit::Rex => Some(
+                        term.value
+                          * root_metrics
+                            .map(|m| m.root_x_height_px)
+                            .unwrap_or(root_px * 0.5),
+                      ),
+                      LengthUnit::Rch => Some(
+                        term.value
+                          * root_metrics
+                            .map(|m| m.root_ch_advance_px)
+                            .unwrap_or(root_px * 0.5),
+                      ),
+                      LengthUnit::Rcap => Some(
+                        term.value
+                          * root_metrics
+                            .map(|m| m.root_cap_height_px)
+                            .unwrap_or(root_px * 0.7),
+                      ),
+                      LengthUnit::Ric => Some(
+                        term.value
+                          * root_metrics
+                            .map(|m| m.root_ic_advance_px)
+                            .unwrap_or(root_px),
+                      ),
+                      LengthUnit::Rlh => Some(
+                        term.value
+                          * root_metrics
+                            .map(|m| m.root_used_line_height_px)
+                            .unwrap_or(root_px * 1.2),
+                      ),
+                      LengthUnit::Lh => Some(term.value * line_height),
+                      _ => None,
+                    }?;
+                    total += resolved;
                  }
                 Some(total)
               },
@@ -445,27 +471,49 @@ impl InlineFormattingContext {
             .unwrap_or(len.value),
             None => len.value,
           }
-        } else if len.unit == LengthUnit::Lh {
-          if line_height.is_finite() {
-            len.value * line_height
-          } else {
-            0.0
-          }
-         } else if len.unit.is_font_relative() {
-           len
-             .resolve_with_context(None, 0.0, 0.0, font_size, root_font_size)
-             .unwrap_or_else(|| match len.unit {
-               LengthUnit::Rem => len.value * root_font_size,
-               LengthUnit::Rex | LengthUnit::Rch => len.value * root_font_size * 0.5,
-               LengthUnit::Rcap => len.value * root_font_size * 0.7,
-               LengthUnit::Ric => len.value * root_font_size,
-               LengthUnit::Rlh => len.value * root_font_size * 1.2,
-               _ => len.value * font_size,
-             })
-         } else if len.unit.is_percentage() {
-           len.resolve_against(line_height).unwrap_or(0.0)
-         } else if len.unit.is_absolute() {
-           len.to_px()
+         } else if len.unit == LengthUnit::Lh {
+           if line_height.is_finite() {
+             len.value * line_height
+           } else {
+             0.0
+           }
+          } else if len.unit.is_font_relative() {
+            match len.unit {
+              LengthUnit::Em => len.value * font_size,
+              LengthUnit::Ex | LengthUnit::Ch => len.value * font_size * 0.5,
+              LengthUnit::Cap => len.value * font_size * 0.7,
+              LengthUnit::Ic => len.value * font_size,
+              LengthUnit::Rem => len.value * root_font_size,
+              LengthUnit::Rex => {
+                len.value * root_metrics.map(|m| m.root_x_height_px).unwrap_or(root_font_size * 0.5)
+              }
+              LengthUnit::Rch => {
+                len.value * root_metrics.map(|m| m.root_ch_advance_px).unwrap_or(root_font_size * 0.5)
+              }
+              LengthUnit::Rcap => {
+                len.value * root_metrics.map(|m| m.root_cap_height_px).unwrap_or(root_font_size * 0.7)
+              }
+              LengthUnit::Ric => {
+                len.value * root_metrics.map(|m| m.root_ic_advance_px).unwrap_or(root_font_size)
+              }
+              LengthUnit::Rlh => len.value
+                * root_metrics
+                  .map(|m| m.root_used_line_height_px)
+                  .unwrap_or(root_font_size * 1.2),
+              // Treat `lh` as line-relative when encountered outside calc.
+              LengthUnit::Lh => {
+                if line_height.is_finite() {
+                  len.value * line_height
+                } else {
+                  0.0
+                }
+              }
+              _ => len.value * font_size,
+            }
+          } else if len.unit.is_percentage() {
+            len.resolve_against(line_height).unwrap_or(0.0)
+          } else if len.unit.is_absolute() {
+            len.to_px()
          } else if len.unit.is_viewport_relative() {
           len
             .resolve_with_viewport_for_writing_mode(
@@ -2931,7 +2979,12 @@ impl InlineFormattingContext {
     let inline_vertical = is_vertical_writing_mode(style.writing_mode);
     let metrics = self.resolve_scaled_metrics(style);
     let line_height =
-      compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(self.viewport_size));
+      compute_line_height_with_metrics_viewport(
+        style,
+        metrics.as_ref(),
+        Some(self.viewport_size),
+        self.font_context.root_font_metrics(),
+      );
     let fc = self.factory.get(fc_type);
 
     let percentage_base = available_width.is_finite().then_some(available_width);
@@ -4535,6 +4588,7 @@ impl InlineFormattingContext {
         style,
         primary_metrics.as_ref(),
         Some(self.viewport_size),
+        self.font_context.root_font_metrics(),
       ),
     };
 
@@ -5188,7 +5242,12 @@ impl InlineFormattingContext {
     let inline_vertical = is_vertical_writing_mode(style.writing_mode);
     let metrics = self.resolve_scaled_metrics(style);
     let line_height =
-      compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(self.viewport_size));
+      compute_line_height_with_metrics_viewport(
+        style,
+        metrics.as_ref(),
+        Some(self.viewport_size),
+        self.font_context.root_font_metrics(),
+      );
     let width_base = available_width.is_finite().then_some(available_width);
     let height_base = available_height.filter(|h| h.is_finite());
     let percentage_size = match (width_base, height_base) {
@@ -5627,7 +5686,12 @@ impl InlineFormattingContext {
   fn compute_strut_metrics(&self, style: &ComputedStyle) -> BaselineMetrics {
     let scaled = self.resolve_scaled_metrics(style);
     let line_height =
-      compute_line_height_with_metrics_viewport(style, scaled.as_ref(), Some(self.viewport_size));
+      compute_line_height_with_metrics_viewport(
+        style,
+        scaled.as_ref(),
+        Some(self.viewport_size),
+        self.font_context.root_font_metrics(),
+      );
     if let Some(scaled) = scaled {
       // CSS 2.1 §10.8: distribute leading equally above and below the font's ascent/descent.
       let half_leading = (line_height - (scaled.ascent + scaled.descent)) / 2.0;
@@ -5673,7 +5737,12 @@ impl InlineFormattingContext {
     };
 
     let line_height =
-      compute_line_height_with_metrics_viewport(style, Some(&scaled), Some(self.viewport_size));
+      compute_line_height_with_metrics_viewport(
+        style,
+        Some(&scaled),
+        Some(self.viewport_size),
+        self.font_context.root_font_metrics(),
+      );
     if !line_height.is_finite() || line_height <= 0.0 {
       return self.compute_strut_metrics(style);
     }
@@ -5718,7 +5787,12 @@ impl InlineFormattingContext {
     };
 
     let line_height =
-      compute_line_height_with_metrics_viewport(style, Some(&scaled), Some(self.viewport_size));
+      compute_line_height_with_metrics_viewport(
+        style,
+        Some(&scaled),
+        Some(self.viewport_size),
+        self.font_context.root_font_metrics(),
+      );
     if !line_height.is_finite() || line_height <= 0.0 {
       return self.compute_strut_metrics(style);
     }

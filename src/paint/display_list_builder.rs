@@ -10777,7 +10777,12 @@ impl DisplayListBuilder {
 
       let metrics_scaled = Self::resolve_scaled_metrics(style, &builder.font_ctx);
       let line_height =
-        compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), Some(viewport));
+        compute_line_height_with_metrics_viewport(
+          style,
+          metrics_scaled.as_ref(),
+          Some(viewport),
+          builder.font_ctx.root_font_metrics(),
+        );
       let metrics =
         InlineTextItem::metrics_from_runs(&builder.font_ctx, &runs, line_height, style.font_size);
       let baseline_offset_y = if center_y {
@@ -11075,7 +11080,12 @@ impl DisplayListBuilder {
         let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
         let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
         let line_height =
-          compute_line_height_with_metrics_viewport(&text_style, metrics_scaled.as_ref(), viewport);
+          compute_line_height_with_metrics_viewport(
+            &text_style,
+            metrics_scaled.as_ref(),
+            viewport,
+            self.font_ctx.root_font_metrics(),
+          );
         let baseline_offset_y = if line_height.is_finite() {
           (text_rect.height() - line_height) / 2.0
         } else {
@@ -11331,7 +11341,12 @@ impl DisplayListBuilder {
         let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
         let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
         let line_height =
-          compute_line_height_with_metrics_viewport(&text_style, metrics_scaled.as_ref(), viewport);
+          compute_line_height_with_metrics_viewport(
+            &text_style,
+            metrics_scaled.as_ref(),
+            viewport,
+            self.font_ctx.root_font_metrics(),
+          );
 
         let selection_color = Rgba {
           r: 0,
@@ -11806,6 +11821,7 @@ impl DisplayListBuilder {
           &button_style,
           metrics_scaled.as_ref(),
           viewport,
+          self.font_ctx.root_font_metrics(),
         );
         let baseline_offset_y = if line_height.is_finite() {
           (rect.height() - line_height) / 2.0
@@ -12529,6 +12545,7 @@ impl DisplayListBuilder {
             &file_style,
             metrics_scaled.as_ref(),
             viewport,
+            self.font_ctx.root_font_metrics(),
           );
           let baseline_offset_y = if line_height.is_finite() {
             (text_rect.height() - line_height) / 2.0
@@ -12713,7 +12730,12 @@ impl DisplayListBuilder {
     let metrics_scaled = Self::resolve_scaled_metrics(style, &self.font_ctx);
     let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
     let line_height =
-      compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), viewport);
+      compute_line_height_with_metrics_viewport(
+        style,
+        metrics_scaled.as_ref(),
+        viewport,
+        self.font_ctx.root_font_metrics(),
+      );
     let metrics =
       InlineTextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
     let baseline = rect.y() + metrics.baseline_offset;

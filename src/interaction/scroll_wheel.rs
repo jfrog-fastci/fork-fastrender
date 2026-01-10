@@ -157,7 +157,7 @@ fn select_listbox_max_scroll_y(
     None
   };
   let line_height =
-    compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size));
+    compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size), None);
   if line_height <= 0.0 || !line_height.is_finite() {
     return None;
   }

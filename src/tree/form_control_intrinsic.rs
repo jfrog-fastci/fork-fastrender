@@ -87,8 +87,12 @@ pub(crate) fn intrinsic_content_size_for_form_control(
 ) -> Size {
   let char_width =
     resolve_font_relative_length(Length::new(1.0, LengthUnit::Ch), style, font_context);
-  let line_height =
-    compute_line_height_with_metrics_viewport(style, metrics_scaled, Some(viewport));
+  let line_height = compute_line_height_with_metrics_viewport(
+    style,
+    metrics_scaled,
+    Some(viewport),
+    font_context.root_font_metrics(),
+  );
 
   match &control.control {
     FormControlKind::Text {

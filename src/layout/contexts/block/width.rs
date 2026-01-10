@@ -38,6 +38,7 @@ use crate::style::types::BoxSizing;
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::style::PhysicalSide;
+use crate::text::font_loader::FontContext;
 
 /// Result of width computation
 ///
@@ -136,11 +137,14 @@ pub fn compute_block_width(
   viewport: crate::geometry::Size,
   inline_sides: (PhysicalSide, PhysicalSide),
   inline_positive: bool,
+  font_context: &FontContext,
 ) -> ComputedBlockWidth {
   let (start_side, end_side) = inline_sides;
   // Resolve padding (percentages relative to containing width)
-  let mut padding_left = resolve_padding_for_side(style, start_side, containing_width, viewport);
-  let mut padding_right = resolve_padding_for_side(style, end_side, containing_width, viewport);
+  let mut padding_left =
+    resolve_padding_for_side(style, start_side, containing_width, viewport, font_context);
+  let mut padding_right =
+    resolve_padding_for_side(style, end_side, containing_width, viewport, font_context);
   let mut reserved_scrollbar_gutter = 0.0;
 
   // Scrollbars are treated as overlay by default; `scrollbar-gutter: stable` opts into reserving
@@ -165,13 +169,17 @@ pub fn compute_block_width(
   }
 
   // Border widths
-  let border_left = resolve_border_for_side(style, start_side, containing_width, viewport);
-  let border_right = resolve_border_for_side(style, end_side, containing_width, viewport);
+  let border_left =
+    resolve_border_for_side(style, start_side, containing_width, viewport, font_context);
+  let border_right =
+    resolve_border_for_side(style, end_side, containing_width, viewport, font_context);
   let horizontal_edges = padding_left + padding_right + border_left + border_right;
 
   // Resolve margins (may be auto - represented by None)
-  let margin_left = margin_value_for_side(style, start_side, containing_width, viewport);
-  let margin_right = margin_value_for_side(style, end_side, containing_width, viewport);
+  let margin_left =
+    margin_value_for_side(style, start_side, containing_width, viewport, font_context);
+  let margin_right =
+    margin_value_for_side(style, end_side, containing_width, viewport, font_context);
 
   // Resolve the authored size on the *inline axis*.
   //
@@ -186,7 +194,7 @@ pub fn compute_block_width(
   };
   let width_value = inline_size_value
     .as_ref()
-    .map(|len| resolve_length(*len, containing_width, style, viewport))
+    .map(|len| resolve_length(*len, containing_width, style, viewport, font_context))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
   // Scrollbars are rendered inside the scrollport, consuming space without affecting the border box
   // size. We model this by treating reserved scrollbar gutters like extra padding while also
@@ -235,15 +243,16 @@ pub fn compute_block_width_with_auto_margins(
   viewport: crate::geometry::Size,
   inline_sides: (PhysicalSide, PhysicalSide),
   inline_positive: bool,
+  font_context: &FontContext,
 ) -> ComputedBlockWidth {
   let (start_side, end_side) = inline_sides;
   // Resolve padding
-  let padding_left = resolve_padding_for_side(style, start_side, containing_width, viewport);
-  let padding_right = resolve_padding_for_side(style, end_side, containing_width, viewport);
+  let padding_left = resolve_padding_for_side(style, start_side, containing_width, viewport, font_context);
+  let padding_right = resolve_padding_for_side(style, end_side, containing_width, viewport, font_context);
 
   // Border widths
-  let border_left = resolve_border_for_side(style, start_side, containing_width, viewport);
-  let border_right = resolve_border_for_side(style, end_side, containing_width, viewport);
+  let border_left = resolve_border_for_side(style, start_side, containing_width, viewport, font_context);
+  let border_right = resolve_border_for_side(style, end_side, containing_width, viewport, font_context);
   let horizontal_edges = padding_left + padding_right + border_left + border_right;
 
   // Resolve margins with explicit auto flags
@@ -251,7 +260,8 @@ pub fn compute_block_width_with_auto_margins(
     MarginValue::Auto
   } else {
     MarginValue::Length(
-      resolve_margin_length_for_side(style, start_side, containing_width, viewport).unwrap_or(0.0),
+      resolve_margin_length_for_side(style, start_side, containing_width, viewport, font_context)
+        .unwrap_or(0.0),
     )
   };
 
@@ -259,7 +269,8 @@ pub fn compute_block_width_with_auto_margins(
     MarginValue::Auto
   } else {
     MarginValue::Length(
-      resolve_margin_length_for_side(style, end_side, containing_width, viewport).unwrap_or(0.0),
+      resolve_margin_length_for_side(style, end_side, containing_width, viewport, font_context)
+        .unwrap_or(0.0),
     )
   };
 
@@ -272,7 +283,7 @@ pub fn compute_block_width_with_auto_margins(
   };
   let width_value = inline_size_value
     .as_ref()
-    .map(|len| resolve_length(*len, containing_width, style, viewport))
+    .map(|len| resolve_length(*len, containing_width, style, viewport, font_context))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
 
   // Compute the resolved values
@@ -304,6 +315,7 @@ fn resolve_margin_length_for_side(
   side: PhysicalSide,
   containing_width: f32,
   viewport: crate::geometry::Size,
+  font_context: &FontContext,
 ) -> Option<f32> {
   let length = match side {
     PhysicalSide::Top => style.margin_top,
@@ -311,7 +323,13 @@ fn resolve_margin_length_for_side(
     PhysicalSide::Bottom => style.margin_bottom,
     PhysicalSide::Left => style.margin_left,
   }?;
-  Some(resolve_length(length, containing_width, style, viewport))
+  Some(resolve_length(
+    length,
+    containing_width,
+    style,
+    viewport,
+    font_context,
+  ))
 }
 
 fn margin_value_for_side(
@@ -319,8 +337,9 @@ fn margin_value_for_side(
   side: PhysicalSide,
   containing_width: f32,
   viewport: crate::geometry::Size,
+  font_context: &FontContext,
 ) -> MarginValue {
-  resolve_margin_length_for_side(style, side, containing_width, viewport)
+  resolve_margin_length_for_side(style, side, containing_width, viewport, font_context)
     .map(MarginValue::Length)
     .unwrap_or(MarginValue::Auto)
 }
@@ -330,6 +349,7 @@ fn resolve_padding_for_side(
   side: PhysicalSide,
   containing_width: f32,
   viewport: crate::geometry::Size,
+  font_context: &FontContext,
 ) -> f32 {
   let length = match side {
     PhysicalSide::Top => style.padding_top,
@@ -337,7 +357,7 @@ fn resolve_padding_for_side(
     PhysicalSide::Bottom => style.padding_bottom,
     PhysicalSide::Left => style.padding_left,
   };
-  let resolved = resolve_length(length, containing_width, style, viewport);
+  let resolved = resolve_length(length, containing_width, style, viewport, font_context);
   if resolved.is_finite() {
     resolved.max(0.0)
   } else {
@@ -350,6 +370,7 @@ fn resolve_border_for_side(
   side: PhysicalSide,
   containing_width: f32,
   viewport: crate::geometry::Size,
+  font_context: &FontContext,
 ) -> f32 {
   let length = match side {
     PhysicalSide::Top => style.used_border_top_width(),
@@ -357,7 +378,7 @@ fn resolve_border_for_side(
     PhysicalSide::Bottom => style.used_border_bottom_width(),
     PhysicalSide::Left => style.used_border_left_width(),
   };
-  let resolved = resolve_length(length, containing_width, style, viewport);
+  let resolved = resolve_length(length, containing_width, style, viewport, font_context);
   if resolved.is_finite() {
     resolved.max(0.0)
   } else {
@@ -436,6 +457,7 @@ fn resolve_length(
   containing_width: f32,
   style: &ComputedStyle,
   viewport: crate::geometry::Size,
+  font_context: &FontContext,
 ) -> f32 {
   let base = if containing_width.is_finite() {
     Some(containing_width)
@@ -449,7 +471,7 @@ fn resolve_length(
     style.font_size,
     style.root_font_size,
     Some(style),
-    None,
+    Some(font_context),
   )
   .unwrap_or(0.0)
 }
@@ -488,7 +510,15 @@ mod tests {
 
   fn compute(style: &ComputedStyle, containing: f32) -> ComputedBlockWidth {
     let (sides, positive) = inline_params(style);
-    compute_block_width(style, containing, viewport(), sides, positive)
+    let font_context = FontContext::empty();
+    compute_block_width(
+      style,
+      containing,
+      viewport(),
+      sides,
+      positive,
+      &font_context,
+    )
   }
 
   fn compute_auto(
@@ -498,6 +528,7 @@ mod tests {
     margin_right_auto: bool,
   ) -> ComputedBlockWidth {
     let (sides, positive) = inline_params(style);
+    let font_context = FontContext::empty();
     compute_block_width_with_auto_margins(
       style,
       containing,
@@ -506,6 +537,7 @@ mod tests {
       viewport(),
       sides,
       positive,
+      &font_context,
     )
   }
 

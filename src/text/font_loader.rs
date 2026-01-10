@@ -54,11 +54,13 @@ use crate::text::font_db::FontWeight;
 use crate::text::font_db::LoadedFont;
 use crate::text::font_db::ScaledMetrics;
 use crate::text::font_fallback::FontId;
+use crate::text::root_font_metrics::RootFontMetrics;
 use crate::text::pipeline::DEFAULT_OBLIQUE_ANGLE_DEG;
 use crate::text::variations::variation_hash;
 use fontdb::Database as FontDbDatabase;
 use lru::LruCache;
 use parking_lot::Mutex as ParkingMutex;
+use parking_lot::RwLock as ParkingRwLock;
 use rustc_hash::FxHasher;
 use rustybuzz::ttf_parser::{self, GlyphId, Tag};
 use rustybuzz::Direction;
@@ -402,6 +404,10 @@ pub struct FontContext {
   feature_support: Arc<RwLock<std::collections::HashMap<(usize, u32, u32), bool>>>,
   scaled_metrics_cache:
     Arc<ParkingMutex<LruCache<ScaledMetricsCacheKey, ScaledMetrics, ScaledMetricsCacheHasher>>>,
+  /// Root element font metrics used to resolve root-relative font units (`rex`/`rch`/`rcap`/`ric`/`rlh`).
+  ///
+  /// Layout computes this once per document render and updates it before resolving any lengths.
+  root_font_metrics: Arc<ParkingRwLock<Option<RootFontMetrics>>>,
   fetcher: Arc<dyn FontFetcher>,
   resource_fetcher: Option<Arc<dyn ResourceFetcher>>,
   resource_context_shared: Option<Arc<RwLock<Option<ResourceContext>>>>,
@@ -688,6 +694,7 @@ impl FontContext {
         NonZeroUsize::new(SCALED_METRICS_CACHE_SIZE).unwrap(),
         ScaledMetricsCacheHasher::default(),
       ))),
+      root_font_metrics: Arc::new(ParkingRwLock::new(None)),
       fetcher,
       resource_fetcher: None,
       resource_context_shared: None,
@@ -720,6 +727,20 @@ impl FontContext {
   #[inline]
   pub fn database(&self) -> &FontDatabase {
     &self.db
+  }
+
+  /// Updates the cached root element font metrics for the current render.
+  ///
+  /// Root-relative units (`rex`/`rch`/`rcap`/`ric`/`rlh`) are defined in terms of the document's
+  /// root element. Layout computes these metrics once per render and stores them here so hot-path
+  /// length resolution can reuse the results.
+  pub fn set_root_font_metrics(&self, metrics: Option<RootFontMetrics>) {
+    *self.root_font_metrics.write() = metrics;
+  }
+
+  /// Returns the cached root element font metrics for the current render, if available.
+  pub fn root_font_metrics(&self) -> Option<RootFontMetrics> {
+    *self.root_font_metrics.read()
   }
 
   /// Returns the number of available fonts
@@ -809,6 +830,7 @@ impl FontContext {
       web_families: Arc::new(RwLock::new(web_families)),
       feature_support: Arc::new(RwLock::new(feature_support)),
       scaled_metrics_cache: Arc::clone(&self.scaled_metrics_cache),
+      root_font_metrics: Arc::clone(&self.root_font_metrics),
       fetcher,
       resource_fetcher,
       resource_context_shared,

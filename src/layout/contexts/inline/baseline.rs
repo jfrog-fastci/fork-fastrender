@@ -36,6 +36,7 @@
 use crate::geometry::Size;
 use crate::style::ComputedStyle;
 use crate::text::font_db::FontMetrics;
+use crate::text::root_font_metrics::RootFontMetrics;
 
 /// Vertical alignment modes for inline elements
 ///
@@ -399,6 +400,7 @@ pub fn compute_line_height_with_metrics_viewport(
   style: &ComputedStyle,
   metrics: Option<&crate::text::font_db::ScaledMetrics>,
   viewport: Option<Size>,
+  root_metrics: Option<RootFontMetrics>,
 ) -> f32 {
   use crate::style::types::LineHeight;
   use crate::style::values::LengthUnit;
@@ -432,12 +434,26 @@ pub fn compute_line_height_with_metrics_viewport(
         len.value * cap_height
       }
       LengthUnit::Ic => len.value * font_size,
-      LengthUnit::Rex | LengthUnit::Rch => len.value * style.root_font_size * 0.5,
-      LengthUnit::Rcap => len.value * style.root_font_size * 0.7,
-      LengthUnit::Ric => len.value * style.root_font_size,
-      // Root line-height isn't plumbed through layout yet; approximate `rlh` as `normal` on the
-      // root font size.
-      LengthUnit::Rlh => len.value * style.root_font_size * 1.2,
+      LengthUnit::Rex => len.value
+        * root_metrics
+          .map(|m| m.root_x_height_px)
+          .unwrap_or(style.root_font_size * 0.5),
+      LengthUnit::Rch => len.value
+        * root_metrics
+          .map(|m| m.root_ch_advance_px)
+          .unwrap_or(style.root_font_size * 0.5),
+      LengthUnit::Rcap => len.value
+        * root_metrics
+          .map(|m| m.root_cap_height_px)
+          .unwrap_or(style.root_font_size * 0.7),
+      LengthUnit::Ric => len.value
+        * root_metrics
+          .map(|m| m.root_ic_advance_px)
+          .unwrap_or(style.root_font_size),
+      LengthUnit::Rlh => len.value
+        * root_metrics
+          .map(|m| m.root_used_line_height_px)
+          .unwrap_or(style.root_font_size * 1.2),
       // `lh` inside the `line-height` property is cyclic; approximate it using the UA's
       // `normal` line height.
       LengthUnit::Lh => len.value * normal_line_height,
@@ -465,19 +481,45 @@ pub fn compute_line_height_with_metrics_viewport(
                     Some(term.value * x_height)
                   }
                   LengthUnit::Ch => Some(term.value * font_px * 0.5),
-                  LengthUnit::Cap => {
-                    let cap_height = metrics.and_then(|m| m.cap_height).unwrap_or(font_px * 0.7);
-                    Some(term.value * cap_height)
-                  }
-                  LengthUnit::Ic => Some(term.value * font_px),
-                  LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_px * 0.5),
-                  LengthUnit::Rcap => Some(term.value * root_px * 0.7),
-                  LengthUnit::Ric => Some(term.value * root_px),
-                  LengthUnit::Rlh => Some(term.value * root_px * 1.2),
-                  // `lh` inside `line-height` is cyclic; approximate it using the UA `normal` line height.
-                  LengthUnit::Lh => Some(term.value * normal_line_height),
-                  u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
-                    .resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode),
+                   LengthUnit::Cap => {
+                     let cap_height = metrics.and_then(|m| m.cap_height).unwrap_or(font_px * 0.7);
+                     Some(term.value * cap_height)
+                   }
+                   LengthUnit::Ic => Some(term.value * font_px),
+                   LengthUnit::Rex => Some(
+                     term.value
+                       * root_metrics
+                         .map(|m| m.root_x_height_px)
+                         .unwrap_or(root_px * 0.5),
+                   ),
+                   LengthUnit::Rch => Some(
+                     term.value
+                       * root_metrics
+                         .map(|m| m.root_ch_advance_px)
+                         .unwrap_or(root_px * 0.5),
+                   ),
+                   LengthUnit::Rcap => Some(
+                     term.value
+                       * root_metrics
+                         .map(|m| m.root_cap_height_px)
+                         .unwrap_or(root_px * 0.7),
+                   ),
+                   LengthUnit::Ric => Some(
+                     term.value
+                       * root_metrics
+                         .map(|m| m.root_ic_advance_px)
+                         .unwrap_or(root_px),
+                   ),
+                   LengthUnit::Rlh => Some(
+                     term.value
+                       * root_metrics
+                         .map(|m| m.root_used_line_height_px)
+                         .unwrap_or(root_px * 1.2),
+                   ),
+                   // `lh` inside `line-height` is cyclic; approximate it using the UA `normal` line height.
+                   LengthUnit::Lh => Some(term.value * normal_line_height),
+                   u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
+                     .resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode),
                   _ => Some(term.value),
                 }?;
               }
@@ -500,7 +542,7 @@ pub fn compute_line_height_with_metrics(
   style: &ComputedStyle,
   metrics: Option<&crate::text::font_db::ScaledMetrics>,
 ) -> f32 {
-  compute_line_height_with_metrics_viewport(style, metrics, None)
+  compute_line_height_with_metrics_viewport(style, metrics, None, None)
 }
 
 #[cfg(test)]
@@ -890,12 +932,12 @@ mod tests {
     // With a 500px high viewport, 10vh should be 50px. The viewport-aware helper should use
     // the provided size instead of the 1200x800 fallback.
     let vh_500 =
-      compute_line_height_with_metrics_viewport(&style, None, Some(Size::new(800.0, 500.0)));
+      compute_line_height_with_metrics_viewport(&style, None, Some(Size::new(800.0, 500.0)), None);
     assert!((vh_500 - 50.0).abs() < 0.001);
 
     // And with a different viewport height, the result should change accordingly.
     let vh_900 =
-      compute_line_height_with_metrics_viewport(&style, None, Some(Size::new(800.0, 900.0)));
+      compute_line_height_with_metrics_viewport(&style, None, Some(Size::new(800.0, 900.0)), None);
     assert!((vh_900 - 90.0).abs() < 0.001);
   }
 
@@ -911,14 +953,14 @@ mod tests {
 
     style.line_height =
       crate::style::types::LineHeight::Length(Length::new(1.0, LengthUnit::Rch));
-    let rch = compute_line_height_with_metrics_viewport(&style, None, None);
+    let rch = compute_line_height_with_metrics_viewport(&style, None, None, None);
     assert!((rch - 5.0).abs() < 0.001);
 
     style.line_height = crate::style::types::LineHeight::Length(Length::calc(CalcLength::single(
       LengthUnit::Rch,
       1.0,
     )));
-    let rch_calc = compute_line_height_with_metrics_viewport(&style, None, None);
+    let rch_calc = compute_line_height_with_metrics_viewport(&style, None, None, None);
     assert!((rch_calc - 5.0).abs() < 0.001);
   }
 }

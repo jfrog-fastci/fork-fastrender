@@ -3778,6 +3778,7 @@ impl GridFormattingContext {
     if len.unit == LengthUnit::Calc || len.calc.is_some() {
       return self.resolve_length_px_with_base(*len, None, style);
     }
+    let root_metrics = self.font_context.root_font_metrics();
     match len.unit {
       LengthUnit::Calc => {
         if len.has_percentage() {
@@ -3808,10 +3809,36 @@ impl GridFormattingContext {
       LengthUnit::Ch => Some(len.value * style.font_size * 0.5),
       LengthUnit::Cap => Some(len.value * style.font_size * 0.7),
       LengthUnit::Ic => Some(len.value * style.font_size),
-      LengthUnit::Rex | LengthUnit::Rch => Some(len.value * style.root_font_size * 0.5),
-      LengthUnit::Rcap => Some(len.value * style.root_font_size * 0.7),
-      LengthUnit::Ric => Some(len.value * style.root_font_size),
-      LengthUnit::Rlh => Some(len.value * style.root_font_size * 1.2),
+      LengthUnit::Rex => Some(
+        len.value
+          * root_metrics
+            .map(|m| m.root_x_height_px)
+            .unwrap_or(style.root_font_size * 0.5),
+      ),
+      LengthUnit::Rch => Some(
+        len.value
+          * root_metrics
+            .map(|m| m.root_ch_advance_px)
+            .unwrap_or(style.root_font_size * 0.5),
+      ),
+      LengthUnit::Rcap => Some(
+        len.value
+          * root_metrics
+            .map(|m| m.root_cap_height_px)
+            .unwrap_or(style.root_font_size * 0.7),
+      ),
+      LengthUnit::Ric => Some(
+        len.value
+          * root_metrics
+            .map(|m| m.root_ic_advance_px)
+            .unwrap_or(style.root_font_size),
+      ),
+      LengthUnit::Rlh => Some(
+        len.value
+          * root_metrics
+            .map(|m| m.root_used_line_height_px)
+            .unwrap_or(style.root_font_size * 1.2),
+      ),
       LengthUnit::Lh => resolve_length_with_percentage_metrics(
         *len,
         None,

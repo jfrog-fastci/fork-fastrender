@@ -1352,7 +1352,7 @@ fn caret_index_for_text_control_point(
       None
     };
     let line_height =
-      compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size));
+      compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size), None);
     if line_height <= 0.0 || !line_height.is_finite() {
       return Some(0);
     }
@@ -1641,9 +1641,9 @@ fn apply_select_listbox_click(
     super::resolve_scaled_metrics_for_interaction(style)
   } else {
     None
-  };
-  let line_height =
-    compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size));
+    };
+    let line_height =
+    compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size), None);
   if line_height <= 0.0 || !line_height.is_finite() {
     return false;
   }

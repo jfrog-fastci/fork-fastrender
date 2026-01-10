@@ -9570,6 +9570,7 @@ impl Painter {
           &text_style,
           metrics_scaled.as_ref(),
           Some(Size::new(self.css_width, self.css_height)),
+          self.font_ctx.root_font_metrics(),
         );
         let baseline_offset_y = if line_height.is_finite() {
           (rect.height() - line_height) / 2.0
@@ -9778,6 +9779,7 @@ impl Painter {
           &text_style,
           metrics_scaled.as_ref(),
           Some(Size::new(self.css_width, self.css_height)),
+          self.font_ctx.root_font_metrics(),
         );
 
         let display_text = paint_text.unwrap_or("");
@@ -9969,6 +9971,7 @@ impl Painter {
             style,
             metrics.as_ref(),
             Some(Size::new(self.css_width, self.css_height)),
+            self.font_ctx.root_font_metrics(),
           );
           if row_height <= 0.0 || !row_height.is_finite() {
             return true;
@@ -10264,6 +10267,7 @@ impl Painter {
           &button_style,
           metrics_scaled.as_ref(),
           Some(Size::new(self.css_width, self.css_height)),
+          self.font_ctx.root_font_metrics(),
         );
         let baseline_offset_y = if line_height.is_finite() {
           (content_rect.height() - line_height) / 2.0
@@ -12274,6 +12278,7 @@ impl Painter {
       style,
       metrics_scaled.as_ref(),
       Some(Size::new(self.css_width, self.css_height)),
+      self.font_ctx.root_font_metrics(),
     );
     let metrics = TextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
     let baseline_y = rect.y() + metrics.baseline_offset;
@@ -12313,6 +12318,7 @@ impl Painter {
       style,
       metrics_scaled.as_ref(),
       Some(Size::new(self.css_width, self.css_height)),
+      self.font_ctx.root_font_metrics(),
     );
     let width: f32 = runs.iter().map(|r| r.advance).sum();
     Some(Size::new(width, line_height))

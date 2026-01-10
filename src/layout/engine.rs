@@ -1060,6 +1060,14 @@ impl LayoutEngine {
       factory.reset_caches();
     }
 
+    // Cache root element font metrics once per layout run so root-relative font units
+    // (`rex`/`rch`/`rcap`/`ric`/`rlh`) can resolve against the actual root font.
+    let viewport_size = factory.viewport_size();
+    let font_context = factory.font_context();
+    let root_metrics =
+      crate::layout::utils::compute_root_font_metrics(&box_tree.root.style, viewport_size, font_context);
+    font_context.set_root_font_metrics(root_metrics);
+
     // Create root constraints from initial containing block, preferring explicit
     // fragmentainer size when pagination is enabled.
     let icb = &self.config.initial_containing_block;
@@ -1263,6 +1271,14 @@ impl LayoutEngine {
     constraints: &LayoutConstraints,
     trace: Option<&TraceHandle>,
   ) -> Result<FragmentNode, LayoutError> {
+    // When laying out an isolated subtree, treat the subtree root as the root element for
+    // root-relative font units. This mirrors the full-document layout behavior.
+    let viewport_size = factory.viewport_size();
+    let font_context = factory.font_context();
+    let root_metrics =
+      crate::layout::utils::compute_root_font_metrics(&box_node.style, viewport_size, font_context);
+    font_context.set_root_font_metrics(root_metrics);
+
     // Future: Check cache first
     // if let Some(cached) = self.check_cache(box_node, constraints) {
     //     return Ok(cached);
@@ -1349,6 +1365,13 @@ impl LayoutEngine {
     box_node: &BoxNode,
     mode: IntrinsicSizingMode,
   ) -> Result<f32, LayoutError> {
+    // Treat the measured box as the root element for root-relative font units.
+    let viewport_size = self.factory.viewport_size();
+    let font_context = self.factory.font_context();
+    let root_metrics =
+      crate::layout::utils::compute_root_font_metrics(&box_node.style, viewport_size, font_context);
+    font_context.set_root_font_metrics(root_metrics);
+
     let fc_type = box_node.formatting_context().ok_or_else(|| {
       LayoutError::MissingContext("Box does not establish a formatting context".to_string())
     })?;
@@ -1368,6 +1391,13 @@ impl LayoutEngine {
     box_node: &BoxNode,
     mode: IntrinsicSizingMode,
   ) -> Result<f32, LayoutError> {
+    // Treat the measured box as the root element for root-relative font units.
+    let viewport_size = self.factory.viewport_size();
+    let font_context = self.factory.font_context();
+    let root_metrics =
+      crate::layout::utils::compute_root_font_metrics(&box_node.style, viewport_size, font_context);
+    font_context.set_root_font_metrics(root_metrics);
+
     let fc_type = box_node.formatting_context().ok_or_else(|| {
       LayoutError::MissingContext("Box does not establish a formatting context".to_string())
     })?;

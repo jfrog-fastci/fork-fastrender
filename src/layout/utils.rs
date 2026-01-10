@@ -25,6 +25,7 @@ use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle as FontFaceStyle;
 use crate::text::font_db::ScaledMetrics;
 use crate::text::font_loader::FontContext;
+use crate::text::root_font_metrics::RootFontMetrics;
 use crate::tree::box_tree::ReplacedBox;
 use crate::tree::fragment_tree::{FragmentNode, ScrollbarReservation};
 
@@ -330,6 +331,7 @@ fn resolve_line_height_px(
       style,
       scaled_metrics.as_ref(),
       Some(viewport),
+      font_context.and_then(|ctx| ctx.root_font_metrics()),
     ),
   )
 }
@@ -645,29 +647,169 @@ pub fn resolve_offset_for_positioned(
   match value {
     LengthOrAuto::Auto => None,
     LengthOrAuto::Length(length) => {
-      if length.unit == LengthUnit::Calc {
-        return length.resolve_with_context_for_writing_mode(
-          percentage_base,
+      resolve_length_for_positioned_style(*length, percentage_base, viewport, style, font_context)
+    }
+  }
+}
+
+pub(crate) fn resolve_length_for_positioned_style(
+  length: Length,
+  percentage_base: Option<f32>,
+  viewport: crate::geometry::Size,
+  style: &PositionedStyle,
+  font_context: &FontContext,
+) -> Option<f32> {
+  if length.unit == LengthUnit::Calc {
+    return length.calc.as_ref().and_then(|calc| match calc {
+      LengthCalc::Linear(calc) => resolve_calc_length_with_percentage_for_positioned(
+        calc,
+        percentage_base,
+        viewport,
+        style,
+        font_context,
+      ),
+      LengthCalc::Expr(_) => resolve_length_calc_with_resolver(
+        *calc,
+        percentage_base,
+        viewport.width,
+        viewport.height,
+        style.font_size,
+        style.root_font_size,
+        &|linear, base, vw, vh, _font_px, _root_px| {
+          resolve_calc_length_with_percentage_for_positioned(
+            linear,
+            base,
+            Size { width: vw, height: vh },
+            style,
+            font_context,
+          )
+        },
+      ),
+    });
+  }
+  if length.unit.is_percentage() {
+    percentage_base.and_then(|base| length.resolve_against(base))
+  } else if length.unit.is_absolute() {
+    Some(length.to_px())
+  } else if length.unit.is_viewport_relative() {
+    length.resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, style.writing_mode)
+  } else if length.unit == LengthUnit::Lh {
+    // PositionedStyle carries a simplified `line-height` value (already in px for <length>).
+    Some(length.value * style.computed_line_height())
+  } else if length.unit.is_font_relative() {
+    Some(resolve_font_relative_length_for_positioned(length, style, font_context))
+  } else {
+    Some(length.value)
+  }
+}
+
+fn resolve_calc_length_with_percentage_for_positioned(
+  calc: &CalcLength,
+  percentage_base: Option<f32>,
+  viewport: crate::geometry::Size,
+  style: &PositionedStyle,
+  font_context: &FontContext,
+) -> Option<f32> {
+  if !viewport.width.is_finite()
+    || !viewport.height.is_finite()
+    || !style.font_size.is_finite()
+    || !style.root_font_size.is_finite()
+  {
+    return None;
+  }
+
+  let percentage_base = percentage_base.filter(|b| b.is_finite());
+  let mut line_height_px: Option<f32> = None;
+
+  let mut resolve_term = |term: &crate::style::values::CalcTerm| -> Option<f32> {
+    match term.unit {
+      LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
+      unit if unit.is_absolute() => Some(Length::new(term.value, unit).to_px()),
+      unit if unit.is_viewport_relative() => {
+        Length::new(term.value, unit).resolve_with_viewport_for_writing_mode(
           viewport.width,
           viewport.height,
-          style.font_size,
-          style.root_font_size,
           style.writing_mode,
-        );
+        )
       }
-      if length.unit.is_percentage() {
-        percentage_base.and_then(|base| length.resolve_against(base))
-      } else if length.unit.is_absolute() {
-        Some(length.to_px())
-      } else if length.unit.is_viewport_relative() {
-        length.resolve_with_viewport_for_writing_mode(viewport.width, viewport.height, style.writing_mode)
-      } else {
-        Some(resolve_font_relative_length_for_positioned(
-          *length,
-          style,
-          font_context,
-        ))
+      LengthUnit::Lh => {
+        let lh = *line_height_px.get_or_insert_with(|| style.computed_line_height());
+        Some(term.value * lh)
       }
+      unit if unit.is_font_relative() => Some(resolve_font_relative_length_for_positioned(
+        Length::new(term.value, unit),
+        style,
+        font_context,
+      )),
+      LengthUnit::Calc => None,
+      _ => None,
+    }
+  };
+
+  match calc.kind() {
+    crate::style::values::CalcLengthKind::Linear => {
+      let mut total = 0.0;
+      for term in calc.terms() {
+        if term.unit == LengthUnit::Calc {
+          return None;
+        }
+        total += resolve_term(term)?;
+      }
+      Some(total)
+    }
+    crate::style::values::CalcLengthKind::Min | crate::style::values::CalcLengthKind::Max => {
+      let mut extremum = match calc.kind() {
+        crate::style::values::CalcLengthKind::Min => f32::INFINITY,
+        crate::style::values::CalcLengthKind::Max => f32::NEG_INFINITY,
+        _ => {
+          debug_assert!(false, "CalcLengthKind::Min|Max handled by outer match");
+          f32::INFINITY
+        }
+      };
+      let mut current = 0.0;
+      for term in calc.terms() {
+        if term.unit == LengthUnit::Calc {
+          extremum = match calc.kind() {
+            crate::style::values::CalcLengthKind::Min => extremum.min(current),
+            crate::style::values::CalcLengthKind::Max => extremum.max(current),
+            _ => extremum,
+          };
+          current = 0.0;
+          continue;
+        }
+        current += resolve_term(term)?;
+      }
+      extremum = match calc.kind() {
+        crate::style::values::CalcLengthKind::Min => extremum.min(current),
+        crate::style::values::CalcLengthKind::Max => extremum.max(current),
+        _ => extremum,
+      };
+      Some(extremum)
+    }
+    crate::style::values::CalcLengthKind::Clamp => {
+      let mut values = [0.0f32; 3];
+      let mut idx = 0usize;
+      let mut current = 0.0;
+      for term in calc.terms() {
+        if term.unit == LengthUnit::Calc {
+          if idx >= 3 {
+            return None;
+          }
+          values[idx] = current;
+          idx += 1;
+          current = 0.0;
+          continue;
+        }
+        current += resolve_term(term)?;
+      }
+      if idx != 2 {
+        return None;
+      }
+      values[2] = current;
+      let min = values[0];
+      let preferred = values[1];
+      let max = values[2];
+      Some(min.max(preferred.min(max)))
     }
   }
 }
@@ -718,35 +860,17 @@ pub fn resolve_font_relative_length_for_positioned(
   )
 }
 
-/// Clamps a value, tolerating inverted bounds and non-finite endpoints.
-///
-/// f32::clamp panics when `min > max` or either bound is NaN. This helper swaps
-/// inverted bounds and treats non-finite bounds as unbounded on that side.
-pub fn clamp_with_order(value: f32, min: f32, max: f32) -> f32 {
-  let mut lo = min;
-  let mut hi = max;
-
-  // Treat NaN bounds as unbounded.
-  let lo_finite = lo.is_finite();
-  let hi_finite = hi.is_finite();
-  if !lo_finite && !hi_finite {
-    return value;
-  } else if !lo_finite {
-    return value.min(hi);
-  } else if !hi_finite {
-    return value.max(lo);
-  }
-
-  if lo > hi {
-    std::mem::swap(&mut lo, &mut hi);
-  }
-  value.max(lo).min(hi)
+#[derive(Debug, Clone, Copy)]
+struct FontRelativeMetrics {
+  used_size: f32,
+  x_height: f32,
+  cap_height: f32,
+  ch_advance: f32,
+  ic_advance: f32,
 }
 
-fn resolve_font_relative_length_with_params(
-  length: Length,
+fn compute_font_relative_metrics(
   font_size: f32,
-  root_font_size: f32,
   font_family: &[String],
   font_weight: u16,
   font_style: CssFontStyle,
@@ -755,7 +879,7 @@ fn resolve_font_relative_length_with_params(
   writing_mode: WritingMode,
   text_orientation: TextOrientation,
   font_context: &FontContext,
-) -> f32 {
+) -> FontRelativeMetrics {
   let face_style = match font_style {
     CssFontStyle::Normal => FontFaceStyle::Normal,
     CssFontStyle::Italic => FontFaceStyle::Italic,
@@ -775,7 +899,7 @@ fn resolve_font_relative_length_with_params(
   let ideograph_is_upright_in_vertical =
     matches!(text_orientation, TextOrientation::Mixed | TextOrientation::Upright);
 
-  let (used_size, x_height, cap_height, ch_advance, ic_advance) = if let Some(font) = maybe_font {
+  if let Some(font) = maybe_font {
     let used_size = compute_font_size_adjusted_size(font_size, font_size_adjust, &font, None);
     let x_height =
       font.font_size_adjust_metric_ratio_or_fallback(FontSizeAdjustMetric::ExHeight) * used_size;
@@ -815,24 +939,224 @@ fn resolve_font_relative_length_with_params(
     };
     let ic_advance = font.font_size_adjust_metric_ratio_or_fallback(ic_metric) * used_size;
 
-    (used_size, x_height, cap_height, ch_advance, ic_advance)
+    FontRelativeMetrics {
+      used_size,
+      x_height,
+      cap_height,
+      ch_advance,
+      ic_advance,
+    }
   } else {
     let used_size = font_size;
-    (used_size, used_size * 0.5, used_size * 0.7, used_size * 0.5, used_size)
+    FontRelativeMetrics {
+      used_size,
+      x_height: used_size * 0.5,
+      cap_height: used_size * 0.7,
+      ch_advance: used_size * 0.5,
+      ic_advance: used_size,
+    }
+  }
+}
+
+fn resolve_root_line_height_length_px(
+  len: Length,
+  root_style: &ComputedStyle,
+  viewport: Size,
+  normal_line_height: f32,
+  root_font_metrics: &FontRelativeMetrics,
+) -> f32 {
+  use crate::style::values::LengthUnit;
+
+  let (vw, vh) = if viewport.width.is_finite() && viewport.height.is_finite() {
+    (viewport.width, viewport.height)
+  } else {
+    // Mirrors the viewport fallback used by `compute_line_height_with_metrics_viewport`.
+    (1200.0, 800.0)
   };
 
+  match len.unit {
+    u if u.is_absolute() => len.to_px(),
+    u if u.is_viewport_relative() => len
+      .resolve_with_viewport_for_writing_mode(vw, vh, root_style.writing_mode)
+      .unwrap_or(len.value),
+    LengthUnit::Em => len.value * root_style.font_size,
+    LengthUnit::Rem => len.value * root_style.root_font_size,
+    LengthUnit::Ex => len.value * root_font_metrics.x_height,
+    LengthUnit::Ch => len.value * root_font_metrics.ch_advance,
+    LengthUnit::Cap => len.value * root_font_metrics.cap_height,
+    LengthUnit::Ic => len.value * root_font_metrics.ic_advance,
+    LengthUnit::Rex => len.value * root_font_metrics.x_height,
+    LengthUnit::Rch => len.value * root_font_metrics.ch_advance,
+    LengthUnit::Rcap => len.value * root_font_metrics.cap_height,
+    LengthUnit::Ric => len.value * root_font_metrics.ic_advance,
+    // `lh` and `rlh` inside the `line-height` property are cyclic; approximate using the UA's
+    // `normal` line height.
+    LengthUnit::Lh | LengthUnit::Rlh => len.value * normal_line_height,
+    LengthUnit::Calc => len
+      .calc
+      .and_then(|calc| {
+        resolve_length_calc_with_resolver(
+          calc,
+          Some(root_style.font_size),
+          vw,
+          vh,
+          root_style.font_size,
+          root_style.root_font_size,
+          &|linear, base, vw, vh, font_px, root_px| {
+            let base = base.filter(|b| b.is_finite());
+            let mut resolved = 0.0;
+            for term in linear.terms() {
+              resolved += match term.unit {
+                LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+                u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+                u if u.is_viewport_relative() => Length::new(term.value, u)
+                  .resolve_with_viewport_for_writing_mode(vw, vh, root_style.writing_mode),
+                LengthUnit::Em => Some(term.value * font_px),
+                LengthUnit::Rem => Some(term.value * root_px),
+                LengthUnit::Ex => Some(term.value * root_font_metrics.x_height),
+                LengthUnit::Ch => Some(term.value * root_font_metrics.ch_advance),
+                LengthUnit::Cap => Some(term.value * root_font_metrics.cap_height),
+                LengthUnit::Ic => Some(term.value * root_font_metrics.ic_advance),
+                LengthUnit::Rex => Some(term.value * root_font_metrics.x_height),
+                LengthUnit::Rch => Some(term.value * root_font_metrics.ch_advance),
+                LengthUnit::Rcap => Some(term.value * root_font_metrics.cap_height),
+                LengthUnit::Ric => Some(term.value * root_font_metrics.ic_advance),
+                // `lh`/`rlh` are cyclic inside `line-height`; approximate with `normal`.
+                LengthUnit::Lh | LengthUnit::Rlh => Some(term.value * normal_line_height),
+                _ => Some(term.value),
+              }?;
+            }
+            Some(resolved)
+          },
+        )
+      })
+      .unwrap_or(len.value),
+    _ => len.value,
+  }
+}
+
+pub(crate) fn compute_root_font_metrics(
+  root_style: &ComputedStyle,
+  viewport: Size,
+  font_context: &FontContext,
+) -> Option<RootFontMetrics> {
+  let root_font_size_px = root_style.font_size;
+  if !root_font_size_px.is_finite() || root_font_size_px <= 0.0 {
+    return None;
+  }
+
+  let root_font_metrics = compute_font_relative_metrics(
+    root_style.font_size,
+    &root_style.font_family,
+    root_style.font_weight.to_u16(),
+    root_style.font_style,
+    root_style.font_stretch,
+    root_style.font_size_adjust,
+    root_style.writing_mode,
+    root_style.text_orientation,
+    font_context,
+  );
+
+  let normal_line_height = scaled_metrics_for_style(root_style, font_context)
+    .map(|metrics| metrics.line_height)
+    .unwrap_or(root_font_size_px * 1.2);
+
+  let root_used_line_height_px = match &root_style.line_height {
+    crate::style::types::LineHeight::Normal => normal_line_height,
+    crate::style::types::LineHeight::Number(n) => root_font_size_px * *n,
+    crate::style::types::LineHeight::Percentage(pct) => root_font_size_px * (*pct / 100.0),
+    crate::style::types::LineHeight::Length(len) => resolve_root_line_height_length_px(
+      *len,
+      root_style,
+      viewport,
+      normal_line_height,
+      &root_font_metrics,
+    ),
+  };
+  let root_used_line_height_px = if root_used_line_height_px.is_finite() {
+    root_used_line_height_px
+  } else {
+    normal_line_height
+  };
+
+  Some(RootFontMetrics {
+    root_font_size_px,
+    root_x_height_px: root_font_metrics.x_height,
+    root_cap_height_px: root_font_metrics.cap_height,
+    root_ch_advance_px: root_font_metrics.ch_advance,
+    root_ic_advance_px: root_font_metrics.ic_advance,
+    root_used_line_height_px,
+  })
+}
+
+/// Clamps a value, tolerating inverted bounds and non-finite endpoints.
+///
+/// f32::clamp panics when `min > max` or either bound is NaN. This helper swaps
+/// inverted bounds and treats non-finite bounds as unbounded on that side.
+pub fn clamp_with_order(value: f32, min: f32, max: f32) -> f32 {
+  let mut lo = min;
+  let mut hi = max;
+
+  // Treat NaN bounds as unbounded.
+  let lo_finite = lo.is_finite();
+  let hi_finite = hi.is_finite();
+  if !lo_finite && !hi_finite {
+    return value;
+  } else if !lo_finite {
+    return value.min(hi);
+  } else if !hi_finite {
+    return value.max(lo);
+  }
+
+  if lo > hi {
+    std::mem::swap(&mut lo, &mut hi);
+  }
+  value.max(lo).min(hi)
+}
+
+fn resolve_font_relative_length_with_params(
+  length: Length,
+  font_size: f32,
+  root_font_size: f32,
+  font_family: &[String],
+  font_weight: u16,
+  font_style: CssFontStyle,
+  font_stretch: crate::style::types::FontStretch,
+  font_size_adjust: crate::style::types::FontSizeAdjust,
+  writing_mode: WritingMode,
+  text_orientation: TextOrientation,
+  font_context: &FontContext,
+) -> f32 {
+  let metrics = compute_font_relative_metrics(
+    font_size,
+    font_family,
+    font_weight,
+    font_style,
+    font_stretch,
+    font_size_adjust,
+    writing_mode,
+    text_orientation,
+    font_context,
+  );
+
+  let root_metrics = font_context.root_font_metrics();
+
   match length.unit {
-    LengthUnit::Em => length.value * used_size,
-    LengthUnit::Ex => length.value * x_height,
-    LengthUnit::Ch => length.value * ch_advance,
-    LengthUnit::Cap => length.value * cap_height,
-    LengthUnit::Ic => length.value * ic_advance,
+    LengthUnit::Em => length.value * metrics.used_size,
+    LengthUnit::Ex => length.value * metrics.x_height,
+    LengthUnit::Ch => length.value * metrics.ch_advance,
+    LengthUnit::Cap => length.value * metrics.cap_height,
+    LengthUnit::Ic => length.value * metrics.ic_advance,
     LengthUnit::Rem => length.value * root_font_size,
-    LengthUnit::Rex | LengthUnit::Rch => length.value * root_font_size * 0.5,
-    LengthUnit::Rcap => length.value * root_font_size * 0.7,
-    LengthUnit::Ric => length.value * root_font_size,
-    // Until root line-height is plumbed through layout, approximate `rlh` as `normal` on the root font size.
-    LengthUnit::Rlh => length.value * root_font_size * 1.2,
+    LengthUnit::Rex => length.value * root_metrics.map(|m| m.root_x_height_px).unwrap_or(root_font_size * 0.5),
+    LengthUnit::Rch => length.value * root_metrics.map(|m| m.root_ch_advance_px).unwrap_or(root_font_size * 0.5),
+    LengthUnit::Rcap => length.value * root_metrics.map(|m| m.root_cap_height_px).unwrap_or(root_font_size * 0.7),
+    LengthUnit::Ric => length.value * root_metrics.map(|m| m.root_ic_advance_px).unwrap_or(root_font_size),
+    LengthUnit::Rlh => length
+      .value
+      * root_metrics
+        .map(|m| m.root_used_line_height_px)
+        .unwrap_or(root_font_size * 1.2),
     _ => length
       .resolve_with_font_size(font_size)
       .unwrap_or(length.value * font_size),

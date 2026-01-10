@@ -5338,6 +5338,7 @@ fn paint_fragment_tree_with_state(
                       style,
                       None,
                       Some(viewport_size),
+                      None,
                     );
                     if row_height.is_finite() && row_height > 0.0 {
                       let content_height = row_height * select.items.len() as f32;
@@ -15232,8 +15233,12 @@ impl FastRender {
 
     let metrics_scaled = self.resolve_scaled_metrics(style);
     let viewport = Size::new(self.default_width as f32, self.default_height as f32);
-    let line_height =
-      compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), Some(viewport));
+    let line_height = compute_line_height_with_metrics_viewport(
+      style,
+      metrics_scaled.as_ref(),
+      Some(viewport),
+      self.font_context.root_font_metrics(),
+    );
     let metrics =
       TextItem::metrics_from_runs(&self.font_context, &runs, line_height, style.font_size);
     let width: f32 = runs.iter().map(|r| r.advance).sum();
@@ -25449,8 +25454,12 @@ mod tests {
       renderer.default_width as f32,
       renderer.default_height as f32,
     );
-    let line_height =
-      compute_line_height_with_metrics_viewport(&style, scaled.as_ref(), Some(viewport));
+    let line_height = compute_line_height_with_metrics_viewport(
+      &style,
+      scaled.as_ref(),
+      Some(viewport),
+      renderer.font_context().root_font_metrics(),
+    );
     let metrics =
       TextItem::metrics_from_runs(renderer.font_context(), &runs, line_height, style.font_size);
     let expected = Size::new(runs.iter().map(|r| r.advance).sum(), metrics.height);
@@ -25550,8 +25559,12 @@ mod tests {
       renderer.default_width as f32,
       renderer.default_height as f32,
     );
-    let line_height =
-      compute_line_height_with_metrics_viewport(&style, scaled.as_ref(), Some(viewport));
+    let line_height = compute_line_height_with_metrics_viewport(
+      &style,
+      scaled.as_ref(),
+      Some(viewport),
+      renderer.font_context().root_font_metrics(),
+    );
     let metrics =
       TextItem::metrics_from_runs(renderer.font_context(), &runs, line_height, style.font_size);
     let expected = Size::new(runs.iter().map(|r| r.advance).sum(), metrics.height);
