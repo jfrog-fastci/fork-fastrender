@@ -473,6 +473,138 @@ Promise.resolve().then(() => { globalThis.__log += "p2,"; });
 }
 
 #[test]
+fn promise_jobs_callbacks_can_mutate_dom() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+Promise.resolve().then(() => {
+  const d = document.createElement('div');
+  d.id = 'p';
+  document.body.appendChild(d);
+});
+"#,
+  )?;
+
+  assert!(
+    host.dom().get_element_by_id("p").is_none(),
+    "element should not exist before the microtask checkpoint"
+  );
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert!(
+    host.dom().get_element_by_id("p").is_some(),
+    "expected Promise job callback to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
+fn queue_microtask_callbacks_can_mutate_dom() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+queueMicrotask(() => {
+  const d = document.createElement('div');
+  d.id = 'm';
+  document.body.appendChild(d);
+});
+"#,
+  )?;
+
+  assert!(
+    host.dom().get_element_by_id("m").is_none(),
+    "element should not exist before the microtask checkpoint"
+  );
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert!(
+    host.dom().get_element_by_id("m").is_some(),
+    "expected queueMicrotask callback to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
+fn set_timeout_callbacks_can_mutate_dom() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+setTimeout(() => {
+  const d = document.createElement('div');
+  d.id = 't';
+  document.body.appendChild(d);
+}, 0);
+"#,
+  )?;
+
+  assert!(
+    host.dom().get_element_by_id("t").is_none(),
+    "element should not exist before the event loop runs"
+  );
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle,
+    "expected event loop to go idle after firing the timeout"
+  );
+  assert!(
+    host.dom().get_element_by_id("t").is_some(),
+    "expected setTimeout callback to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
+fn event_listener_callbacks_can_mutate_dom() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  assert!(host.dom().get_element_by_id("e").is_none());
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+document.body.addEventListener('x', () => {
+  const d = document.createElement('div');
+  d.id = 'e';
+  document.body.appendChild(d);
+});
+document.body.dispatchEvent(new Event('x'));
+"#,
+  )?;
+
+  // `dispatchEvent` is synchronous, but run a checkpoint anyway to ensure any nested microtasks
+  // don't affect assertions.
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  assert!(
+    host.dom().get_element_by_id("e").is_some(),
+    "expected EventTarget.dispatchEvent listener to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
 fn promise_jobs_abort_when_render_deadline_is_expired() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host = WindowHost::new(dom, "https://example.com/")?;
