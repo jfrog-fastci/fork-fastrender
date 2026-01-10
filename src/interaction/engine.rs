@@ -470,6 +470,111 @@ mod tests {
     assert!(!changed);
     assert_eq!(input_value(&mut dom, input_id), "abc");
   }
+
+  #[test]
+  fn arrow_keys_move_caret_and_shift_extends_selection() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abcd\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Place the caret between "b" and "c".
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 2);
+
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowLeft));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 1);
+    assert_eq!(engine.text_edit.as_ref().unwrap().selection(), None);
+
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowRight));
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 2);
+    assert_eq!(engine.text_edit.as_ref().unwrap().selection(), None);
+
+    assert!(engine.key_action(&mut dom, KeyAction::ShiftArrowRight));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 3);
+    assert_eq!(edit.selection(), Some((2, 3)));
+  }
+
+  #[test]
+  fn backspace_deletes_previous_character_and_updates_caret() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Place the caret between "b" and "c".
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 2);
+
+    assert!(engine.key_action(&mut dom, KeyAction::Backspace));
+    assert_eq!(input_value(&mut dom, input_id), "ac");
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 1);
+    assert_eq!(engine.text_edit.as_ref().unwrap().selection(), None);
+  }
+
+  #[test]
+  fn text_input_replaces_selection_and_updates_caret() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Select "ell".
+    set_text_selection_range(&mut engine, &mut dom, input_id, 1, 4);
+
+    assert!(engine.text_input(&mut dom, "X"));
+    assert_eq!(input_value(&mut dom, input_id), "hXo");
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 2);
+    assert_eq!(edit.selection(), None);
+  }
+
+  #[test]
+  fn enter_inserts_newline_for_textarea_but_not_input() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><textarea>hi</textarea><input value=\"hi\"></body></html>",
+    )
+    .expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+    assert!(engine.key_action(&mut dom, KeyAction::Enter));
+    assert_eq!(textarea_value(&mut dom, textarea_id), "hi\n");
+
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    engine.key_action(&mut dom, KeyAction::Enter);
+    assert_eq!(input_value(&mut dom, input_id), "hi");
+  }
+
+  #[test]
+  fn ime_commit_inserts_at_non_end_caret() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Place caret between "a" and "b".
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 1);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(has_preedit_attr(&mut dom, input_id));
+
+    engine.ime_commit(&mut dom, "Z");
+
+    assert!(!has_preedit_attr(&mut dom, input_id));
+    assert!(engine.ime_composition.is_none());
+    assert_eq!(input_value(&mut dom, input_id), "aZbc");
+    assert_eq!(engine.text_edit.as_ref().unwrap().caret, 2);
+  }
 }
 
 fn nearest_element_ancestor(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {

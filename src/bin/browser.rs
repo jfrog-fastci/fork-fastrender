@@ -2507,10 +2507,7 @@ error: {err}",
               | ShortcutAction::Paste
               | ShortcutAction::SelectAll
               | ShortcutAction::PageUp
-              | ShortcutAction::PageDown
-              | ShortcutAction::Space
-              | ShortcutAction::Home
-              | ShortcutAction::End => {
+              | ShortcutAction::PageDown => {
                 // If egui is actively editing text (e.g. the address bar), don't handle page-level
                 // key events.
                 if self.egui_ctx.wants_keyboard_input() {
@@ -2523,55 +2520,33 @@ error: {err}",
                   return;
                 };
  
-                 match action {
-                   ShortcutAction::PageUp | ShortcutAction::PageDown | ShortcutAction::Space => {
-                     let viewport_css = self
-                       .page_viewport_css
-                       .or_else(|| {
-                         self
+                  match action {
+                    ShortcutAction::PageUp | ShortcutAction::PageDown => {
+                      let viewport_css = self
+                        .page_viewport_css
+                        .or_else(|| {
+                          self
                            .browser_state
                            .tab(tab_id)
                            .and_then(|tab| tab.latest_frame_meta.as_ref())
                            .map(|meta| meta.viewport_css)
                        })
                        .unwrap_or((0, 0));
-                     let h = viewport_css.1.max(1) as f32;
-                     let mut dy = (h * 0.9).max(1.0);
-                     if matches!(action, ShortcutAction::PageUp)
-                       || (matches!(action, ShortcutAction::Space) && shortcut_modifiers.shift)
-                     {
-                       dy = -dy;
-                     }
-                     self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-                       tab_id,
+                      let h = viewport_css.1.max(1) as f32;
+                      let mut dy = (h * 0.9).max(1.0);
+                      if matches!(action, ShortcutAction::PageUp) {
+                        dy = -dy;
+                      }
+                      self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                        tab_id,
                        delta_css: (0.0, dy),
                        pointer_css: None,
-                     });
-                   }
-                   ShortcutAction::Home => {
-                     let current_scroll_y_css = self
-                       .browser_state
-                       .tab(tab_id)
-                       .map(|tab| tab.scroll_state.viewport.y)
-                       .unwrap_or(0.0);
-                     if current_scroll_y_css.is_finite() && current_scroll_y_css.abs() > 1e-6 {
-                       self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-                         tab_id,
-                         delta_css: (0.0, -current_scroll_y_css),
-                         pointer_css: None,
-                       });
-                     }
-                   }
-                   // Scroll to the end by applying a large positive delta and letting the worker clamp.
-                   ShortcutAction::End => self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-                     tab_id,
-                     delta_css: (0.0, 1_000_000_000.0),
-                     pointer_css: None,
-                   }),
-                    ShortcutAction::Copy => self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id }),
-                    ShortcutAction::Cut => self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id }),
-                    ShortcutAction::SelectAll => {
-                      self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id })
+                      });
+                    }
+                     ShortcutAction::Copy => self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id }),
+                     ShortcutAction::Cut => self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id }),
+                     ShortcutAction::SelectAll => {
+                       self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id })
                     }
                     ShortcutAction::Paste => {
                       if let Ok(mut clipboard) = Clipboard::new() {
@@ -2587,7 +2562,10 @@ error: {err}",
                     _ => {}
                   }
                  return;
-               }
+                }
+              // Allow these keys to be forwarded to the page so focused text controls can handle
+              // them for caret navigation and text entry.
+              ShortcutAction::Space | ShortcutAction::Home | ShortcutAction::End => {}
             }
           }
         }
@@ -2622,7 +2600,9 @@ error: {err}",
         // Ctrl/Cmd+A selects all in the focused text control.
         //
         // Guard against AltGr (often encoded as Ctrl+Alt).
-        if (self.modifiers.ctrl() || self.modifiers.logo()) && !self.modifiers.alt() && matches!(key, VirtualKeyCode::A)
+        if (self.modifiers.ctrl() || self.modifiers.logo())
+          && !self.modifiers.alt()
+          && matches!(key, VirtualKeyCode::A)
         {
           self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
@@ -2635,6 +2615,8 @@ error: {err}",
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
           VirtualKeyCode::Delete => Some(fastrender::interaction::KeyAction::Delete),
           VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),
+          VirtualKeyCode::NumpadEnter => Some(fastrender::interaction::KeyAction::Enter),
+          VirtualKeyCode::Space => Some(fastrender::interaction::KeyAction::Space),
           VirtualKeyCode::Tab => Some(if self.modifiers.shift() {
             fastrender::interaction::KeyAction::ShiftTab
           } else {

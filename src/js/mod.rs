@@ -144,6 +144,13 @@ pub mod dom_integration;
 #[path = "legacy/dom_integration.rs"]
 pub mod dom_integration;
 
+// Legacy DOM mutation script processing helper (prepare dynamic `<script>` elements).
+//
+// This is still used by some DOM/streaming pipeline tests, so keep it available at the historical
+// `crate::js::dom_integration` path.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
+
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;
