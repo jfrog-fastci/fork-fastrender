@@ -537,6 +537,16 @@ fn rewrite_html(
 ) -> Result<String> {
   let mut rewritten = input.to_string();
 
+  // FastRender parses HTML with `scripting_enabled=true` by default (see `DomParseOptions`), which
+  // means `<noscript>` contents are not parsed as markup and therefore cannot fetch subresources.
+  //
+  // Strip these blocks so:
+  // - we don't rewrite/require assets that will never be fetched, and
+  // - offline fixture validation doesn't flag remote URLs embedded in `<noscript>`.
+  let noscript_regex =
+    Regex::new("(?is)<noscript\\b[^>]*>.*?</noscript>").expect("noscript regex must compile");
+  rewritten = noscript_regex.replace_all(&rewritten, "").to_string();
+
   // Normalize <base href> to keep the output local.
   let base_tag_regex = Regex::new(
     "(?is)(?P<prefix><base[^>]*href\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'][^>]*>)",
@@ -1723,6 +1733,58 @@ mod tests {
     Ok(())
   }
 
+  fn write_synthetic_bundle_with_noscript_missing_image(dir: &Path) -> Result<()> {
+    let resources_dir = dir.join("resources");
+    fs::create_dir_all(&resources_dir)?;
+
+    let document_html = r#"<!doctype html>
+<html>
+  <body>
+    <noscript><img src="https://example.test/missing.png"></noscript>
+    <img src="https://example.test/img.png">
+  </body>
+</html>
+"#;
+    fs::write(dir.join("document.html"), document_html)?;
+    fs::write(resources_dir.join("00000_img.png"), b"dummy png")?;
+
+    let manifest = json!({
+      "version": 1,
+      "original_url": "https://example.test/",
+      "document": {
+        "path": "document.html",
+        "content_type": "text/html; charset=utf-8",
+        "final_url": "https://example.test/",
+        "status": 200,
+        "etag": null,
+        "last_modified": null
+      },
+      "render": {
+        "viewport": [800, 600],
+        "device_pixel_ratio": 1.0,
+        "scroll_x": 0.0,
+        "scroll_y": 0.0,
+        "full_page": false
+      },
+      "resources": {
+        "https://example.test/img.png": {
+          "path": "resources/00000_img.png",
+          "content_type": "image/png",
+          "status": 200,
+          "final_url": "https://example.test/img.png",
+          "etag": null,
+          "last_modified": null
+        }
+      }
+    });
+    fs::write(
+      dir.join("bundle.json"),
+      serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )?;
+
+    Ok(())
+  }
+
   fn assert_no_remote_url_strings(content: &str) {
     let lower = content.to_ascii_lowercase();
     assert!(
@@ -1844,6 +1906,37 @@ mod tests {
       "iframe HTML should reference local font asset {woff2_asset}"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn import_strips_noscript_blocks() -> Result<()> {
+    let bundle_dir = tempdir()?;
+    write_synthetic_bundle_with_noscript_missing_image(bundle_dir.path())?;
+
+    let output = tempdir()?;
+    let output_root = output.path().join("fixtures");
+    let fixture_name = "example_noscript";
+
+    run_import_page_fixture(ImportPageFixtureArgs {
+      bundle: bundle_dir.path().to_path_buf(),
+      fixture_name: fixture_name.to_string(),
+      output_root: output_root.clone(),
+      overwrite: true,
+      allow_missing: false,
+      allow_http_references: false,
+      legacy_rewrite: false,
+      rewrite_scripts: false,
+      dry_run: false,
+    })?;
+
+    let fixture_dir = output_root.join(fixture_name);
+    let index_html = fs::read_to_string(fixture_dir.join("index.html"))?;
+    assert_no_remote_url_strings(&index_html);
+    assert!(
+      !index_html.to_ascii_lowercase().contains("<noscript"),
+      "expected noscript blocks to be stripped from output HTML: {index_html}"
+    );
     Ok(())
   }
 

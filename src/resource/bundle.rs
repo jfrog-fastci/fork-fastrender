@@ -1412,6 +1412,7 @@ impl ResourceFetcher for BundledFetcher {
       || header_name.eq_ignore_ascii_case("accept-language")
       || header_name.eq_ignore_ascii_case("user-agent")
       || header_name.eq_ignore_ascii_case("referer")
+      || header_name.eq_ignore_ascii_case("x-subdomain")
     {
       return Some(String::new());
     }

@@ -7879,6 +7879,7 @@ impl ResourceFetcher for HttpFetcher {
       || header_name.eq_ignore_ascii_case("accept-language")
       || header_name.eq_ignore_ascii_case("user-agent")
       || header_name.eq_ignore_ascii_case("referer")
+      || header_name.eq_ignore_ascii_case("x-subdomain")
     {
       return Some(String::new());
     }
@@ -8161,6 +8162,10 @@ fn vary_is_cacheable(vary: &str, _kind: FetchContextKind, _origin_key: Option<&s
       // We always decode supported content-encodings, so the cached bytes are the decoded
       // representation.
       "accept-encoding" => {}
+      // Wikimedia's CDN adds `Vary: X-Subdomain` to many responses. We don't send an `X-Subdomain`
+      // request header, so its effective value is always empty for our fetchers. Treat it as safe
+      // so disk-cache pageset workflows can persist these responses for offline fixture capture.
+      "x-subdomain" => {}
       // `Accept-Language` and `User-Agent` are stable within a render process and are included in
       // the computed `Vary` key when servers opt into varying on them.
       "accept-language" | "user-agent" => {}
