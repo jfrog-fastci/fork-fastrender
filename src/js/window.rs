@@ -1648,6 +1648,64 @@ mod tests {
   }
 
   #[test]
+  fn window_host_event_target_dispatch_uses_shared_dom_events() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+    // This test exercises a fairly deep chain of JS<->Rust native calls (DOM wrapper creation,
+    // listener registration, and event propagation). The default per-script wall-time budget is
+    // tuned for hostile input and can be a bit too tight in debug builds.
+    let mut opts = JsExecutionOptions::default();
+    opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(1));
+    let mut host = WindowHost::new_with_options(dom, "https://example.invalid/", opts)?;
+
+    let log = host.exec_script(
+      "(() => {\n\
+        let log = '';\n\
+        const win = this;\n\
+        const doc = document;\n\
+        const html = document.documentElement;\n\
+        const body = document.body;\n\
+        const div = document.createElement('div');\n\
+        body.appendChild(div);\n\
+\n\
+        function rec(label) {\n\
+          return function (e) {\n\
+            const ct = this === win ? 'win'\n\
+              : this === doc ? 'doc'\n\
+              : this === html ? 'html'\n\
+              : this === body ? 'body'\n\
+              : this === div ? 'div'\n\
+              : 'other';\n\
+            if (log) log += ',';\n\
+            log += label + ':' + ct + ':' + e.eventPhase + ':' + (e.target === div) + ':' + (e.currentTarget === this);\n\
+          };\n\
+        }\n\
+\n\
+        win.addEventListener('x', rec('wC'), true);\n\
+        doc.addEventListener('x', rec('dC'), true);\n\
+        html.addEventListener('x', rec('hC'), true);\n\
+        body.addEventListener('x', rec('bC'), true);\n\
+        div.addEventListener('x', rec('tC'), true);\n\
+        div.addEventListener('x', rec('tB'), false);\n\
+        body.addEventListener('x', rec('bB'), false);\n\
+        html.addEventListener('x', rec('hB'), false);\n\
+        doc.addEventListener('x', rec('dB'), false);\n\
+        win.addEventListener('x', rec('wB'), false);\n\
+\n\
+        div.dispatchEvent(new Event('x', { bubbles: true }));\n\
+        return log;\n\
+      })()",
+    )?;
+
+    assert_eq!(
+      value_to_string(&host, log),
+      "wC:win:1:true:true,dC:doc:1:true:true,hC:html:1:true:true,bC:body:1:true:true,tC:div:2:true:true,tB:div:2:true:true,bB:body:3:true:true,hB:html:3:true:true,dB:doc:3:true:true,wB:win:3:true:true"
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn exec_script_error_includes_stack_trace() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

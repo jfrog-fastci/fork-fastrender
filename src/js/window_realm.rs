@@ -18,6 +18,7 @@ use crate::web::events as web_events;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use parking_lot::Mutex;
+use selectors::context::QuirksMode;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
@@ -152,6 +153,17 @@ pub(crate) struct WindowRealmUserData {
   cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
   dom_platform: Option<DomPlatform>,
+  /// Fallback `dom2::Document` used for events when the realm is not backed by a host DOM.
+  ///
+  /// This enables `window`/`document` (and `new EventTarget()`) event listeners in minimal realms
+  /// created without [`WindowRealmConfig::dom_source_id`].
+  events_dom_fallback: dom2::Document,
+  /// Cached JS `window` global object for mapping `EventTargetId::Window` back into JS when the
+  /// target is not a DOM-backed node/document.
+  window_obj: Option<GcObject>,
+  /// Cached JS `document` object for rooting event listener callbacks and mapping
+  /// `EventTargetId::Document` back into JS.
+  document_obj: Option<GcObject>,
 }
 
 impl std::fmt::Debug for WindowRealmUserData {
@@ -162,6 +174,8 @@ impl std::fmt::Debug for WindowRealmUserData {
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
       .field("cookie_jar", &self.cookie_jar)
       .field("has_dom_platform", &self.dom_platform.is_some())
+      .field("has_window_obj", &self.window_obj.is_some())
+      .field("has_document_obj", &self.document_obj.is_some())
       .finish()
   }
 }
@@ -175,6 +189,9 @@ impl WindowRealmUserData {
       cookie_fetcher: None,
       cookie_jar: CookieJar::new(),
       dom_platform: None,
+      events_dom_fallback: dom2::Document::new(QuirksMode::NoQuirks),
+      window_obj: None,
+      document_obj: None,
     }
   }
 }
@@ -4633,7 +4650,7 @@ fn event_target_constructor_native(
 }
 
 fn event_target_constructor_construct_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -4732,16 +4749,18 @@ struct ResolvedDomEventTarget {
   target_id: web_events::EventTargetId,
 }
 
-fn dom_source_id_from_document(scope: &mut Scope<'_>, document_obj: GcObject) -> Result<u64, VmError> {
+fn dom_source_id_from_document(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<Option<u64>, VmError> {
   let key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
   match scope
     .heap()
     .object_get_own_data_property_value(document_obj, &key)?
   {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Ok(n as u64),
-    _ => Err(VmError::TypeError(
-      "EventTarget method requires a DOM-backed document",
-    )),
+    None => Ok(None),
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Ok(Some(n as u64)),
+    _ => Err(VmError::TypeError("EventTarget method requires a DOM-backed document")),
   }
 }
 
@@ -4759,6 +4778,7 @@ fn window_object_from_document(scope: &mut Scope<'_>, document_obj: GcObject) ->
 }
 
 fn resolve_dom_event_target(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   target_obj: GcObject,
 ) -> Result<(ResolvedDomEventTarget, NonNull<dom2::Document>), VmError> {
@@ -4769,7 +4789,9 @@ fn resolve_dom_event_target(
     .object_get_own_data_property_value(target_obj, &wrapper_document_key)?
   {
     let window_obj = window_object_from_document(scope, document_obj)?;
-    let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
+    let dom_source_id = dom_source_id_from_document(scope, document_obj)?.ok_or(VmError::TypeError(
+      "EventTarget method requires a DOM-backed document",
+    ))?;
     let Some(mut dom_ptr) = dom_for_source(dom_source_id) else {
       return Err(VmError::TypeError(
         "EventTarget method requires a DOM-backed document",
@@ -4817,16 +4839,23 @@ fn resolve_dom_event_target(
     let document_obj = target_obj;
     let window_obj = window_object_from_document(scope, document_obj)?;
     let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
-    let Some(dom_ptr) = dom_for_source(dom_source_id) else {
-      return Err(VmError::TypeError(
+    let dom_ptr = if let Some(dom_source_id) = dom_source_id {
+      dom_for_source(dom_source_id).ok_or(VmError::TypeError(
         "EventTarget method requires a DOM-backed document",
-      ));
+      ))?
+    } else {
+      let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm is missing required VM user data",
+        ));
+      };
+      NonNull::from(&mut user_data.events_dom_fallback)
     };
     return Ok((
       ResolvedDomEventTarget {
         window_obj,
         document_obj,
-        dom_source_id,
+        dom_source_id: dom_source_id.unwrap_or(0),
         target_id: web_events::EventTargetId::Document,
       },
       dom_ptr,
@@ -4847,16 +4876,23 @@ fn resolve_dom_event_target(
       Some(Value::Object(_))
     ) {
       let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
-      let Some(dom_ptr) = dom_for_source(dom_source_id) else {
-        return Err(VmError::TypeError(
+      let dom_ptr = if let Some(dom_source_id) = dom_source_id {
+        dom_for_source(dom_source_id).ok_or(VmError::TypeError(
           "EventTarget method requires a DOM-backed document",
-        ));
+        ))?
+      } else {
+        let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
+          return Err(VmError::InvariantViolation(
+            "WindowRealm is missing required VM user data",
+          ));
+        };
+        NonNull::from(&mut user_data.events_dom_fallback)
       };
       return Ok((
         ResolvedDomEventTarget {
           window_obj: target_obj,
           document_obj,
-          dom_source_id,
+          dom_source_id: dom_source_id.unwrap_or(0),
           target_id: web_events::EventTargetId::Window,
         },
         dom_ptr,
@@ -4892,7 +4928,7 @@ fn resolve_event_target(
   callee: GcObject,
   target_obj: GcObject,
 ) -> Result<ResolvedEventTarget, VmError> {
-  let (resolved_dom, dom_ptr) = match resolve_dom_event_target(scope, target_obj) {
+  let (resolved_dom, dom_ptr) = match resolve_dom_event_target(vm, scope, target_obj) {
     Ok(ok) => ok,
     Err(err) => {
       // Non-DOM EventTarget objects (e.g. `AbortSignal`, `new EventTarget()`).
@@ -4907,10 +4943,17 @@ fn resolve_event_target(
         _ => return Err(VmError::TypeError("Illegal invocation")),
       };
       let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
-      let Some(dom_ptr) = dom_for_source(dom_source_id) else {
-        return Err(VmError::TypeError(
+      let dom_ptr = if let Some(dom_source_id) = dom_source_id {
+        dom_for_source(dom_source_id).ok_or(VmError::TypeError(
           "EventTarget method requires a DOM-backed document",
-        ));
+        ))?
+      } else {
+        let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() else {
+          return Err(VmError::InvariantViolation(
+            "WindowRealm is missing required VM user data",
+          ));
+        };
+        NonNull::from(&mut user_data.events_dom_fallback)
       };
 
       return Ok(ResolvedEventTarget {
@@ -4918,7 +4961,7 @@ fn resolve_event_target(
         resolved: ResolvedDomEventTarget {
           window_obj,
           document_obj,
-          dom_source_id,
+          dom_source_id: dom_source_id.unwrap_or(0),
           target_id: web_events::EventTargetId::Opaque(gc_object_id(target_obj)),
         },
         dom_ptr,
@@ -5032,10 +5075,20 @@ fn remove_listener_root_if_unused(
   roots_owner_obj: GcObject,
   registry: &web_events::EventListenerRegistry,
   listener_id: web_events::ListenerId,
+  target_for_owner: Option<web_events::EventTargetId>,
 ) -> Result<(), VmError> {
-  if registry.contains_listener_id(listener_id) {
-    return Ok(());
-  }
+  match target_for_owner {
+    Some(target) => {
+      if registry.contains_listener_id_for_target(target, listener_id) {
+        return Ok(());
+      }
+    }
+    None => {
+      if registry.contains_listener_id(listener_id) {
+        return Ok(());
+      }
+    }
+  };
 
   let roots_key = alloc_key(scope, EVENT_LISTENER_ROOTS_KEY)?;
   let Some(Value::Object(roots)) = scope.heap().object_get_own_data_property_value(roots_owner_obj, &roots_key)?
@@ -5297,11 +5350,16 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_, '_> {
 
     // `dispatch_event` can remove listeners during dispatch (`{ once: true }`). Drop the callback
     // root if the listener ID is no longer referenced.
+    let target_for_owner = match event.current_target {
+      Some(t @ web_events::EventTargetId::Opaque(_)) => Some(t),
+      _ => None,
+    };
     if let Err(err) = remove_listener_root_if_unused(
       scope,
       self.listener_roots_owner,
       registry,
       listener_id,
+      target_for_owner,
     ) {
       return Err(web_events::DomError::new(err.to_string()));
     }
@@ -5487,7 +5545,17 @@ fn event_target_remove_event_listener_native(
     .events_mut()
     .remove_event_listener(resolved.target_id, &type_name, listener_id, capture);
   if removed {
-    remove_listener_root_if_unused(scope, listener_roots_owner, dom.events(), listener_id)?;
+    let target_for_owner = match resolved.target_id {
+      web_events::EventTargetId::Opaque(_) => Some(resolved.target_id),
+      _ => None,
+    };
+    remove_listener_root_if_unused(
+      scope,
+      listener_roots_owner,
+      dom.events(),
+      listener_id,
+      target_for_owner,
+    )?;
   }
 
   Ok(Value::Undefined)
@@ -10013,8 +10081,9 @@ fn init_window_globals(
 
   // EventTarget methods.
   //
-  // These are no-frills shims that support the common "register a handler then dispatch an event"
-  // pattern. They do not implement capture/bubble phases or the full DOM event path model.
+  // These shims route listener registration and `dispatchEvent()` through the shared DOM event
+  // system (`crate::web::events` + `dom2::Document.events()`), so capture/bubble semantics match
+  // the rest of the engine.
   let add_event_listener_call_id =
     vm.register_native_call(event_target_add_event_listener_native)?;
   let add_event_listener_name = scope.alloc_string("addEventListener")?;
@@ -11697,6 +11766,13 @@ fn init_window_globals(
   scope.define_property(global, document_key, data_desc(Value::Object(document_obj)))?;
   scope.define_property(global, console_key, data_desc(Value::Object(console_obj)))?;
 
+  // Cache stable window/document handles for event dispatch in non-DOM-backed realms and for
+  // `new EventTarget()` instances.
+  if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
+    user_data.window_obj = Some(global);
+    user_data.document_obj = Some(document_obj);
+  }
+
   // --- Web Storage (localStorage / sessionStorage) ---------------------------
   //
   // Many real-world pages (including MDN + news sites) read from `localStorage` early to decide
@@ -12186,6 +12262,65 @@ mod tests {
     let referrer = realm.exec_script("document.referrer")?;
     assert_eq!(get_string(realm.heap(), referrer), "");
 
+    Ok(())
+  }
+
+  #[test]
+  fn domless_window_and_document_event_targets_dispatch_via_fallback_registry() -> Result<(), VmError>
+  {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let order = realm.exec_script(
+      "(() => {\n\
+        let log = '';\n\
+        const push = (s) => { log = log === '' ? s : log + ',' + s; };\n\
+        window.addEventListener('x', () => push('w-c'), true);\n\
+        window.addEventListener('x', () => push('w-b'));\n\
+        document.addEventListener('x', () => push('d-c'), { capture: true });\n\
+        document.addEventListener('x', () => push('d-b'));\n\
+\n\
+        document.dispatchEvent(new Event('x'));\n\
+        const first = log;\n\
+        log = '';\n\
+        document.dispatchEvent(new Event('x', { bubbles: true }));\n\
+        const second = log;\n\
+        return first + '|' + second;\n\
+      })()",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), order),
+      "w-c,d-c,d-b|w-c,d-c,d-b,w-b"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn event_target_constructor_dispatches_via_shared_event_system() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let called = realm.exec_script(
+      "(() => {\n\
+        const t = new EventTarget();\n\
+        let count = 0;\n\
+        t.addEventListener('x', () => { count++; });\n\
+        t.dispatchEvent(new Event('x'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(called, Value::Number(1.0));
+
+    let removed = realm.exec_script(
+      "(() => {\n\
+        const t = new EventTarget();\n\
+        let count = 0;\n\
+        const cb = () => { count++; };\n\
+        t.addEventListener('x', cb);\n\
+        t.removeEventListener('x', cb);\n\
+        t.dispatchEvent(new Event('x'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(removed, Value::Number(0.0));
     Ok(())
   }
 

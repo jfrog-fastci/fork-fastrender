@@ -608,6 +608,23 @@ impl EventListenerRegistry {
         .any(|listeners| listeners.iter().any(|l| l.id == listener_id))
     })
   }
+
+  pub(crate) fn contains_listener_id_for_target(
+    &self,
+    target: EventTargetId,
+    listener_id: ListenerId,
+  ) -> bool {
+    let target = target.normalize();
+    self
+      .listeners
+      .borrow()
+      .get(&target)
+      .is_some_and(|by_type| {
+        by_type
+          .values()
+          .any(|listeners| listeners.iter().any(|l| l.id == listener_id))
+      })
+  }
 }
 
 #[cfg(test)]
