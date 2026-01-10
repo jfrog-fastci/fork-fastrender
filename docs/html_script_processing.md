@@ -45,12 +45,14 @@ What exists today (in-tree):
   - `src/js/mod.rs`: `ScriptType` + `ScriptElementSpec` (flattened `<script>` record).
   - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`: helpers for building `ScriptElementSpec` at the
     moment a `<script>` finishes parsing.
-- **Import maps parsing/normalization (not yet integrated into script execution):**
-  - `src/js/import_maps/`: spec-mapped import map parsing + normalization:
-    - `parse_import_map_string(...)` + `create_import_map_parse_result(...)` (`parse.rs`)
-    - `resolve_imports_match(...)` (`resolve.rs`) — spec-mapped "resolve an imports match" helper
-      (special-URL gate + backtracking protection)
-    - normalized `ImportMap` + parse-result/warning types (`types.rs`)
+- **Import maps algorithms (not yet integrated into script execution / module loading):**
+  - `src/js/import_maps/`: spec-mapped import map parsing + state + merging + resolution:
+    - parsing/normalization: `parse_import_map_string(...)` + `create_import_map_parse_result(...)` (`parse.rs`)
+    - host-side state: `ImportMapState` + resolved-module-set record types (`types.rs`)
+    - registration + merging: `register_import_map(...)` / `merge_existing_and_new_import_maps(...)` (`merge.rs`)
+    - full module specifier resolution: `resolve_module_specifier(...)` + `add_module_to_resolved_module_set(...)` (`resolve.rs`)
+    - test/debug helper: `resolve_imports_match(...)` (`resolve.rs`) — non-throwing wrapper for the spec’s
+      "resolve an imports match" algorithm
   - Design/spec mapping: [`docs/import_maps.md`](import_maps.md).
 - **Script scheduling + event loop:**
   - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`),
@@ -145,8 +147,10 @@ These features exist in the HTML spec and matter for web-compat, but are intenti
 we can land a correct classic-script core first:
 
 - **Module scripts** (`type="module"`) and the module graph (host hooks, `import`, dynamic import)
-- **Import maps** (`type="importmap"`) registration/merging + interaction with module fetch
-  (parsing/normalization exists in `src/js/import_maps/`; see [`docs/import_maps.md`](import_maps.md))
+- **Import maps** (`type="importmap"`) end-to-end integration:
+  - Import map parsing + merge/register/resolve algorithms exist in `src/js/import_maps/` and are documented in
+    [`docs/import_maps.md`](import_maps.md), but are not yet wired into the streaming `<script>` pipeline or
+    the module graph loader.
 - **Content Security Policy (CSP)**: partially implemented for classic scripts in `api::BrowserTab`
   - Enforces `script-src` / `default-src` for external `<script src=...>` URL allowlisting.
   - Enforces nonce/hash-based allowlisting for inline scripts (`nonce=` + `'nonce-...'`, and

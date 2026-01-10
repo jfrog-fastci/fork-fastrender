@@ -81,8 +81,8 @@ What `BrowserTab` does today:
 What it does **not** do yet (important gaps):
 
 - fully spec-correct parser/event-loop interleaving (e.g. “async-ready” scripts interrupting parsing),
-- module scripts / import maps (import map parsing exists but is not wired into module loading yet; see
-  [`docs/import_maps.md`](import_maps.md)),
+- module scripts / import maps (import map merge/register/resolve algorithms exist in `src/js/import_maps/`, but are
+  not yet wired into module graph loading; see [`docs/import_maps.md`](import_maps.md)),
 - a production author-script JS runtime + full DOM/WebIDL exposure (still being built out).
 
 ### Minimal Rust example (create doc → run loop → render)
@@ -159,7 +159,8 @@ Key modules:
   - parse-time helpers for building `ScriptElementSpec` (base URL timing + attrs + inline text)
 - `src/js/import_maps/`
   - WHATWG HTML import map parsing/normalization (`parse_import_map_string`, `create_import_map_parse_result`)
-  - `resolve_imports_match` helper (used by full module specifier resolution later)
+  - host-side state + merging + resolution (`ImportMapState`, `register_import_map`, `resolve_module_specifier`, ...)
+  - `resolve_imports_match` helper (non-throwing wrapper used by tests/debugging)
   - see [`docs/import_maps.md`](import_maps.md)
 - `src/js/orchestrator.rs`
   - host bookkeeping for `Document.currentScript` (spec-shaped, `dom2`-backed)
