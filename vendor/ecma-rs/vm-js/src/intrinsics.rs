@@ -405,6 +405,7 @@ impl Intrinsics {
     let array_prototype_for_each = vm.register_native_call(builtins::array_prototype_for_each)?;
     let array_prototype_index_of = vm.register_native_call(builtins::array_prototype_index_of)?;
     let array_prototype_includes = vm.register_native_call(builtins::array_prototype_includes)?;
+    let array_prototype_filter = vm.register_native_call(builtins::array_prototype_filter)?;
     let array_prototype_reverse = vm.register_native_call(builtins::array_prototype_reverse)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
@@ -668,7 +669,7 @@ impl Intrinsics {
       )?;
     }
 
-      // Array.prototype.map / forEach / indexOf / includes / reverse / join / slice / push / splice
+      // Array.prototype.map / forEach / indexOf / includes / filter / reverse / join / slice / push / splice
       {
         let map_s = scope.alloc_string("map")?;
         scope.push_root(Value::String(map_s))?;
@@ -726,6 +727,20 @@ impl Intrinsics {
           array_prototype,
           includes_key,
           data_desc(Value::Object(includes_fn), true, false, true),
+        )?;
+
+        let filter_s = scope.alloc_string("filter")?;
+        scope.push_root(Value::String(filter_s))?;
+        let filter_key = PropertyKey::from_string(filter_s);
+        let filter_fn = scope.alloc_native_function(array_prototype_filter, None, filter_s, 1)?;
+        scope.push_root(Value::Object(filter_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(filter_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          filter_key,
+          data_desc(Value::Object(filter_fn), true, false, true),
         )?;
 
         let reverse_s = scope.alloc_string("reverse")?;

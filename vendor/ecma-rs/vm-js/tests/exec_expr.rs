@@ -157,6 +157,17 @@ fn array_prototype_includes_works() {
 }
 
 #[test]
+fn array_prototype_filter_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3]; delete a[1]; var b=a.filter(function(x){ return x % 2 === 1; }); b.length===2 && b[0]===1 && b[1]===3 && Array.prototype.filter.call("ab",function(x){return x==="b";})[0]==="b""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_slice_copies_elements() {
   let mut rt = new_runtime();
   let value = rt
