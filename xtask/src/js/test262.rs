@@ -16,11 +16,17 @@ const DEFAULT_JOBS_CAP: usize = 4;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum HarnessMode {
-  /// Load and execute upstream tc39/test262 harness files.
-  #[value(aliases = ["full", "test262"])]
-  Upstream,
-  /// Use a minimal built-in harness prelude (no upstream harness JS).
-  Minimal,
+  /// Prepend the standard tc39/test262 harness (`assert.js`, `sta.js`) plus any additional
+  /// frontmatter `includes` files.
+  #[value(aliases = ["upstream", "full"])]
+  Test262,
+  /// Prepend only the harness files explicitly listed in test frontmatter (`includes`).
+  ///
+  /// This is useful when you want to avoid implicitly loading `assert.js`/`sta.js`.
+  ///
+  /// Alias: `minimal` (kept for backwards compatibility with older FastRender docs/CLI).
+  #[value(aliases = ["minimal"])]
+  Includes,
   /// Do not prepend any harness code (test body only).
   None,
 }
@@ -28,8 +34,8 @@ pub enum HarnessMode {
 impl HarnessMode {
   fn as_cli_value(self) -> &'static str {
     match self {
-      Self::Upstream => "upstream",
-      Self::Minimal => "minimal",
+      Self::Test262 => "test262",
+      Self::Includes => "includes",
       Self::None => "none",
     }
   }
@@ -50,11 +56,10 @@ pub struct Test262Args {
   #[arg(long, value_enum, default_value_t = Test262Suite::Curated)]
   pub suite: Test262Suite,
 
-  /// Select how the test source is assembled (upstream harness files vs minimal built-in prelude).
+  /// Configure which tc39/test262 harness scripts are prepended before each test body.
   ///
-  /// FastRender defaults to `minimal` so we can run curated suites without executing the upstream
-  /// tc39/test262 harness (`assert.js`/`sta.js`) during early VM bring-up.
-  #[arg(long, value_enum, default_value_t = HarnessMode::Minimal)]
+  /// FastRender defaults to `test262`, matching the upstream runner default.
+  #[arg(long, value_enum, default_value_t = HarnessMode::Test262)]
   pub harness: HarnessMode,
 
   /// Override the expectations manifest (skip/xfail/flaky) used to classify known gaps.
@@ -196,7 +201,7 @@ fn ensure_test262_dir(
 ) -> Result<()> {
   let test_dir = test262_dir.join("test");
   let harness_dir = test262_dir.join("harness");
-  let harness_required = matches!(harness_mode, HarnessMode::Upstream);
+  let harness_required = matches!(harness_mode, HarnessMode::Test262 | HarnessMode::Includes);
   if test_dir.is_dir() && (!harness_required || harness_dir.is_dir()) {
     return Ok(());
   }
