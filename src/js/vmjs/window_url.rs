@@ -492,6 +492,121 @@ fn url_protocol_get_native(
   })
 }
 
+fn url_protocol_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let url = require_url(state, this)?;
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  ignore_setter_failure(url.set_protocol(&value))?;
+  Ok(Value::Undefined)
+}
+
+fn url_username_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(state, this)?;
+    let username = url.username().map_err(map_url_error)?;
+    let s = scope.alloc_string(&username)?;
+    Ok(Value::String(s))
+  })
+}
+
+fn url_username_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let url = require_url(state, this)?;
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  ignore_setter_failure(url.set_username(&value))?;
+  Ok(Value::Undefined)
+}
+
+fn url_password_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+    let url = require_url(state, this)?;
+    let password = url.password().map_err(map_url_error)?;
+    let s = scope.alloc_string(&password)?;
+    Ok(Value::String(s))
+  })
+}
+
+fn url_password_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let url = require_url(state, this)?;
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  ignore_setter_failure(url.set_password(&value))?;
+  Ok(Value::Undefined)
+}
+
 fn url_host_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -507,6 +622,33 @@ fn url_host_get_native(
     let s = scope.alloc_string(&host)?;
     Ok(Value::String(s))
   })
+}
+
+fn url_host_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let url = require_url(state, this)?;
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  ignore_setter_failure(url.set_host(&value))?;
+  Ok(Value::Undefined)
 }
 
 fn url_hostname_get_native(
@@ -526,6 +668,33 @@ fn url_hostname_get_native(
   })
 }
 
+fn url_hostname_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let url = require_url(state, this)?;
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  ignore_setter_failure(url.set_hostname(&value))?;
+  Ok(Value::Undefined)
+}
+
 fn url_port_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -543,6 +712,33 @@ fn url_port_get_native(
   })
 }
 
+fn url_port_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let url = require_url(state, this)?;
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  ignore_setter_failure(url.set_port(&value))?;
+  Ok(Value::Undefined)
+}
+
 fn url_pathname_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -558,6 +754,33 @@ fn url_pathname_get_native(
     let s = scope.alloc_string(&pathname)?;
     Ok(Value::String(s))
   })
+}
+
+fn url_pathname_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (url, max_bytes) = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+    let url = require_url(state, this)?;
+    Ok((url, state.limits.max_input_bytes))
+  })?;
+
+  let value = value_to_limited_string(
+    vm,
+    scope,
+    host,
+    hooks,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_bytes,
+    URL_INPUT_TOO_LONG_ERROR,
+  )?;
+  ignore_setter_failure(url.set_pathname(&value))?;
+  Ok(Value::Undefined)
 }
 
 fn url_search_get_native(
@@ -1479,7 +1702,27 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
     url_proto,
     "protocol",
     url_protocol_get_native,
-    None,
+    Some(url_protocol_set_native),
+    realm_slot,
+  )?;
+  install_accessor(
+    vm,
+    &mut scope,
+    realm,
+    url_proto,
+    "username",
+    url_username_get_native,
+    Some(url_username_set_native),
+    realm_slot,
+  )?;
+  install_accessor(
+    vm,
+    &mut scope,
+    realm,
+    url_proto,
+    "password",
+    url_password_get_native,
+    Some(url_password_set_native),
     realm_slot,
   )?;
   install_accessor(
@@ -1489,7 +1732,7 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
     url_proto,
     "host",
     url_host_get_native,
-    None,
+    Some(url_host_set_native),
     realm_slot,
   )?;
   install_accessor(
@@ -1499,7 +1742,7 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
     url_proto,
     "hostname",
     url_hostname_get_native,
-    None,
+    Some(url_hostname_set_native),
     realm_slot,
   )?;
   install_accessor(
@@ -1509,7 +1752,7 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
     url_proto,
     "port",
     url_port_get_native,
-    None,
+    Some(url_port_set_native),
     realm_slot,
   )?;
   install_accessor(
@@ -1519,7 +1762,7 @@ pub fn install_window_url_bindings(vm: &mut Vm, realm: &Realm, heap: &mut Heap) 
     url_proto,
     "pathname",
     url_pathname_get_native,
-    None,
+    Some(url_pathname_set_native),
     realm_slot,
   )?;
   install_accessor(
@@ -1926,6 +2169,59 @@ mod tests {
     );
 
     drop(scope);
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn url_accessors_and_setters_are_exposed() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      "(function(){\
+         const u = new URL('https://example.com/a?b=c#d');\
+         const before = [u.protocol, u.username, u.password, u.host, u.hostname, u.port, u.pathname].join('|');\
+         u.username = 'user';\
+         u.password = 'pass';\
+         u.hostname = 'example.net';\
+         u.port = '8080';\
+         u.pathname = '/p';\
+         u.protocol = 'http:';\
+         const mid = [u.href, u.host, u.hostname, u.port].join('|');\
+         u.host = 'example.org:9090';\
+         const after = [u.href, u.host, u.hostname, u.port].join('|');\
+         return before + '->' + mid + '->' + after;\
+       })()",
+    )?;
+
+    assert_eq!(
+      get_string(realm.heap(), result),
+      "https:|||example.com|example.com||/a\
+->http://user:pass@example.net:8080/p?b=c#d|example.net:8080|example.net|8080\
+->http://user:pass@example.org:9090/p?b=c#d|example.org:9090|example.org|9090"
+    );
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn url_setters_are_noop_on_failure() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      "(function(){\
+         const u = new URL('https://example.com:8080/a');\
+         try { u.port = 'nope'; } catch (e) { return 'threw-port'; }\
+         try { u.protocol = '1nvalid:'; } catch (e) { return 'threw-proto'; }\
+         return [u.protocol, u.port, u.href].join('|');\
+       })()",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), result),
+      "https:|8080|https://example.com:8080/a"
+    );
+
     realm.teardown();
     Ok(())
   }
