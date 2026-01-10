@@ -11981,6 +11981,7 @@ fn init_window_globals(
   // manipulate URLs. This must happen after `scope` is dropped because it borrows `heap` mutably.
   drop(scope);
   crate::js::window_abort::install_window_abort_bindings(vm, realm, heap)?;
+  crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
 
   Ok((
@@ -12107,6 +12108,15 @@ mod tests {
       Value::Bool(true)
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn window_text_encoding_exists_and_round_trips() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let decoded = realm.exec_script("new TextDecoder().decode(new TextEncoder().encode('hi'))")?;
+    assert_eq!(get_string(realm.heap(), decoded), "hi");
     Ok(())
   }
 

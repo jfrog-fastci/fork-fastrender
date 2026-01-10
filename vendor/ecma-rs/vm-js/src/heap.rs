@@ -667,7 +667,12 @@ impl Heap {
     Ok(self.get_array_buffer(obj)?.byte_length())
   }
 
-  pub(crate) fn array_buffer_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
+  /// Returns a borrowed view of the bytes backing an `ArrayBuffer` object.
+  ///
+  /// This is intended for host bindings that need to read `ArrayBuffer` contents (e.g. `TextDecoder`).
+  /// The returned slice is valid as long as the underlying `ArrayBuffer` remains live and the heap is
+  /// not mutably borrowed.
+  pub fn array_buffer_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
     Ok(self.get_array_buffer(obj)?.data.as_ref())
   }
 
@@ -687,7 +692,14 @@ impl Heap {
     Ok(self.get_uint8_array(obj)?.viewed_array_buffer)
   }
 
-  pub(crate) fn uint8_array_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
+  /// Returns a borrowed view of the bytes visible through a `Uint8Array` view.
+  ///
+  /// This is intended for host bindings that need to read `Uint8Array` contents without round-tripping
+  /// through JS (e.g. `TextDecoder`).
+  ///
+  /// The returned slice is valid as long as the underlying `Uint8Array` and its backing `ArrayBuffer`
+  /// remain live and the heap is not mutably borrowed.
+  pub fn uint8_array_data(&self, obj: GcObject) -> Result<&[u8], VmError> {
     let view = self.get_uint8_array(obj)?;
     let start = view.byte_offset;
     let end = view
