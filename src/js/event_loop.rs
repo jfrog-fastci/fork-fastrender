@@ -836,8 +836,11 @@ impl<Host: 'static> EventLoop<Host> {
     run_state: &mut RunState,
   ) -> RunStepResult<RunUntilIdleOutcome> {
     loop {
-      run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
+      if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+        return Ok(RunUntilIdleOutcome::Idle);
+      }
+      run_state.check_deadline()?;
 
       if !self.microtask_queue.is_empty() {
         self.perform_microtask_checkpoint_limited_inner(host, run_state)?;
@@ -859,8 +862,11 @@ impl<Host: 'static> EventLoop<Host> {
     hook: &mut impl FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
   ) -> RunStepResult<RunUntilIdleOutcome> {
     loop {
-      run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
+      if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+        return Ok(RunUntilIdleOutcome::Idle);
+      }
+      run_state.check_deadline()?;
 
       if !self.microtask_queue.is_empty() {
         self.perform_microtask_checkpoint_limited_inner(host, run_state)?;
@@ -887,8 +893,11 @@ impl<Host: 'static> EventLoop<Host> {
     F: FnMut(Error),
   {
     loop {
-      run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
+      if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+        return Ok(RunUntilIdleOutcome::Idle);
+      }
+      run_state.check_deadline()?;
 
       if !self.microtask_queue.is_empty() {
         self.perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error)?;
@@ -915,8 +924,11 @@ impl<Host: 'static> EventLoop<Host> {
     Hook: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
   {
     loop {
-      run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
+      if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+        return Ok(RunUntilIdleOutcome::Idle);
+      }
+      run_state.check_deadline()?;
 
       if !self.microtask_queue.is_empty() {
         self.perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error)?;
