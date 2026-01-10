@@ -82,7 +82,7 @@ impl DomExceptionClassVmJs {
     scope.push_root(Value::Object(proto))?;
     scope
       .heap_mut()
-      .object_set_prototype(proto, Some(realm.intrinsics().object_prototype()))?;
+      .object_set_prototype(proto, Some(realm.intrinsics().error_prototype()))?;
 
     // DOMException.prototype.toString (minimal).
     let to_string_call_id: NativeFunctionId = vm.register_native_call(dom_exception_to_string)?;
@@ -110,6 +110,52 @@ impl DomExceptionClassVmJs {
       constructor: ctor,
       prototype: proto,
     })
+  }
+
+  pub fn new_instance(
+    &self,
+    scope: &mut Scope<'_>,
+    name: &str,
+    message: &str,
+  ) -> Result<Value, VmError> {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(self.prototype))?;
+
+    let name_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(name_s))?;
+    let message_s = scope.alloc_string(message)?;
+    scope.push_root(Value::String(message_s))?;
+
+    let obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(obj))?;
+    scope.heap_mut().object_set_prototype(obj, Some(self.prototype))?;
+
+    let key_name_s = scope.alloc_string("name")?;
+    scope.push_root(Value::String(key_name_s))?;
+    let key_name = PropertyKey::from_string(key_name_s);
+    scope.define_property(obj, key_name, data_desc(Value::String(name_s)))?;
+
+    let key_message_s = scope.alloc_string("message")?;
+    scope.push_root(Value::String(key_message_s))?;
+    let key_message = PropertyKey::from_string(key_message_s);
+    scope.define_property(obj, key_message, data_desc(Value::String(message_s)))?;
+
+    Ok(Value::Object(obj))
+  }
+
+  pub fn from_dom_exception(&self, scope: &mut Scope<'_>, err: &DomException) -> Result<Value, VmError> {
+    match err {
+      DomException::SyntaxError { message } => self.new_instance(scope, "SyntaxError", message.as_str()),
+      DomException::NoModificationAllowedError { message } => {
+        self.new_instance(scope, "NoModificationAllowedError", message.as_str())
+      }
+      DomException::NotSupportedError { message } => {
+        self.new_instance(scope, "NotSupportedError", message.as_str())
+      }
+      DomException::InvalidStateError { message } => {
+        self.new_instance(scope, "InvalidStateError", message.as_str())
+      }
+    }
   }
 }
 
@@ -283,6 +329,28 @@ fn dom_exception_to_string(
 
 pub fn throw_dom_exception(
   scope: &mut Scope<'_>,
+  dom_exception: DomExceptionClassVmJs,
+  name: &str,
+  message: &str,
+) -> VmError {
+  match dom_exception.new_instance(scope, name, message) {
+    Ok(value) => VmError::Throw(value),
+    Err(_) => VmError::Throw(Value::Undefined),
+  }
+}
+
+pub fn dom_exception_from_rust(
+  scope: &mut Scope<'_>,
+  dom_exception: DomExceptionClassVmJs,
+  err: &DomException,
+) -> Value {
+  dom_exception
+    .from_dom_exception(scope, err)
+    .unwrap_or(Value::Undefined)
+}
+
+pub fn throw_dom_exception_like_error(
+  scope: &mut Scope<'_>,
   intr: Intrinsics,
   name: &str,
   message: &str,
@@ -293,11 +361,7 @@ pub fn throw_dom_exception(
   }
 }
 
-pub fn dom_exception_from_rust(
-  scope: &mut Scope<'_>,
-  intr: Intrinsics,
-  err: &DomException,
-) -> Value {
+pub fn dom_exception_from_rust_like_error(scope: &mut Scope<'_>, intr: Intrinsics, err: &DomException) -> Value {
   let (name, message) = match err {
     DomException::SyntaxError { message } => ("SyntaxError", message.as_str()),
     DomException::NoModificationAllowedError { message } => ("NoModificationAllowedError", message.as_str()),

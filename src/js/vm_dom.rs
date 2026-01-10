@@ -240,7 +240,7 @@ pub struct DomHost {
   class_list_wrappers: HashMap<NodeId, WeakGcObject>,
   live_collections: Vec<LiveCollection>,
 
-  // Persistent roots for cached prototype objects. `DomHost` isn't traced by the GC.
+  // Persistent roots for cached objects. `DomHost` isn't traced by the GC.
   prototype_roots: Vec<RootId>,
 
   // Cached prototypes.
@@ -250,8 +250,8 @@ pub struct DomHost {
   proto_dom_token_list: GcObject,
   proto_html_collection: GcObject,
 
-  // Cached prototypes for thrown objects.
-  error_prototype: GcObject,
+  // Cached constructor/prototype for DOMException.
+  dom_exception: DomExceptionClassVmJs,
   type_error_prototype: GcObject,
 }
 
@@ -512,7 +512,7 @@ fn throw_dom_exception<'a, T>(
   name: &str,
   message: &str,
 ) -> Result<T, VmError> {
-  let err = alloc_error_object(scope, host.error_prototype, name, message)?;
+  let err = host.dom_exception.new_instance(scope, name, message)?;
   Err(VmError::Throw(err))
 }
 
@@ -525,18 +525,8 @@ fn throw_web_dom_exception<'a, T>(
   host: &DomHost,
   err: DomException,
 ) -> Result<T, VmError> {
-  match err {
-    DomException::SyntaxError { message } => throw_dom_exception(scope, host, "SyntaxError", &message),
-    DomException::NoModificationAllowedError { message } => {
-      throw_dom_exception(scope, host, "NoModificationAllowedError", &message)
-    }
-    DomException::NotSupportedError { message } => {
-      throw_dom_exception(scope, host, "NotSupportedError", &message)
-    }
-    DomException::InvalidStateError { message } => {
-      throw_dom_exception(scope, host, "InvalidStateError", &message)
-    }
-  }
+  let err = host.dom_exception.from_dom_exception(scope, &err)?;
+  Err(VmError::Throw(err))
 }
 
 fn wrap_node<'a>(
@@ -2316,7 +2306,7 @@ pub fn install_dom_bindings_with_limits(
   // `vm_dom` is a host-driven DOM binding layer; ensure a spec-shaped `DOMException` exists on the
   // realm global so scripts can construct/catch it (and host code can throw DOMException-like
   // objects).
-  DomExceptionClassVmJs::install(vm, &mut scope, realm)?;
+  let dom_exception = DomExceptionClassVmJs::install(vm, &mut scope, realm)?;
 
   // Prototype objects.
   let proto_node = scope.alloc_object()?;
@@ -2553,7 +2543,7 @@ pub fn install_dom_bindings_with_limits(
     proto_document,
     proto_dom_token_list,
     proto_html_collection,
-    error_prototype: realm.intrinsics().error_prototype(),
+    dom_exception,
     type_error_prototype: realm.intrinsics().type_error_prototype(),
   };
 
@@ -2609,6 +2599,12 @@ pub fn install_dom_bindings_with_limits(
     scope.heap_mut().add_root(Value::Object(proto_document))?,
     scope.heap_mut().add_root(Value::Object(proto_dom_token_list))?,
     scope.heap_mut().add_root(Value::Object(proto_html_collection))?,
+    scope
+      .heap_mut()
+      .add_root(Value::Object(host.dom_exception.constructor))?,
+    scope
+      .heap_mut()
+      .add_root(Value::Object(host.dom_exception.prototype))?,
   ];
 
   vm.set_user_data(host);

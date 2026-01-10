@@ -138,10 +138,76 @@ fn installs_dom_bindings_and_exposes_constructors_and_basic_methods() -> Result<
   let Value::Object(thrown_obj) = thrown else {
     panic!("thrown value should be an object");
   };
+
+  // Thrown value should be a DOMException instance (i.e. [[Prototype]] is DOMException.prototype).
+  let key_dom_exception = PropertyKey::from_string(scope.alloc_string("DOMException")?);
+  let dom_exception_ctor = scope
+    .heap()
+    .object_get_own_data_property_value(global, &key_dom_exception)?
+    .expect("globalThis.DOMException should exist");
+  assert!(
+    scope.heap().is_callable(dom_exception_ctor).unwrap_or(false),
+    "DOMException should be callable"
+  );
+  let Value::Object(dom_exception_ctor_obj) = dom_exception_ctor else {
+    panic!("DOMException should be an object");
+  };
+
+  let dom_exception_proto = scope
+    .heap()
+    .object_get_own_data_property_value(dom_exception_ctor_obj, &key_prototype)?
+    .expect("DOMException.prototype should exist");
+  let Value::Object(dom_exception_proto_obj) = dom_exception_proto else {
+    panic!("DOMException.prototype should be an object");
+  };
+  assert_eq!(
+    scope.object_get_prototype(thrown_obj)?,
+    Some(dom_exception_proto_obj),
+    "thrown DOM exception should have prototype DOMException.prototype"
+  );
+  assert_eq!(
+    scope.object_get_prototype(dom_exception_proto_obj)?,
+    Some(realm.intrinsics().error_prototype()),
+    "DOMException.prototype should inherit from Error.prototype"
+  );
+
   let key_name = PropertyKey::from_string(scope.alloc_string("name")?);
   let name_val = get_data_property_value(scope.heap(), thrown_obj, &key_name)
     .expect("thrown object should have .name");
   assert_eq!(as_utf8_lossy(scope.heap(), name_val), "SyntaxError");
+
+  // name/message are own, non-enumerable, configurable data properties.
+  let name_desc = scope
+    .heap()
+    .object_get_own_property(thrown_obj, &key_name)?
+    .expect("thrown object should have own .name property");
+  assert!(!name_desc.enumerable, "thrown .name should be non-enumerable");
+  assert!(name_desc.configurable, "thrown .name should be configurable");
+
+  let key_message = PropertyKey::from_string(scope.alloc_string("message")?);
+  let message_desc = scope
+    .heap()
+    .object_get_own_property(thrown_obj, &key_message)?
+    .expect("thrown object should have own .message property");
+  assert!(
+    !message_desc.enumerable,
+    "thrown .message should be non-enumerable"
+  );
+  assert!(
+    message_desc.configurable,
+    "thrown .message should be configurable"
+  );
+
+  // DOMException.prototype.toString works.
+  let key_to_string = PropertyKey::from_string(scope.alloc_string("toString")?);
+  let to_string = get_data_property_value(scope.heap(), dom_exception_proto_obj, &key_to_string)
+    .expect("DOMException.prototype.toString should exist");
+  let formatted = vm.call_without_host(&mut scope, to_string, thrown, &[])?;
+  let formatted_s = as_utf8_lossy(scope.heap(), formatted);
+  assert!(
+    formatted_s == "SyntaxError" || formatted_s.starts_with("SyntaxError:"),
+    "unexpected DOMException.prototype.toString output: {formatted_s:?}"
+  );
 
   drop(scope);
   realm.teardown(&mut heap);
