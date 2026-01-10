@@ -26,6 +26,7 @@ mod meta;
 mod runner;
 mod suite;
 pub mod wpt_fs;
+mod wpt_resource_fetcher;
 mod wpt_report;
 
 pub use conformance_harness::{FailOn, Shard};
@@ -38,4 +39,5 @@ pub use suite::{
   TestOutcome, TestResult, REPORT_SCHEMA_VERSION,
 };
 pub use wpt_fs::WptFs;
+pub use wpt_resource_fetcher::WptResourceFetcher;
 pub use wpt_report::{WptReport, WptSubtest};

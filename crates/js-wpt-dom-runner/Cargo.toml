@@ -19,6 +19,7 @@ anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 conformance-harness = { path = "../../vendor/ecma-rs/conformance-harness" }
+fastrender = { path = "../.." }
 globset = "0.4"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
