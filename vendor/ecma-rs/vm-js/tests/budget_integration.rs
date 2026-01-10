@@ -982,6 +982,83 @@ fn own_property_keys_collection_consumes_fuel() {
 }
 
 #[test]
+fn array_length_shrink_consumes_fuel() {
+  fn enumerable_data_desc(value: Value) -> PropertyDescriptor {
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    }
+  }
+
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap).unwrap();
+
+  let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+  let intr = realm.intrinsics();
+
+  // Construct a large array object *outside* the budgeted region so the test isolates the cost of
+  // shrinking `length` (which must enumerate and delete existing element properties).
+  let n = 5000;
+  let mut scope = heap.scope();
+  let arr = scope.alloc_array(n).unwrap();
+  scope.push_root(Value::Object(arr)).unwrap();
+
+  for i in 0..n {
+    let key_s = scope.alloc_string(&i.to_string()).unwrap();
+    let key = PropertyKey::from_string(key_s);
+    scope
+      .define_property(arr, key, enumerable_data_desc(Value::Number(i as f64)))
+      .unwrap();
+  }
+
+  let object_ctor = intr.object_constructor();
+  let define_prop_key = PropertyKey::from_string(scope.alloc_string("defineProperty").unwrap());
+  let define_prop_func = match scope
+    .heap()
+    .get_property(object_ctor, &define_prop_key)
+    .unwrap()
+    .unwrap()
+    .kind
+  {
+    PropertyKind::Data { value, .. } => value,
+    PropertyKind::Accessor { .. } => panic!("Object.defineProperty should be a data property"),
+  };
+
+  let desc_obj = scope.alloc_object().unwrap();
+  scope.push_root(Value::Object(desc_obj)).unwrap();
+  let value_key = PropertyKey::from_string(scope.alloc_string("value").unwrap());
+  scope
+    .define_property(desc_obj, value_key, enumerable_data_desc(Value::Number(0.0)))
+    .unwrap();
+
+  let length_s = scope.alloc_string("length").unwrap();
+
+  // With only a single tick of fuel, the call-entry tick will succeed and `[[DefineOwnProperty]]`
+  // should fail once it begins enumerating and deleting thousands of element properties.
+  vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = vm
+    .call_without_host(
+      &mut scope,
+      define_prop_func,
+      Value::Object(object_ctor),
+      &[Value::Object(arr), Value::String(length_s), Value::Object(desc_obj)],
+    )
+    .unwrap_err();
+
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn spread_call_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);

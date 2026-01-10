@@ -436,7 +436,7 @@ pub fn object_define_property(
   };
   patch.validate()?;
 
-  let ok = scope.define_own_property(target, key, patch)?;
+  let ok = scope.define_own_property_with_tick(target, key, patch, || vm.tick())?;
   if !ok {
     return Err(VmError::TypeError("DefineOwnProperty rejected"));
   }

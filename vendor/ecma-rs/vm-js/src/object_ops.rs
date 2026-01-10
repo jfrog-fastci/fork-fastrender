@@ -97,8 +97,18 @@ impl<'a> Scope<'a> {
     key: PropertyKey,
     desc: PropertyDescriptorPatch,
   ) -> Result<bool, VmError> {
+    self.define_own_property_with_tick(obj, key, desc, || Ok(()))
+  }
+
+  pub fn define_own_property_with_tick(
+    &mut self,
+    obj: GcObject,
+    key: PropertyKey,
+    desc: PropertyDescriptorPatch,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<bool, VmError> {
     if self.heap().object_is_array(obj)? {
-      self.array_define_own_property(obj, key, desc)
+      self.array_define_own_property_with_tick(obj, key, desc, &mut tick)
     } else if self.string_object_in_range_index(obj, &key)?.is_some() {
       self.string_define_own_property_index(obj, key, desc)
     } else {
@@ -365,13 +375,14 @@ impl<'a> Scope<'a> {
             return Ok(false);
           }
 
-          return self.define_own_property(
+          return self.define_own_property_with_tick(
             receiver_obj,
             key,
             PropertyDescriptorPatch {
               value: Some(value),
               ..Default::default()
             },
+            || vm.tick(),
           );
         }
 
@@ -463,13 +474,14 @@ impl<'a> Scope<'a> {
             return Ok(false);
           }
 
-          return self.define_own_property(
+          return self.define_own_property_with_tick(
             receiver_obj,
             key,
             PropertyDescriptorPatch {
               value: Some(value),
               ..Default::default()
             },
+            || vm.tick(),
           );
         }
 
@@ -709,11 +721,12 @@ impl<'a> Scope<'a> {
     }
   }
 
-  fn array_define_own_property(
+  fn array_define_own_property_with_tick(
     &mut self,
     obj: GcObject,
     key: PropertyKey,
     desc: PropertyDescriptorPatch,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
     desc.validate()?;
 
@@ -746,7 +759,7 @@ impl<'a> Scope<'a> {
 
     if self.heap().property_key_is_length(&key) {
       let length_key = self.heap().array_length_key(obj)?;
-      return self.array_set_length(obj, length_key, desc);
+      return self.array_set_length_with_tick(obj, length_key, desc, tick);
     }
 
     if let Some(index) = self.heap().array_index(&key) {
@@ -773,11 +786,12 @@ impl<'a> Scope<'a> {
     self.ordinary_define_own_property(obj, key, desc)
   }
 
-  fn array_set_length(
+  fn array_set_length_with_tick(
     &mut self,
     obj: GcObject,
     length_key: PropertyKey,
     desc: PropertyDescriptorPatch,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
     // If `Desc` does not specify a new length value, this is just a property definition on the
     // existing `length` data property (typically toggling writability).
@@ -822,8 +836,11 @@ impl<'a> Scope<'a> {
     //
     // `OrdinaryOwnPropertyKeys` already sorts indices numerically, so iterating the resulting list
     // in reverse deletes indices from high to low.
-    let keys = self.ordinary_own_property_keys(obj)?;
-    for key in keys.into_iter().rev() {
+    let keys = self.ordinary_own_property_keys_with_tick(obj, &mut *tick)?;
+    for (i, key) in keys.into_iter().rev().enumerate() {
+      if i % 1024 == 0 {
+        tick()?;
+      }
       let Some(index) = self.heap().array_index(&key) else {
         continue;
       };
