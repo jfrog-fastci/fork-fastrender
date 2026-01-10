@@ -7510,21 +7510,9 @@ impl Painter {
           return;
         }
         if !content.fallback_svg.is_empty() {
-          if let Some(injection) = content.document_css_injection.as_ref() {
-            if self.paint_inline_svg_with_injected_style(
-              &content.fallback_svg,
-              injection,
-              style,
-              content_rect.x(),
-              content_rect.y(),
-              content_rect.width(),
-              content_rect.height(),
-              clip_mask,
-            ) {
-              return;
-            }
-          } else if self.paint_svg(
+          if self.paint_inline_svg_markup_with_document_injection(
             &content.fallback_svg,
+            content.document_css_injection.as_ref(),
             style,
             content_rect.x(),
             content_rect.y(),
@@ -8049,21 +8037,18 @@ impl Painter {
     height: f32,
     clip_mask: Option<&Mask>,
   ) -> bool {
-    let injection = content.document_css_injection.as_ref();
+    let style_injection = content.document_css_injection.as_ref();
     if content.foreign_objects.is_empty() {
-      if let Some(injection) = injection {
-        return self.paint_inline_svg_with_injected_style(
-          &content.svg,
-          injection,
-          style,
-          x,
-          y,
-          width,
-          height,
-          clip_mask,
-        );
-      }
-      return self.paint_svg(&content.svg, style, x, y, width, height, clip_mask);
+      return self.paint_inline_svg_markup_with_document_injection(
+        &content.svg,
+        style_injection,
+        style,
+        x,
+        y,
+        width,
+        height,
+        clip_mask,
+      );
     }
 
     let foreign_object_dpr = (|| {
@@ -8121,21 +8106,87 @@ impl Painter {
       foreign_object_dpr,
       self.max_iframe_depth,
     ) {
-      if let Some(injection) = injection {
-        return self.paint_inline_svg_with_injected_style(
-          &svg, injection, style, x, y, width, height, clip_mask,
-        );
-      }
-      return self.paint_svg(&svg, style, x, y, width, height, clip_mask);
+      return self.paint_inline_svg_markup_with_document_injection(
+        &svg,
+        style_injection,
+        style,
+        x,
+        y,
+        width,
+        height,
+        clip_mask,
+      );
     }
 
     false
   }
 
-  fn paint_inline_svg_with_injected_style(
+  fn paint_inline_svg_markup_with_document_injection(
+    &mut self,
+    svg_markup: &str,
+    style_injection: Option<&SvgDocumentCssInjection>,
+    style: Option<&ComputedStyle>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    clip_mask: Option<&Mask>,
+  ) -> bool {
+    if svg_markup.is_empty() {
+      return false;
+    }
+
+    let defs_injection = self.svg_id_defs.as_ref().and_then(|defs| {
+      crate::paint::svg_mask_image::defs_injection_for_svg_fragment(defs, svg_markup)
+    });
+
+    let mut insert_pos = style_injection.map(|inj| inj.insert_pos);
+    if let Some(pos) = insert_pos {
+      if svg_markup.get(..pos).is_none() || svg_markup.get(pos..).is_none() {
+        insert_pos = None;
+      }
+    }
+    if insert_pos.is_none() && (defs_injection.is_some() || style_injection.is_some()) {
+      insert_pos = crate::paint::svg_mask_image::svg_root_start_tag_end(svg_markup);
+    }
+
+    let injected: Option<(usize, std::borrow::Cow<'_, str>)> =
+      match (insert_pos, defs_injection, style_injection) {
+        (Some(pos), Some(defs), Some(style)) => {
+          let mut combined = defs;
+          combined.reserve(style.style_element.len());
+          combined.push_str(style.style_element.as_ref());
+          Some((pos, std::borrow::Cow::Owned(combined)))
+        }
+        (Some(pos), Some(defs), None) => Some((pos, std::borrow::Cow::Owned(defs))),
+        (Some(pos), None, Some(style)) => Some((pos, std::borrow::Cow::Borrowed(
+          style.style_element.as_ref(),
+        ))),
+        _ => None,
+      };
+
+    if let Some((insert_pos, injected)) = injected.as_ref() {
+      return self.paint_inline_svg_with_injected_markup(
+        svg_markup,
+        *insert_pos,
+        injected.as_ref(),
+        style,
+        x,
+        y,
+        width,
+        height,
+        clip_mask,
+      );
+    }
+
+    self.paint_svg(svg_markup, style, x, y, width, height, clip_mask)
+  }
+
+  fn paint_inline_svg_with_injected_markup(
     &mut self,
     content: &str,
-    injection: &SvgDocumentCssInjection,
+    insert_pos: usize,
+    injected_markup: &str,
     style: Option<&ComputedStyle>,
     x: f32,
     y: f32,
@@ -8212,8 +8263,8 @@ impl Painter {
       .image_cache
       .render_svg_pixmap_at_size_with_injected_style(
         content,
-        injection.insert_pos,
-        injection.style_element.as_ref(),
+        insert_pos,
+        injected_markup,
         render_w,
         render_h,
         "inline-svg",

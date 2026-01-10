@@ -183,6 +183,7 @@ use crate::tree::fragment_tree::FragmentTree;
 use crate::tree::fragment_tree::TextEmphasisOffset;
 use lru::LruCache;
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -12376,25 +12377,46 @@ impl DisplayListBuilder {
       return false;
     }
 
-    let injection = content.document_css_injection.as_ref();
-    let (content_hash, content_len) = match injection {
-      Some(injection) => match (
-        svg.get(..injection.insert_pos),
-        svg.get(injection.insert_pos..),
-      ) {
-        // Hash the final SVG markup (with injected CSS) without allocating it, matching `str::hash`
-        // semantics (single 0xFF terminator byte).
+    let style_injection = content.document_css_injection.as_ref();
+    let defs_injection = self.svg_id_defs.as_ref().and_then(|defs| {
+      crate::paint::svg_mask_image::defs_injection_for_svg_fragment(defs, svg)
+    });
+
+    let mut insert_pos = style_injection.map(|inj| inj.insert_pos);
+    if let Some(pos) = insert_pos {
+      if svg.get(..pos).is_none() || svg.get(pos..).is_none() {
+        insert_pos = None;
+      }
+    }
+    if insert_pos.is_none() && (defs_injection.is_some() || style_injection.is_some()) {
+      insert_pos = crate::paint::svg_mask_image::svg_root_start_tag_end(svg);
+    }
+
+    let injection: Option<(usize, Cow<'_, str>)> = match (insert_pos, defs_injection, style_injection)
+    {
+      (Some(pos), Some(defs), Some(style)) => {
+        let mut combined = defs;
+        combined.reserve(style.style_element.len());
+        combined.push_str(style.style_element.as_ref());
+        Some((pos, Cow::Owned(combined)))
+      }
+      (Some(pos), Some(defs), None) => Some((pos, Cow::Owned(defs))),
+      (Some(pos), None, Some(style)) => Some((pos, Cow::Borrowed(style.style_element.as_ref()))),
+      _ => None,
+    };
+
+    let (content_hash, content_len) = match injection.as_ref() {
+      Some((insert_pos, injected)) => match (svg.get(..*insert_pos), svg.get(*insert_pos..)) {
+        // Hash the final SVG markup (with injected markup) without allocating it, matching
+        // `str::hash` semantics (single 0xFF terminator byte).
         (Some(prefix), Some(suffix)) => {
-          let style_element = injection.style_element.as_ref();
+          let injected = injected.as_ref();
           let mut hasher = DefaultHasher::new();
           hasher.write(prefix.as_bytes());
-          hasher.write(style_element.as_bytes());
+          hasher.write(injected.as_bytes());
           hasher.write(suffix.as_bytes());
           hasher.write_u8(0xff);
-          (
-            hasher.finish(),
-            prefix.len() + style_element.len() + suffix.len(),
-          )
+          (hasher.finish(), prefix.len() + injected.len() + suffix.len())
         }
         _ => {
           let mut hasher = DefaultHasher::new();
@@ -12450,11 +12472,11 @@ impl DisplayListBuilder {
     }
 
     let decode_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let pixmap = match injection {
-      Some(injection) => image_cache.render_svg_pixmap_at_size_with_injected_style(
+    let pixmap = match injection.as_ref() {
+      Some((insert_pos, injected)) => image_cache.render_svg_pixmap_at_size_with_injected_style(
         svg,
-        injection.insert_pos,
-        injection.style_element.as_ref(),
+        *insert_pos,
+        injected.as_ref(),
         render_w,
         render_h,
         "inline-svg",

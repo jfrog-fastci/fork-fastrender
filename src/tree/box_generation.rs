@@ -2147,6 +2147,25 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         out.insert(id.to_string());
       }
     }
+    if let crate::dom::DomNodeType::Element {
+      tag_name,
+      namespace,
+      attributes,
+      ..
+    } = &styled.node.node_type
+    {
+      if namespace == SVG_NAMESPACE && tag_name.eq_ignore_ascii_case("use") {
+        for (name, value) in attributes {
+          if !is_href_attr(name) {
+            continue;
+          }
+          let trimmed = trim_ascii_whitespace(value);
+          if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+            out.insert(id.to_string());
+          }
+        }
+      }
+    }
     for child in &styled.children {
       collect_requested_svg_id_defs(child, out);
     }

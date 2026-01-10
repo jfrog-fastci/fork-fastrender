@@ -282,6 +282,39 @@ fn inline_svg_serializes_clip_path_url_from_document_css_when_injection_disabled
 }
 
 #[test]
+fn inline_svg_use_href_resolves_symbol_from_hidden_sprite_svg_when_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r##"
+      <style>
+        body { margin: 0; background: white; font-size: 0; }
+        svg { display: block; }
+      </style>
+      <svg xmlns="http://www.w3.org/2000/svg" style="display:none" id="iconsMap">
+        <symbol id="icon" viewBox="0 0 10 10">
+          <rect width="10" height="10" fill="rgb(255,0,0)"/>
+        </symbol>
+      </svg>
+      <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">
+        <use href="#icon" width="10" height="10"/>
+      </svg>
+      <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10" viewBox="0 0 10 10">
+        <use xlink:href="#icon" width="10" height="10"/>
+      </svg>
+      "##;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 20, 20);
+      assert_eq!(pixel(&pixmap, 5, 5), [255, 0, 0, 255]);
+      assert_eq!(pixel(&pixmap, 5, 15), [255, 0, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_serializes_filter_url_from_document_css_when_injection_disabled() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

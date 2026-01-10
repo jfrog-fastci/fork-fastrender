@@ -335,6 +335,147 @@ fn svg_ids_to_inline(defs: &HashMap<String, String>, root_id: &str) -> Option<Ve
   Some(include)
 }
 
+/// Computes a `<defs>...</defs>` element containing document-level SVG fragments that the given SVG
+/// markup references via `href="#id"` / `url(#id)`.
+///
+/// This is used when FastRender rasterizes an inline `<svg>` subtree as a standalone SVG document.
+/// Fragment-only references cannot resolve outside of that serialized subtree, so we inline the
+/// missing fragments from the document-wide `defs` map.
+///
+/// The returned `<defs>` string:
+/// - includes all referenced ids that are missing from `svg_fragment`,
+/// - includes transitive references (e.g. gradients referenced by an inlined `<symbol>`), and
+/// - suppresses nested defs so duplicate ids are not emitted twice.
+pub(crate) fn defs_injection_for_svg_fragment(
+  defs: &HashMap<String, String>,
+  svg_fragment: &str,
+) -> Option<String> {
+  if defs.is_empty() || svg_fragment.is_empty() {
+    return None;
+  }
+
+  // Avoid parsing unless it looks like there are fragment references.
+  // This must be case-insensitive because HTML/SVG serialization preserves attribute casing.
+  fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
+    let bytes = haystack.as_bytes();
+    bytes
+      .windows(needle.len())
+      .any(|window| window.iter().zip(needle).all(|(a, b)| a.to_ascii_lowercase() == *b))
+  }
+  if !contains_ascii_case_insensitive(svg_fragment, b"href")
+    && !contains_ascii_case_insensitive(svg_fragment, b"url(")
+  {
+    return None;
+  }
+
+  let local_ids = collect_svg_fragment_ids(svg_fragment);
+  let refs = collect_svg_fragment_references(svg_fragment);
+  if refs.is_empty() {
+    return None;
+  }
+
+  let mut required: HashSet<String> = HashSet::new();
+  let mut queue: VecDeque<String> = VecDeque::new();
+  for id in refs {
+    if local_ids.contains(&id) {
+      continue;
+    }
+    if defs.contains_key(&id) && required.insert(id.clone()) {
+      queue.push_back(id);
+    }
+  }
+
+  while let Some(id) = queue.pop_front() {
+    let Some(fragment) = defs.get(&id) else {
+      continue;
+    };
+    for reference in collect_svg_fragment_references(fragment) {
+      if local_ids.contains(&reference) {
+        continue;
+      }
+      if !defs.contains_key(&reference) {
+        continue;
+      }
+      if required.insert(reference.clone()) {
+        queue.push_back(reference);
+      }
+    }
+  }
+
+  if required.is_empty() {
+    return None;
+  }
+
+  let mut nested: HashSet<String> = HashSet::new();
+  for id in required.iter() {
+    let Some(fragment) = defs.get(id) else {
+      continue;
+    };
+    for contained_id in collect_svg_fragment_ids(fragment) {
+      if contained_id != *id && required.contains(&contained_id) {
+        nested.insert(contained_id);
+      }
+    }
+  }
+
+  let mut include: Vec<String> = required
+    .into_iter()
+    .filter(|id| !nested.contains(id))
+    .collect();
+  include.sort();
+  if include.is_empty() {
+    return None;
+  }
+
+  let mut out = String::new();
+  out.push_str("<defs>");
+  for id in include {
+    if let Some(serialized) = defs.get(&id) {
+      out.push_str(serialized);
+    }
+  }
+  out.push_str("</defs>");
+  Some(out)
+}
+
+pub(crate) fn svg_root_start_tag_end(svg_fragment: &str) -> Option<usize> {
+  // Allow leading whitespace / XML declarations by searching for the first `<svg` start tag.
+  let bytes = svg_fragment.as_bytes();
+  let mut start = None;
+  let mut i = 0usize;
+  while i + 4 <= bytes.len() {
+    if bytes[i] == b'<'
+      && bytes[i + 1].to_ascii_lowercase() == b's'
+      && bytes[i + 2].to_ascii_lowercase() == b'v'
+      && bytes[i + 3].to_ascii_lowercase() == b'g'
+    {
+      start = Some(i);
+      break;
+    }
+    i += 1;
+  }
+  let start = start?;
+
+  // Find the end of the root element's start tag, ensuring `>` within quoted attributes does not
+  // terminate the scan early.
+  let mut quote: Option<u8> = None;
+  let mut i = start;
+  while i < bytes.len() {
+    let b = bytes[i];
+    if let Some(q) = quote {
+      if b == q {
+        quote = None;
+      }
+    } else if b == b'"' || b == b'\'' {
+      quote = Some(b);
+    } else if b == b'>' {
+      return Some(i + 1);
+    }
+    i += 1;
+  }
+  None
+}
+
 pub(crate) fn inline_svg_for_mask_id(
   defs: &HashMap<String, String>,
   mask_id: &str,
