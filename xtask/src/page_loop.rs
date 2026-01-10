@@ -81,7 +81,8 @@ pub struct PageLoopArgs {
   )]
   pub top_slowest: Option<usize>,
 
-  /// When selecting from `--from-progress`, only consider pages whose `hotspot` matches this value.
+  /// When selecting from `--from-progress`, only consider pages whose `hotspot` matches this value
+  /// (case-insensitive).
   #[arg(long, value_name = "NAME", requires = "from_progress")]
   pub hotspot: Option<String>,
 

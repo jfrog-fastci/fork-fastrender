@@ -293,11 +293,11 @@ fn from_progress_hotspot_filters_candidates() {
       "--top-worst-accuracy",
       "1",
       "--hotspot",
-      "css",
+      "CSS",
       "--dry-run",
     ])
     .output()
-    .expect("run cargo xtask page-loop --from-progress --hotspot css --dry-run");
+    .expect("run cargo xtask page-loop --from-progress --hotspot CSS --dry-run");
 
   assert!(
     output.status.success(),
