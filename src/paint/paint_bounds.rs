@@ -136,14 +136,20 @@ pub(crate) fn resolve_length_for_paint(
     }
     len.resolve_with_viewport(vw, vh).unwrap_or(0.0)
   } else if len.unit.is_font_relative() {
-    let px = if matches!(len.unit, LengthUnit::Rem) {
-      root_font_size
-    } else {
-      font_size
-    };
     len
-      .resolve_with_font_size(px)
-      .unwrap_or(len.value * px)
+      .resolve_with_context(None, 0.0, 0.0, font_size, root_font_size)
+      .unwrap_or_else(|| match len.unit {
+        LengthUnit::Rem => len.value * root_font_size,
+        LengthUnit::Rex | LengthUnit::Rch => len.value * root_font_size * 0.5,
+        LengthUnit::Rcap => len.value * root_font_size * 0.7,
+        LengthUnit::Ric => len.value * root_font_size,
+        LengthUnit::Rlh => len.value * root_font_size * 1.2,
+        LengthUnit::Ex | LengthUnit::Ch => len.value * font_size * 0.5,
+        LengthUnit::Cap => len.value * font_size * 0.7,
+        LengthUnit::Ic => len.value * font_size,
+        LengthUnit::Lh => len.value * font_size * 1.2,
+        _ => len.value * font_size,
+      })
   } else {
     len.value
   };
@@ -505,5 +511,20 @@ mod tests {
 
     let unresolved = resolve_length_for_border_image(&len, 100.0, 16.0, 16.0, None);
     assert_eq!(unresolved, 0.0);
+  }
+
+  #[test]
+  fn paint_bounds_root_units_resolve_against_root_font_size() {
+    let font_size = 20.0;
+    let root_font_size = 10.0;
+    let base = 100.0;
+
+    let rch = Length::new(1.0, LengthUnit::Rch);
+    let resolved_rch = resolve_length_for_paint(&rch, font_size, root_font_size, base, None);
+    assert!((resolved_rch - 5.0).abs() < 1e-6);
+
+    let rlh = Length::new(1.0, LengthUnit::Rlh);
+    let resolved_rlh = resolve_length_for_paint(&rlh, font_size, root_font_size, base, None);
+    assert!((resolved_rlh - 12.0).abs() < 1e-6);
   }
 }

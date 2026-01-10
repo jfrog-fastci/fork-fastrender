@@ -419,19 +419,26 @@ impl InlineFormattingContext {
                   if !term.value.is_finite() {
                     return None;
                   }
-                  let resolved = match term.unit {
-                    LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
-                    u if u.is_absolute() => Some(crate::style::values::Length::new(term.value, u).to_px()),
-                    u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
-                      .resolve_with_viewport_for_writing_mode(vw, vh, writing_mode),
-                    LengthUnit::Em => Some(term.value * font_px),
-                    LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
-                    LengthUnit::Rem => Some(term.value * root_px),
-                    LengthUnit::Lh => Some(term.value * line_height),
-                    _ => None,
-                  }?;
-                  total += resolved;
-                }
+                   let resolved = match term.unit {
+                     LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+                     u if u.is_absolute() => Some(crate::style::values::Length::new(term.value, u).to_px()),
+                     u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
+                       .resolve_with_viewport_for_writing_mode(vw, vh, writing_mode),
+                     LengthUnit::Em => Some(term.value * font_px),
+                     LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
+                     LengthUnit::Rem => Some(term.value * root_px),
+                     LengthUnit::Cap => Some(term.value * font_px * 0.7),
+                     LengthUnit::Ic => Some(term.value * font_px),
+                     LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_px * 0.5),
+                     LengthUnit::Rcap => Some(term.value * root_px * 0.7),
+                     LengthUnit::Ric => Some(term.value * root_px),
+                     // Root line-height isn't available in this context; use the "normal" fallback.
+                     LengthUnit::Rlh => Some(term.value * root_px * 1.2),
+                     LengthUnit::Lh => Some(term.value * line_height),
+                     _ => None,
+                   }?;
+                   total += resolved;
+                 }
                 Some(total)
               },
             )
@@ -444,20 +451,22 @@ impl InlineFormattingContext {
           } else {
             0.0
           }
-        } else if len.unit.is_font_relative() {
-          let base = if len.unit == LengthUnit::Rem {
-            root_font_size
-          } else {
-            font_size
-          };
-          len
-            .resolve_with_font_size(base)
-            .unwrap_or(len.value * base)
-        } else if len.unit.is_percentage() {
-          len.resolve_against(line_height).unwrap_or(0.0)
-        } else if len.unit.is_absolute() {
-          len.to_px()
-        } else if len.unit.is_viewport_relative() {
+         } else if len.unit.is_font_relative() {
+           len
+             .resolve_with_context(None, 0.0, 0.0, font_size, root_font_size)
+             .unwrap_or_else(|| match len.unit {
+               LengthUnit::Rem => len.value * root_font_size,
+               LengthUnit::Rex | LengthUnit::Rch => len.value * root_font_size * 0.5,
+               LengthUnit::Rcap => len.value * root_font_size * 0.7,
+               LengthUnit::Ric => len.value * root_font_size,
+               LengthUnit::Rlh => len.value * root_font_size * 1.2,
+               _ => len.value * font_size,
+             })
+         } else if len.unit.is_percentage() {
+           len.resolve_against(line_height).unwrap_or(0.0)
+         } else if len.unit.is_absolute() {
+           len.to_px()
+         } else if len.unit.is_viewport_relative() {
           len
             .resolve_with_viewport_for_writing_mode(
               self.viewport_size.width,
@@ -14457,6 +14466,35 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.font_size = 16.0;
     Arc::new(style)
+  }
+
+  #[test]
+  fn vertical_align_length_resolves_root_units() {
+    let ifc = InlineFormattingContext::new();
+    let font_size = 20.0;
+    let root_font_size = 10.0;
+    let line_height = 16.0;
+
+    let resolved = ifc.convert_vertical_align(
+      crate::style::types::VerticalAlign::Length(Length::new(1.0, LengthUnit::Rch)),
+      font_size,
+      root_font_size,
+      line_height,
+      WritingMode::HorizontalTb,
+    );
+    assert_eq!(resolved, baseline::VerticalAlign::Length(5.0));
+
+    let resolved_calc = ifc.convert_vertical_align(
+      crate::style::types::VerticalAlign::Length(Length::calc(CalcLength::single(
+        LengthUnit::Rch,
+        1.0,
+      ))),
+      font_size,
+      root_font_size,
+      line_height,
+      WritingMode::HorizontalTb,
+    );
+    assert_eq!(resolved_calc, baseline::VerticalAlign::Length(5.0));
   }
 
   #[test]
