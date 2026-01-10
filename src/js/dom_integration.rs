@@ -8,6 +8,7 @@ use super::{
   ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
   trim_ascii_whitespace,
 };
+use super::trim_ascii_whitespace;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| c.is_ascii_whitespace())
