@@ -37,6 +37,7 @@ fn main() -> Result<()> {
     Commands::UpdateGoldens(args) => run_update_goldens(args),
     Commands::Js(args) => js::run_js(args),
     Commands::RenderPage(args) => run_render_page(args),
+    Commands::Browser(args) => run_browser(args),
     Commands::PageLoop(args) => page_loop::run_page_loop(args),
     Commands::Pageset(args) => run_pageset(args),
     Commands::PagesetDiff(args) => run_pageset_diff(args),
@@ -108,6 +109,8 @@ enum Commands {
   Js(js::JsArgs),
   /// Render a single page via the fetch_and_render binary
   RenderPage(RenderPageArgs),
+  /// Run the experimental browser UI (winit/wgpu/egui) with wrapper-safe guardrails.
+  Browser(BrowserArgs),
   /// Run the "page loop" workflow for a single offline fixture (FastRender render + optional overlay + optional Chrome diff).
   PageLoop(page_loop::PageLoopArgs),
   /// Fetch pages, prefetch subresources, and update the committed pageset scoreboard (`progress/pages/*.json`)
@@ -642,6 +645,28 @@ struct RenderPageArgs {
   /// Additional arguments forwarded directly to fetch_and_render
   #[arg(last = true)]
   extra: Vec<String>,
+}
+
+#[derive(Args)]
+struct BrowserArgs {
+  /// Optional start URL to open (defaults to `about:newtab`).
+  #[arg(value_name = "URL")]
+  url: Option<String>,
+
+  /// Build and run the browser in release mode.
+  #[arg(long)]
+  release: bool,
+
+  /// Apply an in-process address-space limit (MiB) via `FASTR_BROWSER_MEM_LIMIT_MB`.
+  ///
+  /// This is applied by the `browser` binary itself after startup so Cargo/rustup can still run
+  /// under the default outer `scripts/run_limited.sh --as 64G` cap.
+  #[arg(long, value_name = "MB", value_parser = parse_u64_with_underscores)]
+  mem_limit_mb: Option<u64>,
+
+  /// Run the browser in headless smoke-test mode (no window/wgpu) and exit.
+  #[arg(long)]
+  headless_smoke: bool,
 }
 
 #[derive(Args)]
@@ -2327,6 +2352,21 @@ fn run_render_page(args: RenderPageArgs) -> Result<()> {
   run_command(cmd)
 }
 
+fn run_browser(args: BrowserArgs) -> Result<()> {
+  let repo_root = repo_root();
+  let cmd = xtask::browser::build_browser_command(
+    &repo_root,
+    &xtask::browser::BrowserCommandArgs {
+      url: args.url,
+      release: args.release,
+      mem_limit_mb: args.mem_limit_mb,
+      headless_smoke: args.headless_smoke,
+    },
+  );
+  println!("Running browser UI...");
+  run_command(cmd)
+}
+
 fn run_diff_renders(args: DiffRendersArgs) -> Result<()> {
   if !(0.0..=100.0).contains(&args.max_diff_percent) || !args.max_diff_percent.is_finite() {
     bail!("--max-diff-percent must be a finite number between 0 and 100");
@@ -2452,6 +2492,17 @@ fn run_diff_renders(args: DiffRendersArgs) -> Result<()> {
   }
 
   Ok(())
+}
+
+fn parse_u64_with_underscores(raw: &str) -> Result<u64, String> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Err("value must not be empty".to_string());
+  }
+  let normalized = trimmed.replace('_', "");
+  normalized
+    .parse::<u64>()
+    .map_err(|_| format!("invalid integer value: {raw:?}"))
 }
 
 fn parse_shard(s: &str) -> Result<(usize, usize), String> {

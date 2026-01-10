@@ -65,6 +65,13 @@ bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 ```
 
+Or (recommended), use the xtask wrapper which always applies the required `cargo_agent.sh` +
+`run_limited.sh` safety guardrails:
+
+```bash
+bash scripts/cargo_agent.sh xtask browser
+```
+
 You can optionally provide a start URL (like the address bar). Supported schemes are:
 `http`, `https`, `file`, and `about` (default is `about:newtab`):
 
@@ -72,6 +79,12 @@ You can optionally provide a start URL (like the address bar). Supported schemes
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
   https://example.com/
+```
+
+xtask form:
+
+```bash
+bash scripts/cargo_agent.sh xtask browser https://example.com/
 ```
 
 ### 2) UI framework choice
