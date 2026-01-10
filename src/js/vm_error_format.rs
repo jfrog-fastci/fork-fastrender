@@ -155,9 +155,11 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
     Value::Object(obj) => obj,
   };
 
-  let fallback_marker = if heap.is_promise_object(obj) {
+  let is_promise = heap.is_promise_object(obj);
+  let is_function = heap.is_callable(Value::Object(obj)).unwrap_or(false);
+  let fallback_marker = if is_promise {
     "[promise]"
-  } else if heap.is_callable(Value::Object(obj)).unwrap_or(false) {
+  } else if is_function {
     "[function]"
   } else {
     "[object]"
@@ -200,6 +202,14 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
 
   let name = get_prop_str("name");
   let message = get_prop_str("message");
+  if is_function {
+    // For callable objects, `name` is usually the function's identifier, which can be confusing in
+    // host-side exception output ("f" looks like an Error name). Use an explicit marker.
+    return Some(match name {
+      Some(name) if !name.is_empty() => format!("[function {name}]"),
+      _ => "[function]".to_string(),
+    });
+  }
   match (name, message) {
     (Some(name), Some(message)) if !message.is_empty() => Some(format!("{name}: {message}")),
     (Some(name), _) if !name.is_empty() => Some(name),
@@ -658,6 +668,62 @@ mod tests {
     assert!(
       msg.starts_with("[function]"),
       "expected thrown function without name/message to use marker, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at f (<test>:1:2)"),
+      "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn thrown_named_function_uses_function_marker_with_name() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let empty_name_s = scope.alloc_string("").expect("alloc name");
+    scope
+      .push_root(Value::String(empty_name_s))
+      .expect("root name");
+
+    let func = scope
+      .alloc_native_function(vm_js::NativeFunctionId(0), None, empty_name_s, 0)
+      .expect("alloc function");
+    scope.push_root(Value::Object(func)).expect("root function");
+
+    let name_s = scope.alloc_string("foo").expect("alloc name");
+    scope.push_root(Value::String(name_s)).expect("root name");
+    let name_key_s = scope.alloc_string("name").expect("alloc key");
+    scope.push_root(Value::String(name_key_s)).expect("root key");
+    let name_key = PropertyKey::from_string(name_key_s);
+    scope
+      .define_property(
+        func,
+        name_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::String(name_s),
+            writable: true,
+          },
+        },
+      )
+      .expect("define name");
+
+    let err = VmError::ThrowWithStack {
+      value: Value::Object(func),
+      stack: vec![StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("<test>"),
+        line: 1,
+        col: 2,
+      }],
+    };
+
+    let msg = vm_error_to_string(scope.heap_mut(), err);
+    assert!(
+      msg.starts_with("[function foo]"),
+      "expected thrown function with name property to include it, got {msg:?}"
     );
     assert!(
       msg.contains("at f (<test>:1:2)"),
