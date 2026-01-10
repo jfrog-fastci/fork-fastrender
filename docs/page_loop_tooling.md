@@ -69,6 +69,7 @@ Render FastRender, generate an overlay, run Chrome, and write a diff report:
 ```bash
 bash scripts/cargo_agent.sh xtask page-loop \
   --fixture example.com \
+  --debug \
   --viewport 1200x800 \
   --dpr 1.0 \
   --overlay \
@@ -77,10 +78,13 @@ bash scripts/cargo_agent.sh xtask page-loop \
   --chrome
 ```
 
+Tip: `--debug` skips `--release` for the FastRender + diff steps, which is much faster to compile
+for tight iteration loops (but slower at runtime).
+
 Alternative: if you’re starting from a pageset URL/stem and don’t want to think about fixture naming (including stem collisions), use `--pageset`:
 
 ```bash
-bash scripts/cargo_agent.sh xtask page-loop --pageset https://example.com --overlay --inspect-dump-json --write-snapshot --chrome
+bash scripts/cargo_agent.sh xtask page-loop --pageset https://example.com --debug --overlay --inspect-dump-json --write-snapshot --chrome
 ```
 
 Tip: add `--dry-run` to print the resolved paths and commands without executing.
