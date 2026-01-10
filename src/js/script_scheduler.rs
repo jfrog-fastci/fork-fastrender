@@ -2395,6 +2395,57 @@ mod state_machine_tests {
   }
 
   #[test]
+  fn module_external_script_fetches_with_cors_and_same_origin_credentials_by_default() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let mut spec = classic_external("https://example.com/a.js", false, false);
+    spec.script_type = ScriptType::Module;
+    let script_id = h.discover(spec)?;
+
+    assert_eq!(
+      h.started_fetches,
+      vec![(
+        script_id,
+        1u32,
+        "https://example.com/a.js".to_string(),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::SameOrigin,
+      )]
+    );
+    assert!(
+      h.blocked_parser_on.is_none(),
+      "module scripts must not block parsing"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_crossorigin_use_credentials_sets_credentials_mode_include() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    let mut spec = classic_external("https://example.com/a.js", false, false);
+    spec.script_type = ScriptType::Module;
+    spec.crossorigin = Some(crate::resource::CorsMode::UseCredentials);
+    let script_id = h.discover(spec)?;
+
+    assert_eq!(
+      h.started_fetches,
+      vec![(
+        script_id,
+        1u32,
+        "https://example.com/a.js".to_string(),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::Include,
+      )]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn blocking_external_script_delays_later_inline_script_until_fetch_and_execute() -> Result<()> {
     let mut h = Harness::new();
 
