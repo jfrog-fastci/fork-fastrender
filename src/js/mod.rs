@@ -43,6 +43,8 @@ pub mod dom_integration;
 pub mod dom_host;
 pub mod cookie_jar;
 pub mod dom2_bindings;
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
 pub mod clock;
 pub mod document_lifecycle;
 pub mod event_loop;
