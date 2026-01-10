@@ -435,3 +435,60 @@ fn parses_wordpress_importmap_from_msnbc_fixture() {
 
   let _ = warnings;
 }
+
+#[test]
+fn parses_importmap_from_bing_fixture() {
+  let html = read_fixture("tests/pages/fixtures/bing.com/index.html");
+  let importmap_json = extract_first_importmap_script_text(&html);
+  let base = Url::parse("https://www.bing.com/").unwrap();
+
+  let (map, warnings) = parse_import_map_string(&importmap_json, &base).unwrap();
+
+  let addr = map
+    .imports
+    .entries
+    .iter()
+    .find(|(k, _)| k == "rms-answers-HomepageVNext-PeregrineWidgets")
+    .and_then(|(_, v)| v.as_ref())
+    .expect("expected rms-answers-HomepageVNext-PeregrineWidgets to resolve to a URL");
+  assert_eq!(
+    addr.as_str(),
+    "https://assets.msn.com/bundles/v1/bingHomepage/latest/widget-initializer.js"
+  );
+
+  let _ = warnings;
+}
+
+#[test]
+fn parses_importmap_from_yelp_fixture() {
+  let html = read_fixture("tests/pages/fixtures/yelp.com/index.html");
+  let importmap_json = extract_first_importmap_script_text(&html);
+  let base = Url::parse("https://www.yelp.com/").unwrap();
+
+  let (map, warnings) = parse_import_map_string(&importmap_json, &base).unwrap();
+
+  let react = map
+    .imports
+    .entries
+    .iter()
+    .find(|(k, _)| k == "react")
+    .and_then(|(_, v)| v.as_ref())
+    .expect("expected react to resolve to a URL");
+  assert!(
+    react.as_str().starts_with(
+      "https://s3-media0.fl.yelpcdn.com/assets/srv0/cdn_assets/207c3004a398/assets/vendor/react/18.3.1/esm/"
+    ),
+    "unexpected react URL: {react}"
+  );
+
+  let integrity = map
+    .integrity
+    .get(react.as_str())
+    .expect("expected integrity metadata for react");
+  assert_eq!(
+    integrity,
+    "sha384-UfZTcbQo0urRc9EDyVtaRtxuTnwNWsj3LZU1SOW0wRwXgoc1xPcLpkBisYVl842u"
+  );
+
+  let _ = warnings;
+}
