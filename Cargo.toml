@@ -16,6 +16,16 @@ members = [
   "crates/webidl-js-runtime",
   "crates/webidl-vm-js",
 ]
+# Keep legacy QuickJS crates in the workspace for now, but exclude them from the default
+# workspace build so `cargo build/test` stays vm-js-only unless explicitly requested.
+default-members = [
+  ".",
+  "xtask",
+  "crates/webidl-ir",
+  "crates/js-wpt-dom-runner",
+  "crates/webidl-js-runtime",
+  "crates/webidl-vm-js",
+]
 # `vendor/ecma-rs` is a nested workspace (vendored). Exclude it so Cargo can build `vm-js`
 # and friends using their own workspace-inherited metadata.
 exclude = ["vendor/ecma-rs"]
@@ -26,6 +36,7 @@ default = ["preserve3d_warp"]
 box_generation_demo = []
 disk_cache = ["fs2"]
 preserve3d_warp = []
+quickjs = ["dep:rquickjs"]
 browser_ui = [
   "dep:winit",
   "dep:wgpu",
@@ -118,7 +129,7 @@ sha2 = "0.10"
 httpdate = "1.0"
 http = "1"
 libc = "0.2"
-rquickjs = "0.9"
+rquickjs = { version = "0.9", optional = true, features = ["classes", "macro"] }
 read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
@@ -152,7 +163,6 @@ egui-winit = { version = "0.23", default-features = false, features = ["clipboar
 criterion = "0.5"
 filetime = "0.2"
 usvg = "0.43"
-rquickjs = { version = "0.9", features = ["macro"] }
 
 [[test]]
 name = "wpt_tests"

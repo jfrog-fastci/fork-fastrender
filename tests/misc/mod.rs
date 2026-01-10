@@ -51,14 +51,18 @@ mod integration_test;
 mod is_alias_matches_test;
 mod dom2_closest;
 mod dom2_js_events;
+#[cfg(feature = "quickjs")]
 mod js_current_script;
 mod js_script_fetch_semantics;
+#[cfg(feature = "quickjs")]
 mod js_dom_quickjs_bindings;
 mod js_event_loop_timers;
 mod js_diagnostics;
 mod js_dom_shims;
 mod js_dom_exception;
+#[cfg(feature = "quickjs")]
 mod js_fetch_bindings;
+#[cfg(feature = "quickjs")]
 mod js_timers;
 mod js_trace_spans_test;
 mod js_time_determinism;

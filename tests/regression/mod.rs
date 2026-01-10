@@ -20,7 +20,9 @@ mod content_visibility_writing_mode;
 mod fixed_cb_propagation;
 mod inline_abspos_padding_edge;
 mod pages;
+#[cfg(feature = "quickjs")]
 mod js_fetch_bindings;
+#[cfg(feature = "quickjs")]
 mod js_url_bindings;
 mod vm_js_url_bindings;
 mod vm_js_generated_bindings_url_search_params_iterable;

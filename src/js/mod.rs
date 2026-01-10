@@ -59,6 +59,7 @@ pub mod window_fetch;
 pub mod window_timers;
 pub mod window_url;
 pub(crate) mod vm_budgets;
+#[cfg(feature = "quickjs")]
 pub mod vm_host;
 pub mod vm_limits;
 pub(crate) mod vm_error_format;
@@ -73,6 +74,7 @@ pub mod window_realm;
 pub mod dom_bindings;
 pub mod events_bindings;
 pub mod window;
+#[cfg(feature = "quickjs")]
 pub mod quickjs_dom;
 pub mod window_env;
 
@@ -140,6 +142,7 @@ pub use window_realm::{
   ConsoleSink, LocationNavigationRequest, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 pub use window::{WindowHost, WindowHostState};
+#[cfg(feature = "quickjs")]
 pub use vm_host::JsVmHost;
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
 pub use promise::{JsPromise, JsPromiseResolver, JsPromiseValue};

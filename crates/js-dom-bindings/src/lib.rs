@@ -2,6 +2,7 @@
 //!
 //! This crate is intentionally small and focuses on wiring up host-maintained state that is
 //! observable from JavaScript, such as `document.currentScript`.
+#![cfg(feature = "quickjs")]
 
 use fastrender::dom2::{Document as Dom2Document, DomError, NodeId, NodeKind};
 use fastrender::js::DomHost;

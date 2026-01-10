@@ -2,6 +2,7 @@
 //!
 //! This crate exposes a small subset of DOM APIs required for real-world bootstrap scripts
 //! (class flips, basic DOM construction, selector queries) on top of FastRender's `dom2` document.
+#![cfg(feature = "quickjs")]
 
 use std::cell::RefCell;
 use std::ffi::CString;

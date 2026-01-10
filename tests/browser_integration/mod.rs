@@ -71,6 +71,7 @@ mod select_listbox_hidden_option_click;
 mod select_dropdown_pick;
 mod select_listbox_click_scrolled;
 mod select_listbox_wheel_scroll;
+#[cfg(feature = "quickjs")]
 mod js_rendering;
 mod navigation_streaming;
 mod location_navigation;

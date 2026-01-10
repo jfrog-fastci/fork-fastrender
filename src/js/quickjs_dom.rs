@@ -7,6 +7,7 @@
 //! - A small set of Rust host functions (`__dom_*`) that read/mutate the `dom2::Document`.
 //! - A JS bootstrap snippet that defines `Node`/`Element`/`Document`/`Text` wrappers and maintains a
 //!   wrapper cache so node identity is preserved (`node.firstChild === node.firstChild`).
+#![cfg(feature = "quickjs")]
 
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, Document, NodeId, NodeKind};

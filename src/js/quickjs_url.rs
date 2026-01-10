@@ -5,7 +5,7 @@
 //!
 //! It intentionally keeps the JS binding surface small and self-contained so it can be replaced by
 //! IDL-generated bindings later.
-#![cfg(test)]
+#![cfg(all(test, feature = "quickjs"))]
 
 use fastrender::js::{Url, UrlLimits, UrlSearchParams};
 use rquickjs::class::{Trace, Tracer};

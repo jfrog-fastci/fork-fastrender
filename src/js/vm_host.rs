@@ -1,3 +1,5 @@
+#![cfg(feature = "quickjs")]
+
 use crate::error::{Error, Result};
 use crate::js::event_loop::{EventLoop, TimerId};
 use crate::js::time::WebTime;

@@ -15,6 +15,7 @@
 //!   rejected Promise.
 //! - `Body` is in-memory only (no streaming).
 //! - `Headers` iteration is deterministic and uses `Headers::sort_and_combine()`.
+#![cfg(feature = "quickjs")]
 
 use std::sync::Arc;
 

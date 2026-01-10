@@ -1,3 +1,5 @@
+#![cfg(feature = "quickjs")]
+
 mod js_harness;
 
 use fastrender::js::{ClassicScriptScheduler, RunLimits, RunUntilIdleOutcome, ScriptElementSpec, ScriptType};

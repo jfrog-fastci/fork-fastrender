@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+# Legacy QuickJS bindings. Kept for comparison/debugging only and disabled by default so the
+# workspace default build is vm-js-only.
+default = []
+quickjs = ["dep:fastrender", "dep:rquickjs"]
+
 [dependencies]
-fastrender = { path = "../.." }
-rquickjs = "0.9"
+fastrender = { path = "../..", optional = true }
+rquickjs = { version = "0.9", optional = true }
