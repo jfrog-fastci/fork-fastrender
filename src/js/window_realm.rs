@@ -924,6 +924,7 @@ const NODE_TEXT_CONTENT_GET_KEY: &str = "__fastrender_node_text_content_get";
 const NODE_TEXT_CONTENT_SET_KEY: &str = "__fastrender_node_text_content_set";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
+const ELEMENT_REMOVE_ATTRIBUTE_KEY: &str = "__fastrender_element_remove_attribute";
 const ELEMENT_INNER_HTML_GET_KEY: &str = "__fastrender_element_inner_html_get";
 const ELEMENT_INNER_HTML_SET_KEY: &str = "__fastrender_element_inner_html_set";
 const ELEMENT_OUTER_HTML_GET_KEY: &str = "__fastrender_element_outer_html_get";
@@ -2054,6 +2055,12 @@ fn get_or_create_node_wrapper(
       .heap()
       .object_get_own_data_property_value(document_obj, &key)?
   };
+  let remove_attribute = {
+    let key = alloc_key(scope, ELEMENT_REMOVE_ATTRIBUTE_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
   let inner_html_get = {
     let key = alloc_key(scope, ELEMENT_INNER_HTML_GET_KEY)?;
     scope
@@ -2731,6 +2738,11 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = set_attribute {
     let key = alloc_key(scope, "setAttribute")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = remove_attribute {
+    let key = alloc_key(scope, "removeAttribute")?;
     scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
@@ -6406,6 +6418,11 @@ fn element_reflected_bool_get_native(
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
   let dom = unsafe { dom_ptr.as_ref() };
+  if attr == "async" && is_html_script_element(dom, node_id) {
+    let force_async = dom.node(node_id).script_force_async;
+    let async_attr = dom.has_attribute(node_id, "async").unwrap_or(false);
+    return Ok(Value::Bool(force_async || async_attr));
+  }
   Ok(Value::Bool(dom.has_attribute(node_id, &attr).unwrap_or(false)))
 }
 
@@ -6433,11 +6450,30 @@ fn element_reflected_bool_set_native(
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
   let dom = unsafe { dom_ptr.as_mut() };
+  if attr == "async" && is_html_script_element(dom, node_id) {
+    dom.node_mut(node_id).script_force_async = false;
+    if let Err(err) = dom.set_bool_attribute(node_id, "async", present) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    return Ok(Value::Undefined);
+  }
   if let Err(err) = dom.set_bool_attribute(node_id, &attr, present) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
   Ok(Value::Undefined)
+}
+
+fn is_html_script_element(dom: &dom2::Document, node_id: NodeId) -> bool {
+  match &dom.node(node_id).kind {
+    dom2::NodeKind::Element {
+      tag_name, namespace, ..
+    } => {
+      tag_name.eq_ignore_ascii_case("script")
+        && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
+    }
+    _ => false,
+  }
 }
 
 fn css_style_get_property_value_native(
@@ -7119,6 +7155,74 @@ fn element_set_attribute_native(
     .map_err(|_| VmError::TypeError("Element.setAttribute must be called on an element object"))?;
 
   if let Err(err) = dom.set_attribute(node_id, &name, &value) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn element_remove_attribute_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.removeAttribute must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.removeAttribute requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.removeAttribute must be called on an element object",
+      ));
+    }
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.removeAttribute requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.removeAttribute must be called on an element object")
+  })?;
+
+  if let Err(err) = dom.remove_attribute(node_id, &name) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
@@ -9215,6 +9319,27 @@ fn init_window_globals(
     data_desc(Value::Object(set_attribute_func)),
   )?;
 
+  let remove_attribute_call_id = vm.register_native_call(element_remove_attribute_native)?;
+  let remove_attribute_name = scope.alloc_string("removeAttribute")?;
+  scope.push_root(Value::String(remove_attribute_name))?;
+  let remove_attribute_func = scope.alloc_native_function(
+    remove_attribute_call_id,
+    None,
+    remove_attribute_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    remove_attribute_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(remove_attribute_func))?;
+  let remove_attribute_key = alloc_key(&mut scope, ELEMENT_REMOVE_ATTRIBUTE_KEY)?;
+  scope.define_property(
+    document_obj,
+    remove_attribute_key,
+    data_desc(Value::Object(remove_attribute_func)),
+  )?;
+
   // Store shared Element.className getter/setter functions on `document` so wrappers can reuse them.
   let class_name_get_call_id = vm.register_native_call(element_class_name_get_native)?;
   let class_name_get_name = scope.alloc_string("get className")?;
@@ -10345,16 +10470,19 @@ mod tests {
         add('x', () => {});\n\
       })()",
     );
-    {
-      let err = unbound_error.expect_err("expected unbound addEventListener to throw");
-      let obj = unwrap_thrown_object(err);
-      let (_vm, heap) = realm.vm_and_heap_mut();
-      let mut scope = heap.scope();
-      scope.push_root(Value::Object(obj))?;
-      let name = get_prop(&mut scope, obj, "name");
-      assert_eq!(get_string(scope.heap(), name), "TypeError");
-      let message = get_prop(&mut scope, obj, "message");
-      assert_eq!(get_string(scope.heap(), message), "Illegal invocation");
+    let err = unbound_error.expect_err("expected unbound addEventListener to throw");
+    match err {
+      VmError::TypeError(msg) => assert_eq!(msg, "Illegal invocation"),
+      other => {
+        let obj = unwrap_thrown_object(other);
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        let mut scope = heap.scope();
+        scope.push_root(Value::Object(obj))?;
+        let name = get_prop(&mut scope, obj, "name");
+        assert_eq!(get_string(scope.heap(), name), "TypeError");
+        let message = get_prop(&mut scope, obj, "message");
+        assert_eq!(get_string(scope.heap(), message), "Illegal invocation");
+      }
     }
 
     let default_not_prevented = {
@@ -10737,6 +10865,58 @@ mod tests {
     assert_eq!(dom.has_attribute(script, "async").unwrap(), true);
     assert_eq!(dom.has_attribute(script, "defer").unwrap(), true);
 
+    Ok(())
+  }
+
+  #[test]
+  fn html_script_element_async_reflects_force_async_slot() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const s = document.createElement('script');\n\
+        if (!(s.async === true && s.getAttribute('async') === null)) return false;\n\
+        s.async = false;\n\
+        if (!(s.async === false && s.getAttribute('async') === null)) return false;\n\
+        s.async = true;\n\
+        if (!(s.async === true && s.getAttribute('async') === '')) return false;\n\
+        s.setAttribute('async', '');\n\
+        s.removeAttribute('async');\n\
+        return s.async === false && s.getAttribute('async') === null;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_script_defaults_to_async_false() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><script id=s></script></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const s = document.getElementById('s');\n\
+        return s.async === false && s.getAttribute('async') === null;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 

@@ -202,8 +202,13 @@ impl JsFunction {
       construct: construct.map(ConstructHandler::Native),
       name,
       length,
-      this_mode: ThisMode::Global,
-      is_strict: false,
+      // ECMAScript built-in/native functions are specified to have `[[ThisMode]]` = strict.
+      //
+      // This ensures unbound calls (e.g. `const f = obj.method; f()`) receive `this === undefined`
+      // instead of implicitly rebinding `this` to the global object, which matches web platform
+      // "illegal invocation" behaviour relied upon by host shims.
+      this_mode: ThisMode::Strict,
+      is_strict: true,
       base: ObjectBase::new(None),
       data: FunctionData::None,
       bound_target: None,
