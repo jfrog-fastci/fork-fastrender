@@ -1616,6 +1616,7 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
 
 fn svg_paint_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
   use crate::style::display::Display;
+  use crate::style::types::{ClipPath, FilterFunction};
   use std::fmt::Write as _;
 
   let mut out = String::new();
@@ -1657,6 +1658,20 @@ fn svg_paint_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Opt
   if style.opacity.is_finite() && style.opacity != 1.0 {
     start_decl(&mut out, &mut any);
     let _ = write!(&mut out, "opacity: {:.3}", style.opacity.clamp(0.0, 1.0));
+  }
+
+  if let ClipPath::Url(url, _) = &style.clip_path {
+    start_decl(&mut out, &mut any);
+    out.push_str("clip-path: url(");
+    out.push_str(url);
+    out.push(')');
+  }
+
+  if let [FilterFunction::Url(url)] = style.filter.as_slice() {
+    start_decl(&mut out, &mut any);
+    out.push_str("filter: url(");
+    out.push_str(url);
+    out.push(')');
   }
 
   any.then_some(out)
