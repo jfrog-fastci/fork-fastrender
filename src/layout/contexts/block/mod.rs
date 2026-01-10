@@ -8859,12 +8859,115 @@ impl FormattingContext for BlockFormattingContext {
     let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
 
     let intrinsic_inline = self.compute_intrinsic_inline_size(box_node, mode)?.max(0.0);
+
+    // Force a non-zero inline size so intrinsic block-size probes don't lay out the element in a
+    // 0px column, but still treat percentage-based values as if their percentage base were 0px (the
+    // same behavior the default intrinsic probe path gets from `AvailableSpace::{Min,Max}Content`).
+    //
+    // We achieve this by:
+    // 1) running layout under a *definite* inline constraint equal to the intrinsic inline size, and
+    // 2) installing a temporary style override that resolves padding/margin percentages against a
+    //    0px base so they don't pick up that definite inline constraint.
     let constraints = if inline_is_horizontal {
       LayoutConstraints::new(AvailableSpace::Definite(intrinsic_inline), AvailableSpace::Indefinite)
     } else {
       LayoutConstraints::new(AvailableSpace::Indefinite, AvailableSpace::Definite(intrinsic_inline))
     };
-    let fragment = self.layout(box_node, &constraints)?;
+    let mut probe_style = style_override.unwrap_or_else(|| box_node.style.clone());
+    {
+      let s = Arc::make_mut(&mut probe_style);
+
+      // Layout uses the containing block inline size for resolving all padding percentages (even
+      // for `padding-top`/`padding-bottom`). For intrinsic probes, that base is unknown, so resolve
+      // against 0px and store the resulting absolute lengths in the override.
+      let (padding_left, padding_right, padding_top, padding_bottom, margin_left, margin_right, margin_top, margin_bottom) =
+        {
+          let style_ref: &ComputedStyle = &*s;
+          let resolve0 = |len: Length| {
+            resolve_length_for_width(len, 0.0, style_ref, &self.font_context, self.viewport_size)
+          };
+          (
+            Length::px(resolve0(style_ref.padding_left)),
+            Length::px(resolve0(style_ref.padding_right)),
+            Length::px(resolve0(style_ref.padding_top)),
+            Length::px(resolve0(style_ref.padding_bottom)),
+            style_ref.margin_left.map(|m| Length::px(resolve0(m))),
+            style_ref.margin_right.map(|m| Length::px(resolve0(m))),
+            style_ref.margin_top.map(|m| Length::px(resolve0(m))),
+            style_ref.margin_bottom.map(|m| Length::px(resolve0(m))),
+          )
+        };
+      s.padding_left = padding_left;
+      s.padding_right = padding_right;
+      s.padding_top = padding_top;
+      s.padding_bottom = padding_bottom;
+      s.margin_left = margin_left;
+      s.margin_right = margin_right;
+      s.margin_top = margin_top;
+      s.margin_bottom = margin_bottom;
+
+      // Percentage widths/heights behave as `auto` when the percentage base is unknown. The
+      // definite inline constraint passed via `constraints` is only there to avoid 0px columns, not
+      // to serve as a percentage base.
+      if matches!(s.width, Some(len) if len.unit.is_percentage())
+        || s
+          .width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+      {
+        s.width = None;
+        s.width_keyword = None;
+      }
+      if matches!(s.min_width, Some(len) if len.unit.is_percentage())
+        || s
+          .min_width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+      {
+        s.min_width = None;
+        s.min_width_keyword = None;
+      }
+      if matches!(s.max_width, Some(len) if len.unit.is_percentage())
+        || s
+          .max_width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+      {
+        s.max_width = None;
+        s.max_width_keyword = None;
+      }
+      if matches!(s.height, Some(len) if len.unit.is_percentage())
+        || s
+          .height_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+      {
+        s.height = None;
+        s.height_keyword = None;
+      }
+      if matches!(s.min_height, Some(len) if len.unit.is_percentage())
+        || s
+          .min_height_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+      {
+        s.min_height = None;
+        s.min_height_keyword = None;
+      }
+      if matches!(s.max_height, Some(len) if len.unit.is_percentage())
+        || s
+          .max_height_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
+      {
+        s.max_height = None;
+        s.max_height_keyword = None;
+      }
+    }
+
+    let fragment = if box_node.id != 0 {
+      crate::layout::style_override::with_style_override(box_node.id, probe_style, || {
+        self.layout(box_node, &constraints)
+      })?
+    } else {
+      let mut cloned = box_node.clone();
+      cloned.style = probe_style;
+      self.layout(&cloned, &constraints)?
+    };
     let block_size = if inline_is_horizontal {
       fragment.bounds.height()
     } else {
