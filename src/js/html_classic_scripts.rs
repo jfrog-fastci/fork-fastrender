@@ -6,7 +6,10 @@ use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::js::script_scheduler::ScriptId;
 use crate::js::streaming_pipeline::{ClassicScriptPipeline, ClassicScriptPipelineHost, ParseBudget};
 use crate::js::{EventLoop, ScriptType};
-use crate::resource::{ensure_script_mime_sane, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+use crate::resource::{
+  ensure_script_mime_sane, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
+  ResourceFetcher,
+};
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -18,8 +21,13 @@ use std::sync::Arc;
 /// completions via [`ClassicScriptFetcher::poll_complete`].
 pub trait ClassicScriptFetcher {
   /// Start fetching an external script URL.
-  fn start_fetch(&mut self, script_id: ScriptId, url: &str, destination: FetchDestination)
-    -> Result<()>;
+  fn start_fetch(
+    &mut self,
+    script_id: ScriptId,
+    url: &str,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<()>;
 
   /// Poll the next completed fetch, returning `(script_id, source_text)`.
   ///
@@ -45,10 +53,15 @@ impl ResourceFetcherClassicScriptFetcher {
     }
   }
 
-  fn fetch_text(&self, url: &str, destination: FetchDestination) -> Result<String> {
-    let res: FetchedResource = self
-      .fetcher
-      .fetch_with_request(FetchRequest::new(url, destination))?;
+  fn fetch_text(
+    &self,
+    url: &str,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<String> {
+    let res: FetchedResource = self.fetcher.fetch_with_request(
+      FetchRequest::new(url, destination).with_credentials_mode(credentials_mode),
+    )?;
     ensure_script_mime_sane(&res, url)?;
     Ok(decode_classic_script_bytes(
       &res.bytes,
@@ -59,8 +72,14 @@ impl ResourceFetcherClassicScriptFetcher {
 }
 
 impl ClassicScriptFetcher for ResourceFetcherClassicScriptFetcher {
-  fn start_fetch(&mut self, script_id: ScriptId, url: &str, destination: FetchDestination) -> Result<()> {
-    let text = self.fetch_text(url, destination)?;
+  fn start_fetch(
+    &mut self,
+    script_id: ScriptId,
+    url: &str,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<()> {
+    let text = self.fetch_text(url, destination, credentials_mode)?;
     self.completed.push_back((script_id, text));
     Ok(())
   }
@@ -126,6 +145,7 @@ where
     script_id: ScriptId,
     url: &str,
     destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
   ) -> Result<()> {
     if self.in_flight_fetches.contains_key(&script_id) {
       return Err(Error::Other(format!(
@@ -134,7 +154,9 @@ where
       )));
     }
     self.in_flight_fetches.insert(script_id, url.to_string());
-    self.fetcher.start_fetch(script_id, url, destination)
+    self
+      .fetcher
+      .start_fetch(script_id, url, destination, credentials_mode)
   }
 
   fn execute_script(

@@ -2,7 +2,7 @@ use crate::dom2::NodeId;
 use crate::error::{Error, Result};
 use crate::js::event_loop::{EventLoop, TaskSource};
 use crate::js::{ScriptElementSpec, ScriptType};
-use crate::resource::FetchDestination;
+use crate::resource::{FetchCredentialsMode, FetchDestination};
 
 use super::html_script_scheduler::{
   HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork, ScriptEventKind,
@@ -22,7 +22,13 @@ pub trait ScriptElementEventHost {
 /// Host interface used by [`HtmlScriptPipeline`].
 pub trait HtmlScriptPipelineHost: ScriptElementEventHost + Sized + 'static {
   /// Begin fetching an external script resource.
-  fn start_fetch(&mut self, script_id: HtmlScriptId, url: &str, destination: FetchDestination) -> Result<()>;
+  fn start_fetch(
+    &mut self,
+    script_id: HtmlScriptId,
+    url: &str,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<()>;
 
   /// Begin building/fetching the module graph for an inline module script.
   ///
@@ -186,18 +192,23 @@ impl<Host: HtmlScriptPipelineHost> HtmlScriptPipeline<Host> {
           script_id,
           url,
           destination,
+          credentials_mode,
           ..
         } => {
-          host.start_fetch(script_id, &url, destination)?;
+          host.start_fetch(script_id, &url, destination, credentials_mode)?;
         }
         HtmlScriptSchedulerAction::StartModuleGraphFetch {
           script_id,
           url,
           destination,
-          element: _,
+          element,
           ..
         } => {
-          host.start_fetch(script_id, &url, destination)?;
+          let credentials_mode = element
+            .crossorigin
+            .map(|cors_mode| cors_mode.credentials_mode())
+            .unwrap_or(FetchCredentialsMode::SameOrigin);
+          host.start_fetch(script_id, &url, destination, credentials_mode)?;
         }
         HtmlScriptSchedulerAction::StartInlineModuleGraphFetch {
           script_id,
@@ -311,7 +322,7 @@ mod tests {
 
   #[derive(Default)]
   struct Host {
-    started_fetches: Vec<(HtmlScriptId, String, FetchDestination)>,
+    started_fetches: Vec<(HtmlScriptId, String, FetchDestination, FetchCredentialsMode)>,
     log: Vec<String>,
   }
 
@@ -323,10 +334,16 @@ mod tests {
   }
 
   impl HtmlScriptPipelineHost for Host {
-    fn start_fetch(&mut self, script_id: HtmlScriptId, url: &str, destination: FetchDestination) -> Result<()> {
+    fn start_fetch(
+      &mut self,
+      script_id: HtmlScriptId,
+      url: &str,
+      destination: FetchDestination,
+      credentials_mode: FetchCredentialsMode,
+    ) -> Result<()> {
       self
         .started_fetches
-        .push((script_id, url.to_string(), destination));
+        .push((script_id, url.to_string(), destination, credentials_mode));
       Ok(())
     }
 
@@ -434,6 +451,7 @@ mod tests {
 
     assert_eq!(host.started_fetches.len(), 1);
     assert_eq!(host.started_fetches[0].2, FetchDestination::ScriptCors);
+    assert_eq!(host.started_fetches[0].3, FetchCredentialsMode::SameOrigin);
     assert!(host.log.is_empty());
 
     pipeline.fetch_completed(&mut host, id, "export default 1;".to_string())?;
@@ -484,6 +502,7 @@ mod tests {
 
     assert_eq!(host.started_fetches.len(), 1);
     assert_eq!(host.started_fetches[0].2, FetchDestination::ScriptCors);
+    assert_eq!(host.started_fetches[0].3, FetchCredentialsMode::SameOrigin);
 
     pipeline.fetch_failed(&mut host, id)?;
     pipeline.parsing_completed(&mut host)?;

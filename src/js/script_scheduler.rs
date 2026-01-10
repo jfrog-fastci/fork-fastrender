@@ -1,6 +1,6 @@
 use crate::error::{Error, RenderStage, Result};
 use crate::render_control::{record_stage, StageGuard, StageHeartbeat};
-use crate::resource::FetchDestination;
+use crate::resource::{FetchCredentialsMode, FetchDestination};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -40,12 +40,22 @@ pub trait ScriptLoader {
   /// Load the script resource synchronously.
   ///
   /// Used for parser-blocking external scripts.
-  fn load_blocking(&mut self, url: &str, destination: FetchDestination) -> Result<String>;
+  fn load_blocking(
+    &mut self,
+    url: &str,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<String>;
 
   /// Start loading the script resource in a non-blocking way.
   ///
   /// Used for async and defer scripts.
-  fn start_load(&mut self, url: &str, destination: FetchDestination) -> Result<Self::Handle>;
+  fn start_load(
+    &mut self,
+    url: &str,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<Self::Handle>;
 
   /// Poll for the next completed non-blocking script load.
   ///
@@ -210,10 +220,10 @@ where
       })?;
       return Ok(());
     };
-    let destination = if spec.crossorigin.is_some() {
-      FetchDestination::ScriptCors
+    let (destination, credentials_mode) = if let Some(cors_mode) = spec.crossorigin {
+      (FetchDestination::ScriptCors, cors_mode.credentials_mode())
     } else {
-      FetchDestination::Script
+      (FetchDestination::Script, FetchCredentialsMode::Include)
     };
 
     // Async takes priority over defer. For classic scripts, HTML treats `async` as true when either
@@ -221,7 +231,7 @@ where
     let async_like = spec.async_attr || spec.force_async;
 
     if async_like {
-      let handle = host.start_load(src_url, destination)?;
+      let handle = host.start_load(src_url, destination, credentials_mode)?;
       if self.async_pending.contains_key(&handle)
         || self.defer_by_handle.contains_key(&handle)
         || self.in_order_asap_by_handle.contains_key(&handle)
@@ -235,7 +245,7 @@ where
     }
 
     if !spec.parser_inserted {
-      let handle = host.start_load(src_url, destination)?;
+      let handle = host.start_load(src_url, destination, credentials_mode)?;
       if self.async_pending.contains_key(&handle)
         || self.defer_by_handle.contains_key(&handle)
         || self.in_order_asap_by_handle.contains_key(&handle)
@@ -254,7 +264,7 @@ where
     }
 
     if spec.defer_attr {
-      let handle = host.start_load(src_url, destination)?;
+      let handle = host.start_load(src_url, destination, credentials_mode)?;
       if self.async_pending.contains_key(&handle)
         || self.defer_by_handle.contains_key(&handle)
         || self.in_order_asap_by_handle.contains_key(&handle)
@@ -276,7 +286,7 @@ where
     if spec.parser_inserted && self.js_execution_depth.get() == 0 {
       event_loop.perform_microtask_checkpoint(host)?;
     }
-    let script_text = host.load_blocking(src_url, destination)?;
+    let script_text = host.load_blocking(src_url, destination, credentials_mode)?;
     self
       .options
       .check_script_source(&script_text, &format!("source=external url={src_url}"))?;
@@ -499,6 +509,7 @@ pub enum ScriptSchedulerAction<NodeId> {
     node_id: NodeId,
     url: String,
     destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
   },
   /// Block the HTML parser until the referenced script has executed.
   ///
@@ -707,16 +718,17 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             },
           );
 
-          let destination = if element.crossorigin.is_some() {
-            FetchDestination::ScriptCors
+          let (destination, credentials_mode) = if let Some(cors_mode) = element.crossorigin {
+            (FetchDestination::ScriptCors, cors_mode.credentials_mode())
           } else {
-            FetchDestination::Script
+            (FetchDestination::Script, FetchCredentialsMode::Include)
           };
           actions.push(ScriptSchedulerAction::StartFetch {
             script_id: id,
             node_id: node_id.clone(),
             url,
             destination,
+            credentials_mode,
           });
 
           // Only parser-inserted blocking scripts are allowed to block parsing.
@@ -1085,7 +1097,12 @@ mod tests {
   impl ScriptLoader for TestHost {
     type Handle = usize;
 
-    fn load_blocking(&mut self, url: &str, _destination: FetchDestination) -> Result<String> {
+    fn load_blocking(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<String> {
       self
         .loader
         .blocking_sources
@@ -1094,7 +1111,12 @@ mod tests {
         .ok_or_else(|| crate::error::Error::Other(format!("no blocking source for url={url}")))
     }
 
-    fn start_load(&mut self, url: &str, _destination: FetchDestination) -> Result<Self::Handle> {
+    fn start_load(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<Self::Handle> {
       let handle = self.loader.next_handle;
       self.loader.next_handle += 1;
       self.loader.handles_by_url.insert(url.to_string(), handle);
@@ -1741,7 +1763,7 @@ mod state_machine_tests {
     scheduler: ScriptScheduler<u32>,
     event_loop: EventLoop<Host>,
     host: Host,
-    started_fetches: Vec<(ScriptId, u32, String, FetchDestination)>,
+    started_fetches: Vec<(ScriptId, u32, String, FetchDestination, FetchCredentialsMode)>,
     blocked_parser_on: Option<ScriptId>,
   }
 
@@ -1768,10 +1790,11 @@ mod state_machine_tests {
             node_id,
             url,
             destination,
+            credentials_mode,
           } => {
             self
               .started_fetches
-              .push((script_id, node_id, url, destination));
+              .push((script_id, node_id, url, destination, credentials_mode));
           }
           ScriptSchedulerAction::BlockParserUntilExecuted { script_id, node_id: _ } => {
             self.blocked_parser_on = Some(script_id);
@@ -1910,7 +1933,7 @@ mod state_machine_tests {
     assert_eq!(
       h.started_fetches
         .iter()
-        .map(|(_id, _node_id, url, _destination)| url.as_str())
+        .map(|(_id, _node_id, url, _destination, _credentials_mode)| url.as_str())
         .collect::<Vec<_>>(),
       vec!["a.js", "b.js"]
     );
@@ -2144,6 +2167,7 @@ mod state_machine_tests {
         1u32,
         "https://example.com/a.js".to_string(),
         FetchDestination::Script,
+        FetchCredentialsMode::Include,
       )]
     );
 
@@ -2162,6 +2186,27 @@ mod state_machine_tests {
         "script:b".to_string(),
         "microtask:b".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn crossorigin_use_credentials_sets_credentials_mode_include() -> Result<()> {
+    let mut h = Harness::new();
+
+    let mut spec = classic_external("https://example.com/a.js", false, false);
+    spec.crossorigin = Some(crate::resource::CorsMode::UseCredentials);
+    let script_id = h.discover(spec)?;
+
+    assert_eq!(
+      h.started_fetches,
+      vec![(
+        script_id,
+        1u32,
+        "https://example.com/a.js".to_string(),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::Include,
+      )]
     );
     Ok(())
   }

@@ -16,7 +16,7 @@ use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
-use crate::resource::FetchDestination;
+use crate::resource::{FetchCredentialsMode, FetchDestination};
 
 use super::DomHost;
 use super::orchestrator::{CurrentScriptHost, ScriptBlockExecutor, ScriptOrchestrator};
@@ -82,8 +82,13 @@ pub trait ClassicScriptPipelineHost: CurrentScriptHost + DomHost + Sized + 'stat
   ///
   /// Tests typically record the request and call [`ClassicScriptPipeline::on_fetch_completed`]
   /// manually.
-  fn start_fetch(&mut self, script_id: ScriptId, url: &str, destination: FetchDestination)
-    -> Result<()>;
+  fn start_fetch(
+    &mut self,
+    script_id: ScriptId,
+    url: &str,
+    destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<()>;
 
   /// Execute a script block.
   ///
@@ -422,9 +427,10 @@ impl ClassicScriptPipelineState {
           script_id,
           url,
           destination,
+          credentials_mode,
           ..
         } => {
-          host.start_fetch(script_id, &url, destination)?;
+          host.start_fetch(script_id, &url, destination, credentials_mode)?;
         }
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           self.blocked_parser_on = Some(script_id);
@@ -724,12 +730,13 @@ mod tests {
     ClassicScriptScheduler, CurrentScriptStateHandle, EventLoop, RunLimits, ScriptElementEvent,
     ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
   };
+  use crate::resource::FetchCredentialsMode;
   use selectors::context::QuirksMode;
 
   struct Host {
     dom: Document,
     current_script: CurrentScriptStateHandle,
-    started_fetches: Vec<(ScriptId, String, FetchDestination)>,
+    started_fetches: Vec<(ScriptId, String, FetchDestination, FetchCredentialsMode)>,
     log: Vec<String>,
     assert_dom_state_on_execute: Option<Box<dyn Fn(&Document)>>,
   }
@@ -775,10 +782,11 @@ mod tests {
       script_id: ScriptId,
       url: &str,
       destination: FetchDestination,
+      credentials_mode: FetchCredentialsMode,
     ) -> Result<()> {
       self
         .started_fetches
-        .push((script_id, url.to_string(), destination));
+        .push((script_id, url.to_string(), destination, credentials_mode));
       Ok(())
     }
 
@@ -805,13 +813,23 @@ mod tests {
   impl ScriptLoader for Host {
     type Handle = usize;
 
-    fn load_blocking(&mut self, url: &str, _destination: FetchDestination) -> Result<String> {
+    fn load_blocking(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<String> {
       Err(Error::Other(format!(
         "unexpected load_blocking for url={url} (test host has no external loader)"
       )))
     }
 
-    fn start_load(&mut self, url: &str, _destination: FetchDestination) -> Result<Self::Handle> {
+    fn start_load(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<Self::Handle> {
       Err(Error::Other(format!(
         "unexpected start_load for url={url} (test host has no external loader)"
       )))
@@ -1467,7 +1485,7 @@ mod tests {
     p.finish_input()?;
     p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.started_fetches.len(), 1);
-    let (_id, url, _dest) = &host.started_fetches[0];
+    let (_id, url, _dest, _credentials_mode) = &host.started_fetches[0];
     assert_eq!(url, "https://ex/a.js");
     Ok(())
   }

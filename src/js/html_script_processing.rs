@@ -22,6 +22,7 @@ use super::script_scheduler::{ScriptId, ScriptLoader, ScriptScheduler, ScriptSch
 use super::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use super::ScriptType;
 use super::{DomHost, ScriptExecutionLog};
+use crate::resource::FetchCredentialsMode;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -272,7 +273,8 @@ where
   Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()>
     + 'static,
 {
-  let mut start_fetches: Vec<(ScriptId, String, crate::resource::FetchDestination)> = Vec::new();
+  let mut start_fetches: Vec<(ScriptId, String, crate::resource::FetchDestination, FetchCredentialsMode)> =
+    Vec::new();
   let mut blocking: HashSet<ScriptId> = HashSet::new();
 
   for action in actions {
@@ -281,9 +283,10 @@ where
         script_id,
         url,
         destination,
+        credentials_mode,
         ..
       } => {
-        start_fetches.push((script_id, url, destination));
+        start_fetches.push((script_id, url, destination, credentials_mode));
       }
       ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
         blocking.insert(script_id);
@@ -315,9 +318,9 @@ where
     }
   }
 
-  for (script_id, url, destination) in start_fetches {
+  for (script_id, url, destination, credentials_mode) in start_fetches {
     if blocking.contains(&script_id) {
-      let source_text = loader.load_blocking(&url, destination)?;
+      let source_text = loader.load_blocking(&url, destination, credentials_mode)?;
       let actions = scheduler.fetch_completed(script_id, source_text)?;
       apply_actions(
         scheduler,
@@ -331,7 +334,7 @@ where
         actions,
       )?;
     } else {
-      let handle = loader.start_load(&url, destination)?;
+      let handle = loader.start_load(&url, destination, credentials_mode)?;
       if pending_fetches.insert(handle, script_id).is_some() {
         return Err(Error::Other(format!(
           "Script loader returned duplicate handle {handle:?} for url={url}"
@@ -597,6 +600,7 @@ mod tests {
       &mut self,
       url: &str,
       _destination: crate::resource::FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
     ) -> Result<String> {
       self.started.push(url.to_string());
       if let Some(log) = &self.call_log {
@@ -613,6 +617,7 @@ mod tests {
       &mut self,
       url: &str,
       _destination: crate::resource::FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
     ) -> Result<Self::Handle> {
       self.started.push(url.to_string());
       if let Some(log) = &self.call_log {

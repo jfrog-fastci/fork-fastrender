@@ -17,7 +17,7 @@
 //! - "list of scripts that will execute when the document has finished parsing" (post-parse)
 
 use crate::error::{Error, Result};
-use crate::resource::FetchDestination;
+use crate::resource::{FetchCredentialsMode, FetchDestination};
 
 use super::{ScriptElementSpec, ScriptType};
 
@@ -65,6 +65,7 @@ pub enum HtmlScriptSchedulerAction<NodeId> {
     node_id: NodeId,
     url: String,
     destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
   },
   /// Begin fetching the module graph for an external module script (`type="module" src=...`).
   ///
@@ -305,16 +306,17 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
           },
         );
 
-        let destination = if element.crossorigin.is_some() {
-          FetchDestination::ScriptCors
+        let (destination, credentials_mode) = if let Some(cors_mode) = element.crossorigin {
+          (FetchDestination::ScriptCors, cors_mode.credentials_mode())
         } else {
-          FetchDestination::Script
+          (FetchDestination::Script, FetchCredentialsMode::Include)
         };
         actions.push(HtmlScriptSchedulerAction::StartClassicFetch {
           script_id: id,
           node_id: node_id.clone(),
           url,
           destination,
+          credentials_mode,
         });
 
         if mode == ScheduleMode::ParserBlocking {
@@ -809,7 +811,7 @@ mod state_machine_tests {
     event_loop: EventLoop<Host>,
     host: Host,
 
-    started_classic_fetches: Vec<(HtmlScriptId, u32, String, FetchDestination)>,
+    started_classic_fetches: Vec<(HtmlScriptId, u32, String, FetchDestination, FetchCredentialsMode)>,
     started_module_fetches: Vec<(HtmlScriptId, u32, String, FetchDestination, usize)>,
     started_inline_module_fetches: Vec<(HtmlScriptId, u32, String, usize)>,
 
@@ -841,10 +843,11 @@ mod state_machine_tests {
             node_id,
             url,
             destination,
+            credentials_mode,
           } => {
             self
               .started_classic_fetches
-              .push((script_id, node_id, url, destination));
+              .push((script_id, node_id, url, destination, credentials_mode));
           }
           HtmlScriptSchedulerAction::StartModuleGraphFetch {
             script_id,
@@ -1172,6 +1175,7 @@ mod state_machine_tests {
     ))?;
     assert_eq!(h.started_classic_fetches.len(), 1);
     assert_eq!(h.started_classic_fetches[0].3, FetchDestination::Script);
+    assert_eq!(h.started_classic_fetches[0].4, FetchCredentialsMode::Include);
 
     let mut classic_cors = classic_external(
       "classic_cors.js",
@@ -1183,6 +1187,19 @@ mod state_machine_tests {
     let _classic_cors_id = h.discover(classic_cors)?;
     assert_eq!(h.started_classic_fetches.len(), 2);
     assert_eq!(h.started_classic_fetches[1].3, FetchDestination::ScriptCors);
+    assert_eq!(h.started_classic_fetches[1].4, FetchCredentialsMode::SameOrigin);
+
+    let mut classic_use_credentials = classic_external(
+      "classic_use_credentials.js",
+      /* async */ false,
+      /* defer */ false,
+      /* parser_inserted */ true,
+    );
+    classic_use_credentials.crossorigin = Some(crate::resource::CorsMode::UseCredentials);
+    let _classic_use_credentials_id = h.discover(classic_use_credentials)?;
+    assert_eq!(h.started_classic_fetches.len(), 3);
+    assert_eq!(h.started_classic_fetches[2].3, FetchDestination::ScriptCors);
+    assert_eq!(h.started_classic_fetches[2].4, FetchCredentialsMode::Include);
 
     let _module = h.discover(module_external(
       "mod.js",

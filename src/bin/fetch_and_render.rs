@@ -47,6 +47,7 @@ use fastrender::resource::CachingFetcherConfig;
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
 use fastrender::resource::FetchDestination;
+use fastrender::resource::FetchCredentialsMode;
 use fastrender::resource::FetchRequest;
 use fastrender::resource::ResourceFetcher;
 use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
@@ -153,6 +154,7 @@ fn fetch_script_source(
   document_url: &str,
   url: &str,
   destination: FetchDestination,
+  credentials_mode: FetchCredentialsMode,
   max_script_bytes: usize,
 ) -> Result<fastrender::resource::FetchedResource> {
   debug_assert!(
@@ -163,6 +165,7 @@ fn fetch_script_source(
     "fetch_script_source should only be used for classic <script src> fetches"
   );
   let mut req = FetchRequest::new(url, destination);
+  req = req.with_credentials_mode(credentials_mode);
   req = req.with_referrer_url(document_url);
   if max_script_bytes == usize::MAX {
     fetcher.fetch_with_request(req)
@@ -707,6 +710,7 @@ fn render_page(
                   fastrender::dom2::NodeId,
                   String,
                   FetchDestination,
+                  FetchCredentialsMode,
                 )> = Vec::new();
                 let mut blocking: std::collections::HashSet<ScriptId> =
                   std::collections::HashSet::new();
@@ -718,8 +722,9 @@ fn render_page(
                       node_id,
                       url,
                       destination,
+                      credentials_mode,
                     } => {
-                      start_fetches.push((script_id, node_id, url, destination));
+                      start_fetches.push((script_id, node_id, url, destination, credentials_mode));
                     }
                     ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
                       blocking.insert(script_id);
@@ -888,7 +893,8 @@ fn render_page(
                   }
                 }
 
-                for (script_id, node_id, url, destination) in start_fetches.drain(..) {
+                for (script_id, node_id, url, destination, credentials_mode) in start_fetches.drain(..)
+                {
                   if blocking.contains(&script_id) {
                     let charset_attr =
                       host.dom().get_attribute(node_id, "charset").ok().flatten();
@@ -897,6 +903,7 @@ fn render_page(
                       &base_hint,
                       &url,
                       destination,
+                      credentials_mode,
                       max_script_bytes,
                     ) {
                       Ok(fetched) => fetched,
@@ -955,6 +962,7 @@ fn render_page(
                   let node_id_for_task = node_id;
                   let url_for_task = url.clone();
                   let destination_for_task = destination;
+                  let credentials_mode_for_task = credentials_mode;
                   let fetcher = fetcher.clone();
                   if let Err(err) = event_loop.queue_task(
                     TaskSource::Networking,
@@ -969,6 +977,7 @@ fn render_page(
                         &host.document_url,
                         &url_for_task,
                         destination_for_task,
+                        credentials_mode_for_task,
                         max_script_bytes,
                       );
                       let actions = match fetched {
@@ -1481,6 +1490,7 @@ fn render_page(
                 fastrender::dom2::NodeId,
                 String,
                 FetchDestination,
+                FetchCredentialsMode,
               )> = Vec::new();
               let mut blocking: std::collections::HashSet<ScriptId> = std::collections::HashSet::new();
 
@@ -1491,8 +1501,9 @@ fn render_page(
                     node_id,
                     url,
                     destination,
+                    credentials_mode,
                   } => {
-                    start_fetches.push((script_id, node_id, url, destination));
+                    start_fetches.push((script_id, node_id, url, destination, credentials_mode));
                   }
                   ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
                     blocking.insert(script_id);
@@ -1640,7 +1651,7 @@ fn render_page(
                 }
               }
 
-              for (script_id, node_id, url, destination) in start_fetches.drain(..) {
+              for (script_id, node_id, url, destination, credentials_mode) in start_fetches.drain(..) {
                 if blocking.contains(&script_id) {
                   let charset_attr = host.dom().get_attribute(node_id, "charset").ok().flatten();
                   let fetched = match fetch_script_source(
@@ -1648,6 +1659,7 @@ fn render_page(
                     &base_hint,
                     &url,
                     destination,
+                    credentials_mode,
                     max_script_bytes,
                   ) {
                     Ok(fetched) => fetched,
@@ -1685,6 +1697,7 @@ fn render_page(
                 let node_id_for_task = node_id;
                 let url_for_task = url.clone();
                 let destination_for_task = destination;
+                let credentials_mode_for_task = credentials_mode;
                 let fetcher = fetcher.clone();
                 if let Err(err) = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
                   let charset_attr = host
@@ -1697,6 +1710,7 @@ fn render_page(
                     &host.document_url,
                     &url_for_task,
                     destination_for_task,
+                    credentials_mode_for_task,
                     max_script_bytes,
                   );
                   let actions = match fetched {
@@ -2336,7 +2350,7 @@ mod tests {
 
   #[derive(Default)]
   struct DestRecordingFetcher {
-    destinations: Mutex<Vec<FetchDestination>>,
+    requests: Mutex<Vec<(FetchDestination, FetchCredentialsMode)>>,
   }
 
   impl ResourceFetcher for DestRecordingFetcher {
@@ -2349,7 +2363,11 @@ mod tests {
     }
 
     fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
-      self.destinations.lock().unwrap().push(req.destination);
+      self
+        .requests
+        .lock()
+        .unwrap()
+        .push((req.destination, req.credentials_mode));
       self.fetch(req.url)
     }
   }
@@ -2362,6 +2380,7 @@ mod tests {
       "https://example.com/index.html",
       "https://example.com/a.js",
       FetchDestination::Script,
+      FetchCredentialsMode::Include,
       1024,
     )
     .unwrap();
@@ -2370,12 +2389,16 @@ mod tests {
       "https://example.com/index.html",
       "https://example.com/b.js",
       FetchDestination::ScriptCors,
+      FetchCredentialsMode::Include,
       1024,
     )
     .unwrap();
     assert_eq!(
-      *fetcher.destinations.lock().unwrap(),
-      vec![FetchDestination::Script, FetchDestination::ScriptCors]
+      *fetcher.requests.lock().unwrap(),
+      vec![
+        (FetchDestination::Script, FetchCredentialsMode::Include),
+        (FetchDestination::ScriptCors, FetchCredentialsMode::Include)
+      ]
     );
   }
 }

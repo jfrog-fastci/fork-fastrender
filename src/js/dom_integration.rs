@@ -275,7 +275,7 @@ mod tests {
     ClassicScriptScheduler, DomHost, EventLoop, JsExecutionOptions, RunLimits, ScriptElementEvent,
     ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
   };
-  use crate::resource::FetchDestination;
+  use crate::resource::{FetchCredentialsMode, FetchDestination};
   use selectors::context::QuirksMode;
 
   struct TestHost {
@@ -316,12 +316,22 @@ mod tests {
   impl ScriptLoader for TestHost {
     type Handle = u32;
 
-    fn load_blocking(&mut self, url: &str, _destination: FetchDestination) -> Result<String> {
+    fn load_blocking(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<String> {
       self.started_loads.push(url.to_string());
       Ok(String::new())
     }
 
-    fn start_load(&mut self, url: &str, _destination: FetchDestination) -> Result<Self::Handle> {
+    fn start_load(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<Self::Handle> {
       self.started_loads.push(url.to_string());
       let handle = self.next_handle;
       self.next_handle = self.next_handle.wrapping_add(1);
@@ -604,6 +614,7 @@ mod tests {
 mod nomodule_tests {
   use super::*;
   use crate::js::{JsExecutionOptions, RunLimits};
+  use crate::resource::FetchCredentialsMode;
   use selectors::context::QuirksMode;
 
   struct Host {
@@ -646,6 +657,7 @@ mod nomodule_tests {
       &mut self,
       url: &str,
       _destination: crate::resource::FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
     ) -> Result<String> {
       self.started_loads.push(url.to_string());
       Ok(String::new())
@@ -655,6 +667,7 @@ mod nomodule_tests {
       &mut self,
       url: &str,
       _destination: crate::resource::FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
     ) -> Result<Self::Handle> {
       self.started_loads.push(url.to_string());
       Ok(self.started_loads.len())
@@ -781,7 +794,7 @@ mod dynamic_mutation_tests {
   use crate::dom2::Document;
   use crate::error::Result;
   use crate::js::RunLimits;
-  use crate::resource::FetchDestination;
+  use crate::resource::{FetchCredentialsMode, FetchDestination};
   use std::collections::{HashMap, VecDeque};
 
   struct Host {
@@ -835,13 +848,23 @@ mod dynamic_mutation_tests {
   impl ScriptLoader for Host {
     type Handle = usize;
 
-    fn load_blocking(&mut self, url: &str, _destination: FetchDestination) -> Result<String> {
+    fn load_blocking(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<String> {
       Err(crate::error::Error::Other(format!(
         "unexpected blocking script load for url={url}"
       )))
     }
 
-    fn start_load(&mut self, url: &str, _destination: FetchDestination) -> Result<Self::Handle> {
+    fn start_load(
+      &mut self,
+      url: &str,
+      _destination: FetchDestination,
+      _credentials_mode: FetchCredentialsMode,
+    ) -> Result<Self::Handle> {
       let handle = self.next_handle;
       self.next_handle += 1;
       self.started_urls.push(url.to_string());

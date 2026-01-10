@@ -5,7 +5,7 @@ use crate::js::{
   DocumentLifecycle, DocumentLifecycleHost, EventLoop, ScriptElementSpec, ScriptScheduler,
   ScriptSchedulerAction, ScriptType, TaskSource,
 };
-use crate::resource::FetchDestination;
+use crate::resource::{FetchCredentialsMode, FetchDestination};
 
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::ParseOpts;
@@ -36,6 +36,7 @@ pub trait ScriptFetcher {
     script_id: crate::js::ScriptId,
     url: &str,
     destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
   ) -> Result<()>;
 }
 
@@ -299,9 +300,12 @@ where
           script_id,
           url,
           destination,
+          credentials_mode,
           ..
         } => {
-          self.fetcher.start_fetch(script_id, &url, destination)?;
+          self
+            .fetcher
+            .start_fetch(script_id, &url, destination, credentials_mode)?;
         }
         ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           self.blocked_on = Some(script_id);
@@ -447,7 +451,7 @@ mod tests {
 
   #[derive(Default)]
   struct ManualFetcher {
-    started: Vec<(crate::js::ScriptId, String, FetchDestination)>,
+    started: Vec<(crate::js::ScriptId, String, FetchDestination, FetchCredentialsMode)>,
   }
 
   impl ScriptFetcher for ManualFetcher {
@@ -456,8 +460,11 @@ mod tests {
       script_id: crate::js::ScriptId,
       url: &str,
       destination: FetchDestination,
+      credentials_mode: FetchCredentialsMode,
     ) -> Result<()> {
-      self.started.push((script_id, url.to_string(), destination));
+      self
+        .started
+        .push((script_id, url.to_string(), destination, credentials_mode));
       Ok(())
     }
   }
@@ -527,7 +534,7 @@ mod tests {
 
     assert_eq!(host.executor.log, Vec::<String>::new());
     assert_eq!(host.fetcher.started.len(), 1);
-    let (blocking_id, _, _) = host.fetcher.started[0].clone();
+    let (blocking_id, _, _, _) = host.fetcher.started[0].clone();
     assert_eq!(host.blocked_on, Some(blocking_id));
 
     host.queue_fetch_completed(blocking_id, "ext-a".to_string(), &mut event_loop)?;
@@ -655,7 +662,7 @@ mod tests {
       .fetcher
       .started
       .iter()
-      .map(|(_, url, _)| url.as_str())
+      .map(|(_, url, _, _)| url.as_str())
       .collect();
     assert_eq!(
       urls,
