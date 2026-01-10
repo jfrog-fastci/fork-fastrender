@@ -204,6 +204,9 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 **Worker → UI** (`WorkerToUi`) includes:
 
 - `FrameReady { tab_id, frame }` — a rendered `tiny_skia::Pixmap` + viewport/scroll metadata
+- `Warning { tab_id, text }` — non-fatal, user-facing warnings (e.g. viewport/DPR clamping to avoid
+  huge pixmap allocations); the windowed `browser` UI currently surfaces this as a small warning
+  badge in the chrome.
 - `OpenSelectDropdown { tab_id, select_node_id, control }` — legacy dropdown popup request for a
   `<select>` control (cursor-anchored; kept for back-compat with older UIs).
 - `SelectDropdownOpened { tab_id, select_node_id, control, anchor_css }` — request the UI open a
