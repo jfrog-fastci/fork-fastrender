@@ -102,7 +102,7 @@ pub(crate) fn verify_integrity(bytes: &[u8], integrity: &str) -> std::result::Re
 #[cfg(test)]
 mod tests {
   use super::verify_integrity;
-  use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+  use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, STANDARD_NO_PAD as BASE64_STANDARD_NO_PAD};
   use base64::Engine;
   use sha2::{Digest, Sha256, Sha384, Sha512};
 
@@ -158,6 +158,15 @@ mod tests {
     let b64 = BASE64_STANDARD.encode(digest);
     let integrity = format!("sha256-{b64}?foo=bar");
     verify_integrity(bytes, &integrity).expect("integrity should match even with metadata params");
+  }
+
+  #[test]
+  fn accepts_sha256_with_unpadded_base64_digest() {
+    let bytes = b"console.log('ok');";
+    let digest = Sha256::digest(bytes);
+    let b64 = BASE64_STANDARD_NO_PAD.encode(digest);
+    let integrity = format!("sha256-{b64}");
+    verify_integrity(bytes, &integrity).expect("integrity should match with unpadded base64");
   }
 
   #[test]

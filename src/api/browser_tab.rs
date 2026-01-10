@@ -3911,6 +3911,59 @@ mod tests {
   }
 
   #[test]
+  fn external_script_integrity_rejects_oversized_integrity_attribute() -> Result<()> {
+    let source = "A";
+    let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
+    let html = format!(
+      r#"<script src="a.js" integrity="{integrity}"></script><script>B</script>"#
+    );
+    let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let (mut host, mut event_loop) = build_host(&html, Rc::clone(&script_log))?;
+    host.register_external_script_source("a.js".to_string(), source.to_string());
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 2);
+    let (first_node_id, first_spec) = discovered[0].clone();
+    let (second_node_id, second_spec) = discovered[1].clone();
+
+    let error_listener = ListenerId::new(1);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(first_node_id),
+        "error",
+        error_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected error listener to be inserted"
+    );
+
+    host.register_and_schedule_script(
+      first_node_id,
+      first_spec.clone(),
+      first_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+    host.register_and_schedule_script(
+      second_node_id,
+      second_spec.clone(),
+      second_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+
+    assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+    assert_eq!(
+      &*script_log.borrow(),
+      &["script:B".to_string(), "microtask:B".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn external_script_integrity_with_only_unsupported_algorithms_is_rejected() -> Result<()> {
     let source = "A";
     let html =
