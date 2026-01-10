@@ -2367,8 +2367,7 @@ impl PreparedDocument {
       }
 
       let viewport_override = options.viewport.map(|(w, h)| Size::new(w as f32, h as f32));
-      let paint_scale =
-        (self.device_pixel_ratio / self.page_zoom.max(f32::EPSILON)).max(f32::EPSILON);
+      let paint_scale = self.device_pixel_ratio.max(f32::EPSILON);
       let scroll_state = options
         .scroll
         .clone()
@@ -5404,8 +5403,11 @@ fn paint_fragment_tree_with_state(
     animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
   }
 
-  let viewport_width_px = paint_viewport.width.max(1.0).ceil() as u32;
-  let viewport_height_px = paint_viewport.height.max(1.0).ceil() as u32;
+  // `paint_viewport` may be fractional after applying meta viewport zoom. Use `round()` so the
+  // resulting device pixel size (after applying `device_pixel_ratio`) stays as close as possible
+  // to the caller-requested viewport.
+  let viewport_width_px = paint_viewport.width.max(1.0).round() as u32;
+  let viewport_height_px = paint_viewport.height.max(1.0).round() as u32;
 
   let (target_width, target_height) = if expand_full_page {
     let content_bounds = fragment_tree.content_size();
@@ -6415,7 +6417,11 @@ impl FastRender {
         let artifacts = artifacts_result?;
 
         let layout_viewport = artifacts.fragment_tree.viewport_size();
-        let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
+        // The layout viewport (initial containing block) is controlled by meta viewport width/height
+        // directives, while the paint viewport corresponds to the *visual* viewport after applying
+        // the resolved zoom factor. Using the visual viewport here keeps the output pixmap sized to
+        // the originally requested viewport (after DPR), matching browser screenshots.
+        let paint_viewport = resolved_viewport.visual_viewport;
 
         let document = PreparedDocument {
           dom: artifacts.dom,
@@ -6962,7 +6968,8 @@ impl FastRender {
       let fit_canvas = fit_canvas_to_content || env_fit_canvas;
       let element_scrolls = element_scroll_offsets;
       let viewport_size = layout_viewport;
-      let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
+      // See note in `prepare_html` re: visual vs layout viewport when meta viewport applies zoom.
+      let paint_viewport = resolved_viewport.visual_viewport;
       let viewport_inset =
         viewport_scrollport_inset_for_scrollbar_gutter(&styled_tree, layout_viewport, paint_viewport);
       let mut scroll_state =
@@ -6982,8 +6989,8 @@ impl FastRender {
       let animation_duration = animation_time_ms_to_duration(animation_time);
       animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
 
-      let viewport_width_px = paint_viewport.width.max(1.0).ceil() as u32;
-      let viewport_height_px = paint_viewport.height.max(1.0).ceil() as u32;
+      let viewport_width_px = paint_viewport.width.max(1.0).round() as u32;
+      let viewport_height_px = paint_viewport.height.max(1.0).round() as u32;
 
       let (target_width, target_height) = self.resolve_canvas_size(
         &fragment_tree,
@@ -7430,7 +7437,7 @@ impl FastRender {
     let artifacts = artifacts_result?;
 
     let layout_viewport = artifacts.fragment_tree.viewport_size();
-    let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
+    let paint_viewport = resolved_viewport.visual_viewport;
     if std::env::var("FASTR_LOG_FRAG_BOUNDS")
       .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
       .unwrap_or(false)
@@ -7726,7 +7733,7 @@ impl FastRender {
     let artifacts = artifacts_result?;
 
     let layout_viewport = artifacts.fragment_tree.viewport_size();
-    let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
+    let paint_viewport = resolved_viewport.visual_viewport;
     if std::env::var("FASTR_LOG_FRAG_BOUNDS")
       .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
       .unwrap_or(false)
@@ -8022,7 +8029,7 @@ impl FastRender {
     let artifacts = artifacts_result?;
 
     let layout_viewport = artifacts.fragment_tree.viewport_size();
-    let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
+    let paint_viewport = resolved_viewport.visual_viewport;
     if let Some(start) = stage_start {
       let now = Instant::now();
       eprintln!("timing:layout_document {:?}", now - start);
