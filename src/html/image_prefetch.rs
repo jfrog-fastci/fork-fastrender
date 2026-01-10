@@ -10,7 +10,7 @@ use crate::css::parser::tokenize_rel_list;
 use crate::dom::{
   img_src_is_placeholder, srcset_is_placeholder, DomNode, COMPAT_IMG_SRCSET_DATA_ATTR_CANDIDATES,
   COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES, COMPAT_SIZES_DATA_ATTR_CANDIDATES,
-  COMPAT_SOURCE_SRCSET_DATA_ATTR_CANDIDATES,
+  COMPAT_SOURCE_SRCSET_DATA_ATTR_CANDIDATES, COMPAT_VIDEO_POSTER_DATA_ATTR_CANDIDATES,
 };
 use crate::html::image_attrs::{parse_sizes, parse_srcset};
 use crate::html::images::{
@@ -127,6 +127,12 @@ fn get_source_srcset_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
 fn get_sizes_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
   get_non_empty_attr(node, "sizes")
     .or_else(|| get_first_non_empty_attr(node, &COMPAT_SIZES_DATA_ATTR_CANDIDATES))
+}
+
+fn get_video_poster_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
+  get_non_placeholder_attr(node, "poster")
+    .or_else(|| get_non_placeholder_attr(node, "gnt-gl-ps"))
+    .or_else(|| get_first_non_placeholder_attr(node, &COMPAT_VIDEO_POSTER_DATA_ATTR_CANDIDATES))
 }
 
 fn normalize_mime_type(value: &str) -> Option<String> {
@@ -502,8 +508,11 @@ pub fn discover_image_prefetch_urls(
     };
   }
 
-  let mut stack: Vec<&DomNode> = vec![dom];
-  while let Some(node) = stack.pop() {
+  // Some sites (e.g. Webflow background videos) store the poster on an ancestor `data-poster-url`,
+  // then rely on JS to populate the descendant `<video poster>`. Carry the wrapper poster through
+  // the traversal so discovery matches what dom compatibility mode will surface.
+  let mut stack: Vec<(&DomNode, Option<&str>)> = vec![(dom, None)];
+  while let Some((node, inherited_wrapper_poster)) = stack.pop() {
     if image_elements >= limits.max_image_elements {
       limited = true;
       break;
@@ -514,7 +523,12 @@ pub fn discover_image_prefetch_urls(
     }
 
     let mut descend = true;
+    let mut wrapper_poster = inherited_wrapper_poster;
     if let Some(tag) = node.tag_name() {
+      if !tag.eq_ignore_ascii_case("video") {
+        wrapper_poster = get_non_placeholder_attr(node, "data-poster-url").or(wrapper_poster);
+      }
+
       if tag.eq_ignore_ascii_case("picture") {
         if let Some((picture_sources, img)) = picture_sources_and_fallback_img(node) {
           if image_elements >= limits.max_image_elements {
@@ -578,14 +592,7 @@ pub fn discover_image_prefetch_urls(
           }
         }
       } else if tag.eq_ignore_ascii_case("video") {
-        let poster = node
-          .get_attribute_ref("poster")
-          .filter(|value| !trim_ascii_whitespace(value).is_empty())
-          .or_else(|| {
-            node
-              .get_attribute_ref("gnt-gl-ps")
-              .filter(|value| !trim_ascii_whitespace(value).is_empty())
-          });
+        let poster = get_video_poster_attr(node).or(wrapper_poster);
         if let Some(poster) = poster {
           if image_elements >= limits.max_image_elements {
             limited = true;
@@ -659,7 +666,7 @@ pub fn discover_image_prefetch_urls(
     }
 
     for child in node.traversal_children().iter().rev() {
-      stack.push(child);
+      stack.push((child, wrapper_poster));
     }
   }
 
@@ -693,8 +700,8 @@ pub fn discover_image_prefetch_requests(
     };
   }
 
-  let mut stack: Vec<&DomNode> = vec![dom];
-  while let Some(node) = stack.pop() {
+  let mut stack: Vec<(&DomNode, Option<&str>)> = vec![(dom, None)];
+  while let Some((node, inherited_wrapper_poster)) = stack.pop() {
     if image_elements >= limits.max_image_elements {
       limited = true;
       break;
@@ -705,7 +712,12 @@ pub fn discover_image_prefetch_requests(
     }
 
     let mut descend = true;
+    let mut wrapper_poster = inherited_wrapper_poster;
     if let Some(tag) = node.tag_name() {
+      if !tag.eq_ignore_ascii_case("video") {
+        wrapper_poster = get_non_placeholder_attr(node, "data-poster-url").or(wrapper_poster);
+      }
+
       if tag.eq_ignore_ascii_case("picture") {
         if let Some((picture_sources, img)) = picture_sources_and_fallback_img(node) {
           if image_elements >= limits.max_image_elements {
@@ -772,14 +784,7 @@ pub fn discover_image_prefetch_requests(
           }
         }
       } else if tag.eq_ignore_ascii_case("video") {
-        let poster = node
-          .get_attribute_ref("poster")
-          .filter(|value| !trim_ascii_whitespace(value).is_empty())
-          .or_else(|| {
-            node
-              .get_attribute_ref("gnt-gl-ps")
-              .filter(|value| !trim_ascii_whitespace(value).is_empty())
-          });
+        let poster = get_video_poster_attr(node).or(wrapper_poster);
         if let Some(poster) = poster {
           if image_elements >= limits.max_image_elements {
             limited = true;
@@ -861,7 +866,7 @@ pub fn discover_image_prefetch_requests(
     }
 
     for child in node.traversal_children().iter().rev() {
-      stack.push(child);
+      stack.push((child, wrapper_poster));
     }
   }
 

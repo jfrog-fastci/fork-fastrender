@@ -342,6 +342,40 @@ fn compatibility_mode_overwrites_base64_image_header_without_payload_img_src_fro
 }
 
 #[test]
+fn compatibility_mode_lifts_video_poster_and_src_from_wrapper_data_attrs() {
+  let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("tests/pages/fixtures/dom_compat_lazy_video_poster_wrapper");
+  let html_path = fixture_dir.join("index.html");
+  let html = fs::read_to_string(&html_path).expect("read fixture HTML");
+
+  let standard_dom = parse_html(&html).expect("parse standard DOM");
+  let compat_dom =
+    parse_html_with_options(&html, DomParseOptions::compatibility()).expect("parse compat DOM");
+
+  let standard_video = find_by_id(&standard_dom, "video").expect("standard video element");
+  assert!(
+    standard_video.get_attribute_ref("poster").is_none(),
+    "standard mode should not populate video poster"
+  );
+  assert!(
+    standard_video.get_attribute_ref("src").is_none(),
+    "standard mode should not populate video src"
+  );
+
+  let compat_video = find_by_id(&compat_dom, "video").expect("compat video element");
+  assert_eq!(
+    compat_video.get_attribute_ref("poster"),
+    Some("red.svg"),
+    "compat mode should lift wrapper data-poster-url into video poster"
+  );
+  assert_eq!(
+    compat_video.get_attribute_ref("src"),
+    Some("movie.mp4"),
+    "compat mode should lift wrapper data-video-urls into video src"
+  );
+}
+
+#[test]
 fn compatibility_mode_lifts_img_src_from_lazy_data_attributes() {
   let html = r#"<html><body><img data-src="https://example.com/a.jpg"></body></html>"#;
 

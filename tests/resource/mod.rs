@@ -13,6 +13,7 @@ mod http_request_test;
 mod http_fetcher_response_headers_test;
 mod http_retry_test;
 mod http_www_fallback_test;
+mod image_prefetch_test;
 mod policy_test;
 mod prefetch_assets_integration;
 mod referrer_policy_test;
