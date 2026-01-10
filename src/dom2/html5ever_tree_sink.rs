@@ -898,7 +898,7 @@ impl TreeSink for Dom2TreeSink {
     if node.index() >= doc.nodes_len() {
       return;
     }
-    doc.node_mut(*node).script_already_started = true;
+    let _ = doc.set_script_already_started(*node, true);
   }
 
   fn is_mathml_annotation_xml_integration_point(&self, node: &NodeId) -> bool {

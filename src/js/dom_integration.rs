@@ -112,7 +112,9 @@ where
     // "already started" flag for unsupported script types so later mutations can still produce a
     // runnable classic script.
     if spec.script_type == ScriptType::Classic {
-      dom.node_mut(script).script_already_started = true;
+      if dom.set_script_already_started(script, true).is_err() {
+        return (None, false);
+      }
     }
     (Some(spec), false)
   });

@@ -1216,10 +1216,9 @@ impl BrowserTabHost {
     // execute.
     self.dispatch_script_event_in_event_loop(script_node, "error", event_loop)?;
     // Mark the element as already-started so future scheduling attempts short-circuit.
-    self.mutate_dom(|dom| {
-      dom.node_mut(script_node).script_already_started = true;
-      ((), false)
-    });
+    self
+      .mutate_dom(|dom| (dom.set_script_already_started(script_node, true), false))
+      .map_err(|err| Error::Other(err.to_string()))?;
 
     let actions = self.scheduler.fetch_failed(script_id)?;
     // Treat the script as "done" for parser blocking + deferred-script lifecycle gates.
@@ -1725,10 +1724,9 @@ impl BrowserTabHost {
                 }
 
                 self.dispatch_script_error_event_in_event_loop(node_id, event_loop)?;
-                self.mutate_dom(|dom| {
-                  dom.node_mut(node_id).script_already_started = true;
-                  ((), false)
-                });
+                self
+                  .mutate_dom(|dom| (dom.set_script_already_started(node_id, true), false))
+                  .map_err(|err| Error::Other(err.to_string()))?;
                 self.finish_script_execution(script_id, event_loop)?;
                 continue;
               }
@@ -1852,10 +1850,9 @@ impl BrowserTabHost {
                 }
 
                 self.dispatch_script_error_event_in_event_loop(node_id, event_loop)?;
-                self.mutate_dom(|dom| {
-                  dom.node_mut(node_id).script_already_started = true;
-                  ((), false)
-                });
+                self
+                  .mutate_dom(|dom| (dom.set_script_already_started(node_id, true), false))
+                  .map_err(|err| Error::Other(err.to_string()))?;
                 self.finish_script_execution(script_id, event_loop)?;
                 continue;
               }

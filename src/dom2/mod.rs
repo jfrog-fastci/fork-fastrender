@@ -500,6 +500,15 @@ impl Document {
     Ok(node.script_parser_document)
   }
 
+  pub fn set_script_already_started(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
+    let node = self.node_checked_mut(node)?;
+    if !kind_is_html_script(&node.kind) {
+      return Err(DomError::InvalidNodeType);
+    }
+    node.script_already_started = value;
+    Ok(())
+  }
+
   pub fn set_script_parser_document(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
     let node = self.node_checked_mut(node)?;
     if !kind_is_html_script(&node.kind) {

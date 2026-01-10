@@ -93,7 +93,7 @@ fn clone_copies_script_already_started_but_not_other_script_slots() {
     "expected parser-inserted script defaults"
   );
 
-  doc.node_mut(script).script_already_started = true;
+  doc.set_script_already_started(script, true).unwrap();
   let cloned = doc.clone_node(script, false).unwrap();
 
   let cloned_node = doc.node(cloned);

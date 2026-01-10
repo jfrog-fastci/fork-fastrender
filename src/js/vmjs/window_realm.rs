@@ -9892,7 +9892,9 @@ fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &O
     return Ok(());
   }
 
-  dom.node_mut(script).script_already_started = true;
+  if dom.set_script_already_started(script, true).is_err() {
+    return Ok(());
+  }
 
   // `integrity` attribute clamping: if present but too large, the metadata is invalid and the script
   // must not execute.

@@ -193,6 +193,10 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
     }
   }
 
+  pub fn set_modules_supported(&mut self, modules_supported: bool) {
+    self.modules_supported = modules_supported;
+  }
+
   fn alloc_script_id(&mut self) -> HtmlScriptId {
     let id = HtmlScriptId(self.next_script_id);
     self.next_script_id += 1;
@@ -220,6 +224,19 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
   ) -> Result<HtmlDiscoveredScript<NodeId>> {
     let id = self.alloc_script_id();
     let mut actions: Vec<HtmlScriptSchedulerAction<NodeId>> = Vec::new();
+
+    // If the host does not support module scripts, ignore both module scripts and import maps.
+    //
+    // This mirrors browser behavior on engines without module support:
+    // - `<script type="module">` is ignored
+    // - `<script type="importmap">` is ignored (treated as an unknown script type)
+    //
+    // In this mode, `nomodule` classic scripts should still execute.
+    if !self.modules_supported
+      && matches!(element.script_type, ScriptType::Module | ScriptType::ImportMap)
+    {
+      return Ok(HtmlDiscoveredScript { id, actions });
+    }
 
     // `nomodule` only applies to classic scripts when modules are supported.
     if element.script_type == ScriptType::Classic && element.nomodule_attr && self.modules_supported {
@@ -1227,6 +1244,43 @@ mod state_machine_tests {
       h.host.log,
       vec!["classic:A".to_string(), "microtask:classic:A".to_string()]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn module_scripts_are_ignored_when_modules_are_not_supported() -> Result<()> {
+    let mut h = Harness::new_with_modules_supported(false);
+    h.discover(module_external(
+      "m.js",
+      /* async */ false,
+      /* parser_inserted */ true,
+    ))?;
+    h.discover(module_inline(
+      "export const x = 1;",
+      /* async */ false,
+      /* parser_inserted */ true,
+    ))?;
+    assert!(
+      h.started_module_fetches.is_empty(),
+      "module fetches must not start when modules are not supported"
+    );
+    assert!(
+      h.started_inline_module_fetches.is_empty(),
+      "inline module graph fetches must not start when modules are not supported"
+    );
+    assert!(h.host.log.is_empty(), "module scripts must not execute");
+    Ok(())
+  }
+
+  #[test]
+  fn importmap_scripts_are_ignored_when_modules_are_not_supported() -> Result<()> {
+    let mut h = Harness::new_with_modules_supported(false);
+    h.discover(import_map_inline("{\"imports\":{}}"))?;
+    assert_eq!(
+      h.import_map_version, 0,
+      "import maps must not be registered when modules are not supported"
+    );
+    assert!(h.host.log.is_empty(), "import maps must not execute");
     Ok(())
   }
 }
