@@ -1507,6 +1507,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::new(),
     };
     std::fs::write(
@@ -1580,6 +1581,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::from([(
         url.to_string(),
         BundledResourceInfo {
@@ -1970,6 +1972,7 @@ mod tests {
         compat_profile: CompatProfile::default(),
         dom_compat_mode: DomCompatibilityMode::default(),
       },
+      fetch_profile: BundleFetchProfile::default(),
       resources: BTreeMap::new(),
     };
 
@@ -3368,6 +3371,7 @@ mod tests {
         etag: None,
         last_modified: None,
         response_referrer_policy: None,
+        response_headers: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -3399,6 +3403,7 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            response_headers: None,
             vary: Some("user-agent".to_string()),
             access_control_allow_origin: None,
             timing_allow_origin: None,
@@ -3416,6 +3421,7 @@ mod tests {
             etag: None,
             last_modified: None,
             response_referrer_policy: None,
+            response_headers: None,
             vary: Some("user-agent".to_string()),
             access_control_allow_origin: None,
             timing_allow_origin: None,

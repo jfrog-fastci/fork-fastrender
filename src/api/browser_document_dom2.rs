@@ -51,10 +51,10 @@ impl BrowserDocumentDom2 {
     } else {
       renderer.parse_html(html)?
     };
-    let dom = crate::dom2::Document::from_renderer_dom(&dom);
+    let dom = Box::new(crate::dom2::Document::from_renderer_dom(&dom));
     Ok(Self {
       renderer,
-      dom: Box::new(dom),
+      dom,
       options,
       prepared: None,
       last_dom_mapping: None,
@@ -184,6 +184,17 @@ impl BrowserDocumentDom2 {
     let dom = crate::dom2::Document::from_renderer_dom(&dom);
     self.reset_with_dom(dom, options);
     Ok(())
+  }
+
+  /// Returns a stable pointer to this document's backing `dom2::Document`.
+  ///
+  /// The returned pointer is stable even when the `BrowserDocumentDom2` is moved, because the live
+  /// DOM is stored on the heap.
+  ///
+  /// This is intended for registering DOM pointers in `WindowRealm` via
+  /// `register_dom_source(NonNull<Document>)`.
+  pub fn dom_non_null(&mut self) -> NonNull<crate::dom2::Document> {
+    NonNull::from(self.dom.as_mut())
   }
 
   /// Returns an immutable reference to the live `dom2` document.

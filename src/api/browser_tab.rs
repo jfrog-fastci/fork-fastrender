@@ -1226,11 +1226,13 @@ impl BrowserTab {
 mod tests {
   use super::*;
 
-  use std::cell::RefCell;
+  use crate::js::window_realm::{register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig};
+  use std::cell::{Cell, RefCell};
+  use std::ptr::NonNull;
   use std::rc::Rc;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Arc;
-  use std::ptr::NonNull;
+  use vm_js::Value;
 
   struct TestExecutor {
     log: Rc<RefCell<Vec<String>>>,
@@ -1436,12 +1438,12 @@ mod tests {
 
   impl Drop for DomSourceGuard {
     fn drop(&mut self) {
-      crate::js::window_realm::unregister_dom_source(self.id);
+      unregister_dom_source(self.id);
     }
   }
 
-  fn value_to_string(realm: &crate::js::WindowRealm, value: vm_js::Value) -> String {
-    let vm_js::Value::String(s) = value else {
+  fn value_to_string(realm: &WindowRealm, value: Value) -> String {
+    let Value::String(s) = value else {
       panic!("expected string, got {value:?}");
     };
     realm.heap().get_string(s).unwrap().to_utf8_lossy()
@@ -1458,14 +1460,11 @@ mod tests {
     );
     let mut event_loop = EventLoop::<BrowserTabHost>::new();
 
-    let dom_source_id =
-      crate::js::window_realm::register_dom_source(NonNull::from(host.dom_mut()));
+    let dom_source_id = register_dom_source(NonNull::from(host.dom_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = crate::js::WindowRealm::new(
-      crate::js::WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
-    )
-    .map_err(|err| Error::Other(err.to_string()))?;
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id))
+      .map_err(|err| Error::Other(err.to_string()))?;
 
     let ready_state = realm
       .exec_script("document.readyState")
@@ -1497,6 +1496,87 @@ mod tests {
       .map_err(|err| Error::Other(err.to_string()))?;
     assert_eq!(value_to_string(&realm, ready_state), "complete");
 
+    Ok(())
+  }
+
+  struct VmJsExecutor {
+    dom_source_id: Rc<Cell<Option<u64>>>,
+    result: Rc<RefCell<Option<Value>>>,
+    realm: Option<WindowRealm>,
+  }
+
+  impl VmJsExecutor {
+    fn new(dom_source_id: Rc<Cell<Option<u64>>>, result: Rc<RefCell<Option<Value>>>) -> Self {
+      Self {
+        dom_source_id,
+        result,
+        realm: None,
+      }
+    }
+  }
+
+  impl BrowserTabJsExecutor for VmJsExecutor {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      if self.realm.is_none() {
+        let dom_source_id = self
+          .dom_source_id
+          .get()
+          .expect("dom_source_id should be registered before script execution");
+        let realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id))
+          .map_err(|err| Error::Other(err.to_string()))?;
+        self.realm = Some(realm);
+      }
+
+      let realm = self.realm.as_mut().expect("initialized realm");
+      let value = realm.exec_script(script_text).map_err(|err| Error::Other(err.to_string()))?;
+      *self.result.borrow_mut() = Some(value);
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn dom2_document_address_is_stable_across_tab_move_for_vm_js_shims() -> Result<()> {
+    let dom_source_id_cell = Rc::new(Cell::new(None));
+    let script_result = Rc::new(RefCell::new(None));
+
+    let executor = VmJsExecutor::new(Rc::clone(&dom_source_id_cell), Rc::clone(&script_result));
+
+    let html = "<!doctype html><html><body><div id=target></div>\
+      <script src=\"https://example.com/app.js\" defer></script>\
+      </body></html>";
+    let mut tab = BrowserTab::from_html(html, RenderOptions::default(), executor)?;
+    tab.register_script_source(
+      "https://example.com/app.js",
+      "(() => {\n\
+        const el = document.getElementById('target');\n\
+        return el && el.id === 'target';\n\
+      })()",
+    );
+
+    let dom_ptr = tab.host.document.dom_non_null();
+    let dom_ptr_addr = dom_ptr.as_ptr() as usize;
+    let dom_source_id = register_dom_source(dom_ptr);
+    let _guard = DomSourceGuard { id: dom_source_id };
+    dom_source_id_cell.set(Some(dom_source_id));
+
+    let mut tabs = Vec::new();
+    tabs.push(tab);
+
+    // The DOM pointer registered in TLS must remain stable even when the entire `BrowserTab` is
+    // moved (e.g. into a `Vec`), because vm-js DOM shims dereference it.
+    let ptr_in_vec = tabs[0].host.document.dom() as *const crate::dom2::Document as usize;
+    assert_eq!(dom_ptr_addr, ptr_in_vec, "dom2::Document moved in memory");
+
+    tabs[0].run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(*script_result.borrow(), Some(Value::Bool(true)));
     Ok(())
   }
 }
