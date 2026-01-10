@@ -587,7 +587,26 @@ impl Bundle {
   }
 
   fn resource_for_url(&self, url: &str) -> Option<&BundledResource> {
-    self.resources.get(url)
+    if let Some(resource) = self.resources.get(url) {
+      return Some(resource);
+    }
+
+    // `bundle_page` can record multiple `Vary` variants for a URL. These are stored in the
+    // manifest under a synthetic key of the form:
+    //
+    //   <url>@@fastr:bundle:vary_v1@@<vary_key>
+    //
+    // That key is not a real URL and is not used during normal bundle replay. However, tooling
+    // (e.g. `xtask import-page-fixture`) may need to enumerate `manifest.resources` and retrieve the
+    // raw bytes for each manifest key. Support direct lookup of these synthetic keys by mapping
+    // them back to the appropriate `Vary` bucket + variant.
+    if let Some((base_url, vary_key)) = parse_vary_partitioned_resource_key(url) {
+      if let Some(bucket) = self.vary_bucket_for_url(base_url) {
+        return bucket.variants.get(vary_key);
+      }
+    }
+
+    None
   }
 
   fn vary_bucket_for_url(&self, url: &str) -> Option<&Arc<BundledVaryBucket>> {
