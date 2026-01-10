@@ -1171,6 +1171,48 @@ mod tests {
   }
 
   #[test]
+  fn discovers_img_src_from_data_delayed_url() {
+    let html = r#"<img data-delayed-url="a.jpg">"#;
+    let dom = parse_html(html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_urls(
+      &dom,
+      ctx,
+      ImagePrefetchLimits {
+        max_image_elements: 10,
+        max_urls_per_element: 2,
+      },
+    );
+
+    assert_eq!(out.image_elements, 1);
+    assert!(!out.limited);
+    assert_eq!(out.urls, vec!["https://example.com/a.jpg".to_string()]);
+  }
+
+  #[test]
+  fn discovers_img_src_from_data_img_url() {
+    let html = r#"<img data-img-url="a.jpg">"#;
+    let dom = parse_html(html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_urls(
+      &dom,
+      ctx,
+      ImagePrefetchLimits {
+        max_image_elements: 10,
+        max_urls_per_element: 2,
+      },
+    );
+
+    assert_eq!(out.image_elements, 1);
+    assert!(!out.limited);
+    assert_eq!(out.urls, vec!["https://example.com/a.jpg".to_string()]);
+  }
+
+  #[test]
   fn skips_placeholder_data_src_candidates() {
     let html = r##"<img data-src="#" data-original="real.jpg">"##;
     let dom = parse_html(html).unwrap();

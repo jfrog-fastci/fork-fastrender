@@ -3272,15 +3272,17 @@ pub fn compute_part_export_map_with_ids(
   Ok(map)
 }
 
-pub(crate) const COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES: [&str; 11] = [
+pub(crate) const COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES: [&str; 13] = [
   "data-gl-src",
   "data-src",
   "data-lazy-src",
   "data-original",
   "data-original-src",
   "data-url",
+  "data-delayed-url",
   "data-actualsrc",
   "data-img-src",
+  "data-img-url",
   "data-hires",
   "data-src-retina",
   "data-default-src",
@@ -4174,8 +4176,8 @@ pub(crate) fn apply_dom_compatibility_mutations(
         // from the following attributes, in priority order:
         //
         // - `src` ← `data-gl-src`, `data-src`, `data-lazy-src`, `data-original`, `data-original-src`,
-        //   `data-url`, `data-actualsrc`, `data-img-src`, `data-hires`, `data-src-retina`,
-        //   `data-default-src`
+        //   `data-url`, `data-delayed-url`, `data-actualsrc`, `data-img-src`, `data-img-url`,
+        //   `data-hires`, `data-src-retina`, `data-default-src`
         // - `srcset` ← `data-gl-srcset`, `data-srcset`, `data-lazy-srcset`, `data-original-srcset`,
         //   `data-original-set`, `data-actualsrcset`
         // - `sizes` ← `data-sizes`

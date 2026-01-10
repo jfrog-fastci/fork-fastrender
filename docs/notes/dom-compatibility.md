@@ -81,8 +81,10 @@ tried instead.
   - `data-original`
   - `data-original-src`
   - `data-url`
+  - `data-delayed-url`
   - `data-actualsrc`
   - `data-img-src`
+  - `data-img-url`
   - `data-hires`
   - `data-src-retina`
   - `data-default-src`
