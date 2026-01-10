@@ -15625,6 +15625,40 @@ mod tests {
   }
 
   #[test]
+  fn measure_cache_key_does_not_snap_256_to_512_widths_to_a_4px_grid() {
+    use crate::geometry::Size as GeoSize;
+    use taffy::style::AvailableSpace;
+
+    let viewport = GeoSize::new(1200.0, 800.0);
+
+    let (key, snapped_known, snapped_avail) = super::measure_cache_key_and_snap(
+      &taffy::geometry::Size {
+        width: Some(434.0),
+        height: None,
+      },
+      &taffy::geometry::Size {
+        width: AvailableSpace::Definite(434.0),
+        height: AvailableSpace::Definite(100.0),
+      },
+      viewport,
+      false,
+    );
+
+    assert_eq!(
+      snapped_known.width,
+      Some(434.0),
+      "434px-wide flex item probes should not be snapped up to 436px (4px quantization)"
+    );
+    match snapped_avail.width {
+      AvailableSpace::Definite(w) => assert_eq!(w, 434.0),
+      other => panic!("expected snapped available width to remain definite, got {other:?}"),
+    }
+
+    // Ensure the key itself reflects the preserved width.
+    assert_eq!(key.0, Some(super::f32_to_canonical_bits(434.0)));
+  }
+
+  #[test]
   fn measure_cache_key_unique_count_is_bounded_for_jittery_large_widths() {
     use crate::geometry::Size as GeoSize;
     use std::collections::HashSet;
