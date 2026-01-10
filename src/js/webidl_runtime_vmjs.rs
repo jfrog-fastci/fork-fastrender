@@ -505,11 +505,61 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
   }
 
   fn throw_dom_exception(&mut self, name: &str, message: &str) -> Self::Error {
-    let intr = match self.intrinsics() {
-      Ok(intr) => intr,
-      Err(err) => return err,
-    };
-    crate::js::bindings::throw_dom_exception(&mut self.cx.scope, intr, name, message)
+    // Prefer throwing a real `DOMException` object when the constructor is installed on the global
+    // object (as `WindowRealm` does). If it is missing or has been clobbered by user code, fall
+    // back to an `Error`-like object with a matching `.name` so bindings still surface something
+    // spec-shaped.
+    let global = self.state.global_object;
+    let dom_exception = (|| -> Result<Option<crate::js::bindings::DomExceptionClassVmJs>, VmError> {
+      let mut scope = self.cx.scope.reborrow();
+      scope.push_root(Value::Object(global))?;
+
+      let key_ctor_s = scope.alloc_string("DOMException")?;
+      scope.push_root(Value::String(key_ctor_s))?;
+      let key_ctor = PropertyKey::from_string(key_ctor_s);
+      let Some(Value::Object(ctor)) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &key_ctor)?
+      else {
+        return Ok(None);
+      };
+      scope.push_root(Value::Object(ctor))?;
+
+      let key_proto_s = scope.alloc_string("prototype")?;
+      scope.push_root(Value::String(key_proto_s))?;
+      let key_proto = PropertyKey::from_string(key_proto_s);
+      let Some(Value::Object(proto)) = scope
+        .heap()
+        .object_get_own_data_property_value(ctor, &key_proto)?
+      else {
+        return Ok(None);
+      };
+      scope.push_root(Value::Object(proto))?;
+
+      Ok(Some(crate::js::bindings::DomExceptionClassVmJs {
+        constructor: ctor,
+        prototype: proto,
+      }))
+    })();
+
+    match dom_exception {
+      Ok(Some(dom_exception)) => {
+        crate::js::bindings::throw_dom_exception(&mut self.cx.scope, dom_exception, name, message)
+      }
+      Ok(None) => {
+        let intr = match self.intrinsics() {
+          Ok(intr) => intr,
+          Err(err) => return err,
+        };
+        crate::js::bindings::dom_exception_vmjs::throw_dom_exception_like_error(
+          &mut self.cx.scope,
+          intr,
+          name,
+          message,
+        )
+      }
+      Err(err) => err,
+    }
   }
 
   fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error> {

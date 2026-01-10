@@ -71,7 +71,7 @@ impl Default for JsExecutionOptions {
         max_microtasks: 100_000,
         // If the embedding repeatedly calls `run_until_idle`, each call gets its own wall-time
         // budget; this is intentionally short to avoid hangs in a single "spin".
-        max_wall_time: Some(Duration::from_millis(100)),
+        max_wall_time: Some(Duration::from_millis(500)),
       },
 
       // 2 MiB per script mirrors the stylesheet inlining default and keeps per-script allocations
