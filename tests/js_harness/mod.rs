@@ -3,7 +3,8 @@ use fastrender::dom2::{Document, NodeId, NodeKind};
 use fastrender::js::dom_integration::prepare_dynamic_scripts_on_subtree_insertion;
 use fastrender::js::{
   ClassicScriptScheduler, CurrentScriptStateHandle, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome,
-  ScriptElementSpec, ScriptExecutor, ScriptLoader, ScriptOrchestrator, VirtualClock,
+  ScriptElementEvent, ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
+  ScriptOrchestrator, VirtualClock,
 };
 use fastrender::{Error, Result};
 use rquickjs::{Context, Function, Object, Runtime};
@@ -671,6 +672,16 @@ impl ScriptExecutor for HostState {
     }
 
     js_eval(host_ptr, loop_ptr, script_text)
+  }
+}
+
+impl ScriptEventDispatcher for HostState {
+  fn dispatch_script_event(
+    &mut self,
+    _event: ScriptElementEvent,
+    _spec: &ScriptElementSpec,
+  ) -> Result<()> {
+    Ok(())
   }
 }
 

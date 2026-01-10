@@ -4,8 +4,8 @@ use fastrender::html::base_url_tracker::BaseUrlTracker;
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use fastrender::js::{
-  ClassicScriptScheduler, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptElementEvent, ScriptElementSpec,
-  ScriptEventDispatcher, ScriptExecutor, ScriptLoader, VirtualClock,
+  ScriptElementEvent, ScriptElementSpec, ScriptEventDispatcher, VirtualClock,
+  ClassicScriptScheduler, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptExecutor, ScriptLoader,
 };
 use fastrender::text::font_db::FontConfig;
 use fastrender::{FastRender, RenderOptions, ResourcePolicy};
@@ -205,7 +205,7 @@ impl ScriptExecutor for FixtureHost {
   fn execute_classic_script(
     &mut self,
     script_text: &str,
-    _spec: &fastrender::js::ScriptElementSpec,
+    _spec: &ScriptElementSpec,
     _event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     let _ = &self.js_rt;

@@ -432,6 +432,11 @@ impl BrowserDocumentDom2 {
           Ok(true) => {
             self.invalidation_counters.incremental_relayouts =
               self.invalidation_counters.incremental_relayouts.saturating_add(1);
+            // Incremental relayout produces fresh cached layout artifacts without taking a full
+            // renderer-DOM snapshot, so we still need to record that we've now "seen" the live DOM
+            // mutation generation. Without this, generation-based dirty detection would force an
+            // extra full pipeline run on the next `render_if_needed()` call.
+            self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
             self.prepared = Some(prepared);
             did_incremental_layout = true;
           }

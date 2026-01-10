@@ -309,6 +309,19 @@ fn browser_document_dom2_text_mutation_skips_full_restyle() -> Result<()> {
   assert_eq!(after.full_relayouts, before.full_relayouts);
   assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
 
+  // A successful incremental relayout should also satisfy generation-based dirty detection; we
+  // should not need a follow-up full pipeline run to "clear" the dirty state.
+  let mut frame2: Option<fastrender::Pixmap> = None;
+  let stages2 = capture_stages(|| {
+    frame2 = doc.render_if_needed()?;
+    Ok(())
+  })?;
+  assert!(frame2.is_none(), "expected no rerender after dirty flags cleared");
+  assert!(
+    stages2.is_empty(),
+    "expected no pipeline stages once document is clean; got {stages2:?}"
+  );
+
   Ok(())
 }
 

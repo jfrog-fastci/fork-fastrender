@@ -2670,6 +2670,16 @@ html, body { margin: 0; padding: 0; }
     );
     assert!(tab.render_if_needed()?.is_none());
 
+    // Exercise a mutation that removes children without inserting any replacement nodes (empty
+    // `textContent`). This previously bypassed generation tracking for raw-pointer shims because it
+    // edited `Node.children` directly without calling higher-level mutation APIs.
+    exec_vm_js_dom_script(&mut tab, "document.body.textContent = '';");
+    assert!(
+      tab.render_if_needed()?.is_some(),
+      "expected BrowserTab::render_if_needed to produce a new frame after JS DOM mutation (textContent clear)"
+    );
+    assert!(tab.render_if_needed()?.is_none());
+
     Ok(())
   }
 

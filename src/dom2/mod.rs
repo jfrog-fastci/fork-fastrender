@@ -419,6 +419,10 @@ impl Document {
   }
 
   pub fn node_mut(&mut self, id: NodeId) -> &mut Node {
+    // `node_mut` allows callers to mutate `Node` state directly, bypassing higher-level mutation APIs
+    // that record structured invalidation data. Conservatively bump the mutation generation so hosts
+    // can still detect out-of-band DOM changes (e.g. raw-pointer JS shims).
+    self.bump_mutation_generation();
     &mut self.nodes[id.0]
   }
 
