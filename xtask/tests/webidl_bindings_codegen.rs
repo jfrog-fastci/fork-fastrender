@@ -82,3 +82,87 @@ fn generated_webidl_bindings_are_deterministic_and_match_golden() {
     );
   }
 }
+
+#[test]
+fn generated_dictionary_converters_handle_required_defaults_and_inheritance() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  let idl = r#"
+    [Exposed=Window]
+    interface EventTarget {
+      undefined addEventListener(
+        DOMString type,
+        object listener,
+        optional (AddEventListenerOptions or boolean) options = {}
+      );
+    };
+
+    dictionary EventListenerOptions {
+      boolean capture = false;
+    };
+
+    dictionary AddEventListenerOptions : EventListenerOptions {
+      boolean passive;
+      boolean once = false;
+      object signal;
+    };
+
+    dictionary RequiredDict {
+      required DOMString x;
+    };
+
+    [Exposed=Window]
+    interface Foo {
+      undefined takesRequired(RequiredDict dict);
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["EventTarget".to_string(), "Foo".to_string()]
+      .into_iter()
+      .collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+  )
+  .unwrap();
+
+  // Default-handling for EventListenerOptions.capture.
+  assert!(
+    out.contains("out_dict.insert(\"capture\".to_string(), BindingValue::Bool(false))"),
+    "expected EventListenerOptions.capture default to be materialized"
+  );
+
+  // Inheritance flattening and deterministic member order:
+  // capture (base) then once/passive/signal (derived, lexicographical within dictionary).
+  let capture_pos = out
+    .find("rt.property_key(\"capture\")")
+    .expect("capture property access");
+  let once_pos = out.find("rt.property_key(\"once\")").expect("once access");
+  let passive_pos = out
+    .find("rt.property_key(\"passive\")")
+    .expect("passive property access");
+  let signal_pos = out
+    .find("rt.property_key(\"signal\")")
+    .expect("signal access");
+  assert!(
+    capture_pos < once_pos && once_pos < passive_pos && passive_pos < signal_pos,
+    "expected deterministic member read order capture -> once -> passive -> signal"
+  );
+
+  // Required-member errors should include the dictionary and member name.
+  assert!(
+    out.contains("Missing required dictionary member RequiredDict.x"),
+    "expected required member error message to include dictionary + member name"
+  );
+}
