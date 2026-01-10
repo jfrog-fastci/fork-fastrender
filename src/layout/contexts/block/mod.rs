@@ -770,7 +770,37 @@ impl BlockFormattingContext {
       } else {
         constraints.used_border_box_width
       };
-      if parent_block_size_is_auto && parent_used_border_box_block_size.is_none() {
+
+      // `aspect-ratio` can establish a definite used size even when the corresponding block-size
+      // property is `auto`. Treat that ratio-derived size as a valid percentage basis so common
+      // patterns like `aspect-ratio` + `height:100%` descendants don't collapse to 0px.
+      let parent_aspect_ratio_content_block_size = if parent_block_size_is_auto
+        && parent_used_border_box_block_size.is_none()
+      {
+        match parent.style.aspect_ratio {
+          crate::style::types::AspectRatio::Ratio(ratio)
+          | crate::style::types::AspectRatio::AutoRatio(ratio) => {
+            if ratio > 0.0 && containing_width.is_finite() {
+              let raw = if inline_is_horizontal {
+                containing_width / ratio
+              } else {
+                containing_width * ratio
+              };
+              raw.is_finite().then_some(raw.max(0.0))
+            } else {
+              None
+            }
+          }
+          crate::style::types::AspectRatio::Auto => None,
+        }
+      } else {
+        None
+      };
+
+      if parent_block_size_is_auto
+        && parent_used_border_box_block_size.is_none()
+        && parent_aspect_ratio_content_block_size.is_none()
+      {
         return None;
       }
 
@@ -836,7 +866,7 @@ impl BlockFormattingContext {
           content.max(0.0)
         })
       } else {
-        None
+        parent_aspect_ratio_content_block_size
       };
       parent_content_block_size.filter(|value| value.is_finite())
     });
@@ -1130,10 +1160,6 @@ impl BlockFormattingContext {
       // modes) instead of collapsing to the content size.
       specified_height = Some((available_block_border_box - vertical_edges).max(0.0));
     }
-    let child_height_space = specified_height
-      .map(AvailableSpace::Definite)
-      .unwrap_or(AvailableSpace::Indefinite);
-
     // Compute inline size using CSS 2.1 Section 10.3.3 algorithm
     let inline_sides = inline_axis_sides(style);
     let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
@@ -1462,7 +1488,37 @@ impl BlockFormattingContext {
       }
     }
 
-    let block_percentage_base = specified_height.filter(|h| h.is_finite()).map(|h| h.max(0.0));
+    let aspect_ratio_block_size_hint = if height_auto && specified_height.is_none() {
+      match style.aspect_ratio {
+        crate::style::types::AspectRatio::Ratio(ratio)
+        | crate::style::types::AspectRatio::AutoRatio(ratio) => {
+          if ratio > 0.0 && computed_width.content_width.is_finite() {
+            let raw = if inline_is_horizontal {
+              computed_width.content_width / ratio
+            } else {
+              computed_width.content_width * ratio
+            };
+            raw.is_finite().then_some(raw.max(0.0))
+          } else {
+            None
+          }
+        }
+        crate::style::types::AspectRatio::Auto => None,
+      }
+    } else {
+      None
+    };
+
+    // Definite block-size base used for descendant percentage resolution and containing block
+    // percentage offsets. Prefer the explicitly resolved size, but fall back to the ratio-derived
+    // size when `block-size:auto` + `aspect-ratio` yields a definite used size.
+    let specified_height_base = specified_height.filter(|h| h.is_finite()).map(|h| h.max(0.0));
+    let child_block_size_base = specified_height_base.or(aspect_ratio_block_size_hint);
+    let child_height_space = specified_height_base
+      .map(AvailableSpace::Definite)
+      .unwrap_or(AvailableSpace::Indefinite);
+    let block_percentage_base = child_block_size_base;
+
     let child_constraints = if inline_is_horizontal {
       LayoutConstraints::new(
         AvailableSpace::Definite(computed_width.content_width),
@@ -1594,12 +1650,12 @@ impl BlockFormattingContext {
       border_top + padding_top,
     );
     let padding_origin = Point::new(computed_width.border_left, border_top);
-    let content_height_base = specified_height.unwrap_or(0.0).max(0.0);
+    let content_height_base = child_block_size_base.unwrap_or(0.0);
     let padding_size = Size::new(
       computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
       content_height_base + padding_top + padding_bottom,
     );
-    let cb_block_base = specified_height.map(|h| h.max(0.0) + padding_top + padding_bottom);
+    let cb_block_base = child_block_size_base.map(|h| h + padding_top + padding_bottom);
     let mut box_y = box_y;
     // CSS 2.1 §9.5.1: boxes that establish a new block formatting context must not overlap the
     // margin boxes of floats in the same formatting context. Real pages use this for clearfix
@@ -12839,6 +12895,92 @@ mod tests {
     let fragment = bfc.layout(&root, &constraints).unwrap();
     let child_fragment = fragment.children.first().expect("child fragment");
     assert_eq!(child_fragment.bounds.height(), 100.0);
+  }
+
+  #[test]
+  fn percentage_height_resolves_against_aspect_ratio_auto_height() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.width = Some(Length::px(10.0));
+    inline_block_style.width_keyword = None;
+    inline_block_style.height = Some(Length::percent(100.0));
+    inline_block_style.height_keyword = None;
+    let mut inline_block = BoxNode::new_inline_block(
+      Arc::new(inline_block_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    inline_block.id = 4;
+
+    let mut percent_style = ComputedStyle::default();
+    percent_style.display = Display::Block;
+    percent_style.height = Some(Length::percent(100.0));
+    percent_style.height_keyword = None;
+    let mut percent_box = BoxNode::new_block(
+      Arc::new(percent_style),
+      FormattingContextType::Block,
+      vec![inline_block],
+    );
+    percent_box.id = 3;
+
+    let mut ratio_style = ComputedStyle::default();
+    ratio_style.display = Display::Block;
+    ratio_style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
+    let mut ratio_box = BoxNode::new_block(
+      Arc::new(ratio_style),
+      FormattingContextType::Block,
+      vec![percent_box],
+    );
+    ratio_box.id = 2;
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![ratio_box],
+    );
+    // Root element margins never collapse with children; mimic the real HTML root.
+    root.id = 1;
+
+    let fragment = bfc
+      .layout(&root, &LayoutConstraints::definite_width(200.0))
+      .unwrap();
+
+    fn find_fragment_by_box_id<'a>(node: &'a FragmentNode, id: usize) -> Option<&'a FragmentNode> {
+      if node.box_id() == Some(id) {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_fragment_by_box_id(child, id) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let ratio_fragment = find_fragment_by_box_id(&fragment, 2).expect("ratio fragment");
+    assert!(
+      (ratio_fragment.bounds.height() - 100.0).abs() < 0.1,
+      "expected aspect-ratio box to be 100px tall; got {}",
+      ratio_fragment.bounds.height()
+    );
+
+    let percent_fragment = find_fragment_by_box_id(&fragment, 3).expect("percent fragment");
+    assert!(
+      (percent_fragment.bounds.height() - 100.0).abs() < 0.1,
+      "expected height:100% child to fill ratio height; got {}",
+      percent_fragment.bounds.height()
+    );
+
+    let inline_block_fragment = find_fragment_by_box_id(&fragment, 4).expect("inline-block fragment");
+    assert!(
+      (inline_block_fragment.bounds.height() - 100.0).abs() < 0.1,
+      "expected inline-block height:100% to resolve against definite containing height; got {}",
+      inline_block_fragment.bounds.height()
+    );
   }
 
   #[test]

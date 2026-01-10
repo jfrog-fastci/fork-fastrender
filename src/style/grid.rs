@@ -504,8 +504,12 @@ pub fn parse_grid_template_shorthand(value: &str) -> Option<ParsedGridTemplate> 
     }
   });
 
-  // If there are no area strings, treat as pure track list shorthand.
-  if !main.contains('"') {
+  // If the shorthand does not start with a quoted area row, treat as the track-list form
+  // (`<track-list> / <track-list>`).
+  //
+  // Note: `<string>` tokens in grid-template-areas may use either double quotes or single quotes.
+  let main_starts_with_quote = matches!(main.as_bytes().first(), Some(b'"' | b'\''));
+  if !main_starts_with_quote {
     // Per spec the track-list form requires both rows and columns separated by a slash.
     let cols_raw = cols_part?;
     let (row_tracks, row_line_names, row_is_subgrid, row_subgrid_line_names) =
@@ -811,12 +815,29 @@ fn parse_area_rows_with_sizes(input: &str) -> Option<(Vec<String>, Vec<Option<St
     if i >= bytes.len() {
       break;
     }
-    if bytes[i] != b'"' {
+
+    let quote = bytes[i];
+    if quote != b'"' && quote != b'\'' {
       return None;
     }
     i += 1;
     let start = i;
-    while i < bytes.len() && bytes[i] != b'"' {
+    let mut escaped = false;
+    while i < bytes.len() {
+      let b = bytes[i];
+      if escaped {
+        escaped = false;
+        i += 1;
+        continue;
+      }
+      if b == b'\\' {
+        escaped = true;
+        i += 1;
+        continue;
+      }
+      if b == quote {
+        break;
+      }
       i += 1;
     }
     if i >= bytes.len() {
@@ -829,9 +850,9 @@ fn parse_area_rows_with_sizes(input: &str) -> Option<(Vec<String>, Vec<Option<St
     while i < bytes.len() && bytes[i].is_ascii_whitespace() {
       i += 1;
     }
-    // Capture optional row size until next quote or slash
+    // Capture optional row size until next quoted row (or end-of-input).
     let size_start = i;
-    while i < bytes.len() && bytes[i] != b'"' && bytes[i] != b'/' {
+    while i < bytes.len() && bytes[i] != b'"' && bytes[i] != b'\'' {
       i += 1;
     }
     let size = trim_ascii_whitespace(&input[size_start..i]);
@@ -878,11 +899,34 @@ fn build_area_matrix(rows: &[String]) -> Option<Vec<Vec<Option<String>>>> {
 }
 
 fn split_once_unquoted(input: &str, delim: char) -> (&str, Option<&str>) {
-  let mut in_quote = false;
+  let mut paren_depth: usize = 0;
+  let mut bracket_depth: usize = 0;
+  let mut in_string: Option<char> = None;
+  let mut escape = false;
+
   for (idx, ch) in input.char_indices() {
+    if let Some(quote) = in_string {
+      if escape {
+        escape = false;
+        continue;
+      }
+      if ch == '\\' {
+        escape = true;
+        continue;
+      }
+      if ch == quote {
+        in_string = None;
+      }
+      continue;
+    }
+
     match ch {
-      '"' => in_quote = !in_quote,
-      d if d == delim && !in_quote => {
+      '"' | '\'' => in_string = Some(ch),
+      '(' => paren_depth += 1,
+      ')' => paren_depth = paren_depth.saturating_sub(1),
+      '[' if paren_depth == 0 => bracket_depth += 1,
+      ']' if paren_depth == 0 => bracket_depth = bracket_depth.saturating_sub(1),
+      d if d == delim && paren_depth == 0 && bracket_depth == 0 => {
         let (left, right) = input.split_at(idx);
         return (left, Some(&right[delim.len_utf8()..]));
       }
@@ -1623,6 +1667,42 @@ mod tests {
     let (cols, _) = parsed.column_tracks.expect("cols");
     assert_eq!(cols.len(), 2);
     assert!(matches!(cols[0], GridTrack::Length(_)));
+  }
+
+  #[test]
+  fn grid_template_shorthand_areas_single_quotes() {
+    let parsed = parse_grid_template_shorthand(
+      "'header' 'scroller' 'footer'/minmax(0, 1fr)",
+    )
+    .expect("should parse");
+    let areas = parsed.areas.expect("areas");
+    assert_eq!(areas.len(), 3);
+    assert_eq!(areas[0].len(), 1);
+    assert_eq!(areas[0][0], Some("header".into()));
+    assert_eq!(areas[1][0], Some("scroller".into()));
+    assert_eq!(areas[2][0], Some("footer".into()));
+
+    let (rows, _) = parsed.row_tracks.expect("rows");
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|t| matches!(t, GridTrack::Auto)));
+
+    let (cols, _) = parsed.column_tracks.expect("cols");
+    assert_eq!(cols.len(), 1);
+    match &cols[0] {
+      GridTrack::MinMax(min, max) => {
+        assert!(
+          matches!(**min, GridTrack::Length(len) if len.unit == crate::style::values::LengthUnit::Px && len.value == 0.0),
+          "expected min track to be 0px, got {:?}",
+          min
+        );
+        assert!(
+          matches!(**max, GridTrack::Fr(fr) if fr == 1.0),
+          "expected max track to be 1fr, got {:?}",
+          max
+        );
+      }
+      other => panic!("expected minmax track, got {:?}", other),
+    }
   }
 
   #[test]
