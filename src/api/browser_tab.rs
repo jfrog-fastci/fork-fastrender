@@ -6,25 +6,38 @@ use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::html::encoding::decode_html_bytes;
 use crate::html::document_write::with_active_streaming_parser;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
+use crate::resource::ResourceFetcher;
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
   DocumentReadyState, DomHost, EventLoop, JsExecutionOptions, RunAnimationFrameOutcome, RunLimits,
   RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor, ScriptElementSpec, ScriptId,
-  ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
-  LocationNavigationRequest,
+  LocationNavigationRequest, ScriptBlockingStyleSheetSet, ScriptOrchestrator, ScriptScheduler,
+  ScriptSchedulerAction, ScriptType, TaskSource,
 };
+use crate::css::encoding::decode_css_bytes_cow;
+use crate::css::loader::resolve_href_with_base;
+use crate::css::parser::{parse_stylesheet_with_media, tokenize_rel_list};
+use crate::css::types::CssImportLoader;
 use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
+use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::web::events::{Event, EventInit, EventTargetId};
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use selectors::context::QuirksMode;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason};
+
+const SCRIPT_BLOCKING_STYLESHEET_SPIN_LIMITS: RunLimits = RunLimits {
+  max_tasks: 1024,
+  max_microtasks: 4096,
+  max_wall_time: None,
+};
 
 pub trait BrowserTabJsExecutor {
   fn execute_classic_script(
@@ -124,6 +137,11 @@ pub struct BrowserTabHost {
   document_referrer_policy: ReferrerPolicy,
   pending_navigation: Option<LocationNavigationRequest>,
   external_script_sources: HashMap<String, String>,
+  script_blocking_stylesheets: ScriptBlockingStyleSheetSet,
+  stylesheet_keys_by_node: HashMap<NodeId, usize>,
+  next_stylesheet_key: usize,
+  stylesheet_media_context: MediaContext,
+  stylesheet_media_query_cache: MediaQueryCache,
   js_execution_options: JsExecutionOptions,
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
@@ -152,6 +170,11 @@ impl BrowserTabHost {
       document_referrer_policy: ReferrerPolicy::default(),
       pending_navigation: None,
       external_script_sources: HashMap::new(),
+      script_blocking_stylesheets: ScriptBlockingStyleSheetSet::new(),
+      stylesheet_keys_by_node: HashMap::new(),
+      next_stylesheet_key: 0,
+      stylesheet_media_context: MediaContext::default(),
+      stylesheet_media_query_cache: MediaQueryCache::default(),
       js_execution_options,
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
@@ -200,13 +223,312 @@ impl BrowserTabHost {
     self.executor.on_navigation_committed(self.document_url.as_deref());
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
-
+    self.script_blocking_stylesheets = ScriptBlockingStyleSheetSet::new();
+    self.stylesheet_keys_by_node.clear();
+    self.next_stylesheet_key = 0;
+    self.stylesheet_media_query_cache = MediaQueryCache::default();
     self.executor.reset_for_navigation(
       self.document_url.as_deref(),
       &mut self.document,
       &self.current_script,
       self.js_execution_options,
     )?;
+    Ok(())
+  }
+
+  fn update_stylesheet_media_context(&mut self, options: &RenderOptions) {
+    // Preserve the renderer's defaults for most fields; script-blocking stylesheet semantics only
+    // require correct media type + media query evaluation.
+    let (viewport_w, viewport_h) = options.viewport.unwrap_or((1024, 768));
+    let width = viewport_w as f32;
+    let height = viewport_h as f32;
+    let mut ctx = match options.media_type {
+      MediaType::Print => MediaContext::print(width, height),
+      _ => MediaContext::screen(width, height),
+    };
+    ctx.media_type = options.media_type;
+    if let Some(dpr) = options.device_pixel_ratio {
+      ctx.device_pixel_ratio = dpr;
+    }
+    self.stylesheet_media_context = ctx;
+    // Cached query results depend on the context fingerprint, so clear on updates.
+    self.stylesheet_media_query_cache = MediaQueryCache::default();
+  }
+
+  fn media_attr_matches_env(
+    media_context: &MediaContext,
+    cache: &mut MediaQueryCache,
+    media: Option<&str>,
+  ) -> bool {
+    let Some(raw) = media.map(str::trim).filter(|v| !v.is_empty()) else {
+      return true;
+    };
+    let queries = match MediaQuery::parse_list(raw) {
+      Ok(queries) => queries,
+      Err(_) => vec![MediaQuery::not_all()],
+    };
+    media_context.evaluate_list_with_cache(&queries, Some(cache))
+  }
+
+  fn discover_and_start_script_blocking_stylesheets(
+    &mut self,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    fn is_html_namespace(namespace: &str) -> bool {
+      namespace.is_empty() || namespace == HTML_NAMESPACE
+    }
+
+    let dom = self.document.dom();
+    let mut base_url_tracker = BaseUrlTracker::new(self.document_url.as_deref());
+    let mut stack: Vec<(NodeId, bool, bool, bool)> = Vec::new();
+    stack.push((dom.root(), false, false, false));
+
+    while let Some((id, in_head, in_foreign_namespace, in_template)) = stack.pop() {
+      let node = dom.node(id);
+
+      // Shadow roots are treated as separate trees for script discovery/execution.
+      if matches!(node.kind, NodeKind::ShadowRoot { .. }) {
+        continue;
+      }
+
+      // Be robust against partially-detached nodes that may still appear in a parent's `children`
+      // list.
+      if !dom.is_connected_for_scripting(id) {
+        continue;
+      }
+
+      let mut next_in_head = in_head;
+      let mut next_in_template = in_template;
+      let mut next_in_foreign_namespace = in_foreign_namespace;
+
+      match &node.kind {
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          attributes,
+        } => {
+          base_url_tracker.on_element_inserted(
+            tag_name,
+            namespace,
+            attributes,
+            in_head,
+            in_foreign_namespace,
+            in_template,
+          );
+
+          if tag_name.eq_ignore_ascii_case("link") && is_html_namespace(namespace) {
+            // Skip if we already started (or completed) a load for this node.
+            if !self.stylesheet_keys_by_node.contains_key(&id) {
+              let disabled = dom.has_attribute(id, "disabled").unwrap_or(false);
+              if !disabled {
+                let rel = dom.get_attribute(id, "rel").ok().flatten();
+                let rel_tokens = rel.as_deref().map(tokenize_rel_list).unwrap_or_default();
+                let has_stylesheet = rel_tokens.iter().any(|t| t.eq_ignore_ascii_case("stylesheet"));
+                let has_alternate = rel_tokens.iter().any(|t| t.eq_ignore_ascii_case("alternate"));
+                if has_stylesheet && !has_alternate {
+                  let media = dom.get_attribute(id, "media").ok().flatten();
+                  if Self::media_attr_matches_env(
+                    &self.stylesheet_media_context,
+                    &mut self.stylesheet_media_query_cache,
+                    media.as_deref(),
+                  ) {
+                    let href = dom.get_attribute(id, "href").ok().flatten();
+                    let base_url = base_url_tracker.current_base_url();
+                    let resolved = href
+                      .as_deref()
+                      .and_then(|href| resolve_href_with_base(base_url.as_deref(), href));
+                    if let Some(url) = resolved {
+                      let key = self.next_stylesheet_key;
+                      self.next_stylesheet_key = self.next_stylesheet_key.saturating_add(1);
+                      self.stylesheet_keys_by_node.insert(id, key);
+                      self
+                        .script_blocking_stylesheets
+                        .register_blocking_stylesheet(key);
+
+                      event_loop.queue_task(TaskSource::Networking, move |host, _event_loop| {
+                        let load_result = host.load_stylesheet_and_imports(&url);
+                        host
+                          .script_blocking_stylesheets
+                          .unregister_blocking_stylesheet(key);
+                        match load_result {
+                          Ok(()) => Ok(()),
+                          Err(err @ Error::Render(_)) => Err(err),
+                          Err(_) => Ok(()),
+                        }
+                      })?;
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          let is_head = tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace);
+          next_in_head = in_head || is_head;
+          let is_template = tag_name.eq_ignore_ascii_case("template") && is_html_namespace(namespace);
+          next_in_template = in_template || is_template;
+          next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
+        }
+        NodeKind::Slot {
+          namespace,
+          attributes,
+          ..
+        } => {
+          base_url_tracker.on_element_inserted(
+            "slot",
+            namespace,
+            attributes,
+            in_head,
+            in_foreign_namespace,
+            in_template,
+          );
+          next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
+        }
+        _ => {}
+      }
+
+      // Inert subtrees (template contents) should not be traversed.
+      if node.inert_subtree {
+        continue;
+      }
+
+      for &child in node.children.iter().rev() {
+        stack.push((child, next_in_head, next_in_foreign_namespace, next_in_template));
+      }
+    }
+
+    Ok(())
+  }
+
+  fn load_stylesheet_and_imports(&mut self, url: &str) -> Result<()> {
+    let fetcher = self.document.fetcher();
+    let mut req = FetchRequest::new(url, FetchDestination::Style);
+    if let Some(referrer) = self.document_url.as_deref() {
+      req = req.with_referrer_url(referrer);
+    }
+    if let Some(origin) = self.document_origin.as_ref() {
+      req = req.with_client_origin(origin);
+    }
+    req = req.with_referrer_policy(self.document_referrer_policy);
+    let resource = fetcher.fetch_with_request(req)?;
+    let final_url = resource.final_url.clone().unwrap_or_else(|| url.to_string());
+
+    let css = decode_css_bytes_cow(&resource.bytes, resource.content_type.as_deref());
+    let ctx = &self.stylesheet_media_context;
+    let cache = &mut self.stylesheet_media_query_cache;
+    let mut sheet = parse_stylesheet_with_media(&css, ctx, Some(cache))?;
+
+    if sheet.contains_imports() {
+      struct ImportLoader {
+        fetcher: Arc<dyn ResourceFetcher>,
+        document_url: Option<String>,
+        document_origin: Option<crate::resource::DocumentOrigin>,
+        document_referrer_policy: ReferrerPolicy,
+      }
+
+      impl CssImportLoader for ImportLoader {
+        fn load(&self, url: &str) -> Result<String> {
+          let mut req = FetchRequest::new(url, FetchDestination::Style);
+          if let Some(referrer) = self.document_url.as_deref() {
+            req = req.with_referrer_url(referrer);
+          }
+          if let Some(origin) = self.document_origin.as_ref() {
+            req = req.with_client_origin(origin);
+          }
+          req = req.with_referrer_policy(self.document_referrer_policy);
+          let resource = self.fetcher.fetch_with_request(req)?;
+          Ok(decode_css_bytes_cow(&resource.bytes, resource.content_type.as_deref()).into_owned())
+        }
+
+        fn load_with_importer(
+          &self,
+          url: &str,
+          importer_url: Option<&str>,
+        ) -> Result<crate::css::loader::FetchedStylesheet> {
+          let mut req = FetchRequest::new(url, FetchDestination::Style);
+          if let Some(referrer) = importer_url.or(self.document_url.as_deref()) {
+            req = req.with_referrer_url(referrer);
+          }
+          if let Some(origin) = self.document_origin.as_ref() {
+            req = req.with_client_origin(origin);
+          }
+          req = req.with_referrer_policy(self.document_referrer_policy);
+          let resource = self.fetcher.fetch_with_request(req)?;
+          let css =
+            decode_css_bytes_cow(&resource.bytes, resource.content_type.as_deref()).into_owned();
+          Ok(crate::css::loader::FetchedStylesheet::new(
+            css,
+            resource.final_url.clone(),
+          ))
+        }
+      }
+
+      let loader = ImportLoader {
+        fetcher: Arc::clone(&fetcher),
+        document_url: self.document_url.clone(),
+        document_origin: self.document_origin.clone(),
+        document_referrer_policy: self.document_referrer_policy,
+      };
+      let importer_url = self.document_url.as_deref();
+      sheet = sheet
+        .resolve_imports_owned_with_cache_with_importer_url(
+          &loader,
+          Some(final_url.as_str()),
+          importer_url,
+          ctx,
+          Some(cache),
+        )
+        .map_err(Error::Render)?;
+    }
+
+    let _ = sheet;
+    Ok(())
+  }
+
+  fn script_blocks_on_stylesheets(&self, script_id: ScriptId) -> bool {
+    let Some(entry) = self.scripts.get(&script_id) else {
+      return false;
+    };
+    let spec = &entry.spec;
+    if spec.script_type != ScriptType::Classic {
+      return false;
+    }
+    if !spec.parser_inserted {
+      return false;
+    }
+    // Async external scripts do not participate in stylesheet-blocking semantics.
+    if spec.src_attr_present && spec.async_attr {
+      return false;
+    }
+    true
+  }
+
+  fn wait_for_stylesheets_if_needed(
+    &mut self,
+    script_id: ScriptId,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    if !self.script_blocks_on_stylesheets(script_id) {
+      return Ok(());
+    }
+
+    self.discover_and_start_script_blocking_stylesheets(event_loop)?;
+
+    if !self.script_blocking_stylesheets.has_blocking_stylesheet() {
+      return Ok(());
+    }
+
+    let _ = event_loop.spin_until(
+      self,
+      SCRIPT_BLOCKING_STYLESHEET_SPIN_LIMITS,
+      |host| host.script_blocking_stylesheets.has_blocking_stylesheet(),
+    )?;
+
+    // If we hit a run limit or became idle while stylesheets are still pending, give up
+    // deterministically so scripts are not blocked forever.
+    if self.script_blocking_stylesheets.has_blocking_stylesheet() {
+      self.script_blocking_stylesheets = ScriptBlockingStyleSheetSet::new();
+    }
     Ok(())
   }
 
@@ -377,9 +699,13 @@ impl BrowserTabHost {
           source_text,
           ..
         } => {
-          let exec_result = {
-            let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
-            self.execute_script(script_id, &source_text, event_loop)
+          let wait_result = self.wait_for_stylesheets_if_needed(script_id, event_loop);
+          let exec_result = match wait_result {
+            Ok(()) => {
+              let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
+              self.execute_script(script_id, &source_text, event_loop)
+            }
+            Err(err) => Err(err),
           };
           // Ensure a script failure doesn't leave parsing blocked forever.
           self.finish_script_execution(script_id, event_loop)?;
@@ -398,8 +724,14 @@ impl BrowserTabHost {
           ..
         } => {
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-            let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
-            let result = host.execute_script(script_id, &source_text, event_loop);
+            let wait_result = host.wait_for_stylesheets_if_needed(script_id, event_loop);
+            let result = match wait_result {
+              Ok(()) => {
+                let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
+                host.execute_script(script_id, &source_text, event_loop)
+              }
+              Err(err) => Err(err),
+            };
             host.finish_script_execution(script_id, event_loop)?;
             result
           })?;
@@ -722,6 +1054,8 @@ impl BrowserTab {
     document_url: Option<&str>,
     options: &RenderOptions,
   ) -> Result<Option<String>> {
+    self.host.document_url = document_url.map(|url| url.to_string());
+    self.host.update_stylesheet_media_context(options);
     // `StreamingHtmlParser` cooperatively checks any *active* render deadline via
     // `check_active_periodic`, but it does not accept `RenderOptions` directly. Install a scoped
     // deadline so callers can cancel/timeout large HTML parses via `RenderOptions::{timeout,cancel_callback}`.
@@ -965,6 +1299,7 @@ impl BrowserTab {
     let renderer = super::FastRender::builder()
       .dom_scripting_enabled(true)
       .build()?;
+    let options_for_media = options.clone();
     let document = BrowserDocumentDom2::new(renderer, html, options)?;
     let host = BrowserTabHost::new(
       document,
@@ -981,11 +1316,12 @@ impl BrowserTab {
       host,
       event_loop,
     };
-    let document_referrer_policy = crate::html::referrer_policy::extract_referrer_policy_from_html(html)
-      .unwrap_or_default();
+    let document_referrer_policy =
+      crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
     tab
       .host
       .reset_scripting_state(None, document_referrer_policy)?;
+    tab.host.update_stylesheet_media_context(&options_for_media);
     tab.discover_and_schedule_scripts(None)?;
     Ok(tab)
   }
@@ -1514,9 +1850,13 @@ mod tests {
   use std::cell::{Cell, RefCell};
   use std::ptr::NonNull;
   use std::rc::Rc;
+  use std::sync::Mutex;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Arc;
   use vm_js::Value;
+
+  use tempfile::tempdir;
+  use url::Url;
 
   struct TestExecutor {
     log: Rc<RefCell<Vec<String>>>,
@@ -1940,13 +2280,17 @@ html, body { margin: 0; padding: 0; }
           .dom_source_id
           .get()
           .expect("dom_source_id should be registered before script execution");
-        let realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id))
-          .map_err(|err| Error::Other(err.to_string()))?;
+        let realm = WindowRealm::new(
+          WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+        )
+        .map_err(|err| Error::Other(err.to_string()))?;
         self.realm = Some(realm);
       }
 
       let realm = self.realm.as_mut().expect("initialized realm");
-      let value = realm.exec_script(script_text).map_err(|err| Error::Other(err.to_string()))?;
+      let value = realm
+        .exec_script(script_text)
+        .map_err(|err| Error::Other(err.to_string()))?;
       *self.result.borrow_mut() = Some(value);
       Ok(())
     }
@@ -1999,8 +2343,10 @@ html, body { margin: 0; padding: 0; }
     let dom_source_id = register_dom_source(tab.host.document.dom_ptr());
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id))
-      .expect("WindowRealm");
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )
+    .expect("WindowRealm");
     realm.exec_script(source).expect("exec_script");
   }
 
@@ -2044,6 +2390,217 @@ html, body { margin: 0; padding: 0; }
       "expected BrowserTab::render_if_needed to produce a new frame after JS DOM mutation"
     );
     assert!(tab.render_if_needed()?.is_none());
+
+    Ok(())
+  }
+
+  #[derive(Clone)]
+  struct LoggingFileFetcher {
+    log: Arc<Mutex<Vec<String>>>,
+  }
+
+  impl LoggingFileFetcher {
+    fn read_file_url(&self, url: &str) -> Result<crate::resource::FetchedResource> {
+      let parsed =
+        Url::parse(url).map_err(|err| Error::Other(format!("invalid test URL {url:?}: {err}")))?;
+      if parsed.scheme() != "file" {
+        return Err(Error::Other(format!(
+          "test fetcher only supports file:// URLs (got {url})"
+        )));
+      }
+      let path = parsed
+        .to_file_path()
+        .map_err(|()| Error::Other(format!("invalid file:// URL path: {url}")))?;
+      let bytes = std::fs::read(&path).map_err(Error::Io)?;
+      let content_type = match path.extension().and_then(|ext| ext.to_str()) {
+        Some("css") => Some("text/css".to_string()),
+        Some("js") => Some("text/javascript".to_string()),
+        Some("html") => Some("text/html".to_string()),
+        _ => None,
+      };
+      Ok(crate::resource::FetchedResource::with_final_url(
+        bytes,
+        content_type,
+        Some(url.to_string()),
+      ))
+    }
+  }
+
+  impl crate::resource::ResourceFetcher for LoggingFileFetcher {
+    fn fetch(&self, url: &str) -> Result<crate::resource::FetchedResource> {
+      self
+        .log
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(format!("fetch:{:?}:{url}", FetchDestination::Other));
+      self.read_file_url(url)
+    }
+
+    fn fetch_with_request(
+      &self,
+      req: FetchRequest<'_>,
+    ) -> Result<crate::resource::FetchedResource> {
+      self
+        .log
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(format!("fetch:{:?}:{}", req.destination, req.url));
+      self.read_file_url(req.url)
+    }
+  }
+
+  struct LoggingExecutor {
+    log: Arc<Mutex<Vec<String>>>,
+  }
+
+  impl BrowserTabJsExecutor for LoggingExecutor {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .log
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(format!("exec:{script_text}"));
+      Ok(())
+    }
+  }
+
+  fn log_index(log: &[String], needle: &str) -> Option<usize> {
+    log.iter().position(|line| line.contains(needle))
+  }
+
+  #[test]
+  fn parser_inserted_external_script_waits_for_script_blocking_stylesheet_and_imports() -> Result<()> {
+    let temp = tempdir().map_err(Error::Io)?;
+    std::fs::write(temp.path().join("imported.css"), "body { color: red; }")
+      .map_err(Error::Io)?;
+    std::fs::write(
+      temp.path().join("style.css"),
+      r#"@import "imported.css";"#,
+    )
+    .map_err(Error::Io)?;
+    std::fs::write(temp.path().join("script.js"), "SCRIPT").map_err(Error::Io)?;
+
+    let document_url = Url::from_file_path(temp.path().join("index.html"))
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let fetcher = Arc::new(LoggingFileFetcher {
+      log: Arc::clone(&log),
+    });
+    let renderer = crate::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let options = RenderOptions::default();
+    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(LoggingExecutor {
+        log: Arc::clone(&log),
+      }),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    let mut tab = BrowserTab {
+      trace: TraceHandle::default(),
+      trace_output: None,
+      host,
+      event_loop: EventLoop::new(),
+    };
+    tab
+      .host
+      .reset_scripting_state(Some(document_url.clone()), ReferrerPolicy::default())?;
+
+    let html = r#"<!doctype html>
+      <link rel="stylesheet" href="style.css">
+      <script src="script.js"></script>
+    "#;
+    tab.parse_html_streaming_and_schedule_scripts(html, Some(&document_url), &options)?;
+
+    let entries = log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    let exec_idx = log_index(&entries, "exec:SCRIPT").expect("expected script execution");
+    let style_idx = log_index(&entries, "style.css").expect("expected stylesheet fetch");
+    let imported_idx = log_index(&entries, "imported.css").expect("expected import fetch");
+
+    assert!(
+      style_idx < exec_idx,
+      "expected style.css fetch before exec; log={entries:?}"
+    );
+    assert!(
+      imported_idx < exec_idx,
+      "expected imported.css fetch before exec; log={entries:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn non_matching_media_stylesheet_does_not_block_script() -> Result<()> {
+    let temp = tempdir().map_err(Error::Io)?;
+    std::fs::write(temp.path().join("print.css"), "body { color: green; }")
+      .map_err(Error::Io)?;
+    std::fs::write(temp.path().join("script.js"), "SCRIPT").map_err(Error::Io)?;
+
+    let document_url = Url::from_file_path(temp.path().join("index.html"))
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let fetcher = Arc::new(LoggingFileFetcher {
+      log: Arc::clone(&log),
+    });
+    let renderer = crate::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let options = RenderOptions::default();
+    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(LoggingExecutor {
+        log: Arc::clone(&log),
+      }),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    let mut tab = BrowserTab {
+      trace: TraceHandle::default(),
+      trace_output: None,
+      host,
+      event_loop: EventLoop::new(),
+    };
+    tab
+      .host
+      .reset_scripting_state(Some(document_url.clone()), ReferrerPolicy::default())?;
+
+    let html = r#"<!doctype html>
+      <link rel="stylesheet" href="print.css" media="print">
+      <script src="script.js"></script>
+    "#;
+    tab.parse_html_streaming_and_schedule_scripts(html, Some(&document_url), &options)?;
+
+    let entries = log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    assert!(
+      log_index(&entries, "exec:SCRIPT").is_some(),
+      "expected script execution; log={entries:?}"
+    );
+    assert!(
+      log_index(&entries, "print.css").is_none(),
+      "did not expect print.css to be fetched for screen media; log={entries:?}"
+    );
     Ok(())
   }
 }
