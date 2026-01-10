@@ -1,5 +1,6 @@
-use fastrender::js::bindings::install_window_bindings_vm_js;
 use std::any::Any;
+
+use fastrender::js::bindings::install_window_bindings_vm_js;
 use vm_js::{
   ExecutionContext, GcObject, Heap, HeapLimits, Job, PropertyDescriptor, PropertyKey, PropertyKind,
   RealmId, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
@@ -156,8 +157,9 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
     let mut host = TestHost;
     let mut hooks = HostHooksWithBindingsHost::new(&mut host);
 
+    let realm_id = realm.id();
     let mut vm = vm.execution_context_guard(ExecutionContext {
-      realm: realm.id(),
+      realm: realm_id,
       script_or_module: None,
     });
 
@@ -247,6 +249,22 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
       .construct_with_host(&mut scope, &mut hooks, node_ctor, &[], node_ctor)
       .unwrap_err();
     assert_thrown_type_error_message(&mut vm, &mut scope, err, "Illegal constructor");
+
+    // WebIDL `const` values are defined on the interface object with CONST attributes.
+    let node_element_key_s = scope.alloc_string("ELEMENT_NODE")?;
+    scope.push_root(Value::String(node_element_key_s))?;
+    let node_element_key = PropertyKey::from_string(node_element_key_s);
+    let node_element_desc = scope
+      .heap()
+      .object_get_own_property(_node_ctor_obj, &node_element_key)?
+      .expect("expected Node.ELEMENT_NODE to be defined");
+    assert!(node_element_desc.enumerable);
+    assert!(!node_element_desc.configurable);
+    let PropertyKind::Data { value, writable } = node_element_desc.kind else {
+      panic!("expected Node.ELEMENT_NODE to be a data property");
+    };
+    assert!(!writable);
+    assert_eq!(value, Value::Number(1.0));
 
     Ok(())
   }));

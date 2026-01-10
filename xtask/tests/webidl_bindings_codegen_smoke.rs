@@ -38,6 +38,16 @@ fn generated_bindings_snapshots_contain_known_members() {
     "expected window bindings to install URLSearchParams constructor"
   );
   assert!(
+    window_bindings_no_whitespace.contains("rt.define_data_property_str(global,\"Node\","),
+    "expected window bindings to install Node interface object"
+  );
+  assert!(
+    window_bindings_no_whitespace.contains(
+      "rt.define_data_property_str(ctor_node,\"ELEMENT_NODE\",Value::Number(1.0),DataPropertyAttributes::CONST"
+    ),
+    "expected window bindings to define Node.ELEMENT_NODE as a WebIDL const data property"
+  );
+  assert!(
     window_bindings.contains("fn u_r_l_search_params_append"),
     "expected URLSearchParams.append wrapper to be present in generated window bindings"
   );

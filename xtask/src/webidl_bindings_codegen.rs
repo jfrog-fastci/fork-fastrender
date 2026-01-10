@@ -4481,6 +4481,58 @@ fn emit_constant_js_value_expr(lit: &IdlLiteral) -> String {
   }
 }
 
+fn emit_constant_vmjs_value_expr(lit: &IdlLiteral) -> String {
+  fn parse_idl_number_literal(text: &str) -> Option<f64> {
+    let s = text.trim();
+    if s.eq_ignore_ascii_case("nan") {
+      return Some(f64::NAN);
+    }
+    if s.eq_ignore_ascii_case("infinity") {
+      return Some(f64::INFINITY);
+    }
+    if s.eq_ignore_ascii_case("-infinity") {
+      return Some(f64::NEG_INFINITY);
+    }
+
+    let (sign, rest) = if let Some(rest) = s.strip_prefix('-') {
+      (-1.0, rest)
+    } else if let Some(rest) = s.strip_prefix('+') {
+      (1.0, rest)
+    } else {
+      (1.0, s)
+    };
+
+    let rest = rest.trim();
+    let (radix, digits) = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+      (16, hex)
+    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+      (8, oct)
+    } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+      (2, bin)
+    } else {
+      // Plain decimal / exponent form.
+      return rest.parse::<f64>().ok().map(|v| v * sign);
+    };
+
+    let int = u64::from_str_radix(digits.trim(), radix).ok()?;
+    Some(sign * int as f64)
+  }
+
+  match lit {
+    IdlLiteral::Undefined => "Value::Undefined".to_string(),
+    IdlLiteral::Null => "Value::Null".to_string(),
+    IdlLiteral::Boolean(b) => format!("Value::Bool({})", if *b { "true" } else { "false" }),
+    IdlLiteral::Number(n) => {
+      let v = parse_idl_number_literal(n).unwrap_or(0.0);
+      format!("Value::Number({v:?})")
+    }
+    IdlLiteral::String(s) => format!("Value::String(rt.alloc_string({})?)", rust_string_literal(s)),
+    IdlLiteral::EmptyObject | IdlLiteral::EmptyArray | IdlLiteral::Identifier(_) => {
+      "Value::Undefined".to_string()
+    }
+  }
+}
+
 fn emit_integer_conversion_attrs(ext_attrs: &[ExtendedAttribute]) -> String {
   let mut clamp = false;
   let mut enforce_range = false;

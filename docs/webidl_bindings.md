@@ -176,17 +176,30 @@ Notes:
 `bash scripts/cargo_agent.sh xtask webidl-bindings` emits committed Rust glue from the snapshot
 world:
 
-- **`vm-js` realm bindings glue** (default backend): `src/js/webidl/bindings/generated/mod.rs`
-  - Generated wrappers perform WebIDL-ish argument conversions then dispatch into the host
-    integration via `fastrender::js::bindings::WebHostBindings`.
+- **vm-js realm bindings** (default backend): `src/js/webidl/bindings/generated/mod.rs`
+  - Generated installers install constructors/prototypes directly into a `vm_js::Realm` and dispatch
+    into the embedder via `webidl_vm_js::WebIdlBindingsHost` (retrieved from
+    `webidl_vm_js::host_from_hooks`, backed by a `webidl_vm_js::WebIdlBindingsHostSlot` exposed
+    through `VmHostHooks::as_any_mut`).
   - Controlled by an explicit allowlist: `tools/webidl/window_bindings_allowlist.toml` (typo-guarded
     against the committed snapshot world).
-- **Legacy `webidl-js-runtime` bindings glue** (`--backend legacy --out ...`): `src/js/webidl/bindings/generated_legacy.rs`
+- **Legacy `webidl-js-runtime` bindings** (`--backend legacy --out src/js/webidl/bindings/generated_legacy.rs`):
+  `src/js/webidl/bindings/generated_legacy.rs`
+  - Kept temporarily for migration and for unit tests that still exercise the older bindings/runtime
+    surface.
+  - Regenerate with:
+
+    ```bash
+    bash scripts/cargo_agent.sh xtask webidl-bindings \
+      --backend legacy \
+      --out src/js/webidl/bindings/generated_legacy.rs
+    ```
+
 - **Legacy `VmJsRuntime` DOM scaffold** (`--backend legacy`, default `--dom-out`): `src/js/legacy/dom_generated.rs`
   - Controlled by `tools/webidl/bindings_allowlist.toml`.
 
-DOM bindings are currently implemented directly against `vm-js` realms in `src/js/legacy/vm_dom.rs` and are
-installed with `fastrender::js::vm_dom::install_dom_bindings(vm, heap, realm, ...)`.
+DOM bindings are currently implemented directly against `vm-js` realms in `src/js/legacy/vm_dom.rs`
+and are installed with `fastrender::js::install_dom_bindings(vm, heap, realm, ...)`.
 
 ## Debugging unsupported/odd IDL
 
