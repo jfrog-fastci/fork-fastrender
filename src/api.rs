@@ -22822,6 +22822,7 @@ mod tests {
     };
 
     assert!(!classes.contains(&"no-js"));
+    assert!(classes.contains(&"js"));
     assert!(classes.contains(&"js-enabled"));
     assert!(classes.contains(&"jsl10n-visible"));
   }

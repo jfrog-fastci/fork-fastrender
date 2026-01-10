@@ -106,6 +106,7 @@ fn compatibility_mode_flips_expected_classes() {
 
   let standard_html_classes = collect_classes(standard_html);
   assert!(standard_html_classes.contains(&"no-js".to_string()));
+  assert!(!standard_html_classes.contains(&"js".to_string()));
   assert!(!standard_html_classes.contains(&"js-enabled".to_string()));
   assert!(!standard_html_classes.contains(&"jsl10n-visible".to_string()));
 
@@ -114,12 +115,46 @@ fn compatibility_mode_flips_expected_classes() {
 
   let compat_html_classes = collect_classes(compat_html);
   assert!(!compat_html_classes.contains(&"no-js".to_string()));
+  assert!(compat_html_classes.contains(&"js".to_string()));
   assert!(compat_html_classes.contains(&"js-enabled".to_string()));
   assert!(compat_html_classes.contains(&"foo".to_string()));
   assert!(compat_html_classes.contains(&"jsl10n-visible".to_string()));
 
   let compat_body_classes = collect_classes(compat_body);
   assert!(compat_body_classes.contains(&"bar".to_string()));
+  assert!(compat_body_classes.contains(&"jsl10n-visible".to_string()));
+}
+
+#[test]
+fn compatibility_mode_flips_no_js_class_on_body() {
+  let html = "<html><body class='no-js foo'></body></html>";
+
+  let standard_dom = parse_html(html).expect("parse standard DOM");
+  let compat_dom =
+    parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
+
+  let standard_html = find_element(&standard_dom, "html").expect("standard html element");
+  let standard_body = find_element(standard_html, "body").expect("standard body element");
+
+  let compat_html = find_element(&compat_dom, "html").expect("compat html element");
+  let compat_body = find_element(compat_html, "body").expect("compat body element");
+
+  let standard_body_classes = collect_classes(standard_body);
+  assert!(standard_body_classes.contains(&"no-js".to_string()));
+  assert!(!standard_body_classes.contains(&"js".to_string()));
+  assert!(!standard_body_classes.contains(&"js-enabled".to_string()));
+  assert!(!standard_body_classes.contains(&"jsl10n-visible".to_string()));
+
+  let compat_html_classes = collect_classes(compat_html);
+  assert!(!compat_html_classes.contains(&"js".to_string()));
+  assert!(!compat_html_classes.contains(&"js-enabled".to_string()));
+  assert!(compat_html_classes.contains(&"jsl10n-visible".to_string()));
+
+  let compat_body_classes = collect_classes(compat_body);
+  assert!(!compat_body_classes.contains(&"no-js".to_string()));
+  assert!(compat_body_classes.contains(&"js".to_string()));
+  assert!(compat_body_classes.contains(&"js-enabled".to_string()));
+  assert!(compat_body_classes.contains(&"foo".to_string()));
   assert!(compat_body_classes.contains(&"jsl10n-visible".to_string()));
 }
 

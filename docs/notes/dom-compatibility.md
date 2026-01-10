@@ -16,7 +16,8 @@ When a static render needs to mirror those initializations, enable compatibility
 
 Compatibility mode applies a small, generic set of mutations:
 
-- If the `<html>` element has a `no-js` class, replace it with `js-enabled`
+- If the `<html>` or `<body>` element has a `no-js` class, remove it and add both `js` and
+  `js-enabled`
 - Add `jsl10n-visible` to `<html>` and `<body>` when missing
 - Lift common lazy-load URL stashes into real attributes (without executing JS):
   - `<img>`: if `src` is missing/empty **or** set to a recognized placeholder (`about:blank`, `#`,

@@ -3597,9 +3597,12 @@ pub(crate) fn apply_dom_compatibility_mutations(
         .unwrap_or_default();
       let mut changed = false;
 
-      if tag_name.eq_ignore_ascii_case("html") {
+      if tag_name.eq_ignore_ascii_case("html") || tag_name.eq_ignore_ascii_case("body") {
         if classes.iter().any(|c| c == "no-js") {
           classes.retain(|c| c != "no-js");
+          if !classes.iter().any(|c| c == "js") {
+            classes.push("js".to_string());
+          }
           if !classes.iter().any(|c| c == "js-enabled") {
             classes.push("js-enabled".to_string());
           }
@@ -14523,9 +14526,55 @@ mod tests {
       _ => panic!("expected html element"),
     };
     assert!(!classes.contains(&"no-js"));
+    assert!(classes.contains(&"js"));
     assert!(classes.contains(&"js-enabled"));
     assert!(classes.contains(&"foo"));
     assert!(classes.contains(&"jsl10n-visible"));
+  }
+
+  #[test]
+  fn parse_html_compat_mode_flips_no_js_class_on_body() {
+    let dom = parse_html_with_options(
+      "<html><body class='no-js foo'></body></html>",
+      DomParseOptions::compatibility(),
+    )
+    .expect("parse");
+    let html = dom
+      .children
+      .iter()
+      .find(|c| matches!(c.node_type, DomNodeType::Element { .. }))
+      .expect("html child");
+    let body = html
+      .children
+      .iter()
+      .find(|c| matches!(&c.node_type, DomNodeType::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("body")))
+      .expect("body child");
+
+    let html_classes = match &html.node_type {
+      DomNodeType::Element { attributes, .. } => attributes
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("class"))
+        .map(|(_, v)| v.split_ascii_whitespace().collect::<Vec<_>>())
+        .unwrap_or_default(),
+      _ => panic!("expected html element"),
+    };
+    assert!(!html_classes.contains(&"js"));
+    assert!(!html_classes.contains(&"js-enabled"));
+    assert!(html_classes.contains(&"jsl10n-visible"));
+
+    let body_classes = match &body.node_type {
+      DomNodeType::Element { attributes, .. } => attributes
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("class"))
+        .map(|(_, v)| v.split_ascii_whitespace().collect::<Vec<_>>())
+        .unwrap_or_default(),
+      _ => panic!("expected body element"),
+    };
+    assert!(!body_classes.contains(&"no-js"));
+    assert!(body_classes.contains(&"js"));
+    assert!(body_classes.contains(&"js-enabled"));
+    assert!(body_classes.contains(&"foo"));
+    assert!(body_classes.contains(&"jsl10n-visible"));
   }
 
   #[test]
