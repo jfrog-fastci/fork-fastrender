@@ -15,6 +15,7 @@ use vm_js::{
 
 use super::event_loop::{EventLoop, TimerId};
 use super::script_scheduler::ScriptExecutor;
+use super::vm_error_format;
 use super::ScriptElementSpec;
 
 /// FastRender embedding of `ecma-rs`'s `vm-js` primitives.
@@ -84,7 +85,7 @@ impl<State: 'static> EcmaVmRuntime<State> {
     let mut vm = Vm::new(vm_options);
 
     let mut heap = heap;
-    let realm = Realm::new(&mut vm, &mut heap).map_err(map_vm_error)?;
+    let realm = Realm::new(&mut vm, &mut heap).map_err(|err| map_vm_error(&mut heap, err))?;
 
     let mut rt = Self {
       state,
@@ -111,16 +112,16 @@ impl<State: 'static> EcmaVmRuntime<State> {
     self
       .env
       .declare_var(&mut self.heap, "undefined")
-      .map_err(map_vm_error)?;
+      .map_err(|err| map_vm_error(&mut self.heap, err))?;
     self
       .env
       .set(&mut self.heap, "undefined", Value::Undefined)
-      .map_err(map_vm_error)?;
+      .map_err(|err| map_vm_error(&mut self.heap, err))?;
 
     self
       .env
       .declare_var(&mut self.heap, "globalThis")
-      .map_err(map_vm_error)?;
+      .map_err(|err| map_vm_error(&mut self.heap, err))?;
     self
       .env
       .set(
@@ -128,7 +129,7 @@ impl<State: 'static> EcmaVmRuntime<State> {
         "globalThis",
         Value::Object(self.realm.global_object()),
       )
-      .map_err(map_vm_error)?;
+      .map_err(|err| map_vm_error(&mut self.heap, err))?;
 
     // queueMicrotask(fn)
     self.define_global_native_function("queueMicrotask", 1, native_queue_microtask::<State>)?;
@@ -147,15 +148,20 @@ impl<State: 'static> EcmaVmRuntime<State> {
     length: u32,
     call: vm_js::NativeCall,
   ) -> Result<Value> {
-    let call_id = self.vm.register_native_call(call).map_err(map_vm_error)?;
+    let call_id = self
+      .vm
+      .register_native_call(call)
+      .map_err(|err| map_vm_error(&mut self.heap, err))?;
     let mut scope = self.heap.scope();
-    let name_s = scope.alloc_string(name).map_err(map_vm_error)?;
+    let name_s = scope
+      .alloc_string(name)
+      .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
     scope
       .push_root(Value::String(name_s))
-      .map_err(map_vm_error)?;
+      .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
     let func = scope
       .alloc_native_function(call_id, None, name_s, length)
-      .map_err(map_vm_error)?;
+      .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
     Ok(Value::Object(func))
   }
 
@@ -175,22 +181,24 @@ impl<State: 'static> EcmaVmRuntime<State> {
     self
       .env
       .declare_var(&mut self.heap, name)
-      .map_err(map_vm_error)?;
+      .map_err(|err| map_vm_error(&mut self.heap, err))?;
     self
       .env
       .set(&mut self.heap, name, value)
-      .map_err(map_vm_error)?;
+      .map_err(|err| map_vm_error(&mut self.heap, err))?;
 
     // And on the realm global object for spec shape.
     let mut scope = self.heap.scope();
     let global = self.realm.global_object();
     scope
       .push_root(Value::Object(global))
-      .map_err(map_vm_error)?;
-    scope.push_root(value).map_err(map_vm_error)?;
+      .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
+    scope
+      .push_root(value)
+      .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
 
-    let key = prop_key(&mut scope, name).map_err(map_vm_error)?;
-    define_value(&mut scope, global, key, value).map_err(map_vm_error)?;
+    let key = prop_key(&mut scope, name).map_err(|err| map_vm_error(scope.heap_mut(), err))?;
+    define_value(&mut scope, global, key, value).map_err(|err| map_vm_error(scope.heap_mut(), err))?;
     Ok(())
   }
 
@@ -247,7 +255,7 @@ impl<State: 'static> EcmaVmRuntime<State> {
       let mut scope = self.heap.scope();
       evaluator
         .eval_stmt(&mut scope, stmt)
-        .map_err(map_vm_error)?;
+        .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
       if let Some(err) = self.pending_host_error.take() {
         return Err(err);
       }
@@ -547,7 +555,9 @@ impl<State: 'static> VmHostHooks for EcmaVmRuntime<State> {
           host.reset_budget_for_run();
 
           let mut ctx = FastRenderJobContext::new(host);
-          job.run(&mut ctx, host).map_err(map_vm_error)?;
+          job
+            .run(&mut ctx, host)
+            .map_err(|err| map_vm_error(&mut host.heap, err))?;
           if let Some(err) = host.pending_host_error.take() {
             return Err(err);
           }
@@ -654,8 +664,14 @@ impl<State: 'static> ScriptExecutor for EcmaVmRuntime<State> {
 
 // --- Helpers ---
 
-fn map_vm_error(err: VmError) -> Error {
-  Error::Other(format!("JS error: {err:?}"))
+fn map_vm_error(heap: &mut Heap, err: VmError) -> Error {
+  let is_exception = err.thrown_value().is_some();
+  let message = vm_error_format::vm_error_to_string(heap, err);
+  if is_exception {
+    Error::Other(format!("JS exception: {message}"))
+  } else {
+    Error::Other(format!("JS error: {message}"))
+  }
 }
 
 fn prop_key(scope: &mut Scope<'_>, name: &str) -> std::result::Result<vm_js::PropertyKey, VmError> {
@@ -800,7 +816,9 @@ fn native_queue_microtask<State: 'static>(
       let mut ctx = FastRenderJobContext::new(host);
       let result = ctx.call(host, callback, Value::Undefined, &[]);
       host.heap.remove_root(callback_root);
-      result.map(|_| ()).map_err(map_vm_error)?;
+      result
+        .map(|_| ())
+        .map_err(|err| map_vm_error(&mut host.heap, err))?;
       if let Some(err) = host.pending_host_error.take() {
         return Err(err);
       }
@@ -902,7 +920,9 @@ fn native_set_timeout<State: 'static>(
         host.heap.remove_root(root);
       }
 
-      result.map(|_| ()).map_err(map_vm_error)?;
+      result
+        .map(|_| ())
+        .map_err(|err| map_vm_error(&mut host.heap, err))?;
       if let Some(err) = host.pending_host_error.take() {
         return Err(err);
       }
@@ -1037,7 +1057,7 @@ fn native_set_interval<State: 'static>(
       ctx
         .call(host, callback, global_this, &call_args)
         .map(|_| ())
-        .map_err(map_vm_error)?;
+        .map_err(|err| map_vm_error(&mut host.heap, err))?;
       if let Some(err) = host.pending_host_error.take() {
         return Err(err);
       }
@@ -1137,7 +1157,7 @@ mod tests {
   use crate::js::event_loop::{RunLimits, RunUntilIdleOutcome};
   use crate::js::ScriptType;
   use std::sync::Arc;
-  use vm_js::{PropertyKey, PropertyKind};
+  use vm_js::{PropertyKey, PropertyKind, StackFrame};
 
   #[derive(Default)]
   struct TestState {
@@ -1418,26 +1438,34 @@ mod tests {
       let call_id = host
         .vm
         .register_native_call(getter_enqueues_microtask)
-        .map_err(map_vm_error)?;
+        .map_err(|err| map_vm_error(&mut host.heap, err))?;
 
       let mut scope = host.heap.scope();
 
-      let name_s = scope.alloc_string("get_p").map_err(map_vm_error)?;
-      scope.push_root(Value::String(name_s)).map_err(map_vm_error)?;
+      let name_s = scope
+        .alloc_string("get_p")
+        .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
+      scope
+        .push_root(Value::String(name_s))
+        .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
       let getter = scope
         .alloc_native_function(call_id, None, name_s, 0)
-        .map_err(map_vm_error)?;
+        .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
       scope
         .push_root(Value::Object(getter))
-        .map_err(map_vm_error)?;
+        .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
 
       let global = host.realm.global_object();
       scope
         .push_root(Value::Object(global))
-        .map_err(map_vm_error)?;
+        .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
 
-      let key_s = scope.alloc_string("p").map_err(map_vm_error)?;
-      scope.push_root(Value::String(key_s)).map_err(map_vm_error)?;
+      let key_s = scope
+        .alloc_string("p")
+        .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
+      scope
+        .push_root(Value::String(key_s))
+        .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
       let key = PropertyKey::from_string(key_s);
 
       scope
@@ -1453,7 +1481,7 @@ mod tests {
             },
           },
         )
-        .map_err(map_vm_error)?;
+        .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
     }
 
     host.execute_classic_script("p;", &classic_spec(), &mut event_loop)?;
@@ -1674,7 +1702,9 @@ mod tests {
     let mut dummy_host = ();
 
     let mut scope = host.heap.scope();
-    let callee = scope.alloc_object().map_err(map_vm_error)?;
+    let callee = scope
+      .alloc_object()
+      .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
 
     let err = native_set_timeout::<TestState>(
       &mut host.vm,
@@ -1696,7 +1726,7 @@ mod tests {
       value,
       "setTimeout callback is not callable",
     )
-    .map_err(map_vm_error)?;
+    .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
     Ok(())
   }
 
@@ -1709,8 +1739,12 @@ mod tests {
     let mut dummy_host = ();
 
     let mut scope = host.heap.scope();
-    let callee = scope.alloc_object().map_err(map_vm_error)?;
-    let sym = scope.alloc_symbol(Some("t")).map_err(map_vm_error)?;
+    let callee = scope
+      .alloc_object()
+      .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
+    let sym = scope
+      .alloc_symbol(Some("t"))
+      .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
 
     let err = native_clear_timeout::<TestState>(
       &mut host.vm,
@@ -1732,7 +1766,38 @@ mod tests {
       value,
       "Cannot convert a Symbol value to a number",
     )
-    .map_err(map_vm_error)?;
+    .map_err(|err| map_vm_error(scope.heap_mut(), err))?;
     Ok(())
   }
-} 
+
+  #[test]
+  fn map_vm_error_includes_stack_trace_for_throw_with_stack() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+    let msg_s = scope.alloc_string("boom").expect("alloc thrown string");
+    let _root = scope
+      .push_root(Value::String(msg_s))
+      .expect("root thrown string");
+    let err = VmError::ThrowWithStack {
+      value: Value::String(msg_s),
+      stack: vec![StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("<test>"),
+        line: 1,
+        col: 2,
+      }],
+    };
+
+    let Error::Other(msg) = map_vm_error(scope.heap_mut(), err) else {
+      panic!("expected Error::Other");
+    };
+    assert!(
+      msg.contains("JS exception: boom"),
+      "expected thrown string to appear in message, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at f (<test>:1:2)"),
+      "expected stack trace frame to appear in message, got {msg:?}"
+    );
+  }
+}
