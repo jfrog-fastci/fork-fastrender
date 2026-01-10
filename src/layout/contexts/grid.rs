@@ -5605,11 +5605,13 @@ impl GridFormattingContext {
       node_offset: f32,
     }
 
-    let axes_swapped = {
+    let (axis_style, axes_swapped) = {
       let mut effective_writing_mode = box_node.style.writing_mode;
+      let mut effective_direction = box_node.style.direction;
+      let mut current_style: &ComputedStyle = &box_node.style;
       let mut current_id = node_id;
       let mut current_is_subgrid =
-        box_node.style.grid_row_subgrid || box_node.style.grid_column_subgrid;
+        current_style.grid_row_subgrid || current_style.grid_column_subgrid;
       while current_is_subgrid {
         let Some(parent_id) = taffy.parent(current_id) else {
           break;
@@ -5618,13 +5620,36 @@ impl GridFormattingContext {
           break;
         };
         let parent_box_node = unsafe { &*parent_ptr };
+
         effective_writing_mode = parent_box_node.style.writing_mode;
+        if current_style.grid_column_subgrid {
+          effective_direction = parent_box_node.style.direction;
+        }
+
+        current_style = &parent_box_node.style;
         current_is_subgrid =
-          parent_box_node.style.grid_row_subgrid || parent_box_node.style.grid_column_subgrid;
+          current_style.grid_row_subgrid || current_style.grid_column_subgrid;
         current_id = parent_id;
       }
-      !crate::style::inline_axis_is_horizontal(effective_writing_mode)
+
+      let axis_style = GridAxisStyle {
+        writing_mode: effective_writing_mode,
+        direction: effective_direction,
+      };
+      let axes_swapped = !axis_style.inline_is_horizontal();
+      (axis_style, axes_swapped)
     };
+
+    let inline_is_horizontal = axis_style.inline_is_horizontal();
+    let mut mirror_x = false;
+    let mut mirror_y = false;
+    if !axis_style.inline_positive() {
+      if inline_is_horizontal {
+        mirror_x = true;
+      } else {
+        mirror_y = true;
+      }
+    }
 
     let mut row_offsets: Option<Vec<f32>> = None;
     let mut col_offsets: Option<Vec<f32>> = None;
@@ -5655,17 +5680,11 @@ impl GridFormattingContext {
             .justify_content
             .unwrap_or(taffy::style::AlignContent::Stretch),
         ));
-      } else if crate::debug::runtime::runtime_toggles().truthy("FASTR_LOG_GRID_STATIC_POS") {
-        eprintln!(
-          "[grid-static-pos] missing style for node {node_id:?} (box_id={})",
-          box_node.id
-        );
       }
     } else {
       // Subgrid nodes do not always expose per-node track info in Taffy. When that happens,
       // derive track offsets from the nearest ancestor grid that does provide them, then map
       // local grid line numbers into the ancestor grid's line space.
-      let toggles = crate::debug::runtime::runtime_toggles();
       let maybe_axis_ctx = |axis_is_columns: bool| -> Option<SubgridAxisContext> {
         let axis_is_physical_x = if axes_swapped {
           !axis_is_columns
@@ -5687,11 +5706,24 @@ impl GridFormattingContext {
           if !is_subgrid_axis {
             return None;
           }
-          let start_line = if axis_is_columns {
+          let mut start_line = if axis_is_columns {
             current_box_node.style.grid_column_start
           } else {
             current_box_node.style.grid_row_start
           };
+          if start_line <= 0 {
+            let axis = if axis_is_columns {
+              CssGridAxis::Column
+            } else {
+              CssGridAxis::Row
+            };
+            // Auto-placed subgrids have `grid-*-start/end` set to `auto` in computed style. In that
+            // case, recover the resolved placement from the parent grid's detailed layout info so
+            // we can still map local line numbers into the ancestor grid's line space.
+            let (resolved_start, _) =
+              resolved_grid_item_range_from_parent_layout(taffy, current, axis, axes_swapped)?;
+            start_line = resolved_start as i32;
+          }
           if start_line <= 0 {
             return None;
           }
@@ -5810,16 +5842,6 @@ impl GridFormattingContext {
       if box_node.style.grid_column_subgrid {
         col_subgrid_ctx = maybe_axis_ctx(true);
       }
-
-      if toggles.truthy("FASTR_LOG_GRID_STATIC_POS")
-        && row_subgrid_ctx.is_none()
-        && col_subgrid_ctx.is_none()
-      {
-        eprintln!(
-          "[grid-static-pos] missing grid track info for node {node_id:?} (box_id={})",
-          box_node.id
-        );
-      }
     }
 
     let mut static_positions: FxHashMap<usize, Point> = FxHashMap::default();
@@ -5911,8 +5933,15 @@ impl GridFormattingContext {
         resolve_grid_line_range_from_style(x_start, x_end, x_raw, x_line_count, Some(x_line_names))
       {
         if let Some(col_offsets) = col_offsets.as_ref() {
-          if let Some((start, _)) = grid_area_for_positioned_item(col_offsets, start_line, end_line)
+          if let Some((area_start, area_end)) =
+            grid_area_for_positioned_item(col_offsets, start_line, end_line)
           {
+            let mut start = area_start;
+            if mirror_x {
+              if let Some((&span_start, span_end)) = col_offsets.get(1).zip(col_offsets.last()) {
+                start = span_start + (span_end - area_end);
+              }
+            }
             pos.x = start - padding_origin.x;
           }
         } else if let Some(ctx) = x_ctx {
@@ -5974,8 +6003,15 @@ impl GridFormattingContext {
         resolve_grid_line_range_from_style(y_start, y_end, y_raw, y_line_count, Some(y_line_names))
       {
         if let Some(row_offsets) = row_offsets.as_ref() {
-          if let Some((start, _)) = grid_area_for_positioned_item(row_offsets, start_line, end_line)
+          if let Some((area_start, area_end)) =
+            grid_area_for_positioned_item(row_offsets, start_line, end_line)
           {
+            let mut start = area_start;
+            if mirror_y {
+              if let Some((&span_start, span_end)) = row_offsets.get(1).zip(row_offsets.last()) {
+                start = span_start + (span_end - area_end);
+              }
+            }
             pos.y = start - padding_origin.y;
           }
         } else if let Some(ctx) = y_ctx {
@@ -9099,6 +9135,30 @@ fn grid_line_count_from_offsets(offsets: &[f32]) -> Option<u16> {
   u16::try_from(track_count.saturating_add(1)).ok()
 }
 
+fn resolved_grid_item_range_from_parent_layout(
+  taffy: &TaffyTree<*const BoxNode>,
+  node_id: TaffyNodeId,
+  axis: CssGridAxis,
+  axes_swapped: bool,
+) -> Option<(u16, u16)> {
+  let parent_id = taffy.parent(node_id)?;
+  let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(parent_id) else {
+    return None;
+  };
+
+  let children = taffy.children(parent_id).ok()?;
+  let idx = children.iter().position(|&child| child == node_id)?;
+  let item = info.items.get(idx)?;
+
+  let (start_line, end_line) = match (axis, axes_swapped) {
+    (CssGridAxis::Column, false) => (item.column_start, item.column_end),
+    (CssGridAxis::Column, true) => (item.row_start, item.row_end),
+    (CssGridAxis::Row, false) => (item.row_start, item.row_end),
+    (CssGridAxis::Row, true) => (item.column_start, item.column_end),
+  };
+  (end_line > start_line).then_some((start_line, end_line))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CssGridAxis {
   Column,
@@ -9222,16 +9282,23 @@ fn resolve_effective_grid_line_names_for_node_axis(
       .or_else(|| u16::try_from(parent_names.len()).ok())
       .filter(|count| *count > 0);
 
-    let start = axis.placement_start(&node.style);
-    let end = axis.placement_end(&node.style);
-    let raw = axis.placement_raw(&node.style);
-    let (start_line, end_line) = resolve_grid_line_range_from_style(
-      start,
-      end,
-      raw,
-      parent_line_count,
-      Some(parent_names.as_slice()),
-    )?;
+    let resolved_from_parent =
+      resolved_grid_item_range_from_parent_layout(taffy, node_id, axis, axes_swapped);
+    let (start_line, end_line) = match resolved_from_parent {
+      Some((start_line, end_line)) => (start_line, end_line),
+      None => {
+        let start = axis.placement_start(&node.style);
+        let end = axis.placement_end(&node.style);
+        let raw = axis.placement_raw(&node.style);
+        resolve_grid_line_range_from_style(
+          start,
+          end,
+          raw,
+          parent_line_count,
+          Some(parent_names.as_slice()),
+        )?
+      }
+    };
 
     let span = end_line.checked_sub(start_line)?;
     let start_index = start_line.saturating_sub(1) as usize;
@@ -9468,6 +9535,23 @@ fn resolve_grid_line_range_from_style(
     (Comp::Auto, Comp::NamedLine(end_name, end_idx)) => {
       let end = resolve_named_line_to_u16(line_names?, end_name, end_idx)?;
       let start = end.checked_sub(1)?;
+      (end > start).then_some((start, end))
+    }
+    // Absolutely positioned items with both edges auto (or with span-based placement components
+    // that rely on auto-placement) still need a deterministic static position. Per CSS Grid, the
+    // static position is defined as if the item were the sole grid item, so default auto
+    // placements to the first track.
+    (Comp::Auto, Comp::Auto) => Some((1, 2)),
+    (Comp::Auto, Comp::Span(span)) | (Comp::Span(span), Comp::Auto) => {
+      let start = 1u16;
+      let end = start.checked_add(span)?;
+      Some((start, end))
+    }
+    (Comp::Auto, Comp::NamedSpan(name, span)) | (Comp::NamedSpan(name, span), Comp::Auto) => {
+      let start = 1u16;
+      let end = line_names
+        .and_then(|names| resolve_named_span_forward(names, name, span, start))
+        .or_else(|| start.checked_add(span))?;
       (end > start).then_some((start, end))
     }
     _ => None,
@@ -10565,12 +10649,13 @@ impl FormattingContext for GridFormattingContext {
         positioned_factory.with_positioned_cb(cb_for_absolute)
       };
 
-      // Subgrid axes follow the nearest ancestor grid's writing mode, not the subgrid node's own.
-      let axes_swapped = {
+      let (axis_style, axes_swapped) = {
         let mut effective_writing_mode = box_node.style.writing_mode;
+        let mut effective_direction = box_node.style.direction;
+        let mut current_style: &ComputedStyle = &box_node.style;
         let mut current_id = root_id;
         let mut current_is_subgrid =
-          box_node.style.grid_row_subgrid || box_node.style.grid_column_subgrid;
+          current_style.grid_row_subgrid || current_style.grid_column_subgrid;
         while current_is_subgrid {
           let Some(parent_id) = taffy.parent(current_id) else {
             break;
@@ -10579,13 +10664,36 @@ impl FormattingContext for GridFormattingContext {
             break;
           };
           let parent_box_node = unsafe { &*parent_ptr };
+
           effective_writing_mode = parent_box_node.style.writing_mode;
+          if current_style.grid_column_subgrid {
+            effective_direction = parent_box_node.style.direction;
+          }
+
+          current_style = &parent_box_node.style;
           current_is_subgrid =
-            parent_box_node.style.grid_row_subgrid || parent_box_node.style.grid_column_subgrid;
+            current_style.grid_row_subgrid || current_style.grid_column_subgrid;
           current_id = parent_id;
         }
-        !crate::style::inline_axis_is_horizontal(effective_writing_mode)
+
+        let axis_style = GridAxisStyle {
+          writing_mode: effective_writing_mode,
+          direction: effective_direction,
+        };
+        let axes_swapped = !axis_style.inline_is_horizontal();
+        (axis_style, axes_swapped)
       };
+
+      let inline_is_horizontal = axis_style.inline_is_horizontal();
+      let mut mirror_x = false;
+      let mut mirror_y = false;
+      if !axis_style.inline_positive() {
+        if inline_is_horizontal {
+          mirror_x = true;
+        } else {
+          mirror_y = true;
+        }
+      }
 
       let mut static_positions: FxHashMap<usize, Point> = FxHashMap::default();
       if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(root_id) {
@@ -10615,6 +10723,8 @@ impl FormattingContext for GridFormattingContext {
 
           let col_line_count = grid_line_count_from_offsets(&col_offsets);
           let row_line_count = grid_line_count_from_offsets(&row_offsets);
+          let col_span = mirror_x.then(|| col_offsets.get(1).copied().zip(col_offsets.last().copied())).flatten();
+          let row_span = mirror_y.then(|| row_offsets.get(1).copied().zip(row_offsets.last().copied())).flatten();
 
           for child in &positioned_children {
             let mut pos = Point::ZERO;
@@ -10643,9 +10753,15 @@ impl FormattingContext for GridFormattingContext {
               col_line_count,
               Some(x_line_names),
             ) {
-              if let Some((start, _)) =
+              if let Some((area_start, area_end)) =
                 grid_area_for_positioned_item(&col_offsets, start_line, end_line)
               {
+                let mut start = area_start;
+                if mirror_x {
+                  if let Some((span_start, span_end)) = col_span {
+                    start = span_start + (span_end - area_end);
+                  }
+                }
                 pos.x = start - padding_origin.x;
               }
             }
@@ -10675,9 +10791,15 @@ impl FormattingContext for GridFormattingContext {
               row_line_count,
               Some(y_line_names),
             ) {
-              if let Some((start, _)) =
+              if let Some((area_start, area_end)) =
                 grid_area_for_positioned_item(&row_offsets, start_line, end_line)
               {
+                let mut start = area_start;
+                if mirror_y {
+                  if let Some((span_start, span_end)) = row_span {
+                    start = span_start + (span_end - area_end);
+                  }
+                }
                 pos.y = start - padding_origin.y;
               }
             }

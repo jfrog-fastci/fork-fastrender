@@ -570,6 +570,10 @@ where
       );
 
       // Dispatch to a layout algorithm based on the node's display style and whether the node has children or not.
+      //
+      // Note: CSS Grid containers still need track sizing/alignment even when they have zero in-flow
+      // children. FastRender relies on detailed grid track info for absolute-position static
+      // positioning, so always route `display: grid` through the grid algorithm.
       match (display_mode, has_children) {
         (Display::None, _) => compute_hidden_layout(tree, node),
         #[cfg(feature = "block_layout")]
@@ -577,7 +581,7 @@ where
         #[cfg(feature = "flexbox")]
         (Display::Flex, true) => compute_flexbox_layout(tree, node, inputs),
         #[cfg(feature = "grid")]
-        (Display::Grid, true) => compute_grid_layout(tree, node, inputs),
+        (Display::Grid, _) => compute_grid_layout(tree, node, inputs),
         (_, false) => {
           let node_key = node.into();
           let style = &tree.taffy.nodes[node_key].style;
