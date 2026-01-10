@@ -7,15 +7,29 @@ impl Document {
   fn clone_node_shallow(&mut self, src: NodeId, parent: Option<NodeId>) -> Result<NodeId, DomError> {
     self.node_checked(src)?;
 
-    let (kind, inert_subtree, is_html_script, script_already_started) = {
+    let (
+      kind,
+      inert_subtree,
+      is_html_script,
+      has_async_attr,
+      script_already_started,
+      mathml_annotation_xml_integration_point,
+    ) = {
       let node = &self.nodes[src.index()];
-      let is_html_script = match &node.kind {
+      let (is_html_script, has_async_attr) = match &node.kind {
         NodeKind::Element {
           tag_name,
           namespace,
-          ..
-        } => tag_name.eq_ignore_ascii_case("script") && (namespace.is_empty() || namespace == HTML_NAMESPACE),
-        _ => false,
+          attributes,
+        } if tag_name.eq_ignore_ascii_case("script")
+          && (namespace.is_empty() || namespace == HTML_NAMESPACE) =>
+        {
+          let has_async_attr = attributes
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("async"));
+          (true, has_async_attr)
+        }
+        _ => (false, false),
       };
       let kind = match &node.kind {
         NodeKind::Document { quirks_mode } => {
@@ -78,13 +92,30 @@ impl Document {
         },
       };
 
-      (kind, node.inert_subtree, is_html_script, node.script_already_started)
+      (
+        kind,
+        node.inert_subtree,
+        is_html_script,
+        has_async_attr,
+        node.script_already_started,
+        node.mathml_annotation_xml_integration_point,
+      )
     };
 
     let dst = self.push_node(kind, parent, inert_subtree);
+
+    // Preserve HTML parser flags that affect future parsing behavior.
+    self.nodes[dst.index()].mathml_annotation_xml_integration_point = mathml_annotation_xml_integration_point;
+
     if is_html_script {
-      self.nodes[dst.index()].script_force_async = true;
+      // HTML: script element cloning steps copy the "already started" flag only.
+      //
+      // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-model
       self.nodes[dst.index()].script_already_started = script_already_started;
+
+      // A newly-cloned script element starts with force_async=true unless it has an explicit `async`
+      // content attribute (which clears force_async when added, per the HTML spec).
+      self.nodes[dst.index()].script_force_async = !has_async_attr;
     }
     Ok(dst)
   }

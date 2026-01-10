@@ -3098,6 +3098,45 @@ const DOM_BINDINGS_SHIM: &str = r##"
   }
 
   #[test]
+  fn script_clone_node_preserves_async_default() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            function assert(cond) { if (!cond) throw new Error("assert"); }
+            var s = document.createElement("script");
+            assert(s.async === true);
+
+            var c = s.cloneNode();
+            assert(c.async === true);
+            assert(c.getAttribute("async") === null);
+
+            // Cloning should not allow a <script> to have `async` present and force_async=true at
+            // the same time. (Removing `async` later should leave .async false.)
+            s.setAttribute("async", "");
+            var c2 = s.cloneNode();
+            assert(c2.async === true);
+            c2.removeAttribute("async");
+            assert(c2.async === false);
+
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok);
+    Ok(())
+  }
+
+  #[test]
   fn parser_inserted_script_async_is_false() -> Result<()> {
     let renderer_dom = fastrender::dom::parse_html(concat!(
       "<!doctype html>",
