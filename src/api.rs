@@ -2376,12 +2376,18 @@ impl PreparedDocument {
       let animation_time = options.animation_time.or(self.animation_time);
       let scrollport_viewport = viewport_override.unwrap_or(self.layout_viewport);
       let paint_viewport = viewport_override.unwrap_or(self.paint_viewport);
+      let viewport_inset = viewport_scrollport_inset_for_scrollbar_gutter(
+        &self.styled_tree,
+        scrollport_viewport,
+        paint_viewport,
+      );
       let mut animation_state_store = animation_state_store;
       paint_fragment_tree_with_state(
         self.fragment_tree.clone(),
         scroll_state,
         scrollport_viewport,
         paint_viewport,
+        viewport_inset,
         options.background.unwrap_or(self.background_color),
         &self.font_context,
         &self.image_cache,
@@ -4788,6 +4794,39 @@ fn viewport_should_reserve_gutter(
     false
   }
 }
+
+fn viewport_scrollport_inset_for_scrollbar_gutter(
+  styled_tree: &StyledNode,
+  scrollport_viewport: Size,
+  paint_viewport: Size,
+) -> Point {
+  let params = resolve_viewport_scrollbar_params(styled_tree);
+  if !params.scrollbar_gutter.stable || !params.scrollbar_gutter.both_edges {
+    return Point::ZERO;
+  }
+  let gutter = params.scrollbar_width_px.max(0.0);
+  if gutter <= 0.0 {
+    return Point::ZERO;
+  }
+
+  // When `scrollbar-gutter: stable both-edges` reserves space for classic scrollbars, layout is
+  // performed in a reduced viewport but the scrollport is centered within the full paint viewport.
+  // Translate scrollport content by half the difference so both gutters appear.
+  let diff_x = paint_viewport.width - scrollport_viewport.width;
+  let diff_y = paint_viewport.height - scrollport_viewport.height;
+  let epsilon = 0.51;
+  let inset_x = if diff_x > 0.0 && (diff_x - 2.0 * gutter).abs() <= epsilon {
+    diff_x / 2.0
+  } else {
+    0.0
+  };
+  let inset_y = if diff_y > 0.0 && (diff_y - 2.0 * gutter).abs() <= epsilon {
+    diff_y / 2.0
+  } else {
+    0.0
+  };
+  Point::new(inset_x, inset_y)
+}
 fn force_box_overflow_visible(node: &mut BoxNode, styled_node_id: usize) {
   if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
     let mut style = (*node.style).clone();
@@ -5190,6 +5229,7 @@ fn paint_fragment_tree_with_state(
   mut scroll_state: ScrollState,
   scrollport_viewport: Size,
   paint_viewport: Size,
+  viewport_inset: Point,
   background: Rgba,
   font_context: &FontContext,
   image_cache: &ImageCache,
@@ -5376,7 +5416,9 @@ fn paint_fragment_tree_with_state(
     (viewport_width_px, viewport_height_px)
   };
 
-  let offset = Point::new(-scroll.x, -scroll.y);
+  let offset = Point::new(viewport_inset.x - scroll.x, viewport_inset.y - scroll.y);
+  let mut scroll_state_for_paint = scroll_state.clone();
+  scroll_state_for_paint.viewport = Point::new(scroll.x - viewport_inset.x, scroll.y - viewport_inset.y);
   let pixmap = paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
     &fragment_tree,
     target_width,
@@ -5387,7 +5429,7 @@ fn paint_fragment_tree_with_state(
     device_pixel_ratio,
     offset,
     paint_parallelism,
-    &scroll_state,
+    &scroll_state_for_paint,
     paint_backend_from_env(),
     max_iframe_depth,
   )?;
@@ -6921,6 +6963,8 @@ impl FastRender {
       let element_scrolls = element_scroll_offsets;
       let viewport_size = layout_viewport;
       let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
+      let viewport_inset =
+        viewport_scrollport_inset_for_scrollbar_gutter(&styled_tree, layout_viewport, paint_viewport);
       let mut scroll_state =
         crate::scroll::ScrollState::from_parts(Point::new(scroll_x, scroll_y), element_scrolls);
       let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
@@ -6948,8 +6992,11 @@ impl FastRender {
         fit_canvas,
       );
 
-      // Offset applied during paint to account for viewport scrolling.
-      let offset = Point::new(-scroll.x, -scroll.y);
+      // Offset applied during paint to account for viewport scrolling and scrollbar-gutter insets.
+      let offset = Point::new(viewport_inset.x - scroll.x, viewport_inset.y - scroll.y);
+      let mut scroll_state_for_paint = scroll_state.clone();
+      scroll_state_for_paint.viewport =
+        Point::new(scroll.x - viewport_inset.x, scroll.y - viewport_inset.y);
 
       if let Some(store) = artifacts.as_deref_mut() {
         if store.request().fragment_tree {
@@ -6980,7 +7027,7 @@ impl FastRender {
                 .with_svg_filter_defs(svg_filter_defs.clone())
                 .with_svg_id_defs(svg_id_defs.clone())
                 .with_svg_id_defs_raw(svg_id_defs_raw.clone())
-                .with_scroll_state(scroll_state.clone())
+                .with_scroll_state(scroll_state_for_paint.clone())
                 .with_device_pixel_ratio(self.device_pixel_ratio)
                 .with_parallelism(&paint_parallelism)
                 .with_max_iframe_depth(self.max_iframe_depth)
@@ -7017,7 +7064,7 @@ impl FastRender {
         target_height,
         offset,
         paint_parallelism,
-        &scroll_state,
+        &scroll_state_for_paint,
         trace,
       )?;
       let paint_rss_end = memory_sampling_enabled

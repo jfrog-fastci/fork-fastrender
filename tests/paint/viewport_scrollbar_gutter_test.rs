@@ -193,3 +193,116 @@ fn viewport_scrollbar_gutter_preserves_root_border() {
     gutter.alpha()
   );
 }
+
+#[test]
+fn viewport_scrollbar_gutter_both_edges_reserves_left_gutter() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer should construct");
+
+  // `scrollbar-gutter: stable both-edges` reserves gutter space on both inline edges when the
+  // viewport has classic scrollbars. Layout runs in a reduced scrollport width, but the scrollport
+  // is inset so the gutter appears on both the left and right.
+  let html = r#"<!doctype html>
+    <style>
+      html { background: rgb(0, 0, 255); scrollbar-gutter: stable both-edges; }
+      body { margin: 0; overflow-y: auto; background: transparent; }
+      #marker { background: rgb(255, 0, 0); height: 50px; width: 100%; }
+      .tall { height: 200px; }
+    </style>
+    <div id="marker"></div>
+    <div class="tall"></div>
+  "#;
+
+  let pixmap = renderer
+    .render_html(html, 100, 100)
+    .expect("render should succeed");
+
+  let left_gutter = pixmap.pixel(0, 25).expect("left gutter pixel");
+  assert!(
+    left_gutter.blue() > 200 && left_gutter.red() < 80 && left_gutter.green() < 80,
+    "expected canvas background (blue) in the left stable scrollbar gutter, got rgba({}, {}, {}, {})",
+    left_gutter.red(),
+    left_gutter.green(),
+    left_gutter.blue(),
+    left_gutter.alpha()
+  );
+
+  let inside = pixmap.pixel(20, 25).expect("inside pixel");
+  assert!(
+    inside.red() > 200 && inside.green() < 80 && inside.blue() < 80,
+    "expected marker background (red) inside the scrollport, got rgba({}, {}, {}, {})",
+    inside.red(),
+    inside.green(),
+    inside.blue(),
+    inside.alpha()
+  );
+
+  let right_gutter = pixmap.pixel(99, 25).expect("right gutter pixel");
+  assert!(
+    right_gutter.blue() > 200 && right_gutter.red() < 80 && right_gutter.green() < 80,
+    "expected canvas background (blue) in the right stable scrollbar gutter, got rgba({}, {}, {}, {})",
+    right_gutter.red(),
+    right_gutter.green(),
+    right_gutter.blue(),
+    right_gutter.alpha()
+  );
+}
+
+#[test]
+fn viewport_fixed_elements_paint_into_scrollbar_gutter_both_edges() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer should construct");
+
+  // Even when the scrollport is inset for `stable both-edges`, viewport-fixed elements are still
+  // sized/positioned relative to the full visual viewport (including both gutters).
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; }
+      html { background: rgb(0, 0, 255); scrollbar-gutter: stable both-edges; }
+      body { background: transparent; overflow-y: auto; }
+      .banner {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 10px;
+        background: rgb(0, 255, 0);
+      }
+      .tall { height: 200px; }
+    </style>
+    <div class="banner"></div>
+    <div class="tall"></div>
+  "#;
+
+  let pixmap = renderer
+    .render_html(html, 100, 100)
+    .expect("render should succeed");
+
+  let left = pixmap.pixel(0, 5).expect("left pixel");
+  assert!(
+    left.green() > 200 && left.red() < 80 && left.blue() < 80,
+    "expected fixed banner background (green) in the left gutter, got rgba({}, {}, {}, {})",
+    left.red(),
+    left.green(),
+    left.blue(),
+    left.alpha()
+  );
+
+  let right = pixmap.pixel(99, 5).expect("right pixel");
+  assert!(
+    right.green() > 200 && right.red() < 80 && right.blue() < 80,
+    "expected fixed banner background (green) in the right gutter, got rgba({}, {}, {}, {})",
+    right.red(),
+    right.green(),
+    right.blue(),
+    right.alpha()
+  );
+}

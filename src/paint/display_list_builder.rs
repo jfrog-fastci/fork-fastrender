@@ -289,13 +289,12 @@ struct BackgroundRects {
 #[derive(Clone)]
 struct RootBackground {
   paint_rect: Rect,
-  /// The source element's border box rect used for computing background tiling metrics (repeat,
-  /// default background-size, etc.).
+  /// The border box rect used for computing background tiling/positioning metrics (repeat, default
+  /// background-size, etc.).
   ///
-  /// When HTML canvas background propagation expands the paint area (e.g. the viewport is larger
-  /// than the root stacking context bounds), we must still size the background image/gradient tiles
-  /// relative to the original element bounds. Browsers keep the tile size stable and simply repeat
-  /// it across the expanded canvas.
+  /// For HTML canvas background propagation this should generally match the canvas (viewport) rect.
+  /// In particular, gradients promoted from `<html>`/`<body>` should interpolate relative to the
+  /// viewport size rather than the potentially shorter element box.
   origin_rect: Rect,
   style: Arc<ComputedStyle>,
   paint_border: bool,
@@ -2866,6 +2865,34 @@ impl DisplayListBuilder {
         if canvas.0 <= 0.0 || canvas.1 <= 0.0 {
           return None;
         }
+        // `scrollbar-gutter: stable both-edges` lays out the scrollport in a reduced viewport, then
+        // centers that scrollport within the full paint viewport. Painting applies a global
+        // translation to shift all fragments into the centered scrollport; however the propagated
+        // canvas background needs to cover the full paint viewport (including the left gutter).
+        let viewport_inset = root_style
+          .filter(|style| style.scrollbar_gutter.stable && style.scrollbar_gutter.both_edges)
+          .map(|style| {
+            let gutter = resolve_scrollbar_width(style).max(0.0);
+            if gutter <= 0.0 {
+              return Point::ZERO;
+            }
+            let paint_viewport = self.viewport.unwrap_or(canvas);
+            let diff_x = paint_viewport.0 - fragment.bounds.width();
+            let diff_y = paint_viewport.1 - fragment.bounds.height();
+            let epsilon = 0.51;
+            let inset_x = if diff_x > 0.0 && (diff_x - 2.0 * gutter).abs() <= epsilon {
+              diff_x / 2.0
+            } else {
+              0.0
+            };
+            let inset_y = if diff_y > 0.0 && (diff_y - 2.0 * gutter).abs() <= epsilon {
+              diff_y / 2.0
+            } else {
+              0.0
+            };
+            Point::new(inset_x, inset_y)
+          })
+          .unwrap_or(Point::ZERO);
         let target_w = canvas.0.max(context_bounds.width());
         let target_h = canvas.1.max(context_bounds.height());
         let default_target_rect =
@@ -2881,11 +2908,20 @@ impl DisplayListBuilder {
         } else {
           default_target_rect
         };
+        let target_rect = if viewport_inset != Point::ZERO {
+          target_rect.translate(Point::new(-viewport_inset.x, -viewport_inset.y))
+        } else {
+          target_rect
+        };
         let (style, suppress_box_id, source_rect) =
           Self::root_background_candidate(fragment, descendant_offset)?;
         if !Self::has_paintable_background(&style) {
           return None;
         }
+        // The canvas background is painted onto the *viewport* rect, so background positioning and
+        // gradients should be computed relative to the viewport size rather than the potentially
+        // smaller `<html>`/`<body>` box.
+        let origin_rect = target_rect;
         let paint_border = Self::has_paintable_border(&style)
           && self.should_propagate_root_border(&style, source_rect, target_rect);
         // We normally only need to propagate the canvas background when the source element's
@@ -2907,7 +2943,7 @@ impl DisplayListBuilder {
         }
         Some(RootBackground {
           paint_rect: target_rect,
-          origin_rect: source_rect,
+          origin_rect,
           style,
           paint_border,
         })
@@ -6850,11 +6886,7 @@ impl DisplayListBuilder {
     if let Some(style) = html.style.clone() {
       if Self::has_paintable_background(&style) {
         let suppress_box_id = Self::get_box_id(html).unwrap_or(usize::MAX);
-        return Some((
-          style,
-          suppress_box_id,
-          Rect::new(html_origin, html.bounds.size),
-        ));
+        return Some((style, suppress_box_id, Rect::new(html_origin, html.bounds.size)));
       }
     }
 
@@ -15568,10 +15600,11 @@ mod tests {
   }
 
   #[test]
-  fn root_background_extension_preserves_gradient_tile_size() {
+  fn root_background_extension_sizes_gradient_to_viewport() {
     // When the canvas is taller than the root stacking context bounds, we extend the root
-    // background paint rect to the viewport. The background image tile size should still be
-    // derived from the original element bounds so repeat defaults match Chrome.
+    // background paint rect to the viewport. The propagated gradient should behave as if it were
+    // painted on the canvas itself (i.e. sized to the viewport), so it should not unexpectedly
+    // repeat when the root element is shorter than the viewport.
     let mut root_style = ComputedStyle::default();
     root_style.display = Display::Block;
     root_style.background_color = Rgba::TRANSPARENT;
@@ -15630,8 +15663,8 @@ mod tests {
       .find(|pattern| (pattern.dest_rect.height() - 20.0).abs() < 0.01)
       .expect("expected an extended root background pattern covering the viewport height");
     assert!(
-      (extended.tile_size.height - 10.0).abs() < 0.01,
-      "expected root background tile height to remain 10px, got {}",
+      (extended.tile_size.height - 20.0).abs() < 0.01,
+      "expected root background tile height to match viewport height (20px), got {}",
       extended.tile_size.height
     );
   }
