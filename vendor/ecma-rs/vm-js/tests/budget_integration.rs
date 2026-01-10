@@ -129,6 +129,34 @@ fn var_declarator_list_instantiation_consumes_fuel() {
 }
 
 #[test]
+fn var_declarator_list_evaluation_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+
+  // Instantiation does `O(N)` work for `var` declarations (collecting names and creating var
+  // bindings). This test sets a budget high enough for instantiation to complete, but low enough
+  // that runtime evaluation of a *single* large declaration statement must also be budgeted (i.e.
+  // we must tick per declarator even when there are no initializer expressions).
+  rt.vm.set_budget(Budget {
+    fuel: Some(3800),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let mut src = String::from("var ");
+  for i in 0..1000 {
+    if i != 0 {
+      src.push(',');
+    }
+    src.push_str(&format!("v{i}"));
+  }
+  src.push(';');
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn let_declarator_list_instantiation_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
@@ -148,6 +176,33 @@ fn let_declarator_list_instantiation_consumes_fuel() {
     src.push_str(&format!("v{i}"));
   }
   src.push_str("; }");
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn let_declarator_list_evaluation_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+
+  // `for (let ...; ...)` declarations are evaluated at runtime, and (in this evaluator) are not
+  // instantiated as part of the surrounding statement list hoisting. This provides a narrow
+  // regression test for the runtime declarator loop budget.
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let mut src = String::from("for (let ");
+  for i in 0..2000 {
+    if i != 0 {
+      src.push(',');
+    }
+    src.push_str(&format!("v{i}"));
+  }
+  src.push_str("; false;) {}");
 
   let err = rt.exec_script(&src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
