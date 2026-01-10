@@ -283,7 +283,11 @@ fn browser_tab_task_error_does_not_prevent_later_dom_mutations_and_rendering() -
   let frame_a = tab.render_frame()?;
   assert_eq!(rgba_at(&frame_a, 32, 32), [255, 0, 0, 255]);
 
-  let outcome = tab.run_until_stable(10)?;
+  let run_limits = RunLimits {
+    max_wall_time: Some(Duration::from_secs(1)),
+    ..RunLimits::unbounded()
+  };
+  let outcome = tab.run_until_stable_with_run_limits(run_limits, 10)?;
   match outcome {
     fastrender::RunUntilStableOutcome::Stable { frames_rendered } => {
       assert!(

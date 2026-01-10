@@ -2250,6 +2250,10 @@ impl BrowserTab {
       limits,
       move |err| {
         // Match browser behavior: report uncaught task errors but keep the event loop running.
+        //
+        // NOTE: This method intentionally does *not* render. Callers that want to observe whether
+        // rendering is required should follow up with `render_if_needed()` (or use
+        // `run_until_stable`).
         let message = err.to_string();
         if let Some(diag) = &diagnostics {
           diag.record_js_exception(message.clone(), None);
