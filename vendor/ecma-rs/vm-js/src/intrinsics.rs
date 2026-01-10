@@ -426,6 +426,8 @@ impl Intrinsics {
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
     let string_prototype_char_at = vm.register_native_call(builtins::string_prototype_char_at)?;
     let string_prototype_trim = vm.register_native_call(builtins::string_prototype_trim)?;
+    let string_prototype_trim_start = vm.register_native_call(builtins::string_prototype_trim_start)?;
+    let string_prototype_trim_end = vm.register_native_call(builtins::string_prototype_trim_end)?;
     let string_prototype_substring = vm.register_native_call(builtins::string_prototype_substring)?;
     let string_prototype_substr = vm.register_native_call(builtins::string_prototype_substr)?;
     let string_prototype_to_lower_case =
@@ -1047,6 +1049,74 @@ impl Intrinsics {
         scope.push_root(Value::String(trim_s))?;
         let key = PropertyKey::from_string(trim_s);
         let func = scope.alloc_native_function(string_prototype_trim, None, trim_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.trimStart
+      {
+        let trim_s = scope.alloc_string("trimStart")?;
+        scope.push_root(Value::String(trim_s))?;
+        let key = PropertyKey::from_string(trim_s);
+        let func = scope.alloc_native_function(string_prototype_trim_start, None, trim_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.trimEnd
+      {
+        let trim_s = scope.alloc_string("trimEnd")?;
+        scope.push_root(Value::String(trim_s))?;
+        let key = PropertyKey::from_string(trim_s);
+        let func = scope.alloc_native_function(string_prototype_trim_end, None, trim_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.trimLeft (Annex B)
+      {
+        let trim_s = scope.alloc_string("trimLeft")?;
+        scope.push_root(Value::String(trim_s))?;
+        let key = PropertyKey::from_string(trim_s);
+        let func = scope.alloc_native_function(string_prototype_trim_start, None, trim_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.trimRight (Annex B)
+      {
+        let trim_s = scope.alloc_string("trimRight")?;
+        scope.push_root(Value::String(trim_s))?;
+        let key = PropertyKey::from_string(trim_s);
+        let func = scope.alloc_native_function(string_prototype_trim_end, None, trim_s, 0)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()

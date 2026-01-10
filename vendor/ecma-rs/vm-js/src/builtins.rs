@@ -5910,6 +5910,96 @@ pub fn string_prototype_trim(
   Ok(Value::String(out))
 }
 
+/// `String.prototype.trimStart` / `String.prototype.trimLeft` (ECMA-262) (minimal).
+pub fn string_prototype_trim_start(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let (len, start) = {
+    let js = scope.heap().get_string(s)?;
+    let units = js.as_code_units();
+    let len = units.len();
+
+    let mut start = 0usize;
+    while start < len {
+      if start % 1024 == 0 {
+        vm.tick()?;
+      }
+      if !is_trim_whitespace_unit(units[start]) {
+        break;
+      }
+      start += 1;
+    }
+
+    (len, start)
+  };
+
+  if start == 0 {
+    return Ok(Value::String(s));
+  }
+
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units()[start..len].to_vec()
+  };
+  let out = scope.alloc_string_from_u16_vec(units)?;
+  Ok(Value::String(out))
+}
+
+/// `String.prototype.trimEnd` / `String.prototype.trimRight` (ECMA-262) (minimal).
+pub fn string_prototype_trim_end(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let (len, end) = {
+    let js = scope.heap().get_string(s)?;
+    let units = js.as_code_units();
+    let len = units.len();
+
+    let mut end = len;
+    while end > 0 {
+      if end % 1024 == 0 {
+        vm.tick()?;
+      }
+      if !is_trim_whitespace_unit(units[end - 1]) {
+        break;
+      }
+      end -= 1;
+    }
+
+    (len, end)
+  };
+
+  if end == len {
+    return Ok(Value::String(s));
+  }
+
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units()[0..end].to_vec()
+  };
+  let out = scope.alloc_string_from_u16_vec(units)?;
+  Ok(Value::String(out))
+}
+
 /// `String.prototype.substring` (ECMA-262) (minimal).
 pub fn string_prototype_substring(
   vm: &mut Vm,

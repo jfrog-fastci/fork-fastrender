@@ -570,6 +570,22 @@ fn string_prototype_trim_works_and_is_generic() {
 }
 
 #[test]
+fn string_prototype_trim_start_end_work_and_are_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"(" \n\t\u2000abc\u2000 \r").trimStart() === "abc\u2000 \r"
+        && (" \n\t\u2000abc\u2000 \r").trimEnd() === " \n\t\u2000abc"
+        && String.prototype.trimStart.call({toString:function(){return "\u3000x\u3000";}}) === "x\u3000"
+        && String.prototype.trimEnd.call({toString:function(){return "\u3000x\u3000";}}) === "\u3000x"
+        && (" \n\t\u2000abc\u2000 \r").trimLeft() === "abc\u2000 \r"
+        && (" \n\t\u2000abc\u2000 \r").trimRight() === " \n\t\u2000abc""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_prototype_substring_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt
