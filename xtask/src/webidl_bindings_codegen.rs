@@ -2248,6 +2248,7 @@ fn emit_conversion_expr(
     IdlType::Sequence(elem) => emit_iterable_list_conversion_expr(
       resolved,
       elem,
+      ext_attrs,
       value_ident,
       "sequence",
       "Sequence",
@@ -2255,6 +2256,7 @@ fn emit_conversion_expr(
     IdlType::FrozenArray(elem) => emit_iterable_list_conversion_expr(
       resolved,
       elem,
+      ext_attrs,
       value_ident,
       "FrozenArray",
       "FrozenArray",
@@ -2266,11 +2268,12 @@ fn emit_conversion_expr(
 fn emit_iterable_list_conversion_expr(
   resolved: &ResolvedWebIdlWorld,
   elem_ty: &IdlType,
+  ext_attrs: &[ExtendedAttribute],
   value_ident: &str,
   kind_label: &str,
   out_variant: &str,
 ) -> String {
-  let elem_expr = emit_conversion_expr(resolved, elem_ty, "next");
+  let elem_expr = emit_conversion_expr(resolved, elem_ty, ext_attrs, "next");
   format!(
     r#"{{
   if !rt.is_object({value_ident}) {{
