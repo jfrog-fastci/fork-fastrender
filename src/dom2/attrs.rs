@@ -99,9 +99,6 @@ impl Document {
       let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
         return Err(DomError::InvalidNodeType);
       };
-      let had_attr = attrs
-        .iter()
-        .any(|(k, _)| name_matches(k.as_str(), name, is_html));
 
       if let Some((_, existing)) = attrs
         .iter_mut()
@@ -115,12 +112,12 @@ impl Document {
         true
       } else {
         attrs.push((name.to_string(), value.to_string()));
-          // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
-          if is_script && name.eq_ignore_ascii_case("async") && !had_attr {
-            node.script_force_async = false;
-          }
-          true
+        // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
+        if is_script && name.eq_ignore_ascii_case("async") {
+          node.script_force_async = false;
         }
+        true
+      }
     };
 
     if changed {
