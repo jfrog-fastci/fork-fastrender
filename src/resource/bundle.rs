@@ -1443,8 +1443,90 @@ mod tests {
   use super::*;
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use crate::html::content_security_policy::CspPolicy;
-  use crate::resource::FetchDestination;
+  use crate::resource::{compute_vary_key_for_request, FetchDestination, FetchRequest};
   use std::io::Cursor;
+
+  fn write_minimal_bundle(dir: &Path) {
+    std::fs::write(dir.join("document.html"), "<!doctype html><html></html>").expect("write doc");
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        response_headers: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      fetch_profile: BundleFetchProfile::default(),
+      resources: BTreeMap::new(),
+    };
+    std::fs::write(
+      dir.join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+  }
+
+  #[test]
+  fn bundled_fetcher_request_header_value_treats_missing_upgrade_insecure_requests_as_empty() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_minimal_bundle(tmp.path());
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let req = FetchRequest::new("https://example.com/image.png", FetchDestination::Image);
+    assert_eq!(
+      fetcher
+        .request_header_value(req, "upgrade-insecure-requests")
+        .as_deref(),
+      Some("")
+    );
+
+    let req = FetchRequest::new("https://example.com/image.png", FetchDestination::Image);
+    assert!(
+      compute_vary_key_for_request(&fetcher, req, Some("upgrade-insecure-requests")).is_some(),
+      "expected Vary key to be computed deterministically when header is omitted"
+    );
+  }
+
+  #[test]
+  fn bundled_fetcher_request_header_value_treats_missing_sec_fetch_user_as_empty() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_minimal_bundle(tmp.path());
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let req = FetchRequest::new("https://example.com/", FetchDestination::DocumentNoUser);
+    assert_eq!(
+      fetcher.request_header_value(req, "sec-fetch-user").as_deref(),
+      Some("")
+    );
+
+    let req = FetchRequest::new("https://example.com/", FetchDestination::DocumentNoUser);
+    assert!(
+      compute_vary_key_for_request(&fetcher, req, Some("sec-fetch-user")).is_some(),
+      "expected Vary key to be computed deterministically when header is omitted"
+    );
+  }
 
   #[test]
   fn bundled_fetcher_decodes_data_urls_without_manifest_entries() {

@@ -7949,10 +7949,10 @@ impl ResourceFetcher for HttpFetcher {
         return Some(value);
       }
     }
-    // Some commonly varied headers (notably `Origin`/`Referer` and browser-ish `Sec-Fetch-*`) are
-    // only emitted for certain destinations (or when `FASTR_HTTP_BROWSER_HEADERS=0`). Treat their
-    // absence deterministically as an empty string so callers can still compute a stable variant
-    // key.
+    // Some commonly varied headers (notably `Origin`/`Referer` and browser-ish `Sec-Fetch-*` /
+    // `Upgrade-Insecure-Requests`) are only emitted for certain destinations (or when
+    // `FASTR_HTTP_BROWSER_HEADERS=0`). Treat their absence deterministically as an empty string so
+    // callers can still compute a stable variant key.
     if header_name.eq_ignore_ascii_case("origin")
       || header_name.eq_ignore_ascii_case("accept-encoding")
       || header_name.eq_ignore_ascii_case("accept-language")
@@ -21875,6 +21875,42 @@ mod tests {
       compute_vary_key_for_request(&fetcher, req, Some("origin")).expect("vary key origin");
     let key_nbsp = compute_vary_key_for_request(&fetcher, req, Some(nbsp_name)).expect("vary key");
     assert_ne!(key_origin, key_nbsp);
+  }
+
+  #[test]
+  fn http_fetcher_request_header_value_treats_missing_upgrade_insecure_requests_as_empty() {
+    let fetcher = HttpFetcher::new();
+    let req = FetchRequest::new("https://example.com/image.png", FetchDestination::Image);
+    assert_eq!(
+      fetcher
+        .request_header_value(req, "upgrade-insecure-requests")
+        .as_deref(),
+      Some("")
+    );
+
+    let req = FetchRequest::new("https://example.com/image.png", FetchDestination::Image);
+    assert!(
+      compute_vary_key_for_request(&fetcher, req, Some("upgrade-insecure-requests")).is_some(),
+      "expected Vary key to be computed deterministically when header is omitted"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_request_header_value_treats_missing_sec_fetch_user_as_empty() {
+    let fetcher = HttpFetcher::new();
+    let req = FetchRequest::new("https://example.com/", FetchDestination::DocumentNoUser);
+    assert_eq!(
+      fetcher
+        .request_header_value(req, "sec-fetch-user")
+        .as_deref(),
+      Some("")
+    );
+
+    let req = FetchRequest::new("https://example.com/", FetchDestination::DocumentNoUser);
+    assert!(
+      compute_vary_key_for_request(&fetcher, req, Some("sec-fetch-user")).is_some(),
+      "expected Vary key to be computed deterministically when header is omitted"
+    );
   }
 
   #[test]
