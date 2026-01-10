@@ -177,6 +177,27 @@ Rust API:
 * `fastrender::js::import_maps::parse_import_map_string(input: &str, base_url: &url::Url)
   -> Result<(ImportMap, Vec<ImportMapWarning>), ImportMapError>`
 
+Example:
+
+```rust
+use fastrender::js::import_maps::parse_import_map_string;
+use url::Url;
+
+let base_url = Url::parse("https://example.com/base/page.html").unwrap();
+let (import_map, warnings) = parse_import_map_string(
+    r#"{ "imports": { "lodash": "/node_modules/lodash-es/lodash.js" } }"#,
+    &base_url,
+)
+.unwrap();
+
+// Non-fatal issues (typos/invalid addresses/etc.) are surfaced here.
+for warning in warnings {
+    eprintln!("import map warning: {:?}", warning.kind);
+}
+
+assert_eq!(import_map.imports.entries.len(), 1);
+```
+
 Spec mapping:
 
 * “parse an import map string”
