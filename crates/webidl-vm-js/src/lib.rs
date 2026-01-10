@@ -427,9 +427,12 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
     };
 
     let key = Self::to_vm_property_key(key);
-    // Implement ECMAScript `[[Get]]` directly so accessor getters are invoked via `call_js` (which
-    // respects `Vm::with_host_hooks_override` / embedder host context), rather than through
-    // `Vm::get` → `Scope::ordinary_get` which currently invokes getters via `call_without_host`.
+    // Implement ECMAScript `[[Get]]` directly so accessor getters are invoked via `call_js`.
+    //
+    // This matters because `Vm::get` → `Scope::ordinary_get` always calls accessor getters with a
+    // dummy `VmHost` context (`()`), which breaks host-context propagation when conversions run
+    // inside a `NativeCall`/`NativeConstruct` handler. `call_js` forwards the embedder host context
+    // when available and respects any active `Vm::with_host_hooks_override`.
     let value = match self.scope.heap().get_property(object, &key)? {
       None => Value::Undefined,
       Some(desc) => match desc.kind {
@@ -457,8 +460,8 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
   ) -> Result<Option<Self::Value>, Self::Error> {
     // ECMAScript `GetMethod(O, P)` where `O` is already known to be an object.
     //
-    // Like `get`, we avoid `Vm::get_method` so any accessor getters run via `call_js` instead of
-    // `call_without_host`.
+    // Like `get`, we avoid `Vm::get_method` so any accessor getters run via `call_js` (preserving
+    // embedder host context / host hooks overrides).
     let value = self.get(object, key)?;
     if matches!(value, Value::Undefined | Value::Null) {
       return Ok(None);
