@@ -3634,6 +3634,7 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::Right => ShortcutKey::Right,
     VirtualKeyCode::F4 => ShortcutKey::F4,
     VirtualKeyCode::F5 => ShortcutKey::F5,
+    VirtualKeyCode::F6 => ShortcutKey::F6,
     VirtualKeyCode::Key0 | VirtualKeyCode::Numpad0 => ShortcutKey::Num0,
     VirtualKeyCode::Key1 | VirtualKeyCode::Numpad1 => ShortcutKey::Num1,
     VirtualKeyCode::Key2 | VirtualKeyCode::Numpad2 => ShortcutKey::Num2,

@@ -73,6 +73,7 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
     egui::Key::Num9 => Key::Num9,
     egui::Key::F4 => Key::F4,
     egui::Key::F5 => Key::F5,
+    egui::Key::F6 => Key::F6,
     egui::Key::PlusEquals => Key::Equals,
     egui::Key::Minus => Key::Minus,
     egui::Key::PageUp => Key::PageUp,
@@ -610,6 +611,21 @@ mod tests {
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::K, modifiers);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::FocusAddressBar)),
+      "expected ChromeAction::FocusAddressBar, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn f6_emits_focus_address_bar_action() {
+    let mut app = BrowserAppState::new();
+    let ctx = new_context_with_key(egui::Key::F6, Default::default());
     let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 

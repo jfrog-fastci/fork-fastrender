@@ -73,6 +73,7 @@ pub enum Key {
   Equals,
   F4,
   F5,
+  F6,
   Num1,
   Num2,
   Num3,
@@ -148,6 +149,10 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
   match (key, modifiers) {
     // Many browsers support both Ctrl/Cmd+L and Ctrl/Cmd+K for focusing the address bar.
     (Key::L | Key::K, _) if cmd => Some(ShortcutAction::FocusAddressBar),
+    // Many browsers support F6 to focus the address bar.
+    (Key::F6, Modifiers { ctrl: false, shift: false, alt: false, meta: false }) => {
+      Some(ShortcutAction::FocusAddressBar)
+    }
 
     // Tabs.
     (Key::T, Modifiers { shift: true, .. }) if cmd => Some(ShortcutAction::ReopenClosedTab),
@@ -251,6 +256,14 @@ mod tests {
         KeyEvent::new(Key::K, Modifiers::new(true, false, false, false)),
         Platform::Other
       ),
+      Some(ShortcutAction::FocusAddressBar)
+    );
+  }
+
+  #[test]
+  fn f6_focuses_address_bar() {
+    assert_eq!(
+      map_shortcut_with_platform(KeyEvent::new(Key::F6, Modifiers::default()), Platform::Other),
       Some(ShortcutAction::FocusAddressBar)
     );
   }
