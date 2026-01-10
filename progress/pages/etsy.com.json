@@ -14,7 +14,7 @@
     "layout": 5.359728242208649,
     "paint": 59.06754282692259
   },
-  "notes": "Etsy is behind DataDome bot protection (403 in CI); fixture is the interstitial page. Chrome diff is limited to minor text antialiasing.",
+  "notes": "Etsy is behind DataDome bot protection (403 in CI); fixture is the interstitial page. Chrome diff is limited to minor text antialiasing. Fixture also vendors the DataDome c.js script so validate-page-fixtures --include-scripts passes.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 2271,
@@ -38,7 +38,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "acfe410db3e7f0776527ea2bc68106f6e6429880"
+    "computed_at_commit": "fdb2cfc729ed5c94f60567b0cad0eda04ea00c54"
   },
   "hotspot": "cascade",
   "failure_stage": null,
