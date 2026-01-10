@@ -25,7 +25,7 @@ fn default_jobs() -> usize {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
-enum MediaMode {
+pub(crate) enum MediaMode {
   Screen,
   Print,
 }

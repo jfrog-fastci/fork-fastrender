@@ -14,7 +14,7 @@ const DEFAULT_JOBS: usize = 1;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
-enum MediaMode {
+pub(crate) enum MediaMode {
   Screen,
   Print,
 }

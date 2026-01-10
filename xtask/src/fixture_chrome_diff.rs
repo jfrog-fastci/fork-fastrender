@@ -25,7 +25,7 @@ const PAGES_REGRESSION_MANIFEST_CANDIDATES: &[&str] = &[
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
-enum SortBy {
+pub(crate) enum SortBy {
   Pixel,
   Percent,
   Perceptual,
@@ -43,7 +43,7 @@ impl SortBy {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
-enum MediaMode {
+pub(crate) enum MediaMode {
   Screen,
   Print,
 }
@@ -60,7 +60,7 @@ impl MediaMode {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
 #[clap(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
-enum JsMode {
+pub(crate) enum JsMode {
   On,
   Off,
 }
