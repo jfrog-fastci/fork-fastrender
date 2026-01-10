@@ -223,11 +223,7 @@ pub mod window {
               return Err(rt.throw_type_error("expected object for sequence"));
             }
             rt.with_stack_roots(&[v1], |rt| {
-              let iterator_key = rt.symbol_iterator()?;
-              let Some(method) = rt.get_method(v1, iterator_key)? else {
-                return Err(rt.throw_type_error("sequence: object is not iterable"));
-              };
-              let mut iterator_record = rt.get_iterator_from_method(host, v1, method)?;
+              let mut iterator_record = rt.get_iterator(host, v1)?;
               rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {
                 let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
                 while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
@@ -344,11 +340,7 @@ pub mod window {
           return Err(rt.throw_type_error("expected object for FrozenArray"));
         }
         rt.with_stack_roots(&[v0], |rt| {
-          let iterator_key = rt.symbol_iterator()?;
-          let Some(method) = rt.get_method(v0, iterator_key)? else {
-            return Err(rt.throw_type_error("FrozenArray: object is not iterable"));
-          };
-          let mut iterator_record = rt.get_iterator_from_method(host, v0, method)?;
+          let mut iterator_record = rt.get_iterator(host, v0)?;
           rt.with_stack_roots(
             &[iterator_record.iterator, iterator_record.next_method],
             |rt| {
@@ -403,11 +395,7 @@ pub mod window {
           return Err(rt.throw_type_error("expected object for sequence"));
         }
         rt.with_stack_roots(&[v0], |rt| {
-          let iterator_key = rt.symbol_iterator()?;
-          let Some(method) = rt.get_method(v0, iterator_key)? else {
-            return Err(rt.throw_type_error("sequence: object is not iterable"));
-          };
-          let mut iterator_record = rt.get_iterator_from_method(host, v0, method)?;
+          let mut iterator_record = rt.get_iterator(host, v0)?;
           rt.with_stack_roots(
             &[iterator_record.iterator, iterator_record.next_method],
             |rt| {
