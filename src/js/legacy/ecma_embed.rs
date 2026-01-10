@@ -1244,6 +1244,42 @@ mod tests {
   }
 
   #[test]
+  fn parse_cancellation_is_mapped_to_vm_error() {
+    // This specifically exercises the `SyntaxErrorType::Cancelled` → stored `VmError` mapping.
+    //
+    // Use a large-but-valid script and `fuel=1`:
+    // - the pre-parse `vm.tick()` succeeds (consuming the only fuel)
+    // - parsing continues until the cancellable callback ticks again and runs out of fuel
+    // - the parser reports `Cancelled`, which should surface as `ScriptError::Termination::OutOfFuel`
+    //   (not a syntax error)
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(1),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    // Many empty statements; chosen to exceed the parse cancellation stride.
+    let source = ";".repeat(2048);
+    let err = realm.eval_script("parse_cancel.js", &source).unwrap_err();
+    match err {
+      ScriptError::Termination {
+        reason: ScriptTerminationReason::OutOfFuel,
+        stack_trace,
+      } => {
+        // The termination should occur during parsing, before we push a VM stack frame.
+        assert!(
+          stack_trace.trim().is_empty(),
+          "expected parse-time termination to have empty stack trace, got: {stack_trace:?}"
+        );
+      }
+      other => panic!("expected out-of-fuel termination, got {other:?}"),
+    }
+  }
+
+  #[test]
   fn bigint_literals_and_host_roundtrip_work() {
     let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
       heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
