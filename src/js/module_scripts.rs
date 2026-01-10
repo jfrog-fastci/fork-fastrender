@@ -11,7 +11,7 @@
 //! The runtime provides caching and basic circular import handling so repeated imports share a
 //! single module instance and cycles do not recurse infinitely.
 
-use crate::error::{Error, RenderError, RenderStage, Result};
+use crate::error::{Error, RenderStage, Result};
 use crate::js::import_maps::ImportMapState;
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::resource::{
@@ -809,6 +809,7 @@ fn collect_pat_idents(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::error::RenderError;
   use crate::render_control::RenderDeadline;
   use crate::resource::FetchedResource;
   use crate::js::import_maps::{create_import_map_parse_result, register_import_map};
