@@ -3706,14 +3706,21 @@ fn collect_break_opportunities(
       });
     }
 
+    // In pagination, treat in-flow grid items as parallel fragmentation flows so their internal
+    // break opportunities (including forced breaks) do not affect sibling items (CSS Grid 2
+    // §Fragmenting Grid Layout).
+    let is_in_flow_grid_item = idx < grid_item_count && child_style.position.is_in_flow();
     let parallel_grid_item = grid_items
       .and_then(|info| info.items.get(idx))
       .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
     // Grid items that span a single track in the fragmentation axis establish a parallel
-    // fragmentation flow (CSS Grid 2 §Fragmenting Grid Layout). Their internal break opportunities
-    // are handled when fragmenting the item itself, so suppress them when collecting opportunities
-    // for the main flow.
-    let skip_descendants = parallel_grid_item;
+    // fragmentation flow (CSS Grid 2 §Fragmenting Grid Layout). When collecting break opportunities
+    // for the main pagination flow we also suppress descendants for spanning items so their internal
+    // break opportunities do not become global boundaries.
+    let skip_descendants = parallel_grid_item
+      || (suppress_parallel_flow_descendants
+        && matches!(context, FragmentationContext::Page)
+        && is_in_flow_grid_item);
     if !skip_descendants {
       // CSS Grid 2 §Fragmenting Grid Layout: A forced break inside a grid item effectively
       // increases the size of its contents; it must not become a global forced break that affects
@@ -4471,11 +4478,23 @@ fn collect_atomic_candidates_with_axis(
   } else {
     None
   };
+  let in_flow_grid_item_count = grid_items
+    .as_ref()
+    .map(|info| info.items.len().min(node.children.len()))
+    .unwrap_or(0);
 
   for (idx, child) in node.children.iter().enumerate() {
-    let skip_descendants = grid_items
-      .and_then(|info| info.items.get(idx))
-      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
+    let child_style = child
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    let skip_descendants = (matches!(context, FragmentationContext::Page)
+      && idx < in_flow_grid_item_count
+      && child_style.position.is_in_flow())
+      || grid_items
+        .and_then(|info| info.items.get(idx))
+        .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
     if skip_descendants {
       continue;
     }
@@ -4690,11 +4709,23 @@ fn collect_atomic_ranges_with_axis(
   } else {
     None
   };
+  let in_flow_grid_item_count = grid_items
+    .as_ref()
+    .map(|info| info.items.len().min(node.children.len()))
+    .unwrap_or(0);
 
   for (idx, child) in node.children.iter().enumerate() {
-    let skip_descendants = grid_items
-      .and_then(|info| info.items.get(idx))
-      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
+    let child_style = child
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    let skip_descendants = (matches!(context, FragmentationContext::Page)
+      && idx < in_flow_grid_item_count
+      && child_style.position.is_in_flow())
+      || grid_items
+        .and_then(|info| info.items.get(idx))
+        .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
     if skip_descendants {
       continue;
     }
@@ -5212,6 +5243,80 @@ mod tests {
     assert!(
       (shifted_part2_start - 100.0).abs() < BREAK_EPSILON,
       "expected the continuation content to be shifted to the next fragmentainer boundary (y≈100), got y={shifted_part2_start}"
+    );
+  }
+
+  #[test]
+  fn avoid_inside_in_spanning_grid_item_does_not_merge_row_band_atomicity() {
+    let fragmentainer_size = 100.0;
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    let item_style = Arc::new(item_style);
+
+    let mut avoid_style = ComputedStyle::default();
+    avoid_style.display = Display::Block;
+    avoid_style.break_inside = BreakInside::AvoidPage;
+    let avoid_style = Arc::new(avoid_style);
+
+    // The avoid-inside block crosses the row boundary at 60px (40→80). If we include it in the
+    // grid container's atomic ranges it can merge the row band ranges and prevent breaking between
+    // the two 60px tracks.
+    let mut avoid_block = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 40.0, 100.0, 40.0),
+      vec![],
+      avoid_style,
+    );
+    avoid_block.content = FragmentContent::Block { box_id: Some(10) };
+
+    let mut item = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![avoid_block],
+      item_style,
+    );
+    item.content = FragmentContent::Block { box_id: Some(1) };
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![item],
+      grid_style,
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 60.0), (60.0, 120.0)],
+      columns: Vec::new(),
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![GridItemFragmentationData {
+        box_id: 1,
+        row_start: 1,
+        row_end: 3,
+        column_start: 1,
+        column_end: 2,
+      }],
+    }));
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &grid,
+      FragmentationContext::Page,
+      default_axes(),
+      true,
+      Some(fragmentainer_size),
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let first_break = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+
+    assert!(
+      (first_break - 60.0).abs() < BREAK_EPSILON,
+      "expected row band atomicity to preserve the 60px track boundary, got {first_break} (boundaries={boundaries:?})"
     );
   }
 
