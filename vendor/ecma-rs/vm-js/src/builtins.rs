@@ -99,6 +99,35 @@ fn slice_index_from_value(
   Ok((idx.clamp(0.0, len as f64)) as usize)
 }
 
+fn string_position_from_value(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+  len: usize,
+  default: usize,
+) -> Result<usize, VmError> {
+  if matches!(value, Value::Undefined) {
+    return Ok(default);
+  }
+  let n = scope.to_number(vm, host, hooks, value)?;
+  if n.is_nan() || n.is_sign_negative() {
+    return Ok(0);
+  }
+  if !n.is_finite() {
+    return Ok(len);
+  }
+  let n = n.trunc();
+  if n <= 0.0 {
+    Ok(0usize)
+  } else if n >= len as f64 {
+    Ok(len)
+  } else {
+    Ok(n as usize)
+  }
+}
+
 fn slice_range_from_args(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4767,6 +4796,137 @@ pub fn string_prototype_index_of(
   }
 
   Ok(Value::Number(-1.0))
+}
+
+/// `String.prototype.includes` (ECMA-262) (minimal).
+pub fn string_prototype_includes(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let search = scope.to_string(vm, host, hooks, search_value)?;
+  scope.push_root(Value::String(search))?;
+
+  let len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+  let position = args.get(1).copied().unwrap_or(Value::Undefined);
+  let pos = string_position_from_value(vm, &mut scope, host, hooks, position, len, 0)?;
+
+  let (haystack, needle) = {
+    let haystack = scope.heap().get_string(s)?;
+    let needle = scope.heap().get_string(search)?;
+    (haystack.as_code_units(), needle.as_code_units())
+  };
+
+  if needle.is_empty() {
+    return Ok(Value::Bool(true));
+  }
+  if needle.len() > haystack.len() {
+    return Ok(Value::Bool(false));
+  }
+  if pos > haystack.len() {
+    return Ok(Value::Bool(false));
+  }
+
+  let last = haystack.len().saturating_sub(needle.len());
+  for i in pos..=last {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    if &haystack[i..i + needle.len()] == needle {
+      return Ok(Value::Bool(true));
+    }
+  }
+
+  Ok(Value::Bool(false))
+}
+
+/// `String.prototype.startsWith` (ECMA-262) (minimal).
+pub fn string_prototype_starts_with(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let search = scope.to_string(vm, host, hooks, search_value)?;
+  scope.push_root(Value::String(search))?;
+
+  let len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+  let position = args.get(1).copied().unwrap_or(Value::Undefined);
+  let pos = string_position_from_value(vm, &mut scope, host, hooks, position, len, 0)?;
+
+  let (haystack, needle) = {
+    let haystack = scope.heap().get_string(s)?;
+    let needle = scope.heap().get_string(search)?;
+    (haystack.as_code_units(), needle.as_code_units())
+  };
+
+  if needle.len().saturating_add(pos) > haystack.len() {
+    return Ok(Value::Bool(false));
+  }
+  Ok(Value::Bool(
+    &haystack[pos..pos + needle.len()] == needle,
+  ))
+}
+
+/// `String.prototype.endsWith` (ECMA-262) (minimal).
+pub fn string_prototype_ends_with(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let search = scope.to_string(vm, host, hooks, search_value)?;
+  scope.push_root(Value::String(search))?;
+
+  let len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+  let end_position = args.get(1).copied().unwrap_or(Value::Undefined);
+  let end = string_position_from_value(vm, &mut scope, host, hooks, end_position, len, len)?;
+
+  let (haystack, needle) = {
+    let haystack = scope.heap().get_string(s)?;
+    let needle = scope.heap().get_string(search)?;
+    (haystack.as_code_units(), needle.as_code_units())
+  };
+
+  if needle.len() > end {
+    return Ok(Value::Bool(false));
+  }
+  let start = end - needle.len();
+  Ok(Value::Bool(&haystack[start..end] == needle))
 }
 
 /// `%String.prototype%[@@iterator]` (ECMA-262).

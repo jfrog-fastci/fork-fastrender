@@ -425,3 +425,36 @@ fn string_prototype_index_of_is_generic_and_coerces_position() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn string_prototype_includes_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""abcd".includes("bc") && !"abcd".includes("x") && "abcd".includes("", 2) && !"ab".includes("a", 1) && (function(){var pos={valueOf:function(){return 2;}}; return "abcd".includes("cd", pos);})() && String.prototype.includes.call(123,"23")"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_starts_with_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""abcd".startsWith("ab") && !"abcd".startsWith("bc") && "abcd".startsWith("bc", 1) && "abcd".startsWith("", 4) && String.prototype.startsWith.call(123, "12")"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_ends_with_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""abcd".endsWith("cd") && !"abcd".endsWith("bc") && "abcd".endsWith("bc", 3) && "abcd".endsWith("", 1) && "abcd".endsWith("cd", 1e999) && String.prototype.endsWith.call(123, "23")"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

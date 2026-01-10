@@ -415,6 +415,9 @@ impl Intrinsics {
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
     let string_prototype_slice = vm.register_native_call(builtins::string_prototype_slice)?;
     let string_prototype_index_of = vm.register_native_call(builtins::string_prototype_index_of)?;
+    let string_prototype_includes = vm.register_native_call(builtins::string_prototype_includes)?;
+    let string_prototype_starts_with = vm.register_native_call(builtins::string_prototype_starts_with)?;
+    let string_prototype_ends_with = vm.register_native_call(builtins::string_prototype_ends_with)?;
     let string_prototype_iterator = vm.register_native_call(builtins::string_prototype_iterator)?;
     let string_iterator_next = vm.register_native_call(builtins::string_iterator_next)?;
     let number_prototype_value_of = vm.register_native_call(builtins::number_prototype_value_of)?;
@@ -880,6 +883,60 @@ impl Intrinsics {
         data_desc(Value::Object(func), true, false, true),
       )?;
     }
+
+      // String.prototype.includes
+      {
+        let includes_s = scope.alloc_string("includes")?;
+        scope.push_root(Value::String(includes_s))?;
+        let key = PropertyKey::from_string(includes_s);
+        let func =
+          scope.alloc_native_function(string_prototype_includes, None, includes_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.startsWith
+      {
+        let starts_with_s = scope.alloc_string("startsWith")?;
+        scope.push_root(Value::String(starts_with_s))?;
+        let key = PropertyKey::from_string(starts_with_s);
+        let func =
+          scope.alloc_native_function(string_prototype_starts_with, None, starts_with_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.endsWith
+      {
+        let ends_with_s = scope.alloc_string("endsWith")?;
+        scope.push_root(Value::String(ends_with_s))?;
+        let key = PropertyKey::from_string(ends_with_s);
+        let func =
+          scope.alloc_native_function(string_prototype_ends_with, None, ends_with_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
 
     // String.prototype[@@iterator]
     {
