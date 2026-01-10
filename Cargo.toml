@@ -122,6 +122,7 @@ read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
 webidl-js-runtime = { path = "crates/webidl-js-runtime" }
+webidl-vm-js = { path = "crates/webidl-vm-js" }
 vm-js = { path = "vendor/ecma-rs/vm-js" }
 parse-js = { path = "vendor/ecma-rs/parse-js", features = ["diagnostics"] }
 webidl = { path = "vendor/ecma-rs/webidl" }

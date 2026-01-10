@@ -1,4 +1,4 @@
-use crate::js::webidl::VmJsRuntime;
+use crate::js::webidl::legacy::VmJsRuntime;
 use crate::style::media::{MediaContext, MediaQuery};
 use parking_lot::Mutex;
 use std::collections::HashMap;

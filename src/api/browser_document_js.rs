@@ -4,7 +4,7 @@ use crate::js::{
   RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptExecutionLog, ScriptOrchestrator,
   JsExecutionOptions, RealClock,
 };
-use crate::js::webidl::VmJsRuntime;
+use crate::js::webidl::legacy::VmJsRuntime;
 use std::sync::Arc;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions};

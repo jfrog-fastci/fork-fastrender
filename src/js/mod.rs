@@ -62,6 +62,7 @@ pub mod streaming_dom2;
 pub mod streaming_pipeline;
 pub mod fetch;
 pub mod webidl;
+pub mod webidl_runtime_vmjs;
 pub mod bindings;
 pub mod window_realm;
 pub mod dom_bindings;

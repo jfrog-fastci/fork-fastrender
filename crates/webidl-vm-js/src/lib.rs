@@ -11,13 +11,37 @@
 //! vendored `ecma-rs` workspace directly. See `crates/webidl-vm-js/README.md` for sync notes.
 
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, JsBigInt, PropertyKey as VmPropertyKey, Scope, Value, Vm,
-  VmError,
+  GcObject, GcString, GcSymbol, Heap, JsBigInt, JsRuntime as VmJsRuntime, PropertyKey as VmPropertyKey,
+  Realm, Scope, Value, Vm, VmError,
 };
 use webidl::{
   InterfaceId, IteratorResult, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, PropertyKey,
   WebIdlHooks, WebIdlJsRuntime, WebIdlLimits, WellKnownSymbol,
 };
+
+/// Borrow-splits a `vm-js` [`VmJsRuntime`] into its `(vm, heap, realm)` components.
+///
+/// `vm-js::JsRuntime` stores `vm`, `heap`, and `realm` as disjoint fields, but only exposes `&Realm`
+/// via `JsRuntime::realm()`. Embeddings that need `&mut Vm` + `&mut Heap` while also referencing the
+/// realm (for its global object or intrinsics) must temporarily borrow-split using a raw pointer.
+///
+/// # Safety
+///
+/// This helper is safe to call because:
+/// - `vm`, `heap`, and `realm` are stored as distinct fields in `vm-js::JsRuntime`.
+/// - `realm_ptr` is only used while `rt` is immutably borrowed, and
+/// - the returned references are tied to the lifetime of `&mut VmJsRuntime`.
+///
+/// Callers must still follow normal Rust borrowing rules: do not move the runtime while the
+/// returned references are live.
+pub fn split_js_runtime(rt: &mut VmJsRuntime) -> (&mut Vm, &mut Heap, &Realm) {
+  // SAFETY: `vm-js::JsRuntime` stores `vm`, `heap`, and `realm` as disjoint fields.
+  let realm_ptr = rt.realm() as *const Realm;
+  let vm = &mut rt.vm;
+  let heap = &mut rt.heap;
+  let realm = unsafe { &*realm_ptr };
+  (vm, heap, realm)
+}
 
 /// `webidl` conversion context backed by `vm-js`.
 pub struct VmJsWebIdlCx<'a> {
@@ -53,6 +77,22 @@ impl<'a> VmJsWebIdlCx<'a> {
     hooks: &'a dyn WebIdlHooks<Value>,
   ) -> Self {
     Self::from_scope(vm, heap.scope(), limits, hooks)
+  }
+
+  pub fn new_in_scope(
+    vm: &'a mut Vm,
+    scope: &'a mut Scope<'_>,
+    limits: WebIdlLimits,
+    hooks: &'a dyn WebIdlHooks<Value>,
+  ) -> Self {
+    Self {
+      vm,
+      scope: scope.reborrow(),
+      limits,
+      hooks,
+      well_known_iterator: None,
+      well_known_async_iterator: None,
+    }
   }
 
   /// Convenience helper: `hooks.is_platform_object`.
@@ -285,6 +325,14 @@ impl JsRuntime for VmJsWebIdlCx<'_> {
   fn alloc_object(&mut self) -> Result<Self::Object, Self::Error> {
     let obj = self.scope.alloc_object()?;
     self.root(Value::Object(obj))?;
+
+    // When a realm is initialized, prefer `%Object.prototype%` so the result behaves like a normal
+    // JavaScript object (e.g. has standard methods).
+    if let Some(intrinsics) = self.vm.intrinsics() {
+      let proto = intrinsics.object_prototype();
+      self.root(Value::Object(proto))?;
+      self.scope.object_set_prototype(obj, Some(proto))?;
+    }
     Ok(obj)
   }
 

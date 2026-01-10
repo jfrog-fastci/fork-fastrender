@@ -17,13 +17,23 @@ how to update it.
     `JsRuntime` trait boundary those helpers are defined against.
   - FastRender re-exports this API surface as `fastrender::js::webidl` so generated bindings can
     depend on a single path and we do not fork/duplicate WebIDL algorithms between repos.
-  - FastRender’s `vm-js` embedding adapter lives in `crates/webidl-vm-js` (a workspace-local copy of
-    `vendor/ecma-rs/webidl-vm-js`; see `crates/webidl-vm-js/README.md`).
-- **Binding installation / host scaffolding (temporary)**: `crates/webidl-js-runtime`
-  - This provides a minimal `vm-js`-backed value/object model (`VmJsRuntime`) and a host-facing
-    trait (`WebIdlBindingsRuntime`) used by early generated bindings.
-  - Note: FastRender’s real DOM bindings are now **`vm-js` realm-based** (`src/js/vm_dom.rs`) and do
-    not use this runtime scaffold.
+  - FastRender’s canonical `vm-js` embedding adapter lives in `crates/webidl-vm-js` (a workspace-local
+    copy of `vendor/ecma-rs/webidl-vm-js`; see `crates/webidl-vm-js/README.md`) as
+    `webidl_vm_js::VmJsWebIdlCx`.
+- **Bindings runtime (canonical)**: `src/js/webidl_runtime_vmjs.rs`
+  - This is FastRender’s in-tree “bindings runtime” layer that installs WebIDL-generated APIs onto a
+    **real `vm-js` realm** (`vm_js::{Vm, Heap, Realm, Scope}`) and performs conversions using the
+    canonical `webidl` crate.
+  - It is re-exported under `fastrender::js::webidl` as:
+    - `VmJsWebIdlBindingsCx`
+    - `VmJsWebIdlBindingsState`
+    - `WebIdlBindingsRuntime`
+- **Binding installation / host scaffolding (legacy)**: `crates/webidl-js-runtime`
+  - This provides a heap-only `vm-js` value/object model (`VmJsRuntime`) used by early scaffolding
+    code. It cannot execute author scripts and should not be used for new bindings work.
+  - It remains available under `fastrender::js::webidl::legacy` while migration is in progress.
+  - Note: FastRender’s real DOM bindings are `vm-js` realm-based (`src/js/vm_dom.rs`) and do not use
+    this legacy heap-only runtime.
 - **Committed generated snapshot**: `src/webidl/generated/mod.rs`
   - Contains `pub const WORLD: WebIdlWorld = ...`.
   - Marked `@generated` and must not be edited by hand.
