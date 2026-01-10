@@ -8774,6 +8774,7 @@ impl FlexFormattingContext {
     positioned_sensitive: &FxHashSet<*const BoxNode>,
   ) -> Result<FragmentNode, LayoutError> {
     let rect_eps = 0.01;
+
     // Get layout from Taffy
     let layout = taffy_tree
       .layout(taffy_node)
