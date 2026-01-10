@@ -993,6 +993,56 @@ impl JsWptRuntime {
         .expect("define timer global");
     }
 
+    // Deterministic time shims.
+    //
+    // The vm-js runner models time using `EventLoop::now`, which is advanced deterministically via
+    // `VmJsBackend::idle_wait` (i.e. without wall-clock sleeps). Bind `Date.now()` and
+    // `performance.now()` to that virtual clock so WPT tests cannot accidentally observe
+    // wall-clock time.
+    let date = rt.alloc_object().expect("alloc Date");
+    let date_now = rt
+      .alloc_native_function(native_date_now)
+      .expect("alloc Date.now");
+    let date_now_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("now").expect("alloc Date.now key"))
+    };
+    rt
+      .define_data_prop(date, date_now_key, Value::Object(date_now))
+      .expect("define Date.now");
+    rt.env.set("Date", Value::Object(date));
+    let date_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("Date").expect("alloc Date key"))
+    };
+    rt
+      .define_data_prop(rt.global_object, date_key, Value::Object(date))
+      .expect("define global Date");
+
+    let performance = rt.alloc_object().expect("alloc performance");
+    let perf_now = rt
+      .alloc_native_function(native_performance_now)
+      .expect("alloc performance.now");
+    let perf_now_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("now").expect("alloc performance.now key"))
+    };
+    rt
+      .define_data_prop(performance, perf_now_key, Value::Object(perf_now))
+      .expect("define performance.now");
+    rt.env.set("performance", Value::Object(performance));
+    let performance_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("performance").expect("alloc performance key"))
+    };
+    rt
+      .define_data_prop(
+        rt.global_object,
+        performance_key,
+        Value::Object(performance),
+      )
+      .expect("define global performance");
+
     rt.install_promise_shim().expect("install Promise");
     rt.install_array_shim().expect("install Array");
     rt.install_error_shim().expect("install Error");
@@ -4718,6 +4768,20 @@ fn native_type_error_ctor(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -
   rt.define_data_prop(obj, message_key, message_value)?;
 
   Ok(Value::Object(obj))
+}
+
+fn native_date_now(rt: &mut JsWptRuntime, _this: Value, _args: &[Value]) -> Result<Value, JsError> {
+  Ok(Value::Number(rt.event_loop.now.as_millis() as f64))
+}
+
+fn native_performance_now(
+  rt: &mut JsWptRuntime,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  // This runner models both `Date.now()` and `performance.now()` as millisecond-granularity values
+  // derived from the same deterministic virtual clock (`EventLoop::now`).
+  Ok(Value::Number(rt.event_loop.now.as_millis() as f64))
 }
 
 fn native_set_timeout(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
