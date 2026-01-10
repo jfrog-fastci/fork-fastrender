@@ -32,6 +32,17 @@ fn supports_declaration_accepts_writing_mode_vertical_rl() {
 }
 
 #[test]
+fn supports_declaration_accepts_legacy_writing_mode_value() {
+  let dom = dom::parse_html(r#"<div></div>"#).unwrap();
+  let css = r#"@supports (writing-mode: tb-rl) { div { display: inline; } }"#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let div = first_div(&styled).expect("div");
+  assert_eq!(display(div), "inline");
+}
+
+#[test]
 fn supports_declaration_rejects_invalid_writing_mode() {
   let dom = dom::parse_html(r#"<div></div>"#).unwrap();
   let css = r#"@supports (writing-mode: sideways-up) { div { display: inline; } }"#;

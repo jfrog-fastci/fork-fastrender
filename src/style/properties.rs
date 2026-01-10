@@ -14200,9 +14200,9 @@ fn apply_declaration_with_base_internal_with_order(
       if let PropertyValue::Keyword(kw) = resolved_value {
         let kw = kw.to_ascii_lowercase();
         styles.writing_mode = match kw.as_str() {
-          "horizontal-tb" => WritingMode::HorizontalTb,
-          "vertical-rl" => WritingMode::VerticalRl,
-          "vertical-lr" => WritingMode::VerticalLr,
+          "horizontal-tb" | "lr-tb" | "rl-tb" => WritingMode::HorizontalTb,
+          "vertical-rl" | "tb-rl" => WritingMode::VerticalRl,
+          "vertical-lr" | "tb-lr" => WritingMode::VerticalLr,
           "sideways-rl" => WritingMode::SidewaysRl,
           "sideways-lr" => WritingMode::SidewaysLr,
           _ => styles.writing_mode,
@@ -20846,11 +20846,11 @@ fn parse_mix_blend_mode(kw: &str) -> Option<MixBlendMode> {
 fn parse_background_box(value: &PropertyValue) -> Option<BackgroundBox> {
   match value {
     PropertyValue::Keyword(kw) => {
-      if kw.eq_ignore_ascii_case("border-box") {
+      if kw.eq_ignore_ascii_case("border-box") || kw.eq_ignore_ascii_case("border") {
         Some(BackgroundBox::BorderBox)
-      } else if kw.eq_ignore_ascii_case("padding-box") {
+      } else if kw.eq_ignore_ascii_case("padding-box") || kw.eq_ignore_ascii_case("padding") {
         Some(BackgroundBox::PaddingBox)
-      } else if kw.eq_ignore_ascii_case("content-box") {
+      } else if kw.eq_ignore_ascii_case("content-box") || kw.eq_ignore_ascii_case("content") {
         Some(BackgroundBox::ContentBox)
       } else {
         None
@@ -20863,11 +20863,11 @@ fn parse_background_box(value: &PropertyValue) -> Option<BackgroundBox> {
 fn parse_background_clip(value: &PropertyValue) -> Option<BackgroundBox> {
   match value {
     PropertyValue::Keyword(kw) => {
-      if kw.eq_ignore_ascii_case("border-box") {
+      if kw.eq_ignore_ascii_case("border-box") || kw.eq_ignore_ascii_case("border") {
         Some(BackgroundBox::BorderBox)
-      } else if kw.eq_ignore_ascii_case("padding-box") {
+      } else if kw.eq_ignore_ascii_case("padding-box") || kw.eq_ignore_ascii_case("padding") {
         Some(BackgroundBox::PaddingBox)
-      } else if kw.eq_ignore_ascii_case("content-box") {
+      } else if kw.eq_ignore_ascii_case("content-box") || kw.eq_ignore_ascii_case("content") {
         Some(BackgroundBox::ContentBox)
       } else if kw.eq_ignore_ascii_case("text") {
         Some(BackgroundBox::Text)

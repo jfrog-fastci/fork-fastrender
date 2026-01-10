@@ -36,3 +36,20 @@ fn writing_mode_inherits_from_parent() {
   // writing-mode is inherited, so the span should adopt the parent's sideways-rl mode.
   assert_eq!(span.styles.writing_mode, WritingMode::SidewaysRl);
 }
+
+#[test]
+fn legacy_ms_writing_mode_values_are_accepted() {
+  let dom = dom::parse_html(r#"<div><span>text</span></div>"#).expect("parse html");
+  let css = r#"
+        div { -ms-writing-mode: tb-rl; }
+        span { }
+    "#;
+  let stylesheet = parse_stylesheet(css).expect("parse css");
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let div = find_tag(&styled, "div").expect("div present");
+  assert_eq!(div.styles.writing_mode, WritingMode::VerticalRl);
+
+  let span = find_tag(&styled, "span").expect("span present");
+  assert_eq!(span.styles.writing_mode, WritingMode::VerticalRl);
+}

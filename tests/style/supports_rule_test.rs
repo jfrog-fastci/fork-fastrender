@@ -127,6 +127,18 @@ fn webkit_background_clip_text_is_aliased() {
 }
 
 #[test]
+fn moz_background_clip_content_is_aliased() {
+  let css = r"div { -moz-background-clip: content; }";
+  assert_eq!(render_div_background_clip(css), BackgroundBox::ContentBox);
+}
+
+#[test]
+fn moz_background_clip_padding_is_aliased() {
+  let css = r"div { -moz-background-clip: padding; }";
+  assert_eq!(render_div_background_clip(css), BackgroundBox::PaddingBox);
+}
+
+#[test]
 fn supports_vendor_prefixed_properties_are_case_insensitive() {
   let css = r"@supports (-WeBkIt-TrAnSfOrM: rotate(10deg)) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "inline");
@@ -150,6 +162,12 @@ fn supports_legacy_ms_grid_properties_require_positive_integer_values() {
   assert_eq!(render_div_display(css), "block");
   let css = r"@supports (-ms-grid-column-span: 0) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "block");
+}
+
+#[test]
+fn supports_webkit_calc_lengths() {
+  let css = r"@supports (max-block-size: -webkit-calc(100vh - 160px)) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
 }
 
 #[test]

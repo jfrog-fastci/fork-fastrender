@@ -2674,11 +2674,11 @@ fn consume_nested_tokens_for_slice<'i, 't>(
 }
 
 fn parse_background_box_keyword(kw: &str, allow_text: bool) -> Option<BackgroundBox> {
-  if kw.eq_ignore_ascii_case("border-box") {
+  if kw.eq_ignore_ascii_case("border-box") || kw.eq_ignore_ascii_case("border") {
     Some(BackgroundBox::BorderBox)
-  } else if kw.eq_ignore_ascii_case("padding-box") {
+  } else if kw.eq_ignore_ascii_case("padding-box") || kw.eq_ignore_ascii_case("padding") {
     Some(BackgroundBox::PaddingBox)
-  } else if kw.eq_ignore_ascii_case("content-box") {
+  } else if kw.eq_ignore_ascii_case("content-box") || kw.eq_ignore_ascii_case("content") {
     Some(BackgroundBox::ContentBox)
   } else if allow_text && kw.eq_ignore_ascii_case("text") {
     Some(BackgroundBox::Text)
@@ -3237,8 +3237,12 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         parsed,
         &[
           "horizontal-tb",
+          "lr-tb",
+          "rl-tb",
           "vertical-rl",
+          "tb-rl",
           "vertical-lr",
+          "tb-lr",
           "sideways-rl",
           "sideways-lr",
         ],
@@ -6719,6 +6723,8 @@ mod tests {
 
 const MATH_PREFIXES: &[&str] = &[
   "calc(",
+  "-webkit-calc(",
+  "-moz-calc(",
   "min(",
   "max(",
   "clamp(",
@@ -6908,6 +6914,19 @@ fn could_be_number_or_calc(input: &str) -> bool {
     return false;
   }
 
+  if input
+    .get(.."-webkit-calc(".len())
+    .is_some_and(|start| start.eq_ignore_ascii_case("-webkit-calc("))
+  {
+    return true;
+  }
+  if input
+    .get(.."-moz-calc(".len())
+    .is_some_and(|start| start.eq_ignore_ascii_case("-moz-calc("))
+  {
+    return true;
+  }
+
   let first = bytes[0];
   if first.is_ascii_digit() {
     return true;
@@ -6976,8 +6995,16 @@ pub(crate) fn parse_function_number(input: &str) -> Option<f32> {
   // Plain numbers are extremely common (e.g. opacity, z-index), so fast-path them without going
   // through cssparser. If the value starts like a number but fails to parse as one, it cannot be a
   // valid numeric/calc value (e.g. `10px`, `50%`), so bail out early without invoking calc parsing.
-  let first = input.as_bytes()[0];
-  if first.is_ascii_digit() || matches!(first, b'+' | b'-' | b'.') {
+  let bytes = input.as_bytes();
+  let first = bytes[0];
+  let starts_like_number = first.is_ascii_digit()
+    || (bytes.len() >= 2
+      && ((matches!(first, b'+' | b'-') && bytes[1].is_ascii_digit())
+        || (first == b'.' && bytes[1].is_ascii_digit())
+        || (matches!(first, b'+' | b'-')
+          && bytes[1] == b'.'
+          && bytes.get(2).is_some_and(|b| b.is_ascii_digit()))));
+  if starts_like_number {
     return input.parse::<f32>().ok();
   }
 
@@ -7870,7 +7897,7 @@ fn parse_math_function<'i, 't>(
   location: cssparser::SourceLocation,
 ) -> Result<CalcComponent, cssparser::ParseError<'i, ()>> {
   match func {
-    "calc" => input.parse_nested_block(parse_calc_sum),
+    "calc" | "-webkit-calc" | "-moz-calc" => input.parse_nested_block(parse_calc_sum),
     "min" => input.parse_nested_block(|block| parse_min_max(block, MathFn::Min)),
     "max" => input.parse_nested_block(|block| parse_min_max(block, MathFn::Max)),
     "clamp" => input.parse_nested_block(parse_clamp),
