@@ -33,6 +33,7 @@ use super::ScriptElementSpec;
 /// of JavaScript needed by FastRender's early scripting and scheduling tests.
 pub struct EcmaVmRuntime<State: WebIdlBindingsHost + 'static> {
   pub state: State,
+  bindings_host: WebIdlBindingsHostSlot,
   heap: Heap,
   vm: Vm,
   realm: Realm,
@@ -93,6 +94,7 @@ impl<State: WebIdlBindingsHost + 'static> EcmaVmRuntime<State> {
 
     let mut rt = Self {
       state,
+      bindings_host: WebIdlBindingsHostSlot::default(),
       heap,
       vm,
       realm,
@@ -729,7 +731,9 @@ impl<State: WebIdlBindingsHost + 'static> VmHostHooks for EcmaVmRuntime<State> {
   }
 
   fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
-    Some(self)
+    let (state, slot) = (&mut self.state, &mut self.bindings_host);
+    slot.set(state);
+    Some(slot)
   }
 }
 

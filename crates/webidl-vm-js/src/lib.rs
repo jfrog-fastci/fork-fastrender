@@ -140,6 +140,51 @@ impl WebIdlBindingsHostSlot {
   }
 }
 
+/// Sized payload exposed via [`VmHostHooks::as_any_mut`] by FastRender's `vm-js` hook adapters.
+///
+/// The embedding needs `as_any_mut()` to serve two independent consumers:
+/// - WebIDL bindings (`host_from_hooks`) need access to a [`WebIdlBindingsHostSlot`].
+/// - Some `vm-js` entry points pass a dummy [`VmHost`] (`()`), so tests and host-side code may need
+///   to recover the real embedder [`VmHost`] context through the hooks.
+///
+/// This payload keeps both pointers in a single concrete type so `Any::downcast_mut` works.
+#[derive(Debug, Default)]
+pub struct VmJsHostHooksPayload {
+  // `dyn VmHost` does not have a `'static` bound, so `&mut dyn VmHost` defaults to
+  // `&mut (dyn VmHost + '_)`. We store an erased-lifetime pointer to the active `VmHost` for the
+  // duration of a single JS execution boundary.
+  vm_host: Option<NonNull<dyn VmHost + 'static>>,
+  webidl_bindings_host: WebIdlBindingsHostSlot,
+}
+
+impl VmJsHostHooksPayload {
+  /// Stores the active `VmHost` context (for later recovery via [`vm_host_mut`]).
+  #[inline]
+  pub fn set_vm_host(&mut self, host: &mut dyn VmHost) {
+    // `VmHost` is only implemented for `T: Any`, and `Any` requires `'static`, so it is safe to
+    // widen the trait object lifetime to `'static` here.
+    let ptr: NonNull<dyn VmHost + '_> = NonNull::from(host);
+    // SAFETY: `ptr` points at a `'static` concrete type; only the reference lifetime is shorter.
+    let ptr: NonNull<dyn VmHost + 'static> = unsafe { std::mem::transmute(ptr) };
+    self.vm_host = Some(ptr);
+  }
+
+  /// Returns the active `VmHost` context, if one was installed.
+  #[inline]
+  pub fn vm_host_mut(&mut self) -> Option<&mut dyn VmHost> {
+    let mut ptr = self.vm_host?;
+    // SAFETY: The embedding is responsible for ensuring the stored pointer is valid for the
+    // duration of any native calls that may access it via this payload.
+    Some(unsafe { ptr.as_mut() })
+  }
+
+  /// Returns the [`WebIdlBindingsHostSlot`] used by [`host_from_hooks`].
+  #[inline]
+  pub fn webidl_bindings_host_slot_mut(&mut self) -> &mut WebIdlBindingsHostSlot {
+    &mut self.webidl_bindings_host
+  }
+}
+
 /// Retrieves the embedder WebIDL bindings host from `hooks`.
 ///
 /// This is the canonical plumbing used by generated vm-js WebIDL `NativeCall` wrappers.
@@ -149,12 +194,27 @@ pub fn host_from_hooks<'a>(
   let Some(any) = hooks.as_any_mut() else {
     return Err(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE));
   };
-  let Some(slot) = any.downcast_mut::<WebIdlBindingsHostSlot>() else {
-    return Err(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE));
-  };
-  slot
-    .get_mut()
-    .ok_or(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE))
+
+  // `Any::downcast_mut` returns a mutable borrow of `any` that can escape through the returned
+  // `&'a mut dyn WebIdlBindingsHost`. Use a raw pointer to avoid borrow checker issues while
+  // trying multiple downcast targets.
+  let any_ptr: *mut dyn std::any::Any = any;
+  // SAFETY: `any_ptr` is derived from `hooks.as_any_mut()` and is only used within this function.
+  unsafe {
+    if let Some(slot) = (&mut *any_ptr).downcast_mut::<WebIdlBindingsHostSlot>() {
+      return slot
+        .get_mut()
+        .ok_or(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE));
+    }
+    if let Some(payload) = (&mut *any_ptr).downcast_mut::<VmJsHostHooksPayload>() {
+      return payload
+        .webidl_bindings_host
+        .get_mut()
+        .ok_or(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE));
+    }
+  }
+
+  Err(VmError::TypeError(WEBIDL_BINDINGS_HOST_NOT_AVAILABLE))
 }
 
 /// Kind of WebIDL callback represented by [`CallbackHandle`].

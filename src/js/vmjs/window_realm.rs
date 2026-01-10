@@ -34,6 +34,7 @@ use vm_js::{
   PropertyKey, PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHost,
   VmHostHooks, VmOptions,
 };
+use webidl_vm_js::WebIdlBindingsHost;
 
 pub type ConsoleSink =
   Arc<dyn Fn(ConsoleMessageLevel, &mut vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -595,6 +596,10 @@ pub trait WindowRealmHost {
   ///
   /// Implementations must ensure these borrows do not alias.
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm);
+
+  fn webidl_bindings_host(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
+    None
+  }
 
   fn window_realm(&mut self) -> &mut WindowRealm {
     let (_, realm) = self.vm_host_and_window_realm();

@@ -20,6 +20,7 @@ use vm_js::{
   PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
   VmHostHooks, VmJobContext,
 };
+use webidl_vm_js::VmJsHostHooksPayload;
 pub(crate) const SET_TIMEOUT_STRING_HANDLER_ERROR: &str =
   "setTimeout does not currently support string handlers";
 pub(crate) const SET_TIMEOUT_NOT_CALLABLE_ERROR: &str = "setTimeout callback is not callable";
@@ -321,7 +322,7 @@ impl VmJobContext for WindowRealmJobContext<'_> {
 }
 
 pub struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
-  host_ctx: *mut dyn VmHost,
+  any: VmJsHostHooksPayload,
   pending_discard: Vec<Job>,
   enqueue_error: Option<crate::error::Error>,
   _marker: std::marker::PhantomData<fn() -> Host>,
@@ -333,24 +334,32 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
   /// Note: `vm-js` entry points like [`vm_js::Vm::call_with_host`] and
   /// [`vm_js::JsRuntime::exec_script_with_hooks`] pass a dummy [`vm_js::VmHost`] (`()`) to native
   /// handlers, so bindings that need embedder state must downcast via
-  /// [`vm_js::VmHostHooks::as_any_mut`]. This hook implementation wires that up by returning the
-  /// active [`vm_js::VmHost`] context from `as_any_mut()`.
+  /// [`vm_js::VmHostHooks::as_any_mut`]. This hook implementation wires that up by returning a
+  /// [`webidl_vm_js::VmJsHostHooksPayload`] containing:
+  /// - the active [`vm_js::VmHost`] context (for downcasting), and
+  /// - a [`webidl_vm_js::WebIdlBindingsHostSlot`] for WebIDL host dispatch.
   pub fn new(host_ctx: &mut dyn VmHost) -> Self {
-    // `*mut dyn VmHost` defaults the trait object lifetime to `'static`; erase the shorter
-    // lifetime of the borrow we're handed.
-    //
-    // SAFETY: The returned pointer is only used within VM call boundaries while the original
-    // `&mut dyn VmHost` is still borrowed by the enclosing event-loop task/microtask. It must not
-    // be stored anywhere that can outlive that call boundary.
-    let host_ctx: *mut (dyn VmHost + '_) = host_ctx;
-    let host_ctx: *mut dyn VmHost =
-      unsafe { std::mem::transmute::<*mut (dyn VmHost + '_), *mut dyn VmHost>(host_ctx) };
+    let mut any = VmJsHostHooksPayload::default();
+    any.set_vm_host(host_ctx);
     Self {
-      host_ctx,
+      any,
       pending_discard: Vec::new(),
       enqueue_error: None,
       _marker: std::marker::PhantomData,
     }
+  }
+
+  pub fn new_with_host(host: &mut Host) -> Self {
+    // Initialize the payload with the active `VmHost` context.
+    let mut hooks = {
+      let (host_ctx, _) = host.vm_host_and_window_realm();
+      Self::new(host_ctx)
+    };
+    // Populate the WebIDL bindings host slot if the embedding provides one.
+    if let Some(bindings_host) = host.webidl_bindings_host() {
+      hooks.any.webidl_bindings_host_slot_mut().set(bindings_host);
+    }
+    hooks
   }
 
   pub fn finish(mut self, heap: &mut Heap) -> Option<crate::error::Error> {
@@ -366,10 +375,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
 
 impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
   fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-    // SAFETY: `VmJsEventLoopHooks` is only constructed for the duration of a JS call while the
-    // referenced `VmHost` context is already borrowed mutably by the event loop task/microtask.
-    // The returned `&mut dyn Any` must not escape the native call boundary.
-    Some(unsafe { (&mut *self.host_ctx).as_any_mut() })
+    Some(&mut self.any)
   }
 
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
@@ -394,11 +400,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           return Ok(());
         };
 
+        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+
         // Borrow-split the host so we can pass both:
         // - a real `VmHost` context to native calls, and
         // - a mutable `WindowRealm` for executing the job.
         let (host_ctx, window_realm) = host.vm_host_and_window_realm();
-        let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
         window_realm.reset_interrupt();
 
         with_event_loop(event_loop, || {
@@ -559,6 +566,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
 
   // `event_loop.queue_task` is fallible (queue limits); ensure the root is removed on failure.
   let queue_result = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
     let (vm_host, window_realm) = host.vm_host_and_window_realm();
     window_realm.reset_interrupt();
     let global_obj = window_realm.global_object();
@@ -569,8 +577,6 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
       let mut vm = vm.push_budget(budget);
       vm.tick()
         .map_err(|err| vm_error_to_event_loop_error(heap, err))?;
-
-      let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
       let handled_after_dispatch = (|| -> Result<bool, VmError> {
         let promise_value = heap.get_root(root).unwrap_or(Value::Undefined);
         let Value::Object(promise_obj) = promise_value else {
@@ -836,6 +842,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   let id = event_loop
     .set_timeout(delay, move |host, event_loop| {
       let id = id_cell_for_cb.get();
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
       let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
@@ -845,7 +852,6 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
         let mut vm = vm.push_budget(budget);
         let tick_result = vm.tick();
 
-        let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
         let call_result = tick_result.and_then(|_| {
           let call_result: Result<(), VmError> = (|| {
             let mut scope = heap.scope();
@@ -979,6 +985,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   let id = event_loop
     .set_interval(interval, move |host, event_loop| {
       let id = id_cell_for_cb.get();
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
       let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
@@ -988,7 +995,6 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
         let mut vm = vm.push_budget(budget);
         let tick_result = vm.tick();
 
-        let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
         let call_result = tick_result.and_then(|_| {
           let call_result: Result<(), VmError> = (|| {
             let mut scope = heap.scope();
@@ -1104,6 +1110,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   let root = scope.heap_mut().add_root(callback)?;
   event_loop
     .queue_microtask(move |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
       let (host_ctx, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
@@ -1114,7 +1121,6 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
         let mut vm = vm.push_budget(budget);
         let tick_result = vm.tick();
 
-        let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
         let call_result = tick_result.and_then(|_| {
           let call_result: Result<(), VmError> = (|| {
             let mut scope = heap.scope();
@@ -1302,6 +1308,7 @@ mod tests {
   use std::sync::{Arc, Mutex, OnceLock};
   use std::time::Duration;
   use vm_js::Realm;
+  use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
 
   const CALLBACK_GLOBAL_KEY: &str = "__test_global";
 
@@ -1388,8 +1395,51 @@ mod tests {
     HeapCurrentRealmLogGuard { heap_ptr }
   }
 
+  struct BindingsHost {
+    webidl_dispatch_count: usize,
+  }
+
+  impl BindingsHost {
+    fn new() -> Self {
+      Self {
+        webidl_dispatch_count: 0,
+      }
+    }
+  }
+
+  impl WebIdlBindingsHost for BindingsHost {
+    fn call_operation(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _receiver: Option<Value>,
+      _interface: &'static str,
+      _operation: &'static str,
+      _overload: usize,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      self.webidl_dispatch_count += 1;
+      Ok(Value::Undefined)
+    }
+
+    fn call_constructor(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _interface: &'static str,
+      _overload: usize,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented(
+        "constructor dispatch not implemented for BindingsHost",
+      ))
+    }
+  }
+
   struct Host {
     host_ctx: HostCtx,
+    bindings_host: BindingsHost,
     window: WindowRealm,
   }
 
@@ -1400,6 +1450,7 @@ mod tests {
         host_ctx: HostCtx {
           hook_downcast_count: 0,
         },
+        bindings_host: BindingsHost::new(),
         window,
       }
     }
@@ -1414,6 +1465,7 @@ mod tests {
         host_ctx: HostCtx {
           hook_downcast_count: 0,
         },
+        bindings_host: BindingsHost::new(),
         window,
       }
     }
@@ -1421,9 +1473,70 @@ mod tests {
 
   impl WindowRealmHost for Host {
     fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
-      let Host { host_ctx, window } = self;
+      let Host { host_ctx, window, .. } = self;
       (host_ctx, window)
     }
+
+    fn webidl_bindings_host(&mut self) -> Option<&mut dyn WebIdlBindingsHost> {
+      Some(&mut self.bindings_host)
+    }
+  }
+
+  fn cb_webidl_dispatch(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let host = host_from_hooks(hooks)?;
+    let _ = host.call_operation(vm, scope, None, "TestInterface", "testOp", 0, &[])?;
+    Ok(Value::Undefined)
+  }
+
+  fn cb_timeout_calls_webidl_and_enqueues_jobs(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: vm_js::GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
+      return Ok(Value::Undefined);
+    };
+    let binding = get_prop(scope, global, "__webidl_dispatch");
+    scope.push_root(binding)?;
+    let Value::Object(binding_obj) = binding else {
+      return Err(VmError::Unimplemented(
+        "__webidl_dispatch was not a callable object",
+      ));
+    };
+    vm.call_with_host_and_hooks(host, scope, hooks, binding, Value::Undefined, &[])?;
+
+    // Enqueue a Promise job that calls the generated binding wrapper, then enqueues another job
+    // that does the same. This regression test ensures hooks created for nested Promise jobs still
+    // expose the WebIDL bindings host slot via `VmHostHooks::as_any_mut`.
+    let binding_value = Value::Object(binding_obj);
+    hooks.host_enqueue_promise_job(
+      vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
+        ctx.call(hooks, binding_value, Value::Undefined, &[])?;
+        hooks.host_enqueue_promise_job(
+          vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
+            ctx.call(hooks, binding_value, Value::Undefined, &[])?;
+            Ok(())
+          }),
+          None,
+        );
+        Ok(())
+      }),
+      None,
+    );
+
+    Ok(Value::Undefined)
   }
 
   fn get_prop(scope: &mut Scope<'_>, obj: vm_js::GcObject, name: &str) -> Value {
@@ -1725,9 +1838,19 @@ mod tests {
         "VmHostHooks::as_any_mut returned None",
       ));
     };
-    let Some(host_ctx) = any.downcast_mut::<HostCtx>() else {
+    let Some(payload) = any.downcast_mut::<VmJsHostHooksPayload>() else {
       return Err(VmError::Unimplemented(
-        "VmHostHooks::as_any_mut did not downcast to HostCtx",
+        "VmHostHooks::as_any_mut did not downcast to VmJsHostHooksPayload",
+      ));
+    };
+    let Some(vm_host) = payload.vm_host_mut() else {
+      return Err(VmError::Unimplemented(
+        "VmJsHostHooksPayload did not contain a VmHost pointer",
+      ));
+    };
+    let Some(host_ctx) = vm_host.as_any_mut().downcast_mut::<HostCtx>() else {
+      return Err(VmError::Unimplemented(
+        "VmJsHostHooksPayload VmHost did not downcast to HostCtx",
       ));
     };
     host_ctx.hook_downcast_count += 1;
@@ -1947,6 +2070,7 @@ mod tests {
       host_ctx: HostCtx {
         hook_downcast_count: 0,
       },
+      bindings_host: BindingsHost::new(),
       window,
     };
 
@@ -2198,8 +2322,8 @@ mod tests {
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
       with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
-        let (host_ctx, window_realm) = host.vm_host_and_window_realm();
-        let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
+        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+        let (_, window_realm) = host.vm_host_and_window_realm();
         window_realm.reset_interrupt();
 
         let result = window_realm.exec_script_with_hooks(
@@ -2483,6 +2607,67 @@ mod tests {
       &*job_log.lock().unwrap(),
       &["timeout", "timeout_end", "job", "next"]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_host_slot_available_in_timer_and_nested_promise_jobs() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+
+      with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
+        let mut scope = heap.scope();
+        let set_timeout = get_prop(&mut scope, global, "setTimeout");
+
+        let webidl_dispatch = make_callback(vm, &mut scope, global, "__webidl_dispatch", cb_webidl_dispatch);
+        scope
+          .push_root(Value::Object(webidl_dispatch))
+          .expect("push root __webidl_dispatch");
+        set_prop(
+          &mut scope,
+          global,
+          "__webidl_dispatch",
+          Value::Object(webidl_dispatch),
+        );
+
+        let timeout_cb = make_callback(
+          vm,
+          &mut scope,
+          global,
+          "timeout_cb",
+          cb_timeout_calls_webidl_and_enqueues_jobs,
+        );
+        scope
+          .push_root(Value::Object(timeout_cb))
+          .expect("push root timeout_cb");
+
+        vm.call_without_host(
+          &mut scope,
+          set_timeout,
+          Value::Undefined,
+          &[Value::Object(timeout_cb), Value::Number(0.0)],
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.bindings_host.webidl_dispatch_count, 3);
     Ok(())
   }
 

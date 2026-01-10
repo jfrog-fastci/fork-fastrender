@@ -214,9 +214,9 @@ impl WindowHost {
 
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     with_event_loop(event_loop, || {
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host);
       let WindowHostState { document, window, .. } = host;
       let host_ctx = document.as_mut();
-      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new(&mut *host_ctx);
       let result = window.exec_script_with_host_and_hooks(host_ctx, &mut hooks, source);
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
@@ -468,9 +468,9 @@ impl WindowHostState {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
     with_event_loop(event_loop, || {
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self);
       let WindowHostState { document, window, .. } = self;
       let host_ctx = document.as_mut();
-      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new(&mut *host_ctx);
       let result = window.exec_script_with_host_and_hooks(host_ctx, &mut hooks, source);
 
       if let Some(err) = hooks.finish(window.heap_mut()) {
@@ -496,9 +496,9 @@ impl WindowHostState {
 
     let source = Arc::new(vm_js::SourceText::new(source_name, source_text));
     with_event_loop(event_loop, || {
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self);
       let WindowHostState { document, window, .. } = self;
       let host_ctx = document.as_mut();
-      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new(&mut *host_ctx);
       let result = window.exec_script_source_with_host_and_hooks(host_ctx, &mut hooks, source);
 
       if let Some(err) = hooks.finish(window.heap_mut()) {

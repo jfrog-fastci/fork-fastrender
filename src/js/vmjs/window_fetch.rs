@@ -2982,6 +2982,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       Err(err) => {
         let message = format!("fetch failed: {err}");
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
           let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
@@ -2989,7 +2990,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           with_event_loop(event_loop, || {
             let mut vm = vm.push_budget(budget);
             let tick_result = vm.tick();
-            let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
               let reject = heap
                 .get_root(reject_root)
@@ -3064,6 +3064,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
 
       if aborted.unwrap_or(false) {
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
           let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
@@ -3071,7 +3072,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           with_event_loop(event_loop, || {
             let mut vm = vm.push_budget(budget);
             let tick_result = vm.tick();
-            let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
               let reject = heap
                 .get_root(reject_root)
@@ -3149,6 +3149,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           Err(err) => {
             let message = format!("fetch failed: {err}");
             let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+              let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
               let (vm_host, window_realm) = host.vm_host_and_window_realm();
               window_realm.reset_interrupt();
               let budget = window_realm.vm_budget_now();
@@ -3156,7 +3157,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               with_event_loop(event_loop, || {
                 let mut vm = vm.push_budget(budget);
                 let tick_result = vm.tick();
-                let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
                 let call_result = tick_result.and_then(|_| {
                   let reject = heap
                     .get_root(reject_root)
@@ -3208,6 +3208,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
 
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
           // Resolve the promise with a JS Response wrapper.
+          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
           let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
@@ -3215,7 +3216,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           with_event_loop(event_loop, || {
             let mut vm = vm.push_budget(budget);
             let tick_result = vm.tick();
-            let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
 
             let call_result = tick_result.and_then(|_| {
               let resolve = heap
@@ -3275,6 +3275,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       Err(err) => {
         let message = format!("fetch failed: {err}");
         let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+          let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
           let (vm_host, window_realm) = host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           let budget = window_realm.vm_budget_now();
@@ -3282,7 +3283,6 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           with_event_loop(event_loop, || {
             let mut vm = vm.push_budget(budget);
             let tick_result = vm.tick();
-            let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *vm_host);
             let call_result = tick_result.and_then(|_| {
               let reject = heap
                 .get_root(reject_root)

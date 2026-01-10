@@ -189,8 +189,8 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
         ));
       };
 
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
       let (host_ctx, window_realm) = host.vm_host_and_window_realm();
-      let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
