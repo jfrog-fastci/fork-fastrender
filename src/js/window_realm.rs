@@ -9,6 +9,7 @@ use crate::js::CurrentScriptStateHandle;
 use crate::render_control;
 use crate::resource::ResourceFetcher;
 use crate::style::media::MediaContext;
+use crate::web::events as web_events;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use parking_lot::Mutex;
@@ -836,15 +837,15 @@ const NODE_WRAPPER_CACHE_KEY: &str = "__fastrender_node_wrapper_cache";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
+const DOCUMENT_WINDOW_KEY: &str = "__fastrender_document_window";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
-const EVENT_TARGET_LISTENERS_KEY: &str = "__fastrender_event_target_listeners";
+const EVENT_ID_KEY: &str = "__fastrender_event_id";
+const EVENT_LISTENER_ROOTS_KEY: &str = "__fastrender_event_listener_roots";
 const EVENT_TARGET_ADD_EVENT_LISTENER_KEY: &str = "__fastrender_event_target_add_event_listener";
 const EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY: &str =
   "__fastrender_event_target_remove_event_listener";
 const EVENT_TARGET_DISPATCH_EVENT_KEY: &str = "__fastrender_event_target_dispatch_event";
-const EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY: &str =
-  "__fastrender_event_immediate_propagation_stopped";
 const ELEMENT_CLASS_NAME_GET_KEY: &str = "__fastrender_element_class_name_get";
 const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
 const ELEMENT_CLASS_LIST_ADD_KEY: &str = "__fastrender_element_class_list_add";
@@ -920,11 +921,14 @@ const ELEMENT_CLOSEST_KEY: &str = "__fastrender_element_closest";
 static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
 static NEXT_DOM_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_ACTIVE_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
   static CURRENT_SCRIPT_SOURCES: RefCell<HashMap<u64, CurrentScriptStateHandle>> =
     RefCell::new(HashMap::new());
   static DOM_SOURCES: RefCell<HashMap<u64, NonNull<dom2::Document>>> =
+    RefCell::new(HashMap::new());
+  static ACTIVE_EVENTS: RefCell<HashMap<u64, NonNull<web_events::Event>>> =
     RefCell::new(HashMap::new());
 }
 
@@ -954,6 +958,23 @@ pub(crate) fn unregister_dom_source(id: u64) {
 
 fn dom_for_source(id: u64) -> Option<NonNull<dom2::Document>> {
   DOM_SOURCES.with(|sources| sources.borrow().get(&id).copied())
+}
+
+fn event_active_event_id(scope: &mut Scope<'_>, event_obj: GcObject) -> Result<Option<u64>, VmError> {
+  let key = alloc_key(scope, EVENT_ID_KEY)?;
+  Ok(match scope.heap().object_get_own_data_property_value(event_obj, &key)? {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Some(n as u64),
+    _ => None,
+  })
+}
+
+fn with_active_dom_event<R>(
+  event_id: u64,
+  f: impl FnOnce(&mut web_events::Event) -> R,
+) -> Option<R> {
+  let ptr = ACTIVE_EVENTS.with(|events| events.borrow().get(&event_id).copied())?;
+  // Safety: the pointer is installed by the dispatch invoker for the duration of a listener call.
+  Some(unsafe { f(&mut *ptr.as_ptr()) })
 }
 
 fn current_script_for_source(id: u64) -> Option<NodeId> {
@@ -1660,44 +1681,6 @@ fn decimal_str_for_usize(mut value: usize, buf: &mut [u8; 20]) -> &str {
   }
   // SAFETY: digits are always valid UTF-8.
   unsafe { std::str::from_utf8_unchecked(&buf[i..]) }
-}
-
-fn array_index_from_property_key(heap: &Heap, key: &PropertyKey) -> Option<u32> {
-  let PropertyKey::String(s) = key else {
-    return None;
-  };
-  let s = heap.get_string(*s).ok()?;
-  let units = s.as_code_units();
-  if units.is_empty() {
-    return None;
-  }
-
-  const U0: u16 = b'0' as u16;
-  const U9: u16 = b'9' as u16;
-
-  // `ToString(ToUint32(P)) === P` implies no leading zeros (except the single "0").
-  if units.len() > 1 && units[0] == U0 {
-    return None;
-  }
-
-  let mut value: u64 = 0;
-  for &u in units {
-    if !(U0..=U9).contains(&u) {
-      return None;
-    }
-    value = value.checked_mul(10)?;
-    value = value.checked_add((u - U0) as u64)?;
-    if value > u32::MAX as u64 {
-      return None;
-    }
-  }
-
-  // Exclude 2^32 - 1 per the ECMAScript "array index" definition.
-  if value == u32::MAX as u64 {
-    return None;
-  }
-
-  Some(value as u32)
 }
 
 fn get_or_create_node_wrapper(
@@ -3765,8 +3748,6 @@ fn event_constructor_native(
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
-  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
-  scope.define_property(obj, immediate_key, data_desc(Value::Bool(false)))?;
 
   Ok(Value::Object(obj))
 }
@@ -3857,8 +3838,6 @@ fn custom_event_constructor_native(
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
-  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
-  scope.define_property(obj, immediate_key, data_desc(Value::Bool(false)))?;
 
   let detail_key = alloc_key(scope, "detail")?;
   scope.define_property(obj, detail_key, data_desc(detail))?;
@@ -3948,8 +3927,6 @@ fn event_init_event_native(
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
-  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
-  scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(false)))?;
 
   Ok(Value::Undefined)
 }
@@ -4011,8 +3988,6 @@ fn custom_event_init_custom_event_native(
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
-  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
-  scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(false)))?;
 
   let detail_key = alloc_key(scope, "detail")?;
   scope.define_property(event_obj, detail_key, data_desc(detail))?;
@@ -4034,6 +4009,21 @@ fn event_prototype_prevent_default_native(
       "Event.preventDefault must be called on an Event object",
     ));
   };
+
+  if let Some(event_id) = event_active_event_id(scope, event_obj)? {
+    if with_active_dom_event(event_id, |event| event.prevent_default()).is_some() {
+      let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+      let default_prevented =
+        with_active_dom_event(event_id, |event| event.default_prevented).unwrap_or(false);
+      scope.define_property(
+        event_obj,
+        default_prevented_key,
+        data_desc(Value::Bool(default_prevented)),
+      )?;
+      return Ok(Value::Undefined);
+    }
+  }
+
   let cancelable_key = alloc_key(scope, "cancelable")?;
   let cancelable = scope
     .heap()
@@ -4067,6 +4057,15 @@ fn event_prototype_stop_propagation_native(
       "Event.stopPropagation must be called on an Event object",
     ));
   };
+
+  if let Some(event_id) = event_active_event_id(scope, event_obj)? {
+    if with_active_dom_event(event_id, |event| event.stop_propagation()).is_some() {
+      let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+      scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
+      return Ok(Value::Undefined);
+    }
+  }
+
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
   Ok(Value::Undefined)
@@ -4086,10 +4085,17 @@ fn event_prototype_stop_immediate_propagation_native(
       "Event.stopImmediatePropagation must be called on an Event object",
     ));
   };
+
+  if let Some(event_id) = event_active_event_id(scope, event_obj)? {
+    if with_active_dom_event(event_id, |event| event.stop_immediate_propagation()).is_some() {
+      let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+      scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
+      return Ok(Value::Undefined);
+    }
+  }
+
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
-  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
-  scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(true)))?;
   Ok(Value::Undefined)
 }
 
@@ -4168,83 +4174,587 @@ fn event_target_resolve_this(
   }
 }
 
-fn event_target_get_listener_map(
-  scope: &mut Scope<'_>,
-  target: GcObject,
-) -> Result<Option<GcObject>, VmError> {
-  scope.push_root(Value::Object(target))?;
-  let listeners_key = alloc_key(scope, EVENT_TARGET_LISTENERS_KEY)?;
-  Ok(
-    scope
-      .heap()
-      .object_get_own_data_property_value(target, &listeners_key)?
-      .and_then(|v| match v {
-        Value::Object(obj) => Some(obj),
-        _ => None,
-      }),
-  )
+struct ResolvedDomEventTarget {
+  window_obj: GcObject,
+  document_obj: GcObject,
+  dom_source_id: u64,
+  target_id: web_events::EventTargetId,
 }
 
-fn event_target_get_or_create_listener_map(
+fn dom_source_id_from_document(scope: &mut Scope<'_>, document_obj: GcObject) -> Result<u64, VmError> {
+  let key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => Ok(n as u64),
+    _ => Err(VmError::TypeError(
+      "EventTarget method requires a DOM-backed document",
+    )),
+  }
+}
+
+fn window_object_from_document(scope: &mut Scope<'_>, document_obj: GcObject) -> Result<GcObject, VmError> {
+  let key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "document is missing required window backreference",
+    )),
+  }
+}
+
+fn resolve_dom_event_target(
   scope: &mut Scope<'_>,
-  target: GcObject,
-) -> Result<GcObject, VmError> {
-  if let Some(existing) = event_target_get_listener_map(scope, target)? {
-    return Ok(existing);
+  target_obj: GcObject,
+) -> Result<(ResolvedDomEventTarget, NonNull<dom2::Document>), VmError> {
+  // Node wrapper: has a backreference to its owning document object.
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  if let Some(Value::Object(document_obj)) = scope
+    .heap()
+    .object_get_own_data_property_value(target_obj, &wrapper_document_key)?
+  {
+    let window_obj = window_object_from_document(scope, document_obj)?;
+    let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
+    let Some(mut dom_ptr) = dom_for_source(dom_source_id) else {
+      return Err(VmError::TypeError(
+        "EventTarget method requires a DOM-backed document",
+      ));
+    };
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for
+    // the lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+
+    let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+    let node_index = match scope
+      .heap()
+      .object_get_own_data_property_value(target_obj, &node_id_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+      _ => {
+        return Err(VmError::TypeError(
+          "EventTarget method requires a node-backed event target",
+        ))
+      }
+    };
+    let node_id = dom
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("EventTarget method requires a node-backed event target"))?;
+
+    return Ok((
+      ResolvedDomEventTarget {
+        window_obj,
+        document_obj,
+        dom_source_id,
+        target_id: web_events::EventTargetId::Node(node_id).normalize(),
+      },
+      dom_ptr,
+    ));
   }
 
-  let listeners = scope.alloc_object()?;
-  scope.push_root(Value::Object(listeners))?;
-  scope.push_root(Value::Object(target))?;
-  let listeners_key = alloc_key(scope, EVENT_TARGET_LISTENERS_KEY)?;
+  // Document event target: identified by the presence of the internal node wrapper cache.
+  let wrapper_cache_key = alloc_key(scope, NODE_WRAPPER_CACHE_KEY)?;
+  if scope
+    .heap()
+    .object_get_own_data_property_value(target_obj, &wrapper_cache_key)?
+    .is_some()
+  {
+    let document_obj = target_obj;
+    let window_obj = window_object_from_document(scope, document_obj)?;
+    let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
+    let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+      return Err(VmError::TypeError(
+        "EventTarget method requires a DOM-backed document",
+      ));
+    };
+    return Ok((
+      ResolvedDomEventTarget {
+        window_obj,
+        document_obj,
+        dom_source_id,
+        target_id: web_events::EventTargetId::Document,
+      },
+      dom_ptr,
+    ));
+  }
+
+  // Window event target: has an own `document` property that points at the document shim.
+  let document_key = alloc_key(scope, "document")?;
+  if let Some(Value::Object(document_obj)) = scope
+    .heap()
+    .object_get_own_data_property_value(target_obj, &document_key)?
+  {
+    let wrapper_cache_key = alloc_key(scope, NODE_WRAPPER_CACHE_KEY)?;
+    if scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &wrapper_cache_key)?
+      .is_some()
+    {
+      let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
+      let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+        return Err(VmError::TypeError(
+          "EventTarget method requires a DOM-backed document",
+        ));
+      };
+      return Ok((
+        ResolvedDomEventTarget {
+          window_obj: target_obj,
+          document_obj,
+          dom_source_id,
+          target_id: web_events::EventTargetId::Window,
+        },
+        dom_ptr,
+      ));
+    }
+  }
+
+  Err(VmError::TypeError("Illegal invocation"))
+}
+
+fn parse_add_event_listener_options(
+  scope: &mut Scope<'_>,
+  value: Value,
+) -> Result<web_events::AddEventListenerOptions, VmError> {
+  let mut opts = web_events::AddEventListenerOptions::default();
+  match value {
+    Value::Bool(b) => {
+      opts.capture = b;
+      Ok(opts)
+    }
+    Value::Object(obj) => {
+      let capture_key = alloc_key(scope, "capture")?;
+      if let Some(v) = scope
+        .heap()
+        .object_get_own_data_property_value(obj, &capture_key)?
+      {
+        opts.capture = scope.heap().to_boolean(v)?;
+      }
+
+      let once_key = alloc_key(scope, "once")?;
+      if let Some(v) = scope
+        .heap()
+        .object_get_own_data_property_value(obj, &once_key)?
+      {
+        opts.once = scope.heap().to_boolean(v)?;
+      }
+
+      let passive_key = alloc_key(scope, "passive")?;
+      if let Some(v) = scope
+        .heap()
+        .object_get_own_data_property_value(obj, &passive_key)?
+      {
+        opts.passive = scope.heap().to_boolean(v)?;
+      }
+
+      Ok(opts)
+    }
+    _ => Ok(opts),
+  }
+}
+
+fn parse_event_listener_capture(scope: &mut Scope<'_>, value: Value) -> Result<bool, VmError> {
+  Ok(match value {
+    Value::Bool(b) => b,
+    Value::Object(obj) => {
+      let capture_key = alloc_key(scope, "capture")?;
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &capture_key)?
+      {
+        Some(v) => scope.heap().to_boolean(v)?,
+        None => false,
+      }
+    }
+    _ => false,
+  })
+}
+
+fn get_or_create_event_listener_roots(
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  let key = alloc_key(scope, EVENT_LISTENER_ROOTS_KEY)?;
+  if let Some(Value::Object(obj)) = scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &key)?
+  {
+    return Ok(obj);
+  }
+
+  let roots = scope.alloc_object()?;
+  scope.push_root(Value::Object(roots))?;
   scope.define_property(
-    target,
-    listeners_key,
+    document_obj,
+    key,
     PropertyDescriptor {
       enumerable: false,
       configurable: false,
       kind: PropertyKind::Data {
-        value: Value::Object(listeners),
+        value: Value::Object(roots),
         writable: false,
       },
     },
   )?;
-  Ok(listeners)
+  Ok(roots)
 }
 
-fn event_target_get_listener_list(
+fn listener_id_property_key(
   scope: &mut Scope<'_>,
-  target: GcObject,
-  type_key: PropertyKey,
-) -> Result<Option<GcObject>, VmError> {
-  let Some(map) = event_target_get_listener_map(scope, target)? else {
-    return Ok(None);
-  };
-  Ok(
-    scope
-      .heap()
-      .object_get_own_data_property_value(map, &type_key)?
-      .and_then(|v| match v {
-        Value::Object(obj) => Some(obj),
-        _ => None,
-      }),
-  )
+  listener_id: web_events::ListenerId,
+) -> Result<PropertyKey, VmError> {
+  let key = listener_id.get().to_string();
+  let key_s = scope.alloc_string(&key)?;
+  scope.push_root(Value::String(key_s))?;
+  Ok(PropertyKey::from_string(key_s))
 }
 
-fn event_target_get_or_create_listener_list(
+fn remove_listener_root_if_unused(
   scope: &mut Scope<'_>,
-  target: GcObject,
-  type_key: PropertyKey,
-) -> Result<GcObject, VmError> {
-  if let Some(existing) = event_target_get_listener_list(scope, target, type_key)? {
-    return Ok(existing);
+  document_obj: GcObject,
+  registry: &web_events::EventListenerRegistry,
+  listener_id: web_events::ListenerId,
+) -> Result<(), VmError> {
+  if registry.contains_listener_id(listener_id) {
+    return Ok(());
   }
 
-  let map = event_target_get_or_create_listener_map(scope, target)?;
-  let list = scope.alloc_object()?;
-  scope.push_root(Value::Object(list))?;
-  scope.define_property(map, type_key, data_desc(Value::Object(list)))?;
-  Ok(list)
+  let roots_key = alloc_key(scope, EVENT_LISTENER_ROOTS_KEY)?;
+  let Some(Value::Object(roots)) = scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &roots_key)?
+  else {
+    return Ok(());
+  };
+  let listener_key = listener_id_property_key(scope, listener_id)?;
+  let _ = scope.ordinary_delete(roots, listener_key)?;
+  Ok(())
+}
+
+struct ActiveDomEventGuard {
+  event_id: u64,
+}
+
+impl Drop for ActiveDomEventGuard {
+  fn drop(&mut self) {
+    let event_id = self.event_id;
+    ACTIVE_EVENTS.with(|events| {
+      events.borrow_mut().remove(&event_id);
+    });
+  }
+}
+
+struct VmJsDomEventInvoker<'a, 'hooks> {
+  vm: *mut Vm,
+  scope: *mut Scope<'a>,
+  hooks: *mut (dyn VmHostHooks + 'hooks),
+  window_obj: GcObject,
+  document_obj: GcObject,
+  event_obj: GcObject,
+  listener_roots: GcObject,
+  registry: *const web_events::EventListenerRegistry,
+}
+
+impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
+  fn js_value_for_target(
+    &mut self,
+    target: Option<web_events::EventTargetId>,
+  ) -> Result<Value, VmError> {
+    let scope = unsafe { &mut *self.scope };
+    match target {
+      None => Ok(Value::Null),
+      Some(web_events::EventTargetId::Window) => Ok(Value::Object(self.window_obj)),
+      Some(web_events::EventTargetId::Document) => Ok(Value::Object(self.document_obj)),
+      Some(web_events::EventTargetId::Node(node_id)) => {
+        get_or_create_node_wrapper(scope, self.document_obj, node_id)
+      }
+    }
+  }
+
+  fn sync_event_object(&mut self, event: &web_events::Event) -> Result<(), VmError> {
+    let scope = unsafe { &mut *self.scope };
+    scope.push_root(Value::Object(self.event_obj))?;
+
+    let target_key = alloc_key(scope, "target")?;
+    let target_v = self.js_value_for_target(event.target)?;
+    scope.define_property(self.event_obj, target_key, data_desc(target_v))?;
+
+    let current_target_key = alloc_key(scope, "currentTarget")?;
+    let current_target_v = self.js_value_for_target(event.current_target)?;
+    scope.define_property(self.event_obj, current_target_key, data_desc(current_target_v))?;
+
+    let event_phase_key = alloc_key(scope, "eventPhase")?;
+    scope.define_property(
+      self.event_obj,
+      event_phase_key,
+      data_desc(Value::Number(event.event_phase_numeric() as f64)),
+    )?;
+
+    let time_stamp_key = alloc_key(scope, "timeStamp")?;
+    scope.define_property(
+      self.event_obj,
+      time_stamp_key,
+      data_desc(Value::Number(event.time_stamp)),
+    )?;
+
+    let is_trusted_key = alloc_key(scope, "isTrusted")?;
+    scope.define_property(
+      self.event_obj,
+      is_trusted_key,
+      data_desc(Value::Bool(event.is_trusted)),
+    )?;
+
+    let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+    scope.define_property(
+      self.event_obj,
+      default_prevented_key,
+      data_desc(Value::Bool(event.default_prevented)),
+    )?;
+
+    let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+    scope.define_property(
+      self.event_obj,
+      cancel_bubble_key,
+      data_desc(Value::Bool(event.propagation_stopped)),
+    )?;
+
+    if let Some(detail) = event.detail {
+      let detail_key = alloc_key(scope, "detail")?;
+      scope.define_property(self.event_obj, detail_key, data_desc(detail))?;
+    }
+
+    Ok(())
+  }
+
+  fn report_listener_exception(&mut self, err: VmError) {
+    let scope = unsafe { &mut *self.scope };
+    let vm = unsafe { &mut *self.vm };
+    let hooks = unsafe { &mut *self.hooks };
+    let message = crate::js::vm_error_format::vm_error_to_string(scope.heap_mut(), err);
+
+    let console_key = match alloc_key(scope, "console") {
+      Ok(key) => key,
+      Err(_) => return,
+    };
+    let Some(Value::Object(console_obj)) = scope
+      .heap()
+      .object_get_own_data_property_value(self.window_obj, &console_key)
+      .ok()
+      .flatten()
+    else {
+      return;
+    };
+
+    let error_key = match alloc_key(scope, "error") {
+      Ok(key) => key,
+      Err(_) => return,
+    };
+    let Some(func) = scope
+      .heap()
+      .object_get_own_data_property_value(console_obj, &error_key)
+      .ok()
+      .flatten()
+    else {
+      return;
+    };
+    if !matches!(func, Value::Object(_)) {
+      return;
+    }
+    if scope.heap().is_callable(func).ok() != Some(true) {
+      return;
+    }
+
+    let msg_s = match scope.alloc_string(&message) {
+      Ok(s) => s,
+      Err(_) => return,
+    };
+    let _ = vm.call_with_host(scope, hooks, func, Value::Object(console_obj), &[Value::String(msg_s)]);
+  }
+}
+
+impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
+  fn invoke(
+    &mut self,
+    listener_id: web_events::ListenerId,
+    event: &mut web_events::Event,
+  ) -> std::result::Result<(), web_events::DomError> {
+    let scope = unsafe { &mut *self.scope };
+    let vm = unsafe { &mut *self.vm };
+    let hooks = unsafe { &mut *self.hooks };
+    let registry = unsafe { &*self.registry };
+
+    // Look up the registered callback function/object. If it is missing, treat it as a no-op.
+    let listener_key = listener_id_property_key(scope, listener_id)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    let Some(callback) = scope
+      .heap()
+      .object_get_own_data_property_value(self.listener_roots, &listener_key)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?
+    else {
+      return Ok(());
+    };
+
+    // Update JS-visible event fields for this invocation.
+    self
+      .sync_event_object(event)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    // Install the active Rust `Event` pointer so Event.prototype methods can mutate it.
+    let event_id = NEXT_ACTIVE_EVENT_ID.fetch_add(1, Ordering::Relaxed);
+    ACTIVE_EVENTS.with(|events| {
+      events
+        .borrow_mut()
+        .insert(event_id, NonNull::from(&mut *event));
+    });
+    let _active_guard = ActiveDomEventGuard { event_id };
+
+    let event_id_key = alloc_key(scope, EVENT_ID_KEY)
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+    scope
+      .define_property(
+        self.event_obj,
+        event_id_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Number(event_id as f64),
+            writable: true,
+          },
+        },
+      )
+      .map_err(|e| web_events::DomError::new(e.to_string()))?;
+
+    let current_target = match event.current_target {
+      Some(t) => self
+        .js_value_for_target(Some(t))
+        .map_err(|e| web_events::DomError::new(e.to_string()))?,
+      None => Value::Undefined,
+    };
+
+    // DOM dispatch uses WebIDL's "call a user object's operation" algorithm for EventListener:
+    // - If the listener is callable (function), invoke it with `this = currentTarget`.
+    // - Otherwise, invoke `callback.handleEvent(event)` with `this = callback`.
+    let call_result = (|| -> Result<(), VmError> {
+      let event_value = Value::Object(self.event_obj);
+      if scope.heap().is_callable(callback)? {
+        vm.call_with_host(scope, hooks, callback, current_target, &[event_value])?;
+        Ok(())
+      } else if let Value::Object(callback_obj) = callback {
+        let handle_event_key = alloc_key(scope, "handleEvent")?;
+        let handle_event = vm.get(scope, callback_obj, handle_event_key)?;
+        if !scope.heap().is_callable(handle_event)? {
+          return Err(VmError::TypeError(
+            "EventTarget listener callback has no callable handleEvent",
+          ));
+        }
+        vm.call_with_host(scope, hooks, handle_event, callback, &[event_value])?;
+        Ok(())
+      } else {
+        Err(VmError::TypeError(
+          "EventTarget listener is not callable and not an object",
+        ))
+      }
+    })();
+
+    if let Err(err) = call_result {
+      // Per web platform behavior, exceptions from event listeners should not abort `dispatchEvent`.
+      self.report_listener_exception(err);
+    }
+
+    // `dispatch_event` can remove listeners during dispatch (`{ once: true }`). Drop the callback
+    // root if the listener ID is no longer referenced.
+    if let Err(err) = remove_listener_root_if_unused(scope, self.document_obj, registry, listener_id) {
+      return Err(web_events::DomError::new(err.to_string()));
+    }
+
+    Ok(())
+  }
+}
+
+fn rust_event_from_js_event(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  event_obj: GcObject,
+) -> Result<web_events::Event, VmError> {
+  let type_key = alloc_key(scope, "type")?;
+  let type_value = vm.get(scope, event_obj, type_key)?;
+  let type_string = scope.heap_mut().to_string(type_value)?;
+  let type_name = scope
+    .heap()
+    .get_string(type_string)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  let bubbles = match scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &bubbles_key)?
+  {
+    Some(v) => scope.heap().to_boolean(v)?,
+    None => false,
+  };
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  let cancelable = match scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &cancelable_key)?
+  {
+    Some(v) => scope.heap().to_boolean(v)?,
+    None => false,
+  };
+
+  let composed_key = alloc_key(scope, "composed")?;
+  let composed = match scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &composed_key)?
+  {
+    Some(v) => scope.heap().to_boolean(v)?,
+    None => false,
+  };
+
+  let detail_key = alloc_key(scope, "detail")?;
+  let detail = scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &detail_key)?;
+
+  let mut event = if let Some(detail) = detail {
+    web_events::Event::new_custom_event(
+      type_name,
+      web_events::CustomEventInit {
+        bubbles,
+        cancelable,
+        composed,
+        detail: if matches!(detail, Value::Undefined) {
+          Value::Null
+        } else {
+          detail
+        },
+      },
+    )
+  } else {
+    web_events::Event::new(
+      type_name,
+      web_events::EventInit {
+        bubbles,
+        cancelable,
+        composed,
+      },
+    )
+  };
+
+  // Preserve an already-canceled Event when re-dispatching.
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  if let Some(v) = scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &default_prevented_key)?
+  {
+    event.default_prevented = scope.heap().to_boolean(v)?;
+  }
+
+  Ok(event)
 }
 
 fn event_target_add_event_listener_native(
@@ -4257,50 +4767,38 @@ fn event_target_add_event_listener_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let target_obj = event_target_resolve_this(scope, callee, this)?;
-  scope.push_root(Value::Object(target_obj))?;
+  let (resolved, mut dom_ptr) = resolve_dom_event_target(scope, target_obj)?;
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let type_string = scope.heap_mut().to_string(type_arg)?;
-  scope.push_root(Value::String(type_string))?;
-  let type_key = PropertyKey::from_string(type_string);
+  let type_name = scope
+    .heap()
+    .get_string(type_string)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
 
   let callback = args.get(1).copied().unwrap_or(Value::Undefined);
-  // WebIDL allows `null` for callbacks; treat non-objects as no-ops for compatibility.
-  let Value::Object(_) = callback else {
+  let Value::Object(callback_obj) = callback else {
+    // Per WebIDL/DOM, `null` callbacks are no-ops.
     return Ok(Value::Undefined);
   };
 
-  let list = event_target_get_or_create_listener_list(scope, target_obj, type_key)?;
-  scope.push_root(Value::Object(list))?;
+  let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let options = parse_add_event_listener_options(scope, options_value)?;
+  let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
 
-  let keys = scope.ordinary_own_property_keys(list)?;
-  for key in keys {
-    let Some(_) = array_index_from_property_key(scope.heap(), &key) else {
-      continue;
-    };
-    if scope
-      .heap()
-      .object_get_own_data_property_value(list, &key)?
-      .is_some_and(|v| v == callback)
-    {
-      return Ok(Value::Undefined);
-    }
-  }
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  dom
+    .events_mut()
+    .add_event_listener(resolved.target_id, &type_name, listener_id, options);
 
-  let keys = scope.ordinary_own_property_keys(list)?;
-  let mut next = 0u32;
-  for key in keys {
-    let Some(idx) = array_index_from_property_key(scope.heap(), &key) else {
-      continue;
-    };
-    next = next.max(idx.saturating_add(1));
-  }
-
-  let mut buf = [0u8; 20];
-  let key_str = decimal_str_for_usize(next as usize, &mut buf);
+  // Root the callback while it's registered so it survives GC.
+  let roots = get_or_create_event_listener_roots(scope, resolved.document_obj)?;
+  let listener_key = listener_id_property_key(scope, listener_id)?;
   scope.push_root(callback)?;
-  let key = alloc_key(scope, key_str)?;
-  scope.define_property(list, key, data_desc(callback))?;
+  scope.define_property(roots, listener_key, data_desc(callback))?;
 
   Ok(Value::Undefined)
 }
@@ -4315,36 +4813,33 @@ fn event_target_remove_event_listener_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let target_obj = event_target_resolve_this(scope, callee, this)?;
-  scope.push_root(Value::Object(target_obj))?;
+  let (resolved, mut dom_ptr) = resolve_dom_event_target(scope, target_obj)?;
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let type_string = scope.heap_mut().to_string(type_arg)?;
-  scope.push_root(Value::String(type_string))?;
-  let type_key = PropertyKey::from_string(type_string);
+  let type_name = scope
+    .heap()
+    .get_string(type_string)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
 
   let callback = args.get(1).copied().unwrap_or(Value::Undefined);
-  let Value::Object(_) = callback else {
+  let Value::Object(callback_obj) = callback else {
     return Ok(Value::Undefined);
   };
 
-  let Some(list) = event_target_get_listener_list(scope, target_obj, type_key)? else {
-    return Ok(Value::Undefined);
-  };
-  scope.push_root(Value::Object(list))?;
+  let options_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let capture = parse_event_listener_capture(scope, options_value)?;
+  let listener_id = web_events::ListenerId::from_gc_object(callback_obj);
 
-  let keys = scope.ordinary_own_property_keys(list)?;
-  for key in keys {
-    let Some(_) = array_index_from_property_key(scope.heap(), &key) else {
-      continue;
-    };
-    if scope
-      .heap()
-      .object_get_own_data_property_value(list, &key)?
-      .is_some_and(|v| v == callback)
-    {
-      let _ = scope.ordinary_delete(list, key)?;
-      break;
-    }
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let removed = dom
+    .events_mut()
+    .remove_event_listener(resolved.target_id, &type_name, listener_id, capture);
+  if removed {
+    remove_listener_root_if_unused(scope, resolved.document_obj, dom.events(), listener_id)?;
   }
 
   Ok(Value::Undefined)
@@ -4360,107 +4855,78 @@ fn event_target_dispatch_event_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let target_obj = event_target_resolve_this(scope, callee, this)?;
+  let (resolved, dom_ptr) = resolve_dom_event_target(scope, target_obj)?;
+
   let event_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(event_obj) = event_value else {
     return Err(VmError::TypeError(
       "EventTarget.dispatchEvent: event is not an object",
     ));
   };
-
-  // Expose basic dispatch-related fields for listeners.
   scope.push_root(Value::Object(event_obj))?;
-  scope.push_root(Value::Object(target_obj))?;
-  let target_key = alloc_key(scope, "target")?;
-  scope.define_property(event_obj, target_key, data_desc(Value::Object(target_obj)))?;
-  let current_target_key = alloc_key(scope, "currentTarget")?;
-  scope.define_property(
-    event_obj,
-    current_target_key,
-    data_desc(Value::Object(target_obj)),
-  )?;
 
-  // Reset per-dispatch propagation flags.
+  let mut rust_event = rust_event_from_js_event(vm, scope, event_obj)?;
+
+  // Ensure base Event fields are observable even if there are no listeners.
+  {
+    let target_key = alloc_key(scope, "target")?;
+    let target_v = match resolved.target_id {
+      web_events::EventTargetId::Window => Value::Object(resolved.window_obj),
+      web_events::EventTargetId::Document => Value::Object(resolved.document_obj),
+      web_events::EventTargetId::Node(node_id) => get_or_create_node_wrapper(scope, resolved.document_obj, node_id)?,
+    };
+    scope.define_property(event_obj, target_key, data_desc(target_v))?;
+
+    let current_target_key = alloc_key(scope, "currentTarget")?;
+    scope.define_property(event_obj, current_target_key, data_desc(Value::Null))?;
+
+    let event_phase_key = alloc_key(scope, "eventPhase")?;
+    scope.define_property(event_obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+  }
+
+  // Reset per-dispatch propagation flags on the JS-visible object.
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
-  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
-  scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(false)))?;
 
-  // Snapshot listeners to be spec-shaped (removals during dispatch should not affect the current
-  // dispatch turn).
-  let type_key = alloc_key(scope, "type")?;
-  let type_value = vm.get(scope, event_obj, type_key)?;
-  let type_string = scope.heap_mut().to_string(type_value)?;
-  scope.push_root(Value::String(type_string))?;
-  let listener_key = PropertyKey::from_string(type_string);
-
-  let Some(list) = event_target_get_listener_list(scope, target_obj, listener_key)? else {
-    return Ok(Value::Bool(true));
+  let roots = get_or_create_event_listener_roots(scope, resolved.document_obj)?;
+  let mut invoker = VmJsDomEventInvoker {
+    vm,
+    scope,
+    hooks,
+    window_obj: resolved.window_obj,
+    document_obj: resolved.document_obj,
+    event_obj,
+    listener_roots: roots,
+    registry: unsafe { dom_ptr.as_ref() }.events(),
   };
-  scope.push_root(Value::Object(list))?;
 
-  let mut callbacks = Vec::new();
-  let keys = scope.ordinary_own_property_keys(list)?;
-  for key in keys {
-    let Some(_) = array_index_from_property_key(scope.heap(), &key) else {
-      continue;
-    };
-    if let Some(v) = scope
-      .heap()
-      .object_get_own_data_property_value(list, &key)?
-    {
-      callbacks.push(v);
-    }
-  }
-  scope.push_roots(&callbacks)?;
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let result = web_events::dispatch_event(
+    resolved.target_id,
+    &mut rust_event,
+    dom,
+    dom.events(),
+    &mut invoker,
+  )
+  .map_err(|_err| VmError::TypeError("EventTarget.dispatchEvent failed"))?;
 
-  for callback in callbacks {
-    if !matches!(callback, Value::Object(_)) {
-      continue;
-    }
-    if !scope.heap().is_callable(callback)? {
-      continue;
-    }
-    let call_res = vm.call_with_host(
-      scope,
-      hooks,
-      callback,
-      Value::Object(target_obj),
-      &[event_value],
-    );
-    if call_res.is_err() {
-      // Per web platform behavior, exceptions from event listeners should not abort `dispatchEvent`.
-    }
-
-    let stopped = scope
-      .heap()
-      .object_get_own_data_property_value(event_obj, &immediate_key)?
-      .is_some_and(|v| matches!(v, Value::Bool(true)));
-    if stopped {
-      break;
-    }
-  }
-
-  let cancelable_key = alloc_key(scope, "cancelable")?;
-  let cancelable = match scope
-    .heap()
-    .object_get_own_data_property_value(event_obj, &cancelable_key)?
+  // Persist final per-dispatch state.
   {
-    Some(v) => scope.heap().to_boolean(v)?,
-    None => false,
-  };
-  if !cancelable {
-    return Ok(Value::Bool(true));
+    let current_target_key = alloc_key(scope, "currentTarget")?;
+    scope.define_property(event_obj, current_target_key, data_desc(Value::Null))?;
+    let event_phase_key = alloc_key(scope, "eventPhase")?;
+    scope.define_property(event_obj, event_phase_key, data_desc(Value::Number(0.0)))?;
+    let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+    scope.define_property(
+      event_obj,
+      default_prevented_key,
+      data_desc(Value::Bool(rust_event.default_prevented)),
+    )?;
   }
 
-  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  let default_prevented = match scope
-    .heap()
-    .object_get_own_data_property_value(event_obj, &default_prevented_key)?
-  {
-    Some(Value::Bool(b)) => b,
-    _ => false,
-  };
-  Ok(Value::Bool(!default_prevented))
+  Ok(Value::Bool(result))
 }
 
 fn document_create_event_native(
@@ -4542,8 +5008,6 @@ fn document_create_event_native(
 
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
-  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
-  scope.define_property(obj, immediate_key, data_desc(Value::Bool(false)))?;
 
   if matches!(kind, Kind::CustomEvent) {
     let detail_key = alloc_key(scope, "detail")?;
@@ -7525,6 +7989,21 @@ fn init_window_globals(
     data_desc(Value::Object(location_obj)),
   )?;
 
+  // Backreference used by DOM event dispatch to map `EventTargetId::Window` back into the JS realm.
+  let document_window_key = alloc_key(&mut scope, DOCUMENT_WINDOW_KEY)?;
+  scope.define_property(
+    document_obj,
+    document_window_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(global),
+        writable: false,
+      },
+    },
+  )?;
+
   // `Document.referrer`.
   //
   // Many real-world scripts assume this is a string (even if empty) and call string methods on it.
@@ -9683,41 +10162,22 @@ mod tests {
   }
 
   #[test]
-  fn event_target_listeners_can_be_registered_and_dispatched() -> Result<(), VmError> {
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+  fn dom_event_listeners_are_registered_in_dom2_and_invoked_by_host_dispatch() -> Result<(), VmError>
+  {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
 
-    let called = realm.exec_script(
-      "(() => {\n\
-        let count = 0;\n\
-        function cb(e) { if (e.type === 'ping') count++; }\n\
-        addEventListener('ping', cb);\n\
-        dispatchEvent(new Event('ping'));\n\
-        removeEventListener('ping', cb);\n\
-        dispatchEvent(new Event('ping'));\n\
-        return count;\n\
-      })()",
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
-    assert_eq!(called, Value::Number(1.0));
 
-    let prevented = realm.exec_script(
-      "(() => {\n\
-        function cb(e) { e.preventDefault(); }\n\
-        addEventListener('p', cb);\n\
-        const ev = new Event('p', { cancelable: true });\n\
-        return dispatchEvent(ev);\n\
-      })()",
+    realm.exec_script(
+      "globalThis.__count = 0;\n\
+       document.addEventListener('x', () => { __count++; });\n\
+       globalThis.__ev = new Event('x');",
     )?;
-    assert_eq!(prevented, Value::Bool(false));
-
-    let doc_called = realm.exec_script(
-      "(() => {\n\
-        let count = 0;\n\
-        document.addEventListener('x', () => { count++; });\n\
-        document.dispatchEvent(new CustomEvent('x'));\n\
-        return count;\n\
-      })()",
-    )?;
-    assert_eq!(doc_called, Value::Number(1.0));
 
     let unbound_error = realm.exec_script(
       "(() => {\n\
@@ -9737,26 +10197,260 @@ mod tests {
       assert_eq!(get_string(scope.heap(), message), "Illegal invocation");
     }
 
+    let default_not_prevented = {
+      let realm_id = realm.realm_id;
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      });
+
+      let global = realm_ref.global_object();
+      let document_obj = match get_prop(&mut scope, global, "document") {
+        Value::Object(obj) => obj,
+        other => panic!("expected document object, got {other:?}"),
+      };
+      let event_obj = match get_prop(&mut scope, global, "__ev") {
+        Value::Object(obj) => obj,
+        other => panic!("expected Event object, got {other:?}"),
+      };
+      let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+
+      let mut hooks = NoopHostHooks::default();
+      let mut invoker = super::VmJsDomEventInvoker {
+        vm: &mut *vm,
+        scope: &mut scope,
+        hooks: &mut hooks,
+        window_obj: global,
+        document_obj,
+        event_obj,
+        listener_roots,
+        registry: dom.events(),
+      };
+
+      let mut event = web_events::Event::new(
+        "x",
+        web_events::EventInit {
+          bubbles: false,
+          cancelable: false,
+          composed: false,
+        },
+      );
+      web_events::dispatch_event(
+        web_events::EventTargetId::Document,
+        &mut event,
+        dom.as_ref(),
+        dom.events(),
+        &mut invoker,
+      )
+      .expect("dispatch_event should succeed")
+    };
+
+    assert_eq!(default_not_prevented, true);
+    assert_eq!(realm.exec_script("__count")?, Value::Number(1.0));
     Ok(())
   }
 
   #[test]
-  fn event_target_constructor_exists_and_dispatches() -> Result<(), VmError> {
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+  fn dom_event_once_listeners_are_removed_after_first_dispatch() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
 
-    let ok = realm.exec_script(
-      "(() => {\n\
-        if (typeof EventTarget !== 'function') return false;\n\
-        if (typeof EventTarget.prototype.addEventListener !== 'function') return false;\n\
-        const et = new EventTarget();\n\
-        let count = 0;\n\
-        et.addEventListener('x', () => { count++; });\n\
-        et.dispatchEvent(new Event('x'));\n\
-        return count === 1;\n\
-      })()",
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
     )?;
-    assert_eq!(ok, Value::Bool(true));
 
+    realm.exec_script(
+      "globalThis.__count = 0;\n\
+       document.addEventListener('x', () => { __count++; }, { once: true });\n\
+       globalThis.__ev = new Event('x');",
+    )?;
+
+    for _ in 0..2 {
+      let realm_id = realm.realm_id;
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      });
+      let global = realm_ref.global_object();
+      let document_obj = match get_prop(&mut scope, global, "document") {
+        Value::Object(obj) => obj,
+        other => panic!("expected document object, got {other:?}"),
+      };
+      let event_obj = match get_prop(&mut scope, global, "__ev") {
+        Value::Object(obj) => obj,
+        other => panic!("expected Event object, got {other:?}"),
+      };
+      let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+      let mut hooks = NoopHostHooks::default();
+      let mut invoker = super::VmJsDomEventInvoker {
+        vm: &mut *vm,
+        scope: &mut scope,
+        hooks: &mut hooks,
+        window_obj: global,
+        document_obj,
+        event_obj,
+        listener_roots,
+        registry: dom.events(),
+      };
+
+      let mut event = web_events::Event::new(
+        "x",
+        web_events::EventInit {
+          bubbles: false,
+          cancelable: false,
+          composed: false,
+        },
+      );
+      web_events::dispatch_event(
+        web_events::EventTargetId::Document,
+        &mut event,
+        dom.as_ref(),
+        dom.events(),
+        &mut invoker,
+      )
+      .expect("dispatch_event should succeed");
+    }
+
+    assert_eq!(realm.exec_script("__count")?, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn dom_event_stop_immediate_propagation_stops_later_listeners() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    realm.exec_script(
+      "globalThis.__count = 0;\n\
+       document.addEventListener('x', (e) => { __count++; e.stopImmediatePropagation(); });\n\
+       document.addEventListener('x', () => { __count++; });\n\
+       globalThis.__ev = new Event('x');",
+    )?;
+
+    {
+      let realm_id = realm.realm_id;
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      });
+      let global = realm_ref.global_object();
+      let document_obj = match get_prop(&mut scope, global, "document") {
+        Value::Object(obj) => obj,
+        other => panic!("expected document object, got {other:?}"),
+      };
+      let event_obj = match get_prop(&mut scope, global, "__ev") {
+        Value::Object(obj) => obj,
+        other => panic!("expected Event object, got {other:?}"),
+      };
+      let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+      let mut hooks = NoopHostHooks::default();
+      let mut invoker = super::VmJsDomEventInvoker {
+        vm: &mut *vm,
+        scope: &mut scope,
+        hooks: &mut hooks,
+        window_obj: global,
+        document_obj,
+        event_obj,
+        listener_roots,
+        registry: dom.events(),
+      };
+      let mut event = web_events::Event::new(
+        "x",
+        web_events::EventInit {
+          bubbles: false,
+          cancelable: false,
+          composed: false,
+        },
+      );
+      web_events::dispatch_event(
+        web_events::EventTargetId::Document,
+        &mut event,
+        dom.as_ref(),
+        dom.events(),
+        &mut invoker,
+      )
+      .expect("dispatch_event should succeed");
+    }
+    assert_eq!(realm.exec_script("__count")?, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn dom_event_prevent_default_affects_dispatch_event_return_value() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    realm.exec_script(
+      "document.addEventListener('x', (e) => { e.preventDefault(); });\n\
+       globalThis.__ev = new Event('x', { cancelable: true });",
+    )?;
+
+    let realm_id = realm.realm_id;
+    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
+    let global = realm_ref.global_object();
+    let document_obj = match get_prop(&mut scope, global, "document") {
+      Value::Object(obj) => obj,
+      other => panic!("expected document object, got {other:?}"),
+    };
+    let event_obj = match get_prop(&mut scope, global, "__ev") {
+      Value::Object(obj) => obj,
+      other => panic!("expected Event object, got {other:?}"),
+    };
+    let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
+    let mut hooks = NoopHostHooks::default();
+    let mut invoker = super::VmJsDomEventInvoker {
+      vm: &mut *vm,
+      scope: &mut scope,
+      hooks: &mut hooks,
+      window_obj: global,
+      document_obj,
+      event_obj,
+      listener_roots,
+      registry: dom.events(),
+    };
+
+    let mut event = web_events::Event::new(
+      "x",
+      web_events::EventInit {
+        bubbles: false,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    let default_not_prevented = web_events::dispatch_event(
+      web_events::EventTargetId::Document,
+      &mut event,
+      dom.as_ref(),
+      dom.events(),
+      &mut invoker,
+    )
+    .expect("dispatch_event should succeed");
+    assert_eq!(default_not_prevented, false);
     Ok(())
   }
 
