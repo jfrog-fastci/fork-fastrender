@@ -220,13 +220,14 @@ impl BrowserTabHost {
     trace: TraceHandle,
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self> {
+    let current_script = CurrentScriptStateHandle::default();
     Ok(Self {
       trace,
       document: Box::new(document),
       executor,
       event_invoker: Box::new(NoopEventInvoker),
       js_events: JsDomEvents::new()?,
-      current_script: CurrentScriptStateHandle::default(),
+      current_script,
       orchestrator: ScriptOrchestrator::new(),
       scheduler: ScriptScheduler::with_options(js_execution_options),
       scripts: HashMap::new(),
@@ -1983,6 +1984,10 @@ pub struct BrowserTab {
 }
 
 impl BrowserTab {
+  pub fn from_html_with_vmjs_executor(html: &str, options: RenderOptions) -> Result<Self> {
+    Self::from_html(html, options, super::VmJsBrowserTabExecutor::default())
+  }
+
   fn parse_html_streaming_and_schedule_scripts(
     &mut self,
     html: &str,

@@ -82,6 +82,7 @@ mod support;
 mod tab;
 mod ui_clipboard;
 mod tab_js_realm_navigation_reset;
+mod tab_vmjs;
 mod ui_input_routing;
 mod ui_navigation_messages;
 mod ui_render_thread;

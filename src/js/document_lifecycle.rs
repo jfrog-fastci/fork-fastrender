@@ -42,7 +42,7 @@ pub trait DocumentLifecycleHost {
     })?;
 
     if ready_state_changed {
-      fire_ready_state_change(self)?;
+      with_event_loop(event_loop, || fire_ready_state_change(self))?;
     }
 
     // Queue DOMContentLoaded/load tasks (or mark parsing as complete so they can be queued once any
