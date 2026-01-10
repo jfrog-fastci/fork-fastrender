@@ -2169,7 +2169,7 @@ impl BrowserTab {
       Box::new(executor),
       trace_handle.clone(),
       js_execution_options,
-    );
+    )?;
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
