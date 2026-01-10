@@ -247,6 +247,20 @@ impl WindowRealm {
     self.runtime.exec_script(source)
   }
 
+  /// Execute a classic script in this window realm with an explicit embedder host context and host
+  /// hook implementation.
+  ///
+  /// This routes Promise jobs through `VmHostHooks::host_enqueue_promise_job` instead of the
+  /// VM-owned microtask queue used by [`WindowRealm::exec_script`].
+  pub fn exec_script_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    self.runtime.exec_script_with_host_and_hooks(host, hooks, source)
+  }
+
   /// Execute a classic script in this window realm using a custom host hook implementation.
   ///
   /// This routes Promise jobs through `VmHostHooks::host_enqueue_promise_job` instead of the
@@ -257,7 +271,19 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.runtime.exec_script_with_hooks(hooks, source)
+    let mut dummy_host = ();
+    self.exec_script_with_host_and_hooks(&mut dummy_host, hooks, source)
+  }
+
+  pub(crate) fn exec_script_source_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    source: Arc<SourceText>,
+  ) -> Result<Value, VmError> {
+    self
+      .runtime
+      .exec_script_source_with_host_and_hooks(host, hooks, source)
   }
 
   pub(crate) fn exec_script_source_with_hooks(
@@ -265,9 +291,8 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
-    // Route Promise jobs through host hooks so embeddings can integrate with a host-owned microtask
-    // queue (HTML event loop).
-    self.runtime.exec_script_source_with_hooks(hooks, source)
+    let mut dummy_host = ();
+    self.exec_script_source_with_host_and_hooks(&mut dummy_host, hooks, source)
   }
 
   /// Execute a classic script with an explicit source name for stack traces.

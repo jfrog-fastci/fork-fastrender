@@ -582,13 +582,25 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.exec_script_source_with_hooks(hooks, Arc::new(SourceText::new("<inline>", source)))
+    let mut host = ();
+    self.exec_script_with_host_and_hooks(&mut host, hooks, source)
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`).
   pub fn exec_script_source(&mut self, source: Arc<SourceText>) -> Result<Value, VmError> {
     let mut host = ();
     self.exec_script_source_with_host(&mut host, source)
+  }
+
+  /// Parse and execute a classic script, using an explicit embedder host context and host hook
+  /// implementation.
+  pub fn exec_script_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    self.exec_script_source_with_host_and_hooks(host, hooks, Arc::new(SourceText::new("<inline>", source)))
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
@@ -679,7 +691,7 @@ impl JsRuntime {
     result
   }
 
-  /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
+  /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) using an explicit
   /// embedder host context and host hook implementation.
   pub fn exec_script_source_with_host_and_hooks(
     &mut self,

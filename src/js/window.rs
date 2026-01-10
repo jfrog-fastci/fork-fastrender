@@ -100,9 +100,9 @@ impl WindowHost {
 
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     with_event_loop(event_loop, || {
-      let window = host.window_mut();
+      let WindowHostState { document, window, .. } = host;
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
-      let result = window.exec_script_with_hooks(&mut hooks, source);
+      let result = window.exec_script_with_host_and_hooks(document.as_mut(), &mut hooks, source);
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
       }
@@ -246,9 +246,9 @@ impl WindowHostState {
     use crate::js::window_timers::VmJsEventLoopHooks;
 
     with_event_loop(event_loop, || {
-      let window = self.window_mut();
+      let WindowHostState { document, window, .. } = self;
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
-      let result = window.exec_script_with_hooks(&mut hooks, source);
+      let result = window.exec_script_with_host_and_hooks(document.as_mut(), &mut hooks, source);
 
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
@@ -273,9 +273,10 @@ impl WindowHostState {
 
     let source = Arc::new(vm_js::SourceText::new(source_name, source_text));
     with_event_loop(event_loop, || {
-      let window = self.window_mut();
+      let WindowHostState { document, window, .. } = self;
       let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
-      let result = window.exec_script_source_with_hooks(&mut hooks, source);
+      let result =
+        window.exec_script_source_with_host_and_hooks(document.as_mut(), &mut hooks, source);
 
       if let Some(err) = hooks.finish(window.heap_mut()) {
         return Err(err);
@@ -336,7 +337,10 @@ mod tests {
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Mutex;
   use std::time::{Duration, Instant};
-  use vm_js::{PropertyKey, Value};
+  use vm_js::{
+    GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
+    VmHostHooks,
+  };
 
   fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
     let window = host.host_mut().window_mut();
@@ -494,6 +498,73 @@ mod tests {
     host.perform_microtask_checkpoint()?;
 
     assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 1.0));
+    Ok(())
+  }
+
+  fn is_document_host_native(
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
+    Ok(Value::Bool(
+      host.as_any_mut().is::<DocumentHostState>(),
+    ))
+  }
+
+  #[test]
+  fn exec_script_passes_real_vm_host_context() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    // Install a native function that can only return `true` if script execution passes the actual
+    // `DocumentHostState` as the vm-js host context.
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+
+      let call_id = vm
+        .register_native_call(is_document_host_native)
+        .expect("register native call");
+
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .expect("push root global");
+
+      let name_s = scope.alloc_string("__fr_is_document_host").expect("alloc name");
+      scope
+        .push_root(Value::String(name_s))
+        .expect("push root name");
+      let func = scope
+        .alloc_native_function(call_id, None, name_s, 0)
+        .expect("alloc native function");
+      scope
+        .push_root(Value::Object(func))
+        .expect("push root func");
+      let key = PropertyKey::from_string(name_s);
+      scope
+        .define_property(
+          global,
+          key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: Value::Object(func),
+              writable: true,
+            },
+          },
+        )
+        .expect("define global native function");
+    }
+
+    let value = host.exec_script("__fr_is_document_host()")?;
+    assert!(matches!(value, Value::Bool(true)));
     Ok(())
   }
 
