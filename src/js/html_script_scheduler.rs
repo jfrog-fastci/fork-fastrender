@@ -1237,6 +1237,28 @@ mod state_machine_tests {
   }
 
   #[test]
+  fn nomodule_external_classic_script_does_not_start_fetch_when_modules_are_supported() -> Result<()> {
+    let mut h = Harness::new_with_modules_supported(true);
+    let mut spec = classic_external(
+      "legacy.js",
+      /* async */ false,
+      /* defer */ false,
+      /* parser_inserted */ true,
+    );
+    spec.nomodule_attr = true;
+    h.discover(spec)?;
+    assert!(
+      h.started_classic_fetches.is_empty(),
+      "expected no fetch to be started for nomodule classic scripts when modules are supported"
+    );
+    assert!(
+      h.host.log.is_empty(),
+      "expected nomodule classic scripts not to execute"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn nomodule_classic_script_executes_when_modules_are_not_supported() -> Result<()> {
     let mut h = Harness::new_with_modules_supported(false);
     h.discover(classic_inline("A", /* nomodule */ true))?;
@@ -1281,6 +1303,46 @@ mod state_machine_tests {
       "import maps must not be registered when modules are not supported"
     );
     assert!(h.host.log.is_empty(), "import maps must not execute");
+    Ok(())
+  }
+
+  #[test]
+  fn nomodule_external_classic_script_starts_fetch_when_modules_are_not_supported() -> Result<()> {
+    let mut h = Harness::new_with_modules_supported(false);
+    let mut spec = classic_external(
+      "legacy.js",
+      /* async */ false,
+      /* defer */ false,
+      /* parser_inserted */ true,
+    );
+    spec.nomodule_attr = true;
+    h.discover(spec)?;
+    assert_eq!(
+      h.started_classic_fetches.len(),
+      1,
+      "expected classic nomodule scripts to run normally when modules are not supported"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn nomodule_does_not_block_module_scripts() -> Result<()> {
+    let mut h = Harness::new_with_modules_supported(true);
+    let mut spec = module_external("mod.js", /* async */ false, /* parser_inserted */ true);
+    spec.nomodule_attr = true;
+    let id = h.discover(spec)?;
+    assert_eq!(
+      h.started_module_fetches.len(),
+      1,
+      "expected module graph fetch to start even when `nomodule` is present"
+    );
+    h.module_graph_complete(id, "M")?;
+    h.parsing_completed()?;
+    h.run_event_loop()?;
+    assert_eq!(
+      h.host.log,
+      vec!["module:M".to_string(), "microtask:module:M".to_string()]
+    );
     Ok(())
   }
 }

@@ -572,6 +572,8 @@ impl GradientLut {
     if self.stop_positions.is_empty() || self.stop_colors.is_empty() {
       return [0.0, 0.0, 0.0, 0.0];
     }
+    // `t` is in the same offset-adjusted coordinate system used by `sample_mapped_f32`:
+    // callers subtract `self.offset` before sampling.
     let t = t.clamp(0.0, self.span);
     if t <= self.stop_positions[0] {
       return self.stop_colors[0];
