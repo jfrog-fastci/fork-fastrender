@@ -976,6 +976,30 @@ impl FormattingContext for FlexFormattingContext {
       }
     }
 
+    // CSS2.1 §10.5: Percentage `height` values compute to `auto` when the containing block height
+    // is not definite (i.e. it depends on content height) for in-flow elements.
+    //
+    // Taffy treats percentage heights as resolving against the available space handed to it. When
+    // this formatting context is invoked with an indefinite block-size (common for block-flow
+    // layout), we must therefore translate unresolvable percentage heights to `auto` on the root
+    // node so `height:100%` doesn't incorrectly expand to the viewport/probe size.
+    if constraints.used_border_box_height.is_none()
+      && constraints.height().is_none()
+      && style
+        .height
+        .as_ref()
+        .is_some_and(crate::style::values::Length::has_percentage)
+      && !matches!(style.position, Position::Absolute | Position::Fixed)
+    {
+      if let Ok(existing) = taffy_tree.style(root_node) {
+        let mut updated = existing.clone();
+        updated.size.height = Dimension::auto();
+        taffy_tree
+          .set_style(root_node, updated)
+          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      }
+    }
+
     // `width/height: fit-content` clamps the used size between the box's min- and max-content
     // contributions. Outer layout usually resolves this for block-level boxes and passes the
     // result via `used_border_box_*`, but when the flex formatting context is invoked without
@@ -1061,6 +1085,28 @@ impl FormattingContext for FlexFormattingContext {
 
     // Phase 2: Compute layout using Taffy
     let mut available_space = self.constraints_to_available_space(&constraints);
+    // When an outer layout context has already resolved a definite used size for this flex
+    // container, ensure Taffy runs the flex algorithm against that line size.
+    //
+    // We already force the root node's `size` via `used_border_box_*` above, but Taffy still uses
+    // the available space passed to `compute_layout()` as a clamp. If the used size is larger than
+    // the containing block (overflow), failing to update `available_space` will cause Taffy to lay
+    // out children using the smaller containing block size and only later "expand" the root, which
+    // can massively inflate the computed cross size (e.g. long headlines wrapping into hundreds of
+    // lines). Use the known used size as the available space so layout happens at the correct
+    // dimensions.
+    if let Some(w) = constraints
+      .used_border_box_width
+      .filter(|w| w.is_finite() && *w >= 0.0)
+    {
+      available_space.width = AvailableSpace::Definite(w);
+    }
+    if let Some(h) = constraints
+      .used_border_box_height
+      .filter(|h| h.is_finite() && *h >= 0.0)
+    {
+      available_space.height = AvailableSpace::Definite(h);
+    }
     // If the flex container itself is sized with intrinsic keywords, map the available space we
     // pass into Taffy so it performs the corresponding intrinsic probe. Fit-content needs a
     // definite available size (fill-available), so only map min-/max-content here.
@@ -1234,20 +1280,41 @@ impl FormattingContext for FlexFormattingContext {
     let log_root = toggles.truthy("FASTR_LOG_FLEX_ROOT");
     if log_root {
       eprintln!(
-        "[flex-root] id={} selector={} avail=({:?},{:?}) known=({:?},{:?}) viewport=({:.1},{:.1})",
+        "[flex-root] id={} selector={} dir={:?} wm={:?} avail=({:?},{:?}) known=({:?},{:?}) used=({:?},{:?}) viewport=({:.1},{:.1})",
         box_node.id,
         box_node
           .debug_info
           .as_ref()
           .map(|d| d.to_selector())
           .unwrap_or_else(|| "<anon>".to_string()),
+        box_node.style.flex_direction,
+        box_node.style.writing_mode,
         available_space.width,
         available_space.height,
         constraints.width(),
         constraints.height(),
+        constraints.used_border_box_width,
+        constraints.used_border_box_height,
         self.viewport_size.width,
         self.viewport_size.height,
       );
+      if let Ok(root_style) = taffy_tree.style(root_node) {
+        eprintln!(
+          "[flex-root-style] id={} display={:?} flex_dir={:?} align_items={:?} justify_items={:?} justify={:?} size=({:?},{:?}) min=({:?},{:?}) max=({:?},{:?})",
+          box_node.id,
+          root_style.display,
+          root_style.flex_direction,
+          root_style.align_items,
+          root_style.justify_items,
+          root_style.justify_content,
+          root_style.size.width,
+          root_style.size.height,
+          root_style.min_size.width,
+          root_style.min_size.height,
+          root_style.max_size.width,
+          root_style.max_size.height,
+        );
+      }
     }
     let log_constraint_raw = toggles
       .get("FASTR_LOG_FLEX_CONSTRAINTS")
@@ -2732,9 +2799,16 @@ impl FormattingContext for FlexFormattingContext {
                         // widths propagating through flex sizing.
                         content_w = content_w.min(this.viewport_size.width.max(0.0));
 
-                        // Preserve the existing block-size hint behavior so baseline alignment
-                        // doesn't collapse when Taffy asks for intrinsic inline sizes.
-                        let mut content_h = fallback_size(known_dimensions.height, avail.height);
+                         // For intrinsic inline-size probes, the `known_dimensions.height` that
+                         // Taffy supplies is often just the flex line's tentative cross size (or a
+                         // fallback like the viewport width/height) rather than a meaningful
+                         // constraint for the measured box.
+                         //
+                         // Using it directly can wildly inflate measured block sizes and cause the
+                         // entire flex/grid track to expand (e.g. large carousels on
+                         // theguardian.com). Instead, compute an intrinsic block size when we
+                         // don't otherwise have a reliable value.
+                         let mut content_h = 0.0;
                         let eps = 0.01;
                         if content_h <= eps {
                           let intrinsic_block_result = if let Some(style) = override_style.clone() {
@@ -2897,7 +2971,9 @@ impl FormattingContext for FlexFormattingContext {
                           // cross size (notably for baseline alignment). Returning 0 here can
                           // collapse the line height, so compute an intrinsic block size when the
                           // caller hasn't provided a definite height.
-                          let mut content_h = fallback_size(known_dimensions.height, avail.height);
+                          // See note above: don't treat `known_dimensions.height` as the measured
+                          // block size during intrinsic inline-size probes.
+                          let mut content_h = 0.0;
                           let eps = 0.01;
                           if content_h <= eps {
                             let intrinsic_block_result = if let Some(style) = override_style.clone() {
@@ -5438,7 +5514,14 @@ fn measure_cache_key_and_snap(
 
   let ignore_height = drop_available_height || width_is_intrinsic;
   let height = if let Some(h) = snapped_known.height {
-    Some(quantize(h))
+    if width_is_intrinsic {
+      // Intrinsic inline-size probes only care about the inline axis. Taffy may supply a
+      // "known" block size that is merely a tentative cross size (or another fallback); treat
+      // it as absent so it can't poison cached measurements.
+      None
+    } else {
+      Some(quantize(h))
+    }
   } else if ignore_height {
     // Ignore available block-size differences when the measurement does not depend on the
     // containing block height (or when probing intrinsic inline sizes).
@@ -5513,7 +5596,16 @@ fn hash_length(len: &Length, hasher: &mut FingerprintHasher) {
   match &len.calc {
     Some(calc) => {
       1u8.hash(hasher);
-      hash_calc_length(calc, hasher);
+      match calc {
+        crate::style::values::LengthCalc::Linear(calc) => {
+          0u8.hash(hasher);
+          hash_calc_length(calc, hasher);
+        }
+        crate::style::values::LengthCalc::Expr(id) => {
+          1u8.hash(hasher);
+          id.index().hash(hasher);
+        }
+      }
     }
     None => 0u8.hash(hasher),
   }
@@ -6178,11 +6270,11 @@ impl FlexFormattingContext {
       }
     };
     let cross_positive_self = self_axis_positive(container_cross_axis);
-    let inline_positive_self = self_axis_positive(container_axes.inline_axis());
+    let _inline_positive_self = self_axis_positive(container_axes.inline_axis());
 
-    // `align-items` and `justify-items` define the used value for `align-self/justify-self:auto`.
-    // Encode that into per-item `align_self/justify_self` so `self-start/self-end` can resolve per
-    // item (Taffy's container-level `align_items` cannot express that).
+    // `align-items` defines the used value for `align-self:auto` in flex layout. Encode that into
+    // per-item `align_self` so `self-start/self-end` can resolve per item (Taffy's container-level
+    // `align_items` cannot express that).
     let effective_align_self = if is_root {
       style.align_self
     } else {
@@ -6190,14 +6282,6 @@ impl FlexFormattingContext {
         .align_self
         .or_else(|| containing_flex.map(|flex| flex.align_items))
     };
-    let effective_justify_self = if is_root {
-      style.justify_self
-    } else {
-      style
-        .justify_self
-        .or_else(|| containing_flex.map(|flex| flex.justify_items))
-    };
-
     let align_self_axis_positive = match effective_align_self {
       Some(AlignItems::SelfStart | AlignItems::SelfEnd) => cross_positive_self ^ mirror_cross_axis,
       // `start`/`end` resolve against the flex container's physical axis and must *not* mirror with
@@ -6208,11 +6292,6 @@ impl FlexFormattingContext {
       Some(AlignItems::Start | AlignItems::End) => cross_positive_item_base ^ mirror_cross_axis,
       _ => cross_positive_item,
     };
-    let justify_self_axis_positive = match effective_justify_self {
-      Some(AlignItems::SelfStart | AlignItems::SelfEnd) => inline_positive_self,
-      _ => inline_positive_item,
-    };
-
     let reserve_scroll_x = style.scrollbar_gutter.stable
       && matches!(
         style.overflow_x,
@@ -6272,8 +6351,8 @@ impl FlexFormattingContext {
       align_items: self.align_items_to_taffy(style.align_items, cross_positive_container),
       align_content: self.align_content_to_taffy(style.align_content, cross_positive_for_start_end),
       align_self: self.align_self_to_taffy(effective_align_self, align_self_axis_positive),
-      justify_self: self.align_self_to_taffy(effective_justify_self, justify_self_axis_positive),
-      justify_items: self.align_items_to_taffy(style.justify_items, inline_positive_container),
+      justify_self: None,
+      justify_items: None,
 
       // Gap
       gap: taffy::geometry::Size {
@@ -8161,9 +8240,9 @@ impl FlexFormattingContext {
         let fragment = item_fc.layout(node, constraints)?;
         Ok(fragment.bounds.height())
       };
-      let intrinsic_result: Result<f32, LayoutError> = if let Some(cross_size) = stretch_cross_size {
+      let intrinsic_result: Result<(f32, f32), LayoutError> = if let Some(cross_size) = stretch_cross_size {
         let probe_constraints = LayoutConstraints::definite_width(cross_size);
-        if needs_override {
+        let result = if needs_override {
           let mut override_style: ComputedStyle = (*box_node.style).clone();
           override_style.height = None;
           override_style.height_keyword = None;
@@ -8180,7 +8259,8 @@ impl FlexFormattingContext {
           }
         } else {
           probe_block_size(box_node, &probe_constraints)
-        }
+        };
+        result.map(|h| (h, h))
       } else if needs_override {
         let mut override_style: ComputedStyle = (*box_node.style).clone();
         override_style.height = None;
@@ -8190,42 +8270,38 @@ impl FlexFormattingContext {
             box_node.id,
             Arc::new(override_style),
             || {
-              crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+              crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
                 item_fc.as_ref(),
                 box_node,
                 PhysicalAxis::Y,
-                // Flexbox's content-based automatic minimum size uses the *content size suggestion*.
-                // For a vertical main axis, measuring the min-content block-size at the min-content
-                // inline size can hugely overestimate the true minimum (because it models wrapping
-                // at an artificially narrow width). Browsers instead use the max-content inline
-                // size for this probe, producing the single-line block size when the item is
-                // allowed to shrink-to-fit in the cross axis.
-                IntrinsicSizingMode::MaxContent,
               )
             },
           )
         } else {
           let mut cloned = box_node.clone();
           cloned.style = Arc::new(override_style);
-          crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+          crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
             item_fc.as_ref(),
             &cloned,
             PhysicalAxis::Y,
-            IntrinsicSizingMode::MaxContent,
           )
         }
       } else {
-        crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+        crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
           item_fc.as_ref(),
           box_node,
           PhysicalAxis::Y,
-          IntrinsicSizingMode::MaxContent,
         )
       };
 
       match intrinsic_result {
-        Ok(content_size_suggestion) => {
-          let mut min_candidate = content_size_suggestion;
+        Ok((min_content, max_content)) => {
+          // Intrinsic block-size probes can report a larger min-content size than max-content size
+          // (narrower widths cause more line wrapping and therefore taller content). Flexbox
+          // automatic minimum sizing wants the *content-based minimum* size; pick the smaller of
+          // the two intrinsic block-size modes so long headlines don't explode to viewport-sized
+          // heights during flex-item min-size resolution (e.g. theguardian.com cards).
+          let mut min_candidate = min_content.min(max_content);
           if let Some(transferred) = transferred_size_suggestion {
             if box_node.is_replaced() {
               min_candidate = min_candidate.min(transferred);
@@ -8531,11 +8607,15 @@ impl FlexFormattingContext {
           rect.size.width = self.viewport_size.width;
         }
       }
-      // Clamp overly wide layouts back to the definite available inline size so children
-      // are reflowed within the container instead of inheriting a runaway max-content span.
-      if let Some(def_w) = resolved_definite_width() {
-        if rect.size.width > def_w + rect_eps {
-          rect.size.width = def_w;
+      // If the flex container has `width:auto` and Taffy returns a wider size (usually due to an
+      // intrinsic sizing probe), clamp back to the definite available inline size. This keeps the
+      // re-laid out children consistent with the final container size. Do *not* clamp explicitly
+      // sized flex containers: they are allowed to overflow their containing block.
+      if physical_width_is_auto(&box_node.style) {
+        if let Some(def_w) = resolved_definite_width() {
+          if rect.size.width > def_w + rect_eps {
+            rect.size.width = def_w;
+          }
         }
       }
     }

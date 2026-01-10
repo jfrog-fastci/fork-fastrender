@@ -43,3 +43,26 @@ fn whitespace_only_inline_boxes_do_not_create_empty_lines() {
   assert_eq!(trimmed, ["Title"]);
 }
 
+#[test]
+fn abspos_only_inline_boxes_do_not_create_empty_lines() {
+  // Inline boxes that only contain out-of-flow positioned descendants should not create
+  // placeholder line boxes. These descendants are represented internally as static-position
+  // anchors, which should not contribute line box height.
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+  let dom = renderer
+    .parse_html(
+      "<span><span style=\"position:absolute;top:0;left:0\"></span></span><h1 style=\"margin:0\">Title</h1>",
+    )
+    .expect("parse HTML");
+  let fragments = renderer
+    .layout_document(&dom, 800, 600)
+    .expect("layout document");
+
+  let mut lines = Vec::new();
+  collect_line_texts(&fragments.root, &mut lines);
+  let trimmed: Vec<&str> = lines.iter().map(|line| line.trim()).collect();
+  assert_eq!(trimmed, ["Title"]);
+}

@@ -14,7 +14,10 @@
 //! Reference: CSS Values and Units Module Level 3
 //! <https://www.w3.org/TR/css-values-3/>
 
+use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
 use std::fmt;
+use std::sync::OnceLock;
 
 use smallvec::SmallVec;
 
@@ -321,6 +324,751 @@ const ARG_SEPARATOR_TERM: CalcTerm = CalcTerm {
   unit: LengthUnit::Calc,
   value: 0.0,
 };
+
+// ============================================================================
+// Non-linear calc/min/max/clamp support for <length-percentage>
+// ============================================================================
+
+/// Identifier for an interned non-linear `<length-percentage>` expression (e.g. `max(10px, 5vw)`).
+///
+/// These are stored in a global arena so `Length` can stay `Copy` while supporting expressions
+/// that cannot be represented as a linear [`CalcLength`] combination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CalcLengthExprId(u32);
+
+impl CalcLengthExprId {
+  #[inline]
+  pub(crate) fn index(self) -> u32 {
+    self.0
+  }
+}
+
+/// `<length-percentage>` computed value for `calc()`/`min()`/`max()`/`clamp()`.
+///
+/// - [`LengthCalc::Linear`] stores a linear combination of units (`CalcLength`) as we did
+///   historically.
+/// - [`LengthCalc::Expr`] references an interned expression tree for non-linear cases such as
+///   `max(180px, calc(100vw - 170px))`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LengthCalc {
+  Linear(CalcLength),
+  Expr(CalcLengthExprId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MinMaxOp {
+  Min,
+  Max,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum LengthCalcExpr {
+  Add {
+    left: LengthCalc,
+    right: LengthCalc,
+    /// Either `1.0` or `-1.0` (corresponding to `+` / `-`).
+    sign: f32,
+  },
+  Scale {
+    value: LengthCalc,
+    factor: f32,
+  },
+  MinMax {
+    op: MinMaxOp,
+    values: Vec<LengthCalc>,
+  },
+  Clamp {
+    min: LengthCalc,
+    preferred: LengthCalc,
+    max: LengthCalc,
+  },
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+struct LengthCalcFlags {
+  has_percentage: bool,
+  has_viewport_relative: bool,
+  has_font_relative: bool,
+  has_container_query_relative: bool,
+}
+
+impl LengthCalcFlags {
+  fn or(self, other: Self) -> Self {
+    Self {
+      has_percentage: self.has_percentage || other.has_percentage,
+      has_viewport_relative: self.has_viewport_relative || other.has_viewport_relative,
+      has_font_relative: self.has_font_relative || other.has_font_relative,
+      has_container_query_relative: self.has_container_query_relative || other.has_container_query_relative,
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+struct LengthCalcExprEntry {
+  expr: LengthCalcExpr,
+  /// Key used for interning/equality.
+  key: String,
+  /// Canonical CSS serialization of this expression.
+  css_text: String,
+  flags: LengthCalcFlags,
+}
+
+#[derive(Default)]
+struct LengthCalcExprArena {
+  entries: Vec<LengthCalcExprEntry>,
+  index: FxHashMap<String, CalcLengthExprId>,
+}
+
+static LENGTH_CALC_EXPR_ARENA: OnceLock<RwLock<LengthCalcExprArena>> = OnceLock::new();
+
+fn length_calc_expr_arena() -> &'static RwLock<LengthCalcExprArena> {
+  LENGTH_CALC_EXPR_ARENA.get_or_init(|| RwLock::new(LengthCalcExprArena::default()))
+}
+
+fn linear_flags(calc: &CalcLength) -> LengthCalcFlags {
+  LengthCalcFlags {
+    has_percentage: calc.has_percentage(),
+    has_viewport_relative: calc.has_viewport_relative(),
+    has_font_relative: calc.has_font_relative(),
+    has_container_query_relative: calc.has_container_query_relative(),
+  }
+}
+
+fn value_flags(value: LengthCalc, arena: &LengthCalcExprArena) -> LengthCalcFlags {
+  match value {
+    LengthCalc::Linear(calc) => linear_flags(&calc),
+    LengthCalc::Expr(id) => arena
+      .entries
+      .get(id.0 as usize)
+      .map(|e| e.flags)
+      .unwrap_or_default(),
+  }
+}
+
+fn value_key(value: LengthCalc, arena: &LengthCalcExprArena) -> String {
+  match value {
+    LengthCalc::Linear(calc) => calc.to_css(),
+    LengthCalc::Expr(id) => arena
+      .entries
+      .get(id.0 as usize)
+      .map(|e| e.key.clone())
+      .unwrap_or_else(|| "invalid-expr".to_string()),
+  }
+}
+
+fn value_css(value: LengthCalc, arena: &LengthCalcExprArena) -> String {
+  match value {
+    LengthCalc::Linear(calc) => calc.to_css(),
+    LengthCalc::Expr(id) => arena
+      .entries
+      .get(id.0 as usize)
+      .map(|e| e.css_text.clone())
+      .unwrap_or_else(|| "calc(0)".to_string()),
+  }
+}
+
+fn intern_length_calc_expr(expr: LengthCalcExpr) -> CalcLengthExprId {
+  // Build key + css text under a write lock so we can reuse existing entries' strings without
+  // additional locking.
+  let arena_lock = length_calc_expr_arena();
+  let mut arena = arena_lock.write();
+
+  // Sites often use nested `min()`/`max()` forms as a clamp polyfill:
+  // - `max(MIN, min(PREFERRED, MAX))`
+  // - `min(MAX, max(MIN, PREFERRED))`
+  //
+  // Canonicalize these to a single `clamp()` expression so `to_css()` produces stable output and
+  // downstream code doesn't need to special-case the polyfill.
+  let expr = match expr {
+    LengthCalcExpr::MinMax { op, values } => {
+      let lookup_two_args =
+        |id: CalcLengthExprId| -> Option<(MinMaxOp, [LengthCalc; 2])> {
+          let entry = arena.entries.get(id.index() as usize)?;
+          let LengthCalcExpr::MinMax { op, values } = &entry.expr else {
+            return None;
+          };
+          if values.len() != 2 {
+            return None;
+          }
+          Some((*op, [values[0], values[1]]))
+        };
+
+      if values.len() == 2 {
+        match op {
+          MinMaxOp::Max => {
+            let mut min_bound: Option<LengthCalc> = None;
+            let mut inner_min: Option<[LengthCalc; 2]> = None;
+
+            // `max(MIN, min(PREFERRED, MAX))` (either argument order).
+            if let LengthCalc::Expr(id) = values[0] {
+              if let Some((inner_op, inner_values)) = lookup_two_args(id) {
+                if inner_op == MinMaxOp::Min {
+                  min_bound = Some(values[1]);
+                  inner_min = Some(inner_values);
+                }
+              }
+            }
+            if min_bound.is_none() {
+              if let LengthCalc::Expr(id) = values[1] {
+                if let Some((inner_op, inner_values)) = lookup_two_args(id) {
+                  if inner_op == MinMaxOp::Min {
+                    min_bound = Some(values[0]);
+                    inner_min = Some(inner_values);
+                  }
+                }
+              }
+            }
+
+            if let (Some(min), Some([preferred, max])) = (min_bound, inner_min) {
+              LengthCalcExpr::Clamp {
+                min,
+                preferred,
+                max,
+              }
+            } else {
+              LengthCalcExpr::MinMax { op, values }
+            }
+          }
+          MinMaxOp::Min => {
+            let mut max_bound: Option<LengthCalc> = None;
+            let mut inner_max: Option<[LengthCalc; 2]> = None;
+
+            // `min(MAX, max(MIN, PREFERRED))` (either argument order).
+            if let LengthCalc::Expr(id) = values[0] {
+              if let Some((inner_op, inner_values)) = lookup_two_args(id) {
+                if inner_op == MinMaxOp::Max {
+                  max_bound = Some(values[1]);
+                  inner_max = Some(inner_values);
+                }
+              }
+            }
+            if max_bound.is_none() {
+              if let LengthCalc::Expr(id) = values[1] {
+                if let Some((inner_op, inner_values)) = lookup_two_args(id) {
+                  if inner_op == MinMaxOp::Max {
+                    max_bound = Some(values[0]);
+                    inner_max = Some(inner_values);
+                  }
+                }
+              }
+            }
+
+            if let (Some(max), Some([min, preferred])) = (max_bound, inner_max) {
+              LengthCalcExpr::Clamp {
+                min,
+                preferred,
+                max,
+              }
+            } else {
+              LengthCalcExpr::MinMax { op, values }
+            }
+          }
+        }
+      } else {
+        LengthCalcExpr::MinMax { op, values }
+      }
+    }
+    other => other,
+  };
+
+  let (key, css_text, flags) = match &expr {
+    LengthCalcExpr::Add { left, right, sign } => {
+      let left_key = value_key(*left, &arena);
+      let right_key = value_key(*right, &arena);
+      let left_css = value_css(*left, &arena);
+      let right_css = value_css(*right, &arena);
+      let op = if *sign < 0.0 { '-' } else { '+' };
+      let key = format!("add({left_key},{op},{right_key})");
+      let css_text = format!("calc({left_css} {op} {right_css})");
+      let flags = value_flags(*left, &arena).or(value_flags(*right, &arena));
+      (key, css_text, flags)
+    }
+    LengthCalcExpr::Scale { value, factor } => {
+      let child_key = value_key(*value, &arena);
+      let child_css = value_css(*value, &arena);
+      let factor_bits = factor.to_bits();
+      let key = format!("scale({factor_bits},{child_key})");
+      // Wrap the child in `calc()` so the result stays a valid calc expression even when the child
+      // is a bare length like `10px`.
+      let css_text = format!("calc({factor} * ({child_css}))");
+      let flags = value_flags(*value, &arena);
+      (key, css_text, flags)
+    }
+    LengthCalcExpr::MinMax { op, values } => {
+      let op_name = match op {
+        MinMaxOp::Min => "min",
+        MinMaxOp::Max => "max",
+      };
+      let mut key = String::new();
+      key.push_str(op_name);
+      key.push('(');
+      let mut css_text = String::new();
+      css_text.push_str(op_name);
+      css_text.push('(');
+      let mut flags = LengthCalcFlags::default();
+      for (idx, v) in values.iter().enumerate() {
+        if idx > 0 {
+          key.push(',');
+          css_text.push_str(", ");
+        }
+        key.push_str(&value_key(*v, &arena));
+        css_text.push_str(&value_css(*v, &arena));
+        flags = flags.or(value_flags(*v, &arena));
+      }
+      key.push(')');
+      css_text.push(')');
+      (key, css_text, flags)
+    }
+    LengthCalcExpr::Clamp { min, preferred, max } => {
+      let min_key = value_key(*min, &arena);
+      let pref_key = value_key(*preferred, &arena);
+      let max_key = value_key(*max, &arena);
+      let min_css = value_css(*min, &arena);
+      let pref_css = value_css(*preferred, &arena);
+      let max_css = value_css(*max, &arena);
+      let key = format!("clamp({min_key},{pref_key},{max_key})");
+      let css_text = format!("clamp({min_css}, {pref_css}, {max_css})");
+      let flags = value_flags(*min, &arena)
+        .or(value_flags(*preferred, &arena))
+        .or(value_flags(*max, &arena));
+      (key, css_text, flags)
+    }
+  };
+
+  if let Some(existing) = arena.index.get(&key) {
+    return *existing;
+  }
+
+  let id = CalcLengthExprId(arena.entries.len().min(u32::MAX as usize) as u32);
+  arena.entries.push(LengthCalcExprEntry {
+    expr,
+    key: key.clone(),
+    css_text,
+    flags,
+  });
+  arena.index.insert(key, id);
+  id
+}
+
+impl LengthCalc {
+  pub fn has_percentage(&self) -> bool {
+    match self {
+      LengthCalc::Linear(calc) => calc.has_percentage(),
+      LengthCalc::Expr(id) => length_calc_expr_arena()
+        .read()
+        .entries
+        .get(id.0 as usize)
+        .is_some_and(|e| e.flags.has_percentage),
+    }
+  }
+
+  pub fn has_viewport_relative(&self) -> bool {
+    match self {
+      LengthCalc::Linear(calc) => calc.has_viewport_relative(),
+      LengthCalc::Expr(id) => length_calc_expr_arena()
+        .read()
+        .entries
+        .get(id.0 as usize)
+        .is_some_and(|e| e.flags.has_viewport_relative),
+    }
+  }
+
+  pub fn has_font_relative(&self) -> bool {
+    match self {
+      LengthCalc::Linear(calc) => calc.has_font_relative(),
+      LengthCalc::Expr(id) => length_calc_expr_arena()
+        .read()
+        .entries
+        .get(id.0 as usize)
+        .is_some_and(|e| e.flags.has_font_relative),
+    }
+  }
+
+  pub fn has_container_query_relative(&self) -> bool {
+    match self {
+      LengthCalc::Linear(calc) => calc.has_container_query_relative(),
+      LengthCalc::Expr(id) => length_calc_expr_arena()
+        .read()
+        .entries
+        .get(id.0 as usize)
+        .is_some_and(|e| e.flags.has_container_query_relative),
+    }
+  }
+
+  pub fn to_css(&self) -> String {
+    match self {
+      LengthCalc::Linear(calc) => calc.to_css(),
+      LengthCalc::Expr(id) => length_calc_expr_arena()
+        .read()
+        .entries
+        .get(id.0 as usize)
+        .map(|e| e.css_text.clone())
+        .unwrap_or_else(|| "calc(0)".to_string()),
+    }
+  }
+
+  pub fn resolve(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+  ) -> Option<f32> {
+    match self {
+      LengthCalc::Linear(calc) => {
+        calc.resolve(percentage_base, viewport_width, viewport_height, font_size_px, root_font_size_px)
+      }
+      LengthCalc::Expr(id) => resolve_length_calc_expr(
+        LengthCalc::Expr(*id),
+        percentage_base,
+        viewport_width,
+        viewport_height,
+        font_size_px,
+        root_font_size_px,
+      ),
+    }
+  }
+
+  pub(crate) fn resolve_for_inline_axis(
+    &self,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    inline_axis_is_horizontal: bool,
+  ) -> Option<f32> {
+    match self {
+      LengthCalc::Linear(calc) => calc.resolve_for_inline_axis(
+        percentage_base,
+        viewport_width,
+        viewport_height,
+        font_size_px,
+        root_font_size_px,
+        inline_axis_is_horizontal,
+      ),
+      LengthCalc::Expr(_) => resolve_length_calc_with_resolver(
+        *self,
+        percentage_base,
+        viewport_width,
+        viewport_height,
+        font_size_px,
+        root_font_size_px,
+        &|calc, pct, vw, vh, font_px, root_px| {
+          calc.resolve_for_inline_axis(pct, vw, vh, font_px, root_px, inline_axis_is_horizontal)
+        },
+      ),
+    }
+  }
+
+  pub fn absolute_sum(&self) -> Option<f32> {
+    match self {
+      LengthCalc::Linear(calc) => calc.absolute_sum(),
+      LengthCalc::Expr(_) => None,
+    }
+  }
+
+  pub fn terms(&self) -> Option<&[CalcTerm]> {
+    match self {
+      LengthCalc::Linear(calc) => Some(calc.terms()),
+      LengthCalc::Expr(_) => None,
+    }
+  }
+}
+
+pub(crate) fn length_calc_add_scaled(
+  left: LengthCalc,
+  right: LengthCalc,
+  sign: f32,
+) -> Option<LengthCalc> {
+  match (left, right) {
+    (LengthCalc::Linear(l), LengthCalc::Linear(r)) => {
+      l.add_scaled(&r, sign).map(LengthCalc::Linear)
+    }
+    _ => Some(LengthCalc::Expr(intern_length_calc_expr(LengthCalcExpr::Add {
+      left,
+      right,
+      sign,
+    }))),
+  }
+}
+
+pub(crate) fn length_calc_scale(value: LengthCalc, factor: f32) -> Option<LengthCalc> {
+  match value {
+    LengthCalc::Linear(calc) => calc.scale(factor).map(LengthCalc::Linear),
+    _ => Some(LengthCalc::Expr(intern_length_calc_expr(LengthCalcExpr::Scale {
+      value,
+      factor,
+    }))),
+  }
+}
+
+pub(crate) fn length_calc_min_max(op: MinMaxOp, values: Vec<LengthCalc>) -> LengthCalc {
+  LengthCalc::Expr(intern_length_calc_expr(LengthCalcExpr::MinMax { op, values }))
+}
+
+pub(crate) fn length_calc_clamp(min: LengthCalc, preferred: LengthCalc, max: LengthCalc) -> LengthCalc {
+  LengthCalc::Expr(intern_length_calc_expr(LengthCalcExpr::Clamp {
+    min,
+    preferred,
+    max,
+  }))
+}
+
+pub(crate) fn resolve_length_calc_with_resolver(
+  value: LengthCalc,
+  percentage_base: Option<f32>,
+  viewport_width: f32,
+  viewport_height: f32,
+  font_size_px: f32,
+  root_font_size_px: f32,
+  resolve_linear: &impl Fn(&CalcLength, Option<f32>, f32, f32, f32, f32) -> Option<f32>,
+) -> Option<f32> {
+  fn resolve_inner(
+    value: LengthCalc,
+    arena: &LengthCalcExprArena,
+    percentage_base: Option<f32>,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    resolve_linear: &impl Fn(&CalcLength, Option<f32>, f32, f32, f32, f32) -> Option<f32>,
+    depth: u32,
+  ) -> Option<f32> {
+    // Guard against pathological self-referential expression graphs (shouldn't happen with the
+    // parser, but avoid unbounded recursion).
+    if depth > 128 {
+      return None;
+    }
+
+    match value {
+      LengthCalc::Linear(calc) => resolve_linear(
+        &calc,
+        percentage_base,
+        viewport_width,
+        viewport_height,
+        font_size_px,
+        root_font_size_px,
+      ),
+      LengthCalc::Expr(id) => {
+        let entry = arena.entries.get(id.index() as usize)?;
+        match &entry.expr {
+          LengthCalcExpr::Add { left, right, sign } => {
+            let l = resolve_inner(
+              *left,
+              arena,
+              percentage_base,
+              viewport_width,
+              viewport_height,
+              font_size_px,
+              root_font_size_px,
+              resolve_linear,
+              depth + 1,
+            )?;
+            let r = resolve_inner(
+              *right,
+              arena,
+              percentage_base,
+              viewport_width,
+              viewport_height,
+              font_size_px,
+              root_font_size_px,
+              resolve_linear,
+              depth + 1,
+            )?;
+            let out = l + r * *sign;
+            out.is_finite().then_some(out)
+          }
+          LengthCalcExpr::Scale { value, factor } => {
+            let v = resolve_inner(
+              *value,
+              arena,
+              percentage_base,
+              viewport_width,
+              viewport_height,
+              font_size_px,
+              root_font_size_px,
+              resolve_linear,
+              depth + 1,
+            )?;
+            let out = v * *factor;
+            out.is_finite().then_some(out)
+          }
+          LengthCalcExpr::MinMax { op, values } => {
+            let mut iter = values.iter();
+            let first = *iter.next()?;
+            let mut extremum = resolve_inner(
+              first,
+              arena,
+              percentage_base,
+              viewport_width,
+              viewport_height,
+              font_size_px,
+              root_font_size_px,
+              resolve_linear,
+              depth + 1,
+            )?;
+            for v in iter {
+              let resolved = resolve_inner(
+                *v,
+                arena,
+                percentage_base,
+                viewport_width,
+                viewport_height,
+                font_size_px,
+                root_font_size_px,
+                resolve_linear,
+                depth + 1,
+              )?;
+              extremum = match op {
+                MinMaxOp::Min => extremum.min(resolved),
+                MinMaxOp::Max => extremum.max(resolved),
+              };
+            }
+            extremum.is_finite().then_some(extremum)
+          }
+          LengthCalcExpr::Clamp { min, preferred, max } => {
+            let min_v = resolve_inner(
+              *min,
+              arena,
+              percentage_base,
+              viewport_width,
+              viewport_height,
+              font_size_px,
+              root_font_size_px,
+              resolve_linear,
+              depth + 1,
+            )?;
+            let pref_v = resolve_inner(
+              *preferred,
+              arena,
+              percentage_base,
+              viewport_width,
+              viewport_height,
+              font_size_px,
+              root_font_size_px,
+              resolve_linear,
+              depth + 1,
+            )?;
+            let max_v = resolve_inner(
+              *max,
+              arena,
+              percentage_base,
+              viewport_width,
+              viewport_height,
+              font_size_px,
+              root_font_size_px,
+              resolve_linear,
+              depth + 1,
+            )?;
+            let upper = if max_v < min_v { min_v } else { max_v };
+            let out = pref_v.max(min_v).min(upper);
+            out.is_finite().then_some(out)
+          }
+        }
+      }
+    }
+  }
+
+  let arena_guard = length_calc_expr_arena().read();
+  resolve_inner(
+    value,
+    &arena_guard,
+    percentage_base,
+    viewport_width,
+    viewport_height,
+    font_size_px,
+    root_font_size_px,
+    resolve_linear,
+    0,
+  )
+}
+
+fn resolve_length_calc_expr(
+  value: LengthCalc,
+  percentage_base: Option<f32>,
+  viewport_width: f32,
+  viewport_height: f32,
+  font_size_px: f32,
+  root_font_size_px: f32,
+) -> Option<f32> {
+  resolve_length_calc_with_resolver(
+    value,
+    percentage_base,
+    viewport_width,
+    viewport_height,
+    font_size_px,
+    root_font_size_px,
+    &|calc, percentage_base, vw, vh, font_px, root_px| {
+      calc.resolve(percentage_base, vw, vh, font_px, root_px)
+    },
+  )
+}
+
+fn resolve_length_calc_container_query_units(
+  value: LengthCalc,
+  cqw_base: f32,
+  cqh_base: f32,
+  cqi_base: f32,
+  cqb_base: f32,
+) -> LengthCalc {
+  fn inner(
+    value: LengthCalc,
+    cqw_base: f32,
+    cqh_base: f32,
+    cqi_base: f32,
+    cqb_base: f32,
+    depth: u32,
+  ) -> LengthCalc {
+    if depth > 128 {
+      return LengthCalc::Linear(CalcLength::empty());
+    }
+
+    match value {
+      LengthCalc::Linear(calc) => LengthCalc::Linear(calc.resolve_container_query_units(
+        cqw_base, cqh_base, cqi_base, cqb_base,
+      )),
+      LengthCalc::Expr(id) => {
+        let expr = {
+          let arena_guard = length_calc_expr_arena().read();
+          let Some(entry) = arena_guard.entries.get(id.index() as usize) else {
+            return LengthCalc::Linear(CalcLength::empty());
+          };
+          entry.expr.clone()
+        };
+
+        match expr {
+          LengthCalcExpr::Add { left, right, sign } => {
+            let left = inner(left, cqw_base, cqh_base, cqi_base, cqb_base, depth + 1);
+            let right = inner(right, cqw_base, cqh_base, cqi_base, cqb_base, depth + 1);
+            length_calc_add_scaled(left, right, sign)
+              .unwrap_or(LengthCalc::Linear(CalcLength::empty()))
+          }
+          LengthCalcExpr::Scale { value, factor } => {
+            let value = inner(value, cqw_base, cqh_base, cqi_base, cqb_base, depth + 1);
+            length_calc_scale(value, factor).unwrap_or(LengthCalc::Linear(CalcLength::empty()))
+          }
+          LengthCalcExpr::MinMax { op, values } => {
+            let values = values
+              .into_iter()
+              .map(|v| inner(v, cqw_base, cqh_base, cqi_base, cqb_base, depth + 1))
+              .collect();
+            length_calc_min_max(op, values)
+          }
+          LengthCalcExpr::Clamp { min, preferred, max } => {
+            let min = inner(min, cqw_base, cqh_base, cqi_base, cqb_base, depth + 1);
+            let preferred = inner(preferred, cqw_base, cqh_base, cqi_base, cqb_base, depth + 1);
+            let max = inner(max, cqw_base, cqh_base, cqi_base, cqb_base, depth + 1);
+            length_calc_clamp(min, preferred, max)
+          }
+        }
+      }
+    }
+  }
+
+  inner(value, cqw_base, cqh_base, cqi_base, cqb_base, 0)
+}
 
 impl CalcLength {
   pub const fn empty() -> Self {
@@ -1629,8 +2377,8 @@ pub struct Length {
   pub value: f32,
   /// The unit
   pub unit: LengthUnit,
-  /// Optional calc() expression (takes precedence over `value`/`unit`)
-  pub calc: Option<CalcLength>,
+  /// Optional calc()/min()/max()/clamp() expression (takes precedence over `value`/`unit`)
+  pub calc: Option<LengthCalc>,
 }
 
 impl Length {
@@ -1657,7 +2405,15 @@ impl Length {
     Self {
       value: 0.0,
       unit: LengthUnit::Calc,
-      calc: Some(calc),
+      calc: Some(LengthCalc::Linear(calc)),
+    }
+  }
+
+  pub(crate) fn calc_expr(expr: CalcLengthExprId) -> Self {
+    Self {
+      value: 0.0,
+      unit: LengthUnit::Calc,
+      calc: Some(LengthCalc::Expr(expr)),
     }
   }
 
@@ -1745,11 +2501,19 @@ impl Length {
   /// ```
   pub fn to_px(self) -> f32 {
     if let Some(calc) = self.calc {
-      if let Some(abs) = calc.absolute_sum() {
-        return abs;
+      match calc {
+        LengthCalc::Linear(calc) => {
+          if let Some(abs) = calc.absolute_sum() {
+            return abs;
+          }
+          // Best-effort fallback when context is missing: treat unresolved units as raw values.
+          return calc.terms().iter().map(|t| t.value).sum();
+        }
+        LengthCalc::Expr(id) => {
+          return resolve_length_calc_expr(LengthCalc::Expr(id), None, 0.0, 0.0, 0.0, 0.0)
+            .unwrap_or(0.0);
+        }
       }
-      // Best-effort fallback when context is missing: treat unresolved units as raw values.
-      return calc.terms().iter().map(|t| t.value).sum();
     }
     match self.unit {
       LengthUnit::Px => self.value,
@@ -1771,14 +2535,43 @@ impl Length {
     cqb_base: f32,
   ) -> Self {
     if let Some(calc) = self.calc {
-      let resolved = calc.resolve_container_query_units(cqw_base, cqh_base, cqi_base, cqb_base);
-      if resolved.is_zero() {
-        return Length::px(0.0);
+      match calc {
+        LengthCalc::Linear(calc) => {
+          let resolved = calc.resolve_container_query_units(cqw_base, cqh_base, cqi_base, cqb_base);
+          if resolved.is_zero() {
+            return Length::px(0.0);
+          }
+          if let Some(term) = resolved.single_term() {
+            return Length::new(term.value, term.unit);
+          }
+          return Length::calc(resolved);
+        }
+        LengthCalc::Expr(_) => {
+          if !calc.has_container_query_relative() {
+            return self;
+          }
+
+          let resolved = resolve_length_calc_container_query_units(
+            calc,
+            cqw_base,
+            cqh_base,
+            cqi_base,
+            cqb_base,
+          );
+          match resolved {
+            LengthCalc::Linear(calc) => {
+              if calc.is_zero() {
+                return Length::px(0.0);
+              }
+              if let Some(term) = calc.single_term() {
+                return Length::new(term.value, term.unit);
+              }
+              return Length::calc(calc);
+            }
+            LengthCalc::Expr(id) => return Length::calc_expr(id),
+          }
+        }
       }
-      if let Some(term) = resolved.single_term() {
-        return Length::new(term.value, term.unit);
-      }
-      return Length::calc(resolved);
     }
 
     let cqw_base = if cqw_base.is_finite() && cqw_base > 0.0 {
@@ -1842,7 +2635,16 @@ impl Length {
         return None;
       }
 
-      return calc.resolve(Some(percentage_base), 0.0, 0.0, 0.0, 0.0);
+      return match calc {
+        LengthCalc::Linear(calc) => calc.resolve(Some(percentage_base), 0.0, 0.0, 0.0, 0.0),
+        LengthCalc::Expr(_) => self.resolve_with_context(
+          Some(percentage_base),
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+        ),
+      };
     }
     match self.unit {
       LengthUnit::Percent => Some((self.value / 100.0) * percentage_base),
@@ -1877,7 +2679,10 @@ impl Length {
         return None;
       }
 
-      return calc.resolve(None, 0.0, 0.0, font_size_px, font_size_px);
+      return match calc {
+        LengthCalc::Linear(calc) => calc.resolve(None, 0.0, 0.0, font_size_px, font_size_px),
+        LengthCalc::Expr(_) => self.resolve_with_context(None, 0.0, 0.0, font_size_px, font_size_px),
+      };
     }
     match self.unit {
       LengthUnit::Em | LengthUnit::Rem => Some(self.value * font_size_px),
@@ -1915,7 +2720,10 @@ impl Length {
         return None;
       }
 
-      return calc.resolve(None, viewport_width, viewport_height, 0.0, 0.0);
+      return match calc {
+        LengthCalc::Linear(calc) => calc.resolve(None, viewport_width, viewport_height, 0.0, 0.0),
+        LengthCalc::Expr(_) => self.resolve_with_context(None, viewport_width, viewport_height, 0.0, 0.0),
+      };
     }
     match self.unit {
       LengthUnit::Vw => Some((self.value / 100.0) * viewport_width),
@@ -2075,7 +2883,21 @@ impl Length {
     };
 
     if let Some(calc) = self.calc {
-      return calc.resolve(percentage_base, vw, vh, font_px, root_px);
+      match calc {
+        LengthCalc::Linear(calc) => {
+          return calc.resolve(percentage_base, vw, vh, font_px, root_px);
+        }
+        LengthCalc::Expr(id) => {
+          return resolve_length_calc_expr(
+            LengthCalc::Expr(id),
+            percentage_base,
+            vw,
+            vh,
+            font_px,
+            root_px,
+          );
+        }
+      }
     }
 
     if self.unit.is_percentage() {
@@ -2177,71 +2999,106 @@ impl Length {
       Some(Length::calc(calc))
     };
 
-    // For function-encoded calcs (`min()`/`max()`/`clamp()`), preserve the argument structure.
-    // Each argument is itself a linear `<length-percentage>` sum, so we can canonicalize them
-    // independently and then rebuild the function.
     if let Some(calc) = resolved.calc {
-      match calc.kind() {
-        CalcLengthKind::Linear => {
-          let mut pct_total: f32 = 0.0;
-          let mut px_total: f32 = 0.0;
-
-          for term in calc.terms() {
-            if term.value == 0.0 {
-              continue;
-            }
-            if term.unit == LengthUnit::Percent {
-              pct_total += term.value;
-              continue;
-            }
-            let Some(px) = resolve_non_percent_term_to_px(term.unit, term.value) else {
-              return resolved;
-            };
-            px_total += px;
-          }
-
-          return build_length_from_px_and_percent(px_total, pct_total).unwrap_or(resolved);
+      // Convert each linear `<length-percentage>` leaf into a canonical `px + %` form where all
+      // non-percentage terms are resolved to absolute pixels and `%` coefficients are preserved.
+      //
+      // Non-linear expressions (`min()`/`max()`/`clamp()` and nested combinations) are mapped
+      // recursively, preserving their structure.
+      let map_leaf = |calc: CalcLength| -> Option<LengthCalc> {
+        if calc.kind() != CalcLengthKind::Linear {
+          return None;
         }
-        kind @ (CalcLengthKind::Min | CalcLengthKind::Max | CalcLengthKind::Clamp) => {
-          let mapped = calc.map_linear_args(kind, |arg| {
-            let mut pct_total: f32 = 0.0;
-            let mut px_total: f32 = 0.0;
 
-            for term in arg.terms() {
-              if term.value == 0.0 {
-                continue;
+        let mut pct_total: f32 = 0.0;
+        let mut px_total: f32 = 0.0;
+        for term in calc.terms() {
+          if term.value == 0.0 {
+            continue;
+          }
+          if term.unit == LengthUnit::Percent {
+            pct_total += term.value;
+            continue;
+          }
+          px_total += resolve_non_percent_term_to_px(term.unit, term.value)?;
+        }
+
+        // Normalize tiny floating point noise to deterministic zeros.
+        if px_total.abs() <= 1e-6 {
+          px_total = 0.0;
+        }
+        if pct_total.abs() <= 1e-6 {
+          pct_total = 0.0;
+        }
+
+        let mut out = CalcLength::empty();
+        out.push(LengthUnit::Px, px_total).ok()?;
+        out.push(LengthUnit::Percent, pct_total).ok()?;
+        Some(LengthCalc::Linear(out))
+      };
+
+      fn map_calc(
+        value: LengthCalc,
+        depth: u32,
+        map_leaf: &impl Fn(CalcLength) -> Option<LengthCalc>,
+      ) -> Option<LengthCalc> {
+        if depth > 128 {
+          return None;
+        }
+
+        match value {
+          LengthCalc::Linear(calc) => map_leaf(calc),
+          LengthCalc::Expr(id) => {
+            let expr = {
+              let arena_guard = length_calc_expr_arena().read();
+              let entry = arena_guard.entries.get(id.index() as usize)?;
+              entry.expr.clone()
+            };
+
+            match expr {
+              LengthCalcExpr::Add { left, right, sign } => {
+                let left = map_calc(left, depth + 1, map_leaf)?;
+                let right = map_calc(right, depth + 1, map_leaf)?;
+                length_calc_add_scaled(left, right, sign)
               }
-              if term.unit == LengthUnit::Percent {
-                pct_total += term.value;
-                continue;
+              LengthCalcExpr::Scale { value, factor } => {
+                let value = map_calc(value, depth + 1, map_leaf)?;
+                length_calc_scale(value, factor)
               }
-              px_total += resolve_non_percent_term_to_px(term.unit, term.value)?;
-            }
-
-            // Collapse to a canonical linear calc (px + %), leaving `%` components intact.
-            let mut out = CalcLength::empty();
-            out.push(LengthUnit::Px, px_total).ok()?;
-            out.push(LengthUnit::Percent, pct_total).ok()?;
-            Some(out)
-          });
-
-          let Some(mapped) = mapped else {
-            return resolved;
-          };
-
-          // If the entire expression is absolute, collapse to px for a deterministic computed value.
-          if !mapped.has_percentage() {
-            if let Some(abs) = mapped.absolute_sum() {
-              return Length::px(abs);
+              LengthCalcExpr::MinMax { op, values } => {
+                let mut mapped = Vec::with_capacity(values.len());
+                for v in values {
+                  mapped.push(map_calc(v, depth + 1, map_leaf)?);
+                }
+                Some(length_calc_min_max(op, mapped))
+              }
+              LengthCalcExpr::Clamp { min, preferred, max } => {
+                let min = map_calc(min, depth + 1, map_leaf)?;
+                let preferred = map_calc(preferred, depth + 1, map_leaf)?;
+                let max = map_calc(max, depth + 1, map_leaf)?;
+                Some(length_calc_clamp(min, preferred, max))
+              }
             }
           }
-
-          if mapped.is_zero() {
-            return Length::px(0.0);
-          }
-          return Length::calc(mapped);
         }
       }
+
+      let Some(mapped) = map_calc(calc, 0, &map_leaf) else {
+        return resolved;
+      };
+
+      return match mapped {
+        LengthCalc::Linear(calc) => {
+          if calc.is_zero() {
+            Length::px(0.0)
+          } else if let Some(term) = calc.single_term() {
+            Length::new(term.value, term.unit)
+          } else {
+            Length::calc(calc)
+          }
+        }
+        LengthCalc::Expr(id) => Length::calc_expr(id),
+      };
     }
 
     // Non-calc (single unit) value.
@@ -2284,14 +3141,28 @@ impl Length {
   /// ```
   pub fn is_zero(self) -> bool {
     if let Some(calc) = self.calc {
-      return calc.is_zero();
+      match calc {
+        LengthCalc::Linear(calc) => return calc.is_zero(),
+        LengthCalc::Expr(_) => return false,
+      }
     }
     self.value == 0.0
   }
 
   fn write_css(&self, out: &mut impl fmt::Write) -> fmt::Result {
     if let Some(calc) = self.calc {
-      return calc.write_css(out);
+      match calc {
+        LengthCalc::Linear(calc) => return calc.write_css(out),
+        LengthCalc::Expr(id) => {
+          let css = length_calc_expr_arena()
+            .read()
+            .entries
+            .get(id.0 as usize)
+            .map(|e| e.css_text.clone())
+            .unwrap_or_else(|| "calc(0)".to_string());
+          return out.write_str(&css);
+        }
+      }
     }
     write!(out, "{}{}", self.value, self.unit)
   }
@@ -2598,14 +3469,22 @@ impl CustomPropertyTypedValue {
 
 fn compute_custom_property_length(length: Length, ctx: &CustomPropertyComputeContext) -> Length {
   if let Some(calc) = length.calc {
-    let computed = compute_custom_property_calc_length(calc, ctx);
-    if computed.is_zero() {
-      return Length::px(0.0);
-    }
-    if let Some(term) = computed.single_term() {
-      return Length::new(term.value, term.unit);
-    }
-    return Length::calc(computed);
+    let Some(computed) = compute_custom_property_length_calc(calc, ctx) else {
+      return length;
+    };
+
+    return match computed {
+      LengthCalc::Linear(calc) => {
+        if calc.is_zero() {
+          Length::px(0.0)
+        } else if let Some(term) = calc.single_term() {
+          Length::new(term.value, term.unit)
+        } else {
+          Length::calc(calc)
+        }
+      }
+      LengthCalc::Expr(id) => Length::calc_expr(id),
+    };
   }
 
   match length.unit {
@@ -2644,6 +3523,59 @@ fn compute_custom_property_length(length: Length, ctx: &CustomPropertyComputeCon
       .unwrap_or(length),
     _ => length,
   }
+}
+
+fn compute_custom_property_length_calc(
+  value: LengthCalc,
+  ctx: &CustomPropertyComputeContext,
+) -> Option<LengthCalc> {
+  fn inner(
+    value: LengthCalc,
+    ctx: &CustomPropertyComputeContext,
+    depth: u32,
+  ) -> Option<LengthCalc> {
+    if depth > 128 {
+      return None;
+    }
+
+    match value {
+      LengthCalc::Linear(calc) => Some(LengthCalc::Linear(compute_custom_property_calc_length(calc, ctx))),
+      LengthCalc::Expr(id) => {
+        let expr = {
+          let arena_guard = length_calc_expr_arena().read();
+          let entry = arena_guard.entries.get(id.index() as usize)?;
+          entry.expr.clone()
+        };
+
+        match expr {
+          LengthCalcExpr::Add { left, right, sign } => {
+            let left = inner(left, ctx, depth + 1)?;
+            let right = inner(right, ctx, depth + 1)?;
+            length_calc_add_scaled(left, right, sign)
+          }
+          LengthCalcExpr::Scale { value, factor } => {
+            let value = inner(value, ctx, depth + 1)?;
+            length_calc_scale(value, factor)
+          }
+          LengthCalcExpr::MinMax { op, values } => {
+            let mut mapped = Vec::with_capacity(values.len());
+            for v in values {
+              mapped.push(inner(v, ctx, depth + 1)?);
+            }
+            Some(length_calc_min_max(op, mapped))
+          }
+          LengthCalcExpr::Clamp { min, preferred, max } => {
+            let min = inner(min, ctx, depth + 1)?;
+            let preferred = inner(preferred, ctx, depth + 1)?;
+            let max = inner(max, ctx, depth + 1)?;
+            Some(length_calc_clamp(min, preferred, max))
+          }
+        }
+      }
+    }
+  }
+
+  inner(value, ctx, 0)
 }
 
 fn compute_custom_property_calc_length(calc: CalcLength, ctx: &CustomPropertyComputeContext) -> CalcLength {

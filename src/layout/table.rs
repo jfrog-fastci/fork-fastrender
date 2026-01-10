@@ -1620,26 +1620,38 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
     // Convert border-box sizing hints to content-box hints by subtracting the stripped horizontal
     // edges (padding + borders). Use calc-term arithmetic so this stays allocation-free and does
     // not depend on percentage base resolution.
-    if style.box_sizing == BoxSizing::BorderBox {
-      let mut horizontal_edges = CalcLength::empty();
-      let to_calc = |len: Length| {
-        len
-          .calc
-          .unwrap_or_else(|| CalcLength::single(len.unit, len.value))
-      };
-      for edge in [
-        style.padding_left,
-        style.padding_right,
-        style.used_border_left_width(),
-        style.used_border_right_width(),
-      ] {
-        let edge_calc = to_calc(edge);
-        if let Some(next) = horizontal_edges.add_scaled(&edge_calc, 1.0) {
-          horizontal_edges = next;
-        } else {
-          // Expression too complex; bail out and keep original widths to avoid churn.
-          horizontal_edges = CalcLength::empty();
-          break;
+      if style.box_sizing == BoxSizing::BorderBox {
+        let mut horizontal_edges = CalcLength::empty();
+        let to_calc = |len: Length| -> Option<CalcLength> {
+          match len.calc {
+            Some(crate::style::values::LengthCalc::Linear(calc)) => Some(calc),
+            // Non-linear calc expressions cannot be manipulated as linear term sums.
+            Some(crate::style::values::LengthCalc::Expr(_)) => None,
+            None => {
+              if len.unit == LengthUnit::Calc {
+                None
+              } else {
+                Some(CalcLength::single(len.unit, len.value))
+              }
+            }
+          }
+        };
+        for edge in [
+          style.padding_left,
+          style.padding_right,
+          style.used_border_left_width(),
+          style.used_border_right_width(),
+        ] {
+          let Some(edge_calc) = to_calc(edge) else {
+            horizontal_edges = CalcLength::empty();
+            break;
+          };
+          if let Some(next) = horizontal_edges.add_scaled(&edge_calc, 1.0) {
+            horizontal_edges = next;
+          } else {
+            // Expression too complex; bail out and keep original widths to avoid churn.
+            horizontal_edges = CalcLength::empty();
+            break;
         }
       }
 
@@ -1648,7 +1660,10 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
           let Some(len) = value.take() else {
             return;
           };
-          let base_calc = to_calc(len);
+          let Some(base_calc) = to_calc(len) else {
+            *value = Some(len);
+            return;
+          };
           if let Some(adjusted) = base_calc.add_scaled(&horizontal_edges, -1.0) {
             let resolved = if let Some(px) = adjusted.absolute_sum() {
               Length::px(px.max(0.0))

@@ -21,9 +21,10 @@ use crate::style::float::Float;
 use crate::style::position::Position;
 use crate::style::types::BackgroundBox;
 use crate::style::types::DynamicRangeLimit;
-use crate::style::values::CalcLength;
-use crate::style::values::Length;
-use crate::style::values::LengthUnit;
+use crate::style::values::{
+  length_calc_add_scaled, length_calc_clamp, length_calc_min_max, length_calc_scale, CalcLength,
+  Length, LengthCalc, LengthUnit, MinMaxOp,
+};
 use cssparser::BasicParseErrorKind;
 use cssparser::Parser;
 use cssparser::ParserInput;
@@ -1182,7 +1183,9 @@ fn parse_scale_factor_component(parser: &mut Parser) -> Result<f32, ()> {
   match component {
     CalcComponent::Number(n) => Ok(n),
     CalcComponent::Length(calc) => {
-      let terms = calc.terms();
+      let Some(terms) = calc.terms() else {
+        return Err(());
+      };
       if terms.is_empty() {
         return Err(());
       }
@@ -1838,7 +1841,10 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
               CalcComponent::Number(n) => Ok(n),
               CalcComponent::Length(calc) => {
                 let mut total = 0.0;
-                for term in calc.terms() {
+                let Some(terms) = calc.terms() else {
+                  return Err(());
+                };
+                for term in terms {
                   if term.unit != LengthUnit::Percent {
                     return Err(());
                   }
@@ -5790,10 +5796,12 @@ mod tests {
     let calc = len.calc.expect("calc terms");
     assert!(calc
       .terms()
+      .expect("linear calc terms")
       .iter()
       .any(|t| t.unit == LengthUnit::Vh && (t.value - 100.0).abs() < 1e-6));
     assert!(calc
       .terms()
+      .expect("linear calc terms")
       .iter()
       .any(|t| t.unit == LengthUnit::Px && (t.value + 10.0).abs() < 1e-6));
 
@@ -5940,20 +5948,24 @@ mod tests {
         let calc_x = x.calc.as_ref().expect("calc preserved for x");
         assert!(calc_x
           .terms()
+          .expect("linear calc for x")
           .iter()
           .any(|t| t.unit == LengthUnit::Px && (t.value - 10.0).abs() < 0.01));
         assert!(calc_x
           .terms()
+          .expect("linear calc for x")
           .iter()
           .any(|t| t.unit == LengthUnit::Percent && (t.value - 5.0).abs() < 0.01));
 
         let calc_y = y.calc.as_ref().expect("calc preserved for y");
         assert!(calc_y
           .terms()
+          .expect("linear calc for y")
           .iter()
           .any(|t| t.unit == LengthUnit::Percent && (t.value - 20.0).abs() < 0.01));
         assert!(calc_y
           .terms()
+          .expect("linear calc for y")
           .iter()
           .any(|t| t.unit == LengthUnit::Px && (t.value + 4.0).abs() < 0.01));
       }
@@ -6196,6 +6208,23 @@ mod tests {
       .resolve_with_context(None, 1000.0, 800.0, 16.0, 16.0)
       .expect("resolve clamp polyfill rev");
     assert!((resolved - 30.0).abs() < 1e-6);
+
+    // Mixed-unit min/max forms must be preserved as non-linear expressions (instead of being
+    // rejected) so downstream layout can resolve them with the correct viewport/percentage bases.
+    let mixed = parse_length("max(180px, calc(100vw - 170px))").expect("mixed-unit max() parses");
+    assert_eq!(mixed.unit, LengthUnit::Calc);
+    assert!(
+      matches!(mixed.calc, Some(LengthCalc::Expr(_))),
+      "expected max() with mixed units to be stored as a non-linear expression"
+    );
+    let resolved_wide = mixed
+      .resolve_with_context(None, 1040.0, 0.0, 16.0, 16.0)
+      .expect("resolve wide");
+    assert!((resolved_wide - 870.0).abs() < 1e-3);
+    let resolved_narrow = mixed
+      .resolve_with_context(None, 200.0, 0.0, 16.0, 16.0)
+      .expect("resolve narrow");
+    assert!((resolved_narrow - 180.0).abs() < 1e-3);
   }
 
   #[test]
@@ -6408,7 +6437,7 @@ enum CalcDimension {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum CalcComponent {
   Number(f32),
-  Length(CalcLength),
+  Length(LengthCalc),
   /// Stored in degrees
   Angle(f32),
 }
@@ -6576,12 +6605,17 @@ fn calc_component_to_length_with_numbers(
       }
     }
     CalcComponent::Length(calc) => {
-      if calc.is_zero() {
-        Some(Length::px(0.0))
-      } else if let Some(term) = calc.single_term() {
-        Some(Length::new(term.value, term.unit))
-      } else {
-        Some(Length::calc(calc))
+      match calc {
+        LengthCalc::Linear(calc) => {
+          if calc.is_zero() {
+            Some(Length::px(0.0))
+          } else if let Some(term) = calc.single_term() {
+            Some(Length::new(term.value, term.unit))
+          } else {
+            Some(Length::calc(calc))
+          }
+        }
+        LengthCalc::Expr(id) => Some(Length::calc_expr(id)),
       }
     }
     _ => None,
@@ -6610,11 +6644,16 @@ fn all_same_dimension(values: &[CalcComponent]) -> bool {
     .unwrap_or(false)
 }
 
-fn extract_simple_length(len: &CalcLength) -> Option<(f32, LengthUnit)> {
-  if len.is_zero() {
-    return Some((0.0, LengthUnit::Px));
+fn extract_simple_length(len: &LengthCalc) -> Option<(f32, LengthUnit)> {
+  match len {
+    LengthCalc::Linear(calc) => {
+      if calc.is_zero() {
+        return Some((0.0, LengthUnit::Px));
+      }
+      calc.single_term().map(|t| (t.value, t.unit))
+    }
+    LengthCalc::Expr(_) => None,
   }
-  len.single_term().map(|t| (t.value, t.unit))
 }
 
 fn round_value<'i>(
@@ -6776,11 +6815,12 @@ fn parse_calc_factor<'i, 't>(
         "lvmax" => LengthUnit::Vmax,
         _ => return Err(location.new_custom_error(())),
       };
-      Ok(CalcComponent::Length(CalcLength::single(unit, *value)))
+      Ok(CalcComponent::Length(LengthCalc::Linear(CalcLength::single(
+        unit, *value,
+      ))))
     }
-    Token::Percentage { unit_value, .. } => Ok(CalcComponent::Length(CalcLength::single(
-      LengthUnit::Percent,
-      *unit_value * 100.0,
+    Token::Percentage { unit_value, .. } => Ok(CalcComponent::Length(LengthCalc::Linear(
+      CalcLength::single(LengthUnit::Percent, *unit_value * 100.0),
     ))),
     Token::Function(ref name) => {
       let name = name.as_ref();
@@ -6807,10 +6847,9 @@ fn parse_calc_factor<'i, 't>(
       let inner = parse_calc_factor(input)?;
       match inner {
         CalcComponent::Number(v) => Ok(CalcComponent::Number(-v)),
-        CalcComponent::Length(len) => len
-          .scale(-1.0)
-          .map(CalcComponent::Length)
-          .ok_or_else(|| location.new_custom_error(())),
+        CalcComponent::Length(len) => Ok(CalcComponent::Length(
+          length_calc_scale(len, -1.0).ok_or_else(|| location.new_custom_error(()))?,
+        )),
         CalcComponent::Angle(v) => Ok(CalcComponent::Angle(-v)),
       }
     }
@@ -6902,7 +6941,8 @@ fn parse_clamp<'i, 't>(
   let location = input.current_source_location();
   match (min, preferred, max) {
     (CalcComponent::Number(a), CalcComponent::Number(b), CalcComponent::Number(c)) => {
-      Ok(CalcComponent::Number(b.clamp(a, c)))
+      let upper = if c < a { a } else { c };
+      Ok(CalcComponent::Number(b.max(a).min(upper)))
     }
     (CalcComponent::Angle(a), CalcComponent::Angle(b), CalcComponent::Angle(c)) => {
       let upper = if c < a { a } else { c };
@@ -6921,13 +6961,13 @@ fn parse_clamp<'i, 't>(
             max_value
           };
           let clamped = pref_value.max(min_value).min(upper);
-          return Ok(CalcComponent::Length(CalcLength::single(unit, clamped)));
+          return Ok(CalcComponent::Length(LengthCalc::Linear(CalcLength::single(
+            unit, clamped,
+          ))));
         }
       }
 
-      CalcLength::clamp_function(a, b, c)
-        .map(CalcComponent::Length)
-        .ok_or_else(|| location.new_custom_error(()))
+      Ok(CalcComponent::Length(length_calc_clamp(a, b, c)))
     }
     _ => Err(location.new_custom_error(())),
   }
@@ -7033,26 +7073,26 @@ fn reduce_components<'i>(
       Ok(CalcComponent::Angle(result))
     }
     CalcDimension::Length => {
-      let mut lengths: Vec<CalcLength> = Vec::with_capacity(values.len());
+      let mut length_values = Vec::with_capacity(values.len());
       for comp in values {
-        match comp {
-          CalcComponent::Length(calc) => lengths.push(calc),
-          _ => return Err(location.new_custom_error(())),
-        }
+        let CalcComponent::Length(len) = comp else {
+          return Err(location.new_custom_error(()));
+        };
+        length_values.push(len);
       }
+      let Some(first) = length_values.first().copied() else {
+        return Err(location.new_custom_error(()));
+      };
 
-      // If all arguments reduce to a single term in the same unit, evaluate the extremum at parse
-      // time. This keeps simple `min(10px, 20px)` cases cheap.
-      if let Some((first_value, unit)) = extract_simple_length(&lengths[0]) {
-        let mut extremum = first_value;
-        let mut ok = true;
-        for calc in lengths.iter().skip(1) {
-          let Some((value, this_unit)) = extract_simple_length(calc) else {
-            ok = false;
+      if let Some((mut extremum, unit)) = extract_simple_length(&first) {
+        let mut all_simple = true;
+        for val in length_values.iter().skip(1) {
+          let Some((value, this_unit)) = extract_simple_length(val) else {
+            all_simple = false;
             break;
           };
           if this_unit != unit {
-            ok = false;
+            all_simple = false;
             break;
           }
           extremum = match func {
@@ -7060,23 +7100,19 @@ fn reduce_components<'i>(
             MathFn::Max => extremum.max(value),
           };
         }
-        if ok {
-          return Ok(CalcComponent::Length(CalcLength::single(unit, extremum)));
+
+        if all_simple {
+          return Ok(CalcComponent::Length(LengthCalc::Linear(CalcLength::single(
+            unit, extremum,
+          ))));
         }
       }
 
-      if let Some(clamp) = try_rewrite_clamp_polyfill_length(&lengths, func) {
-        return Ok(CalcComponent::Length(clamp));
-      }
-
-      // Otherwise, preserve the `min()`/`max()` function so it can be resolved later with viewport
-      // and font metrics.
-      let calc = match func {
-        MathFn::Min => CalcLength::min_function(&lengths),
-        MathFn::Max => CalcLength::max_function(&lengths),
-      }
-      .ok_or_else(|| location.new_custom_error(()))?;
-      Ok(CalcComponent::Length(calc))
+      let op = match func {
+        MathFn::Min => MinMaxOp::Min,
+        MathFn::Max => MinMaxOp::Max,
+      };
+      Ok(CalcComponent::Length(length_calc_min_max(op, length_values)))
     }
   }
 }
@@ -7090,15 +7126,14 @@ fn combine_sum<'i>(
   match (left, right) {
     (CalcComponent::Number(a), CalcComponent::Number(b)) => Ok(CalcComponent::Number(a + b * sign)),
     (CalcComponent::Angle(a), CalcComponent::Angle(b)) => Ok(CalcComponent::Angle(a + b * sign)),
-    (CalcComponent::Length(l), CalcComponent::Length(r)) => l
-      .add_scaled(&r, sign)
+    (CalcComponent::Length(l), CalcComponent::Length(r)) => length_calc_add_scaled(l, r, sign)
       .map(CalcComponent::Length)
       .ok_or_else(|| location.new_custom_error(())),
     (CalcComponent::Length(l), CalcComponent::Number(0.0)) => Ok(CalcComponent::Length(l)),
     (CalcComponent::Number(0.0), CalcComponent::Length(l)) => {
-      l.scale(sign)
-        .map(CalcComponent::Length)
-        .ok_or_else(|| location.new_custom_error(()))
+      Ok(CalcComponent::Length(
+        length_calc_scale(l, sign).ok_or_else(|| location.new_custom_error(()))?,
+      ))
     }
     (CalcComponent::Angle(a), CalcComponent::Number(0.0)) => Ok(CalcComponent::Angle(a)),
     (CalcComponent::Number(0.0), CalcComponent::Angle(a)) => Ok(CalcComponent::Angle(a * sign)),
@@ -7117,9 +7152,9 @@ fn combine_product<'i>(
       (CalcComponent::Number(a), CalcComponent::Number(b)) => Ok(CalcComponent::Number(a * b)),
       (CalcComponent::Length(l), CalcComponent::Number(n))
       | (CalcComponent::Number(n), CalcComponent::Length(l)) => {
-        l.scale(n)
-          .map(CalcComponent::Length)
-          .ok_or_else(|| location.new_custom_error(()))
+        Ok(CalcComponent::Length(
+          length_calc_scale(l, n).ok_or_else(|| location.new_custom_error(()))?,
+        ))
       }
       (CalcComponent::Angle(a), CalcComponent::Number(n))
       | (CalcComponent::Number(n), CalcComponent::Angle(a)) => Ok(CalcComponent::Angle(a * n)),
@@ -7129,9 +7164,9 @@ fn combine_product<'i>(
       (_, CalcComponent::Number(0.0)) => Err(location.new_custom_error(())),
       (CalcComponent::Number(a), CalcComponent::Number(b)) => Ok(CalcComponent::Number(a / b)),
       (CalcComponent::Length(l), CalcComponent::Number(n)) => {
-        l.scale(1.0 / n)
-          .map(CalcComponent::Length)
-          .ok_or_else(|| location.new_custom_error(()))
+        Ok(CalcComponent::Length(
+          length_calc_scale(l, 1.0 / n).ok_or_else(|| location.new_custom_error(()))?,
+        ))
       }
       (CalcComponent::Angle(a), CalcComponent::Number(n)) => Ok(CalcComponent::Angle(a / n)),
       _ => Err(location.new_custom_error(())),
@@ -7215,7 +7250,7 @@ fn apply_round_function<'i>(
         return Err(location.new_custom_error(()));
       }
       round_value(value, step_value, strategy, location)
-        .map(|v| CalcComponent::Length(CalcLength::single(unit, v)))
+        .map(|v| CalcComponent::Length(LengthCalc::Linear(CalcLength::single(unit, v))))
     }
   }
 }
@@ -7300,7 +7335,9 @@ fn apply_mod_rem<'i>(
         return Err(location.new_custom_error(()));
       }
       let result = if euclidean { a.rem_euclid(b) } else { a % b };
-      ensure_finite(result, location).map(|v| CalcComponent::Length(CalcLength::single(unit, v)))
+      ensure_finite(result, location).map(|v| {
+        CalcComponent::Length(LengthCalc::Linear(CalcLength::single(unit, v)))
+      })
     }
     _ => Err(location.new_custom_error(())),
   }
@@ -7356,7 +7393,9 @@ fn parse_hypot_function<'i, 't>(
         acc_value = acc_value.hypot(val);
       }
       let unit = acc_unit.ok_or_else(|| location.new_custom_error(()))?;
-      ensure_finite(acc_value, location).map(|v| CalcComponent::Length(CalcLength::single(unit, v)))
+      ensure_finite(acc_value, location).map(|v| {
+        CalcComponent::Length(LengthCalc::Linear(CalcLength::single(unit, v)))
+      })
     }
   }
 }
@@ -7384,9 +7423,8 @@ fn parse_env_or_constant_function<'i, 't>(
   };
 
   if is_safe_area_inset {
-    return Ok(CalcComponent::Length(CalcLength::single(
-      LengthUnit::Px,
-      0.0,
+    return Ok(CalcComponent::Length(LengthCalc::Linear(
+      CalcLength::single(LengthUnit::Px, 0.0),
     )));
   }
 
@@ -7514,7 +7552,10 @@ fn parse_math_function<'i, 't>(
         CalcComponent::Length(len) => {
           let (v, unit) =
             extract_simple_length(&len).ok_or_else(|| location.new_custom_error(()))?;
-          Ok(CalcComponent::Length(CalcLength::single(unit, v.abs())))
+          Ok(CalcComponent::Length(LengthCalc::Linear(CalcLength::single(
+            unit,
+            v.abs(),
+          ))))
         }
       }
     }),

@@ -17250,10 +17250,19 @@ fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
     }
   }
 
-  fn length_as_calc(len: Length) -> CalcLength {
-    len
-      .calc
-      .unwrap_or_else(|| CalcLength::single(len.unit, len.value))
+  fn length_as_calc(len: Length) -> Option<crate::style::values::LengthCalc> {
+    match len.calc {
+      Some(calc) => Some(calc),
+      None => {
+        if len.unit == LengthUnit::Calc {
+          None
+        } else {
+          Some(crate::style::values::LengthCalc::Linear(CalcLength::single(
+            len.unit, len.value,
+          )))
+        }
+      }
+    }
   }
 
   fn offset_to_component(offset: Length) -> PC {
@@ -17273,15 +17282,29 @@ fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
         PK::Start => Some(offset_to_component(offset)),
         PK::Center | PK::End => {
           let base = base_percent(pos.align);
-          let mut calc = CalcLength::single(LengthUnit::Percent, base);
-          let offset_calc = length_as_calc(offset);
+          let base_calc = crate::style::values::LengthCalc::Linear(CalcLength::single(
+            LengthUnit::Percent,
+            base,
+          ));
+          let offset_calc = length_as_calc(offset)?;
           let sign = if matches!(pos.align, PK::End) {
             -1.0
           } else {
             1.0
           };
-          calc = calc.add_scaled(&offset_calc, sign)?;
-          Some(PC::Length(Length::calc(calc)))
+          let combined =
+            crate::style::values::length_calc_add_scaled(base_calc, offset_calc, sign)?;
+          let resolved = match combined {
+            crate::style::values::LengthCalc::Linear(calc) => {
+              if let Some(term) = calc.single_term() {
+                Length::new(term.value, term.unit)
+              } else {
+                Length::calc(calc)
+              }
+            }
+            crate::style::values::LengthCalc::Expr(id) => Length::calc_expr(id),
+          };
+          Some(PC::Length(resolved))
         }
       },
     }

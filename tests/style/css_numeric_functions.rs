@@ -1,6 +1,6 @@
 use fastrender::css::properties::{parse_length, parse_property_value};
 use fastrender::css::types::{PropertyValue, Transform};
-use fastrender::style::values::{Length, LengthUnit};
+use fastrender::style::values::{Length, LengthCalc, LengthUnit};
 
 fn as_number(prop: &str, value: &str) -> Option<f32> {
   match parse_property_value(prop, value)? {
@@ -64,9 +64,10 @@ fn math_functions_apply_to_lengths() {
 
   let rounded = parse_length("calc(round(50%) + 10px)").expect("rounded percent");
   let calc = rounded.calc.expect("calc terms");
+  let terms = calc.terms().expect("linear calc terms");
   let mut percent = None;
   let mut px = None;
-  for term in calc.terms() {
+  for term in terms {
     match term.unit {
       LengthUnit::Percent => percent = Some(term.value),
       LengthUnit::Px => px = Some(term.value),
@@ -75,6 +76,20 @@ fn math_functions_apply_to_lengths() {
   }
   assert_eq!(percent, Some(50.0));
   assert_eq!(px, Some(10.0));
+}
+
+#[test]
+fn min_max_clamp_work_for_lengths_with_mixed_units() {
+  let max_len = parse_length("max(10px, 5vw)").expect("max length");
+  assert_eq!(max_len.unit, LengthUnit::Calc);
+  assert!(matches!(max_len.calc, Some(LengthCalc::Expr(_))));
+  assert_eq!(max_len.to_css(), "max(10px, 5vw)");
+  assert_eq!(parse_length(&max_len.to_css()), Some(max_len));
+
+  let clamp_len = parse_length("clamp(10px, 5vw, 100px)").expect("clamp length");
+  assert!(matches!(clamp_len.calc, Some(LengthCalc::Expr(_))));
+  assert_eq!(clamp_len.to_css(), "clamp(10px, 5vw, 100px)");
+  assert_eq!(parse_length(&clamp_len.to_css()), Some(clamp_len));
 }
 
 #[test]

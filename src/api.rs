@@ -6098,7 +6098,7 @@ impl FastRender {
         // stylesheet loader runs (avoids double-fetching and ensures `css_limit` is authoritative).
         let mut dom = {
           let _span = trace_handle.span("dom_parse", "parse");
-          self.parse_html(&inlined_html)?
+          self.parse_html_for_render(&inlined_html)?
         };
         self.update_base_url_from_dom(&dom);
         if let Some(policy) =
@@ -6415,7 +6415,7 @@ impl FastRender {
     let parse_timer = stats.as_deref().and_then(|rec| rec.timer());
     let dom = {
       let _span = trace.span("dom_parse", "parse");
-      self.parse_html(html)?
+      self.parse_html_for_render(html)?
     };
     self.update_base_url_from_dom(&dom);
     if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)?
@@ -7429,7 +7429,7 @@ impl FastRender {
     record_stage(StageHeartbeat::DomParse);
     let dom = {
       let _span = trace.span("dom_parse", "parse");
-      self.parse_html(html)?
+      self.parse_html_for_render(html)?
     };
     self.update_base_url_from_dom(&dom);
     if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)?
@@ -8695,7 +8695,7 @@ impl FastRender {
     self.set_base_url(base_url.clone());
 
     let requested_viewport = Size::new(width as f32, height as f32);
-    let dom = self.parse_html(html)?;
+    let dom = self.parse_html_for_render(html)?;
     self.update_base_url_from_dom(&dom);
     let meta_viewport = if self.apply_meta_viewport {
       crate::html::viewport::extract_viewport_with_deadline(&dom)?
@@ -8845,6 +8845,20 @@ impl FastRender {
         },
       )
     })
+  }
+
+  fn parse_html_for_render(&self, html: &str) -> Result<DomNode> {
+    // Chrome baselines are captured with script-src blocked via CSP, which still uses
+    // "scripting enabled" HTML parsing semantics (notably for `<noscript>`). Match that here so
+    // offline fixture diffs do not include large page-wide shifts from head `<noscript>` fallbacks
+    // being moved into the document body.
+    dom::parse_html_with_options(
+      html,
+      DomParseOptions {
+        scripting_enabled: true,
+        compatibility_mode: self.dom_compat_mode,
+      },
+    )
   }
 
   fn update_base_url_from_dom(&mut self, dom: &DomNode) {
@@ -9878,7 +9892,7 @@ impl FastRender {
       if !trim_ascii_whitespace(&base_hint).is_empty() {
         self.set_base_url(base_hint);
       }
-      let dom = self.parse_html(html)?;
+      let dom = self.parse_html_for_render(html)?;
       self.update_base_url_from_dom(&dom);
 
       let shared_diagnostics = self
@@ -9962,7 +9976,7 @@ impl FastRender {
       }
 
       let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
-      let dom = self.parse_html(&html)?;
+      let dom = self.parse_html_for_render(&html)?;
       self.update_base_url_from_dom(&dom);
 
       let shared_diagnostics = self
@@ -13416,9 +13430,19 @@ impl FastRender {
     profile_enabled: bool,
     jobs: &mut HashMap<ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>>,
   ) {
+    fn length_needs_percentage_base(length: &Length) -> bool {
+      length.has_percentage()
+    }
+
+    fn has_definite_specified_dimension(length: Option<&Length>) -> bool {
+      length.is_some_and(|l| !length_needs_percentage_base(l))
+    }
+
     fn should_skip_image_probe(style: &ComputedStyle) -> bool {
+      let width_definite = has_definite_specified_dimension(style.width.as_ref());
+      let height_definite = has_definite_specified_dimension(style.height.as_ref());
       matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r.is_finite() && r > 0.0)
-        && (style.width.is_some() || style.height.is_some())
+        && (width_definite || height_definite)
     }
 
     fn trim_ascii_whitespace(value: &str) -> &str {
@@ -13465,7 +13489,13 @@ impl FastRender {
         if !needs_ratio_probe && !needs_size_probe && !needs_no_ratio_probe {
           return;
         }
-        if style.width.is_some() && style.height.is_some() {
+        // Only skip probes when both dimensions are definite (i.e. they don't depend on a
+        // percentage base). Percentage-based sizes (e.g. `height: 100%`) often resolve to `auto`
+        // when the containing block size is indefinite, in which case intrinsic sizing still
+        // matters (and skipping probes can incorrectly fall back to CSS2.1's 150px default height).
+        let width_definite = has_definite_specified_dimension(style.width.as_ref());
+        let height_definite = has_definite_specified_dimension(style.height.as_ref());
+        if width_definite && height_definite {
           return;
         }
         if should_skip_image_probe(style.as_ref()) {
@@ -13795,11 +13825,34 @@ impl FastRender {
         _ => None,
       }
     };
-    if style.width.is_some() && style.height.is_some() {
+
+    let length_needs_percentage_base = |length: &Length| {
+      length.has_percentage()
+    };
+    let width_definite = style
+      .width
+      .as_ref()
+      .is_some_and(|l| !length_needs_percentage_base(l));
+    let height_definite = style
+      .height
+      .as_ref()
+      .is_some_and(|l| !length_needs_percentage_base(l));
+
+    // If both dimensions are definite, intrinsic data is unused per replaced element sizing, so we
+    // can skip probing/fallback intrinsic logic.
+    //
+    // Percentages (including calc/min/max/clamp expressions containing percentages) are *not*
+    // treated as definite here, because a missing percentage base can cause them to resolve to
+    // `auto`, in which case intrinsic size/aspect ratio still affects layout (and skipping can
+    // incorrectly fall back to the CSS2.1 150px default height).
+    if width_definite && height_definite {
       return;
     }
+
+    // If an explicit CSS aspect ratio is provided and at least one definite dimension is
+    // specified, replaced sizing does not need the resource's intrinsic ratio.
     if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r.is_finite() && r > 0.0)
-      && (style.width.is_some() || style.height.is_some())
+      && (width_definite || height_definite)
     {
       return;
     }
@@ -14221,15 +14274,33 @@ impl FastRender {
           return;
         }
 
-        // If both width and height are specified (non-auto), intrinsic data is unused per
-        // replaced element sizing. Avoid network fetches in that case to speed up heavy pages.
-        if style.width.is_some() && style.height.is_some() {
+        let length_needs_percentage_base = |length: &Length| {
+          length.has_percentage()
+        };
+        let width_definite = style
+          .width
+          .as_ref()
+          .is_some_and(|l| !length_needs_percentage_base(l));
+        let height_definite = style
+          .height
+          .as_ref()
+          .is_some_and(|l| !length_needs_percentage_base(l));
+
+        // If both dimensions are definite, intrinsic data is unused per replaced element sizing.
+        // Avoid network fetches in that case to speed up heavy pages.
+        //
+        // Percentages (including calc/min/max/clamp expressions containing percentages) are not
+        // treated as definite here. If the containing block size is indefinite, percentage-based
+        // sizes can resolve to `auto`, in which case intrinsic size/aspect ratio still affects
+        // layout (and skipping probing can incorrectly fall back to CSS2.1's 150px default height).
+        if width_definite && height_definite {
           return;
         }
-        // If an explicit CSS aspect ratio is provided and at least one dimension is specified,
-        // replaced sizing does not need the resource's intrinsic ratio. Skip probing in that case.
+        // If an explicit CSS aspect ratio is provided and at least one definite dimension is
+        // specified, replaced sizing does not need the resource's intrinsic ratio. Skip probing in
+        // that case.
         if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r.is_finite() && r > 0.0)
-          && (style.width.is_some() || style.height.is_some())
+          && (width_definite || height_definite)
         {
           return;
         }
@@ -15130,7 +15201,16 @@ fn hash_length(len: &Length, hasher: &mut DefaultHasher) {
   match &len.calc {
     Some(calc) => {
       1u8.hash(hasher);
-      hash_calc_length(calc, hasher);
+      match calc {
+        crate::style::values::LengthCalc::Linear(calc) => {
+          0u8.hash(hasher);
+          hash_calc_length(calc, hasher);
+        }
+        crate::style::values::LengthCalc::Expr(id) => {
+          1u8.hash(hasher);
+          id.index().hash(hasher);
+        }
+      }
     }
     None => 0u8.hash(hasher),
   }

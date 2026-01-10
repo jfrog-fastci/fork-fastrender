@@ -43,6 +43,8 @@ use crate::layout::float_context::FloatContext;
 use crate::layout::float_context::{resolve_clear_side, resolve_float_side, FloatSide};
 use crate::layout::float_shape::build_float_shape;
 use crate::layout::formatting_context::count_block_intrinsic_call;
+use crate::layout::formatting_context::intrinsic_block_cache_lookup;
+use crate::layout::formatting_context::intrinsic_block_cache_store;
 use crate::layout::formatting_context::intrinsic_cache_lookup;
 use crate::layout::formatting_context::intrinsic_cache_store;
 use crate::layout::formatting_context::layout_cache_lookup;
@@ -617,6 +619,33 @@ impl BlockFormattingContext {
     } else {
       constraints.width()
     };
+    // CSS2.1 §10.5: Percentage `height` values on in-flow elements compute to `auto` when the
+    // containing block's height depends on content (i.e. it is not specified explicitly).
+    //
+    // Block layout often carries a definite *available* height from an ancestor (e.g. the
+    // viewport) even though the containing block itself is `height:auto`. Using that available
+    // height as the percentage basis incorrectly resolves `height:100%` against the viewport and
+    // can blow up layouts (common in carousels that use `height:100%` in descendants).
+    //
+    // Only allow percentage heights to resolve when this block container has a definite block
+    // size. In practice this means it has a non-auto physical size (height/width depending on
+    // writing mode) or a parent layout algorithm has already forced a used border-box size.
+    let parent_block_size_is_auto = if inline_is_horizontal {
+      parent.style.height.is_none() && parent.style.height_keyword.is_none()
+    } else {
+      parent.style.width.is_none() && parent.style.width_keyword.is_none()
+    };
+    let parent_used_border_box_block_size = if inline_is_horizontal {
+      constraints.used_border_box_height
+    } else {
+      constraints.used_border_box_width
+    };
+    let containing_height_for_percentages =
+      if parent_block_size_is_auto && parent_used_border_box_block_size.is_none() {
+        None
+      } else {
+        containing_height.or(parent_used_border_box_block_size)
+      };
 
     // Handle block-axis margins (resolve em/rem units with font-size)
     let block_sides = block_axis_sides(style);
@@ -759,7 +788,7 @@ impl BlockFormattingContext {
     let mut specified_height = block_length.and_then(|h| {
       resolve_length_with_percentage_metrics(
         h,
-        containing_height,
+        containing_height_for_percentages,
         self.viewport_size,
         font_size,
         style.root_font_size,
@@ -791,7 +820,7 @@ impl BlockFormattingContext {
           let basis_border = match limit {
             Some(limit) => resolve_length_with_percentage_metrics(
               limit,
-              containing_height,
+              containing_height_for_percentages,
               self.viewport_size,
               font_size,
               style.root_font_size,
@@ -1491,10 +1520,21 @@ impl BlockFormattingContext {
           // pulling later siblings upward (notably visible on `walmart.com` where the footer would
           // appear in the initial viewport).
           let fc_constraints = if inline_is_horizontal {
-            LayoutConstraints::new(
-              AvailableSpace::Definite(containing_width),
-              child_height_space,
-            )
+            // Block formatting contexts do not constrain in-flow children in the block axis.
+            // A definite available height may still be present (e.g. the viewport height), but
+            // treating it as an actual sizing constraint causes nested flex/grid/table layout
+            // to incorrectly resolve percentage heights and stretch auto-sized containers.
+            //
+            // Only preserve a definite available block-size when we're in a real fragmentation
+            // context; otherwise treat it as indefinite.
+            let mut available_height = constraints.available_height;
+            if crate::layout::formatting_context::fragmentainer_block_size_hint().is_none()
+              && containing_height_for_percentages.is_none()
+              && matches!(available_height, AvailableSpace::Definite(_))
+            {
+              available_height = AvailableSpace::Indefinite;
+            }
+            LayoutConstraints::new(AvailableSpace::Definite(containing_width), available_height)
           } else {
             LayoutConstraints::new(
               child_height_space,
@@ -1648,7 +1688,7 @@ impl BlockFormattingContext {
           let basis_border = match limit {
             Some(limit) => resolve_length_with_percentage_metrics(
               limit,
-              containing_height,
+              containing_height_for_percentages,
               self.viewport_size,
               font_size,
               style.root_font_size,
@@ -1673,7 +1713,7 @@ impl BlockFormattingContext {
         .and_then(|l| {
           resolve_length_with_percentage_metrics(
             *l,
-            containing_height,
+            containing_height_for_percentages,
             self.viewport_size,
             font_size,
             style.root_font_size,
@@ -1718,7 +1758,7 @@ impl BlockFormattingContext {
           let basis_border = match limit {
             Some(limit) => resolve_length_with_percentage_metrics(
               limit,
-              containing_height,
+              containing_height_for_percentages,
               self.viewport_size,
               font_size,
               style.root_font_size,
@@ -1743,7 +1783,7 @@ impl BlockFormattingContext {
         .and_then(|l| {
           resolve_length_with_percentage_metrics(
             *l,
-            containing_height,
+            containing_height_for_percentages,
             self.viewport_size,
             font_size,
             style.root_font_size,
@@ -8793,6 +8833,45 @@ impl FormattingContext for BlockFormattingContext {
       IntrinsicSizingMode::MinContent => min,
       IntrinsicSizingMode::MaxContent => max,
     })
+  }
+
+  fn compute_intrinsic_block_size(
+    &self,
+    box_node: &BoxNode,
+    mode: IntrinsicSizingMode,
+  ) -> Result<f32, LayoutError> {
+    // The default `FormattingContext::compute_intrinsic_block_size` implementation lays out the box
+    // under `AvailableSpace::{MinContent,MaxContent}` in the inline axis. Block layout's intrinsic
+    // probes intentionally treat percentage bases as 0px, but the containing block inline size still
+    // needs to be *non-zero* so the element lays out at its intrinsic inline size rather than being
+    // forced into a 0px column (which can explode the computed block size and poison flex/grid
+    // sizing probes).
+    //
+    // Compute the element's intrinsic *inline* size first, then lay it out with that definite
+    // inline size to obtain the corresponding intrinsic block size.
+    count_block_intrinsic_call();
+    if let Some(cached) = intrinsic_block_cache_lookup(box_node, mode) {
+      return Ok(cached);
+    }
+
+    let style_override = crate::layout::style_override::style_override_for(box_node.id);
+    let style: &ComputedStyle = style_override.as_deref().unwrap_or_else(|| box_node.style.as_ref());
+    let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
+
+    let intrinsic_inline = self.compute_intrinsic_inline_size(box_node, mode)?.max(0.0);
+    let constraints = if inline_is_horizontal {
+      LayoutConstraints::new(AvailableSpace::Definite(intrinsic_inline), AvailableSpace::Indefinite)
+    } else {
+      LayoutConstraints::new(AvailableSpace::Indefinite, AvailableSpace::Definite(intrinsic_inline))
+    };
+    let fragment = self.layout(box_node, &constraints)?;
+    let block_size = if inline_is_horizontal {
+      fragment.bounds.height()
+    } else {
+      fragment.bounds.width()
+    };
+    intrinsic_block_cache_store(box_node, mode, block_size);
+    Ok(block_size)
   }
 }
 

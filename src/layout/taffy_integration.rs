@@ -531,7 +531,16 @@ fn hash_length(len: &Length, hasher: &mut FxHasher) {
   match &len.calc {
     Some(calc) => {
       1u8.hash(hasher);
-      hash_calc_length(calc, hasher);
+      match calc {
+        crate::style::values::LengthCalc::Linear(calc) => {
+          0u8.hash(hasher);
+          hash_calc_length(calc, hasher);
+        }
+        crate::style::values::LengthCalc::Expr(id) => {
+          1u8.hash(hasher);
+          id.index().hash(hasher);
+        }
+      }
     }
     None => 0u8.hash(hasher),
   }

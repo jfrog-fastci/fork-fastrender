@@ -536,9 +536,23 @@ fn resolve_container_query_length(
     };
 
     if let Some(calc) = length.calc {
-      for term in calc.terms() {
-        if term.unit.is_container_query_relative() && term.value != 0.0 && !bases_known(term.unit) {
-          return None;
+      match calc {
+        crate::style::values::LengthCalc::Linear(calc) => {
+          for term in calc.terms() {
+            if term.unit.is_container_query_relative()
+              && term.value != 0.0
+              && !bases_known(term.unit)
+            {
+              return None;
+            }
+          }
+        }
+        // For non-linear expressions we can't cheaply inspect individual terms here; conservatively
+        // treat any missing container-query bases as making the query unknown.
+        crate::style::values::LengthCalc::Expr(_) => {
+          if !cqw_base.is_finite() || !cqh_base.is_finite() || !cqi_base.is_finite() || !cqb_base.is_finite() {
+            return None;
+          }
         }
       }
     } else if length.unit.is_container_query_relative()
@@ -600,22 +614,33 @@ fn resolve_container_query_length(
     };
     let percentage_base = percentage_base.filter(|v| v.is_finite());
 
-    let mut total = 0.0;
-    for term in calc.terms() {
-      let resolved = match term.unit {
-        LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
-        u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
-        u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
-        LengthUnit::Em => Some(term.value * font_size),
-        LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size * 0.5),
-        LengthUnit::Rem => Some(term.value * root_font_size),
-        LengthUnit::Lh => Some(term.value * line_height),
-        LengthUnit::Calc => None,
-        _ => None,
-      }?;
-      total += resolved;
-    }
-    return Some(total);
+    return crate::style::values::resolve_length_calc_with_resolver(
+      calc,
+      percentage_base,
+      vw,
+      vh,
+      font_size,
+      root_font_size,
+      &|linear, base, vw, vh, font_px, root_px| {
+        let base = base.filter(|b| b.is_finite());
+        let mut total = 0.0;
+        for term in linear.terms() {
+          let resolved = match term.unit {
+            LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+            u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+            u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
+            LengthUnit::Em => Some(term.value * font_px),
+            LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
+            LengthUnit::Rem => Some(term.value * root_px),
+            LengthUnit::Lh => Some(term.value * line_height),
+            LengthUnit::Calc => None,
+            _ => None,
+          }?;
+          total += resolved;
+        }
+        Some(total)
+      },
+    );
   }
 
   match length.unit {
@@ -1578,20 +1603,31 @@ fn cq_required_bases_from_property_value(value: &PropertyValue) -> u8 {
 fn cq_required_bases_from_length(length: &Length) -> u8 {
   let mut mask = 0u8;
   if let Some(calc) = length.calc {
-    for term in calc.terms() {
-      if term.value == 0.0 {
-        continue;
+    match calc {
+      crate::style::values::LengthCalc::Linear(calc) => {
+        for term in calc.terms() {
+          if term.value == 0.0 {
+            continue;
+          }
+          mask |= match term.unit {
+            LengthUnit::Cqw => CQ_VALUE_BASE_CQW,
+            LengthUnit::Cqh => CQ_VALUE_BASE_CQH,
+            LengthUnit::Cqi => CQ_VALUE_BASE_CQI,
+            LengthUnit::Cqb => CQ_VALUE_BASE_CQB,
+            LengthUnit::Cqmin | LengthUnit::Cqmax => CQ_VALUE_BASE_CQI | CQ_VALUE_BASE_CQB,
+            _ => 0,
+          };
+        }
+        return mask;
       }
-      mask |= match term.unit {
-        LengthUnit::Cqw => CQ_VALUE_BASE_CQW,
-        LengthUnit::Cqh => CQ_VALUE_BASE_CQH,
-        LengthUnit::Cqi => CQ_VALUE_BASE_CQI,
-        LengthUnit::Cqb => CQ_VALUE_BASE_CQB,
-        LengthUnit::Cqmin | LengthUnit::Cqmax => CQ_VALUE_BASE_CQI | CQ_VALUE_BASE_CQB,
-        _ => 0,
-      };
+      crate::style::values::LengthCalc::Expr(_) => {
+        // Non-linear expressions do not currently expose per-term unit inspection; conservatively
+        // assume all container-query bases might be required when cq* units appear.
+        if calc.has_container_query_relative() {
+          return CQ_VALUE_BASE_CQW | CQ_VALUE_BASE_CQH | CQ_VALUE_BASE_CQI | CQ_VALUE_BASE_CQB;
+        }
+      }
     }
-    return mask;
   }
 
   if length.value == 0.0 {
@@ -2894,9 +2930,21 @@ fn resolve_length_for_query(
     };
 
     if let Some(calc) = length.calc {
-      for term in calc.terms() {
-        if term.unit.is_container_query_relative() && term.value != 0.0 && !bases_known(term.unit) {
-          return None;
+      match calc {
+        crate::style::values::LengthCalc::Linear(calc) => {
+          for term in calc.terms() {
+            if term.unit.is_container_query_relative()
+              && term.value != 0.0
+              && !bases_known(term.unit)
+            {
+              return None;
+            }
+          }
+        }
+        crate::style::values::LengthCalc::Expr(_) => {
+          if !cqw.is_finite() || !cqh.is_finite() || !cqi.is_finite() || !cqb.is_finite() {
+            return None;
+          }
         }
       }
     } else if length.unit.is_container_query_relative()
@@ -2967,22 +3015,31 @@ fn resolve_length_for_query(
       vh.unwrap_or(0.0)
     };
 
-    let mut total = 0.0;
-    for term in calc.terms() {
-      let resolved = match term.unit {
-        u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
-        u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
-        LengthUnit::Em => Some(term.value * font_size),
-        LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size * 0.5),
-        LengthUnit::Rem => Some(term.value * root_font_size),
-        LengthUnit::Lh => Some(term.value * line_height),
-        LengthUnit::Calc | LengthUnit::Percent => None,
-        _ => None,
-      }?;
-      total += resolved;
-    }
-
-    return Some(total);
+    return crate::style::values::resolve_length_calc_with_resolver(
+      calc,
+      None,
+      vw,
+      vh,
+      font_size,
+      root_font_size,
+      &|linear, _base, vw, vh, font_px, root_px| {
+        let mut total = 0.0;
+        for term in linear.terms() {
+          let resolved = match term.unit {
+            u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+            u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
+            LengthUnit::Em => Some(term.value * font_px),
+            LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
+            LengthUnit::Rem => Some(term.value * root_px),
+            LengthUnit::Lh => Some(term.value * line_height),
+            LengthUnit::Calc | LengthUnit::Percent => None,
+            _ => None,
+          }?;
+          total += resolved;
+        }
+        Some(total)
+      },
+    );
   }
 
   match length.unit {
@@ -3547,7 +3604,16 @@ fn hash_length_fingerprint(state: &mut impl Hasher, length: &Length) {
   f32_to_canonical_bits(length.value).hash(state);
   if let Some(calc) = length.calc {
     1u8.hash(state);
-    hash_calc_length_fingerprint(state, &calc);
+    match calc {
+      crate::style::values::LengthCalc::Linear(calc) => {
+        0u8.hash(state);
+        hash_calc_length_fingerprint(state, &calc);
+      }
+      crate::style::values::LengthCalc::Expr(id) => {
+        1u8.hash(state);
+        id.index().hash(state);
+      }
+    }
   } else {
     0u8.hash(state);
   }

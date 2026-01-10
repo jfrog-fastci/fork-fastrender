@@ -13,8 +13,10 @@ use crate::style::types::Overflow;
 use crate::style::types::ScrollbarWidth;
 use crate::style::values::CalcLength;
 use crate::style::values::Length;
+use crate::style::values::LengthCalc;
 use crate::style::values::LengthOrAuto;
 use crate::style::values::LengthUnit;
+use crate::style::values::resolve_length_calc_with_resolver;
 use crate::style::ComputedStyle;
 use crate::text::font_db::compute_font_size_adjusted_size;
 use crate::text::font_db::FontStretch;
@@ -56,8 +58,8 @@ pub fn resolve_length_with_percentage_metrics(
   font_context: Option<&FontContext>,
 ) -> Option<f32> {
   if length.unit == LengthUnit::Calc {
-    return length.calc.as_ref().and_then(|calc| {
-      resolve_calc_length_with_percentage_metrics(
+    return length.calc.as_ref().and_then(|calc| match calc {
+      LengthCalc::Linear(calc) => resolve_calc_length_with_percentage_metrics(
         calc,
         percentage_base,
         viewport,
@@ -65,7 +67,26 @@ pub fn resolve_length_with_percentage_metrics(
         root_font_size,
         style,
         font_context,
-      )
+      ),
+      LengthCalc::Expr(_) => resolve_length_calc_with_resolver(
+        *calc,
+        percentage_base,
+        viewport.width,
+        viewport.height,
+        font_size,
+        root_font_size,
+        &|linear, base, vw, vh, font_px, root_px| {
+          resolve_calc_length_with_percentage_metrics(
+            linear,
+            base,
+            Size { width: vw, height: vh },
+            font_px,
+            root_px,
+            style,
+            font_context,
+          )
+        },
+      ),
     });
   }
 

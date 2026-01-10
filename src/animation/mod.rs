@@ -77,7 +77,7 @@ use crate::style::types::ViewTimelineInset;
 use crate::style::types::ViewTimelinePhase;
 use crate::style::types::WritingMode;
 use crate::style::values::{
-  CalcLength, CustomPropertyTypedValue, CustomPropertyValue, Length, LengthUnit,
+  CalcLength, CustomPropertyTypedValue, CustomPropertyValue, Length, LengthCalc, LengthUnit,
 };
 use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 use crate::style::ComputedStyle;
@@ -219,13 +219,22 @@ fn length_percentage_components(
   let mut px = 0.0f32;
 
   if let Some(calc) = len.calc.as_ref() {
-    for term in calc.terms() {
-      if term.unit == LengthUnit::Percent {
-        pct += term.value;
-        continue;
+    match calc {
+      LengthCalc::Linear(calc) => {
+        for term in calc.terms() {
+          if term.unit == LengthUnit::Percent {
+            pct += term.value;
+            continue;
+          }
+          let term_len = Length::new(term.value, term.unit);
+          px += resolve_length_px(&term_len, None, style, ctx);
+        }
       }
-      let term_len = Length::new(term.value, term.unit);
-      px += resolve_length_px(&term_len, None, style, ctx);
+      // Non-linear expressions (e.g. clamp/max) cannot be decomposed into separate percentage +
+      // absolute components for interpolation. Fall back to resolving the entire value to px.
+      LengthCalc::Expr(_) => {
+        px += resolve_length_px(len, None, style, ctx);
+      }
     }
     return (pct, px);
   }
@@ -243,11 +252,18 @@ fn length_percentage_components_no_context(len: &Length) -> (f32, f32) {
   let mut px = 0.0f32;
 
   if let Some(calc) = len.calc.as_ref() {
-    for term in calc.terms() {
-      if term.unit == LengthUnit::Percent {
-        pct += term.value;
-      } else {
-        px += Length::new(term.value, term.unit).to_px();
+    match calc {
+      LengthCalc::Linear(calc) => {
+        for term in calc.terms() {
+          if term.unit == LengthUnit::Percent {
+            pct += term.value;
+          } else {
+            px += Length::new(term.value, term.unit).to_px();
+          }
+        }
+      }
+      LengthCalc::Expr(_) => {
+        px += len.to_px();
       }
     }
     return (pct, px);
@@ -294,7 +310,6 @@ fn interpolate_custom_property(
 ) -> Option<CustomPropertyValue> {
   let from_typed = from.typed.as_ref()?;
   let to_typed = to.typed.as_ref()?;
-
   let typed = match (from_typed, to_typed) {
     (CustomPropertyTypedValue::Number(a), CustomPropertyTypedValue::Number(b)) => {
       CustomPropertyTypedValue::Number(lerp(*a, *b, t))

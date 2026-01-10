@@ -539,6 +539,59 @@ fn physical_height_is_auto(style: &ComputedStyle) -> bool {
   style.height.is_none() && style.height_keyword.is_none()
 }
 
+fn grid_track_is_definite(track: &GridTrack, containing_block_definite: bool) -> bool {
+  match track {
+    GridTrack::Length(len) => !len.has_percentage() || containing_block_definite,
+    GridTrack::Fr(_) => containing_block_definite,
+    GridTrack::MinMax(min, max) => {
+      grid_track_is_definite(min, containing_block_definite)
+        && grid_track_is_definite(max, containing_block_definite)
+    }
+    // Content-based track sizing functions do not provide a definite track size for percentage
+    // resolution.
+    GridTrack::Auto
+    | GridTrack::MinContent
+    | GridTrack::MaxContent
+    | GridTrack::FitContent(_)
+    | GridTrack::RepeatAutoFill { .. }
+    | GridTrack::RepeatAutoFit { .. } => false,
+  }
+}
+
+fn grid_container_allows_stretch_block_size_override(
+  style: &ComputedStyle,
+  constraints: &LayoutConstraints,
+) -> bool {
+  // `align-self: stretch` makes grid items fill their grid area. We sometimes forward that
+  // stretched size into nested layout via `used_border_box_height` so percentage heights inside
+  // the item can resolve.
+  //
+  // For content-sized tracks (notably the default implicit `auto` tracks used by horizontal
+  // carousels), treating the track size as a definite containing block for percentages is
+  // incorrect and can create circular sizing dependencies (`height:100%` expands to the probe
+  // size, inflating the track, which then inflates the probe again).
+  //
+  // Only forward the stretched size when the grid container's first track on the block axis is
+  // definitely sized.
+  let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+  if !inline_is_horizontal {
+    // Writing-mode-aware track selection is more complex than the current needs; keep existing
+    // behaviour for non-horizontal writing modes.
+    return true;
+  }
+
+  let containing_block_definite = constraints.height().is_some() || constraints.used_border_box_height.is_some();
+  let track = if !style.grid_template_rows.is_empty() {
+    &style.grid_template_rows[0]
+  } else {
+    style
+      .grid_auto_rows
+      .get(0)
+      .unwrap_or(&GridTrack::Auto)
+  };
+  grid_track_is_definite(track, containing_block_definite)
+}
+
 fn node_or_in_flow_children_depend_on_available_height(node: &BoxNode) -> bool {
   if height_depends_on_available_height(&node.style) {
     return true;
@@ -3376,9 +3429,10 @@ impl GridFormattingContext {
     // font/viewport-relative units inside calc(). That is fine for "best effort" debugging, but it
     // breaks layout when we feed those values into Taffy as absolute track/sizing numbers.
     //
-    // Use the full resolver for calc() values so expressions like `calc(5rem + 1px)` contribute the
-    // correct used size (e.g. MDN's `.page-layout__banner` height).
-    if len.calc.is_some() {
+    // Modern grid templates frequently use calc/min/max/clamp with viewport units (e.g.
+    // `max(180px, calc(100vw - 170px))`). Ensure we resolve those expressions here so Taffy
+    // receives concrete track sizes.
+    if len.unit == LengthUnit::Calc || len.calc.is_some() {
       return self.resolve_length_px_with_base(*len, None, style);
     }
     match len.unit {
@@ -7125,6 +7179,7 @@ impl GridFormattingContext {
     known_dimensions: taffy::geometry::Size<Option<f32>>,
     available_space: taffy::geometry::Size<taffy::style::AvailableSpace>,
     parent_inline_base: Option<f32>,
+    allow_stretch_block_size_override: bool,
     taffy_style: &taffy::style::Style,
     auto_unskipped: &FxHashSet<*const BoxNode>,
     factory: &crate::layout::contexts::factory::FormattingContextFactory,
@@ -7212,6 +7267,18 @@ impl GridFormattingContext {
       if let taffy::style::AvailableSpace::Definite(w) = available_space.width {
         if w.is_finite() && w > 1.0 {
           constraints.used_border_box_width = Some(w.max(0.0));
+        }
+      }
+    }
+    if constraints.used_border_box_height.is_none()
+      && known_dimensions.height.is_none()
+      && physical_height_is_auto(style)
+      && taffy_style.align_self == Some(taffy::style::AlignItems::Stretch)
+      && allow_stretch_block_size_override
+    {
+      if let taffy::style::AvailableSpace::Definite(h) = available_space.height {
+        if h.is_finite() && h > 1.0 {
+          constraints.used_border_box_height = Some(h.max(0.0));
         }
       }
     }
@@ -9190,6 +9257,35 @@ impl FormattingContext for GridFormattingContext {
       }
     }
 
+    // CSS2.1 §10.5: Percentage `height` values compute to `auto` when the containing block height
+    // is not definite (i.e. it depends on content height) for in-flow elements.
+    //
+    // Grid layout commonly runs inside block-flow where the block-size is indefinite. Taffy
+    // resolves percentage heights against the available space it receives, so without this
+    // normalization `height:100%` can incorrectly expand to viewport/probe sizes when the
+    // containing block height is actually indefinite.
+    if constraints.used_border_box_height.is_none()
+      && constraints.height().is_none()
+      && style
+        .height
+        .as_ref()
+        .is_some_and(crate::style::values::Length::has_percentage)
+      && !matches!(
+        style.position,
+        crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+      )
+    {
+      if let Ok(existing) = taffy.style(root_id) {
+        if existing.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG {
+          let mut updated = existing.clone();
+          updated.size.height = Dimension::auto();
+          taffy
+            .set_style(root_id, updated)
+            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        }
+      }
+    }
+
     // `width/height: fit-content` clamps the used size between the box's min- and max-content
     // contributions. When this grid formatting context is invoked without a parent precomputing
     // a used border-box size (notably at the root of the layout tree), resolve it here so Taffy
@@ -9427,6 +9523,28 @@ impl FormattingContext for GridFormattingContext {
         CrateAvailableSpace::MaxContent => taffy::style::AvailableSpace::MaxContent,
       },
     };
+
+    // In scrollable layout (no pagination/fragmentation), block-axis available space from the
+    // containing block should not constrain auto-sized grid containers.
+    //
+    // FastRender's block formatting context threads a definite available block size from the
+    // viewport down the tree so percentage heights can resolve, but CSS block layout does not
+    // constrain in-flow children to that size — they can overflow and extend the scrollable
+    // content area. Taffy, however, treats a definite available height as an input to grid track
+    // sizing and will stretch `auto` block sizes to fill it (notably when `align-content: stretch`,
+    // which is common and the initial value for grid containers). This can create huge grid rows
+    // that push subsequent content far below the viewport (e.g. The Guardian highlights carousel).
+    //
+    // When we're not in a fragmentation context and the grid container's block size is `auto`,
+    // treat the available block size as indefinite so the grid's used height is content-based.
+    if fragmentainer_block_size_hint().is_none()
+      && constraints.used_border_box_height.is_none()
+      && crate::style::inline_axis_is_horizontal(style.writing_mode)
+      && physical_height_is_auto(style)
+      && matches!(available_space.height, taffy::style::AvailableSpace::Definite(_))
+    {
+      available_space.height = taffy::style::AvailableSpace::MaxContent;
+    }
     // If the grid container itself is sized with intrinsic keywords, map the available space we
     // pass into Taffy so it performs the corresponding intrinsic probe. Fit-content needs a
     // definite available size (fill-available), so only map min-/max-content here.
@@ -9501,6 +9619,8 @@ impl FormattingContext for GridFormattingContext {
     };
 
     let parent_inline_base = constraints.inline_percentage_base;
+    let allow_stretch_block_size_override =
+      grid_container_allows_stretch_block_size_override(style, constraints);
     for pass_idx in 0..max_passes {
       if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
         return Err(LayoutError::Timeout { elapsed });
@@ -9622,6 +9742,7 @@ impl FormattingContext for GridFormattingContext {
               known_dimensions,
               available_space,
               parent_inline_base,
+              allow_stretch_block_size_override,
               taffy_style,
               auto_unskipped_for_pass,
               &this.factory,
@@ -11421,6 +11542,7 @@ mod tests {
       known_dimensions,
       available_space,
       Some(260.0),
+      false,
       &taffy::style::Style::default(),
       &auto_unskipped,
       &fc.factory,
@@ -12828,42 +12950,44 @@ mod tests {
       "expected probes to map to the same quantized MeasureKey"
     );
 
-    let size_a = {
-      let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
-        FxHashMap::default();
-      let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
-      let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
-      gc.measure_grid_item(
-        node_ptr,
-        node_id,
-        known,
-        avail_a,
-        None,
-        &taffy_style,
-        &FxHashSet::default(),
-        &factory,
-        &mut measure_cache,
-        &mut measured_fragments,
+      let size_a = {
+        let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+          FxHashMap::default();
+        let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+        let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+        gc.measure_grid_item(
+          node_ptr,
+          node_id,
+          known,
+          avail_a,
+          None,
+          false,
+          &taffy_style,
+          &FxHashSet::default(),
+          &factory,
+          &mut measure_cache,
+          &mut measured_fragments,
         &mut measured_node_keys,
       )
     };
 
-    let size_b = {
-      let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
-        FxHashMap::default();
-      let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
-      let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
-      gc.measure_grid_item(
-        node_ptr,
-        node_id,
-        known,
-        avail_b,
-        None,
-        &taffy_style,
-        &FxHashSet::default(),
-        &factory,
-        &mut measure_cache,
-        &mut measured_fragments,
+      let size_b = {
+        let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+          FxHashMap::default();
+        let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+        let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+        gc.measure_grid_item(
+          node_ptr,
+          node_id,
+          known,
+          avail_b,
+          None,
+          false,
+          &taffy_style,
+          &FxHashSet::default(),
+          &factory,
+          &mut measure_cache,
+          &mut measured_fragments,
         &mut measured_node_keys,
       )
     };
@@ -13125,6 +13249,7 @@ mod tests {
         known,
         avail,
         None,
+        false,
         &taffy_style,
         &FxHashSet::default(),
         &factory,
@@ -13249,6 +13374,7 @@ mod tests {
             known,
             avail,
             None,
+            false,
             &taffy_style,
             &FxHashSet::default(),
             &factory,
@@ -13305,6 +13431,7 @@ mod tests {
           known,
           avail,
           None,
+          false,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -13365,6 +13492,7 @@ mod tests {
           known,
           avail,
           None,
+          false,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -13432,6 +13560,7 @@ mod tests {
           known,
           avail,
           None,
+          false,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -13499,6 +13628,7 @@ mod tests {
           known,
           avail,
           None,
+          false,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -13560,6 +13690,7 @@ mod tests {
           height: probe_height,
         },
         Some(wide_width),
+        false,
         &taffy_style,
         &FxHashSet::default(),
         &factory,
@@ -13591,6 +13722,7 @@ mod tests {
           height: probe_height,
         },
         Some(narrow_width),
+        false,
         &taffy_style,
         &FxHashSet::default(),
         &factory,

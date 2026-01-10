@@ -393,6 +393,7 @@ pub fn compute_line_height_with_metrics_viewport(
   viewport: Option<Size>,
 ) -> f32 {
   use crate::style::types::LineHeight;
+  use crate::style::values::LengthCalc;
   use crate::style::values::LengthUnit;
 
   let font_size = style.font_size;
@@ -424,28 +425,38 @@ pub fn compute_line_height_with_metrics_viewport(
       LengthUnit::Lh => len.value * normal_line_height,
       LengthUnit::Calc => len
         .calc
-        .map(|calc| {
-          let mut resolved = 0.0;
-          for term in calc.terms() {
-            resolved += match term.unit {
-              LengthUnit::Percent => (term.value / 100.0) * font_size,
-              u if u.is_absolute() => crate::style::values::Length::new(term.value, u).to_px(),
-              LengthUnit::Em => term.value * font_size,
-              LengthUnit::Rem => term.value * style.root_font_size,
-              LengthUnit::Ex => {
-                let x_height = metrics.and_then(|m| m.x_height).unwrap_or(font_size * 0.5);
-                term.value * x_height
+        .and_then(|calc| {
+          crate::style::values::resolve_length_calc_with_resolver(
+            calc,
+            Some(font_size),
+            vw,
+            vh,
+            font_size,
+            style.root_font_size,
+            &|linear, base, vw, vh, font_px, root_px| {
+              let base = base.filter(|b| b.is_finite());
+              let mut resolved = 0.0;
+              for term in linear.terms() {
+                resolved += match term.unit {
+                  LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+                  u if u.is_absolute() => Some(crate::style::values::Length::new(term.value, u).to_px()),
+                  LengthUnit::Em => Some(term.value * font_px),
+                  LengthUnit::Rem => Some(term.value * root_px),
+                  LengthUnit::Ex => {
+                    let x_height = metrics.and_then(|m| m.x_height).unwrap_or(font_px * 0.5);
+                    Some(term.value * x_height)
+                  }
+                  LengthUnit::Ch => Some(term.value * font_px * 0.5),
+                  // `lh` inside `line-height` is cyclic; approximate it using the UA `normal` line height.
+                  LengthUnit::Lh => Some(term.value * normal_line_height),
+                  u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
+                    .resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode),
+                  _ => Some(term.value),
+                }?;
               }
-              LengthUnit::Ch => term.value * font_size * 0.5,
-              LengthUnit::Lh => term.value * normal_line_height,
-              u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
-                .resolve_with_viewport_for_writing_mode(vw, vh, style.writing_mode)
-                .unwrap_or(term.value),
-              _ => term.value,
-            };
-          }
-
-          resolved
+              Some(resolved)
+            },
+          )
         })
         .unwrap_or(len.value),
       u if u.is_viewport_relative() => len

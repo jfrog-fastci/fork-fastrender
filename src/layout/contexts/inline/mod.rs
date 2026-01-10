@@ -394,68 +394,48 @@ impl InlineFormattingContext {
       StyleAlign::Top => Align::Top,
       StyleAlign::Bottom => Align::Bottom,
       StyleAlign::Length(len) => {
-        let resolve_calc_with_line_height = |calc: &crate::style::values::CalcLength| -> Option<f32> {
-          if !line_height.is_finite()
-            || !self.viewport_size.width.is_finite()
-            || !self.viewport_size.height.is_finite()
-            || !font_size.is_finite()
-            || !root_font_size.is_finite()
-          {
-            return None;
-          }
-
-          let mut total = 0.0;
-          for term in calc.terms() {
-            if !term.value.is_finite() {
-              return None;
-            }
-            let resolved = match term.unit {
-              LengthUnit::Percent => Some((term.value / 100.0) * line_height),
-              u if u.is_absolute() => Some(crate::style::values::Length::new(term.value, u).to_px()),
-              u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
-                .resolve_with_viewport_for_writing_mode(
-                  self.viewport_size.width,
-                  self.viewport_size.height,
-                  writing_mode,
-                ),
-              LengthUnit::Em => Some(term.value * font_size),
-              LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size * 0.5),
-              LengthUnit::Rem => Some(term.value * root_font_size),
-              LengthUnit::Lh => Some(term.value * line_height),
-              _ => None,
-            }?;
-            total += resolved;
-          }
-
-          Some(total)
-        };
-
         let px = if len.unit == LengthUnit::Calc {
-          // `Length::resolve_with_context` cannot resolve `lh` terms inside `calc()` accurately,
-          // because `CalcLength::resolve` lacks access to computed line-height. Inline layout has
-          // that information, so resolve those calc expressions here.
-          len
-            .calc
-            .as_ref()
-            .and_then(|calc| {
-              calc
-                .terms()
-                .iter()
-                .any(|t| t.unit == LengthUnit::Lh)
-                .then(|| resolve_calc_with_line_height(calc))
-                .flatten()
-            })
-            .or_else(|| {
-              len.resolve_with_context_for_writing_mode(
-                Some(line_height),
-                self.viewport_size.width,
-                self.viewport_size.height,
-                font_size,
-                root_font_size,
-                writing_mode,
-              )
-            })
-            .unwrap_or(len.value)
+          // `Length::resolve_with_context_for_writing_mode` cannot resolve `lh` terms inside
+          // calc/min/max/clamp accurately because `CalcLength::resolve` lacks access to the
+          // computed line-height. Inline layout has that information, so resolve calc expressions
+          // here with a custom resolver that treats both `%` and `lh` as relative to the line box.
+          match len.calc.as_ref() {
+            Some(calc) => crate::style::values::resolve_length_calc_with_resolver(
+              *calc,
+              Some(line_height),
+              self.viewport_size.width,
+              self.viewport_size.height,
+              font_size,
+              root_font_size,
+              &|linear, base, vw, vh, font_px, root_px| {
+                if !line_height.is_finite() {
+                  return None;
+                }
+                let base = base.filter(|b| b.is_finite());
+                let mut total = 0.0;
+                for term in linear.terms() {
+                  if !term.value.is_finite() {
+                    return None;
+                  }
+                  let resolved = match term.unit {
+                    LengthUnit::Percent => base.map(|b| (term.value / 100.0) * b),
+                    u if u.is_absolute() => Some(crate::style::values::Length::new(term.value, u).to_px()),
+                    u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
+                      .resolve_with_viewport_for_writing_mode(vw, vh, writing_mode),
+                    LengthUnit::Em => Some(term.value * font_px),
+                    LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_px * 0.5),
+                    LengthUnit::Rem => Some(term.value * root_px),
+                    LengthUnit::Lh => Some(term.value * line_height),
+                    _ => None,
+                  }?;
+                  total += resolved;
+                }
+                Some(total)
+              },
+            )
+            .unwrap_or(len.value),
+            None => len.value,
+          }
         } else if len.unit == LengthUnit::Lh {
           if line_height.is_finite() {
             len.value * line_height
@@ -1123,8 +1103,15 @@ impl InlineFormattingContext {
             .iter()
             .any(|item| matches!(item, InlineItem::Floating(_)));
           let bottom_inset = padding_bottom + border_bottom;
+          let only_bookkeeping_anchors = !child_items.is_empty()
+            && child_items.iter().all(|item| match item {
+              InlineItem::StaticPositionAnchor(anchor) => {
+                anchor.running.is_none() && anchor.footnote.is_none()
+              }
+              _ => false,
+            });
           if !has_floats
-            && child_items.is_empty()
+            && (child_items.is_empty() || only_bookkeeping_anchors)
             && start_edge == 0.0
             && end_edge == 0.0
             && content_offset_y == 0.0
@@ -1134,6 +1121,16 @@ impl InlineFormattingContext {
             // Empty inline boxes are normally skipped, but footnote calls still need a zero-sized
             // anchor so pagination can place the footnote body even when `::footnote-call` has
             // `content: none`.
+            if only_bookkeeping_anchors {
+              // Static-position anchors for out-of-flow positioned descendants are bookkeeping-only;
+              // don't create an inline box that would force an empty line box, but keep the anchors
+              // in the inline stream so absolute positioning can still fall back to a sensible
+              // static position when needed.
+              for item in child_items {
+                current_items.push(item);
+              }
+              whitespace.note_ignorable();
+            }
             maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
             continue;
           }
