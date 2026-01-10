@@ -473,6 +473,25 @@ mod tests {
   }
 
   #[test]
+  fn document_cookie_fetcher_sync_handles_empty_cookie_header() -> Result<()> {
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(HttpFetcher::new());
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher.clone())?;
+
+    // Cookie is scoped to `/sub`, so it should not be visible on the document at `/`.
+    host.exec_script("document.cookie = 'a=b; Path=/sub';")?;
+    let cookie = host.exec_script("document.cookie")?;
+    assert_eq!(value_to_string(&host, cookie), "");
+
+    // A separate document whose URL path matches the cookie should observe it.
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host_sub = WindowHost::new_with_fetcher(dom, "https://example.invalid/sub", fetcher)?;
+    let cookie = host_sub.exec_script("document.cookie")?;
+    assert_eq!(value_to_string(&host_sub, cookie), "a=b");
+    Ok(())
+  }
+
+  #[test]
   fn window_realm_supports_event_constructors_and_create_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

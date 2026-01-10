@@ -3309,8 +3309,9 @@ pub trait ResourceFetcher: Send + Sync {
   /// This is primarily intended for `document.cookie` integration so JavaScript can observe cookies
   /// that were stored by the underlying HTTP client (via `Set-Cookie` headers).
   ///
-  /// The default implementation returns `None` to indicate that the fetcher does not expose cookie
-  /// state.
+  /// Implementations that support cookies should return `Some(value)`, using an empty string to
+  /// represent "no cookies would be sent". Returning `None` indicates that the fetcher does not
+  /// expose cookie state.
   fn cookie_header_value(&self, url: &str) -> Option<String> {
     let _ = url;
     None
@@ -7858,7 +7859,11 @@ impl ResourceFetcher for HttpFetcher {
   }
 
   fn cookie_header_value(&self, url: &str) -> Option<String> {
-    HttpFetcher::cookie_header_value(self, url)
+    let parsed = Url::parse(url).ok()?;
+    match self.cookie_jar.cookies(&parsed) {
+      Some(header) => header.to_str().ok().map(|value| value.to_string()),
+      None => Some(String::new()),
+    }
   }
 
   fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
