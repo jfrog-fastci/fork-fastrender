@@ -135,6 +135,17 @@ fn array_prototype_for_each_binds_this_arg() {
 }
 
 #[test]
+fn array_prototype_index_of_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var o={}; var a=[1,2,3]; var b=[Number.NaN]; var c=[o]; a.indexOf(2)===1 && a.indexOf(2,2)===-1 && a.indexOf(2,-2)===1 && b.indexOf(Number.NaN)===-1 && c.indexOf(o)===0 && Array.prototype.indexOf.call("ab","b")===1"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_slice_copies_elements() {
   let mut rt = new_runtime();
   let value = rt
