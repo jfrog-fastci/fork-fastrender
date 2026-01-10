@@ -2351,7 +2351,7 @@ impl BrowserTabHost {
 
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(OverlayFetcher {
       base: self.document.fetcher(),
-      sources: self.external_script_sources.clone(),
+      sources: Arc::clone(&self.external_script_sources),
     });
 
     // HTML queues module graph fetching on the networking task source. This applies even for inline
@@ -8725,6 +8725,60 @@ html, body { margin: 0; padding: 0; }
       dom.get_attribute(body, "data-top-level-this-undefined")
         .expect("get_attribute should succeed"),
       Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_import_meta_url_is_exposed_for_entry_and_imported_modules() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let dep_source = "globalThis.__dep_url = import.meta.url;";
+    let dep_url = {
+      let b64 = BASE64_STANDARD.encode(dep_source.as_bytes());
+      Url::parse(&format!("data:text/javascript;base64,{b64}"))
+        .expect("data: URL should parse")
+        .to_string()
+    };
+
+    let entry_source = format!(
+      "import \"{dep_url}\";\n\
+       document.body.setAttribute(\"data-entry-url\", import.meta.url);\n\
+       document.body.setAttribute(\"data-dep-url\", globalThis.__dep_url);\n"
+    );
+    let entry_url = {
+      let b64 = BASE64_STANDARD.encode(entry_source.as_bytes());
+      Url::parse(&format!("data:text/javascript;base64,{b64}"))
+        .expect("data: URL should parse")
+        .to_string()
+    };
+
+    let html = format!(
+      r#"<!doctype html><body>
+        <script type="module" src="{entry_url}"></script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-entry-url")
+        .expect("get_attribute should succeed"),
+      Some(entry_url.as_str())
+    );
+    assert_eq!(
+      dom.get_attribute(body, "data-dep-url")
+        .expect("get_attribute should succeed"),
+      Some(dep_url.as_str())
     );
     Ok(())
   }

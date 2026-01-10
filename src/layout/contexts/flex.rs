@@ -15745,7 +15745,7 @@ mod tests {
       AvailableSpace::Definite(w) => assert_eq!(w, 434.0),
       other => panic!("expected snapped available width to remain definite, got {other:?}"),
     }
- 
+  
     // Ensure the key itself reflects the preserved width.
     assert_eq!(key.0, Some(super::f32_to_canonical_bits(434.0) as u64));
   }

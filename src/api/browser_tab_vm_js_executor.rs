@@ -27,9 +27,10 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 use url::Url;
 use vm_js::{
-  HostDefined, ImportMetaProperty, Job, JobCallback, ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer,
-  ModuleRequest, PromiseHandle, PromiseRejectionOperation, PromiseState, PropertyKey, RealmId, Scope,
-  SourceText, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  HostDefined, ImportMetaProperty, Job, JobCallback, ModuleGraph, ModuleId, ModuleLoadPayload,
+  ModuleReferrer, ModuleRequest, PromiseHandle, PromiseRejectionOperation, PromiseState, PropertyKey,
+  RealmId, Scope, SourceText, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks,
+  VmJobContext,
 };
 
 use super::BrowserDocumentDom2;
@@ -45,6 +46,7 @@ pub struct VmJsBrowserTabExecutor {
   fetch_bindings: Option<WindowFetchBindings>,
   module_graph: Option<ModuleGraph>,
   module_map: HashMap<String, ModuleId>,
+  module_url_by_id: HashMap<ModuleId, String>,
   import_map_state: ImportMapState,
   document_origin: Option<DocumentOrigin>,
   js_execution_options: JsExecutionOptions,
@@ -67,6 +69,7 @@ impl VmJsBrowserTabExecutor {
       fetch_bindings: None,
       module_graph: None,
       module_map: HashMap::new(),
+      module_url_by_id: HashMap::new(),
       import_map_state: ImportMapState::new_empty(),
       document_origin: None,
       js_execution_options: JsExecutionOptions::default(),
@@ -144,6 +147,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.realm = None;
     self.module_graph = None;
     self.module_map.clear();
+    self.module_url_by_id.clear();
     self.import_map_state = ImportMapState::new_empty();
     self.document_origin = document_url.and_then(crate::resource::origin_from_url);
     self.js_execution_options = js_execution_options;
@@ -338,6 +342,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let clock = event_loop.clock();
     let max_script_bytes = self.js_execution_options.max_script_bytes;
     let module_map = &mut self.module_map;
+    let module_url_by_id = &mut self.module_url_by_id;
     let import_map_state = &mut self.import_map_state;
 
     let exec_result: Result<()> = with_event_loop(event_loop, || {
@@ -357,6 +362,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         fetcher,
         max_script_bytes,
         module_map,
+        module_url_by_id,
         import_map_state,
         document_origin,
         cors_mode,
@@ -403,6 +409,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         };
         let id = module_graph.add_module(record);
         hooks.module_map.insert(entry_specifier.clone(), id);
+        hooks.module_url_by_id.insert(id, entry_specifier.clone());
         Ok(id)
       };
 
@@ -489,6 +496,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let max_script_bytes = self.js_execution_options.max_script_bytes;
     let document_origin = self.document_origin.clone();
     let module_map = &mut self.module_map;
+    let module_url_by_id = &mut self.module_url_by_id;
     let import_map_state = &mut self.import_map_state;
 
     let exec_result: Result<()> = with_event_loop(event_loop, || {
@@ -527,6 +535,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         };
         let id = module_graph.add_module(record);
         module_map.insert(entry_specifier.clone(), id);
+        module_url_by_id.insert(id, entry_specifier.clone());
         id
       };
 
@@ -537,6 +546,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         fetcher: document.fetcher(),
         max_script_bytes,
         module_map,
+        module_url_by_id,
         import_map_state,
         document_origin,
         cors_mode,
@@ -790,6 +800,7 @@ struct ModuleLoaderHooks<'a> {
   fetcher: Arc<dyn ResourceFetcher>,
   max_script_bytes: usize,
   module_map: &'a mut HashMap<String, ModuleId>,
+  module_url_by_id: &'a mut HashMap<ModuleId, String>,
   import_map_state: &'a mut ImportMapState,
   document_origin: Option<DocumentOrigin>,
   cors_mode: CorsMode,
@@ -925,6 +936,7 @@ impl ModuleLoaderHooks<'_> {
 
     let id = modules.add_module(record);
     self.module_map.insert(url.to_string(), id);
+    self.module_url_by_id.insert(id, url.to_string());
     Ok(id)
   }
 }
@@ -932,33 +944,6 @@ impl ModuleLoaderHooks<'_> {
 impl VmHostHooks for ModuleLoaderHooks<'_> {
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
     self.inner.host_enqueue_promise_job(job, realm);
-  }
-
-  fn host_get_import_meta_properties(
-    &mut self,
-    _vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    module: ModuleId,
-  ) -> std::result::Result<Vec<ImportMetaProperty>, VmError> {
-    let Some(url) = self
-      .module_map
-      .iter()
-      .find_map(|(url, id)| (*id == module).then_some(url.as_str()))
-    else {
-      return Ok(Vec::new());
-    };
-
-    let key_s = scope.alloc_string("url")?;
-    scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
-
-    let url_s = scope.alloc_string(url)?;
-    scope.push_root(Value::String(url_s))?;
-
-    Ok(vec![ImportMetaProperty {
-      key,
-      value: Value::String(url_s),
-    }])
   }
 
   fn host_exotic_get(
@@ -1017,6 +1002,29 @@ impl VmHostHooks for ModuleLoaderHooks<'_> {
 
   fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
     self.inner.host_get_supported_import_attributes()
+  }
+
+  fn host_get_import_meta_properties(
+    &mut self,
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    module: ModuleId,
+  ) -> std::result::Result<Vec<ImportMetaProperty>, VmError> {
+    let Some(url) = self.module_url_by_id.get(&module) else {
+      return Ok(Vec::new());
+    };
+ 
+    let key_s = scope.alloc_string("url")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+ 
+    let url_s = scope.alloc_string(url.as_str())?;
+    scope.push_root(Value::String(url_s))?;
+ 
+    Ok(vec![ImportMetaProperty {
+      key,
+      value: Value::String(url_s),
+    }])
   }
 
   fn host_load_imported_module(
