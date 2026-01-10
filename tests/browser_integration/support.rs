@@ -12,6 +12,13 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use fastrender::dom2::NodeId;
+use fastrender::js::{
+  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, ScriptElementSpec, WindowRealm, WindowRealmConfig,
+  WindowRealmHost,
+};
+use fastrender::{BrowserDocumentDom2, BrowserTabHost, BrowserTabJsExecutor, Result};
+
 /// Default per-wait timeout used by integration-test helpers/tests that don't define their own.
 ///
 /// This is intentionally generous: these tests do real rendering work and can run in parallel,
@@ -20,6 +27,95 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 
 // Keep this small enough that long waits are still responsive, but not so small we busy-loop.
 const RECV_SLICE: Duration = Duration::from_millis(25);
+
+pub(crate) struct ExecutorWithWindow<E> {
+  inner: E,
+  host_ctx: (),
+  window: WindowRealm,
+}
+
+impl<E> ExecutorWithWindow<E> {
+  pub(crate) fn new(inner: E) -> Self {
+    let window =
+      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    Self {
+      inner,
+      host_ctx: (),
+      window,
+    }
+  }
+}
+
+impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
+  fn reset_for_navigation(
+    &mut self,
+    document_url: Option<&str>,
+    document: &mut BrowserDocumentDom2,
+    current_script_state: &CurrentScriptStateHandle,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<()> {
+    self.inner.reset_for_navigation(
+      document_url,
+      document,
+      current_script_state,
+      js_execution_options,
+    )
+  }
+
+  fn execute_classic_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self
+      .inner
+      .execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self
+      .inner
+      .execute_module_script(script_text, spec, current_script, document, event_loop)
+  }
+
+  fn execute_import_map_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self
+      .inner
+      .execute_import_map_script(script_text, spec, current_script, document, event_loop)
+  }
+
+  fn window_realm_mut(&mut self) -> Option<&mut WindowRealm> {
+    if let Some(realm) = self.inner.window_realm_mut() {
+      Some(realm)
+    } else {
+      Some(&mut self.window)
+    }
+  }
+}
+
+impl<E> WindowRealmHost for ExecutorWithWindow<E> {
+  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    (host_ctx, window)
+  }
+}
 
 /// RAII helper for scoping the global test render delay override.
 ///

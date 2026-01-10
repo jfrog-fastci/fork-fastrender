@@ -2311,14 +2311,14 @@ fn read_log_object(heap: &mut Heap, global: vm_js::GcObject) -> Result<Vec<Strin
 }
 
 struct FetchOnlyHost {
-  vm_host: (),
+  host_ctx: (),
   window: WindowRealm,
   _fetch_bindings: fastrender::js::WindowFetchBindings,
 }
 
 impl WindowRealmHost for FetchOnlyHost {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn VmHost, &mut WindowRealm) {
-    (&mut self.vm_host, &mut self.window)
+    (&mut self.host_ctx, &mut self.window)
   }
 }
 
@@ -3351,7 +3351,7 @@ fn window_fetch_rejects_when_response_body_exceeds_limit() -> Result<()> {
     .map_err(|e| Error::Other(e.to_string()))?
   };
   let mut host = FetchOnlyHost {
-    vm_host: (),
+    host_ctx: (),
     window,
     _fetch_bindings: fetch_bindings,
   };

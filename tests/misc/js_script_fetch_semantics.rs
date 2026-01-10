@@ -4,7 +4,9 @@ use fastrender::api::{BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTa
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::dom2::NodeId;
 use fastrender::error::Result;
-use fastrender::js::{EventLoop, RunLimits, ScriptElementSpec};
+use fastrender::js::{
+  EventLoop, RunLimits, ScriptElementSpec, WindowRealm, WindowRealmConfig, WindowRealmHost,
+};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -57,6 +59,46 @@ impl BrowserTabJsExecutor for LogExecutor {
     event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
+}
+
+struct ExecutorWithWindow<E> {
+  inner: E,
+  host_ctx: (),
+  window: WindowRealm,
+}
+
+impl<E> ExecutorWithWindow<E> {
+  fn new(inner: E) -> Self {
+    let window =
+      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    Self {
+      inner,
+      host_ctx: (),
+      window,
+    }
+  }
+}
+
+impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
+  fn execute_classic_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self
+      .inner
+      .execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
+}
+
+impl<E> WindowRealmHost for ExecutorWithWindow<E> {
+  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    (host_ctx, window)
   }
 }
 
@@ -147,7 +189,8 @@ fn sri_sha256_allows_matching_digest() -> Result<()> {
   );
 
   let executor = LogExecutor::default();
-  let mut tab = BrowserTab::from_html(&html, RenderOptions::default(), executor.clone())?;
+  let mut tab =
+    BrowserTab::from_html(&html, RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
   tab.register_script_source(script_url, script_body);
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
@@ -232,7 +275,8 @@ fn sri_sha256_mismatch_blocks_script_execution_without_aborting() -> Result<()> 
   );
 
   let executor = LogExecutor::default();
-  let mut tab = BrowserTab::from_html(&html, RenderOptions::default(), executor.clone())?;
+  let mut tab =
+    BrowserTab::from_html(&html, RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
   tab.register_script_source(script_url, script_body);
 
   // SRI mismatches should behave like script load failures: no execution, but the run completes.
@@ -430,7 +474,8 @@ fn crossorigin_anonymous_enforces_cors_and_blocks_on_missing_acao() -> Result<()
     "1".to_string(),
   )])));
   with_thread_runtime_toggles(toggles, || -> Result<()> {
-    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
+    let mut tab =
+      BrowserTab::from_html("", RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
     tab.navigate_to_url(&doc_url, RenderOptions::default())?;
     // No async/defer scripts; everything should have been handled during navigation.
     tab.run_event_loop_until_idle(RunLimits::unbounded())?;
@@ -503,7 +548,8 @@ fn referrerpolicy_no_referrer_suppresses_referer_header_for_scripts() -> Result<
   });
 
   let executor = LogExecutor::default();
-  let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
+  let mut tab =
+    BrowserTab::from_html("", RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
   tab.navigate_to_url(&doc_url, RenderOptions::default())?;
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
@@ -565,7 +611,8 @@ fn document_referrer_policy_header_applies_to_script_requests() -> Result<()> {
   });
 
   let executor = LogExecutor::default();
-  let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
+  let mut tab =
+    BrowserTab::from_html("", RenderOptions::default(), ExecutorWithWindow::new(executor.clone()))?;
   tab.navigate_to_url(&doc_url, RenderOptions::default())?;
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
@@ -671,7 +718,11 @@ fn crossorigin_use_credentials_includes_cookies_on_cross_origin_script_requests(
     "1".to_string(),
   )])));
   with_thread_runtime_toggles(toggles, || -> Result<()> {
-    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
+    let mut tab = BrowserTab::from_html(
+      "",
+      RenderOptions::default(),
+      ExecutorWithWindow::new(executor.clone()),
+    )?;
     tab.navigate_to_url(&doc_url, RenderOptions::default())?;
     tab.run_event_loop_until_idle(RunLimits::unbounded())?;
     Ok(())
@@ -800,7 +851,11 @@ fn crossorigin_use_credentials_blocks_without_allow_credentials_or_with_wildcard
     "1".to_string(),
   )])));
   with_thread_runtime_toggles(toggles, || -> Result<()> {
-    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
+    let mut tab = BrowserTab::from_html(
+      "",
+      RenderOptions::default(),
+      ExecutorWithWindow::new(executor.clone()),
+    )?;
     tab.navigate_to_url(&doc_url, RenderOptions::default())?;
     tab.run_event_loop_until_idle(RunLimits::unbounded())?;
     Ok(())

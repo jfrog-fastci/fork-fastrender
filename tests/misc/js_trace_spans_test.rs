@@ -1,7 +1,99 @@
 use fastrender::api::{BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions};
 use fastrender::dom2::NodeId;
 use fastrender::error::Result;
-use fastrender::js::{EventLoop, RunLimits, ScriptElementSpec, TaskSource};
+use fastrender::js::{
+  CurrentScriptStateHandle, EventLoop, JsExecutionOptions, ScriptElementSpec, TaskSource, WindowRealm, WindowRealmConfig,
+  WindowRealmHost, RunLimits,
+};
+
+struct ExecutorWithWindow<E> {
+  inner: E,
+  host_ctx: (),
+  window: WindowRealm,
+}
+
+impl<E> ExecutorWithWindow<E> {
+  fn new(inner: E) -> Self {
+    let window =
+      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    Self {
+      inner,
+      host_ctx: (),
+      window,
+    }
+  }
+}
+
+impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
+  fn execute_classic_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self
+      .inner
+      .execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
+
+  fn execute_module_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self
+      .inner
+      .execute_module_script(script_text, spec, current_script, document, event_loop)
+  }
+
+  fn execute_import_map_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self
+      .inner
+      .execute_import_map_script(script_text, spec, current_script, document, event_loop)
+  }
+
+  fn reset_for_navigation(
+    &mut self,
+    document_url: Option<&str>,
+    document: &mut BrowserDocumentDom2,
+    current_script_state: &CurrentScriptStateHandle,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<()> {
+    self.inner.reset_for_navigation(
+      document_url,
+      document,
+      current_script_state,
+      js_execution_options,
+    )
+  }
+
+  fn window_realm_mut(&mut self) -> Option<&mut WindowRealm> {
+    if let Some(realm) = self.inner.window_realm_mut() {
+      Some(realm)
+    } else {
+      Some(&mut self.window)
+    }
+  }
+}
+
+impl<E> WindowRealmHost for ExecutorWithWindow<E> {
+  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    (host_ctx, window)
+  }
+}
 
 #[test]
 fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
@@ -51,7 +143,7 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
     }
   }
 
-  let mut tab = BrowserTab::from_html(html, options, DummyExecutor).expect("create tab");
+  let mut tab = BrowserTab::from_html(html, options, ExecutorWithWindow::new(DummyExecutor)).expect("create tab");
   tab.register_script_source("https://example.com/ext.js", "queueTask");
   let _ = tab
     .run_event_loop_until_idle(RunLimits::unbounded())

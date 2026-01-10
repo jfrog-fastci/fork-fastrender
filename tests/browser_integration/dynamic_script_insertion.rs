@@ -2,7 +2,7 @@ use fastrender::dom2::NodeId;
 use fastrender::js::{EventLoop, RunLimits, RunUntilIdleOutcome};
 use fastrender::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, RenderOptions, Result};
 
-use super::support::rgba_at;
+use super::support::{rgba_at, ExecutorWithWindow};
 
 const INSERT_DYNAMIC_INLINE: &str = "const s=document.createElement('script'); s.text='document.documentElement.className=\"x\"'; document.head.appendChild(s);";
 const INLINE_DYNAMIC_BODY: &str = "document.documentElement.className=\"x\"";
@@ -113,7 +113,11 @@ fn browser_tab_executes_dynamically_inserted_inline_scripts() -> Result<()> {
   );
 
   let options = RenderOptions::new().with_viewport(64, 64);
-  let mut tab = BrowserTab::from_html(&html, options, DynamicScriptInsertionExecutor::default())?;
+  let mut tab = BrowserTab::from_html(
+    &html,
+    options,
+    ExecutorWithWindow::new(DynamicScriptInsertionExecutor::default()),
+  )?;
 
   let frame_red = tab.render_frame()?;
   assert_eq!(rgba_at(&frame_red, 32, 32), [255, 0, 0, 255]);
@@ -161,7 +165,11 @@ fn browser_tab_executes_dynamically_inserted_external_scripts() -> Result<()> {
   );
 
   let options = RenderOptions::new().with_viewport(1, 1);
-  let mut tab = BrowserTab::from_html(&html, options, DynamicScriptInsertionExecutor::default())?;
+  let mut tab = BrowserTab::from_html(
+    &html,
+    options,
+    ExecutorWithWindow::new(DynamicScriptInsertionExecutor::default()),
+  )?;
   tab.register_script_source(EXTERNAL_URL, EXTERNAL_BODY);
 
   tab.render_frame()?;

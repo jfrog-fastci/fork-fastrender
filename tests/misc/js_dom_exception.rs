@@ -6,7 +6,7 @@ use fastrender::web::dom::DomException;
 use std::cell::RefCell;
 use std::rc::Rc;
 use webidl_js_runtime::runtime::JsRuntime as _;
-use vm_js::{PropertyKey, Value};
+use vm_js::{PropertyKey, Value, VmError};
 
 fn prop_key(rt: &mut VmJsRuntime, s: &str) -> PropertyKey {
   let v = rt.alloc_string_value(s).expect("alloc string");
@@ -50,7 +50,7 @@ fn query_selector_invalid_selector_throws_domexception_syntaxerror() {
     .expect("get querySelector");
 
   let selector_arg = rt.alloc_string_value("[").expect("selector string");
-  let result = rt.call(
+  let result: std::result::Result<Value, VmError> = rt.call(
     query_selector,
     document,
     &[selector_arg],

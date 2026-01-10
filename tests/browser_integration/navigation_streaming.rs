@@ -4,6 +4,8 @@ use fastrender::js::{EventLoop, RunLimits, RunUntilIdleOutcome, ScriptElementSpe
 use fastrender::{BrowserDocumentDom2, BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions, Result};
 use std::sync::{Arc, Mutex};
 
+use super::support::ExecutorWithWindow;
+
 fn has_element_by_id(dom: &Document, target: &str) -> bool {
   let mut stack = vec![dom.root()];
   while let Some(id) = stack.pop() {
@@ -88,7 +90,7 @@ fn browser_tab_navigate_to_url_uses_streaming_parser_and_script_scheduling() -> 
   let options = RenderOptions::default();
 
   // Start from an empty tab so we can exercise URL navigation code paths.
-  let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
+  let mut tab = BrowserTab::from_html("", options.clone(), ExecutorWithWindow::new(executor))?;
 
   tab.register_script_source("https://example.com/blocking.js", "EXT_BLOCKING");
   tab.register_script_source("https://example.com/async.js", "EXT_ASYNC");

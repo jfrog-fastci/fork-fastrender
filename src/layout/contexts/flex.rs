@@ -8786,7 +8786,6 @@ impl FlexFormattingContext {
       Size::new(layout.size.width, layout.size.height),
     );
     if taffy_node == root_id {
-      let rect_eps = 0.01;
       // Root size corrections are handled by rerunning Taffy in Phase 2 so child positions stay
       // consistent. Avoid mutating the size here, aside from last-resort sanitisation.
       if !rect.size.width.is_finite() || rect.size.width < 0.0 {
@@ -8795,6 +8794,7 @@ impl FlexFormattingContext {
       if !rect.size.height.is_finite() || rect.size.height < 0.0 {
         rect.size.height = 0.0;
       }
+      let rect_eps = 0.01;
       let width_base_for_vertical_edges = constraints
         .width()
         .or(constraints.inline_percentage_base)

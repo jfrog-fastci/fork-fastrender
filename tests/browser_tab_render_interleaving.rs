@@ -6,7 +6,49 @@ use fastrender::api::{
 };
 use fastrender::dom2::{NodeId, NodeKind};
 use fastrender::error::Result;
-use fastrender::js::{EventLoop, RunLimits, ScriptElementSpec, TaskSource};
+use fastrender::js::{
+  EventLoop, RunLimits, ScriptElementSpec, TaskSource, WindowRealm, WindowRealmConfig, WindowRealmHost,
+};
+
+struct ExecutorWithWindow<E> {
+  inner: E,
+  host_ctx: (),
+  window: WindowRealm,
+}
+
+impl<E> ExecutorWithWindow<E> {
+  fn new(inner: E) -> Self {
+    let window =
+      WindowRealm::new(WindowRealmConfig::new("https://example.invalid/")).expect("create WindowRealm");
+    Self {
+      inner,
+      host_ctx: (),
+      window,
+    }
+  }
+}
+
+impl<E: BrowserTabJsExecutor> BrowserTabJsExecutor for ExecutorWithWindow<E> {
+  fn execute_classic_script(
+    &mut self,
+    script_text: &str,
+    spec: &ScriptElementSpec,
+    current_script: Option<NodeId>,
+    document: &mut BrowserDocumentDom2,
+    event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    self
+      .inner
+      .execute_classic_script(script_text, spec, current_script, document, event_loop)
+  }
+}
+
+impl<E> WindowRealmHost for ExecutorWithWindow<E> {
+  fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
+    let ExecutorWithWindow { host_ctx, window, .. } = self;
+    (host_ctx, window)
+  }
+}
 
 #[derive(Clone)]
 struct InterleavingExecutor {
@@ -77,7 +119,11 @@ fn browser_tab_renders_between_tasks() -> Result<()> {
   };
 
   let html = "<!doctype html><html><body><div>Hello</div><script>setup</script></body></html>";
-  let mut tab = BrowserTab::from_html(html, RenderOptions::new().with_viewport(32, 32), executor)?;
+  let mut tab = BrowserTab::from_html(
+    html,
+    RenderOptions::new().with_viewport(32, 32),
+    ExecutorWithWindow::new(executor),
+  )?;
 
   tab.render_frame()?;
 

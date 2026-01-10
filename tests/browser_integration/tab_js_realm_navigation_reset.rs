@@ -1,7 +1,7 @@
 use fastrender::api::VmJsBrowserTabExecutor;
 use fastrender::dom2::NodeId;
 use fastrender::error::{Error, Result};
-use fastrender::js::RunLimits;
+use fastrender::js::{JsExecutionOptions, RunLimits};
 use fastrender::{BrowserTab, RenderOptions};
 
 fn attr(doc: &fastrender::dom2::Document, node: NodeId, name: &str) -> Result<Option<String>> {
@@ -42,7 +42,16 @@ fn tab_navigation_resets_vm_js_realm_and_current_script() -> Result<()> {
     </html>"#;
 
   let options = RenderOptions::new().with_viewport(64, 64);
-  let mut tab = BrowserTab::from_html(html_a, options.clone(), VmJsBrowserTabExecutor::new())?;
+  let js_execution_options = JsExecutionOptions {
+    event_loop_run_limits: RunLimits::unbounded(),
+    ..JsExecutionOptions::default()
+  };
+  let mut tab = BrowserTab::from_html_with_js_execution_options(
+    html_a,
+    options.clone(),
+    VmJsBrowserTabExecutor::new(),
+    js_execution_options,
+  )?;
 
   let outcome = tab.run_until_stable_with_run_limits(RunLimits::unbounded(), 8)?;
   assert!(
