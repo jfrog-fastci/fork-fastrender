@@ -268,8 +268,8 @@ mod tests {
   use crate::dom2::{parse_html, Document};
   use crate::error::Result;
   use crate::js::{
-    ClassicScriptScheduler, DomHost, EventLoop, RunLimits, ScriptElementEvent, ScriptElementSpec,
-    ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
+    ClassicScriptScheduler, DomHost, EventLoop, JsExecutionOptions, RunLimits, ScriptElementEvent,
+    ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
   };
   use crate::resource::FetchDestination;
   use selectors::context::QuirksMode;
@@ -549,7 +549,9 @@ mod tests {
     let script = dom.get_element_by_id("s").expect("script element not found");
 
     let mut host = TestHost::new(dom);
-    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::with_options(options);
     let mut event_loop = EventLoop::<TestHost>::new();
 
     prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
@@ -568,7 +570,9 @@ mod tests {
     let script = dom.get_element_by_id("s").expect("script element not found");
 
     let mut host = TestHost::new(dom);
-    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::with_options(options);
     let mut event_loop = EventLoop::<TestHost>::new();
 
     prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;

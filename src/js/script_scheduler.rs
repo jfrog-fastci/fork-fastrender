@@ -168,12 +168,6 @@ where
       return Ok(());
     }
 
-    // HTML: When a user agent supports module scripts, classic scripts with the `nomodule`
-    // attribute must be ignored completely (not fetched/executed).
-    if spec.nomodule_attr {
-      return Ok(());
-    }
-
     // Inline scripts execute immediately (async/defer ignored).
     //
     // Note: the HTML script processing model treats the *presence* of the `src` attribute as
