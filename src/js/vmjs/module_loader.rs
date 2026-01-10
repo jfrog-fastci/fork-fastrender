@@ -376,6 +376,22 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
       .and_then(|_| ensure_script_mime_sane(&res, url))
       .map_err(|err| self.throw_type_error(vm, scope, &format!("{err}")))?;
 
+    // WHATWG HTML import maps: module scripts can be associated with Subresource Integrity metadata
+    // via the import map `"integrity"` table. Enforce integrity metadata when present.
+    if let Some(import_map_state) = self.import_map_state.as_ref() {
+      let integrity_metadata = Url::parse(url)
+        .ok()
+        .map(|url| import_map_state.resolve_module_integrity_metadata(&url).to_string())
+        .unwrap_or_default();
+      if !integrity_metadata.is_empty() {
+        if let Err(message) = crate::js::sri::verify_integrity(&res.bytes, &integrity_metadata) {
+          return Err(self.throw_type_error(vm, scope, &format!(
+            "SRI blocked module {url}: {message}"
+          )));
+        }
+      }
+    }
+
     if self.max_module_bytes != usize::MAX && res.bytes.len() > self.max_module_bytes {
       return Err(self.throw_type_error(vm, scope, &format!(
         "module {url} is too large ({} bytes > max {})",
@@ -645,7 +661,10 @@ mod tests {
   use crate::dom2;
   use crate::js::import_maps::{create_import_map_parse_result, register_import_map};
   use crate::resource::FetchedResource;
+  use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+  use base64::Engine;
   use selectors::context::QuirksMode;
+  use sha2::{Digest, Sha256};
   use std::sync::Mutex;
   use vm_js::{Budget, PropertyKey};
 
@@ -912,6 +931,133 @@ mod tests {
     )?;
 
     assert_eq!(get_global_prop(&mut host, "result"), Value::Number(7.0));
+    Ok(())
+  }
+
+  #[test]
+  fn module_imports_enforce_import_map_integrity_metadata() -> Result<()> {
+    let entry_url = "https://example.com/entry.js";
+    let dep_url = "https://example.com/dep.js";
+    let base_url = Url::parse("https://example.com/index.html")
+      .map_err(|err| Error::Other(format!("invalid test base URL: {err}")))?;
+
+    let dep_source = "export default 123;";
+    let integrity = {
+      let digest = Sha256::digest(dep_source.as_bytes());
+      format!("sha256-{}", BASE64_STANDARD.encode(digest))
+    };
+
+    let importmap = serde_json::json!({
+      "imports": { "dep": dep_url },
+      "integrity": { dep_url: integrity },
+    })
+    .to_string();
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "import x from 'dep'; globalThis.result = x;"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        dep_source.as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, base_url.as_str(), fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let parse_result = create_import_map_parse_result(importmap.as_str(), &base_url);
+    let mut import_map_state = ImportMapState::default();
+    register_import_map(&mut import_map_state, parse_result).map_err(|err| Error::Other(err.to_string()))?;
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), base_url.as_str(), 128 * 1024);
+    loader.evaluate_module_url_with_import_maps(
+      &mut host,
+      &mut event_loop,
+      &mut import_map_state,
+      entry_url,
+    )?;
+
+    assert_eq!(get_global_prop(&mut host, "result"), Value::Number(123.0));
+    Ok(())
+  }
+
+  #[test]
+  fn module_imports_reject_mismatched_import_map_integrity_metadata() -> Result<()> {
+    let entry_url = "https://example.com/entry.js";
+    let dep_url = "https://example.com/dep.js";
+    let base_url = Url::parse("https://example.com/index.html")
+      .map_err(|err| Error::Other(format!("invalid test base URL: {err}")))?;
+
+    let dep_source = "export default 123;";
+    let integrity = {
+      let digest = Sha256::digest(b"other");
+      format!("sha256-{}", BASE64_STANDARD.encode(digest))
+    };
+
+    let importmap = serde_json::json!({
+      "imports": { "dep": dep_url },
+      "integrity": { dep_url: integrity },
+    })
+    .to_string();
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "import x from 'dep'; globalThis.result = x;"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        dep_source.as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, base_url.as_str(), fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let parse_result = create_import_map_parse_result(importmap.as_str(), &base_url);
+    let mut import_map_state = ImportMapState::default();
+    register_import_map(&mut import_map_state, parse_result).map_err(|err| Error::Other(err.to_string()))?;
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), base_url.as_str(), 128 * 1024);
+    let err = loader
+      .evaluate_module_url_with_import_maps(
+        &mut host,
+        &mut event_loop,
+        &mut import_map_state,
+        entry_url,
+      )
+      .expect_err("expected mismatched import map integrity metadata to reject module");
+    assert!(
+      err.to_string().contains("SRI blocked module"),
+      "unexpected error: {err}"
+    );
+    assert_eq!(
+      get_global_prop(&mut host, "result"),
+      Value::Undefined,
+      "entry module should not have executed after SRI failure"
+    );
     Ok(())
   }
 }
