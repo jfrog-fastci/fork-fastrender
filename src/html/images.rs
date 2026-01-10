@@ -183,12 +183,17 @@ where
       continue;
     }
     if density >= target {
-      let replace = best_ge.as_ref().map(|(_, d)| density < *d).unwrap_or(true);
+      // HTML's `srcset` selection prefers the last candidate when multiple entries resolve to the
+      // same effective density. Chrome does this, and it matches the spec's behavior of treating
+      // later candidates with the same descriptor as overriding earlier ones.
+      let replace = best_ge.as_ref().map(|(_, d)| density <= *d).unwrap_or(true);
       if replace {
         best_ge = Some((candidate, density));
       }
     } else {
-      let replace = best_lt.as_ref().map(|(_, d)| density > *d).unwrap_or(true);
+      // Likewise, for candidates below the target density, prefer the last candidate when densities
+      // tie.
+      let replace = best_lt.as_ref().map(|(_, d)| density >= *d).unwrap_or(true);
       if replace {
         best_lt = Some((candidate, density));
       }
@@ -518,5 +523,90 @@ mod tests {
     assert!(is_supported_image_mime(" image/png"));
     assert!(!is_supported_image_mime(&format!("{nbsp}image/png")));
     assert!(!is_supported_image_mime(&format!("image/png{nbsp}")));
+  }
+
+  #[test]
+  fn srcset_selection_prefers_last_candidate_for_equal_density_descriptors() {
+    let srcset = vec![
+      SrcsetCandidate {
+        url: "first.png".to_string(),
+        descriptor: SrcsetDescriptor::Density(1.0),
+      },
+      SrcsetCandidate {
+        url: "second.png".to_string(),
+        descriptor: SrcsetDescriptor::Density(1.0),
+      },
+    ];
+
+    let ctx = ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: None,
+      media_context: None,
+      font_size: None,
+      root_font_size: None,
+      base_url: None,
+    };
+
+    let picked = image_sources_with_fallback("fallback.png", &srcset, None, &[], ctx);
+    assert_eq!(picked[0].url, "second.png");
+  }
+
+  #[test]
+  fn srcset_selection_prefers_last_candidate_for_equal_width_descriptors() {
+    let srcset = vec![
+      SrcsetCandidate {
+        url: "first.png".to_string(),
+        descriptor: SrcsetDescriptor::Width(320),
+      },
+      SrcsetCandidate {
+        url: "second.png".to_string(),
+        descriptor: SrcsetDescriptor::Width(320),
+      },
+      SrcsetCandidate {
+        url: "third.png".to_string(),
+        descriptor: SrcsetDescriptor::Width(640),
+      },
+    ];
+
+    let ctx = ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: Some(320.0),
+      viewport: Some(crate::geometry::Size::new(320.0, 200.0)),
+      media_context: None,
+      font_size: None,
+      root_font_size: None,
+      base_url: None,
+    };
+
+    let picked = image_sources_with_fallback("fallback.png", &srcset, None, &[], ctx);
+    assert_eq!(picked[0].url, "second.png");
+  }
+
+  #[test]
+  fn srcset_selection_prefers_last_candidate_when_all_densities_below_target() {
+    let srcset = vec![
+      SrcsetCandidate {
+        url: "first.png".to_string(),
+        descriptor: SrcsetDescriptor::Density(1.0),
+      },
+      SrcsetCandidate {
+        url: "second.png".to_string(),
+        descriptor: SrcsetDescriptor::Density(1.0),
+      },
+    ];
+
+    let ctx = ImageSelectionContext {
+      device_pixel_ratio: 2.0,
+      slot_width: None,
+      viewport: None,
+      media_context: None,
+      font_size: None,
+      root_font_size: None,
+      base_url: None,
+    };
+
+    let picked = image_sources_with_fallback("fallback.png", &srcset, None, &[], ctx);
+    assert_eq!(picked[0].url, "second.png");
   }
 }
