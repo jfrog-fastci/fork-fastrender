@@ -4225,6 +4225,222 @@ pub fn array_prototype_reduce(
   Ok(accumulator)
 }
 
+/// `Array.prototype.some` (ECMA-262) (minimal).
+pub fn array_prototype_some(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("Array.prototype.some callback is not callable"));
+  }
+  scope.push_root(callback)?;
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  for k in 0..len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key = PropertyKey::from_string(key_s);
+    if !iter_scope.ordinary_has_property(obj, key)? {
+      continue;
+    }
+    let value =
+      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+
+    let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
+    let selected_val =
+      vm.call_with_host_and_hooks(host, &mut iter_scope, hooks, callback, this_arg, &call_args)?;
+    if iter_scope.heap().to_boolean(selected_val)? {
+      return Ok(Value::Bool(true));
+    }
+  }
+
+  Ok(Value::Bool(false))
+}
+
+/// `Array.prototype.every` (ECMA-262) (minimal).
+pub fn array_prototype_every(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("Array.prototype.every callback is not callable"));
+  }
+  scope.push_root(callback)?;
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  for k in 0..len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key = PropertyKey::from_string(key_s);
+    if !iter_scope.ordinary_has_property(obj, key)? {
+      continue;
+    }
+    let value =
+      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+
+    let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
+    let selected_val =
+      vm.call_with_host_and_hooks(host, &mut iter_scope, hooks, callback, this_arg, &call_args)?;
+    if !iter_scope.heap().to_boolean(selected_val)? {
+      return Ok(Value::Bool(false));
+    }
+  }
+
+  Ok(Value::Bool(true))
+}
+
+/// `Array.prototype.find` (ECMA-262) (minimal).
+pub fn array_prototype_find(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("Array.prototype.find callback is not callable"));
+  }
+  scope.push_root(callback)?;
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  for k in 0..len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key = PropertyKey::from_string(key_s);
+    if !iter_scope.ordinary_has_property(obj, key)? {
+      continue;
+    }
+    let value =
+      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+
+    let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
+    let selected_val =
+      vm.call_with_host_and_hooks(host, &mut iter_scope, hooks, callback, this_arg, &call_args)?;
+    if iter_scope.heap().to_boolean(selected_val)? {
+      return Ok(value);
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+/// `Array.prototype.findIndex` (ECMA-262) (minimal).
+pub fn array_prototype_find_index(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError("Array.prototype.findIndex callback is not callable"));
+  }
+  scope.push_root(callback)?;
+
+  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_root(this_arg)?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  for k in 0..len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = iter_scope.alloc_string(&k.to_string())?;
+    let key = PropertyKey::from_string(key_s);
+    if !iter_scope.ordinary_has_property(obj, key)? {
+      continue;
+    }
+    let value =
+      iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+
+    let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
+    let selected_val =
+      vm.call_with_host_and_hooks(host, &mut iter_scope, hooks, callback, this_arg, &call_args)?;
+    if iter_scope.heap().to_boolean(selected_val)? {
+      return Ok(Value::Number(k as f64));
+    }
+  }
+
+  Ok(Value::Number(-1.0))
+}
+
 /// `Array.prototype.reverse` (ECMA-262) (minimal).
 pub fn array_prototype_reverse(
   vm: &mut Vm,

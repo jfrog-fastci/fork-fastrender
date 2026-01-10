@@ -179,6 +179,17 @@ fn array_prototype_reduce_works() {
 }
 
 #[test]
+fn array_prototype_some_every_find_find_index_work() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3]; delete a[0]; var some=a.some(function(x){return x===2;}); var every=a.every(function(x){return x>0;}); var find=a.find(function(x){return x>1;}); var fi=a.findIndex(function(x){return x===2;}); some && every && find===2 && fi===1 && Array.prototype.some.call("ab",function(x){return x==="b";}) && Array.prototype.every.call("ab",function(x){return x!=="x";}) && Array.prototype.find.call("ab",function(x){return x==="b";})==="b" && Array.prototype.findIndex.call("ab",function(x){return x==="b";})===1"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_slice_copies_elements() {
   let mut rt = new_runtime();
   let value = rt

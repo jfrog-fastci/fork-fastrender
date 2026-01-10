@@ -407,6 +407,10 @@ impl Intrinsics {
     let array_prototype_includes = vm.register_native_call(builtins::array_prototype_includes)?;
     let array_prototype_filter = vm.register_native_call(builtins::array_prototype_filter)?;
     let array_prototype_reduce = vm.register_native_call(builtins::array_prototype_reduce)?;
+    let array_prototype_some = vm.register_native_call(builtins::array_prototype_some)?;
+    let array_prototype_every = vm.register_native_call(builtins::array_prototype_every)?;
+    let array_prototype_find = vm.register_native_call(builtins::array_prototype_find)?;
+    let array_prototype_find_index = vm.register_native_call(builtins::array_prototype_find_index)?;
     let array_prototype_reverse = vm.register_native_call(builtins::array_prototype_reverse)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
@@ -670,7 +674,7 @@ impl Intrinsics {
       )?;
     }
 
-      // Array.prototype.map / forEach / indexOf / includes / filter / reduce / reverse / join / slice / push / splice
+      // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / reverse / join / slice / push / splice
       {
         let map_s = scope.alloc_string("map")?;
         scope.push_root(Value::String(map_s))?;
@@ -756,6 +760,63 @@ impl Intrinsics {
           array_prototype,
           reduce_key,
           data_desc(Value::Object(reduce_fn), true, false, true),
+        )?;
+
+        let some_s = scope.alloc_string("some")?;
+        scope.push_root(Value::String(some_s))?;
+        let some_key = PropertyKey::from_string(some_s);
+        let some_fn = scope.alloc_native_function(array_prototype_some, None, some_s, 1)?;
+        scope.push_root(Value::Object(some_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(some_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          some_key,
+          data_desc(Value::Object(some_fn), true, false, true),
+        )?;
+
+        let every_s = scope.alloc_string("every")?;
+        scope.push_root(Value::String(every_s))?;
+        let every_key = PropertyKey::from_string(every_s);
+        let every_fn = scope.alloc_native_function(array_prototype_every, None, every_s, 1)?;
+        scope.push_root(Value::Object(every_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(every_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          every_key,
+          data_desc(Value::Object(every_fn), true, false, true),
+        )?;
+
+        let find_s = scope.alloc_string("find")?;
+        scope.push_root(Value::String(find_s))?;
+        let find_key = PropertyKey::from_string(find_s);
+        let find_fn = scope.alloc_native_function(array_prototype_find, None, find_s, 1)?;
+        scope.push_root(Value::Object(find_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(find_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          find_key,
+          data_desc(Value::Object(find_fn), true, false, true),
+        )?;
+
+        let find_index_s = scope.alloc_string("findIndex")?;
+        scope.push_root(Value::String(find_index_s))?;
+        let find_index_key = PropertyKey::from_string(find_index_s);
+        let find_index_fn =
+          scope.alloc_native_function(array_prototype_find_index, None, find_index_s, 1)?;
+        scope.push_root(Value::Object(find_index_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(find_index_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          find_index_key,
+          data_desc(Value::Object(find_index_fn), true, false, true),
         )?;
 
         let reverse_s = scope.alloc_string("reverse")?;
