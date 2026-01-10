@@ -2074,7 +2074,7 @@ mod tests {
   fn limited_microtask_checkpoint_stops_infinite_microtask_chains() -> Result<()> {
     let mut host = TestHost::default();
     let clock = Arc::new(VirtualClock::new());
-    let clock_for_loop: Arc<dyn Clock> = Arc::clone(&clock);
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
     let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
 
     event_loop.queue_microtask(self_requeue_microtask)?;
@@ -2163,7 +2163,7 @@ mod tests {
     }
 
     let clock = Arc::new(VirtualClock::new());
-    let clock_for_loop: Arc<dyn Clock> = Arc::clone(&clock);
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
     let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
     let mut host = Host::default();
 
@@ -2182,7 +2182,7 @@ mod tests {
         max_microtasks: usize::MAX,
         max_wall_time: None,
       },
-      Arc::clone(&clock),
+      clock.clone(),
       event_loop.default_deadline_stage(),
     );
 
@@ -2230,7 +2230,7 @@ mod tests {
     }
 
     let clock = Arc::new(VirtualClock::new());
-    let clock_for_loop: Arc<dyn Clock> = Arc::clone(&clock);
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
     let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
     let mut host = Host::default();
 
