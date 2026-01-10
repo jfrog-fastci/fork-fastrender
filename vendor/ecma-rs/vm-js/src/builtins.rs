@@ -695,6 +695,82 @@ pub fn object_entries(
   Ok(Value::Object(array))
 }
 
+pub fn object_from_entries(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, iterable)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let intr = require_intrinsics(vm)?;
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intr.object_prototype()))?;
+
+  let result: Result<Value, VmError> = (|| {
+    loop {
+      let next_value =
+        crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record)?;
+      let Some(next_value) = next_value else {
+        return Ok(Value::Object(out));
+      };
+
+      // Use a nested scope so per-entry roots do not accumulate.
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+
+      let Value::Object(entry_obj) = next_value else {
+        return Err(VmError::TypeError("Object.fromEntries: iterator value is not an object"));
+      };
+
+      let zero_key = string_key(&mut step_scope, "0")?;
+      let key_val = step_scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        entry_obj,
+        zero_key,
+        next_value,
+      )?;
+      step_scope.push_root(key_val)?;
+      let prop_key = step_scope.to_property_key(vm, host, hooks, key_val)?;
+      root_property_key(&mut step_scope, prop_key)?;
+
+      let one_key = string_key(&mut step_scope, "1")?;
+      let value = step_scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        entry_obj,
+        one_key,
+        next_value,
+      )?;
+
+      step_scope.create_data_property_or_throw(out, prop_key, value)?;
+    }
+  })();
+
+  match result {
+    Ok(v) => Ok(v),
+    Err(err) => {
+      if !iterator_record.done {
+        let _ = crate::iterator::iterator_close(vm, host, hooks, &mut scope, &iterator_record);
+      }
+      Err(err)
+    }
+  }
+}
+
 pub fn object_assign(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

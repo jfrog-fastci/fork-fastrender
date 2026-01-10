@@ -88,6 +88,22 @@ fn object_entries_and_values_work() {
 }
 
 #[test]
+fn object_from_entries_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var s=Symbol("x");
+         var o = Object.fromEntries([["a",1],["b",2],[s,3]]);
+         var round = Object.fromEntries(Object.entries({k:4}));
+         var bad=false; try { Object.fromEntries([1]); } catch(e) { bad = e.name === "TypeError"; }
+         var not_iter=false; try { Object.fromEntries(1); } catch(e) { not_iter = e.name === "TypeError"; }
+         o.a===1 && o.b===2 && o[s]===3 && round.k===4 && bad && not_iter"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_prototype_has_own_property_works_on_typed_arrays() {
   let mut rt = new_runtime();
   let value = rt
