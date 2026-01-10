@@ -8,6 +8,90 @@ use super::{
   ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
 };
 
+/// Helpers that bridge DOM mutation ("insertion steps") to the HTML `<script>` processing model.
+///
+/// This module intentionally keeps the "extract/collect script elements" and "build a
+/// `ScriptElementSpec` snapshot" logic host-agnostic, so embeddings can drive execution via their
+/// chosen scheduler/orchestrator.
+///
+/// For callers that still use [`ClassicScriptScheduler`], this module also provides small
+/// convenience wrappers that implement the minimal "prepare a script" behavior needed for dynamic
+/// insertion.
+
+/// Collect HTML `<script>` elements within newly-inserted roots, in tree order.
+///
+/// The returned list is derived from a snapshot of the post-insertion DOM tree:
+/// callers should collect the list **before** executing any of the scripts, so subsequent DOM
+/// mutations (e.g. a script removing a later `<script>` element) do not affect which elements are
+/// processed. Individual script execution should still re-check connectivity at execution time.
+///
+/// Notes:
+/// - Only scripts in the HTML namespace are included.
+/// - Inert `<template>` subtrees are skipped (matching `dom2::Document` scripting connectedness).
+/// - Disconnected roots produce no output.
+pub fn collect_inserted_script_elements(dom: &Document, inserted_roots: &[NodeId]) -> Vec<NodeId> {
+  let mut out = Vec::new();
+  for &root in inserted_roots {
+    for node in dom.dom_connected_subtree_preorder(root) {
+      if is_html_script_element(dom, node) {
+        out.push(node);
+      }
+    }
+  }
+  out
+}
+
+/// Build a [`ScriptElementSpec`] for a dynamically inserted `<script>` element (`parser_inserted=false`).
+///
+/// This is intended to be called from DOM insertion steps, after the element becomes connected.
+pub fn build_dynamic_script_element_spec(
+  dom: &Document,
+  script: NodeId,
+  document_base_url: Option<&str>,
+) -> ScriptElementSpec {
+  let async_attr = dom.has_attribute(script, "async").unwrap_or(false);
+  let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
+  let nomodule_attr = dom.has_attribute(script, "nomodule").unwrap_or(false);
+  let referrer_policy = dom
+    .get_attribute(script, "referrerpolicy")
+    .ok()
+    .flatten()
+    .and_then(crate::resource::ReferrerPolicy::from_attribute);
+
+  let raw_src = dom.get_attribute(script, "src").ok().flatten();
+  let src_attr_present = raw_src.is_some();
+  let src = raw_src.and_then(|raw| resolve_script_src_at_parse_time(document_base_url, raw));
+
+  let (integrity_attr_present, integrity) =
+    super::clamp_integrity_attribute(dom.get_attribute(script, "integrity").ok().flatten());
+  let crossorigin =
+    super::parse_crossorigin_attr(dom.get_attribute(script, "crossorigin").ok().flatten());
+
+  let mut inline_text = String::new();
+  for &child in &dom.node(script).children {
+    if let NodeKind::Text { content } = &dom.node(child).kind {
+      inline_text.push_str(content);
+    }
+  }
+
+  ScriptElementSpec {
+    base_url: document_base_url.map(|s| s.to_string()),
+    src,
+    src_attr_present,
+    inline_text,
+    async_attr,
+    force_async: dom.node(script).script_force_async,
+    defer_attr,
+    nomodule_attr,
+    crossorigin,
+    integrity_attr_present,
+    integrity,
+    referrer_policy,
+    parser_inserted: false,
+    node_id: Some(script),
+    script_type: determine_script_type_dom2(dom, script),
+  }
+}
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
 /// `<script>` elements.
 /// 
@@ -16,14 +100,11 @@ use super::{
 ///
 /// Supported subset:
 /// - Classic and module scripts (`type`/`language` mapped via [`determine_script_type_dom2`]).
-/// - Dynamic classic external scripts (`src` present and non-empty) are treated as async by default
-///   when the element's internal "force async" flag is set (mirroring HTML's default for
-///   `document.createElement("script")`).
-/// - Dynamic module scripts:
-///   - `async` present: execute ASAP once ready.
-///   - otherwise: execute in insertion order as soon as possible once ready.
-/// - Inline scripts are queued as tasks (rather than executing synchronously inside the DOM
-///   mutation call). The event loop's post-task microtask checkpoint naturally applies.
+/// - Dynamically inserted classic external scripts (`src` present and non-empty) are async-by-default
+///   due to the element's internal `force_async` flag (which defaults to true for DOM-created
+///   `<script>` elements).
+/// - Inline classic scripts execute synchronously as part of insertion steps (observable by JS).
+/// - Module scripts never execute synchronously; the scheduler queues them as tasks once ready.
 ///
 /// HTML uses a per-script-element "already started" flag to ensure each `<script>` executes at most
 /// once. FastRender stores this on the live `dom2` node (`Node::script_already_started`).
@@ -32,11 +113,12 @@ pub fn prepare_dynamic_script_on_insertion<Host>(
   scheduler: &mut ClassicScriptScheduler<Host>,
   event_loop: &mut EventLoop<Host>,
   inserted_node: NodeId,
+  document_base_url: Option<&str>,
 ) -> Result<()>
 where
   Host: DomHost + ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
-  prepare_dynamic_script(host, scheduler, event_loop, inserted_node)
+  prepare_dynamic_script(host, scheduler, event_loop, inserted_node, document_base_url)
 }
 
 /// Prepare a dynamically-connected `<script>` element after its `src` attribute changes.
@@ -47,11 +129,12 @@ pub fn prepare_dynamic_script_on_src_attribute_change<Host>(
   scheduler: &mut ClassicScriptScheduler<Host>,
   event_loop: &mut EventLoop<Host>,
   script: NodeId,
+  document_base_url: Option<&str>,
 ) -> Result<()>
 where
   Host: DomHost + ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
-  prepare_dynamic_script(host, scheduler, event_loop, script)
+  prepare_dynamic_script(host, scheduler, event_loop, script, document_base_url)
 }
 
 /// Prepare a dynamically-connected `<script>` element after its children change.
@@ -62,11 +145,12 @@ pub fn prepare_dynamic_script_on_children_changed<Host>(
   scheduler: &mut ClassicScriptScheduler<Host>,
   event_loop: &mut EventLoop<Host>,
   script: NodeId,
+  document_base_url: Option<&str>,
 ) -> Result<()>
 where
   Host: DomHost + ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
-  prepare_dynamic_script(host, scheduler, event_loop, script)
+  prepare_dynamic_script(host, scheduler, event_loop, script, document_base_url)
 }
 
 fn prepare_dynamic_script<Host>(
@@ -74,6 +158,7 @@ fn prepare_dynamic_script<Host>(
   scheduler: &mut ClassicScriptScheduler<Host>,
   event_loop: &mut EventLoop<Host>,
   script: NodeId,
+  document_base_url: Option<&str>,
 ) -> Result<()>
 where
   Host: DomHost + ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
@@ -101,7 +186,7 @@ where
       return (None, false);
     }
 
-    let spec = build_non_parser_inserted_script_spec(dom, script);
+    let spec = build_dynamic_script_element_spec(dom, script, document_base_url);
 
     // HTML: if there is no `src` attribute and the inline text is empty, do nothing. Importantly,
     // this must *not* set the "already started" flag so later `src`/text mutations can trigger
@@ -136,20 +221,10 @@ where
 
   match spec.script_type {
     ScriptType::Classic => {
-      // External scripts are handled directly by the scheduler so they start loading immediately.
-      // Inline scripts are queued as tasks to keep DOM mutation calls non-reentrant.
-      if spec.src_attr_present {
-        scheduler.handle_script(host, event_loop, spec)?;
-        return Ok(());
-      }
-
-      scheduler
-        .options()
-        .check_script_source(&spec.inline_text, "source=inline")?;
-      event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-        host.execute_classic_script(&spec.inline_text, &spec, event_loop)
-      })?;
-      Ok(())
+      // Delegate classic script scheduling/execution to the classic scheduler:
+      // - inline executes synchronously,
+      // - external starts fetching immediately and executes async-by-default.
+      scheduler.handle_script(host, event_loop, spec)
     }
     ScriptType::Module => {
       // When module scripts are unsupported, HTML ignores them. However, the `src` attribute being
@@ -209,76 +284,18 @@ pub fn prepare_dynamic_scripts_on_subtree_insertion<Host>(
   scheduler: &mut ClassicScriptScheduler<Host>,
   event_loop: &mut EventLoop<Host>,
   inserted_root: NodeId,
+  document_base_url: Option<&str>,
 ) -> Result<()>
 where
   Host: DomHost + ScriptLoader + ScriptExecutor + ScriptEventDispatcher,
 {
-  let script_nodes = host.with_dom(|dom| {
-    let mut out = Vec::new();
-    collect_html_script_elements(dom, inserted_root, &mut out);
-    out
-  });
+  let script_nodes = host.with_dom(|dom| collect_inserted_script_elements(dom, &[inserted_root]));
 
   for node in script_nodes {
-    prepare_dynamic_script_on_insertion(host, scheduler, event_loop, node)?;
+    prepare_dynamic_script_on_insertion(host, scheduler, event_loop, node, document_base_url)?;
   }
   Ok(())
 }
-
-fn collect_html_script_elements(dom: &Document, node: NodeId, out: &mut Vec<NodeId>) {
-  if is_html_script_element(dom, node) {
-    out.push(node);
-  }
-  for &child in &dom.node(node).children {
-    collect_html_script_elements(dom, child, out);
-  }
-}
-
-fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> ScriptElementSpec {
-  let async_attr = dom.has_attribute(script, "async").unwrap_or(false);
-  let force_async = dom.node(script).script_force_async;
-  let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
-  let nomodule_attr = dom.has_attribute(script, "nomodule").unwrap_or(false);
-  let referrer_policy = dom
-    .get_attribute(script, "referrerpolicy")
-    .ok()
-    .flatten()
-    .and_then(crate::resource::ReferrerPolicy::from_attribute);
-
-  let raw_src = dom.get_attribute(script, "src").ok().flatten();
-  let src_attr_present = raw_src.is_some();
-  let src = raw_src.and_then(|raw| resolve_script_src_at_parse_time(None, raw));
-
-  let (integrity_attr_present, integrity) =
-    super::clamp_integrity_attribute(dom.get_attribute(script, "integrity").ok().flatten());
-  let crossorigin = super::parse_crossorigin_attr(dom.get_attribute(script, "crossorigin").ok().flatten());
-
-  let mut inline_text = String::new();
-  for &child in &dom.node(script).children {
-    if let NodeKind::Text { content } = &dom.node(child).kind {
-      inline_text.push_str(content);
-    }
-  }
-
-  ScriptElementSpec {
-    base_url: None,
-    src,
-    src_attr_present,
-    inline_text,
-    async_attr,
-    force_async,
-    defer_attr,
-    nomodule_attr,
-    crossorigin,
-    integrity_attr_present,
-    integrity,
-    referrer_policy,
-    parser_inserted: false,
-    node_id: Some(script),
-    script_type: determine_script_type_dom2(dom, script),
-  }
-}
-
 fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
   let kind = &dom.node(node).kind;
   let NodeKind::Element {
@@ -301,7 +318,7 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use super::{build_non_parser_inserted_script_spec, prepare_dynamic_script_on_insertion};
+  use super::{build_dynamic_script_element_spec, prepare_dynamic_script_on_insertion};
   use crate::dom2::Document;
   use crate::error::Result;
   use crate::js::{
@@ -423,7 +440,7 @@ mod tests {
       "expected dom2 create_element('script') to default script_force_async=true"
     );
 
-    let spec = build_non_parser_inserted_script_spec(&dom, script);
+    let spec = build_dynamic_script_element_spec(&dom, script, None);
     assert!(
       spec.force_async,
       "expected ScriptElementSpec.force_async=true for DOM-created dynamic scripts"
@@ -454,7 +471,7 @@ mod tests {
       "innerHTML/outerHTML parsing must set script_force_async=false"
     );
 
-    let spec = build_non_parser_inserted_script_spec(&dom, script);
+    let spec = build_dynamic_script_element_spec(&dom, script, None);
     assert!(
       !spec.force_async,
       "expected ScriptElementSpec.force_async=false for fragment-parser-created scripts"
@@ -478,7 +495,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(
@@ -514,7 +531,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(
@@ -545,7 +562,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
 
     assert_eq!(host.started_loads, vec!["https://example.com/a.js".to_string()]);
     Ok(())
@@ -568,7 +585,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
 
     assert_eq!(host.started_loads, vec!["a.js".to_string()]);
     Ok(())
@@ -591,7 +608,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(
@@ -626,7 +643,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(
@@ -665,7 +682,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::with_options(options);
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(
@@ -732,7 +749,7 @@ mod tests {
       .set_attribute(script, "crossorigin", " \tuse-credentials\t ")
       .expect("set_attribute should succeed");
 
-    let spec = build_non_parser_inserted_script_spec(&dom, script);
+    let spec = build_dynamic_script_element_spec(&dom, script, None);
     assert_eq!(
       spec.crossorigin,
       Some(crate::resource::CorsMode::UseCredentials)
@@ -779,14 +796,14 @@ mod tests {
     doc.append_child(doc.root(), script).expect("append_child");
 
     // HTML: for dynamically created scripts, `force async` defaults to true.
-    let spec = build_non_parser_inserted_script_spec(&doc, script);
+    let spec = build_dynamic_script_element_spec(&doc, script, None);
     assert!(!spec.parser_inserted);
     assert!(spec.force_async);
 
     // If host code toggles the internal slot (e.g. `script.async = false`), the built spec should
     // reflect that value.
     doc.node_mut(script).script_force_async = false;
-    let spec2 = build_non_parser_inserted_script_spec(&doc, script);
+    let spec2 = build_dynamic_script_element_spec(&doc, script, None);
     assert!(!spec2.force_async);
   }
 
@@ -809,7 +826,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::with_options(options);
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(host.started_loads.is_empty());
@@ -839,7 +856,7 @@ mod tests {
     let mut scheduler = ClassicScriptScheduler::<TestHost>::with_options(options);
     let mut event_loop = EventLoop::<TestHost>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(
@@ -989,7 +1006,7 @@ mod nomodule_tests {
     let mut scheduler = ClassicScriptScheduler::<Host>::with_options(options);
     let mut event_loop = EventLoop::<Host>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(host.executed.is_empty(), "expected nomodule script not to execute");
@@ -1008,7 +1025,7 @@ mod nomodule_tests {
     let mut scheduler = ClassicScriptScheduler::<Host>::with_options(options);
     let mut event_loop = EventLoop::<Host>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(host.executed, vec!["RUN".to_string()]);
@@ -1027,7 +1044,7 @@ mod nomodule_tests {
     let mut scheduler = ClassicScriptScheduler::<Host>::with_options(options);
     let mut event_loop = EventLoop::<Host>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     assert!(
       host.started_loads.is_empty(),
       "expected no fetch to be started for nomodule external scripts"
@@ -1170,7 +1187,7 @@ mod dynamic_mutation_tests {
     let mut scheduler = ClassicScriptScheduler::<Host>::new();
     let mut event_loop = EventLoop::<Host>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
 
     assert!(
       !host.dom.node(script).script_already_started,
@@ -1194,7 +1211,7 @@ mod dynamic_mutation_tests {
     let mut scheduler = ClassicScriptScheduler::<Host>::new();
     let mut event_loop = EventLoop::<Host>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
 
     assert!(
       !host.dom.node(script).script_already_started,
@@ -1214,7 +1231,7 @@ mod dynamic_mutation_tests {
     let mut scheduler = ClassicScriptScheduler::<Host>::new();
     let mut event_loop = EventLoop::<Host>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     assert!(
       !host.dom.node(script).script_already_started,
       "empty dynamic scripts must not be marked started on insertion"
@@ -1223,21 +1240,31 @@ mod dynamic_mutation_tests {
     let text = host.dom.create_text("console.log(1);");
     host.dom.append_child(script, text).unwrap();
 
-    prepare_dynamic_script_on_children_changed(&mut host, &mut scheduler, &mut event_loop, script)?;
-    assert!(
-      host.executed.is_empty(),
-      "dynamic inline scripts must be queued as tasks, not executed synchronously"
+    prepare_dynamic_script_on_children_changed(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+      None,
+    )?;
+    assert_eq!(
+      host.executed.len(),
+      1,
+      "dynamic inline scripts should execute synchronously during children-changed steps"
     );
-
-    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
-    assert_eq!(host.executed.len(), 1);
     assert_eq!(host.executed[0].0, "console.log(1);");
     assert!(host.dom.node(script).script_already_started);
 
     // Subsequent mutations must not re-execute the script.
     let text2 = host.dom.create_text("console.log(2);");
     host.dom.append_child(script, text2).unwrap();
-    prepare_dynamic_script_on_children_changed(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_children_changed(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+      None,
+    )?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(
       host.executed.len(),
@@ -1256,7 +1283,7 @@ mod dynamic_mutation_tests {
     let mut scheduler = ClassicScriptScheduler::<Host>::new();
     let mut event_loop = EventLoop::<Host>::new();
 
-    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script, None)?;
     assert!(
       !host.dom.node(script).script_already_started,
       "empty dynamic scripts must not be marked started on insertion"
@@ -1269,7 +1296,13 @@ mod dynamic_mutation_tests {
       .dom
       .set_attribute(script, "src", "https://example.com/a.js")
       .unwrap();
-    prepare_dynamic_script_on_src_attribute_change(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_src_attribute_change(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+      None,
+    )?;
     assert!(
       host.dom.node(script).script_already_started,
       "setting src should prepare and mark the script started"
@@ -1294,7 +1327,13 @@ mod dynamic_mutation_tests {
       .dom
       .set_attribute(script, "src", "https://example.com/b.js")
       .unwrap();
-    prepare_dynamic_script_on_src_attribute_change(&mut host, &mut scheduler, &mut event_loop, script)?;
+    prepare_dynamic_script_on_src_attribute_change(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+      None,
+    )?;
     assert_eq!(
       host.started_urls,
       vec!["https://example.com/a.js".to_string()],

@@ -540,6 +540,23 @@ impl JsRuntime {
     // Make the runtime-owned module graph available to nested ECMAScript function calls (and other
     // VM entry points that do not naturally thread an explicit `&mut ModuleGraph` parameter).
     vm.set_module_graph(modules.as_mut());
+
+    // Intrinsic Function constructor semantics rely on `[[Realm]]` and (for dynamic functions)
+    // `[[Environment]]` being populated:
+    // - `builtins::function_constructor_construct` creates functions in the realm of the Function
+    //   constructor object.
+    // - Those created functions should capture the global lexical environment (not the caller's
+    //   lexical environment), so we store the global lexical env on the Function constructor's
+    //   closure env slot.
+    //
+    // Realm initialization happens before `RuntimeEnv::new` creates the global lexical environment,
+    // so patch it up here once both exist.
+    {
+      let function_ctor = realm.intrinsics().function_constructor();
+      heap.set_function_realm(function_ctor, realm.global_object())?;
+      heap.set_function_job_realm(function_ctor, realm.id())?;
+      heap.set_function_closure_env(function_ctor, Some(env.lexical_env()))?;
+    }
     Ok(Self {
       vm,
       heap,

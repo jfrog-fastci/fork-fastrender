@@ -1,11 +1,17 @@
-use crate::function::FunctionData;
+use crate::function::{FunctionData, ThisMode};
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::string::JsString;
 use crate::{
   GcObject, Job, JobKind, PromiseCapability, PromiseHandle, PromiseReaction, PromiseReactionType,
   PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
-  VmHostHooks,
+  VmHostHooks, SourceText,
 };
+use parse_js::ast::expr::Expr;
+use parse_js::ast::func::FuncBody;
+use parse_js::ast::node::ParenthesizedExpr;
+use parse_js::ast::stmt::Stmt;
+use parse_js::{Dialect, ParseOptions, SourceType};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn data_desc(
@@ -1346,27 +1352,173 @@ pub fn uint8_array_prototype_slice(
 }
 
 pub fn function_constructor_call(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
   _this: Value,
-  _args: &[Value],
+  args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::Unimplemented("Function constructor"))
+  function_constructor_construct(vm, scope, host, hooks, callee, args, Value::Object(callee))
 }
 
 pub fn function_constructor_construct(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _args: &[Value],
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
   _new_target: Value,
 ) -> Result<Value, VmError> {
-  Err(VmError::Unimplemented("Function constructor"))
+  let intr = require_intrinsics(vm)?;
+
+  // `CreateDynamicFunction` creates the function in the realm of the provided constructor. `vm-js`
+  // represents a realm by storing the realm's global object on `[[Realm]]`.
+  let Some(global_object) = scope.heap().get_function_realm(callee)? else {
+    return Err(VmError::Unimplemented("Function constructor missing [[Realm]]"));
+  };
+
+  // The Function constructor creates its function in the global lexical environment, not in the
+  // caller's environment. `vm-js` stores the global lexical env as the Function constructor's
+  // captured closure env.
+  let closure_env = scope.heap().get_function_closure_env(callee)?;
+
+  // `Function(...params, body)` uses the final argument as the body.
+  let (param_values, body_value) = match args.split_last() {
+    Some((last, rest)) => (rest, *last),
+    None => (&[][..], Value::Undefined),
+  };
+
+  let mut params_joined: String = String::new();
+  for (idx, param_value) in param_values.iter().copied().enumerate() {
+    if idx % 32 == 0 {
+      vm.tick()?;
+    }
+    let s = scope.to_string(vm, host, hooks, param_value)?;
+    let text = scope.heap().get_string(s)?.to_utf8_lossy();
+    if idx != 0 {
+      params_joined.push(',');
+    }
+    params_joined.push_str(&text);
+  }
+
+  let body_s = scope.to_string(vm, host, hooks, body_value)?;
+  let body_text = scope.heap().get_string(body_s)?.to_utf8_lossy();
+
+  // Parse as a single function declaration statement so we can reuse the normal ECMAScript
+  // function-object call path.
+  let mut source: String = String::new();
+  source
+    .try_reserve(
+      "function anonymous(){}".len()
+        .saturating_add(params_joined.len())
+        .saturating_add(body_text.len()),
+    )
+    .map_err(|_| VmError::OutOfMemory)?;
+  source.push_str("function anonymous(");
+  source.push_str(&params_joined);
+  source.push_str(") {\n");
+  source.push_str(&body_text);
+  source.push_str("\n}");
+
+  // Parse eagerly so syntax errors become JS-catchable `SyntaxError` exceptions instead of
+  // surfacing as non-catchable `VmError::Syntax`.
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let parsed = match vm.parse_top_level_with_budget(&source, opts) {
+    Ok(top) => top,
+    Err(VmError::Syntax(diags)) => {
+      let message = diags
+        .first()
+        .map(|d| d.message.as_str())
+        .unwrap_or("Invalid or unexpected token");
+      let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
+      return Err(VmError::Throw(err_obj));
+    }
+    Err(err) => return Err(err),
+  };
+
+  // Derive strictness and length from the parsed function node.
+  let mut is_strict = false;
+  let mut length: u32 = 0;
+  if parsed.stx.body.len() == 1 {
+    if let Stmt::FunctionDecl(decl) = &*parsed.stx.body[0].stx {
+      let func = &decl.stx.function.stx;
+      length = {
+        let mut len: u32 = 0;
+        for (i, param) in func.parameters.iter().enumerate() {
+          if i % 32 == 0 {
+            vm.tick()?;
+          }
+          if param.stx.rest || param.stx.default_value.is_some() {
+            break;
+          }
+          len = len.saturating_add(1);
+        }
+        len
+      };
+      if let Some(FuncBody::Block(stmts)) = &func.body {
+        const TICK_EVERY: usize = 32;
+        for (i, stmt) in stmts.iter().enumerate() {
+          if i % TICK_EVERY == 0 {
+            vm.tick()?;
+          }
+          let Stmt::Expr(expr_stmt) = &*stmt.stx else {
+            break;
+          };
+          let expr = &expr_stmt.stx.expr;
+          if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+            break;
+          }
+          let Expr::LitStr(lit) = &*expr.stx else {
+            break;
+          };
+          if lit.stx.value == "use strict" {
+            is_strict = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  let this_mode = if is_strict { ThisMode::Strict } else { ThisMode::Global };
+
+  let source = Arc::new(SourceText::new("<Function>", source));
+  let span_end = u32::try_from(source.text.len()).unwrap_or(u32::MAX);
+  let code_id = vm.register_ecma_function(source, 0, span_end, crate::vm::EcmaFunctionKind::Decl)?;
+
+  let name_s = scope.alloc_string("anonymous")?;
+  let func_obj = scope.alloc_ecma_function(
+    code_id,
+    true,
+    name_s,
+    length,
+    this_mode,
+    is_strict,
+    closure_env,
+  )?;
+  scope.push_root(Value::Object(func_obj))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+  scope
+    .heap_mut()
+    .set_function_realm(func_obj, global_object)?;
+
+  let job_realm = scope
+    .heap()
+    .get_function_job_realm(callee)
+    .or(vm.current_realm());
+  if let Some(job_realm) = job_realm {
+    scope.heap_mut().set_function_job_realm(func_obj, job_realm)?;
+  }
+
+  Ok(Value::Object(func_obj))
 }
 
 pub fn error_constructor_call(

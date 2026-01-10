@@ -11,7 +11,8 @@ use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
 use crate::js::{
-  runtime, DocumentHostState, ScriptOrchestrator, ScriptType, TaskSource, WindowHostState,
+  runtime, CurrentScriptStateHandle, DocumentHostState, ScriptOrchestrator, ScriptType, TaskSource,
+  WindowHostState,
 };
 use crate::js::host_document::ActiveEventGuard;
 use crate::js::window_timers::VmJsEventLoopHooks;
@@ -7863,13 +7864,12 @@ fn document_create_event_native(
 fn node_append_child_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(parent_obj) = this else {
     return Err(VmError::TypeError(
       "Node.appendChild must be called on a node object",
@@ -7994,23 +7994,36 @@ fn node_append_child_native(
     )?;
   }
 
-  // Dynamic `<script>` preparation: run after insertion so nodes are connected.
+  let inserted_roots: Vec<NodeId> = if child_is_fragment {
+    fragment_children
+  } else {
+    vec![child_node_id]
+  };
+
+  run_dynamic_script_insertion_steps(
+    vm,
+    scope,
+    host,
+    hooks,
+    document_obj,
+    dom_ptr,
+    &inserted_roots,
+  )?;
+  run_dynamic_script_children_changed_steps(
+    vm,
+    scope,
+    host,
+    hooks,
+    document_obj,
+    dom_ptr,
+    parent_node_id,
+  )?;
+
   {
     // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
     // lifetime of the associated host document.
     let dom = unsafe { dom_ptr.as_mut() };
-    if child_is_fragment {
-      for node in fragment_children {
-        prepare_dynamic_scripts_on_subtree_insertion(dom, node, &base_url)?;
-      }
-    } else {
-      prepare_dynamic_scripts_on_subtree_insertion(dom, child_node_id, &base_url)?;
-    }
-    if is_html_script_element(dom, parent_node_id) {
-      prepare_dynamic_script(dom, parent_node_id, &base_url)?;
-    }
-
-    maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, dom)?;
   }
 
   Ok(child_value)
@@ -8019,13 +8032,12 @@ fn node_append_child_native(
 fn node_insert_before_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(parent_obj) = this else {
     return Err(VmError::TypeError(
       "Node.insertBefore must be called on a node object",
@@ -8198,23 +8210,36 @@ fn node_insert_before_native(
     )?;
   }
 
-  // Dynamic `<script>` preparation: run after insertion so nodes are connected.
+  let inserted_roots: Vec<NodeId> = if new_child_is_fragment {
+    fragment_children
+  } else {
+    vec![new_child_node_id]
+  };
+
+  run_dynamic_script_insertion_steps(
+    vm,
+    scope,
+    host,
+    hooks,
+    document_obj,
+    dom_ptr,
+    &inserted_roots,
+  )?;
+  run_dynamic_script_children_changed_steps(
+    vm,
+    scope,
+    host,
+    hooks,
+    document_obj,
+    dom_ptr,
+    parent_node_id,
+  )?;
+
   {
     // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
     // lifetime of the associated host document.
     let dom = unsafe { dom_ptr.as_mut() };
-    if new_child_is_fragment {
-      for node in fragment_children {
-        prepare_dynamic_scripts_on_subtree_insertion(dom, node, &base_url)?;
-      }
-    } else {
-      prepare_dynamic_scripts_on_subtree_insertion(dom, new_child_node_id, &base_url)?;
-    }
-    if is_html_script_element(dom, parent_node_id) {
-      prepare_dynamic_script(dom, parent_node_id, &base_url)?;
-    }
-
-    maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, dom)?;
   }
 
   Ok(new_child_value)
@@ -8223,13 +8248,12 @@ fn node_insert_before_native(
 fn node_remove_child_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(parent_obj) = this else {
     return Err(VmError::TypeError(
       "Node.removeChild must be called on a node object",
@@ -8325,17 +8349,21 @@ fn node_remove_child_native(
   let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
   sync_cached_child_nodes_for_wrapper(vm, scope, source_id, document_obj, parent_obj, parent_node_id)?;
 
-  // Dynamic `<script>` children-changed preparation: removing child nodes from a `<script>` can
-  // trigger execution when the element had not started yet.
+  run_dynamic_script_children_changed_steps(
+    vm,
+    scope,
+    host,
+    hooks,
+    document_obj,
+    dom_ptr,
+    parent_node_id,
+  )?;
+
   {
     // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
     // lifetime of the associated host document.
     let dom = unsafe { dom_ptr.as_mut() };
-    if is_html_script_element(dom, parent_node_id) {
-      prepare_dynamic_script(dom, parent_node_id, &base_url)?;
-    }
-
-    maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, dom)?;
   }
 
   Ok(child_value)
@@ -8344,13 +8372,12 @@ fn node_remove_child_native(
 fn node_replace_child_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(parent_obj) = this else {
     return Err(VmError::TypeError(
       "Node.replaceChild must be called on a node object",
@@ -8514,23 +8541,36 @@ fn node_replace_child_native(
     )?;
   }
 
-  // Dynamic `<script>` preparation: run after insertion so nodes are connected.
+  let inserted_roots: Vec<NodeId> = if new_child_is_fragment {
+    fragment_children
+  } else {
+    vec![new_child_node_id]
+  };
+
+  run_dynamic_script_insertion_steps(
+    vm,
+    scope,
+    host,
+    hooks,
+    document_obj,
+    dom_ptr,
+    &inserted_roots,
+  )?;
+  run_dynamic_script_children_changed_steps(
+    vm,
+    scope,
+    host,
+    hooks,
+    document_obj,
+    dom_ptr,
+    parent_node_id,
+  )?;
+
   {
     // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
     // lifetime of the associated host document.
     let dom = unsafe { dom_ptr.as_mut() };
-    if new_child_is_fragment {
-      for node in fragment_children {
-        prepare_dynamic_scripts_on_subtree_insertion(dom, node, &base_url)?;
-      }
-    } else {
-      prepare_dynamic_scripts_on_subtree_insertion(dom, new_child_node_id, &base_url)?;
-    }
-    if is_html_script_element(dom, parent_node_id) {
-      prepare_dynamic_script(dom, parent_node_id, &base_url)?;
-    }
-
-    maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, dom)?;
   }
 
   Ok(old_child_value)
@@ -9234,13 +9274,12 @@ fn node_text_content_get_native(
 fn node_text_content_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(wrapper_obj) = this else {
     return Err(VmError::TypeError(
       "Node.textContent must be called on a node object",
@@ -9292,110 +9331,132 @@ fn node_text_content_set_native(
       "Node.textContent requires a DOM-backed document",
     ));
   };
-  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-  // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
-  let node_id = dom
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("Node.textContent must be called on a node object"))?;
 
-  #[derive(Clone, Copy)]
-  enum TextContentTarget {
-    Text,
-    Comment,
-    ProcessingInstruction,
-    ReplaceChildren { preserve_shadow_roots: bool },
-    NoOp,
-  }
+  let (node_id, maybe_script_children_changed) = {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let node_id = dom
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("Node.textContent must be called on a node object"))?;
 
-  let target = match &dom.node(node_id).kind {
-    NodeKind::Text { .. } => TextContentTarget::Text,
-    NodeKind::Comment { .. } => TextContentTarget::Comment,
-    NodeKind::ProcessingInstruction { .. } => TextContentTarget::ProcessingInstruction,
-    NodeKind::Element { .. } | NodeKind::Slot { .. } => {
-      TextContentTarget::ReplaceChildren {
-        preserve_shadow_roots: true,
-      }
+    #[derive(Clone, Copy)]
+    enum TextContentTarget {
+      Text,
+      Comment,
+      ProcessingInstruction,
+      ReplaceChildren { preserve_shadow_roots: bool },
+      NoOp,
     }
-    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => TextContentTarget::ReplaceChildren {
-      preserve_shadow_roots: false,
-    },
-    NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
-  };
 
-  let mut maybe_script_children_changed: Option<NodeId> = None;
-  match target {
-    TextContentTarget::Text => {
-      if let Err(err) = dom.set_text_data(node_id, &value) {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-      }
-      if let Some(parent) = dom.node(node_id).parent {
-        if is_html_script_element(dom, parent) {
-          maybe_script_children_changed = Some(parent);
+    let target = match &dom.node(node_id).kind {
+      NodeKind::Text { .. } => TextContentTarget::Text,
+      NodeKind::Comment { .. } => TextContentTarget::Comment,
+      NodeKind::ProcessingInstruction { .. } => TextContentTarget::ProcessingInstruction,
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {
+        TextContentTarget::ReplaceChildren {
+          preserve_shadow_roots: true,
         }
       }
-    }
-    TextContentTarget::Comment => {
-      let node = dom.node_mut(node_id);
-      if let NodeKind::Comment { content } = &mut node.kind {
-        if content != &value {
-          content.clear();
-          content.push_str(&value);
-        }
-      }
-    }
-    TextContentTarget::ProcessingInstruction => {
-      let node = dom.node_mut(node_id);
-      if let NodeKind::ProcessingInstruction { data, .. } = &mut node.kind {
-        if data != &value {
-          data.clear();
-          data.push_str(&value);
-        }
-      }
-    }
-    TextContentTarget::ReplaceChildren {
-      preserve_shadow_roots,
-    } => {
-      let old_children = {
-        let node = dom.node_mut(node_id);
-        std::mem::take(&mut node.children)
-      };
+      NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => TextContentTarget::ReplaceChildren {
+        preserve_shadow_roots: false,
+      },
+      NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
+    };
 
-      let mut preserved: Vec<NodeId> = Vec::new();
-      for child in old_children {
-        if child.index() >= dom.nodes_len() {
-          continue;
-        }
-        if dom.node(child).parent != Some(node_id) {
-          continue;
-        }
-
-        if preserve_shadow_roots && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
-          preserved.push(child);
-          continue;
-        }
-
-        dom.node_mut(child).parent = None;
-      }
-
-      dom.node_mut(node_id).children = preserved;
-
-      if !value.is_empty() {
-        let text_node = dom.create_text(&value);
-        if let Err(err) = dom.append_child(node_id, text_node) {
+    let mut maybe_script_children_changed: Option<NodeId> = None;
+    match target {
+      TextContentTarget::Text => {
+        if let Err(err) = dom.set_text_data(node_id, &value) {
           return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
         }
+        if let Some(parent) = dom.node(node_id).parent {
+          if is_html_script_element(dom, parent) {
+            maybe_script_children_changed = Some(parent);
+          }
+        }
       }
+      TextContentTarget::Comment => {
+        let node = dom.node_mut(node_id);
+        if let NodeKind::Comment { content } = &mut node.kind {
+          if content != &value {
+            content.clear();
+            content.push_str(&value);
+          }
+        }
+      }
+      TextContentTarget::ProcessingInstruction => {
+        let node = dom.node_mut(node_id);
+        if let NodeKind::ProcessingInstruction { data, .. } = &mut node.kind {
+          if data != &value {
+            data.clear();
+            data.push_str(&value);
+          }
+        }
+      }
+      TextContentTarget::ReplaceChildren {
+        preserve_shadow_roots,
+      } => {
+        let old_children = {
+          let node = dom.node_mut(node_id);
+          std::mem::take(&mut node.children)
+        };
 
-      if is_html_script_element(dom, node_id) {
-        maybe_script_children_changed = Some(node_id);
+        let mut preserved: Vec<NodeId> = Vec::new();
+        for child in old_children {
+          if child.index() >= dom.nodes_len() {
+            continue;
+          }
+          if dom.node(child).parent != Some(node_id) {
+            continue;
+          }
+
+          if preserve_shadow_roots && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
+            preserved.push(child);
+            continue;
+          }
+
+          dom.node_mut(child).parent = None;
+        }
+
+        dom.node_mut(node_id).children = preserved;
+
+        if !value.is_empty() {
+          let text_node = dom.create_text(&value);
+          if let Err(err) = dom.append_child(node_id, text_node) {
+            return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          }
+        }
+
+        if is_html_script_element(dom, node_id) {
+          maybe_script_children_changed = Some(node_id);
+        }
       }
+      TextContentTarget::NoOp => {}
     }
-    TextContentTarget::NoOp => {}
-  }
+
+    (node_id, maybe_script_children_changed)
+  };
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)?;
 
   if let Some(script) = maybe_script_children_changed {
-    prepare_dynamic_script(dom, script, &base_url)?;
+    run_dynamic_script_children_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      script,
+    )?;
+  }
+
+  {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, dom)?;
   }
 
   Ok(Value::Undefined)
@@ -9436,15 +9497,21 @@ fn text_data_get_native(
 fn text_data_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(text_obj) = this else {
     return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let Some(document_obj) = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.document_obj)
+  else {
+    return Ok(Value::Undefined);
   };
 
   let (dom_source_id, text_id) = {
@@ -9466,16 +9533,28 @@ fn text_data_set_native(
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
+  let maybe_script_parent = {
+    let dom = unsafe { dom_ptr.as_mut() };
 
-  if let Err(err) = dom.set_text_data(text_id, &new_value) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    if let Err(err) = dom.set_text_data(text_id, &new_value) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    dom
+      .node(text_id)
+      .parent
+      .filter(|&parent| is_html_script_element(dom, parent))
+  };
+
+  if let Some(parent) = maybe_script_parent {
+    run_dynamic_script_children_changed_steps(vm, scope, host, hooks, document_obj, dom_ptr, parent)?;
   }
 
-  if let Some(parent) = dom.node(text_id).parent {
-    if is_html_script_element(dom, parent) {
-      prepare_dynamic_script(dom, parent, &base_url)?;
-    }
+  {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, dom)?;
   }
 
   Ok(Value::Undefined)
@@ -9833,7 +9912,7 @@ fn element_reflected_string_get_native(
 fn element_reflected_string_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
@@ -9865,18 +9944,33 @@ fn element_reflected_string_set_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-  // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
-  if let Err(err) = dom.set_attribute(node_id, &attr, &new_value) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-  }
+  let should_run_src_attribute_changed_steps = {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if let Err(err) = dom.set_attribute(node_id, &attr, &new_value) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+    attr.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id)
+  };
 
-  if attr == "src" && is_html_script_element(dom, node_id) {
-    let base_url = current_base_url_for_dynamic_scripts(vm);
-    prepare_dynamic_script(dom, node_id, &base_url)?;
+  if should_run_src_attribute_changed_steps {
+    run_dynamic_script_src_attribute_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      node_id,
+    )?;
   }
-  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
+  {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, dom)?;
+  }
 
   Ok(Value::Undefined)
 }
@@ -9986,6 +10080,284 @@ fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
   vm
     .user_data::<WindowRealmUserData>()
     .and_then(|data| data.base_url.clone())
+}
+
+// --- Dynamic <script> insertion (non-parser-inserted) --------------------------
+//
+// When JS/host DOM operations connect a subtree to the document, HTML requires running the "prepare
+// a script" steps for each `<script>` element in the inserted subtree (tree order).
+//
+// FastRender's `vm-js` DOM shims are invoked with `host: &mut dyn vm_js::VmHost` pointing at the
+// document (`BrowserDocumentDom2`), not the owning `BrowserTabHost`. This means we cannot directly
+// call the host script scheduler synchronously from the binding layer.
+//
+// For spec-visible ordering, we execute **inline classic** dynamic scripts synchronously in the
+// insertion call stack. For **external** scripts, we attempt to queue a BrowserTabHost task when
+// available; otherwise we leave the element eligible for another integration layer to discover and
+// schedule later (e.g. the JS harness scan).
+
+struct CurrentScriptOverrideGuard {
+  handle: Option<CurrentScriptStateHandle>,
+  previous: Option<NodeId>,
+}
+
+impl CurrentScriptOverrideGuard {
+  fn new(handle: Option<CurrentScriptStateHandle>, new_current: Option<NodeId>) -> Self {
+    let previous = handle.as_ref().map(|handle| {
+      let mut state = handle.borrow_mut();
+      let prev = state.current_script;
+      state.current_script = new_current;
+      prev
+    });
+    Self { handle, previous: previous.flatten() }
+  }
+}
+
+impl Drop for CurrentScriptOverrideGuard {
+  fn drop(&mut self) {
+    let Some(handle) = self.handle.as_ref() else {
+      return;
+    };
+    handle.borrow_mut().current_script = self.previous;
+  }
+}
+
+fn current_script_state_handle_from_vm_host(
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+) -> Option<CurrentScriptStateHandle> {
+  fn from_vm_host(host: &mut dyn VmHost) -> Option<CurrentScriptStateHandle> {
+    if let Some(document) = host.as_any_mut().downcast_mut::<DocumentHostState>() {
+      return Some(document.current_script_handle().clone());
+    }
+    if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+      return Some(document.current_script_handle().clone());
+    }
+    if let Some(ctx) = host.as_any_mut().downcast_mut::<VmJsHostContext>() {
+      return ctx.current_script_state().cloned();
+    }
+    None
+  }
+
+  from_vm_host(host).or_else(|| {
+    let any = hooks.as_any_mut()?;
+    let payload = any.downcast_mut::<VmJsHostHooksPayload>()?;
+    let vm_host = payload.vm_host_mut()?;
+    from_vm_host(vm_host)
+  })
+}
+
+fn execute_dynamic_inline_script(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _document_obj: GcObject,
+  dom_ptr: NonNull<dom2::Document>,
+  script: NodeId,
+  source_text: String,
+) -> Result<(), VmError> {
+  let state_handle = current_script_state_handle_from_vm_host(host, hooks);
+
+  let new_current_script = {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_ref() };
+    (dom.is_connected_for_scripting(script) && !node_root_is_shadow_root(dom, script)).then_some(script)
+  };
+  let _current_script_guard = CurrentScriptOverrideGuard::new(state_handle, new_current_script);
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let function_constructor = intr.function_constructor();
+
+  let body_s = scope.alloc_string(&source_text)?;
+  scope.push_root(Value::String(body_s))?;
+  let body_value = Value::String(body_s);
+
+  let func_value = match vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    Value::Object(function_constructor),
+    Value::Undefined,
+    &[body_value],
+  ) {
+    Ok(v) => v,
+    Err(err) => {
+      if crate::js::vm_error_format::vm_error_is_js_exception(&err) {
+        return Ok(());
+      }
+      return Err(err);
+    }
+  };
+
+  let Value::Object(func_obj) = func_value else {
+    // Treat this as a JS exception (it should not abort the DOM operation).
+    return Ok(());
+  };
+  scope.push_root(Value::Object(func_obj))?;
+
+  // Call with an undefined receiver. For non-strict functions created by `Function()`, the VM's
+  // normal `this` coercion will treat this as the global object (matching script execution).
+  match vm.call_with_host_and_hooks(host, scope, hooks, Value::Object(func_obj), Value::Undefined, &[])
+  {
+    Ok(_) => Ok(()),
+    Err(err) => {
+      if crate::js::vm_error_format::vm_error_is_js_exception(&err) {
+        Ok(())
+      } else {
+        Err(err)
+      }
+    }
+  }
+}
+
+fn schedule_dynamic_script_via_browser_tab_host(script: NodeId, spec: crate::js::ScriptElementSpec) -> bool {
+  let Some(event_loop) = runtime::current_event_loop_mut::<crate::api::BrowserTabHost>() else {
+    return false;
+  };
+  let base_url_at_discovery = spec.base_url.clone();
+  event_loop
+    .queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+      let _ = host.register_and_schedule_dynamic_script(script, spec, base_url_at_discovery, event_loop)?;
+      Ok(())
+    })
+    .is_ok()
+}
+
+fn prepare_dynamic_script_element(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  document_obj: GcObject,
+  mut dom_ptr: NonNull<dom2::Document>,
+  script: NodeId,
+) -> Result<(), VmError> {
+  let base_url = current_base_url_for_dynamic_scripts(vm);
+
+  let spec = {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_ref() };
+
+    if !is_html_script_element(dom, script) {
+      return Ok(());
+    }
+
+    // HTML element post-connection steps: parser-inserted scripts are prepared by the parser, not by
+    // DOM insertion.
+    if dom.node(script).script_parser_document {
+      return Ok(());
+    }
+
+    // HTML: scripts inside inert `<template>` contents are treated as disconnected and must not
+    // execute.
+    if !dom.is_connected_for_scripting(script) {
+      return Ok(());
+    }
+
+    // HTML: do nothing when "already started" is true.
+    if dom.node(script).script_already_started {
+      return Ok(());
+    }
+
+    crate::js::dom_integration::build_dynamic_script_element_spec(dom, script, base_url.as_deref())
+  };
+
+  // HTML: if there is no `src` attribute and the inline text is empty, do nothing. Importantly,
+  // this must *not* set the "already started" flag so later `src`/text mutations can trigger
+  // preparation.
+  if !spec.src_attr_present && spec.inline_text.is_empty() {
+    return Ok(());
+  }
+
+  // Only classic scripts are executed/scheduled by this binding-layer helper for now.
+  if spec.script_type != ScriptType::Classic {
+    return Ok(());
+  }
+
+  if !spec.src_attr_present {
+    // Inline classic script: execute synchronously as part of insertion steps.
+    {
+      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+      // lifetime of the associated host document.
+      let dom = unsafe { dom_ptr.as_mut() };
+      if dom.set_script_already_started(script, true).is_err() {
+        return Ok(());
+      }
+    }
+    return execute_dynamic_inline_script(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      script,
+      spec.inline_text,
+    );
+  }
+
+  // External classic script: async-by-default. Queue scheduling via `BrowserTabHost` when available.
+  // If there is no BrowserTabHost event loop installed (e.g. some unit test harnesses), do nothing
+  // and leave the element eligible for later discovery.
+  if schedule_dynamic_script_via_browser_tab_host(script, spec) {
+    // Mark started only if we successfully queued the scheduling task.
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let _ = dom.set_script_already_started(script, true);
+  }
+  Ok(())
+}
+
+fn run_dynamic_script_insertion_steps(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  document_obj: GcObject,
+  dom_ptr: NonNull<dom2::Document>,
+  inserted_roots: &[NodeId],
+) -> Result<(), VmError> {
+  let scripts = {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_ref() };
+    crate::js::dom_integration::collect_inserted_script_elements(dom, inserted_roots)
+  };
+
+  for script in scripts {
+    prepare_dynamic_script_element(vm, scope, host, hooks, document_obj, dom_ptr, script)?;
+  }
+  Ok(())
+}
+
+fn run_dynamic_script_children_changed_steps(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  document_obj: GcObject,
+  dom_ptr: NonNull<dom2::Document>,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  prepare_dynamic_script_element(vm, scope, host, hooks, document_obj, dom_ptr, node_id)
+}
+
+fn run_dynamic_script_src_attribute_changed_steps(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  document_obj: GcObject,
+  dom_ptr: NonNull<dom2::Document>,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  prepare_dynamic_script_element(vm, scope, host, hooks, document_obj, dom_ptr, node_id)
 }
 
 fn build_dynamic_script_spec(
@@ -11164,7 +11536,7 @@ fn element_get_attribute_native(
 fn element_set_attribute_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -11236,22 +11608,42 @@ fn element_set_attribute_native(
       "Element.setAttribute requires a DOM-backed document",
     ));
   };
-  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-  // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
-  let node_id = dom
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("Element.setAttribute must be called on an element object"))?;
 
-  if let Err(err) = dom.set_attribute(node_id, &name, &value) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-  }
+  let (node_id, should_run_src_attribute_changed_steps) = {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let node_id = dom
+      .node_id_from_index(node_index)
+      .map_err(|_| VmError::TypeError("Element.setAttribute must be called on an element object"))?;
 
-  if name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id) {
-    let base_url = current_base_url_for_dynamic_scripts(vm);
-    prepare_dynamic_script(dom, node_id, &base_url)?;
+    if let Err(err) = dom.set_attribute(node_id, &name, &value) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    (
+      node_id,
+      name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id),
+    )
+  };
+
+  if should_run_src_attribute_changed_steps {
+    run_dynamic_script_src_attribute_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      node_id,
+    )?;
   }
-  maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
+  {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, dom)?;
+  }
 
   Ok(Value::Undefined)
 }
@@ -11260,7 +11652,7 @@ fn element_remove_attribute_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -11269,6 +11661,19 @@ fn element_remove_attribute_native(
     return Err(VmError::TypeError(
       "Element.removeAttribute must be called on an element object",
     ));
+  };
+
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.removeAttribute must be called on an element object",
+      ));
+    }
   };
 
   let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
@@ -11310,20 +11715,40 @@ fn element_remove_attribute_native(
       "Element.removeAttribute requires a DOM-backed document",
     ));
   };
-  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-  // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
-  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
-    VmError::TypeError("Element.removeAttribute must be called on an element object")
-  })?;
+  let (node_id, should_run_src_attribute_changed_steps) = {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+      VmError::TypeError("Element.removeAttribute must be called on an element object")
+    })?;
 
-  if let Err(err) = dom.remove_attribute(node_id, &name) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    if let Err(err) = dom.remove_attribute(node_id, &name) {
+      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    }
+
+    (
+      node_id,
+      name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id),
+    )
+  };
+
+  if should_run_src_attribute_changed_steps {
+    run_dynamic_script_src_attribute_changed_steps(
+      vm,
+      scope,
+      _host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      node_id,
+    )?;
   }
-
-  if name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id) {
-    let base_url = current_base_url_for_dynamic_scripts(vm);
-    prepare_dynamic_script(dom, node_id, &base_url)?;
+  {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    maybe_queue_mutation_observer_microtask(vm, scope, _host, hooks, document_obj, dom)?;
   }
 
   Ok(Value::Undefined)

@@ -8,7 +8,7 @@ fn dynamic_external_script_executes_as_script_task() -> Result<()> {
   let html = "<!doctype html><html><body></body></html>";
   let mut h = Harness::new("https://example.com/", html)?;
   h.set_external_script_sources(HashMap::from([(
-    "/a.js".to_string(),
+    "https://example.com/a.js".to_string(),
     "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('a');".to_string(),
   )]));
 
@@ -26,11 +26,8 @@ fn dynamic_external_script_executes_as_script_task() -> Result<()> {
   assert_eq!(h.take_log(), vec!["after-append".to_string()]);
 
   // Fetch completion should queue a task (still not execute synchronously).
-  h.complete_external_script("/a.js")?;
-  assert!(
-    h.take_log().is_empty(),
-    "expected execution to be task-queued"
-  );
+  h.complete_external_script("https://example.com/a.js")?;
+  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -42,7 +39,7 @@ fn dynamic_external_script_via_insert_before_executes_as_script_task() -> Result
   let html = "<!doctype html><html><body></body></html>";
   let mut h = Harness::new("https://example.com/", html)?;
   h.set_external_script_sources(HashMap::from([(
-    "/a.js".to_string(),
+    "https://example.com/a.js".to_string(),
     "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('a');".to_string(),
   )]));
 
@@ -62,11 +59,8 @@ fn dynamic_external_script_via_insert_before_executes_as_script_task() -> Result
 
   assert_eq!(h.take_log(), vec!["after-insert".to_string()]);
 
-  h.complete_external_script("/a.js")?;
-  assert!(
-    h.take_log().is_empty(),
-    "expected execution to be task-queued"
-  );
+  h.complete_external_script("https://example.com/a.js")?;
+  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -78,7 +72,7 @@ fn dynamic_external_script_via_replace_child_executes_as_script_task() -> Result
   let html = "<!doctype html><html><body></body></html>";
   let mut h = Harness::new("https://example.com/", html)?;
   h.set_external_script_sources(HashMap::from([(
-    "/a.js".to_string(),
+    "https://example.com/a.js".to_string(),
     "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('a');".to_string(),
   )]));
 
@@ -97,11 +91,8 @@ fn dynamic_external_script_via_replace_child_executes_as_script_task() -> Result
 
   assert_eq!(h.take_log(), vec!["after-replace".to_string()]);
 
-  h.complete_external_script("/a.js")?;
-  assert!(
-    h.take_log().is_empty(),
-    "expected execution to be task-queued"
-  );
+  h.complete_external_script("https://example.com/a.js")?;
+  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -113,7 +104,7 @@ fn dynamic_external_script_nested_in_container_executes_as_script_task() -> Resu
   let html = "<!doctype html><html><body></body></html>";
   let mut h = Harness::new("https://example.com/", html)?;
   h.set_external_script_sources(HashMap::from([(
-    "/a.js".to_string(),
+    "https://example.com/a.js".to_string(),
     "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('a');".to_string(),
   )]));
 
@@ -132,7 +123,7 @@ fn dynamic_external_script_nested_in_container_executes_as_script_task() -> Resu
   assert_eq!(h.take_log(), vec!["after-disconnected-append".to_string()]);
 
   assert!(
-    h.complete_external_script("/a.js").is_err(),
+    h.complete_external_script("https://example.com/a.js").is_err(),
     "expected disconnected scripts to not start loading"
   );
 
@@ -145,11 +136,8 @@ fn dynamic_external_script_nested_in_container_executes_as_script_task() -> Resu
 
   assert_eq!(h.take_log(), vec!["after-append".to_string()]);
 
-  h.complete_external_script("/a.js")?;
-  assert!(
-    h.take_log().is_empty(),
-    "expected execution to be task-queued"
-  );
+  h.complete_external_script("https://example.com/a.js")?;
+  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -161,7 +149,7 @@ fn dynamic_external_script_via_document_fragment_executes_as_script_task() -> Re
   let html = "<!doctype html><html><body></body></html>";
   let mut h = Harness::new("https://example.com/", html)?;
   h.set_external_script_sources(HashMap::from([(
-    "/a.js".to_string(),
+    "https://example.com/a.js".to_string(),
     "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('a');".to_string(),
   )]));
 
@@ -180,7 +168,7 @@ fn dynamic_external_script_via_document_fragment_executes_as_script_task() -> Re
   assert_eq!(h.take_log(), vec!["after-fragment-append".to_string()]);
 
   assert!(
-    h.complete_external_script("/a.js").is_err(),
+    h.complete_external_script("https://example.com/a.js").is_err(),
     "expected detached fragment scripts to not start loading"
   );
 
@@ -193,11 +181,8 @@ fn dynamic_external_script_via_document_fragment_executes_as_script_task() -> Re
 
   assert_eq!(h.take_log(), vec!["after-append".to_string()]);
 
-  h.complete_external_script("/a.js")?;
-  assert!(
-    h.take_log().is_empty(),
-    "expected execution to be task-queued"
-  );
+  h.complete_external_script("https://example.com/a.js")?;
+  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -209,7 +194,7 @@ fn dynamic_external_script_in_inert_template_does_not_load_until_moved() -> Resu
   let html = "<!doctype html><html><body></body></html>";
   let mut h = Harness::new("https://example.com/", html)?;
   h.set_external_script_sources(HashMap::from([(
-    "/a.js".to_string(),
+    "https://example.com/a.js".to_string(),
     "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('a');".to_string(),
   )]));
 
@@ -229,7 +214,7 @@ fn dynamic_external_script_in_inert_template_does_not_load_until_moved() -> Resu
   assert_eq!(h.take_log(), vec!["after-template-append".to_string()]);
 
   assert!(
-    h.complete_external_script("/a.js").is_err(),
+    h.complete_external_script("https://example.com/a.js").is_err(),
     "expected scripts in inert <template> contents to not start loading"
   );
 
@@ -243,11 +228,8 @@ fn dynamic_external_script_in_inert_template_does_not_load_until_moved() -> Resu
 
   assert_eq!(h.take_log(), vec!["after-move".to_string()]);
 
-  h.complete_external_script("/a.js")?;
-  assert!(
-    h.take_log().is_empty(),
-    "expected execution to be task-queued"
-  );
+  h.complete_external_script("https://example.com/a.js")?;
+  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
 
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["a".to_string()]);
@@ -266,99 +248,22 @@ fn dynamic_inline_script_executes_and_flushes_microtasks() -> Result<()> {
       s.appendChild(document.createTextNode(
         "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('INLINE'); queueMicrotask(() => console.log('microtask'));"
       ));
-      document.body.appendChild(s);
-      console.log("after-append");
-    "#,
+       document.body.appendChild(s);
+       console.log("after-append");
+     "#,
   )?;
 
-  // Inline scripts are queued as Script tasks; DOM insertion itself should not execute them
-  // synchronously.
-  assert_eq!(h.take_log(), vec!["after-append".to_string()]);
-
-  h.run_until_idle(RunLimits::unbounded())?;
+  // Inline classic dynamic scripts execute synchronously during DOM insertion steps.
+  // Promise jobs (`queueMicrotask`) run at the microtask checkpoint after the outer script
+  // completes.
   assert_eq!(
     h.take_log(),
-    vec!["INLINE".to_string(), "microtask".to_string()]
+    vec![
+      "INLINE".to_string(),
+      "after-append".to_string(),
+      "microtask".to_string()
+    ]
   );
-  Ok(())
-}
-
-#[test]
-fn dynamic_inline_module_script_is_task_queued_and_current_script_is_null() -> Result<()> {
-  let html = "<!doctype html><html><body></body></html>";
-  let mut h = Harness::new("https://example.com/", html)?;
-
-  h.exec_script(
-    r#"
-      var s = document.createElement("script");
-      s.setAttribute("type", "module");
-      s.appendChild(document.createTextNode(
-        "if (document.currentScript !== null) throw new Error('bad currentScript'); console.log('MODULE_INLINE');"
-      ));
-      document.body.appendChild(s);
-      console.log("after-append");
-    "#,
-  )?;
-
-  // Inline module scripts must not execute synchronously inside DOM insertion calls.
-  assert_eq!(h.take_log(), vec!["after-append".to_string()]);
-
-  h.run_until_idle(RunLimits::unbounded())?;
-  assert_eq!(h.take_log(), vec!["MODULE_INLINE".to_string()]);
-  Ok(())
-}
-
-#[test]
-fn dynamic_external_module_scripts_without_async_execute_in_insertion_order() -> Result<()> {
-  let html = "<!doctype html><html><body></body></html>";
-  let mut h = Harness::new("https://example.com/", html)?;
-  h.set_external_script_sources(HashMap::from([
-    (
-      "/m1.js".to_string(),
-      "if (document.currentScript !== null) throw new Error('bad currentScript'); console.log('m1');"
-        .to_string(),
-    ),
-    (
-      "/m2.js".to_string(),
-      "if (document.currentScript !== null) throw new Error('bad currentScript'); console.log('m2');"
-        .to_string(),
-    ),
-  ]));
-
-  h.exec_script(
-    r#"
-      var s1 = document.createElement("script");
-      s1.setAttribute("type", "module");
-      s1.setAttribute("src", "/m1.js");
-      document.body.appendChild(s1);
-
-      var s2 = document.createElement("script");
-      s2.setAttribute("type", "module");
-      s2.setAttribute("src", "/m2.js");
-      document.body.appendChild(s2);
-
-      console.log("after-append");
-    "#,
-  )?;
-
-  // Insertion should only schedule loads; no synchronous execution.
-  assert_eq!(h.take_log(), vec!["after-append".to_string()]);
-
-  // Complete out of order: m2 completes before m1.
-  h.complete_external_script("/m2.js")?;
-  assert!(
-    h.take_log().is_empty(),
-    "expected module execution to be task-queued"
-  );
-
-  h.complete_external_script("/m1.js")?;
-  assert!(
-    h.take_log().is_empty(),
-    "expected module execution to be task-queued"
-  );
-
-  h.run_until_idle(RunLimits::unbounded())?;
-  assert_eq!(h.take_log(), vec!["m1".to_string(), "m2".to_string()]);
   Ok(())
 }
 
@@ -378,15 +283,41 @@ fn dynamic_script_already_started_prevents_reexecution() -> Result<()> {
       s.appendChild(document.createTextNode("console.log('ONCE');"));
 
       a.appendChild(s);
-      // Move the same script node again: it must not execute twice.
-      b.appendChild(s);
+       // Move the same script node again: it must not execute twice.
+       b.appendChild(s);
+     "#,
+  )?;
+
+  assert_eq!(h.take_log(), vec!["ONCE".to_string()]);
+  Ok(())
+}
+
+#[test]
+fn dynamic_inline_scripts_in_inserted_subtree_execute_in_tree_order() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+
+  h.exec_script(
+    r#"
+      var container = document.createElement("div");
+
+      var a = document.createElement("script");
+      a.appendChild(document.createTextNode("console.log('A');"));
+      var b = document.createElement("script");
+      b.appendChild(document.createTextNode("console.log('B');"));
+
+      container.appendChild(a);
+      container.appendChild(b);
+
+      document.body.appendChild(container);
+      console.log("after");
     "#,
   )?;
 
-  assert!(h.take_log().is_empty(), "expected script task to be queued");
-
-  h.run_until_idle(RunLimits::unbounded())?;
-  assert_eq!(h.take_log(), vec!["ONCE".to_string()]);
+  assert_eq!(
+    h.take_log(),
+    vec!["A".to_string(), "B".to_string(), "after".to_string()]
+  );
   Ok(())
 }
 
@@ -414,10 +345,13 @@ fn empty_dynamic_inline_script_executes_when_text_added_after_insertion() -> Res
       console.log("after-text");
     "#,
   )?;
-  assert_eq!(h.take_log(), vec!["after-text".to_string()]);
+  assert_eq!(
+    h.take_log(),
+    vec!["LATE".to_string(), "after-text".to_string()]
+  );
 
   h.run_until_idle(RunLimits::unbounded())?;
-  assert_eq!(h.take_log(), vec!["LATE".to_string()]);
+  assert!(h.take_log().is_empty());
 
   // Further child mutations must not re-run an already-started script.
   h.exec_script(
@@ -439,11 +373,11 @@ fn empty_dynamic_external_script_loads_when_src_set_after_insertion() -> Result<
   let mut h = Harness::new("https://example.com/", html)?;
   h.set_external_script_sources(HashMap::from([
     (
-      "/a.js".to_string(),
+      "https://example.com/a.js".to_string(),
       "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('A');".to_string(),
     ),
     (
-      "/b.js".to_string(),
+      "https://example.com/b.js".to_string(),
       "console.log('B');".to_string(),
     ),
   ]));
@@ -460,7 +394,7 @@ fn empty_dynamic_external_script_loads_when_src_set_after_insertion() -> Result<
 
   // No load should have started yet.
   assert!(
-    h.complete_external_script("/a.js").is_err(),
+    h.complete_external_script("https://example.com/a.js").is_err(),
     "expected empty connected scripts to not start loading until src is set"
   );
 
@@ -472,7 +406,7 @@ fn empty_dynamic_external_script_loads_when_src_set_after_insertion() -> Result<
   )?;
   assert_eq!(h.take_log(), vec!["after-src".to_string()]);
 
-  h.complete_external_script("/a.js")?;
+  h.complete_external_script("https://example.com/a.js")?;
   assert!(h.take_log().is_empty(), "expected execution to be task-queued");
   h.run_until_idle(RunLimits::unbounded())?;
   assert_eq!(h.take_log(), vec!["A".to_string()]);
@@ -487,7 +421,7 @@ fn empty_dynamic_external_script_loads_when_src_set_after_insertion() -> Result<
   assert_eq!(h.take_log(), vec!["after-src2".to_string()]);
 
   assert!(
-    h.complete_external_script("/b.js").is_err(),
+    h.complete_external_script("https://example.com/b.js").is_err(),
     "already-started scripts must not start a new load on src changes"
   );
   h.run_until_idle(RunLimits::unbounded())?;

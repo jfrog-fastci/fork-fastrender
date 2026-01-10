@@ -1302,11 +1302,20 @@ mod tests {
       &mut scheduler,
       p.event_loop(),
       inert_script,
+      None,
     )?;
 
-    // Dynamic insertion queues a script task; it should not execute synchronously.
-    assert_eq!(host.log, vec!["LIVE".to_string(), "mLIVE".to_string()]);
-
+    // Dynamic insertion executes inline classic scripts synchronously during insertion steps.
+    assert_eq!(
+      host.log,
+      vec![
+        "LIVE".to_string(),
+        "mLIVE".to_string(),
+        "INERT".to_string(),
+        "mINERT".to_string()
+      ]
+    );
+    // There should be no additional script tasks required to observe the execution.
     p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(
       host.log,

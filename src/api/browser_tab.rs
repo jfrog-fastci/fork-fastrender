@@ -1577,7 +1577,13 @@ impl BrowserTabHost {
                 );
               spec.parser_inserted = false;
               spec.force_async = node.script_force_async;
-              discovered.push((id, spec));
+              // HTML: dynamic scripts with no `src` attribute and empty inline text do nothing and
+              // must remain eligible for later `src`/text mutations (do not mark started).
+              if !spec.src_attr_present && spec.inline_text.is_empty() {
+                // Still update base URL tracking and traversal; just skip scheduling.
+              } else {
+                discovered.push((id, spec));
+              }
             }
 
             let is_head = tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace);
@@ -1808,13 +1814,20 @@ impl BrowserTabHost {
     Ok(discovered.id)
   }
 
-  fn register_and_schedule_dynamic_script(
+  pub(crate) fn register_and_schedule_dynamic_script(
     &mut self,
     node_id: NodeId,
     spec: ScriptElementSpec,
     base_url_at_discovery: Option<String>,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
+    // Dynamic scripts are also marked "already started" at preparation time (DOM insertion steps /
+    // attribute mutation steps) so subsequent insertion attempts short-circuit.
+    self.mutate_dom(|dom| {
+      dom.node_mut(node_id).script_already_started = true;
+      ((), false)
+    });
+
     let spec_for_table = spec.clone();
     let failed_to_run = (!spec_for_table.src_attr_present && spec_for_table.inline_text.is_empty())
       || spec_for_table.script_type == ScriptType::Unknown;
@@ -2281,7 +2294,11 @@ impl BrowserTabHost {
 
     // Avoid double-borrowing `self` by temporarily moving the orchestrator out.
     let mut orchestrator = std::mem::take(&mut self.orchestrator);
-    let result = orchestrator.execute_script_element(self, node_id, script_type, &mut adapter);
+    // Scripts are marked as "already started" during preparation (HTML "prepare a script"), not
+    // during execution. Use the "prepared script" entrypoint so scripts that were prepared earlier
+    // (and therefore already-started) still execute once their fetch completes.
+    let result =
+      orchestrator.execute_prepared_script_element(self, node_id, script_type, &mut adapter);
     self.orchestrator = orchestrator;
     result
   }

@@ -193,6 +193,74 @@ impl ScriptOrchestrator {
       .push(new_current_script)?;
     let result = f();
     let pop_result = current_script_state.borrow_mut().pop();
+
+    match (result, pop_result) {
+      (Ok(()), Ok(())) => Ok(()),
+      (Err(err), Ok(())) => Err(err),
+      (Ok(()), Err(pop_err)) => Err(pop_err),
+      (Err(err), Err(pop_err)) => Err(Error::Other(format!(
+        "script execution failed ({err}); additionally failed to restore Document.currentScript ({pop_err})"
+      ))),
+    }
+  }
+
+  /// Execute a script element that has already been "prepared" (HTML `prepare a script`).
+  ///
+  /// This differs from [`ScriptOrchestrator::execute_script_element`] in one key way:
+  /// `script_already_started` is **not** consulted or mutated here.
+  ///
+  /// HTML sets the per-element "already started" flag during *preparation* (e.g. during DOM
+  /// insertion steps for dynamically inserted scripts, and when a parser-inserted script finishes
+  /// parsing). External scripts may be prepared long before they execute (after a fetch completes),
+  /// so the execution phase must not treat `script_already_started=true` as a reason to skip.
+  ///
+  /// Callers are still responsible for ensuring the element is prepared at most once.
+  pub fn execute_prepared_script_element<Host, Exec>(
+    &mut self,
+    host: &mut Host,
+    script: NodeId,
+    script_type: ScriptType,
+    executor: &mut Exec,
+  ) -> Result<()>
+  where
+    Host: CurrentScriptHost + DomHost,
+    Exec: ScriptBlockExecutor<Host>,
+  {
+    // Even for a previously-prepared script, avoid executing when the node is no longer connected
+    // for scripting (e.g. it was removed from the document, or moved into inert <template>
+    // contents).
+    if !host.with_dom(|dom| dom.is_connected_for_scripting(script)) {
+      return Ok(());
+    }
+
+    let new_current_script = match script_type {
+      ScriptType::Classic => (!host.with_dom(|dom| node_root_is_shadow_root(dom, script))).then_some(script),
+      // `Document.currentScript` is null for module scripts.
+      ScriptType::Module => None,
+      // Import maps and unknown script types are not executed (currentScript remains null).
+      ScriptType::ImportMap | ScriptType::Unknown => None,
+    };
+
+    let source_snapshot = host.with_dom(|dom| script_source_snapshot(dom, script));
+
+    host
+      .current_script_state()
+      .borrow_mut()
+      .push(new_current_script)?;
+    if let Some(log) = host.script_execution_log_mut() {
+      log.record(ScriptExecutionLogEntry {
+        script_id: script.index(),
+        source: source_snapshot,
+        current_script_node_id: new_current_script.map(|id| id.index()),
+      });
+    }
+    let result = {
+      let _stage_guard = StageGuard::install(Some(RenderStage::Script));
+      record_stage(StageHeartbeat::Script);
+      executor.execute_script(host, self, script, script_type)
+    };
+    let pop_result = host.current_script_state().borrow_mut().pop();
+
     match (result, pop_result) {
       (Ok(()), Ok(())) => Ok(()),
       (Err(err), Ok(())) => Err(err),

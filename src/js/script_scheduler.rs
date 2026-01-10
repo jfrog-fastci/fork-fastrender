@@ -196,6 +196,16 @@ where
     self.options
   }
 
+  /// Returns a handle to the shared "JS execution context stack depth" counter used by this
+  /// scheduler.
+  ///
+  /// Embeddings that execute JS outside the scheduler (e.g., timers, host-initiated scripts, or
+  /// dynamic `<script>` insertion during JS execution) can use this handle to participate in the
+  /// same depth tracking so microtask checkpoints occur only when the JS stack is empty.
+  pub fn js_execution_depth_handle(&self) -> Rc<Cell<usize>> {
+    Rc::clone(&self.js_execution_depth)
+  }
+
   /// Handle a `<script>` element encountered during parsing / insertion.
   pub fn handle_script(
     &mut self,
@@ -1002,26 +1012,17 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id, node_id });
           }
         } else {
-          // Inline classic scripts:
-          // - If empty: no-op (do not mark as started; allows later mutations to run it).
-          // - parser-inserted: execute synchronously (parsing-blocking)
-          // - dynamically inserted: queue as a task (keeps DOM mutation calls non-reentrant)
-          if element.inline_text.is_empty() {
-            return Ok(DiscoveredScript { id, actions });
-          }
-          if element.parser_inserted {
-            actions.push(ScriptSchedulerAction::ExecuteNow {
-              script_id: id,
-              node_id,
-              source_text: element.inline_text,
-            });
-          } else {
-            actions.push(ScriptSchedulerAction::QueueTask {
-              script_id: id,
-              node_id,
-              source_text: element.inline_text,
-            });
-          }
+          // Inline classic scripts execute synchronously during preparation (HTML "prepare a
+          // script"), both for parser-inserted scripts and for dynamically inserted scripts.
+          //
+          // Observable behavior in browsers:
+          // - `document.body.appendChild(scriptWithText)` runs the inline script before
+          //   `appendChild` returns.
+          actions.push(ScriptSchedulerAction::ExecuteNow {
+            script_id: id,
+            node_id,
+            source_text: element.inline_text,
+          });
         }
       }
       ScriptType::Module => {
@@ -2943,11 +2944,10 @@ mod state_machine_tests {
     let mut h = Harness::new();
 
     h.discover_dynamic(classic_inline_dynamic("x"))?;
-    // Dynamically inserted inline scripts are queued as tasks (MVP: keep DOM mutation calls
-    // non-reentrant). They should execute once the event loop runs.
-    assert!(h.host.log.is_empty());
-    h.run_event_loop()?;
-    assert_eq!(h.host.log, vec!["script:x".to_string(), "microtask:x".to_string()]);
+    assert_eq!(
+      h.host.log,
+      vec!["script:x".to_string(), "microtask:x".to_string()]
+    );
     Ok(())
   }
 

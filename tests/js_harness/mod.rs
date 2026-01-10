@@ -318,7 +318,14 @@ impl Harness {
       limits,
       |host, event_loop| {
         let root = host.with_dom(|dom| dom.root());
-        prepare_dynamic_scripts_on_subtree_insertion(host, scheduler, event_loop, root)
+        let base_url = host.window.base_url.clone();
+        prepare_dynamic_scripts_on_subtree_insertion(
+          host,
+          scheduler,
+          event_loop,
+          root,
+          base_url.as_deref(),
+        )
       },
     )
   }
@@ -393,11 +400,13 @@ impl Harness {
 
   fn prepare_dynamic_scripts(&mut self) -> Result<()> {
     let root = self.host.with_dom(|dom| dom.root());
+    let base_url = self.host.window.base_url.clone();
     prepare_dynamic_scripts_on_subtree_insertion(
       &mut self.host,
       &mut self.script_scheduler,
       &mut self.event_loop,
       root,
+      base_url.as_deref(),
     )
   }
 }
