@@ -19,6 +19,8 @@ use webidl::{
   WebIdlHooks, WebIdlJsRuntime, WebIdlLimits, WellKnownSymbol,
 };
 
+pub mod bindings_runtime;
+
 /// Borrow-splits a `vm-js` [`VmJsRuntime`] into its `(vm, heap, realm)` components.
 ///
 /// `vm-js::JsRuntime` stores `vm`, `heap`, and `realm` as disjoint fields, but only exposes `&Realm`
