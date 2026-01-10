@@ -288,6 +288,13 @@ where
         host.execute_classic_script(&script_text, &spec, event_loop)?;
       }
     }
+    // HTML: external scripts fire a `load` event once they have executed.
+    if spec.src_attr_present {
+      let spec_for_event = spec.clone();
+      event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+        host.dispatch_script_event(ScriptElementEvent::Load, &spec_for_event)
+      })?;
+    }
     if self.js_execution_depth.get() == 0 {
       event_loop.perform_microtask_checkpoint(host)?;
     }
@@ -397,7 +404,19 @@ where
     let js_execution_depth = Rc::clone(&self.js_execution_depth);
     event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
       let _guard = enter_js_execution(&js_execution_depth);
-      host.execute_classic_script(&source, &spec, event_loop)
+      host.execute_classic_script(&source, &spec, event_loop)?;
+      // HTML: external scripts (those with a `src` attribute) fire a `load` event once they have
+      // finished executing. This is queued as an element task on the DOM manipulation task source.
+      //
+      // We model only the external-script case here: inline scripts do not queue load/error element
+      // tasks in our current host pipeline.
+      if spec.src_attr_present {
+        let spec_for_event = spec.clone();
+        event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+          host.dispatch_script_event(ScriptElementEvent::Load, &spec_for_event)
+        })?;
+      }
+      Ok(())
     })?;
     Ok(())
   }
@@ -1459,6 +1478,38 @@ mod tests {
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert_eq!(host.log, vec!["a2".to_string(), "a1".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn external_script_queues_load_event_task_after_execution() -> Result<()> {
+    let mut host = TestHost::new(true);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script("a1", /* async_attr */ true, /* defer_attr */ false),
+    )?;
+
+    host.loader.complete_url("a1", "a1");
+    scheduler.poll(&mut host, &mut event_loop)?;
+
+    // First task turn: execute the script task (and its microtask checkpoint).
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(
+      host.log,
+      vec!["a1".to_string(), "microtask-after-a1".to_string()]
+    );
+    assert!(
+      host.events.is_empty(),
+      "load event must be queued as a separate element task"
+    );
+
+    // Second task turn: run the queued `load` element task.
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(host.events, vec!["load".to_string()]);
     Ok(())
   }
 
