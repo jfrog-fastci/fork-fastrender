@@ -4048,6 +4048,33 @@ fn set_border_width_side(
   *side_order_mut(&mut styles.logical.border_width_orders, side) = order;
 }
 
+#[inline]
+fn set_outline_color(styles: &mut ComputedStyle, value: OutlineColor, order: i32) {
+  if order < styles.logical.outline_color_order {
+    return;
+  }
+  styles.outline_color = value;
+  styles.logical.outline_color_order = order;
+}
+
+#[inline]
+fn set_outline_style(styles: &mut ComputedStyle, value: OutlineStyle, order: i32) {
+  if order < styles.logical.outline_style_order {
+    return;
+  }
+  styles.outline_style = value;
+  styles.logical.outline_style_order = order;
+}
+
+#[inline]
+fn set_outline_width(styles: &mut ComputedStyle, value: Length, order: i32) {
+  if order < styles.logical.outline_width_order {
+    return;
+  }
+  styles.outline_width = value;
+  styles.logical.outline_width_order = order;
+}
+
 fn set_border_style_side(
   styles: &mut ComputedStyle,
   side: crate::style::PhysicalSide,
@@ -5318,15 +5345,14 @@ pub(crate) fn apply_property_from_source(
       styles.position_try_order = source.position_try_order;
     }
     "z-index" => styles.z_index = source.z_index,
-    "outline-color" => styles.outline_color = source.outline_color,
-    "outline-style" => styles.outline_style = source.outline_style,
-    "outline-width" => styles.outline_width = source.outline_width,
+    "outline-color" => set_outline_color(styles, source.outline_color, order),
+    "outline-style" => set_outline_style(styles, source.outline_style, order),
+    "outline-width" => set_outline_width(styles, source.outline_width, order),
     "outline-offset" => styles.outline_offset = source.outline_offset,
     "outline" => {
-      styles.outline_color = source.outline_color;
-      styles.outline_style = source.outline_style;
-      styles.outline_width = source.outline_width;
-      styles.outline_offset = source.outline_offset;
+      set_outline_color(styles, source.outline_color, order);
+      set_outline_style(styles, source.outline_style, order);
+      set_outline_width(styles, source.outline_width, order);
     }
     "width" => {
       if let Some(anchor_size) = source.width_anchor_size.clone() {
@@ -10450,31 +10476,34 @@ fn apply_declaration_with_base_internal_with_order(
     },
     "outline-color" => match resolved_value {
       PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
-        styles.outline_color = OutlineColor::CurrentColor;
+        set_outline_color(styles, OutlineColor::CurrentColor, order);
       }
       PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("invert") => {
-        styles.outline_color = OutlineColor::Invert;
+        set_outline_color(styles, OutlineColor::Invert, order);
       }
       PropertyValue::Color(c) => {
-        styles.outline_color =
+        set_outline_color(
+          styles,
           OutlineColor::Color(c.to_rgba_with_scheme_and_forced_colors(
             styles.color,
             is_dark_color_scheme,
             styles.forced_colors,
-          ));
+          )),
+          order,
+        );
       }
       _ => {}
     },
     "outline-style" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Some(style) = parse_outline_style(kw) {
-          styles.outline_style = style;
+          set_outline_style(styles, style, order);
         }
       }
     }
     "outline-width" => {
       if let Some(width) = parse_outline_width(resolved_value) {
-        styles.outline_width = width;
+        set_outline_width(styles, width, order);
       }
     }
     "outline-offset" => {
@@ -10483,7 +10512,13 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "outline" => {
-      apply_outline_shorthand(styles, resolved_value, is_dark_color_scheme, styles.forced_colors);
+      apply_outline_shorthand(
+        styles,
+        resolved_value,
+        is_dark_color_scheme,
+        styles.forced_colors,
+        order,
+      );
     }
 
     // Width and height
@@ -23459,13 +23494,14 @@ fn apply_outline_shorthand(
   value: &PropertyValue,
   is_dark_color_scheme: bool,
   forced_colors: bool,
+  order: i32,
 ) {
   // The outline shorthand resets color/style/width to their initial values
   // before applying provided tokens (offset is not part of the shorthand).
   let defaults = default_computed_style();
-  styles.outline_style = defaults.outline_style;
-  styles.outline_width = defaults.outline_width;
-  styles.outline_color = defaults.outline_color;
+  set_outline_style(styles, defaults.outline_style, order);
+  set_outline_width(styles, defaults.outline_width, order);
+  set_outline_color(styles, defaults.outline_color, order);
 
   let mut color: Option<OutlineColor> = None;
   let mut style = None;
@@ -23508,13 +23544,13 @@ fn apply_outline_shorthand(
   }
 
   if let Some(c) = color {
-    styles.outline_color = c;
+    set_outline_color(styles, c, order);
   }
   if let Some(s) = style {
-    styles.outline_style = s;
+    set_outline_style(styles, s, order);
   }
   if let Some(w) = width {
-    styles.outline_width = w;
+    set_outline_width(styles, w, order);
   }
 }
 
@@ -30462,6 +30498,37 @@ mod tests {
     assert_eq!(style.outline_width, Length::px(1.0));
     assert_eq!(style.outline_color, OutlineColor::Invert);
     // currentColor resolution happens at paint time; initial value is invert per spec
+  }
+
+  #[test]
+  fn recompute_var_dependent_outline_shorthand_preserves_longhand_overrides() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+
+    let decls = parse_declarations(
+      "outline: 2px solid var(--c, rgb(52,110,183)); outline-color: transparent;",
+    );
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut styles,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        false,
+      );
+    }
+
+    assert!(styles.var_dependent_declarations.contains_key("outline"));
+    assert_eq!(styles.outline_color, OutlineColor::Color(Rgba::TRANSPARENT));
+
+    // Outline shorthands that depend on `var()` are cached for paint-time recomputation. Ensure that
+    // recomputing the shorthand does not clobber a later longhand (e.g. `outline-color`).
+    styles.recompute_var_dependent_properties(&parent, DEFAULT_VIEWPORT);
+    assert_eq!(styles.outline_color, OutlineColor::Color(Rgba::TRANSPARENT));
   }
 
   #[test]

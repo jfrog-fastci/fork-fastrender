@@ -10,7 +10,7 @@ const DEFAULT_FIXTURES_DIR: &str = "tests/pages/fixtures";
 const DEFAULT_OUT_BASE: &str = "target/page_loop";
 const DEFAULT_VIEWPORT: &str = "1040x1240";
 const DEFAULT_DPR: f32 = 1.0;
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_JOBS: usize = 1;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]

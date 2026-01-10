@@ -102,6 +102,7 @@ use margin_collapse::should_collapse_with_last_child;
 use margin_collapse::CollapsibleMargin;
 use margin_collapse::MarginCollapseContext;
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 use selectors::context::QuirksMode;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -129,9 +130,53 @@ fn record_overflow_auto_child_layout_pass() {
   OVERFLOW_AUTO_CHILD_LAYOUT_PASSES.with(|cell| cell.set(cell.get() + 1));
 }
 
+#[cfg(test)]
+thread_local! {
+  static COLLAPSED_BLOCK_MARGINS_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+  static COLLAPSED_BLOCK_MARGINS_CALL_LIMIT: std::cell::Cell<Option<usize>> =
+    const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn reset_collapsed_block_margins_call_tracking() {
+  COLLAPSED_BLOCK_MARGINS_CALLS.with(|cell| cell.set(0));
+  COLLAPSED_BLOCK_MARGINS_CALL_LIMIT.with(|cell| cell.set(None));
+}
+
+#[cfg(test)]
+fn set_collapsed_block_margins_call_limit(limit: Option<usize>) {
+  COLLAPSED_BLOCK_MARGINS_CALL_LIMIT.with(|cell| cell.set(limit));
+}
+
+#[cfg(test)]
+fn collapsed_block_margins_calls() -> usize {
+  COLLAPSED_BLOCK_MARGINS_CALLS.with(|cell| cell.get())
+}
+
+#[cfg(test)]
+fn record_collapsed_block_margins_call() {
+  COLLAPSED_BLOCK_MARGINS_CALLS.with(|count_cell| {
+    let next = count_cell.get().saturating_add(1);
+    count_cell.set(next);
+    let limit = COLLAPSED_BLOCK_MARGINS_CALL_LIMIT.with(|limit_cell| limit_cell.get());
+    if let Some(limit) = limit {
+      assert!(
+        next <= limit,
+        "collapsed_block_margins call count exceeded limit ({} > {})",
+        next,
+        limit
+      );
+    }
+  });
+}
+
 #[cfg(not(test))]
 #[inline]
 fn record_overflow_auto_child_layout_pass() {}
+
+#[cfg(not(test))]
+#[inline]
+fn record_collapsed_block_margins_call() {}
 
 fn is_ascii_whitespace_char(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
@@ -191,7 +236,7 @@ struct CollapsedBlockMargins {
   collapsible_through: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 enum CollapsedMarginMode {
   #[default]
   Normal,
@@ -3896,6 +3941,23 @@ impl BlockFormattingContext {
     containing_width: f32,
     mode: CollapsedMarginMode,
   ) -> CollapsedBlockMargins {
+    let mut cache: FxHashMap<(usize, CollapsedMarginMode), CollapsedBlockMargins> =
+      FxHashMap::default();
+    self.collapsed_block_margins_cached(node, containing_width, mode, &mut cache)
+  }
+
+  fn collapsed_block_margins_cached(
+    &self,
+    node: &BoxNode,
+    containing_width: f32,
+    mode: CollapsedMarginMode,
+    cache: &mut FxHashMap<(usize, CollapsedMarginMode), CollapsedBlockMargins>,
+  ) -> CollapsedBlockMargins {
+    record_collapsed_block_margins_call();
+    if let Some(cached) = cache.get(&(node.id, mode)) {
+      return *cached;
+    }
+
     let style = &node.style;
     let block_sides = block_axis_sides(style);
     let margin_order_for_side = |style: &ComputedStyle, side: PhysicalSide| -> i32 {
@@ -4111,7 +4173,8 @@ impl BlockFormattingContext {
             break;
           }
         }
-        let child_margins = self.collapsed_block_margins(child, containing_width, child_mode);
+        let child_margins =
+          self.collapsed_block_margins_cached(child, containing_width, child_mode, cache);
         if child_margins.collapsible_through {
           chain = chain.collapse_with(child_margins.top.collapse_with(child_margins.bottom));
           continue;
@@ -4131,7 +4194,8 @@ impl BlockFormattingContext {
         if !is_in_flow_block(child) {
           break;
         }
-        let child_margins = self.collapsed_block_margins(child, containing_width, child_mode);
+        let child_margins =
+          self.collapsed_block_margins_cached(child, containing_width, child_mode, cache);
         if child_margins.collapsible_through {
           chain = chain.collapse_with(child_margins.top.collapse_with(child_margins.bottom));
           continue;
@@ -4173,7 +4237,8 @@ impl BlockFormattingContext {
             has_in_flow_content = true;
             break;
           }
-          let child_margins = self.collapsed_block_margins(child, containing_width, child_mode);
+          let child_margins =
+            self.collapsed_block_margins_cached(child, containing_width, child_mode, cache);
           if !child_margins.collapsible_through {
             has_in_flow_content = true;
             break;
@@ -4222,11 +4287,13 @@ impl BlockFormattingContext {
       bottom = combined;
     }
 
-    CollapsedBlockMargins {
+    let result = CollapsedBlockMargins {
       top,
       bottom,
       collapsible_through,
-    }
+    };
+    cache.insert((node.id, mode), result);
+    result
   }
 
   /// Lays out all children of a box
@@ -4655,8 +4722,27 @@ impl BlockFormattingContext {
        current_y: f32,
        float_ctx_ref: &mut FloatContext|
        -> Result<(FragmentNode, f32), LayoutError> {
+        let trace_child = !trace_boxes.is_empty() && trace_boxes.contains(&child.id);
+        let trace_start = trace_child.then(Instant::now);
+        if trace_child {
+          eprintln!(
+            "[trace-margins-start] parent_id={} child_id={} children={}",
+            parent.id,
+            child.id,
+            child.children.len()
+          );
+        }
         let child_margins =
           child_layout_ctx.collapsed_block_margins(child, containing_width, child_margin_mode);
+        if let Some(start) = trace_start {
+          eprintln!(
+            "[trace-margins-end] parent_id={} child_id={} elapsed_ms={} margins={:?}",
+            parent.id,
+            child.id,
+            start.elapsed().as_millis(),
+            child_margins
+          );
+        }
         let pending_margin = margin_ctx.pending_collapsible_margin();
         let margin_edge_y = current_y + pending_margin.resolve();
         let clear_side =
@@ -11441,6 +11527,35 @@ mod tests {
       "expected parent border-box height ≈43px (50px child, -8px margin, 1px border), got {:.2}",
       parent_fragment.bounds.height()
     );
+  }
+
+  #[test]
+  fn collapsed_block_margins_avoids_exponential_recursion_for_empty_block_chains() {
+    reset_collapsed_block_margins_call_tracking();
+    set_collapsed_block_margins_call_limit(Some(10_000));
+
+    let bfc = BlockFormattingContext::new();
+
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.margin_top = Some(Length::px(10.0));
+    style.margin_bottom = Some(Length::px(20.0));
+    let style = Arc::new(style);
+
+    let mut node = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+    for _ in 0..256usize {
+      node = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![node]);
+    }
+
+    let margins = bfc.collapsed_block_margins(&node, 800.0, CollapsedMarginMode::Normal);
+    assert!(margins.collapsible_through);
+    assert!(
+      collapsed_block_margins_calls() < 5_000,
+      "expected collapsed_block_margins to be cached, calls={}",
+      collapsed_block_margins_calls()
+    );
+
+    reset_collapsed_block_margins_call_tracking();
   }
 
   fn content_visibility_test_guard() -> runtime::ThreadRuntimeTogglesGuard {

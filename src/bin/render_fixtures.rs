@@ -18,6 +18,7 @@ use fastrender::api::{FastRenderPool, FastRenderPoolConfig, RenderArtifactReques
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::resource::ResourcePolicy;
+use fastrender::render_control::{push_stage_listener, StageHeartbeat};
 use fastrender::text::font_db::FontConfig;
 use fastrender::{snapshot_pipeline, PipelineSnapshot, RenderArtifacts};
 use image::ImageFormat;
@@ -1562,8 +1563,18 @@ fn render_fixture(
   let determinism = opts.determinism.clone();
   let stem_for_determinism = stem.clone();
   let out_dir_for_determinism = shared.out_dir.clone();
+  let last_stage: Arc<Mutex<Option<StageHeartbeat>>> = Arc::new(Mutex::new(None));
+  let last_stage_for_listener = Arc::clone(&last_stage);
 
   let render_work = move || -> Result<RenderOutcome, fastrender::Error> {
+    let stage_listener: Arc<dyn Fn(StageHeartbeat) + Send + Sync> = Arc::new(move |stage| {
+      let mut guard = last_stage_for_listener
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      *guard = Some(stage);
+    });
+    let _stage_guard = push_stage_listener(Some(stage_listener));
+
     apply_test_render_delay(Some(&stem_for_determinism));
     let report = render_pool.with_renderer(|renderer| {
       renderer.render_html_with_stylesheets_report(&html, &base_url, options, artifact_request)
@@ -1644,10 +1655,20 @@ fn render_fixture(
         }
       }),
       Ok(Err(panic)) => Err(Status::Crash(panic_to_string(panic))),
-      Err(RecvTimeoutError::Timeout) => Err(Status::Timeout(format!(
-        "render timed out after {:.2}s",
-        shared.hard_timeout.as_secs_f64()
-      ))),
+      Err(RecvTimeoutError::Timeout) => {
+        let last_stage = last_stage
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .map(|stage| stage.as_str().to_string());
+        Err(Status::Timeout(format!(
+          "render timed out after {:.2}s{}",
+          shared.hard_timeout.as_secs_f64(),
+          last_stage
+            .as_deref()
+            .map(|stage| format!(" (last stage: {stage})"))
+            .unwrap_or_default()
+        )))
+      }
       Err(RecvTimeoutError::Disconnected) => {
         Err(Status::Crash("render worker disconnected".to_string()))
       }

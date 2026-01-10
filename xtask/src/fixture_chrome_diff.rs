@@ -15,7 +15,7 @@ const DEFAULT_FIXTURES_DIR: &str = "tests/pages/fixtures";
 const DEFAULT_OUT_DIR: &str = "target/fixture_chrome_diff";
 const DEFAULT_VIEWPORT: &str = "1040x1240";
 const DEFAULT_DPR: f32 = 1.0;
-const DEFAULT_TIMEOUT: u64 = 15;
+const DEFAULT_TIMEOUT: u64 = 120;
 const PAGES_REGRESSION_MANIFEST_CANDIDATES: &[&str] = &[
   // Legacy location.
   "tests/pages_regression_test.rs",
