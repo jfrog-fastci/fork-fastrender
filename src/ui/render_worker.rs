@@ -1417,7 +1417,17 @@ impl BrowserRuntime {
             fragment_tree,
             &scroll_snapshot,
             *node_id,
-          ),
+          )
+          .filter(|_| {
+            // Pointer-driven focus changes (e.g. clicking a `<label>` that focuses a visually-hidden
+            // checkbox) should not unexpectedly scroll the page away from the clicked content.
+            //
+            // Only apply focus scrolling when the focused element is the actual hit-test target at
+            // the pointer location.
+            let page_point = viewport_point.translate(scroll_snapshot.viewport);
+            crate::interaction::hit_test::hit_test_dom(dom, box_tree, hit_tree, page_point)
+              .is_some_and(|hit| hit.styled_node_id == *node_id || hit.dom_node_id == *node_id)
+          }),
           _ => None,
         };
 
@@ -1477,7 +1487,6 @@ impl BrowserRuntime {
       }
       _ => {
         if dom_changed || scroll_changed {
-          tab.cancel.bump_paint();
           tab.needs_repaint = true;
         }
       }
