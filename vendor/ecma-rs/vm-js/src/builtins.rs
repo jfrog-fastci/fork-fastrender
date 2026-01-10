@@ -4420,6 +4420,34 @@ pub fn string_prototype_to_string(
   }
 }
 
+/// `String.prototype.slice` (ECMA-262) (minimal).
+pub fn string_prototype_slice(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+  let (start, end) = slice_range_from_args(vm, &mut scope, host, hooks, len, args)?;
+
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units()[start..end].to_vec()
+  };
+  let out = scope.alloc_string_from_u16_vec(units)?;
+  Ok(Value::String(out))
+}
+
 /// `%String.prototype%[@@iterator]` (ECMA-262).
 ///
 /// This returns an iterator object with internal slots:

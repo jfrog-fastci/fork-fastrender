@@ -350,3 +350,23 @@ fn string_primitive_has_length_and_index_properties() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn string_prototype_slice_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#""abcd".slice(1, 3) === "bc" && "abcd".slice(-1) === "d""#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_slice_is_generic_and_coerces_args() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var o={toString:function(){return "ab";}}; var start={valueOf:function(){return 1;}}; String.prototype.slice.call(o,start) === "b""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
