@@ -1995,25 +1995,63 @@ fn node_clone_node_deep_clones_detached_subtree() -> Result<(), VmError> {
   let shallow_first = vm.call_without_host(&mut scope, shallow_first_child_get, shallow_val, &[])?;
   assert_eq!(shallow_first, Value::Null);
 
-  // Document.cloneNode is currently unsupported by dom2; bindings must surface NotSupportedError.
+  // Document.cloneNode(false) returns a detached Document with no children.
   let document_clone = get_data_property_value(scope.heap(), document_obj, &key_clone_node)
     .expect("document.cloneNode exists");
-  let thrown = match vm.call_without_host(&mut scope, document_clone, document_val, &[]) {
-    Ok(_) => panic!("expected document.cloneNode to throw"),
-    Err(err) => err.thrown_value().expect("expected thrown value"),
-  };
-  let Value::Object(thrown_obj) = thrown else {
-    panic!("expected thrown object");
-  };
-  let key_name = PropertyKey::from_string(scope.alloc_string("name")?);
-  let name_val = get_data_property_value(scope.heap(), thrown_obj, &key_name).expect("name exists");
-  let Value::String(name_str) = name_val else {
-    panic!("expected name string");
+  let doc_shallow = vm.call_without_host(&mut scope, document_clone, document_val, &[])?;
+  let Value::Object(_doc_shallow_obj) = doc_shallow else {
+    panic!("expected cloned Document wrapper");
   };
   assert_eq!(
-    scope.heap().get_string(name_str)?.to_utf8_lossy(),
-    "NotSupportedError"
+    vm.call_without_host(&mut scope, parent_node_get, doc_shallow, &[])?,
+    Value::Null
   );
+  assert_eq!(
+    vm.call_without_host(&mut scope, is_connected_get, doc_shallow, &[])?,
+    Value::Bool(false)
+  );
+  let doc_shallow_first = vm.call_without_host(&mut scope, first_child_get, doc_shallow, &[])?;
+  assert_eq!(doc_shallow_first, Value::Null);
+
+  // Document.cloneNode(true) deep clones the document subtree.
+  let doc_deep = vm.call_without_host(&mut scope, document_clone, document_val, &[Value::Bool(true)])?;
+  let Value::Object(doc_deep_obj) = doc_deep else {
+    panic!("expected cloned Document wrapper");
+  };
+  assert_ne!(doc_deep, document_val);
+  assert_ne!(doc_deep_obj, document_obj);
+  assert_eq!(
+    vm.call_without_host(&mut scope, parent_node_get, doc_deep, &[])?,
+    Value::Null
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, is_connected_get, doc_deep, &[])?,
+    Value::Bool(false)
+  );
+
+  let doc_deep_div = vm.call_without_host(&mut scope, first_child_get, doc_deep, &[])?;
+  assert_ne!(doc_deep_div, Value::Null);
+  assert_ne!(doc_deep_div, div_val);
+  let Value::Object(doc_deep_div_obj) = doc_deep_div else {
+    panic!("expected deep-cloned div wrapper");
+  };
+
+  let doc_deep_id_get =
+    get_accessor_getter(scope.heap(), doc_deep_div_obj, &key_id).expect("id getter exists");
+  let doc_deep_id_val = vm.call_without_host(&mut scope, doc_deep_id_get, doc_deep_div, &[])?;
+  let Value::String(doc_deep_id_str) = doc_deep_id_val else {
+    panic!("expected id string");
+  };
+  assert_eq!(scope.heap().get_string(doc_deep_id_str)?.to_utf8_lossy(), "src");
+
+  // Mutating the clone must not affect the original.
+  let arg_cloned = Value::String(scope.alloc_string("cloned")?);
+  vm.call_without_host(&mut scope, id_set, doc_deep_div, &[arg_cloned])?;
+  let original_id_val = vm.call_without_host(&mut scope, id_get, div_val, &[])?;
+  let Value::String(original_id_str) = original_id_val else {
+    panic!("expected id string");
+  };
+  assert_eq!(scope.heap().get_string(original_id_str)?.to_utf8_lossy(), "src");
 
   drop(scope);
   realm.teardown(&mut heap);

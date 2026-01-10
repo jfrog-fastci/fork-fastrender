@@ -699,9 +699,69 @@ fn deep_tree_mutations_are_iterative() {
 }
 
 #[test]
-fn clone_node_rejects_document_nodes() {
-  let mut doc = Document::new(QuirksMode::NoQuirks);
-  assert_eq!(doc.clone_node(doc.root(), false), Err(DomError::NotSupportedError));
+fn clone_node_clones_document_nodes() {
+  let mut doc = Document::new(QuirksMode::LimitedQuirks);
+  let root = doc.root();
+
+  // Build a document that exercises document-specific child ordering:
+  // <!doctype html><html id=orig><body><div id=src></div></body></html>
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: "pub".to_string(),
+      system_id: "sys".to_string(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  doc.append_child(root, doctype).unwrap();
+
+  let html = doc.create_element("html", "");
+  doc.set_attribute(html, "id", "orig").unwrap();
+  doc.append_child(root, html).unwrap();
+
+  let body = doc.create_element("body", "");
+  doc.append_child(html, body).unwrap();
+  let div = doc.create_element("div", "");
+  doc.set_attribute(div, "id", "src").unwrap();
+  doc.append_child(body, div).unwrap();
+
+  // Shallow document clone has no children but preserves document kind data.
+  let shallow = doc.clone_node(root, false).unwrap();
+  assert_eq!(doc.parent(shallow).unwrap(), None);
+  assert_eq!(doc.children(shallow).unwrap(), &[]);
+  match &doc.node(shallow).kind {
+    NodeKind::Document { quirks_mode } => assert_eq!(*quirks_mode, QuirksMode::LimitedQuirks),
+    other => panic!("expected Document clone, got {other:?}"),
+  }
+
+  // Deep clone preserves child ordering and produces independent nodes.
+  let deep = doc.clone_node(root, true).unwrap();
+  assert_eq!(doc.parent(deep).unwrap(), None);
+  let deep_children = doc.children(deep).unwrap();
+  assert_eq!(deep_children.len(), 2);
+
+  let cloned_doctype = deep_children[0];
+  let cloned_html = deep_children[1];
+  assert_ne!(cloned_doctype, doctype);
+  assert_ne!(cloned_html, html);
+  match &doc.node(cloned_doctype).kind {
+    NodeKind::Doctype {
+      name,
+      public_id,
+      system_id,
+    } => {
+      assert_eq!(name, "html");
+      assert_eq!(public_id, "pub");
+      assert_eq!(system_id, "sys");
+    }
+    other => panic!("expected Doctype clone, got {other:?}"),
+  }
+  assert_eq!(doc.get_attribute(cloned_html, "id").unwrap(), Some("orig"));
+
+  // Mutating the clone must not affect the original.
+  doc.set_attribute(cloned_html, "id", "cloned").unwrap();
+  assert_eq!(doc.get_attribute(html, "id").unwrap(), Some("orig"));
 }
 
 #[test]

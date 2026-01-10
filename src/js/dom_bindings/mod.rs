@@ -854,7 +854,11 @@ fn extract_event_target_id(
   let map = platform_objects.borrow();
   match map.get(&key) {
     Some(PlatformObjectKind::Window) => Ok(events::EventTargetId::Window),
-    Some(PlatformObjectKind::Document { .. }) => Ok(events::EventTargetId::Document),
+    Some(PlatformObjectKind::Document { node_id }) => {
+      // The primary document node is a special-cased `EventTargetId::Document` per spec, but
+      // detached `Document` clones are represented by their `NodeId`.
+      Ok(events::EventTargetId::Node(*node_id).normalize())
+    }
     Some(PlatformObjectKind::Node { node_id }) => Ok(events::EventTargetId::Node(*node_id)),
     _ => Err(rt.throw_type_error("Illegal invocation")),
   }
@@ -1008,11 +1012,18 @@ fn wrap_node(
     platform_objects.borrow_mut().remove(&existing);
   }
 
-  let proto = {
+  let (proto, platform_kind) = {
     let dom = dom.borrow();
     match &dom.node(node_id).kind {
-      NodeKind::Element { .. } | NodeKind::Slot { .. } => prototypes.element,
-      _ => prototypes.node,
+      NodeKind::Document { .. } => (
+        prototypes.document,
+        PlatformObjectKind::Document { node_id },
+      ),
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => (
+        prototypes.element,
+        PlatformObjectKind::Node { node_id },
+      ),
+      _ => (prototypes.node, PlatformObjectKind::Node { node_id }),
     }
   };
 
@@ -1027,10 +1038,9 @@ fn wrap_node(
   node_wrapper_cache
     .borrow_mut()
     .insert(node_id, WeakGcObject::from(obj_handle));
-  platform_objects.borrow_mut().insert(
-    WeakGcObject::from(obj_handle),
-    PlatformObjectKind::Node { node_id },
-  );
+  platform_objects
+    .borrow_mut()
+    .insert(WeakGcObject::from(obj_handle), platform_kind);
 
   Ok(obj)
 }
@@ -2516,15 +2526,54 @@ fn install_constructors(
     define_accessor(rt, prototypes.node, "textContent", text_content_get, text_content_set)?;
 
     // ownerDocument
+    let dom_for_owner = dom.clone();
     let platform_objects_for_owner = platform_objects.clone();
+    let node_wrapper_cache_for_owner = node_wrapper_cache.clone();
     let owner_document_get = rt.alloc_function_value(move |rt, this, _args| {
       let Value::Object(obj) = this else {
         return Err(rt.throw_type_error("Illegal invocation"));
       };
-      let key = WeakGcObject::from(obj);
-      match platform_objects_for_owner.borrow().get(&key) {
+
+      let kind = {
+        let key = WeakGcObject::from(obj);
+        platform_objects_for_owner.borrow().get(&key).cloned()
+      };
+
+      match kind {
         Some(PlatformObjectKind::Document { .. }) => Ok(Value::Null),
-        Some(PlatformObjectKind::Node { .. }) => Ok(document),
+        Some(PlatformObjectKind::Node { node_id }) => {
+          // When multiple `Document` nodes exist (e.g. via `Document.cloneNode()`), determine the
+          // owner document by walking to the tree root. If the root is not a `Document` (detached
+          // subtrees), fall back to the realm's primary `document` to preserve the historical
+          // single-document behavior.
+          let owner_document_id = {
+            let dom_ref = dom_for_owner.borrow();
+            let mut current = node_id;
+            let mut remaining = dom_ref.nodes_len() + 1;
+            while remaining != 0 {
+              remaining -= 1;
+              let Some(parent) = dom_ref.parent_node(current) else {
+                break;
+              };
+              current = parent;
+            }
+            matches!(dom_ref.node(current).kind, NodeKind::Document { .. }).then_some(current)
+          };
+
+          match owner_document_id {
+            Some(doc_id) => wrap_node(
+              rt,
+              &dom_for_owner,
+              &platform_objects_for_owner,
+              &node_wrapper_cache_for_owner,
+              document_node_id,
+              document,
+              prototypes,
+              doc_id,
+            ),
+            None => Ok(document),
+          }
+        }
         _ => Err(rt.throw_type_error("Illegal invocation")),
       }
     })?;
@@ -3175,9 +3224,9 @@ fn install_constructors(
     let platform_objects_for_get_by_id = platform_objects.clone();
     let node_wrapper_cache_for_get_by_id = node_wrapper_cache.clone();
     let get_by_id = rt.alloc_function_value(move |rt, this, args| {
-      let _doc_id = extract_document_id(rt, &platform_objects_for_get_by_id, this)?;
+      let doc_id = extract_document_id(rt, &platform_objects_for_get_by_id, this)?;
       let id = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
-      match dom_for_get_by_id.borrow().get_element_by_id(&id) {
+      match dom_for_get_by_id.borrow().get_element_by_id_from(doc_id, &id) {
         Some(node_id) => wrap_node(
           rt,
           &dom_for_get_by_id,
@@ -3205,9 +3254,13 @@ fn install_constructors(
           args.len()
         )));
       }
-      let _doc_id = extract_document_id(rt, &platform_objects_for_doc_query, this)?;
+      let doc_id = extract_document_id(rt, &platform_objects_for_doc_query, this)?;
       let selectors = to_rust_string(rt, args[0])?;
-      let found = match dom_for_doc_query.borrow_mut().query_selector(&selectors, None) {
+      let scope = (doc_id != document_node_id).then_some(doc_id);
+      let found = match dom_for_doc_query
+        .borrow_mut()
+        .query_selector(&selectors, scope)
+      {
         Ok(v) => v,
         Err(err) => {
           let exc = dom_ex_for_doc_query.from_dom_exception(rt, &err)?;
@@ -3241,11 +3294,12 @@ fn install_constructors(
           args.len()
         )));
       }
-      let _doc_id = extract_document_id(rt, &platform_objects_for_doc_query_all, this)?;
+      let doc_id = extract_document_id(rt, &platform_objects_for_doc_query_all, this)?;
       let selectors = to_rust_string(rt, args[0])?;
+      let scope = (doc_id != document_node_id).then_some(doc_id);
       let ids = match dom_for_doc_query_all
         .borrow_mut()
-        .query_selector_all(&selectors, None)
+        .query_selector_all(&selectors, scope)
       {
         Ok(v) => v,
         Err(err) => {
@@ -3282,8 +3336,8 @@ fn install_constructors(
     let platform_objects_for_doc_el = platform_objects.clone();
     let node_wrapper_cache_for_doc_el = node_wrapper_cache.clone();
     let document_element_get = rt.alloc_function_value(move |rt, this, _args| {
-      let _doc_id = extract_document_id(rt, &platform_objects_for_doc_el, this)?;
-      match dom_for_doc_el.borrow().document_element() {
+      let doc_id = extract_document_id(rt, &platform_objects_for_doc_el, this)?;
+      match dom_for_doc_el.borrow().document_element_for(doc_id) {
         Some(node_id) => wrap_node(
           rt,
           &dom_for_doc_el,
@@ -3309,8 +3363,8 @@ fn install_constructors(
     let platform_objects_for_head = platform_objects.clone();
     let node_wrapper_cache_for_head = node_wrapper_cache.clone();
     let head_get = rt.alloc_function_value(move |rt, this, _args| {
-      let _doc_id = extract_document_id(rt, &platform_objects_for_head, this)?;
-      match dom_for_head.borrow().head() {
+      let doc_id = extract_document_id(rt, &platform_objects_for_head, this)?;
+      match dom_for_head.borrow().head_for(doc_id) {
         Some(node_id) => wrap_node(
           rt,
           &dom_for_head,
@@ -3330,8 +3384,8 @@ fn install_constructors(
     let platform_objects_for_body = platform_objects.clone();
     let node_wrapper_cache_for_body = node_wrapper_cache.clone();
     let body_get = rt.alloc_function_value(move |rt, this, _args| {
-      let _doc_id = extract_document_id(rt, &platform_objects_for_body, this)?;
-      match dom_for_body.borrow().body() {
+      let doc_id = extract_document_id(rt, &platform_objects_for_body, this)?;
+      match dom_for_body.borrow().body_for(doc_id) {
         Some(node_id) => wrap_node(
           rt,
           &dom_for_body,
@@ -3353,7 +3407,11 @@ fn install_constructors(
       let platform_objects = platform_objects.clone();
       let node_wrapper_cache = node_wrapper_cache.clone();
       rt.alloc_function_value(move |rt, this, _args| {
-        let _doc_id = extract_document_id(rt, &platform_objects, this)?;
+        let doc_id = extract_document_id(rt, &platform_objects, this)?;
+        if doc_id != document_node_id {
+          // Detached `Document` clones do not participate in the realm's "current script" state.
+          return Ok(Value::Null);
+        }
         let current = current_script_state.borrow().current_script;
         match current {
           Some(node_id) => wrap_node(
@@ -5341,7 +5399,28 @@ mod tests {
     let append_child_key = pk(&mut realm.rt, "appendChild");
     let append_child = realm.rt.get(document, append_child_key).unwrap();
 
-    // document.appendChild(<div id=src><span>hello</span></div>)
+    // Build: document -> html -> head + body -> div#src -> span -> "hello"
+    let html_tag = realm.rt.alloc_string_value("html").unwrap();
+    let html = realm
+      .rt
+      .call_function(create_element, document, &[html_tag])
+      .unwrap();
+    realm.rt.call_function(append_child, document, &[html]).unwrap();
+
+    let head_tag = realm.rt.alloc_string_value("head").unwrap();
+    let head = realm
+      .rt
+      .call_function(create_element, document, &[head_tag])
+      .unwrap();
+    realm.rt.call_function(append_child, html, &[head]).unwrap();
+
+    let body_tag = realm.rt.alloc_string_value("body").unwrap();
+    let body = realm
+      .rt
+      .call_function(create_element, document, &[body_tag])
+      .unwrap();
+    realm.rt.call_function(append_child, html, &[body]).unwrap();
+
     let div_tag = realm.rt.alloc_string_value("div").unwrap();
     let div = realm
       .rt
@@ -5357,23 +5436,21 @@ mod tests {
       .call_function(set_attribute, div, &[attr_id, id_src])
       .unwrap();
 
-    realm.rt.call_function(append_child, document, &[div]).unwrap();
+    realm.rt.call_function(append_child, body, &[div]).unwrap();
 
     let span_tag = realm.rt.alloc_string_value("span").unwrap();
     let span = realm
       .rt
       .call_function(create_element, document, &[span_tag])
       .unwrap();
-    let div_append = realm.rt.get(div, append_child_key).unwrap();
-    realm.rt.call_function(div_append, div, &[span]).unwrap();
+    realm.rt.call_function(append_child, div, &[span]).unwrap();
 
     let hello = realm.rt.alloc_string_value("hello").unwrap();
     let text = realm
       .rt
       .call_function(create_text, document, &[hello])
       .unwrap();
-    let span_append = realm.rt.get(span, append_child_key).unwrap();
-    realm.rt.call_function(span_append, span, &[text]).unwrap();
+    realm.rt.call_function(append_child, span, &[text]).unwrap();
 
     // div.cloneNode(true) should deep clone but remain detached.
     let clone_node_key = pk(&mut realm.rt, "cloneNode");
@@ -5410,16 +5487,73 @@ mod tests {
     let shallow = realm.rt.call_function(clone_node, div, &[]).unwrap();
     assert_eq!(realm.rt.get(shallow, first_child_key).unwrap(), Value::Null);
 
-    // Document.cloneNode is currently unsupported by dom2; surface NotSupportedError.
+    // Document.cloneNode(false) returns a detached Document with no children.
     let document_clone = realm.rt.get(document, clone_node_key).unwrap();
-    let err = realm
+    let shallow_doc = realm
       .rt
-      .call_function(document_clone, document, &[])
-      .expect_err("expected document.cloneNode to throw");
-    let thrown = err.thrown_value().expect("expected thrown value");
-    let name_key = pk(&mut realm.rt, "name");
-    let name = realm.rt.get(thrown, name_key).unwrap();
-    assert_eq!(as_str(&realm.rt, name), "NotSupportedError");
+      .call_function(document_clone, document, &[Value::Bool(false)])
+      .unwrap();
+    assert_ne!(shallow_doc, document);
+    assert_eq!(realm.rt.get(shallow_doc, parent_node_key).unwrap(), Value::Null);
+    assert_eq!(
+      realm.rt.get(shallow_doc, is_connected_key).unwrap(),
+      Value::Bool(false)
+    );
+    assert_eq!(realm.rt.get(shallow_doc, first_child_key).unwrap(), Value::Null);
+    let document_element_key = pk(&mut realm.rt, "documentElement");
+    assert_eq!(
+      realm.rt.get(shallow_doc, document_element_key).unwrap(),
+      Value::Null
+    );
+
+    // Document.cloneNode(true) deep clones the HTML tree but remains detached.
+    let deep_doc = realm
+      .rt
+      .call_function(document_clone, document, &[Value::Bool(true)])
+      .unwrap();
+    assert_ne!(deep_doc, document);
+    assert_eq!(realm.rt.get(deep_doc, parent_node_key).unwrap(), Value::Null);
+    assert_eq!(
+      realm.rt.get(deep_doc, is_connected_key).unwrap(),
+      Value::Bool(false)
+    );
+
+    let cloned_html = realm.rt.get(deep_doc, document_element_key).unwrap();
+    assert_ne!(cloned_html, Value::Null);
+    assert_ne!(cloned_html, html);
+
+    let body_key = pk(&mut realm.rt, "body");
+    let cloned_body = realm.rt.get(deep_doc, body_key).unwrap();
+    assert_ne!(cloned_body, Value::Null);
+    assert_ne!(cloned_body, body);
+
+    let cloned_div = realm.rt.get(cloned_body, first_child_key).unwrap();
+    assert_ne!(cloned_div, Value::Null);
+    assert_ne!(cloned_div, div);
+
+    let id_key = pk(&mut realm.rt, "id");
+    let cloned_id = realm.rt.get(cloned_div, id_key).unwrap();
+    assert_eq!(as_str(&realm.rt, cloned_id), "src");
+
+    let cloned_span = realm.rt.get(cloned_div, first_child_key).unwrap();
+    assert_ne!(cloned_span, Value::Null);
+    assert_ne!(cloned_span, span);
+    let cloned_text = realm.rt.get(cloned_span, first_child_key).unwrap();
+    assert_ne!(cloned_text, text);
+    let node_value_key = pk(&mut realm.rt, "nodeValue");
+    let cloned_text_value = realm.rt.get(cloned_text, node_value_key).unwrap();
+    assert_eq!(as_str(&realm.rt, cloned_text_value), "hello");
+
+    // Mutating the clone must not affect the original.
+    let set_attribute_clone = realm.rt.get(cloned_div, set_attribute_key).unwrap();
+    let attr_id2 = realm.rt.alloc_string_value("id").unwrap();
+    let id_new = realm.rt.alloc_string_value("cloned").unwrap();
+    realm
+      .rt
+      .call_function(set_attribute_clone, cloned_div, &[attr_id2, id_new])
+      .unwrap();
+    let original_id = realm.rt.get(div, id_key).unwrap();
+    assert_eq!(as_str(&realm.rt, original_id), "src");
   }
 
   #[test]

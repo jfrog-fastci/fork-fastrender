@@ -390,19 +390,22 @@ impl Document {
   ///
   /// This is the first child of the document root that is an element (including `<slot>`),
   /// in tree order.
-  pub fn document_element(&self) -> Option<NodeId> {
-    let root = self.root();
-    let root_node = self.nodes.get(root.index())?;
+  pub fn document_element_for(&self, document: NodeId) -> Option<NodeId> {
+    let root_node = self.nodes.get(document.index())?;
     root_node.children.iter().copied().find(|&child| {
       self
         .nodes
         .get(child.index())
-        .is_some_and(|node| node.parent == Some(root))
+        .is_some_and(|node| node.parent == Some(document))
         && matches!(
           self.nodes[child.index()].kind,
           NodeKind::Element { .. } | NodeKind::Slot { .. }
         )
     })
+  }
+
+  pub fn document_element(&self) -> Option<NodeId> {
+    self.document_element_for(self.root())
   }
 
   /// Returns the first element in tree order whose `id` attribute matches `id`.
@@ -411,14 +414,14 @@ impl Document {
   /// - returns `None` for an empty `id`,
   /// - ignores detached subtrees, and
   /// - ignores nodes inside inert `<template>` contents (`Node::inert_subtree`).
-  pub fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
+  pub fn get_element_by_id_from(&self, root: NodeId, id: &str) -> Option<NodeId> {
     if id.is_empty() {
       return None;
     }
 
     // Document.getElementById does not traverse into shadow roots.
     let mut remaining = self.nodes.len() + 1;
-    let mut stack: Vec<NodeId> = vec![self.root()];
+    let mut stack: Vec<NodeId> = vec![root];
     while let Some(node_id) = stack.pop() {
       if remaining == 0 {
         break;
@@ -476,6 +479,10 @@ impl Document {
     None
   }
 
+  pub fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
+    self.get_element_by_id_from(self.root(), id)
+  }
+
   #[inline]
   fn is_html_element(&self, node_id: NodeId, tag: &str) -> bool {
     let Some(node) = self.nodes.get(node_id.index()) else {
@@ -501,8 +508,8 @@ impl Document {
   /// - If `documentElement` exists and is an HTML `<html>` element, return the first HTML `<head>`
   ///   child element (tree order).
   /// - Otherwise return `None`.
-  pub fn head(&self) -> Option<NodeId> {
-    let html = self.document_element()?;
+  pub fn head_for(&self, document: NodeId) -> Option<NodeId> {
+    let html = self.document_element_for(document)?;
     if !self.is_html_element(html, "html") {
       return None;
     }
@@ -516,6 +523,10 @@ impl Document {
     })
   }
 
+  pub fn head(&self) -> Option<NodeId> {
+    self.head_for(self.root())
+  }
+
   /// Returns the document's HTML `<body>` element, if any.
   ///
   /// Minimal HTML-ish semantics:
@@ -523,8 +534,8 @@ impl Document {
   ///   child element (tree order).
   /// - If no `<body>` is present, return the first HTML `<frameset>` child element (tree order).
   /// - Otherwise return `None`.
-  pub fn body(&self) -> Option<NodeId> {
-    let html = self.document_element()?;
+  pub fn body_for(&self, document: NodeId) -> Option<NodeId> {
+    let html = self.document_element_for(document)?;
     if !self.is_html_element(html, "html") {
       return None;
     }
@@ -547,6 +558,10 @@ impl Document {
       .iter()
       .copied()
       .find(|&child| is_direct_child(child) && self.is_html_element(child, "frameset"))
+  }
+
+  pub fn body(&self) -> Option<NodeId> {
+    self.body_for(self.root())
   }
 
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {

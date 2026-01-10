@@ -384,10 +384,21 @@ fn quickjs_dom_clone_node_deep_clones_detached_subtree() {
       ctx.eval::<(), _>("globalThis.shallow = div.cloneNode();")?;
       assert_eq!(ctx.eval::<bool, _>("shallow.firstChild === null")?, true);
 
-      ctx.eval::<(), _>(
-        "globalThis.__bad = false; try { document.cloneNode(true); } catch(e) { __bad = (e.name === 'NotSupportedError'); }",
-      )?;
-      assert_eq!(ctx.eval::<bool, _>("__bad")?, true);
+      // Document.cloneNode should return a detached Document object (not throw).
+      ctx.eval::<(), _>("globalThis.docClone = document.cloneNode(true);")?;
+      assert_eq!(ctx.eval::<bool, _>("docClone !== document")?, true);
+      assert_eq!(ctx.eval::<i32, _>("docClone.nodeType")?, 9);
+      assert_eq!(ctx.eval::<String, _>("docClone.nodeName")?, "#document");
+      assert_eq!(ctx.eval::<bool, _>("docClone.parentNode === null")?, true);
+      assert_eq!(ctx.eval::<bool, _>("docClone.isConnected")?, false);
+      assert_eq!(ctx.eval::<String, _>("docClone.firstChild.nodeName")?, "HTML");
+      assert_eq!(
+        ctx.eval::<String, _>("docClone.firstChild.lastChild.firstChild.id")?,
+        "a"
+      );
+
+      ctx.eval::<(), _>("globalThis.docShallow = document.cloneNode();")?;
+      assert_eq!(ctx.eval::<bool, _>("docShallow.firstChild === null")?, true);
 
       Ok(())
     })

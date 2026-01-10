@@ -10,7 +10,18 @@ impl Document {
     let (kind, inert_subtree) = {
       let node = &self.nodes[src.index()];
       let kind = match &node.kind {
-        NodeKind::Document { .. } => return Err(DomError::NotSupportedError),
+        NodeKind::Document { quirks_mode } => {
+          // A `dom2::Document` stores its primary document node at `self.root()`, but cloning a
+          // document node is still useful (e.g. `Document.cloneNode()` in JS). The cloned `Document`
+          // node must remain detached: `Document` nodes cannot be inserted into the tree.
+          debug_assert!(
+            parent.is_none(),
+            "Document nodes cannot have a parent; clone_node() must only clone them as detached roots"
+          );
+          NodeKind::Document {
+            quirks_mode: *quirks_mode,
+          }
+        }
         NodeKind::DocumentFragment => NodeKind::DocumentFragment,
         NodeKind::Comment { content } => NodeKind::Comment {
           content: content.clone(),
@@ -128,7 +139,7 @@ impl Document {
       return Err(DomError::HierarchyRequestError);
     }
 
-    // Non-root `Document` nodes should never exist.
+    // `Document` nodes cannot be inserted into the tree.
     if matches!(child_kind, NodeKind::Document { .. }) {
       return Err(DomError::InvalidNodeType);
     }
