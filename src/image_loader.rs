@@ -1852,6 +1852,275 @@ fn apply_svg_url_fragment<'a>(svg_content: &'a str, requested_url: &str) -> Cow<
   Cow::Owned(out)
 }
 
+fn svg_with_resolved_root_viewport_size<'a>(
+  svg_content: &'a str,
+  render_width: u32,
+  render_height: u32,
+) -> Cow<'a, str> {
+  // When an SVG is used as an image (e.g. `background-image`), the embedding context provides a
+  // concrete viewport size. If the outermost `<svg>` omits `width`/`height`, SVG defaults them to
+  // `100%`. That means any percentage lengths (including nested `<image width="100%">`) should be
+  // resolved against the concrete viewport size.
+  //
+  // `usvg`/`resvg` parse percentage lengths during tree construction. When no explicit viewport is
+  // present, percentage lengths can resolve to zero, producing fully transparent output. Fix this
+  // by injecting a definite `width`/`height` (in px) when rasterizing to an explicit size.
+  if render_width == 0 || render_height == 0 {
+    return Cow::Borrowed(svg_content);
+  }
+
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    roxmltree::Document::parse(svg_content)
+  })) {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) | Err(_) => return Cow::Borrowed(svg_content),
+  };
+
+  let root = doc.root_element();
+  if !root.tag_name().name().eq_ignore_ascii_case("svg") {
+    return Cow::Borrowed(svg_content);
+  }
+
+  fn parse_percent(value: &str) -> Option<f32> {
+    let trimmed = trim_ascii_whitespace(value);
+    let number = trimmed.strip_suffix('%')?;
+    trim_ascii_whitespace(number).parse::<f32>().ok()
+  }
+
+  fn format_px(value: f32) -> String {
+    if !value.is_finite() {
+      return "0".to_string();
+    }
+    let rounded = value.round();
+    if (value - rounded).abs() < 0.000_1 {
+      return format!("{}", rounded as i64);
+    }
+    value.to_string()
+  }
+
+  let width_attr_raw = root.attribute("width");
+  let height_attr_raw = root.attribute("height");
+  let width_trimmed = width_attr_raw.map(trim_ascii_whitespace).unwrap_or("");
+  let height_trimmed = height_attr_raw.map(trim_ascii_whitespace).unwrap_or("");
+
+  let width_needs_resolution =
+    width_attr_raw.is_none() || width_trimmed.is_empty() || width_trimmed.ends_with('%');
+  let height_needs_resolution =
+    height_attr_raw.is_none() || height_trimmed.is_empty() || height_trimmed.ends_with('%');
+
+  if !width_needs_resolution && !height_needs_resolution {
+    return Cow::Borrowed(svg_content);
+  }
+
+  let width_resolved = if width_needs_resolution {
+    let px = parse_percent(width_trimmed)
+      .map(|pct| render_width as f32 * (pct / 100.0))
+      .unwrap_or(render_width as f32);
+    Some(format_px(px))
+  } else {
+    None
+  };
+
+  let height_resolved = if height_needs_resolution {
+    let px = parse_percent(height_trimmed)
+      .map(|pct| render_height as f32 * (pct / 100.0))
+      .unwrap_or(render_height as f32);
+    Some(format_px(px))
+  } else {
+    None
+  };
+
+  let root_range = root.range();
+  if root_range.end > svg_content.len() || root_range.start >= root_range.end {
+    return Cow::Borrowed(svg_content);
+  }
+
+  let Some(tag_end) = find_xml_start_tag_end(svg_content, root_range.start, root_range.end) else {
+    return Cow::Borrowed(svg_content);
+  };
+  if tag_end > svg_content.len() || tag_end <= root_range.start {
+    return Cow::Borrowed(svg_content);
+  }
+
+  let bytes_all = svg_content.as_bytes();
+  let tag_close = tag_end.saturating_sub(1);
+  let mut insert_pos = tag_close;
+  let mut j = tag_close;
+  while j > root_range.start && bytes_all[j.saturating_sub(1)].is_ascii_whitespace() {
+    j = j.saturating_sub(1);
+  }
+  if j > root_range.start && bytes_all[j.saturating_sub(1)] == b'/' {
+    insert_pos = j.saturating_sub(1);
+  }
+
+  let tag = &svg_content[root_range.start..tag_end];
+  let bytes = tag.as_bytes();
+  let mut i = 0usize;
+
+  // Skip `<` + element name.
+  if bytes.get(i) == Some(&b'<') {
+    i += 1;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    while i < bytes.len()
+      && !bytes[i].is_ascii_whitespace()
+      && bytes[i] != b'>'
+      && bytes[i] != b'/'
+    {
+      i += 1;
+    }
+  }
+
+  let mut width_range: Option<std::ops::Range<usize>> = None;
+  let mut height_range: Option<std::ops::Range<usize>> = None;
+
+  while i < bytes.len() {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() || bytes[i] == b'>' {
+      break;
+    }
+    if bytes[i] == b'/' {
+      i += 1;
+      continue;
+    }
+
+    let name_start = i;
+    while i < bytes.len()
+      && !bytes[i].is_ascii_whitespace()
+      && bytes[i] != b'='
+      && bytes[i] != b'>'
+      && bytes[i] != b'/'
+    {
+      i += 1;
+    }
+    let name_end = i;
+    if name_end == name_start {
+      i = i.saturating_add(1);
+      continue;
+    }
+
+    let attr_name = &tag[name_start..name_end];
+    let local_name = attr_name
+      .rsplit_once(':')
+      .map(|(_, local)| local)
+      .unwrap_or(attr_name);
+
+    let is_width = local_name.eq_ignore_ascii_case("width");
+    let is_height = local_name.eq_ignore_ascii_case("height");
+
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != b'=' {
+      continue;
+    }
+    i += 1;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() {
+      continue;
+    }
+
+    let value_start = i;
+    if bytes[i] == b'"' || bytes[i] == b'\'' {
+      let quote = bytes[i];
+      i += 1;
+      let start = i;
+      while i < bytes.len() && bytes[i] != quote {
+        i += 1;
+      }
+      let value_end = i;
+      if i < bytes.len() {
+        i += 1;
+      }
+
+      let range = (root_range.start + start)..(root_range.start + value_end);
+      if is_width {
+        width_range = Some(range);
+      } else if is_height {
+        height_range = Some(range);
+      }
+      continue;
+    }
+
+    while i < bytes.len()
+      && !bytes[i].is_ascii_whitespace()
+      && bytes[i] != b'>'
+      && bytes[i] != b'/'
+    {
+      i += 1;
+    }
+    let value_end = i;
+    let range = (root_range.start + value_start)..(root_range.start + value_end);
+    if is_width {
+      width_range = Some(range);
+    } else if is_height {
+      height_range = Some(range);
+    }
+  }
+
+  let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+  let mut injected_bytes = 0usize;
+
+  if let Some(width) = width_resolved {
+    if width_attr_raw.is_some() {
+      let Some(range) = width_range else {
+        return Cow::Borrowed(svg_content);
+      };
+      injected_bytes = injected_bytes.saturating_add(
+        width
+          .len()
+          .saturating_sub(range.end.saturating_sub(range.start)),
+      );
+      replacements.push((range, width));
+    } else {
+      let snippet = format!(" width=\"{width}\"");
+      injected_bytes = injected_bytes.saturating_add(snippet.len());
+      replacements.push((insert_pos..insert_pos, snippet));
+    }
+  }
+
+  if let Some(height) = height_resolved {
+    if height_attr_raw.is_some() {
+      let Some(range) = height_range else {
+        return Cow::Borrowed(svg_content);
+      };
+      injected_bytes = injected_bytes.saturating_add(
+        height
+          .len()
+          .saturating_sub(range.end.saturating_sub(range.start)),
+      );
+      replacements.push((range, height));
+    } else {
+      let snippet = format!(" height=\"{height}\"");
+      injected_bytes = injected_bytes.saturating_add(snippet.len());
+      replacements.push((insert_pos..insert_pos, snippet));
+    }
+  }
+
+  if replacements.is_empty() {
+    return Cow::Borrowed(svg_content);
+  }
+
+  replacements.sort_by_key(|(range, _)| range.start);
+  let mut out = String::with_capacity(svg_content.len().saturating_add(injected_bytes));
+  let mut cursor = 0usize;
+  for (range, replacement) in replacements {
+    if range.start < cursor || range.end < range.start || range.end > svg_content.len() {
+      return Cow::Borrowed(svg_content);
+    }
+    out.push_str(&svg_content[cursor..range.start]);
+    out.push_str(&replacement);
+    cursor = range.end;
+  }
+  out.push_str(&svg_content[cursor..]);
+  Cow::Owned(out)
+}
+
 fn svg_parse_fill_color(value: &str) -> Option<Rgba> {
   let trimmed = trim_ascii_whitespace(value);
   if trimmed.is_empty() {
@@ -5248,7 +5517,12 @@ impl ImageCache {
       self.resource_context.as_ref(),
     )?;
     let svg_fragment_applied = apply_svg_url_fragment(svg_images_inlined.as_ref(), url);
-    let svg_content = svg_fragment_applied.as_ref();
+    let svg_viewport_resolved = svg_with_resolved_root_viewport_size(
+      svg_fragment_applied.as_ref(),
+      render_width,
+      render_height,
+    );
+    let svg_content = svg_viewport_resolved.as_ref();
     if let Some(pixmap) = try_render_simple_svg_pixmap(svg_content, render_width, render_height)? {
       let pixmap = Arc::new(pixmap);
       record_image_decode_ms(render_timer.elapsed().as_secs_f64() * 1000.0);
