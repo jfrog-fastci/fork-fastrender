@@ -184,6 +184,34 @@ fn opaque_axis_aligned_rect_fills_are_pixel_snapped() {
 }
 
 #[test]
+fn near_opaque_axis_aligned_rect_fills_are_pixel_snapped() {
+  let mut canvas = Canvas::new(10, 60, Rgba::WHITE).unwrap();
+
+  // `Canvas::draw_rect` treats fills as "opaque" based on the quantized 8-bit alpha channel.
+  // In practice, computed opacity values can be extremely close to 1.0 while still rounding to 255
+  // when mapped via `round(alpha * 255)`. Those should be considered opaque for the purposes of
+  // pixel snapping; otherwise we end up with anti-aliased seams at fractional boundaries even
+  // though the fill is effectively fully opaque.
+  canvas.set_opacity(0.999);
+  canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 51.6), Rgba::rgb(0, 38, 118));
+  canvas.draw_rect(Rect::from_xywh(0.0, 51.6, 10.0, 8.4), Rgba::WHITE);
+
+  let p51 = canvas.pixmap().pixel(0, 51).unwrap();
+  assert_eq!(
+    (p51.red(), p51.green(), p51.blue(), p51.alpha()),
+    (0, 38, 118, 255),
+    "expected the last covered row to be fully filled (no blended seam)"
+  );
+
+  let p52 = canvas.pixmap().pixel(0, 52).unwrap();
+  assert_eq!(
+    (p52.red(), p52.green(), p52.blue(), p52.alpha()),
+    (255, 255, 255, 255),
+    "expected the fill not to extend past the snapped bounds"
+  );
+}
+
+#[test]
 fn opaque_axis_aligned_rect_fills_inside_clips_are_pixel_snapped() {
   let mut canvas = Canvas::new(10, 60, Rgba::WHITE).unwrap();
   canvas

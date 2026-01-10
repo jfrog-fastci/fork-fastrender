@@ -167,6 +167,10 @@ fn dry_run_with_chrome_enables_chrome_patching_and_diff_steps() {
     "expected render_fixtures to be patched for chrome baselines; got:\n{stdout}"
   );
   assert!(
+    stdout.contains("--system-fonts"),
+    "expected page-loop Chrome diffs to enable system fonts so generic families match Chrome; got:\n{stdout}"
+  );
+  assert!(
     stdout.contains("chrome-baseline-fixtures"),
     "expected chrome-baseline-fixtures command in plan; got:\n{stdout}"
   );
@@ -318,6 +322,10 @@ fn dry_run_with_chrome_and_inspect_dump_json_patches_inspect_frag_html() {
   assert!(
     inspect_line.contains("--patch-html-for-chrome-baseline"),
     "expected inspect_frag to patch HTML when --chrome is enabled; got:\n{inspect_line}"
+  );
+  assert!(
+    inspect_line.contains("--system-fonts"),
+    "expected inspect_frag to enable system fonts when --chrome is enabled; got:\n{inspect_line}"
   );
 }
 

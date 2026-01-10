@@ -40,6 +40,12 @@ pub fn patch_html_bytes(
   font-style: normal;
 }
 @font-face {
+  font-family: "DejaVu Sans";
+  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
   font-family: Arial;
   src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
   font-weight: 100 1000;
@@ -82,6 +88,12 @@ pub fn patch_html_bytes(
   font-style: normal;
 }
 @font-face {
+  font-family: "DejaVu Serif";
+  src: url("../../../fixtures/fonts/STIXTwoMath-Regular.otf") format("opentype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
   font-family: "Times New Roman";
   src: url("../../../fixtures/fonts/STIXTwoMath-Regular.otf") format("opentype");
   font-weight: 100 1000;
@@ -101,6 +113,12 @@ pub fn patch_html_bytes(
 }
 @font-face {
   font-family: Courier;
+  src: url("../../../fixtures/fonts/NotoSansMono-subset.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: "DejaVu Sans Mono";
   src: url("../../../fixtures/fonts/NotoSansMono-subset.ttf") format("truetype");
   font-weight: 100 1000;
   font-style: normal;
@@ -311,8 +329,20 @@ mod tests {
       "patched HTML should reference the bundled Roboto Flex font"
     );
     assert!(
+      output_str.contains("DejaVu Sans"),
+      "patched HTML should alias common Linux default fonts to bundled fonts"
+    );
+    assert!(
       output_str.contains("NotoSansMono-subset.ttf"),
       "patched HTML should reference the bundled monospace font"
+    );
+    assert!(
+      output_str.contains("DejaVu Serif"),
+      "patched HTML should alias common Linux default serif fonts to bundled fonts"
+    );
+    assert!(
+      output_str.contains("DejaVu Sans Mono"),
+      "patched HTML should alias common Linux default monospace fonts to bundled fonts"
     );
   }
 

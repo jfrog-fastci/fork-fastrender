@@ -2259,26 +2259,33 @@ impl Canvas {
 
     let transform = self.current_state.transform;
 
-    // Pixel-snap opaque axis-aligned fills to avoid fractional-edge seams between adjacent
-    // backgrounds (see `tests/paint/canvas_test.rs`).
-    if color.a == 1.0
-      && self.current_state.opacity == 1.0
-      && self.current_state.blend_mode == SkiaBlendMode::SourceOver
-    {
-      if let Some(snapped) = self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
-      {
-        if let Some(skia_rect) = self.to_skia_rect(snapped) {
-          let path = PathBuilder::from_rect(skia_rect);
-          let mut paint = self.current_state.create_paint(color);
-          paint.anti_alias = false;
-          self.pixmap.fill_path(
-            &path,
-            &paint,
-            FillRule::Winding,
-            Transform::identity(),
-            self.current_state.clip_mask.as_deref(),
-          );
-          return;
+    // Pixel-snap *effectively opaque* axis-aligned fills to avoid fractional-edge seams between
+    // adjacent backgrounds (see `tests/paint/canvas_test.rs`).
+    //
+    // "Opaque" is determined after quantizing alpha using the same rounding logic as Skia/Chrome
+    // (i.e. `round(alpha * 255)`), rather than requiring `color.a == 1.0` and
+    // `current_state.opacity == 1.0` exactly. In practice computed opacity values can be extremely
+    // close to 1.0 while still rounding to an 8-bit alpha of 255; treating those as opaque improves
+    // border/background fidelity without affecting true semi-transparent content.
+    if self.current_state.blend_mode == SkiaBlendMode::SourceOver {
+      let alpha = (color.a * self.current_state.opacity).clamp(0.0, 1.0);
+      let alpha_u8 = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+      if alpha_u8 == 255 {
+        if let Some(snapped) = self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
+        {
+          if let Some(skia_rect) = self.to_skia_rect(snapped) {
+            let path = PathBuilder::from_rect(skia_rect);
+            let mut paint = self.current_state.create_paint(color);
+            paint.anti_alias = false;
+            self.pixmap.fill_path(
+              &path,
+              &paint,
+              FillRule::Winding,
+              Transform::identity(),
+              self.current_state.clip_mask.as_deref(),
+            );
+            return;
+          }
         }
       }
     }

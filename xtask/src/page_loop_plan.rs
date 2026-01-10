@@ -100,6 +100,10 @@ pub fn build_render_fixtures_command(
     // via `render_fixtures` so the resulting report reflects renderer differences rather than the
     // harness modifications.
     cmd.arg("--patch-html-for-chrome-baseline");
+    // Chrome baselines use system fonts for generic families like `serif`/`sans-serif`, which can't
+    // be redirected via `@font-face` aliases. Enable system font discovery on the FastRender side so
+    // chrome diffs aren't dominated by generic font metric mismatches.
+    cmd.arg("--system-fonts");
   }
   if write_snapshot {
     cmd.arg("--write-snapshot");
@@ -150,6 +154,9 @@ pub fn build_inspect_frag_command(
   cmd.arg("--deny-network");
   if args.patch_html_for_chrome_baseline {
     cmd.arg("--patch-html-for-chrome-baseline");
+    // Keep inspect output aligned with the `render_fixtures` step when diffing against Chrome:
+    // generic font families in fixtures resolve via the host's system font database in Chrome.
+    cmd.arg("--system-fonts");
   }
   if let Some(overlay) = args.overlay_png.as_ref() {
     cmd.arg("--render-overlay").arg(overlay);

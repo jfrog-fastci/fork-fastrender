@@ -123,6 +123,14 @@ fn page_loop_render_fixtures_runs_prebuilt_binary_under_run_limited() {
       .any(|arg| arg.ends_with(format!("render_fixtures{}", std::env::consts::EXE_SUFFIX).as_str())),
     "expected render_fixtures executable suffix in args, got {args:?}"
   );
+  assert!(
+    args.iter().any(|arg| arg == "--patch-html-for-chrome-baseline"),
+    "expected page-loop Chrome diff mode to patch HTML for baseline parity, got {args:?}"
+  );
+  assert!(
+    args.iter().any(|arg| arg == "--system-fonts"),
+    "expected page-loop Chrome diff mode to enable system fonts so generic families match Chrome, got {args:?}"
+  );
   assert_eq!(
     cmd_env(&cmd, "FASTR_USE_BUNDLED_FONTS").as_deref(),
     None,
