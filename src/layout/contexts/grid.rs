@@ -1960,6 +1960,87 @@ impl GridFormattingContext {
     Size::new(content_width, content_height)
   }
 
+  #[inline]
+  fn resolve_taffy_length_percentage_px(value: LengthPercentage, percentage_base: f32) -> f32 {
+    let percentage_base = if percentage_base.is_finite() && percentage_base >= 0.0 {
+      percentage_base
+    } else {
+      0.0
+    };
+    let raw = value.into_raw();
+    let resolved = match raw.tag() {
+      CompactLength::LENGTH_TAG => raw.value(),
+      CompactLength::PERCENT_TAG => raw.value() * percentage_base,
+      _ => 0.0,
+    };
+    if resolved.is_finite() && resolved >= 0.0 {
+      resolved
+    } else {
+      0.0
+    }
+  }
+
+  #[inline]
+  fn taffy_measure_insets_px(taffy_style: &TaffyStyle, percentage_base: f32) -> (f32, f32) {
+    let resolve =
+      |value: LengthPercentage| Self::resolve_taffy_length_percentage_px(value, percentage_base);
+
+    let padding_left = resolve(taffy_style.padding.left);
+    let padding_right = resolve(taffy_style.padding.right);
+    let padding_top = resolve(taffy_style.padding.top);
+    let padding_bottom = resolve(taffy_style.padding.bottom);
+    let border_left = resolve(taffy_style.border.left);
+    let border_right = resolve(taffy_style.border.right);
+    let border_top = resolve(taffy_style.border.top);
+    let border_bottom = resolve(taffy_style.border.bottom);
+
+    let scrollbar_width = if taffy_style.scrollbar_width.is_finite() && taffy_style.scrollbar_width > 0.0
+    {
+      taffy_style.scrollbar_width
+    } else {
+      0.0
+    };
+    let right_gutter = if taffy_style.overflow.y == TaffyOverflow::Scroll {
+      scrollbar_width
+    } else {
+      0.0
+    };
+    let bottom_gutter = if taffy_style.overflow.x == TaffyOverflow::Scroll {
+      scrollbar_width
+    } else {
+      0.0
+    };
+
+    let inset_w = padding_left + padding_right + border_left + border_right + right_gutter;
+    let inset_h = padding_top + padding_bottom + border_top + border_bottom + bottom_gutter;
+    (
+      if inset_w.is_finite() { inset_w.max(0.0) } else { 0.0 },
+      if inset_h.is_finite() { inset_h.max(0.0) } else { 0.0 },
+    )
+  }
+
+  #[inline]
+  fn content_box_size_for_taffy_style(
+    border_box_size: Size,
+    taffy_style: &TaffyStyle,
+    percentage_base: f32,
+  ) -> Size {
+    let border_w = if border_box_size.width.is_finite() && border_box_size.width >= 0.0 {
+      border_box_size.width
+    } else {
+      0.0
+    };
+    let border_h = if border_box_size.height.is_finite() && border_box_size.height >= 0.0 {
+      border_box_size.height
+    } else {
+      0.0
+    };
+    let (inset_w, inset_h) = Self::taffy_measure_insets_px(taffy_style, percentage_base);
+    let width = (border_w - inset_w).max(0.0);
+    let height = (border_h - inset_h).max(0.0);
+    Size::new(width, height)
+  }
+
   fn resolve_root_fit_content_border_box_size(
     &self,
     box_node: &BoxNode,
@@ -7891,7 +7972,6 @@ impl GridFormattingContext {
       root_id,
       available_space,
       {
-        let this = self.clone();
         let factory = self.factory.clone();
         let viewport_size = self.viewport_size;
         let mut cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
@@ -8036,29 +8116,18 @@ impl GridFormattingContext {
               taffy::style::AvailableSpace::Definite(w) => w,
               _ => 0.0,
             };
-            let (
-              padding_left,
-              padding_right,
-              padding_top,
-              padding_bottom,
-              border_left,
-              border_right,
-              border_top,
-              border_bottom,
-            ) = this.resolved_padding_border_for_measure(style, percentage_base);
-
+            let (inset_w, inset_h) = GridFormattingContext::taffy_measure_insets_px(
+              taffy_style,
+              percentage_base,
+            );
             let width = intrinsic_width
-              .map(|border_width| {
-                (border_width - padding_left - padding_right - border_left - border_right).max(0.0)
-              })
+              .map(|border_width| (border_width - inset_w).max(0.0))
               .unwrap_or_else(|| {
                 fallback_size(known_dimensions.width, available_space.width).max(0.0)
               });
 
             let height = intrinsic_height
-              .map(|border_height| {
-                (border_height - padding_top - padding_bottom - border_top - border_bottom).max(0.0)
-              })
+              .map(|border_height| (border_height - inset_h).max(0.0))
               .unwrap_or_else(|| {
                 fallback_size(known_dimensions.height, available_space.height).max(0.0)
               });
@@ -8080,7 +8149,11 @@ impl GridFormattingContext {
               .width()
               .unwrap_or_else(|| fragment.bounds.width()),
           };
-          let content_size = this.content_box_size(&fragment, style, percentage_base);
+          let content_size = GridFormattingContext::content_box_size_for_taffy_style(
+            Size::new(fragment.bounds.width(), fragment.bounds.height()),
+            taffy_style,
+            percentage_base,
+          );
           let size = taffy::geometry::Size {
             width: content_size.width.max(0.0),
             height: content_size.height.max(0.0),
@@ -8220,49 +8293,6 @@ impl GridFormattingContext {
         available_space.width,
         taffy::style::AvailableSpace::Definite(w) if w.is_finite() && w > 1.0
       );
-    let resolve_taffy_insets =
-      |base_width: f32| -> (f32, f32) {
-        let base_width = if base_width.is_finite() && base_width >= 0.0 {
-          base_width
-        } else {
-          0.0
-        };
-        let resolve = |value: LengthPercentage| {
-          let raw = value.into_raw();
-          match raw.tag() {
-            CompactLength::LENGTH_TAG => raw.value(),
-            CompactLength::PERCENT_TAG => raw.value() * base_width,
-            _ => 0.0,
-          }
-        };
-        let mut inset_w = resolve(taffy_style.padding.left)
-          + resolve(taffy_style.padding.right)
-          + resolve(taffy_style.border.left)
-          + resolve(taffy_style.border.right);
-        let mut inset_h = resolve(taffy_style.padding.top)
-          + resolve(taffy_style.padding.bottom)
-          + resolve(taffy_style.border.top)
-          + resolve(taffy_style.border.bottom);
-        if !inset_w.is_finite() {
-          inset_w = 0.0;
-        }
-        if !inset_h.is_finite() {
-          inset_h = 0.0;
-        }
-        (inset_w.max(0.0), inset_h.max(0.0))
-      };
-    let adjust_measured_size =
-      |border_box: Size, base_width: f32, default_content: Size| -> Size {
-        if !should_adjust_for_calc_percentage_edges {
-          return default_content;
-        }
-        let (inset_w, inset_h) = resolve_taffy_insets(base_width);
-        let width = (border_box.width - inset_w).max(0.0);
-        let height = (border_box.height - inset_h).max(0.0);
-        let width = if width.is_finite() { width } else { 0.0 };
-        let height = if height.is_finite() { height } else { 0.0 };
-        Size::new(width, height)
-      };
 
     if skip_contents {
       let constraints = constraints_from_taffy(
@@ -8341,11 +8371,10 @@ impl GridFormattingContext {
         box_id: Some(box_node.id),
       };
       fragment.style = Some(box_node.style.clone());
-      let content_size = self.content_box_size(&fragment, style, percentage_base);
-      let content_size = adjust_measured_size(
+      let content_size = Self::content_box_size_for_taffy_style(
         Size::new(fragment.bounds.width(), fragment.bounds.height()),
+        taffy_style,
         percentage_base,
-        content_size,
       );
       let size = taffy::geometry::Size {
         width: content_size.width.max(0.0),
@@ -8892,31 +8921,8 @@ impl GridFormattingContext {
         taffy::style::AvailableSpace::Definite(w) => w,
         _ => parent_inline_base.unwrap_or(0.0),
       };
-      let (
-        padding_left,
-        padding_right,
-        padding_top,
-        padding_bottom,
-        border_left,
-        border_right,
-        border_top,
-        border_bottom,
-      ) = self.resolved_padding_border_for_measure(style, percentage_base);
-
-      let actual_insets_w = padding_left + padding_right + border_left + border_right;
-      let actual_insets_h = padding_top + padding_bottom + border_top + border_bottom;
-      let (taffy_insets_w, taffy_insets_h) = resolve_taffy_insets(percentage_base);
-
-      let width_inset = if should_adjust_for_calc_percentage_edges {
-        taffy_insets_w
-      } else {
-        actual_insets_w
-      };
-      let height_inset = if should_adjust_for_calc_percentage_edges {
-        taffy_insets_h
-      } else {
-        actual_insets_h
-      };
+      let (width_inset, height_inset) =
+        Self::taffy_measure_insets_px(taffy_style, percentage_base);
 
       // Grid items with `justify-self`/`justify-items` values other than `stretch` use a
       // content-based size in the inline axis (roughly: max-content clamped to the grid area).
@@ -9083,11 +9089,10 @@ impl GridFormattingContext {
       box_id: Some(box_node.id),
     };
     fragment.style = Some(box_node.style.clone());
-    let content_size = self.content_box_size(&fragment, style, percentage_base);
-    let content_size = adjust_measured_size(
+    let content_size = Self::content_box_size_for_taffy_style(
       Size::new(fragment.bounds.width(), fragment.bounds.height()),
+      taffy_style,
       percentage_base,
-      content_size,
     );
     let size = taffy::geometry::Size {
       width: content_size.width.max(0.0),
@@ -12106,7 +12111,6 @@ impl FormattingContext for GridFormattingContext {
       root_id,
       available_space,
       {
-        let this = self.clone();
         let factory = self.factory.clone();
         let viewport_size = self.viewport_size;
         let mut cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
@@ -12251,29 +12255,18 @@ impl FormattingContext for GridFormattingContext {
               taffy::style::AvailableSpace::Definite(w) => w,
               _ => 0.0,
             };
-            let (
-              padding_left,
-              padding_right,
-              padding_top,
-              padding_bottom,
-              border_left,
-              border_right,
-              border_top,
-              border_bottom,
-            ) = this.resolved_padding_border_for_measure(style, percentage_base);
-
+            let (inset_w, inset_h) = GridFormattingContext::taffy_measure_insets_px(
+              taffy_style,
+              percentage_base,
+            );
             let width = intrinsic_width
-              .map(|border_width| {
-                (border_width - padding_left - padding_right - border_left - border_right).max(0.0)
-              })
+              .map(|border_width| (border_width - inset_w).max(0.0))
               .unwrap_or_else(|| {
                 fallback_size(known_dimensions.width, available_space.width).max(0.0)
               });
 
             let height = intrinsic_height
-              .map(|border_height| {
-                (border_height - padding_top - padding_bottom - border_top - border_bottom).max(0.0)
-              })
+              .map(|border_height| (border_height - inset_h).max(0.0))
               .unwrap_or_else(|| {
                 fallback_size(known_dimensions.height, available_space.height).max(0.0)
               });
@@ -12295,7 +12288,11 @@ impl FormattingContext for GridFormattingContext {
               .width()
               .unwrap_or_else(|| fragment.bounds.width()),
           };
-          let content_size = this.content_box_size(&fragment, style, percentage_base);
+          let content_size = GridFormattingContext::content_box_size_for_taffy_style(
+            Size::new(fragment.bounds.width(), fragment.bounds.height()),
+            taffy_style,
+            percentage_base,
+          );
           let size = taffy::geometry::Size {
             width: content_size.width.max(0.0),
             height: content_size.height.max(0.0),

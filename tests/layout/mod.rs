@@ -160,6 +160,7 @@ mod grid_calc_percentage_padding;
 mod grid_calc_percentage_width;
 mod grid_item_padding_calc_percentage;
 mod grid_item_margin_calc_percentage;
+mod grid_item_padding_calc_percent;
 mod grid_calc_length_rem;
 mod grid_calc_gap;
 mod grid_column_shorthand_longhand_merge;
