@@ -2881,6 +2881,19 @@ pub struct LineBuildResult {
   pub truncated: bool,
 }
 
+enum SplitInlineBoxForLineResult {
+  Split {
+    fragment: InlineBoxItem,
+    remainder: Option<InlineBoxItem>,
+    ends_with_hard_break: bool,
+    force_break: bool,
+  },
+  /// The inline box starts mid-line and nothing inside it can fit within the remaining width
+  /// without using emergency breaks. In this case, the correct behavior is to break the line
+  /// *before* the box and try again on a fresh line.
+  BreakBefore { inline_box: InlineBoxItem },
+}
+
 /// Builder for constructing lines from inline items
 ///
 /// Handles line breaking and item positioning.
@@ -3637,7 +3650,8 @@ impl<'a> LineBuilder<'a> {
     inline_box: InlineBoxItem,
     box_start_x: f32,
     available_width: f32,
-  ) -> Result<(InlineBoxItem, Option<InlineBoxItem>, bool, bool), LayoutError> {
+    allow_emergency_breaks: bool,
+  ) -> Result<SplitInlineBoxForLineResult, LayoutError> {
     let box_id = inline_box.box_id;
     let box_index = inline_box.box_index;
     let direction = inline_box.direction;
@@ -3690,6 +3704,132 @@ impl<'a> LineBuilder<'a> {
             InlineItem::Text(text_item) => {
               let remaining_width = (available_children_width - used_width).max(0.0);
               let mut break_opportunity = text_item.find_break_point(remaining_width);
+              if fragment_children.is_empty() && !allow_emergency_breaks {
+                // When the inline box starts mid-line, we should not apply emergency breaks to the
+                // first child if the box would fit on the next line. Instead, break the line
+                // *before* the box and try again.
+                if break_opportunity.is_some_and(|brk| {
+                  if brk.kind != BreakOpportunityKind::Emergency {
+                    return false;
+                  }
+                  let offset = brk.byte_offset;
+                  if offset == 0 || offset >= text_item.text.len() {
+                    return false;
+                  }
+                  if !text_item.text.is_char_boundary(offset) {
+                    return true;
+                  }
+                  let after = text_item.text[offset..].chars().next().unwrap();
+                  let before = text_item.text[..offset].chars().rev().next().unwrap();
+                  !(after.is_whitespace() || before.is_whitespace())
+                }) {
+                  remaining.push_front(InlineItem::Text(text_item));
+                  let remaining_children: Vec<InlineItem> = remaining.into();
+                  let metrics = super::compute_inline_box_metrics(
+                    &remaining_children,
+                    content_offset_y,
+                    bottom_inset,
+                    strut_metrics,
+                  );
+                  let mut inline_box = InlineBoxItem::new(
+                    start_edge,
+                    end_edge,
+                    content_offset_y,
+                    metrics,
+                    style.clone(),
+                    box_index,
+                    direction,
+                    unicode_bidi,
+                  );
+                  inline_box.box_id = box_id;
+                  inline_box.border_left = border_left;
+                  inline_box.border_right = border_right;
+                  inline_box.border_top = border_top;
+                  inline_box.border_bottom = border_bottom;
+                  inline_box.bottom_inset = bottom_inset;
+                  inline_box.strut_metrics = strut_metrics;
+                  inline_box.vertical_align = vertical_align;
+                  inline_box.children = remaining_children;
+                  return Ok(SplitInlineBoxForLineResult::BreakBefore { inline_box });
+                }
+
+                if break_opportunity.is_none() {
+                  if let Some(candidate) = text_item.break_opportunities.first().copied() {
+                    if candidate.kind != BreakOpportunityKind::Emergency {
+                      if let Some((mut before, _)) = text_item.split_at(
+                        candidate.byte_offset,
+                        candidate.adds_hyphen,
+                        &self.shaper,
+                        &self.font_context,
+                        &mut self.reshape_cache,
+                      ) {
+                        let mut drop_before = false;
+                        if matches!(candidate.break_type, BreakType::Allowed)
+                          && matches!(
+                            text_item.style.white_space,
+                            WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+                          )
+                        {
+                          let trimmed_len = before.text.trim_end_matches(' ').len();
+                          if trimmed_len < before.text.len() {
+                            if trimmed_len == 0 {
+                              drop_before = true;
+                            } else if let Some((trimmed, _)) = before.split_at(
+                              trimmed_len,
+                              false,
+                              &self.shaper,
+                              &self.font_context,
+                              &mut self.reshape_cache,
+                            ) {
+                              before = trimmed;
+                            }
+                          }
+                        }
+
+                        if !drop_before
+                          && before.advance_for_layout > 0.0
+                          && before.advance_for_layout
+                            <= remaining_width + LINE_FIT_EPSILON
+                        {
+                          break_opportunity = Some(candidate);
+                        }
+                      }
+                    }
+                  }
+
+                  if break_opportunity.is_none() {
+                    remaining.push_front(InlineItem::Text(text_item));
+                    let remaining_children: Vec<InlineItem> = remaining.into();
+                    let metrics = super::compute_inline_box_metrics(
+                      &remaining_children,
+                      content_offset_y,
+                      bottom_inset,
+                      strut_metrics,
+                    );
+                    let mut inline_box = InlineBoxItem::new(
+                      start_edge,
+                      end_edge,
+                      content_offset_y,
+                      metrics,
+                      style.clone(),
+                      box_index,
+                      direction,
+                      unicode_bidi,
+                    );
+                    inline_box.box_id = box_id;
+                    inline_box.border_left = border_left;
+                    inline_box.border_right = border_right;
+                    inline_box.border_top = border_top;
+                    inline_box.border_bottom = border_bottom;
+                    inline_box.bottom_inset = bottom_inset;
+                    inline_box.strut_metrics = strut_metrics;
+                    inline_box.vertical_align = vertical_align;
+                    inline_box.children = remaining_children;
+                    return Ok(SplitInlineBoxForLineResult::BreakBefore { inline_box });
+                  }
+                }
+              }
+
               if break_opportunity.is_none() && fragment_children.is_empty() {
                 break_opportunity = text_item.break_opportunities.first().copied();
                 if break_opportunity.is_none()
@@ -3786,8 +3926,50 @@ impl<'a> LineBuilder<'a> {
             InlineItem::InlineBox(child_box) => {
               if fragment_children.is_empty() {
                 let remaining_width = (available_children_width - used_width).max(0.0);
-                let (fragment, remainder, child_hard_break, child_force_break) = self
-                  .split_inline_box_for_line(child_box, start_x, remaining_width)?;
+                let split = self.split_inline_box_for_line(
+                  child_box,
+                  start_x,
+                  remaining_width,
+                  allow_emergency_breaks,
+                )?;
+                let (fragment, remainder, child_hard_break, child_force_break) = match split {
+                  SplitInlineBoxForLineResult::Split {
+                    fragment,
+                    remainder,
+                    ends_with_hard_break,
+                    force_break,
+                  } => (fragment, remainder, ends_with_hard_break, force_break),
+                  SplitInlineBoxForLineResult::BreakBefore { inline_box: child_box } => {
+                    remaining.push_front(InlineItem::InlineBox(child_box));
+                    let remaining_children: Vec<InlineItem> = remaining.into();
+                    let metrics = super::compute_inline_box_metrics(
+                      &remaining_children,
+                      content_offset_y,
+                      bottom_inset,
+                      strut_metrics,
+                    );
+                    let mut inline_box = InlineBoxItem::new(
+                      start_edge,
+                      end_edge,
+                      content_offset_y,
+                      metrics,
+                      style.clone(),
+                      box_index,
+                      direction,
+                      unicode_bidi,
+                    );
+                    inline_box.box_id = box_id;
+                    inline_box.border_left = border_left;
+                    inline_box.border_right = border_right;
+                    inline_box.border_top = border_top;
+                    inline_box.border_bottom = border_bottom;
+                    inline_box.bottom_inset = bottom_inset;
+                    inline_box.strut_metrics = strut_metrics;
+                    inline_box.vertical_align = vertical_align;
+                    inline_box.children = remaining_children;
+                    return Ok(SplitInlineBoxForLineResult::BreakBefore { inline_box });
+                  }
+                };
                 fragment_children.push(InlineItem::InlineBox(fragment));
                 if let Some(remainder) = remainder {
                   remaining.push_front(InlineItem::InlineBox(remainder));
@@ -3879,7 +4061,12 @@ impl<'a> LineBuilder<'a> {
       None
     };
 
-    Ok((fragment, remainder, ends_with_hard_break, force_break))
+    Ok(SplitInlineBoxForLineResult::Split {
+      fragment,
+      remainder,
+      ends_with_hard_break,
+      force_break,
+    })
   }
 
   fn add_fragmented_inline_box(&mut self, inline_box: InlineBoxItem) -> Result<(), LayoutError> {
@@ -3893,8 +4080,26 @@ impl<'a> LineBuilder<'a> {
 
       let available_width = (self.current_line_width() - self.current_x).max(0.0);
       let box_start_x = self.current_x;
-      let (fragment, remainder, ends_with_hard_break, force_break) =
-        self.split_inline_box_for_line(remaining_box, box_start_x, available_width)?;
+      let split = self.split_inline_box_for_line(
+        remaining_box,
+        box_start_x,
+        available_width,
+        self.current_line.is_empty(),
+      )?;
+
+      let (fragment, remainder, ends_with_hard_break, force_break) = match split {
+        SplitInlineBoxForLineResult::Split {
+          fragment,
+          remainder,
+          ends_with_hard_break,
+          force_break,
+        } => (fragment, remainder, ends_with_hard_break, force_break),
+        SplitInlineBoxForLineResult::BreakBefore { inline_box } => {
+          self.finish_line()?;
+          remaining_box = inline_box;
+          continue;
+        }
+      };
 
       let fragment_width = fragment.width();
       self.place_item_with_width(InlineItem::InlineBox(fragment), fragment_width);

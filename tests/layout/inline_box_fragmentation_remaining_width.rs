@@ -33,7 +33,7 @@ fn inline_boxes_can_fragment_without_starting_on_new_line() {
       r#"<!doctype html>
         <style>
           html, body { margin: 0; padding: 0; }
-          #box { width: 11ch; font: 16px/1 monospace; }
+          #box { width: 120px; font: 16px/1 monospace; }
           span { background: yellow; }
         </style>
         <div id="box">Hello <span>world world</span></div>
@@ -50,4 +50,37 @@ fn inline_boxes_can_fragment_without_starting_on_new_line() {
   let trimmed: Vec<&str> = lines.iter().map(|line| line.trim()).collect();
 
   assert_eq!(trimmed, ["Hello world", "world"]);
+}
+
+#[test]
+fn inline_boxes_do_not_use_emergency_breaks_mid_line() {
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+
+  let dom = renderer
+    .parse_html(
+      r#"<!doctype html>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 120px; font: 16px/1 monospace; overflow-wrap: break-word; }
+          span { background: yellow; }
+        </style>
+        <div id="box">Hello <span>transform</span></div>
+      "#,
+    )
+    .expect("parse HTML");
+
+  let fragments = renderer
+    .layout_document(&dom, 200, 200)
+    .expect("layout document");
+
+  let mut lines = Vec::new();
+  collect_line_texts(&fragments.root, &mut lines);
+  let trimmed: Vec<&str> = lines.iter().map(|line| line.trim()).collect();
+
+  // Even with `overflow-wrap: break-word`, a word inside an inline box should not be split mid-word
+  // just to use leftover space at the end of a line; it should move to the next line instead.
+  assert_eq!(trimmed, ["Hello", "transform"]);
 }
