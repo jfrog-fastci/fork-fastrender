@@ -38,6 +38,8 @@ use std::time::Duration;
 use std::time::Instant;
 use std::{mem, ops};
 
+const ARG_HANDLING_CHUNK_SIZE: usize = 256;
+
 /// Converts internal `VmError` variants that represent spec `ThrowCompletion`s (TypeError, etc.)
 /// into `VmError::Throw` by allocating a minimal `TypeError` instance.
 ///
@@ -1379,6 +1381,42 @@ impl Vm {
     result
   }
 
+  fn push_roots_with_ticks(
+    &mut self,
+    scope: &mut Scope<'_>,
+    values: &[Value],
+  ) -> Result<(), VmError> {
+    let mut start = 0;
+    while start < values.len() {
+      let end = values.len().min(start.saturating_add(ARG_HANDLING_CHUNK_SIZE));
+      let chunk = &values[start..end];
+      let remaining = &values[end..];
+      scope.push_roots_with_extra_roots(chunk, remaining, &[])?;
+      start = end;
+      if start < values.len() {
+        self.tick()?;
+      }
+    }
+    Ok(())
+  }
+
+  fn vec_extend_from_slice_with_ticks(
+    &mut self,
+    out: &mut Vec<Value>,
+    values: &[Value],
+  ) -> Result<(), VmError> {
+    let mut start = 0;
+    while start < values.len() {
+      let end = values.len().min(start.saturating_add(ARG_HANDLING_CHUNK_SIZE));
+      out.extend_from_slice(&values[start..end]);
+      start = end;
+      if start < values.len() {
+        self.tick()?;
+      }
+    }
+    Ok(())
+  }
+
   fn call_impl(
     &mut self,
     host: &mut dyn VmHost,
@@ -1389,52 +1427,25 @@ impl Vm {
     args: &[Value],
   ) -> Result<Value, VmError> {
     let mut scope = scope.reborrow();
-    // Root all inputs in a way that is robust against GC triggering while we grow the root stack.
-    //
-    // `push_root`/`push_roots` can trigger GC when growing `root_stack`, so ensure any not-yet-pushed
-    // values are treated as extra roots during that operation.
-    let roots = [callee, this];
-    scope.push_roots_with_extra_roots(&roots, args, &[])?;
-    scope.push_roots(args)?;
-
     let callee_obj = match callee {
       Value::Object(obj) => obj,
-      _ => return Err(coerce_error_to_throw(self, &mut scope, VmError::NotCallable)),
-    };
-    // Bound function dispatch: if the callee has `[[BoundTargetFunction]]`, forward the call to
-    // the target with the bound `this` and arguments.
-    if let Ok(func) = scope.heap().get_function(callee_obj) {
-      if let Some(bound_target) = func.bound_target {
-        let bound_this = func.bound_this.unwrap_or(Value::Undefined);
-        let bound_args = func.bound_args.as_deref().unwrap_or(&[]);
-
-        let total_len = bound_args
-          .len()
-          .checked_add(args.len())
-          .ok_or(VmError::OutOfMemory)?;
-        let mut combined: Vec<Value> = Vec::new();
-        combined
-          .try_reserve_exact(total_len)
-          .map_err(|_| VmError::OutOfMemory)?;
-        combined.extend_from_slice(bound_args);
-        combined.extend_from_slice(args);
-
-        // Root the concatenated list for the duration of the forwarding call.
-        scope.push_roots(&combined)?;
-
-        return self.call_impl(
-          host,
-          &mut scope,
-          hooks,
-          Value::Object(bound_target),
-          bound_this,
-          &combined,
-        );
+      _ => {
+        self.tick()?;
+        let roots = [callee, this];
+        scope.push_roots_with_extra_roots(&roots, args, &[])?;
+        self.push_roots_with_ticks(&mut scope, args)?;
+        return Err(coerce_error_to_throw(self, &mut scope, VmError::NotCallable));
       }
-    }
+    };
     let call_handler = match scope.heap().get_function_call_handler(callee_obj) {
       Ok(h) => h,
-      Err(e) => return Err(coerce_error_to_throw(self, &mut scope, e)),
+      Err(e) => {
+        self.tick()?;
+        let roots = [callee, this];
+        scope.push_roots_with_extra_roots(&roots, args, &[])?;
+        self.push_roots_with_ticks(&mut scope, args)?;
+        return Err(coerce_error_to_throw(self, &mut scope, e));
+      }
     };
 
     let function_name = scope
@@ -1460,8 +1471,46 @@ impl Vm {
     let frame = StackFrame { function: function_name, source, line, col };
 
     let mut vm = self.enter_frame(frame)?;
-    // Budget/interrupt check for host-initiated calls that may not pass through the evaluator.
     vm.tick()?;
+
+    // Root all inputs in a way that is robust against GC triggering while we grow the root stack.
+    //
+    // `push_root`/`push_roots` can trigger GC when growing `root_stack`, so ensure any not-yet-pushed
+    // values are treated as extra roots during that operation.
+    let roots = [callee, this];
+    scope.push_roots_with_extra_roots(&roots, args, &[])?;
+    vm.push_roots_with_ticks(&mut scope, args)?;
+
+    // Bound function dispatch: if the callee has `[[BoundTargetFunction]]`, forward the call to
+    // the target with the bound `this` and arguments.
+    if let Ok(func) = scope.heap().get_function(callee_obj) {
+      if let Some(bound_target) = func.bound_target {
+        let bound_this = func.bound_this.unwrap_or(Value::Undefined);
+        let bound_args = func.bound_args.as_deref().unwrap_or(&[]);
+
+        let total_len = bound_args
+          .len()
+          .checked_add(args.len())
+          .ok_or(VmError::OutOfMemory)?;
+        let mut combined: Vec<Value> = Vec::new();
+        combined
+          .try_reserve_exact(total_len)
+          .map_err(|_| VmError::OutOfMemory)?;
+        vm.vec_extend_from_slice_with_ticks(&mut combined, bound_args)?;
+        vm.vec_extend_from_slice_with_ticks(&mut combined, args)?;
+
+        vm.push_roots_with_ticks(&mut scope, &combined)?;
+
+        return vm.call_impl(
+          host,
+          &mut scope,
+          hooks,
+          Value::Object(bound_target),
+          bound_this,
+          &combined,
+        );
+      }
+    }
 
     let result = match call_handler {
       CallHandler::Native(call_id) => {
@@ -1647,58 +1696,32 @@ impl Vm {
     new_target: Value,
   ) -> Result<Value, VmError> {
     let mut scope = scope.reborrow();
-    // Root all inputs robustly; see `Vm::call` for rationale.
-    let roots = [callee, new_target];
-    scope.push_roots_with_extra_roots(&roots, args, &[])?;
-    scope.push_roots(args)?;
-
     let callee_obj = match callee {
       Value::Object(obj) => obj,
-      _ => return Err(coerce_error_to_throw(self, &mut scope, VmError::NotConstructable)),
-    };
-
-    // Bound function dispatch: if the callee has `[[BoundTargetFunction]]`, forward construction to
-    // the target with concatenated arguments.
-    if let Ok(func) = scope.heap().get_function(callee_obj) {
-      if let Some(bound_target) = func.bound_target {
-        let bound_args = func.bound_args.as_deref().unwrap_or(&[]);
-
-        let total_len = bound_args
-          .len()
-          .checked_add(args.len())
-          .ok_or(VmError::OutOfMemory)?;
-        let mut combined: Vec<Value> = Vec::new();
-        combined
-          .try_reserve_exact(total_len)
-          .map_err(|_| VmError::OutOfMemory)?;
-        combined.extend_from_slice(bound_args);
-        combined.extend_from_slice(args);
-
-        // ECMA-262: if `new_target` is the bound function itself, forward `new_target` as the
-        // target function.
-        let forwarded_new_target = if new_target == callee {
-          Value::Object(bound_target)
-        } else {
-          new_target
-        };
-
-        // Root the concatenated list for the duration of the forwarding call.
-        scope.push_roots(&combined)?;
-
-        return self.construct_impl(
-          host,
-          &mut scope,
-          hooks,
-          Value::Object(bound_target),
-          &combined,
-          forwarded_new_target,
-        );
+      _ => {
+        self.tick()?;
+        let roots = [callee, new_target];
+        scope.push_roots_with_extra_roots(&roots, args, &[])?;
+        self.push_roots_with_ticks(&mut scope, args)?;
+        return Err(coerce_error_to_throw(self, &mut scope, VmError::NotConstructable));
       }
-    }
+    };
     let construct_handler = match scope.heap().get_function_construct_handler(callee_obj) {
       Ok(Some(h)) => h,
-      Ok(None) => return Err(coerce_error_to_throw(self, &mut scope, VmError::NotConstructable)),
-      Err(e) => return Err(coerce_error_to_throw(self, &mut scope, e)),
+      Ok(None) => {
+        self.tick()?;
+        let roots = [callee, new_target];
+        scope.push_roots_with_extra_roots(&roots, args, &[])?;
+        self.push_roots_with_ticks(&mut scope, args)?;
+        return Err(coerce_error_to_throw(self, &mut scope, VmError::NotConstructable));
+      }
+      Err(e) => {
+        self.tick()?;
+        let roots = [callee, new_target];
+        scope.push_roots_with_extra_roots(&roots, args, &[])?;
+        self.push_roots_with_ticks(&mut scope, args)?;
+        return Err(coerce_error_to_throw(self, &mut scope, e));
+      }
     };
 
     let function_name = scope
@@ -1723,9 +1746,50 @@ impl Vm {
     let frame = StackFrame { function: function_name, source, line, col };
 
     let mut vm = self.enter_frame(frame)?;
-    // Budget/interrupt check for host-initiated construction that may not pass through the
-    // evaluator.
     vm.tick()?;
+
+    // Root all inputs robustly; see `Vm::call` for rationale.
+    let roots = [callee, new_target];
+    scope.push_roots_with_extra_roots(&roots, args, &[])?;
+    vm.push_roots_with_ticks(&mut scope, args)?;
+
+    // Bound function dispatch: if the callee has `[[BoundTargetFunction]]`, forward construction to
+    // the target with concatenated arguments.
+    if let Ok(func) = scope.heap().get_function(callee_obj) {
+      if let Some(bound_target) = func.bound_target {
+        let bound_args = func.bound_args.as_deref().unwrap_or(&[]);
+
+        let total_len = bound_args
+          .len()
+          .checked_add(args.len())
+          .ok_or(VmError::OutOfMemory)?;
+        let mut combined: Vec<Value> = Vec::new();
+        combined
+          .try_reserve_exact(total_len)
+          .map_err(|_| VmError::OutOfMemory)?;
+        vm.vec_extend_from_slice_with_ticks(&mut combined, bound_args)?;
+        vm.vec_extend_from_slice_with_ticks(&mut combined, args)?;
+
+        // ECMA-262: if `new_target` is the bound function itself, forward `new_target` as the
+        // target function.
+        let forwarded_new_target = if new_target == callee {
+          Value::Object(bound_target)
+        } else {
+          new_target
+        };
+
+        vm.push_roots_with_ticks(&mut scope, &combined)?;
+
+        return vm.construct_impl(
+          host,
+          &mut scope,
+          hooks,
+          Value::Object(bound_target),
+          &combined,
+          forwarded_new_target,
+        );
+      }
+    }
 
     let result = match construct_handler {
       ConstructHandler::Native(construct_id) => vm.dispatch_native_construct(

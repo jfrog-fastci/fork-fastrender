@@ -81,6 +81,18 @@ fn native_noop(
   Ok(Value::Undefined)
 }
 
+fn native_construct_noop(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
+}
+
 #[test]
 fn instantiation_consumes_fuel() {
   let vm = Vm::new(VmOptions::default());
@@ -320,6 +332,120 @@ fn native_call_consumes_tick() {
 
   let err = vm
     .call_without_host(&mut scope, Value::Object(callee), Value::Undefined, &[])
+    .unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn large_args_call_consumes_fuel_before_dispatch() {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+
+  let native_id = vm.register_native_call(native_noop).unwrap();
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f").unwrap();
+  let callee = scope
+    .alloc_native_function(native_id, None, name, 0)
+    .unwrap();
+
+  vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let args = vec![Value::Undefined; 16 * 1024];
+  let err = vm
+    .call_without_host(&mut scope, Value::Object(callee), Value::Undefined, &args)
+    .unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn large_args_construct_consumes_fuel_before_dispatch() {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+
+  let call_id = vm.register_native_call(native_noop).unwrap();
+  let construct_id = vm.register_native_construct(native_construct_noop).unwrap();
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f").unwrap();
+  let callee = scope
+    .alloc_native_function(call_id, Some(construct_id), name, 0)
+    .unwrap();
+
+  vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let args = vec![Value::Undefined; 16 * 1024];
+  let err = vm
+    .construct_without_host(&mut scope, Value::Object(callee), &args, Value::Object(callee))
+    .unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn large_bound_args_call_consumes_fuel_before_dispatch() {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+
+  let call_id = vm.register_native_call(native_noop).unwrap();
+  let mut scope = heap.scope();
+
+  let target_name = scope.alloc_string("target").unwrap();
+  let target = scope
+    .alloc_native_function(call_id, None, target_name, 0)
+    .unwrap();
+
+  let bound_name = scope.alloc_string("bound").unwrap();
+  let bound_args = vec![Value::Undefined; 16 * 1024];
+  let bound = scope
+    .alloc_bound_function(target, Value::Undefined, &bound_args, bound_name, 0)
+    .unwrap();
+
+  vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = vm
+    .call_without_host(&mut scope, Value::Object(bound), Value::Undefined, &[])
+    .unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
+fn large_bound_args_construct_consumes_fuel_before_dispatch() {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+
+  let call_id = vm.register_native_call(native_noop).unwrap();
+  let construct_id = vm.register_native_construct(native_construct_noop).unwrap();
+  let mut scope = heap.scope();
+
+  let target_name = scope.alloc_string("target").unwrap();
+  let target = scope
+    .alloc_native_function(call_id, Some(construct_id), target_name, 0)
+    .unwrap();
+
+  let bound_name = scope.alloc_string("bound").unwrap();
+  let bound_args = vec![Value::Undefined; 16 * 1024];
+  let bound = scope
+    .alloc_bound_function(target, Value::Undefined, &bound_args, bound_name, 0)
+    .unwrap();
+
+  vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = vm
+    .construct_without_host(&mut scope, Value::Object(bound), &[], Value::Object(bound))
     .unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
