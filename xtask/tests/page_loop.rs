@@ -51,6 +51,82 @@ fn dry_run_prints_expected_plan() {
 }
 
 #[test]
+fn dry_run_with_debug_omits_release_for_fastrender_commands() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    // Ensure diff_renders paths resolve deterministically even if the outer environment sets
+    // CARGO_TARGET_DIR.
+    .env("CARGO_TARGET_DIR", "")
+    .args(["page-loop", "--fixture", "example.com", "--debug", "--dry-run"])
+    .output()
+    .expect("run xtask page-loop --debug --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop --debug dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let render_line = stdout
+    .lines()
+    .find(|line| line.contains("render_fixtures"))
+    .expect("render_fixtures command line should be printed");
+  assert!(
+    render_line.contains("scripts/cargo_agent.sh run") && render_line.contains("--bin render_fixtures"),
+    "expected render_fixtures command line; got:\n{render_line}"
+  );
+  assert!(
+    !render_line.contains("--release"),
+    "expected --debug to omit `--release` for render_fixtures; got:\n{render_line}"
+  );
+}
+
+#[test]
+fn dry_run_with_chrome_and_debug_uses_debug_diff_renders_binary() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", "")
+    .args([
+      "page-loop",
+      "--fixture",
+      "example.com",
+      "--chrome",
+      "--debug",
+      "--dry-run",
+    ])
+    .output()
+    .expect("run xtask page-loop --chrome --debug --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop --chrome --debug dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let build_line = stdout
+    .lines()
+    .find(|line| line.contains("scripts/cargo_agent.sh build") && line.contains("--bin diff_renders"))
+    .expect("diff_renders build command line should be printed");
+  assert!(
+    !build_line.contains("--release"),
+    "expected --debug to omit `--release` for diff_renders build; got:\n{build_line}"
+  );
+
+  let diff_line = stdout
+    .lines()
+    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("diff_renders"))
+    .expect("diff_renders execution command line should be printed");
+  assert!(
+    diff_line.contains("target/debug/diff_renders"),
+    "expected --debug to use target/debug/diff_renders; got:\n{diff_line}"
+  );
+}
+
+#[test]
 fn dry_run_with_chrome_enables_chrome_patching_and_diff_steps() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(repo_root())

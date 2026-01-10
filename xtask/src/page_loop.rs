@@ -166,6 +166,13 @@ pub struct PageLoopArgs {
   /// Print the computed plan (commands + output paths) without executing.
   #[arg(long)]
   pub dry_run: bool,
+
+  /// Use Cargo's debug profile for the FastRender/diff steps (skip `--release`).
+  ///
+  /// This is substantially faster to compile for quick inspection loops, at the cost of slower
+  /// runtime and less representative performance numbers.
+  #[arg(long)]
+  pub debug: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -267,12 +274,12 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
   };
 
   let build_diff_renders_cmd = if run_chrome {
-    Some(build_diff_renders_build_command(&repo_root))
+    Some(build_diff_renders_build_command(&repo_root, &args))
   } else {
     None
   };
   let diff_renders_cmd = if run_chrome {
-    Some(build_diff_renders_command(&repo_root, &layout)?)
+    Some(build_diff_renders_command(&repo_root, &layout, &args)?)
   } else {
     None
   };
@@ -696,10 +703,11 @@ fn build_render_fixtures_command(
   let mut cmd = crate::cmd::cargo_agent_command(repo_root);
   cmd.current_dir(repo_root);
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
-  cmd
-    .arg("run")
-    .arg("--release")
-    .args(["--bin", "render_fixtures", "--"]);
+  cmd.arg("run");
+  if !args.debug {
+    cmd.arg("--release");
+  }
+  cmd.args(["--bin", "render_fixtures", "--"]);
   cmd.arg("--fixtures-dir").arg(&layout.fixtures_dir);
   cmd.arg("--out-dir").arg(&layout.fastrender_dir);
   cmd.arg("--fixtures").arg(&layout.fixture_stem);
@@ -731,10 +739,11 @@ fn build_inspect_frag_command(
   let mut cmd = crate::cmd::cargo_agent_command(repo_root);
   cmd.current_dir(repo_root);
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
-  cmd
-    .arg("run")
-    .arg("--release")
-    .args(["--bin", "inspect_frag", "--"]);
+  cmd.arg("run");
+  if !args.debug {
+    cmd.arg("--release");
+  }
+  cmd.args(["--bin", "inspect_frag", "--"]);
   cmd.arg(layout.fixture_html.as_os_str());
   if args.overlay {
     cmd.arg("--render-overlay").arg(&layout.overlay_png);
@@ -795,18 +804,24 @@ fn build_chrome_baseline_command(repo_root: &Path, layout: &Layout, args: &PageL
   Ok(cmd)
 }
 
-fn build_diff_renders_build_command(repo_root: &Path) -> Command {
+fn build_diff_renders_build_command(repo_root: &Path, args: &PageLoopArgs) -> Command {
   let mut cmd = crate::cmd::cargo_agent_command(repo_root);
   cmd.current_dir(repo_root);
-  cmd
-    .arg("build")
-    .arg("--release")
-    .args(["--bin", "diff_renders"]);
+  cmd.arg("build");
+  if !args.debug {
+    cmd.arg("--release");
+  }
+  cmd.args(["--bin", "diff_renders"]);
   cmd
 }
 
-fn build_diff_renders_command(repo_root: &Path, layout: &Layout) -> Result<Command> {
-  let diff_renders_exe = crate::diff_renders_executable(repo_root);
+fn build_diff_renders_command(repo_root: &Path, layout: &Layout, args: &PageLoopArgs) -> Result<Command> {
+  let target_dir = crate::cargo_target_dir(repo_root);
+  let profile_dir = if args.debug { "debug" } else { "release" };
+  let diff_renders_exe = target_dir.join(profile_dir).join(format!(
+    "diff_renders{}",
+    std::env::consts::EXE_SUFFIX
+  ));
   let mut cmd = crate::cmd::run_limited_command_default(repo_root);
   cmd.arg(&diff_renders_exe);
   cmd.arg("--before").arg(&layout.chrome_png);

@@ -328,6 +328,7 @@ fn page_loop_help_mentions_flags() {
       && stdout.contains("--inspect-custom-properties-limit")
       && stdout.contains("--chrome")
       && stdout.contains("--no-chrome")
+      && stdout.contains("--debug")
       && stdout.contains("--dry-run"),
     "page-loop help should mention key flags; got:\n{stdout}"
   );
