@@ -5,34 +5,97 @@
 
 // --- capture/target/bubble ordering ---
 var eventtarget_order_window_order_step = 0;
+var eventtarget_order_window_order_root = null;
+var eventtarget_order_window_order_parent = null;
+var eventtarget_order_window_order_target = null;
 
-function eventtarget_order_window_order_root_capture(_e) {
+function eventtarget_order_window_order_root_capture(e) {
   assert_equals(eventtarget_order_window_order_step, 0, "root capture ran out of order");
+  assert_equals(
+    e.target,
+    eventtarget_order_window_order_target,
+    "event.target should be the dispatch target"
+  );
+  assert_equals(
+    e.currentTarget,
+    eventtarget_order_window_order_root,
+    "root currentTarget in capture"
+  );
   eventtarget_order_window_order_step = 1;
 }
 
-function eventtarget_order_window_order_parent_capture(_e) {
+function eventtarget_order_window_order_parent_capture(e) {
   assert_equals(eventtarget_order_window_order_step, 1, "parent capture ran out of order");
+  assert_equals(
+    e.target,
+    eventtarget_order_window_order_target,
+    "event.target should be the dispatch target"
+  );
+  assert_equals(
+    e.currentTarget,
+    eventtarget_order_window_order_parent,
+    "parent currentTarget in capture"
+  );
   eventtarget_order_window_order_step = 2;
 }
 
-function eventtarget_order_window_order_target_capture(_e) {
+function eventtarget_order_window_order_target_capture(e) {
   assert_equals(eventtarget_order_window_order_step, 2, "target capture ran out of order");
+  assert_equals(
+    e.target,
+    eventtarget_order_window_order_target,
+    "event.target should be the dispatch target"
+  );
+  assert_equals(
+    e.currentTarget,
+    eventtarget_order_window_order_target,
+    "target currentTarget in capture"
+  );
   eventtarget_order_window_order_step = 3;
 }
 
-function eventtarget_order_window_order_target_bubble(_e) {
+function eventtarget_order_window_order_target_bubble(e) {
   assert_equals(eventtarget_order_window_order_step, 3, "target bubble ran out of order");
+  assert_equals(
+    e.target,
+    eventtarget_order_window_order_target,
+    "event.target should be the dispatch target"
+  );
+  assert_equals(
+    e.currentTarget,
+    eventtarget_order_window_order_target,
+    "target currentTarget in bubble"
+  );
   eventtarget_order_window_order_step = 4;
 }
 
-function eventtarget_order_window_order_parent_bubble(_e) {
+function eventtarget_order_window_order_parent_bubble(e) {
   assert_equals(eventtarget_order_window_order_step, 4, "parent bubble ran out of order");
+  assert_equals(
+    e.target,
+    eventtarget_order_window_order_target,
+    "event.target should be the dispatch target"
+  );
+  assert_equals(
+    e.currentTarget,
+    eventtarget_order_window_order_parent,
+    "parent currentTarget in bubble"
+  );
   eventtarget_order_window_order_step = 5;
 }
 
-function eventtarget_order_window_order_root_bubble(_e) {
+function eventtarget_order_window_order_root_bubble(e) {
   assert_equals(eventtarget_order_window_order_step, 5, "root bubble ran out of order");
+  assert_equals(
+    e.target,
+    eventtarget_order_window_order_target,
+    "event.target should be the dispatch target"
+  );
+  assert_equals(
+    e.currentTarget,
+    eventtarget_order_window_order_root,
+    "root currentTarget in bubble"
+  );
   eventtarget_order_window_order_step = 6;
 }
 
@@ -42,6 +105,9 @@ function eventtarget_order_window_capture_target_bubble_order_test() {
   var order_root = new EventTarget();
   var order_parent = new EventTarget(order_root);
   var order_target = new EventTarget(order_parent);
+  eventtarget_order_window_order_root = order_root;
+  eventtarget_order_window_order_parent = order_parent;
+  eventtarget_order_window_order_target = order_target;
 
   order_root.addEventListener("order", eventtarget_order_window_order_root_capture, {
     capture: true,
