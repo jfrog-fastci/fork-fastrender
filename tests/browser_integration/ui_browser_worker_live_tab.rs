@@ -69,7 +69,11 @@ fn tick_does_not_repaint_clean_tab() {
     .send(support::viewport_changed_msg(tab_id, (32, 32), 1.0))
     .expect("viewport");
 
-  let _initial = next_frame(&handle.ui_rx, tab_id);
+  let initial = next_frame(&handle.ui_rx, tab_id);
+  assert!(
+    !initial.wants_ticks,
+    "expected about:blank to render without time-based effects"
+  );
   let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
   })
@@ -137,7 +141,11 @@ fn tick_emits_new_frames_for_css_animation() {
     .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
     .expect("viewport");
 
-  let _initial = next_frame(&handle.ui_rx, tab_id);
+  let initial = next_frame(&handle.ui_rx, tab_id);
+  assert!(
+    initial.wants_ticks,
+    "expected animation fixture page to request periodic ticks"
+  );
   let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
   })
@@ -165,4 +173,3 @@ fn tick_emits_new_frames_for_css_animation() {
 
   handle.join().expect("worker join");
 }
-

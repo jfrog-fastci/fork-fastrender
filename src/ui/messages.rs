@@ -77,6 +77,11 @@ pub struct RenderedFrame {
   pub viewport_css: (u32, u32),
   pub dpr: f32,
   pub scroll_state: ScrollState,
+  /// True when the rendered document contains time-based effects (CSS animations/transitions).
+  ///
+  /// Front-ends that want animated content should drive periodic [`UiToWorker::Tick`] messages for
+  /// the active tab while this is `true`.
+  pub wants_ticks: bool,
 }
 
 impl std::fmt::Debug for RenderedFrame {
@@ -86,6 +91,7 @@ impl std::fmt::Debug for RenderedFrame {
       .field("viewport_css", &self.viewport_css)
       .field("dpr", &self.dpr)
       .field("scroll_state", &self.scroll_state)
+      .field("wants_ticks", &self.wants_ticks)
       .finish()
   }
 }

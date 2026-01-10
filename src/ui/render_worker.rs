@@ -173,6 +173,13 @@ fn base_url_for_links(tab: &TabState) -> &str {
     .unwrap_or(about_pages::ABOUT_BASE_URL)
 }
 
+fn document_wants_ticks(doc: &BrowserDocument) -> bool {
+  doc.prepared().is_some_and(|prepared| {
+    let tree = prepared.fragment_tree();
+    !tree.keyframes.is_empty() || tree.transition_state.is_some()
+  })
+}
+
 fn normalize_url_without_fragment(mut url: url::Url) -> url::Url {
   url.set_fragment(None);
   url
@@ -1106,11 +1113,7 @@ impl BrowserRuntime {
     // `BrowserDocument` resolves time-based CSS animations/transitions to a deterministic settled
     // state unless `RenderOptions.animation_time` is set. Use ticks to advance that time (and mark
     // paint dirty) so animated pages can produce multiple frames without explicit UI interaction.
-    let has_time_based_effects = doc.prepared().is_some_and(|prepared| {
-      let tree = prepared.fragment_tree();
-      !tree.keyframes.is_empty() || tree.transition_state.is_some()
-    });
-    if !has_time_based_effects {
+    if !document_wants_ticks(doc) {
       return;
     }
 
@@ -1864,6 +1867,7 @@ impl BrowserRuntime {
               .map(|p| p.device_pixel_ratio())
               .unwrap_or(dpr),
             scroll_state: tab.scroll_state.clone(),
+            wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
           },
         });
         msgs.push(WorkerToUi::ScrollStateUpdated {
@@ -2110,6 +2114,7 @@ impl BrowserRuntime {
               .map(|p| p.device_pixel_ratio())
               .unwrap_or(tab.dpr),
             scroll_state: tab.scroll_state.clone(),
+            wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
           },
         },
         WorkerToUi::ScrollStateUpdated {
@@ -2180,6 +2185,7 @@ impl BrowserRuntime {
             .map(|p| p.device_pixel_ratio())
             .unwrap_or(tab.dpr),
           scroll_state: tab.scroll_state.clone(),
+          wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
         },
       });
       msgs.push(WorkerToUi::ScrollStateUpdated {

@@ -654,6 +654,10 @@ impl BrowserTabController {
         viewport_css: self.viewport_css,
         dpr: self.dpr,
         scroll_state: self.scroll_state.clone(),
+        wants_ticks: self.document.prepared().is_some_and(|prepared| {
+          let tree = prepared.fragment_tree();
+          !tree.keyframes.is_empty() || tree.transition_state.is_some()
+        }),
       },
     });
 

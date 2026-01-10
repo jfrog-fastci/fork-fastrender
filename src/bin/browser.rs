@@ -244,6 +244,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
       _ => {}
     }
+
+    if matches!(*control_flow, ControlFlow::Exit) {
+      return;
+    }
+
+    // Drive periodic worker ticks for animated documents and keep the event loop armed for the next
+    // tick deadline when needed.
+    app.drive_animation_tick();
+    app.update_control_flow_for_animation_ticks(control_flow);
   });
 }
 
@@ -496,11 +505,20 @@ struct App {
   open_select_dropdown_rect: Option<egui::Rect>,
 
   debug_log: std::collections::VecDeque<String>,
+
+  /// Periodic tick driver state for animated documents.
+  ///
+  /// The render worker only advances CSS animation/transition sampling time when the UI sends
+  /// [`fastrender::ui::UiToWorker::Tick`]. We keep a small scheduler here so the windowed browser
+  /// can display multi-frame animations without busy-polling the event loop.
+  animation_tick_tab: Option<fastrender::ui::TabId>,
+  next_animation_tick: Option<std::time::Instant>,
 }
 
 #[cfg(feature = "browser_ui")]
 impl App {
   const DEBUG_LOG_MAX_LINES: usize = 200;
+  const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
   async fn new<T: 'static>(
     window: winit::window::Window,
@@ -607,6 +625,8 @@ impl App {
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
       debug_log: std::collections::VecDeque::new(),
+      animation_tick_tab: None,
+      next_animation_tick: None,
     })
   }
 
@@ -640,6 +660,55 @@ impl App {
     if title != self.window_title_cache {
       self.window.set_title(&title);
       self.window_title_cache = title;
+    }
+  }
+
+  fn desired_animation_tick_tab(&self) -> Option<fastrender::ui::TabId> {
+    let tab_id = self.browser_state.active_tab_id()?;
+    let wants_ticks = self
+      .browser_state
+      .tab(tab_id)
+      .and_then(|tab| tab.latest_frame_meta.as_ref())
+      .is_some_and(|meta| meta.wants_ticks);
+    wants_ticks.then_some(tab_id)
+  }
+
+  fn drive_animation_tick(&mut self) {
+    let Some(tab_id) = self.desired_animation_tick_tab() else {
+      self.animation_tick_tab = None;
+      self.next_animation_tick = None;
+      return;
+    };
+
+    // If the active tab changed (or ticking just became enabled), start a fresh schedule.
+    if self.animation_tick_tab != Some(tab_id) {
+      self.animation_tick_tab = Some(tab_id);
+      self.next_animation_tick = Some(std::time::Instant::now() + Self::ANIMATION_TICK_INTERVAL);
+      return;
+    }
+
+    let now = std::time::Instant::now();
+    let deadline = self.next_animation_tick.unwrap_or(now);
+    if now >= deadline {
+      self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
+      self.next_animation_tick = Some(now + Self::ANIMATION_TICK_INTERVAL);
+    }
+  }
+
+  fn update_control_flow_for_animation_ticks(&mut self, control_flow: &mut winit::event_loop::ControlFlow) {
+    let Some(tab_id) = self.desired_animation_tick_tab() else {
+      self.animation_tick_tab = None;
+      self.next_animation_tick = None;
+      return;
+    };
+
+    if self.animation_tick_tab != Some(tab_id) || self.next_animation_tick.is_none() {
+      self.animation_tick_tab = Some(tab_id);
+      self.next_animation_tick = Some(std::time::Instant::now() + Self::ANIMATION_TICK_INTERVAL);
+    }
+
+    if let Some(deadline) = self.next_animation_tick {
+      *control_flow = winit::event_loop::ControlFlow::WaitUntil(deadline);
     }
   }
 

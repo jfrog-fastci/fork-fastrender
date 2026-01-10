@@ -14,6 +14,7 @@ pub struct LatestFrameMeta {
   pub pixmap_px: (u32, u32),
   pub viewport_css: (u32, u32),
   pub dpr: f32,
+  pub wants_ticks: bool,
 }
 
 #[derive(Debug, Default)]
@@ -465,6 +466,7 @@ impl BrowserAppState {
           viewport_css,
           dpr,
           scroll_state,
+          wants_ticks,
         } = frame;
         let pixmap_px = (pixmap.width(), pixmap.height());
 
@@ -474,6 +476,7 @@ impl BrowserAppState {
             pixmap_px,
             viewport_css,
             dpr,
+            wants_ticks,
           });
         }
 
@@ -763,6 +766,7 @@ mod browser_app_tests {
         viewport_css,
         dpr,
         scroll_state: expected_scroll.clone(),
+        wants_ticks: false,
       },
     });
 
@@ -773,7 +777,8 @@ mod browser_app_tests {
       Some(LatestFrameMeta {
         pixmap_px: (2, 3),
         viewport_css,
-        dpr
+        dpr,
+        wants_ticks: false,
       })
     );
 
