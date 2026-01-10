@@ -168,6 +168,111 @@ fn vm_js_infinite_loop_in_unhandledrejection_listener_is_bounded() {
 }
 
 #[test]
+fn vm_js_infinite_loop_in_set_timeout_callback_is_bounded() {
+  let mut js_opts = JsExecutionOptions::default();
+  js_opts.event_loop_run_limits.max_wall_time = None;
+  // Small enough to ensure termination is quick in debug builds while allowing the timer callback to
+  // start and set the sentinel flag.
+  js_opts.max_instruction_count = Some(5_000);
+
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts)
+    .expect("create WindowHost");
+
+  host
+    .exec_script(
+      "globalThis.__timeout_ran = false;\n\
+       setTimeout(function () {\n\
+         globalThis.__timeout_ran = true;\n\
+         while (true) {}\n\
+       }, 0);\n",
+    )
+    .expect("script should complete without throwing");
+
+  let (err, watchdog_fired) = with_interrupt_watchdog(Duration::from_secs(2), || {
+    host
+      .run_until_idle(fastrender::js::RunLimits {
+        max_tasks: 10,
+        max_microtasks: 1_000,
+        max_wall_time: None,
+      })
+      .expect_err("expected timer callback loop to terminate")
+  });
+  assert!(
+    !watchdog_fired,
+    "watchdog should not need to interrupt a budget-terminated setTimeout callback"
+  );
+
+  let msg = err.to_string();
+  assert!(
+    msg.contains("out of fuel") || msg.contains("deadline exceeded"),
+    "expected a budget termination error, got: {msg}"
+  );
+  assert!(
+    !msg.contains("interrupted"),
+    "expected termination due to budget, but watchdog interrupt fired: {msg}"
+  );
+
+  assert!(matches!(
+    get_global_prop(&mut host, "__timeout_ran"),
+    Value::Bool(true)
+  ));
+}
+
+#[test]
+fn vm_js_infinite_loop_in_request_animation_frame_callback_is_bounded() {
+  let mut js_opts = JsExecutionOptions::default();
+  js_opts.event_loop_run_limits.max_wall_time = None;
+  // Keep this small so the callback terminates quickly even in debug builds.
+  js_opts.max_instruction_count = Some(5_000);
+
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts)
+    .expect("create WindowHost");
+
+  host
+    .exec_script(
+      "globalThis.__raf_ran = false;\n\
+       requestAnimationFrame(function () {\n\
+         globalThis.__raf_ran = true;\n\
+         while (true) {}\n\
+       });\n",
+    )
+    .expect("script should complete without throwing");
+
+  let (err, watchdog_fired) = with_interrupt_watchdog(Duration::from_secs(2), || {
+    let mut event_loop = std::mem::take(host.event_loop_mut());
+    let result = {
+      let host_state = host.host_mut();
+      event_loop
+        .run_animation_frame(host_state)
+        .expect_err("expected animation frame callback loop to terminate")
+    };
+    *host.event_loop_mut() = event_loop;
+    result
+  });
+  assert!(
+    !watchdog_fired,
+    "watchdog should not need to interrupt a budget-terminated requestAnimationFrame callback"
+  );
+
+  let msg = err.to_string();
+  assert!(
+    msg.contains("out of fuel") || msg.contains("deadline exceeded"),
+    "expected a budget termination error, got: {msg}"
+  );
+  assert!(
+    !msg.contains("interrupted"),
+    "expected termination due to budget, but watchdog interrupt fired: {msg}"
+  );
+
+  assert!(matches!(
+    get_global_prop(&mut host, "__raf_ran"),
+    Value::Bool(true)
+  ));
+}
+
+#[test]
 fn vm_js_heap_limit_is_enforced() {
   let mut js_opts = JsExecutionOptions::default();
   js_opts.event_loop_run_limits.max_wall_time = None;
