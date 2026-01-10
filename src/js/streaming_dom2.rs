@@ -143,7 +143,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     integrity,
     referrer_policy,
     parser_inserted: true,
-    force_async: false,
+    force_async: doc.node(script).script_force_async,
     node_id: Some(script),
     script_type: determine_script_type_dom2(doc, script),
   }

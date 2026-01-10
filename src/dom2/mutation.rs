@@ -515,6 +515,7 @@ impl Document {
     };
 
     let id = self.push_node(kind, None, inert_subtree);
+    // HTML: DOM-created `<script>` elements default the internal "force async" flag to true.
     if is_html_ns && tag_name.eq_ignore_ascii_case("script") {
       self.nodes[id.index()].script_force_async = true;
     }

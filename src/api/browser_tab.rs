@@ -1391,6 +1391,7 @@ impl BrowserTabHost {
           && entry.spec.src_attr_present
           && !entry.spec.async_attr
           && !entry.spec.defer_attr
+          && !entry.spec.force_async
       });
 
     if is_blocking {
@@ -3459,6 +3460,42 @@ mod tests {
     assert!(
       dom_parse_checks.load(Ordering::Relaxed) >= 6,
       "expected cancel callback to be polled during streaming dom parse"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn streaming_parser_sets_force_async_false_for_parser_inserted_scripts() -> Result<()> {
+    #[derive(Clone)]
+    struct RecordingExecutor {
+      seen: Rc<RefCell<Vec<bool>>>,
+    }
+
+    impl BrowserTabJsExecutor for RecordingExecutor {
+      fn execute_classic_script(
+        &mut self,
+        _script_text: &str,
+        spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.seen.borrow_mut().push(spec.force_async);
+        Ok(())
+      }
+    }
+
+    let seen = Rc::new(RefCell::new(Vec::<bool>::new()));
+    let _tab = BrowserTab::from_html(
+      "<!doctype html><script>noop</script>",
+      RenderOptions::default(),
+      RecordingExecutor { seen: Rc::clone(&seen) },
+    )?;
+
+    assert_eq!(
+      &*seen.borrow(),
+      &[false],
+      "expected parser-inserted <script> to have force_async=false"
     );
     Ok(())
   }

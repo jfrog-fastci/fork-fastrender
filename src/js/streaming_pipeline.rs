@@ -403,7 +403,7 @@ impl ClassicScriptPipelineState {
       integrity,
       referrer_policy,
       parser_inserted: true,
-      force_async: false,
+      force_async: dom.node(script_node_id).script_force_async,
       node_id: Some(script_node_id),
       script_type,
     }
