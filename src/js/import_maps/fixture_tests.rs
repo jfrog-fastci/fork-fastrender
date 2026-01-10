@@ -86,8 +86,10 @@ fn fixture_import_map_parses_techcrunch() {
 
   let url = expect_import_url(&map, "@wordpress/interactivity");
   assert!(
-    url.as_str().starts_with("https://techcrunch.com/"),
-    "expected @wordpress/interactivity to map to a https://techcrunch.com/ URL, got {url}"
+    url
+      .as_str()
+      .starts_with("https://techcrunch.com/wp-includes/js/dist/script-modules/interactivity/"),
+    "unexpected @wordpress/interactivity URL: {url}"
   );
 }
 
@@ -97,8 +99,10 @@ fn fixture_import_map_parses_msnbc() {
 
   let url = expect_import_url(&map, "@wordpress/interactivity");
   assert!(
-    url.as_str().starts_with("https://www.ms.now/"),
-    "expected @wordpress/interactivity to map to a https://www.ms.now/ URL, got {url}"
+    url
+      .as_str()
+      .starts_with("https://www.ms.now/wp-includes/js/dist/script-modules/interactivity/"),
+    "unexpected @wordpress/interactivity URL: {url}"
   );
 }
 
@@ -107,22 +111,23 @@ fn fixture_import_map_parses_bing() {
   let map = parse_fixture_import_map("tests/pages/fixtures/bing.com/index.html", "https://www.bing.com/");
 
   let url = expect_import_url(&map, "rms-answers-HomepageVNext-PeregrineWidgets");
-  assert_eq!(
-    url.scheme(),
-    "https",
-    "expected rms-answers-HomepageVNext-PeregrineWidgets to map to an absolute https URL, got {url}"
-  );
-  assert!(
-    url.as_str().starts_with("https://assets.msn.com/"),
-    "expected rms-answers-HomepageVNext-PeregrineWidgets to map to assets.msn.com (stable host), got {url}"
-  );
+  assert_eq!(url.as_str(), "https://assets.msn.com/bundles/v1/bingHomepage/latest/widget-initializer.js");
 }
 
 #[test]
 fn fixture_import_map_parses_yelp() {
   let map = parse_fixture_import_map("tests/pages/fixtures/yelp.com/index.html", "https://www.yelp.com/");
 
-  for specifier in ["react", "react-dom"] {
+  for (specifier, expected_integrity) in [
+    (
+      "react",
+      "sha384-UfZTcbQo0urRc9EDyVtaRtxuTnwNWsj3LZU1SOW0wRwXgoc1xPcLpkBisYVl842u",
+    ),
+    (
+      "react-dom",
+      "sha384-5NZxAm34SqlAowGqMPn47F6pkDLPYoGmdSnkCZa9IWUZR1kkFh1Yb3U8tTtaFDtl",
+    ),
+  ] {
     let url = expect_import_url(&map, specifier);
     assert_eq!(
       url.scheme(),
@@ -133,6 +138,10 @@ fn fixture_import_map_parses_yelp() {
       url.as_str().ends_with(".mjs"),
       "expected {specifier} to map to a .mjs module URL, got {url}"
     );
+    let integrity = map
+      .integrity
+      .get(url.as_str())
+      .unwrap_or_else(|| panic!("expected integrity metadata for {specifier} ({url})"));
+    assert_eq!(integrity, expected_integrity);
   }
 }
-
