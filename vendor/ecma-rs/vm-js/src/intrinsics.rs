@@ -416,6 +416,9 @@ impl Intrinsics {
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
     let array_prototype_push = vm.register_native_call(builtins::array_prototype_push)?;
+    let array_prototype_pop = vm.register_native_call(builtins::array_prototype_pop)?;
+    let array_prototype_shift = vm.register_native_call(builtins::array_prototype_shift)?;
+    let array_prototype_unshift = vm.register_native_call(builtins::array_prototype_unshift)?;
     let array_prototype_splice = vm.register_native_call(builtins::array_prototype_splice)?;
     let array_is_array = vm.register_native_call(builtins::array_is_array)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
@@ -677,7 +680,7 @@ impl Intrinsics {
       )?;
     }
 
-      // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / concat / reverse / join / slice / push / splice
+      // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / concat / reverse / join / slice / push / pop / shift / unshift / splice
       {
         let map_s = scope.alloc_string("map")?;
         scope.push_root(Value::String(map_s))?;
@@ -886,10 +889,52 @@ impl Intrinsics {
         scope
           .heap_mut()
           .object_set_prototype(push_fn, Some(function_prototype))?;
+       scope.define_property(
+         array_prototype,
+         push_key,
+         data_desc(Value::Object(push_fn), true, false, true),
+       )?;
+
+        let pop_s = scope.alloc_string("pop")?;
+        scope.push_root(Value::String(pop_s))?;
+        let pop_key = PropertyKey::from_string(pop_s);
+        let pop_fn = scope.alloc_native_function(array_prototype_pop, None, pop_s, 0)?;
+        scope.push_root(Value::Object(pop_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(pop_fn, Some(function_prototype))?;
       scope.define_property(
         array_prototype,
-        push_key,
-        data_desc(Value::Object(push_fn), true, false, true),
+        pop_key,
+        data_desc(Value::Object(pop_fn), true, false, true),
+      )?;
+
+        let shift_s = scope.alloc_string("shift")?;
+        scope.push_root(Value::String(shift_s))?;
+        let shift_key = PropertyKey::from_string(shift_s);
+        let shift_fn = scope.alloc_native_function(array_prototype_shift, None, shift_s, 0)?;
+        scope.push_root(Value::Object(shift_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(shift_fn, Some(function_prototype))?;
+      scope.define_property(
+        array_prototype,
+        shift_key,
+        data_desc(Value::Object(shift_fn), true, false, true),
+      )?;
+
+        let unshift_s = scope.alloc_string("unshift")?;
+        scope.push_root(Value::String(unshift_s))?;
+        let unshift_key = PropertyKey::from_string(unshift_s);
+        let unshift_fn = scope.alloc_native_function(array_prototype_unshift, None, unshift_s, 1)?;
+        scope.push_root(Value::Object(unshift_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(unshift_fn, Some(function_prototype))?;
+      scope.define_property(
+        array_prototype,
+        unshift_key,
+        data_desc(Value::Object(unshift_fn), true, false, true),
       )?;
 
         let splice_s = scope.alloc_string("splice")?;

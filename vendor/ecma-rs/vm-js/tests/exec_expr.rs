@@ -241,6 +241,39 @@ fn array_prototype_push_appends_and_returns_length() {
 }
 
 #[test]
+fn array_prototype_pop_removes_last_element_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2]; var x=a.pop(); var b=[]; var y=b.pop(); var o={0:"a", length:1}; var z=Array.prototype.pop.call(o); x===2 && a.length===1 && a[0]===1 && y===undefined && b.length===0 && z==="a" && o.length===0 && !o.hasOwnProperty("0")"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_prototype_shift_removes_first_element_preserves_holes_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3]; var x=a.shift(); var b=[1,2,3]; delete b[1]; var y=b.shift(); var o={0:"a",1:"b",length:2}; var z=Array.prototype.shift.call(o); x===1 && a.length===2 && a[0]===2 && a[1]===3 && y===1 && b.length===2 && !b.hasOwnProperty("0") && b[1]===3 && z==="a" && o[0]==="b" && o.length===1 && !o.hasOwnProperty("1")"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_prototype_unshift_inserts_preserves_holes_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[2,3]; var l=a.unshift(0,1); var b=[1,2]; delete b[0]; b.unshift(9); var o={0:"b",length:1}; var l2=Array.prototype.unshift.call(o,"a"); l===4 && a.length===4 && a[0]===0 && a[1]===1 && a[2]===2 && a[3]===3 && b.length===3 && b[0]===9 && !b.hasOwnProperty("1") && b[2]===2 && l2===2 && o[0]==="a" && o[1]==="b" && o.length===2"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn array_prototype_splice_removes_elements() {
   let mut rt = new_runtime();
   let value = rt

@@ -4868,6 +4868,293 @@ pub fn array_prototype_push(
   Ok(Value::Number(len as f64))
 }
 
+/// `Array.prototype.pop` (minimal).
+pub fn array_prototype_pop(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  if len == 0 {
+    let ok = scope.ordinary_set_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      length_key,
+      Value::Number(0.0),
+      Value::Object(obj),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.pop failed"));
+    }
+    return Ok(Value::Undefined);
+  }
+
+  let idx = len - 1;
+  let mut idx_scope = scope.reborrow();
+  let idx_s = idx_scope.alloc_string(&idx.to_string())?;
+  idx_scope.push_root(Value::String(idx_s))?;
+  let key = PropertyKey::from_string(idx_s);
+
+  let element =
+    idx_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+  let ok = idx_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
+  if !ok {
+    return Err(VmError::TypeError("Array.prototype.pop failed"));
+  }
+
+  let ok = idx_scope.ordinary_set_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    obj,
+    length_key,
+    Value::Number(idx as f64),
+    Value::Object(obj),
+  )?;
+  if !ok {
+    return Err(VmError::TypeError("Array.prototype.pop failed"));
+  }
+
+  Ok(element)
+}
+
+/// `Array.prototype.shift` (minimal).
+pub fn array_prototype_shift(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  if len == 0 {
+    let ok = scope.ordinary_set_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      length_key,
+      Value::Number(0.0),
+      Value::Object(obj),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.shift failed"));
+    }
+    return Ok(Value::Undefined);
+  }
+
+  // Get the first element before shifting.
+  let first_key = string_key(&mut scope, "0")?;
+  let first =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, first_key, Value::Object(obj))?;
+
+  // Shift existing elements down by one (holes preserved via HasProperty/Delete).
+  for k in 1..len {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let from = k;
+    let to = k - 1;
+
+    let mut iter_scope = scope.reborrow();
+    let from_s = iter_scope.alloc_string(&from.to_string())?;
+    iter_scope.push_root(Value::String(from_s))?;
+    let to_s = iter_scope.alloc_string(&to.to_string())?;
+    iter_scope.push_root(Value::String(to_s))?;
+
+    let from_key = PropertyKey::from_string(from_s);
+    let to_key = PropertyKey::from_string(to_s);
+
+    if iter_scope.ordinary_has_property(obj, from_key)? {
+      let value =
+        iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+      let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        obj,
+        to_key,
+        value,
+        Value::Object(obj),
+      )?;
+      if !ok {
+        return Err(VmError::TypeError("Array.prototype.shift failed"));
+      }
+    } else {
+      let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
+      if !ok {
+        return Err(VmError::TypeError("Array.prototype.shift failed"));
+      }
+    }
+  }
+
+  // Delete the last element (if any) and update length.
+  let last = len - 1;
+  {
+    let mut del_scope = scope.reborrow();
+    let last_s = del_scope.alloc_string(&last.to_string())?;
+    del_scope.push_root(Value::String(last_s))?;
+    let last_key = PropertyKey::from_string(last_s);
+    let ok = del_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, last_key)?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.shift failed"));
+    }
+
+    let ok = del_scope.ordinary_set_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      length_key,
+      Value::Number(last as f64),
+      Value::Object(obj),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.shift failed"));
+    }
+  }
+
+  Ok(first)
+}
+
+/// `Array.prototype.unshift` (minimal).
+pub fn array_prototype_unshift(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  let insert_count = args.len();
+  if insert_count == 0 {
+    return Ok(Value::Number(len as f64));
+  }
+
+  let new_len = len
+    .checked_add(insert_count)
+    .ok_or(VmError::OutOfMemory)?;
+
+  // Move existing elements up by `insert_count` starting from the end so we don't overwrite.
+  for k in (0..len).rev() {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let from = k;
+    let to = k
+      .checked_add(insert_count)
+      .ok_or(VmError::OutOfMemory)?;
+
+    let mut iter_scope = scope.reborrow();
+    let from_s = iter_scope.alloc_string(&from.to_string())?;
+    iter_scope.push_root(Value::String(from_s))?;
+    let to_s = iter_scope.alloc_string(&to.to_string())?;
+    iter_scope.push_root(Value::String(to_s))?;
+
+    let from_key = PropertyKey::from_string(from_s);
+    let to_key = PropertyKey::from_string(to_s);
+
+    if iter_scope.ordinary_has_property(obj, from_key)? {
+      let value =
+        iter_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+      let ok = iter_scope.ordinary_set_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        obj,
+        to_key,
+        value,
+        Value::Object(obj),
+      )?;
+      if !ok {
+        return Err(VmError::TypeError("Array.prototype.unshift failed"));
+      }
+    } else {
+      let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
+      if !ok {
+        return Err(VmError::TypeError("Array.prototype.unshift failed"));
+      }
+    }
+  }
+
+  // Set the inserted items.
+  for (i, item) in args.iter().copied().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let mut set_scope = scope.reborrow();
+    let idx_s = set_scope.alloc_string(&i.to_string())?;
+    set_scope.push_root(Value::String(idx_s))?;
+    let key = PropertyKey::from_string(idx_s);
+    let ok = set_scope.ordinary_set_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      key,
+      item,
+      Value::Object(obj),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.unshift failed"));
+    }
+  }
+
+  let ok = scope.ordinary_set_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    obj,
+    length_key,
+    Value::Number(new_len as f64),
+    Value::Object(obj),
+  )?;
+  if !ok {
+    return Err(VmError::TypeError("Array.prototype.unshift failed"));
+  }
+
+  Ok(Value::Number(new_len as f64))
+}
+
 /// `Array.prototype.splice` (minimal).
 ///
 /// This is implemented in a spec-shaped way so it works on array-like objects (e.g.
