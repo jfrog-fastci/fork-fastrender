@@ -140,6 +140,10 @@ pub mod dom_integration;
 #[path = "legacy/dom_integration.rs"]
 pub mod dom_integration;
 
+// Dynamic `<script>` insertion helpers for the legacy DOM bindings / pipelines.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
+
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;
