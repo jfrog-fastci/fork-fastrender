@@ -263,3 +263,73 @@ pub(crate) fn code_unit_cmp(a: &str, b: &str) -> Ordering {
     }
   }
 }
+
+/// Whether `prefix` is a prefix of `full` when both strings are compared as sequences of UTF-16
+/// code units.
+///
+/// This matches the HTML Standard's "code unit prefix" definition (as used by import maps).
+///
+/// Note: Rust `&str` values are always valid UTF-8 and therefore cannot represent unpaired
+/// surrogates. The HTML Standard defines this operation over arbitrary sequences of UTF-16 code
+/// units (including lone surrogates), so this helper intentionally implements the semantics on the
+/// UTF-16 *encoding* of each string.
+pub(super) fn is_code_unit_prefix(prefix: &str, full: &str) -> bool {
+  let mut prefix_iter = prefix.encode_utf16();
+  let mut full_iter = full.encode_utf16();
+  loop {
+    match prefix_iter.next() {
+      None => return true,
+      Some(prefix_unit) => match full_iter.next() {
+        Some(full_unit) if full_unit == prefix_unit => continue,
+        _ => return false,
+      },
+    }
+  }
+}
+
+/// Enumerate all prefixes of `s` that end with `/`, in descending (most-specific-first) order,
+/// using UTF-16 code unit indexing semantics.
+///
+/// This is used to implement the import maps prefix matching rules without relying on UTF-8 byte
+/// indices. Returned slices are guaranteed to be valid UTF-8 (`&str` slices).
+///
+/// If a computed code unit boundary does not correspond to a UTF-8 character boundary (e.g. would
+/// split a surrogate pair), it is skipped. This can only occur if the underlying string contains
+/// unpaired surrogates, which cannot be represented in Rust `&str` values.
+pub(super) fn code_unit_prefix_candidates_ending_with_slash<'a>(s: &'a str) -> Vec<&'a str> {
+  // Step 1: collect the code-unit offsets (end positions) of every `/` code unit.
+  let slash = '/' as u16;
+  let mut slash_ends_in_code_units: Vec<usize> = Vec::new();
+  for (idx, unit) in s.encode_utf16().enumerate() {
+    if unit == slash {
+      slash_ends_in_code_units.push(idx + 1);
+    }
+  }
+
+  if slash_ends_in_code_units.is_empty() {
+    return Vec::new();
+  }
+
+  // Step 2: Walk the UTF-8 string once, tracking the current UTF-16 code unit offset, and map each
+  // desired code-unit end offset to a UTF-8 byte index that Rust can slice on.
+  let mut out: Vec<&'a str> = Vec::with_capacity(slash_ends_in_code_units.len());
+  let mut next_slash_idx = 0usize;
+  let mut code_units_so_far = 0usize;
+  for (byte_idx, ch) in s.char_indices() {
+    code_units_so_far += ch.len_utf16();
+    while next_slash_idx < slash_ends_in_code_units.len()
+      && code_units_so_far == slash_ends_in_code_units[next_slash_idx]
+    {
+      debug_assert_eq!(
+        ch, '/',
+        "code unit offset for '/' must coincide with end of a '/' character"
+      );
+      out.push(&s[..byte_idx + ch.len_utf8()]);
+      next_slash_idx += 1;
+    }
+  }
+
+  // Most-specific-first.
+  out.reverse();
+  out
+}

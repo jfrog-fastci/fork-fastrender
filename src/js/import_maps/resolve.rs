@@ -1,9 +1,9 @@
-use memchr::memrchr_iter;
 use url::Url;
 
 use super::parse::resolve_url_like_module_specifier;
 use super::types::{
-  ImportMapError, ImportMapState, ModuleSpecifierMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
+  code_unit_prefix_candidates_ending_with_slash, is_code_unit_prefix, ImportMapError, ImportMapState,
+  ModuleSpecifierMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 
 fn is_special_url(url: &Url) -> bool {
@@ -35,8 +35,7 @@ fn resolve_imports_match_impl(
   }
 
   // Prefix matches: try candidate prefixes ending with "/" from most specific to least specific.
-  for idx in memrchr_iter(b'/', normalized_specifier.as_bytes()) {
-    let specifier_key = &normalized_specifier[..idx + 1];
+  for specifier_key in code_unit_prefix_candidates_ending_with_slash(normalized_specifier) {
     let Some(resolution_result) = specifier_map.get(specifier_key) else {
       continue;
     };
@@ -58,7 +57,7 @@ fn resolve_imports_match_impl(
       ))
     })?;
 
-    if !url.as_str().starts_with(base_url.as_str()) {
+    if !is_code_unit_prefix(base_url.as_str(), url.as_str()) {
       return Err(ImportMapError::TypeError(format!(
         "resolution of {normalized_specifier} was blocked due to it backtracking above its prefix {specifier_key}."
       )));
@@ -124,13 +123,10 @@ pub fn resolve_module_specifier(
   }
 
   if result.is_none() {
-    for idx in memrchr_iter(b'/', serialized_base_url.as_bytes()) {
-      let end = idx + 1;
-      if end == serialized_base_url.len() {
+    for scope_prefix in code_unit_prefix_candidates_ending_with_slash(&serialized_base_url) {
+      if scope_prefix.len() == serialized_base_url.len() {
         continue;
       }
-
-      let scope_prefix = &serialized_base_url[..end];
       let Some(scope_imports) = state.import_map.scopes.get(scope_prefix) else {
         continue;
       };

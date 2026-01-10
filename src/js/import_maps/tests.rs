@@ -413,6 +413,49 @@ fn prefix_mapping_chooses_longest_prefix() {
 }
 
 #[test]
+fn prefix_mapping_handles_non_ascii_bare_specifiers_with_non_bmp_chars() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  // 💩 is outside the BMP (two UTF-16 code units); ensure prefix candidate enumeration and slicing
+  // are correct and do not panic.
+  register_json(
+    &mut state,
+    r#"{
+      "imports": {
+        "pkg/💩/": "https://cdn.example/pile/",
+        "pkg/": "https://cdn.example/pkg/"
+      }
+    }"#,
+    &base,
+  );
+
+  let resolved = resolve_module_specifier(&mut state, "pkg/💩/mod.js", &base).unwrap();
+  assert_eq!(resolved.as_str(), "https://cdn.example/pile/mod.js");
+}
+
+#[test]
+fn prefix_mapping_handles_url_serialization_with_non_ascii_input() {
+  let base = Url::parse("https://example.com/app/page.html").unwrap();
+  let mut state = ImportMapState::default();
+
+  // The key and specifier contain a non-BMP character; URL serialization percent-encodes it.
+  register_json(
+    &mut state,
+    r#"{
+      "imports": {
+        "https://example.test/💩/": "https://cdn.example/pile/"
+      }
+    }"#,
+    &base,
+  );
+
+  let resolved =
+    resolve_module_specifier(&mut state, "https://example.test/💩/mod.js", &base).unwrap();
+  assert_eq!(resolved.as_str(), "https://cdn.example/pile/mod.js");
+}
+
+#[test]
 fn prefix_mapping_backtracking_throws() {
   let base = Url::parse("https://example.com/app/page.html").unwrap();
   let mut state = ImportMapState::default();

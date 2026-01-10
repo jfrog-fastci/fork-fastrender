@@ -117,6 +117,10 @@ pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
 
+// Legacy DOM integration helpers (used by some non-streaming DOM mutation call sites).
+#[path = "legacy/dom_integration.rs"]
+pub(crate) mod dom_integration;
+
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
 pub mod vm_host;
