@@ -455,6 +455,11 @@ mod tests {
       host.executed.is_empty(),
       "expected no inline execution when src attribute is present"
     );
+    assert_eq!(
+      host.events,
+      vec![ScriptElementEvent::Error],
+      "expected an error event task for javascript: src"
+    );
     Ok(())
   }
 
@@ -562,6 +567,11 @@ mod tests {
     assert!(
       host.executed.is_empty(),
       "expected no inline execution when src attribute is present"
+    );
+    assert_eq!(
+      host.events,
+      vec![ScriptElementEvent::Error],
+      "expected an error event task for empty src"
     );
     Ok(())
   }
