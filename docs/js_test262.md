@@ -29,8 +29,14 @@ test execution/reporting to the vendored ecma-rs and pins the corpus directory v
 `--test262-dir vendor/ecma-rs/test262-semantic/data`.
 
 By default, xtask runs the suite with the standard **test262 harness** (equivalent to
-`--harness test262`), which prepends `harness/assert.js` and `harness/sta.js` plus any additional
-frontmatter `includes` files.
+`--harness test262`): it prepends `harness/assert.js`, `harness/sta.js`, then any additional harness
+files explicitly listed in each test’s frontmatter `includes` list. This matches the upstream
+execution environment and avoids spurious failures from missing harness globals like `assert`.
+
+If you need a smaller harness while debugging, pass `--harness includes` (alias: `minimal`): it
+prepends only frontmatter `includes` (no implicit `assert.js`/`sta.js`). Note that many test262 tests
+rely on the default harness without listing it in `includes`, so `includes` is not expected to be
+green for most suites.
 
 Note: the vendored `vendor/ecma-rs` does not commit a `Cargo.lock`, so the child invocation inside
 that directory is intentionally **not** run with `--locked` (even if you run the top-level xtask with
@@ -52,7 +58,7 @@ flags we use the most).
 - `--harness <test262|includes|none>`
   - Control how test sources are assembled:
     - `test262` (default): prepend `assert.js`, `sta.js`, then frontmatter `includes`.
-    - `includes`: prepend only frontmatter `includes` (no implicit `assert.js`/`sta.js`).
+    - `includes` (alias: `minimal`): prepend only frontmatter `includes` (no implicit `assert.js`/`sta.js`).
     - `none`: run the raw test body only (useful for early engine bring-up / debugging).
 - `--manifest <PATH>`
   - Override the expectations manifest (skip/xfail/flaky) used to classify known gaps.

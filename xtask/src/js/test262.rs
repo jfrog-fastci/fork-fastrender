@@ -194,18 +194,14 @@ fn resolve_repo_path(repo_root: &Path, path: &Path) -> PathBuf {
   }
 }
 
-fn ensure_test262_dir(
-  repo_root: &Path,
-  test262_dir: &Path,
-  harness_mode: HarnessMode,
-) -> Result<()> {
+fn ensure_test262_dir(repo_root: &Path, test262_dir: &Path, harness_mode: HarnessMode) -> Result<()> {
   let test_dir = test262_dir.join("test");
   let harness_dir = test262_dir.join("harness");
-  let harness_required = matches!(harness_mode, HarnessMode::Test262 | HarnessMode::Includes);
+  let harness_required = !matches!(harness_mode, HarnessMode::None);
   if test_dir.is_dir() && (!harness_required || harness_dir.is_dir()) {
     return Ok(());
   }
-
+ 
   let default_dir = repo_root.join(DEFAULT_TEST262_DIR);
   if test262_dir == default_dir {
     bail!(
