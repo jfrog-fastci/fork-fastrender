@@ -8,13 +8,38 @@
   "total_ms": 511.318051,
   "stages_ms": {
     "fetch": 103.06410812720158,
-    "css": 25.015560225048926,
+    "css": 25.01556022504893,
     "cascade": 198.1232369823875,
-    "box_tree": 25.015560225048926,
-    "layout": 102.06348571819963,
+    "box_tree": 25.01556022504893,
+    "layout": 102.06348571819964,
     "paint": 58.03609972211351
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 330823,
+    "diff_percent": 25.6531,
+    "perceptual": 0.1496,
+    "first_mismatch": {
+      "x": 454,
+      "y": 22,
+      "baseline_rgba": [
+        254,
+        254,
+        254,
+        255
+      ],
+      "rendered_rgba": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "cascade",
   "failure_stage": null,
   "timeout_stage": null,
@@ -29,7 +54,7 @@
         "dom_convert_ms": 3.240934,
         "dom_shadow_attach_ms": 0.238325,
         "dom_compat_ms": 0.0,
-        "dom_meta_viewport_ms": 0.0074800000000000005,
+        "dom_meta_viewport_ms": 0.00748,
         "dom_clone_ms": null,
         "dom_top_layer_ms": null,
         "css_inlining_ms": 21.275747000000003,
@@ -46,11 +71,11 @@
         "css_parse_load_webfonts_ms": 1.020713,
         "css_parse_collect_keyframes_ms": 0.000031,
         "cascade_ms": 198.021635,
-        "box_tree_ms": 24.038259999999998,
+        "box_tree_ms": 24.03826,
         "layout_ms": 100.270467,
-        "text_fallback_cpu_ms": 1.8645199999999997,
+        "text_fallback_cpu_ms": 1.8645199999999995,
         "text_shape_cpu_ms": 6.689427999999999,
-        "paint_build_ms": 19.055875999999998,
+        "paint_build_ms": 19.055876,
         "paint_optimize_ms": 0.0315,
         "paint_rasterize_ms": 22.291480999999997,
         "text_rasterize_cpu_ms": 4.157926,

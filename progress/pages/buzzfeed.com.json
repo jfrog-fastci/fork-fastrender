@@ -5,16 +5,41 @@
     "http_browser_headers_enabled": true
   },
   "status": "ok",
-  "total_ms": 384.63842999999997,
+  "total_ms": 384.63843,
   "stages_ms": {
     "fetch": 105.174570703125,
     "css": 20.0332515625,
     "cascade": 65.108067578125,
-    "box_tree": 3.0049877343749998,
+    "box_tree": 3.004987734375,
     "layout": 162.26933765625,
-    "paint": 29.048214765624998
+    "paint": 29.048214765625
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 1141826,
+    "diff_percent": 88.5411,
+    "perceptual": 1.0,
+    "first_mismatch": {
+      "x": 606,
+      "y": 13,
+      "baseline_rgba": [
+        249,
+        179,
+        173,
+        255
+      ],
+      "rendered_rgba": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "layout",
   "failure_stage": null,
   "timeout_stage": null,
@@ -32,7 +57,7 @@
         "dom_meta_viewport_ms": 0.043251000000000005,
         "dom_clone_ms": null,
         "dom_top_layer_ms": 0.027991,
-        "css_inlining_ms": 14.664005000000001,
+        "css_inlining_ms": 14.664005,
         "css_inline_extract_links_ms": null,
         "css_inline_extract_embedded_urls_ms": null,
         "css_inline_stylesheet_fetch_cpu_ms": null,
@@ -42,16 +67,16 @@
         "css_inline_inject_ms": null,
         "css_parse_ms": 1.266718,
         "css_parse_used_codepoints_ms": 0.071912,
-        "css_parse_collect_font_faces_ms": 0.21076499999999998,
+        "css_parse_collect_font_faces_ms": 0.210765,
         "css_parse_load_webfonts_ms": 0.983281,
         "css_parse_collect_keyframes_ms": 0.00002,
         "cascade_ms": 64.695952,
         "box_tree_ms": 2.497795,
         "layout_ms": 160.04268,
-        "text_fallback_cpu_ms": 20.442612999999994,
+        "text_fallback_cpu_ms": 20.44261299999999,
         "text_shape_cpu_ms": 1.4783980000000003,
         "paint_build_ms": 15.034533,
-        "paint_optimize_ms": 0.028140000000000002,
+        "paint_optimize_ms": 0.02814,
         "paint_rasterize_ms": 7.037205999999999,
         "text_rasterize_cpu_ms": 1.1427429999999998,
         "encode_ms": null

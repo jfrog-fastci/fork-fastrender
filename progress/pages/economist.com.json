@@ -9,13 +9,38 @@
   "stages_ms": {
     "fetch": 112.76460306532664,
     "css": 23.107500628140706,
-    "cascade": 9.976108283102063,
+    "cascade": 9.976108283102064,
     "box_tree": 7.585592194284873,
     "layout": 8.318700226130654,
     "paint": 22.183200603015077
   },
   "notes": "",
   "auto_notes": "cached_html_status=403",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 123791,
+    "diff_percent": 9.5992,
+    "perceptual": 0.4617,
+    "first_mismatch": {
+      "x": 472,
+      "y": 22,
+      "baseline_rgba": [
+        250,
+        250,
+        250,
+        255
+      ],
+      "rendered_rgba": [
+        199,
+        199,
+        199,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "paint",
   "failure_stage": null,
   "timeout_stage": null,

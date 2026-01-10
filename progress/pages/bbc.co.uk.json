@@ -5,16 +5,41 @@
     "http_browser_headers_enabled": true
   },
   "status": "ok",
-  "total_ms": 489.27366700000005,
+  "total_ms": 489.2736670000001,
   "stages_ms": {
     "fetch": 84.04701028220859,
     "css": 9.00503681595092,
     "cascade": 118.06603825357874,
     "box_tree": 11.00615610838446,
-    "layout": 244.13655367689162,
+    "layout": 244.1365536768916,
     "paint": 23.012871862985687
   },
   "notes": "",
+  "accuracy": {
+    "baseline": "chrome",
+    "diff_pixels": 764381,
+    "diff_percent": 59.2727,
+    "perceptual": 0.3198,
+    "first_mismatch": {
+      "x": 111,
+      "y": 16,
+      "baseline_rgba": [
+        254,
+        254,
+        254,
+        255
+      ],
+      "rendered_rgba": [
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "tolerance": 0,
+    "max_diff_percent": 0.0,
+    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+  },
   "hotspot": "layout",
   "failure_stage": null,
   "timeout_stage": null,
@@ -24,7 +49,7 @@
     "stats": {
       "timings": {
         "html_decode_ms": null,
-        "dom_parse_ms": 9.008299000000001,
+        "dom_parse_ms": 9.008299,
         "dom_html5ever_ms": 6.105614,
         "dom_convert_ms": 2.189618,
         "dom_shadow_attach_ms": 0.189504,
@@ -41,17 +66,17 @@
         "css_inline_imports_cpu_ms": null,
         "css_inline_inject_ms": null,
         "css_parse_ms": 1.024372,
-        "css_parse_used_codepoints_ms": 0.14233200000000001,
+        "css_parse_used_codepoints_ms": 0.142332,
         "css_parse_collect_font_faces_ms": 0.178093,
         "css_parse_load_webfonts_ms": 0.703065,
         "css_parse_collect_keyframes_ms": 0.000029999999999999997,
         "cascade_ms": 117.655592,
-        "box_tree_ms": 10.165474000000001,
+        "box_tree_ms": 10.165474,
         "layout_ms": 238.199817,
         "text_fallback_cpu_ms": 2.330347000000002,
         "text_shape_cpu_ms": 6.602379000000001,
         "paint_build_ms": 12.021044,
-        "paint_optimize_ms": 0.028090999999999998,
+        "paint_optimize_ms": 0.028091,
         "paint_rasterize_ms": 3.62247,
         "text_rasterize_cpu_ms": 0.581184,
         "encode_ms": null
