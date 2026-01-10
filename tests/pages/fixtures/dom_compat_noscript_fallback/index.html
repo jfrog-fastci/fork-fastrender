@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: rgb(0, 255, 0);
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+
+      picture,
+      img {
+        display: block;
+      }
+
+      img {
+        width: 64px;
+        height: 32px;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Primary markup uses 1×1 transparent GIF placeholders; the real sources exist only inside
+      adjacent <noscript> fallbacks.
+
+      When parsing with scripting-enabled semantics, <noscript> contents become a single text node,
+      so the fallback images don't render unless dom compatibility mode scavenges their sources.
+    -->
+    <img
+      width="64"
+      height="32"
+      src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+      alt=""
+    />
+    <noscript><img width="64" height="32" src="red.svg" alt="" /></noscript>
+
+    <picture data-lazy>
+      <source
+        srcset="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+      />
+      <img
+        width="64"
+        height="32"
+        src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+        alt=""
+      />
+    </picture>
+    <noscript>
+      <picture>
+        <source srcset="blue.svg" />
+        <img width="64" height="32" src="blue.svg" alt="" />
+      </picture>
+    </noscript>
+  </body>
+</html>

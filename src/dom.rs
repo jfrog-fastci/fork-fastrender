@@ -3441,6 +3441,475 @@ pub(crate) fn apply_dom_compatibility_mutations(
     None
   }
 
+  fn srcset_is_placeholder(value: &str) -> bool {
+    let trimmed = trim_ascii_whitespace(value);
+    if trimmed.is_empty() {
+      return true;
+    }
+    // Fast path: the placeholder values we recognize are URL-like strings that typically begin with
+    // `data:` / `about:` / `javascript:` / `#`, whereas real `srcset` values usually start with a
+    // filename, `/`, or `http(s)://`. Avoid running the full srcset parser for the common case.
+    let starts_with_ignore_ascii_case = |prefix: &str| {
+      trimmed
+        .as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+    };
+    if !(trimmed.starts_with('#')
+      || starts_with_ignore_ascii_case("data:")
+      || starts_with_ignore_ascii_case("about:")
+      || starts_with_ignore_ascii_case("javascript:")
+      || starts_with_ignore_ascii_case("vbscript:")
+      || starts_with_ignore_ascii_case("mailto:"))
+    {
+      return false;
+    }
+    // Consider a `srcset` attribute to be a placeholder when all of its parsed candidate URLs are
+    // known `<img src>` placeholders (e.g. 1×1 transparent GIF data URLs). This matches common
+    // lazy-loading patterns where the real `srcset` is revealed after JS runs.
+    //
+    // Importantly, we only treat values as placeholders when parsing yields candidates; non-empty
+    // garbage strings (including those containing NBSP) should not be overwritten.
+    const SRCSET_PLACEHOLDER_PARSE_LIMIT: usize = 8;
+    let candidates =
+      crate::html::image_attrs::parse_srcset_with_limit(trimmed, SRCSET_PLACEHOLDER_PARSE_LIMIT);
+    if candidates.is_empty() {
+      return false;
+    }
+    candidates
+      .iter()
+      .all(|candidate| img_src_is_placeholder(&candidate.url))
+  }
+
+  fn is_whitespace_only_text_node(node: &DomNode) -> bool {
+    matches!(&node.node_type, DomNodeType::Text { content } if trim_ascii_whitespace(content).is_empty())
+  }
+
+  fn noscript_text_contains_img_or_picture(text: &str) -> bool {
+    // Fast precheck: avoid parsing huge tracking/analytics <noscript> blocks that don't contain
+    // fallback image markup.
+    let bytes = text.as_bytes();
+    bytes
+      .windows(4)
+      .any(|window| window.eq_ignore_ascii_case(b"<img"))
+      || bytes
+        .windows(8)
+        .any(|window| window.eq_ignore_ascii_case(b"<picture"))
+  }
+
+  fn class_has_lazy_hint(value: &str) -> bool {
+    value.split_ascii_whitespace().any(|class| {
+      // Optional heuristic: treat `lazyload` / `lazyloading` as a signal that this is a placeholder
+      // awaiting a JS swap.
+      let lower = class.to_ascii_lowercase();
+      lower.contains("lazyload")
+    })
+  }
+
+  fn is_html_element_tag(node: &DomNode, tag: &str) -> bool {
+    matches!(
+      node.node_type,
+      DomNodeType::Element { ref tag_name, ref namespace, .. }
+        if tag_name.eq_ignore_ascii_case(tag) && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+    )
+  }
+
+  fn find_first_descendant_html_tag<'a>(roots: &'a [DomNode], tag: &str) -> Option<&'a DomNode> {
+    let mut stack: Vec<&'a DomNode> = Vec::new();
+    for root in roots.iter().rev() {
+      stack.push(root);
+    }
+    while let Some(current) = stack.pop() {
+      if is_html_element_tag(current, tag) {
+        return Some(current);
+      }
+      for child in current.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  fn find_prev_element_sibling(children: &[DomNode], idx: usize) -> Option<usize> {
+    let mut i = idx;
+    while i > 0 {
+      i -= 1;
+      let child = &children[i];
+      if child.is_element() {
+        return Some(i);
+      }
+      if is_whitespace_only_text_node(child) {
+        continue;
+      }
+      break;
+    }
+    None
+  }
+
+  fn find_next_element_sibling(children: &[DomNode], idx: usize) -> Option<usize> {
+    let mut i = idx + 1;
+    while i < children.len() {
+      let child = &children[i];
+      if child.is_element() {
+        return Some(i);
+      }
+      if is_whitespace_only_text_node(child) {
+        i += 1;
+        continue;
+      }
+      break;
+    }
+    None
+  }
+
+  fn img_needs_src(node: &DomNode) -> bool {
+    match node.get_attribute_ref("src") {
+      Some(value) => img_src_is_placeholder(value),
+      None => true,
+    }
+  }
+
+  fn img_needs_srcset(node: &DomNode) -> bool {
+    match node.get_attribute_ref("srcset") {
+      Some(value) => srcset_is_placeholder(value),
+      None => true,
+    }
+  }
+
+  fn img_needs_sizes(node: &DomNode) -> bool {
+    match node.get_attribute_ref("sizes") {
+      Some(value) => trim_ascii_whitespace(value).is_empty(),
+      None => true,
+    }
+  }
+
+  fn source_needs_srcset(node: &DomNode) -> bool {
+    match node.get_attribute_ref("srcset") {
+      Some(value) => srcset_is_placeholder(value),
+      None => true,
+    }
+  }
+
+  fn source_needs_sizes(node: &DomNode) -> bool {
+    match node.get_attribute_ref("sizes") {
+      Some(value) => trim_ascii_whitespace(value).is_empty(),
+      None => true,
+    }
+  }
+
+  fn node_has_lazy_class(node: &DomNode) -> bool {
+    node
+      .get_attribute_ref("class")
+      .is_some_and(class_has_lazy_hint)
+  }
+
+  fn picture_is_lazy_placeholder(node: &DomNode) -> bool {
+    if node.get_attribute_ref("data-lazy").is_some() {
+      return true;
+    }
+    if node_has_lazy_class(node) {
+      return true;
+    }
+
+    // If the `<picture>` contains an `<img>` placeholder or any `<source srcset>` placeholders,
+    // treat it as a lazy-loading target.
+    for child in &node.children {
+      if is_html_element_tag(child, "img") && img_needs_src(child) {
+        return true;
+      }
+      if is_html_element_tag(child, "source") && source_needs_srcset(child) {
+        return true;
+      }
+    }
+    false
+  }
+
+  fn is_plausible_lazy_placeholder_target(node: &DomNode) -> bool {
+    if is_html_element_tag(node, "img") {
+      if img_needs_src(node) {
+        return true;
+      }
+      if node_has_lazy_class(node) && (img_needs_srcset(node) || img_needs_sizes(node)) {
+        return true;
+      }
+      return false;
+    }
+
+    if is_html_element_tag(node, "picture") {
+      return picture_is_lazy_placeholder(node);
+    }
+
+    false
+  }
+
+  fn first_non_empty_attr_value<'a>(node: &'a DomNode, names: &[&str]) -> Option<&'a str> {
+    for &name in names {
+      if let Some(value) = node.get_attribute_ref(name) {
+        if !trim_ascii_whitespace(value).is_empty() {
+          return Some(value);
+        }
+      }
+    }
+    None
+  }
+
+  fn first_non_placeholder_img_src<'a>(img: &'a DomNode) -> Option<String> {
+    if let Some(value) = img.get_attribute_ref("src") {
+      if !img_src_is_placeholder(value) {
+        return Some(value.to_string());
+      }
+    }
+    let candidate =
+      first_non_empty_attr_value(img, &COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES).map(|v| v.to_string());
+    match candidate {
+      Some(value) if !img_src_is_placeholder(&value) => Some(value),
+      _ => None,
+    }
+  }
+
+  fn first_non_placeholder_img_srcset(img: &DomNode) -> Option<String> {
+    if let Some(value) = img.get_attribute_ref("srcset") {
+      if !srcset_is_placeholder(value) {
+        return Some(value.to_string());
+      }
+    }
+    let candidate = first_non_empty_attr_value(img, &COMPAT_IMG_SRCSET_DATA_ATTR_CANDIDATES)
+      .map(|v| v.to_string());
+    match candidate {
+      Some(value) if !srcset_is_placeholder(&value) => Some(value),
+      _ => None,
+    }
+  }
+
+  fn first_non_empty_sizes(node: &DomNode) -> Option<String> {
+    if let Some(value) = node.get_attribute_ref("sizes") {
+      if !trim_ascii_whitespace(value).is_empty() {
+        return Some(value.to_string());
+      }
+    }
+    first_non_empty_attr_value(node, &COMPAT_SIZES_DATA_ATTR_CANDIDATES).map(|v| v.to_string())
+  }
+
+  fn first_non_placeholder_source_srcset(source: &DomNode) -> Option<String> {
+    if let Some(value) = source.get_attribute_ref("srcset") {
+      if !srcset_is_placeholder(value) {
+        return Some(value.to_string());
+      }
+    }
+    let candidate = first_non_empty_attr_value(source, &COMPAT_SOURCE_SRCSET_DATA_ATTR_CANDIDATES)
+      .map(|v| v.to_string());
+    match candidate {
+      Some(value) if !srcset_is_placeholder(&value) => Some(value),
+      _ => None,
+    }
+  }
+
+  fn copy_img_like_attrs(target: &mut DomNode, fallback: &DomNode) {
+    if !is_html_element_tag(target, "img") || !is_html_element_tag(fallback, "img") {
+      return;
+    }
+
+    if img_needs_src(target) {
+      if let Some(value) = first_non_placeholder_img_src(fallback) {
+        target.set_attribute("src", &value);
+      }
+    }
+    if img_needs_srcset(target) {
+      if let Some(value) = first_non_placeholder_img_srcset(fallback) {
+        target.set_attribute("srcset", &value);
+      }
+    }
+    if img_needs_sizes(target) {
+      if let Some(value) = first_non_empty_sizes(fallback) {
+        target.set_attribute("sizes", &value);
+      }
+    }
+  }
+
+  fn copy_picture_attrs(target: &mut DomNode, fallback_picture: Option<&DomNode>, fallback_img: &DomNode) {
+    if !is_html_element_tag(target, "picture") {
+      return;
+    }
+
+    // `<picture>`: lift `<img>` attrs.
+    if let Some(target_img) = target
+      .children
+      .iter_mut()
+      .find(|child| is_html_element_tag(child, "img"))
+    {
+      copy_img_like_attrs(target_img, fallback_img);
+    }
+
+    // Lift `<source>` attrs when we have a fallback `<picture>` source list.
+    let Some(fallback_picture) = fallback_picture else {
+      return;
+    };
+
+    let fallback_sources: Vec<&DomNode> = fallback_picture
+      .children
+      .iter()
+      .filter(|child| is_html_element_tag(child, "source"))
+      .collect();
+    if fallback_sources.is_empty() {
+      return;
+    }
+
+    for target_source in target
+      .children
+      .iter_mut()
+      .filter(|child| is_html_element_tag(child, "source"))
+    {
+      if !source_needs_srcset(target_source) && !source_needs_sizes(target_source) {
+        continue;
+      }
+
+      let target_media = target_source
+        .get_attribute_ref("media")
+        .map(trim_ascii_whitespace)
+        .filter(|v| !v.is_empty());
+      let target_type = target_source
+        .get_attribute_ref("type")
+        .map(trim_ascii_whitespace)
+        .filter(|v| !v.is_empty());
+
+      let mut fallback_match: Option<&DomNode> = None;
+      if let Some(media) = target_media {
+        fallback_match = fallback_sources.iter().copied().find(|source| {
+          source
+            .get_attribute_ref("media")
+            .map(trim_ascii_whitespace)
+            .filter(|v| !v.is_empty())
+            == Some(media)
+        });
+      }
+      if fallback_match.is_none() {
+        if let Some(ty) = target_type {
+          fallback_match = fallback_sources.iter().copied().find(|source| {
+            source
+              .get_attribute_ref("type")
+              .map(trim_ascii_whitespace)
+              .filter(|v| !v.is_empty())
+              .is_some_and(|candidate| candidate.eq_ignore_ascii_case(ty))
+          });
+        }
+      }
+      if fallback_match.is_none() {
+        fallback_match = fallback_sources.first().copied();
+      }
+      let Some(fallback_source) = fallback_match else {
+        continue;
+      };
+
+      if source_needs_srcset(target_source) {
+        if let Some(value) = first_non_placeholder_source_srcset(fallback_source) {
+          target_source.set_attribute("srcset", &value);
+        }
+      }
+      if source_needs_sizes(target_source) {
+        if let Some(value) = first_non_empty_sizes(fallback_source) {
+          target_source.set_attribute("sizes", &value);
+        }
+      }
+    }
+  }
+
+  fn scavenge_noscript_image_fallbacks(
+    parent: &mut DomNode,
+    document_quirks: QuirksMode,
+    deadline_counter: &mut usize,
+  ) -> Result<()> {
+    if parent.children.is_empty() {
+      return Ok(());
+    }
+
+    // Collect noscript indices up-front so we can mutate sibling attributes without fighting the
+    // borrow checker.
+    let mut noscripts: Vec<usize> = Vec::new();
+    for (idx, child) in parent.children.iter().enumerate() {
+      if !is_html_element_tag(child, "noscript") {
+        continue;
+      }
+      if child.children.len() != 1 {
+        continue;
+      }
+      if !matches!(child.children[0].node_type, DomNodeType::Text { .. }) {
+        continue;
+      }
+      noscripts.push(idx);
+    }
+
+    for noscript_idx in noscripts {
+      check_active_periodic(
+        deadline_counter,
+        DOM_PARSE_NODE_DEADLINE_STRIDE,
+        RenderStage::DomParse,
+      )?;
+
+      let prev = find_prev_element_sibling(&parent.children, noscript_idx);
+      let next = find_next_element_sibling(&parent.children, noscript_idx);
+
+      let mut target_idx = None;
+      if let Some(idx) = prev {
+        if is_plausible_lazy_placeholder_target(&parent.children[idx]) {
+          target_idx = Some(idx);
+        }
+      }
+      if target_idx.is_none() {
+        if let Some(idx) = next {
+          if is_plausible_lazy_placeholder_target(&parent.children[idx]) {
+            target_idx = Some(idx);
+          }
+        }
+      }
+      let Some(target_idx) = target_idx else {
+        continue;
+      };
+
+      let noscript_text = match &parent.children[noscript_idx].children[0].node_type {
+        DomNodeType::Text { content } => content.as_str(),
+        _ => continue,
+      };
+      if !noscript_text_contains_img_or_picture(noscript_text) {
+        continue;
+      }
+
+      // Parse the raw markup in the `<noscript>` text node with scripting disabled so that
+      // fallback `<img>`/`<picture>` elements become real DOM nodes.
+      let fragment = parse_html_fragment(
+        noscript_text,
+        "noscript",
+        HTML_NAMESPACE,
+        DomParseOptions::with_scripting_enabled(false),
+        document_quirks,
+      )?;
+
+      let fallback_picture = find_first_descendant_html_tag(&fragment, "picture");
+      let fallback_img = if let Some(picture) = fallback_picture {
+        find_first_descendant_html_tag(std::slice::from_ref(picture), "img")
+      } else {
+        find_first_descendant_html_tag(&fragment, "img")
+      };
+
+      let Some(fallback_img) = fallback_img else {
+        continue;
+      };
+
+      // Apply the fallback markup to the nearby placeholder element, copying attributes rather than
+      // inserting DOM nodes.
+      let target_is_img = is_html_element_tag(&parent.children[target_idx], "img");
+      let target_is_picture = is_html_element_tag(&parent.children[target_idx], "picture");
+      if target_is_img {
+        let target = &mut parent.children[target_idx];
+        copy_img_like_attrs(target, fallback_img);
+      } else if target_is_picture {
+        let target = &mut parent.children[target_idx];
+        copy_picture_attrs(target, fallback_picture, fallback_img);
+      }
+    }
+
+    Ok(())
+  }
+
   fn looks_like_url(value: &str) -> bool {
     let value = trim_ascii_whitespace(value);
     if value.is_empty() {
@@ -3574,6 +4043,11 @@ pub(crate) fn apply_dom_compatibility_mutations(
     first_non_empty_url_attr(attrs, &COMPAT_VIDEO_SRC_DATA_ATTR_CANDIDATES)
   }
 
+  let document_quirks = match &node.node_type {
+    DomNodeType::Document { quirks_mode, .. } => *quirks_mode,
+    _ => QuirksMode::NoQuirks,
+  };
+
   let mut stack: Vec<*mut DomNode> = Vec::new();
   stack.push(node as *mut DomNode);
 
@@ -3676,7 +4150,7 @@ pub(crate) fn apply_dom_compatibility_mutations(
         }
 
         let needs_srcset = match srcset_idx {
-          Some(idx) => trim_ascii_whitespace(&attributes[idx].1).is_empty(),
+          Some(idx) => srcset_is_placeholder(&attributes[idx].1),
           None => true,
         };
         if needs_srcset {
@@ -3685,7 +4159,7 @@ pub(crate) fn apply_dom_compatibility_mutations(
           {
             match srcset_idx {
               Some(idx) => {
-                if trim_ascii_whitespace(&attributes[idx].1).is_empty() {
+                if srcset_is_placeholder(&attributes[idx].1) {
                   attributes[idx].1 = candidate;
                 }
               }
@@ -3728,7 +4202,7 @@ pub(crate) fn apply_dom_compatibility_mutations(
           .position(|(name, _)| name.eq_ignore_ascii_case("sizes"));
 
         let needs_srcset = match srcset_idx {
-          Some(idx) => trim_ascii_whitespace(&attributes[idx].1).is_empty(),
+          Some(idx) => srcset_is_placeholder(&attributes[idx].1),
           None => true,
         };
         if needs_srcset {
@@ -3737,7 +4211,7 @@ pub(crate) fn apply_dom_compatibility_mutations(
           {
             match srcset_idx {
               Some(idx) => {
-                if trim_ascii_whitespace(&attributes[idx].1).is_empty() {
+                if srcset_is_placeholder(&attributes[idx].1) {
                   attributes[idx].1 = candidate;
                 }
               }
@@ -3918,6 +4392,10 @@ pub(crate) fn apply_dom_compatibility_mutations(
         wrapper_video_urls = first_non_empty_attr(attributes, &["data-video-urls"]);
         wrapper_poster_url = first_non_empty_attr(attributes, &["data-poster-url"]);
       }
+    }
+
+    if matches!(node.node_type, DomNodeType::Element { .. }) {
+      scavenge_noscript_image_fallbacks(node, document_quirks, deadline_counter)?;
     }
 
     if wrapper_video_urls.is_some() || wrapper_poster_url.is_some() {
