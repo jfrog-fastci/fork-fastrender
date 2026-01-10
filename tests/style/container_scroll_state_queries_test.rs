@@ -676,3 +676,45 @@ fn container_scroll_state_scrollable_block_keyword_matches_vertical_scroll_conta
     "expected scrollable: block to match for vertical scrollers in horizontal writing mode"
   );
 }
+
+#[test]
+fn container_scroll_state_scrollable_top_tracks_viewport_scroll_offset() {
+  let html = r#"
+    <style>
+      html {
+        container-name: viewport;
+      }
+      html, body { margin: 0; }
+      #spacer { height: 2000px; }
+      #target { color: rgb(0, 0, 255); }
+      @container viewport scroll-state(scrollable: top) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="spacer"></div>
+    <div id="target">hello</div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let base_options = RenderOptions::new().with_viewport(80, 60);
+
+  let prepared_top = renderer
+    .prepare_html(html, base_options.clone())
+    .expect("prepare top");
+  let target_top = find_by_id(prepared_top.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_top.styles.color,
+    Rgba::rgb(0, 0, 255),
+    "expected scrollable: top to be false at scroll start for viewport scrolling"
+  );
+
+  let prepared_bottom = renderer
+    .prepare_html(html, base_options.clone().with_scroll(0.0, 10_000.0))
+    .expect("prepare bottom");
+  let target_bottom = find_by_id(prepared_bottom.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target_bottom.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: top to match at scroll end for viewport scrolling"
+  );
+}

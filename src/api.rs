@@ -18597,6 +18597,7 @@ fn build_container_query_context(
     parent_content_width: f32,
     viewport: Size,
     include_scroll_state: bool,
+    viewport_scroll_box_id: usize,
   ) {
     let (border_box_width, border_box_height) = sizes.get(&node.id).copied().unwrap_or((0.0, 0.0));
     let has_layout_size = sizes.contains_key(&node.id);
@@ -18705,7 +18706,11 @@ fn build_container_query_context(
         }
 
         let scroll_offset = if include_scroll_state {
-          scroll_state.element_offset(node.id)
+          if node.id == viewport_scroll_box_id {
+            scroll_state.viewport
+          } else {
+            scroll_state.element_offset(node.id)
+          }
         } else {
           Point::ZERO
         };
@@ -18753,6 +18758,7 @@ fn build_container_query_context(
         child_base,
         viewport,
         include_scroll_state,
+        viewport_scroll_box_id,
       );
     }
     for child in node.children.iter() {
@@ -18767,6 +18773,7 @@ fn build_container_query_context(
         child_base,
         viewport,
         include_scroll_state,
+        viewport_scroll_box_id,
       );
     }
   }
@@ -18782,6 +18789,7 @@ fn build_container_query_context(
     viewport.width,
     viewport,
     include_scroll_state,
+    box_tree.root.id,
   );
 
   ContainerQueryContext {

@@ -1496,8 +1496,6 @@ fn eval_scroll_state_scrollable(
 
   let scroll = bounds.clamp(container.scroll_offset);
 
-  let scrollable_overflow = |overflow: Overflow| matches!(overflow, Overflow::Auto | Overflow::Scroll);
-
   let eps = 1e-6;
   let axis_scrollable = |min: f32, max: f32| -> Option<bool> {
     (min.is_finite() && max.is_finite() && min <= max).then_some(max - min > eps)
@@ -1509,10 +1507,8 @@ fn eval_scroll_state_scrollable(
     (pos.is_finite() && max.is_finite()).then_some(pos < max - eps)
   };
 
-  let scrollable_x = scrollable_overflow(container.styles.overflow_x)
-    && axis_scrollable(bounds.min_x, bounds.max_x).unwrap_or(false);
-  let scrollable_y = scrollable_overflow(container.styles.overflow_y)
-    && axis_scrollable(bounds.min_y, bounds.max_y).unwrap_or(false);
+  let scrollable_x = axis_scrollable(bounds.min_x, bounds.max_x).unwrap_or(false);
+  let scrollable_y = axis_scrollable(bounds.min_y, bounds.max_y).unwrap_or(false);
   let scrollable_any = scrollable_x || scrollable_y;
 
   let axis_sides = |inline_axis: bool| {
@@ -1545,25 +1541,25 @@ fn eval_scroll_state_scrollable(
   let physical_side_matches = |side: crate::style::PhysicalSide| -> Option<bool> {
     match side {
       crate::style::PhysicalSide::Top => {
-        if !scrollable_overflow(container.styles.overflow_y) {
+        if !scrollable_y {
           return Some(false);
         }
         can_scroll_towards_min(scroll.y, bounds.min_y)
       }
       crate::style::PhysicalSide::Bottom => {
-        if !scrollable_overflow(container.styles.overflow_y) {
+        if !scrollable_y {
           return Some(false);
         }
         can_scroll_towards_max(scroll.y, bounds.max_y)
       }
       crate::style::PhysicalSide::Left => {
-        if !scrollable_overflow(container.styles.overflow_x) {
+        if !scrollable_x {
           return Some(false);
         }
         can_scroll_towards_min(scroll.x, bounds.min_x)
       }
       crate::style::PhysicalSide::Right => {
-        if !scrollable_overflow(container.styles.overflow_x) {
+        if !scrollable_x {
           return Some(false);
         }
         can_scroll_towards_max(scroll.x, bounds.max_x)
