@@ -1115,10 +1115,15 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
         .map_err(|err| Status::Crash(format!("spawn render worker: {err}")))?;
 
       if let Some(secs) = timeout_secs {
-        match rx.recv_timeout(Duration::from_secs(secs)) {
-          Ok(Ok(outcome)) => {
-            outcome.map_err(|e| Status::Error(format_error_with_chain(&e, verbose)))
-          }
+          match rx.recv_timeout(Duration::from_secs(secs)) {
+          Ok(Ok(outcome)) => outcome.map_err(|e| {
+            let msg = format_error_with_chain(&e, verbose);
+            if e.is_timeout() {
+              Status::Timeout(msg)
+            } else {
+              Status::Error(msg)
+            }
+          }),
           Ok(Err(panic)) => Err(Status::Crash(panic_to_string(panic))),
           Err(RecvTimeoutError::Timeout) => {
             Err(Status::Timeout(format!("render timed out after {}s", secs)))
@@ -1129,9 +1134,14 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
         }
       } else {
         match rx.recv() {
-          Ok(Ok(outcome)) => {
-            outcome.map_err(|e| Status::Error(format_error_with_chain(&e, verbose)))
-          }
+          Ok(Ok(outcome)) => outcome.map_err(|e| {
+            let msg = format_error_with_chain(&e, verbose);
+            if e.is_timeout() {
+              Status::Timeout(msg)
+            } else {
+              Status::Error(msg)
+            }
+          }),
           Ok(Err(panic)) => Err(Status::Crash(panic_to_string(panic))),
           Err(_) => Err(Status::Crash("render worker disconnected".to_string())),
         }

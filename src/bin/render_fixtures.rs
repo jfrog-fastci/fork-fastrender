@@ -1635,7 +1635,14 @@ fn render_fixture(
 
   let result = match spawn_result {
     Ok(_handle) => match rx.recv_timeout(shared.hard_timeout) {
-      Ok(Ok(outcome)) => outcome.map_err(|e| Status::Error(format_error_with_chain(&e, false))),
+      Ok(Ok(outcome)) => outcome.map_err(|e| {
+        let msg = format_error_with_chain(&e, false);
+        if e.is_timeout() {
+          Status::Timeout(msg)
+        } else {
+          Status::Error(msg)
+        }
+      }),
       Ok(Err(panic)) => Err(Status::Crash(panic_to_string(panic))),
       Err(RecvTimeoutError::Timeout) => Err(Status::Timeout(format!(
         "render timed out after {:.2}s",

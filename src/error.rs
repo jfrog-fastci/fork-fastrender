@@ -278,6 +278,14 @@ impl Error {
       Error::Other(_) => ErrorKind::Other,
     }
   }
+
+  /// True when rendering was aborted because a cooperative deadline/timeout was reached.
+  pub fn is_timeout(&self) -> bool {
+    matches!(
+      self,
+      Error::Layout(LayoutError::Timeout { .. }) | Error::Render(RenderError::Timeout { .. })
+    )
+  }
 }
 
 /// Errors that occur during HTML or CSS parsing
@@ -557,6 +565,32 @@ pub enum RenderError {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn test_error_is_timeout_for_layout_timeout() {
+    let err = Error::Layout(LayoutError::Timeout {
+      elapsed: Duration::from_millis(10),
+    });
+    assert!(err.is_timeout());
+  }
+
+  #[test]
+  fn test_error_is_timeout_for_render_timeout() {
+    let err = Error::Render(RenderError::Timeout {
+      stage: RenderStage::Layout,
+      elapsed: Duration::from_millis(10),
+    });
+    assert!(err.is_timeout());
+  }
+
+  #[test]
+  fn test_error_is_timeout_false_for_non_timeout() {
+    let err = Error::Parse(ParseError::InvalidHtml {
+      message: "oops".to_string(),
+      line: 1,
+    });
+    assert!(!err.is_timeout());
+  }
 
   // ParseError tests
   #[test]
