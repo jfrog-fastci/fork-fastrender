@@ -34,6 +34,7 @@ pub mod html_classic_scripts;
 pub mod html_scripting;
 pub mod html_script_processing;
 pub mod import_maps;
+pub mod module_scripts;
 pub mod options;
 pub mod orchestrator;
 pub mod browser_tab;
@@ -98,6 +99,7 @@ pub use html_classic_scripts::{
   parse_and_run_classic_scripts, ClassicScriptExecutor, ClassicScriptFetcher,
   ResourceFetcherClassicScriptFetcher,
 };
+pub use module_scripts::ModuleGraphLoader;
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader,

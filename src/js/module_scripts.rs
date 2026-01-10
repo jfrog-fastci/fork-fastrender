@@ -1,0 +1,766 @@
+//! Minimal HTML module script support (`<script type="module">`).
+//!
+//! FastRender's embedded JS engine (`vm-js`) does not currently implement ECMAScript module
+//! instantiation/evaluation. To unblock real-world fixtures that ship as ESM bundles, we implement a
+//! small host-side module graph loader that:
+//! - fetches module sources via [`crate::resource::ResourceFetcher`],
+//! - resolves static `import` / `export ... from` specifiers against a base URL,
+//! - transforms ESM syntax into classic-script-compatible code,
+//! - and emits a single classic script bundle that installs a tiny module runtime on `globalThis`.
+//!
+//! The runtime provides caching and basic circular import handling so repeated imports share a
+//! single module instance and cycles do not recurse infinitely.
+
+use crate::error::{Error, Result};
+use crate::js::url_resolve::{resolve_url, UrlResolveError};
+use crate::resource::ResourceFetcher;
+
+use parse_js::ast::import_export::{ExportNames, ImportNames, ModuleExportImportName};
+use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, PatDecl, VarDecl};
+use parse_js::ast::stmt::{ExportDefaultExprStmt, ExportListStmt, ImportStmt, Stmt};
+use parse_js::ast::{expr::pat::Pat, node::Node, stx::TopLevel};
+use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+#[derive(Debug, Clone)]
+struct ModuleInfo {
+  transformed_body: String,
+  dependencies: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum CachedModule {
+  Loading,
+  Loaded(ModuleInfo),
+}
+
+/// Host-side loader/bundler for static ECMAScript module graphs.
+///
+/// A single `ModuleGraphLoader` can be reused across multiple module scripts to reuse the fetch +
+/// parse + transform cache.
+#[derive(Clone)]
+pub struct ModuleGraphLoader {
+  fetcher: Arc<dyn ResourceFetcher>,
+  cache: HashMap<String, CachedModule>,
+}
+
+impl ModuleGraphLoader {
+  pub fn new(fetcher: Arc<dyn ResourceFetcher>) -> Self {
+    Self {
+      fetcher,
+      cache: HashMap::new(),
+    }
+  }
+
+  /// Build a classic-script bundle for an external module entry point.
+  pub fn build_bundle_for_url(&mut self, entry_url: &str, max_module_bytes: usize) -> Result<String> {
+    self.load_external_module(entry_url, max_module_bytes)?;
+    self.emit_bundle(entry_url)
+  }
+
+  /// Build a classic-script bundle for an inline module entry point.
+  ///
+  /// `inline_id` is an opaque stable identifier for caching; `base_url` is the document base URL
+  /// used to resolve relative imports in the inline module.
+  pub fn build_bundle_for_inline(
+    &mut self,
+    inline_id: &str,
+    base_url: &str,
+    source: &str,
+    max_module_bytes: usize,
+  ) -> Result<String> {
+    if source.as_bytes().len() > max_module_bytes {
+      return Err(Error::Other(format!(
+        "inline module is too large ({} bytes > max {})",
+        source.as_bytes().len(),
+        max_module_bytes
+      )));
+    }
+
+    self.load_inline_module(inline_id, base_url, source, max_module_bytes)?;
+    self.emit_bundle(inline_id)
+  }
+
+  fn emit_bundle(&self, entry_id: &str) -> Result<String> {
+    let mut closure: HashSet<String> = HashSet::new();
+    self.collect_transitive_closure(entry_id, &mut closure)?;
+
+    let mut module_ids: Vec<String> = closure.into_iter().collect();
+    module_ids.sort();
+
+    let mut out = String::new();
+    out.push_str(MODULE_RUNTIME_SOURCE);
+    out.push('\n');
+
+    for id in module_ids {
+      let Some(CachedModule::Loaded(module)) = self.cache.get(&id) else {
+        return Err(Error::Other(format!("module missing from cache: {id}")));
+      };
+      out.push_str("__fastrDefineModule(");
+      out.push_str(&js_string_literal(&id)?);
+      out.push_str(", function(exports, __import) {\n");
+      out.push_str("\"use strict\";\n");
+      out.push_str(&module.transformed_body);
+      if !module.transformed_body.ends_with('\n') {
+        out.push('\n');
+      }
+      out.push_str("});\n");
+    }
+
+    out.push_str("__fastrImportModule(");
+    out.push_str(&js_string_literal(entry_id)?);
+    out.push_str(");\n");
+
+    Ok(out)
+  }
+
+  fn collect_transitive_closure(&self, id: &str, out: &mut HashSet<String>) -> Result<()> {
+    if !out.insert(id.to_string()) {
+      return Ok(());
+    }
+    let Some(CachedModule::Loaded(module)) = self.cache.get(id) else {
+      return Err(Error::Other(format!("module not loaded: {id}")));
+    };
+    for dep in &module.dependencies {
+      self.collect_transitive_closure(dep, out)?;
+    }
+    Ok(())
+  }
+
+  fn load_inline_module(
+    &mut self,
+    inline_id: &str,
+    base_url: &str,
+    source: &str,
+    max_module_bytes: usize,
+  ) -> Result<()> {
+    if let Some(existing) = self.cache.get(inline_id) {
+      match existing {
+        CachedModule::Loading => return Ok(()),
+        CachedModule::Loaded(_) => return Ok(()),
+      }
+    }
+
+    self
+      .cache
+      .insert(inline_id.to_string(), CachedModule::Loading);
+    let result = (|| {
+      let transform = transform_module_source(inline_id, base_url, source)?;
+      for dep in &transform.dependencies {
+        self.load_external_module(dep, max_module_bytes)?;
+      }
+      self.cache.insert(
+        inline_id.to_string(),
+        CachedModule::Loaded(ModuleInfo {
+          transformed_body: transform.transformed_body,
+          dependencies: transform.dependencies,
+        }),
+      );
+      Ok(())
+    })();
+
+    if result.is_err() {
+      self.cache.remove(inline_id);
+    }
+    result
+  }
+
+  fn load_external_module(&mut self, url: &str, max_module_bytes: usize) -> Result<()> {
+    if let Some(existing) = self.cache.get(url) {
+      match existing {
+        CachedModule::Loading => return Ok(()),
+        CachedModule::Loaded(_) => return Ok(()),
+      }
+    }
+
+    self.cache.insert(url.to_string(), CachedModule::Loading);
+    let result = (|| {
+      let res = self.fetcher.fetch(url)?;
+      if res.bytes.len() > max_module_bytes {
+        return Err(Error::Other(format!(
+          "module {url} is too large ({} bytes > max {})",
+          res.bytes.len(),
+          max_module_bytes
+        )));
+      }
+      let source = String::from_utf8(res.bytes).map_err(|err| {
+        Error::Other(format!("module {url} response was not valid UTF-8: {err}"))
+      })?;
+
+      let transform = transform_module_source(url, url, &source)?;
+      for dep in &transform.dependencies {
+        self.load_external_module(dep, max_module_bytes)?;
+      }
+      self.cache.insert(
+        url.to_string(),
+        CachedModule::Loaded(ModuleInfo {
+          transformed_body: transform.transformed_body,
+          dependencies: transform.dependencies,
+        }),
+      );
+      Ok(())
+    })();
+
+    if result.is_err() {
+      self.cache.remove(url);
+    }
+    result
+  }
+}
+
+const MODULE_RUNTIME_SOURCE: &str = r#"
+if (!globalThis.__fastrModuleRegistry) {
+  // url -> { fn: (exports, __import) => void, exports: object, state: 0|1|2 }
+  globalThis.__fastrModuleRegistry = {};
+  globalThis.__fastrDefineModule = function (url, fn) {
+    var reg = globalThis.__fastrModuleRegistry;
+    if (reg[url]) return;
+    reg[url] = { fn: fn, exports: {}, state: 0 };
+  };
+  globalThis.__fastrImportModule = function (url) {
+    var reg = globalThis.__fastrModuleRegistry;
+    var rec = reg[url];
+    if (!rec) throw new Error("module not found: " + url);
+    if (rec.state === 2) return rec.exports;
+    if (rec.state === 1) return rec.exports; // circular import: return partial exports
+    rec.state = 1;
+    rec.fn(rec.exports, globalThis.__fastrImportModule);
+    rec.state = 2;
+    return rec.exports;
+  };
+}
+var __fastrDefineModule = globalThis.__fastrDefineModule;
+var __fastrImportModule = globalThis.__fastrImportModule;
+"#;
+
+fn js_string_literal(value: &str) -> Result<String> {
+  serde_json::to_string(value).map_err(|err| Error::Other(format!("failed to encode JS string: {err}")))
+}
+
+fn resolve_module_specifier(specifier: &str, base_url: &str) -> Result<String> {
+  // HTML's "resolve a module specifier" algorithm treats bare specifiers (those not starting with
+  // `/`, `./`, or `../` and not parseable as an absolute URL) as failures unless import maps are
+  // present. Import maps are out of scope for this milestone, so reject them.
+  let allowed_relative = specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../");
+  if allowed_relative {
+    return resolve_url(specifier, Some(base_url)).map_err(|err| Error::Other(format!("{err}")));
+  }
+
+  match resolve_url(specifier, None) {
+    Ok(abs) => Ok(abs),
+    Err(UrlResolveError::RelativeUrlWithoutBase) => Err(Error::Other(format!(
+      "unsupported bare module specifier {specifier:?} (import maps not implemented)"
+    ))),
+    Err(err) => Err(Error::Other(format!("{err}"))),
+  }
+}
+
+#[derive(Debug)]
+struct TransformOutput {
+  transformed_body: String,
+  dependencies: Vec<String>,
+}
+
+fn transform_module_source(module_id: &str, base_url: &str, source: &str) -> Result<TransformOutput> {
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Module,
+  };
+  let top: Node<TopLevel> = parse_with_options(source, opts).map_err(|err| {
+    Error::Other(format!("failed to parse module {module_id}: {err}"))
+  })?;
+
+  let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+  let mut hoisted: String = String::new();
+  let mut deps: Vec<String> = Vec::new();
+  let mut temp_idx: usize = 0;
+
+  for stmt in &top.stx.body {
+    match &*stmt.stx {
+      Stmt::Import(import_stmt) => {
+        let import = &import_stmt.stx;
+        if import.type_only {
+          replacements.push((stmt.loc.0, stmt.loc.1, "\n".to_string()));
+          continue;
+        }
+        let dep = resolve_module_specifier(&import.module, base_url)?;
+        deps.push(dep.clone());
+        hoisted.push_str(&emit_import_binding(import, &dep, &mut temp_idx)?);
+        hoisted.push('\n');
+        // Remove the original `import ...` statement; imports are hoisted.
+        replacements.push((stmt.loc.0, stmt.loc.1, "\n".to_string()));
+      }
+      Stmt::ExportList(export_stmt) => {
+        let export = &export_stmt.stx;
+        if export.type_only {
+          replacements.push((stmt.loc.0, stmt.loc.1, "\n".to_string()));
+          continue;
+        }
+
+        if let Some(from) = export.from.as_deref() {
+          // `export ... from "..."` behaves like a hoisted import.
+          let dep = resolve_module_specifier(from, base_url)?;
+          deps.push(dep.clone());
+          hoisted.push_str(&emit_export_from(export, &dep, &mut temp_idx)?);
+          hoisted.push('\n');
+          replacements.push((stmt.loc.0, stmt.loc.1, "\n".to_string()));
+        } else {
+          // Local export list (`export { foo as bar }`).
+          let replacement = emit_local_export_list(export)?;
+          replacements.push((stmt.loc.0, stmt.loc.1, replacement));
+        }
+      }
+      Stmt::ExportDefaultExpr(export_stmt) => {
+        let export: &ExportDefaultExprStmt = &export_stmt.stx;
+        let expr = slice_loc(source, export.expression.loc)?;
+        let replacement = format!("exports[\"default\"] = ({expr});\n");
+        replacements.push((stmt.loc.0, stmt.loc.1, replacement));
+      }
+      Stmt::VarDecl(var_decl) => {
+        let decl: &VarDecl = &var_decl.stx;
+        if !decl.export {
+          continue;
+        }
+        let stmt_text = slice_loc(source, stmt.loc)?;
+        let stripped = strip_export_prefix(stmt_text, false)?;
+        let mut replacement = String::new();
+        replacement.push_str(stripped);
+        if !replacement.ends_with('\n') {
+          replacement.push('\n');
+        }
+        for declarator in &decl.declarators {
+          let mut names = Vec::new();
+          collect_binding_idents(&declarator.pattern.stx, &mut names)?;
+          for name in names {
+            replacement.push_str("exports[");
+            replacement.push_str(&js_string_literal(&name)?);
+            replacement.push_str("] = ");
+            replacement.push_str(&name);
+            replacement.push_str(";\n");
+          }
+        }
+        replacements.push((stmt.loc.0, stmt.loc.1, replacement));
+      }
+      Stmt::FunctionDecl(func_decl) => {
+        let decl: &FuncDecl = &func_decl.stx;
+        if !decl.export && !decl.export_default {
+          continue;
+        }
+        let stmt_text = slice_loc(source, stmt.loc)?;
+
+        let mut replacement = String::new();
+        if decl.export_default {
+          if let Some(name) = decl.name.as_ref().map(|n| n.stx.name.clone()) {
+            replacement.push_str(&strip_export_prefix(stmt_text, true)?);
+            if !replacement.ends_with('\n') {
+              replacement.push('\n');
+            }
+            replacement.push_str("exports[\"default\"] = ");
+            replacement.push_str(&name);
+            replacement.push_str(";\n");
+          } else {
+            // `export default function () {}` => function expression assigned to default.
+            let func_text = slice_loc(source, decl.function.loc)?;
+            replacement.push_str("exports[\"default\"] = (");
+            replacement.push_str(func_text);
+            replacement.push_str(");\n");
+          }
+        } else {
+          let Some(name) = decl.name.as_ref().map(|n| n.stx.name.clone()) else {
+            return Err(Error::Other(format!(
+              "exported function declaration in {module_id} was missing a name"
+            )));
+          };
+          replacement.push_str(&strip_export_prefix(stmt_text, false)?);
+          if !replacement.ends_with('\n') {
+            replacement.push('\n');
+          }
+          replacement.push_str("exports[");
+          replacement.push_str(&js_string_literal(&name)?);
+          replacement.push_str("] = ");
+          replacement.push_str(&name);
+          replacement.push_str(";\n");
+        }
+        replacements.push((stmt.loc.0, stmt.loc.1, replacement));
+      }
+      Stmt::ClassDecl(class_decl) => {
+        let decl: &ClassDecl = &class_decl.stx;
+        if !decl.export && !decl.export_default {
+          continue;
+        }
+        let stmt_text = slice_loc(source, stmt.loc)?;
+
+        let mut replacement = String::new();
+        if decl.export_default {
+          if let Some(name) = decl.name.as_ref().map(|n| n.stx.name.clone()) {
+            replacement.push_str(&strip_export_prefix(stmt_text, true)?);
+            if !replacement.ends_with('\n') {
+              replacement.push('\n');
+            }
+            replacement.push_str("exports[\"default\"] = ");
+            replacement.push_str(&name);
+            replacement.push_str(";\n");
+          } else {
+            // `export default class {}` => class expression assigned to default.
+            // The class *body* is part of the original statement; strip the leading export keywords
+            // and treat it as an expression.
+            let stripped = strip_export_prefix(stmt_text, true)?;
+            replacement.push_str("exports[\"default\"] = (");
+            replacement.push_str(stripped.trim_start());
+            replacement.push_str(");\n");
+          }
+        } else {
+          let Some(name) = decl.name.as_ref().map(|n| n.stx.name.clone()) else {
+            return Err(Error::Other(format!(
+              "exported class declaration in {module_id} was missing a name"
+            )));
+          };
+          replacement.push_str(&strip_export_prefix(stmt_text, false)?);
+          if !replacement.ends_with('\n') {
+            replacement.push('\n');
+          }
+          replacement.push_str("exports[");
+          replacement.push_str(&js_string_literal(&name)?);
+          replacement.push_str("] = ");
+          replacement.push_str(&name);
+          replacement.push_str(";\n");
+        }
+        replacements.push((stmt.loc.0, stmt.loc.1, replacement));
+      }
+      _ => {}
+    }
+  }
+
+  replacements.sort_by_key(|(start, _, _)| *start);
+  // Ensure replacements do not overlap.
+  for w in replacements.windows(2) {
+    let (a_start, a_end, _) = w[0];
+    let (b_start, _, _) = w[1];
+    if b_start < a_end {
+      return Err(Error::Other(format!(
+        "module transform produced overlapping replacements in {module_id}: {a_start}..{a_end} overlaps {b_start}"
+      )));
+    }
+  }
+
+  let mut rewritten = String::new();
+  let mut cursor = 0usize;
+  for (start, end, repl) in replacements {
+    if start > cursor {
+      rewritten.push_str(&source[cursor..start]);
+    }
+    rewritten.push_str(&repl);
+    cursor = end;
+  }
+  if cursor < source.len() {
+    rewritten.push_str(&source[cursor..]);
+  }
+
+  let mut transformed_body = String::new();
+  transformed_body.push_str(&hoisted);
+  transformed_body.push_str(&rewritten);
+
+  Ok(TransformOutput {
+    transformed_body,
+    dependencies: deps,
+  })
+}
+
+fn slice_loc<'a>(source: &'a str, loc: parse_js::loc::Loc) -> Result<&'a str> {
+  let start = loc.0;
+  let end = loc.1;
+  if start > end || end > source.len() {
+    return Err(Error::Other(format!(
+      "invalid source range {start}..{end} for source length {}",
+      source.len()
+    )));
+  }
+  Ok(&source[start..end])
+}
+
+fn strip_export_prefix(stmt_text: &str, export_default: bool) -> Result<&str> {
+  let trimmed = stmt_text.trim_start();
+  let rest = trimmed
+    .strip_prefix("export")
+    .ok_or_else(|| Error::Other("expected statement to start with export".to_string()))?;
+  let rest = rest.trim_start();
+  if export_default {
+    let rest = rest
+      .strip_prefix("default")
+      .ok_or_else(|| Error::Other("expected export default".to_string()))?;
+    Ok(rest.trim_start())
+  } else {
+    Ok(rest)
+  }
+}
+
+fn emit_import_binding(import: &ImportStmt, resolved_url: &str, temp_idx: &mut usize) -> Result<String> {
+  let url_lit = js_string_literal(resolved_url)?;
+  if import.default.is_none() && import.names.is_none() {
+    return Ok(format!("__import({url_lit});"));
+  }
+
+  let tmp_name = format!("__m{temp_idx}");
+  *temp_idx = temp_idx.saturating_add(1);
+
+  let mut out = String::new();
+  out.push_str("var ");
+  out.push_str(&tmp_name);
+  out.push_str(" = __import(");
+  out.push_str(&url_lit);
+  out.push_str(");\n");
+
+  if let Some(default_decl) = import.default.as_ref() {
+    let name = pat_decl_ident(default_decl)?;
+    out.push_str("var ");
+    out.push_str(name);
+    out.push_str(" = ");
+    out.push_str(&tmp_name);
+    out.push_str("[\"default\"];");
+    out.push('\n');
+  }
+
+  if let Some(names) = import.names.as_ref() {
+    match names {
+      ImportNames::All(alias) => {
+        let name = pat_decl_ident(alias)?;
+        out.push_str("var ");
+        out.push_str(name);
+        out.push_str(" = ");
+        out.push_str(&tmp_name);
+        out.push_str(";\n");
+      }
+      ImportNames::Specific(list) => {
+        for item in list {
+          if item.stx.type_only {
+            continue;
+          }
+          let importable = item.stx.importable.as_str();
+          let alias = pat_decl_ident(&item.stx.alias)?;
+          out.push_str("var ");
+          out.push_str(alias);
+          out.push_str(" = ");
+          out.push_str(&tmp_name);
+          out.push_str("[");
+          out.push_str(&js_string_literal(importable)?);
+          out.push_str("];\n");
+        }
+      }
+    }
+  }
+
+  Ok(out)
+}
+
+fn emit_export_from(export: &ExportListStmt, resolved_url: &str, temp_idx: &mut usize) -> Result<String> {
+  let url_lit = js_string_literal(resolved_url)?;
+  match &export.names {
+    ExportNames::Specific(list) => {
+      let tmp_name = format!("__m{temp_idx}");
+      *temp_idx = temp_idx.saturating_add(1);
+      let mut out = String::new();
+      out.push_str("var ");
+      out.push_str(&tmp_name);
+      out.push_str(" = __import(");
+      out.push_str(&url_lit);
+      out.push_str(");\n");
+      for name in list {
+        if name.stx.type_only {
+          continue;
+        }
+        let imported = name.stx.exportable.as_str();
+        let exported = &name.stx.alias.stx.name;
+        out.push_str("exports[");
+        out.push_str(&js_string_literal(exported)?);
+        out.push_str("] = ");
+        out.push_str(&tmp_name);
+        out.push_str("[");
+        out.push_str(&js_string_literal(imported)?);
+        out.push_str("];\n");
+      }
+      Ok(out)
+    }
+    ExportNames::All(Some(alias)) => {
+      let name = &alias.stx.name;
+      Ok(format!("exports[{}] = __import({});", js_string_literal(name)?, url_lit))
+    }
+    ExportNames::All(None) => {
+      // Best-effort `export * from "module"`: copy enumerable properties excluding `default`.
+      let tmp_name = format!("__m{temp_idx}");
+      *temp_idx = temp_idx.saturating_add(1);
+      Ok(format!(
+        "var {tmp_name} = __import({url_lit});\nfor (var __k in {tmp_name}) {{ if (__k !== \"default\") exports[__k] = {tmp_name}[__k]; }}\n"
+      ))
+    }
+  }
+}
+
+fn emit_local_export_list(export: &ExportListStmt) -> Result<String> {
+  let ExportNames::Specific(list) = &export.names else {
+    return Err(Error::Other(
+      "local export list must be `export { ... }`".to_string(),
+    ));
+  };
+
+  let mut out = String::new();
+  for name in list {
+    if name.stx.type_only {
+      continue;
+    }
+    let local = match &name.stx.exportable {
+      ModuleExportImportName::Ident(id) => id.as_str(),
+      ModuleExportImportName::Str(_) => {
+        return Err(Error::Other(
+          "string-named local exports are not supported".to_string(),
+        ));
+      }
+    };
+    let exported = &name.stx.alias.stx.name;
+    out.push_str("exports[");
+    out.push_str(&js_string_literal(exported)?);
+    out.push_str("] = ");
+    out.push_str(local);
+    out.push_str(";\n");
+  }
+  Ok(out)
+}
+
+fn pat_decl_ident(decl: &Node<PatDecl>) -> Result<&str> {
+  match &*decl.stx.pat.stx {
+    Pat::Id(id) => Ok(id.stx.name.as_str()),
+    other => Err(Error::Other(format!(
+      "unsupported import binding pattern: {other:?}"
+    ))),
+  }
+}
+
+fn collect_binding_idents(decl: &PatDecl, out: &mut Vec<String>) -> Result<()> {
+  collect_pat_idents(&decl.pat, out)
+}
+
+fn collect_pat_idents(pat: &Node<Pat>, out: &mut Vec<String>) -> Result<()> {
+  match &*pat.stx {
+    Pat::Id(id) => out.push(id.stx.name.clone()),
+    Pat::Arr(arr) => {
+      for elem in &arr.stx.elements {
+        if let Some(elem) = elem {
+          collect_pat_idents(&elem.target, out)?;
+        }
+      }
+      if let Some(rest) = arr.stx.rest.as_ref() {
+        collect_pat_idents(rest, out)?;
+      }
+    }
+    Pat::Obj(obj) => {
+      for prop in &obj.stx.properties {
+        collect_pat_idents(&prop.stx.target, out)?;
+      }
+      if let Some(rest) = obj.stx.rest.as_ref() {
+        collect_pat_idents(rest, out)?;
+      }
+    }
+    Pat::AssignTarget(_) => {
+      return Err(Error::Other(
+        "unsupported export binding pattern (assign target)".to_string(),
+      ));
+    }
+  }
+  Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::resource::FetchedResource;
+  use std::collections::HashMap;
+  use std::sync::Mutex;
+
+  #[derive(Default)]
+  struct MapFetcher {
+    entries: Mutex<HashMap<String, Vec<u8>>>,
+    counts: Mutex<HashMap<String, usize>>,
+  }
+
+  impl MapFetcher {
+    fn insert(&self, url: &str, source: &str) {
+      self
+        .entries
+        .lock()
+        .unwrap()
+        .insert(url.to_string(), source.as_bytes().to_vec());
+    }
+
+    fn count(&self, url: &str) -> usize {
+      *self.counts.lock().unwrap().get(url).unwrap_or(&0)
+    }
+  }
+
+  impl ResourceFetcher for MapFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      *self
+        .counts
+        .lock()
+        .unwrap()
+        .entry(url.to_string())
+        .or_insert(0) += 1;
+      let bytes = self
+        .entries
+        .lock()
+        .unwrap()
+        .get(url)
+        .cloned()
+        .ok_or_else(|| Error::Other(format!("missing fixture: {url}")))?;
+      Ok(FetchedResource::with_final_url(bytes, None, Some(url.to_string())))
+    }
+  }
+
+  #[test]
+  fn resolves_relative_module_specifier_against_base_url() {
+    let resolved = resolve_module_specifier("./dep.js", "https://example.com/dir/main.js").unwrap();
+    assert_eq!(resolved, "https://example.com/dir/dep.js");
+  }
+
+  #[test]
+  fn rejects_bare_specifiers_without_import_maps() {
+    let err = resolve_module_specifier("react", "https://example.com/dir/main.js").unwrap_err();
+    assert!(
+      err.to_string().contains("bare module specifier"),
+      "got: {err}"
+    );
+  }
+
+  #[test]
+  fn caches_fetched_modules_across_imports() {
+    let fetcher = Arc::new(MapFetcher::default());
+    fetcher.insert(
+      "https://example.com/main.js",
+      r#"import "./dep.js"; import "./dep.js"; globalThis.__ok = true;"#,
+    );
+    fetcher.insert("https://example.com/dep.js", r#"globalThis.__dep = true;"#);
+
+    let mut loader = ModuleGraphLoader::new(fetcher.clone());
+    let _bundle = loader
+      .build_bundle_for_url("https://example.com/main.js", 1024 * 1024)
+      .unwrap();
+
+    assert_eq!(fetcher.count("https://example.com/dep.js"), 1);
+  }
+
+  #[test]
+  fn handles_circular_imports_without_infinite_recursion() {
+    let fetcher = Arc::new(MapFetcher::default());
+    fetcher.insert("https://example.com/a.js", r#"import "./b.js";"#);
+    fetcher.insert("https://example.com/b.js", r#"import "./a.js";"#);
+
+    let mut loader = ModuleGraphLoader::new(fetcher.clone());
+    let bundle = loader
+      .build_bundle_for_url("https://example.com/a.js", 1024 * 1024)
+      .unwrap();
+
+    assert!(bundle.contains("__fastrDefineModule"));
+    assert_eq!(fetcher.count("https://example.com/a.js"), 1);
+    assert_eq!(fetcher.count("https://example.com/b.js"), 1);
+  }
+}

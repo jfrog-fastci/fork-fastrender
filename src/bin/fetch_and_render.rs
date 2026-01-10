@@ -30,7 +30,7 @@ use fastrender::html::base_url_tracker::BaseUrlTracker;
 use fastrender::image_output::encode_image;
 use fastrender::js::{
   determine_script_type_dom2, CurrentScriptHost, EventLoop, RunLimits, RunUntilIdleOutcome,
-  RunUntilIdleStopReason, ScriptType, TaskSource, WindowHostState,
+  RunUntilIdleStopReason, ScriptType, TaskSource, WindowHostState, ModuleGraphLoader,
 };
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::resource::normalize_user_agent_for_log;
@@ -48,7 +48,9 @@ use fastrender::resource::DEFAULT_USER_AGENT;
 use fastrender::OutputFormat;
 use fastrender::Result;
 use std::error::Error;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
@@ -420,6 +422,7 @@ fn render_page(
     };
     let mut event_loop = EventLoop::<WindowHostState>::new();
     let mut scripts_queued = 0usize;
+    let module_loader = Rc::new(RefCell::new(ModuleGraphLoader::new(fetcher.clone())));
 
     #[derive(Clone, Copy)]
     struct DomScanState {
@@ -461,104 +464,227 @@ fn render_page(
             state.in_template || state.in_shadow_root,
           );
 
-          // Execute classic HTML <script> elements.
+          // Execute HTML <script> elements (classic + module).
           if tag_name.eq_ignore_ascii_case("script")
             && (namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE)
             && dom.is_connected_for_scripting(node_id)
           {
-            if determine_script_type_dom2(dom, node_id) != ScriptType::Classic {
-              log("JavaScript: skipping non-classic <script> (only classic scripts supported)");
-            } else {
-              let src_attr_present = dom.has_attribute(node_id, "src").unwrap_or(false);
-              if src_attr_present {
-                // HTML semantics: presence of `src` suppresses inline execution, even if empty/invalid.
-                let raw_src = dom.get_attribute(node_id, "src").ok().flatten().unwrap_or("");
-                if let Some(resolved_src) = base_url_tracker.resolve_script_src(raw_src) {
-                  let charset_attr = dom.get_attribute(node_id, "charset").ok().flatten();
-                  let req = FetchRequest::new(resolved_src.as_str(), FetchDestination::Other)
-                    .with_referrer_url(base_hint.as_str());
+            match determine_script_type_dom2(dom, node_id) {
+              ScriptType::Classic => {
+                let src_attr_present = dom.has_attribute(node_id, "src").unwrap_or(false);
+                if src_attr_present {
+                  // HTML semantics: presence of `src` suppresses inline execution, even if empty/invalid.
+                  let raw_src = dom.get_attribute(node_id, "src").ok().flatten().unwrap_or("");
+                  if let Some(resolved_src) = base_url_tracker.resolve_script_src(raw_src) {
+                    let charset_attr = dom.get_attribute(node_id, "charset").ok().flatten();
+                    let req = FetchRequest::new(resolved_src.as_str(), FetchDestination::Other)
+                      .with_referrer_url(base_hint.as_str());
 
-                  let fetched = if max_script_bytes == usize::MAX {
-                    fetcher.fetch_with_request(req)
-                  } else {
-                    // Fetch at most `max_script_bytes + 1` so we can deterministically decide whether
-                    // the script exceeds the configured budget without downloading arbitrary amounts.
-                    fetcher.fetch_partial_with_request(req, max_script_bytes.saturating_add(1))
-                  };
+                    let fetched = if max_script_bytes == usize::MAX {
+                      fetcher.fetch_with_request(req)
+                    } else {
+                      // Fetch at most `max_script_bytes + 1` so we can deterministically decide whether
+                      // the script exceeds the configured budget without downloading arbitrary amounts.
+                      fetcher.fetch_partial_with_request(req, max_script_bytes.saturating_add(1))
+                    };
 
-                  match fetched {
-                    Ok(fetched) => {
-                      if max_script_bytes != usize::MAX && fetched.bytes.len() > max_script_bytes {
-                        log(&format!(
-                          "JavaScript: skipping external script ({} bytes > max {}) ({resolved_src})",
-                          fetched.bytes.len(),
-                          max_script_bytes
-                        ));
-                      } else {
-                        let script_text = decode_external_classic_script_bytes(
-                          &fetched.bytes,
-                          fetched.content_type.as_deref(),
-                          charset_attr,
-                        );
-                        let script_name: Arc<str> =
-                          Arc::from(fetched.final_url.clone().unwrap_or(resolved_src));
-                        let script_text: Arc<str> = Arc::from(script_text);
+                    match fetched {
+                      Ok(fetched) => {
+                        if max_script_bytes != usize::MAX && fetched.bytes.len() > max_script_bytes {
+                          log(&format!(
+                            "JavaScript: skipping external script ({} bytes > max {}) ({resolved_src})",
+                            fetched.bytes.len(),
+                            max_script_bytes
+                          ));
+                        } else {
+                          let script_text = decode_external_classic_script_bytes(
+                            &fetched.bytes,
+                            fetched.content_type.as_deref(),
+                            charset_attr,
+                          );
+                          let script_name: Arc<str> =
+                            Arc::from(fetched.final_url.clone().unwrap_or(resolved_src));
+                          let script_text: Arc<str> = Arc::from(script_text);
 
-                        if let Err(err) = queue_classic_script_task(
-                          &mut event_loop,
-                          run_limits,
-                          node_id,
-                          script_name,
-                          script_text,
-                        ) {
-                          log(&format!("JavaScript: failed to queue script task: {err}"));
-                          break;
+                          if let Err(err) = queue_classic_script_task(
+                            &mut event_loop,
+                            run_limits,
+                            node_id,
+                            script_name,
+                            script_text,
+                          ) {
+                            log(&format!("JavaScript: failed to queue script task: {err}"));
+                            break;
+                          }
+                          scripts_queued += 1;
                         }
-                        scripts_queued += 1;
+                      }
+                      Err(err) => {
+                        log(&format!(
+                          "JavaScript: failed to fetch external script {resolved_src} (continuing): {err}"
+                        ));
+                        // Fetch failures should not crash the render; skip and keep going.
                       }
                     }
-                    Err(err) => {
-                      log(&format!(
-                        "JavaScript: failed to fetch external script {resolved_src} (continuing): {err}"
-                      ));
-                      // Fetch failures should not crash the render; skip and keep going.
+                  } else {
+                    log("JavaScript: skipping <script src> with empty/invalid/unresolvable src");
+                  }
+                } else {
+                  // Inline classic script.
+                  let mut inline_text = String::new();
+                  for &child_id in &node.children {
+                    if let Dom2NodeKind::Text { content } = &dom.node(child_id).kind {
+                      inline_text.push_str(content);
                     }
                   }
-                } else {
-                  log("JavaScript: skipping <script src> with empty/invalid/unresolvable src");
-                }
-              } else {
-                // Inline script.
-                let mut inline_text = String::new();
-                for &child_id in &node.children {
-                  if let Dom2NodeKind::Text { content } = &dom.node(child_id).kind {
-                    inline_text.push_str(content);
+
+                  if inline_text.as_bytes().len() > max_script_bytes {
+                    log(&format!(
+                      "JavaScript: skipping inline script ({} bytes > max {})",
+                      inline_text.as_bytes().len(),
+                      max_script_bytes
+                    ));
+                  } else {
+                    let script_name: Arc<str> =
+                      Arc::from(format!("<inline script {}>", node_id.index()));
+                    let script_text: Arc<str> = Arc::from(inline_text);
+
+                    if let Err(err) = queue_classic_script_task(
+                      &mut event_loop,
+                      run_limits,
+                      node_id,
+                      script_name,
+                      script_text,
+                    ) {
+                      log(&format!("JavaScript: failed to queue script task: {err}"));
+                      break;
+                    }
+                    scripts_queued += 1;
                   }
                 }
+              }
+              ScriptType::Module => {
+                let src_attr_present = dom.has_attribute(node_id, "src").unwrap_or(false);
+                if src_attr_present {
+                  let raw_src = dom.get_attribute(node_id, "src").ok().flatten().unwrap_or("");
+                  if let Some(resolved_src) = base_url_tracker.resolve_script_src(raw_src) {
+                    let loader = Rc::clone(&module_loader);
+                    let entry_url: Arc<str> = Arc::from(resolved_src.clone());
+                    let script_name: Arc<str> =
+                      Arc::from(format!("<module script {}>", resolved_src));
+                    if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+                      let prev = host.current_script_state().borrow().current_script;
+                      host.current_script_state().borrow_mut().current_script = None;
 
-                if inline_text.as_bytes().len() > max_script_bytes {
-                  log(&format!(
-                    "JavaScript: skipping inline script ({} bytes > max {})",
-                    inline_text.as_bytes().len(),
-                    max_script_bytes
-                  ));
-                } else {
-                  let script_name: Arc<str> =
-                    Arc::from(format!("<inline script {}>", node_id.index()));
-                  let script_text: Arc<str> = Arc::from(inline_text);
+                      let bundle = loader
+                        .borrow_mut()
+                        .build_bundle_for_url(&entry_url, max_script_bytes)?;
+                      let bundle_text: Arc<str> = Arc::from(bundle);
 
-                  if let Err(err) = queue_classic_script_task(
-                    &mut event_loop,
-                    run_limits,
-                    node_id,
-                    script_name,
-                    script_text,
-                  ) {
-                    log(&format!("JavaScript: failed to queue script task: {err}"));
-                    break;
+                      {
+                        let window = host.window_mut();
+                        window.reset_interrupt();
+                        window.vm_mut().set_budget(js_budget_for_script(run_limits));
+                      }
+                      let result = host.exec_script_with_name_in_event_loop(
+                        event_loop,
+                        script_name.clone(),
+                        bundle_text.clone(),
+                      );
+                      {
+                        let window = host.window_mut();
+                        window
+                          .vm_mut()
+                          .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                      }
+
+                      host.current_script_state().borrow_mut().current_script = prev;
+
+                      result
+                        .map(|_| ())
+                        .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*script_name)))
+                    }) {
+                      log(&format!("JavaScript: failed to queue module script task: {err}"));
+                      break;
+                    }
+                    scripts_queued += 1;
+                  } else {
+                    log("JavaScript: skipping <script type=module src> with empty/invalid/unresolvable src");
                   }
-                  scripts_queued += 1;
+                } else {
+                  // Inline module script.
+                  let mut inline_text = String::new();
+                  for &child_id in &node.children {
+                    if let Dom2NodeKind::Text { content } = &dom.node(child_id).kind {
+                      inline_text.push_str(content);
+                    }
+                  }
+
+                  if inline_text.as_bytes().len() > max_script_bytes {
+                    log(&format!(
+                      "JavaScript: skipping inline module script ({} bytes > max {})",
+                      inline_text.as_bytes().len(),
+                      max_script_bytes
+                    ));
+                  } else {
+                    let loader = Rc::clone(&module_loader);
+                    let inline_id: Arc<str> =
+                      Arc::from(format!("{base_hint}#inline-module-{}", node_id.index()));
+                    let inline_base_url: Arc<str> = Arc::from(
+                      base_url_tracker
+                        .current_base_url()
+                        .unwrap_or_else(|| base_hint.clone()),
+                    );
+                    let script_name: Arc<str> =
+                      Arc::from(format!("<inline module script {}>", node_id.index()));
+                    let script_text: Arc<str> = Arc::from(inline_text);
+                    if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+                      let prev = host.current_script_state().borrow().current_script;
+                      host.current_script_state().borrow_mut().current_script = None;
+
+                      let bundle = loader.borrow_mut().build_bundle_for_inline(
+                        &inline_id,
+                        &inline_base_url,
+                        &script_text,
+                        max_script_bytes,
+                      )?;
+                      let bundle_text: Arc<str> = Arc::from(bundle);
+
+                      {
+                        let window = host.window_mut();
+                        window.reset_interrupt();
+                        window.vm_mut().set_budget(js_budget_for_script(run_limits));
+                      }
+                      let result = host.exec_script_with_name_in_event_loop(
+                        event_loop,
+                        script_name.clone(),
+                        bundle_text.clone(),
+                      );
+                      {
+                        let window = host.window_mut();
+                        window
+                          .vm_mut()
+                          .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                      }
+
+                      host.current_script_state().borrow_mut().current_script = prev;
+
+                      result
+                        .map(|_| ())
+                        .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*script_name)))
+                    }) {
+                      log(&format!("JavaScript: failed to queue module script task: {err}"));
+                      break;
+                    }
+                    scripts_queued += 1;
+                  }
                 }
+              }
+              ScriptType::ImportMap => {
+                log("JavaScript: skipping <script type=importmap> (not supported yet)");
+              }
+              ScriptType::Unknown => {
+                log("JavaScript: skipping <script> (unsupported type)");
               }
             }
           }

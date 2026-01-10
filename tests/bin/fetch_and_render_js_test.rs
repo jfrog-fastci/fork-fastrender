@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 #[test]
@@ -128,5 +129,54 @@ html.js-enabled body { background: rgb(0, 255, 0); }
   assert!(
     js_pixel.0[1] > 200 && js_pixel.0[0] < 80,
     "JS run should flip to the green background from external script"
+  );
+}
+
+#[test]
+fn js_flag_executes_module_script_and_mutates_dom() {
+  let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/module_simple");
+  let html_path = fixture_dir.join("index.html");
+  assert!(html_path.exists(), "fixture missing: {}", html_path.display());
+
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let status = Command::new(env!("CARGO_BIN_EXE_fetch_and_render"))
+    .args([&url, no_js_png.to_str().unwrap()])
+    .args(["--viewport", "64x64"])
+    .status()
+    .expect("run fetch_and_render (no js)");
+  assert!(
+    status.success(),
+    "baseline render should exit successfully without --js"
+  );
+
+  let status = Command::new(env!("CARGO_BIN_EXE_fetch_and_render"))
+    .args(["--js", &url, js_png.to_str().unwrap()])
+    .args(["--viewport", "64x64"])
+    .status()
+    .expect("run fetch_and_render --js");
+  assert!(
+    status.success(),
+    "JS render should exit successfully with --js"
+  );
+
+  let no_js_image = image::open(&no_js_png)
+    .expect("open baseline render")
+    .into_rgba8();
+  let js_image = image::open(&js_png).expect("open JS render").into_rgba8();
+
+  let no_js_pixel = no_js_image.get_pixel(0, 0);
+  let js_pixel = js_image.get_pixel(0, 0);
+
+  assert!(
+    no_js_pixel.0[0] > 200 && no_js_pixel.0[1] < 80,
+    "baseline run should keep the red background from html.no-js"
+  );
+  assert!(
+    js_pixel.0[1] > 200 && js_pixel.0[0] < 80,
+    "JS run should flip to the green background from html.js-enabled"
   );
 }
