@@ -8897,17 +8897,16 @@ impl Painter {
 
     let render_w = dest_w_device.ceil().max(1.0) as u32;
     let render_h = dest_h_device.ceil().max(1.0) as u32;
-    let pixmap = match self
-      .image_cache
-      .render_svg_pixmap_at_size_with_injected_style(
-        content,
-        insert_pos,
-        injected_markup,
-        render_w,
-        render_h,
-        "inline-svg",
-        self.scale,
-      ) {
+    let pixmap = self.image_cache.render_svg_pixmap_at_size_with_injected_style(
+      content,
+      insert_pos,
+      injected_markup,
+      render_w,
+      render_h,
+      "inline-svg",
+      self.scale,
+    );
+    let pixmap = match pixmap {
       Ok(pixmap) => pixmap,
       Err(_) => return false,
     };

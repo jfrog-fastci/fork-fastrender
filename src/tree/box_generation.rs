@@ -2367,10 +2367,17 @@ pub fn collect_svg_filter_defs(styled: &StyledNode) -> HashMap<String, String> {
   filters
 }
 
-/// Collect serialized SVG id definitions required by fragment-only CSS masks and clip paths.
+/// Collect serialized SVG id definitions required by fragment-only CSS masks, clip paths, and
+/// inline SVG cross-root references.
 ///
 /// This powers `mask-image: url(#id)` and `clip-path: url(#id)` by serializing the referenced SVG
 /// element (and any other defs it references via `href="#..."`, `url(#...)`, etc.).
+///
+/// It also supports SVG sprite-sheet patterns where a rendered inline `<svg>` references an `id`
+/// defined in a different `<svg>` element in the same HTML document (e.g. `<use href="#icon">`,
+/// `fill="url(#grad)"`). FastRender rasterizes each `<svg>` as an isolated SVG document, so we
+/// collect referenced ids at document scope and later inject the required fragments before
+/// rasterizing.
 ///
 /// We inline computed SVG presentation properties (fill/stroke/opacity/etc.) during serialization
 /// so downstream rasterizers (resvg) do not need access to the full document CSS cascade.
@@ -2489,6 +2496,56 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
     }
   }
 
+  fn collect_defined_svg_ids(styled: &StyledNode, out: &mut HashSet<String>) {
+    if let crate::dom::DomNodeType::Element { namespace, .. } = &styled.node.node_type {
+      if namespace == SVG_NAMESPACE {
+        if let Some(id) = styled.node.get_attribute_ref("id").filter(|id| !id.is_empty()) {
+          out.insert(id.to_string());
+        }
+      }
+    }
+    for child in &styled.children {
+      collect_defined_svg_ids(child, out);
+    }
+  }
+
+  fn collect_requested_svg_ids_from_replaced_inline_svgs(
+    styled: &StyledNode,
+    out: &mut HashSet<String>,
+  ) {
+    // Inline `<svg>` elements are treated as replaced content by box generation (except when
+    // `display: contents`). Since FastRender rasterizes each `<svg>` subtree as an isolated SVG
+    // document, same-document fragment references that point outside the subtree need to be
+    // resolved via a document-level registry and injected at paint time.
+    let mut stack: Vec<&StyledNode> = vec![styled];
+    while let Some(node) = stack.pop() {
+      if node.styles.display == Display::None {
+        continue;
+      }
+      if let crate::dom::DomNodeType::Element { tag_name, .. } = &node.node.node_type {
+        if tag_name.eq_ignore_ascii_case("svg") && node.styles.display != Display::Contents {
+          let mut referenced = HashSet::new();
+          collect_referenced_svg_ids(node, false, &mut referenced);
+          if !referenced.is_empty() {
+            let mut defined = HashSet::new();
+            collect_defined_svg_ids(node, &mut defined);
+            for id in referenced {
+              if !defined.contains(&id) {
+                out.insert(id);
+              }
+            }
+          }
+          // Do not descend into children of a replaced `<svg>`; its subtree will be rasterized as
+          // a single image.
+          continue;
+        }
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+  }
+
   struct IndexedNode<'a> {
     node: &'a StyledNode,
     namespaces: Vec<(String, String)>,
@@ -2581,6 +2638,7 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
 
   let mut requested = HashSet::new();
   collect_requested_svg_id_defs(styled, &mut requested);
+  collect_requested_svg_ids_from_replaced_inline_svgs(styled, &mut requested);
   if requested.is_empty() {
     return HashMap::new();
   }
