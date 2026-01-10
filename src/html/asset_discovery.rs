@@ -201,11 +201,26 @@ fn link_rel_is_preload_image(rel_value: &str, as_value: Option<&str>) -> bool {
 
 /// Best-effort extraction of subresource URLs from raw HTML.
 ///
-/// All returned URLs are resolved against `base_url` using [`resolve_href`]. Discovery is
-/// deterministic (input-order, first occurrence wins) and bounded (per-category caps and
-/// `srcset` candidate limits).
+/// All returned URLs are resolved against `base_url` using [`resolve_href`].
+///
+/// `base_url` should be the document's **effective** base URL (i.e. after applying any
+/// `<base href>` element). If you only have a document URL, prefer
+/// [`discover_html_asset_urls_with_base_hint`], which will compute the effective base URL before
+/// discovering assets.
+///
+/// Discovery is deterministic (input-order, first occurrence wins) and bounded (per-category caps
+/// and `srcset` candidate limits).
 pub fn discover_html_asset_urls(html: &str, base_url: &str) -> HtmlAssetUrls {
   discover_html_asset_urls_with_srcset_limit(html, base_url, MAX_SRCSET_CANDIDATES)
+}
+
+/// Best-effort extraction of subresource URLs from raw HTML.
+///
+/// Like [`discover_html_asset_urls`], but accepts a document URL "hint" and computes the effective
+/// base URL (respecting `<base href>`) before resolving asset URLs.
+pub fn discover_html_asset_urls_with_base_hint(html: &str, base_hint: &str) -> HtmlAssetUrls {
+  let base_url = crate::html::infer_base_url(html, base_hint);
+  discover_html_asset_urls_with_srcset_limit(html, base_url.as_ref(), MAX_SRCSET_CANDIDATES)
 }
 
 /// Best-effort extraction of subresource URLs from raw HTML.
@@ -741,6 +756,49 @@ mod tests {
     assert!(
       out.documents.is_empty(),
       "data-src iframe should not be discovered"
+    );
+  }
+
+  #[test]
+  fn discover_html_asset_urls_with_base_hint_respects_base_href() {
+    let html = r#"
+      <html>
+        <head><base href="/static/"></head>
+        <body>
+          <img src="img.png">
+          <iframe src="frame.html"></iframe>
+        </body>
+      </html>
+    "#;
+    let out = discover_html_asset_urls_with_base_hint(html, "https://example.com/page.html");
+    assert_eq!(
+      out.images,
+      vec!["https://example.com/static/img.png".to_string()]
+    );
+    assert_eq!(
+      out.documents,
+      vec!["https://example.com/static/frame.html".to_string()]
+    );
+  }
+
+  #[test]
+  fn discover_html_asset_urls_with_base_hint_ignores_base_inside_template_or_script() {
+    let html = r#"
+      <html>
+        <head>
+          <template><base href="/poison-template/"></template>
+          <script>var s = '<base href="/poison-script/">';</script>
+          <base href="/static/">
+        </head>
+        <body>
+          <img src="img.png">
+        </body>
+      </html>
+    "#;
+    let out = discover_html_asset_urls_with_base_hint(html, "https://example.com/page.html");
+    assert_eq!(
+      out.images,
+      vec!["https://example.com/static/img.png".to_string()]
     );
   }
 }

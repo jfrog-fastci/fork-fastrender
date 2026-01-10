@@ -20,6 +20,7 @@ pub mod viewport;
 
 pub use favicon::find_document_favicon_url;
 pub use title::find_document_title;
+pub use crate::css::loader::infer_base_url;
 
 use crate::css::loader::resolve_href;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
