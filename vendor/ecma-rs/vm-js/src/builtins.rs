@@ -341,7 +341,8 @@ pub fn object_define_property(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
 
-  let target = require_object(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = scope.to_object(vm, host, hooks, target_val)?;
   scope.push_root(Value::Object(target))?;
 
   let prop = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -415,13 +416,17 @@ pub fn object_create(
 pub fn object_keys(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let obj = require_object(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
+  // Root `obj` while collecting keys and allocating the output array so the collected key strings
+  // remain reachable during GC.
+  scope.push_root(Value::Object(obj))?;
 
   let own_keys = scope.heap().ordinary_own_property_keys(obj)?;
   let mut names: Vec<crate::GcString> = Vec::new();
@@ -471,10 +476,11 @@ pub fn object_assign(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  // Spec: Object.assign performs `ToObject` on the target and each source. We only support objects
-  // for now, but we still follow the `Get`/`Set` semantics (invoking accessors).
+  // Spec: Object.assign performs `ToObject` on the target and each source, and uses `Get`/`Set`
+  // semantics (invoking accessors).
   let mut scope = scope.reborrow();
-  let target = require_object(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let target_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let target = scope.to_object(vm, host, hooks, target_val)?;
   scope.push_root(Value::Object(target))?;
 
   for (i, source_val) in args.iter().copied().skip(1).enumerate() {
@@ -483,8 +489,7 @@ pub fn object_assign(
     }
     let source = match source_val {
       Value::Undefined | Value::Null => continue,
-      Value::Object(o) => o,
-      _ => return Err(VmError::TypeError("Object.assign source must be an object")),
+      other => scope.to_object(vm, host, hooks, other)?,
     };
 
     let keys = scope.heap().ordinary_own_property_keys(source)?;
@@ -528,15 +533,16 @@ pub fn object_assign(
 }
 
 pub fn object_get_prototype_of(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let obj = require_object(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let obj_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let obj = scope.to_object(vm, host, hooks, obj_val)?;
   match scope.heap().object_prototype(obj)? {
     Some(proto) => Ok(Value::Object(proto)),
     None => Ok(Value::Null),

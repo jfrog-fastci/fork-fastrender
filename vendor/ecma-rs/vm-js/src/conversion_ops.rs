@@ -206,6 +206,47 @@ impl<'a> Scope<'a> {
     scope.heap_mut().to_number(prim)
   }
 
+  /// ECMAScript `ToObject(argument)`.
+  ///
+  /// This performs `RequireObjectCoercible(argument)` (throwing for `null` / `undefined`) and boxes
+  /// primitives into their corresponding wrapper objects.
+  ///
+  /// Note: this operation does **not** invoke user code, but it can allocate and therefore
+  /// potentially trigger GC.
+  pub fn to_object(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<GcObject, VmError> {
+    match value {
+      Value::Object(obj) => Ok(obj),
+      Value::Undefined | Value::Null => Err(VmError::TypeError(
+        "Cannot convert undefined or null to object",
+      )),
+      other => {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let object_ctor = Value::Object(intr.object_constructor());
+
+        // Root the primitive value and callee across the internal boxing call (which can allocate).
+        let mut scope = self.reborrow();
+        scope.push_roots(&[other, object_ctor])?;
+
+        let args = [other];
+        let boxed = vm.call_with_host_and_hooks(host, &mut scope, hooks, object_ctor, Value::Undefined, &args)?;
+        match boxed {
+          Value::Object(obj) => Ok(obj),
+          _ => Err(VmError::InvariantViolation(
+            "ToObject internal boxing returned non-object",
+          )),
+        }
+      }
+    }
+  }
+
   /// ECMAScript `ToPropertyKey(argument)`.
   ///
   /// This performs `ToPrimitive(argument, hint String)` followed by:

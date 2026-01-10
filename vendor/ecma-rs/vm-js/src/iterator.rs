@@ -76,10 +76,8 @@ fn get_method(
   obj: Value,
   key: PropertyKey,
 ) -> Result<Option<Value>, VmError> {
-  // `GetMethod(V, P)` uses `GetV`, which performs `ToObject` on `V` before the property lookup.
-  //
-  // `vm-js` doesn't have a dedicated `ToObject` implementation yet; treat the intrinsic `Object`
-  // constructor as a converter for primitives (matching the strategy used in `for..in`).
+  // `GetMethod(V, P)` uses `GetV(V, P)`, which performs `ToObject(V)` for the property lookup but
+  // still uses the original `V` as the `receiver`/`this` value for accessor getters.
   let mut scope = scope.reborrow();
   let (obj, receiver) = match obj {
     Value::Object(obj) => {
@@ -94,29 +92,12 @@ fn get_method(
       )?);
     }
     other => {
-      let intr = vm
-        .intrinsics()
-        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-      let object_ctor = Value::Object(intr.object_constructor());
-
-      let roots = [other, object_ctor];
-      scope.push_roots(&roots)?;
-
-      let wrapped = vm.call_with_host_and_hooks(
-        host,
-        &mut scope,
-        hooks,
-        object_ctor,
-        Value::Undefined,
-        &[other],
-      )?;
-      let Value::Object(wrapped_obj) = wrapped else {
-        return Err(VmError::InvariantViolation(
-          "Object(..) conversion returned non-object",
-        ));
-      };
-      scope.push_root(wrapped)?;
-      (wrapped_obj, wrapped)
+      // Root `other` across boxing + property access; for primitives like String, the receiver is
+      // still the primitive value.
+      scope.push_root(other)?;
+      let wrapped_obj = scope.to_object(vm, host, hooks, other)?;
+      scope.push_root(Value::Object(wrapped_obj))?;
+      (wrapped_obj, other)
     }
   };
 

@@ -128,6 +128,46 @@ fn object_define_property_defines_value() -> Result<(), VmError> {
 }
 
 #[test]
+fn object_define_property_boxes_primitive_target() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+  let number_proto = rt.realm.intrinsics().number_prototype();
+
+  let mut scope = rt.heap.scope();
+
+  let define_property = get_own_data_property(&mut scope, object, "defineProperty")?
+    .expect("Object.defineProperty should exist");
+  let Value::Object(define_property) = define_property else {
+    panic!("Object.defineProperty should be a function object");
+  };
+
+  // { value: 1 }
+  let desc = scope.alloc_object()?;
+  scope.push_root(Value::Object(desc))?;
+  define_enumerable_data_property(&mut scope, desc, "value", Value::Number(1.0))?;
+
+  let x = scope.alloc_string("x")?;
+  let args = [Value::Number(5.0), Value::String(x), Value::Object(desc)];
+
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(define_property), Value::Object(object), &args)?;
+  let Value::Object(out_obj) = out else {
+    panic!("Object.defineProperty should return an object");
+  };
+  scope.push_root(Value::Object(out_obj))?;
+
+  // Returned object is a boxed Number with an own `x` property.
+  assert_eq!(
+    get_own_data_property(&mut scope, out_obj, "x")?,
+    Some(Value::Number(1.0))
+  );
+  assert_eq!(scope.heap().object_prototype(out_obj)?, Some(number_proto));
+
+  Ok(())
+}
+
+#[test]
 fn object_create_sets_prototype() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
   let object = rt.realm.intrinsics().object_constructor();
@@ -198,6 +238,55 @@ fn object_keys_returns_enumerable_string_keys() -> Result<(), VmError> {
 }
 
 #[test]
+fn object_keys_boxes_primitive_target() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+
+  let mut scope = rt.heap.scope();
+
+  let keys = get_own_data_property(&mut scope, object, "keys")?.expect("Object.keys exists");
+  let Value::Object(keys) = keys else {
+    panic!("Object.keys should be a function object");
+  };
+
+  let args = [Value::Number(1.0)];
+  let result = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(keys), Value::Object(object), &args)?;
+  let Value::Object(arr) = result else {
+    panic!("Object.keys should return an object");
+  };
+
+  let length = get_own_data_property(&mut scope, arr, "length")?.expect("length exists");
+  assert_eq!(length, Value::Number(0.0));
+
+  Ok(())
+}
+
+#[test]
+fn object_get_prototype_of_boxes_primitives() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+  let number_proto = rt.realm.intrinsics().number_prototype();
+
+  let mut scope = rt.heap.scope();
+
+  let get_proto =
+    get_own_data_property(&mut scope, object, "getPrototypeOf")?.expect("Object.getPrototypeOf exists");
+  let Value::Object(get_proto) = get_proto else {
+    panic!("Object.getPrototypeOf should be a function object");
+  };
+
+  let args = [Value::Number(1.0)];
+  let result = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(get_proto), Value::Object(object), &args)?;
+  assert_eq!(result, Value::Object(number_proto));
+
+  Ok(())
+}
+
+#[test]
 fn object_assign_copies_enumerable_properties_and_invokes_getters() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
   let object = rt.realm.intrinsics().object_constructor();
@@ -249,6 +338,41 @@ fn object_assign_copies_enumerable_properties_and_invokes_getters() -> Result<()
   );
   assert_eq!(
     get_own_data_property(&mut scope, target, "b")?,
+    Some(Value::Number(2.0))
+  );
+
+  Ok(())
+}
+
+#[test]
+fn object_assign_boxes_primitive_target() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+  let number_proto = rt.realm.intrinsics().number_prototype();
+
+  let mut scope = rt.heap.scope();
+
+  let assign = get_own_data_property(&mut scope, object, "assign")?.expect("Object.assign exists");
+  let Value::Object(assign) = assign else {
+    panic!("Object.assign should be a function object");
+  };
+
+  let source = scope.alloc_object()?;
+  scope.push_root(Value::Object(source))?;
+  define_enumerable_data_property(&mut scope, source, "a", Value::Number(2.0))?;
+
+  let args = [Value::Number(7.0), Value::Object(source)];
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(assign), Value::Object(object), &args)?;
+  let Value::Object(out_obj) = out else {
+    panic!("Object.assign should return an object");
+  };
+  scope.push_root(Value::Object(out_obj))?;
+
+  assert_eq!(scope.heap().object_prototype(out_obj)?, Some(number_proto));
+  assert_eq!(
+    get_own_data_property(&mut scope, out_obj, "a")?,
     Some(Value::Number(2.0))
   );
 
