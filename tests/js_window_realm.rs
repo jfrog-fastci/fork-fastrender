@@ -801,12 +801,14 @@ fn promise_rejection_event_tasks_can_mutate_dom() -> Result<()> {
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_assert_non_dummy_vm_host(&mut host)?;
 
   assert!(host.dom().get_element_by_id("ur").is_none());
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
 window.addEventListener('unhandledrejection', () => {
+  __fastrender_assert_vm_host();
   const d = document.createElement('div');
   d.id = 'ur';
   document.body.appendChild(d);
@@ -918,17 +920,24 @@ requestAnimationFrame(() => {
 }
 
 #[test]
-fn abort_signal_onabort_callbacks_receive_real_vm_host() -> Result<()> {
+fn abort_signal_abort_event_handlers_receive_real_vm_host() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
   let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
+  assert!(host.dom().get_element_by_id("abl").is_none());
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
 const c = new AbortController();
+c.signal.addEventListener('abort', () => {
+  __fastrender_assert_vm_host();
+  const d = document.createElement('div');
+  d.id = 'abl';
+  document.body.appendChild(d);
+});
 c.signal.onabort = () => {
   __fastrender_assert_vm_host();
   const d = document.createElement('div');
@@ -939,6 +948,7 @@ c.abort();
 "#,
   )?;
   event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert!(host.dom().get_element_by_id("abl").is_some());
   assert!(host.dom().get_element_by_id("ab").is_some());
   Ok(())
 }
