@@ -227,6 +227,14 @@ fn build_fetch_pages_command(args: &FreezePageFixtureArgs, pages_csv: &str) -> C
     .args(["--bin", "fetch_pages", "--"])
     .args(["--pages", pages_csv])
     .arg("--allow-collisions")
+    // When capturing offline fixtures, we prefer a deterministic snapshot even if the live page is
+    // currently blocked by bot mitigation (403/5xx). `fetch_pages` normally treats these as
+    // failures and does not cache them, but the fixture workflow depends on having *some* cached
+    // HTML to bundle.
+    //
+    // Safety: `fetch_pages` will not overwrite an existing cached snapshot with an HTTP error page
+    // unless the existing snapshot is also known to be an error page.
+    .arg("--allow-http-error-status")
     .args(["--user-agent", &args.user_agent])
     .args(["--accept-language", &args.accept_language]);
 
