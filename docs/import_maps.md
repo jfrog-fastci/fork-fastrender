@@ -270,8 +270,8 @@ Behavior summary:
 * Fatal type errors become `ImportMapError::TypeError(...)` (matching spec “throw a TypeError”).
 * Non-fatal issues become `ImportMapWarning`s and typically produce `null` entries in the normalized
   map (i.e. `Option<Url> = None`).
-* Sorting is done in **descending UTF-16 code unit order**, so resolution can be implemented with
-  “first match wins” iteration later.
+* Sorting is done in **descending UTF-16 code unit order**, so module specifier resolution can
+  implement the spec’s “first match wins” iteration.
 * JSON object key order and duplicate keys:
   * Input JSON is parsed into an order-preserving representation (matching the spec’s use of
     “ordered maps”).
@@ -499,8 +499,8 @@ Non-fatal examples (see `ImportMapWarningKind`):
 * `IntegrityKeyFailedToResolve { key }`
 * `IntegrityValueNotString { key }`
 
-Many warnings result in a `null` mapping entry in the normalized map (which later resolution must
-treat as “blocked”).
+Many warnings result in a `null` mapping entry in the normalized map (which module specifier
+resolution must treat as “blocked”).
 
 ---
 
