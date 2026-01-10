@@ -196,6 +196,116 @@ fn parent_first_child_margin_collapses() {
 }
 
 #[test]
+fn parent_first_child_collapse_through_empty_block_does_not_offset_floats() {
+  let prev = block_with_height_and_margins(0.0, 0.0, 0.0);
+
+  // An empty first child should collapse its top/bottom margins through itself and out of the
+  // parent. Floats that follow must start at the parent's block start, not below the collapsed
+  // margin chain (CSS 2.1 §8.3.1).
+  let empty = empty_block_with_margins(20.0, 30.0);
+
+  let mut float_style = ComputedStyle::default();
+  float_style.display = Display::Block;
+  float_style.float = Float::Left;
+  float_style.width = Some(Length::px(10.0));
+  float_style.height = Some(Length::px(10.0));
+  float_style.width_keyword = None;
+  float_style.height_keyword = None;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  // Ensure the parent is not collapsible-through itself: a block that contains only floats has a
+  // used height of 0 in CSS2.1, but the presence of `clear` after floats (like a footer) prevents
+  // collapsing-through and keeps the parent's collapsed margins meaningful for sibling placement.
+  let mut clear_style = block_style_with_height(Some(0.0));
+  clear_style.clear = Clear::Both;
+  let clear_block = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
+
+  let outer = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![empty, float_box, clear_block],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![prev, outer],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let prev_fragment = &fragment.children[0];
+  let outer_fragment = &fragment.children[1];
+
+  assert_approx(
+    outer_fragment.bounds.y() - prev_fragment.bounds.max_y(),
+    30.0,
+    "expected the empty child's margins to collapse into the parent's own top margin (max(20,30)=30)",
+  );
+  assert!(
+    outer_fragment.children.len() >= 2,
+    "expected outer to have both the empty child and float fragments"
+  );
+  let float_fragment = &outer_fragment.children[1];
+  assert_approx(
+    float_fragment.bounds.y(),
+    0.0,
+    "expected float to start at y=0 inside the parent after parent/first-child margin collapsing",
+  );
+}
+
+#[test]
+fn clearance_prevents_parent_first_child_margin_collapse_past_floats() {
+  let prev = block_with_height_and_margins(0.0, 0.0, 0.0);
+
+  // The parent should collapse its own margin-top with the empty child's margins, but must not
+  // further collapse with a later in-flow block whose `clear` introduces clearance against floats.
+  // Otherwise, the cleared block's margin-top would incorrectly be hoisted to the parent's top
+  // edge (CSS 2.1 §9.5.2 / §8.3.1).
+  let empty = empty_block_with_margins(10.0, 10.0);
+
+  let mut float_style = block_style_with_height(Some(50.0));
+  float_style.width = Some(Length::px(10.0));
+  float_style.width_keyword = None;
+  float_style.float = Float::Left;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let mut cleared_style = block_style_with_height(Some(0.0));
+  cleared_style.margin_top = Some(Length::px(20.0));
+  cleared_style.clear = Clear::Left;
+  let cleared = BoxNode::new_block(Arc::new(cleared_style), FormattingContextType::Block, vec![]);
+
+  let outer = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![empty, float_box, cleared],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![prev, outer],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let prev_fragment = &fragment.children[0];
+  let outer_fragment = &fragment.children[1];
+
+  assert_approx(
+    outer_fragment.bounds.y() - prev_fragment.bounds.max_y(),
+    10.0,
+    "expected parent/first-child collapsing to ignore margins after clearance (max(0,10)=10)",
+  );
+}
+
+#[test]
 fn border_prevents_parent_first_child_margin_collapse() {
   let prev = block_with_height_and_margins(10.0, 0.0, 0.0);
 

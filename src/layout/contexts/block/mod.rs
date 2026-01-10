@@ -3649,12 +3649,34 @@ impl BlockFormattingContext {
 
     if collapse_first {
       let mut chain = CollapsibleMargin::ZERO;
+      let mut seen_left_float = false;
+      let mut seen_right_float = false;
       for child in &node.children {
+        if child.style.float.is_floating()
+          && !matches!(child.style.position, Position::Absolute | Position::Fixed)
+        {
+          if let Some(side) = resolve_float_side(child.style.float, style.writing_mode, style.direction) {
+            match side {
+              FloatSide::Left => seen_left_float = true,
+              FloatSide::Right => seen_right_float = true,
+            }
+          }
+        }
         if is_out_of_flow_or_float(child) || is_ignorable_whitespace(child) {
           continue;
         }
         if !is_in_flow_block(child) {
           break;
+        }
+        // Clearance (from `clear`) breaks margin adjoining, so parent/first-child margin collapsing
+        // must not tunnel past floats into a cleared block (CSS 2.1 §9.5.2 / §8.3.1).
+        if seen_left_float || seen_right_float {
+          let clear_side = resolve_clear_side(child.style.clear, style.writing_mode, style.direction);
+          let clears_seen_float = (clear_side.clears_left() && seen_left_float)
+            || (clear_side.clears_right() && seen_right_float);
+          if clears_seen_float {
+            break;
+          }
         }
         let child_margins = self.collapsed_block_margins(child, containing_width, child_mode);
         if child_margins.collapsible_through {
@@ -4943,10 +4965,18 @@ impl BlockFormattingContext {
         )?;
 
         // Floats are out-of-flow: their own margins never collapse, but they also must not break
-        // the sibling margin collapsing chain between in-flow blocks. Position floats relative to
-        // the current in-flow cursor plus the pending collapsed margin without consuming it.
-        let pending_margin = margin_ctx.pending_margin();
-        let float_base_y_local = current_y + pending_margin;
+        // the sibling margin collapsing chain between in-flow blocks.
+        //
+        // When parent/first-child margin collapsing applies, any leading collapsible-through
+        // margins at the start of the BFC are represented by the *parent's* own collapsed margins.
+        // They must not shift floats down inside the parent (notably: an empty block with
+        // `margin-top`/`margin-bottom` followed by floats).
+        let float_base_y_local = if collapse_with_parent_top && margin_ctx.is_at_start() {
+          margin_ctx.consume_pending_without_marking_content();
+          current_y
+        } else {
+          current_y + margin_ctx.pending_margin()
+        };
         float_cursor_y = float_cursor_y.max(float_base_y_local);
 
         // Honor clearance against existing floats for this float's placement only.
