@@ -49,6 +49,34 @@ fn exec_script_sets_current_realm_during_evaluation() -> Result<(), VmError> {
 }
 
 #[test]
+fn exec_script_sets_current_realm_during_evaluation_even_on_throw() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("currentRealmIsSet", current_realm_is_set, 0)?;
+
+  let err = rt
+    .exec_script(
+      r#"
+        var ok = currentRealmIsSet();
+        throw 1;
+      "#,
+    )
+    .unwrap_err();
+  assert!(
+    matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }),
+    "expected a JS throw, got {err:?}"
+  );
+
+  // `exec_script` should restore the execution context stack to its prior state.
+  assert_eq!(rt.vm.current_realm(), None);
+
+  // The value computed before the throw should have observed a valid current realm.
+  let value = rt.exec_script("ok")?;
+  assert_eq!(value, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
 fn exec_script_sets_active_host_hooks_override_to_vm_microtask_queue() -> Result<(), VmError> {
   let mut rt = new_runtime();
   rt.register_global_native_function("callCallback", call_callback_via_vm_call, 1)?;
@@ -81,3 +109,37 @@ fn exec_script_sets_active_host_hooks_override_to_vm_microtask_queue() -> Result
   Ok(())
 }
 
+#[test]
+fn exec_script_restores_microtask_queue_even_on_throw() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("callCallback", call_callback_via_vm_call, 1)?;
+
+  let err = rt
+    .exec_script(
+      r#"
+        var ran = false;
+        function schedule() {
+          Promise.resolve().then(() => { ran = true; });
+        }
+        callCallback(schedule);
+        throw 1;
+      "#,
+    )
+    .unwrap_err();
+  assert!(
+    matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }),
+    "expected a JS throw, got {err:?}"
+  );
+
+  // Run any queued Promise jobs.
+  let mut queue = std::mem::take(rt.vm.microtask_queue_mut());
+  let errors = queue.perform_microtask_checkpoint(&mut rt);
+  *rt.vm.microtask_queue_mut() = queue;
+  assert!(errors.is_empty());
+
+  // The Promise job should have been preserved and run even though the script threw.
+  let value = rt.exec_script("ran")?;
+  assert_eq!(value, Value::Bool(true));
+
+  Ok(())
+}
