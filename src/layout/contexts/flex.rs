@@ -8773,8 +8773,6 @@ impl FlexFormattingContext {
     scroll_sensitive: &FxHashSet<*const BoxNode>,
     positioned_sensitive: &FxHashSet<*const BoxNode>,
   ) -> Result<FragmentNode, LayoutError> {
-    let rect_eps = 0.01;
-
     // Get layout from Taffy
     let layout = taffy_tree
       .layout(taffy_node)
@@ -8788,14 +8786,12 @@ impl FlexFormattingContext {
     if taffy_node == root_id {
       // Root size corrections are handled by rerunning Taffy in Phase 2 so child positions stay
       // consistent. Avoid mutating the size here, aside from last-resort sanitisation.
-      let rect_eps = 0.01;
       if !rect.size.width.is_finite() || rect.size.width < 0.0 {
         rect.size.width = 0.0;
       }
       if !rect.size.height.is_finite() || rect.size.height < 0.0 {
         rect.size.height = 0.0;
       }
-      let rect_eps = 0.01;
       let width_base_for_vertical_edges = constraints
         .width()
         .or(constraints.inline_percentage_base)
