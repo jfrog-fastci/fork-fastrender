@@ -541,41 +541,74 @@ impl<'a> Scope<'a> {
 
   /// ECMAScript `[[OwnPropertyKeys]]` for ordinary objects.
   pub fn ordinary_own_property_keys(&mut self, obj: GcObject) -> Result<Vec<PropertyKey>, VmError> {
-    let Some(string_data) = self.string_object_data(obj)? else {
-      return self.heap().ordinary_own_property_keys(obj);
-    };
+    if let Some(string_data) = self.string_object_data(obj)? {
+      self.push_root(Value::Object(obj))?;
+      self.push_root(Value::String(string_data))?;
 
-    self.push_root(Value::Object(obj))?;
-    self.push_root(Value::String(string_data))?;
+      let len = self.heap().get_string(string_data)?.len_code_units();
+      let own_keys = self.heap().ordinary_own_property_keys(obj)?;
 
-    let len = self.heap().get_string(string_data)?.len_code_units();
-    let own_keys = self.heap().ordinary_own_property_keys(obj)?;
+      let out_len = len
+        .checked_add(own_keys.len())
+        .ok_or(VmError::OutOfMemory)?;
+      let mut out: Vec<PropertyKey> = Vec::new();
+      out
+        .try_reserve_exact(out_len)
+        .map_err(|_| VmError::OutOfMemory)?;
 
-    let out_len = len
-      .checked_add(own_keys.len())
-      .ok_or(VmError::OutOfMemory)?;
-    let mut out: Vec<PropertyKey> = Vec::new();
-    out
-      .try_reserve_exact(out_len)
-      .map_err(|_| VmError::OutOfMemory)?;
+      for i in 0..len {
+        let key_s = self.alloc_string(&i.to_string())?;
+        self.push_root(Value::String(key_s))?;
+        out.push(PropertyKey::from_string(key_s));
+      }
 
-    for i in 0..len {
-      let key_s = self.alloc_string(&i.to_string())?;
-      self.push_root(Value::String(key_s))?;
-      out.push(PropertyKey::from_string(key_s));
-    }
-
-    for key in own_keys {
-      if let Some(idx) = self.heap().array_index(&key) {
-        if idx as usize >= len {
+      for key in own_keys {
+        if let Some(idx) = self.heap().array_index(&key) {
+          if idx as usize >= len {
+            out.push(key);
+          }
+        } else {
           out.push(key);
         }
-      } else {
-        out.push(key);
       }
+
+      return Ok(out);
     }
 
-    Ok(out)
+    if self.heap().is_uint8_array_object(obj) {
+      self.push_root(Value::Object(obj))?;
+
+      let len = self.heap().uint8_array_length(obj)?;
+      let own_keys = self.heap().ordinary_own_property_keys(obj)?;
+
+      let out_len = len
+        .checked_add(own_keys.len())
+        .ok_or(VmError::OutOfMemory)?;
+      let mut out: Vec<PropertyKey> = Vec::new();
+      out
+        .try_reserve_exact(out_len)
+        .map_err(|_| VmError::OutOfMemory)?;
+
+      for i in 0..len {
+        let key_s = self.alloc_string(&i.to_string())?;
+        self.push_root(Value::String(key_s))?;
+        out.push(PropertyKey::from_string(key_s));
+      }
+
+      for key in own_keys {
+        if let Some(idx) = self.heap().array_index(&key) {
+          if idx as usize >= len {
+            out.push(key);
+          }
+        } else {
+          out.push(key);
+        }
+      }
+
+      return Ok(out);
+    }
+
+    self.heap().ordinary_own_property_keys(obj)
   }
 
   pub fn create_data_property(

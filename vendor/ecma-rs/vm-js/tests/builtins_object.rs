@@ -303,6 +303,57 @@ fn object_keys_on_string_returns_index_keys() -> Result<(), VmError> {
 }
 
 #[test]
+fn object_keys_on_uint8_array_returns_index_keys() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+  let uint8_array = rt.realm.intrinsics().uint8_array();
+
+  let mut scope = rt.heap.scope();
+
+  let keys = get_own_data_property(&mut scope, object, "keys")?.expect("Object.keys exists");
+  let Value::Object(keys) = keys else {
+    panic!("Object.keys should be a function object");
+  };
+
+  let args = [Value::Number(2.0)];
+  let view = rt.vm.construct_without_host(
+    &mut scope,
+    Value::Object(uint8_array),
+    &args,
+    Value::Object(uint8_array),
+  )?;
+  let Value::Object(view) = view else {
+    panic!("Uint8Array constructor should return an object");
+  };
+  scope.push_root(Value::Object(view))?;
+
+  let args = [Value::Object(view)];
+  let result = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(keys), Value::Object(object), &args)?;
+  let Value::Object(arr) = result else {
+    panic!("Object.keys should return an object");
+  };
+
+  let length = get_own_data_property(&mut scope, arr, "length")?.expect("length exists");
+  assert_eq!(length, Value::Number(2.0));
+
+  let v0 = get_own_data_property(&mut scope, arr, "0")?.expect("key 0 exists");
+  let Value::String(v0s) = v0 else {
+    panic!("expected Object.keys result[0] to be a string");
+  };
+  assert_eq!(scope.heap().get_string(v0s)?.to_utf8_lossy(), "0");
+
+  let v1 = get_own_data_property(&mut scope, arr, "1")?.expect("key 1 exists");
+  let Value::String(v1s) = v1 else {
+    panic!("expected Object.keys result[1] to be a string");
+  };
+  assert_eq!(scope.heap().get_string(v1s)?.to_utf8_lossy(), "1");
+
+  Ok(())
+}
+
+#[test]
 fn object_get_prototype_of_boxes_primitives() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
   let object = rt.realm.intrinsics().object_constructor();
@@ -473,6 +524,85 @@ fn object_assign_copies_string_index_properties() -> Result<(), VmError> {
     panic!("expected target[1] to be a string");
   };
   assert_eq!(scope.heap().get_string(v1s)?.to_utf8_lossy(), "b");
+
+  Ok(())
+}
+
+#[test]
+fn object_assign_copies_uint8_array_index_properties() -> Result<(), VmError> {
+  let mut rt = TestRealm::new()?;
+  let object = rt.realm.intrinsics().object_constructor();
+  let uint8_array = rt.realm.intrinsics().uint8_array();
+
+  let mut scope = rt.heap.scope();
+
+  let assign = get_own_data_property(&mut scope, object, "assign")?.expect("Object.assign exists");
+  let Value::Object(assign) = assign else {
+    panic!("Object.assign should be a function object");
+  };
+
+  let target = scope.alloc_object()?;
+  scope.push_root(Value::Object(target))?;
+
+  // new Uint8Array(2)
+  let args = [Value::Number(2.0)];
+  let source = rt.vm.construct_without_host(
+    &mut scope,
+    Value::Object(uint8_array),
+    &args,
+    Value::Object(uint8_array),
+  )?;
+  let Value::Object(source) = source else {
+    panic!("Uint8Array constructor should return an object");
+  };
+  scope.push_root(Value::Object(source))?;
+
+  // source[0] = 1; source[1] = 2;
+  let key0_s = scope.alloc_string("0")?;
+  scope.push_root(Value::String(key0_s))?;
+  let key0 = PropertyKey::from_string(key0_s);
+  scope.define_property(
+    source,
+    key0,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(1.0),
+        writable: true,
+      },
+    },
+  )?;
+  let key1_s = scope.alloc_string("1")?;
+  scope.push_root(Value::String(key1_s))?;
+  let key1 = PropertyKey::from_string(key1_s);
+  scope.define_property(
+    source,
+    key1,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(2.0),
+        writable: true,
+      },
+    },
+  )?;
+
+  let args = [Value::Object(target), Value::Object(source)];
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, Value::Object(assign), Value::Object(object), &args)?;
+  assert_eq!(out, Value::Object(target));
+
+  assert_eq!(
+    get_own_data_property(&mut scope, target, "0")?,
+    Some(Value::Number(1.0))
+  );
+  assert_eq!(
+    get_own_data_property(&mut scope, target, "1")?,
+    Some(Value::Number(2.0))
+  );
 
   Ok(())
 }
