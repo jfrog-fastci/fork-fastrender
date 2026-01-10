@@ -49,6 +49,7 @@ pub enum InteractionAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAction {
   Backspace,
+  Delete,
   Enter,
   Tab,
   ShiftTab,
@@ -258,6 +259,55 @@ mod tests {
     assert!(engine.ime_composition.is_none());
     assert!(!has_preedit_attr(&mut dom, textarea_id));
     assert_eq!(textarea_value(&mut dom, textarea_id), "hiあ");
+  }
+
+  #[test]
+  fn delete_removes_next_character_in_focused_input() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"aあb\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Place the caret between "a" and "あ".
+    engine.set_text_selection_caret(input_id, "a".len());
+
+    let changed = engine.key_action(&mut dom, KeyAction::Delete);
+    assert!(changed);
+    assert_eq!(input_value(&mut dom, input_id), "ab");
+  }
+
+  #[test]
+  fn delete_removes_selection_in_focused_textarea() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><textarea>hello</textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    // Delete "ell".
+    engine.set_text_selection_range(textarea_id, 1, 4);
+
+    let changed = engine.key_action(&mut dom, KeyAction::Delete);
+    assert!(changed);
+    assert_eq!(textarea_value(&mut dom, textarea_id), "ho");
+  }
+
+  #[test]
+  fn delete_is_noop_at_end_of_input() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Default caret is at the end of the text; `Delete` should be a no-op.
+    let changed = engine.key_action(&mut dom, KeyAction::Delete);
+    assert!(!changed);
+    assert_eq!(input_value(&mut dom, input_id), "abc");
   }
 }
 
@@ -2511,6 +2561,91 @@ impl InteractionEngine {
           }
         }
       }
+      KeyAction::Delete => {
+        if index.node(focused).is_some_and(is_text_input) {
+          if node_or_ancestor_is_inert(&index, focused)
+            || node_is_disabled(&index, focused)
+            || node_is_readonly(&index, focused)
+          {
+            return changed;
+          }
+          let current = index
+            .node(focused)
+            .and_then(|node| node.get_attribute_ref("value"))
+            .unwrap_or("")
+            .to_string();
+          let (start, end) = self.text_selection_range_for(focused, current.len());
+
+          let (next, caret) = if start != end {
+            // Delete selection.
+            (format!("{}{}", &current[..start], &current[end..]), start)
+          } else if start < current.len() {
+            // Delete the next character after the caret.
+            let next_idx = current[start..]
+              .chars()
+              .next()
+              .map(|ch| start.saturating_add(ch.len_utf8()))
+              .unwrap_or(start);
+            (format!("{}{}", &current[..start], &current[next_idx..]), start)
+          } else {
+            (current.clone(), start)
+          };
+
+          if next != current {
+            let Some(node_mut) = index.node_mut(focused) else {
+              return changed;
+            };
+            let changed_value = set_node_attr(node_mut, "value", &next);
+            changed |= changed_value;
+            if changed_value {
+              changed |= dom_mutation::mark_user_validity(node_mut);
+              self.set_text_selection_caret(focused, caret);
+            }
+          }
+        } else if index.node(focused).is_some_and(is_textarea) {
+          if node_or_ancestor_is_inert(&index, focused)
+            || node_is_disabled(&index, focused)
+            || node_is_readonly(&index, focused)
+          {
+            return changed;
+          }
+          let current = index
+            .node(focused)
+            .map(collect_text_children_value)
+            .unwrap_or_default();
+          let (start, end) = self.text_selection_range_for(focused, current.len());
+
+          let (next, caret) = if start != end {
+            (format!("{}{}", &current[..start], &current[end..]), start)
+          } else if start < current.len() {
+            let next_idx = current[start..]
+              .chars()
+              .next()
+              .map(|ch| start.saturating_add(ch.len_utf8()))
+              .unwrap_or(start);
+            (format!("{}{}", &current[..start], &current[next_idx..]), start)
+          } else {
+            (current.clone(), start)
+          };
+
+          if next != current {
+            let old_index = index;
+            let mut index = DomIndexMut::new(dom);
+            if let Some(node_mut) = index.node_mut(focused) {
+              let (changed_value, inserted) = set_textarea_text_children_value(node_mut, &next);
+              changed |= changed_value;
+              if changed_value {
+                changed |= dom_mutation::mark_user_validity(node_mut);
+                self.set_text_selection_caret(focused, caret);
+              }
+              if inserted {
+                let new_ids = enumerate_dom_ids(dom);
+                self.remap_engine_ids_after_dom_change(&old_index, &new_ids);
+              }
+            }
+          }
+        }
+      }
       KeyAction::Enter => {
         if index.node(focused).is_some_and(is_textarea) {
           if node_or_ancestor_is_inert(&index, focused)
@@ -2708,9 +2843,9 @@ impl InteractionEngine {
 
     // Delegate text-editing keys to `key_action` so behaviour stays consistent.
     match key {
-      KeyAction::Backspace => {
+      KeyAction::Backspace | KeyAction::Delete => {
         return (
-          self.key_action_with_box_tree(dom, box_tree, KeyAction::Backspace),
+          self.key_action_with_box_tree(dom, box_tree, key),
           InteractionAction::None,
         );
       }

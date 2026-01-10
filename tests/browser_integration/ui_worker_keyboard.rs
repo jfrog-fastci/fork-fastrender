@@ -241,6 +241,53 @@ fn backspace_edits_focused_input_and_repaints() {
 }
 
 #[test]
+fn delete_edits_focused_input_selection_and_repaints() {
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_test_page();
+
+  let handle = spawn_ui_worker("fastr-ui-worker-keyboard-delete").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+  ui_tx
+    .send(create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 255));
+
+  // Click the input to focus it.
+  ui_tx
+    .send(pointer_down(tab_id, (10.0, 90.0), PointerButton::Primary))
+    .expect("PointerDown");
+  ui_tx
+    .send(pointer_up(tab_id, (10.0, 90.0), PointerButton::Primary))
+    .expect("PointerUp");
+  // Consume PointerDown + PointerUp repaints.
+  let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  let _ = wait_for_frame_ready(&ui_rx, tab_id);
+
+  // Selection is worker-local state; it should apply to the subsequent Delete key action.
+  ui_tx
+    .send(UiToWorker::SelectAll { tab_id })
+    .expect("SelectAll");
+
+  ui_tx
+    .send(key_action(tab_id, KeyAction::Delete))
+    .expect("Delete");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (255, 0, 0));
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
 fn key_action_sets_focus_visible() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();

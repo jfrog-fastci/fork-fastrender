@@ -2501,6 +2501,7 @@ hint: if you're running in a headless environment, try `browser --headless-smoke
 
         let key_action = match key {
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
+          VirtualKeyCode::Delete => Some(fastrender::interaction::KeyAction::Delete),
           VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),
           VirtualKeyCode::Tab => Some(if self.modifiers.shift() {
             fastrender::interaction::KeyAction::ShiftTab
