@@ -148,7 +148,7 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
     (Some(name), Some(message)) if !message.is_empty() => Some(format!("{name}: {message}")),
     (Some(name), _) if !name.is_empty() => Some(name),
     (_, Some(message)) if !message.is_empty() => Some(message),
-    _ => None,
+    _ => Some("[object]".to_string()),
   }
 }
 
@@ -383,6 +383,37 @@ mod tests {
     assert!(
       msg.starts_with("Error: boom"),
       "expected name from prototype to be included, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at f (<test>:1:2)"),
+      "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn thrown_object_without_name_or_message_uses_object_marker() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let obj = scope.alloc_object().expect("alloc thrown object");
+    scope
+      .push_root(Value::Object(obj))
+      .expect("root thrown object");
+
+    let err = VmError::ThrowWithStack {
+      value: Value::Object(obj),
+      stack: vec![StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("<test>"),
+        line: 1,
+        col: 2,
+      }],
+    };
+
+    let msg = vm_error_to_string(scope.heap_mut(), err);
+    assert!(
+      msg.starts_with("[object]"),
+      "expected thrown object without name/message to use marker, got {msg:?}"
     );
     assert!(
       msg.contains("at f (<test>:1:2)"),
