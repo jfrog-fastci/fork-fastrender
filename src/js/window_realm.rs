@@ -228,6 +228,16 @@ impl WindowRealm {
     self.runtime.exec_script_with_hooks(hooks, source)
   }
 
+  pub(crate) fn exec_script_source_with_hooks(
+    &mut self,
+    hooks: &mut dyn VmHostHooks,
+    source: Arc<SourceText>,
+  ) -> Result<Value, VmError> {
+    // Route Promise jobs through host hooks so embeddings can integrate with a host-owned microtask
+    // queue (HTML event loop).
+    self.runtime.exec_script_source_with_hooks(hooks, source)
+  }
+
   /// Execute a classic script with an explicit source name for stack traces.
   pub fn exec_script_with_name(
     &mut self,

@@ -30,8 +30,6 @@ use fastrender::js::{
   determine_script_type_dom2, CurrentScriptHost, EventLoop, RunLimits, RunUntilIdleOutcome,
   RunUntilIdleStopReason, ScriptType, TaskSource, WindowHostState,
 };
-use fastrender::js::runtime::with_event_loop;
-use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::resource::normalize_user_agent_for_log;
 use fastrender::resource::url_to_filename;
@@ -368,27 +366,21 @@ fn render_page(
         let prev = host.current_script_state().borrow().current_script;
         host.current_script_state().borrow_mut().current_script = Some(script_id_for_task);
 
-        let result = with_event_loop(event_loop, || {
+        // Execute scripts through the `WindowHostState` helper so Promise jobs are routed into the
+        // host-owned HTML-like event loop microtask queue.
+        {
           let window = host.window_mut();
           window.reset_interrupt();
           window.vm_mut().set_budget(js_budget_for_script(run_limits));
-
-          // Execute with `VmHostHooks` so Promise jobs are enqueued onto the `EventLoop`'s microtask
-          // queue (shared FIFO ordering with `queueMicrotask`).
-          let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
-          let exec_result = window
-            .exec_script_with_hooks(&mut hooks, &script_text)
-            .map_err(|err| fastrender::Error::Other(err.to_string()));
-
+        }
+        let result =
+          host.exec_script_with_name_in_event_loop(event_loop, script_name.clone(), script_text.clone());
+        {
+          let window = host.window_mut();
           window
             .vm_mut()
             .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-
-          if let Some(err) = hooks.finish(window.heap_mut()) {
-            return Err(err);
-          }
-          exec_result
-        });
+        }
 
         host.current_script_state().borrow_mut().current_script = prev;
 

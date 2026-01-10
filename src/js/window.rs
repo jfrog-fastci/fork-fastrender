@@ -230,6 +230,64 @@ impl WindowHostState {
   pub fn window_mut(&mut self) -> &mut WindowRealm {
     &mut self.window
   }
+
+  /// Execute a classic script while integrating Promise jobs into the provided [`EventLoop`]'s
+  /// microtask queue.
+  ///
+  /// This is the lower-level form of [`WindowHost::exec_script`] for callers that already have a
+  /// `(&mut WindowHostState, &mut EventLoop<WindowHostState>)` pair (e.g. inside an event-loop task).
+  ///
+  /// Note: this does **not** automatically run a microtask checkpoint. Drive the event loop or call
+  /// [`EventLoop::perform_microtask_checkpoint`] as needed.
+  pub fn exec_script_in_event_loop(
+    &mut self,
+    event_loop: &mut EventLoop<WindowHostState>,
+    source: &str,
+  ) -> Result<vm_js::Value> {
+    use crate::js::window_timers::VmJsEventLoopHooks;
+
+    with_event_loop(event_loop, || {
+      let window = self.window_mut();
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
+      let result = window.exec_script_with_hooks(&mut hooks, source);
+
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+
+      match result {
+        Ok(value) => Ok(value),
+        Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+      }
+    })
+  }
+
+  /// Execute a classic script (with an explicit source name) while integrating Promise jobs into the
+  /// provided [`EventLoop`]'s microtask queue.
+  pub fn exec_script_with_name_in_event_loop(
+    &mut self,
+    event_loop: &mut EventLoop<WindowHostState>,
+    source_name: impl Into<Arc<str>>,
+    source_text: impl Into<Arc<str>>,
+  ) -> Result<vm_js::Value> {
+    use crate::js::window_timers::VmJsEventLoopHooks;
+
+    let source = Arc::new(vm_js::SourceText::new(source_name, source_text));
+    with_event_loop(event_loop, || {
+      let window = self.window_mut();
+      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
+      let result = window.exec_script_source_with_hooks(&mut hooks, source);
+
+      if let Some(err) = hooks.finish(window.heap_mut()) {
+        return Err(err);
+      }
+
+      match result {
+        Ok(value) => Ok(value),
+        Err(err) => Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
+      }
+    })
+  }
 }
 
 impl Drop for WindowHostState {

@@ -172,9 +172,10 @@ FastRender implements these hooks by routing Promise jobs into the host-owned HT
 - `src/js/window_timers.rs`: `VmJsEventLoopHooks` implements `VmHostHooks::host_enqueue_promise_job`
   by queueing an `EventLoop` microtask that runs the `vm-js::Job`.
 - Script execution that needs correct Promise/microtask behavior must use the `vm-js`
-  `exec_script_with_hooks(...)` entrypoint (wired through `WindowRealm::exec_script_with_host` /
-  `WindowHost::exec_script`), not `exec_script(...)` / `exec_script_with_host(...)` which use the
-  VM-owned microtask queue.
+  `exec_script_with_hooks(...)` / `exec_script_source_with_hooks(...)` entrypoints (wired through
+  `WindowRealm::{exec_script_with_hooks, exec_script_source_with_hooks}` and exposed via
+  `WindowHost::exec_script` and `WindowHostState::{exec_script_in_event_loop, exec_script_with_name_in_event_loop}`),
+  not `exec_script(...)` / `exec_script_with_host(...)` which use the VM-owned microtask queue.
 
 This keeps Promise jobs and `queueMicrotask(...)` in the same FIFO-ordered microtask queue, and
 ensures Promise jobs enqueued by other Promise jobs run in the same microtask checkpoint.

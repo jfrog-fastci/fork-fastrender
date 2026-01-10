@@ -385,6 +385,47 @@ Promise.resolve().then(() => { globalThis.__log += "p2,"; });
 }
 
 #[test]
+fn named_scripts_route_promise_jobs_through_event_loop_microtasks() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHostState::new(dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_with_name_in_event_loop(
+    &mut event_loop,
+    "<test named script>",
+    r#"
+globalThis.__log = "";
+Promise.resolve().then(() => { globalThis.__log += "p1,"; });
+queueMicrotask(() => { globalThis.__log += "qm,"; });
+Promise.resolve().then(() => { globalThis.__log += "p2,"; });
+"#,
+  )?;
+
+  let before = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__log");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(before, "");
+
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let after = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let value = get_data_prop(&mut scope, global, "__log");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(after, "p1,qm,p2,");
+  Ok(())
+}
+
+#[test]
 fn promise_jobs_abort_when_render_deadline_is_expired() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host = WindowHost::new(dom, "https://example.com/")?;
