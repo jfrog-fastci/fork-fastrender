@@ -400,7 +400,10 @@ fn tab_and_shift_tab_traverse_focus_and_wrap_in_ui_worker() {
   ui_tx
     .send(UiToWorker::PointerDown {
       tab_id,
-      pos_css: (90.0, 90.0),
+      // Click below the inputs. Note: form controls have UA padding/border, so their hit-test
+      // bounds extend beyond the authored `width`/`height`; use a point far enough away that we
+      // definitely don't hit them.
+      pos_css: (110.0, 110.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
     })
@@ -408,7 +411,7 @@ fn tab_and_shift_tab_traverse_focus_and_wrap_in_ui_worker() {
   ui_tx
     .send(UiToWorker::PointerUp {
       tab_id,
-      pos_css: (90.0, 90.0),
+      pos_css: (110.0, 110.0),
       button: PointerButton::Primary,
       modifiers: PointerModifiers::NONE,
     })
