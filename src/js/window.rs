@@ -493,8 +493,8 @@ mod tests {
   use std::sync::Mutex;
   use std::time::{Duration, Instant};
   use vm_js::{
-    GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
-    VmHostHooks,
+    GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, TerminationReason, Value, Vm, VmError,
+    VmHost, VmHostHooks,
   };
 
   fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
@@ -543,6 +543,49 @@ mod tests {
       .get_string(s)
       .expect("heap should contain string")
       .to_utf8_lossy()
+  }
+
+  #[test]
+  fn window_realm_respects_max_stack_depth() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new_with_options(
+      dom,
+      "https://example.invalid/",
+      JsExecutionOptions {
+        max_stack_depth: Some(16),
+        ..JsExecutionOptions::default()
+      },
+    )?;
+    let window = host.host_mut().window_mut();
+    let err = window
+      .exec_script("function f(){return f()} f()")
+      .expect_err("expected recursion to terminate");
+    match err {
+      VmError::Termination(term) => {
+        assert_eq!(term.reason, TerminationReason::StackOverflow);
+        assert_eq!(term.stack.len(), 16);
+      }
+      other => panic!("expected stack overflow termination, got {other:?}"),
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn window_realm_respects_max_vm_heap_bytes() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let limit = 7 * 1024 * 1024;
+    let host = WindowHost::new_with_options(
+      dom,
+      "https://example.invalid/",
+      JsExecutionOptions {
+        max_vm_heap_bytes: Some(limit),
+        ..JsExecutionOptions::default()
+      },
+    )?;
+    let limits = host.host().window().heap().limits();
+    assert_eq!(limits.max_bytes, limit);
+    assert_eq!(limits.gc_threshold, (limit / 2).min(limit));
+    Ok(())
   }
 
   #[derive(Default)]

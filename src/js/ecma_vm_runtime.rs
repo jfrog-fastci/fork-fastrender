@@ -58,7 +58,7 @@ pub struct EcmaVmRuntimeConfig {
 impl Default for EcmaVmRuntimeConfig {
   fn default() -> Self {
     Self {
-      heap_limits: HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024),
+      heap_limits: super::vm_limits::default_heap_limits(),
       fuel: None,
       deadline: None,
       check_time_every: 100,

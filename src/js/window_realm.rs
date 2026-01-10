@@ -63,6 +63,10 @@ pub struct WindowRealmConfig {
   /// FastRender treats JavaScript as hostile input; keeping a hard heap limit is a foundational
   /// safety invariant even before full script execution is wired up.
   pub heap_limits: HeapLimits,
+  /// Construction-time VM options for the embedded `vm-js` VM.
+  ///
+  /// Notably, this includes stack depth limits (`VmOptions::max_stack_depth`).
+  pub vm_options: VmOptions,
   /// Host clock backing web time APIs like `Date.now()` and `performance.now()`.
   pub clock: Arc<dyn Clock>,
   /// Deterministic web time model (`performance.timeOrigin`, and the epoch offset for `Date.now()`).
@@ -87,7 +91,8 @@ impl WindowRealmConfig {
       dom_source_id: None,
       current_script_state: None,
       console_sink: None,
-      heap_limits: default_heap_limits(),
+      heap_limits: super::vm_limits::default_heap_limits(),
+      vm_options: VmOptions::default(),
       clock: Arc::new(RealClock::default()),
       web_time: WebTime::default(),
     }
@@ -110,6 +115,11 @@ impl WindowRealmConfig {
 
   pub fn with_heap_limits(mut self, limits: HeapLimits) -> Self {
     self.heap_limits = limits;
+    self
+  }
+
+  pub fn with_vm_options(mut self, options: VmOptions) -> Self {
+    self.vm_options = options;
     self
   }
 
@@ -171,7 +181,7 @@ impl WindowRealmUserData {
 
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
-    let mut vm_options = VmOptions::default();
+    let mut vm_options = config.vm_options.clone();
     // Window realms should be interruptible even before full script execution is wired up.
     // This is separate from the renderer-level interrupt flag: it's resettable per realm.
     let interrupt_flag = Arc::new(AtomicBool::new(false));
@@ -239,75 +249,24 @@ impl WindowRealm {
     mut config: WindowRealmConfig,
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self, VmError> {
-    if let Some(max_bytes) = js_execution_options.max_vm_heap_bytes {
-      const MIN_HEAP_MAX_BYTES: usize = 4 * 1024 * 1024;
-
-      let mut capped_max = max_bytes;
-
-      // If the process is constrained by `RLIMIT_AS`, keep JS heap usage to a small fraction of that
-      // ceiling so other renderer subsystems still have headroom.
-      #[cfg(target_os = "linux")]
-      {
-        if let Ok((cur, _max)) = crate::process_limits::get_address_space_limit_bytes() {
-          if cur > 0 && cur < u64::MAX {
-            let suggested = cur / 8;
-            if let Ok(suggested) = usize::try_from(suggested) {
-              capped_max = capped_max.min(suggested.max(MIN_HEAP_MAX_BYTES));
-            }
-          }
-        }
-      }
-
-      let gc_threshold = (capped_max / 2).min(capped_max);
-      config.heap_limits = HeapLimits::new(capped_max, gc_threshold);
+    if js_execution_options.max_vm_heap_bytes.is_some() {
+      // When explicitly configured, treat the heap cap as authoritative (don't apply RLIMIT scaling).
+      config.heap_limits = super::vm_limits::heap_limits_from_js_options(&js_execution_options);
     }
 
-    let mut vm_options = VmOptions::default();
     if let Some(max_stack_depth) = js_execution_options.max_stack_depth {
-      vm_options.max_stack_depth = max_stack_depth;
+      config.vm_options.max_stack_depth = max_stack_depth;
     }
-    // Window realms should be interruptible even before full script execution is wired up.
-    // This is separate from the renderer-level interrupt flag: it's resettable per realm.
-    let interrupt_flag = Arc::new(AtomicBool::new(false));
-    vm_options.interrupt_flag = Some(Arc::clone(&interrupt_flag));
-    // Also observe the render-wide interrupt flag so host cancellation interrupts JS at the next
-    // `Vm::tick()`.
-    vm_options.external_interrupt_flag = Some(render_control::interrupt_flag());
-    let max_stack_depth = vm_options.max_stack_depth;
-    let vm = Vm::new(vm_options);
-    let heap = Heap::new(config.heap_limits);
+    let enforced_heap_max_bytes = config.heap_limits.max_bytes;
+    let enforced_stack_depth = config.vm_options.max_stack_depth;
 
-    let mut runtime = Box::new(VmJsRuntime::new(vm, heap)?);
-    runtime
-      .vm
-      .set_user_data(WindowRealmUserData::new(config.document_url.clone()));
-    let realm_id = runtime.realm().id();
-
-    let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
-
-    let (console_sink_id, current_script_source_id, match_media_env_id) =
-      init_window_globals(vm, heap, realm, &config)?;
-    let time_bindings = crate::js::time::install_time_bindings(
-      vm,
-      realm,
-      heap,
-      Arc::clone(&config.clock),
-      config.web_time,
-    )?;
-    let mut js_execution_options = js_execution_options;
-    // Keep stored options consistent with the realm's enforced limits after capping.
-    js_execution_options.max_vm_heap_bytes = Some(config.heap_limits.max_bytes);
-    js_execution_options.max_stack_depth = Some(max_stack_depth);
-    Ok(Self {
-      runtime,
-      realm_id,
-      console_sink_id,
-      current_script_source_id,
-      match_media_env_id,
-      time_bindings: Some(time_bindings),
-      interrupt_flag,
-      js_execution_options,
-    })
+    let mut realm = Self::new(config)?;
+    realm.js_execution_options = js_execution_options;
+    // Keep stored options consistent with the realm's actual limits. Even when the caller leaves
+    // these as `None`, the realm still applies a concrete heap cap + stack depth.
+    realm.js_execution_options.max_vm_heap_bytes = Some(enforced_heap_max_bytes);
+    realm.js_execution_options.max_stack_depth = Some(enforced_stack_depth);
+    Ok(realm)
   }
 
   fn prepare_for_script_run(&mut self) -> Result<(), VmError> {
@@ -545,31 +504,6 @@ impl vm_js::VmJobContext for WindowRealm {
     self.runtime.heap.remove_root(id);
   }
 }
-fn default_heap_limits() -> HeapLimits {
-  const DEFAULT_HEAP_MAX_BYTES: usize = 32 * 1024 * 1024;
-  const MIN_HEAP_MAX_BYTES: usize = 4 * 1024 * 1024;
-
-  let mut max = DEFAULT_HEAP_MAX_BYTES;
-
-  // If the process is constrained by `RLIMIT_AS` (typically applied by FastRender CLI flags or
-  // an outer `prlimit`/cgroup), keep JS heap usage to a small fraction of that ceiling so other
-  // renderer subsystems still have headroom.
-  #[cfg(target_os = "linux")]
-  {
-    if let Ok((cur, _max)) = crate::process_limits::get_address_space_limit_bytes() {
-      if cur > 0 && cur < u64::MAX {
-        let suggested = cur / 8;
-        if let Ok(suggested) = usize::try_from(suggested) {
-          max = max.min(suggested.max(MIN_HEAP_MAX_BYTES));
-        }
-      }
-    }
-  }
-
-  let gc_threshold = (max / 2).min(max);
-  HeapLimits::new(max, gc_threshold)
-}
-
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,

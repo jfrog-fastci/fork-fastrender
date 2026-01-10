@@ -60,6 +60,7 @@ pub mod window_timers;
 pub mod window_url;
 pub(crate) mod vm_budgets;
 pub mod vm_host;
+pub mod vm_limits;
 pub(crate) mod vm_error_format;
 pub mod streaming;
 pub mod streaming_dom2;

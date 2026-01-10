@@ -12,9 +12,9 @@ use super::{QueueLimits, RunLimits};
 /// - VM limits (instruction count, heap budget, stack depth) enforced by the JS engine.
 ///
 /// This struct is the single configuration surface for all of the above *JS-specific* limits. Some
-/// fields are currently host-enforced and others are enforced by the `vm-js` backend. When FastRender
-/// is built against a different JS engine, VM-specific fields may be treated as best-effort/no-ops
-/// until that backend exposes equivalent budgeting hooks.
+/// fields are currently host-enforced and others are enforced by the active JS backend (currently
+/// `vm-js`). When FastRender is built against a different JS engine, VM-specific fields may be
+/// treated as best-effort/no-ops until that backend exposes equivalent budgeting hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JsExecutionOptions {
   /// Bounds for how much work can be *queued* in the host event loop.
@@ -35,14 +35,17 @@ pub struct JsExecutionOptions {
   /// For the `vm-js` backend, this is enforced as a per-run fuel budget.
   pub max_instruction_count: Option<u64>,
 
-  /// Maximum heap bytes the VM is allowed to allocate.
+  /// VM budget: maximum heap bytes the VM is allowed to allocate.
   ///
-  /// For the `vm-js` backend, this is enforced via the heap's hard [`vm_js::HeapLimits`].
+  /// When using the `vm-js` backend, this configures the VM heap's hard cap.
+  ///
+  /// If `None`, embeddings should apply a conservative default (currently 64MiB, scaled down when
+  /// the process is constrained by `RLIMIT_AS`).
   pub max_vm_heap_bytes: Option<usize>,
 
-  /// Maximum allowed stack depth for JS execution.
+  /// VM budget: maximum allowed stack depth for JS execution.
   ///
-  /// For the `vm-js` backend, this is enforced via [`vm_js::VmOptions::max_stack_depth`].
+  /// When using the `vm-js` backend, this configures `vm_js::VmOptions::max_stack_depth`.
   pub max_stack_depth: Option<usize>,
 }
 
@@ -86,8 +89,10 @@ impl Default for JsExecutionOptions {
 
       // VM budgets (enforced by the `vm-js` backend).
       max_instruction_count: Some(50_000_000),
-      max_vm_heap_bytes: Some(64 * 1024 * 1024),
-      max_stack_depth: Some(1024),
+      // `None` means "use the embedding's default safe heap cap" (see `js::vm_limits`).
+      max_vm_heap_bytes: None,
+      // `None` means "use the VM's default max stack depth".
+      max_stack_depth: None,
     }
   }
 }
