@@ -413,11 +413,23 @@ fn module_record_from_top_level(
         };
 
         if let Some(req) = &from {
-          push_requested_module(
-            &mut record.requested_modules,
-            clone_module_request(req, &mut ctx)?,
-            &mut ctx,
-          )?;
+          let mut exists = false;
+          for existing in &record.requested_modules {
+            ctx.budget_tick()?;
+            if existing == req {
+              exists = true;
+              break;
+            }
+          }
+          if !exists {
+            record
+              .requested_modules
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
+            record
+              .requested_modules
+              .push(clone_module_request(req, &mut ctx)?);
+          }
         }
 
         match (&export_stmt.stx.names, from) {
