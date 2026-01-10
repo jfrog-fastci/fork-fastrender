@@ -4,6 +4,7 @@ use crate::geometry::Point;
 use crate::js::clock::{Clock, RealClock};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
+use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +19,7 @@ use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
 /// layout recomputation is needed.
 pub struct BrowserDocumentDom2 {
   renderer: super::FastRender,
-  dom: crate::dom2::Document,
+  dom: Box<crate::dom2::Document>,
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
   last_dom_mapping: Option<crate::dom2::RendererDomMapping>,
@@ -53,7 +54,7 @@ impl BrowserDocumentDom2 {
     let dom = crate::dom2::Document::from_renderer_dom(&dom);
     Ok(Self {
       renderer,
-      dom,
+      dom: Box::new(dom),
       options,
       prepared: None,
       last_dom_mapping: None,
@@ -140,7 +141,7 @@ impl BrowserDocumentDom2 {
 
   /// Replaces the live DOM and clears any cached preparation state.
   pub fn reset_with_dom(&mut self, dom: crate::dom2::Document, options: RenderOptions) {
-    self.dom = dom;
+    *self.dom = dom;
     self.options = options;
     self.prepared = None;
     self.last_dom_mapping = None;
@@ -154,10 +155,10 @@ impl BrowserDocumentDom2 {
   /// The next `render_if_needed` call will paint using the prepared layout without re-running
   /// cascade/layout.
   pub fn reset_with_prepared(&mut self, prepared: PreparedDocument, options: RenderOptions) {
-    self.dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
+    *self.dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
     self.options = options;
     self.prepared = Some(prepared);
-    self.last_dom_mapping = Some(self.dom.to_renderer_dom_with_mapping().mapping);
+    self.last_dom_mapping = Some(self.dom.as_ref().to_renderer_dom_with_mapping().mapping);
     self.animation_state_store = crate::animation::AnimationStateStore::new();
     self.style_dirty = false;
     self.layout_dirty = false;
@@ -183,7 +184,7 @@ impl BrowserDocumentDom2 {
 
   /// Returns an immutable reference to the live `dom2` document.
   pub fn dom(&self) -> &crate::dom2::Document {
-    &self.dom
+    self.dom.as_ref()
   }
 
   /// Returns a mutable reference to the live `dom2` document, marking the document dirty.
@@ -191,7 +192,7 @@ impl BrowserDocumentDom2 {
   /// MVP invalidation: any mutation to the DOM is treated as a full structural/style change.
   pub fn dom_mut(&mut self) -> &mut crate::dom2::Document {
     self.invalidate_all();
-    &mut self.dom
+    self.dom.as_mut()
   }
 
   /// Mutates the DOM tree, marking the document dirty only when `f` reports that it changed
@@ -202,11 +203,15 @@ impl BrowserDocumentDom2 {
   where
     F: FnOnce(&mut crate::dom2::Document) -> bool,
   {
-    let changed = f(&mut self.dom);
+    let changed = f(self.dom.as_mut());
     if changed {
       self.invalidate_all();
     }
     changed
+  }
+
+  pub(crate) fn dom_ptr(&self) -> NonNull<crate::dom2::Document> {
+    NonNull::from(self.dom.as_ref())
   }
 
   /// Updates the viewport size (in CSS px), marking layout+paint dirty.
@@ -465,7 +470,7 @@ impl BrowserDocumentDom2 {
 
   fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
     let options = self.options.clone();
-    let snapshot = self.dom.to_renderer_dom_with_mapping();
+    let snapshot = self.dom.as_ref().to_renderer_dom_with_mapping();
     let renderer_dom = snapshot.dom;
     let mapping = snapshot.mapping;
     let renderer_dom_ref = &renderer_dom;
@@ -538,7 +543,7 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
   where
     F: FnOnce(&mut crate::dom2::Document) -> (R, bool),
   {
-    let (result, changed) = f(&mut self.dom);
+    let (result, changed) = f(self.dom.as_mut());
     if changed {
       self.invalidate_all();
     }
@@ -909,5 +914,36 @@ mod tests {
       }
       other => panic!("expected mapped dom2 node to be an element, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn dom_pointer_is_stable_across_moves_and_resets() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let options = RenderOptions::new().with_viewport(16, 16);
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>hi</div></body></html>",
+      options.clone(),
+    )?;
+    let ptr = doc.dom_ptr().as_ptr();
+
+    // Moving the host must not change the address of the underlying `dom2::Document`, since JS
+    // shims store the document pointer in a registry.
+    let mut doc = doc;
+    assert_eq!(ptr, doc.dom_ptr().as_ptr());
+
+    // Reset paths must also keep the `Document` allocation stable so existing registrations stay
+    // valid.
+    doc.reset_with_html(
+      "<!doctype html><html><body><span>reset</span></body></html>",
+      options.clone(),
+    )?;
+    assert_eq!(ptr, doc.dom_ptr().as_ptr());
+
+    let prepared = doc.prepare_dom_with_options()?;
+    doc.reset_with_prepared(prepared, options);
+    assert_eq!(ptr, doc.dom_ptr().as_ptr());
+
+    Ok(())
   }
 }
