@@ -1200,7 +1200,10 @@ impl FontContext {
 
   /// Loads web fonts defined by @font-face rules into the context.
   ///
-  /// Relative URLs are resolved against `base_url` when provided.
+  /// Relative URLs are resolved against the declaring stylesheet's URL when available.
+  ///
+  /// For inline styles (where [`FontFaceRule::source_stylesheet_url`] is `None`), relative URLs fall
+  /// back to resolving against `base_url` when provided.
   pub fn load_web_fonts(
     &self,
     faces: &[FontFaceRule],
@@ -1639,10 +1642,11 @@ impl FontContext {
     }
 
     let face_has_non_http_source = |face: &FontFaceRule| {
+      let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
       face.sources.iter().any(|src| match src {
         FontFaceSource::Local(_) => true,
         FontFaceSource::Url(url_src) => {
-          let resolved = resolve_font_url(&url_src.url, base_url);
+          let resolved = resolve_font_url(&url_src.url, face_base_url);
           !has_prefix_ignore_ascii_case(&resolved, "http://")
             && !has_prefix_ignore_ascii_case(&resolved, "https://")
         }
@@ -1753,9 +1757,13 @@ impl FontContext {
             last_error = Some("remote font loading disabled".to_string());
             continue;
           }
-          let resolved = resolve_font_url(&src.url, base_url);
+          // Per CSS Fonts, relative `url(...)` sources in `@font-face` are resolved against the
+          // stylesheet they were declared in (not the document URL). Inline style blocks inherit the
+          // document base URL instead.
+          let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+          let resolved = resolve_font_url(&src.url, face_base_url);
           last_source = Some(resolved.clone());
-          match self.load_remote_face(family, &resolved, face, order, start, base_url) {
+          match self.load_remote_face(family, &resolved, face, order, start, face_base_url) {
             Ok(LoadOutcome::Loaded) => {
               return FontLoadEvent::loaded(family, last_source.clone(), display)
             }
@@ -3576,6 +3584,59 @@ mod tests {
         "https://example.com/font.ttf",
         "https://example.com/font.woff"
       ]
+    );
+  }
+
+  #[test]
+  fn font_face_relative_url_resolves_against_declaring_stylesheet() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let font_path = manifest_dir.join("tests/fixtures/fonts/NotoSansMono-subset.ttf");
+    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+
+    let stylesheet_path = font_path
+      .parent()
+      .expect("font path has parent")
+      .join("stylesheet.css");
+    let stylesheet_url = url::Url::from_file_path(&stylesheet_path)
+      .expect("stylesheet path is absolute")
+      .to_string();
+    let document_url = url::Url::from_file_path(manifest_dir.join("index.html"))
+      .expect("document path is absolute")
+      .to_string();
+    let expected_font_url = url::Url::from_file_path(&font_path)
+      .expect("font path is absolute")
+      .to_string();
+
+    let ctx = FontContext::with_database(Arc::new(FontDatabase::empty()));
+    let face = FontFaceRule {
+      family: Some("RelativeFace".to_string()),
+      sources: vec![FontFaceSource::url("NotoSansMono-subset.ttf")],
+      display: Some(FontDisplay::Block),
+      source_stylesheet_url: Some(stylesheet_url),
+      ..Default::default()
+    };
+
+    let report = ctx
+      .load_web_fonts_with_policy(
+        &[face],
+        Some(&document_url),
+        None,
+        WebFontPolicy::BlockUntilLoaded {
+          timeout: Duration::from_secs(1),
+        },
+      )
+      .expect("load web fonts report");
+
+    let event = report.events.first().expect("expected a font load event");
+    assert_eq!(
+      event.source.as_deref(),
+      Some(expected_font_url.as_str()),
+      "expected font URL to resolve relative to the stylesheet URL"
+    );
+    assert!(
+      matches!(event.status, FontLoadStatus::Loaded),
+      "expected font load to succeed, got {:?}",
+      event.status
     );
   }
 
