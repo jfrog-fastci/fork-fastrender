@@ -16,7 +16,8 @@ use crate::js::{
   WindowFetchBindings, WindowFetchEnv,
 };
 use crate::resource::{
-  ensure_http_success, ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher,
+  ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane, CorsMode, DocumentOrigin,
+  FetchDestination, FetchRequest, ResourceFetcher,
 };
 use crate::style::media::{MediaContext, MediaType};
 use crate::web::events::{Event, EventTargetId};
@@ -44,6 +45,7 @@ pub struct VmJsBrowserTabExecutor {
   module_graph: Option<ModuleGraph>,
   module_map: HashMap<String, ModuleId>,
   import_map_state: ImportMapState,
+  document_origin: Option<DocumentOrigin>,
   js_execution_options: JsExecutionOptions,
   inline_module_id_counter: u64,
   pending_navigation: Option<LocationNavigationRequest>,
@@ -64,6 +66,7 @@ impl VmJsBrowserTabExecutor {
       module_graph: None,
       module_map: HashMap::new(),
       import_map_state: ImportMapState::new_empty(),
+      document_origin: None,
       js_execution_options: JsExecutionOptions::default(),
       inline_module_id_counter: 0,
       pending_navigation: None,
@@ -140,6 +143,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.module_graph = None;
     self.module_map.clear();
     self.import_map_state = ImportMapState::new_empty();
+    self.document_origin = document_url.and_then(crate::resource::origin_from_url);
     self.js_execution_options = js_execution_options;
     self.inline_module_id_counter = 0;
 
@@ -269,6 +273,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     document: &mut BrowserDocumentDom2,
     event_loop: &mut crate::js::EventLoop<BrowserTabHost>,
   ) -> Result<()> {
+    // HTML: module scripts are fetched in CORS mode by default. When the `crossorigin` attribute is
+    // missing, the default state is "anonymous" (same-origin credentials for same-origin requests).
+    let cors_mode = spec.crossorigin.unwrap_or(CorsMode::Anonymous);
+
     let entry_specifier = if spec.src_attr_present {
       // External module script: use the resolved `src` URL as the module's specifier.
       let Some(entry_url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
@@ -298,6 +306,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
     let max_script_bytes = self.js_execution_options.max_script_bytes;
+    let document_origin = self.document_origin.clone();
     let module_map = &mut self.module_map;
     let import_map_state = &mut self.import_map_state;
 
@@ -348,6 +357,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         max_script_bytes,
         module_map,
         import_map_state,
+        document_origin,
+        cors_mode,
       };
 
       let mut scope = heap.scope();
@@ -597,6 +608,8 @@ struct ModuleLoaderHooks<'a> {
   max_script_bytes: usize,
   module_map: &'a mut HashMap<String, ModuleId>,
   import_map_state: &'a mut ImportMapState,
+  document_origin: Option<DocumentOrigin>,
+  cors_mode: CorsMode,
 }
 
 impl ModuleLoaderHooks<'_> {
@@ -648,6 +661,10 @@ impl ModuleLoaderHooks<'_> {
     if let Some(referrer_url) = referrer_url {
       req = req.with_referrer_url(referrer_url);
     }
+    if let Some(origin) = self.document_origin.as_ref() {
+      req = req.with_client_origin(origin);
+    }
+    req = req.with_credentials_mode(self.cors_mode.credentials_mode());
     let fetched =
       match self.fetcher.fetch_partial_with_request(req, max_fetch) {
         Ok(fetched) => fetched,
@@ -666,6 +683,13 @@ impl ModuleLoaderHooks<'_> {
       let message = err.to_string();
       let value = Self::throw_type_error(vm, scope, &message)?;
       return Err(VmError::Throw(value));
+    }
+    if crate::resource::cors_enforcement_enabled() {
+      if let Err(err) = ensure_cors_allows_origin(self.document_origin.as_ref(), &fetched, url, self.cors_mode) {
+        let message = err.to_string();
+        let value = Self::throw_type_error(vm, scope, &message)?;
+        return Err(VmError::Throw(value));
+      }
     }
 
     // HTML: module scripts can be associated with Subresource Integrity metadata via import maps

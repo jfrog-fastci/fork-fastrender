@@ -832,8 +832,8 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             },
           );
 
-          // HTML: module scripts are fetched in CORS mode; the `crossorigin` attribute controls the
-          // credentials mode (defaulting to same-origin).
+          // HTML: module scripts are fetched in CORS mode; the `crossorigin` attribute only controls the
+          // credentials mode ("anonymous" vs "use-credentials", defaulting to same-origin).
           let destination = FetchDestination::ScriptCors;
           let credentials_mode = element
             .crossorigin

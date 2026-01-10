@@ -1231,6 +1231,13 @@ impl BrowserTabHost {
               && is_html_namespace(namespace)
               && !node.script_parser_document
               && !node.script_already_started
+              // Only schedule scripts that were *not* inserted by the HTML parser.
+              //
+              // Parser-inserted scripts are surfaced to the host explicitly (via streaming parse
+              // callbacks or best-effort scans). If we also pick them up here, script execution can
+              // accidentally schedule the remainder of a fully-parsed document as "dynamic" scripts
+              // (leading to duplicate fetches/execution).
+              && !node.script_parser_document
               && !self.scheduled_script_nodes.contains(&id)
             {
               let mut spec =
@@ -2012,6 +2019,14 @@ impl BrowserTabHost {
         ))
       })?;
 
+    // HTML: module scripts are fetched in CORS mode by default. The `crossorigin` attribute only
+    // controls the *credentials mode* ("anonymous" vs "use-credentials"). For classic scripts, CORS
+    // mode is enabled only when the attribute is present.
+    let cors_mode = match spec.script_type {
+      ScriptType::Module => Some(spec.crossorigin.unwrap_or(crate::resource::CorsMode::Anonymous)),
+      _ => spec.crossorigin,
+    };
+
     // Subresource Integrity (SRI) enforcement. When the `integrity` attribute is present, we must
     // reject the script if the metadata is invalid or the fetched bytes do not match.
     //
@@ -2025,7 +2040,7 @@ impl BrowserTabHost {
         ))
       })?;
 
-      if spec.crossorigin.is_none() {
+      if cors_mode.is_none() {
         if let (Some(doc_origin), Some(target_origin)) =
           (self.document_origin.as_ref(), crate::resource::origin_from_url(url))
         {
@@ -2057,7 +2072,11 @@ impl BrowserTabHost {
     }
 
     let fetcher = self.document.fetcher();
-    let mut req = FetchRequest::new(url, destination);
+    let effective_destination = match spec.script_type {
+      ScriptType::Module => FetchDestination::ScriptCors,
+      _ => destination,
+    };
+    let mut req = FetchRequest::new(url, effective_destination);
     if let Some(referrer) = self.document_url.as_deref() {
       req = req.with_referrer_url(referrer);
     }
@@ -2066,7 +2085,7 @@ impl BrowserTabHost {
     }
     let effective_referrer_policy = spec.referrer_policy.unwrap_or(self.document_referrer_policy);
     req = req.with_referrer_policy(effective_referrer_policy);
-    if let Some(cors_mode) = spec.crossorigin {
+    if let Some(cors_mode) = cors_mode {
       req = req.with_credentials_mode(cors_mode.credentials_mode());
     }
 
@@ -2080,7 +2099,7 @@ impl BrowserTabHost {
 
     crate::resource::ensure_http_success(&resource, url)?;
     crate::resource::ensure_script_mime_sane(&resource, url)?;
-    if let Some(cors_mode) = spec.crossorigin {
+    if let Some(cors_mode) = cors_mode {
       if crate::resource::cors_enforcement_enabled() {
         crate::resource::ensure_cors_allows_origin(
           self.document_origin.as_ref(),
@@ -3672,6 +3691,7 @@ mod tests {
         let body = match req.url {
           "https://example.com/a.js" => "A",
           "https://example.com/b.js" => "B",
+          "https://example.com/m.js" => "M",
           _ => "",
         };
         let mut res =
@@ -3696,14 +3716,17 @@ mod tests {
       renderer,
       r#"<!doctype html>
         <script src="https://example.com/a.js"></script>
-        <script src="https://example.com/b.js" crossorigin></script>"#,
+        <script src="https://example.com/b.js" crossorigin></script>
+        <script type="module" src="https://example.com/m.js"></script>"#,
       RenderOptions::default(),
     )?;
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
     let mut host = BrowserTabHost::new(
       document,
       Box::new(NoopExecutor::default()),
       TraceHandle::default(),
-      JsExecutionOptions::default(),
+      js_options,
     )?;
     host.reset_scripting_state(
       Some("https://example.com/doc.html".to_string()),
@@ -3712,7 +3735,7 @@ mod tests {
     let mut event_loop = EventLoop::new();
 
     let mut discovered = host.discover_scripts_best_effort(Some("https://example.com/doc.html"));
-    assert_eq!(discovered.len(), 2);
+    assert_eq!(discovered.len(), 3);
     for (node_id, spec) in discovered.drain(..) {
       let base_url_at_discovery = spec.base_url.clone();
       host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
@@ -3728,6 +3751,7 @@ mod tests {
       vec![
         ("https://example.com/a.js".to_string(), FetchDestination::Script),
         ("https://example.com/b.js".to_string(), FetchDestination::ScriptCors),
+        ("https://example.com/m.js".to_string(), FetchDestination::ScriptCors),
       ]
     );
     Ok(())
