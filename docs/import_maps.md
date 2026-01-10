@@ -238,6 +238,13 @@ Behavior summary:
 HTML stores an **import map parse result** in the `<script>` element’s `result` slot during
 preparation, then registers it during execution:
 
+Rust API:
+
+* `fastrender::js::import_maps::create_import_map_parse_result(input: &str, base_url: &url::Url)
+  -> ImportMapParseResult`
+
+Spec mapping:
+
 * “create an import map parse result” (**implemented as** `create_import_map_parse_result`)
 * “register an import map”
 
@@ -249,6 +256,23 @@ FastRender does not yet implement registration/merge, but the expected flow is:
 2. When the script element executes (HTML “execute the script element”):
    * if `error_to_rethrow` exists, report it and do not mutate import map state
    * otherwise, merge the parsed import map into the global import map state
+
+Example:
+
+```rust
+use fastrender::js::import_maps::create_import_map_parse_result;
+use url::Url;
+
+let base_url = Url::parse("https://example.com/base/page.html").unwrap();
+let result = create_import_map_parse_result(r#"{ "imports": { "x": "/x.js" } }"#, &base_url);
+
+for warning in &result.warnings {
+    eprintln!("import map warning: {:?}", warning.kind);
+}
+
+assert!(result.error_to_rethrow.is_none());
+assert!(result.import_map.is_some());
+```
 
 ### Supporting helper: `resolve_imports_match` (implemented)
 
@@ -272,6 +296,23 @@ Return values:
 * `Some(None)`: a match was found, but resolution is blocked/invalid (e.g. null entry, invalid
   join/backtracking). In the full spec this should translate into a thrown exception and **must not**
   fall back to other candidates.
+
+Example:
+
+```rust
+use fastrender::js::import_maps::{parse_import_map_string, resolve_imports_match};
+use url::Url;
+
+let base_url = Url::parse("https://example.com/base/page.html").unwrap();
+let (map, _warnings) = parse_import_map_string(r#"{ "imports": { "pkg/": "/static/pkg/" } }"#, &base_url)
+    .unwrap();
+
+let as_url = Url::parse("https://example.com/app.js").ok();
+let normalized_specifier = "pkg/util.js";
+let resolved = resolve_imports_match(normalized_specifier, as_url.as_ref(), &map.imports);
+
+assert!(resolved.is_some());
+```
 
 ### 3) `merge` (spec concept; not implemented yet)
 
