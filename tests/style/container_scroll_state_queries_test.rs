@@ -849,3 +849,77 @@ fn container_scroll_state_scrollable_block_end_in_vertical_writing_mode_tracks_h
     "expected scrollable: block-end to match when not at the block-end edge in vertical writing mode"
   );
 }
+
+#[test]
+fn container_scroll_state_scrollable_inline_keyword_matches_vertical_scroll_containers_in_vertical_writing_mode() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        writing-mode: vertical-rl;
+        container-name: scroller;
+      }
+      #spacer { height: 200px; }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable: inline) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let prepared = renderer
+    .prepare_html(html, RenderOptions::new().with_viewport(80, 60))
+    .expect("prepare");
+
+  let target = find_by_id(prepared.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: inline to match for vertical scrollers in vertical writing mode"
+  );
+}
+
+#[test]
+fn container_scroll_state_scrollable_block_keyword_matches_horizontal_scroll_containers_in_vertical_writing_mode() {
+  let html = r#"
+    <style>
+      #scroller {
+        width: 80px;
+        height: 60px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        writing-mode: vertical-rl;
+        container-name: scroller;
+      }
+      #spacer { width: 200px; height: 1px; }
+      #target { color: rgb(0, 0, 255); }
+      @container scroller scroll-state(scrollable: block) {
+        #target { color: rgb(255, 0, 0); }
+      }
+    </style>
+    <div id="scroller">
+      <div id="spacer"></div>
+      <div id="target">hello</div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let prepared = renderer
+    .prepare_html(html, RenderOptions::new().with_viewport(80, 60))
+    .expect("prepare");
+
+  let target = find_by_id(prepared.styled_tree(), "target").expect("target element");
+  assert_eq!(
+    target.styles.color,
+    Rgba::rgb(255, 0, 0),
+    "expected scrollable: block to match for horizontal scrollers in vertical writing mode"
+  );
+}
