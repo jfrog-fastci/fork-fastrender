@@ -8522,6 +8522,7 @@ fn init_window_globals(
   // Install WHATWG URL bindings (`URL`/`URLSearchParams`) so real-world scripts can parse and
   // manipulate URLs. This must happen after `scope` is dropped because it borrows `heap` mutably.
   drop(scope);
+  crate::js::window_abort::install_window_abort_bindings(vm, realm, heap)?;
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
 
   Ok((

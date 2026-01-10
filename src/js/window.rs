@@ -333,6 +333,7 @@ mod tests {
   use selectors::context::QuirksMode;
   use std::io::{Read, Write};
   use std::net::TcpListener;
+  use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Mutex;
   use std::time::{Duration, Instant};
   use vm_js::{PropertyKey, Value};
@@ -780,6 +781,183 @@ mod tests {
       msg.contains(":2:1"),
       "expected stack trace to include line/col 2:1, got {msg:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn abort_controller_exists_and_dispatches_abort_event() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      var g = this;
+      g.__has_abort_controller = (typeof AbortController === 'function');
+      var c = new AbortController();
+      g.__abort_fired = false;
+      g.__onabort_fired = false;
+      c.signal.addEventListener('abort', function () { g.__abort_fired = true; });
+      c.signal.onabort = function () { g.__onabort_fired = true; };
+      c.abort();
+      g.__aborted = c.signal.aborted;
+      g.__reason_name = c.signal.reason && c.signal.reason.name;
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__has_abort_controller"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__abort_fired"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__onabort_fired"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__aborted"),
+      Value::Bool(true)
+    ));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__reason_name").as_deref(),
+      Some("AbortError")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn abort_signal_timeout_zero_aborts_on_next_turn() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      var g = this;
+      g.__timeout_signal = AbortSignal.timeout(0);
+      g.__timeout_fired = false;
+      g.__timeout_signal.addEventListener('abort', function () { g.__timeout_fired = true; });
+      g.__timeout_aborted_before = g.__timeout_signal.aborted;
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__timeout_aborted_before"),
+      Value::Bool(false)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__timeout_fired"),
+      Value::Bool(false)
+    ));
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    let aborted_after = host.exec_script("__timeout_signal.aborted")?;
+    assert!(matches!(aborted_after, Value::Bool(true)));
+    assert!(matches!(
+      get_global_prop(&mut host, "__timeout_fired"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct CountingFetcher {
+    calls: AtomicUsize,
+  }
+
+  impl ResourceFetcher for CountingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      self.calls.fetch_add(1, Ordering::Relaxed);
+      Err(Error::Other(format!("CountingFetcher does not support fetch: {url}")))
+    }
+  }
+
+  #[test]
+  fn fetch_rejects_when_signal_is_pre_aborted() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(CountingFetcher::default());
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher.clone())?;
+
+    host.exec_script(
+      r#"
+      var g = this;
+      var c = new AbortController();
+      c.abort();
+      fetch("/", { signal: c.signal }).catch(function (e) {
+        g.__fetch_err_name = e && e.name;
+      });
+      "#,
+    )?;
+
+    // Rejection happens synchronously (no networking task enqueued), but Promise reactions are
+    // microtasks.
+    host.perform_microtask_checkpoint()?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__fetch_err_name").as_deref(),
+      Some("AbortError")
+    );
+    assert_eq!(fetcher.calls.load(Ordering::Relaxed), 0);
+    assert!(host.event_loop().is_idle());
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_can_be_aborted_after_scheduling_before_execution() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(CountingFetcher::default());
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher.clone())?;
+
+    host.exec_script(
+      r#"
+      var g = this;
+      var c = new AbortController();
+      fetch("/", { signal: c.signal }).catch(function (e) {
+        g.__fetch2_err_name = e && e.name;
+      });
+      c.abort();
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__fetch2_err_name").as_deref(),
+      Some("AbortError")
+    );
+    assert_eq!(fetcher.calls.load(Ordering::Relaxed), 0);
+    Ok(())
+  }
+
+  #[test]
+  fn request_exposes_signal_and_clone_preserves_it() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      var g = this;
+      var c = new AbortController();
+      var r1 = new Request("/", { signal: c.signal });
+      var r2 = r1.clone();
+      g.__req_signal_same = (r1.signal === c.signal) && (r2.signal === c.signal);
+      "#,
+    )?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__req_signal_same"),
+      Value::Bool(true)
+    ));
     Ok(())
   }
 }

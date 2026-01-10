@@ -1321,28 +1321,36 @@ fn request_ctor_construct(
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  let mut request = if let Some((other_env_id, other_request_id)) =
-    request_info_from_value(scope, input)
-  {
+  let input_request_info = request_info_from_value(scope, input);
+  let input_request_obj = match (input_request_info, input) {
+    (Some(_), Value::Object(obj)) => Some(obj),
+    _ => None,
+  };
+
+  let mut request = if let Some((other_env_id, other_request_id)) = input_request_info {
     with_env_state(other_env_id, |state| {
       state
         .requests
         .get(&other_request_id)
         .cloned()
         .ok_or(VmError::TypeError("Request: invalid backing request"))
-      })?
+    })?
   } else {
-      let url = to_rust_string_limited(
-        scope.heap_mut(),
-        input,
-        limits.max_url_bytes,
-        FETCH_URL_TOO_LONG_ERROR,
-      )?;
-      let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
-      let url = resolve_url(&url, base_url.as_deref())
-        .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
-      CoreRequest::new_with_limits("GET", url, &limits)
-    };
+    let url = to_rust_string_limited(
+      scope.heap_mut(),
+      input,
+      limits.max_url_bytes,
+      FETCH_URL_TOO_LONG_ERROR,
+    )?;
+    let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+    let url = resolve_url(&url, base_url.as_deref())
+      .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
+    CoreRequest::new_with_limits("GET", url, &limits)
+  };
+
+  // Associated AbortSignal (optional; FastRender currently treats missing signals as `null`).
+  let mut signal: Option<Value> = None;
+  let mut init_specified_signal = false;
 
   if !matches!(init, Value::Undefined | Value::Null) {
     let Value::Object(init_obj) = init else {
@@ -1406,6 +1414,33 @@ fn request_ctor_construct(
         .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
       request.body = Some(body);
     }
+
+    let signal_key = alloc_key(scope, "signal")?;
+    let signal_val = vm.get(scope, init_obj, signal_key)?;
+    if !matches!(signal_val, Value::Undefined) {
+      init_specified_signal = true;
+      match signal_val {
+        Value::Undefined | Value::Null => signal = None,
+        Value::Object(_) => signal = Some(signal_val),
+        _ => {
+          return Err(throw_type_error(
+            vm,
+            scope,
+            host_hooks,
+            "RequestInit.signal must be an AbortSignal or null",
+          ));
+        }
+      }
+    }
+  }
+
+  if !init_specified_signal {
+    if let Some(input_obj) = input_request_obj {
+      let inherited = get_data_prop(scope, input_obj, "signal")?;
+      if matches!(inherited, Value::Object(_)) {
+        signal = Some(inherited);
+      }
+    }
   }
 
   if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
@@ -1457,6 +1492,14 @@ fn request_ctor_construct(
     make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_REQUEST, request_id)?;
   set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
 
+  set_data_prop(
+    scope,
+    obj,
+    "signal",
+    signal.unwrap_or(Value::Null),
+    /* writable */ false,
+  )?;
+
   Ok(Value::Object(obj))
 }
 
@@ -1469,11 +1512,12 @@ fn request_clone_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(obj) = this else {
+  let Value::Object(original_obj) = this else {
     return Err(VmError::TypeError("Request: illegal invocation"));
   };
-  let (env_id, request_id) = request_info_from_this(scope, Value::Object(obj))?;
+  let (env_id, request_id) = request_info_from_this(scope, Value::Object(original_obj))?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
+  let signal = get_data_prop(scope, original_obj, "signal")?;
 
   let cloned = with_env_state(env_id, |state| {
     let req = state
@@ -1492,7 +1536,10 @@ fn request_clone_native(
     Ok(id)
   })?;
 
-  let proto = scope.heap().object_prototype(obj)?.ok_or(VmError::InvariantViolation(
+  let proto = scope
+    .heap()
+    .object_prototype(original_obj)?
+    .ok_or(VmError::InvariantViolation(
     "Request.prototype missing on instance",
   ))?;
   let obj = scope.alloc_object_with_prototype(Some(proto))?;
@@ -1516,6 +1563,7 @@ fn request_clone_native(
   let headers_obj =
     make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_REQUEST, new_request_id)?;
   set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
+  set_data_prop(scope, obj, "signal", signal, /* writable */ false)?;
 
   Ok(Value::Object(obj))
 }
@@ -2110,29 +2158,41 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
   // Build request synchronously (invalid init should reject deterministically).
-  let mut request =
-    if let Some((other_env_id, other_request_id)) = request_info_from_value(scope, input) {
-      with_env_state(other_env_id, |state| {
-        state
-          .requests
-          .get(&other_request_id)
-          .cloned()
-          .ok_or(VmError::TypeError("Request: invalid backing request"))
-      })?
-    } else {
-      let url = to_rust_string_limited(
-        scope.heap_mut(),
-        input,
-        limits.max_url_bytes,
-        FETCH_URL_TOO_LONG_ERROR,
-      )?;
-      let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
-      let url = resolve_url(&url, base_url.as_deref())
-        .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
-      let mut request = CoreRequest::new_with_limits("GET", url, &limits);
-      request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
-       request
-     };
+  let input_request_info = request_info_from_value(scope, input);
+  let input_request_obj = match (input_request_info, input) {
+    (Some(_), Value::Object(obj)) => Some(obj),
+    _ => None,
+  };
+
+  let mut request = if let Some((other_env_id, other_request_id)) = input_request_info {
+    with_env_state(other_env_id, |state| {
+      state
+        .requests
+        .get(&other_request_id)
+        .cloned()
+        .ok_or(VmError::TypeError("Request: invalid backing request"))
+    })?
+  } else {
+    let url = to_rust_string_limited(
+      scope.heap_mut(),
+      input,
+      limits.max_url_bytes,
+      FETCH_URL_TOO_LONG_ERROR,
+    )?;
+    let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+    let url = resolve_url(&url, base_url.as_deref())
+      .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
+    let mut request = CoreRequest::new_with_limits("GET", url, &limits);
+    request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
+    request
+  };
+
+  // Resolve the associated AbortSignal, if any.
+  //
+  // `fetch(input, init)` matches the `new Request(input, init)` behavior: an explicit
+  // `init.signal` overrides `input.signal` when `input` is a `Request`.
+  let mut signal: Option<Value> = None;
+  let mut init_specified_signal = false;
 
   if !matches!(init, Value::Undefined | Value::Null) {
     let Value::Object(init_obj) = init else {
@@ -2195,6 +2255,33 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
       request.body = Some(body);
     }
+
+    let signal_key = alloc_key(scope, "signal")?;
+    let signal_val = vm.get(scope, init_obj, signal_key)?;
+    if !matches!(signal_val, Value::Undefined) {
+      init_specified_signal = true;
+      match signal_val {
+        Value::Undefined | Value::Null => signal = None,
+        Value::Object(_) => signal = Some(signal_val),
+        _ => {
+          return Err(throw_type_error(
+            vm,
+            scope,
+            host_hooks,
+            "RequestInit.signal must be an AbortSignal or null",
+          ));
+        }
+      }
+    }
+  }
+
+  if !init_specified_signal {
+    if let Some(input_obj) = input_request_obj {
+      let inherited = get_data_prop(scope, input_obj, "signal")?;
+      if matches!(inherited, Value::Object(_)) {
+        signal = Some(inherited);
+      }
+    }
   }
 
   // Create a Promise capability for the returned Promise.
@@ -2205,12 +2292,38 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   let resolve_root = scope.heap_mut().add_root(cap.resolve)?;
   let reject_root = scope.heap_mut().add_root(cap.reject)?;
   let promise_root = scope.heap_mut().add_root(promise)?;
+  let signal_root = match signal {
+    Some(v) => Some(scope.heap_mut().add_root(v)?),
+    None => None,
+  };
+
+  // If the signal is already aborted, reject immediately and skip queueing any networking task.
+  if let Some(signal_root) = signal_root {
+    let signal_value = scope.heap().get_root(signal_root).ok_or(VmError::InvalidHandle)?;
+    if let Value::Object(signal_obj) = signal_value {
+      let aborted_key = alloc_key(scope, "aborted")?;
+      let aborted = vm.get(scope, signal_obj, aborted_key)?;
+      if scope.heap().to_boolean(aborted)? {
+        let reason_key = alloc_key(scope, "reason")?;
+        let reason = vm.get(scope, signal_obj, reason_key)?;
+        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[reason])?;
+        scope.heap_mut().remove_root(resolve_root);
+        scope.heap_mut().remove_root(reject_root);
+        scope.heap_mut().remove_root(promise_root);
+        scope.heap_mut().remove_root(signal_root);
+        return Ok(promise);
+      }
+    }
+  }
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
     // Reject synchronously.
     scope.heap_mut().remove_root(resolve_root);
     scope.heap_mut().remove_root(reject_root);
     scope.heap_mut().remove_root(promise_root);
+    if let Some(signal_root) = signal_root {
+      scope.heap_mut().remove_root(signal_root);
+    }
     let err = create_type_error(vm, scope, host_hooks, "fetch called without an active EventLoop")?;
     vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err])?;
     return Ok(promise);
@@ -2256,6 +2369,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             window_realm.heap_mut().remove_root(resolve_root);
             window_realm.heap_mut().remove_root(reject_root);
             window_realm.heap_mut().remove_root(promise_root);
+            if let Some(signal_root) = signal_root {
+              window_realm.heap_mut().remove_root(signal_root);
+            }
 
             window_realm
               .vm_mut()
@@ -2275,12 +2391,97 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           window_realm.heap_mut().remove_root(resolve_root);
           window_realm.heap_mut().remove_root(reject_root);
           window_realm.heap_mut().remove_root(promise_root);
+          if let Some(signal_root) = signal_root {
+            window_realm.heap_mut().remove_root(signal_root);
+          }
           return Err(queue_err);
         }
 
         return Ok(());
       }
     };
+
+    // If the signal was aborted after `fetch()` returned but before this networking task begins,
+    // reject and skip executing the underlying fetcher.
+    if let Some(signal_root_id) = signal_root {
+      let window_realm = host.window_realm();
+      let aborted = (|| {
+        let heap = window_realm.heap_mut();
+        let signal_value = heap.get_root(signal_root_id)?;
+        let Value::Object(signal_obj) = signal_value else {
+          return None;
+        };
+        let mut scope = heap.scope();
+        let key = alloc_key(&mut scope, "aborted").ok()?;
+        let value = scope
+          .heap()
+          .object_get_own_data_property_value(signal_obj, &key)
+          .ok()
+          .flatten()
+          .unwrap_or(Value::Undefined);
+        scope.heap().to_boolean(value).ok()
+      })();
+
+      if aborted.unwrap_or(false) {
+        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+          let window_realm = host.window_realm();
+          window_realm.reset_interrupt();
+          with_event_loop(event_loop, || {
+            let vm = window_realm.vm_mut();
+            vm.set_budget(callback_budget_from_render_deadline());
+            let tick_result = vm.tick();
+            let mut hooks = VmJsEventLoopHooks::<Host>::new();
+            let call_result = tick_result.and_then(|_| {
+              let (vm, heap) = window_realm.vm_and_heap_mut();
+              let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
+              let signal_value = heap.get_root(signal_root_id).ok_or(VmError::InvalidHandle)?;
+              let mut scope = heap.scope();
+              let reason = match signal_value {
+                Value::Object(signal_obj) => {
+                  let key = alloc_key(&mut scope, "reason")?;
+                  vm.get(&mut scope, signal_obj, key)?
+                }
+                _ => Value::Undefined,
+              };
+              vm.call_with_host(
+                &mut scope,
+                &mut hooks,
+                reject,
+                Value::Undefined,
+                &[reason],
+              )?;
+              Ok(())
+            });
+
+            window_realm.heap_mut().remove_root(resolve_root);
+            window_realm.heap_mut().remove_root(reject_root);
+            window_realm.heap_mut().remove_root(promise_root);
+            window_realm.heap_mut().remove_root(signal_root_id);
+
+            window_realm
+              .vm_mut()
+              .set_budget(Budget::unlimited(100));
+            if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+              return Err(err);
+            }
+            call_result
+              .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+              .map(|_| ())
+          })
+        });
+
+        if let Err(queue_err) = queue_result {
+          let window_realm = host.window_realm();
+          window_realm.heap_mut().remove_root(resolve_root);
+          window_realm.heap_mut().remove_root(reject_root);
+          window_realm.heap_mut().remove_root(promise_root);
+          window_realm.heap_mut().remove_root(signal_root_id);
+          return Err(queue_err);
+        }
+
+        return Ok(());
+      }
+    }
 
     let exec_ctx = WebFetchExecutionContext {
       destination: FetchDestination::Fetch,
@@ -2335,6 +2536,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 window_realm.heap_mut().remove_root(resolve_root);
                 window_realm.heap_mut().remove_root(reject_root);
                 window_realm.heap_mut().remove_root(promise_root);
+                if let Some(signal_root) = signal_root {
+                  window_realm.heap_mut().remove_root(signal_root);
+                }
 
                 window_realm
                   .vm_mut()
@@ -2353,6 +2557,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               window_realm.heap_mut().remove_root(resolve_root);
               window_realm.heap_mut().remove_root(reject_root);
               window_realm.heap_mut().remove_root(promise_root);
+              if let Some(signal_root) = signal_root {
+                window_realm.heap_mut().remove_root(signal_root);
+              }
               return Err(queue_err);
             }
 
@@ -2442,6 +2649,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             window_realm.heap_mut().remove_root(resolve_root);
             window_realm.heap_mut().remove_root(reject_root);
             window_realm.heap_mut().remove_root(promise_root);
+            if let Some(signal_root) = signal_root {
+              window_realm.heap_mut().remove_root(signal_root);
+            }
 
             window_realm
               .vm_mut()
@@ -2465,6 +2675,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           window_realm.heap_mut().remove_root(resolve_root);
           window_realm.heap_mut().remove_root(reject_root);
           window_realm.heap_mut().remove_root(promise_root);
+          if let Some(signal_root) = signal_root {
+            window_realm.heap_mut().remove_root(signal_root);
+          }
           return Err(queue_err);
         }
       }
@@ -2496,6 +2709,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
             window_realm.heap_mut().remove_root(resolve_root);
             window_realm.heap_mut().remove_root(reject_root);
             window_realm.heap_mut().remove_root(promise_root);
+            if let Some(signal_root) = signal_root {
+              window_realm.heap_mut().remove_root(signal_root);
+            }
 
             window_realm
               .vm_mut()
@@ -2514,6 +2730,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           window_realm.heap_mut().remove_root(resolve_root);
           window_realm.heap_mut().remove_root(reject_root);
           window_realm.heap_mut().remove_root(promise_root);
+          if let Some(signal_root) = signal_root {
+            window_realm.heap_mut().remove_root(signal_root);
+          }
           return Err(queue_err);
         }
       }
@@ -2527,6 +2746,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     scope.heap_mut().remove_root(resolve_root);
     scope.heap_mut().remove_root(reject_root);
     scope.heap_mut().remove_root(promise_root);
+    if let Some(signal_root) = signal_root {
+      scope.heap_mut().remove_root(signal_root);
+    }
     let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
     vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
   }
