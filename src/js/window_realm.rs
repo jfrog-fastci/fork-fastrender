@@ -1,9 +1,11 @@
 use crate::dom2::{self, NodeId};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
+use crate::js::window_env::{
+  install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
+};
 use crate::js::CurrentScriptStateHandle;
-use crate::js::window_env::{install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv};
-use crate::style::media::MediaContext;
 use crate::resource::ResourceFetcher;
+use crate::style::media::MediaContext;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use parking_lot::Mutex;
@@ -16,7 +18,8 @@ use std::sync::OnceLock;
 use url::Url;
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, JsRuntime as VmJsRuntime, PropertyDescriptor, PropertyKey,
-  PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks,
+  VmOptions,
 };
 
 pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -355,7 +358,10 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
-fn storage_slots_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<(GcObject, GcObject), VmError> {
+fn storage_slots_from_callee(
+  scope: &Scope<'_>,
+  callee: GcObject,
+) -> Result<(GcObject, GcObject), VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   let this_slot = slots
     .get(STORAGE_METHOD_THIS_SLOT)
@@ -589,10 +595,18 @@ fn install_storage_object(
   };
 
   let get_item_func = make_method(scope, get_item_call_id, "getItem", 1)?;
-  scope.define_property(storage_obj, get_item_key, data_desc(Value::Object(get_item_func)))?;
+  scope.define_property(
+    storage_obj,
+    get_item_key,
+    data_desc(Value::Object(get_item_func)),
+  )?;
 
   let set_item_func = make_method(scope, set_item_call_id, "setItem", 2)?;
-  scope.define_property(storage_obj, set_item_key, data_desc(Value::Object(set_item_func)))?;
+  scope.define_property(
+    storage_obj,
+    set_item_key,
+    data_desc(Value::Object(set_item_func)),
+  )?;
 
   let remove_item_func = make_method(scope, remove_item_call_id, "removeItem", 1)?;
   scope.define_property(
@@ -612,9 +626,10 @@ fn install_storage_object(
   scope.push_root(Value::String(length_get_name))?;
   let length_get_func =
     scope.alloc_native_function_with_slots(length_get_call_id, None, length_get_name, 0, &slots)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(length_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    length_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(length_get_func))?;
   scope.define_property(
     storage_obj,
@@ -698,6 +713,7 @@ const LOCATION_URL_KEY: &str = "__fastrender_location_url";
 const STORAGE_METHOD_THIS_SLOT: usize = 0;
 const STORAGE_METHOD_DATA_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
+const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
 const CURRENT_SCRIPT_SOURCE_ID_KEY: &str = "__fastrender_current_script_source_id";
 const NODE_WRAPPER_CACHE_KEY: &str = "__fastrender_node_wrapper_cache";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
@@ -705,6 +721,13 @@ const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
 const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
 const CUSTOM_EVENT_PROTOTYPE_KEY: &str = "__fastrender_custom_event_prototype";
+const EVENT_TARGET_LISTENERS_KEY: &str = "__fastrender_event_target_listeners";
+const EVENT_TARGET_ADD_EVENT_LISTENER_KEY: &str = "__fastrender_event_target_add_event_listener";
+const EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY: &str =
+  "__fastrender_event_target_remove_event_listener";
+const EVENT_TARGET_DISPATCH_EVENT_KEY: &str = "__fastrender_event_target_dispatch_event";
+const EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY: &str =
+  "__fastrender_event_immediate_propagation_stopped";
 const ELEMENT_CLASS_NAME_GET_KEY: &str = "__fastrender_element_class_name_get";
 const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
 const ELEMENT_CLASS_LIST_ADD_KEY: &str = "__fastrender_element_class_list_add";
@@ -917,11 +940,17 @@ fn window_report_error_native(
         let name_key = alloc_key(scope, "name")?;
         let message_key = alloc_key(scope, "message")?;
 
-        let name = match scope.heap().object_get_own_data_property_value(obj, &name_key)? {
+        let name = match scope
+          .heap()
+          .object_get_own_data_property_value(obj, &name_key)?
+        {
           Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
           _ => String::new(),
         };
-        let message = match scope.heap().object_get_own_data_property_value(obj, &message_key)? {
+        let message = match scope
+          .heap()
+          .object_get_own_data_property_value(obj, &message_key)?
+        {
           Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
           _ => String::new(),
         };
@@ -1068,7 +1097,11 @@ fn window_atob_native(
   }
 
   // If it contains a non-base64 character, fail.
-  if stripped.iter().copied().any(|b| !is_base64_alphabet_byte(b)) {
+  if stripped
+    .iter()
+    .copied()
+    .any(|b| !is_base64_alphabet_byte(b))
+  {
     return Err(VmError::Throw(make_dom_exception(
       scope,
       "InvalidCharacterError",
@@ -1227,7 +1260,10 @@ fn location_set_unimplemented_native(
   ))
 }
 
-fn parse_location_url(scope: &mut Scope<'_>, location_obj: GcObject) -> Result<Option<Url>, VmError> {
+fn parse_location_url(
+  scope: &mut Scope<'_>,
+  location_obj: GcObject,
+) -> Result<Option<Url>, VmError> {
   let key = alloc_key(scope, LOCATION_URL_KEY)?;
   let value = scope
     .heap()
@@ -1301,7 +1337,9 @@ fn location_hostname_get_native(
   let Some(url) = parse_location_url(scope, location_obj)? else {
     return Ok(Value::String(scope.alloc_string("")?));
   };
-  Ok(Value::String(scope.alloc_string(url.host_str().unwrap_or(""))?))
+  Ok(Value::String(
+    scope.alloc_string(url.host_str().unwrap_or(""))?,
+  ))
 }
 
 fn location_port_get_native(
@@ -1403,6 +1441,44 @@ fn decimal_str_for_usize(mut value: usize, buf: &mut [u8; 20]) -> &str {
   unsafe { std::str::from_utf8_unchecked(&buf[i..]) }
 }
 
+fn array_index_from_property_key(heap: &Heap, key: &PropertyKey) -> Option<u32> {
+  let PropertyKey::String(s) = key else {
+    return None;
+  };
+  let s = heap.get_string(*s).ok()?;
+  let units = s.as_code_units();
+  if units.is_empty() {
+    return None;
+  }
+
+  const U0: u16 = b'0' as u16;
+  const U9: u16 = b'9' as u16;
+
+  // `ToString(ToUint32(P)) === P` implies no leading zeros (except the single "0").
+  if units.len() > 1 && units[0] == U0 {
+    return None;
+  }
+
+  let mut value: u64 = 0;
+  for &u in units {
+    if !(U0..=U9).contains(&u) {
+      return None;
+    }
+    value = value.checked_mul(10)?;
+    value = value.checked_add((u - U0) as u64)?;
+    if value > u32::MAX as u64 {
+      return None;
+    }
+  }
+
+  // Exclude 2^32 - 1 per the ECMAScript "array index" definition.
+  if value == u32::MAX as u64 {
+    return None;
+  }
+
+  Some(value as u32)
+}
+
 fn get_or_create_node_wrapper(
   scope: &mut Scope<'_>,
   document_obj: GcObject,
@@ -1417,11 +1493,7 @@ fn get_or_create_node_wrapper(
     _ => {
       let cache = scope.alloc_object()?;
       scope.push_root(Value::Object(cache))?;
-      scope.define_property(
-        document_obj,
-        cache_key,
-        data_desc(Value::Object(cache)),
-      )?;
+      scope.define_property(document_obj, cache_key, data_desc(Value::Object(cache)))?;
       cache
     }
   };
@@ -1447,56 +1519,82 @@ fn get_or_create_node_wrapper(
 
   let element_query_selector = {
     let key = alloc_key(scope, ELEMENT_QUERY_SELECTOR_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let element_query_selector_all = {
     let key = alloc_key(scope, ELEMENT_QUERY_SELECTOR_ALL_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let element_matches = {
     let key = alloc_key(scope, ELEMENT_MATCHES_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let element_closest = {
     let key = alloc_key(scope, ELEMENT_CLOSEST_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
 
   let class_name_get = {
     let key = alloc_key(scope, ELEMENT_CLASS_NAME_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let class_name_set = {
     let key = alloc_key(scope, ELEMENT_CLASS_NAME_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let class_list_add = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_ADD_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let class_list_remove = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_REMOVE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let class_list_toggle = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_TOGGLE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let class_list_contains = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_CONTAINS_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let class_list_replace = {
     let key = alloc_key(scope, ELEMENT_CLASS_LIST_REPLACE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let id_get = {
     let key = alloc_key(scope, ELEMENT_ID_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let id_set = {
     let key = alloc_key(scope, ELEMENT_ID_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let src_get = {
     let key = alloc_key(scope, ELEMENT_SRC_GET_KEY)?;
@@ -1596,79 +1694,135 @@ fn get_or_create_node_wrapper(
   };
   let append_child = {
     let key = alloc_key(scope, NODE_APPEND_CHILD_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let insert_before = {
     let key = alloc_key(scope, NODE_INSERT_BEFORE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let remove_child = {
     let key = alloc_key(scope, NODE_REMOVE_CHILD_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let replace_child = {
     let key = alloc_key(scope, NODE_REPLACE_CHILD_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let clone_node = {
     let key = alloc_key(scope, NODE_CLONE_NODE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let parent_node_get = {
     let key = alloc_key(scope, NODE_PARENT_NODE_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let first_child_get = {
     let key = alloc_key(scope, NODE_FIRST_CHILD_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let previous_sibling_get = {
     let key = alloc_key(scope, NODE_PREVIOUS_SIBLING_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let next_sibling_get = {
     let key = alloc_key(scope, NODE_NEXT_SIBLING_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let node_remove = {
     let key = alloc_key(scope, NODE_REMOVE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let add_event_listener = {
+    let key = alloc_key(scope, EVENT_TARGET_ADD_EVENT_LISTENER_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let remove_event_listener = {
+    let key = alloc_key(scope, EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
+  };
+  let dispatch_event = {
+    let key = alloc_key(scope, EVENT_TARGET_DISPATCH_EVENT_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let get_attribute = {
     let key = alloc_key(scope, ELEMENT_GET_ATTRIBUTE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let set_attribute = {
     let key = alloc_key(scope, ELEMENT_SET_ATTRIBUTE_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let inner_html_get = {
     let key = alloc_key(scope, ELEMENT_INNER_HTML_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let inner_html_set = {
     let key = alloc_key(scope, ELEMENT_INNER_HTML_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let outer_html_get = {
     let key = alloc_key(scope, ELEMENT_OUTER_HTML_GET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let outer_html_set = {
     let key = alloc_key(scope, ELEMENT_OUTER_HTML_SET_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let insert_adjacent_html = {
     let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_HTML_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let insert_adjacent_element = {
     let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_ELEMENT_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let insert_adjacent_text = {
     let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_TEXT_KEY)?;
-    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+    scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &key)?
   };
   let style_get_property_value = {
     let key = alloc_key(scope, STYLE_GET_PROPERTY_VALUE_KEY)?;
@@ -2020,38 +2174,18 @@ fn get_or_create_node_wrapper(
       )?;
 
       let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
-      scope.define_property(
-        class_list,
-        source_id_key,
-        data_desc(dom_source_id_value),
-      )?;
+      scope.define_property(class_list, source_id_key, data_desc(dom_source_id_value))?;
 
       let add_key = alloc_key(scope, "add")?;
       scope.define_property(class_list, add_key, data_desc(Value::Object(add)))?;
       let remove_key = alloc_key(scope, "remove")?;
-      scope.define_property(
-        class_list,
-        remove_key,
-        data_desc(Value::Object(remove)),
-      )?;
+      scope.define_property(class_list, remove_key, data_desc(Value::Object(remove)))?;
       let toggle_key = alloc_key(scope, "toggle")?;
-      scope.define_property(
-        class_list,
-        toggle_key,
-        data_desc(Value::Object(toggle)),
-      )?;
+      scope.define_property(class_list, toggle_key, data_desc(Value::Object(toggle)))?;
       let contains_key = alloc_key(scope, "contains")?;
-      scope.define_property(
-        class_list,
-        contains_key,
-        data_desc(Value::Object(contains)),
-      )?;
+      scope.define_property(class_list, contains_key, data_desc(Value::Object(contains)))?;
       let replace_key = alloc_key(scope, "replace")?;
-      scope.define_property(
-        class_list,
-        replace_key,
-        data_desc(Value::Object(replace)),
-      )?;
+      scope.define_property(class_list, replace_key, data_desc(Value::Object(replace)))?;
 
       let key = alloc_key(scope, "classList")?;
       scope.define_property(wrapper, key, data_desc(Value::Object(class_list)))?;
@@ -2284,6 +2418,21 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = node_remove {
     let key = alloc_key(scope, "remove")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = add_event_listener {
+    let key = alloc_key(scope, "addEventListener")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = remove_event_listener {
+    let key = alloc_key(scope, "removeEventListener")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = dispatch_event {
+    let key = alloc_key(scope, "dispatchEvent")?;
     scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
@@ -2543,8 +2692,12 @@ fn document_query_selector_native(
         crate::web::dom::DomException::NoModificationAllowedError { message } => {
           ("NoModificationAllowedError", message)
         }
-        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
-        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+        crate::web::dom::DomException::NotSupportedError { message } => {
+          ("NotSupportedError", message)
+        }
+        crate::web::dom::DomException::InvalidStateError { message } => {
+          ("InvalidStateError", message)
+        }
       };
       Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
     }
@@ -2596,8 +2749,12 @@ fn document_query_selector_all_native(
         crate::web::dom::DomException::NoModificationAllowedError { message } => {
           ("NoModificationAllowedError", message)
         }
-        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
-        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+        crate::web::dom::DomException::NotSupportedError { message } => {
+          ("NotSupportedError", message)
+        }
+        crate::web::dom::DomException::InvalidStateError { message } => {
+          ("InvalidStateError", message)
+        }
       };
       return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
     }
@@ -2720,8 +2877,12 @@ fn element_query_selector_native(
         crate::web::dom::DomException::NoModificationAllowedError { message } => {
           ("NoModificationAllowedError", message)
         }
-        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
-        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+        crate::web::dom::DomException::NotSupportedError { message } => {
+          ("NotSupportedError", message)
+        }
+        crate::web::dom::DomException::InvalidStateError { message } => {
+          ("InvalidStateError", message)
+        }
       };
       Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
     }
@@ -2810,8 +2971,12 @@ fn element_query_selector_all_native(
         crate::web::dom::DomException::NoModificationAllowedError { message } => {
           ("NoModificationAllowedError", message)
         }
-        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
-        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+        crate::web::dom::DomException::NotSupportedError { message } => {
+          ("NotSupportedError", message)
+        }
+        crate::web::dom::DomException::InvalidStateError { message } => {
+          ("InvalidStateError", message)
+        }
       };
       return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
     }
@@ -2917,8 +3082,12 @@ fn element_matches_native(
         crate::web::dom::DomException::NoModificationAllowedError { message } => {
           ("NoModificationAllowedError", message)
         }
-        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
-        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+        crate::web::dom::DomException::NotSupportedError { message } => {
+          ("NotSupportedError", message)
+        }
+        crate::web::dom::DomException::InvalidStateError { message } => {
+          ("InvalidStateError", message)
+        }
       };
       Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
     }
@@ -3008,8 +3177,12 @@ fn element_closest_native(
         crate::web::dom::DomException::NoModificationAllowedError { message } => {
           ("NoModificationAllowedError", message)
         }
-        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
-        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+        crate::web::dom::DomException::NotSupportedError { message } => {
+          ("NotSupportedError", message)
+        }
+        crate::web::dom::DomException::InvalidStateError { message } => {
+          ("InvalidStateError", message)
+        }
       };
       Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
     }
@@ -3085,21 +3258,26 @@ fn event_constructor_native(
   if let Some(init_value) = args.get(1).copied() {
     if let Value::Object(init_obj) = init_value {
       let bubbles_key = alloc_key(scope, "bubbles")?;
-      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &bubbles_key)? {
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
         bubbles = scope.heap().to_boolean(value)?;
       }
 
       let cancelable_key = alloc_key(scope, "cancelable")?;
-      if let Some(value) =
-        scope
-          .heap()
-          .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
       {
         cancelable = scope.heap().to_boolean(value)?;
       }
 
       let composed_key = alloc_key(scope, "composed")?;
-      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &composed_key)? {
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
         composed = scope.heap().to_boolean(value)?;
       }
     }
@@ -3135,6 +3313,11 @@ fn event_constructor_native(
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
   scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
 
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
+  scope.define_property(obj, immediate_key, data_desc(Value::Bool(false)))?;
+
   Ok(Value::Object(obj))
 }
 
@@ -3157,26 +3340,34 @@ fn custom_event_constructor_native(
   if let Some(init_value) = args.get(1).copied() {
     if let Value::Object(init_obj) = init_value {
       let bubbles_key = alloc_key(scope, "bubbles")?;
-      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &bubbles_key)? {
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &bubbles_key)?
+      {
         bubbles = scope.heap().to_boolean(value)?;
       }
 
       let cancelable_key = alloc_key(scope, "cancelable")?;
-      if let Some(value) =
-        scope
-          .heap()
-          .object_get_own_data_property_value(init_obj, &cancelable_key)?
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &cancelable_key)?
       {
         cancelable = scope.heap().to_boolean(value)?;
       }
 
       let composed_key = alloc_key(scope, "composed")?;
-      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &composed_key)? {
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &composed_key)?
+      {
         composed = scope.heap().to_boolean(value)?;
       }
 
       let detail_key = alloc_key(scope, "detail")?;
-      if let Some(value) = scope.heap().object_get_own_data_property_value(init_obj, &detail_key)? {
+      if let Some(value) = scope
+        .heap()
+        .object_get_own_data_property_value(init_obj, &detail_key)?
+      {
         if !matches!(value, Value::Undefined) {
           detail = value;
         }
@@ -3213,6 +3404,11 @@ fn custom_event_constructor_native(
 
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
   scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
+  scope.define_property(obj, immediate_key, data_desc(Value::Bool(false)))?;
 
   let detail_key = alloc_key(scope, "detail")?;
   scope.define_property(obj, detail_key, data_desc(detail))?;
@@ -3283,14 +3479,27 @@ fn event_init_event_native(
   scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
 
   let cancelable_key = alloc_key(scope, "cancelable")?;
-  scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+  scope.define_property(
+    event_obj,
+    cancelable_key,
+    data_desc(Value::Bool(cancelable)),
+  )?;
 
   // `initEvent` does not expose `composed`; reset to false per DOM.
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
 
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(event_obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+  scope.define_property(
+    event_obj,
+    default_prevented_key,
+    data_desc(Value::Bool(false)),
+  )?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
+  scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(false)))?;
 
   Ok(Value::Undefined)
 }
@@ -3333,19 +3542,430 @@ fn custom_event_init_custom_event_native(
   scope.define_property(event_obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
 
   let cancelable_key = alloc_key(scope, "cancelable")?;
-  scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+  scope.define_property(
+    event_obj,
+    cancelable_key,
+    data_desc(Value::Bool(cancelable)),
+  )?;
 
   // `initCustomEvent` does not expose `composed`; reset to false per DOM.
   let composed_key = alloc_key(scope, "composed")?;
   scope.define_property(event_obj, composed_key, data_desc(Value::Bool(false)))?;
 
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
-  scope.define_property(event_obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+  scope.define_property(
+    event_obj,
+    default_prevented_key,
+    data_desc(Value::Bool(false)),
+  )?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
+  scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(false)))?;
 
   let detail_key = alloc_key(scope, "detail")?;
   scope.define_property(event_obj, detail_key, data_desc(detail))?;
 
   Ok(Value::Undefined)
+}
+
+fn event_prototype_prevent_default_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "Event.preventDefault must be called on an Event object",
+    ));
+  };
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  let cancelable = scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &cancelable_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?
+    .unwrap_or(false);
+  if !cancelable {
+    return Ok(Value::Undefined);
+  }
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(
+    event_obj,
+    default_prevented_key,
+    data_desc(Value::Bool(true)),
+  )?;
+  Ok(Value::Undefined)
+}
+
+fn event_prototype_stop_propagation_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "Event.stopPropagation must be called on an Event object",
+    ));
+  };
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
+  Ok(Value::Undefined)
+}
+
+fn event_prototype_stop_immediate_propagation_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(event_obj) = this else {
+    return Err(VmError::TypeError(
+      "Event.stopImmediatePropagation must be called on an Event object",
+    ));
+  };
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(true)))?;
+  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
+  scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(true)))?;
+  Ok(Value::Undefined)
+}
+
+fn event_target_default_this_from_callee(
+  scope: &Scope<'_>,
+  callee: GcObject,
+) -> Result<Option<GcObject>, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  Ok(match slots
+    .get(EVENT_TARGET_DEFAULT_THIS_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => Some(obj),
+    _ => None,
+  })
+}
+
+fn event_target_resolve_this(
+  scope: &Scope<'_>,
+  callee: GcObject,
+  this: Value,
+) -> Result<GcObject, VmError> {
+  match this {
+    Value::Object(obj) => Ok(obj),
+    Value::Undefined | Value::Null => match event_target_default_this_from_callee(scope, callee)? {
+      Some(obj) => Ok(obj),
+      None => Err(VmError::TypeError("Illegal invocation")),
+    },
+    _ => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn event_target_get_listener_map(
+  scope: &mut Scope<'_>,
+  target: GcObject,
+) -> Result<Option<GcObject>, VmError> {
+  scope.push_root(Value::Object(target))?;
+  let listeners_key = alloc_key(scope, EVENT_TARGET_LISTENERS_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(target, &listeners_key)?
+      .and_then(|v| match v {
+        Value::Object(obj) => Some(obj),
+        _ => None,
+      }),
+  )
+}
+
+fn event_target_get_or_create_listener_map(
+  scope: &mut Scope<'_>,
+  target: GcObject,
+) -> Result<GcObject, VmError> {
+  if let Some(existing) = event_target_get_listener_map(scope, target)? {
+    return Ok(existing);
+  }
+
+  let listeners = scope.alloc_object()?;
+  scope.push_root(Value::Object(listeners))?;
+  scope.push_root(Value::Object(target))?;
+  let listeners_key = alloc_key(scope, EVENT_TARGET_LISTENERS_KEY)?;
+  scope.define_property(
+    target,
+    listeners_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(listeners),
+        writable: false,
+      },
+    },
+  )?;
+  Ok(listeners)
+}
+
+fn event_target_get_listener_list(
+  scope: &mut Scope<'_>,
+  target: GcObject,
+  type_key: PropertyKey,
+) -> Result<Option<GcObject>, VmError> {
+  let Some(map) = event_target_get_listener_map(scope, target)? else {
+    return Ok(None);
+  };
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(map, &type_key)?
+      .and_then(|v| match v {
+        Value::Object(obj) => Some(obj),
+        _ => None,
+      }),
+  )
+}
+
+fn event_target_get_or_create_listener_list(
+  scope: &mut Scope<'_>,
+  target: GcObject,
+  type_key: PropertyKey,
+) -> Result<GcObject, VmError> {
+  if let Some(existing) = event_target_get_listener_list(scope, target, type_key)? {
+    return Ok(existing);
+  }
+
+  let map = event_target_get_or_create_listener_map(scope, target)?;
+  let list = scope.alloc_object()?;
+  scope.push_root(Value::Object(list))?;
+  scope.define_property(map, type_key, data_desc(Value::Object(list)))?;
+  Ok(list)
+}
+
+fn event_target_add_event_listener_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target_obj = event_target_resolve_this(scope, callee, this)?;
+  scope.push_root(Value::Object(target_obj))?;
+
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+  scope.push_root(Value::String(type_string))?;
+  let type_key = PropertyKey::from_string(type_string);
+
+  let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+  // WebIDL allows `null` for callbacks; treat non-objects as no-ops for compatibility.
+  let Value::Object(_) = callback else {
+    return Ok(Value::Undefined);
+  };
+
+  let list = event_target_get_or_create_listener_list(scope, target_obj, type_key)?;
+  scope.push_root(Value::Object(list))?;
+
+  let keys = scope.ordinary_own_property_keys(list)?;
+  for key in keys {
+    let Some(_) = array_index_from_property_key(scope.heap(), &key) else {
+      continue;
+    };
+    if scope
+      .heap()
+      .object_get_own_data_property_value(list, &key)?
+      .is_some_and(|v| v == callback)
+    {
+      return Ok(Value::Undefined);
+    }
+  }
+
+  let keys = scope.ordinary_own_property_keys(list)?;
+  let mut next = 0u32;
+  for key in keys {
+    let Some(idx) = array_index_from_property_key(scope.heap(), &key) else {
+      continue;
+    };
+    next = next.max(idx.saturating_add(1));
+  }
+
+  let mut buf = [0u8; 20];
+  let key_str = decimal_str_for_usize(next as usize, &mut buf);
+  scope.push_root(callback)?;
+  let key = alloc_key(scope, key_str)?;
+  scope.define_property(list, key, data_desc(callback))?;
+
+  Ok(Value::Undefined)
+}
+
+fn event_target_remove_event_listener_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target_obj = event_target_resolve_this(scope, callee, this)?;
+  scope.push_root(Value::Object(target_obj))?;
+
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+  scope.push_root(Value::String(type_string))?;
+  let type_key = PropertyKey::from_string(type_string);
+
+  let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+  let Value::Object(_) = callback else {
+    return Ok(Value::Undefined);
+  };
+
+  let Some(list) = event_target_get_listener_list(scope, target_obj, type_key)? else {
+    return Ok(Value::Undefined);
+  };
+  scope.push_root(Value::Object(list))?;
+
+  let keys = scope.ordinary_own_property_keys(list)?;
+  for key in keys {
+    let Some(_) = array_index_from_property_key(scope.heap(), &key) else {
+      continue;
+    };
+    if scope
+      .heap()
+      .object_get_own_data_property_value(list, &key)?
+      .is_some_and(|v| v == callback)
+    {
+      let _ = scope.ordinary_delete(list, key)?;
+      break;
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn event_target_dispatch_event_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let target_obj = event_target_resolve_this(scope, callee, this)?;
+  let event_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(event_obj) = event_value else {
+    return Err(VmError::TypeError(
+      "EventTarget.dispatchEvent: event is not an object",
+    ));
+  };
+
+  // Expose basic dispatch-related fields for listeners.
+  scope.push_root(Value::Object(event_obj))?;
+  scope.push_root(Value::Object(target_obj))?;
+  let target_key = alloc_key(scope, "target")?;
+  scope.define_property(event_obj, target_key, data_desc(Value::Object(target_obj)))?;
+  let current_target_key = alloc_key(scope, "currentTarget")?;
+  scope.define_property(
+    event_obj,
+    current_target_key,
+    data_desc(Value::Object(target_obj)),
+  )?;
+
+  // Reset per-dispatch propagation flags.
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
+  scope.define_property(event_obj, immediate_key, data_desc(Value::Bool(false)))?;
+
+  // Snapshot listeners to be spec-shaped (removals during dispatch should not affect the current
+  // dispatch turn).
+  let type_key = alloc_key(scope, "type")?;
+  let type_value = vm.get(scope, event_obj, type_key)?;
+  let type_string = scope.heap_mut().to_string(type_value)?;
+  scope.push_root(Value::String(type_string))?;
+  let listener_key = PropertyKey::from_string(type_string);
+
+  let Some(list) = event_target_get_listener_list(scope, target_obj, listener_key)? else {
+    return Ok(Value::Bool(true));
+  };
+  scope.push_root(Value::Object(list))?;
+
+  let mut callbacks = Vec::new();
+  let keys = scope.ordinary_own_property_keys(list)?;
+  for key in keys {
+    let Some(_) = array_index_from_property_key(scope.heap(), &key) else {
+      continue;
+    };
+    if let Some(v) = scope
+      .heap()
+      .object_get_own_data_property_value(list, &key)?
+    {
+      callbacks.push(v);
+    }
+  }
+  scope.push_roots(&callbacks)?;
+
+  for callback in callbacks {
+    if !matches!(callback, Value::Object(_)) {
+      continue;
+    }
+    if !scope.heap().is_callable(callback)? {
+      continue;
+    }
+    let call_res = vm.call_with_host(
+      scope,
+      hooks,
+      callback,
+      Value::Object(target_obj),
+      &[event_value],
+    );
+    if call_res.is_err() {
+      // Per web platform behavior, exceptions from event listeners should not abort `dispatchEvent`.
+    }
+
+    let stopped = scope
+      .heap()
+      .object_get_own_data_property_value(event_obj, &immediate_key)?
+      .is_some_and(|v| matches!(v, Value::Bool(true)));
+    if stopped {
+      break;
+    }
+  }
+
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  let cancelable = match scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &cancelable_key)?
+  {
+    Some(v) => scope.heap().to_boolean(v)?,
+    None => false,
+  };
+  if !cancelable {
+    return Ok(Value::Bool(true));
+  }
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  let default_prevented = match scope
+    .heap()
+    .object_get_own_data_property_value(event_obj, &default_prevented_key)?
+  {
+    Some(Value::Bool(b)) => b,
+    _ => false,
+  };
+  Ok(Value::Bool(!default_prevented))
 }
 
 fn document_create_event_native(
@@ -3424,6 +4044,11 @@ fn document_create_event_native(
 
   let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
   scope.define_property(obj, default_prevented_key, data_desc(Value::Bool(false)))?;
+
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+  let immediate_key = alloc_key(scope, EVENT_IMMEDIATE_PROPAGATION_STOPPED_KEY)?;
+  scope.define_property(obj, immediate_key, data_desc(Value::Bool(false)))?;
 
   if matches!(kind, Kind::CustomEvent) {
     let detail_key = alloc_key(scope, "detail")?;
@@ -3666,9 +4291,11 @@ fn node_insert_before_native(
     .node_id_from_index(new_child_index)
     .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?;
   let reference_node_id = match reference_index {
-    Some(reference_index) => Some(dom.node_id_from_index(reference_index).map_err(|_| {
-      VmError::TypeError("Node.insertBefore requires a reference node argument")
-    })?),
+    Some(reference_index) => Some(
+      dom
+        .node_id_from_index(reference_index)
+        .map_err(|_| VmError::TypeError("Node.insertBefore requires a reference node argument"))?,
+    ),
     None => None,
   };
 
@@ -4910,9 +5537,9 @@ fn element_class_list_contains_native(
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
   let dom = unsafe { dom_ptr.as_ref() };
-  let node_id = dom
-    .node_id_from_index(node_index)
-    .map_err(|_| VmError::TypeError("DOMTokenList.contains must be called on a classList object"))?;
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("DOMTokenList.contains must be called on a classList object")
+  })?;
 
   match dom.class_list_contains(node_id, &token) {
     Ok(result) => Ok(Value::Bool(result)),
@@ -5890,9 +6517,10 @@ fn init_window_globals(
   scope.push_root(Value::String(location_set_name))?;
   let location_set_func =
     scope.alloc_native_function(location_set_call_id, None, location_set_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(location_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    location_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(location_set_func))?;
 
   let protocol_get_call_id = vm.register_native_call(location_protocol_get_native)?;
@@ -5900,9 +6528,10 @@ fn init_window_globals(
   scope.push_root(Value::String(protocol_get_name))?;
   let protocol_get_func =
     scope.alloc_native_function(protocol_get_call_id, None, protocol_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(protocol_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    protocol_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(protocol_get_func))?;
   scope.define_property(
     location_obj,
@@ -5943,9 +6572,10 @@ fn init_window_globals(
   scope.push_root(Value::String(hostname_get_name))?;
   let hostname_get_func =
     scope.alloc_native_function(hostname_get_call_id, None, hostname_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(hostname_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    hostname_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(hostname_get_func))?;
   scope.define_property(
     location_obj,
@@ -5986,9 +6616,10 @@ fn init_window_globals(
   scope.push_root(Value::String(pathname_get_name))?;
   let pathname_get_func =
     scope.alloc_native_function(pathname_get_call_id, None, pathname_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(pathname_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    pathname_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(pathname_get_func))?;
   scope.define_property(
     location_obj,
@@ -6008,9 +6639,10 @@ fn init_window_globals(
   scope.push_root(Value::String(search_get_name))?;
   let search_get_func =
     scope.alloc_native_function(search_get_call_id, None, search_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(search_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    search_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(search_get_func))?;
   scope.define_property(
     location_obj,
@@ -6147,9 +6779,10 @@ fn init_window_globals(
   scope.push_root(Value::String(current_script_name))?;
   let current_script_func =
     scope.alloc_native_function(current_script_call_id, None, current_script_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(current_script_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    current_script_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(current_script_func))?;
 
   // Shared wrapper cache for returning stable element wrappers.
@@ -6178,12 +6811,10 @@ fn init_window_globals(
   scope.push_root(Value::String(document_element_name))?;
   let document_element_func =
     scope.alloc_native_function(document_element_call_id, None, document_element_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      document_element_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    document_element_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(document_element_func))?;
   scope.define_property(
     document_obj,
@@ -6203,13 +6834,12 @@ fn init_window_globals(
   let document_head_call_id = vm.register_native_call(document_head_get_native)?;
   let document_head_name = scope.alloc_string("get head")?;
   scope.push_root(Value::String(document_head_name))?;
-  let document_head_func = scope.alloc_native_function(document_head_call_id, None, document_head_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      document_head_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  let document_head_func =
+    scope.alloc_native_function(document_head_call_id, None, document_head_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    document_head_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(document_head_func))?;
   scope.define_property(
     document_obj,
@@ -6229,13 +6859,12 @@ fn init_window_globals(
   let document_body_call_id = vm.register_native_call(document_body_get_native)?;
   let document_body_name = scope.alloc_string("get body")?;
   scope.push_root(Value::String(document_body_name))?;
-  let document_body_func = scope.alloc_native_function(document_body_call_id, None, document_body_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      document_body_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  let document_body_func =
+    scope.alloc_native_function(document_body_call_id, None, document_body_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    document_body_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(document_body_func))?;
   scope.define_property(
     document_obj,
@@ -6257,12 +6886,10 @@ fn init_window_globals(
   scope.push_root(Value::String(get_element_by_id_name))?;
   let get_element_by_id_func =
     scope.alloc_native_function(get_element_by_id_call_id, None, get_element_by_id_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      get_element_by_id_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    get_element_by_id_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(get_element_by_id_func))?;
   scope.define_property(
     document_obj,
@@ -6277,12 +6904,10 @@ fn init_window_globals(
   scope.push_root(Value::String(query_selector_name))?;
   let query_selector_func =
     scope.alloc_native_function(query_selector_call_id, None, query_selector_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      query_selector_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    query_selector_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(query_selector_func))?;
   scope.define_property(
     document_obj,
@@ -6297,12 +6922,10 @@ fn init_window_globals(
   scope.push_root(Value::String(query_selector_all_name))?;
   let query_selector_all_func =
     scope.alloc_native_function(query_selector_all_call_id, None, query_selector_all_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      query_selector_all_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    query_selector_all_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(query_selector_all_func))?;
   scope.define_property(
     document_obj,
@@ -6317,12 +6940,10 @@ fn init_window_globals(
   scope.push_root(Value::String(create_element_name))?;
   let create_element_func =
     scope.alloc_native_function(create_element_call_id, None, create_element_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      create_element_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    create_element_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(create_element_func))?;
   scope.define_property(
     document_obj,
@@ -6341,13 +6962,72 @@ fn init_window_globals(
   let init_event_call_id = vm.register_native_call(event_init_event_native)?;
   let init_event_name = scope.alloc_string("initEvent")?;
   scope.push_root(Value::String(init_event_name))?;
-  let init_event_func = scope.alloc_native_function(init_event_call_id, None, init_event_name, 3)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(init_event_func, Some(realm.intrinsics().function_prototype()))?;
+  let init_event_func =
+    scope.alloc_native_function(init_event_call_id, None, init_event_name, 3)?;
+  scope.heap_mut().object_set_prototype(
+    init_event_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(init_event_func))?;
   let init_event_key = alloc_key(&mut scope, "initEvent")?;
-  scope.define_property(event_proto, init_event_key, data_desc(Value::Object(init_event_func)))?;
+  scope.define_property(
+    event_proto,
+    init_event_key,
+    data_desc(Value::Object(init_event_func)),
+  )?;
+
+  let prevent_default_call_id = vm.register_native_call(event_prototype_prevent_default_native)?;
+  let prevent_default_name = scope.alloc_string("preventDefault")?;
+  scope.push_root(Value::String(prevent_default_name))?;
+  let prevent_default_func =
+    scope.alloc_native_function(prevent_default_call_id, None, prevent_default_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    prevent_default_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(prevent_default_func))?;
+  let prevent_default_key = alloc_key(&mut scope, "preventDefault")?;
+  scope.define_property(
+    event_proto,
+    prevent_default_key,
+    data_desc(Value::Object(prevent_default_func)),
+  )?;
+
+  let stop_propagation_call_id =
+    vm.register_native_call(event_prototype_stop_propagation_native)?;
+  let stop_propagation_name = scope.alloc_string("stopPropagation")?;
+  scope.push_root(Value::String(stop_propagation_name))?;
+  let stop_propagation_func =
+    scope.alloc_native_function(stop_propagation_call_id, None, stop_propagation_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    stop_propagation_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(stop_propagation_func))?;
+  let stop_propagation_key = alloc_key(&mut scope, "stopPropagation")?;
+  scope.define_property(
+    event_proto,
+    stop_propagation_key,
+    data_desc(Value::Object(stop_propagation_func)),
+  )?;
+
+  let stop_immediate_call_id =
+    vm.register_native_call(event_prototype_stop_immediate_propagation_native)?;
+  let stop_immediate_name = scope.alloc_string("stopImmediatePropagation")?;
+  scope.push_root(Value::String(stop_immediate_name))?;
+  let stop_immediate_func =
+    scope.alloc_native_function(stop_immediate_call_id, None, stop_immediate_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    stop_immediate_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(stop_immediate_func))?;
+  let stop_immediate_key = alloc_key(&mut scope, "stopImmediatePropagation")?;
+  scope.define_property(
+    event_proto,
+    stop_immediate_key,
+    data_desc(Value::Object(stop_immediate_func)),
+  )?;
 
   let custom_event_proto = scope.alloc_object()?;
   scope.push_root(Value::Object(custom_event_proto))?;
@@ -6360,12 +7040,10 @@ fn init_window_globals(
   scope.push_root(Value::String(init_custom_event_name))?;
   let init_custom_event_func =
     scope.alloc_native_function(init_custom_event_call_id, None, init_custom_event_name, 4)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      init_custom_event_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    init_custom_event_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(init_custom_event_func))?;
   let init_custom_event_key = alloc_key(&mut scope, "initCustomEvent")?;
   scope.define_property(
@@ -6388,9 +7066,10 @@ fn init_window_globals(
     event_ctor_name,
     1,
   )?;
-  scope
-    .heap_mut()
-    .object_set_prototype(event_ctor_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(event_ctor_func))?;
   scope.define_property(
     event_ctor_func,
@@ -6403,26 +7082,27 @@ fn init_window_globals(
     data_desc(Value::Object(event_ctor_func)),
   )?;
   let event_ctor_key = alloc_key(&mut scope, "Event")?;
-  scope.define_property(global, event_ctor_key, data_desc(Value::Object(event_ctor_func)))?;
+  scope.define_property(
+    global,
+    event_ctor_key,
+    data_desc(Value::Object(event_ctor_func)),
+  )?;
 
   let custom_event_ctor_call_id = vm.register_native_call(custom_event_constructor_native)?;
   let custom_event_ctor_construct_id =
     vm.register_native_construct(custom_event_constructor_construct_native)?;
   let custom_event_ctor_name = scope.alloc_string("CustomEvent")?;
   scope.push_root(Value::String(custom_event_ctor_name))?;
-  let custom_event_ctor_func =
-    scope.alloc_native_function(
-      custom_event_ctor_call_id,
-      Some(custom_event_ctor_construct_id),
-      custom_event_ctor_name,
-      1,
-    )?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      custom_event_ctor_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  let custom_event_ctor_func = scope.alloc_native_function(
+    custom_event_ctor_call_id,
+    Some(custom_event_ctor_construct_id),
+    custom_event_ctor_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    custom_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(custom_event_ctor_func))?;
   scope.define_property(
     custom_event_ctor_func,
@@ -6462,17 +7142,150 @@ fn init_window_globals(
   scope.push_root(Value::String(create_event_name))?;
   let create_event_func =
     scope.alloc_native_function(create_event_call_id, None, create_event_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      create_event_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    create_event_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(create_event_func))?;
   scope.define_property(
     document_obj,
     create_event_key,
     data_desc(Value::Object(create_event_func)),
+  )?;
+
+  // EventTarget methods.
+  //
+  // These are no-frills shims that support the common "register a handler then dispatch an event"
+  // pattern. They do not implement capture/bubble phases or the full DOM event path model.
+  let add_event_listener_call_id =
+    vm.register_native_call(event_target_add_event_listener_native)?;
+  let add_event_listener_name = scope.alloc_string("addEventListener")?;
+  scope.push_root(Value::String(add_event_listener_name))?;
+  let event_target_slots = [Value::Object(global)];
+  let add_event_listener_global_func = scope.alloc_native_function_with_slots(
+    add_event_listener_call_id,
+    None,
+    add_event_listener_name,
+    2,
+    &event_target_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    add_event_listener_global_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(add_event_listener_global_func))?;
+  let add_event_listener_func =
+    scope.alloc_native_function(add_event_listener_call_id, None, add_event_listener_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    add_event_listener_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(add_event_listener_func))?;
+
+  let remove_event_listener_call_id =
+    vm.register_native_call(event_target_remove_event_listener_native)?;
+  let remove_event_listener_name = scope.alloc_string("removeEventListener")?;
+  scope.push_root(Value::String(remove_event_listener_name))?;
+  let remove_event_listener_global_func = scope.alloc_native_function_with_slots(
+    remove_event_listener_call_id,
+    None,
+    remove_event_listener_name,
+    2,
+    &event_target_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    remove_event_listener_global_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(remove_event_listener_global_func))?;
+  let remove_event_listener_func = scope.alloc_native_function(
+    remove_event_listener_call_id,
+    None,
+    remove_event_listener_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    remove_event_listener_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(remove_event_listener_func))?;
+
+  let dispatch_event_call_id = vm.register_native_call(event_target_dispatch_event_native)?;
+  let dispatch_event_name = scope.alloc_string("dispatchEvent")?;
+  scope.push_root(Value::String(dispatch_event_name))?;
+  let dispatch_event_global_func = scope.alloc_native_function_with_slots(
+    dispatch_event_call_id,
+    None,
+    dispatch_event_name,
+    1,
+    &event_target_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    dispatch_event_global_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(dispatch_event_global_func))?;
+  let dispatch_event_func =
+    scope.alloc_native_function(dispatch_event_call_id, None, dispatch_event_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    dispatch_event_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(dispatch_event_func))?;
+
+  let add_event_listener_key = alloc_key(&mut scope, "addEventListener")?;
+  scope.define_property(
+    global,
+    add_event_listener_key,
+    data_desc(Value::Object(add_event_listener_global_func)),
+  )?;
+  scope.define_property(
+    document_obj,
+    add_event_listener_key,
+    data_desc(Value::Object(add_event_listener_func)),
+  )?;
+  let remove_event_listener_key = alloc_key(&mut scope, "removeEventListener")?;
+  scope.define_property(
+    global,
+    remove_event_listener_key,
+    data_desc(Value::Object(remove_event_listener_global_func)),
+  )?;
+  scope.define_property(
+    document_obj,
+    remove_event_listener_key,
+    data_desc(Value::Object(remove_event_listener_func)),
+  )?;
+  let dispatch_event_key = alloc_key(&mut scope, "dispatchEvent")?;
+  scope.define_property(
+    global,
+    dispatch_event_key,
+    data_desc(Value::Object(dispatch_event_global_func)),
+  )?;
+  scope.define_property(
+    document_obj,
+    dispatch_event_key,
+    data_desc(Value::Object(dispatch_event_func)),
+  )?;
+
+  // Store shared function objects on document so wrappers can reuse them.
+  let add_event_listener_internal_key = alloc_key(&mut scope, EVENT_TARGET_ADD_EVENT_LISTENER_KEY)?;
+  scope.define_property(
+    document_obj,
+    add_event_listener_internal_key,
+    data_desc(Value::Object(add_event_listener_func)),
+  )?;
+  let remove_event_listener_internal_key =
+    alloc_key(&mut scope, EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY)?;
+  scope.define_property(
+    document_obj,
+    remove_event_listener_internal_key,
+    data_desc(Value::Object(remove_event_listener_func)),
+  )?;
+  let dispatch_event_internal_key = alloc_key(&mut scope, EVENT_TARGET_DISPATCH_EVENT_KEY)?;
+  scope.define_property(
+    document_obj,
+    dispatch_event_internal_key,
+    data_desc(Value::Object(dispatch_event_func)),
   )?;
 
   // Store shared Node.appendChild function on `document` so wrappers can reuse it.
@@ -6481,12 +7294,10 @@ fn init_window_globals(
   scope.push_root(Value::String(append_child_name))?;
   let append_child_func =
     scope.alloc_native_function(append_child_call_id, None, append_child_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      append_child_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    append_child_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(append_child_func))?;
   let append_child_key = alloc_key(&mut scope, NODE_APPEND_CHILD_KEY)?;
   scope.define_property(
@@ -6501,12 +7312,10 @@ fn init_window_globals(
   scope.push_root(Value::String(insert_before_name))?;
   let insert_before_func =
     scope.alloc_native_function(insert_before_call_id, None, insert_before_name, 2)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      insert_before_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    insert_before_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(insert_before_func))?;
   let insert_before_key = alloc_key(&mut scope, NODE_INSERT_BEFORE_KEY)?;
   scope.define_property(
@@ -6519,13 +7328,12 @@ fn init_window_globals(
   let remove_child_call_id = vm.register_native_call(node_remove_child_native)?;
   let remove_child_name = scope.alloc_string("removeChild")?;
   scope.push_root(Value::String(remove_child_name))?;
-  let remove_child_func = scope.alloc_native_function(remove_child_call_id, None, remove_child_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      remove_child_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  let remove_child_func =
+    scope.alloc_native_function(remove_child_call_id, None, remove_child_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    remove_child_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(remove_child_func))?;
   let remove_child_key = alloc_key(&mut scope, NODE_REMOVE_CHILD_KEY)?;
   scope.define_property(
@@ -6540,12 +7348,10 @@ fn init_window_globals(
   scope.push_root(Value::String(replace_child_name))?;
   let replace_child_func =
     scope.alloc_native_function(replace_child_call_id, None, replace_child_name, 2)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      replace_child_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    replace_child_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(replace_child_func))?;
   let replace_child_key = alloc_key(&mut scope, NODE_REPLACE_CHILD_KEY)?;
   scope.define_property(
@@ -6558,13 +7364,12 @@ fn init_window_globals(
   let clone_node_call_id = vm.register_native_call(node_clone_node_native)?;
   let clone_node_name = scope.alloc_string("cloneNode")?;
   scope.push_root(Value::String(clone_node_name))?;
-  let clone_node_func = scope.alloc_native_function(clone_node_call_id, None, clone_node_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      clone_node_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  let clone_node_func =
+    scope.alloc_native_function(clone_node_call_id, None, clone_node_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    clone_node_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(clone_node_func))?;
   let clone_node_key = alloc_key(&mut scope, NODE_CLONE_NODE_KEY)?;
   scope.define_property(
@@ -6580,12 +7385,10 @@ fn init_window_globals(
   scope.push_root(Value::String(parent_node_get_name))?;
   let parent_node_get_func =
     scope.alloc_native_function(parent_node_get_call_id, None, parent_node_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      parent_node_get_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    parent_node_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(parent_node_get_func))?;
   let parent_node_get_key = alloc_key(&mut scope, NODE_PARENT_NODE_GET_KEY)?;
   scope.define_property(
@@ -6599,12 +7402,10 @@ fn init_window_globals(
   scope.push_root(Value::String(first_child_get_name))?;
   let first_child_get_func =
     scope.alloc_native_function(first_child_get_call_id, None, first_child_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      first_child_get_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    first_child_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(first_child_get_func))?;
   let first_child_get_key = alloc_key(&mut scope, NODE_FIRST_CHILD_GET_KEY)?;
   scope.define_property(
@@ -6622,12 +7423,10 @@ fn init_window_globals(
     previous_sibling_get_name,
     0,
   )?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      previous_sibling_get_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    previous_sibling_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(previous_sibling_get_func))?;
   let previous_sibling_get_key = alloc_key(&mut scope, NODE_PREVIOUS_SIBLING_GET_KEY)?;
   scope.define_property(
@@ -6641,12 +7440,10 @@ fn init_window_globals(
   scope.push_root(Value::String(next_sibling_get_name))?;
   let next_sibling_get_func =
     scope.alloc_native_function(next_sibling_get_call_id, None, next_sibling_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      next_sibling_get_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    next_sibling_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(next_sibling_get_func))?;
   let next_sibling_get_key = alloc_key(&mut scope, NODE_NEXT_SIBLING_GET_KEY)?;
   scope.define_property(
@@ -6660,9 +7457,10 @@ fn init_window_globals(
   scope.push_root(Value::String(node_remove_name))?;
   let node_remove_func =
     scope.alloc_native_function(node_remove_call_id, None, node_remove_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(node_remove_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    node_remove_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(node_remove_func))?;
   let node_remove_key = alloc_key(&mut scope, NODE_REMOVE_KEY)?;
   scope.define_property(
@@ -6675,14 +7473,16 @@ fn init_window_globals(
   let element_query_selector_call_id = vm.register_native_call(element_query_selector_native)?;
   let element_query_selector_name = scope.alloc_string("querySelector")?;
   scope.push_root(Value::String(element_query_selector_name))?;
-  let element_query_selector_func =
-    scope.alloc_native_function(element_query_selector_call_id, None, element_query_selector_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      element_query_selector_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  let element_query_selector_func = scope.alloc_native_function(
+    element_query_selector_call_id,
+    None,
+    element_query_selector_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    element_query_selector_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(element_query_selector_func))?;
   let element_query_selector_key = alloc_key(&mut scope, ELEMENT_QUERY_SELECTOR_KEY)?;
   scope.define_property(
@@ -6691,7 +7491,8 @@ fn init_window_globals(
     data_desc(Value::Object(element_query_selector_func)),
   )?;
 
-  let element_query_selector_all_call_id = vm.register_native_call(element_query_selector_all_native)?;
+  let element_query_selector_all_call_id =
+    vm.register_native_call(element_query_selector_all_native)?;
   let element_query_selector_all_name = scope.alloc_string("querySelectorAll")?;
   scope.push_root(Value::String(element_query_selector_all_name))?;
   let element_query_selector_all_func = scope.alloc_native_function(
@@ -6700,12 +7501,10 @@ fn init_window_globals(
     element_query_selector_all_name,
     1,
   )?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      element_query_selector_all_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    element_query_selector_all_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(element_query_selector_all_func))?;
   let element_query_selector_all_key = alloc_key(&mut scope, ELEMENT_QUERY_SELECTOR_ALL_KEY)?;
   scope.define_property(
@@ -6717,10 +7516,12 @@ fn init_window_globals(
   let element_matches_call_id = vm.register_native_call(element_matches_native)?;
   let element_matches_name = scope.alloc_string("matches")?;
   scope.push_root(Value::String(element_matches_name))?;
-  let element_matches_func = scope.alloc_native_function(element_matches_call_id, None, element_matches_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(element_matches_func, Some(realm.intrinsics().function_prototype()))?;
+  let element_matches_func =
+    scope.alloc_native_function(element_matches_call_id, None, element_matches_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    element_matches_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(element_matches_func))?;
   let element_matches_key = alloc_key(&mut scope, ELEMENT_MATCHES_KEY)?;
   scope.define_property(
@@ -6732,10 +7533,12 @@ fn init_window_globals(
   let element_closest_call_id = vm.register_native_call(element_closest_native)?;
   let element_closest_name = scope.alloc_string("closest")?;
   scope.push_root(Value::String(element_closest_name))?;
-  let element_closest_func = scope.alloc_native_function(element_closest_call_id, None, element_closest_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(element_closest_func, Some(realm.intrinsics().function_prototype()))?;
+  let element_closest_func =
+    scope.alloc_native_function(element_closest_call_id, None, element_closest_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    element_closest_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(element_closest_func))?;
   let element_closest_key = alloc_key(&mut scope, ELEMENT_CLOSEST_KEY)?;
   scope.define_property(
@@ -6750,12 +7553,10 @@ fn init_window_globals(
   scope.push_root(Value::String(get_attribute_name))?;
   let get_attribute_func =
     scope.alloc_native_function(get_attribute_call_id, None, get_attribute_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      get_attribute_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    get_attribute_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(get_attribute_func))?;
   let get_attribute_key = alloc_key(&mut scope, ELEMENT_GET_ATTRIBUTE_KEY)?;
   scope.define_property(
@@ -6769,12 +7570,10 @@ fn init_window_globals(
   scope.push_root(Value::String(set_attribute_name))?;
   let set_attribute_func =
     scope.alloc_native_function(set_attribute_call_id, None, set_attribute_name, 2)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      set_attribute_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    set_attribute_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(set_attribute_func))?;
   let set_attribute_key = alloc_key(&mut scope, ELEMENT_SET_ATTRIBUTE_KEY)?;
   scope.define_property(
@@ -6789,12 +7588,10 @@ fn init_window_globals(
   scope.push_root(Value::String(class_name_get_name))?;
   let class_name_get_func =
     scope.alloc_native_function(class_name_get_call_id, None, class_name_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      class_name_get_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    class_name_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(class_name_get_func))?;
   let class_name_get_key = alloc_key(&mut scope, ELEMENT_CLASS_NAME_GET_KEY)?;
   scope.define_property(
@@ -6808,12 +7605,10 @@ fn init_window_globals(
   scope.push_root(Value::String(class_name_set_name))?;
   let class_name_set_func =
     scope.alloc_native_function(class_name_set_call_id, None, class_name_set_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      class_name_set_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    class_name_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(class_name_set_func))?;
   let class_name_set_key = alloc_key(&mut scope, ELEMENT_CLASS_NAME_SET_KEY)?;
   scope.define_property(
@@ -6828,12 +7623,10 @@ fn init_window_globals(
   scope.push_root(Value::String(class_list_add_name))?;
   let class_list_add_func =
     scope.alloc_native_function(class_list_add_call_id, None, class_list_add_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      class_list_add_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    class_list_add_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(class_list_add_func))?;
   let class_list_add_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_ADD_KEY)?;
   scope.define_property(
@@ -6847,12 +7640,10 @@ fn init_window_globals(
   scope.push_root(Value::String(class_list_remove_name))?;
   let class_list_remove_func =
     scope.alloc_native_function(class_list_remove_call_id, None, class_list_remove_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      class_list_remove_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    class_list_remove_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(class_list_remove_func))?;
   let class_list_remove_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_REMOVE_KEY)?;
   scope.define_property(
@@ -6866,12 +7657,10 @@ fn init_window_globals(
   scope.push_root(Value::String(class_list_toggle_name))?;
   let class_list_toggle_func =
     scope.alloc_native_function(class_list_toggle_call_id, None, class_list_toggle_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      class_list_toggle_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    class_list_toggle_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(class_list_toggle_func))?;
   let class_list_toggle_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_TOGGLE_KEY)?;
   scope.define_property(
@@ -6883,14 +7672,16 @@ fn init_window_globals(
   let class_list_contains_call_id = vm.register_native_call(element_class_list_contains_native)?;
   let class_list_contains_name = scope.alloc_string("contains")?;
   scope.push_root(Value::String(class_list_contains_name))?;
-  let class_list_contains_func =
-    scope.alloc_native_function(class_list_contains_call_id, None, class_list_contains_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      class_list_contains_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  let class_list_contains_func = scope.alloc_native_function(
+    class_list_contains_call_id,
+    None,
+    class_list_contains_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    class_list_contains_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(class_list_contains_func))?;
   let class_list_contains_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_CONTAINS_KEY)?;
   scope.define_property(
@@ -6904,12 +7695,10 @@ fn init_window_globals(
   scope.push_root(Value::String(class_list_replace_name))?;
   let class_list_replace_func =
     scope.alloc_native_function(class_list_replace_call_id, None, class_list_replace_name, 2)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      class_list_replace_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    class_list_replace_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(class_list_replace_func))?;
   let class_list_replace_key = alloc_key(&mut scope, ELEMENT_CLASS_LIST_REPLACE_KEY)?;
   scope.define_property(
@@ -6928,7 +7717,11 @@ fn init_window_globals(
     .object_set_prototype(id_get_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(id_get_func))?;
   let id_get_key = alloc_key(&mut scope, ELEMENT_ID_GET_KEY)?;
-  scope.define_property(document_obj, id_get_key, data_desc(Value::Object(id_get_func)))?;
+  scope.define_property(
+    document_obj,
+    id_get_key,
+    data_desc(Value::Object(id_get_func)),
+  )?;
 
   let id_set_call_id = vm.register_native_call(element_id_set_native)?;
   let id_set_name = scope.alloc_string("set id")?;
@@ -6939,7 +7732,11 @@ fn init_window_globals(
     .object_set_prototype(id_set_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(id_set_func))?;
   let id_set_key = alloc_key(&mut scope, ELEMENT_ID_SET_KEY)?;
-  scope.define_property(document_obj, id_set_key, data_desc(Value::Object(id_set_func)))?;
+  scope.define_property(
+    document_obj,
+    id_set_key,
+    data_desc(Value::Object(id_set_func)),
+  )?;
 
   // Store shared reflected attribute accessors on `document` so wrappers can reuse them.
   let reflected_string_get_call_id = vm.register_native_call(element_reflected_string_get_native)?;
@@ -7197,9 +7994,10 @@ fn init_window_globals(
   scope.push_root(Value::String(inner_html_get_name))?;
   let inner_html_get_func =
     scope.alloc_native_function(inner_html_get_call_id, None, inner_html_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(inner_html_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    inner_html_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(inner_html_get_func))?;
   let inner_html_get_key = alloc_key(&mut scope, ELEMENT_INNER_HTML_GET_KEY)?;
   scope.define_property(
@@ -7213,9 +8011,10 @@ fn init_window_globals(
   scope.push_root(Value::String(inner_html_set_name))?;
   let inner_html_set_func =
     scope.alloc_native_function(inner_html_set_call_id, None, inner_html_set_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(inner_html_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    inner_html_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(inner_html_set_func))?;
   let inner_html_set_key = alloc_key(&mut scope, ELEMENT_INNER_HTML_SET_KEY)?;
   scope.define_property(
@@ -7229,9 +8028,10 @@ fn init_window_globals(
   scope.push_root(Value::String(outer_html_get_name))?;
   let outer_html_get_func =
     scope.alloc_native_function(outer_html_get_call_id, None, outer_html_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(outer_html_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    outer_html_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(outer_html_get_func))?;
   let outer_html_get_key = alloc_key(&mut scope, ELEMENT_OUTER_HTML_GET_KEY)?;
   scope.define_property(
@@ -7245,9 +8045,10 @@ fn init_window_globals(
   scope.push_root(Value::String(outer_html_set_name))?;
   let outer_html_set_func =
     scope.alloc_native_function(outer_html_set_call_id, None, outer_html_set_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(outer_html_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    outer_html_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(outer_html_set_func))?;
   let outer_html_set_key = alloc_key(&mut scope, ELEMENT_OUTER_HTML_SET_KEY)?;
   scope.define_property(
@@ -7257,17 +8058,20 @@ fn init_window_globals(
   )?;
 
   // Store shared insertAdjacent* functions.
-  let insert_adjacent_html_call_id = vm.register_native_call(element_insert_adjacent_html_native)?;
+  let insert_adjacent_html_call_id =
+    vm.register_native_call(element_insert_adjacent_html_native)?;
   let insert_adjacent_html_name = scope.alloc_string("insertAdjacentHTML")?;
   scope.push_root(Value::String(insert_adjacent_html_name))?;
-  let insert_adjacent_html_func =
-    scope.alloc_native_function(insert_adjacent_html_call_id, None, insert_adjacent_html_name, 2)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      insert_adjacent_html_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  let insert_adjacent_html_func = scope.alloc_native_function(
+    insert_adjacent_html_call_id,
+    None,
+    insert_adjacent_html_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    insert_adjacent_html_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(insert_adjacent_html_func))?;
   let insert_adjacent_html_key = alloc_key(&mut scope, ELEMENT_INSERT_ADJACENT_HTML_KEY)?;
   scope.define_property(
@@ -7286,12 +8090,10 @@ fn init_window_globals(
     insert_adjacent_element_name,
     2,
   )?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      insert_adjacent_element_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  scope.heap_mut().object_set_prototype(
+    insert_adjacent_element_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(insert_adjacent_element_func))?;
   let insert_adjacent_element_key = alloc_key(&mut scope, ELEMENT_INSERT_ADJACENT_ELEMENT_KEY)?;
   scope.define_property(
@@ -7300,17 +8102,20 @@ fn init_window_globals(
     data_desc(Value::Object(insert_adjacent_element_func)),
   )?;
 
-  let insert_adjacent_text_call_id = vm.register_native_call(element_insert_adjacent_text_native)?;
+  let insert_adjacent_text_call_id =
+    vm.register_native_call(element_insert_adjacent_text_native)?;
   let insert_adjacent_text_name = scope.alloc_string("insertAdjacentText")?;
   scope.push_root(Value::String(insert_adjacent_text_name))?;
-  let insert_adjacent_text_func =
-    scope.alloc_native_function(insert_adjacent_text_call_id, None, insert_adjacent_text_name, 2)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(
-      insert_adjacent_text_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
+  let insert_adjacent_text_func = scope.alloc_native_function(
+    insert_adjacent_text_call_id,
+    None,
+    insert_adjacent_text_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    insert_adjacent_text_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(insert_adjacent_text_func))?;
   let insert_adjacent_text_key = alloc_key(&mut scope, ELEMENT_INSERT_ADJACENT_TEXT_KEY)?;
   scope.define_property(
@@ -7349,19 +8154,23 @@ fn init_window_globals(
   let cookie_get_call_id = vm.register_native_call(document_cookie_get_native)?;
   let cookie_get_name = scope.alloc_string("get cookie")?;
   scope.push_root(Value::String(cookie_get_name))?;
-  let cookie_get_func = scope.alloc_native_function(cookie_get_call_id, None, cookie_get_name, 0)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(cookie_get_func, Some(realm.intrinsics().function_prototype()))?;
+  let cookie_get_func =
+    scope.alloc_native_function(cookie_get_call_id, None, cookie_get_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    cookie_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(cookie_get_func))?;
 
   let cookie_set_call_id = vm.register_native_call(document_cookie_set_native)?;
   let cookie_set_name = scope.alloc_string("set cookie")?;
   scope.push_root(Value::String(cookie_set_name))?;
-  let cookie_set_func = scope.alloc_native_function(cookie_set_call_id, None, cookie_set_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(cookie_set_func, Some(realm.intrinsics().function_prototype()))?;
+  let cookie_set_func =
+    scope.alloc_native_function(cookie_set_call_id, None, cookie_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    cookie_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(cookie_set_func))?;
 
   scope.define_property(
@@ -7547,12 +8356,17 @@ fn init_window_globals(
   scope.push_root(Value::String(report_error_name))?;
   let report_error_func =
     scope.alloc_native_function(report_error_call_id, None, report_error_name, 1)?;
-  scope
-    .heap_mut()
-    .object_set_prototype(report_error_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.heap_mut().object_set_prototype(
+    report_error_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
   scope.push_root(Value::Object(report_error_func))?;
   let report_error_key = alloc_key(&mut scope, "reportError")?;
-  scope.define_property(global, report_error_key, data_desc(Value::Object(report_error_func)))?;
+  scope.define_property(
+    global,
+    report_error_key,
+    data_desc(Value::Object(report_error_func)),
+  )?;
 
   // --- Deterministic browser environment shims ---------------------------------
   //
@@ -7649,9 +8463,8 @@ mod tests {
   #[test]
   fn window_env_shims_exist_and_match_media_evaluates() -> Result<(), VmError> {
     let media = MediaContext::screen(800.0, 600.0).with_device_pixel_ratio(2.0);
-    let mut realm = WindowRealm::new(
-      WindowRealmConfig::new("https://example.com/").with_media_context(media),
-    )?;
+    let mut realm =
+      WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_media_context(media))?;
 
     let dpr = realm.exec_script("devicePixelRatio")?;
     assert!(matches!(dpr, Value::Number(v) if (v - 2.0).abs() < f64::EPSILON));
@@ -7685,7 +8498,10 @@ mod tests {
   fn window_storage_exists_and_round_trips() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
-    assert_eq!(realm.exec_script("localStorage.getItem('missing')")?, Value::Null);
+    assert_eq!(
+      realm.exec_script("localStorage.getItem('missing')")?,
+      Value::Null
+    );
 
     realm.exec_script("localStorage.setItem('a', 1)")?;
     let a = realm.exec_script("localStorage.getItem('a')")?;
@@ -7756,16 +8572,95 @@ mod tests {
   }
 
   #[test]
+  fn event_target_listeners_can_be_registered_and_dispatched() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let called = realm.exec_script(
+      "(() => {\n\
+        let count = 0;\n\
+        function cb(e) { if (e.type === 'ping') count++; }\n\
+        addEventListener('ping', cb);\n\
+        dispatchEvent(new Event('ping'));\n\
+        removeEventListener('ping', cb);\n\
+        dispatchEvent(new Event('ping'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(called, Value::Number(1.0));
+
+    let prevented = realm.exec_script(
+      "(() => {\n\
+        function cb(e) { e.preventDefault(); }\n\
+        addEventListener('p', cb);\n\
+        const ev = new Event('p', { cancelable: true });\n\
+        return dispatchEvent(ev);\n\
+      })()",
+    )?;
+    assert_eq!(prevented, Value::Bool(false));
+
+    let doc_called = realm.exec_script(
+      "(() => {\n\
+        let count = 0;\n\
+        document.addEventListener('x', () => { count++; });\n\
+        document.dispatchEvent(new CustomEvent('x'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(doc_called, Value::Number(1.0));
+
+    let unbound_error = realm.exec_script(
+      "(() => {\n\
+        const add = document.addEventListener;\n\
+        add('x', () => {});\n\
+      })()",
+    );
+    assert!(matches!(
+      unbound_error,
+      Err(VmError::TypeError(msg)) if msg == "Illegal invocation"
+    ));
+
+    Ok(())
+  }
+
+  #[test]
+  fn node_wrappers_expose_event_target_methods() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let called = realm.exec_script(
+      "(() => {\n\
+        let count = 0;\n\
+        const el = document.createElement('div');\n\
+        el.addEventListener('hi', () => { count++; });\n\
+        el.dispatchEvent(new Event('hi'));\n\
+        return count;\n\
+      })()",
+    )?;
+    assert_eq!(called, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
   fn document_element_class_name_mutates_dom2_document() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
     let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
 
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id))?;
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
     realm.exec_script("document.documentElement.className = 'hello'")?;
 
-    let doc_el = dom.document_element().expect("document element should exist");
+    let doc_el = dom
+      .document_element()
+      .expect("document element should exist");
     assert_eq!(dom.element_class_name(doc_el), "hello");
     Ok(())
   }
@@ -7892,10 +8787,9 @@ mod tests {
 
   #[test]
   fn element_inner_html_round_trips_via_window_realm_shim() -> Result<(), VmError> {
-    let renderer_dom = crate::dom::parse_html(
-      "<!doctype html><html><body><div id=target></div></body></html>",
-    )
-    .unwrap();
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .unwrap();
     let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
@@ -7914,7 +8808,8 @@ mod tests {
   }
 
   #[test]
-  fn element_outer_html_setter_replaces_node_in_dom2_via_window_realm_shim() -> Result<(), VmError> {
+  fn element_outer_html_setter_replaces_node_in_dom2_via_window_realm_shim() -> Result<(), VmError>
+  {
     let renderer_dom = crate::dom::parse_html(
       "<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>",
     )
@@ -7943,10 +8838,9 @@ mod tests {
 
   #[test]
   fn element_insert_adjacent_html_inserts_fragment_and_returns_undefined() -> Result<(), VmError> {
-    let renderer_dom = crate::dom::parse_html(
-      "<!doctype html><html><body><div id=target></div></body></html>",
-    )
-    .unwrap();
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .unwrap();
     let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
@@ -7973,10 +8867,9 @@ mod tests {
 
   #[test]
   fn element_insert_adjacent_text_inserts_text() -> Result<(), VmError> {
-    let renderer_dom = crate::dom::parse_html(
-      "<!doctype html><html><body><div id=target></div></body></html>",
-    )
-    .unwrap();
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+        .unwrap();
     let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
     let _guard = DomSourceGuard { id: dom_source_id };
@@ -8293,11 +9186,17 @@ mod tests {
   fn window_or_worker_global_scope_primitives_exist_and_behave() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/path"))?;
     let window_origin = realm.exec_script("window.origin")?;
-    assert_eq!(get_string(realm.heap(), window_origin), "https://example.com");
+    assert_eq!(
+      get_string(realm.heap(), window_origin),
+      "https://example.com"
+    );
     let origin = realm.exec_script("origin")?;
     assert_eq!(get_string(realm.heap(), origin), "https://example.com");
     assert_eq!(realm.exec_script("isSecureContext")?, Value::Bool(true));
-    assert_eq!(realm.exec_script("crossOriginIsolated")?, Value::Bool(false));
+    assert_eq!(
+      realm.exec_script("crossOriginIsolated")?,
+      Value::Bool(false)
+    );
 
     let btoa_a = realm.exec_script("btoa('a')")?;
     assert_eq!(get_string(realm.heap(), btoa_a), "YQ==");
@@ -8309,12 +9208,19 @@ mod tests {
     assert_eq!(get_string(realm.heap(), atob_no_pad), "a");
 
     let invalid_atob = realm.exec_script("try { atob('!!!'); 'no' } catch (e) { e.name }")?;
-    assert_eq!(get_string(realm.heap(), invalid_atob), "InvalidCharacterError");
+    assert_eq!(
+      get_string(realm.heap(), invalid_atob),
+      "InvalidCharacterError"
+    );
     let invalid_btoa = realm.exec_script("try { btoa('\\u0100'); 'no' } catch (e) { e.name }")?;
-    assert_eq!(get_string(realm.heap(), invalid_btoa), "InvalidCharacterError");
+    assert_eq!(
+      get_string(realm.heap(), invalid_btoa),
+      "InvalidCharacterError"
+    );
 
     // `reportError` must never throw (even for Symbols).
-    let report_ok = realm.exec_script("try { reportError(Symbol('x')); true } catch (e) { false }")?;
+    let report_ok =
+      realm.exec_script("try { reportError(Symbol('x')); true } catch (e) { false }")?;
     assert_eq!(report_ok, Value::Bool(true));
 
     // atob result is a ByteString-like DOMString where each code unit is 0..255.
