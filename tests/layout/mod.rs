@@ -80,6 +80,7 @@ mod flex_intrinsic_sizing_keywords;
 mod flex_intrinsic_gap_wrap;
 mod flex_cross_axis_fit_content_clamp;
 mod flex_wrap_allows_oversized_items_without_clamping;
+mod flex_wrap_percent_width_items_wrap_to_new_lines;
 mod flex_wrap_gap_intrinsic_width_exact_fit;
 mod flex_wrap_subpixel_intrinsic_overflow_does_not_wrap;
 mod flex_wrap_subpixel_overflow_rounding_does_not_wrap;
