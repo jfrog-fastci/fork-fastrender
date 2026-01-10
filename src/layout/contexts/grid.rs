@@ -3469,10 +3469,6 @@ impl GridFormattingContext {
           // `calc()` values mixing lengths + percentages cannot be represented in Taffy without a
           // percentage base. Falling back to `Length::to_px()` would treat the percentage term as a
           // raw number and bake a bogus definite pixel size into the cached template.
-          //
-          // Represent these as `auto` so Taffy continues to treat them as indefinite and we can
-          // resolve them later when a definite base is available (root style patch) or inside the
-          // measure callback (grid items).
           Dimension::auto()
         } else {
           Dimension::length(length.to_px())
@@ -3496,9 +3492,14 @@ impl GridFormattingContext {
           if let Some(px) = self.resolve_length_px(len, style) {
             LengthPercentageAuto::length(px)
           } else if len.has_percentage() {
-            // Unresolved `calc()` percentages can't be represented in Taffy. Use a safe 0px
-            // fallback instead of `Length::to_px()` (which treats percentages as raw numbers).
-            LengthPercentageAuto::length(0.0)
+            // Unresolved `calc(<percentage> + <length>)` values cannot be represented directly in
+            // Taffy. Avoid `Length::to_px()` (which treats percentages as raw numbers) by
+            // resolving with a 0 percentage base so only absolute terms contribute.
+            LengthPercentageAuto::length(
+              self
+                .resolve_length_px_with_base(*len, Some(0.0), style)
+                .unwrap_or(0.0),
+            )
           } else {
             LengthPercentageAuto::length(len.to_px())
           }
@@ -3516,9 +3517,14 @@ impl GridFormattingContext {
         if let Some(px) = self.resolve_length_px(length, style) {
           LengthPercentage::length(px)
         } else if length.has_percentage() {
-          // Unresolved `calc()` percentages can't be represented in Taffy. Use a safe 0px fallback
-          // instead of `Length::to_px()` (which treats percentages as raw numbers).
-          LengthPercentage::length(0.0)
+          // See note in `convert_opt_length_to_lpa`: treat unresolved percentage terms as 0 instead
+          // of falling back to `Length::to_px()`.
+          LengthPercentage::length(
+            self
+              .resolve_length_px_with_base(*length, Some(0.0), style)
+              .unwrap_or(0.0)
+              .max(0.0),
+          )
         } else {
           LengthPercentage::length(length.to_px())
         }
@@ -3549,19 +3555,25 @@ impl GridFormattingContext {
   }
 
   fn edges_px(&self, style: &ComputedStyle, axis: Axis) -> Option<f32> {
+    let resolve_edge = |len: &Length| -> Option<f32> {
+      self
+        .resolve_length_px(len, style)
+        .or_else(|| self.resolve_length_px_with_base(*len, Some(0.0), style))
+        .map(|px| if px.is_finite() { px.max(0.0) } else { 0.0 })
+    };
     match axis {
       Axis::Horizontal => {
-        let p1 = self.resolve_length_px(&style.padding_left, style)?;
-        let p2 = self.resolve_length_px(&style.padding_right, style)?;
-        let b1 = self.resolve_length_px(&style.used_border_left_width(), style)?;
-        let b2 = self.resolve_length_px(&style.used_border_right_width(), style)?;
+        let p1 = resolve_edge(&style.padding_left)?;
+        let p2 = resolve_edge(&style.padding_right)?;
+        let b1 = resolve_edge(&style.used_border_left_width())?;
+        let b2 = resolve_edge(&style.used_border_right_width())?;
         Some(p1 + p2 + b1 + b2)
       }
       Axis::Vertical => {
-        let p1 = self.resolve_length_px(&style.padding_top, style)?;
-        let p2 = self.resolve_length_px(&style.padding_bottom, style)?;
-        let b1 = self.resolve_length_px(&style.used_border_top_width(), style)?;
-        let b2 = self.resolve_length_px(&style.used_border_bottom_width(), style)?;
+        let p1 = resolve_edge(&style.padding_top)?;
+        let p2 = resolve_edge(&style.padding_bottom)?;
+        let b1 = resolve_edge(&style.used_border_top_width())?;
+        let b2 = resolve_edge(&style.used_border_bottom_width())?;
         Some(p1 + p2 + b1 + b2)
       }
     }
@@ -4102,7 +4114,6 @@ impl GridFormattingContext {
 
     Ok(())
   }
-
 
   /// Converts GridTrack Vec to Taffy track list
   fn convert_grid_template(
