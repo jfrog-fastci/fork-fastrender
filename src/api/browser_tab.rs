@@ -3853,6 +3853,39 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn navigate_to_url_fetch_error_does_not_clobber_existing_dom() -> Result<()> {
+    let mut tab = BrowserTab::from_html(
+      "<!doctype html><html><body><div id=old></div></body></html>",
+      RenderOptions::default(),
+      NoopExecutor::default(),
+    )?;
+    assert!(
+      tab.dom().get_element_by_id("old").is_some(),
+      "expected initial DOM to contain #old"
+    );
+
+    let dir = tempdir().map_err(Error::Io)?;
+    let missing_path = dir.path().join("missing.html");
+    let missing_url = Url::from_file_path(&missing_path)
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    let err = tab
+      .navigate_to_url(&missing_url, RenderOptions::default())
+      .expect_err("expected navigation to fail for missing file");
+    match err {
+      Error::Resource(_) => {}
+      other => panic!("expected resource error for missing file, got {other:?}"),
+    }
+
+    assert!(
+      tab.dom().get_element_by_id("old").is_some(),
+      "expected failed navigation not to clobber existing DOM"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn non_matching_media_stylesheet_does_not_block_script() -> Result<()> {
     let temp = tempdir().map_err(Error::Io)?;
     std::fs::write(temp.path().join("print.css"), "body { color: green; }")
