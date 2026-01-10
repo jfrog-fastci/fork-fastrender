@@ -20,6 +20,8 @@
 //!   - "merge module specifier maps"
 //!   - "merge existing and new import maps"
 //!   - "register an import map"
+//!
+//! See `docs/import_maps.md` for a spec-mapped developer guide and integration notes.
 
 mod merge;
 mod parse;
@@ -34,6 +36,8 @@ pub use types::{
   ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 
+#[cfg(test)]
+mod merge_tests;
 #[cfg(test)]
 mod parse_tests;
 

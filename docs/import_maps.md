@@ -7,8 +7,8 @@ In the HTML platform, import maps influence **module specifier → URL** resolut
 * `<script type="module">` imports
 * `import()` (dynamic import)
 
-This module is deliberately scoped to **import map parsing + normalization**, plus the spec-mapped
-state + algorithms needed to wire import maps into HTML/script and module loading:
+This module implements the WHATWG HTML import maps algorithms: parsing/normalization, host-side
+state/merging, and module specifier resolution.
 
 * `ImportMapState` (host-side global state: merged import map + resolved module set)
 * `create_import_map_parse_result(...)` (HTML “import map parse result”)
@@ -27,11 +27,12 @@ Code lives in:
 
 * `src/js/import_maps/`
   * `mod.rs`: module entry point + re-exports
-  * `merge.rs`: `register an import map` + merging implementation
+  * `merge.rs`: merge + registration implementation (`merge_module_specifier_maps`, `merge_existing_and_new_import_maps`, `register_import_map`)
   * `parse.rs`: parsing + normalization implementation
-  * `resolve.rs`: `resolve a module specifier` + resolved module set plumbing
-  * `types.rs`: `ImportMap` + `ImportMapState` data model, warnings/errors
+  * `resolve.rs`: module specifier resolution (`resolve_module_specifier`) + helpers (`resolve_imports_match`, `add_module_to_resolved_module_set`)
+  * `types.rs`: data model (`ImportMap`, `ImportMapState`), warnings/errors, resolved module set types
   * `parse_tests.rs`: focused unit tests
+  * `merge_tests.rs`: focused unit tests
   * `tests.rs`: merge/register/resolve unit tests
 
 What exists today:
@@ -42,6 +43,7 @@ What exists today:
 * **Implemented:** host-side global state (`ImportMapState`) including the **resolved module set**
   record types (`SpecifierResolutionRecord`, `SpecifierAsUrlKind`).
 * **Implemented:** registration + merging:
+  * `merge_module_specifier_maps`
   * `merge_existing_and_new_import_maps`
   * `register_import_map`
 * **Implemented:** full module specifier resolution (`resolve_module_specifier`) and resolved-module-set
@@ -59,6 +61,7 @@ Import map parsing/normalization + merge/registration/resolution is covered by s
 unit tests in:
 
 * `src/js/import_maps/parse_tests.rs`
+* `src/js/import_maps/merge_tests.rs`
 * `src/js/import_maps/tests.rs`
 
 Run them (scoped) with:
@@ -101,25 +104,25 @@ Use these `rg -n` commands to jump to the normative algorithms.
   * `rg -n 'Import map parse results' specs/whatwg-html/source`
 * `create an import map parse result`:
   * `rg -n 'create an import map parse result' specs/whatwg-html/source`
-* `register an import map`:
+* `register an import map` (**implemented as** `register_import_map`):
   * `rg -n 'register an import map' specs/whatwg-html/source`
 
 ### Merging (implemented)
 
-* `merge existing and new import maps`:
+* `merge existing and new import maps` (**implemented as** `merge_existing_and_new_import_maps`):
   * `rg -n 'merge existing and new import maps' specs/whatwg-html/source`
-* `merge module specifier maps`:
+* `merge module specifier maps` (**implemented as** `merge_module_specifier_maps`):
   * `rg -n 'merge module specifier maps' specs/whatwg-html/source`
 
 ### Resolution (implemented)
 
-* `resolve a module specifier`:
+* `resolve a module specifier` (**implemented as** `resolve_module_specifier`):
   * `rg -n '<dfn>resolve a module specifier' specs/whatwg-html/source`
 * `resolve an imports match` (**implemented as** `resolve_imports_match`):
   * `rg -n 'resolve an imports match' specs/whatwg-html/source`
 * `resolve a URL-like module specifier`:
   * `rg -n 'resolve a URL-like module specifier' specs/whatwg-html/source`
-* `add module to resolved module set`:
+* `add module to resolved module set` (**implemented as** `add_module_to_resolved_module_set`):
   * `rg -n 'add module to resolved module set' specs/whatwg-html/source`
 
 ---
@@ -195,6 +198,8 @@ This is the spec-mapped "import map parse result" struct that HTML stores in the
 
 ### `ImportMapState` + resolved module set (implemented)
 
+Rust type: `fastrender::js::import_maps::ImportMapState` (`src/js/import_maps/types.rs`)
+
 Rust types:
 
 * `ImportMapState { import_map, resolved_module_set }`
@@ -224,6 +229,9 @@ FastRender models this directly with `ImportMapState`:
   by merge filtering to match the spec rule that prefix matches only apply when `asURL` is null OR a
   special URL (non-special URL-like specifiers such as `blob:` should not be affected by new prefix
   rules).
+
+Host integration should keep one `ImportMapState` per document/realm/global and pass it to
+`register_import_map(...)` and `resolve_module_specifier(...)`.
 
 ---
 
@@ -277,8 +285,8 @@ Behavior summary:
     “ordered maps”).
   * Repeated top-level keys (e.g. multiple `"imports"` properties) are handled as “last one wins”
     (`parse_import_map_string` consults the last occurrence).
-  * Repeated keys inside `"imports"`/`"scopes"` are resolved after normalization; the last occurrence
-    wins.
+* Repeated keys inside `"imports"`/`"scopes"` are resolved after normalization; the last occurrence
+  wins.
 
 ### 2) `create_import_map_parse_result` (implemented)
 
@@ -427,6 +435,9 @@ Spec mapping: “merge existing and new import maps”.
 This is required for multiple `<script type="importmap">` elements in one document and must consult
 the resolved module set to drop rules that would affect already-resolved specifiers.
 
+This uses `merge_module_specifier_maps(...)` (HTML “merge module specifier maps”) to merge component
+specifier maps (conflicts are resolved in favor of the existing state).
+
 In practice, most callers should use `register_import_map(...)` instead; this lower-level API is
 useful if the host wants to parse import maps separately or merge pre-parsed import maps.
 
@@ -452,7 +463,8 @@ Spec mapping:
 * “add module to resolved module set”
 
 This is the API module graph code should call to turn a specifier string into a URL, using the
-current import map state.
+current import map state. It also appends to the resolved module set, so later import maps cannot
+retroactively change the meaning of already-resolved specifiers.
 
 Rust API:
 
