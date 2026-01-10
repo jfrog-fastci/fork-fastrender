@@ -55,6 +55,7 @@ use crate::geometry::Size;
 use crate::paint::clip_path::ResolvedClipPath;
 use crate::paint::display_list::GlyphInstance;
 use crate::paint::display_list::TextItem;
+use crate::paint::gradient::{BAYER_4X4_XY, GradientLut};
 use crate::paint::pixmap::{new_pixmap, new_pixmap_with_context};
 use crate::paint::text_rasterize::{
   concat_transforms, rotation_transform, GlyphCacheStats, TextRasterizer, TextRenderState, TextStroke,
@@ -3885,6 +3886,120 @@ pub(crate) fn composite_layer_into_pixmap(
   origin: (i32, i32),
   clip: Option<&Mask>,
 ) {
+  fn composite_source_over_dither(
+    target: &mut Pixmap,
+    layer: &Pixmap,
+    opacity: f32,
+    origin: (i32, i32),
+    clip: Option<&Mask>,
+  ) {
+    let dst_w = target.width() as i32;
+    let dst_h = target.height() as i32;
+    if dst_w <= 0 || dst_h <= 0 {
+      return;
+    }
+
+    let src_w = layer.width() as i32;
+    let src_h = layer.height() as i32;
+    if src_w <= 0 || src_h <= 0 {
+      return;
+    }
+
+    let dst_x0 = origin.0.max(0);
+    let dst_y0 = origin.1.max(0);
+    let dst_x1 = origin.0.saturating_add(src_w).min(dst_w);
+    let dst_y1 = origin.1.saturating_add(src_h).min(dst_h);
+    if dst_x0 >= dst_x1 || dst_y0 >= dst_y1 {
+      return;
+    }
+
+    let src_x0 = (dst_x0 - origin.0) as usize;
+    let src_y0 = (dst_y0 - origin.1) as usize;
+    let copy_w = (dst_x1 - dst_x0) as usize;
+    let copy_h = (dst_y1 - dst_y0) as usize;
+    if copy_w == 0 || copy_h == 0 {
+      return;
+    }
+
+    let (clip_data, clip_stride) = match clip {
+      Some(mask) => (Some(mask.data()), mask.width() as usize),
+      None => (None, 0),
+    };
+
+    let dst_stride = target.width() as usize;
+    let src_stride = layer.width() as usize;
+    let dst_pixels = target.pixels_mut();
+    let src_pixels = layer.pixels();
+
+    let inv_255 = 1.0 / 255.0;
+    for row in 0..copy_h {
+      let dst_y = dst_y0 as usize + row;
+      let src_y = src_y0 + row;
+
+      let dst_row_start = dst_y * dst_stride + dst_x0 as usize;
+      let src_row_start = src_y * src_stride + src_x0;
+      let dst_row = &mut dst_pixels[dst_row_start..dst_row_start + copy_w];
+      let src_row = &src_pixels[src_row_start..src_row_start + copy_w];
+
+      let y_mod = dst_y & 3;
+      let mut x_mod = (dst_x0 as usize) & 3;
+      for (col, (dst_px, src_px)) in dst_row.iter_mut().zip(src_row.iter()).enumerate() {
+        let mut sa = src_px.alpha() as f32 * opacity;
+        if sa <= 0.0 {
+          x_mod = (x_mod + 1) & 3;
+          continue;
+        }
+
+        let mut sr = src_px.red() as f32 * opacity;
+        let mut sg = src_px.green() as f32 * opacity;
+        let mut sb = src_px.blue() as f32 * opacity;
+
+        if let Some(clip_data) = clip_data {
+          let m = clip_data[dst_y * clip_stride + dst_x0 as usize + col];
+          if m == 0 {
+            x_mod = (x_mod + 1) & 3;
+            continue;
+          }
+          if m != 255 {
+            let mf = m as f32 * inv_255;
+            sr *= mf;
+            sg *= mf;
+            sb *= mf;
+            sa *= mf;
+            if sa <= 0.0 {
+              x_mod = (x_mod + 1) & 3;
+              continue;
+            }
+          }
+        }
+
+        let inv_sa = 1.0 - (sa * inv_255).clamp(0.0, 1.0);
+        let out = [
+          sr + dst_px.red() as f32 * inv_sa,
+          sg + dst_px.green() as f32 * inv_sa,
+          sb + dst_px.blue() as f32 * inv_sa,
+          sa + dst_px.alpha() as f32 * inv_sa,
+        ];
+
+        let idx = y_mod * 4 + x_mod;
+        let m = BAYER_4X4_XY[idx] as f32;
+        let dither = m * 0.0625 + 0.03125;
+        *dst_px = GradientLut::quantize_dither(out, dither);
+        x_mod = (x_mod + 1) & 3;
+      }
+    }
+  }
+
+  let opacity = opacity.clamp(0.0, 1.0);
+  if opacity <= 0.0 || !opacity.is_finite() {
+    return;
+  }
+
+  if blend_mode == SkiaBlendMode::SourceOver {
+    composite_source_over_dither(target, layer, opacity, origin, clip);
+    return;
+  }
+
   let mut paint = PixmapPaint::default();
   paint.opacity = opacity;
   paint.blend_mode = blend_mode;
@@ -5254,5 +5369,37 @@ mod tests {
     assert!(apply_mask_with_offset(&mut actual, (0, 0), &mask, (0, 0)).unwrap());
 
     assert_eq!(actual.data(), expected.data());
+  }
+
+  #[test]
+  fn composite_layer_source_over_dithers_after_blend() {
+    let mut dst = new_pixmap(4, 1).expect("pixmap");
+    let dst_px = PremultipliedColorU8::from_rgba(200, 10, 30, 255).expect("premultiplied dst");
+    dst.pixels_mut().fill(dst_px);
+
+    let mut layer = new_pixmap(4, 1).expect("pixmap");
+    let src_px = PremultipliedColorU8::from_rgba(0, 0, 0, 1).expect("premultiplied src");
+    layer.pixels_mut().fill(src_px);
+
+    composite_layer_into_pixmap(&mut dst, &layer, 1.0, SkiaBlendMode::SourceOver, (0, 0), None);
+
+    let inv_255 = 1.0 / 255.0;
+    let sa = src_px.alpha() as f32 * inv_255;
+    let inv = 1.0 - sa;
+    let out = [
+      src_px.red() as f32 + dst_px.red() as f32 * inv,
+      src_px.green() as f32 + dst_px.green() as f32 * inv,
+      src_px.blue() as f32 + dst_px.blue() as f32 * inv,
+      src_px.alpha() as f32 + dst_px.alpha() as f32 * inv,
+    ];
+
+    let dither0 = BAYER_4X4_XY[0] as f32 * 0.0625 + 0.03125;
+    let dither3 = BAYER_4X4_XY[3] as f32 * 0.0625 + 0.03125;
+    let expected0 = GradientLut::quantize_dither(out, dither0);
+    let expected3 = GradientLut::quantize_dither(out, dither3);
+
+    assert_eq!(dst.pixel(0, 0).expect("pixel"), expected0);
+    assert_eq!(dst.pixel(3, 0).expect("pixel"), expected3);
+    assert_ne!(expected0, expected3, "expected the dither pattern to differ across x");
   }
 }

@@ -114,6 +114,22 @@ fn allocate_pixmap_bytes(bytes: usize) -> Result<Vec<u8>, RenderError> {
   Ok(buffer)
 }
 
+fn allocate_pixmap_bytes_uninitialized(bytes: usize) -> Result<Vec<u8>, RenderError> {
+  let mut buffer = Vec::new();
+  if let Err(err) = buffer.try_reserve_exact(bytes) {
+    return Err(RenderError::InvalidParameters {
+      message: format!("pixmap allocation failed: {err}"),
+    });
+  }
+  // SAFETY: The caller must ensure every byte is written before any read occurs. This is used by
+  // rasterizers that overwrite the entire pixmap before returning it (and may early-return with an
+  // error, in which case the partially-initialized buffer is safely dropped without being read).
+  unsafe {
+    buffer.set_len(bytes);
+  }
+  Ok(buffer)
+}
+
 #[track_caller]
 pub(crate) fn new_pixmap_with_context(
   width: u32,
@@ -155,6 +171,31 @@ pub(crate) fn new_pixmap(width: u32, height: u32) -> Option<Pixmap> {
     }
   }
   new_pixmap_with_context(width, height, "pixmap").ok()
+}
+
+#[track_caller]
+pub(crate) fn new_pixmap_uninitialized(width: u32, height: u32) -> Option<Pixmap> {
+  #[cfg(test)]
+  {
+    if RECORD_NEW_PIXMAP.with(|flag| flag.get()) {
+      let caller = std::panic::Location::caller();
+      NEW_PIXMAP_RECORDS.with(|records| {
+        records.borrow_mut().push(NewPixmapAllocRecord {
+          width,
+          height,
+          file: caller.file(),
+          line: caller.line(),
+        });
+      });
+    }
+  }
+
+  let caller = std::panic::Location::caller();
+  let context = format!("pixmap (at {}:{})", caller.file(), caller.line());
+  let bytes = guard_dimensions(width, height, &context).ok()?;
+  let buffer = allocate_pixmap_bytes_uninitialized(bytes).ok()?;
+  let size = IntSize::from_wh(width, height)?;
+  Pixmap::from_vec(buffer, size)
 }
 
 #[cfg(test)]

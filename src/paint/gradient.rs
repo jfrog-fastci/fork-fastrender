@@ -1,7 +1,11 @@
 use crate::error::{RenderError, RenderStage};
 use crate::geometry::Point;
+use crate::paint::pixmap::new_pixmap_uninitialized;
+#[cfg(test)]
 use crate::paint::pixmap::new_pixmap;
-use crate::render_control::{active_deadline, check_active, check_active_periodic, with_deadline};
+use crate::render_control::{
+  active_deadline, check_active, check_active_periodic, with_deadline, RenderDeadline,
+};
 use crate::style::color::Rgba;
 use lru::LruCache;
 use rayon::prelude::*;
@@ -14,6 +18,14 @@ use tiny_skia::{ColorU8, Pixmap, PremultipliedColorU8, SpreadMode};
 
 const DEADLINE_PIXELS_STRIDE: usize = 16 * 1024;
 const GRADIENT_PARALLEL_THRESHOLD_PIXELS: usize = 1_000_000;
+const GRADIENT_PARALLEL_MIN_TIMEOUT: Duration = Duration::from_millis(500);
+
+#[inline(always)]
+fn gradient_allow_parallel(deadline: Option<&RenderDeadline>) -> bool {
+  deadline
+    .and_then(RenderDeadline::timeout_limit)
+    .map_or(true, |limit| limit >= GRADIENT_PARALLEL_MIN_TIMEOUT)
+}
 
 const DEFAULT_GRADIENT_PIXMAP_CACHE_ITEMS: usize = 64;
 // Rasterized gradients can be extremely large (e.g. full-size mask/border-image gradients on
@@ -27,7 +39,7 @@ const DEFAULT_GRADIENT_PIXMAP_CACHE_BYTES: usize = 64 * 1024 * 1024;
 //
 // We keep this as a small integer table and derive the floating dither offset on demand:
 // `dither = (m + 0.5) / 16.0`.
-const BAYER_4X4_XY: [u8; 16] = [
+pub(crate) const BAYER_4X4_XY: [u8; 16] = [
   0, 12, 3, 15, //
   8, 4, 11, 7, //
   2, 14, 1, 13, //
@@ -454,6 +466,9 @@ impl GradientCacheKey {
 #[derive(Clone)]
 pub struct GradientLut {
   colors: Arc<Vec<[f32; 4]>>,
+  segments: Arc<Vec<u16>>,
+  stop_positions: Arc<Vec<f32>>,
+  stop_colors: Arc<Vec<[f32; 4]>>,
   spread: SpreadModeKey,
   offset: f32,
   span: f32,
@@ -484,6 +499,65 @@ impl GradientLut {
     // SAFETY: idx < last_idx implies idx+1 is within the LUT.
     let c0 = unsafe { *self.colors.get_unchecked(idx) };
     let c1 = unsafe { *self.colors.get_unchecked(idx + 1) };
+
+    // Avoid interpolating across different stop segments. When a stop falls between the two LUT
+    // sample positions, blending `c0` and `c1` would incorrectly smear a sharp corner and can
+    // produce visible color leakage (e.g. red bleeding into the subsequent segment).
+    let seg0 = unsafe { *self.segments.get_unchecked(idx) };
+    let seg1 = unsafe { *self.segments.get_unchecked(idx + 1) };
+    if seg0 != seg1 {
+      // Fast path: a single boundary between adjacent segments.
+      let seg0 = seg0 as usize;
+      let seg1 = seg1 as usize;
+      if seg1 == seg0 + 1 && seg1 < self.stop_positions.len() && seg1 < self.stop_colors.len() {
+        let stop_pos = unsafe { *self.stop_positions.get_unchecked(seg1) };
+        let stop_color = unsafe { *self.stop_colors.get_unchecked(seg1) };
+        let stop_scaled = stop_pos * self.scale;
+        let boundary = (stop_scaled - idx as f32).clamp(0.0, 1.0);
+        if boundary <= 0.0 {
+          // Boundary aligns with the left endpoint.
+          let inv = 1.0 - frac;
+          return [
+            stop_color[0] * inv + c1[0] * frac,
+            stop_color[1] * inv + c1[1] * frac,
+            stop_color[2] * inv + c1[2] * frac,
+            stop_color[3] * inv + c1[3] * frac,
+          ];
+        }
+        if boundary >= 1.0 {
+          // Boundary aligns with the right endpoint.
+          let inv = 1.0 - frac;
+          return [
+            c0[0] * inv + stop_color[0] * frac,
+            c0[1] * inv + stop_color[1] * frac,
+            c0[2] * inv + stop_color[2] * frac,
+            c0[3] * inv + stop_color[3] * frac,
+          ];
+        }
+        if frac < boundary {
+          let local = (frac / boundary).clamp(0.0, 1.0);
+          let inv = 1.0 - local;
+          return [
+            c0[0] * inv + stop_color[0] * local,
+            c0[1] * inv + stop_color[1] * local,
+            c0[2] * inv + stop_color[2] * local,
+            c0[3] * inv + stop_color[3] * local,
+          ];
+        }
+        let local = ((frac - boundary) / (1.0 - boundary)).clamp(0.0, 1.0);
+        let inv = 1.0 - local;
+        return [
+          stop_color[0] * inv + c1[0] * local,
+          stop_color[1] * inv + c1[1] * local,
+          stop_color[2] * inv + c1[2] * local,
+          stop_color[3] * inv + c1[3] * local,
+        ];
+      }
+
+      // Rare fallback: multiple stop boundaries within one LUT interval (or missing metadata).
+      return self.sample_exact_f32(t);
+    }
+
     let inv = 1.0 - frac;
     [
       c0[0] * inv + c1[0] * frac,
@@ -491,6 +565,105 @@ impl GradientLut {
       c0[2] * inv + c1[2] * frac,
       c0[3] * inv + c1[3] * frac,
     ]
+  }
+
+  #[inline]
+  fn sample_exact_f32(&self, t: f32) -> [f32; 4] {
+    if self.stop_positions.is_empty() || self.stop_colors.is_empty() {
+      return [0.0, 0.0, 0.0, 0.0];
+    }
+    let t = t.clamp(0.0, self.period);
+    if t <= self.stop_positions[0] {
+      return self.stop_colors[0];
+    }
+    let last = self.stop_positions.len().saturating_sub(1);
+    if t >= self.stop_positions[last] {
+      return self.stop_colors[last];
+    }
+
+    // Find the segment containing `t` (stop positions are assumed sorted ascending).
+    let mut lo = 0usize;
+    let mut hi = last;
+    while lo + 1 < hi {
+      let mid = (lo + hi) / 2;
+      if t < self.stop_positions[mid] {
+        hi = mid;
+      } else {
+        lo = mid;
+      }
+    }
+    let p0 = self.stop_positions[lo];
+    let p1 = self.stop_positions[hi];
+    let c0 = self.stop_colors[lo];
+    let c1 = self.stop_colors[hi];
+    if (p1 - p0).abs() < f32::EPSILON {
+      return c0;
+    }
+    let frac = ((t - p0) / (p1 - p0)).clamp(0.0, 1.0);
+    let inv = 1.0 - frac;
+    [
+      c0[0] * inv + c1[0] * frac,
+      c0[1] * inv + c1[1] * frac,
+      c0[2] * inv + c1[2] * frac,
+      c0[3] * inv + c1[3] * frac,
+    ]
+  }
+
+  #[inline(always)]
+  fn pm_u8_to_f32(color: PremultipliedColorU8) -> [f32; 4] {
+    [
+      color.red() as f32,
+      color.green() as f32,
+      color.blue() as f32,
+      color.alpha() as f32,
+    ]
+  }
+
+  #[inline(always)]
+  fn sample_pad_f32(&self, t: f32) -> [f32; 4] {
+    if self.last_idx == 0 || !t.is_finite() || t < 0.0 {
+      return Self::pm_u8_to_f32(self.first);
+    }
+    if t >= self.period {
+      return Self::pm_u8_to_f32(self.last);
+    }
+    self.sample_mapped_f32(t)
+  }
+
+  #[inline(always)]
+  fn sample_repeat_f32(&self, mut t: f32) -> [f32; 4] {
+    if self.last_idx == 0 || !t.is_finite() {
+      return Self::pm_u8_to_f32(self.first);
+    }
+    let p = self.period;
+    if p <= 0.0 {
+      return Self::pm_u8_to_f32(self.first);
+    }
+    t = t % p;
+    if t < 0.0 {
+      t += p;
+    }
+    self.sample_mapped_f32(t)
+  }
+
+  #[inline(always)]
+  fn sample_reflect_f32(&self, mut t: f32) -> [f32; 4] {
+    if self.last_idx == 0 || !t.is_finite() {
+      return Self::pm_u8_to_f32(self.first);
+    }
+    let p = self.period;
+    if p <= 0.0 {
+      return Self::pm_u8_to_f32(self.first);
+    }
+    let two_p = p * 2.0;
+    t = t % two_p;
+    if t < 0.0 {
+      t += two_p;
+    }
+    if t > p {
+      t = two_p - t;
+    }
+    self.sample_mapped_f32(t)
   }
 
   #[inline(always)]
@@ -511,7 +684,7 @@ impl GradientLut {
   }
 
   #[inline(always)]
-  fn quantize_dither(color: [f32; 4], dither: f32) -> PremultipliedColorU8 {
+  pub(crate) fn quantize_dither(color: [f32; 4], dither: f32) -> PremultipliedColorU8 {
     // Convert premultiplied f32 channels to premultiplied u8 using ordered dithering.
     //
     // The dither value is in (0, 1) and is added before truncation (floor for positive inputs).
@@ -691,12 +864,28 @@ fn build_gradient_lut(
   let offset = stops.first().map(|(pos, _)| *pos).unwrap_or(0.0);
   let span = span.max(1e-6);
   let mut colors = Vec::with_capacity(step_count);
+  let mut segments = Vec::with_capacity(step_count);
+  let stop_positions: Vec<f32> = stops.iter().map(|(pos, _)| *pos).collect();
+  let stop_colors: Vec<[f32; 4]> = stops
+    .iter()
+    .map(|(_, c)| {
+      let a = c.a.clamp(0.0, 1.0);
+      [
+        c.r as f32 * a,
+        c.g as f32 * a,
+        c.b as f32 * a,
+        a * 255.0,
+      ]
+    })
+    .collect();
   let mut window = stops.windows(2).peekable();
+  let mut segment_idx = 0u16;
   for i in 0..step_count {
     let pos = offset + (i as f32 / max_idx) * span;
     while let Some(segment) = window.peek() {
       if pos > segment[1].0 {
         window.next();
+        segment_idx = segment_idx.saturating_add(1);
       } else {
         break;
       }
@@ -734,9 +923,13 @@ fn build_gradient_lut(
     };
     let a255 = a * 255.0;
     colors.push([pr, pg, pb, a255]);
+    segments.push(segment_idx);
   }
 
   let colors = Arc::new(colors);
+  let segments = Arc::new(segments);
+  let stop_positions = Arc::new(stop_positions);
+  let stop_colors = Arc::new(stop_colors);
   let last_idx = colors.len().saturating_sub(1);
   // Pad gradients use `first/last` directly when clamping outside the stop range, so make sure
   // these match the actual terminal stop colors rather than the sampled LUT values. This matters
@@ -761,6 +954,9 @@ fn build_gradient_lut(
     first,
     last,
     colors,
+    segments,
+    stop_positions,
+    stop_colors,
   }
 }
 
@@ -817,15 +1013,17 @@ fn rasterize_linear_gradient_with_phase(
   let dx = end.x - start.x;
   let dy = end.y - start.y;
   let denom = dx * dx + dy * dy;
-  let Some(mut pixmap) = new_pixmap(width, height) else {
+  let Some(mut pixmap) = new_pixmap_uninitialized(width, height) else {
     return Ok(None);
   };
   let pixels_len = width as usize * height as usize;
   if denom.abs() <= f32::EPSILON {
     let color = premultiply_rgba(stops[0].1);
     let pixels = pixmap.pixels_mut();
-    if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS {
-      let deadline = active_deadline();
+    let deadline = active_deadline();
+    if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS && gradient_allow_parallel(deadline.as_ref())
+    {
+      crate::rayon_init::ensure_global_rayon_pool();
       pixels
         .par_chunks_mut(DEADLINE_PIXELS_STRIDE)
         .try_for_each(|chunk| {
@@ -919,8 +1117,10 @@ fn rasterize_linear_gradient_with_phase(
     Ok(())
   };
 
-  if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS {
-    let deadline = active_deadline();
+  let deadline = active_deadline();
+  if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS && gradient_allow_parallel(deadline.as_ref())
+  {
+    crate::rayon_init::ensure_global_rayon_pool();
     pixels
       .par_chunks_mut(stride)
       .enumerate()
@@ -936,6 +1136,372 @@ fn rasterize_linear_gradient_with_phase(
   }
 
   Ok(Some(pixmap))
+}
+
+pub fn paint_linear_gradient_src_over(
+  dest: &mut Pixmap,
+  dest_x: i32,
+  dest_y: i32,
+  width: u32,
+  height: u32,
+  start: Point,
+  end: Point,
+  spread: SpreadMode,
+  stops: &[(f32, Rgba)],
+  cache: &GradientLutCache,
+  bucket: u16,
+  dither_phase: u8,
+  clip: Option<&tiny_skia::Mask>,
+) -> Result<(), RenderError> {
+  check_active(RenderStage::Paint)?;
+  if width == 0 || height == 0 || stops.is_empty() {
+    return Ok(());
+  }
+  let dest_width = dest.width() as i32;
+  let dest_height = dest.height() as i32;
+  if dest_width <= 0 || dest_height <= 0 {
+    return Ok(());
+  }
+  let Some(rect_x1) = dest_x.checked_add(width as i32) else {
+    return Ok(());
+  };
+  let Some(rect_y1) = dest_y.checked_add(height as i32) else {
+    return Ok(());
+  };
+  let x0 = dest_x.max(0);
+  let y0 = dest_y.max(0);
+  let x1 = rect_x1.min(dest_width);
+  let y1 = rect_y1.min(dest_height);
+  if x0 >= x1 || y0 >= y1 {
+    return Ok(());
+  }
+  let local_x0 = (x0 - dest_x) as usize;
+  let local_y0 = (y0 - dest_y) as usize;
+  let span_x = (x1 - x0) as usize;
+  let span_y = (y1 - y0) as usize;
+
+  let period = gradient_period(stops);
+  let spread_key: SpreadModeKey = spread.into();
+  let phase_x = (dither_phase & 3) as usize;
+  let phase_y = ((dither_phase >> 2) & 3) as usize;
+  let key = GradientCacheKey::new(stops, spread, period, bucket);
+  let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
+
+  #[inline(always)]
+  fn blend_src_over(dst: PremultipliedColorU8, src: [f32; 4]) -> [f32; 4] {
+    let sa = (src[3] * (1.0 / 255.0)).clamp(0.0, 1.0);
+    if sa <= 0.0 {
+      return [
+        dst.red() as f32,
+        dst.green() as f32,
+        dst.blue() as f32,
+        dst.alpha() as f32,
+      ];
+    }
+    if sa >= 1.0 {
+      return src;
+    }
+    let inv = 1.0 - sa;
+    [
+      src[0] + dst.red() as f32 * inv,
+      src[1] + dst.green() as f32 * inv,
+      src[2] + dst.blue() as f32 * inv,
+      src[3] + dst.alpha() as f32 * inv,
+    ]
+  }
+
+  let (clip_data, clip_stride) = match clip {
+    Some(mask) if mask.width() as i32 == dest_width && mask.height() as i32 == dest_height => {
+      (Some(mask.data()), mask.width() as usize)
+    }
+    _ => (None, 0),
+  };
+
+  let stride = dest.width() as usize;
+  let pixels = dest.pixels_mut();
+  let row_start = y0 as usize * stride;
+  let row_end = y1 as usize * stride;
+  let pixels = &mut pixels[row_start..row_end];
+
+  let dx = end.x - start.x;
+  let dy = end.y - start.y;
+  let denom = dx * dx + dy * dy;
+  if denom.abs() <= f32::EPSILON {
+    let solid = premultiply_rgba(stops[0].1);
+    let src = [
+      solid.red() as f32,
+      solid.green() as f32,
+      solid.blue() as f32,
+      solid.alpha() as f32,
+    ];
+    let total_pixels = span_x.saturating_mul(span_y);
+    let paint_row = |local_y: usize,
+                     row: &mut [PremultipliedColorU8],
+                     mask_row: Option<&[u8]>|
+     -> Result<(), RenderError> {
+      let y_mod = (local_y + phase_y) & 3;
+      let mut x = 0usize;
+      let mut deadline_counter = 0usize;
+      let inv_255 = 1.0 / 255.0;
+      for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
+        check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+        let mut x_mod = (local_x0 + x + phase_x) & 3;
+        let chunk_len = chunk.len();
+        if let Some(mask_row) = mask_row {
+          let mask_chunk = &mask_row[x..x + chunk_len];
+          for (pixel, &mask) in chunk.iter_mut().zip(mask_chunk.iter()) {
+            if mask == 0 {
+              x_mod = (x_mod + 1) & 3;
+              continue;
+            }
+            let out = if mask == 255 {
+              blend_src_over(*pixel, src)
+            } else {
+              let mf = mask as f32 * inv_255;
+              blend_src_over(*pixel, [src[0] * mf, src[1] * mf, src[2] * mf, src[3] * mf])
+            };
+            let idx = y_mod * 4 + x_mod;
+            let m = BAYER_4X4_XY[idx] as f32;
+            let dither = m * 0.0625 + 0.03125;
+            *pixel = GradientLut::quantize_dither(out, dither);
+            x_mod = (x_mod + 1) & 3;
+          }
+        } else {
+          for pixel in chunk.iter_mut() {
+            let out = blend_src_over(*pixel, src);
+            let idx = y_mod * 4 + x_mod;
+            let m = BAYER_4X4_XY[idx] as f32;
+            let dither = m * 0.0625 + 0.03125;
+            *pixel = GradientLut::quantize_dither(out, dither);
+            x_mod = (x_mod + 1) & 3;
+          }
+        }
+        x += chunk_len;
+      }
+      Ok(())
+    };
+
+    if total_pixels >= GRADIENT_PARALLEL_THRESHOLD_PIXELS {
+      let deadline = active_deadline();
+      pixels
+        .par_chunks_mut(stride)
+        .enumerate()
+        .try_for_each(|(row_idx, full_row)| {
+          with_deadline(deadline.as_ref(), || {
+            let local_y = local_y0 + row_idx;
+            let row = &mut full_row[x0 as usize..x1 as usize];
+            let mask_row = clip_data.map(|data| {
+              let global_y = y0 as usize + row_idx;
+              let start = global_y * clip_stride + x0 as usize;
+              &data[start..start + span_x]
+            });
+            paint_row(local_y, row, mask_row)
+          })
+        })?;
+    } else {
+      for (row_idx, full_row) in pixels.chunks_mut(stride).enumerate() {
+        let local_y = local_y0 + row_idx;
+        let row = &mut full_row[x0 as usize..x1 as usize];
+        let mask_row = clip_data.map(|data| {
+          let global_y = y0 as usize + row_idx;
+          let start = global_y * clip_stride + x0 as usize;
+          &data[start..start + span_x]
+        });
+        paint_row(local_y, row, mask_row)?;
+      }
+    }
+    return Ok(());
+  }
+
+  let inv_len = 1.0 / denom;
+  let step_x = dx * inv_len;
+  let step_y = dy * inv_len;
+  let start_dot = (0.5 - start.x) * dx + (0.5 - start.y) * dy;
+  let row_start0 = start_dot * inv_len;
+  let total_pixels = span_x.saturating_mul(span_y);
+
+  let paint_row = |local_y: usize,
+                   row: &mut [PremultipliedColorU8],
+                   mask_row: Option<&[u8]>|
+   -> Result<(), RenderError> {
+    let y_mod = (local_y + phase_y) & 3;
+    let mut deadline_counter = 0usize;
+    let mut t = row_start0 + local_y as f32 * step_y + local_x0 as f32 * step_x;
+    let inv_255 = 1.0 / 255.0;
+
+    match spread_key {
+      SpreadModeKey::Pad => {
+        let mut x = 0usize;
+        for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
+          check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+          let mut x_mod = (local_x0 + x + phase_x) & 3;
+          let chunk_len = chunk.len();
+          if let Some(mask_row) = mask_row {
+            let mask_chunk = &mask_row[x..x + chunk_len];
+            for (pixel, &mask) in chunk.iter_mut().zip(mask_chunk.iter()) {
+              if mask == 0 {
+                t += step_x;
+                x_mod = (x_mod + 1) & 3;
+                continue;
+              }
+              let mut src = lut.sample_pad_f32(t);
+              if mask != 255 {
+                let mf = mask as f32 * inv_255;
+                src[0] *= mf;
+                src[1] *= mf;
+                src[2] *= mf;
+                src[3] *= mf;
+              }
+              let out = blend_src_over(*pixel, src);
+              let idx = y_mod * 4 + x_mod;
+              let m = BAYER_4X4_XY[idx] as f32;
+              let dither = m * 0.0625 + 0.03125;
+              *pixel = GradientLut::quantize_dither(out, dither);
+              t += step_x;
+              x_mod = (x_mod + 1) & 3;
+            }
+          } else {
+            for pixel in chunk.iter_mut() {
+              let src = lut.sample_pad_f32(t);
+              let out = blend_src_over(*pixel, src);
+              let idx = y_mod * 4 + x_mod;
+              let m = BAYER_4X4_XY[idx] as f32;
+              let dither = m * 0.0625 + 0.03125;
+              *pixel = GradientLut::quantize_dither(out, dither);
+              t += step_x;
+              x_mod = (x_mod + 1) & 3;
+            }
+          }
+          x += chunk_len;
+        }
+      }
+      SpreadModeKey::Repeat => {
+        let mut x = 0usize;
+        for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
+          check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+          let mut x_mod = (local_x0 + x + phase_x) & 3;
+          let chunk_len = chunk.len();
+          if let Some(mask_row) = mask_row {
+            let mask_chunk = &mask_row[x..x + chunk_len];
+            for (pixel, &mask) in chunk.iter_mut().zip(mask_chunk.iter()) {
+              if mask == 0 {
+                t += step_x;
+                x_mod = (x_mod + 1) & 3;
+                continue;
+              }
+              let mut src = lut.sample_repeat_f32(t);
+              if mask != 255 {
+                let mf = mask as f32 * inv_255;
+                src[0] *= mf;
+                src[1] *= mf;
+                src[2] *= mf;
+                src[3] *= mf;
+              }
+              let out = blend_src_over(*pixel, src);
+              let idx = y_mod * 4 + x_mod;
+              let m = BAYER_4X4_XY[idx] as f32;
+              let dither = m * 0.0625 + 0.03125;
+              *pixel = GradientLut::quantize_dither(out, dither);
+              t += step_x;
+              x_mod = (x_mod + 1) & 3;
+            }
+          } else {
+            for pixel in chunk.iter_mut() {
+              let src = lut.sample_repeat_f32(t);
+              let out = blend_src_over(*pixel, src);
+              let idx = y_mod * 4 + x_mod;
+              let m = BAYER_4X4_XY[idx] as f32;
+              let dither = m * 0.0625 + 0.03125;
+              *pixel = GradientLut::quantize_dither(out, dither);
+              t += step_x;
+              x_mod = (x_mod + 1) & 3;
+            }
+          }
+          x += chunk_len;
+        }
+      }
+      SpreadModeKey::Reflect => {
+        let mut x = 0usize;
+        for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
+          check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+          let mut x_mod = (local_x0 + x + phase_x) & 3;
+          let chunk_len = chunk.len();
+          if let Some(mask_row) = mask_row {
+            let mask_chunk = &mask_row[x..x + chunk_len];
+            for (pixel, &mask) in chunk.iter_mut().zip(mask_chunk.iter()) {
+              if mask == 0 {
+                t += step_x;
+                x_mod = (x_mod + 1) & 3;
+                continue;
+              }
+              let mut src = lut.sample_reflect_f32(t);
+              if mask != 255 {
+                let mf = mask as f32 * inv_255;
+                src[0] *= mf;
+                src[1] *= mf;
+                src[2] *= mf;
+                src[3] *= mf;
+              }
+              let out = blend_src_over(*pixel, src);
+              let idx = y_mod * 4 + x_mod;
+              let m = BAYER_4X4_XY[idx] as f32;
+              let dither = m * 0.0625 + 0.03125;
+              *pixel = GradientLut::quantize_dither(out, dither);
+              t += step_x;
+              x_mod = (x_mod + 1) & 3;
+            }
+          } else {
+            for pixel in chunk.iter_mut() {
+              let src = lut.sample_reflect_f32(t);
+              let out = blend_src_over(*pixel, src);
+              let idx = y_mod * 4 + x_mod;
+              let m = BAYER_4X4_XY[idx] as f32;
+              let dither = m * 0.0625 + 0.03125;
+              *pixel = GradientLut::quantize_dither(out, dither);
+              t += step_x;
+              x_mod = (x_mod + 1) & 3;
+            }
+          }
+          x += chunk_len;
+        }
+      }
+    }
+    Ok(())
+  };
+
+  let deadline = active_deadline();
+  if total_pixels >= GRADIENT_PARALLEL_THRESHOLD_PIXELS && gradient_allow_parallel(deadline.as_ref())
+  {
+    crate::rayon_init::ensure_global_rayon_pool();
+      pixels
+        .par_chunks_mut(stride)
+        .enumerate()
+        .try_for_each(|(row_idx, full_row)| {
+          with_deadline(deadline.as_ref(), || {
+            let local_y = local_y0 + row_idx;
+            let row = &mut full_row[x0 as usize..x1 as usize];
+            let mask_row = clip_data.map(|data| {
+              let global_y = y0 as usize + row_idx;
+              let start = global_y * clip_stride + x0 as usize;
+              &data[start..start + span_x]
+            });
+            paint_row(local_y, row, mask_row)
+          })
+        })?;
+  } else {
+    for (row_idx, full_row) in pixels.chunks_mut(stride).enumerate() {
+      let local_y = local_y0 + row_idx;
+      let row = &mut full_row[x0 as usize..x1 as usize];
+      let mask_row = clip_data.map(|data| {
+        let global_y = y0 as usize + row_idx;
+        let start = global_y * clip_stride + x0 as usize;
+        &data[start..start + span_x]
+      });
+      paint_row(local_y, row, mask_row)?;
+    }
+  }
+
+  Ok(())
 }
 
 pub fn rasterize_linear_gradient_cached(
@@ -995,7 +1561,7 @@ pub fn rasterize_conic_gradient(
   let period = gradient_period(stops);
   let key = GradientCacheKey::new(stops, spread, period, bucket);
   let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
-  let Some(mut pixmap) = new_pixmap(width, height) else {
+  let Some(mut pixmap) = new_pixmap_uninitialized(width, height) else {
     return Ok(None);
   };
 
@@ -1065,8 +1631,10 @@ pub fn rasterize_conic_gradient(
     Ok(())
   };
 
-  if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS {
-    let deadline = active_deadline();
+  let deadline = active_deadline();
+  if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS && gradient_allow_parallel(deadline.as_ref())
+  {
+    crate::rayon_init::ensure_global_rayon_pool();
     pixels
       .par_chunks_mut(stride)
       .enumerate()
@@ -1147,7 +1715,7 @@ pub fn rasterize_conic_gradient_scaled(
   let period = gradient_period(stops);
   let key = GradientCacheKey::new(stops, spread, period, bucket);
   let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
-  let Some(mut pixmap) = new_pixmap(width, height) else {
+  let Some(mut pixmap) = new_pixmap_uninitialized(width, height) else {
     return Ok(None);
   };
 
@@ -1657,6 +2225,161 @@ mod tests {
   }
 
   #[test]
+  fn linear_gradient_src_over_dithers_after_blend() {
+    let mut dest = new_pixmap(4, 1).expect("pixmap");
+    let dst = PremultipliedColorU8::from_rgba(200, 10, 30, 255).expect("premultiplied dst");
+    dest.pixels_mut().fill(dst);
+
+    let faint_red = Rgba {
+      r: 193,
+      g: 0,
+      b: 0,
+      a: 1.0 / 255.0,
+    };
+    let stops = vec![(0.0, faint_red), (1.0, faint_red)];
+    let cache = GradientLutCache::default();
+    let bucket = gradient_bucket(1);
+
+    let start = Point::new(0.0, 0.0);
+    let end = Point::new(1.0, 0.0);
+
+    // This pixel uses the first Bayer matrix entry, which yields the smallest dither offset.
+    let dither = BAYER_4X4_XY[0] as f32 * 0.0625 + 0.03125;
+    let lut = build_gradient_lut(&stops, SpreadMode::Pad, gradient_period(&stops), bucket);
+    let src = lut.sample_pad_f32(0.5);
+
+    let sa = (src[3] * (1.0 / 255.0)).clamp(0.0, 1.0);
+    let inv = 1.0 - sa;
+    let out = [
+      src[0] + dst.red() as f32 * inv,
+      src[1] + dst.green() as f32 * inv,
+      src[2] + dst.blue() as f32 * inv,
+      src[3] + dst.alpha() as f32 * inv,
+    ];
+    let expected = GradientLut::quantize_dither(out, dither);
+
+    // Ensure the test setup is sensitive to whether dithering happens before or after blending.
+    let src_pre = GradientLut::quantize_dither(src, dither);
+    let sa_pre = (src_pre.alpha() as f32) * (1.0 / 255.0);
+    let inv_pre = 1.0 - sa_pre;
+    let out_pre = [
+      src_pre.red() as f32 + dst.red() as f32 * inv_pre,
+      src_pre.green() as f32 + dst.green() as f32 * inv_pre,
+      src_pre.blue() as f32 + dst.blue() as f32 * inv_pre,
+      src_pre.alpha() as f32 + dst.alpha() as f32 * inv_pre,
+    ];
+    let expected_preblend = GradientLut::quantize_dither(out_pre, dither);
+    assert_ne!(
+      expected, expected_preblend,
+      "expected the test pixel to change when dithering is applied before blending"
+    );
+
+    paint_linear_gradient_src_over(
+      &mut dest,
+      0,
+      0,
+      1,
+      1,
+      start,
+      end,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      bucket,
+      0,
+      None,
+    )
+    .expect("paint src-over");
+
+    let actual = dest.pixel(0, 0).expect("pixel");
+    assert_eq!(actual, expected);
+  }
+
+  #[test]
+  fn linear_gradient_src_over_matches_opaque_pattern_subrect() {
+    let tile_w = 8u32;
+    let tile_h = 8u32;
+    let origin_x = 2i32;
+    let origin_y = 3i32;
+    let dest_x = 4i32;
+    let dest_y = 5i32;
+    let sub_w = 3u32;
+    let sub_h = 2u32;
+
+    let stops = vec![(0.0, Rgba::RED), (1.0, Rgba::BLUE)];
+    let cache = GradientLutCache::default();
+    let bucket = gradient_bucket(tile_w.max(tile_h));
+
+    // Reference output: rasterize the whole tile with the pattern's origin-based dither phase, then
+    // copy the relevant sub-rectangle into the destination surface.
+    let tile_dither_phase = (((origin_y & 3) as u8) << 2) | ((origin_x & 3) as u8);
+    let tile = rasterize_linear_gradient_with_phase(
+      tile_w,
+      tile_h,
+      Point::new(0.0, 0.0),
+      Point::new(0.0, tile_h as f32),
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      bucket,
+      tile_dither_phase,
+    )
+    .expect("tile rasterize")
+    .expect("tile pixmap");
+
+    let bg = PremultipliedColorU8::from_rgba(10, 20, 30, 255).expect("bg premultiplied");
+    let mut expected = new_pixmap(20, 20).expect("expected pixmap");
+    expected.pixels_mut().fill(bg);
+    let mut actual = new_pixmap(20, 20).expect("actual pixmap");
+    actual.pixels_mut().fill(bg);
+
+    let src_x = (dest_x - origin_x) as usize;
+    let src_y = (dest_y - origin_y) as usize;
+    let dst_x = dest_x as usize;
+    let dst_y = dest_y as usize;
+    let copy_w = sub_w as usize;
+    let copy_h = sub_h as usize;
+
+    let src_stride = tile_w as usize * 4;
+    let dst_stride = expected.width() as usize * 4;
+    let row_bytes = copy_w * 4;
+    let tile_data = tile.data();
+    let expected_data = expected.data_mut();
+    for row in 0..copy_h {
+      let src_off = (src_y + row) * src_stride + src_x * 4;
+      let dst_off = (dst_y + row) * dst_stride + dst_x * 4;
+      expected_data[dst_off..dst_off + row_bytes]
+        .copy_from_slice(&tile_data[src_off..src_off + row_bytes]);
+    }
+
+    // Now paint the same sub-rect directly, using the local start/end coordinates that correspond
+    // to sampling the (single) visible tile.
+    let offset_x = (dest_x - origin_x) as f32;
+    let offset_y = (dest_y - origin_y) as f32;
+    let start = Point::new(-offset_x, -offset_y);
+    let end = Point::new(-offset_x, tile_h as f32 - offset_y);
+    let sub_dither_phase = (((dest_y & 3) as u8) << 2) | ((dest_x & 3) as u8);
+    paint_linear_gradient_src_over(
+      &mut actual,
+      dest_x,
+      dest_y,
+      sub_w,
+      sub_h,
+      start,
+      end,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      bucket,
+      sub_dither_phase,
+      None,
+    )
+    .expect("paint src-over");
+
+    assert_eq!(actual.data(), expected.data());
+  }
+
+  #[test]
   fn conic_lut_scaled_matches_naive_with_low_error() {
     let stops = vec![(0.0, Rgba::RED), (0.5, Rgba::GREEN), (1.0, Rgba::BLUE)];
     let cache = GradientLutCache::default();
@@ -1722,6 +2445,10 @@ mod tests {
       )
     });
     let elapsed = start.elapsed();
+    let timeout_elapsed = match &result {
+      Err(RenderError::Timeout { elapsed, .. }) => Some(*elapsed),
+      _ => None,
+    };
     assert!(
       matches!(
         result,
@@ -1734,7 +2461,7 @@ mod tests {
     );
     assert!(
       elapsed < Duration::from_millis(250),
-      "timeout should be cooperative (elapsed {elapsed:?})"
+      "timeout should be cooperative (elapsed {elapsed:?}, error_elapsed={timeout_elapsed:?})"
     );
   }
 

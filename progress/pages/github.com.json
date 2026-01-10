@@ -17,8 +17,8 @@
   "notes": "Remaining pixel diffs are mostly from text rasterization (hinting/subpixel AA differences vs Chrome) and minor gradient/blur rendering differences in the hero background.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 236546,
-    "diff_percent": 18.3426,
+    "diff_pixels": 236454,
+    "diff_percent": 18.3355,
     "perceptual": 0.3285,
     "first_mismatch": {
       "x": 44,
@@ -38,7 +38,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "b2ae46f536f1ef9725c17630df5b34c6067c0d3f"
+    "computed_at_commit": "ab0c0f7298533e28d0bc9c6dcc2ae595d6effeba"
   },
   "hotspot": "layout",
   "failure_stage": null,

@@ -75,8 +75,8 @@ use crate::paint::filter_outset::filter_halo_outset_with_bounds;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::gradient::{
   gradient_bucket, rasterize_conic_gradient_cached, rasterize_conic_gradient_scaled_cached,
-  rasterize_linear_gradient_cached, GradientLutCache, GradientPixmapCache, GradientPixmapCacheKey,
-  GradientStats,
+  rasterize_linear_gradient_cached, paint_linear_gradient_src_over, GradientLutCache,
+  GradientPixmapCache, GradientPixmapCacheKey, GradientStats,
 };
 use crate::paint::homography::Homography;
 use crate::paint::optimize::DisplayListOptimizer;
@@ -5364,6 +5364,68 @@ impl DisplayListRenderer {
     let dest_x = visible_rect.x().floor() as i32;
     let dest_y = visible_rect.y().floor() as i32;
     let dither_phase = (((dest_y & 3) as u8) << 2) | ((dest_x & 3) as u8);
+
+    // Fast path: paint directly into the destination surface when the gradient is axis-aligned and
+    // uses a normal source-over blend. This matches Skia/Chrome's behavior more closely for
+    // partially-transparent gradients by applying ordered dithering *after* blending, rather than
+    // rasterizing into an intermediate u8 pixmap and then compositing.
+    //
+    // Keep this conservative: it intentionally opts out when fractional positioning/transform/clip
+    // would require resampling or partial coverage at the edges.
+    let visible_rect_is_pixel_aligned = (visible_rect.x() - dest_x as f32).abs() <= 1e-6
+      && (visible_rect.y() - dest_y as f32).abs() <= 1e-6
+      && (visible_rect.width() - width as f32).abs() <= 1e-6
+      && (visible_rect.height() - height as f32).abs() <= 1e-6;
+    let canvas_transform = self.canvas.transform();
+    let translation_only = (canvas_transform.sx - 1.0).abs() <= 1e-6
+      && (canvas_transform.sy - 1.0).abs() <= 1e-6
+      && canvas_transform.kx.abs() <= 1e-6
+      && canvas_transform.ky.abs() <= 1e-6
+      && canvas_transform.tx.is_finite()
+      && canvas_transform.ty.is_finite();
+    let tx = canvas_transform.tx.round();
+    let ty = canvas_transform.ty.round();
+    let translation_integral = (canvas_transform.tx - tx).abs() <= 1e-6
+      && (canvas_transform.ty - ty).abs() <= 1e-6
+      && tx >= i32::MIN as f32
+      && tx <= i32::MAX as f32
+      && ty >= i32::MIN as f32
+      && ty <= i32::MAX as f32;
+    let dest_x_dev = dest_x.saturating_add(tx as i32);
+    let dest_y_dev = dest_y.saturating_add(ty as i32);
+    if visible_rect_is_pixel_aligned
+      && translation_only
+      && translation_integral
+      && self.canvas.clip_mask().is_none()
+      && self.canvas.blend_mode() == SkiaBlendMode::SourceOver
+    {
+      self
+        .canvas
+        .with_mirrored_pixmap_mut_result(|pixmap| -> Result<()> {
+          paint_linear_gradient_src_over(
+            pixmap,
+            dest_x_dev,
+            dest_y_dev,
+            width,
+            height,
+            start,
+            end,
+            spread,
+            &stops,
+            &self.gradient_cache,
+            gradient_bucket(original_width.max(original_height)),
+            dither_phase,
+            None,
+          )
+          .map_err(Error::Render)?;
+          Ok(())
+        })?;
+      if let Some(start) = timer {
+        self.record_gradient_usage((width * height) as u64, start);
+      }
+      self.record_background_paint(background_timer);
+      return Ok(());
+    }
     let Some(pix) = rasterize_linear_gradient_cached(
       &self.gradient_pixmap_cache,
       width,
@@ -5413,16 +5475,14 @@ impl DisplayListRenderer {
     }
 
     let dest_rect = self.ds_rect(item.dest_rect);
-    if self.canvas.apply_clip(dest_rect).is_none() {
-      return Ok(());
-    }
-    if dest_rect.width() <= 0.0 || dest_rect.height() <= 0.0 {
-      return Ok(());
-    }
+    let visible_rect = match self.gradient_visible_rect(dest_rect) {
+      Some(r) => r,
+      None => return Ok(()),
+    };
 
     let tile_w = self.ds_len(item.tile_size.width);
     let tile_h = self.ds_len(item.tile_size.height);
-    if tile_w <= 0.0 || tile_h <= 0.0 {
+    if tile_w <= 0.0 || tile_h <= 0.0 || !tile_w.is_finite() || !tile_h.is_finite() {
       return Ok(());
     }
 
@@ -5438,6 +5498,15 @@ impl DisplayListRenderer {
       return Ok(());
     };
 
+    let origin = self.ds_point(item.origin);
+    let start_tile = Point::new(self.ds_len(item.start.x), self.ds_len(item.start.y));
+    let end_tile = Point::new(self.ds_len(item.end.x), self.ds_len(item.end.y));
+    let spread = match item.spread {
+      crate::paint::display_list::GradientSpread::Pad => SpreadMode::Pad,
+      crate::paint::display_list::GradientSpread::Repeat => SpreadMode::Repeat,
+      crate::paint::display_list::GradientSpread::Reflect => SpreadMode::Reflect,
+    };
+
     // The tile pixmap is rasterized at an integer pixel size, then scaled via the pattern shader
     // so the repetition period matches `tile_w/tile_h` exactly (which can be fractional at device
     // scale). Convert gradient geometry from tile-space (device px) into the raster pixmap's
@@ -5448,30 +5517,102 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
-    let origin = self.ds_point(item.origin);
-    let origin_x = origin.x.floor() as i32;
-    let origin_y = origin.y.floor() as i32;
-    let dither_phase = (((origin_y & 3) as u8) << 2) | ((origin_x & 3) as u8);
-
-    let start = Point::new(
-      self.ds_len(item.start.x) * raster_scale_x,
-      self.ds_len(item.start.y) * raster_scale_y,
-    );
-    let end = Point::new(
-      self.ds_len(item.end.x) * raster_scale_x,
-      self.ds_len(item.end.y) * raster_scale_y,
-    );
-    let spread = match item.spread {
-      crate::paint::display_list::GradientSpread::Pad => SpreadMode::Pad,
-      crate::paint::display_list::GradientSpread::Repeat => SpreadMode::Repeat,
-      crate::paint::display_list::GradientSpread::Reflect => SpreadMode::Reflect,
-    };
-
     let background_timer = self
       .background_paint_diagnostics
       .as_ref()
       .map(|_| Instant::now());
     let timer = self.diagnostics_enabled.then(Instant::now);
+
+    // Fast path: if the visible portion of the destination rectangle fits entirely within a
+    // single pattern tile, paint the gradient directly into the destination surface.
+    //
+    // This avoids rasterizing the full backing tile and more closely matches Skia/Chrome for
+    // partially-transparent gradients by applying ordered dithering after the source-over blend.
+    //
+    // Keep this conservative: it requires an identity canvas transform and no clip mask.
+    let visible_x = visible_rect.x();
+    let visible_y = visible_rect.y();
+    let dest_x = visible_x.floor() as i32;
+    let dest_y = visible_y.floor() as i32;
+    let visible_w = visible_rect.width().ceil() as u32;
+    let visible_h = visible_rect.height().ceil() as u32;
+    let visible_rect_is_pixel_aligned = (visible_x - dest_x as f32).abs() <= 1e-6
+      && (visible_y - dest_y as f32).abs() <= 1e-6
+      && (visible_rect.width() - visible_w as f32).abs() <= 1e-6
+      && (visible_rect.height() - visible_h as f32).abs() <= 1e-6;
+    let needs_pattern_repeat_x = ((visible_rect.min_x() - origin.x) / tile_w).floor();
+    let needs_pattern_repeat_y = ((visible_rect.min_y() - origin.y) / tile_h).floor();
+    let tile_origin_x = origin.x + needs_pattern_repeat_x * tile_w;
+    let tile_origin_y = origin.y + needs_pattern_repeat_y * tile_h;
+    let visible_in_single_tile = tile_origin_x.is_finite()
+      && tile_origin_y.is_finite()
+      && visible_rect.min_x() >= tile_origin_x - 1e-6
+      && visible_rect.min_y() >= tile_origin_y - 1e-6
+      && visible_rect.max_x() <= tile_origin_x + tile_w + 1e-6
+      && visible_rect.max_y() <= tile_origin_y + tile_h + 1e-6;
+    let translation_only = (canvas_transform.sx - 1.0).abs() <= 1e-6
+      && (canvas_transform.sy - 1.0).abs() <= 1e-6
+      && canvas_transform.kx.abs() <= 1e-6
+      && canvas_transform.ky.abs() <= 1e-6
+      && canvas_transform.tx.is_finite()
+      && canvas_transform.ty.is_finite();
+    let tx = canvas_transform.tx.round();
+    let ty = canvas_transform.ty.round();
+    let translation_integral = (canvas_transform.tx - tx).abs() <= 1e-6
+      && (canvas_transform.ty - ty).abs() <= 1e-6
+      && tx >= i32::MIN as f32
+      && tx <= i32::MAX as f32
+      && ty >= i32::MIN as f32
+      && ty <= i32::MAX as f32;
+    let dest_x_dev = dest_x.saturating_add(tx as i32);
+    let dest_y_dev = dest_y.saturating_add(ty as i32);
+    if opacity >= 1.0 - f32::EPSILON
+      && visible_rect_is_pixel_aligned
+      && visible_in_single_tile
+      && translation_only
+      && translation_integral
+      && self.canvas.clip_mask().is_none()
+      && self.canvas.blend_mode() == SkiaBlendMode::SourceOver
+    {
+      let offset_x = visible_x - tile_origin_x;
+      let offset_y = visible_y - tile_origin_y;
+      let start = Point::new(start_tile.x - offset_x, start_tile.y - offset_y);
+      let end = Point::new(end_tile.x - offset_x, end_tile.y - offset_y);
+      let dither_phase = (((dest_y & 3) as u8) << 2) | ((dest_x & 3) as u8);
+      self
+        .canvas
+        .with_mirrored_pixmap_mut_result(|pixmap| -> Result<()> {
+          paint_linear_gradient_src_over(
+            pixmap,
+            dest_x_dev,
+            dest_y_dev,
+            visible_w,
+            visible_h,
+            start,
+            end,
+            spread,
+            &stops,
+            &self.gradient_cache,
+            gradient_bucket(width.max(height)),
+            dither_phase,
+            None,
+          )
+          .map_err(Error::Render)?;
+          Ok(())
+        })?;
+      if let Some(start) = timer {
+        self.record_gradient_usage((visible_w * visible_h) as u64, start);
+      }
+      self.record_background_paint(background_timer);
+      return Ok(());
+    }
+
+    let origin_x = origin.x.floor() as i32;
+    let origin_y = origin.y.floor() as i32;
+    let dither_phase = (((origin_y & 3) as u8) << 2) | ((origin_x & 3) as u8);
+
+    let start = Point::new(start_tile.x * raster_scale_x, start_tile.y * raster_scale_y);
+    let end = Point::new(end_tile.x * raster_scale_x, end_tile.y * raster_scale_y);
 
     let Some(tile) = rasterize_linear_gradient_cached(
       &self.gradient_pixmap_cache,
