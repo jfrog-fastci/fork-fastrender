@@ -1241,6 +1241,78 @@ fn dry_run_respects_diff_only_alias() {
 }
 
 #[test]
+fn dry_run_with_overlay_prints_deterministic_overlay_paths() {
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  write_fixture(&fixtures_root, "a");
+  write_fixture(&fixtures_root, "b");
+  let out_dir = temp.path().join("out");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "fixture-chrome-diff",
+      "--dry-run",
+      "--no-chrome",
+      "--no-fastrender",
+      "--overlay",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      // Provide fixtures out of order; output should still be deterministic.
+      "--fixtures",
+      "b,a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+      "--viewport",
+      "800x600",
+      "--dpr",
+      "2",
+      "--media",
+      "print",
+    ])
+    .output()
+    .expect("run fixture-chrome-diff --dry-run --overlay");
+
+  assert!(
+    output.status.success(),
+    "expected dry-run to succeed; stderr:\n{}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains(&format!("overlay: {}", out_dir.join("overlay").display())),
+    "plan should mention overlay dir; got:\n{stdout}"
+  );
+
+  let a_overlay = format!("--render-overlay {}", out_dir.join("overlay").join("a.png").display());
+  let b_overlay = format!("--render-overlay {}", out_dir.join("overlay").join("b.png").display());
+  let a_pos = stdout
+    .find(&a_overlay)
+    .unwrap_or_else(|| panic!("missing a overlay path in plan; stdout:\n{stdout}"));
+  let b_pos = stdout
+    .find(&b_overlay)
+    .unwrap_or_else(|| panic!("missing b overlay path in plan; stdout:\n{stdout}"));
+  assert!(
+    a_pos < b_pos,
+    "expected overlay commands to be printed in stem order (a then b); stdout:\n{stdout}"
+  );
+
+  assert!(
+    stdout.contains("--viewport 800x600"),
+    "inspect_frag overlay plan should include viewport; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("--dpr 2"),
+    "inspect_frag overlay plan should include dpr; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("--media print"),
+    "inspect_frag overlay plan should include media; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn no_chrome_fails_on_baseline_metadata_mismatch() {
   let temp = tempdir().expect("tempdir");
   let fixtures_root = temp.path().join("fixtures");
@@ -1406,6 +1478,50 @@ fn dry_run_rejects_out_dir_equal_to_fixtures_dir() {
 }
 
 #[test]
+fn no_build_with_overlay_requires_inspect_frag_executable() {
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  write_fixture(&fixtures_root, "a");
+  let out_dir = temp.path().join("out");
+
+  let target_dir = temp.path().join("target");
+  // Provide a stub diff_renders so we don't fail the existing --no-build validation first.
+  write_stub_diff_renders(&target_dir);
+
+  // Intentionally do *not* create a stub inspect_frag binary.
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--dry-run",
+      "--no-build",
+      "--overlay",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff with --no-build --overlay");
+
+  assert!(
+    !output.status.success(),
+    "expected fixture-chrome-diff to fail when --overlay is set but inspect_frag is missing.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("inspect_frag executable does not exist"),
+    "expected stderr to mention missing inspect_frag executable; got:\n{stderr}"
+  );
+}
+
+#[test]
 #[cfg(unix)]
 fn end_to_end_runs_with_stub_cargo_and_fake_chrome() {
   let temp = tempdir().expect("tempdir");
@@ -1437,9 +1553,9 @@ for arg in "$@"; do
   prev="$arg"
 done
 
-# The real `fixture-chrome-diff` builds the `diff_renders` binary and then executes it directly.
-# Emulate that by writing a stub `diff_renders` executable into the target dir when we see a
-# `cargo build --bin diff_renders` invocation.
+# The real `fixture-chrome-diff` builds the `diff_renders` + `inspect_frag` binaries and then
+# executes them directly. Emulate that by writing stub executables into the target dir when we see
+# corresponding `cargo build` invocations.
 if [ "$subcommand" = "build" ] && [ "$bin" = "diff_renders" ]; then
   out="${CARGO_TARGET_DIR:-target}"
   case "$out" in
@@ -1472,6 +1588,67 @@ mkdir -p "$(dirname "$html")/${stem}_files/diffs"
 echo "PNG" > "$(dirname "$html")/${stem}_files/diffs/stub.png"
 echo "1 differences over threshold" >&2
 exit 1
+SH
+  chmod +x "$out"
+  exit 0
+fi
+
+if [ "$subcommand" = "build" ] && [ "$bin" = "inspect_frag" ]; then
+  out="${CARGO_TARGET_DIR:-target}"
+  case "$out" in
+    /*) ;;
+    *) out="$(pwd)/$out" ;;
+  esac
+  out="$out/release/inspect_frag"
+  mkdir -p "$(dirname "$out")"
+  cat > "$out" <<'SH'
+#!/usr/bin/env sh
+set -eu
+
+expected_viewport="64x64"
+expected_media="screen"
+
+overlay=""
+viewport=""
+dpr=""
+media=""
+timeout=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --render-overlay) overlay="$2"; shift 2;;
+    --viewport) viewport="$2"; shift 2;;
+    --dpr) dpr="$2"; shift 2;;
+    --media) media="$2"; shift 2;;
+    --timeout) timeout="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+if [ -z "$overlay" ]; then
+  echo "inspect_frag stub: missing --render-overlay" >&2
+  exit 2
+fi
+if [ "$viewport" != "$expected_viewport" ]; then
+  echo "inspect_frag stub: expected --viewport $expected_viewport, got $viewport" >&2
+  exit 2
+fi
+if [ "$media" != "$expected_media" ]; then
+  echo "inspect_frag stub: expected --media $expected_media, got $media" >&2
+  exit 2
+fi
+if [ -z "$dpr" ]; then
+  echo "inspect_frag stub: missing --dpr" >&2
+  exit 2
+fi
+if [ -z "$timeout" ]; then
+  echo "inspect_frag stub: missing --timeout" >&2
+  exit 2
+fi
+
+mkdir -p "$(dirname "$overlay")"
+echo "PNG" > "$overlay"
+exit 0
 SH
   chmod +x "$out"
   exit 0
@@ -1575,6 +1752,7 @@ exit 0
       "64x64",
       "--dpr",
       "1",
+      "--overlay",
       "--tolerance",
       "0",
       "--max-diff-percent",
@@ -1601,6 +1779,14 @@ exit 0
   assert!(
     out_dir.join("chrome").join("a.png").is_file(),
     "missing chrome a.png"
+  );
+  assert!(
+    out_dir.join("overlay").join("a.png").is_file(),
+    "missing overlay a.png"
+  );
+  assert!(
+    out_dir.join("overlay").join("b.png").is_file(),
+    "missing overlay b.png"
   );
   assert!(
     out_dir.join("report_files").join("diffs").is_dir(),

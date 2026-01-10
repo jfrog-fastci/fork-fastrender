@@ -145,6 +145,12 @@ pub struct FixtureChromeDiffArgs {
   #[arg(long)]
   pub write_snapshot: bool,
 
+  /// Render debug overlay PNGs (fragment bounds) via `inspect_frag`.
+  ///
+  /// Overlays are written to `<out-dir>/overlay/<fixture>.png`.
+  #[arg(long)]
+  pub overlay: bool,
+
   /// Root directory to write output artifacts into.
   #[arg(long, value_name = "DIR", default_value = DEFAULT_OUT_DIR)]
   pub out_dir: PathBuf,
@@ -315,26 +321,15 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   }
   let diff_renders = build_diff_renders_command(&diff_renders_exe, &layout, &args)?;
 
-  if args.dry_run {
-    println!("fixture-chrome-diff plan:");
-    println!("  out_dir: {}", layout.root.display());
-    println!("  fastrender: {}", layout.fastrender.display());
-    println!("  chrome: {}", layout.chrome.display());
-    println!("  report: {}", layout.report_html.display());
-    println!("  json: {}", layout.report_json.display());
-    println!();
-
-    if let Some(cmd) = render_fixtures.as_ref() {
-      crate::print_command(cmd);
-    }
-    if let Some(cmd) = chrome_baseline.as_ref() {
-      crate::print_command(cmd);
-    }
-    crate::print_command(&diff_renders);
-    return Ok(());
+  let inspect_frag_exe = crate::inspect_frag_executable(&repo_root);
+  if args.overlay && args.no_build && !inspect_frag_exe.is_file() {
+    bail!(
+      "--no-build was set, but inspect_frag executable does not exist at {}",
+      inspect_frag_exe.display()
+    );
   }
 
-  let selected_fixture_stems = if args.no_chrome {
+  let selected_fixture_stems = if args.no_chrome || args.overlay {
     Some(discover_selected_fixture_stems(
       &fixtures_root,
       args.fixtures.as_deref(),
@@ -343,6 +338,43 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   } else {
     None
   };
+
+  if args.dry_run {
+    println!("fixture-chrome-diff plan:");
+    println!("  out_dir: {}", layout.root.display());
+    println!("  fastrender: {}", layout.fastrender.display());
+    println!("  chrome: {}", layout.chrome.display());
+    if args.overlay {
+      println!("  overlay: {}", layout.overlay.display());
+    }
+    println!("  report: {}", layout.report_html.display());
+    println!("  json: {}", layout.report_json.display());
+    println!();
+
+    if let Some(cmd) = render_fixtures.as_ref() {
+      crate::print_command(cmd);
+    }
+    if args.overlay {
+      let stems = selected_fixture_stems
+        .as_deref()
+        .context("internal error: missing selected fixture list for overlay")?;
+      for stem in stems {
+        crate::print_command(&build_inspect_frag_overlay_command(
+          &repo_root,
+          &inspect_frag_exe,
+          &fixtures_root,
+          &layout,
+          &args,
+          stem,
+        )?);
+      }
+    }
+    if let Some(cmd) = chrome_baseline.as_ref() {
+      crate::print_command(cmd);
+    }
+    crate::print_command(&diff_renders);
+    return Ok(());
+  }
 
   fs::create_dir_all(&layout.root).with_context(|| {
     format!(
@@ -377,12 +409,47 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   } else {
     clear_dir(&layout.fastrender).context("clear FastRender output dir")?;
   }
+  if args.overlay {
+    clear_dir(&layout.overlay).context("clear overlay output dir")?;
+  }
   remove_file_if_exists(&layout.report_html).context("clear existing report.html")?;
   remove_file_if_exists(&layout.report_json).context("clear existing report.json")?;
 
   if let Some(cmd) = render_fixtures {
     println!("Rendering fixtures with FastRender...");
     crate::run_command(cmd).context("render_fixtures failed")?;
+  }
+
+  if args.overlay {
+    if args.no_build {
+      println!("Skipping inspect_frag build (--no-build set)...");
+    } else {
+      let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
+      build_cmd
+        .arg("build")
+        .arg("--release")
+        .args(["--bin", "inspect_frag"])
+        .current_dir(&repo_root);
+      println!("Building inspect_frag...");
+      crate::run_command(build_cmd).context("build inspect_frag failed")?;
+    }
+
+    let stems = selected_fixture_stems
+      .as_deref()
+      .context("internal error: missing selected fixture list for overlay")?;
+    println!("Rendering debug overlays via inspect_frag...");
+    for stem in stems {
+      crate::run_command(build_inspect_frag_overlay_command(
+        &repo_root,
+        &inspect_frag_exe,
+        &fixtures_root,
+        &layout,
+        &args,
+        stem,
+      )?)
+      .with_context(|| format!("inspect_frag overlay failed for fixture '{stem}'"))?;
+    }
+    println!("Overlays written to {}", layout.overlay.display());
   }
 
   if let Some(cmd) = chrome_baseline {
@@ -1174,6 +1241,7 @@ struct Layout {
   root: PathBuf,
   fastrender: PathBuf,
   chrome: PathBuf,
+  overlay: PathBuf,
   report_html: PathBuf,
   report_json: PathBuf,
 }
@@ -1184,6 +1252,7 @@ impl Layout {
       root: root.to_path_buf(),
       fastrender: root.join("fastrender"),
       chrome: root.join("chrome"),
+      overlay: root.join("overlay"),
       report_html: root.join("report.html"),
       report_json: root.join("report.json"),
     }
@@ -1577,6 +1646,38 @@ fn build_chrome_baseline_command(
   if let Some((index, total)) = args.shard {
     cmd.arg("--shard").arg(format!("{index}/{total}"));
   }
+  cmd.current_dir(repo_root);
+  Ok(cmd)
+}
+
+fn build_inspect_frag_overlay_command(
+  repo_root: &Path,
+  inspect_frag_exe: &Path,
+  fixtures_root: &Path,
+  layout: &Layout,
+  args: &FixtureChromeDiffArgs,
+  stem: &str,
+) -> Result<Command> {
+  let fixture_html = fixtures_root.join(stem).join("index.html");
+  if !fixture_html.is_file() {
+    bail!(
+      "fixture does not exist: {stem}\nexpected fixture HTML at {}",
+      fixture_html.display()
+    );
+  }
+
+  let overlay_png = layout.overlay.join(format!("{stem}.png"));
+  let mut cmd = xtask::cmd::run_limited_command_default(repo_root);
+  cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
+  cmd.arg(inspect_frag_exe);
+  cmd.arg(fixture_html);
+  cmd.arg("--render-overlay").arg(overlay_png);
+  cmd
+    .arg("--viewport")
+    .arg(format!("{}x{}", args.viewport.0, args.viewport.1));
+  cmd.arg("--dpr").arg(args.dpr.to_string());
+  cmd.arg("--media").arg(args.media.as_cli_value());
+  cmd.arg("--timeout").arg(args.timeout.to_string());
   cmd.current_dir(repo_root);
   Ok(cmd)
 }

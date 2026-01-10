@@ -339,12 +339,14 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Typical usage:
   - `bash scripts/cargo_agent.sh xtask fixture-chrome-diff` (writes `target/fixture_chrome_diff/report.html` and prints the path)
   - Select fixtures: `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --fixtures grid_news,flex_dashboard`
+  - Also generate fragment overlays: `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --overlay --fixtures grid_news,flex_dashboard`
   - Re-run only the diff step (reuse the existing `<out>/chrome` renders; validated against current fixture inputs): `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --out-dir target/fixture_chrome_diff --no-chrome`
   - Re-run only the diff step (reuse both Chrome + FastRender renders): `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --out-dir target/fixture_chrome_diff --no-chrome --no-fastrender`
   - Shorthand for diff-only: `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --out-dir target/fixture_chrome_diff --diff-only`
 - Output layout:
   - `<out>/chrome/<fixture>.png` (+ `<fixture>.chrome.log`, `<fixture>.json` metadata)
   - `<out>/fastrender/<fixture>.png` (rendered by `render_fixtures`)
+  - `<out>/overlay/<fixture>.png` (when `--overlay` is enabled; rendered by `inspect_frag`)
   - `<out>/report.html`, `<out>/report.json`
 - Notes:
   - JavaScript is disabled by default (Chrome baseline uses an injected CSP, matching FastRender's no-JS model).
@@ -354,10 +356,10 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Core flags:
   - Selection: `--fixtures <csv>`, `--shard <index>/<total>`
   - Paths: `--fixtures-dir <dir>`, `--out-dir <dir>`
-  - Render params: `--viewport <WxH>`, `--dpr <float>`, `--timeout <secs>`, `--media {screen|print}`, `--jobs/-j <n>`, `--write-snapshot`, `--js {on|off}`
+  - Render params: `--viewport <WxH>`, `--dpr <float>`, `--timeout <secs>`, `--media {screen|print}`, `--jobs/-j <n>`, `--write-snapshot`, `--overlay`, `--js {on|off}`
   - Diff params: `--tolerance <u8>`, `--max-diff-percent <float>`, `--max-perceptual-distance <float>`, `--sort-by {pixel|percent|perceptual}`, `--ignore-alpha`, `--fail-on-differences`
   - Chrome: `--chrome <path>`, `--chrome-dir <dir>`, `--no-chrome`, `--require-chrome-metadata`, `--allow-stale-chrome-baselines`, `--no-fastrender`, `--diff-only`
-  - Build: `--no-build` (skip `bash scripts/cargo_agent.sh build --release --bin diff_renders`; reuse an existing binary)
+  - Build: `--no-build` (skip building `diff_renders`; also skips building `inspect_frag` when `--overlay` is set)
 
 ## `bash scripts/cargo_agent.sh xtask recapture-page-fixtures`
 
