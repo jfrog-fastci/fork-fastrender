@@ -11731,6 +11731,86 @@ mod tests {
   }
 
   #[test]
+  fn image_mime_sanity_rejects_text_html_content_type_for_jpg_url() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut resource = FetchedResource::new(
+        Vec::new(),
+        Some("text/html; charset=utf-8".to_string()),
+      );
+      resource.status = Some(200);
+      let url = "https://example.com/photo.jpg";
+      let err = ensure_image_mime_sane(&resource, url)
+        .expect_err("expected image MIME sanity check to reject HTML content-type");
+      assert!(
+        err.to_string().contains("unexpected content-type"),
+        "unexpected error: {err}"
+      );
+    });
+  }
+
+  #[test]
+  fn image_mime_sanity_rejects_text_plain_content_type_for_png_url() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut resource = FetchedResource::new(Vec::new(), Some("text/plain".to_string()));
+      resource.status = Some(200);
+      let url = "https://example.com/photo.png";
+      let err = ensure_image_mime_sane(&resource, url)
+        .expect_err("expected image MIME sanity check to reject text/plain content-type");
+      assert!(
+        err.to_string().contains("unexpected content-type"),
+        "unexpected error: {err}"
+      );
+    });
+  }
+
+  #[test]
+  fn image_mime_sanity_rejects_markup_bodies_when_content_type_is_missing() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut resource = FetchedResource::new(
+        b"<!doctype html><html><title>blocked</title></html>".to_vec(),
+        None,
+      );
+      resource.status = Some(200);
+      let url = "https://example.com/img";
+      let err = ensure_image_mime_sane(&resource, url)
+        .expect_err("expected markup payload to be rejected even without content-type");
+      assert!(
+        err.to_string().contains("unexpected markup"),
+        "unexpected error: {err}"
+      );
+    });
+  }
+
+  #[test]
+  fn image_mime_sanity_allows_text_html_for_svg_urls() {
+    // `.svg` (and `.html`) suffixes are exempt from the image MIME sanity check, because those URLs
+    // are commonly used as `<img>` sources even when the resource is actually a document.
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut resource = FetchedResource::new(Vec::new(), Some("text/html".to_string()));
+      resource.status = Some(200);
+      let url = "https://example.com/icon.svg";
+      ensure_image_mime_sane(&resource, url)
+        .expect("expected .svg URLs to be exempt from image MIME sanity checks");
+    });
+  }
+
+  #[test]
   fn font_mime_sanity_rejects_markup_bodies_for_font_urls() {
     let mut resource = FetchedResource::new(
       b"<!DOCTYPE html><html><title>blocked</title></html>".to_vec(),
