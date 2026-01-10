@@ -94,6 +94,8 @@ Use these `rg -n` commands to jump to the normative algorithms.
 
 * `merge existing and new import maps`:
   * `rg -n 'merge existing and new import maps' specs/whatwg-html/source`
+* `merge module specifier maps`:
+  * `rg -n 'merge module specifier maps' specs/whatwg-html/source`
 
 ### Resolution (imports-match helper implemented; full resolution not implemented yet)
 
