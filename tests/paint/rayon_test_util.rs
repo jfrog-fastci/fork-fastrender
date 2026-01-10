@@ -11,11 +11,12 @@ pub fn init_rayon_for_tests(num_threads: usize) {
   let num_threads = num_threads.max(1);
 
   INIT.call_once(|| {
-    // Set the env var too so any incidental global-pool initialization (inside dependencies) uses
-    // the same cap.
-    if !std::env::var_os("RAYON_NUM_THREADS").is_some_and(|value| !value.is_empty()) {
-      std::env::set_var("RAYON_NUM_THREADS", num_threads.to_string());
-    }
+    // Do not mutate process environment variables here.
+    //
+    // The Rust test harness runs tests in parallel by default, and `std::env::set_var` is not
+    // thread-safe with concurrent `std::env::*` access. Setting `RAYON_NUM_THREADS` could race with
+    // other tests (or FastRender initialization) that read environment variables, leading to flaky
+    // behavior.
     if let Err(err) = rayon::ThreadPoolBuilder::new()
       .num_threads(num_threads)
       .build_global()

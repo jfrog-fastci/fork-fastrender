@@ -3355,7 +3355,6 @@ fn serialize_svg_subtree(
           .iter()
           .any(|(name, _)| name.eq_ignore_ascii_case("xmlns:xlink"))
     );
-
   fn serialize_foreign_object_placeholder(
     styled: &StyledNode,
     attrs: &[(String, String)],

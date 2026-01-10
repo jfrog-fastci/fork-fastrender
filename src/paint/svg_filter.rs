@@ -614,6 +614,7 @@ impl SvgFilterRegion {
   }
 
   fn resolve_for_surface(&self, bbox: Rect, surface_origin_css: (f32, f32)) -> Rect {
+    let _ = surface_origin_css;
     let width_basis = bbox.width();
     let height_basis = bbox.height();
     match self.units {
@@ -628,19 +629,9 @@ impl SvgFilterRegion {
       }
       SvgFilterUnits::UserSpaceOnUse => {
         let units = SvgCoordinateUnits::UserSpaceOnUse;
-        let x = match self.x {
-          // Numbers are absolute user-space values. Convert to surface coordinates by shifting
-          // relative to the surface origin.
-          SvgLength::Number(v) => v - surface_origin_css.0,
-          other => bbox.min_x() + other.resolve(units, width_basis),
-        };
-        let y = match self.y {
-          SvgLength::Number(v) => v - surface_origin_css.1,
-          other => bbox.min_y() + other.resolve(units, height_basis),
-        };
         Rect::from_xywh(
-          x,
-          y,
+          bbox.min_x() + self.x.resolve(units, width_basis),
+          bbox.min_y() + self.y.resolve(units, height_basis),
           self.width.resolve(units, width_basis).max(0.0),
           self.height.resolve(units, height_basis).max(0.0),
         )
@@ -3710,16 +3701,10 @@ fn apply_svg_filter_scaled(
         SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
       };
       if let Some(x) = region_override.x {
-        css_prim_region.origin.x = match (region_override.units, x) {
-          (SvgFilterUnits::UserSpaceOnUse, SvgLength::Number(v)) => v - surface_origin_css.0,
-          _ => css_bbox.min_x() + x.resolve(units, css_bbox.width()),
-        };
+        css_prim_region.origin.x = css_bbox.min_x() + x.resolve(units, css_bbox.width());
       }
       if let Some(y) = region_override.y {
-        css_prim_region.origin.y = match (region_override.units, y) {
-          (SvgFilterUnits::UserSpaceOnUse, SvgLength::Number(v)) => v - surface_origin_css.1,
-          _ => css_bbox.min_y() + y.resolve(units, css_bbox.height()),
-        };
+        css_prim_region.origin.y = css_bbox.min_y() + y.resolve(units, css_bbox.height());
       }
       if let Some(width) = region_override.width {
         css_prim_region.size.width = width.resolve(units, css_bbox.width()).max(0.0);

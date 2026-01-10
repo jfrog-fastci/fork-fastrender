@@ -50,10 +50,11 @@ use super::compare::CompareConfig;
 use super::compare::ImageDiff;
 use super::compare::load_png_from_bytes;
 use fastrender::FastRender;
+use fastrender::FastRenderConfig;
+use fastrender::FontConfig;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Once;
 use std::time::Duration;
 use std::time::Instant;
 use tiny_skia::Pixmap;
@@ -291,19 +292,15 @@ pub struct RefTestHarness {
   config: RefTestConfig,
 }
 
-static SET_BUNDLED_FONTS: Once = Once::new();
-
-fn ensure_bundled_fonts() {
-  SET_BUNDLED_FONTS.call_once(|| {
-    // Keep reference renders deterministic across machines.
-    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-  });
-}
-
 impl RefTestHarness {
   fn deterministic_renderer() -> FastRender {
-    ensure_bundled_fonts();
-    FastRender::new().expect("Failed to create renderer")
+    // Keep reference renders deterministic across machines.
+    //
+    // Avoid mutating process environment variables (e.g. `FASTR_USE_BUNDLED_FONTS=1`) here because
+    // the Rust test harness runs tests in parallel and `std::env::set_var` is not thread-safe with
+    // concurrent environment access.
+    let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+    FastRender::with_config(config).expect("Failed to create renderer")
   }
 
   /// Creates a new reference test harness with default configuration

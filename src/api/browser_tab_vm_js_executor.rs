@@ -423,7 +423,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     update_time_bindings_clock(realm.heap(), clock).map_err(|err| Error::Other(err.to_string()))?;
     realm.reset_interrupt();
-
     let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
     let source_text = Arc::new(SourceText::new("<lifecycle>", Arc::from(source)));
     let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
