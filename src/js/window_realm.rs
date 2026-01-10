@@ -10491,6 +10491,8 @@ mod tests {
     )?;
 
     clock.set_now(Duration::from_millis(0));
+    assert_eq!(realm.exec_script("typeof Date === 'function'")?, Value::Bool(true));
+    assert_eq!(realm.exec_script("typeof Date.now === 'function'")?, Value::Bool(true));
     assert_eq!(
       realm.exec_script("performance.timeOrigin")?,
       Value::Number(web_time.time_origin_unix_ms as f64)

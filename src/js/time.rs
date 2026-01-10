@@ -136,8 +136,22 @@ pub fn install_time_bindings(
     scope.push_root(Value::Object(global))?;
 
     // --- Date.now() ---
-    let date = scope.alloc_object()?;
-    scope.push_root(Value::Object(date))?;
+    let date_key_s = scope.alloc_string("Date")?;
+    scope.push_root(Value::String(date_key_s))?;
+    let date_key = PropertyKey::from_string(date_key_s);
+    // Prefer patching the existing `%Date%` constructor installed by `vm-js` intrinsics rather
+    // than replacing it with a stub object. Many real pages construct `new Date()` or access other
+    // `Date.*` APIs; overriding the global binding would regress compatibility.
+    let date_obj = match vm.get(&mut scope, global, date_key)? {
+      Value::Object(obj) => obj,
+      _ => {
+        // Fall back to creating a minimal object if the realm doesn't provide `Date`.
+        let date = scope.alloc_object()?;
+        scope.push_root(Value::Object(date))?;
+        scope.define_property(global, date_key, global_data_desc(Value::Object(date)))?;
+        date
+      }
+    };
 
     let date_now_id = vm.register_native_call(date_now_native)?;
     let date_now_name = scope.alloc_string("now")?;
@@ -151,15 +165,10 @@ pub fn install_time_bindings(
     scope.push_root(Value::String(date_now_key_s))?;
     let date_now_key = PropertyKey::from_string(date_now_key_s);
     scope.define_property(
-      date,
+      date_obj,
       date_now_key,
       global_data_desc(Value::Object(date_now)),
     )?;
-
-    let date_key_s = scope.alloc_string("Date")?;
-    scope.push_root(Value::String(date_key_s))?;
-    let date_key = PropertyKey::from_string(date_key_s);
-    scope.define_property(global, date_key, global_data_desc(Value::Object(date)))?;
 
     // --- performance.now() ---
     let performance = scope.alloc_object()?;
