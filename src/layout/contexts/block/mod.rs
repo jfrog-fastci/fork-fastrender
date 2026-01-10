@@ -4865,10 +4865,14 @@ impl BlockFormattingContext {
         inline_fragment.bounds.height(),
       );
 
-      let has_line_boxes = inline_fragment
-        .children
-        .iter()
-        .any(|child| matches!(child.content, FragmentContent::Line { .. }));
+      let mut line_boxes_bottom: f32 = 0.0;
+      let mut has_line_boxes = false;
+      for child in inline_fragment.children.iter() {
+        if matches!(child.content, FragmentContent::Line { .. }) {
+          has_line_boxes = true;
+          line_boxes_bottom = line_boxes_bottom.max(child.bounds.max_y());
+        }
+      }
 
       if has_line_boxes {
         // Line boxes terminate any margin collapsing chain above them.
@@ -4876,7 +4880,10 @@ impl BlockFormattingContext {
         *current_y += applied_margin;
 
         *content_height = content_height.max(inline_fragment.bounds.max_y());
-        *current_y += inline_fragment.bounds.height();
+        // Inline formatting contexts can contain floats. Floats are out-of-flow and must not
+        // advance the block flow cursor; only the in-flow line boxes do. Still, the parent block's
+        // content height should account for floats (handled above via `inline_fragment.bounds.max_y()`).
+        *current_y += line_boxes_bottom;
         fragments.push(inline_fragment);
       } else if !inline_fragment.children.is_empty() {
         // Floats, positioned descendants, and other out-of-flow contributions may still need to
@@ -5319,10 +5326,19 @@ impl BlockFormattingContext {
         continue;
       }
 
-      // Floats are taken out of flow but still participate in this BFC's float context
+      // Floats are taken out of flow but still participate in this BFC's float context.
+      //
+      // Inline-level floats (e.g. `display:inline-block; float:right`) must be handled by the
+      // inline formatting context so they can be positioned relative to the current line box. If
+      // we flush the inline buffer and place the float as a standalone block-level float here, it
+      // is forced below any already-laid-out line boxes and cannot share the first line.
       if child.style.float.is_floating()
         && !matches!(child.style.position, Position::Absolute | Position::Fixed)
       {
+        if child.is_inline_level() {
+          inline_buffer.push(child.clone());
+          continue;
+        }
         flush_inline_buffer(
           &mut inline_buffer,
           &mut fragments,

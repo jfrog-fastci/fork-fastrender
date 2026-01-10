@@ -11066,6 +11066,38 @@ impl InlineFormattingContext {
       shape,
     );
     let bottom_rel = fy + float_height - float_base_y;
+    if float_node.style.position.is_relative() {
+      // Inline layout operates in physical coordinates, so apply relative positioning as a pure
+      // paint-time offset without mutating the float context placement (CSS 2.1 §9.3.2).
+      //
+      // Percentage offsets resolve against the containing block's physical width/height. The
+      // `containing_block_size` parameter is expressed in the inline/block axes, so map it back
+      // into physical coordinates before constructing the positioned containing block.
+      let (physical_width, physical_height) =
+        if crate::style::inline_axis_is_horizontal(writing_mode) {
+          (containing_block_size.width, containing_block_size.height)
+        } else {
+          (containing_block_size.height, containing_block_size.width)
+        };
+      let physical_width = physical_width.max(0.0);
+      let physical_height = physical_height.max(0.0);
+      let relative_cb = ContainingBlock::with_viewport_and_bases(
+        Rect::new(Point::ZERO, Size::new(physical_width, physical_height)),
+        self.viewport_size,
+        physical_width.is_finite().then_some(physical_width),
+        physical_height.is_finite().then_some(physical_height),
+      );
+      let positioned_style =
+        resolve_positioned_style(&float_node.style, &relative_cb, self.viewport_size, &self.font_context);
+      let offset = crate::layout::contexts::positioned::compute_relative_offset(
+        &positioned_style,
+        &relative_cb,
+        &self.font_context,
+      );
+      if offset != Point::ZERO {
+        fragment.translate_root_in_place(offset);
+      }
+    }
     Ok((fragment, fy, bottom_rel))
   }
 

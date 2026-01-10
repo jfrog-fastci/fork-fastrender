@@ -191,6 +191,7 @@ mod grid_track_sizing_intrinsics;
 mod grid_writing_mode_in_block;
 mod image_percent_height_missing_uses_alt_intrinsic;
 mod inline_max_content_accumulates;
+mod inline_float_after_inline_content;
 mod inline_float_min_width;
 mod inline_float_in_inline_box;
 mod inline_intrinsic_max_content_text_items;
