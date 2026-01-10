@@ -3820,6 +3820,35 @@ impl BlockFormattingContext {
         has_in_flow_content = true;
         break;
       }
+
+      // Block formatting context roots (e.g. `overflow:hidden` clearfix containers) include floats
+      // in their used block size. Even though floats are out of normal flow, their presence means
+      // the box is not "empty" for the purposes of collapsing margins through it (CSS 2.1 §8.3.1).
+      //
+      // Without this, float-only BFC roots can be misclassified as collapsible-through, allowing
+      // later sibling margins to collapse all the way out of ancestors. This is visible on pages
+      // like sqlite.org where a float-based header incorrectly collapses away and lets the first
+      // paragraph's `margin-top` shift the entire body down by a line-height.
+      if !has_in_flow_content && establishes_bfc(style) {
+        // Consider only in-flow floats: skip out-of-flow positioned subtrees.
+        let mut stack: Vec<&BoxNode> = node.children.iter().collect();
+        while let Some(desc) = stack.pop() {
+          if desc.style.running_position.is_some()
+            || matches!(desc.style.position, Position::Absolute | Position::Fixed)
+          {
+            continue;
+          }
+          if desc.style.float.is_floating()
+            && matches!(desc.style.position, Position::Static | Position::Relative)
+          {
+            has_in_flow_content = true;
+            break;
+          }
+          for child in &desc.children {
+            stack.push(child);
+          }
+        }
+      }
     }
 
     let collapsible_through = !has_in_flow_content && is_margin_collapsible_through(style);

@@ -891,6 +891,65 @@ fn aspect_ratio_prevents_collapse_through_empty_blocks() {
 }
 
 #[test]
+fn overflow_bfc_with_floats_prevents_collapse_through() {
+  // Regression: block formatting context roots that "self-clear" floats (e.g. `overflow:hidden`)
+  // have a non-zero used height and must not be treated as collapsible-through for margin
+  // collapsing (CSS 2.1 §8.3.1).
+  //
+  // This matches patterns like sqlite.org's header navigation: if we incorrectly treat the float
+  // container as collapsible-through, the first real block's top margin can collapse all the way
+  // out of the body, shifting the entire page down by a line-height.
+  let mut float_style = block_style_with_height(Some(10.0));
+  float_style.width = Some(Length::px(10.0));
+  float_style.width_keyword = None;
+  float_style.float = Float::Left;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let mut bfc_style = block_style_with_height(None);
+  bfc_style.overflow_x = Overflow::Hidden;
+  bfc_style.overflow_y = Overflow::Hidden;
+  let bfc_container = BoxNode::new_block(
+    Arc::new(bfc_style),
+    FormattingContextType::Block,
+    vec![float_box],
+  );
+
+  let mut following_style = block_style_with_height(Some(10.0));
+  following_style.margin_top = Some(Length::px(20.0));
+  let following =
+    BoxNode::new_block(Arc::new(following_style), FormattingContextType::Block, vec![]);
+
+  let mut body_style = ComputedStyle::default();
+  body_style.display = Display::Block;
+  let mut body = BoxNode::new_block(
+    Arc::new(body_style),
+    FormattingContextType::Block,
+    vec![bfc_container, following],
+  );
+  body.id = 2;
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+  let mut root =
+    BoxNode::new_block(Arc::new(root_style), FormattingContextType::Block, vec![body]);
+  // Root element margins never collapse with children; mimic the real HTML root.
+  root.id = 1;
+
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let body_fragment = &fragment.children[0];
+  assert_approx(
+    body_fragment.bounds.y(),
+    0.0,
+    "expected float-containing BFC roots to prevent margin collapsing through earlier siblings",
+  );
+}
+
+#[test]
 fn clearance_breaks_margin_collapse() {
   // A left float tall enough to overlap the next in-flow block.
   let mut float_style = block_style_with_height(Some(50.0));
