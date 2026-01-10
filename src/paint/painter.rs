@@ -6284,6 +6284,93 @@ impl Painter {
       }
     }
 
+    // For solid borders with square corners, the CSS border area is composed of trapezoids /
+    // triangles meeting at diagonal miters. Stroking each edge produces rectangles, which is
+    // incorrect when border widths/colors differ (e.g. CSS border triangles using transparent
+    // borders).
+    if radii.is_zero()
+      && gap.is_none()
+      && matches!(
+        style.border_top_style,
+        CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden
+      )
+      && matches!(
+        style.border_right_style,
+        CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden
+      )
+      && matches!(
+        style.border_bottom_style,
+        CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden
+      )
+      && matches!(
+        style.border_left_style,
+        CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden
+      )
+    {
+      let eps = 1e-6;
+      let uniform_solid = matches!(
+        (
+          style.border_top_style,
+          style.border_right_style,
+          style.border_bottom_style,
+          style.border_left_style
+        ),
+        (
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid
+        )
+      ) && (top - right).abs() <= eps
+        && (top - bottom).abs() <= eps
+        && (top - left).abs() <= eps
+        && style.border_top_color == style.border_right_color
+        && style.border_top_color == style.border_bottom_color
+        && style.border_top_color == style.border_left_color;
+
+      if !uniform_solid {
+        let widths = crate::paint::rasterize::BorderWidths {
+          top: if style.border_top_style == CssBorderStyle::Solid {
+            top
+          } else {
+            0.0
+          },
+          right: if style.border_right_style == CssBorderStyle::Solid {
+            right
+          } else {
+            0.0
+          },
+          bottom: if style.border_bottom_style == CssBorderStyle::Solid {
+            bottom
+          } else {
+            0.0
+          },
+          left: if style.border_left_style == CssBorderStyle::Solid {
+            left
+          } else {
+            0.0
+          },
+        };
+        let colors = crate::paint::rasterize::BorderColors {
+          top: style.border_top_color,
+          right: style.border_right_color,
+          bottom: style.border_bottom_color,
+          left: style.border_left_color,
+        };
+        crate::paint::rasterize::render_borders(
+          &mut self.pixmap,
+          x,
+          y,
+          width,
+          height,
+          &widths,
+          &colors,
+          &radii,
+        );
+        return;
+      }
+    }
+
     // Center strokes on the border edges so paint remains within the border box.
     let top_center = y + top * 0.5;
     let bottom_center = y + height - bottom * 0.5;

@@ -6405,6 +6405,165 @@ impl DisplayListRenderer {
       }
     }
 
+    // For solid borders with square corners, CSS border geometry is a set of trapezoids/triangles
+    // meeting at diagonal miters. Stroking each edge paints rectangles, which is incorrect when
+    // border widths/colors differ (e.g. CSS border triangles that rely on transparent borders).
+    if !radii.has_radius()
+      && item.image.is_none()
+      && gap.is_none()
+      && matches!(top.style, CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden)
+      && matches!(
+        right.style,
+        CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden
+      )
+      && matches!(
+        bottom.style,
+        CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden
+      )
+      && matches!(
+        left.style,
+        CssBorderStyle::Solid | CssBorderStyle::None | CssBorderStyle::Hidden
+      )
+    {
+      let eps = 1e-6;
+      let uniform_solid = matches!(
+        (top.style, right.style, bottom.style, left.style),
+        (
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid,
+          CssBorderStyle::Solid
+        )
+      ) && (top.width - right.width).abs() <= eps
+        && (top.width - bottom.width).abs() <= eps
+        && (top.width - left.width).abs() <= eps
+        && top.color == right.color
+        && top.color == bottom.color
+        && top.color == left.color;
+
+      // Keep the existing edge-stroke code path for the common uniform case to avoid introducing
+      // seams along the diagonal miter split when all sides are identical.
+      if !uniform_solid && rect.width() > 0.0 && rect.height() > 0.0 {
+        let top_w = if top.style == CssBorderStyle::Solid {
+          top.width
+        } else {
+          0.0
+        };
+        let right_w = if right.style == CssBorderStyle::Solid {
+          right.width
+        } else {
+          0.0
+        };
+        let bottom_w = if bottom.style == CssBorderStyle::Solid {
+          bottom.width
+        } else {
+          0.0
+        };
+        let left_w = if left.style == CssBorderStyle::Solid {
+          left.width
+        } else {
+          0.0
+        };
+
+        let x0 = rect.x();
+        let y0 = rect.y();
+        let x1 = x0 + rect.width();
+        let y1 = y0 + rect.height();
+
+        let mut inner_left = (x0 + left_w).min(x1);
+        let mut inner_right = (x1 - right_w).max(x0);
+        if inner_right < inner_left {
+          let mid = (inner_left + inner_right) * 0.5;
+          inner_left = mid;
+          inner_right = mid;
+        }
+        let mut inner_top = (y0 + top_w).min(y1);
+        let mut inner_bottom = (y1 - bottom_w).max(y0);
+        if inner_bottom < inner_top {
+          let mid = (inner_top + inner_bottom) * 0.5;
+          inner_top = mid;
+          inner_bottom = mid;
+        }
+
+        let clip = self.canvas.clip_mask_rc();
+        let mut paint = tiny_skia::Paint::default();
+        paint.blend_mode = blend_mode;
+        paint.anti_alias = true;
+
+        let mut fill_quad = |pts: [(f32, f32); 4], color: &Rgba| {
+          if color.is_transparent() {
+            return;
+          }
+          let mut pb = PathBuilder::new();
+          pb.move_to(pts[0].0, pts[0].1);
+          pb.line_to(pts[1].0, pts[1].1);
+          pb.line_to(pts[2].0, pts[2].1);
+          pb.line_to(pts[3].0, pts[3].1);
+          pb.close();
+          let Some(path) = pb.finish() else {
+            return;
+          };
+          set_paint_color(&mut paint, color, opacity);
+          self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+            pixmap.fill_path(
+              &path,
+              &paint,
+              tiny_skia::FillRule::Winding,
+              transform,
+              clip.as_deref(),
+            );
+          });
+        };
+
+        if top_w > 0.0 && top.style == CssBorderStyle::Solid {
+          fill_quad(
+            [
+              (x0, y0),
+              (x1, y0),
+              (inner_right, inner_top),
+              (inner_left, inner_top),
+            ],
+            &top.color,
+          );
+        }
+        if right_w > 0.0 && right.style == CssBorderStyle::Solid {
+          fill_quad(
+            [
+              (x1, y0),
+              (x1, y1),
+              (inner_right, inner_bottom),
+              (inner_right, inner_top),
+            ],
+            &right.color,
+          );
+        }
+        if bottom_w > 0.0 && bottom.style == CssBorderStyle::Solid {
+          fill_quad(
+            [
+              (x0, y1),
+              (x1, y1),
+              (inner_right, inner_bottom),
+              (inner_left, inner_bottom),
+            ],
+            &bottom.color,
+          );
+        }
+        if left_w > 0.0 && left.style == CssBorderStyle::Solid {
+          fill_quad(
+            [
+              (x0, y0),
+              (x0, y1),
+              (inner_left, inner_bottom),
+              (inner_left, inner_top),
+            ],
+            &left.color,
+          );
+        }
+
+        return Ok(());
+      }
+    }
+
     // Dotted borders use round caps, which can extend outside the border box. Clip to the border
     // rect (and any corner radii) so the stroke stays within the border box.
     let wants_stroke_clip = matches!(
