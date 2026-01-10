@@ -3649,14 +3649,7 @@ fn serialize_svg_subtree(
         continue;
       };
       let mut serialized = String::new();
-      serialize_svg_mask_subtree_with_namespaces(
-        entry.node,
-        entry.namespaces.as_slice(),
-        None,
-        None,
-        true,
-        &mut serialized,
-      );
+      serialize_node_with_namespaces(entry.node, entry.namespaces.as_slice(), &mut serialized);
       defs.push_str(&serialized);
     }
     defs.push_str("</defs>");
