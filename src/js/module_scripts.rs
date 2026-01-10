@@ -12,6 +12,7 @@
 //! single module instance and cycles do not recurse infinitely.
 
 use crate::error::{Error, Result};
+use crate::js::import_maps::ImportMapState;
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::resource::ResourceFetcher;
 
@@ -56,7 +57,12 @@ impl ModuleGraphLoader {
 
   /// Build a classic-script bundle for an external module entry point.
   pub fn build_bundle_for_url(&mut self, entry_url: &str, max_module_bytes: usize) -> Result<String> {
-    self.load_external_module(entry_url, max_module_bytes)?;
+    // Preserve historical behavior: bare specifiers are rejected unless import maps are explicitly
+    // supplied via `build_bundle_for_url_with_import_maps`.
+    let mut resolver = |specifier: &str, base_url: &str| {
+      resolve_module_specifier_without_import_maps(specifier, base_url)
+    };
+    self.load_external_module(&mut resolver, entry_url, max_module_bytes)?;
     self.emit_bundle(entry_url)
   }
 
@@ -79,7 +85,52 @@ impl ModuleGraphLoader {
       )));
     }
 
-    self.load_inline_module(inline_id, base_url, source, max_module_bytes)?;
+    let mut resolver = |specifier: &str, base_url: &str| {
+      resolve_module_specifier_without_import_maps(specifier, base_url)
+    };
+    self.load_inline_module(&mut resolver, inline_id, base_url, source, max_module_bytes)?;
+    self.emit_bundle(inline_id)
+  }
+
+  /// Build a classic-script bundle for an external module entry point using WHATWG HTML import maps.
+  pub fn build_bundle_for_url_with_import_maps(
+    &mut self,
+    import_map_state: &mut ImportMapState,
+    entry_url: &str,
+    max_module_bytes: usize,
+  ) -> Result<String> {
+    {
+      let mut resolver = |specifier: &str, base_url: &str| {
+        resolve_module_specifier_with_import_maps(import_map_state, specifier, base_url)
+      };
+      self.load_external_module(&mut resolver, entry_url, max_module_bytes)?;
+    }
+    self.emit_bundle(entry_url)
+  }
+
+  /// Build a classic-script bundle for an inline module entry point using WHATWG HTML import maps.
+  pub fn build_bundle_for_inline_with_import_maps(
+    &mut self,
+    import_map_state: &mut ImportMapState,
+    inline_id: &str,
+    base_url: &str,
+    source: &str,
+    max_module_bytes: usize,
+  ) -> Result<String> {
+    if source.as_bytes().len() > max_module_bytes {
+      return Err(Error::Other(format!(
+        "inline module is too large ({} bytes > max {})",
+        source.as_bytes().len(),
+        max_module_bytes
+      )));
+    }
+
+    {
+      let mut resolver = |specifier: &str, base_url: &str| {
+        resolve_module_specifier_with_import_maps(import_map_state, specifier, base_url)
+      };
+      self.load_inline_module(&mut resolver, inline_id, base_url, source, max_module_bytes)?;
+    }
     self.emit_bundle(inline_id)
   }
 
@@ -131,6 +182,7 @@ impl ModuleGraphLoader {
 
   fn load_inline_module(
     &mut self,
+    resolver: &mut impl FnMut(&str, &str) -> Result<String>,
     inline_id: &str,
     base_url: &str,
     source: &str,
@@ -147,9 +199,9 @@ impl ModuleGraphLoader {
       .cache
       .insert(inline_id.to_string(), CachedModule::Loading);
     let result = (|| {
-      let transform = transform_module_source(inline_id, base_url, source)?;
+      let transform = transform_module_source(inline_id, base_url, source, resolver)?;
       for dep in &transform.dependencies {
-        self.load_external_module(dep, max_module_bytes)?;
+        self.load_external_module(resolver, dep, max_module_bytes)?;
       }
       self.cache.insert(
         inline_id.to_string(),
@@ -167,7 +219,12 @@ impl ModuleGraphLoader {
     result
   }
 
-  fn load_external_module(&mut self, url: &str, max_module_bytes: usize) -> Result<()> {
+  fn load_external_module(
+    &mut self,
+    resolver: &mut impl FnMut(&str, &str) -> Result<String>,
+    url: &str,
+    max_module_bytes: usize,
+  ) -> Result<()> {
     if let Some(existing) = self.cache.get(url) {
       match existing {
         CachedModule::Loading => return Ok(()),
@@ -189,9 +246,9 @@ impl ModuleGraphLoader {
         Error::Other(format!("module {url} response was not valid UTF-8: {err}"))
       })?;
 
-      let transform = transform_module_source(url, url, &source)?;
+      let transform = transform_module_source(url, url, &source, resolver)?;
       for dep in &transform.dependencies {
-        self.load_external_module(dep, max_module_bytes)?;
+        self.load_external_module(resolver, dep, max_module_bytes)?;
       }
       self.cache.insert(
         url.to_string(),
@@ -239,12 +296,12 @@ fn js_string_literal(value: &str) -> Result<String> {
   serde_json::to_string(value).map_err(|err| Error::Other(format!("failed to encode JS string: {err}")))
 }
 
-fn resolve_module_specifier(specifier: &str, base_url: &str) -> Result<String> {
+fn resolve_module_specifier_without_import_maps(specifier: &str, base_url: &str) -> Result<String> {
   // HTML's "resolve a module specifier" algorithm treats bare specifiers (those not starting with
   // `/`, `./`, or `../` and not parseable as an absolute URL) as failures unless import maps are
   // present. FastRender implements import map parsing/merging/resolution in `src/js/import_maps/`,
-  // but that state is not yet integrated into this minimal host-side module graph loader, so reject
-  // bare specifiers here.
+  // but callers must supply that state explicitly when bundling via
+  // `ModuleGraphLoader::build_bundle_for_*_with_import_maps`.
   let allowed_relative = specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../");
   if allowed_relative {
     return resolve_url(specifier, Some(base_url)).map_err(|err| Error::Other(format!("{err}")));
@@ -253,10 +310,22 @@ fn resolve_module_specifier(specifier: &str, base_url: &str) -> Result<String> {
   match resolve_url(specifier, None) {
     Ok(abs) => Ok(abs),
     Err(UrlResolveError::RelativeUrlWithoutBase) => Err(Error::Other(format!(
-      "unsupported bare module specifier {specifier:?} (import maps not wired into ModuleGraphLoader yet)"
+      "unsupported bare module specifier {specifier:?} (supply import maps via ModuleGraphLoader::build_bundle_for_*_with_import_maps)"
     ))),
     Err(err) => Err(Error::Other(format!("{err}"))),
   }
+}
+
+fn resolve_module_specifier_with_import_maps(
+  state: &mut ImportMapState,
+  specifier: &str,
+  base_url: &str,
+) -> Result<String> {
+  let base_url = url::Url::parse(base_url)
+    .map_err(|err| Error::Other(format!("invalid module base URL {base_url:?}: {err}")))?;
+  super::import_maps::resolve_module_specifier(state, specifier, &base_url)
+    .map(|url| url.to_string())
+    .map_err(|err| Error::Other(err.to_string()))
 }
 
 #[derive(Debug)]
@@ -265,7 +334,12 @@ struct TransformOutput {
   dependencies: Vec<String>,
 }
 
-fn transform_module_source(module_id: &str, base_url: &str, source: &str) -> Result<TransformOutput> {
+fn transform_module_source(
+  module_id: &str,
+  base_url: &str,
+  source: &str,
+  resolve_specifier: &mut impl FnMut(&str, &str) -> Result<String>,
+) -> Result<TransformOutput> {
   let opts = ParseOptions {
     dialect: Dialect::Ecma,
     source_type: SourceType::Module,
@@ -287,7 +361,7 @@ fn transform_module_source(module_id: &str, base_url: &str, source: &str) -> Res
           replacements.push((stmt.loc.0, stmt.loc.1, "\n".to_string()));
           continue;
         }
-        let dep = resolve_module_specifier(&import.module, base_url)?;
+        let dep = resolve_specifier(&import.module, base_url)?;
         deps.push(dep.clone());
         hoisted.push_str(&emit_import_binding(import, &dep, &mut temp_idx)?);
         hoisted.push('\n');
@@ -303,7 +377,7 @@ fn transform_module_source(module_id: &str, base_url: &str, source: &str) -> Res
 
         if let Some(from) = export.from.as_deref() {
           // `export ... from "..."` behaves like a hoisted import.
-          let dep = resolve_module_specifier(from, base_url)?;
+          let dep = resolve_specifier(from, base_url)?;
           deps.push(dep.clone());
           hoisted.push_str(&emit_export_from(export, &dep, &mut temp_idx)?);
           hoisted.push('\n');
@@ -676,6 +750,8 @@ fn collect_pat_idents(pat: &Node<Pat>, out: &mut Vec<String>) -> Result<()> {
 mod tests {
   use super::*;
   use crate::resource::FetchedResource;
+  use crate::js::import_maps::{create_import_map_parse_result, register_import_map};
+  use url::Url;
   use std::collections::HashMap;
   use std::sync::Mutex;
 
@@ -720,17 +796,39 @@ mod tests {
 
   #[test]
   fn resolves_relative_module_specifier_against_base_url() {
-    let resolved = resolve_module_specifier("./dep.js", "https://example.com/dir/main.js").unwrap();
+    let resolved = resolve_module_specifier_without_import_maps("./dep.js", "https://example.com/dir/main.js").unwrap();
     assert_eq!(resolved, "https://example.com/dir/dep.js");
   }
 
   #[test]
   fn rejects_bare_specifiers_without_import_maps() {
-    let err = resolve_module_specifier("react", "https://example.com/dir/main.js").unwrap_err();
+    let err = resolve_module_specifier_without_import_maps("react", "https://example.com/dir/main.js").unwrap_err();
     assert!(
       err.to_string().contains("bare module specifier"),
       "got: {err}"
     );
+  }
+
+  #[test]
+  fn resolves_bare_specifiers_via_import_maps() {
+    let fetcher = Arc::new(MapFetcher::default());
+    fetcher.insert(
+      "https://example.com/main.js",
+      r#"import React from "react"; globalThis.__react_default = React;"#,
+    );
+    fetcher.insert("https://example.com/vendor/react.js", r#"export default 123;"#);
+
+    let base_url = Url::parse("https://example.com/index.html").unwrap();
+    let parse_result = create_import_map_parse_result(r#"{ "imports": { "react": "/vendor/react.js" } }"#, &base_url);
+    let mut state = ImportMapState::default();
+    register_import_map(&mut state, parse_result).unwrap();
+
+    let mut loader = ModuleGraphLoader::new(fetcher.clone());
+    let _bundle = loader
+      .build_bundle_for_url_with_import_maps(&mut state, "https://example.com/main.js", 1024 * 1024)
+      .unwrap();
+
+    assert_eq!(fetcher.count("https://example.com/vendor/react.js"), 1);
   }
 
   #[test]
