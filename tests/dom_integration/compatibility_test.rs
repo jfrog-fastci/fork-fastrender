@@ -3,6 +3,8 @@ use fastrender::dom::{
   DomNode, DomNodeType, DomParseOptions, SlotAssignment,
 };
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 
 fn find_element<'a>(node: &'a DomNode, tag: &str) -> Option<&'a DomNode> {
   if matches!(node.tag_name(), Some(t) if t.eq_ignore_ascii_case(tag)) {
@@ -232,6 +234,50 @@ fn compatibility_mode_preserves_shadow_slot_distribution() {
   );
   assert_eq!(standard_named, vec!["named".to_string()]);
   assert_eq!(standard_default, vec!["default".to_string()]);
+}
+
+#[test]
+fn compatibility_mode_lifts_data_default_src_images() {
+  let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join("tests/pages/fixtures/dom_compat_lazy_data_attr_matrix");
+  let html_path = fixture_dir.join("index.html");
+  let html = fs::read_to_string(&html_path).expect("read fixture HTML");
+
+  let standard_dom = parse_html(&html).expect("parse standard DOM");
+  let compat_dom =
+    parse_html_with_options(&html, DomParseOptions::compatibility()).expect("parse compat DOM");
+
+  let standard_default_src = find_by_id(&standard_dom, "default-src")
+    .expect("standard img#default-src")
+    .get_attribute_ref("src")
+    .unwrap_or("");
+  assert!(
+    standard_default_src.starts_with("data:image/gif"),
+    "expected standard img#default-src to keep placeholder; got {standard_default_src:?}"
+  );
+  let compat_default_src = find_by_id(&compat_dom, "default-src")
+    .expect("compat img#default-src")
+    .get_attribute_ref("src")
+    .unwrap_or("");
+  assert_eq!(compat_default_src, "red.svg");
+
+  let compat_priority_src = find_by_id(&compat_dom, "data-src-priority")
+    .expect("compat img#data-src-priority")
+    .get_attribute_ref("src")
+    .unwrap_or("");
+  assert_eq!(
+    compat_priority_src, "blue.svg",
+    "expected `data-src` to remain higher priority than `data-default-src`"
+  );
+
+  let compat_authored_src = find_by_id(&compat_dom, "authored-src")
+    .expect("compat img#authored-src")
+    .get_attribute_ref("src")
+    .unwrap_or("");
+  assert_eq!(
+    compat_authored_src, "blue.svg",
+    "expected compat mode to preserve non-placeholder authored src"
+  );
 }
 
 #[test]

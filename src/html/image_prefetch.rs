@@ -71,17 +71,6 @@ pub struct ImagePrefetchRequestDiscovery {
 
 const WIDTH_DESCRIPTOR_SECONDARY_SLOT_SCALE: f32 = 0.75;
 
-const IMG_SRC_DATA_ATTR_FALLBACKS: [&str; 5] = [
-  "data-src",
-  "data-lazy-src",
-  "data-original",
-  "data-original-src",
-  "data-gl-src",
-];
-
-const IMG_SRCSET_DATA_ATTR_FALLBACKS: [&str; 3] =
-  ["data-srcset", "data-lazy-srcset", "data-gl-srcset"];
-
 fn trim_ascii_whitespace(value: &str) -> &str {
   // HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
@@ -112,8 +101,7 @@ fn get_img_src_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
     }
   }
 
-  get_first_non_placeholder_attr(node, &IMG_SRC_DATA_ATTR_FALLBACKS)
-    .or_else(|| get_first_non_placeholder_attr(node, &COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES))
+  get_first_non_placeholder_attr(node, &COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES)
 }
 
 fn get_img_srcset_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
@@ -123,8 +111,7 @@ fn get_img_srcset_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
     }
   }
 
-  get_first_non_empty_attr(node, &IMG_SRCSET_DATA_ATTR_FALLBACKS)
-    .or_else(|| get_first_non_empty_attr(node, &COMPAT_IMG_SRCSET_DATA_ATTR_CANDIDATES))
+  get_first_non_empty_attr(node, &COMPAT_IMG_SRCSET_DATA_ATTR_CANDIDATES)
 }
 
 fn get_source_srcset_attr<'a>(node: &'a DomNode) -> Option<&'a str> {
