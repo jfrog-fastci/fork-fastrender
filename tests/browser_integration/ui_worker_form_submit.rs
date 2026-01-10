@@ -239,6 +239,201 @@ fn enter_in_text_input_navigates_to_get_form_submission_url() {
   join.join().expect("worker join");
 }
 
+#[test]
+fn submit_prevent_default_blocks_click_submit_navigation() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let next_url = site.write(
+    "result.html",
+    r#"<!doctype html>
+<html><body>next</body></html>
+"#,
+  );
+  let page_url = site.write(
+    "page.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #submit { position: absolute; left: 0; top: 0; width: 120px; height: 40px; }
+      #q { position: absolute; left: 0; top: 60px; width: 120px; height: 24px; }
+    </style>
+  </head>
+  <body>
+    <form id="f" action="result.html">
+      <input id="q" name="q" value="a b">
+      <input id="submit" type="submit" value="Go">
+    </form>
+    <script>
+      document.getElementById("f").addEventListener("submit", function (ev) { ev.preventDefault(); });
+    </script>
+  </body>
+</html>
+"#,
+  );
+
+  let handle = spawn_ui_worker("fastr-ui-worker-form-submit-prevent-default").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId::new();
+
+  ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("create tab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (240, 160), 1.0))
+    .expect("viewport");
+  ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      page_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("navigate");
+
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
+    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
+
+  // Click submit. The JS `submit` listener prevents default, so no navigation should occur.
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer down");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer up");
+
+  let msgs = support::drain_for(&ui_rx, Duration::from_millis(500));
+  assert!(
+    !msgs.iter().any(|msg| {
+      matches!(
+        msg,
+        WorkerToUi::NavigationStarted { .. }
+          | WorkerToUi::NavigationCommitted { .. }
+          | WorkerToUi::NavigationFailed { .. }
+          | WorkerToUi::RequestOpenInNewTab { .. }
+      )
+    }),
+    "expected submit preventDefault to suppress navigation to {next_url}; got:\n{}",
+    support::format_messages(&msgs)
+  );
+
+  drop(ui_tx);
+  join.join().expect("worker join");
+}
+
+#[test]
+fn submit_prevent_default_blocks_enter_form_submission_navigation() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let next_url = site.write(
+    "result.html",
+    r#"<!doctype html>
+<html><body>next</body></html>
+"#,
+  );
+  let page_url = site.write(
+    "page.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #submit { position: absolute; left: 0; top: 0; width: 120px; height: 40px; }
+      #q { position: absolute; left: 0; top: 60px; width: 120px; height: 24px; }
+    </style>
+  </head>
+  <body>
+    <form id="f" action="result.html">
+      <input id="q" name="q" value="a b">
+      <input id="submit" type="submit" value="Go">
+    </form>
+    <script>
+      document.getElementById("f").addEventListener("submit", function (ev) { ev.preventDefault(); });
+    </script>
+  </body>
+</html>
+"#,
+  );
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-form-submit-enter-prevent-default").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId::new();
+
+  ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("create tab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (240, 160), 1.0))
+    .expect("viewport");
+  ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      page_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("navigate");
+
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::FrameReady { .. }))
+    .unwrap_or_else(|| panic!("timed out waiting for FrameReady after navigating to {page_url}"));
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
+
+  // Focus the input then press Enter to submit.
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (10.0, 70.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer down");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (10.0, 70.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer up");
+  ui_tx
+    .send(UiToWorker::KeyAction {
+      tab_id,
+      key: KeyAction::Enter,
+    })
+    .expect("key enter");
+
+  let msgs = support::drain_for(&ui_rx, Duration::from_millis(500));
+  assert!(
+    !msgs.iter().any(|msg| {
+      matches!(
+        msg,
+        WorkerToUi::NavigationStarted { .. }
+          | WorkerToUi::NavigationCommitted { .. }
+          | WorkerToUi::NavigationFailed { .. }
+          | WorkerToUi::RequestOpenInNewTab { .. }
+      )
+    }),
+    "expected submit preventDefault to suppress navigation to {next_url}; got:\n{}",
+    support::format_messages(&msgs)
+  );
+
+  drop(ui_tx);
+  join.join().expect("worker join");
+}
+
 #[derive(Debug)]
 struct CapturedHttpRequest {
   method: String,

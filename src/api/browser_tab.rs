@@ -2939,6 +2939,27 @@ impl BrowserTab {
     })
   }
 
+  /// Dispatch a trusted `submit` DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_submit_event(&mut self, node_id: NodeId) -> Result<bool> {
+    let mut event = Event::new(
+      "submit",
+      EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    // Install the tab's event loop in TLS so JS Web APIs like `setTimeout` can schedule tasks
+    // during event listener invocation.
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    with_event_loop(event_loop, || {
+      host.dispatch_dom_event(EventTargetId::Node(node_id).normalize(), event)
+    })
+  }
+
   /// Simulate a user click on `node_id` and return the resolved navigation target URL if the
   /// element's default click action should navigate.
   ///

@@ -213,6 +213,54 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn js_dom_node_for_preorder_id(
+  js_tab: &BrowserTab,
+  preorder_id: usize,
+  element_id: Option<&str>,
+) -> Option<crate::dom2::NodeId> {
+  element_id
+    .and_then(|id| js_tab.dom().get_element_by_id(id))
+    .or_else(|| js_tab.dom().node_id_from_index(preorder_id.saturating_sub(1)).ok())
+}
+
+fn js_find_form_owner_for_submitter(
+  dom: &crate::dom2::Document,
+  submitter: crate::dom2::NodeId,
+) -> Option<crate::dom2::NodeId> {
+  use crate::dom2::NodeKind;
+
+  let is_form_element = |node_id: crate::dom2::NodeId| -> bool {
+    let node = dom.node(node_id);
+    match &node.kind {
+      NodeKind::Element {
+        tag_name, namespace, ..
+      } => tag_name.eq_ignore_ascii_case("form")
+        && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE),
+      _ => false,
+    }
+  };
+
+  // Form owner resolution: prefer the submitter's explicit `form=` association.
+  if let Ok(Some(form_attr)) = dom.get_attribute(submitter, "form") {
+    let form_attr = trim_ascii_whitespace(&form_attr);
+    if !form_attr.is_empty() {
+      if let Some(form_id) = dom.get_element_by_id(form_attr).filter(|id| is_form_element(*id)) {
+        return Some(form_id);
+      }
+    }
+  }
+
+  // Otherwise, walk ancestors to find the nearest `<form>`.
+  let mut current = Some(submitter);
+  while let Some(node_id) = current {
+    if is_form_element(node_id) {
+      return Some(node_id);
+    }
+    current = dom.node(node_id).parent;
+  }
+  None
+}
+
 fn cursor_for_form_control(dom: &mut crate::dom::DomNode, dom_node_id: usize) -> CursorKind {
   let Some(node) = crate::dom::find_node_mut_by_preorder_id(dom, dom_node_id) else {
     return CursorKind::Default;
@@ -1746,12 +1794,30 @@ impl BrowserRuntime {
       .to_string();
     let scroll_snapshot = tab.scroll_state.clone();
     let viewport_point = viewport_point_for_pos_css(&scroll_snapshot, pos_css);
-    let (dom_changed, action, anchor_css, scroll_changed, click_target, click_target_element_id) = {
+    let (
+      dom_changed,
+      action,
+      anchor_css,
+      scroll_changed,
+      click_target,
+      click_target_element_id,
+      form_submitter,
+      form_submitter_element_id,
+    ) = {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
       let engine = &mut tab.interaction;
-      let (dom_changed, action, anchor_css, focus_scroll, click_target, click_target_element_id) =
+      let (
+        dom_changed,
+        action,
+        anchor_css,
+        focus_scroll,
+        click_target,
+        click_target_element_id,
+        form_submitter,
+        form_submitter_element_id,
+      ) =
         match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let scrolled = (!scroll_snapshot.elements.is_empty())
             .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
@@ -1771,6 +1837,13 @@ impl BrowserRuntime {
           let click_target = engine.take_last_click_target();
           let click_target_element_id = click_target.and_then(|target_id| {
             crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+              .and_then(|node| node.get_attribute_ref("id"))
+              .map(|id| id.to_string())
+          });
+
+          let form_submitter = engine.take_last_form_submitter();
+          let form_submitter_element_id = form_submitter.and_then(|submitter_id| {
+            crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
               .and_then(|node| node.get_attribute_ref("id"))
               .map(|id| id.to_string())
           });
@@ -1806,18 +1879,20 @@ impl BrowserRuntime {
             _ => None,
           };
 
-          (
-            dom_changed,
             (
               dom_changed,
-              action,
-              anchor_css,
-              focus_scroll,
-              click_target,
-              click_target_element_id,
-            ),
-          )
-        }) {
+              (
+                dom_changed,
+                action,
+                anchor_css,
+                focus_scroll,
+                click_target,
+                click_target_element_id,
+                form_submitter,
+                form_submitter_element_id,
+              ),
+            )
+          }) {
           Ok(result) => result,
           Err(_) => return,
         };
@@ -1840,19 +1915,19 @@ impl BrowserRuntime {
         scroll_changed,
         click_target,
         click_target_element_id,
+        form_submitter,
+        form_submitter_element_id,
       )
     };
 
     let mut default_allowed = true;
     if let Some(target_id) = click_target {
       if let Some(js_tab) = tab.js_tab.as_mut() {
-        let target = click_target_element_id
-          .as_deref()
-          .and_then(|id| js_tab.dom().get_element_by_id(id))
-          .or_else(|| {
-            let idx = target_id.saturating_sub(1);
-            js_tab.dom().node_id_from_index(idx).ok()
-          });
+        let target = js_dom_node_for_preorder_id(
+          js_tab,
+          target_id,
+          click_target_element_id.as_deref(),
+        );
 
         if let Some(node_id) = target {
           match js_tab.dispatch_click_event(node_id) {
@@ -1862,6 +1937,30 @@ impl BrowserRuntime {
                 tab_id,
                 line: format!("js click event dispatch failed: {err}"),
               });
+            }
+          }
+        }
+      }
+    }
+
+    // If a click triggers a form submission attempt, dispatch a cancelable `"submit"` event on the
+    // form owner and honor `preventDefault()` before committing the navigation.
+    if default_allowed {
+      if let Some(submitter_id) = form_submitter {
+        if let Some(js_tab) = tab.js_tab.as_mut() {
+          let submitter_node =
+            js_dom_node_for_preorder_id(js_tab, submitter_id, form_submitter_element_id.as_deref());
+          if let Some(submitter_node) = submitter_node {
+            if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node) {
+              match js_tab.dispatch_submit_event(form_node) {
+                Ok(allowed) => default_allowed = allowed,
+                Err(err) => {
+                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                    tab_id,
+                    line: format!("js submit event dispatch failed: {err}"),
+                  });
+                }
+              }
             }
           }
         }
@@ -2205,6 +2304,12 @@ impl BrowserRuntime {
           &document_url,
           &base_url,
         );
+        let submitter = tab.interaction.take_last_form_submitter();
+        let submitter_element_id = submitter.and_then(|submitter_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
+        });
         let focus_scroll = match &action {
           InteractionAction::FocusChanged {
             node_id: Some(node_id),
@@ -2216,21 +2321,29 @@ impl BrowserRuntime {
           ),
           _ => None,
         };
-        (dom_changed, (dom_changed, action, focus_scroll))
+        (dom_changed, (dom_changed, action, focus_scroll, submitter, submitter_element_id))
       });
-      let (changed, action, focus_scroll) = match result {
+      let (changed, action, focus_scroll, form_submitter, form_submitter_element_id) = match result {
         Ok(result) => result,
         Err(_) => {
           let mut action = InteractionAction::None;
+          let mut submitter: Option<usize> = None;
+          let mut submitter_element_id: Option<String> = None;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
               tab
                 .interaction
                 .key_activate(dom, key, &document_url, &base_url);
             action = next_action;
+            submitter = tab.interaction.take_last_form_submitter();
+            submitter_element_id = submitter.and_then(|submitter_id| {
+              crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
+                .and_then(|node| node.get_attribute_ref("id"))
+                .map(|id| id.to_string())
+            });
             dom_changed
           });
-          (changed, action, None)
+          (changed, action, None, submitter, submitter_element_id)
         }
       };
 
@@ -2245,10 +2358,36 @@ impl BrowserRuntime {
         });
       }
 
+      let mut default_allowed = true;
+      if let Some(submitter_id) = form_submitter {
+        if let Some(js_tab) = tab.js_tab.as_mut() {
+          let submitter_node =
+            js_dom_node_for_preorder_id(js_tab, submitter_id, form_submitter_element_id.as_deref());
+          if let Some(submitter_node) = submitter_node {
+            if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node) {
+              match js_tab.dispatch_submit_event(form_node) {
+                Ok(allowed) => default_allowed = allowed,
+                Err(err) => {
+                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                    tab_id,
+                    line: format!("js submit event dispatch failed: {err}"),
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
       let action_is_none = matches!(action, InteractionAction::None);
       match action {
         InteractionAction::Navigate { href } => {
-          navigate_to = Some(href);
+          if default_allowed {
+            navigate_to = Some(href);
+          } else if changed || scroll_changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
         }
         InteractionAction::OpenInNewTab { href } => {
           let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
@@ -2258,7 +2397,12 @@ impl BrowserRuntime {
           }
         }
         InteractionAction::NavigateRequest { request } => {
-          navigate_request = Some(request);
+          if default_allowed {
+            navigate_request = Some(request);
+          } else if changed || scroll_changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
         }
         InteractionAction::OpenSelectDropdown {
           select_node_id,

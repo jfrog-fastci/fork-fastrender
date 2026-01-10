@@ -79,6 +79,7 @@ pub struct InteractionEngine {
   text_edit: Option<TextEditState>,
   modality: InputModality,
   last_click_target: Option<usize>,
+  last_form_submitter: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1993,6 +1994,7 @@ impl InteractionEngine {
       text_edit: None,
       modality: InputModality::Pointer,
       last_click_target: None,
+      last_form_submitter: None,
     }
   }
 
@@ -2008,6 +2010,16 @@ impl InteractionEngine {
   /// as the interaction engine's built-in default actions.
   pub fn take_last_click_target(&mut self) -> Option<usize> {
     self.last_click_target.take()
+  }
+
+  /// Returns the most recent form submitter (pre-order DOM node id) that produced a submission
+  /// navigation request during user activation.
+  ///
+  /// This is an integration hook for higher-level layers (e.g. browser UI workers) that need to
+  /// dispatch JS `"submit"` events and honor `event.preventDefault()` before committing the
+  /// navigation.
+  pub fn take_last_form_submitter(&mut self) -> Option<usize> {
+    self.last_form_submitter.take()
   }
 
   fn set_focus(
@@ -2417,6 +2429,7 @@ impl InteractionEngine {
     remap_vec(&mut self.active_chain, old_index, new_ids);
     remap_opt(&mut self.pointer_down_target, old_index, new_ids);
     remap_opt(&mut self.last_click_target, old_index, new_ids);
+    remap_opt(&mut self.last_form_submitter, old_index, new_ids);
     if let Some(state) = &mut self.range_drag {
       let new_node_id = old_index
         .id_to_node
@@ -2496,6 +2509,7 @@ impl InteractionEngine {
     base_url: &str,
   ) -> (bool, InteractionAction) {
     self.last_click_target = None;
+    self.last_form_submitter = None;
 
     let range_drag = self.range_drag.take();
     let text_drag = self.text_drag.take();
@@ -2690,6 +2704,7 @@ impl InteractionEngine {
               }
               dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
               if let Some(submission) = form_submission(dom, target_id, document_url, base_url) {
+                self.last_form_submitter = Some(target_id);
                 match submission.method {
                   FormSubmissionMethod::Get => {
                     action = InteractionAction::Navigate { href: submission.url };
@@ -3687,6 +3702,7 @@ impl InteractionEngine {
     document_url: &str,
     base_url: &str,
   ) -> (bool, InteractionAction) {
+    self.last_form_submitter = None;
     let prev_focus = self.focused;
 
     self.modality = InputModality::Keyboard;
@@ -3791,6 +3807,7 @@ impl InteractionEngine {
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
             if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+              self.last_form_submitter = Some(focused);
               match submission.method {
                 FormSubmissionMethod::Get => {
                   action = InteractionAction::Navigate { href: submission.url };
@@ -3814,6 +3831,7 @@ impl InteractionEngine {
               let submitter_id = find_default_form_submitter(&index, form_id);
               if let Some(submitter_id) = submitter_id {
                 if let Some(submission) = form_submission(dom, submitter_id, document_url, base_url) {
+                  self.last_form_submitter = Some(submitter_id);
                   match submission.method {
                     FormSubmissionMethod::Get => {
                       action = InteractionAction::Navigate { href: submission.url };
@@ -3850,6 +3868,7 @@ impl InteractionEngine {
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
             if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+              self.last_form_submitter = Some(focused);
               match submission.method {
                 FormSubmissionMethod::Get => {
                   action = InteractionAction::Navigate { href: submission.url };
