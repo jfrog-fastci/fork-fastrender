@@ -189,6 +189,24 @@ fn destructuring_var_decl_binding_consumes_fuel() {
 }
 
 #[test]
+fn object_destructuring_rest_consumes_fuel() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  install_global_object_with_enumerable_props(&mut rt, "obj", 4096);
+
+  // Object rest patterns can copy an arbitrary number of enumerable keys even when the pattern is
+  // tiny (`{...r}`). Ensure the copy loop is budgeted.
+  rt.vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let err = rt.exec_script("var {...r} = obj;").unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn empty_script_ticks_at_entry() {
   let vm = Vm::new(VmOptions::default());
   let mut rt = new_runtime_with_vm(vm);
