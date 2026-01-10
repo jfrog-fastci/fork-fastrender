@@ -1461,6 +1461,23 @@ impl BrowserTabHost {
         &format!("source=external url={url}"),
       )?;
       if let Some(integrity) = spec.integrity.as_deref() {
+        // The Fetch standard's SRI integration runs against the *filtered* response body. For
+        // cross-origin `no-cors` requests, the response is opaque and therefore has a null body,
+        // causing integrity checks to fail even when the underlying bytes would match. Match browser
+        // behavior by rejecting cross-origin script integrity metadata unless a CORS-mode fetch is
+        // used (i.e. `<script crossorigin=...>`).
+        if spec.crossorigin.is_none() {
+          let script_origin = origin_from_url(url);
+          if let (Some(doc_origin), Some(script_origin)) =
+            (self.document_origin.as_ref(), script_origin.as_ref())
+          {
+            if doc_origin != script_origin {
+              return Err(Error::Other(format!(
+                "SRI blocked script {url}: cross-origin integrity requires a CORS fetch (add a crossorigin attribute)"
+              )));
+            }
+          }
+        }
         crate::js::sri::verify_integrity(source.as_bytes(), integrity).map_err(|message| {
           Error::Other(format!("SRI blocked script {url}: {message}"))
         })?;
@@ -1503,6 +1520,20 @@ impl BrowserTabHost {
       }
     }
     if let Some(integrity) = spec.integrity.as_deref() {
+      // Mirror Fetch's SRI behavior: cross-origin `no-cors` requests return an opaque response with
+      // a null body, meaning integrity checks fail even when the underlying bytes match.
+      if spec.crossorigin.is_none() {
+        let script_origin = origin_from_url(url);
+        if let (Some(doc_origin), Some(script_origin)) =
+          (self.document_origin.as_ref(), script_origin.as_ref())
+        {
+          if doc_origin != script_origin {
+            return Err(Error::Other(format!(
+              "SRI blocked script {url}: cross-origin integrity requires a CORS fetch (add a crossorigin attribute)"
+            )));
+          }
+        }
+      }
       crate::js::sri::verify_integrity(&resource.bytes, integrity).map_err(|message| {
         Error::Other(format!("SRI blocked script {url}: {message}"))
       })?;

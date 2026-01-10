@@ -167,6 +167,81 @@ fn sri_sha256_mismatch_blocks_script_execution_without_aborting() -> Result<()> 
 }
 
 #[test]
+fn sri_cross_origin_without_crossorigin_blocks_script_execution() -> Result<()> {
+  let _net_lock = net_test_lock();
+  let Some(doc_listener) = try_bind_localhost("sri cross-origin document server") else {
+    return Ok(());
+  };
+  let Some(script_listener) = try_bind_localhost("sri cross-origin script server") else {
+    return Ok(());
+  };
+
+  let doc_addr = doc_listener.local_addr().expect("doc addr");
+  let script_addr = script_listener.local_addr().expect("script addr");
+  let doc_url = format!("http://{}/page.html", doc_addr);
+  let script_url = format!("http://{}/script.js", script_addr);
+
+  let script_body = "EXTERNAL";
+  let digest = Sha256::digest(script_body.as_bytes());
+  let b64 = BASE64_STANDARD.encode(digest);
+
+  let captured_script_headers: Arc<Mutex<Option<HashMap<String, String>>>> = Arc::new(Mutex::new(None));
+  let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
+
+  let doc_thread = std::thread::spawn(move || {
+    let (mut stream, _) = doc_listener.accept().expect("accept doc");
+    let (_path, _headers) = read_http_request(&mut stream);
+    let body = format!(
+      r#"<!doctype html><html><head>
+        <script src="{script_url}" integrity="sha256-{b64}"></script>
+        <script>INLINE</script>
+      </head><body></body></html>"#
+    );
+    write_http_response(stream, "200 OK", "text/html", &body, &[]);
+  });
+
+  let script_thread = std::thread::spawn(move || {
+    let (mut stream, _) = script_listener.accept().expect("accept script");
+    let (_path, headers) = read_http_request(&mut stream);
+    *captured_script_headers_for_thread
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(headers);
+    write_http_response(stream, "200 OK", "application/javascript", script_body, &[]);
+  });
+
+  let executor = LogExecutor::default();
+  let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
+  tab.navigate_to_url(&doc_url, RenderOptions::default())?;
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  doc_thread.join().expect("join doc thread");
+  script_thread.join().expect("join script thread");
+
+  assert_eq!(
+    executor.take_log(),
+    vec!["INLINE".to_string()],
+    "cross-origin scripts without crossorigin should be blocked when integrity is present"
+  );
+
+  let headers = captured_script_headers
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone()
+    .unwrap_or_default();
+  assert_eq!(
+    headers.get("sec-fetch-mode").map(String::as_str),
+    Some("no-cors"),
+    "expected cross-origin scripts without crossorigin to use no-cors mode; headers={headers:?}"
+  );
+  assert!(
+    headers.get("origin").is_none(),
+    "expected no Origin header for no-cors script requests; headers={headers:?}"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn crossorigin_anonymous_enforces_cors_and_blocks_on_missing_acao() -> Result<()> {
   let _net_lock = net_test_lock();
   let Some(doc_listener) = try_bind_localhost("cors script document server") else {
