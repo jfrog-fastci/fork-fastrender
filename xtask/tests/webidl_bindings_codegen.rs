@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use xtask::webidl::generate::{rustfmt, FORBIDDEN_TOKENS};
@@ -32,6 +33,8 @@ fn generated_webidl_bindings_are_deterministic_and_match_golden() {
   let config = WebIdlBindingsCodegenConfig {
     mode: WebIdlBindingsGenerationMode::AllMembers,
     allow_interfaces: ["Foo".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
   };
 
   let out1 =

@@ -647,25 +647,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_search_params_sort<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    {
-      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result =
-        host.call_operation(rt, Some(this), "URLSearchParams", "sort", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
-    }
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_search_params_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -899,8 +880,6 @@ pub mod window {
     rt.define_data_property_str(proto_u_r_l_search_params, "has", func, true)?;
     let func = rt.create_function(u_r_l_search_params_set::<Host, R>)?;
     rt.define_data_property_str(proto_u_r_l_search_params, "set", func, true)?;
-    let func = rt.create_function(u_r_l_search_params_sort::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "sort", func, true)?;
     let ctor_u_r_l_search_params =
       rt.create_function(u_r_l_search_params_constructor::<Host, R>)?;
     rt.define_data_property_str(global, "URLSearchParams", ctor_u_r_l_search_params, true)?;
@@ -1573,25 +1552,6 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_search_params_sort<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    {
-      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result =
-        host.call_operation(rt, Some(this), "URLSearchParams", "sort", 0, converted_args)?;
-      binding_value_to_js::<Host, R>(rt, result)
-    }
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_search_params_constructor<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1667,8 +1627,6 @@ pub mod worker {
     rt.define_data_property_str(proto_u_r_l_search_params, "has", func, true)?;
     let func = rt.create_function(u_r_l_search_params_set::<Host, R>)?;
     rt.define_data_property_str(proto_u_r_l_search_params, "set", func, true)?;
-    let func = rt.create_function(u_r_l_search_params_sort::<Host, R>)?;
-    rt.define_data_property_str(proto_u_r_l_search_params, "sort", func, true)?;
     let ctor_u_r_l_search_params =
       rt.create_function(u_r_l_search_params_constructor::<Host, R>)?;
     rt.define_data_property_str(global, "URLSearchParams", ctor_u_r_l_search_params, true)?;

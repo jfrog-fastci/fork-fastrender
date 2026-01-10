@@ -179,6 +179,8 @@ Notes:
 - **Window-facing bindings glue**: `src/js/bindings/generated/mod.rs`
   - Generated wrappers perform WebIDL-ish argument conversions then dispatch into the host
     integration via `fastrender::js::bindings::WebHostBindings`.
+  - Controlled by an explicit allowlist: `tools/webidl/window_bindings_allowlist.toml` (typo-guarded
+    against the committed snapshot world).
 
 DOM bindings are currently implemented directly against `vm-js` realms in `src/js/vm_dom.rs` and are
 installed with `fastrender::js::install_dom_bindings(vm, heap, realm, ...)`.
@@ -186,6 +188,7 @@ installed with `fastrender::js::install_dom_bindings(vm, heap, realm, ...)`.
 Note: The deprecated `VmJsRuntime` DOM scaffold can still be generated for debugging with
 `bash scripts/cargo_agent.sh xtask webidl-bindings --backend legacy`, but it is not committed or
 used by tests.
+The legacy scaffold is controlled by `tools/webidl/bindings_allowlist.toml`.
 
 ## Debugging unsupported/odd IDL
 

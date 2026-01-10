@@ -1,0 +1,36 @@
+# WebIDL allowlist for Window-facing bindings generation (`cargo xtask webidl-bindings`).
+#
+# This controls what gets emitted into:
+# - src/js/bindings/generated/mod.rs
+#
+# The generator treats this file as the source of truth for *what* gets generated and will fail if
+# any allowlisted interface/member is missing from `src/webidl/generated/mod.rs` (typo guard).
+#
+# Keep this intentionally small and grow it as new Window-facing APIs are implemented.
+prototype_chains = true
+
+[[interface]]
+name = "EventTarget"
+constructors = true
+attributes = []
+operations = ["addEventListener", "removeEventListener", "dispatchEvent"]
+
+[[interface]]
+name = "URL"
+constructors = true
+attributes = []
+operations = ["toJSON", "canParse", "parse"]
+
+[[interface]]
+name = "URLSearchParams"
+constructors = true
+attributes = []
+# Intentionally exclude `sort` so a unit test can validate the allowlist is honored.
+operations = ["append", "delete", "get", "getAll", "has", "set"]
+
+[[interface]]
+name = "Window"
+constructors = false
+attributes = []
+operations = ["setTimeout", "setInterval", "clearTimeout", "clearInterval", "queueMicrotask"]
+

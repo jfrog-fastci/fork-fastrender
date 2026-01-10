@@ -31,6 +31,14 @@ pub struct WebIdlBindingsCodegenArgs {
   )]
   pub out: PathBuf,
 
+  /// Path to the Window-facing WebIDL bindings allowlist manifest (TOML).
+  #[arg(
+    long,
+    default_value = "tools/webidl/window_bindings_allowlist.toml",
+    value_name = "FILE"
+  )]
+  pub window_allowlist: PathBuf,
+
   /// Path to the DOM-scaffold bindings allowlist manifest (TOML).
   ///
   /// Only used when `--backend legacy` is passed.
@@ -59,8 +67,10 @@ pub struct WebIdlBindingsCodegenArgs {
   #[arg(long, value_enum, default_value_t = ExposureTarget::All)]
   pub exposure_target: ExposureTarget,
 
-  /// Interface allow-list (can be passed multiple times). Defaults to a small Window-facing core
-  /// subset.
+  /// Interface allow-list override (can be passed multiple times).
+  ///
+  /// If supplied, this bypasses the committed Window bindings allowlist manifest and emits *all*
+  /// constructors/operations for the selected interfaces (useful for local experiments).
   #[arg(long = "allow-interface", value_name = "NAME")]
   pub allow_interfaces: Vec<String>,
 }
@@ -75,37 +85,26 @@ pub enum WebIdlBindingsBackend {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebIdlBindingsGenerationMode {
-  /// Emit the minimal binding glue needed for early Window-facing APIs.
-  CoreWindow,
+  /// Emit only allowlisted constructors/operations (driven by `window_bindings_allowlist.toml`).
+  Allowlist,
   /// Emit operations/constructors for all selected interfaces (used by unit tests).
   AllMembers,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WebIdlInterfaceAllowlist {
+  pub constructors: bool,
+  #[allow(dead_code)]
+  pub attributes: BTreeSet<String>,
+  pub operations: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WebIdlBindingsCodegenConfig {
   pub mode: WebIdlBindingsGenerationMode,
   pub allow_interfaces: BTreeSet<String>,
-}
-
-impl WebIdlBindingsCodegenConfig {
-  pub fn core_window_default() -> Self {
-    Self {
-      mode: WebIdlBindingsGenerationMode::CoreWindow,
-      allow_interfaces: [
-        "Window",
-        "Document",
-        "Node",
-        "Element",
-        "EventTarget",
-        "Event",
-        "URL",
-        "URLSearchParams",
-      ]
-      .into_iter()
-      .map(|s| s.to_string())
-      .collect(),
-    }
-  }
+  pub interface_allowlist: BTreeMap<String, WebIdlInterfaceAllowlist>,
+  pub prototype_chains: bool,
 }
 
 pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()> {
@@ -113,28 +112,46 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
   let rustfmt_config = repo_root.join(".rustfmt.toml");
 
   let out_path = absolutize(repo_root.clone(), args.out);
+  let window_allowlist_path = absolutize(repo_root.clone(), args.window_allowlist);
   let dom_allowlist_path = absolutize(repo_root.clone(), args.dom_allowlist);
   let dom_out_path = absolutize(repo_root.clone(), args.dom_out);
-
-  let allow_interfaces = if args.allow_interfaces.is_empty() {
-    WebIdlBindingsCodegenConfig::core_window_default().allow_interfaces
-  } else {
-    args.allow_interfaces.into_iter().collect()
-  };
 
   // Prefer the committed snapshot (`src/webidl/generated`) so running this xtask does not require
   // vendored spec submodules.
   let snapshot_world: &WebIdlWorld = &fastrender::webidl::generated::WORLD;
   let snapshot_idl = snapshot_world_to_idl(snapshot_world);
 
+  let window_config = if args.allow_interfaces.is_empty() {
+    let allowlist_text = fs::read_to_string(&window_allowlist_path).with_context(|| {
+      format!(
+        "read WebIDL Window bindings allowlist {}",
+        window_allowlist_path.display()
+      )
+    })?;
+    let manifest: WindowBindingsAllowlistManifest =
+      toml::from_str(&allowlist_text).context("parse WebIDL Window bindings allowlist TOML")?;
+    let interface_allowlist =
+      window_parse_allowlisted_interfaces(snapshot_world, &manifest.interfaces)?;
+    WebIdlBindingsCodegenConfig {
+      mode: WebIdlBindingsGenerationMode::Allowlist,
+      allow_interfaces: interface_allowlist.keys().cloned().collect(),
+      interface_allowlist,
+      prototype_chains: manifest.prototype_chains,
+    }
+  } else {
+    WebIdlBindingsCodegenConfig {
+      mode: WebIdlBindingsGenerationMode::AllMembers,
+      allow_interfaces: args.allow_interfaces.into_iter().collect(),
+      interface_allowlist: BTreeMap::new(),
+      prototype_chains: true,
+    }
+  };
+
   let generated_bindings = generate_bindings_module_from_idl_with_config(
     &snapshot_idl,
     &rustfmt_config,
     args.exposure_target,
-    WebIdlBindingsCodegenConfig {
-      mode: WebIdlBindingsGenerationMode::CoreWindow,
-      allow_interfaces,
-    },
+    window_config,
   )
   .context("generate WebIDL bindings module")?;
 
@@ -378,6 +395,187 @@ fn idl_string_literal(value: &str) -> String {
   }
   out.push('"');
   out
+}
+
+fn default_true() -> bool {
+  true
+}
+
+#[derive(Debug, Deserialize)]
+struct WindowBindingsAllowlistManifest {
+  #[serde(default = "default_true")]
+  prototype_chains: bool,
+  #[serde(rename = "interface")]
+  interfaces: Vec<WindowBindingsAllowlistInterface>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WindowBindingsAllowlistInterface {
+  name: String,
+  #[serde(default)]
+  constructors: bool,
+  #[serde(default)]
+  attributes: Vec<String>,
+  #[serde(default)]
+  operations: Vec<String>,
+}
+
+fn window_parse_allowlisted_interfaces(
+  world: &WebIdlWorld,
+  allowlist: &[WindowBindingsAllowlistInterface],
+) -> Result<BTreeMap<String, WebIdlInterfaceAllowlist>> {
+  let mut out = BTreeMap::new();
+  let mut seen = BTreeSet::new();
+
+  for entry in allowlist {
+    if !seen.insert(entry.name.clone()) {
+      bail!(
+        "Window bindings allowlist contains duplicate interface entry: {}",
+        entry.name
+      );
+    }
+
+    let iface = world.interface(&entry.name).with_context(|| {
+      format!(
+        "allowlisted interface `{}` is missing from WORLD",
+        entry.name
+      )
+    })?;
+
+    out.insert(entry.name.clone(), window_parse_interface_entry(iface, entry)?);
+  }
+
+  Ok(out)
+}
+
+fn window_parse_interface_entry(
+  iface: &WebIdlInterface,
+  allow: &WindowBindingsAllowlistInterface,
+) -> Result<WebIdlInterfaceAllowlist> {
+  // Constructors.
+  if allow.constructors {
+    let mut found_ctor = false;
+    for member in iface.members {
+      if member.name != Some("constructor") {
+        continue;
+      }
+      let parsed = crate::webidl::parse_interface_member(member.raw).with_context(|| {
+        format!(
+          "failed to parse WebIDL member `{}` constructor `{}`",
+          iface.name, member.raw
+        )
+      })?;
+      if matches!(parsed, InterfaceMember::Constructor { .. }) {
+        found_ctor = true;
+      }
+    }
+    if !found_ctor {
+      bail!(
+        "Window bindings allowlist requested constructors for `{}`, but none were found in WORLD",
+        iface.name
+      );
+    }
+  }
+
+  // Attributes.
+  let mut attributes: BTreeSet<String> = BTreeSet::new();
+  for attr_name in &allow.attributes {
+    if !attributes.insert(attr_name.clone()) {
+      bail!(
+        "Window bindings allowlist contains duplicate attribute `{}` on interface `{}`",
+        attr_name,
+        iface.name
+      );
+    }
+
+    let mut matches = Vec::new();
+    for member in iface.members {
+      if member.name != Some(attr_name.as_str()) {
+        continue;
+      }
+      let parsed = crate::webidl::parse_interface_member(member.raw).with_context(|| {
+        format!(
+          "failed to parse WebIDL member `{}` attribute `{}`",
+          iface.name, member.raw
+        )
+      })?;
+      if matches!(parsed, InterfaceMember::Attribute { .. }) {
+        matches.push(parsed);
+      }
+    }
+    if matches.is_empty() {
+      bail!(
+        "allowlisted attribute `{}` was not found on interface `{}`",
+        attr_name,
+        iface.name
+      );
+    }
+    if matches.len() != 1 {
+      bail!(
+        "allowlisted attribute `{}` appears multiple times on interface `{}`; overloads are not supported for attributes",
+        attr_name,
+        iface.name
+      );
+    }
+  }
+
+  // Operations.
+  let mut operations: BTreeSet<String> = BTreeSet::new();
+  for op_name in &allow.operations {
+    if !operations.insert(op_name.clone()) {
+      bail!(
+        "Window bindings allowlist contains duplicate operation `{}` on interface `{}`",
+        op_name,
+        iface.name
+      );
+    }
+
+    let mut found = false;
+    for member in iface.members {
+      if member.name != Some(op_name.as_str()) {
+        continue;
+      }
+      let parsed = crate::webidl::parse_interface_member(member.raw).with_context(|| {
+        format!(
+          "failed to parse WebIDL member `{}` operation `{}`",
+          iface.name, member.raw
+        )
+      })?;
+      let InterfaceMember::Operation {
+        name: Some(name),
+        special: None,
+        ..
+      } = &parsed
+      else {
+        continue;
+      };
+      if name == op_name {
+        found = true;
+      }
+    }
+    if !found {
+      bail!(
+        "allowlisted operation `{}` was not found on interface `{}`",
+        op_name,
+        iface.name
+      );
+    }
+  }
+
+  // Window-facing bindings codegen does not support installing accessor properties yet. Fail fast
+  // rather than silently ignoring allowlisted attributes.
+  if !attributes.is_empty() {
+    bail!(
+      "attributes are not yet supported in Window bindings generation (interface={})",
+      iface.name
+    );
+  }
+
+  Ok(WebIdlInterfaceAllowlist {
+    constructors: allow.constructors,
+    attributes,
+    operations,
+  })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1224,19 +1422,21 @@ fn generate_bindings_module_for_target_unformatted(
     ));
   }
 
-  // Set prototype chains.
-  for iface_name in selected.keys() {
-    let iface = &selected[iface_name];
-    if is_global_iface(&iface.name) {
-      continue;
-    }
-    if let Some(parent) = iface.inherits.as_deref() {
-      if selected.contains_key(parent) {
-        out.push_str(&format!(
-          "  rt.set_prototype(proto_{child}, Some(proto_{parent}))?;\n",
-          child = to_snake_ident(&iface.name),
-          parent = to_snake_ident(parent)
-        ));
+  if config.prototype_chains {
+    // Set prototype chains.
+    for iface_name in selected.keys() {
+      let iface = &selected[iface_name];
+      if is_global_iface(&iface.name) {
+        continue;
+      }
+      if let Some(parent) = iface.inherits.as_deref() {
+        if selected.contains_key(parent) {
+          out.push_str(&format!(
+            "  rt.set_prototype(proto_{child}, Some(proto_{parent}))?;\n",
+            child = to_snake_ident(&iface.name),
+            parent = to_snake_ident(parent)
+          ));
+        }
       }
     }
   }
@@ -1313,12 +1513,21 @@ fn generate_bindings_module_for_target_unformatted(
   out
 }
 
-fn select_interfaces(analyzed: &AnalyzedWebIdlWorld, config: &WebIdlBindingsCodegenConfig) -> BTreeMap<String, SelectedInterface> {
+fn select_interfaces(
+  analyzed: &AnalyzedWebIdlWorld,
+  config: &WebIdlBindingsCodegenConfig,
+) -> BTreeMap<String, SelectedInterface> {
   let mut out = BTreeMap::<String, SelectedInterface>::new();
 
   for iface_name in &config.allow_interfaces {
     let Some(iface) = analyzed.interfaces.get(iface_name) else {
       continue;
+    };
+
+    let allow = if config.mode == WebIdlBindingsGenerationMode::Allowlist {
+      config.interface_allowlist.get(iface_name)
+    } else {
+      None
     };
 
     let mut constructors: Vec<ArgumentList> = Vec::new();
@@ -1328,7 +1537,11 @@ fn select_interfaces(analyzed: &AnalyzedWebIdlWorld, config: &WebIdlBindingsCode
     for member in &iface.members {
       match &member.parsed {
         InterfaceMember::Constructor { arguments } => {
-          if should_emit_member(config.mode, iface.name.as_str(), "constructor") {
+          let allowed = match config.mode {
+            WebIdlBindingsGenerationMode::AllMembers => true,
+            WebIdlBindingsGenerationMode::Allowlist => allow.is_some_and(|a| a.constructors),
+          };
+          if allowed {
             constructors.push(ArgumentList {
               arguments: arguments.clone(),
             });
@@ -1344,7 +1557,13 @@ fn select_interfaces(analyzed: &AnalyzedWebIdlWorld, config: &WebIdlBindingsCode
           let Some(op_name) = name.as_deref() else {
             continue;
           };
-          if should_emit_member(config.mode, iface.name.as_str(), op_name) {
+          let allowed = match config.mode {
+            WebIdlBindingsGenerationMode::AllMembers => true,
+            WebIdlBindingsGenerationMode::Allowlist => {
+              allow.is_some_and(|a| a.operations.contains(op_name))
+            }
+          };
+          if allowed {
             let sig = OperationSig {
               name: op_name.to_string(),
               return_type: return_type.clone(),
@@ -1365,7 +1584,12 @@ fn select_interfaces(analyzed: &AnalyzedWebIdlWorld, config: &WebIdlBindingsCode
     }
 
     if constructors.is_empty() && operations.is_empty() && static_operations.is_empty() {
-      continue;
+      // Allow generating prototype-only scaffolding when prototype chains are enabled.
+      if config.mode == WebIdlBindingsGenerationMode::Allowlist && config.prototype_chains {
+        // Keep the interface with empty member lists so it can participate in prototype chains.
+      } else {
+        continue;
+      }
     }
 
     out.insert(
@@ -1381,25 +1605,6 @@ fn select_interfaces(analyzed: &AnalyzedWebIdlWorld, config: &WebIdlBindingsCode
   }
 
   out
-}
-
-fn should_emit_member(mode: WebIdlBindingsGenerationMode, iface: &str, member_name: &str) -> bool {
-  match mode {
-    WebIdlBindingsGenerationMode::AllMembers => true,
-    WebIdlBindingsGenerationMode::CoreWindow => match iface {
-      "EventTarget" => matches!(
-        member_name,
-        "addEventListener" | "removeEventListener" | "dispatchEvent" | "constructor"
-      ),
-      "URL" => true,
-      "URLSearchParams" => true,
-      "Window" => matches!(
-        member_name,
-        "setTimeout" | "setInterval" | "clearTimeout" | "clearInterval" | "queueMicrotask"
-      ),
-      _ => false,
-    },
-  }
 }
 
 fn collect_referenced_dictionaries(resolved: &ResolvedWebIdlWorld, interfaces: &BTreeMap<String, SelectedInterface>) -> BTreeSet<String> {

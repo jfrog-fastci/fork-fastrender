@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use fastrender::webidl::generated::WORLD;
+
 fn repo_root() -> PathBuf {
   Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()
@@ -27,5 +29,18 @@ fn generated_bindings_snapshots_contain_known_members() {
   assert!(
     window_bindings.contains("fn u_r_l_search_params_append"),
     "expected URLSearchParams.append wrapper to be present in generated window bindings"
+  );
+  assert!(
+    WORLD
+      .interface("URLSearchParams")
+      .expect("generated WORLD should include URLSearchParams")
+      .members
+      .iter()
+      .any(|m| m.name == Some("sort")),
+    "expected committed WORLD to contain URLSearchParams.sort (guard for allowlist test)"
+  );
+  assert!(
+    !window_bindings.contains("u_r_l_search_params_sort"),
+    "expected URLSearchParams.sort to be excluded by tools/webidl/window_bindings_allowlist.toml"
   );
 }
