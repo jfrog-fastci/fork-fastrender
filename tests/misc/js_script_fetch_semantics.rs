@@ -367,3 +367,128 @@ fn document_referrer_policy_header_applies_to_script_requests() -> Result<()> {
   );
   Ok(())
 }
+
+#[test]
+fn crossorigin_use_credentials_includes_cookies_on_cross_origin_script_requests() -> Result<()> {
+  let _net_lock = net_test_lock();
+  let Some(doc_listener) = try_bind_localhost("cors credentials script document server") else {
+    return Ok(());
+  };
+  let Some(script_listener) = try_bind_localhost("cors credentials script asset server") else {
+    return Ok(());
+  };
+
+  let doc_addr = doc_listener.local_addr().expect("doc addr");
+  let script_addr = script_listener.local_addr().expect("script addr");
+  let doc_url = format!("http://{}/page.html", doc_addr);
+  let anon_url = format!("http://{}/anon.js", script_addr);
+  let cred_url = format!("http://{}/cred.js", script_addr);
+  let expected_origin = format!("http://{}", doc_addr);
+
+  let captured_script_headers: Arc<Mutex<HashMap<String, HashMap<String, String>>>> =
+    Arc::new(Mutex::new(HashMap::new()));
+  let captured_script_headers_for_thread = Arc::clone(&captured_script_headers);
+
+  let doc_thread = std::thread::spawn(move || {
+    let (mut stream, _) = doc_listener.accept().expect("accept doc");
+    let (_path, _headers) = read_http_request(&mut stream);
+    let body = format!(
+      r#"<!doctype html><html><head>
+        <script src="{anon_url}" crossorigin="anonymous"></script>
+        <script src="{cred_url}" crossorigin="use-credentials"></script>
+      </head><body></body></html>"#
+    );
+    // Host-only cookies ignore port, so a cookie set by `doc_url` can still be attached to the
+    // cross-origin (different port) script request when the credentials mode is `include`.
+    write_http_response(
+      stream,
+      "200 OK",
+      "text/html",
+      &body,
+      &[("Set-Cookie", "session=abc; Path=/")],
+    );
+  });
+
+  let script_thread = std::thread::spawn(move || {
+    for _ in 0..2 {
+      let (mut stream, _) = script_listener.accept().expect("accept script");
+      let (path, headers) = read_http_request(&mut stream);
+      captured_script_headers_for_thread
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.clone(), headers);
+
+      match path.as_str() {
+        "/anon.js" => {
+          write_http_response(
+            stream,
+            "200 OK",
+            "application/javascript",
+            "ANON",
+            &[("Access-Control-Allow-Origin", expected_origin.as_str())],
+          );
+        }
+        "/cred.js" => {
+          write_http_response(
+            stream,
+            "200 OK",
+            "application/javascript",
+            "CRED",
+            &[
+              ("Access-Control-Allow-Origin", expected_origin.as_str()),
+              ("Access-Control-Allow-Credentials", "true"),
+            ],
+          );
+        }
+        _ => {
+          write_http_response(stream, "404 Not Found", "text/plain", "not found", &[]);
+        }
+      }
+    }
+  });
+
+  let executor = LogExecutor::default();
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_FETCH_ENFORCE_CORS".to_string(),
+    "1".to_string(),
+  )])));
+  with_thread_runtime_toggles(toggles, || -> Result<()> {
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor.clone())?;
+    tab.navigate_to_url(&doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    Ok(())
+  })?;
+
+  doc_thread.join().expect("join doc thread");
+  script_thread.join().expect("join script thread");
+
+  assert_eq!(
+    executor.take_log(),
+    vec!["ANON".to_string(), "CRED".to_string()]
+  );
+
+  let headers_by_path = captured_script_headers
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+    .clone();
+
+  let anon_headers = headers_by_path
+    .get("/anon.js")
+    .cloned()
+    .unwrap_or_default();
+  let cred_headers = headers_by_path
+    .get("/cred.js")
+    .cloned()
+    .unwrap_or_default();
+
+  assert!(
+    !anon_headers.contains_key("cookie"),
+    "expected crossorigin=anonymous scripts to omit Cookie on cross-origin requests; headers={anon_headers:?}"
+  );
+  let cookie = cred_headers.get("cookie").cloned().unwrap_or_default();
+  assert!(
+    cookie.contains("session=abc"),
+    "expected crossorigin=use-credentials scripts to include Cookie on cross-origin requests; headers={cred_headers:?}"
+  );
+  Ok(())
+}
