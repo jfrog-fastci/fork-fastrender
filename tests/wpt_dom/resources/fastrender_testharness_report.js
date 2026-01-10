@@ -39,9 +39,15 @@ var __fastrender_wpt_reporter_seen = {};
 // Stash the original host hook (if any) and replace it with a single-shot wrapper so:
 // - tests that call `__fastrender_wpt_report(...)` directly still work,
 // - the offline runner observes exactly one payload per file even if called multiple times.
+//
+// NOTE: Some minimal JS engines (including FastRender's vm-js WPT harness) do not fully mirror
+// global object properties into the global lexical environment. Be defensive and check both the
+// identifier binding and the `globalThis` property form.
 var __fastrender_wpt_reporter_original_report = null;
 try {
-  if (
+  if (typeof __fastrender_wpt_report === "function") {
+    __fastrender_wpt_reporter_original_report = __fastrender_wpt_report;
+  } else if (
     __fastrender_wpt_global &&
     typeof __fastrender_wpt_global.__fastrender_wpt_report === "function"
   ) {
@@ -149,6 +155,11 @@ try {
     __fastrender_wpt_global.__fastrender_wpt_report = __fastrender_wpt_report_wrapper;
   }
 } catch (_e) {}
+// Also mirror onto the global binding for runtimes where `globalThis.__fastrender_wpt_report`
+// does not affect `__fastrender_wpt_report` identifier resolution.
+try {
+  __fastrender_wpt_report = __fastrender_wpt_report_wrapper;
+} catch (_e4) {}
 
 // -----------------------------
 // WPT callback plumbing

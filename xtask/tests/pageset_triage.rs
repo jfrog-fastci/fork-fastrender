@@ -37,9 +37,9 @@ fn pageset_triage_markdown_is_deterministic() {
   .expect("write progress example.com");
 
   fs::write(
-    progress_dir.join("example.org.json"),
+    progress_dir.join("example.invalid.json"),
     r#"{
-  "url": "https://example.org/",
+  "url": "https://example.invalid/",
   "status": "error",
   "hotspot": "fetch",
   "total_ms": 300.0,
@@ -47,7 +47,7 @@ fn pageset_triage_markdown_is_deterministic() {
 }
 "#,
   )
-  .expect("write progress example.org");
+  .expect("write progress example.invalid");
 
   let report_path = tmp.path().join("report.json");
   fs::write(
@@ -66,10 +66,10 @@ fn pageset_triage_markdown_is_deterministic() {
       }
     },
     {
-      "name": "example.org",
+      "name": "example.invalid",
       "status": "error",
-      "before": "chrome/example.org.png",
-      "after": "fastrender/example.org.png",
+      "before": "chrome/example.invalid.png",
+      "after": "fastrender/example.invalid.png",
       "error": "boom"
     }
   ]
@@ -138,29 +138,29 @@ bash scripts/cargo_agent.sh xtask page-loop --fixture example.com --viewport 120
 - Resources:
   - [ ] ...
 
-## example.org
+## example.invalid
 
-- URL: https://example.org/
-- Fixture: MISSING (expected `tests/pages/fixtures/example.org/index.html`)
+- URL: https://example.invalid/
+- Fixture: MISSING (expected `tests/pages/fixtures/example.invalid/index.html`)
 - Progress: status=error hotspot=fetch total_ms=300.00
 - Auto notes: missing cache
-- Diff report: status=error (`report.html#entry-ee7160631269bf51`)
-  - before: `chrome/example.org.png`
-  - after: `fastrender/example.org.png`
+- Diff report: status=error (`report.html#entry-f81ea3a07d5a5458`)
+  - before: `chrome/example.invalid.png`
+  - after: `fastrender/example.invalid.png`
   - error: boom
 
 ### Commands
 
 ```bash
-bash scripts/cargo_agent.sh xtask page-loop --pageset https://example.org/ --viewport 1200x800 --dpr 1.0 --media screen --chrome --overlay --inspect-dump-json --write-snapshot
+bash scripts/cargo_agent.sh xtask page-loop --pageset https://example.invalid/ --viewport 1200x800 --dpr 1.0 --media screen --chrome --overlay --inspect-dump-json --write-snapshot
 ```
 
 Capture fixture:
 
 ```bash
-bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch https://example.org/ --no-render --out target/page-fixture-bundles/example.org.tar --viewport 1200x800 --dpr 1.0
-bash scripts/cargo_agent.sh xtask import-page-fixture target/page-fixture-bundles/example.org.tar example.org
-bash scripts/cargo_agent.sh xtask validate-page-fixtures --only example.org
+bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch https://example.invalid/ --no-render --out target/page-fixture-bundles/example.invalid.tar --viewport 1200x800 --dpr 1.0
+bash scripts/cargo_agent.sh xtask import-page-fixture target/page-fixture-bundles/example.invalid.tar example.invalid
+bash scripts/cargo_agent.sh xtask validate-page-fixtures --only example.invalid
 ```
 
 ### Brokenness inventory
