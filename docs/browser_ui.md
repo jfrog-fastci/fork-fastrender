@@ -59,6 +59,14 @@ bash scripts/run_limited.sh --as 64G -- \
 The `browser` binary also supports an in-process, best-effort address-space cap via
 `FASTR_BROWSER_MEM_LIMIT_MB` (see [env-vars.md](env-vars.md)).
 
+To prevent huge in-process pixmap allocations when the window is resized to extreme sizes (or when
+running on very high-DPI displays), the browser UI also clamps viewport/DPR based on these env vars
+(see [env-vars.md](env-vars.md) for defaults and details):
+
+- `FASTR_BROWSER_MAX_PIXELS`
+- `FASTR_BROWSER_MAX_DIM_PX`
+- `FASTR_BROWSER_MAX_DPR`
+
 For CI environments without a display/GPU, the `browser` entrypoint provides **test-only** headless
 hooks to exercise startup and UI↔worker wiring without creating a window:
 

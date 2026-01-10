@@ -79,6 +79,9 @@ binary)”). Notably:
 
 - `FASTR_BROWSER_MEM_LIMIT_MB=<MiB>` – best-effort address-space (virtual memory) limit for the
   `browser` process. This is applied at process start (and may be unsupported on some platforms).
+- `FASTR_BROWSER_MAX_PIXELS`, `FASTR_BROWSER_MAX_DIM_PX`, `FASTR_BROWSER_MAX_DPR` – hard safety
+  limits for viewport/DPR to prevent huge in-process pixmap allocations when the window is resized
+  to extreme dimensions or when the display has a very high DPI scale.
 
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).
