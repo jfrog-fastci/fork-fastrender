@@ -7628,6 +7628,9 @@ impl ImageCache {
         px[2] = 0;
         continue;
       }
+      if a == 255 {
+        continue;
+      }
 
       // Match `image_output`'s unpremultiplication semantics exactly:
       // - compute alpha as f32
