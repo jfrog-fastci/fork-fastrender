@@ -16,6 +16,8 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - JavaScript support workstream: [`instructions/javascript_support.md`](../instructions/javascript_support.md)
 - `ecma-rs` submodule workflow: [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)
 - JavaScript integration architecture: [javascript.md](javascript.md)
+- HTML `<script>` processing model (spec-mapped): [html_script_processing.md](html_script_processing.md)
+- Import maps (spec-mapped parsing/normalization): [import_maps.md](import_maps.md)
 - WebIDL bindings/codegen pipeline: [webidl_bindings.md](webidl_bindings.md)
 - Running the renderer: [running.md](running.md)
 - CLI tools & workflows: [cli.md](cli.md)

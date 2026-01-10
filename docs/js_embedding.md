@@ -81,7 +81,8 @@ What `BrowserTab` does today:
 What it does **not** do yet (important gaps):
 
 - fully spec-correct parser/event-loop interleaving (e.g. “async-ready” scripts interrupting parsing),
-- module scripts / import maps,
+- module scripts / import maps (import map parsing exists but is not wired into module loading yet; see
+  [`docs/import_maps.md`](import_maps.md)),
 - a production author-script JS runtime + full DOM/WebIDL exposure (still being built out).
 
 ### Minimal Rust example (create doc → run loop → render)
@@ -386,7 +387,8 @@ The JS workstream is intentionally staged. Today, important missing/unsupported 
 
 - `BrowserDocumentDom2::from_html(...)` does not execute author `<script>` elements by itself (script
   execution is hosted by `BrowserTab`; see [`docs/html_script_processing.md`](html_script_processing.md))
-- no module scripts (`type="module"`), no import maps, no dynamic `import()`
+- no module scripts (`type="module"`), no import maps (`type="importmap"`; parsing exists but is not yet
+  integrated; see [`docs/import_maps.md`](import_maps.md)), no dynamic `import()`
 - no `document.write()` / parser re-entry
 - no CSP/SRI/CORS nuances for scripts
 - no full DOM/Web API surface exposed to JS yet (bindings are still being built out)
