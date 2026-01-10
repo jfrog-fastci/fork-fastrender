@@ -4944,6 +4944,27 @@ impl GridFormattingContext {
       PhysicalAxis::Y => root_layout.size.height,
     };
     let root_axis_style = GridAxisStyle::from_style(box_node.style.as_ref());
+    let root_inline_is_horizontal = root_axis_style.inline_is_horizontal();
+    let mut mirror_x = false;
+    let mut mirror_y = false;
+    if !root_axis_style.inline_positive() {
+      if root_inline_is_horizontal {
+        mirror_x = true;
+      } else {
+        mirror_y = true;
+      }
+    }
+    if !root_axis_style.block_positive() {
+      if root_inline_is_horizontal {
+        mirror_y = true;
+      } else {
+        mirror_x = true;
+      }
+    }
+    let block_axis_mirrored = match fragment_block_axis {
+      PhysicalAxis::X => mirror_x,
+      PhysicalAxis::Y => mirror_y,
+    };
 
     let mut child_bounds: Vec<Rect> = Vec::with_capacity(child_ids.len());
     let mut reused_fragments: Vec<Option<FragmentNode>> = vec![None; child_ids.len()];
@@ -5175,11 +5196,12 @@ impl GridFormattingContext {
       {
         return None;
       }
-      let child_rel_flow_start = if fragmentainer_axes_resolved.block_positive() {
-        child_block_start_phys
-      } else {
-        container_block_size - child_block_start_phys - child_block_size
-      };
+      let child_rel_flow_start =
+        if fragmentainer_axes_resolved.block_positive() ^ block_axis_mirrored {
+          child_block_start_phys
+        } else {
+          container_block_size - child_block_start_phys - child_block_size
+        };
       if !(child_rel_flow_start.is_finite() && child_rel_flow_start >= 0.0) {
         return None;
       }
@@ -5931,6 +5953,31 @@ impl GridFormattingContext {
       let fragment_block_axis = fragmentainer_axes_hint()
         .map(|axes| axes.block_axis())
         .unwrap_or(PhysicalAxis::Y);
+      let block_axis_mirrored = containing_grid_axis
+        .map(|axis_style| {
+          let inline_is_horizontal = axis_style.inline_is_horizontal();
+          let mut mirror_x = false;
+          let mut mirror_y = false;
+          if !axis_style.inline_positive() {
+            if inline_is_horizontal {
+              mirror_x = true;
+            } else {
+              mirror_y = true;
+            }
+          }
+          if !axis_style.block_positive() {
+            if inline_is_horizontal {
+              mirror_y = true;
+            } else {
+              mirror_x = true;
+            }
+          }
+          match fragment_block_axis {
+            PhysicalAxis::X => mirror_x,
+            PhysicalAxis::Y => mirror_y,
+          }
+        })
+        .unwrap_or(false);
       let container_block_size = if taffy.parent(node_id) == Some(root_id) {
         let root_layout = taffy
           .layout(root_id)
@@ -6014,7 +6061,20 @@ impl GridFormattingContext {
             })
             .filter(|size| size.is_finite())
             .unwrap_or(0.0);
-          let child_block_start = fragmentainer_axes_resolved.block_start(&bounds, parent_block_size);
+          let child_block_start_phys = match fragmentainer_axes_resolved.block_axis() {
+            PhysicalAxis::X => bounds.x(),
+            PhysicalAxis::Y => bounds.y(),
+          };
+          let child_block_size = match fragmentainer_axes_resolved.block_axis() {
+            PhysicalAxis::X => bounds.width(),
+            PhysicalAxis::Y => bounds.height(),
+          };
+          let child_block_start =
+            if fragmentainer_axes_resolved.block_positive() ^ block_axis_mirrored {
+              child_block_start_phys
+            } else {
+              parent_block_size - child_block_start_phys - child_block_size
+            };
           let child_block_start = if child_block_start.is_finite() {
             child_block_start
           } else {
