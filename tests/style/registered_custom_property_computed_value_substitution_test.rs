@@ -62,6 +62,24 @@ fn registered_custom_property_length_substitutes_computed_value_on_same_element(
 }
 
 #[test]
+fn registered_custom_property_length_initial_value_supports_cap() {
+  let css = r#"
+    @property --len {
+      syntax: "<length>";
+      inherits: false;
+      initial-value: 1cap;
+    }
+    #root { font-size: 10px; margin-left: var(--len); }
+  "#;
+  let sheet = parse_stylesheet(css).unwrap();
+  let dom = dom_with_child();
+  let styled = apply_styles(&dom, &sheet);
+
+  // 1cap uses the deterministic fallback: 0.7 * font-size.
+  assert_eq!(styled.styles.margin_left, Some(Length::px(7.0)));
+}
+
+#[test]
 fn registered_custom_property_length_max_is_not_flattened_across_arguments() {
   let css = r#"
     @property --len {

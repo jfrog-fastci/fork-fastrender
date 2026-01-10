@@ -6395,6 +6395,40 @@ mod tests {
   }
 
   #[test]
+  fn parses_values_and_units_4_font_relative_units() {
+    let cap = parse_length("1cap").expect("parse cap");
+    assert_eq!(cap.value, 1.0);
+    assert_eq!(cap.unit, LengthUnit::Cap);
+
+    let ic = parse_length("2ic").expect("parse ic");
+    assert_eq!(ic.value, 2.0);
+    assert_eq!(ic.unit, LengthUnit::Ic);
+
+    let rex = parse_length("3rex").expect("parse rex");
+    assert_eq!(rex.value, 3.0);
+    assert_eq!(rex.unit, LengthUnit::Rex);
+
+    let rch = parse_length("4rch").expect("parse rch");
+    assert_eq!(rch.value, 4.0);
+    assert_eq!(rch.unit, LengthUnit::Rch);
+
+    let rcap = parse_length("5rcap").expect("parse rcap");
+    assert_eq!(rcap.value, 5.0);
+    assert_eq!(rcap.unit, LengthUnit::Rcap);
+
+    let ric = parse_length("6ric").expect("parse ric");
+    assert_eq!(ric.value, 6.0);
+    assert_eq!(ric.unit, LengthUnit::Ric);
+
+    let rlh = parse_length("3rlh").expect("parse rlh");
+    assert_eq!(rlh.value, 3.0);
+    assert_eq!(rlh.unit, LengthUnit::Rlh);
+
+    let calc = parse_length("calc(1cap + 2ic)").expect("parse calc cap+ic");
+    assert_eq!(calc.unit, LengthUnit::Calc);
+  }
+
+  #[test]
   fn parses_env_safe_area_insets() {
     assert_eq!(
       parse_length("env(safe-area-inset-left)").unwrap(),
@@ -6928,7 +6962,6 @@ fn parse_calc_factor<'i, 't>(
         "rem" => LengthUnit::Rem,
         "ex" => LengthUnit::Ex,
         "ch" => LengthUnit::Ch,
-        "lh" => LengthUnit::Lh,
         "cap" => LengthUnit::Cap,
         "ic" => LengthUnit::Ic,
         "rex" => LengthUnit::Rex,
@@ -6936,6 +6969,7 @@ fn parse_calc_factor<'i, 't>(
         "rcap" => LengthUnit::Rcap,
         "ric" => LengthUnit::Ric,
         "rlh" => LengthUnit::Rlh,
+        "lh" => LengthUnit::Lh,
         "pt" => LengthUnit::Pt,
         "pc" => LengthUnit::Pc,
         "in" => LengthUnit::In,

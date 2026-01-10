@@ -7,7 +7,7 @@
 //!
 //! CSS supports various length units. We categorize them as:
 //! - **Absolute**: px, pt, pc, in, cm, mm
-//! - **Font-relative**: em, rem, ex, ch, lh
+//! - **Font-relative**: em, rem, ex, ch, lh, cap, ic, rex, rch, rcap, ric, rlh
 //! - **Viewport-relative**: vw, vh, vmin, vmax
 //! - **Percentages**: Relative to containing block or font size
 //!
@@ -189,7 +189,7 @@ impl LengthUnit {
     )
   }
 
-  /// Returns true if this is a font-relative unit (em, rem, ex, ch, lh)
+  /// Returns true if this is a font-relative unit (em, rem, ex, ch, lh, cap, ic, rex, rch, rcap, ric, rlh)
   ///
   /// Font-relative units require font metrics to resolve.
   ///
@@ -287,7 +287,6 @@ impl LengthUnit {
       Self::Rem => "rem",
       Self::Ex => "ex",
       Self::Ch => "ch",
-      Self::Lh => "lh",
       Self::Cap => "cap",
       Self::Ic => "ic",
       Self::Rex => "rex",
@@ -295,6 +294,7 @@ impl LengthUnit {
       Self::Rcap => "rcap",
       Self::Ric => "ric",
       Self::Rlh => "rlh",
+      Self::Lh => "lh",
       Self::Vw => "vw",
       Self::Vh => "vh",
       Self::Vi => "vi",
@@ -1588,16 +1588,16 @@ impl CalcLength {
         }
         LengthUnit::Em => Some(term.value * font_size_px),
         LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size_px * 0.5),
-        LengthUnit::Rem => Some(term.value * root_font_size_px),
         LengthUnit::Cap => Some(term.value * font_size_px * 0.7),
         LengthUnit::Ic => Some(term.value * font_size_px),
+        LengthUnit::Rem => Some(term.value * root_font_size_px),
         LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_font_size_px * 0.5),
         LengthUnit::Rcap => Some(term.value * root_font_size_px * 0.7),
         LengthUnit::Ric => Some(term.value * root_font_size_px),
-        LengthUnit::Rlh => Some(term.value * root_font_size_px * 1.2),
         // Without access to computed `line-height`, fall back to the `normal` approximation.
         // Layout code that has access to `ComputedStyle` should resolve `lh` more accurately.
         LengthUnit::Lh => Some(term.value * font_size_px * 1.2),
+        LengthUnit::Rlh => Some(term.value * root_font_size_px * 1.2),
         LengthUnit::Calc => None,
         _ => None,
       }
@@ -1721,16 +1721,16 @@ impl CalcLength {
         u if u.is_viewport_relative() => resolve_viewport(u, term.value),
         LengthUnit::Em => Some(term.value * font_size_px),
         LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size_px * 0.5),
-        LengthUnit::Rem => Some(term.value * root_font_size_px),
         LengthUnit::Cap => Some(term.value * font_size_px * 0.7),
         LengthUnit::Ic => Some(term.value * font_size_px),
+        LengthUnit::Rem => Some(term.value * root_font_size_px),
         LengthUnit::Rex | LengthUnit::Rch => Some(term.value * root_font_size_px * 0.5),
         LengthUnit::Rcap => Some(term.value * root_font_size_px * 0.7),
         LengthUnit::Ric => Some(term.value * root_font_size_px),
-        LengthUnit::Rlh => Some(term.value * root_font_size_px * 1.2),
         // Without access to computed `line-height`, fall back to the `normal` approximation.
         // Layout code that has access to `ComputedStyle` should resolve `lh` more accurately.
         LengthUnit::Lh => Some(term.value * font_size_px * 1.2),
+        LengthUnit::Rlh => Some(term.value * root_font_size_px * 1.2),
         LengthUnit::Calc => None,
         _ => None,
       }
@@ -1999,6 +1999,13 @@ mod tests {
 
     assert!(LengthUnit::Em.is_font_relative());
     assert!(LengthUnit::Rem.is_font_relative());
+    assert!(LengthUnit::Cap.is_font_relative());
+    assert!(LengthUnit::Ic.is_font_relative());
+    assert!(LengthUnit::Rex.is_font_relative());
+    assert!(LengthUnit::Rch.is_font_relative());
+    assert!(LengthUnit::Rcap.is_font_relative());
+    assert!(LengthUnit::Ric.is_font_relative());
+    assert!(LengthUnit::Rlh.is_font_relative());
     assert!(LengthUnit::Lh.is_font_relative());
 
     assert!(LengthUnit::Vw.is_viewport_relative());
@@ -2013,6 +2020,8 @@ mod tests {
   fn test_length_unit_as_str() {
     assert_eq!(LengthUnit::Px.as_str(), "px");
     assert_eq!(LengthUnit::Em.as_str(), "em");
+    assert_eq!(LengthUnit::Cap.as_str(), "cap");
+    assert_eq!(LengthUnit::Ic.as_str(), "ic");
     assert_eq!(LengthUnit::Lh.as_str(), "lh");
     assert_eq!(LengthUnit::Percent.as_str(), "%");
   }
@@ -2082,6 +2091,12 @@ mod tests {
 
     let ch = Length::ch(3.0);
     assert_eq!(ch.resolve_with_font_size(16.0), Some(24.0));
+
+    let cap = Length::new(2.0, LengthUnit::Cap);
+    assert_eq!(cap.resolve_with_font_size(10.0), Some(14.0));
+
+    let ic = Length::new(2.0, LengthUnit::Ic);
+    assert_eq!(ic.resolve_with_font_size(10.0), Some(20.0));
   }
 
   #[test]
@@ -2813,12 +2828,13 @@ impl Length {
       LengthUnit::Em | LengthUnit::Rem => Some(self.value * font_size_px),
       // Approximate ex/ch with font metrics; fallback to 0.5em when actual x-height/zero-width is unknown.
       LengthUnit::Ex | LengthUnit::Ch => Some(self.value * font_size_px * 0.5),
-      // Without the computed `line-height` property, treat `lh` as `normal` (1.2 * font-size).
-      LengthUnit::Lh => Some(self.value * font_size_px * 1.2),
-      // Without font metrics, approximate cap-height as 0.7em.
       LengthUnit::Cap => Some(self.value * font_size_px * 0.7),
-      // Without font metrics, approximate `ic` as 1em.
       LengthUnit::Ic => Some(self.value * font_size_px),
+      LengthUnit::Rex | LengthUnit::Rch => Some(self.value * font_size_px * 0.5),
+      LengthUnit::Rcap => Some(self.value * font_size_px * 0.7),
+      LengthUnit::Ric => Some(self.value * font_size_px),
+      // Without the computed `line-height` property, treat `lh`/`rlh` as `normal` (1.2 * font-size).
+      LengthUnit::Lh | LengthUnit::Rlh => Some(self.value * font_size_px * 1.2),
       _ if self.unit.is_absolute() => Some(self.to_px()),
       _ => None,
     }
@@ -3685,7 +3701,42 @@ fn compute_custom_property_length(length: Length, ctx: &CustomPropertyComputeCon
         length
       }
     }
+    LengthUnit::Cap => {
+      if ctx.font_size.is_finite() {
+        Length::px(length.value * ctx.font_size * 0.7)
+      } else {
+        length
+      }
+    }
+    LengthUnit::Ic => {
+      if ctx.font_size.is_finite() {
+        Length::px(length.value * ctx.font_size)
+      } else {
+        length
+      }
+    }
     LengthUnit::Rem => {
+      if ctx.root_font_size.is_finite() {
+        Length::px(length.value * ctx.root_font_size)
+      } else {
+        length
+      }
+    }
+    LengthUnit::Rex | LengthUnit::Rch => {
+      if ctx.root_font_size.is_finite() {
+        Length::px(length.value * ctx.root_font_size * 0.5)
+      } else {
+        length
+      }
+    }
+    LengthUnit::Rcap => {
+      if ctx.root_font_size.is_finite() {
+        Length::px(length.value * ctx.root_font_size * 0.7)
+      } else {
+        length
+      }
+    }
+    LengthUnit::Ric => {
       if ctx.root_font_size.is_finite() {
         Length::px(length.value * ctx.root_font_size)
       } else {
@@ -3695,6 +3746,14 @@ fn compute_custom_property_length(length: Length, ctx: &CustomPropertyComputeCon
     LengthUnit::Lh => {
       if ctx.line_height.is_finite() {
         Length::px(length.value * ctx.line_height)
+      } else {
+        length
+      }
+    }
+    LengthUnit::Rlh => {
+      if ctx.root_font_size.is_finite() {
+        // Root `line-height` is not available in this pass; approximate `rlh` as `normal` (1.2em).
+        Length::px(length.value * ctx.root_font_size * 1.2)
       } else {
         length
       }
@@ -3852,7 +3911,42 @@ fn compute_custom_property_calc_term(
       value *= ctx.font_size * 0.5;
       LengthUnit::Px
     }
+    LengthUnit::Cap => {
+      if !ctx.font_size.is_finite() {
+        return Some(term);
+      }
+      value *= ctx.font_size * 0.7;
+      LengthUnit::Px
+    }
+    LengthUnit::Ic => {
+      if !ctx.font_size.is_finite() {
+        return Some(term);
+      }
+      value *= ctx.font_size;
+      LengthUnit::Px
+    }
     LengthUnit::Rem => {
+      if !ctx.root_font_size.is_finite() {
+        return Some(term);
+      }
+      value *= ctx.root_font_size;
+      LengthUnit::Px
+    }
+    LengthUnit::Rex | LengthUnit::Rch => {
+      if !ctx.root_font_size.is_finite() {
+        return Some(term);
+      }
+      value *= ctx.root_font_size * 0.5;
+      LengthUnit::Px
+    }
+    LengthUnit::Rcap => {
+      if !ctx.root_font_size.is_finite() {
+        return Some(term);
+      }
+      value *= ctx.root_font_size * 0.7;
+      LengthUnit::Px
+    }
+    LengthUnit::Ric => {
       if !ctx.root_font_size.is_finite() {
         return Some(term);
       }
@@ -3864,6 +3958,14 @@ fn compute_custom_property_calc_term(
         return Some(term);
       }
       value *= ctx.line_height;
+      LengthUnit::Px
+    }
+    LengthUnit::Rlh => {
+      if !ctx.root_font_size.is_finite() {
+        return Some(term);
+      }
+      // Root `line-height` is not available in this pass; approximate `rlh` as `normal` (1.2em).
+      value *= ctx.root_font_size * 1.2;
       LengthUnit::Px
     }
     LengthUnit::Calc => LengthUnit::Calc,

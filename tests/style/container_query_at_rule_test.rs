@@ -1701,3 +1701,44 @@ fn container_query_resolves_lh_inside_calc_in_size_features() {
   // line-height = 2 * 10px = 20px, the query is `min-width: 79px`, so it should not match.
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
 }
+
+#[test]
+fn container_query_resolves_cap_and_rlh_fallbacks() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: calc(10cap + 1rlh)) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.container_type = ContainerType::Size;
+  style.writing_mode = WritingMode::HorizontalTb;
+  style.font_size = 10.0;
+  style.root_font_size = 16.0;
+  style.line_height = LineHeight::Number(2.0);
+  let styles = Arc::new(style);
+
+  let styled = cascade_with_containers(
+    HTML,
+    css,
+    vec![(
+      "c",
+      ContainerQueryInfo {
+        width: 85.0,
+        height: 100.0,
+        inline_size: 85.0,
+        block_size: 100.0,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: styles.font_size,
+        styles: Arc::clone(&styles),
+      },
+    )],
+  );
+
+  // With font-size = 10px, 10cap resolves to 10 * (0.7 * 10px) = 70px. Root font-size defaults to
+  // 16px, so 1rlh resolves to 1.2 * 16px = 19.2px. The total is 89.2px, so the query should not
+  // match a 85px container.
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}

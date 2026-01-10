@@ -56,6 +56,18 @@ fn rejects_media_query_with_invalid_length_unit() {
 }
 
 #[test]
+fn media_query_cap_uses_font_metric_fallback_ratio() {
+  let min_query = MediaQuery::parse("(min-width: 1cap)").expect("parse min-width cap");
+  let max_query = MediaQuery::parse("(max-width: 1cap)").expect("parse max-width cap");
+
+  // Default MQ base font size is 16px. With the deterministic fallback model:
+  // 1cap = 0.7 * 16px = 11.2px.
+  let ctx = MediaContext::screen(10.0, 10.0);
+  assert!(!ctx.evaluate(&min_query));
+  assert!(ctx.evaluate(&max_query));
+}
+
+#[test]
 fn media_query_calc_percentage_resolves_against_axis() {
   // FastRender allows `%` terms inside `calc()` for MQ length features and resolves them against the
   // relevant axis (e.g. width percentages use the viewport width). This matches common authoring
