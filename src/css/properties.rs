@@ -2968,8 +2968,45 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "-webkit-box-orient" | "box-orient" => {
       return keyword_in_list(parsed, &["horizontal", "vertical"])
     }
-    "box-pack" => return keyword_in_list(parsed, &["start", "end", "center", "justify"]),
-    "box-align" => return keyword_in_list(parsed, &["start", "end", "center", "baseline", "stretch"]),
+    "box-pack" => {
+      return keyword_in_list(
+        parsed,
+        &[
+          "start",
+          "end",
+          "center",
+          "justify",
+          "flex-start",
+          "flex-end",
+          "space-between",
+          "space-around",
+          "space-evenly",
+          "stretch",
+          "left",
+          "right",
+          "normal",
+        ],
+      )
+    }
+    "box-align" => {
+      return keyword_in_list(
+        parsed,
+        &[
+          "start",
+          "end",
+          "center",
+          "baseline",
+          "stretch",
+          "flex-start",
+          "flex-end",
+          "top",
+          "bottom",
+          "left",
+          "right",
+          "normal",
+        ],
+      )
+    }
     "box-direction" => return keyword_in_list(parsed, &["normal", "reverse"]),
     "box-flex-wrap" => return keyword_in_list(parsed, &["nowrap", "wrap", "wrap-reverse"]),
     "box-flex" => {

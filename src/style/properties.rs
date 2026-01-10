@@ -9888,33 +9888,36 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "box-pack" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.justify_content = if kw.eq_ignore_ascii_case("start") {
-          JustifyContent::FlexStart
-        } else if kw.eq_ignore_ascii_case("end") {
-          JustifyContent::FlexEnd
-        } else if kw.eq_ignore_ascii_case("center") {
-          JustifyContent::Center
-        } else if kw.eq_ignore_ascii_case("justify") {
-          JustifyContent::SpaceBetween
-        } else {
-          styles.justify_content
+        let lower = kw.to_ascii_lowercase();
+        styles.justify_content = match lower.as_str() {
+          // 2009 flexbox syntax: `start | end | center | justify`.
+          //
+          // Real-world prefixed CSS often carries modern keywords here (from tooling like
+          // autoprefixers). Accept a common superset and map to the closest flexbox equivalent.
+          "start" | "flex-start" | "normal" | "left" => JustifyContent::FlexStart,
+          "end" | "flex-end" | "right" => JustifyContent::FlexEnd,
+          "center" => JustifyContent::Center,
+          "justify" | "space-between" => JustifyContent::SpaceBetween,
+          "space-around" => JustifyContent::SpaceAround,
+          "space-evenly" => JustifyContent::SpaceEvenly,
+          "stretch" => JustifyContent::Stretch,
+          _ => styles.justify_content,
         };
       }
     }
     "box-align" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.align_items = if kw.eq_ignore_ascii_case("start") {
-          AlignItems::FlexStart
-        } else if kw.eq_ignore_ascii_case("end") {
-          AlignItems::FlexEnd
-        } else if kw.eq_ignore_ascii_case("center") {
-          AlignItems::Center
-        } else if kw.eq_ignore_ascii_case("baseline") {
-          AlignItems::Baseline
-        } else if kw.eq_ignore_ascii_case("stretch") {
-          AlignItems::Stretch
-        } else {
-          styles.align_items
+        let lower = kw.to_ascii_lowercase();
+        styles.align_items = match lower.as_str() {
+          // 2009 flexbox syntax: `start | end | center | baseline | stretch`.
+          //
+          // Accept common modern keywords as well (e.g. `flex-start`, `flex-end`, `normal`).
+          "start" | "flex-start" | "top" | "left" => AlignItems::FlexStart,
+          "end" | "flex-end" | "bottom" | "right" => AlignItems::FlexEnd,
+          "center" => AlignItems::Center,
+          "baseline" => AlignItems::Baseline,
+          "stretch" | "normal" => AlignItems::Stretch,
+          _ => styles.align_items,
         };
       }
     }
@@ -24111,6 +24114,35 @@ mod tests {
     assert_eq!(styles.flex_wrap, FlexWrap::WrapReverse);
     assert!((styles.flex_grow - 2.0).abs() < f32::EPSILON);
     assert_eq!(styles.order, 0);
+  }
+
+  #[test]
+  fn legacy_webkit_box_accepts_modern_alignment_keywords() {
+    let decls = parse_declarations(
+      "-webkit-box-pack: space-evenly; box-pack: normal; box-pack: stretch; -webkit-box-align: top; box-align: flex-end; box-align: normal;",
+    );
+    assert_eq!(decls.len(), 6);
+
+    let mut styles = ComputedStyle::default();
+    let parent = ComputedStyle::default();
+
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.justify_content, JustifyContent::SpaceEvenly);
+
+    apply_declaration(&mut styles, &decls[1], &parent, 16.0, 16.0);
+    assert_eq!(styles.justify_content, JustifyContent::FlexStart);
+
+    apply_declaration(&mut styles, &decls[2], &parent, 16.0, 16.0);
+    assert_eq!(styles.justify_content, JustifyContent::Stretch);
+
+    apply_declaration(&mut styles, &decls[3], &parent, 16.0, 16.0);
+    assert_eq!(styles.align_items, AlignItems::FlexStart);
+
+    apply_declaration(&mut styles, &decls[4], &parent, 16.0, 16.0);
+    assert_eq!(styles.align_items, AlignItems::FlexEnd);
+
+    apply_declaration(&mut styles, &decls[5], &parent, 16.0, 16.0);
+    assert_eq!(styles.align_items, AlignItems::Stretch);
   }
 
   #[test]

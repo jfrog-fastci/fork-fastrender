@@ -215,10 +215,15 @@ mod tests {
   fn supports_legacy_webkit_box_alignment_and_order_properties() {
     assert!(supports_declaration("-webkit-box-pack", "center"));
     assert!(supports_declaration("box-pack", "justify"));
-    assert!(!supports_declaration("box-pack", "space-evenly"));
+    assert!(supports_declaration("box-pack", "space-evenly"));
+    assert!(supports_declaration("box-pack", "normal"));
+    assert!(supports_declaration("box-pack", "stretch"));
 
     assert!(supports_declaration("-webkit-box-align", "baseline"));
     assert!(supports_declaration("box-align", "stretch"));
+    assert!(supports_declaration("-webkit-box-align", "top"));
+    assert!(supports_declaration("box-align", "flex-end"));
+    assert!(supports_declaration("box-align", "normal"));
     assert!(!supports_declaration("box-align", "auto"));
 
     assert!(supports_declaration("-webkit-box-direction", "reverse"));

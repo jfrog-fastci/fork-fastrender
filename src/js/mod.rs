@@ -34,6 +34,8 @@
 
 pub mod dom_scripts;
 pub mod dom_host;
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
 pub mod cookie_jar;
 pub mod dom2_bindings;
 // Legacy dynamic `<script>` insertion helper used by some unit tests and DOM-mutation plumbing.
