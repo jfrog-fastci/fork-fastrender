@@ -158,6 +158,27 @@ fn exec_script_with_host_and_hooks_threads_host_context_and_records_promise_jobs
   Ok(())
 }
 
+#[test]
+fn exec_script_with_hooks_passes_dummy_vmhost_context_for_native_calls() -> Result<(), VmError> {
+  // Regression guard: `exec_script_with_hooks`/`exec_script_source_with_hooks` preserve the historic
+  // behavior of running native calls with a dummy host context (`()`), while still routing Promise
+  // jobs through the supplied hooks.
+  //
+  // Embeddings that need real host state for native calls should use the new
+  // `exec_script*_with_host_and_hooks` entrypoints instead.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  rt.register_global_native_function("inc", inc_host_counter, 0)?;
+
+  let mut hooks = NoopHooks::default();
+  let err = rt
+    .exec_script_with_hooks(&mut hooks, "inc();")
+    .expect_err("expected dummy host context to fail Host downcast");
+  assert!(matches!(err, VmError::Unimplemented(_)));
+  Ok(())
+}
+
 struct HostJobContext<'a> {
   rt: &'a mut JsRuntime,
   host: &'a mut Host,
