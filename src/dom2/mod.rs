@@ -661,9 +661,9 @@ impl Document {
       parent,
       children: Vec::new(),
       inert_subtree,
-      script_force_async: false,
       script_already_started: false,
       script_parser_document: false,
+      script_force_async: false,
       mathml_annotation_xml_integration_point: false,
     });
     if let Some(parent_id) = parent {
