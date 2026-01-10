@@ -5020,13 +5020,6 @@ impl ImageCache {
     if resource.bytes.is_empty() {
       return Ok(self.cache_placeholder_image(cache_key));
     }
-    // `ResourceFetcher` implementations (notably the offline fixture tooling) may substitute missing
-    // image responses with a deterministic 1×1 transparent PNG. This is a "missing image" sentinel
-    // and must behave like our internal `about:` placeholder so callers can reliably detect it
-    // (e.g. replaced `<img>` fallback UI / broken-image icon).
-    if resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes() {
-      return Ok(self.cache_placeholder_image(cache_key));
-    }
     if should_substitute_markup_payload_for_image(
       resolved_url,
       resource.final_url.as_deref(),
@@ -9237,6 +9230,54 @@ mod tests {
     assert!(
       diag.invalid_images.is_empty(),
       "empty-body placeholder images should not be treated as invalid images"
+    );
+  }
+
+  #[test]
+  fn image_cache_raw_cached_offline_placeholder_png_is_recognized_as_placeholder() {
+    #[derive(Clone)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("fetch should not be called when raw cache is populated");
+      }
+
+      fn fetch_partial_with_context(
+        &self,
+        _kind: FetchContextKind,
+        _url: &str,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        panic!("partial fetch should not be called when raw cache is populated");
+      }
+    }
+
+    let cache = ImageCache::with_fetcher(Arc::new(PanicFetcher));
+    let url = "https://example.com/offline-placeholder.png";
+    let cache_key = cache.cache_key_for_crossorigin(url, CrossOriginAttribute::None, None);
+
+    let mut resource = FetchedResource::with_final_url(
+      crate::resource::offline_placeholder_png_bytes().to_vec(),
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.status = Some(200);
+    let resource = Arc::new(resource);
+
+    if let Ok(mut guard) = cache.raw_cache.lock() {
+      guard.insert(cache_key, resource);
+    } else {
+      // If the lock is poisoned, reset and insert into the recovered map.
+      let mut guard = cache.raw_cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      guard.clear();
+      guard.insert(cache_key, resource);
+    }
+
+    let image = cache.load(url).expect("image should load from raw cache");
+    assert!(
+      cache.is_placeholder_image(&image),
+      "offline fixture placeholder PNG should load as the about: placeholder image"
     );
   }
 

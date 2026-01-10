@@ -2021,7 +2021,6 @@ impl InteractionEngine {
   pub fn take_last_form_submitter(&mut self) -> Option<usize> {
     self.last_form_submitter.take()
   }
-
   fn set_focus(
     &mut self,
     index: &mut DomIndexMut,

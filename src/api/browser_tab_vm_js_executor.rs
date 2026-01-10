@@ -228,7 +228,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let source = Arc::new(SourceText::new(name, Arc::from(script_text)));
 
     let exec_result: Result<()> = with_event_loop(event_loop, || {
-      update_time_bindings_clock(realm.heap(), clock.clone()).map_err(|err| Error::Other(err.to_string()))?;
+      update_time_bindings_clock(realm.heap(), clock.clone())
+        .map_err(|err| Error::Other(err.to_string()))?;
       realm.set_base_url(spec.base_url.clone());
       realm.reset_interrupt();
 
@@ -503,7 +504,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       };
       event_loop.clock()
     };
- 
+
     update_time_bindings_clock(realm.heap(), clock).map_err(|err| Error::Other(err.to_string()))?;
     realm.reset_interrupt();
     let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
