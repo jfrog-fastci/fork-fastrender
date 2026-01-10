@@ -4864,6 +4864,42 @@ fn radius_for_corner(style: &ComputedStyle, corner: PhysicalCorner) -> BorderCor
   }
 }
 
+fn webkit_box_flex_direction(orient: WebkitBoxOrient, direction: WebkitBoxDirection) -> FlexDirection {
+  match (orient, direction) {
+    (WebkitBoxOrient::Horizontal, WebkitBoxDirection::Normal) => FlexDirection::Row,
+    (WebkitBoxOrient::Horizontal, WebkitBoxDirection::Reverse) => FlexDirection::RowReverse,
+    (WebkitBoxOrient::Vertical, WebkitBoxDirection::Normal) => FlexDirection::Column,
+    (WebkitBoxOrient::Vertical, WebkitBoxDirection::Reverse) => FlexDirection::ColumnReverse,
+  }
+}
+
+fn update_flex_direction_from_webkit_box(styles: &mut ComputedStyle) {
+  styles.flex_direction = webkit_box_flex_direction(styles.webkit_box_orient, styles.webkit_box_direction);
+}
+
+fn update_webkit_box_display_for_line_clamp(styles: &mut ComputedStyle) {
+  if !styles.display_is_webkit_box {
+    return;
+  }
+
+  let inline = matches!(styles.display, Display::InlineFlex | Display::InlineBlock);
+  let should_force_flow = styles.line_clamp_source == LineClampSource::Webkit
+    && styles.line_clamp.is_some()
+    && styles.webkit_box_orient == WebkitBoxOrient::Vertical;
+
+  styles.display = if should_force_flow {
+    if inline {
+      Display::InlineBlock
+    } else {
+      Display::Block
+    }
+  } else if inline {
+    Display::InlineFlex
+  } else {
+    Display::Flex
+  };
+}
+
 pub(crate) fn apply_property_from_source(
   styles: &mut ComputedStyle,
   source: &ComputedStyle,
@@ -4877,8 +4913,21 @@ pub(crate) fn apply_property_from_source(
     "display" => {
       styles.display = source.display;
       styles.display_is_webkit_box = source.display_is_webkit_box;
+      update_webkit_box_display_for_line_clamp(styles);
     }
-    "-webkit-box-orient" | "box-orient" => styles.webkit_box_orient = source.webkit_box_orient,
+    "-webkit-box-orient" | "box-orient" => {
+      styles.webkit_box_orient = source.webkit_box_orient;
+      update_flex_direction_from_webkit_box(styles);
+      update_webkit_box_display_for_line_clamp(styles);
+    }
+    "box-direction" => {
+      styles.webkit_box_direction = source.webkit_box_direction;
+      update_flex_direction_from_webkit_box(styles);
+    }
+    "box-pack" => styles.justify_content = source.justify_content,
+    "box-align" => styles.align_items = source.align_items,
+    "box-flex" => styles.flex_grow = source.flex_grow,
+    "box-ordinal-group" => styles.order = source.order,
     "visibility" => {
       styles.visibility = source.visibility;
       styles.visibility_is_inherited = source.visibility_is_inherited;
@@ -4898,10 +4947,12 @@ pub(crate) fn apply_property_from_source(
     "line-clamp" => {
       styles.line_clamp = source.line_clamp;
       styles.line_clamp_source = LineClampSource::Standard;
+      update_webkit_box_display_for_line_clamp(styles);
     }
     "-webkit-line-clamp" => {
       styles.line_clamp = source.line_clamp;
       styles.line_clamp_source = LineClampSource::Webkit;
+      update_webkit_box_display_for_line_clamp(styles);
     }
     "appearance" | "-webkit-appearance" | "-moz-appearance" => {
       styles.appearance = source.appearance.clone()
@@ -9579,32 +9630,92 @@ fn apply_declaration_with_base_internal_with_order(
     "display" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if kw.eq_ignore_ascii_case("-webkit-box") {
-          styles.display = Display::Block;
+          styles.display = Display::Flex;
           styles.display_is_webkit_box = true;
         } else if kw.eq_ignore_ascii_case("-webkit-inline-box") {
-          styles.display = Display::InlineBlock;
+          styles.display = Display::InlineFlex;
           styles.display_is_webkit_box = true;
         } else if let Ok(display) = Display::parse(kw) {
           styles.display = display;
           styles.display_is_webkit_box = false;
         }
+        update_webkit_box_display_for_line_clamp(styles);
       }
     }
-    "-webkit-box-orient" => {
+    "-webkit-box-orient" | "box-orient" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if kw.eq_ignore_ascii_case("vertical") {
           styles.webkit_box_orient = WebkitBoxOrient::Vertical;
         } else if kw.eq_ignore_ascii_case("horizontal") {
           styles.webkit_box_orient = WebkitBoxOrient::Horizontal;
         }
+        update_flex_direction_from_webkit_box(styles);
+        update_webkit_box_display_for_line_clamp(styles);
       }
     }
-    "box-orient" => {
+    "box-direction" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        if kw.eq_ignore_ascii_case("horizontal") {
-          styles.webkit_box_orient = WebkitBoxOrient::Horizontal;
-        } else if kw.eq_ignore_ascii_case("vertical") {
-          styles.webkit_box_orient = WebkitBoxOrient::Vertical;
+        if kw.eq_ignore_ascii_case("normal") {
+          styles.webkit_box_direction = WebkitBoxDirection::Normal;
+        } else if kw.eq_ignore_ascii_case("reverse") {
+          styles.webkit_box_direction = WebkitBoxDirection::Reverse;
+        }
+        update_flex_direction_from_webkit_box(styles);
+      }
+    }
+    "box-pack" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        styles.justify_content = if kw.eq_ignore_ascii_case("start") {
+          JustifyContent::FlexStart
+        } else if kw.eq_ignore_ascii_case("end") {
+          JustifyContent::FlexEnd
+        } else if kw.eq_ignore_ascii_case("center") {
+          JustifyContent::Center
+        } else if kw.eq_ignore_ascii_case("justify") {
+          JustifyContent::SpaceBetween
+        } else {
+          styles.justify_content
+        };
+      }
+    }
+    "box-align" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        styles.align_items = if kw.eq_ignore_ascii_case("start") {
+          AlignItems::FlexStart
+        } else if kw.eq_ignore_ascii_case("end") {
+          AlignItems::FlexEnd
+        } else if kw.eq_ignore_ascii_case("center") {
+          AlignItems::Center
+        } else if kw.eq_ignore_ascii_case("baseline") {
+          AlignItems::Baseline
+        } else if kw.eq_ignore_ascii_case("stretch") {
+          AlignItems::Stretch
+        } else {
+          styles.align_items
+        };
+      }
+    }
+    "box-flex" => {
+      let value: Option<f32> = match resolved_value {
+        PropertyValue::Number(n) => Some(*n),
+        PropertyValue::Keyword(raw) => raw.parse::<f32>().ok(),
+        _ => None,
+      };
+      if let Some(n) = value {
+        if n.is_finite() && n >= 0.0 {
+          styles.flex_grow = n;
+        }
+      }
+    }
+    "box-ordinal-group" => {
+      let value: Option<i64> = match resolved_value {
+        PropertyValue::Number(n) if n.is_finite() && n.fract() == 0.0 => Some(*n as i64),
+        PropertyValue::Keyword(raw) => raw.parse::<i64>().ok(),
+        _ => None,
+      };
+      if let Some(n) = value {
+        if (1..=i32::MAX as i64).contains(&n) {
+          styles.order = (n as i32) - 1;
         }
       }
     }
@@ -13640,6 +13751,7 @@ fn apply_declaration_with_base_internal_with_order(
         } else {
           LineClampSource::Webkit
         };
+        update_webkit_box_display_for_line_clamp(styles);
       }
     }
     "text-overflow" => {
@@ -23698,7 +23810,7 @@ mod tests {
       important: false,
     };
     apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
-    assert_eq!(styles.display, Display::Block);
+    assert_eq!(styles.display, Display::Flex);
     assert!(styles.display_is_webkit_box);
 
     let decl = Declaration {
@@ -23710,6 +23822,8 @@ mod tests {
     };
     apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
     assert_eq!(styles.webkit_box_orient, WebkitBoxOrient::Vertical);
+    assert_eq!(styles.flex_direction, FlexDirection::Column);
+    assert_eq!(styles.display, Display::Flex);
   }
 
   #[test]
@@ -23730,6 +23844,46 @@ mod tests {
     assert_eq!(styles.webkit_box_orient, WebkitBoxOrient::Vertical);
     assert_eq!(styles.line_clamp, Some(2));
     assert_eq!(styles.line_clamp_source, LineClampSource::Webkit);
+  }
+
+  #[test]
+  fn webkit_box_clamp_pattern_is_order_independent() {
+    let decls = parse_declarations(
+      "-webkit-line-clamp: 2; display: -webkit-box; -webkit-box-orient: vertical;",
+    );
+    assert_eq!(decls.len(), 3);
+
+    let mut styles = ComputedStyle::default();
+    let parent = ComputedStyle::default();
+    for decl in &decls {
+      apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+    }
+
+    assert_eq!(styles.display, Display::Block);
+    assert!(styles.display_is_webkit_box);
+    assert_eq!(styles.webkit_box_orient, WebkitBoxOrient::Vertical);
+    assert_eq!(styles.line_clamp, Some(2));
+    assert_eq!(styles.line_clamp_source, LineClampSource::Webkit);
+  }
+
+  #[test]
+  fn legacy_webkit_box_properties_map_to_flexbox_equivalents() {
+    let decls = parse_declarations(
+      "box-pack: justify; box-align: center; box-orient: vertical; box-direction: reverse; box-flex: 2; box-ordinal-group: 1;",
+    );
+    assert_eq!(decls.len(), 6);
+
+    let mut styles = ComputedStyle::default();
+    let parent = ComputedStyle::default();
+    for decl in &decls {
+      apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+    }
+
+    assert_eq!(styles.justify_content, JustifyContent::SpaceBetween);
+    assert_eq!(styles.align_items, AlignItems::Center);
+    assert_eq!(styles.flex_direction, FlexDirection::ColumnReverse);
+    assert!((styles.flex_grow - 2.0).abs() < f32::EPSILON);
+    assert_eq!(styles.order, 0);
   }
 
   #[test]

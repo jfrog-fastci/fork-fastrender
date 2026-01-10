@@ -211,6 +211,29 @@ mod tests {
   }
 
   #[test]
+  fn supports_legacy_webkit_box_alignment_and_order_properties() {
+    assert!(supports_declaration("-webkit-box-pack", "center"));
+    assert!(supports_declaration("box-pack", "justify"));
+    assert!(!supports_declaration("box-pack", "space-evenly"));
+
+    assert!(supports_declaration("-webkit-box-align", "baseline"));
+    assert!(supports_declaration("box-align", "stretch"));
+    assert!(!supports_declaration("box-align", "auto"));
+
+    assert!(supports_declaration("-webkit-box-direction", "reverse"));
+    assert!(supports_declaration("box-direction", "normal"));
+    assert!(!supports_declaration("box-direction", "sideways"));
+
+    assert!(supports_declaration("-webkit-box-flex", "1"));
+    assert!(supports_declaration("box-flex", "calc(1 + 1)"));
+    assert!(!supports_declaration("box-flex", "-1"));
+
+    assert!(supports_declaration("-webkit-box-ordinal-group", "1"));
+    assert!(supports_declaration("box-ordinal-group", "2"));
+    assert!(!supports_declaration("box-ordinal-group", "0"));
+  }
+
+  #[test]
   fn supports_word_break_auto_phrase_is_true() {
     assert!(supports_declaration("word-break", "auto-phrase"));
     assert!(supports_declaration("word-break", "break-word"));

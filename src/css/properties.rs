@@ -212,8 +212,13 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "border-top-width",
   "border-width",
   "bottom",
+  "box-align",
   "box-decoration-break",
+  "box-direction",
+  "box-flex",
+  "box-ordinal-group",
   "box-orient",
+  "box-pack",
   "box-shadow",
   "box-sizing",
   "break-after",
@@ -2865,6 +2870,27 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "display" => return keyword_parse(parsed, |kw| Display::parse(kw).ok()),
     "-webkit-box-orient" | "box-orient" => {
       return keyword_in_list(parsed, &["horizontal", "vertical"])
+    }
+    "box-pack" => return keyword_in_list(parsed, &["start", "end", "center", "justify"]),
+    "box-align" => return keyword_in_list(parsed, &["start", "end", "center", "baseline", "stretch"]),
+    "box-direction" => return keyword_in_list(parsed, &["normal", "reverse"]),
+    "box-flex" => {
+      return match parsed {
+        PropertyValue::Number(n) => n.is_finite() && *n >= 0.0,
+        PropertyValue::Keyword(raw) => raw
+          .parse::<f32>()
+          .ok()
+          .is_some_and(|n| n.is_finite() && n >= 0.0),
+        _ => false,
+      };
+    }
+    "box-ordinal-group" => {
+      let value: Option<i64> = match parsed {
+        PropertyValue::Number(n) if n.is_finite() && n.fract() == 0.0 => Some(*n as i64),
+        PropertyValue::Keyword(raw) => raw.parse::<i64>().ok(),
+        _ => None,
+      };
+      return value.is_some_and(|n| n >= 1 && n <= i32::MAX as i64);
     }
     "position" => return keyword_parse(parsed, |kw| Position::parse(kw).ok()),
     "float" => return keyword_parse(parsed, |kw| Float::parse(kw).ok()),

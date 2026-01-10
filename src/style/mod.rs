@@ -220,6 +220,7 @@ use types::UnicodeBidi;
 use types::UserSelect;
 use types::VerticalAlign;
 use types::ViewTimeline;
+use types::WebkitBoxDirection;
 use types::WebkitBoxOrient;
 use types::WhiteSpace;
 use types::WillChange;
@@ -871,14 +872,21 @@ pub struct ComputedStyle {
   pub display: Display,
   /// Whether `display` was specified as the legacy `-webkit-box` value.
   ///
-  /// This legacy keyword is commonly paired with `-webkit-line-clamp`. We currently map the
-  /// display value to a standard flow layout, but preserve the fact that the legacy spelling was
-  /// used so we can implement line clamping behavior compatibly.
+  /// This legacy keyword is commonly paired with `-webkit-line-clamp` and legacy `-webkit-box-*`
+  /// flexbox properties. FastRender treats `-webkit-box` / `-webkit-inline-box` as flex containers
+  /// (see the legacy property mapping in `style::properties`), but the classic line-clamp pattern
+  /// expects flow layout; when the pattern is active, the used display is forced back to a flow
+  /// display type while this flag remains true.
   pub display_is_webkit_box: bool,
   /// Legacy axis orientation for `display: -webkit-box` (2009 flexbox draft).
   ///
   /// The `-webkit-line-clamp` pattern relies on `-webkit-box-orient: vertical` to enable clamping.
   pub webkit_box_orient: WebkitBoxOrient,
+  /// Legacy axis direction for `display: -webkit-box` (2009 flexbox draft).
+  ///
+  /// Together with [`ComputedStyle::webkit_box_orient`], this maps the legacy
+  /// `box-orient`/`box-direction` properties onto the modern `flex-direction` value.
+  pub webkit_box_direction: WebkitBoxDirection,
   /// Maximum number of line boxes to lay out for the `-webkit-line-clamp` / `line-clamp` pattern.
   ///
   /// When set, the inline formatting context truncates after this many lines and appends an
@@ -1404,6 +1412,7 @@ impl Default for ComputedStyle {
       display: Display::Inline,
       display_is_webkit_box: false,
       webkit_box_orient: WebkitBoxOrient::default(),
+      webkit_box_direction: WebkitBoxDirection::default(),
       line_clamp: None,
       line_clamp_source: LineClampSource::Standard,
       position: Position::Static,

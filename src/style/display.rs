@@ -471,16 +471,15 @@ impl Display {
       "inline" => Ok(Display::Inline),
       // Legacy -webkit-box values from the 2009 flexbox draft.
       //
-      // These values are heavily used as a compatibility fallback (notably for
-      // multi-line clamps alongside `-webkit-line-clamp`). FastRender does not
-      // implement legacy flexbox, so map them to a safe flow layout equivalent
-      // that preserves text layout.
+      // These values are heavily used as a compatibility fallback. FastRender treats them as
+      // equivalent to modern flex containers (the legacy `-webkit-box-*` properties are mapped to
+      // modern flexbox semantics during style application).
       //
-      // Semantics:
-      // - `-webkit-box`: outer block, inner flow  -> `display: block`
-      // - `-webkit-inline-box`: outer inline, inner flow-root -> `display: inline-block`
-      "-webkit-box" => Ok(Display::Block),
-      "-webkit-inline-box" => Ok(Display::InlineBlock),
+      // Note: the classic `-webkit-line-clamp` pattern relies on `display: -webkit-box` but needs
+      // flow layout behavior. That compatibility quirk is handled when applying declarations (see
+      // `ComputedStyle::display_is_webkit_box`), not here.
+      "-webkit-box" => Ok(Display::Flex),
+      "-webkit-inline-box" => Ok(Display::InlineFlex),
       "ruby" => Ok(Display::Ruby),
       "ruby-base" => Ok(Display::RubyBase),
       "ruby-text" => Ok(Display::RubyText),
@@ -670,10 +669,10 @@ mod tests {
 
   #[test]
   fn test_parse_webkit_box_fallbacks() {
-    assert_eq!(Display::parse("-webkit-box").unwrap(), Display::Block);
+    assert_eq!(Display::parse("-webkit-box").unwrap(), Display::Flex);
     assert_eq!(
       Display::parse("-webkit-inline-box").unwrap(),
-      Display::InlineBlock
+      Display::InlineFlex
     );
   }
 

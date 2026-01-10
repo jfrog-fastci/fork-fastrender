@@ -148,6 +148,21 @@ impl Default for WebkitBoxOrient {
   }
 }
 
+/// Legacy axis direction used by the 2009 flexbox draft (`display: -webkit-box`).
+///
+/// Used together with [`WebkitBoxOrient`] to derive an equivalent modern `flex-direction` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebkitBoxDirection {
+  Normal,
+  Reverse,
+}
+
+impl Default for WebkitBoxDirection {
+  fn default() -> Self {
+    Self::Normal
+  }
+}
+
 /// Container type for container queries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerType {

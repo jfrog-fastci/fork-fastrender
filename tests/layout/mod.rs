@@ -46,6 +46,7 @@ mod flex_align_content_multiline;
 mod flex_align_items_flex_start_axis_polarity;
 mod flex_column_align_items_center_auto_width_wrap;
 mod flex_alignment_order_test;
+mod legacy_webkit_box_flex;
 mod flex_auto_min_and_intrinsics;
 mod flex_auto_min_height_definite_cross_size;
 mod flex_auto_min_size_aspect_ratio_transferred;
