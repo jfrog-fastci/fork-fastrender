@@ -2961,7 +2961,14 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "word-break" => {
       return keyword_in_list(
         parsed,
-        &["normal", "break-all", "keep-all", "break-word", "anywhere"],
+        &[
+          "normal",
+          "break-all",
+          "keep-all",
+          "auto-phrase",
+          "break-word",
+          "anywhere",
+        ],
       )
     }
     "animation-duration" | "-webkit-animation-duration" => {

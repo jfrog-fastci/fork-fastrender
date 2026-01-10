@@ -137,6 +137,8 @@ use line_builder::TabItem;
 use line_builder::TextItem;
 use rayon::prelude::*;
 use smallvec::SmallVec;
+use icu_segmenter::options::WordBreakOptions;
+use icu_segmenter::WordSegmenter;
 use std::borrow::Cow;
 #[cfg(any(test, debug_assertions))]
 use std::cell::Cell;
@@ -4317,10 +4319,17 @@ impl InlineFormattingContext {
     let (hyphen_free, hyphen_breaks) = if is_marker {
       (normalized_text, Vec::new())
     } else {
+      // CSS Text 4: `word-break: auto-phrase` suppresses hyphenation opportunities as if
+      // `hyphens: none` were specified (regardless of language support).
+      let effective_hyphens = if matches!(style.word_break, WordBreak::AutoPhrase) {
+        HyphensMode::None
+      } else {
+        style.hyphens
+      };
       let hyphenator = self.hyphenator_for(&style.language);
       hyphenation_breaks(
         normalized_text,
-        style.hyphens,
+        effective_hyphens,
         hyphenator.as_ref(),
         allow_soft_wrap,
       )
@@ -9359,6 +9368,186 @@ fn is_kinsoku_loose_prohibited_line_start(ch: char, writing_system: WritingSyste
   is_kinsoku_strict_prohibited_line_start(ch)
 }
 
+thread_local! {
+  // `word-break: auto-phrase` requires linguistic segmentation. ICU segmenters are relatively
+  // expensive to construct and are not `Sync` by default, so cache one instance per thread.
+  static ICU_WORD_SEGMENTER_AUTO_PHRASE: Option<WordSegmenter> =
+    WordSegmenter::try_new_auto(WordBreakOptions::default()).ok();
+}
+
+fn with_icu_word_segmenter_auto_phrase(f: impl FnOnce(&WordSegmenter)) {
+  ICU_WORD_SEGMENTER_AUTO_PHRASE.with(|segmenter| {
+    if let Some(segmenter) = segmenter.as_ref() {
+      f(segmenter);
+    }
+  })
+}
+
+fn count_cjk_pair_boundaries(text: &str) -> usize {
+  let mut prev: Option<char> = None;
+  let mut count = 0usize;
+  for ch in text.chars() {
+    if let Some(prev_ch) = prev {
+      if is_cjk_character(prev_ch) && is_cjk_character(ch) {
+        count += 1;
+      }
+    }
+    prev = Some(ch);
+  }
+  count
+}
+
+fn auto_phrase_candidate_boundaries_from_icu(text: &str) -> Option<Vec<usize>> {
+  let mut boundaries: Vec<usize> = Vec::new();
+  with_icu_word_segmenter_auto_phrase(|segmenter| {
+    for boundary in segmenter.as_borrowed().segment_str(text) {
+      if boundary == 0 || boundary >= text.len() {
+        continue;
+      }
+      if text.is_char_boundary(boundary) {
+        boundaries.push(boundary);
+      }
+    }
+  });
+  if boundaries.is_empty() {
+    return None;
+  }
+  boundaries.sort_unstable();
+  boundaries.dedup();
+  Some(boundaries)
+}
+
+fn is_auto_phrase_japanese_boundary_char(ch: char) -> bool {
+  // A lightweight, deterministic approximation of Japanese bunsetsu-like boundaries.
+  //
+  // This intentionally favors stability and common UI copy over linguistic completeness.
+  matches!(
+    ch,
+    // Common particles.
+    'は' | 'が' | 'を' | 'に' | 'へ' | 'と' | 'で' | 'や' | 'も' | 'の' | 'か' | 'ね' | 'よ'
+      // Common punctuation.
+      | '、' | '。' | '，' | '．' | '！' | '？' | '・' | '：' | '；' | '!' | '?' | ',' | '.'
+  )
+}
+
+fn auto_phrase_candidate_boundaries_for_japanese(text: &str) -> Vec<usize> {
+  let mut boundaries = Vec::new();
+  for (idx, ch) in text.char_indices() {
+    if is_auto_phrase_japanese_boundary_char(ch) {
+      boundaries.push(idx + ch.len_utf8());
+    }
+  }
+  boundaries
+}
+
+fn filter_cjk_boundaries(text: &str, mut boundaries: Vec<usize>) -> Vec<usize> {
+  boundaries.retain(|&pos| {
+    if !text.is_char_boundary(pos) {
+      return false;
+    }
+    let prev = text[..pos].chars().next_back();
+    let next = text[pos..].chars().next();
+    matches!(
+      (prev, next),
+      (Some(prev), Some(next)) if is_cjk_character(prev) && is_cjk_character(next)
+    )
+  });
+  boundaries.sort_unstable();
+  boundaries.dedup();
+  boundaries
+}
+
+fn auto_phrase_boundaries(text: &str, language: &str) -> Option<Vec<usize>> {
+  // Only attempt phrase segmentation for languages where it is commonly used in real-world
+  // stylesheets (e.g. GitLab's `:lang(ja)` blocks). For other languages, spec-compliant behavior is
+  // to fall back to `word-break: normal`.
+  match writing_system_from_language(language) {
+    WritingSystem::Japanese => {
+      let total_cjk_pairs = count_cjk_pair_boundaries(text);
+
+      let icu_boundaries = auto_phrase_candidate_boundaries_from_icu(text)
+        .map(|b| filter_cjk_boundaries(text, b))
+        .filter(|b| {
+          if total_cjk_pairs == 0 {
+            return false;
+          }
+          // If the segmentation degenerates to "boundary between every character", it provides no
+          // meaningful phrase grouping. Prefer the heuristic fallback in that case.
+          (b.len() as f32 / total_cjk_pairs as f32) < 0.8
+        });
+
+      let mut boundaries = icu_boundaries.unwrap_or_else(|| {
+        filter_cjk_boundaries(text, auto_phrase_candidate_boundaries_for_japanese(text))
+      });
+
+      // Merge the heuristic boundaries in even when ICU segmentation is available: it improves
+      // results for short UI strings that are dominated by particles/punctuation.
+      let mut heuristic = filter_cjk_boundaries(text, auto_phrase_candidate_boundaries_for_japanese(text));
+      boundaries.append(&mut heuristic);
+      boundaries.sort_unstable();
+      boundaries.dedup();
+
+      Some(boundaries)
+    }
+    WritingSystem::Chinese => {
+      let total_cjk_pairs = count_cjk_pair_boundaries(text);
+      auto_phrase_candidate_boundaries_from_icu(text)
+        .map(|b| filter_cjk_boundaries(text, b))
+        .filter(|b| total_cjk_pairs > 0 && (b.len() as f32 / total_cjk_pairs as f32) < 0.8)
+    }
+    WritingSystem::Other => None,
+  }
+}
+
+fn apply_word_break_auto_phrase(
+  text: &str,
+  language: &str,
+  breaks: &mut [crate::text::line_break::BreakOpportunity],
+) {
+  use crate::text::line_break::BreakOpportunityKind;
+  use crate::text::line_break::BreakType;
+
+  let Some(boundaries) = auto_phrase_boundaries(text, language) else {
+    return;
+  };
+
+  for brk in breaks {
+    if brk.break_type == BreakType::Mandatory {
+      continue;
+    }
+    if brk.kind == BreakOpportunityKind::Emergency {
+      continue;
+    }
+
+    let pos = brk.byte_offset.min(text.len());
+    if !text.is_char_boundary(pos) {
+      continue;
+    }
+
+    // Preserve boundaries detected as phrase breaks.
+    if boundaries.binary_search(&pos).is_ok() {
+      continue;
+    }
+
+    let prev = text[..pos].chars().next_back();
+    let next = text[pos..].chars().next();
+    let (Some(prev), Some(next)) = (prev, next) else {
+      continue;
+    };
+
+    // CSS Text: `word-break` must not suppress `<wbr>`/U+200B opportunities.
+    if prev == '\u{200B}' || next == '\u{200B}' {
+      continue;
+    }
+
+    if is_cjk_character(prev) && is_cjk_character(next) {
+      // Model UA overflow relaxation: keep the opportunity, but downgrade it so it is used only if
+      // no other normal opportunity fits.
+      brk.kind = BreakOpportunityKind::Emergency;
+    }
+  }
+}
+
 fn apply_break_properties(
   text: &str,
   language: &str,
@@ -9407,6 +9596,9 @@ fn apply_break_properties(
           brk.kind = BreakOpportunityKind::Emergency;
         }
       }
+    }
+    WordBreak::AutoPhrase => {
+      apply_word_break_auto_phrase(text, language, &mut result);
     }
     WordBreak::BreakWord => {
       result.extend(grapheme_boundary_breaks(

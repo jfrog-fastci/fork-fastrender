@@ -3738,6 +3738,7 @@ pub enum WordBreak {
   Normal,
   BreakAll,
   KeepAll,
+  AutoPhrase,
   BreakWord,
   Anywhere,
 }

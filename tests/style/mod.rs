@@ -118,6 +118,7 @@ mod style_containment_quotes_test;
 mod styled_node_shallow_dom_clone;
 mod user_validity_pseudo_test;
 mod supports_rule_test;
+mod supports_word_break_auto_phrase_test;
 mod supports_selector_test;
 mod supports_selector_forgiving_list_test;
 mod supports_selector_namespace_test;

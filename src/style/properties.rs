@@ -13198,6 +13198,7 @@ fn apply_declaration_with_base_internal_with_order(
           "normal" => WordBreak::Normal,
           "break-all" => WordBreak::BreakAll,
           "keep-all" => WordBreak::KeepAll,
+          "auto-phrase" => WordBreak::AutoPhrase,
           "anywhere" => WordBreak::Anywhere,
           "break-word" => WordBreak::BreakWord,
           _ => styles.word_break,
