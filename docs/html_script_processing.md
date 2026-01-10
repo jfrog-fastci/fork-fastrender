@@ -47,8 +47,10 @@ What exists today (in-tree):
     moment a `<script>` finishes parsing.
 - **Import maps parsing/normalization (not yet integrated into script execution):**
   - `src/js/import_maps/`: spec-mapped import map parsing + normalization:
-    - `parse_import_map_string(...)` (`parse.rs`)
-    - normalized `ImportMap` + warning types (`types.rs`)
+    - `parse_import_map_string(...)` + `create_import_map_parse_result(...)` (`parse.rs`)
+    - `resolve_imports_match(...)` (`resolve.rs`) — spec-mapped "resolve an imports match" helper
+      (special-URL gate + backtracking protection)
+    - normalized `ImportMap` + parse-result/warning types (`types.rs`)
   - Design/spec mapping: [`docs/import_maps.md`](import_maps.md).
 - **Script scheduling + event loop:**
   - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`),

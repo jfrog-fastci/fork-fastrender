@@ -158,7 +158,8 @@ Key modules:
 - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`
   - parse-time helpers for building `ScriptElementSpec` (base URL timing + attrs + inline text)
 - `src/js/import_maps/`
-  - WHATWG HTML import map parsing/normalization (`parse_import_map_string`)
+  - WHATWG HTML import map parsing/normalization (`parse_import_map_string`, `create_import_map_parse_result`)
+  - `resolve_imports_match` helper (used by full module specifier resolution later)
   - see [`docs/import_maps.md`](import_maps.md)
 - `src/js/orchestrator.rs`
   - host bookkeeping for `Document.currentScript` (spec-shaped, `dom2`-backed)

@@ -36,6 +36,18 @@ What exists today:
 Those “not implemented yet” items are still documented below, because they are the intended
 integration surface for `<script type="importmap">` and module loading.
 
+### How to run tests
+
+Import map parsing/normalization is covered by small, deterministic unit tests in
+`src/js/import_maps/parse_tests.rs`.
+
+Run them (scoped) with:
+
+```bash
+# Runs the fastrender crate's lib test binary, filtered to import_maps tests.
+bash scripts/cargo_agent.sh test -p fastrender --lib import_maps
+```
+
 ---
 
 ## Spec anchors (local WHATWG HTML copy)
@@ -59,7 +71,7 @@ Use these `rg -n` commands to jump to the normative algorithms.
 * `normalize a module integrity map`:
   * `rg -n 'normalize a module integrity map' specs/whatwg-html/source`
 
-### Script integration (not implemented yet)
+### Script integration (parse result implemented; registration not implemented yet)
 
 * `<script type="importmap">` preparation (creates parse result):
   * `rg -n 'creating an import map parse result' specs/whatwg-html/source`
@@ -221,7 +233,7 @@ Behavior summary:
   * Repeated keys inside `"imports"`/`"scopes"` are resolved after normalization; the last occurrence
     wins.
 
-### 2) Create/register parse result (spec concept; not implemented yet)
+### 2) Create/register parse result (partially implemented)
 
 HTML stores an **import map parse result** in the `<script>` element’s `result` slot during
 preparation, then registers it during execution:
@@ -237,6 +249,29 @@ FastRender does not yet implement registration/merge, but the expected flow is:
 2. When the script element executes (HTML “execute the script element”):
    * if `error_to_rethrow` exists, report it and do not mutate import map state
    * otherwise, merge the parsed import map into the global import map state
+
+### Supporting helper: `resolve_imports_match` (implemented)
+
+Rust API:
+
+* `fastrender::js::import_maps::resolve_imports_match(normalized_specifier, as_url, specifier_map)
+  -> Option<Option<url::Url>>`
+
+Spec mapping: “resolve an imports match”.
+
+This is a low-level helper used by the full “resolve a module specifier” algorithm. It implements:
+
+* exact-key matches and trailing-slash prefix matches (most-specific-first due to map sorting),
+* the “special URL” gate for allowing prefix matches, and
+* backtracking protection for prefix mappings.
+
+Return values:
+
+* `None`: no matching entry was found in the given `ModuleSpecifierMap` (caller should fall back).
+* `Some(Some(url))`: a URL mapping was found (success).
+* `Some(None)`: a match was found, but resolution is blocked/invalid (e.g. null entry, invalid
+  join/backtracking). In the full spec this should translate into a thrown exception and **must not**
+  fall back to other candidates.
 
 ### 3) `merge` (spec concept; not implemented yet)
 
@@ -306,26 +341,36 @@ Import maps treat any **normalized** specifier key ending in `/` as a prefix mat
 require that the mapped address URL’s serialization also ends in `/`.
 
 Be careful: URL serialization can add an implicit trailing slash. For example, the URL string
-`"https://example.com"` serializes as `"https://example.com/"`. FastRender enforces the trailing-slash
-rule based on the **normalized key string** (post-serialization), so a mapping like:
+`"https://example.com"` serializes as `"https://example.com/"`.
+
+HTML’s trailing-slash mismatch check (and FastRender’s current implementation) is based on the
+*original* specifier key string (pre-normalization). This means a mapping like:
 
 ```json
 { "imports": { "https://example.com": "https://cdn.example.com/file.js" } }
 ```
 
-becomes a `null` entry (with a warning) instead of creating a prefix key with an invalid address.
+normalizes the key to `"https://example.com/"` (a prefix key), but does **not** currently generate a
+`TrailingSlashMismatch` warning because the input key did not end with `/`.
+
+`resolve_imports_match(...)` defensively treats such invalid prefix mappings as blocked (`Some(None)`)
+and emits a debug assertion in debug builds.
 
 ---
 
-## Special URL handling + backtracking protection (future resolution work)
+## Special URL handling + backtracking protection
 
-These matter when implementing “resolve an imports match”:
+These matter when implementing “resolve an imports match”, and are enforced by
+`resolve_imports_match(...)` today:
 
-* Prefix mappings (keys ending in `/`) must only apply when the referrer specifier is bare or when
-  its parsed URL is **special** (HTML uses the URL Standard’s “is special” concept).
-* Backtracking protection: resolving the `afterPrefix` segment relative to the mapped URL must not
-  allow escaping above the mapped prefix; HTML enforces this with a serialization-prefix check and
-  requires throwing (no fallbacks) on violation.
+* Prefix mappings (keys ending in `/`) only apply when the referrer is bare (`as_url == None`) or
+  when `as_url` has a **special** scheme (`http`, `https`, `file`, `ftp`, `ws`, `wss`).
+* Backtracking protection: after resolving `afterPrefix` relative to the mapped URL, the resulting
+  URL must still have the mapped base URL serialization as a prefix.
+
+Note: `resolve_imports_match` currently reports “blocked/invalid” cases as `Some(None)` (so the caller
+can surface a TypeError-style exception message). It does not yet construct spec-accurate error
+messages.
 
 ---
 
@@ -338,10 +383,12 @@ it should:
 
 1. Determine the base URL **at that point in parsing** (see `BaseUrlTracker` in
    `docs/html_script_processing.md`).
-2. Call `parse_import_map_string(source_text, base_url)` and capture warnings.
-3. Store the resulting parse output in a script-element result slot (HTML does this; FastRender will
+2. Call `create_import_map_parse_result(source_text, base_url)` and surface `result.warnings` as
+   console warnings.
+3. Store the `ImportMapParseResult` in a script-element result slot (HTML does this; FastRender will
    need an equivalent representation for import map scripts).
-4. During “execute the script element”, register/merge into global import map state (not yet wired).
+4. During “execute the script element”, register/merge into global import map state (not yet wired;
+   will use `result.error_to_rethrow` and/or `result.import_map`).
 
 ### Module loader (module scripts integration is separate)
 
