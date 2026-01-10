@@ -1,0 +1,47 @@
+use vm_js::{
+  GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+};
+
+#[derive(Debug, Default)]
+struct Host {
+  counter: u32,
+}
+
+fn inc_host_counter(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host
+    .as_any_mut()
+    .downcast_mut::<Host>()
+    .ok_or(VmError::Unimplemented("host context has unexpected type"))?;
+  host.counter += 1;
+  Ok(Value::Undefined)
+}
+
+fn new_runtime() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
+#[test]
+fn host_context_is_preserved_when_builtins_invoke_user_code() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("inc", inc_host_counter, 0)?;
+
+  let mut host = Host::default();
+  assert_eq!(host.counter, 0);
+
+  // The Promise constructor invokes its executor synchronously, which in turn calls into the host
+  // through the `inc()` native handler.
+  rt.exec_script_with_host(&mut host, "new Promise(() => { inc(); });")?;
+
+  assert_eq!(host.counter, 1);
+  Ok(())
+}

@@ -10,27 +10,44 @@
 //! This module exposes small, spec-shaped helpers that are convenient to call from engine code
 //! without going through property lookups on the global `Promise` constructor.
 
-use crate::{PromiseCapability, Scope, Value, Vm, VmError, VmHostHooks};
+use crate::{PromiseCapability, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 /// `NewPromiseCapability(%Promise%)`.
-pub fn new_promise_capability(
+pub fn new_promise_capability_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
 ) -> Result<PromiseCapability, VmError> {
   let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
     "NewPromiseCapability requires intrinsics (create a Realm first)",
   ))?;
-  crate::builtins::new_promise_capability(vm, scope, host, Value::Object(intr.promise()))
+  crate::builtins::new_promise_capability_with_host_and_hooks(
+    vm,
+    scope,
+    host_ctx,
+    hooks,
+    Value::Object(intr.promise()),
+  )
+}
+
+pub fn new_promise_capability(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+) -> Result<PromiseCapability, VmError> {
+  let mut dummy_host = ();
+  new_promise_capability_with_host_and_hooks(vm, scope, &mut dummy_host, hooks)
 }
 
 /// `PromiseResolve(%Promise%, value)`.
 ///
 /// Returns a Promise object.
-pub fn promise_resolve(
+pub fn promise_resolve_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   value: Value,
 ) -> Result<Value, VmError> {
   let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
@@ -39,33 +56,76 @@ pub fn promise_resolve(
 
   // Fast path: if `value` is already a %Promise% instance, return it.
   if let Value::Object(obj) = value {
-    if scope.heap().is_promise_object(obj) && scope.heap().object_prototype(obj)? == Some(intr.promise_prototype()) {
+    if scope.heap().is_promise_object(obj)
+      && scope.heap().object_prototype(obj)? == Some(intr.promise_prototype())
+    {
       return Ok(Value::Object(obj));
     }
   }
 
-  let cap = new_promise_capability(vm, scope, host)?;
-  let _ = vm.call_with_host(scope, host, cap.resolve, Value::Undefined, &[value])?;
+  let cap = new_promise_capability_with_host_and_hooks(vm, scope, host_ctx, hooks)?;
+  let _ = vm.call_with_host_and_hooks(
+    host_ctx,
+    scope,
+    hooks,
+    cap.resolve,
+    Value::Undefined,
+    &[value],
+  )?;
   Ok(cap.promise)
+}
+
+pub fn promise_resolve(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<Value, VmError> {
+  let mut dummy_host = ();
+  promise_resolve_with_host_and_hooks(vm, scope, &mut dummy_host, hooks, value)
 }
 
 /// `PerformPromiseThen(promise, onFulfilled, onRejected)`.
 ///
 /// Returns the derived Promise (the value returned by `promise.then(...)`).
-pub fn perform_promise_then(
+pub fn perform_promise_then_with_host_and_hooks(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   promise: Value,
   on_fulfilled: Option<Value>,
   on_rejected: Option<Value>,
 ) -> Result<Value, VmError> {
+  // `PerformPromiseThen` currently does not need the host context, but accept it so embeddings can
+  // thread it through spec-shaped helper APIs consistently.
+  let _ = host_ctx;
   crate::builtins::perform_promise_then(
     vm,
     scope,
-    host,
+    hooks,
     promise,
     on_fulfilled.unwrap_or(Value::Undefined),
     on_rejected.unwrap_or(Value::Undefined),
+  )
+}
+
+pub fn perform_promise_then(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+  promise: Value,
+  on_fulfilled: Option<Value>,
+  on_rejected: Option<Value>,
+) -> Result<Value, VmError> {
+  let mut dummy_host = ();
+  perform_promise_then_with_host_and_hooks(
+    vm,
+    scope,
+    &mut dummy_host,
+    hooks,
+    promise,
+    on_fulfilled,
+    on_rejected,
   )
 }

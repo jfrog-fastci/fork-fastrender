@@ -3,8 +3,8 @@ use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, 
 use crate::string::JsString;
 use crate::{
   GcObject, Job, JobKind, PromiseCapability, PromiseHandle, PromiseReaction, PromiseReactionType,
-  PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope, Value, Vm, VmError, VmHostHooks,
-  VmHost,
+  PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks,
 };
 
 fn data_desc(
@@ -425,8 +425,8 @@ pub fn object_keys(
 pub fn object_assign(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -454,9 +454,24 @@ pub fn object_assign(
       }
 
       // Spec: `Get(from, key)` (invokes getters).
-      let value = vm.get(&mut scope, source, key)?;
+      let value = scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        source,
+        key,
+        Value::Object(source),
+      )?;
       // Spec: `Set(to, key, value, true)` (invokes setters, throws on failure).
-      let ok = scope.ordinary_set(vm, target, key, value, Value::Object(target))?;
+      let ok = scope.ordinary_set_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        target,
+        key,
+        value,
+        Value::Object(target),
+      )?;
       if !ok {
         return Err(VmError::TypeError("Object.assign failed to set property"));
       }
@@ -1059,19 +1074,39 @@ fn new_promise(vm: &mut Vm, scope: &mut Scope<'_>) -> Result<GcObject, VmError> 
 pub(crate) fn new_promise_capability(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
+  constructor: Value,
+) -> Result<PromiseCapability, VmError> {
+  let mut dummy_host = ();
+  new_promise_capability_with_host_and_hooks(vm, scope, &mut dummy_host, hooks, constructor)
+}
+
+pub(crate) fn new_promise_capability_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   constructor: Value,
 ) -> Result<PromiseCapability, VmError> {
   let intr = require_intrinsics(vm)?;
 
   let Value::Object(_) = constructor else {
-    let err = create_type_error(vm, scope, host, "Promise capability constructor must be an object")?;
+    let err = create_type_error(
+      vm,
+      scope,
+      hooks,
+      "Promise capability constructor must be an object",
+    )?;
     return Err(VmError::Throw(err));
   };
 
   if !scope.heap().is_constructor(constructor)? {
-    let err =
-      create_type_error(vm, scope, host, "Promise capability constructor is not a constructor")?;
+    let err = create_type_error(
+      vm,
+      scope,
+      hooks,
+      "Promise capability constructor is not a constructor",
+    )?;
     return Err(VmError::Throw(err));
   }
 
@@ -1116,9 +1151,10 @@ pub(crate) fn new_promise_capability(
     .set_function_closure_env(executor, Some(resolving_env))?;
 
   // promise = ? Construct(C, « executor »)
-  let promise = vm.construct_with_host(
-    scope,
+  let promise = vm.construct_with_host_and_hooks(
     host,
+    scope,
+    hooks,
     constructor,
     &[Value::Object(executor)],
     constructor,
@@ -1127,7 +1163,12 @@ pub(crate) fn new_promise_capability(
   // Per spec, `Construct` returns an Object. `vm-js` native constructors can return non-objects, so
   // validate this to preserve the PromiseCapability invariants used throughout the VM.
   if !matches!(promise, Value::Object(_)) {
-    let err = create_type_error(vm, scope, host, "Promise capability promise is not an object")?;
+    let err = create_type_error(
+      vm,
+      scope,
+      hooks,
+      "Promise capability promise is not an object",
+    )?;
     return Err(VmError::Throw(err));
   }
 
@@ -1136,7 +1177,12 @@ pub(crate) fn new_promise_capability(
     .heap()
     .env_get_binding_value(resolving_env, "resolve", false)?;
   if !scope.heap().is_callable(resolve)? {
-    let err = create_type_error(vm, scope, host, "Promise capability resolve is not callable")?;
+    let err = create_type_error(
+      vm,
+      scope,
+      hooks,
+      "Promise capability resolve is not callable",
+    )?;
     return Err(VmError::Throw(err));
   }
 
@@ -1145,7 +1191,12 @@ pub(crate) fn new_promise_capability(
     .heap()
     .env_get_binding_value(resolving_env, "reject", false)?;
   if !scope.heap().is_callable(reject)? {
-    let err = create_type_error(vm, scope, host, "Promise capability reject is not callable")?;
+    let err = create_type_error(
+      vm,
+      scope,
+      hooks,
+      "Promise capability reject is not callable",
+    )?;
     return Err(VmError::Throw(err));
   }
 
@@ -1159,7 +1210,8 @@ pub(crate) fn new_promise_capability(
 fn get_property_value_with_host(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   obj: GcObject,
   key: PropertyKey,
   receiver: Value,
@@ -1177,7 +1229,7 @@ fn get_property_value_with_host(
         if !scope.heap().is_callable(get)? {
           return Err(VmError::TypeError("accessor getter is not callable"));
         }
-        vm.call_with_host(scope, host, get, receiver, &[])
+        vm.call_with_host_and_hooks(host, scope, hooks, get, receiver, &[])
       }
     }
   }
@@ -1187,7 +1239,8 @@ fn get_property_value_with_host(
 fn promise_resolve_abstract(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   constructor: Value,
   x: Value,
 ) -> Result<GcObject, VmError> {
@@ -1206,6 +1259,7 @@ fn promise_resolve_abstract(
         vm,
         &mut scope,
         host,
+        hooks,
         obj,
         ctor_key,
         Value::Object(obj),
@@ -1216,7 +1270,8 @@ fn promise_resolve_abstract(
     }
   }
 
-  let capability = new_promise_capability(vm, &mut scope, host, constructor)?;
+  let capability =
+    new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks, constructor)?;
   let Value::Object(promise_obj) = capability.promise else {
     return Err(VmError::InvariantViolation(
       "PromiseCapability.promise is not an object",
@@ -1227,7 +1282,14 @@ fn promise_resolve_abstract(
   // allocate/GC).
   scope.push_root(capability.promise)?;
   scope.push_root(capability.resolve)?;
-  let _ = vm.call_with_host(&mut scope, host, capability.resolve, Value::Undefined, &[x])?;
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    capability.resolve,
+    Value::Undefined,
+    &[x],
+  )?;
   Ok(promise_obj)
 }
 
@@ -1251,9 +1313,11 @@ fn create_promise_resolving_functions(
   let already_resolved_env = scope.env_create(None)?;
   scope.push_env_root(already_resolved_env)?;
   scope.env_create_mutable_binding(already_resolved_env, "alreadyResolved")?;
-  scope
-    .heap_mut()
-    .env_initialize_binding(already_resolved_env, "alreadyResolved", Value::Bool(false))?;
+  scope.heap_mut().env_initialize_binding(
+    already_resolved_env,
+    "alreadyResolved",
+    Value::Bool(false),
+  )?;
 
   let resolve_name = scope.alloc_string("resolve")?;
   let resolve = scope.alloc_native_function(call_id, None, resolve_name, 1)?;
@@ -1299,7 +1363,10 @@ fn enqueue_promise_reaction_job(
   argument: Value,
   current_realm: Option<RealmId>,
 ) -> Result<(), VmError> {
-  let handler_callback_object = reaction.handler.as_ref().map(|handler| handler.callback_object());
+  let handler_callback_object = reaction
+    .handler
+    .as_ref()
+    .map(|handler| handler.callback_object());
   let realm = reaction
     .handler
     .as_ref()
@@ -1453,7 +1520,8 @@ pub(crate) fn reject_promise(
 fn resolve_promise(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   promise: GcObject,
   resolution: Value,
 ) -> Result<(), VmError> {
@@ -1463,14 +1531,14 @@ fn resolve_promise(
   // 27.2.1.3.2 `Promise Resolve Functions`: self-resolution is a TypeError rejection.
   if let Value::Object(obj) = resolution {
     if obj == promise {
-      let err = create_type_error(vm, scope, host, "Promise cannot resolve itself")?;
-      return reject_promise(host, scope, promise, err, current_realm);
+      let err = create_type_error(vm, scope, hooks, "Promise cannot resolve itself")?;
+      return reject_promise(hooks, scope, promise, err, current_realm);
     }
   }
 
   // Non-objects cannot be thenables.
   let Value::Object(thenable_obj) = resolution else {
-    return fulfill_promise(host, scope, promise, resolution, current_realm);
+    return fulfill_promise(hooks, scope, promise, resolution, current_realm);
   };
 
   // Get `thenable.then`.
@@ -1503,7 +1571,14 @@ fn resolve_promise(
               "accessor getter is not callable",
             ))
           } else {
-            vm.call_with_host(&mut key_scope, host, get, Value::Object(thenable_obj), &[])
+            vm.call_with_host_and_hooks(
+              host,
+              &mut key_scope,
+              hooks,
+              get,
+              Value::Object(thenable_obj),
+              &[],
+            )
           }
         }
       },
@@ -1513,14 +1588,14 @@ fn resolve_promise(
   let then = match then_result {
     Ok(v) => v,
     Err(VmError::Throw(e) | VmError::ThrowWithStack { value: e, .. }) => {
-      reject_promise(host, scope, promise, e, current_realm)?;
+      reject_promise(hooks, scope, promise, e, current_realm)?;
       return Ok(());
     }
     Err(e) => return Err(e),
   };
 
   if !scope.heap().is_callable(then)? {
-    return fulfill_promise(host, scope, promise, resolution, current_realm);
+    return fulfill_promise(hooks, scope, promise, resolution, current_realm);
   }
 
   let Value::Object(then_obj) = then else {
@@ -1528,7 +1603,7 @@ fn resolve_promise(
   };
 
   // Enqueue PromiseResolveThenableJob(promise, thenable, then).
-  let then_job_callback = host.host_make_job_callback(then_obj);
+  let then_job_callback = hooks.host_make_job_callback(then_obj);
 
   // Per spec, the thenable job must use *fresh* resolving functions for `promise` (with their own
   // alreadyResolved record).
@@ -1575,7 +1650,7 @@ fn resolve_promise(
   }
 
   let job = job.with_roots(roots);
-  host.host_enqueue_promise_job(job, realm);
+  hooks.host_enqueue_promise_job(job, realm);
   Ok(())
 }
 
@@ -1588,21 +1663,26 @@ pub fn promise_constructor_call(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  throw_type_error(vm, scope, host, "Promise constructor must be called with new")
+  throw_type_error(
+    vm,
+    scope,
+    host,
+    "Promise constructor must be called with new",
+  )
 }
 
 pub fn promise_constructor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
   let executor = args.get(0).copied().unwrap_or(Value::Undefined);
   if !scope.heap().is_callable(executor)? {
-    return throw_type_error(vm, scope, host, "Promise executor is not callable");
+    return throw_type_error(vm, scope, hooks, "Promise executor is not callable");
   }
 
   // Promise constructor:
@@ -1627,12 +1707,20 @@ pub fn promise_constructor_construct(
   let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
 
   // Invoke executor(resolve, reject).
-  match vm.call_with_host(scope, host, executor, Value::Undefined, &[resolve, reject]) {
+  match vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    executor,
+    Value::Undefined,
+    &[resolve, reject],
+  ) {
     Ok(_) => {}
     Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
       // If executor throws, reject the promise with the thrown value by calling the resolving
       // function (so it respects `alreadyResolved`).
-      let _ = vm.call_with_host(scope, host, reject, Value::Undefined, &[reason])?;
+      let _ =
+        vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[reason])?;
     }
     Err(e) => return Err(e),
   }
@@ -1684,7 +1772,12 @@ pub fn promise_capability_executor_call(
   let existing_resolve = scope.heap().env_get_binding_value(env, "resolve", false)?;
   let existing_reject = scope.heap().env_get_binding_value(env, "reject", false)?;
   if !matches!(existing_resolve, Value::Undefined) || !matches!(existing_reject, Value::Undefined) {
-    return throw_type_error(vm, scope, hooks, "Promise capability executor already called");
+    return throw_type_error(
+      vm,
+      scope,
+      hooks,
+      "Promise capability executor already called",
+    );
   }
 
   scope
@@ -1699,8 +1792,8 @@ pub fn promise_capability_executor_call(
 pub fn promise_resolving_function_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -1731,9 +1824,9 @@ pub fn promise_resolving_function_call(
     .env_set_mutable_binding(env, "alreadyResolved", Value::Bool(true), false)?;
 
   if is_reject {
-    reject_promise(host, scope, promise, resolution, vm.current_realm())?;
+    reject_promise(hooks, scope, promise, resolution, vm.current_realm())?;
   } else {
-    resolve_promise(vm, scope, host, promise, resolution)?;
+    resolve_promise(vm, scope, host, hooks, promise, resolution)?;
   }
   Ok(Value::Undefined)
 }
@@ -1741,35 +1834,42 @@ pub fn promise_resolving_function_call(
 pub fn promise_resolve(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let x = args.get(0).copied().unwrap_or(Value::Undefined);
   if !matches!(this, Value::Object(_)) {
-    return throw_type_error(vm, scope, host, "Promise.resolve called on non-object");
+    return throw_type_error(vm, scope, hooks, "Promise.resolve called on non-object");
   }
 
-  let p = promise_resolve_abstract(vm, scope, host, this, x)?;
+  let p = promise_resolve_abstract(vm, scope, host, hooks, this, x)?;
   Ok(Value::Object(p))
 }
 
 pub fn promise_reject(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability(vm, scope, host, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
   scope.push_root(capability.promise)?;
   scope.push_root(capability.reject)?;
-  let _ = vm.call_with_host(scope, host, capability.reject, Value::Undefined, &[reason])?;
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    capability.reject,
+    Value::Undefined,
+    &[reason],
+  )?;
   Ok(capability.promise)
 }
 
@@ -1824,8 +1924,7 @@ pub(crate) fn perform_promise_then(
   };
 
   // Create the derived promise + capability.
-  let result_promise = scope
-    .alloc_promise_with_prototype(Some(intr.promise_prototype()))?;
+  let result_promise = scope.alloc_promise_with_prototype(Some(intr.promise_prototype()))?;
   scope.push_root(Value::Object(result_promise))?;
   let (resolve, reject) = create_promise_resolving_functions(vm, scope, result_promise)?;
   let capability = PromiseCapability {
@@ -1874,7 +1973,8 @@ pub(crate) fn perform_promise_then(
 fn invoke_then(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   receiver: Value,
   on_fulfilled: Value,
   on_rejected: Value,
@@ -1893,13 +1993,23 @@ fn invoke_then(
   let obj = match receiver {
     Value::Object(obj) => obj,
     Value::Null | Value::Undefined => {
-      return Err(crate::throw_type_error(&mut scope, intr, non_object_message));
+      return Err(crate::throw_type_error(
+        &mut scope,
+        intr,
+        non_object_message,
+      ));
     }
     primitive => {
       let object_ctor = Value::Object(intr.object_constructor());
       scope.push_root(object_ctor)?;
-      let value =
-        vm.call_with_host(&mut scope, host, object_ctor, Value::Undefined, &[primitive])?;
+      let value = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        object_ctor,
+        Value::Undefined,
+        &[primitive],
+      )?;
       let Value::Object(obj) = value else {
         return Err(VmError::InvariantViolation(
           "Object(..) conversion returned non-object",
@@ -1913,12 +2023,23 @@ fn invoke_then(
   let then_key_s = scope.alloc_string("then")?;
   scope.push_root(Value::String(then_key_s))?;
   let then_key = PropertyKey::from_string(then_key_s);
-  let then = get_property_value_with_host(vm, &mut scope, host, obj, then_key, receiver)?;
+  let then = get_property_value_with_host(vm, &mut scope, host, hooks, obj, then_key, receiver)?;
   if !scope.heap().is_callable(then)? {
-    return Err(crate::throw_type_error(&mut scope, intr, "then is not callable"));
+    return Err(crate::throw_type_error(
+      &mut scope,
+      intr,
+      "then is not callable",
+    ));
   }
 
-  vm.call_with_host(&mut scope, host, then, receiver, &[on_fulfilled, on_rejected])
+  vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    then,
+    receiver,
+    &[on_fulfilled, on_rejected],
+  )
 }
 
 pub fn promise_prototype_then(
@@ -1938,8 +2059,8 @@ pub fn promise_prototype_then(
 pub fn promise_prototype_catch(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -1949,6 +2070,7 @@ pub fn promise_prototype_catch(
     vm,
     scope,
     host,
+    hooks,
     this,
     Value::Undefined,
     on_rejected,
@@ -1959,8 +2081,8 @@ pub fn promise_prototype_catch(
 pub fn promise_prototype_finally(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -1983,6 +2105,7 @@ pub fn promise_prototype_finally(
       vm,
       scope,
       host,
+      hooks,
       Value::Object(promise),
       on_finally,
       on_finally,
@@ -2037,6 +2160,7 @@ pub fn promise_prototype_finally(
     vm,
     scope,
     host,
+    hooks,
     Value::Object(promise),
     Value::Object(then_finally),
     Value::Object(catch_finally),
@@ -2047,8 +2171,8 @@ pub fn promise_prototype_finally(
 pub fn promise_finally_handler_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -2070,11 +2194,12 @@ pub fn promise_finally_handler_call(
   let captured = args.get(0).copied().unwrap_or(Value::Undefined);
 
   // Call onFinally() with no arguments.
-  let result = vm.call_with_host(scope, host, on_finally, Value::Undefined, &[])?;
+  let result =
+    vm.call_with_host_and_hooks(host, scope, hooks, on_finally, Value::Undefined, &[])?;
   let result = scope.push_root(result)?;
 
   // `PromiseResolve(C, result)`
-  let promise_obj = promise_resolve_abstract(vm, scope, host, constructor, result)?;
+  let promise_obj = promise_resolve_abstract(vm, scope, host, hooks, constructor, result)?;
 
   // Create `valueThunk` or `thrower`.
   scope.push_root(Value::Object(promise_obj))?;
@@ -2101,6 +2226,7 @@ pub fn promise_finally_handler_call(
     vm,
     scope,
     host,
+    hooks,
     Value::Object(promise_obj),
     Value::Object(thunk),
     Value::Undefined,
@@ -2133,18 +2259,18 @@ pub fn promise_finally_thunk_call(
 pub fn promise_try(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
   if !scope.heap().is_callable(callback)? {
-    return throw_type_error(vm, scope, host, "Promise.try callback is not callable");
+    return throw_type_error(vm, scope, hooks, "Promise.try callback is not callable");
   }
 
-  let capability = new_promise_capability(vm, scope, host, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
 
   // Root the promise + resolving functions for the duration of the callback call.
   scope.push_root(capability.promise)?;
@@ -2152,12 +2278,33 @@ pub fn promise_try(
   scope.push_root(capability.reject)?;
 
   let callback_args = args.get(1..).unwrap_or(&[]);
-  match vm.call_with_host(scope, host, callback, Value::Undefined, callback_args) {
+  match vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    callback,
+    Value::Undefined,
+    callback_args,
+  ) {
     Ok(v) => {
-      let _ = vm.call_with_host(scope, host, capability.resolve, Value::Undefined, &[v])?;
+      let _ = vm.call_with_host_and_hooks(
+        host,
+        scope,
+        hooks,
+        capability.resolve,
+        Value::Undefined,
+        &[v],
+      )?;
     }
     Err(VmError::Throw(e) | VmError::ThrowWithStack { value: e, .. }) => {
-      let _ = vm.call_with_host(scope, host, capability.reject, Value::Undefined, &[e])?;
+      let _ = vm.call_with_host_and_hooks(
+        host,
+        scope,
+        hooks,
+        capability.reject,
+        Value::Undefined,
+        &[e],
+      )?;
     }
     Err(e) => return Err(e),
   }
@@ -2168,15 +2315,15 @@ pub fn promise_try(
 pub fn promise_with_resolvers(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
 
-  let capability = new_promise_capability(vm, scope, host, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
   // Root the new promise and resolving functions before allocating the result object.
   scope.push_root(capability.promise)?;
   scope.push_root(capability.resolve)?;
@@ -2215,22 +2362,29 @@ pub fn promise_with_resolvers(
 fn get_promise_resolve(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   constructor: Value,
 ) -> Result<Value, VmError> {
   // `GetPromiseResolve` (ECMA-262).
   //
   // For now this is used by Promise combinator built-ins (Promise.all/race/allSettled/any).
   let Value::Object(c) = constructor else {
-    return throw_type_error(vm, scope, host, "Promise resolve constructor must be an object");
+    return throw_type_error(
+      vm,
+      scope,
+      hooks,
+      "Promise resolve constructor must be an object",
+    );
   };
 
   let mut key_scope = scope.reborrow();
   key_scope.push_root(constructor)?;
   let resolve_key = PropertyKey::from_string(key_scope.alloc_string("resolve")?);
-  let resolve = key_scope.ordinary_get(vm, c, resolve_key, constructor)?;
+  let resolve =
+    key_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, c, resolve_key, constructor)?;
   if !key_scope.heap().is_callable(resolve)? {
-    return throw_type_error(vm, &mut key_scope, host, "Promise resolve is not callable");
+    return throw_type_error(vm, &mut key_scope, hooks, "Promise resolve is not callable");
   }
   Ok(resolve)
 }
@@ -2295,7 +2449,12 @@ fn invoke_thenable_then(
   invoke_scope.push_roots(&[next_promise, on_fulfilled, on_rejected])?;
 
   let Value::Object(obj) = next_promise else {
-    let err = create_type_error(vm, &mut invoke_scope, hooks, "Promise thenable is not an object")?;
+    let err = create_type_error(
+      vm,
+      &mut invoke_scope,
+      hooks,
+      "Promise thenable is not an object",
+    )?;
     return Err(VmError::Throw(err));
   };
 
@@ -2307,10 +2466,14 @@ fn invoke_thenable_then(
     return Err(VmError::Throw(err));
   }
 
-  let _ = vm.call_with_host_and_hooks(host, &mut invoke_scope, hooks, then, next_promise, &[
-    on_fulfilled,
-    on_rejected,
-  ])?;
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    &mut invoke_scope,
+    hooks,
+    then,
+    next_promise,
+    &[on_fulfilled, on_rejected],
+  )?;
   Ok(())
 }
 
@@ -2327,7 +2490,14 @@ fn if_abrupt_reject_promise(
   let Some(reason) = completion.thrown_value() else {
     return Err(completion);
   };
-  let _ = vm.call_with_host_and_hooks(host, scope, hooks, capability.reject, Value::Undefined, &[reason])?;
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    capability.reject,
+    Value::Undefined,
+    &[reason],
+  )?;
   Ok(capability.promise)
 }
 
@@ -2398,8 +2568,14 @@ fn perform_promise_all(
     }
 
     // nextPromise = ? Call(promiseResolve, constructor, « nextValue »).
-    let next_promise =
-      vm.call_with_host_and_hooks(host, &mut step_scope, hooks, promise_resolve, constructor, &[next_value])?;
+    let next_promise = vm.call_with_host_and_hooks(
+      host,
+      &mut step_scope,
+      hooks,
+      promise_resolve,
+      constructor,
+      &[next_value],
+    )?;
     step_scope.push_root(next_promise)?;
 
     // Create per-element alreadyCalled record.
@@ -2462,7 +2638,7 @@ pub fn promise_all(
 ) -> Result<Value, VmError> {
   // `Promise.all(iterable)` (ECMA-262).
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability(vm, scope, hooks, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
 
   // Root the resulting promise and resolving functions so `IfAbruptRejectPromise` can call them
   // even if the iterator acquisition/loop allocates and triggers GC.
@@ -2470,7 +2646,7 @@ pub fn promise_all(
   scope.push_root(capability.resolve)?;
   scope.push_root(capability.reject)?;
 
-  let promise_resolve = match get_promise_resolve(vm, scope, hooks, this) {
+  let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
     Ok(v) => v,
     Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
   };
@@ -2520,9 +2696,23 @@ fn perform_promise_race(
       return Ok(capability.promise);
     };
 
-    let next_promise =
-      vm.call_with_host_and_hooks(host, scope, hooks, promise_resolve, constructor, &[next_value])?;
-    invoke_thenable_then(vm, scope, host, hooks, next_promise, capability.resolve, capability.reject)?;
+    let next_promise = vm.call_with_host_and_hooks(
+      host,
+      scope,
+      hooks,
+      promise_resolve,
+      constructor,
+      &[next_value],
+    )?;
+    invoke_thenable_then(
+      vm,
+      scope,
+      host,
+      hooks,
+      next_promise,
+      capability.resolve,
+      capability.reject,
+    )?;
   }
 }
 
@@ -2537,12 +2727,12 @@ pub fn promise_race(
 ) -> Result<Value, VmError> {
   // `Promise.race(iterable)` (ECMA-262).
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability(vm, scope, hooks, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
   scope.push_root(capability.promise)?;
   scope.push_root(capability.resolve)?;
   scope.push_root(capability.reject)?;
 
-  let promise_resolve = match get_promise_resolve(vm, scope, hooks, this) {
+  let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
     Ok(v) => v,
     Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
   };
@@ -2638,8 +2828,14 @@ fn perform_promise_all_settled(
       idx_scope.create_data_property_or_throw(values, key, Value::Undefined)?;
     }
 
-    let next_promise =
-      vm.call_with_host_and_hooks(host, &mut step_scope, hooks, promise_resolve, constructor, &[next_value])?;
+    let next_promise = vm.call_with_host_and_hooks(
+      host,
+      &mut step_scope,
+      hooks,
+      promise_resolve,
+      constructor,
+      &[next_value],
+    )?;
     step_scope.push_root(next_promise)?;
 
     // Shared alreadyCalled record for the pair of element functions.
@@ -2724,12 +2920,12 @@ pub fn promise_all_settled(
 ) -> Result<Value, VmError> {
   // `Promise.allSettled(iterable)` (ECMA-262).
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability(vm, scope, hooks, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
   scope.push_root(capability.promise)?;
   scope.push_root(capability.resolve)?;
   scope.push_root(capability.reject)?;
 
-  let promise_resolve = match get_promise_resolve(vm, scope, hooks, this) {
+  let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
     Ok(v) => v,
     Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
   };
@@ -2833,8 +3029,14 @@ fn perform_promise_any(
       idx_scope.create_data_property_or_throw(errors, key, Value::Undefined)?;
     }
 
-    let next_promise =
-      vm.call_with_host_and_hooks(host, &mut step_scope, hooks, promise_resolve, constructor, &[next_value])?;
+    let next_promise = vm.call_with_host_and_hooks(
+      host,
+      &mut step_scope,
+      hooks,
+      promise_resolve,
+      constructor,
+      &[next_value],
+    )?;
     step_scope.push_root(next_promise)?;
 
     let already_called =
@@ -2895,12 +3097,12 @@ pub fn promise_any(
 ) -> Result<Value, VmError> {
   // `Promise.any(iterable)` (ECMA-262).
   let iterable = args.get(0).copied().unwrap_or(Value::Undefined);
-  let capability = new_promise_capability(vm, scope, hooks, this)?;
+  let capability = new_promise_capability_with_host_and_hooks(vm, scope, host, hooks, this)?;
   scope.push_root(capability.promise)?;
   scope.push_root(capability.resolve)?;
   scope.push_root(capability.reject)?;
 
-  let promise_resolve = match get_promise_resolve(vm, scope, hooks, this) {
+  let promise_resolve = match get_promise_resolve(vm, scope, host, hooks, this) {
     Ok(v) => v,
     Err(err) => return if_abrupt_reject_promise(vm, scope, host, hooks, capability, err),
   };
@@ -2936,8 +3138,8 @@ pub fn promise_any(
 pub fn promise_all_resolve_element_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -3000,9 +3202,10 @@ pub fn promise_all_resolve_element_call(
   let new_remaining = n - 1.0;
   write_internal_record_value(scope, remaining, Value::Number(new_remaining))?;
   if new_remaining == 0.0 {
-    let _ = vm.call_with_host(
-      scope,
+    let _ = vm.call_with_host_and_hooks(
       host,
+      scope,
+      hooks,
       resolve,
       Value::Undefined,
       &[Value::Object(values)],
@@ -3015,8 +3218,8 @@ pub fn promise_all_resolve_element_call(
 pub fn promise_all_settled_element_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -3108,9 +3311,10 @@ pub fn promise_all_settled_element_call(
   let new_remaining = n - 1.0;
   write_internal_record_value(scope, remaining, Value::Number(new_remaining))?;
   if new_remaining == 0.0 {
-    let _ = vm.call_with_host(
-      scope,
+    let _ = vm.call_with_host_and_hooks(
       host,
+      scope,
+      hooks,
       resolve,
       Value::Undefined,
       &[Value::Object(values)],
@@ -3123,8 +3327,8 @@ pub fn promise_all_settled_element_call(
 pub fn promise_any_reject_element_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -3188,14 +3392,16 @@ pub fn promise_any_reject_element_call(
   if new_remaining == 0.0 {
     let intr = require_intrinsics(vm)?;
     let message = scope.alloc_string("All promises were rejected")?;
-    let aggregate = vm.construct_with_host(
-      scope,
+    let aggregate = vm.construct_with_host_and_hooks(
       host,
+      scope,
+      hooks,
       Value::Object(intr.aggregate_error()),
       &[Value::Object(errors), Value::String(message)],
       Value::Object(intr.aggregate_error()),
     )?;
-    let _ = vm.call_with_host(scope, host, reject, Value::Undefined, &[aggregate])?;
+    let _ =
+      vm.call_with_host_and_hooks(host, scope, hooks, reject, Value::Undefined, &[aggregate])?;
   }
 
   Ok(Value::Undefined)
@@ -3243,7 +3449,9 @@ fn vec_try_push<T>(buf: &mut Vec<T>, value: T) -> Result<(), VmError> {
 }
 
 fn vec_try_extend_from_slice<T: Copy>(buf: &mut Vec<T>, slice: &[T]) -> Result<(), VmError> {
-  let needed = slice.len().saturating_sub(buf.capacity().saturating_sub(buf.len()));
+  let needed = slice
+    .len()
+    .saturating_sub(buf.capacity().saturating_sub(buf.len()));
   if needed > 0 {
     buf.try_reserve(needed).map_err(|_| VmError::OutOfMemory)?;
   }
@@ -3255,23 +3463,23 @@ fn vec_try_extend_from_slice<T: Copy>(buf: &mut Vec<T>, slice: &[T]) -> Result<(
 pub fn function_prototype_call_method(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let this_arg = args.first().copied().unwrap_or(Value::Undefined);
   let rest = args.get(1..).unwrap_or(&[]);
-  vm.call_with_host(scope, host, this, this_arg, rest)
+  vm.call_with_host_and_hooks(host, scope, hooks, this, this_arg, rest)
 }
 
 /// `Function.prototype.apply` (minimal, supports array-like objects).
 pub fn function_prototype_apply(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -3282,14 +3490,14 @@ pub fn function_prototype_apply(
 
   match arg_array {
     Value::Undefined | Value::Null => {
-      vm.call_with_host(scope, host, Value::Object(target), this_arg, &[])
+      vm.call_with_host_and_hooks(host, scope, hooks, Value::Object(target), this_arg, &[])
     }
     Value::Object(obj) => {
       // Root `obj` while building the argument list, since we may allocate strings for property
       // keys and trigger a GC.
       scope.push_root(Value::Object(obj))?;
       let list = get_array_like_args(scope, obj)?;
-      vm.call_with_host(scope, host, Value::Object(target), this_arg, &list)
+      vm.call_with_host_and_hooks(host, scope, hooks, Value::Object(target), this_arg, &list)
     }
     _ => Err(VmError::Unimplemented(
       "Function.prototype.apply: argArray must be an object or null/undefined",
@@ -3344,7 +3552,10 @@ pub fn function_prototype_bind(
     scope.heap_mut().set_function_realm(func, realm)?;
   }
 
-  let job_realm = scope.heap().get_function_job_realm(target).or(vm.current_realm());
+  let job_realm = scope
+    .heap()
+    .get_function_job_realm(target)
+    .or(vm.current_realm());
   if let Some(job_realm) = job_realm {
     scope.heap_mut().set_function_job_realm(func, job_realm)?;
   }
@@ -3402,8 +3613,8 @@ fn define_array_length(scope: &mut Scope<'_>, obj: GcObject, len: usize) -> Resu
 pub fn array_prototype_map(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -3435,7 +3646,7 @@ pub fn array_prototype_map(
 
     // callback(value, index, array)
     let call_args = [value, Value::Number(i as f64), Value::Object(this_obj)];
-    let mapped = vm.call_with_host(scope, host, callback, this_arg, &call_args)?;
+    let mapped = vm.call_with_host_and_hooks(host, scope, hooks, callback, this_arg, &call_args)?;
 
     scope.define_property(out, key, data_desc(mapped, true, true, true))?;
   }
@@ -3585,12 +3796,19 @@ pub fn string_prototype_to_string(
       let marker = scope.alloc_string("vm-js.internal.StringData")?;
       let marker_sym = scope.heap_mut().symbol_for(marker)?;
       let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &marker_key)?
+      {
         Some(Value::String(s)) => Ok(Value::String(s)),
-        _ => Err(VmError::Unimplemented("String.prototype.toString on non-String object")),
+        _ => Err(VmError::Unimplemented(
+          "String.prototype.toString on non-String object",
+        )),
       }
     }
-    _ => Err(VmError::Unimplemented("String.prototype.toString on non-string")),
+    _ => Err(VmError::Unimplemented(
+      "String.prototype.toString on non-string",
+    )),
   }
 }
 
@@ -3670,12 +3888,19 @@ pub fn number_prototype_value_of(
       let marker = scope.alloc_string("vm-js.internal.NumberData")?;
       let marker_sym = scope.heap_mut().symbol_for(marker)?;
       let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &marker_key)?
+      {
         Some(Value::Number(n)) => Ok(Value::Number(n)),
-        _ => Err(VmError::Unimplemented("Number.prototype.valueOf on non-Number object")),
+        _ => Err(VmError::Unimplemented(
+          "Number.prototype.valueOf on non-Number object",
+        )),
       }
     }
-    _ => Err(VmError::Unimplemented("Number.prototype.valueOf on non-number")),
+    _ => Err(VmError::Unimplemented(
+      "Number.prototype.valueOf on non-number",
+    )),
   }
 }
 
@@ -3755,12 +3980,19 @@ pub fn boolean_prototype_value_of(
       let marker = scope.alloc_string("vm-js.internal.BooleanData")?;
       let marker_sym = scope.heap_mut().symbol_for(marker)?;
       let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &marker_key)?
+      {
         Some(Value::Bool(b)) => Ok(Value::Bool(b)),
-        _ => Err(VmError::Unimplemented("Boolean.prototype.valueOf on non-Boolean object")),
+        _ => Err(VmError::Unimplemented(
+          "Boolean.prototype.valueOf on non-Boolean object",
+        )),
       }
     }
-    _ => Err(VmError::Unimplemented("Boolean.prototype.valueOf on non-boolean")),
+    _ => Err(VmError::Unimplemented(
+      "Boolean.prototype.valueOf on non-boolean",
+    )),
   }
 }
 
@@ -3780,14 +4012,19 @@ pub fn bigint_prototype_value_of(
       let marker = scope.alloc_string("vm-js.internal.BigIntData")?;
       let marker_sym = scope.heap_mut().symbol_for(marker)?;
       let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &marker_key)?
+      {
         Some(Value::BigInt(b)) => Ok(Value::BigInt(b)),
         _ => Err(VmError::Unimplemented(
           "BigInt.prototype.valueOf on non-BigInt object",
         )),
       }
     }
-    _ => Err(VmError::Unimplemented("BigInt.prototype.valueOf on non-bigint")),
+    _ => Err(VmError::Unimplemented(
+      "BigInt.prototype.valueOf on non-bigint",
+    )),
   }
 }
 
@@ -3807,14 +4044,19 @@ pub fn symbol_prototype_value_of(
       let marker = scope.alloc_string("vm-js.internal.SymbolData")?;
       let marker_sym = scope.heap_mut().symbol_for(marker)?;
       let marker_key = PropertyKey::from_symbol(marker_sym);
-      match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &marker_key)?
+      {
         Some(Value::Symbol(s)) => Ok(Value::Symbol(s)),
         _ => Err(VmError::Unimplemented(
           "Symbol.prototype.valueOf on non-Symbol object",
         )),
       }
     }
-    _ => Err(VmError::Unimplemented("Symbol.prototype.valueOf on non-symbol")),
+    _ => Err(VmError::Unimplemented(
+      "Symbol.prototype.valueOf on non-symbol",
+    )),
   }
 }
 
@@ -3916,14 +4158,21 @@ pub fn date_prototype_value_of(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Date.prototype.valueOf called on non-object"));
+    return Err(VmError::TypeError(
+      "Date.prototype.valueOf called on non-object",
+    ));
   };
   let marker = scope.alloc_string("vm-js.internal.DateData")?;
   let marker_sym = scope.heap_mut().symbol_for(marker)?;
   let marker_key = PropertyKey::from_symbol(marker_sym);
-  match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
+  match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &marker_key)?
+  {
     Some(Value::Number(n)) => Ok(Value::Number(n)),
-    _ => Err(VmError::TypeError("Date.prototype.valueOf called on non-Date object")),
+    _ => Err(VmError::TypeError(
+      "Date.prototype.valueOf called on non-Date object",
+    )),
   }
 }
 
@@ -3991,7 +4240,11 @@ pub fn error_prototype_to_string(
 ) -> Result<Value, VmError> {
   let this_obj = match this {
     Value::Object(o) => o,
-    _ => return Err(VmError::Unimplemented("Error.prototype.toString on non-object")),
+    _ => {
+      return Err(VmError::Unimplemented(
+        "Error.prototype.toString on non-object",
+      ))
+    }
   };
 
   let name_key = string_key(scope, "name")?;
