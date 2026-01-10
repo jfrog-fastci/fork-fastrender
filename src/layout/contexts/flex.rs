@@ -8774,6 +8774,7 @@ impl FlexFormattingContext {
       let rect_eps = 0.01;
       // Root size corrections are handled by rerunning Taffy in Phase 2 so child positions stay
       // consistent. Avoid mutating the size here, aside from last-resort sanitisation.
+      let rect_eps = 0.01;
       if !rect.size.width.is_finite() || rect.size.width < 0.0 {
         rect.size.width = 0.0;
       }
