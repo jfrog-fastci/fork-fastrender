@@ -135,6 +135,12 @@ pub mod quickjs_dom;
 pub mod vm_dom;
 #[path = "legacy/dom_bindings_context.rs"]
 pub mod dom_bindings_context;
+
+// Legacy `vm-js` embeddings kept for tests and experimental script execution paths.
+#[path = "legacy/ecma_embed.rs"]
+pub mod ecma_embed;
+#[path = "legacy/ecma_vm_runtime.rs"]
+pub mod ecma_vm_runtime;
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;

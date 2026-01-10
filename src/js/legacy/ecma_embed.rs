@@ -11,7 +11,8 @@ use parse_js::ast::expr::lit::{LitBigIntExpr, LitNumExpr, LitStrExpr};
 use parse_js::ast::expr::{BinaryExpr, CallExpr, Expr, IdExpr};
 use parse_js::ast::node::{literal_string_code_units, Node};
 use parse_js::ast::stmt::{BlockStmt, Stmt, ThrowStmt, WhileStmt};
-use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+use parse_js::error::SyntaxErrorType;
+use parse_js::{parse_with_options_cancellable_by, Dialect, ParseOptions, SourceType};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -289,13 +290,68 @@ impl ScriptRealm for VmJsScriptRealm {
     let budget = self.derive_budget(render_deadline.as_ref(), &budget);
     self.vm.set_budget(budget);
 
+    // Enforce budgets/interrupts during parsing as well as evaluation.
+    //
+    // 1) Tick once before parsing so `fuel=0`/expired deadlines fail immediately.
+    // 2) Use `parse-js`'s cancellable parse API so long parses periodically call `vm.tick()`.
+    let render_cancel = render_deadline.as_ref().and_then(|d| d.cancel_callback());
+    if let Some(cancel) = &render_cancel {
+      if cancel() {
+        self.interrupt_handle.interrupt();
+      }
+    }
+    self.vm.tick().map_err(vm_error_to_runtime)?;
+
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = parse_with_options(source, opts).map_err(|err| ScriptError::Syntax {
-      message: err.to_string(),
-    })?;
+    let top = {
+      const PARSE_CANCEL_STRIDE: usize = 1024;
+      let mut parse_counter = 0usize;
+      let mut tick_err: Option<VmError> = None;
+      let interrupt_handle = self.interrupt_handle.clone();
+      let vm = &mut self.vm;
+      match parse_with_options_cancellable_by(source, opts, || {
+        parse_counter = parse_counter.wrapping_add(1);
+        if parse_counter % PARSE_CANCEL_STRIDE != 0 {
+          return false;
+        }
+        if let Some(cancel) = &render_cancel {
+          if cancel() {
+            interrupt_handle.interrupt();
+          }
+        }
+        match vm.tick() {
+          Ok(()) => false,
+          Err(err) => {
+            tick_err = Some(err);
+            true
+          }
+        }
+      }) {
+        Ok(top) => top,
+        Err(err) => {
+          if err.typ == SyntaxErrorType::Cancelled {
+            if let Some(vm_err) = tick_err.take() {
+              return Err(vm_error_to_runtime(vm_err));
+            }
+            // Fallback: cancelled without a stored tick error. Re-run the tick so we surface a
+            // structured termination (fuel/deadline/interrupt) instead of a syntax error.
+            if let Err(vm_err) = vm.tick() {
+              return Err(vm_error_to_runtime(vm_err));
+            }
+            return Err(ScriptError::Runtime {
+              message: "JavaScript parse cancelled".to_string(),
+              stack_trace: String::new(),
+            });
+          }
+          return Err(ScriptError::Syntax {
+            message: err.to_string(),
+          });
+        }
+      }
+    };
 
     let source_text = SourceText::new(source_name, source);
 
@@ -1064,13 +1120,50 @@ mod tests {
     let budget = realm.derive_budget(None, &ScriptBudgetOverride::default());
     realm.vm.set_budget(budget);
 
+    realm.vm.tick().map_err(vm_error_to_runtime)?;
+
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = parse_with_options(source, opts).map_err(|err| ScriptError::Syntax {
-      message: err.to_string(),
-    })?;
+    let top = {
+      const PARSE_CANCEL_STRIDE: usize = 1024;
+      let mut parse_counter = 0usize;
+      let mut tick_err: Option<VmError> = None;
+      let vm = &mut realm.vm;
+      match parse_with_options_cancellable_by(source, opts, || {
+        parse_counter = parse_counter.wrapping_add(1);
+        if parse_counter % PARSE_CANCEL_STRIDE != 0 {
+          return false;
+        }
+        match vm.tick() {
+          Ok(()) => false,
+          Err(err) => {
+            tick_err = Some(err);
+            true
+          }
+        }
+      }) {
+        Ok(top) => top,
+        Err(err) => {
+          if err.typ == SyntaxErrorType::Cancelled {
+            if let Some(vm_err) = tick_err.take() {
+              return Err(vm_error_to_runtime(vm_err));
+            }
+            if let Err(vm_err) = vm.tick() {
+              return Err(vm_error_to_runtime(vm_err));
+            }
+            return Err(ScriptError::Runtime {
+              message: "JavaScript parse cancelled".to_string(),
+              stack_trace: String::new(),
+            });
+          }
+          return Err(ScriptError::Syntax {
+            message: err.to_string(),
+          });
+        }
+      }
+    };
 
     let source_text = SourceText::new(source_name, source);
 
@@ -1127,6 +1220,27 @@ mod tests {
     .unwrap();
     let value = realm.eval_script("test.js", "1+2").unwrap();
     assert_eq!(value, ScriptValue::Number(3.0));
+  }
+
+  #[test]
+  fn parse_respects_fuel_budget() {
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(0),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    let err = realm.eval_script("test.js", "").unwrap_err();
+    assert!(matches!(
+      err,
+      ScriptError::Termination {
+        reason: ScriptTerminationReason::OutOfFuel,
+        ..
+      }
+    ));
   }
 
   #[test]

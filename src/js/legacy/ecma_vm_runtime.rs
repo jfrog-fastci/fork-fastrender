@@ -1,6 +1,8 @@
 use crate::error::{Error, Result};
 use crate::render_control;
 
+use parse_js::error::SyntaxErrorType;
+
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -234,12 +236,49 @@ impl<State: WebIdlBindingsHost + 'static> EcmaVmRuntime<State> {
 
     self.reset_budget_for_run();
 
+    // Enforce VM budgets/interrupts during parsing as well as evaluation.
+    self
+      .vm
+      .tick()
+      .map_err(|err| map_vm_error(&mut self.heap, err))?;
+
     let opts = parse_js::ParseOptions {
       dialect: parse_js::Dialect::Ecma,
       source_type: parse_js::SourceType::Script,
     };
-    let top = parse_js::parse_with_options(script_text, opts)
-      .map_err(|err| Error::Other(format!("JS parse error: {err}")))?;
+    let top = {
+      const PARSE_CANCEL_STRIDE: usize = 1024;
+      let mut parse_counter = 0usize;
+      let mut tick_err: Option<VmError> = None;
+      let vm = &mut self.vm;
+      match parse_js::parse_with_options_cancellable_by(script_text, opts, || {
+        parse_counter = parse_counter.wrapping_add(1);
+        if parse_counter % PARSE_CANCEL_STRIDE != 0 {
+          return false;
+        }
+        match vm.tick() {
+          Ok(()) => false,
+          Err(err) => {
+            tick_err = Some(err);
+            true
+          }
+        }
+      }) {
+        Ok(top) => top,
+        Err(err) => {
+          if err.typ == SyntaxErrorType::Cancelled {
+            if let Some(vm_err) = tick_err.take() {
+              return Err(map_vm_error(&mut self.heap, vm_err));
+            }
+            if let Err(vm_err) = vm.tick() {
+              return Err(map_vm_error(&mut self.heap, vm_err));
+            }
+            return Err(Error::Other("JS parse cancelled".to_string()));
+          }
+          return Err(Error::Other(format!("JS parse error: {err}")));
+        }
+      }
+    };
 
     let global_this = self.global_this();
     let intrinsics = *self.realm.intrinsics();
@@ -1318,6 +1357,26 @@ mod tests {
       node_id: None,
       script_type: ScriptType::Classic,
     }
+  }
+
+  #[test]
+  fn parse_respects_fuel_budget() -> Result<()> {
+    let mut host = EcmaVmRuntime::new(
+      TestState::default(),
+      EcmaVmRuntimeConfig {
+        fuel: Some(0),
+        deadline: None,
+        check_time_every: 1,
+        ..EcmaVmRuntimeConfig::default()
+      },
+    )?;
+
+    let err = host.execute_script_text("").unwrap_err();
+    assert!(
+      err.to_string().contains("out of fuel"),
+      "expected out-of-fuel error, got: {err}"
+    );
+    Ok(())
   }
 
   fn log_downcast_via_hooks(
