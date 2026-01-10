@@ -43,6 +43,42 @@ fn object_literal_member_get_set() {
 }
 
 #[test]
+fn object_prototype_has_own_property_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var o={a:1}; o.hasOwnProperty("a") && !o.hasOwnProperty("toString")"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_prototype_has_own_property_works_on_primitives() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#""ab".hasOwnProperty("0") && "ab".hasOwnProperty("length")"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_prototype_has_own_property_supports_symbol_keys() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var s=Symbol("x"); var o={}; o[s]=1; o.hasOwnProperty(s)"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn object_prototype_has_own_property_works_on_typed_arrays() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var u=new Uint8Array(2); u.hasOwnProperty("0") && !u.hasOwnProperty("length")"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn computed_member_get_set() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"var o = {}; o["x"] = 3; o.x"#).unwrap();

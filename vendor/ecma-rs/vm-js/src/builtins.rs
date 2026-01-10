@@ -3718,6 +3718,29 @@ pub fn object_prototype_to_string(
   Ok(Value::String(scope.alloc_string(s)?))
 }
 
+/// `Object.prototype.hasOwnProperty` (ECMA-262).
+pub fn object_prototype_has_own_property(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let prop = args.get(0).copied().unwrap_or(Value::Undefined);
+  let key = scope.to_property_key(vm, host, hooks, prop)?;
+  root_property_key(&mut scope, key)?;
+
+  let has = scope.ordinary_get_own_property(obj, key)?.is_some();
+  Ok(Value::Bool(has))
+}
+
 fn get_array_length(scope: &mut Scope<'_>, obj: GcObject) -> Result<usize, VmError> {
   let length_key = string_key(scope, "length")?;
   Ok(match get_data_property_value(scope, obj, &length_key)? {

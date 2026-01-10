@@ -393,6 +393,8 @@ impl Intrinsics {
 
     // --- Prototype/native method call handlers ---
     let object_prototype_to_string = vm.register_native_call(builtins::object_prototype_to_string)?;
+    let object_prototype_has_own_property =
+      vm.register_native_call(builtins::object_prototype_has_own_property)?;
     let function_prototype_call_method =
       vm.register_native_call(builtins::function_prototype_call_method)?;
     let function_prototype_apply_method =
@@ -475,6 +477,24 @@ impl Intrinsics {
         scope.push_root(Value::String(to_string_s))?;
         let key = PropertyKey::from_string(to_string_s);
         let func = scope.alloc_native_function(object_prototype_to_string, None, to_string_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        object_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+      // Object.prototype.hasOwnProperty
+      {
+        let has_own_s = scope.alloc_string("hasOwnProperty")?;
+        scope.push_root(Value::String(has_own_s))?;
+        let key = PropertyKey::from_string(has_own_s);
+        let func =
+          scope.alloc_native_function(object_prototype_has_own_property, None, has_own_s, 1)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()
