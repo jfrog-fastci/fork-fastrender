@@ -43,13 +43,35 @@ const SYMBOL_TO_NUMBER_ERROR: &str = "Cannot convert a Symbol value to a number"
 
 fn callback_budget_from_render_deadline() -> Budget {
   // Prefer the root (outermost) render deadline so JS does not inherit internal per-stage budgets.
-  let deadline = render_control::root_deadline().and_then(|d| d.remaining_timeout());
-  let deadline = deadline.and_then(|remaining| Instant::now().checked_add(remaining));
+  let mut check_time_every = DEFAULT_CHECK_TIME_EVERY;
+  let deadline = match render_control::root_deadline() {
+    Some(deadline) => match deadline.remaining_timeout() {
+      Some(remaining) => {
+        // When no time remains, force the VM to check the deadline on the first `tick` so we can
+        // immediately abort queued work (important for microtasks and Promise jobs).
+        if remaining.is_zero() {
+          check_time_every = 1;
+        }
+        Instant::now().checked_add(remaining)
+      }
+      None => {
+        // `remaining_timeout` returns `None` both when no timeout is configured *and* when the
+        // timeout has elapsed. Only treat this as an elapsed timeout when a timeout limit exists.
+        if deadline.timeout_limit().is_some() {
+          check_time_every = 1;
+          Some(Instant::now())
+        } else {
+          None
+        }
+      }
+    },
+    None => None,
+  };
 
   Budget {
     fuel: Some(DEFAULT_CALLBACK_FUEL),
     deadline,
-    check_time_every: DEFAULT_CHECK_TIME_EVERY,
+    check_time_every,
   }
 }
 
@@ -371,10 +393,19 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           let tick_result = vm.tick();
 
           let mut hooks = VmJsEventLoopHooks::<Host>::new();
-          let job_result = tick_result.and_then(|_| {
-            let mut ctx = WindowRealmJobContext::new(window_realm, realm);
-            job.run(&mut ctx, &mut hooks)
-          });
+          let job_result = match tick_result {
+            Ok(()) => {
+              let mut ctx = WindowRealmJobContext::new(window_realm, realm);
+              job.run(&mut ctx, &mut hooks)
+            }
+            Err(err) => {
+              // If the VM is already out of budget (deadline exceeded, interrupted, out of fuel),
+              // we must still discard the job so any persistent roots it owns are cleaned up.
+              let mut ctx = WindowRealmJobContext::new(window_realm, realm);
+              job.discard(&mut ctx);
+              Err(err)
+            }
+          };
 
           if let Some(err) = hooks.finish(window_realm.heap_mut()) {
             return Err(err);

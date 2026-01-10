@@ -8,6 +8,7 @@ use fastrender::resource::{
   FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
 };
 use fastrender::resource::web_fetch::WebFetchLimits;
+use fastrender::render_control;
 use fastrender::{Error, Result};
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
@@ -380,6 +381,39 @@ Promise.resolve().then(() => { globalThis.__log += "p2,"; });
     get_string(scope.heap(), value)
   };
   assert_eq!(after, "p1,qm,p2,");
+  Ok(())
+}
+
+#[test]
+fn promise_jobs_abort_when_render_deadline_is_expired() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__ran = false;
+Promise.resolve().then(() => { globalThis.__ran = true; });
+"#,
+  )?;
+
+  // Install an already-expired render deadline so the VM callback budget has no time remaining.
+  // Promise jobs are host-owned microtasks; they must not leak roots or run once the deadline is
+  // exceeded.
+  let deadline =
+    render_control::RenderDeadline::new(Some(std::time::Duration::from_millis(0)), None);
+  let _guard = render_control::DeadlineGuard::install(Some(&deadline));
+
+  let _err = host
+    .perform_microtask_checkpoint()
+    .expect_err("expected microtask checkpoint to fail under expired deadline");
+
+  let ran = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    get_data_prop(&mut scope, global, "__ran")
+  };
+  assert_eq!(ran, Value::Bool(false));
   Ok(())
 }
 
