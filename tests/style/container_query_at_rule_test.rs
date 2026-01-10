@@ -1725,6 +1725,7 @@ fn container_query_resolves_cap_and_rlh_fallbacks() {
     vec![(
       "c",
       ContainerQueryInfo {
+        box_id: None,
         width: 85.0,
         height: 100.0,
         inline_size: 85.0,
@@ -1733,6 +1734,8 @@ fn container_query_resolves_cap_and_rlh_fallbacks() {
         names: Vec::new(),
         font_size: styles.font_size,
         styles: Arc::clone(&styles),
+        scroll_offset: Point::ZERO,
+        scroll_bounds: None,
       },
     )],
   );
