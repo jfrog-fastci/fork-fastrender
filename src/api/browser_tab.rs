@@ -23,6 +23,7 @@ use crate::css::types::CssImportLoader;
 use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
 use crate::style::media::{MediaContext, MediaQueryCache, MediaType};
+use crate::ui::TabHistory;
 use crate::web::events::{Event, EventInit, EventTargetId};
 
 use encoding_rs::{Encoding, UTF_8};
@@ -1985,6 +1986,7 @@ pub struct BrowserTab {
   host: BrowserTabHost,
   event_loop: EventLoop<BrowserTabHost>,
   pending_frame: Option<Pixmap>,
+  history: TabHistory,
 }
 
 impl BrowserTab {
@@ -2107,13 +2109,14 @@ impl BrowserTab {
       host,
       event_loop,
       pending_frame: None,
+      history: TabHistory::new(),
     };
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
     tab.host.reset_scripting_state(None, document_referrer_policy)?;
     let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url(&req.url, options.clone())?;
+      tab.navigate_to_url_with_replace(&req.url, options.clone(), req.replace)?;
     } else if tab.host.streaming_parse.is_none() {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -2190,6 +2193,7 @@ impl BrowserTab {
       host,
       event_loop,
       pending_frame: None,
+      history: TabHistory::new(),
     };
 
     // Configure the renderer's document URL hint up-front so any non-script fetches (stylesheets,
@@ -2204,7 +2208,7 @@ impl BrowserTab {
     let base_url =
       tab.parse_html_streaming_and_schedule_scripts(html, Some(document_url), &options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url(&req.url, options.clone())?;
+      tab.navigate_to_url_with_replace(&req.url, options.clone(), req.replace)?;
     } else {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -2259,13 +2263,14 @@ impl BrowserTab {
       host,
       event_loop,
       pending_frame: None,
+      history: TabHistory::new(),
     };
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
     tab.host.reset_scripting_state(None, document_referrer_policy)?;
     let base_url = tab.parse_html_streaming_and_schedule_scripts(html, None, &options)?;
     if let Some(req) = tab.host.pending_navigation.take() {
-      tab.navigate_to_url(&req.url, options.clone())?;
+      tab.navigate_to_url_with_replace(&req.url, options.clone(), req.replace)?;
     } else {
       let renderer = tab.host.document.renderer_mut();
       match base_url {
@@ -2361,7 +2366,7 @@ impl BrowserTab {
     parse_options.cancel_callback = None;
     let base_url = self.parse_html_streaming_and_schedule_scripts(html, None, &parse_options)?;
     if let Some(req) = self.host.pending_navigation.take() {
-      self.navigate_to_url(&req.url, options_for_parse.clone())?;
+      self.navigate_to_url_with_replace(&req.url, options_for_parse.clone(), req.replace)?;
       return Ok(());
     }
 
@@ -2379,6 +2384,15 @@ impl BrowserTab {
   }
 
   pub fn navigate_to_url(&mut self, url: &str, options: RenderOptions) -> Result<()> {
+    self.navigate_to_url_with_replace(url, options, /*replace=*/ false)
+  }
+
+  fn navigate_to_url_with_replace(
+    &mut self,
+    url: &str,
+    options: RenderOptions,
+    mut replace: bool,
+  ) -> Result<()> {
     // Navigations replace the current document; any pending frame is no longer relevant.
     self.pending_frame = None;
     let trace_session = super::TraceSession::from_options(Some(&options));
@@ -2459,6 +2473,12 @@ impl BrowserTab {
           (final_url, html, header_csp, document_referrer_policy)
         };
 
+      if replace {
+        self.history.replace_current_url(final_url.clone());
+      } else {
+        self.history.push(final_url.clone());
+      }
+
       // Seed navigation URL hints for downstream subresource fetches. Unlike the base URL, the
       // document URL is used for referrer/origin semantics and must remain stable even if `<base
       // href>` changes during parsing.
@@ -2496,6 +2516,7 @@ impl BrowserTab {
 
       if let Some(req) = self.host.pending_navigation.take() {
         target_url = req.url;
+        replace = req.replace;
         continue;
       }
 
@@ -2518,7 +2539,7 @@ impl BrowserTab {
       return Ok(false);
     };
     let options = self.host.document.options().clone();
-    self.navigate_to_url(&req.url, options)?;
+    self.navigate_to_url_with_replace(&req.url, options, req.replace)?;
     Ok(true)
   }
 
@@ -4453,6 +4474,7 @@ html, body { margin: 0; padding: 0; }
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,
+      history: TabHistory::new(),
     };
     tab
       .host
@@ -4518,6 +4540,7 @@ html, body { margin: 0; padding: 0; }
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,
+      history: TabHistory::new(),
     };
     tab
       .host
@@ -4624,6 +4647,7 @@ html, body { margin: 0; padding: 0; }
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,
+      history: TabHistory::new(),
     };
     tab
       .host
@@ -4834,6 +4858,7 @@ html, body { margin: 0; padding: 0; }
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,
+      history: TabHistory::new(),
     };
 
     let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
@@ -4974,6 +4999,144 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn navigate_to_url_location_assign_pushes_history_entry() -> Result<()> {
+    struct ScriptNavigationExecutor {
+      target_url: String,
+      replace: bool,
+      pending: Option<LocationNavigationRequest>,
+    }
+
+    impl BrowserTabJsExecutor for ScriptNavigationExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          self.pending = Some(LocationNavigationRequest {
+            url: self.target_url.clone(),
+            replace: self.replace,
+          });
+        }
+        Ok(())
+      }
+
+      fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+        self.pending.take()
+      }
+    }
+
+    let page1_url = "https://example.com/page1.html";
+    let page2_url = "https://example.com/page2.html";
+    let page1_html = "<!doctype html><html><body><script>NAVIGATE</script></body></html>";
+    let page2_html = "<!doctype html><html><body><div id=done></div></body></html>";
+
+    let executor = ScriptNavigationExecutor {
+      target_url: page2_url.to_string(),
+      replace: false,
+      pending: None,
+    };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+    tab.register_html_source(page1_url, page1_html);
+    tab.register_html_source(page2_url, page2_html);
+
+    tab.navigate_to_url(page1_url, RenderOptions::default())?;
+
+    assert_eq!(tab.history.len(), 2);
+    assert_eq!(tab.history.current().map(|e| e.url.as_str()), Some(page2_url));
+    let mut history = tab.history.clone();
+    assert_eq!(
+      history.go_back().map(|e| e.url.as_str()),
+      Some(page1_url),
+      "expected assign navigation to push history entry for the intermediate page"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn navigate_to_url_location_replace_replaces_history_entry() -> Result<()> {
+    struct ScriptNavigationExecutor {
+      target_url: String,
+      replace: bool,
+      pending: Option<LocationNavigationRequest>,
+    }
+
+    impl BrowserTabJsExecutor for ScriptNavigationExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          self.pending = Some(LocationNavigationRequest {
+            url: self.target_url.clone(),
+            replace: self.replace,
+          });
+        }
+        Ok(())
+      }
+
+      fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+        self.pending.take()
+      }
+    }
+
+    let page1_url = "https://example.com/page1.html";
+    let page2_url = "https://example.com/page2.html";
+    let page1_html = "<!doctype html><html><body><script>NAVIGATE</script></body></html>";
+    let page2_html = "<!doctype html><html><body><div id=done></div></body></html>";
+
+    let executor = ScriptNavigationExecutor {
+      target_url: page2_url.to_string(),
+      replace: true,
+      pending: None,
+    };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+    tab.register_html_source(page1_url, page1_html);
+    tab.register_html_source(page2_url, page2_html);
+
+    tab.navigate_to_url(page1_url, RenderOptions::default())?;
+
+    assert_eq!(tab.history.len(), 1);
+    assert_eq!(tab.history.current().map(|e| e.url.as_str()), Some(page2_url));
+    assert!(!tab.history.can_go_back(), "expected replace to not push history");
+    Ok(())
+  }
+
+  #[test]
+  fn event_loop_navigation_replace_replaces_history_entry() -> Result<()> {
+    let page1_url = "https://example.com/page1.html";
+    let page2_url = "https://example.com/page2.html";
+    let page1_html = "<!doctype html><html><body><div id=one></div></body></html>";
+    let page2_html = "<!doctype html><html><body><div id=two></div></body></html>";
+
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), NoopExecutor::default())?;
+    tab.register_html_source(page1_url, page1_html);
+    tab.register_html_source(page2_url, page2_html);
+    tab.navigate_to_url(page1_url, RenderOptions::default())?;
+
+    assert_eq!(tab.history.len(), 1);
+    assert_eq!(tab.history.current().map(|e| e.url.as_str()), Some(page1_url));
+
+    // Simulate a script-triggered `location.replace(page2_url)` during the event loop.
+    tab.host.pending_navigation = Some(LocationNavigationRequest {
+      url: page2_url.to_string(),
+      replace: true,
+    });
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(tab.history.len(), 1);
+    assert_eq!(tab.history.current().map(|e| e.url.as_str()), Some(page2_url));
+    Ok(())
+  }
+
+  #[test]
   fn navigate_to_url_timeout_spans_script_redirect_chain() -> Result<()> {
     use crate::error::{RenderError, RenderStage};
     use std::time::Duration;
@@ -5086,6 +5249,7 @@ html, body { margin: 0; padding: 0; }
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,
+      history: TabHistory::new(),
     };
  
     let err = tab
@@ -5200,6 +5364,7 @@ html, body { margin: 0; padding: 0; }
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,
+      history: TabHistory::new(),
     };
 
     let err = tab
@@ -5256,6 +5421,7 @@ html, body { margin: 0; padding: 0; }
       host,
       event_loop: EventLoop::new(),
       pending_frame: None,
+      history: TabHistory::new(),
     };
     tab
       .host
