@@ -251,10 +251,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // `src/bin/browser.rs` entrypoint and UI↔worker messaging.
   //
   // Usage:
-  //   cargo run --features browser_ui --bin browser -- --headless-smoke
+  //   bash scripts/run_limited.sh --as 64G -- \
+  //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke
   //
   // Or (legacy):
-  //   FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 cargo run --features browser_ui --bin browser
+  //   FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 bash scripts/run_limited.sh --as 64G -- \
+  //     bash scripts/cargo_agent.sh run --features browser_ui --bin browser
   if cli.headless_smoke || std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
     const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
     let (startup_session, source) = match std::env::var(OVERRIDE_ENV) {

@@ -84,6 +84,62 @@ fn docs_do_not_use_raw_cargo_in_code_fences() {
   }
 }
 
+#[test]
+fn docs_do_not_mention_raw_cargo_run_or_xtask() {
+  // Fenced blocks are the most copy/paste friendly, but inline code (or prose) that includes
+  // `cargo run` / `cargo xtask` is also easy to copy and accidentally bypasses the repo wrappers.
+  //
+  // Keep it simple: disallow raw `cargo run` / `cargo xtask` anywhere in docs/instructions/AGENTS.
+  let raw_run_or_xtask =
+    Regex::new(r"\bcargo\s+(run|xtask)\b").expect("valid regex");
+  let repo_root = repo_root();
+  let mut violations: Vec<String> = Vec::new();
+
+  let mut scan_roots = vec![repo_root.join("docs"), repo_root.join("instructions")];
+  scan_roots.push(repo_root.join("AGENTS.md"));
+
+  for root in scan_roots {
+    if root.is_file() {
+      scan_lines_for_raw_run_or_xtask(&root, &raw_run_or_xtask, &mut violations);
+      continue;
+    }
+    if !root.is_dir() {
+      continue;
+    }
+    for path in iter_markdown_files(&root) {
+      scan_lines_for_raw_run_or_xtask(&path, &raw_run_or_xtask, &mut violations);
+    }
+  }
+
+  if !violations.is_empty() {
+    panic!(
+      "Found raw `cargo run` / `cargo xtask` mentions in docs/instructions.\n\
+       Do not run raw cargo; use `bash scripts/cargo_agent.sh ...` instead.\n\n{}",
+      violations.join("\n")
+    );
+  }
+}
+
+fn scan_lines_for_raw_run_or_xtask(
+  path: &Path,
+  raw_run_or_xtask: &Regex,
+  violations: &mut Vec<String>,
+) {
+  let content = fs::read_to_string(path)
+    .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+  for (idx, line) in content.lines().enumerate() {
+    let line_no = idx + 1;
+    if raw_run_or_xtask.is_match(line) {
+      violations.push(format!(
+        "{}:{}: raw cargo run/xtask mention: {}",
+        path.display(),
+        line_no,
+        line.trim()
+      ));
+    }
+  }
+}
+
 fn scan_file(
   path: &Path,
   cargo_invocation: &Regex,

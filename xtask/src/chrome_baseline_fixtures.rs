@@ -18,7 +18,7 @@ use fastrender::cli_utils::fixture_html_patch;
 /// environments.
 ///
 /// `scripts/cargo_agent.sh` enforces a 64GiB address-space cap via `scripts/run_limited.sh` by
-/// default (96GiB for `cargo run -p xtask`). Unfortunately, recent Chrome builds reserve >64GiB of
+/// default (96GiB for `bash scripts/cargo_agent.sh xtask ...`). Unfortunately, recent Chrome builds reserve >64GiB of
 /// virtual address space at startup
 /// (even for trivial pages), which trips Oilpan's OOM guard and causes headless Chrome to hang.
 ///

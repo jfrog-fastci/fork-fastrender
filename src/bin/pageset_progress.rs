@@ -1525,7 +1525,7 @@ fn ensure_disk_cache_feature_available() {
       "pageset_progress was built without the `disk_cache` feature, but disk cache is enabled by \
        default for pageset runs so progress artifacts are comparable.\n\
        \n\
-       Re-run via `cargo xtask pageset` / `scripts/pageset.sh`, or rebuild with \
+       Re-run via `bash scripts/cargo_agent.sh xtask pageset` / `scripts/pageset.sh`, or rebuild with \
        `--features disk_cache`.\n\
        \n\
        To intentionally disable disk cache, set `NO_DISK_CACHE=1` or `DISK_CACHE=0`."
@@ -12405,7 +12405,7 @@ fn main() -> io::Result<()> {
   exit_silently_on_broken_pipe_panic();
 
   // Default to bundled fonts (deterministic + fast) unless the caller explicitly overrides via
-  // env/CLI. This matches the pageset wrappers (`scripts/pageset.sh`, `cargo xtask pageset`) and
+  // env/CLI. This matches the pageset wrappers (`scripts/pageset.sh`, `bash scripts/cargo_agent.sh xtask pageset`) and
   // avoids accidental "system font discovery" runs that can be dramatically slower.
   if std::env::var_os("FASTR_USE_BUNDLED_FONTS").is_none() {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
