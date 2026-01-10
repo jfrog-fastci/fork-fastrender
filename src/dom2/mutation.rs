@@ -7,8 +7,16 @@ impl Document {
   fn clone_node_shallow(&mut self, src: NodeId, parent: Option<NodeId>) -> Result<NodeId, DomError> {
     self.node_checked(src)?;
 
-    let (kind, inert_subtree) = {
+    let (kind, inert_subtree, is_html_script, script_already_started) = {
       let node = &self.nodes[src.index()];
+      let is_html_script = match &node.kind {
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } => tag_name.eq_ignore_ascii_case("script") && (namespace.is_empty() || namespace == HTML_NAMESPACE),
+        _ => false,
+      };
       let kind = match &node.kind {
         NodeKind::Document { quirks_mode } => {
           // A `dom2::Document` stores its primary document node at `self.root()`, but cloning a
@@ -70,10 +78,15 @@ impl Document {
         },
       };
 
-      (kind, node.inert_subtree)
+      (kind, node.inert_subtree, is_html_script, node.script_already_started)
     };
 
-    Ok(self.push_node(kind, parent, inert_subtree))
+    let dst = self.push_node(kind, parent, inert_subtree);
+    if is_html_script {
+      self.nodes[dst.index()].script_force_async = true;
+      self.nodes[dst.index()].script_already_started = script_already_started;
+    }
+    Ok(dst)
   }
 
   /// Clone a single node, optionally cloning its descendant subtree.

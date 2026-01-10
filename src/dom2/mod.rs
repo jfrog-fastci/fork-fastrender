@@ -193,6 +193,17 @@ fn kind_implies_inert_subtree(kind: &NodeKind) -> bool {
   }
 }
 
+fn kind_is_html_script(kind: &NodeKind) -> bool {
+  match kind {
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } => tag_name.eq_ignore_ascii_case("script") && (namespace.is_empty() || namespace == HTML_NAMESPACE),
+    _ => false,
+  }
+}
+
 #[derive(Debug, Clone)]
 pub struct RendererDomMapping {
   /// 1-based pre-order id (as produced by `crate::dom::enumerate_dom_ids`) -> `dom2` [`NodeId`].
@@ -429,6 +440,40 @@ impl Document {
     // can still detect out-of-band DOM changes (e.g. raw-pointer JS shims).
     self.bump_mutation_generation();
     &mut self.nodes[id.0]
+  }
+
+  pub fn script_force_async(&self, node: NodeId) -> Result<bool, DomError> {
+    let node = self.node_checked(node)?;
+    if !kind_is_html_script(&node.kind) {
+      return Err(DomError::InvalidNodeType);
+    }
+    Ok(node.script_force_async)
+  }
+
+  pub fn set_script_force_async(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
+    let node = self.node_checked_mut(node)?;
+    if !kind_is_html_script(&node.kind) {
+      return Err(DomError::InvalidNodeType);
+    }
+    node.script_force_async = value;
+    Ok(())
+  }
+
+  pub fn script_parser_document(&self, node: NodeId) -> Result<bool, DomError> {
+    let node = self.node_checked(node)?;
+    if !kind_is_html_script(&node.kind) {
+      return Err(DomError::InvalidNodeType);
+    }
+    Ok(node.script_parser_document)
+  }
+
+  pub fn set_script_parser_document(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
+    let node = self.node_checked_mut(node)?;
+    if !kind_is_html_script(&node.kind) {
+      return Err(DomError::InvalidNodeType);
+    }
+    node.script_parser_document = value;
+    Ok(())
   }
 
   pub fn nodes(&self) -> &[Node] {
@@ -1582,6 +1627,8 @@ mod inner_html_tests;
 mod html_tests;
 #[cfg(test)]
 mod contextual_fragment_tests;
+#[cfg(test)]
+mod script_internal_slots_tests;
 
 #[cfg(test)]
 mod helper_tests {

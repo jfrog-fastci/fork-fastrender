@@ -115,12 +115,12 @@ impl Document {
         true
       } else {
         attrs.push((name.to_string(), value.to_string()));
-        // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
-        if is_script && name.eq_ignore_ascii_case("async") && !had_attr {
-          node.script_force_async = false;
+          // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
+          if is_script && name.eq_ignore_ascii_case("async") && !had_attr {
+            node.script_force_async = false;
+          }
+          true
         }
-        true
-      }
     };
 
     if changed {

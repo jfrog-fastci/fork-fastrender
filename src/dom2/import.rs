@@ -145,6 +145,27 @@ impl Document {
       }
     }
 
+    if matches!(&root.node_type, DomNodeType::Document { .. }) {
+      for node in &mut doc.nodes {
+        let NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &node.kind
+        else {
+          continue;
+        };
+        if !tag_name.eq_ignore_ascii_case("script") {
+          continue;
+        }
+        if !(namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE) {
+          continue;
+        }
+        node.script_force_async = false;
+        node.script_parser_document = true;
+      }
+    }
+
     doc
   }
 }
