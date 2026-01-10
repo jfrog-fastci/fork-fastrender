@@ -1,5 +1,6 @@
 use roxmltree::Document;
 use tiny_skia::Transform;
+use std::borrow::Cow;
 
 fn is_svg_whitespace(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000D}' | ' ')
@@ -13,6 +14,90 @@ fn split_svg_whitespace(value: &str) -> impl Iterator<Item = &str> {
   value
     .split(is_svg_whitespace)
     .filter(|part| !part.is_empty())
+}
+
+/// Returns SVG markup suitable for parsing with `roxmltree`.
+///
+/// `roxmltree` deliberately rejects `<!DOCTYPE ...>` declarations. Unfortunately, many real-world
+/// SVGs include a doctype (often emitted by Adobe Illustrator), and we rely on `roxmltree` for
+/// lightweight metadata extraction and source-range-aware patching.
+///
+/// To keep node byte ranges stable (so they still index into the original SVG string), we replace
+/// the doctype declaration bytes with ASCII spaces instead of deleting them.
+pub(crate) fn svg_markup_for_roxmltree(svg_content: &str) -> Cow<'_, str> {
+  let bytes = svg_content.as_bytes();
+  if bytes.len() < "<!DOCTYPE".len() {
+    return Cow::Borrowed(svg_content);
+  }
+
+  let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+  let mut search_start = 0usize;
+
+  while search_start + "<!DOCTYPE".len() <= bytes.len() {
+    let mut found = None;
+    for i in search_start..=(bytes.len() - "<!DOCTYPE".len()) {
+      if bytes[i] == b'<'
+        && bytes.get(i + 1) == Some(&b'!')
+        && bytes
+          .get(i + 2..i + 9)
+          .is_some_and(|needle| needle.eq_ignore_ascii_case(b"DOCTYPE"))
+      {
+        found = Some(i);
+        break;
+      }
+    }
+    let Some(start) = found else {
+      break;
+    };
+
+    let mut i = start + 2;
+    let mut bracket_depth = 0u32;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+      let b = bytes[i];
+      if let Some(q) = quote {
+        if b == q {
+          quote = None;
+        }
+        i += 1;
+        continue;
+      }
+
+      match b {
+        b'\'' | b'"' => quote = Some(b),
+        b'[' => bracket_depth = bracket_depth.saturating_add(1),
+        b']' => bracket_depth = bracket_depth.saturating_sub(1),
+        b'>' if bracket_depth == 0 => {
+          i += 1;
+          break;
+        }
+        _ => {}
+      }
+      i += 1;
+    }
+    if i <= start || i > bytes.len() {
+      break;
+    }
+    ranges.push(start..i);
+    search_start = i;
+  }
+
+  if ranges.is_empty() {
+    return Cow::Borrowed(svg_content);
+  }
+
+  let mut out_bytes = bytes.to_vec();
+  for range in ranges {
+    for b in &mut out_bytes[range] {
+      *b = b' ';
+    }
+  }
+  // SVG is UTF-8 (or at least treated as such by the rest of the pipeline). Replacing ASCII bytes
+  // preserves UTF-8 validity.
+  match String::from_utf8(out_bytes) {
+    Ok(s) => Cow::Owned(s),
+    Err(_) => Cow::Borrowed(svg_content),
+  }
 }
 
 fn parse_svg_number_and_unit(value: &str) -> Option<(f32, &str)> {
@@ -226,8 +311,9 @@ pub(crate) fn svg_root_intrinsic_dimensions(
   font_size: f32,
   root_font_size: f32,
 ) -> Option<SvgIntrinsicDimensions> {
+  let svg_content = svg_markup_for_roxmltree(svg_content);
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    Document::parse(svg_content)
+    Document::parse(svg_content.as_ref())
   })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) => return None,
@@ -419,8 +505,9 @@ pub(crate) fn map_svg_aspect_ratio(
 
 /// Extracts the root viewBox if present.
 pub(crate) fn svg_root_view_box(svg_content: &str) -> Option<SvgViewBox> {
+  let svg_content = svg_markup_for_roxmltree(svg_content);
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    Document::parse(svg_content)
+    Document::parse(svg_content.as_ref())
   })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) => return None,
@@ -440,8 +527,9 @@ pub(crate) fn svg_view_box_root_transform(
   dest_width: f32,
   dest_height: f32,
 ) -> Option<Transform> {
+  let svg_content = svg_markup_for_roxmltree(svg_content);
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    Document::parse(svg_content)
+    Document::parse(svg_content.as_ref())
   })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) => return None,

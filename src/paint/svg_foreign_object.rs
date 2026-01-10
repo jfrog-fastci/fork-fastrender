@@ -15,7 +15,7 @@ use crate::paint::painter::{
 };
 use crate::resource::data_url;
 use crate::scroll::ScrollState;
-use crate::svg::{parse_svg_view_box, SvgMeetOrSlice, SvgPreserveAspectRatio};
+use crate::svg::{parse_svg_view_box, svg_markup_for_roxmltree, SvgMeetOrSlice, SvgPreserveAspectRatio};
 use crate::style::color::Rgba;
 use crate::style::types::{Direction, FontStyle as CssFontStyle, Overflow, WritingMode};
 use crate::text::font_loader::FontContext;
@@ -256,7 +256,10 @@ pub(crate) fn extract_foreign_objects_from_svg_markup(
     return None;
   }
 
-  let doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roxmltree::Document::parse(svg)))
+  let svg_for_parse = svg_markup_for_roxmltree(svg);
+  let doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    roxmltree::Document::parse(svg_for_parse.as_ref())
+  }))
     .ok()
     .and_then(|doc| doc.ok())?;
   let mut nodes: Vec<roxmltree::Node<'_, '_>> = doc
@@ -468,7 +471,10 @@ pub(crate) fn foreign_object_html_device_pixel_ratio(
     return outer_device_pixel_ratio;
   }
 
-  let root_parse = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roxmltree::Document::parse(svg)));
+  let svg_for_parse = svg_markup_for_roxmltree(svg);
+  let root_parse = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    roxmltree::Document::parse(svg_for_parse.as_ref())
+  }));
   let (view_box, preserve) = match root_parse {
     Ok(Ok(doc)) => {
       let root = doc.root_element();
@@ -751,7 +757,10 @@ pub(crate) fn inline_svg_with_foreign_objects(
   device_pixel_ratio: f32,
   max_iframe_depth: usize,
 ) -> Option<String> {
-  let svg_doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roxmltree::Document::parse(svg)))
+  let svg_for_parse = svg_markup_for_roxmltree(svg);
+  let svg_doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    roxmltree::Document::parse(svg_for_parse.as_ref())
+  }))
     .ok()
     .and_then(|doc| doc.ok());
   let mut out_svg = String::new();

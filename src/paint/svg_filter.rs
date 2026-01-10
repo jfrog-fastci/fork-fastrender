@@ -1833,7 +1833,10 @@ fn parse_filter_definition(
   fragment: Option<&str>,
   image_cache: &ImageCache,
 ) -> Option<Arc<SvgFilter>> {
-  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg))) {
+  let svg_for_parse = crate::svg::svg_markup_for_roxmltree(svg);
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    Document::parse(svg_for_parse.as_ref())
+  })) {
     Ok(Ok(doc)) => doc,
     _ => return None,
   };
@@ -2093,7 +2096,10 @@ pub(crate) fn collect_svg_filters(
   image_cache: &ImageCache,
 ) -> HashMap<String, Arc<SvgFilter>> {
   let mut registry = HashMap::new();
-  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg))) {
+  let svg_for_parse = crate::svg::svg_markup_for_roxmltree(svg);
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    Document::parse(svg_for_parse.as_ref())
+  })) {
     Ok(Ok(doc)) => doc,
     _ => return registry,
   };

@@ -1,4 +1,5 @@
 use crate::dom::SVG_NAMESPACE;
+use crate::svg::svg_markup_for_roxmltree;
 use roxmltree::Document;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -262,7 +263,10 @@ fn collect_svg_fragment_ids(fragment: &str) -> HashSet<String> {
 /// The returned fragments are slices of the original markup (via `roxmltree::Node::range`) to
 /// avoid lossy re-serialization. Invalid markup yields an empty map.
 pub(crate) fn collect_svg_id_defs_from_svg_document(svg: &str) -> HashMap<String, String> {
-  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg))) {
+  let svg_for_parse = svg_markup_for_roxmltree(svg);
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    Document::parse(svg_for_parse.as_ref())
+  })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) | Err(_) => return HashMap::new(),
   };

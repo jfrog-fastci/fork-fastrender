@@ -28,8 +28,8 @@ use crate::text::font_db::FontConfig;
 use crate::url_normalize::normalize_url_reference_for_resolution;
 use crate::svg::{
   map_svg_aspect_ratio, parse_svg_length_px, parse_svg_view_box,
-  svg_intrinsic_dimensions_from_attributes, svg_view_box_root_transform, SvgPreserveAspectRatio,
-  SvgViewBox,
+  svg_intrinsic_dimensions_from_attributes, svg_markup_for_roxmltree, svg_view_box_root_transform,
+  SvgPreserveAspectRatio, SvgViewBox,
 };
 use crate::tree::box_tree::CrossOriginAttribute;
 use avif_decode::Decoder as AvifDecoder;
@@ -703,8 +703,9 @@ fn inline_svg_use_references<'a>(
 
   check_root(RenderStage::Paint).map_err(Error::Render)?;
 
+  let svg_for_parse = svg_markup_for_roxmltree(svg_content);
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    roxmltree::Document::parse(svg_content)
+    roxmltree::Document::parse(svg_for_parse.as_ref())
   })) {
     Ok(Ok(doc)) => doc,
     // Best-effort: if the SVG doesn't parse, don't fail the entire image decode.
@@ -896,8 +897,9 @@ fn inline_svg_use_references<'a>(
       )?
       .into_owned();
 
+      let sprite_for_parse = svg_markup_for_roxmltree(&sprite_text);
       let sprite_doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        roxmltree::Document::parse(&sprite_text)
+        roxmltree::Document::parse(sprite_for_parse.as_ref())
       })) {
         Ok(Ok(doc)) => doc,
         Ok(Err(_)) | Err(_) => continue,
@@ -1231,8 +1233,9 @@ fn inline_svg_image_references<'a>(
 
   check_root(RenderStage::Paint).map_err(Error::Render)?;
 
+  let svg_for_parse = svg_markup_for_roxmltree(svg_content);
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    roxmltree::Document::parse(svg_content)
+    roxmltree::Document::parse(svg_for_parse.as_ref())
   })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) | Err(_) => return Ok(Cow::Borrowed(svg_content)),
@@ -1698,8 +1701,9 @@ fn apply_svg_url_fragment<'a>(svg_content: &'a str, requested_url: &str) -> Cow<
     return Cow::Borrowed(svg_content);
   }
 
+  let svg_for_parse = svg_markup_for_roxmltree(svg_content);
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    roxmltree::Document::parse(svg_content)
+    roxmltree::Document::parse(svg_for_parse.as_ref())
   })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) | Err(_) => return Cow::Borrowed(svg_content),
@@ -1869,8 +1873,9 @@ fn svg_with_resolved_root_viewport_size<'a>(
     return Cow::Borrowed(svg_content);
   }
 
+  let svg_for_parse = svg_markup_for_roxmltree(svg_content);
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    roxmltree::Document::parse(svg_content)
+    roxmltree::Document::parse(svg_for_parse.as_ref())
   })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) | Err(_) => return Cow::Borrowed(svg_content),
@@ -2231,8 +2236,9 @@ fn try_render_simple_svg_pixmap(
     RenderStage::Paint,
   )?;
 
+  let svg_for_parse = svg_markup_for_roxmltree(svg_content);
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    Document::parse(svg_content)
+    Document::parse(svg_for_parse.as_ref())
   })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) | Err(_) => return Ok(None),
@@ -4742,8 +4748,9 @@ impl ImageCache {
       scan_parser(&mut parser, include_imports, svg_url, record, 0)
     }
 
+    let svg_for_parse = svg_markup_for_roxmltree(svg_content);
     let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-      roxmltree::Document::parse(svg_content)
+      roxmltree::Document::parse(svg_for_parse.as_ref())
     })) {
       Ok(Ok(doc)) => doc,
       Ok(Err(_)) | Err(_) => return Ok(()),
@@ -7423,7 +7430,8 @@ fn svg_intrinsic_metadata(
   root_font_size: f32,
 ) -> Option<(Option<f32>, Option<f32>, Option<f32>, bool)> {
   std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    let doc = Document::parse(svg_content).ok()?;
+    let svg_for_parse = svg_markup_for_roxmltree(svg_content);
+    let doc = Document::parse(svg_for_parse.as_ref()).ok()?;
     let root = doc.root_element();
     if !root.tag_name().name().eq_ignore_ascii_case("svg") {
       return None;
@@ -10279,6 +10287,21 @@ mod tests {
       Some(2.0)
     );
     assert!(!img.aspect_ratio_none);
+  }
+
+  #[test]
+  fn svg_viewbox_doctype_preserves_intrinsic_ratio() {
+    let svg = r#"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 450 175"></svg>"#;
+
+    let (meta_width, meta_height, ratio, aspect_ratio_none) =
+      svg_intrinsic_metadata(svg, 16.0, 16.0).expect("parse svg intrinsic metadata");
+    assert_eq!(meta_width, None);
+    assert_eq!(meta_height, None);
+    assert!(!aspect_ratio_none);
+    assert!(
+      (ratio.unwrap_or(0.0) - (450.0 / 175.0)).abs() < 1e-6,
+      "expected ratio from viewBox with doctype"
+    );
   }
 
   #[test]

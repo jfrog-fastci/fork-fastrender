@@ -2,7 +2,7 @@ use super::limits::{log_glyph_limit, round_dimension, GlyphRasterLimits};
 use super::{ColorFontCaches, ColorGlyphRaster, FontKey, SvgCacheKey};
 use crate::paint::pixmap::new_pixmap;
 use crate::style::color::Rgba;
-use crate::svg::{svg_root_view_box, svg_view_box_root_transform, SvgViewBox};
+use crate::svg::{svg_markup_for_roxmltree, svg_root_view_box, svg_view_box_root_transform, SvgViewBox};
 use regex::Regex;
 use roxmltree::Document;
 use std::ops::Range;
@@ -288,8 +288,10 @@ fn sanitize_svg_glyph(svg_bytes: &[u8]) -> Option<&str> {
   }
 
   let svg_str = std::str::from_utf8(svg_bytes).ok()?;
-  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg_str)))
-  {
+  let svg_for_parse = svg_markup_for_roxmltree(svg_str);
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    Document::parse(svg_for_parse.as_ref())
+  })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) => return None,
     Err(_) => return None,
@@ -413,7 +415,10 @@ fn starts_with_case_insensitive(value: &str, prefix: &str) -> bool {
 }
 
 fn preprocess_svg_markup(svg: &str, text_color: Rgba) -> Option<String> {
-  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg))) {
+  let svg_for_parse = svg_markup_for_roxmltree(svg);
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    Document::parse(svg_for_parse.as_ref())
+  })) {
     Ok(Ok(doc)) => doc,
     Ok(Err(_)) => return None,
     Err(_) => return None,

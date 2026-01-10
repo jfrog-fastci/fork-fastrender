@@ -5195,7 +5195,33 @@ impl DisplayListBuilder {
           }
           (None, None) => {
             if let (Some(w), Some(h)) = (natural_w, natural_h) {
-              (w, h)
+              return (w, h);
+            }
+            if let Some(ratio) = ratio {
+              if let Some(w) = natural_w {
+                return (w, (w / ratio).max(0.0));
+              }
+              if let Some(h) = natural_h {
+                return ((h * ratio).max(0.0), h);
+              }
+              // Per CSS Backgrounds and Borders: when `background-size: auto auto` is used and the
+              // image provides an intrinsic ratio but no intrinsic size, size the image as if
+              // `contain` were specified.
+              let area_w = area_w.max(0.0);
+              let area_h = area_h.max(0.0);
+              if area_w <= 0.0 || area_h <= 0.0 {
+                return (area_w, area_h);
+              }
+              let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+              if area_ratio > ratio {
+                (area_h * ratio, area_h)
+              } else {
+                (area_w, area_w / ratio)
+              }
+            } else if let Some(w) = natural_w {
+              (w, area_h.max(0.0))
+            } else if let Some(h) = natural_h {
+              (area_w.max(0.0), h)
             } else {
               (area_w.max(0.0), area_h.max(0.0))
             }
@@ -5203,6 +5229,32 @@ impl DisplayListBuilder {
         }
       }
     }
+  }
+
+  fn svg_intrinsic_dimensions_for_css(svg_markup: &str) -> (Option<f32>, Option<f32>) {
+    // Use the same SVG intrinsic-size rules as `ImageCache` probing/rendering: resolve `<svg>`
+    // width/height when they are absolute lengths, ignore percentages, and keep viewBox-only SVGs
+    // as having no intrinsic size (only an intrinsic ratio).
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let svg_markup = crate::svg::svg_markup_for_roxmltree(svg_markup);
+      let doc = roxmltree::Document::parse(svg_markup.as_ref()).ok()?;
+      let root = doc.root_element();
+      if !root.tag_name().name().eq_ignore_ascii_case("svg") {
+        return None;
+      }
+      let intrinsic = crate::svg::svg_intrinsic_dimensions_from_attributes(
+        root.attribute("width"),
+        root.attribute("height"),
+        root.attribute("viewBox"),
+        root.attribute("preserveAspectRatio"),
+        16.0,
+        16.0,
+      );
+      Some((intrinsic.width, intrinsic.height))
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or((None, None))
   }
 
   fn resolve_background_offset(
@@ -8305,36 +8357,33 @@ impl DisplayListBuilder {
           };
 
           let orientation = style.image_orientation.resolve(cached.orientation, true);
-          let Some((mut img_w, mut img_h)) = cached.css_dimensions(
-            orientation,
-            &style.image_resolution,
-            self.device_pixel_ratio,
-            None,
-          ) else {
-            break 'paint_url;
-          };
-
-          // SVGs without an explicit intrinsic size (`width`/`height` missing or percentage) are
-          // treated as having no natural size for CSS backgrounds. In that case
-          // `background-size: auto` falls back to the background positioning area size rather than
-          // the 300×150 default object size used by replaced elements.
-          if cached.is_vector {
-            if let Some(svg) = cached.svg_content.as_deref() {
-              if let Some(intrinsic) =
-                crate::svg::svg_root_intrinsic_dimensions(svg, style.font_size, style.root_font_size)
-              {
-                if intrinsic.width.is_none() && intrinsic.height.is_none() {
-                  img_w = 0.0;
-                  img_h = 0.0;
-                }
-              }
-            }
-          }
-
-          if !cached.is_vector && (img_w <= 0.0 || img_h <= 0.0) {
-            break 'paint_url;
-          }
           let intrinsic_ratio = cached.intrinsic_ratio(orientation);
+          let (img_w, img_h) = if cached.is_vector {
+            let Some(svg_markup) = cached.svg_content.as_deref() else {
+              break 'paint_url;
+            };
+            let (mut w, mut h) = Self::svg_intrinsic_dimensions_for_css(svg_markup);
+            if orientation.quarter_turns % 2 == 1 {
+              std::mem::swap(&mut w, &mut h);
+            }
+            (
+              w.filter(|v| v.is_finite() && *v > 0.0).unwrap_or(0.0),
+              h.filter(|v| v.is_finite() && *v > 0.0).unwrap_or(0.0),
+            )
+          } else {
+            let Some((w, h)) = cached.css_dimensions(
+              orientation,
+              &style.image_resolution,
+              self.device_pixel_ratio,
+              None,
+            ) else {
+              break 'paint_url;
+            };
+            if w <= 0.0 || h <= 0.0 {
+              break 'paint_url;
+            }
+            (w, h)
+          };
 
           let (mut tile_w, mut tile_h) = Self::compute_background_size(
             layer,
@@ -16006,6 +16055,47 @@ mod tests {
       (image_data.width, image_data.height),
       (20, 20),
       "SVG background images should rasterize at the resolved tile size"
+    );
+  }
+
+  #[test]
+  fn background_viewbox_only_svg_auto_size_uses_contain_sizing() {
+    // SVG with an intrinsic ratio (from viewBox) but no intrinsic size (no width/height).
+    // `background-size: auto auto` should size this as if `contain` were specified.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20"><rect width="40" height="20" fill="red"/></svg>"#;
+
+    let mut style = ComputedStyle::default();
+    style.background_color = Rgba::TRANSPARENT;
+    style.set_background_layers(vec![BackgroundLayer {
+      image: Some(BackgroundImage::Url(svg.into())),
+      ..BackgroundLayer::default()
+    }]);
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 400.0, 200.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let list = DisplayListBuilder::with_image_cache(ImageCache::new()).build(&fragment);
+    let pattern = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::ImagePattern(pattern) => Some(pattern),
+        _ => None,
+      })
+      .expect("background should emit an image pattern item");
+
+    assert!(
+      (pattern.tile_size.width - 400.0).abs() < 1e-6,
+      "expected contain sizing to pick tile width equal to area width, got {}",
+      pattern.tile_size.width
+    );
+    assert!(
+      (pattern.tile_size.height - 200.0).abs() < 1e-6,
+      "expected contain sizing to pick tile height equal to area height, got {}",
+      pattern.tile_size.height
     );
   }
 
