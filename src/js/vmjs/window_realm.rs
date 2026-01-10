@@ -5357,35 +5357,65 @@ fn event_target_constructor_construct_native(
     },
   )?;
 
-  // Curated WPT harness extension: allow `new EventTarget(parent)` to define an explicit parent
-  // chain for propagation.
+  let child_id = gc_object_id(obj);
+
+  // Register this opaque EventTarget so dispatch can resolve `event.target/currentTarget` back into
+  // a JS object, and so we can locate per-target callback roots.
+  if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+    if let Some(platform) = data.dom_platform.as_ref() {
+      let dom_source_id = platform.dom_source_id();
+      if let Some(dom_ptr) = dom_for_source(dom_source_id) {
+        // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for
+        // the lifetime of the associated host document.
+        let dom = unsafe { dom_ptr.as_ref() };
+        dom
+          .events()
+          .register_opaque_target(child_id, vm_js::WeakGcObject::new(obj));
+      }
+    } else {
+      data
+        .events_dom_fallback
+        .events()
+        .register_opaque_target(child_id, vm_js::WeakGcObject::new(obj));
+    }
+  }
+
+  // Non-standard extension used by curated WPT tests:
+  // `new EventTarget(parent)` attaches an explicit parent so capture/bubble can traverse a synthetic
+  // chain (useful for exercising the dispatch algorithm without real DOM nodes).
   if let Some(parent_value) = args.get(0).copied() {
     match parent_value {
       Value::Undefined | Value::Null => {}
       Value::Object(parent_obj) => {
-        if !is_branded_event_target(scope, parent_obj)? {
-          return Err(VmError::TypeError("EventTarget parent must be an EventTarget"));
-        }
+    let parent_target = resolve_dom_event_target(vm, scope, parent_obj)
+      .ok()
+      .map(|(resolved, _dom_ptr)| resolved.target_id)
+      .or_else(|| {
+        is_branded_event_target(scope, parent_obj)
+          .ok()
+          .and_then(|is_branded| is_branded.then_some(web_events::EventTargetId::Opaque(gc_object_id(parent_obj))))
+      });
 
-        let child_id = gc_object_id(obj);
-        let parent_id = gc_object_id(parent_obj);
-        if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
-          if let Some(platform) = data.dom_platform.as_ref() {
-            let dom_source_id = platform.dom_source_id();
-            if let Some(mut dom_ptr) = dom_for_source(dom_source_id) {
-              // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-              // lifetime of the associated host document.
-              unsafe { dom_ptr.as_mut() }
-                .events_mut()
-                .set_opaque_parent(child_id, Some(parent_id));
-            }
-          } else {
-            data
-              .events_dom_fallback
-              .events_mut()
-              .set_opaque_parent(child_id, Some(parent_id));
-          }
+    let Some(parent_target) = parent_target else {
+      return Err(VmError::TypeError("EventTarget parent must be an EventTarget"));
+    };
+
+    if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+      if let Some(platform) = data.dom_platform.as_ref() {
+        let dom_source_id = platform.dom_source_id();
+        if let Some(dom_ptr) = dom_for_source(dom_source_id) {
+          // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for
+          // the lifetime of the associated host document.
+          let dom = unsafe { dom_ptr.as_ref() };
+          dom.events().set_opaque_parent(child_id, Some(parent_target));
         }
+      } else {
+        data
+          .events_dom_fallback
+          .events()
+          .set_opaque_parent(child_id, Some(parent_target));
+      }
+    }
       }
       _ => return Err(VmError::TypeError("EventTarget parent must be an EventTarget")),
     }
@@ -6293,9 +6323,12 @@ fn resolve_event_target(
       };
 
       return Ok(ResolvedEventTarget {
-        // Root listener callbacks on the realm's `document` so dispatch across an explicit parent
-        // chain (`new EventTarget(parent)`) can still locate callbacks for ancestor targets.
-        listener_roots_owner: document_obj,
+        // Root listener callbacks on the target object itself.
+        //
+        // When dispatching through an explicit parent chain (`new EventTarget(parent)`), the vm-js
+        // event invoker uses the registry's weak mapping from `EventTargetId::Opaque` IDs back to
+        // JS objects to locate per-target callback roots.
+        listener_roots_owner: target_obj,
         resolved: ResolvedDomEventTarget {
           window_obj,
           document_obj,
@@ -6799,13 +6832,21 @@ struct VmJsDomEventInvoker<'a, 'host, 'hooks> {
   window_obj: GcObject,
   document_obj: GcObject,
   event_obj: GcObject,
-  listener_roots_owner: GcObject,
-  listener_roots: GcObject,
+  /// Callback roots stored on the realm's document object (used for DOM-backed targets).
+  document_listener_roots: GcObject,
   opaque_target_obj: Option<GcObject>,
   registry: *const web_events::EventListenerRegistry,
 }
 
 impl<'a, 'host, 'hooks> VmJsDomEventInvoker<'a, 'host, 'hooks> {
+  fn opaque_target_obj_for_id(&mut self, id: u64) -> Option<GcObject> {
+    let scope = unsafe { &mut *self.scope };
+    let registry = unsafe { &*self.registry };
+    registry
+      .opaque_target_object(scope.heap(), id)
+      .or_else(|| self.opaque_target_obj.filter(|obj| gc_object_id(*obj) == id))
+  }
+
   fn js_value_for_target(
     &mut self,
     target: Option<web_events::EventTargetId>,
@@ -6819,7 +6860,7 @@ impl<'a, 'host, 'hooks> VmJsDomEventInvoker<'a, 'host, 'hooks> {
         let vm = unsafe { &mut *self.vm };
         get_or_create_node_wrapper(vm, scope, self.document_obj, node_id)
       }
-      Some(web_events::EventTargetId::Opaque(_)) => Ok(match self.opaque_target_obj {
+      Some(web_events::EventTargetId::Opaque(id)) => Ok(match self.opaque_target_obj_for_id(id) {
         Some(obj) => Value::Object(obj),
         None => Value::Null,
       }),
@@ -6948,11 +6989,33 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_, '_> {
     let registry = unsafe { &*self.registry };
 
     // Look up the registered callback function/object. If it is missing, treat it as a no-op.
+    //
+    // DOM-backed targets root callbacks on the realm's `document` object.
+    // Non-DOM `EventTargetId::Opaque` targets root callbacks on the target object itself.
+    let (listener_roots_owner, listener_roots, target_for_owner) = match event.current_target {
+      Some(web_events::EventTargetId::Opaque(id)) => {
+        let Some(owner_obj) = self.opaque_target_obj_for_id(id) else {
+          return Ok(());
+        };
+        let roots_key = alloc_key(scope, EVENT_LISTENER_ROOTS_KEY)
+          .map_err(|e| web_events::DomError::new(e.to_string()))?;
+        let Some(Value::Object(roots)) = scope
+          .heap()
+          .object_get_own_data_property_value(owner_obj, &roots_key)
+          .map_err(|e| web_events::DomError::new(e.to_string()))?
+        else {
+          return Ok(());
+        };
+        (owner_obj, roots, Some(web_events::EventTargetId::Opaque(id)))
+      }
+      _ => (self.document_obj, self.document_listener_roots, None),
+    };
+
     let listener_key = listener_id_property_key(scope, listener_id)
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
     let Some(callback) = scope
       .heap()
-      .object_get_own_data_property_value(self.listener_roots, &listener_key)
+      .object_get_own_data_property_value(listener_roots, &listener_key)
       .map_err(|e| web_events::DomError::new(e.to_string()))?
     else {
       return Ok(());
@@ -6990,6 +7053,7 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_, '_> {
       .map_err(|e| web_events::DomError::new(e.to_string()))?;
 
     let current_target = match event.current_target {
+      Some(web_events::EventTargetId::Opaque(_)) => Value::Object(listener_roots_owner),
       Some(t) => self
         .js_value_for_target(Some(t))
         .map_err(|e| web_events::DomError::new(e.to_string()))?,
@@ -7030,7 +7094,7 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_, '_> {
     // root if the listener ID is no longer referenced.
     if let Err(err) = remove_listener_root_if_unused(
       scope,
-      self.listener_roots_owner,
+      listener_roots_owner,
       registry,
       listener_id,
       None,
@@ -7497,8 +7561,8 @@ fn event_target_dispatch_event_native(
   let ResolvedEventTarget {
     resolved,
     dom_ptr,
-    listener_roots_owner,
     opaque_target_obj,
+    ..
   } = resolved;
 
   let event_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -7539,7 +7603,9 @@ fn event_target_dispatch_event_native(
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
 
-  let roots = get_or_create_event_listener_roots(scope, listener_roots_owner)?;
+  // DOM-backed `EventTarget`s root callbacks on the realm's `document` object. Keep that roots
+  // object handy so the invoker can resolve listeners while dispatching through the DOM event path.
+  let document_roots = get_or_create_event_listener_roots(scope, resolved.document_obj)?;
   let mut invoker = VmJsDomEventInvoker {
     vm,
     scope,
@@ -7548,8 +7614,7 @@ fn event_target_dispatch_event_native(
     window_obj: resolved.window_obj,
     document_obj: resolved.document_obj,
     event_obj,
-    listener_roots_owner,
-    listener_roots: roots,
+    document_listener_roots: document_roots,
     opaque_target_obj,
     registry: unsafe { dom_ptr.as_ref() }.events(),
   };
@@ -15869,8 +15934,7 @@ mod tests {
         window_obj: global,
         document_obj,
         event_obj,
-        listener_roots_owner: document_obj,
-        listener_roots,
+        document_listener_roots: listener_roots,
         opaque_target_obj: None,
         registry: dom.events(),
       };
@@ -15943,8 +16007,7 @@ mod tests {
         window_obj: global,
         document_obj,
         event_obj,
-        listener_roots_owner: document_obj,
-        listener_roots,
+        document_listener_roots: listener_roots,
         opaque_target_obj: None,
         registry: dom.events(),
       };
@@ -16017,8 +16080,7 @@ mod tests {
         window_obj: global,
         document_obj,
         event_obj,
-        listener_roots_owner: document_obj,
-        listener_roots,
+        document_listener_roots: listener_roots,
         opaque_target_obj: None,
         registry: dom.events(),
       };
@@ -16247,8 +16309,7 @@ mod tests {
       window_obj: global,
       document_obj,
       event_obj,
-      listener_roots_owner: document_obj,
-      listener_roots,
+      document_listener_roots: listener_roots,
       opaque_target_obj: None,
       registry: dom.events(),
     };

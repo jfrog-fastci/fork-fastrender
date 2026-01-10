@@ -176,7 +176,7 @@ impl Runner {
       BackendKind::VmJs => {
         #[cfg(feature = "vmjs")]
         {
-          Box::new(crate::backend_vmjs::VmJsBackend::new())
+          Box::new(crate::backend_vmjs::VmJsBackend::new(self.fs.clone()))
         }
         #[cfg(not(feature = "vmjs"))]
         {

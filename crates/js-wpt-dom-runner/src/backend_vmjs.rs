@@ -1,425 +1,90 @@
 use crate::backend::{Backend, BackendInit};
 use crate::wpt_fs::WptFs;
 use crate::wpt_report::{WptReport, WptSubtest};
+use crate::wpt_resource_fetcher::WptResourceFetcher;
 use crate::RunError;
-use fastrender::dom2;
 use fastrender::js::{
   EventLoop, JsExecutionOptions, MicrotaskCheckpointLimitedOutcome, RunLimits, RunNextTaskLimitedOutcome,
   RunState, VirtualClock, WindowHostState,
 };
-use fastrender::resource::{FetchedResource, HttpRequest, ResourceFetcher};
-use selectors::context::QuirksMode;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use vm_js::{
-  GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
-  VmHost, VmHostHooks,
-};
+use vm_js::{PropertyKey, Value, VmError};
 
 pub(crate) fn is_available() -> bool {
   true
 }
 
-const REPORT_FN_NAME: &str = "__fastrender_wpt_report";
-const REPORT_PAYLOAD_KEY: &str = "__fastrender_wpt_report_payload";
-const REPORT_STATE_KEY: &str = "__fastrender_wpt_report_state";
-
-const RESOLVE_URL_FN_NAME: &str = "__fastrender_resolve_url";
-
-const REPORT_STATE_NONE: f64 = 0.0;
-const REPORT_STATE_AVAILABLE: f64 = 1.0;
-const REPORT_STATE_TAKEN: f64 = 2.0;
-
-// Native slot index for storing the owning global object.
-const NATIVE_SLOT_GLOBAL: usize = 0;
-
-const DEFAULT_SCRIPT_FUEL: u64 = 10_000_000;
-
-const RESOLVE_URL_RELATIVE_WITHOUT_BASE: &str = "relative URL has no base URL";
-const RESOLVE_URL_PARSE_ERROR: &str = "failed to resolve URL";
-
-#[derive(Clone)]
-struct WptResourceFetcher {
-  fs: WptFs,
-}
-
-impl WptResourceFetcher {
-  fn new(fs: WptFs) -> Self {
-    Self { fs }
-  }
-
-  fn content_type_for_path(path: &Path) -> Option<String> {
-    let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
-    let ct = match ext.as_str() {
-      "js" => "application/javascript",
-      "mjs" => "application/javascript",
-      "html" | "htm" => "text/html",
-      "css" => "text/css",
-      "json" => "application/json",
-      "txt" => "text/plain",
-      "svg" => "image/svg+xml",
-      _ => return None,
-    };
-    Some(ct.to_string())
-  }
-
-  fn not_found(url: &str) -> fastrender::Result<FetchedResource> {
-    let mut res = FetchedResource::new(Vec::new(), None);
-    res.status = Some(404);
-    res.final_url = Some(url.to_string());
-    Ok(res)
-  }
-
-  fn fetch_url(&self, url: &str) -> fastrender::Result<FetchedResource> {
-    let path = match self.fs.resolve_url("", url) {
-      Ok(path) => path,
-      Err(_) => return Self::not_found(url),
-    };
-
-    match std::fs::read(&path) {
-      Ok(bytes) => {
-        let mut res = FetchedResource::new(bytes, Self::content_type_for_path(&path));
-        res.status = Some(200);
-        res.final_url = Some(url.to_string());
-        Ok(res)
-      }
-      Err(_) => Self::not_found(url),
-    }
-  }
-}
-
-impl ResourceFetcher for WptResourceFetcher {
-  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
-    self.fetch_url(url)
-  }
-
-  fn fetch_http_request(&self, req: HttpRequest<'_>) -> fastrender::Result<FetchedResource> {
-    let _ = (req.method, req.headers, req.body, req.redirect);
-    self.fetch_url(req.fetch.url)
-  }
-}
-
-struct VmJsRuntime {
-  host: WindowHostState,
-  event_loop: EventLoop<WindowHostState>,
-  clock: Arc<VirtualClock>,
-  run_state: RunState,
-  deadline: Duration,
-}
-
+/// `vm-js` backend implemented as a thin adapter over FastRender's real Window-shaped runtime:
+/// - `WindowHostState` / `WindowRealm` (vm-js realm with DOM-ish globals)
+/// - `EventLoop` (tasks/microtasks/timers)
+/// - `VirtualClock` (deterministic time for tests)
+/// - `WptResourceFetcher` (offline-only fetch implementation)
 pub struct VmJsBackend {
-  rt: Option<VmJsRuntime>,
+  fs: WptFs,
+
+  host: Option<WindowHostState>,
+  event_loop: Option<EventLoop<WindowHostState>>,
+  virtual_clock: Option<Arc<VirtualClock>>,
+  run_state: Option<RunState>,
+
+  deadline: Option<Duration>,
   timed_out: bool,
 }
 
-impl Default for VmJsBackend {
-  fn default() -> Self {
-    Self::new()
-  }
-}
-
 impl VmJsBackend {
-  pub fn new() -> Self {
+  pub fn new(fs: WptFs) -> Self {
     Self {
-      rt: None,
+      fs,
+      host: None,
+      event_loop: None,
+      virtual_clock: None,
+      run_state: None,
+      deadline: None,
       timed_out: false,
     }
   }
 
-  fn rt_mut(&mut self) -> Result<&mut VmJsRuntime, RunError> {
+  fn state_mut(
+    &mut self,
+  ) -> Result<(&mut WindowHostState, &mut EventLoop<WindowHostState>, &mut RunState), RunError> {
+    let host = self
+      .host
+      .as_mut()
+      .ok_or_else(|| RunError::Js("vm-js backend is not initialized".to_string()))?;
+    let event_loop = self
+      .event_loop
+      .as_mut()
+      .ok_or_else(|| RunError::Js("vm-js backend is not initialized".to_string()))?;
+    let run_state = self
+      .run_state
+      .as_mut()
+      .ok_or_else(|| RunError::Js("vm-js backend is not initialized".to_string()))?;
+    Ok((host, event_loop, run_state))
+  }
+
+  fn host_mut(&mut self) -> Result<&mut WindowHostState, RunError> {
     self
-      .rt
+      .host
       .as_mut()
       .ok_or_else(|| RunError::Js("vm-js backend is not initialized".to_string()))
   }
 
-  fn is_vm_termination_message(msg: &str) -> bool {
-    let lower = msg.to_ascii_lowercase();
-    lower.contains("execution terminated: out of fuel")
-      || lower.contains("execution terminated: deadline exceeded")
-      || lower.contains("execution terminated: interrupted")
-      || lower.contains("outoffuel")
-      || lower.contains("deadlineexceeded")
-      || lower.contains("interrupted")
-      || lower.contains("interrupt")
+  fn virtual_now(&self) -> Option<Duration> {
+    self.virtual_clock.as_ref().map(|c| c.now())
   }
 
-  fn report_state(window: &mut fastrender::js::WindowRealm) -> Result<f64, VmError> {
-    let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
-    let mut scope = heap.scope();
-    let global = realm.global_object();
-    scope.push_root(Value::Object(global))?;
-    let key_s = scope.alloc_string(REPORT_STATE_KEY)?;
-    scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
-    match scope
-      .heap()
-      .object_get_own_data_property_value(global, &key)?
-    {
-      Some(Value::Number(n)) => Ok(n),
-      _ => Ok(REPORT_STATE_NONE),
+  fn handle_fastrender_error_as_timeout_or_js(&mut self, err: fastrender::error::Error) -> Result<(), RunError> {
+    let msg = err.to_string();
+    if is_vm_interrupt_message(&msg) {
+      self.timed_out = true;
+      Ok(())
+    } else {
+      Err(RunError::Js(msg))
     }
   }
 
-  fn has_report(&mut self) -> Result<bool, RunError> {
-    let rt = self.rt_mut()?;
-    let state = {
-      let window = rt.host.window_mut();
-      Self::report_state(window).map_err(|e| RunError::Js(e.to_string()))?
-    };
-    Ok(state != REPORT_STATE_NONE)
-  }
-
-  fn install_wpt_report_hook(vm: &mut Vm, realm: &Realm, heap: &mut Heap) -> Result<(), VmError> {
-    fn data_desc(value: Value) -> PropertyDescriptor {
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Data {
-          value,
-          writable: true,
-        },
-      }
-    }
-
-    let mut scope = heap.scope();
-    let global = realm.global_object();
-    scope.push_root(Value::Object(global))?;
-
-    // Initialize `__fastrender_wpt_report_state` + `__fastrender_wpt_report_payload`.
-    {
-      let state_key_s = scope.alloc_string(REPORT_STATE_KEY)?;
-      scope.push_root(Value::String(state_key_s))?;
-      let state_key = PropertyKey::from_string(state_key_s);
-      scope.define_property(
-        global,
-        state_key,
-        data_desc(Value::Number(REPORT_STATE_NONE)),
-      )?;
-
-      let payload_key_s = scope.alloc_string(REPORT_PAYLOAD_KEY)?;
-      scope.push_root(Value::String(payload_key_s))?;
-      let payload_key = PropertyKey::from_string(payload_key_s);
-      scope.define_property(global, payload_key, data_desc(Value::Undefined))?;
-    }
-
-    // Install native `__fastrender_wpt_report(payload)` which stores the payload object on the
-    // global. The first call wins; subsequent calls are ignored.
-    let call_id = vm.register_native_call(wpt_report_native)?;
-    let name_s = scope.alloc_string(REPORT_FN_NAME)?;
-    scope.push_root(Value::String(name_s))?;
-    let func =
-      scope.alloc_native_function_with_slots(call_id, None, name_s, 1, &[Value::Object(global)])?;
-    scope
-      .heap_mut()
-      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
-    scope.push_root(Value::Object(func))?;
-
-    let fn_key = PropertyKey::from_string(name_s);
-    scope.define_property(global, fn_key, data_desc(Value::Object(func)))?;
-
-    Ok(())
-  }
-
-  fn install_resolve_url_hook(vm: &mut Vm, realm: &Realm, heap: &mut Heap) -> Result<(), VmError> {
-    fn data_desc(value: Value) -> PropertyDescriptor {
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Data {
-          value,
-          writable: true,
-        },
-      }
-    }
-
-    let mut scope = heap.scope();
-    let global = realm.global_object();
-    scope.push_root(Value::Object(global))?;
-
-    let call_id = vm.register_native_call(resolve_url_native)?;
-    let name_s = scope.alloc_string(RESOLVE_URL_FN_NAME)?;
-    scope.push_root(Value::String(name_s))?;
-    let func = scope.alloc_native_function(call_id, None, name_s, 2)?;
-    scope
-      .heap_mut()
-      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
-    scope.push_root(Value::Object(func))?;
-
-    let key = PropertyKey::from_string(name_s);
-    scope.define_property(global, key, data_desc(Value::Object(func)))?;
-    Ok(())
-  }
-
-  fn decode_report(heap: &mut Heap, payload: Value) -> Result<WptReport, RunError> {
-    match payload {
-      Value::String(s) => {
-        let text = heap
-          .get_string(s)
-          .map_err(|e| RunError::Js(e.to_string()))?
-          .to_utf8_lossy();
-        return Ok(WptReport {
-          file_status: text,
-          harness_status: "ok".to_string(),
-          message: None,
-          stack: None,
-          subtests: Vec::new(),
-        });
-      }
-      Value::Object(obj) => {
-        let mut scope = heap.scope();
-        scope
-          .push_root(Value::Object(obj))
-          .map_err(|e| RunError::Js(e.to_string()))?;
-
-        let get_own =
-          |scope: &mut Scope<'_>, obj: GcObject, name: &str| -> Result<Option<Value>, VmError> {
-            let key_s = scope.alloc_string(name)?;
-            scope.push_root(Value::String(key_s))?;
-            let key = PropertyKey::from_string(key_s);
-            scope.heap().object_get_own_data_property_value(obj, &key)
-          };
-
-        let get_required_string = |scope: &mut Scope<'_>,
-                                   obj: GcObject,
-                                   name: &str,
-                                   default: &str|
-         -> Result<String, RunError> {
-          match get_own(scope, obj, name).map_err(|e| RunError::Js(e.to_string()))? {
-            Some(Value::String(s)) => Ok(
-              scope
-                .heap()
-                .get_string(s)
-                .map_err(|e| RunError::Js(e.to_string()))?
-                .to_utf8_lossy(),
-            ),
-            Some(Value::Undefined | Value::Null) | None => Ok(default.to_string()),
-            Some(Value::Bool(b)) => Ok(b.to_string()),
-            Some(Value::Number(n)) => Ok(n.to_string()),
-            Some(_) => Ok(default.to_string()),
-          }
-        };
-
-        let get_optional_string =
-          |scope: &mut Scope<'_>, obj: GcObject, name: &str| -> Result<Option<String>, RunError> {
-            let Some(value) = get_own(scope, obj, name).map_err(|e| RunError::Js(e.to_string()))?
-            else {
-              return Ok(None);
-            };
-            match value {
-              Value::Undefined | Value::Null => Ok(None),
-              Value::String(s) => Ok(Some(
-                scope
-                  .heap()
-                  .get_string(s)
-                  .map_err(|e| RunError::Js(e.to_string()))?
-                  .to_utf8_lossy(),
-              )),
-              Value::Bool(b) => Ok(Some(b.to_string())),
-              Value::Number(n) => Ok(Some(n.to_string())),
-              // Some harness shims report nested payloads (e.g. `{name, message}` objects). Decode
-              // the subset we care about without executing user JS.
-              Value::Object(nested) => {
-                let nested_name =
-                  match get_own(scope, nested, "name").map_err(|e| RunError::Js(e.to_string()))? {
-                    Some(Value::String(s)) => Some(
-                      scope
-                        .heap()
-                        .get_string(s)
-                        .map_err(|e| RunError::Js(e.to_string()))?
-                        .to_utf8_lossy(),
-                    ),
-                    Some(Value::Bool(b)) => Some(b.to_string()),
-                    Some(Value::Number(n)) => Some(n.to_string()),
-                    _ => None,
-                  };
-                let nested_message = match get_own(scope, nested, "message")
-                  .map_err(|e| RunError::Js(e.to_string()))?
-                {
-                  Some(Value::String(s)) => Some(
-                    scope
-                      .heap()
-                      .get_string(s)
-                      .map_err(|e| RunError::Js(e.to_string()))?
-                      .to_utf8_lossy(),
-                  ),
-                  Some(Value::Bool(b)) => Some(b.to_string()),
-                  Some(Value::Number(n)) => Some(n.to_string()),
-                  _ => None,
-                };
-                Ok(match (nested_name, nested_message) {
-                  (Some(name), Some(msg)) if !name.is_empty() => Some(format!("{name}: {msg}")),
-                  (_, Some(msg)) => Some(msg),
-                  (Some(name), None) => Some(name),
-                  _ => None,
-                })
-              }
-              _ => Ok(None),
-            }
-          };
-
-        let file_status = get_required_string(&mut scope, obj, "file_status", "error")?;
-        let harness_status = get_required_string(&mut scope, obj, "harness_status", "ok")?;
-        let message = get_optional_string(&mut scope, obj, "message")?;
-        let stack = get_optional_string(&mut scope, obj, "stack")?;
-
-        let mut subtests: Vec<WptSubtest> = Vec::new();
-        if let Some(Value::Object(arr)) =
-          get_own(&mut scope, obj, "subtests").map_err(|e| RunError::Js(e.to_string()))?
-        {
-          scope
-            .push_root(Value::Object(arr))
-            .map_err(|e| RunError::Js(e.to_string()))?;
-
-          let len =
-            match get_own(&mut scope, arr, "length").map_err(|e| RunError::Js(e.to_string()))? {
-              Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
-              _ => 0,
-            };
-
-          for idx in 0..len {
-            let Some(Value::Object(st_obj)) = get_own(&mut scope, arr, &idx.to_string())
-              .map_err(|e| RunError::Js(e.to_string()))?
-            else {
-              continue;
-            };
-            scope
-              .push_root(Value::Object(st_obj))
-              .map_err(|e| RunError::Js(e.to_string()))?;
-
-            let name = get_required_string(&mut scope, st_obj, "name", "")?;
-            let status = get_required_string(&mut scope, st_obj, "status", "error")?;
-            let message = get_optional_string(&mut scope, st_obj, "message")?;
-            let stack = get_optional_string(&mut scope, st_obj, "stack")?;
-            subtests.push(WptSubtest {
-              name,
-              status,
-              message,
-              stack,
-            });
-          }
-        }
-
-        Ok(WptReport {
-          file_status,
-          harness_status,
-          message,
-          stack,
-          subtests,
-        })
-      }
-      other => Ok(WptReport {
-        file_status: "error".to_string(),
-        harness_status: "error".to_string(),
-        message: Some(format!("unexpected report payload type: {other:?}")),
-        stack: None,
-        subtests: Vec::new(),
-      }),
-    }
-  }
-
-  fn drain_microtasks_internal(&mut self) -> Result<(), RunError> {
+  fn perform_microtask_checkpoint_limited(&mut self) -> Result<(), RunError> {
     if self.timed_out {
       return Ok(());
     }
@@ -427,29 +92,16 @@ impl VmJsBackend {
       self.timed_out = true;
       return Ok(());
     }
-    if self.has_report()? {
-      return Ok(());
-    }
 
-    let rt = self.rt_mut()?;
-    match rt
-      .event_loop
-      .perform_microtask_checkpoint_limited(&mut rt.host, &mut rt.run_state)
-    {
+    let (host, event_loop, run_state) = self.state_mut()?;
+
+    match event_loop.perform_microtask_checkpoint_limited(host, run_state) {
       Ok(MicrotaskCheckpointLimitedOutcome::Completed) => Ok(()),
       Ok(MicrotaskCheckpointLimitedOutcome::Stopped(_reason)) => {
         self.timed_out = true;
         Ok(())
       }
-      Err(err) => {
-        let msg = err.to_string();
-        if Self::is_vm_termination_message(&msg) {
-          self.timed_out = true;
-          Ok(())
-        } else {
-          Err(RunError::Js(msg))
-        }
-      }
+      Err(err) => self.handle_fastrender_error_as_timeout_or_js(err),
     }
   }
 }
@@ -460,53 +112,90 @@ impl Backend for VmJsBackend {
     init: BackendInit,
     _host: Option<&mut dyn crate::engine::HostEnvironment>,
   ) -> Result<(), RunError> {
+    self.deadline = Some(init.timeout);
     self.timed_out = false;
 
-    // Deterministic virtual clock starting at 0.
-    let clock = Arc::new(VirtualClock::new());
-    clock.set_now(Duration::ZERO);
-    let clock_dyn: Arc<dyn fastrender::js::Clock> = clock.clone();
+    // Deterministic virtual time (starts at 0).
+    let virtual_clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<WindowHostState>::with_clock(virtual_clock.clone());
 
-    let event_loop = EventLoop::<WindowHostState>::with_clock(Arc::clone(&clock_dyn));
+    // Create an HTML-ish DOM with <html><head> and <body> so curated tests can assert:
+    // `document.head.tagName === "HEAD"` etc.
+    let dom = fastrender::dom2::parse_html("<!doctype html><html><head></head><body></body></html>")
+      .map_err(|e| RunError::Js(e.to_string()))?;
 
-    let dom = build_dom_skeleton().map_err(|e| RunError::Js(e.to_string()))?;
-    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(WptResourceFetcher::new(init.fs));
-    // Avoid wall-clock deadlines inside the VM budget so the offline WPT runner is deterministic.
-    // We rely on a VirtualClock + host RunLimits for timeout enforcement instead.
-    let mut js_opts = JsExecutionOptions::default();
-    js_opts.event_loop_run_limits.max_wall_time = None;
-    js_opts.max_instruction_count = Some(DEFAULT_SCRIPT_FUEL);
+    // Offline-only fetcher mapped to the local curated WPT corpus.
+    let fetcher = Arc::new(WptResourceFetcher::from_wpt_fs(&self.fs));
+
+    // JS execution options tuned for deterministic test runs:
+    // - disable wall-clock based deadlines (avoid CI flakiness),
+    // - keep an instruction/fuel budget so `while(true){}` terminates deterministically.
+    let mut options = JsExecutionOptions::default();
+    options.event_loop_run_limits.max_wall_time = None;
+    // The WPT runner relies on a deterministic instruction budget (fuel) rather than wall-clock
+    // timeouts. Keep this budget conservative so `while(true){}` tests terminate quickly even in
+    // debug builds.
+    options.max_instruction_count = Some(50_000);
+
+    // Keep event-loop queue limits consistent with the VM configuration.
+    event_loop.set_queue_limits(options.event_loop_queue_limits);
 
     let mut host = WindowHostState::new_with_fetcher_and_clock_and_options(
       dom,
-      init.test_url.clone(),
+      init.test_url,
       fetcher,
-      clock_dyn,
-      js_opts,
+      virtual_clock.clone(),
+      options,
     )
     .map_err(|e| RunError::Js(e.to_string()))?;
 
-    {
-      let window = host.window_mut();
-      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-      Self::install_wpt_report_hook(vm, realm, heap).map_err(|e| RunError::Js(e.to_string()))?;
-      Self::install_resolve_url_hook(vm, realm, heap).map_err(|e| RunError::Js(e.to_string()))?;
-    }
+    // Install runner-specific globals:
+    // - `__fastrender_wpt_report(payload)` stores the first payload for `take_report`.
+    // - `__fastrender_resolve_url(input, base)` (legacy helper used by curated tests).
+    const BOOTSTRAP: &str = r#"
+      (function () {
+        var g = typeof globalThis !== "undefined" ? globalThis : this;
 
-    let deadline = init.timeout;
+        // Single-shot report hook used by `resources/fastrender_testharness_report.js`.
+        try { g.__fastrender_wpt_report_called = false; } catch (_e) {}
+        try { g.__fastrender_wpt_report_payload = undefined; } catch (_e2) {}
+
+        // Define via `var` so very small runtimes (historically) could resolve it as an identifier
+        // binding, while also reflecting it on `globalThis`.
+        var __fastrender_wpt_report = function (payload) {
+          try {
+            if (g.__fastrender_wpt_report_called) return;
+            g.__fastrender_wpt_report_called = true;
+            g.__fastrender_wpt_report_payload = payload;
+          } catch (_e3) {}
+        };
+        try { g.__fastrender_wpt_report = __fastrender_wpt_report; } catch (_e4) {}
+
+        // Legacy URL resolver used by curated tests and compatibility shims.
+        var __fastrender_resolve_url = function (input, base) {
+          if (base === null || base === undefined) {
+            return (new URL(input)).toString();
+          }
+          return (new URL(input, base)).toString();
+        };
+        try { g.__fastrender_resolve_url = __fastrender_resolve_url; } catch (_e5) {}
+      })();
+    "#;
+
+    host
+      .exec_script_with_name_in_event_loop(&mut event_loop, "fastrender_wpt_bootstrap.js", BOOTSTRAP)
+      .map_err(|e| RunError::Js(e.to_string()))?;
+
     let run_state = event_loop.new_run_state(RunLimits {
       max_tasks: init.max_tasks,
       max_microtasks: init.max_microtasks,
-      max_wall_time: Some(deadline),
+      max_wall_time: None,
     });
 
-    self.rt = Some(VmJsRuntime {
-      host,
-      event_loop,
-      clock,
-      run_state,
-      deadline,
-    });
+    self.virtual_clock = Some(virtual_clock);
+    self.event_loop = Some(event_loop);
+    self.host = Some(host);
+    self.run_state = Some(run_state);
 
     Ok(())
   }
@@ -519,40 +208,21 @@ impl Backend for VmJsBackend {
       self.timed_out = true;
       return Ok(());
     }
-    if self.has_report()? {
-      return Ok(());
-    }
 
-    let rt = self.rt_mut()?;
-    {
-      let window = rt.host.window_mut();
-      window.reset_interrupt();
-    }
+    let (host, event_loop, _run_state) = self.state_mut()?;
+    let exec_result = host.exec_script_with_name_in_event_loop(event_loop, name, source);
 
-    let result = rt.host.exec_script_with_name_in_event_loop(
-      &mut rt.event_loop,
-      Arc::<str>::from(name),
-      Arc::<str>::from(source),
-    );
-
-    match result {
+    match exec_result {
       Ok(_value) => {
         // Microtask checkpoint after every script evaluation.
-        self.drain_microtasks_internal()
+        self.perform_microtask_checkpoint_limited()
       }
-      Err(err) => {
-        let msg = err.to_string();
-        if Self::is_vm_termination_message(&msg) {
-          self.timed_out = true;
-          return Ok(());
-        }
-        Err(RunError::Js(msg))
-      }
+      Err(err) => self.handle_fastrender_error_as_timeout_or_js(err),
     }
   }
 
   fn drain_microtasks(&mut self) -> Result<(), RunError> {
-    self.drain_microtasks_internal()
+    self.perform_microtask_checkpoint_limited()
   }
 
   fn poll_event_loop(&mut self) -> Result<bool, RunError> {
@@ -563,15 +233,9 @@ impl Backend for VmJsBackend {
       self.timed_out = true;
       return Ok(false);
     }
-    if self.has_report()? {
-      return Ok(false);
-    }
 
-    let rt = self.rt_mut()?;
-    match rt
-      .event_loop
-      .run_next_task_limited(&mut rt.host, &mut rt.run_state)
-    {
+    let (host, event_loop, run_state) = self.state_mut()?;
+    match event_loop.run_next_task_limited(host, run_state) {
       Ok(RunNextTaskLimitedOutcome::Ran) => Ok(true),
       Ok(RunNextTaskLimitedOutcome::NoTask) => Ok(false),
       Ok(RunNextTaskLimitedOutcome::Stopped(_reason)) => {
@@ -579,76 +243,51 @@ impl Backend for VmJsBackend {
         Ok(false)
       }
       Err(err) => {
-        let msg = err.to_string();
-        if Self::is_vm_termination_message(&msg) {
-          self.timed_out = true;
-          Ok(false)
-        } else {
-          Err(RunError::Js(msg))
-        }
+        self.handle_fastrender_error_as_timeout_or_js(err)?;
+        Ok(false)
       }
     }
   }
 
   fn take_report(&mut self) -> Result<Option<WptReport>, RunError> {
-    let rt = self.rt_mut()?;
-    let window = rt.host.window_mut();
-    let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let host = self.host_mut()?;
+    let window = host.window_mut();
+    let (vm, realm, heap) = window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-    let global = realm.global_object();
-    scope
-      .push_root(Value::Object(global))
-      .map_err(|e| RunError::Js(e.to_string()))?;
 
-    let state_key_s = scope
-      .alloc_string(REPORT_STATE_KEY)
-      .map_err(|e| RunError::Js(e.to_string()))?;
-    scope
-      .push_root(Value::String(state_key_s))
-      .map_err(|e| RunError::Js(e.to_string()))?;
-    let state_key = PropertyKey::from_string(state_key_s);
-    let state = match scope
-      .heap()
-      .object_get_own_data_property_value(global, &state_key)
-      .map_err(|e| RunError::Js(e.to_string()))?
-    {
-      Some(Value::Number(n)) => n,
-      _ => REPORT_STATE_NONE,
+    let global = realm.global_object();
+    if let Err(err) = scope.push_root(Value::Object(global)) {
+      return Ok(Some(harness_error_report(format!(
+        "failed to root global object while reading report payload: {err}"
+      ))));
+    }
+
+    let payload_key = match alloc_key(&mut scope, "__fastrender_wpt_report_payload") {
+      Ok(key) => key,
+      Err(err) => {
+        return Ok(Some(harness_error_report(format!(
+          "failed to allocate report payload key: {err}"
+        ))))
+      }
     };
 
-    if state != REPORT_STATE_AVAILABLE {
+    let payload = match vm.get(&mut scope, global, payload_key) {
+      Ok(value) => value,
+      Err(err) => {
+        return Ok(Some(harness_error_report(format!(
+          "failed to read report payload: {err}"
+        ))))
+      }
+    };
+
+    if matches!(payload, Value::Undefined | Value::Null) {
       return Ok(None);
     }
 
-    let payload_key_s = scope
-      .alloc_string(REPORT_PAYLOAD_KEY)
-      .map_err(|e| RunError::Js(e.to_string()))?;
-    scope
-      .push_root(Value::String(payload_key_s))
-      .map_err(|e| RunError::Js(e.to_string()))?;
-    let payload_key = PropertyKey::from_string(payload_key_s);
+    let report = report_from_js_value(vm, &mut scope, payload);
 
-    let payload = scope
-      .heap()
-      .object_get_own_data_property_value(global, &payload_key)
-      .map_err(|e| RunError::Js(e.to_string()))?
-      .unwrap_or(Value::Undefined);
-
-    let report = Self::decode_report(scope.heap_mut(), payload)?;
-
-    // Mark taken so subsequent polls return None and additional report calls are ignored.
-    scope
-      .heap_mut()
-      .object_set_existing_data_property_value(global, &payload_key, Value::Undefined)
-      .map_err(|e| RunError::Js(e.to_string()))?;
-    scope
-      .heap_mut()
-      .object_set_existing_data_property_value(
-        global,
-        &state_key,
-        Value::Number(REPORT_STATE_TAKEN),
-      )
-      .map_err(|e| RunError::Js(e.to_string()))?;
+    // Clear the stored payload so subsequent `take_report` calls return `None`.
+    let _ = scope.ordinary_set(vm, global, payload_key, Value::Undefined, Value::Object(global));
 
     Ok(Some(report))
   }
@@ -657,24 +296,42 @@ impl Backend for VmJsBackend {
     if self.timed_out {
       return true;
     }
-    let Some(rt) = self.rt.as_ref() else {
+    let Some(deadline) = self.deadline else {
       return true;
     };
-    rt.clock.now() >= rt.deadline
+    let Some(now) = self.virtual_now() else {
+      return true;
+    };
+    if now >= deadline {
+      return true;
+    }
+
+    let Some(run_state) = self.run_state.as_ref() else {
+      return true;
+    };
+    let limits = run_state.limits();
+    run_state.tasks_executed() >= limits.max_tasks || run_state.microtasks_executed() >= limits.max_microtasks
   }
 
   fn idle_wait(&mut self) {
     if self.timed_out {
       return;
     }
-    let Some(rt) = self.rt.as_mut() else {
+    let Some(deadline) = self.deadline else {
+      self.timed_out = true;
+      return;
+    };
+    let Some(clock) = self.virtual_clock.as_ref() else {
+      self.timed_out = true;
+      return;
+    };
+    let Some(event_loop) = self.event_loop.as_mut() else {
       self.timed_out = true;
       return;
     };
 
-    let now = rt.clock.now();
-    let deadline = rt.deadline;
-    let next_due = rt.event_loop.next_timer_due_time();
+    let now = clock.now();
+    let next_due = event_loop.next_timer_due_time();
     let target = match next_due {
       Some(due) if due > now => due.min(deadline),
       Some(_due) => now,
@@ -682,138 +339,228 @@ impl Backend for VmJsBackend {
     };
 
     if target > now {
-      rt.clock.set_now(target);
+      clock.set_now(target);
     } else if now < deadline {
-      // Nothing runnable and nothing to advance to: force progress to the deadline so we don't spin
-      // forever.
-      rt.clock.set_now(deadline);
+      // Force progress to the deadline so the runner doesn't spin forever if nothing becomes
+      // runnable (defensive against unexpected event-loop states).
+      clock.set_now(deadline);
     }
 
-    if rt.clock.now() >= deadline {
+    if clock.now() >= deadline {
       self.timed_out = true;
     }
   }
 }
 
-fn build_dom_skeleton() -> Result<dom2::Document, dom2::DomError> {
-  let mut doc = dom2::Document::new(QuirksMode::NoQuirks);
-  let root = doc.root();
-  let html = doc.create_element("html", "");
-  doc.append_child(root, html)?;
-  let head = doc.create_element("head", "");
-  doc.append_child(html, head)?;
-  let body = doc.create_element("body", "");
-  doc.append_child(html, body)?;
-  Ok(doc)
+fn is_vm_interrupt_message(msg: &str) -> bool {
+  // `vm-js` termination messages are currently formatted as:
+  // - "execution terminated: out of fuel"
+  // - "execution terminated: deadline exceeded"
+  // - "execution terminated: interrupted"
+  //
+  // Keep this matching permissive so runner-level timeout classification remains robust even if
+  // formatting changes.
+  let msg = msg.to_ascii_lowercase();
+  msg.contains("execution terminated: out of fuel")
+    || msg.contains("execution terminated: deadline exceeded")
+    || msg.contains("execution terminated: interrupted")
+    || msg.contains("outoffuel")
+    || msg.contains("deadlineexceeded")
+    || msg.contains("interrupted")
 }
 
-fn global_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
-  let slot = scope
-    .heap()
-    .get_function_native_slots(callee)?
-    .get(NATIVE_SLOT_GLOBAL)
-    .copied()
-    .unwrap_or(Value::Undefined);
-  match slot {
-    Value::Object(obj) => Ok(obj),
-    _ => Err(VmError::Unimplemented(
-      "native function missing global binding",
-    )),
+fn alloc_key(scope: &mut vm_js::Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
+  let s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(s))?;
+  Ok(PropertyKey::from_string(s))
+}
+
+fn string_from_value(heap: &vm_js::Heap, value: Value) -> Option<String> {
+  let Value::String(s) = value else {
+    return None;
+  };
+  heap.get_string(s).ok().map(|js| js.to_utf8_lossy())
+}
+
+fn harness_error_report(message: impl Into<String>) -> WptReport {
+  WptReport {
+    file_status: "error".to_string(),
+    harness_status: "error".to_string(),
+    message: Some(message.into()),
+    stack: None,
+    subtests: Vec::new(),
   }
 }
 
-fn wpt_report_native(
-  _vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let global = global_from_callee(scope, callee)?;
+fn report_from_js_value(vm: &mut vm_js::Vm, scope: &mut vm_js::Scope<'_>, payload: Value) -> WptReport {
+  let heap = scope.heap();
 
-  // Root `global` and the payload while allocating keys / updating heap properties.
-  let payload = args.get(0).copied().unwrap_or(Value::Undefined);
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(global))?;
-  scope.push_root(payload)?;
-
-  let state_key_s = scope.alloc_string(REPORT_STATE_KEY)?;
-  scope.push_root(Value::String(state_key_s))?;
-  let state_key = PropertyKey::from_string(state_key_s);
-  let state = match scope
-    .heap()
-    .object_get_own_data_property_value(global, &state_key)?
-  {
-    Some(Value::Number(n)) => n,
-    _ => REPORT_STATE_NONE,
-  };
-  if state != REPORT_STATE_NONE {
-    return Ok(Value::Undefined);
+  match payload {
+    // Some curated tests call `__fastrender_wpt_report("pass")` directly.
+    Value::String(s) => WptReport {
+      file_status: heap
+        .get_string(s)
+        .ok()
+        .map(|js| js.to_utf8_lossy())
+        .unwrap_or_else(|| "error".to_string()),
+      harness_status: "ok".to_string(),
+      message: None,
+      stack: None,
+      subtests: Vec::new(),
+    },
+    Value::Object(obj) => report_from_js_object(vm, scope, obj),
+    other => harness_error_report(format!("unexpected report payload type: {other:?}")),
   }
-
-  let payload_key_s = scope.alloc_string(REPORT_PAYLOAD_KEY)?;
-  scope.push_root(Value::String(payload_key_s))?;
-  let payload_key = PropertyKey::from_string(payload_key_s);
-  scope
-    .heap_mut()
-    .object_set_existing_data_property_value(global, &payload_key, payload)?;
-  scope.heap_mut().object_set_existing_data_property_value(
-    global,
-    &state_key,
-    Value::Number(REPORT_STATE_AVAILABLE),
-  )?;
-  Ok(Value::Undefined)
 }
 
-fn resolve_url_native(
-  _vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let input = args.get(0).copied().unwrap_or(Value::Undefined);
-  let base = args.get(1).copied().unwrap_or(Value::Undefined);
-
-  let input_s = match scope.heap_mut().to_string(input) {
-    Ok(s) => s,
-    Err(_) => return Err(VmError::TypeError(RESOLVE_URL_PARSE_ERROR)),
-  };
-  let input = scope
-    .heap()
-    .get_string(input_s)
-    .map_err(|_| VmError::TypeError(RESOLVE_URL_PARSE_ERROR))?
-    .to_utf8_lossy();
-
-  let base_opt: Option<String> = match base {
-    Value::Undefined | Value::Null => None,
-    other => {
-      let s = scope
-        .heap_mut()
-        .to_string(other)
-        .map_err(|_| VmError::TypeError(RESOLVE_URL_PARSE_ERROR))?;
-      Some(
-        scope
-          .heap()
-          .get_string(s)
-          .map_err(|_| VmError::TypeError(RESOLVE_URL_PARSE_ERROR))?
-          .to_utf8_lossy(),
-      )
-    }
-  };
-
-  match fastrender::js::resolve_url(&input, base_opt.as_deref()) {
-    Ok(resolved) => {
-      let handle = scope.alloc_string(&resolved)?;
-      Ok(Value::String(handle))
-    }
-    Err(fastrender::js::UrlResolveError::RelativeUrlWithoutBase) => {
-      Err(VmError::TypeError(RESOLVE_URL_RELATIVE_WITHOUT_BASE))
-    }
-    Err(_) => Err(VmError::TypeError(RESOLVE_URL_PARSE_ERROR)),
+fn report_from_js_object(vm: &mut vm_js::Vm, scope: &mut vm_js::Scope<'_>, obj: vm_js::GcObject) -> WptReport {
+  // Root the payload object while allocating property keys and reading properties.
+  if let Err(err) = scope.push_root(Value::Object(obj)) {
+    return harness_error_report(format!("failed to root report payload object: {err}"));
   }
+
+  let file_status_key = match alloc_key(scope, "file_status") {
+    Ok(key) => key,
+    Err(err) => return harness_error_report(format!("failed to allocate file_status key: {err}")),
+  };
+  let harness_status_key = match alloc_key(scope, "harness_status") {
+    Ok(key) => key,
+    Err(err) => return harness_error_report(format!("failed to allocate harness_status key: {err}")),
+  };
+  let message_key = match alloc_key(scope, "message") {
+    Ok(key) => key,
+    Err(err) => return harness_error_report(format!("failed to allocate message key: {err}")),
+  };
+  let stack_key = match alloc_key(scope, "stack") {
+    Ok(key) => key,
+    Err(err) => return harness_error_report(format!("failed to allocate stack key: {err}")),
+  };
+  let subtests_key = match alloc_key(scope, "subtests") {
+    Ok(key) => key,
+    Err(err) => return harness_error_report(format!("failed to allocate subtests key: {err}")),
+  };
+  let length_key = match alloc_key(scope, "length") {
+    Ok(key) => key,
+    Err(err) => return harness_error_report(format!("failed to allocate length key: {err}")),
+  };
+  let name_key = match alloc_key(scope, "name") {
+    Ok(key) => key,
+    Err(err) => return harness_error_report(format!("failed to allocate name key: {err}")),
+  };
+  let status_key = match alloc_key(scope, "status") {
+    Ok(key) => key,
+    Err(err) => return harness_error_report(format!("failed to allocate status key: {err}")),
+  };
+
+  let file_status = match vm.get(scope, obj, file_status_key) {
+    Ok(value) => {
+      let heap = scope.heap();
+      string_from_value(heap, value).unwrap_or_else(|| "error".to_string())
+    }
+    Err(_err) => "error".to_string(),
+  };
+  let harness_status = match vm.get(scope, obj, harness_status_key) {
+    Ok(value) => {
+      let heap = scope.heap();
+      string_from_value(heap, value).unwrap_or_else(|| "ok".to_string())
+    }
+    Err(_err) => "ok".to_string(),
+  };
+
+  let message = match vm.get(scope, obj, message_key) {
+    Ok(value) => {
+      let heap = scope.heap();
+      string_from_value(heap, value).filter(|s| !s.is_empty())
+    }
+    Err(_err) => None,
+  };
+  let stack = match vm.get(scope, obj, stack_key) {
+    Ok(value) => {
+      let heap = scope.heap();
+      string_from_value(heap, value).filter(|s| !s.is_empty())
+    }
+    Err(_err) => None,
+  };
+
+  let subtests = match vm.get(scope, obj, subtests_key) {
+    Ok(Value::Object(arr)) => parse_subtests_array(vm, scope, arr, length_key, name_key, status_key, message_key, stack_key),
+    _ => Vec::new(),
+  };
+
+  WptReport {
+    file_status,
+    harness_status,
+    message,
+    stack,
+    subtests,
+  }
+}
+
+fn parse_subtests_array(
+  vm: &mut vm_js::Vm,
+  scope: &mut vm_js::Scope<'_>,
+  arr: vm_js::GcObject,
+  length_key: PropertyKey,
+  name_key: PropertyKey,
+  status_key: PropertyKey,
+  message_key: PropertyKey,
+  stack_key: PropertyKey,
+) -> Vec<WptSubtest> {
+  let len = match vm.get(scope, arr, length_key) {
+    Ok(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0,
+  };
+
+  let mut out = Vec::new();
+  if out.try_reserve(len.min(1024)).is_err() {
+    // Keep host allocations bounded; fall back to incremental growth.
+  }
+
+  for idx in 0..len {
+    // Use a nested scope per element so roots (index key strings, subtest objects) do not
+    // accumulate unboundedly across large subtest arrays.
+    let mut iter_scope = scope.reborrow();
+
+    let idx_key = match alloc_key(&mut iter_scope, &idx.to_string()) {
+      Ok(key) => key,
+      Err(_) => continue,
+    };
+
+    let Ok(Value::Object(st_obj)) = vm.get(&mut iter_scope, arr, idx_key) else {
+      continue;
+    };
+
+    if iter_scope.push_root(Value::Object(st_obj)).is_err() {
+      continue;
+    }
+
+    let name = match vm.get(&mut iter_scope, st_obj, name_key) {
+      Ok(value) => string_from_value(iter_scope.heap(), value).unwrap_or_default(),
+      Err(_err) => String::new(),
+    };
+    let status = match vm.get(&mut iter_scope, st_obj, status_key) {
+      Ok(value) => {
+        string_from_value(iter_scope.heap(), value).unwrap_or_else(|| "error".to_string())
+      }
+      Err(_err) => "error".to_string(),
+    };
+
+    let message = match vm.get(&mut iter_scope, st_obj, message_key) {
+      Ok(value) => string_from_value(iter_scope.heap(), value).filter(|s| !s.is_empty()),
+      Err(_err) => None,
+    };
+    let stack = match vm.get(&mut iter_scope, st_obj, stack_key) {
+      Ok(value) => string_from_value(iter_scope.heap(), value).filter(|s| !s.is_empty()),
+      Err(_err) => None,
+    };
+
+    out.push(WptSubtest {
+      name,
+      status,
+      message,
+      stack,
+    });
+  }
+
+  out
 }

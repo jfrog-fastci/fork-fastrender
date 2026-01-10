@@ -26,7 +26,7 @@ reason = "Intentional harness-level error used to validate uncaught exception cl
 [[expectations]]
 id = "smoke/infinite_loop_timeout.window.js"
 status = "xfail"
-reason = "Intentional infinite loop to validate timeout handling."
+reason = "Intentional infinite loop; runner should terminate it deterministically as a timeout."
 
 [[expectations]]
 id = "vmjs/time_determinism.window.js"
@@ -39,3 +39,9 @@ id = "vmjs/time_determinism_baseline.window.js"
 backend = "quickjs"
 status = "skip"
 reason = "Deterministic virtual time (Date.now/performance.now) is vm-js-only; QuickJS timers are wall-clock based."
+
+[[expectations]]
+glob = "url/**"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend does not currently provide WHATWG URL/URLSearchParams bindings."

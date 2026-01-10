@@ -10,9 +10,10 @@
 //! keeps room for extension.
 
 use crate::dom2;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 use thiserror::Error;
+use vm_js::{GcObject, Heap, WeakGcObject};
 use vm_js::Value as JsValue;
 
 #[derive(Debug, Error)]
@@ -188,7 +189,7 @@ pub struct Event {
   ///
   /// For non-`CustomEvent` events, this remains `None`.
   pub detail: Option<JsValue>,
-  in_passive_listener: bool,
+  pub(crate) in_passive_listener: bool,
 }
 
 impl Event {
@@ -306,7 +307,21 @@ struct RegisteredListener {
 pub struct EventListenerRegistry {
   next_record_id: Cell<u64>,
   listeners: RefCell<FxHashMap<EventTargetId, FxHashMap<String, Vec<RegisteredListener>>>>,
-  opaque_parents: RefCell<FxHashMap<u64, u64>>,
+  /// Parent links for `EventTargetId::Opaque` targets.
+  ///
+  /// `EventTargetId::Opaque` is used for non-DOM `EventTarget`s created in JS (e.g. `new EventTarget()`),
+  /// so the DOM tree can't provide a propagation path. Curated WPT tests rely on a non-standard
+  /// extension: `new EventTarget(parent)` creates an EventTarget whose "get the parent" algorithm
+  /// returns `parent`, allowing capture/bubble across a synthetic chain.
+  opaque_parents: RefCell<FxHashMap<u64, EventTargetId>>,
+  /// Weak mapping from opaque target IDs back to their JS object wrappers.
+  ///
+  /// This allows JS-driven `dispatchEvent()` to:
+  /// - expose `event.target/currentTarget` as the correct JS EventTarget object, and
+  /// - locate per-target callback roots for non-DOM EventTargets.
+  ///
+  /// Stored as weak handles so the registry does not keep EventTarget wrappers alive.
+  opaque_targets: RefCell<FxHashMap<u64, WeakGcObject>>,
 }
 
 impl std::fmt::Debug for EventListenerRegistry {
@@ -319,15 +334,27 @@ impl std::fmt::Debug for EventListenerRegistry {
         .flat_map(|by_type| by_type.values())
         .map(|listeners| listeners.len())
         .sum::<usize>();
-      (targets, event_types, listener_count)
+      let opaque_parents = self
+        .opaque_parents
+        .try_borrow()
+        .map(|m| m.len())
+        .unwrap_or(0);
+      let opaque_targets = self
+        .opaque_targets
+        .try_borrow()
+        .map(|m| m.len())
+        .unwrap_or(0);
+      (targets, event_types, listener_count, opaque_parents, opaque_targets)
     });
 
     let mut ds = f.debug_struct("EventListenerRegistry");
     match snapshot {
-      Some((targets, event_types, listener_count)) => ds
+      Some((targets, event_types, listener_count, opaque_parents, opaque_targets)) => ds
         .field("targets", &targets)
         .field("event_types", &event_types)
         .field("listeners", &listener_count)
+        .field("opaque_parents", &opaque_parents)
+        .field("opaque_targets", &opaque_targets)
         .finish(),
       None => ds.field("listeners", &"<borrowed>").finish_non_exhaustive(),
     }
@@ -376,19 +403,19 @@ impl EventListenerRegistry {
   ///
   /// This is used by host environments that support manually-linked `EventTarget` graphs (e.g.
   /// `new EventTarget(parent)` in the vm-js WPT harness).
-  pub fn set_opaque_parent(&self, child: u64, parent: Option<u64>) {
-    let mut parents = self.opaque_parents.borrow_mut();
+  pub fn set_opaque_parent(&self, child: u64, parent: Option<EventTargetId>) {
+    let mut map = self.opaque_parents.borrow_mut();
     match parent {
       Some(parent) => {
-        parents.insert(child, parent);
+        map.insert(child, parent.normalize());
       }
       None => {
-        parents.remove(&child);
+        map.remove(&child);
       }
     }
   }
 
-  fn opaque_parent(&self, child: u64) -> Option<u64> {
+  fn opaque_parent(&self, child: u64) -> Option<EventTargetId> {
     self.opaque_parents.borrow().get(&child).copied()
   }
 
@@ -424,6 +451,24 @@ impl EventListenerRegistry {
     }
     true
   }
+
+  pub(crate) fn register_opaque_target(&self, id: u64, target: WeakGcObject) {
+    self.opaque_targets.borrow_mut().insert(id, target);
+  }
+
+  pub(crate) fn opaque_target_object(&self, heap: &Heap, id: u64) -> Option<GcObject> {
+    // Best-effort cleanup: if the object is dead, remove the weak handle so the table doesn't grow
+    // unboundedly across repeated allocations.
+    let mut map = self.opaque_targets.borrow_mut();
+    let weak = *map.get(&id)?;
+    match weak.upgrade(heap) {
+      Some(obj) => Some(obj),
+      None => {
+        map.remove(&id);
+        None
+      }
+    }
+  }
 }
 
 impl Clone for EventListenerRegistry {
@@ -440,11 +485,36 @@ impl Clone for EventListenerRegistry {
       .try_borrow()
       .map(|map| map.clone())
       .unwrap_or_default();
+    let opaque_targets = self
+      .opaque_targets
+      .try_borrow()
+      .map(|map| map.clone())
+      .unwrap_or_default();
     Self {
       next_record_id: Cell::new(self.next_record_id.get()),
       listeners: RefCell::new(listeners),
       opaque_parents: RefCell::new(opaque_parents),
+      opaque_targets: RefCell::new(opaque_targets),
     }
+  }
+}
+
+fn event_target_parent(
+  target: EventTargetId,
+  dom: &dom2::Document,
+  registry: &EventListenerRegistry,
+) -> Option<EventTargetId> {
+  match target.normalize() {
+    EventTargetId::Window => None,
+    EventTargetId::Document => Some(EventTargetId::Window),
+    EventTargetId::Node(node_id) => dom.dom_parent_for_event_path(node_id).map(|parent| {
+      if parent.index() == 0 {
+        EventTargetId::Document
+      } else {
+        EventTargetId::Node(parent)
+      }
+    }),
+    EventTargetId::Opaque(id) => registry.opaque_parent(id),
   }
 }
 
@@ -453,56 +523,25 @@ fn build_event_path(
   dom: &dom2::Document,
   registry: &EventListenerRegistry,
 ) -> Vec<EventPathEntry> {
-  let target = target.normalize();
-  let mut path: Vec<EventTargetId> = Vec::new();
-  match target {
-    EventTargetId::Window => {
-      path.push(EventTargetId::Window);
+  let mut rev: Vec<EventTargetId> = Vec::new();
+  let mut seen: FxHashSet<EventTargetId> = FxHashSet::default();
+  let mut current = target.normalize();
+
+  // Defensive against accidental cycles (e.g. `new EventTarget(self)`).
+  // Bound the path to keep dispatch deterministic even under malicious inputs.
+  for _ in 0..1024 {
+    if !seen.insert(current) {
+      break;
     }
-    EventTargetId::Document => {
-      path.push(EventTargetId::Window);
-      path.push(EventTargetId::Document);
-    }
-    EventTargetId::Node(node_id) => {
-      let mut rev: Vec<EventTargetId> = vec![EventTargetId::Node(node_id)];
-      let mut current = node_id;
-      let mut reached_document = false;
-      loop {
-        let Some(parent) = dom.dom_parent_for_event_path(current) else {
-          break;
-        };
-        if parent.index() == 0 {
-          rev.push(EventTargetId::Document);
-          reached_document = true;
-          break;
-        }
-        rev.push(EventTargetId::Node(parent));
-        current = parent;
-      }
-      if reached_document {
-        rev.push(EventTargetId::Window);
-      }
-      rev.reverse();
-      path.extend(rev);
-    }
-    EventTargetId::Opaque(id) => {
-      let mut rev: Vec<EventTargetId> = vec![EventTargetId::Opaque(id)];
-      let mut current = id;
-      let mut visited: rustc_hash::FxHashSet<u64> = rustc_hash::FxHashSet::default();
-      visited.insert(current);
-      while let Some(parent) = registry.opaque_parent(current) {
-        if !visited.insert(parent) {
-          break;
-        }
-        rev.push(EventTargetId::Opaque(parent));
-        current = parent;
-      }
-      rev.reverse();
-      path.extend(rev);
-    }
+    rev.push(current);
+    let Some(parent) = event_target_parent(current, dom, registry) else {
+      break;
+    };
+    current = parent.normalize();
   }
 
-  path.into_iter().map(|target| EventPathEntry { target }).collect()
+  rev.reverse();
+  rev.into_iter().map(|target| EventPathEntry { target }).collect()
 }
 
 fn invoke_listeners(

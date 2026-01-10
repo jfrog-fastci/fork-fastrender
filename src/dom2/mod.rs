@@ -1342,14 +1342,20 @@ impl Document {
         });
 
         if scope_active && item.node.is_element() && shadow_ok {
-          if node_matches_selector_list(
-            item.node,
-            &ancestors,
-            &selector_list,
-            &mut selector_caches,
-            quirks_mode,
-            scope_anchor,
-          ) {
+          let kind_ok = matches!(
+            self.node(dom2_id).kind,
+            NodeKind::Element { .. } | NodeKind::Slot { .. }
+          );
+          if kind_ok
+            && node_matches_selector_list(
+              item.node,
+              &ancestors,
+              &selector_list,
+              &mut selector_caches,
+              quirks_mode,
+              scope_anchor,
+            )
+          {
             return Ok(Some(dom2_id));
           }
         }
@@ -1490,14 +1496,20 @@ impl Document {
         });
 
         if scope_active && item.node.is_element() && shadow_ok {
-          if node_matches_selector_list(
-            item.node,
-            &ancestors,
-            &selector_list,
-            &mut selector_caches,
-            quirks_mode,
-            scope_anchor,
-          ) {
+          let kind_ok = matches!(
+            self.node(dom2_id).kind,
+            NodeKind::Element { .. } | NodeKind::Slot { .. }
+          );
+          if kind_ok
+            && node_matches_selector_list(
+              item.node,
+              &ancestors,
+              &selector_list,
+              &mut selector_caches,
+              quirks_mode,
+              scope_anchor,
+            )
+          {
             results.push(dom2_id);
           }
         }

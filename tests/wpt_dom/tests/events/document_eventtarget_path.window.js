@@ -85,7 +85,7 @@ function document_eventtarget_path_window_document_path_order_test() {
   document_eventtarget_path_child = child;
 
   // Attach the subtree so the propagation path includes window + document.
-  document.appendChild(parent);
+  document.body.appendChild(parent);
   parent.appendChild(child);
 
   window.addEventListener("document-path", document_eventtarget_path_win_capture, true);

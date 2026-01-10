@@ -81,7 +81,18 @@ fn suite_smoke_report_classifies_expected_failures() {
   assert_eq!(
     dom_shims.outcome,
     TestOutcome::Passed,
-    "dom_shims.window.js should pass: {dom_shims:#?}"
+     "dom_shims.window.js should pass: {dom_shims:#?}"
+  );
+
+  let infinite_loop = report
+    .results
+    .iter()
+    .find(|r| r.id == "smoke/infinite_loop_timeout.window.js")
+    .expect("missing infinite_loop_timeout.window.js");
+  assert_eq!(infinite_loop.outcome, TestOutcome::TimedOut);
+  assert!(
+    infinite_loop.expected_mismatch,
+    "expected xfail should be marked expected_mismatch: {infinite_loop:#?}"
   );
 
   let infinite_loop_timeout = report
