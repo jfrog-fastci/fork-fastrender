@@ -296,6 +296,28 @@ pub enum UiToWorker {
     tab_id: TabId,
     text: String,
   },
+  /// IME preedit update for the focused page text control (input/textarea).
+  ///
+  /// This represents an in-progress composition string that should be rendered at the caret
+  /// position but **not** committed to the DOM value until an [`UiToWorker::ImeCommit`] arrives.
+  ImePreedit {
+    tab_id: TabId,
+    text: String,
+    /// Cursor/selection range within `text`, when provided by the platform IME.
+    cursor: Option<(usize, usize)>,
+  },
+  /// IME commit for the focused page text control (input/textarea).
+  ///
+  /// This is the final committed text from the platform IME and should be inserted into the DOM
+  /// value at the caret.
+  ImeCommit {
+    tab_id: TabId,
+    text: String,
+  },
+  /// Cancels any active IME composition for the focused page text control.
+  ImeCancel {
+    tab_id: TabId,
+  },
   KeyAction {
     tab_id: TabId,
     key: KeyAction,

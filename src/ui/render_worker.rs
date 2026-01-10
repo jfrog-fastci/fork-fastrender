@@ -933,6 +933,15 @@ impl BrowserRuntime {
       UiToWorker::TextInput { tab_id, text } => {
         self.handle_text_input(tab_id, &text);
       }
+      UiToWorker::ImePreedit { tab_id, text, cursor } => {
+        self.handle_ime_preedit(tab_id, &text, cursor);
+      }
+      UiToWorker::ImeCommit { tab_id, text } => {
+        self.handle_ime_commit(tab_id, &text);
+      }
+      UiToWorker::ImeCancel { tab_id } => {
+        self.handle_ime_cancel(tab_id);
+      }
       UiToWorker::KeyAction { tab_id, key } => {
         self.handle_key_action(tab_id, key);
       }
@@ -1487,6 +1496,51 @@ impl BrowserRuntime {
     };
 
     let changed = doc.mutate_dom(|dom| tab.interaction.text_input(dom, text));
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
+  fn handle_ime_preedit(&mut self, tab_id: TabId, text: &str, cursor: Option<(usize, usize)>) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let changed = doc.mutate_dom(|dom| tab.interaction.ime_preedit(dom, text, cursor));
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
+  fn handle_ime_commit(&mut self, tab_id: TabId, text: &str) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let changed = doc.mutate_dom(|dom| tab.interaction.ime_commit(dom, text));
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
+  fn handle_ime_cancel(&mut self, tab_id: TabId) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let changed = doc.mutate_dom(|dom| tab.interaction.ime_cancel(dom));
     if changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;

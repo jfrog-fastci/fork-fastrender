@@ -63,6 +63,7 @@ pub struct InteractionEngine {
   pointer_down_target: Option<usize>,
   range_drag: Option<RangeDragState>,
   focused: Option<usize>,
+  ime_composition: Option<ImeCompositionState>,
   modality: InputModality,
 }
 
@@ -71,6 +72,15 @@ struct RangeDragState {
   node_id: usize,
   box_id: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImeCompositionState {
+  node_id: usize,
+  text: String,
+  cursor: Option<(usize, usize)>,
+}
+
+const IME_PREEDIT_ATTR: &str = "data-fastr-ime-preedit";
 
 struct DomIndexMut {
   id_to_node: Vec<*mut DomNode>,
@@ -120,6 +130,121 @@ impl DomIndexMut {
     }
     // SAFETY: We only produce a temporary mutable reference for the current call site.
     Some(unsafe { &mut *ptr })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn find_element_node_id(dom: &mut DomNode, tag: &str) -> usize {
+    let index = DomIndexMut::new(dom);
+    for node_id in 1..index.id_to_node.len() {
+      if index
+        .node(node_id)
+        .and_then(|node| node.tag_name())
+        .is_some_and(|name| name.eq_ignore_ascii_case(tag))
+      {
+        return node_id;
+      }
+    }
+    panic!("missing element {tag}");
+  }
+
+  fn input_value(dom: &mut DomNode, node_id: usize) -> String {
+    let index = DomIndexMut::new(dom);
+    index
+      .node(node_id)
+      .and_then(|node| node.get_attribute_ref("value"))
+      .unwrap_or("")
+      .to_string()
+  }
+
+  fn textarea_value(dom: &mut DomNode, node_id: usize) -> String {
+    let index = DomIndexMut::new(dom);
+    let node = index.node(node_id).expect("textarea node");
+    collect_text_children_value(node)
+  }
+
+  fn has_preedit_attr(dom: &mut DomNode, node_id: usize) -> bool {
+    let index = DomIndexMut::new(dom);
+    index
+      .node(node_id)
+      .and_then(|node| node.get_attribute_ref(IME_PREEDIT_ATTR))
+      .is_some()
+  }
+
+  #[test]
+  fn ime_preedit_sets_composition_without_mutating_value() {
+    let mut dom = crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    engine.ime_preedit(&mut dom, "あ", Some((0, 1)));
+
+    let comp = engine.ime_composition.as_ref().expect("composition state");
+    assert_eq!(comp.node_id, input_id);
+    assert_eq!(comp.text, "あ");
+    assert_eq!(comp.cursor, Some((0, 1)));
+
+    assert_eq!(input_value(&mut dom, input_id), "a");
+    assert!(has_preedit_attr(&mut dom, input_id));
+  }
+
+  #[test]
+  fn ime_commit_inserts_text_and_clears_preedit() {
+    let mut dom = crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    engine.ime_preedit(&mut dom, "あ", Some((0, 1)));
+    assert!(has_preedit_attr(&mut dom, input_id));
+
+    engine.ime_commit(&mut dom, "あ");
+
+    assert!(engine.ime_composition.is_none());
+    assert!(!has_preedit_attr(&mut dom, input_id));
+    assert_eq!(input_value(&mut dom, input_id), "aあ");
+  }
+
+  #[test]
+  fn ime_cancel_clears_preedit_without_mutating_value() {
+    let mut dom = crate::dom::parse_html("<html><body><input value=\"a\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    engine.ime_preedit(&mut dom, "あ", Some((0, 1)));
+    assert!(has_preedit_attr(&mut dom, input_id));
+
+    engine.ime_cancel(&mut dom);
+
+    assert!(engine.ime_composition.is_none());
+    assert!(!has_preedit_attr(&mut dom, input_id));
+    assert_eq!(input_value(&mut dom, input_id), "a");
+  }
+
+  #[test]
+  fn ime_commit_updates_textarea_value() {
+    let mut dom = crate::dom::parse_html("<html><body><textarea>hi</textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&mut dom, "textarea");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(textarea_id), true);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(has_preedit_attr(&mut dom, textarea_id));
+
+    engine.ime_commit(&mut dom, "あ");
+
+    assert!(engine.ime_composition.is_none());
+    assert!(!has_preedit_attr(&mut dom, textarea_id));
+    assert_eq!(textarea_value(&mut dom, textarea_id), "hiあ");
   }
 }
 
@@ -1412,6 +1537,7 @@ impl InteractionEngine {
       pointer_down_target: None,
       range_drag: None,
       focused: None,
+      ime_composition: None,
       modality: InputModality::Pointer,
     }
   }
@@ -1424,6 +1550,12 @@ impl InteractionEngine {
   ) -> bool {
     let mut changed = false;
     if self.focused != new_focused {
+      // Any focus change cancels an in-progress IME composition.
+      if let Some(composition) = self.ime_composition.take() {
+        if let Some(node_mut) = index.node_mut(composition.node_id) {
+          changed |= remove_node_attr(node_mut, IME_PREEDIT_ATTR);
+        }
+      }
       if let Some(old) = self.focused {
         changed |= set_data_flag(index, old, "data-fastr-focus", false);
         changed |= set_data_flag(index, old, "data-fastr-focus-visible", false);
@@ -1659,6 +1791,19 @@ impl InteractionEngine {
       }
     }
     remap_opt(&mut self.focused, old_index, new_ids);
+
+    if let Some(state) = &mut self.ime_composition {
+      let new_node_id = old_index
+        .id_to_node
+        .get(state.node_id)
+        .copied()
+        .filter(|ptr| !ptr.is_null())
+        .and_then(|ptr| new_ids.get(&(ptr as *const DomNode)).copied());
+      match new_node_id {
+        Some(id) => state.node_id = id,
+        None => self.ime_composition = None,
+      }
+    }
   }
 
   /// End active state, and if click qualifies, perform action:
@@ -2003,6 +2148,166 @@ impl InteractionEngine {
     }
 
     changed
+  }
+
+  fn ime_cancel_with_index(&mut self, index: &mut DomIndexMut) -> bool {
+    let Some(composition) = self.ime_composition.take() else {
+      return false;
+    };
+    let Some(node_mut) = index.node_mut(composition.node_id) else {
+      return false;
+    };
+    remove_node_attr(node_mut, IME_PREEDIT_ATTR)
+  }
+
+  /// Update the active IME preedit (composition) string for the focused text control.
+  ///
+  /// This should *not* mutate the actual DOM value; it stores the in-progress text as a
+  /// `data-fastr-ime-preedit` attribute so the painter can render it at the caret with styling.
+  pub fn ime_preedit(
+    &mut self,
+    dom: &mut DomNode,
+    text: &str,
+    cursor: Option<(usize, usize)>,
+  ) -> bool {
+    self.modality = InputModality::Keyboard;
+
+    // Empty preedit text is treated as cancellation by most platform IMEs.
+    if text.is_empty() {
+      return self.ime_cancel(dom);
+    }
+
+    let Some(focused) = self.focused else {
+      return false;
+    };
+
+    let mut index = DomIndexMut::new(dom);
+
+    // Ensure focus-visible when the keyboard/IME is used.
+    let mut changed = self.set_focus(&mut index, Some(focused), true);
+
+    // Only text inputs and textareas participate in IME composition.
+    let is_text_control =
+      index.node(focused).is_some_and(is_text_input) || index.node(focused).is_some_and(is_textarea);
+    if !is_text_control {
+      changed |= self.ime_cancel_with_index(&mut index);
+      return changed;
+    }
+
+    if node_or_ancestor_is_inert(&index, focused) || node_is_disabled(&index, focused) || node_is_readonly(&index, focused) {
+      changed |= self.ime_cancel_with_index(&mut index);
+      return changed;
+    }
+
+    // Update internal state.
+    match self.ime_composition.as_mut() {
+      Some(existing) if existing.node_id == focused => {
+        if existing.text != text || existing.cursor != cursor {
+          existing.text.clear();
+          existing.text.push_str(text);
+          existing.cursor = cursor;
+        }
+      }
+      _ => {
+        self.ime_composition = Some(ImeCompositionState {
+          node_id: focused,
+          text: text.to_string(),
+          cursor,
+        });
+      }
+    }
+
+    // Mirror the preedit text into the DOM as a paint hint.
+    if let Some(node_mut) = index.node_mut(focused) {
+      changed |= set_node_attr(node_mut, IME_PREEDIT_ATTR, text);
+    }
+
+    changed
+  }
+
+  /// Commit IME text into the focused text control, clearing any active preedit.
+  pub fn ime_commit(&mut self, dom: &mut DomNode, text: &str) -> bool {
+    self.modality = InputModality::Keyboard;
+    let Some(focused) = self.focused else {
+      return false;
+    };
+
+    let mut index = DomIndexMut::new(dom);
+    let mut changed = false;
+
+    changed |= self.set_focus(&mut index, Some(focused), true);
+    // Clear any in-flight preedit before inserting committed text.
+    changed |= self.ime_cancel_with_index(&mut index);
+
+    if text.is_empty() {
+      return changed;
+    }
+
+    if index.node(focused).is_some_and(is_text_input) {
+      if node_or_ancestor_is_inert(&index, focused)
+        || node_is_disabled(&index, focused)
+        || node_is_readonly(&index, focused)
+      {
+        return changed;
+      }
+
+      let current = index
+        .node(focused)
+        .and_then(|node| node.get_attribute_ref("value"))
+        .unwrap_or("")
+        .to_string();
+      let mut next = current;
+      next.push_str(text);
+      let Some(node_mut) = index.node_mut(focused) else {
+        return changed;
+      };
+      let changed_value = set_node_attr(node_mut, "value", &next);
+      changed |= changed_value;
+      if changed_value {
+        changed |= dom_mutation::mark_user_validity(node_mut);
+      }
+      return changed;
+    }
+
+    if index.node(focused).is_some_and(is_textarea) {
+      if node_or_ancestor_is_inert(&index, focused)
+        || node_is_disabled(&index, focused)
+        || node_is_readonly(&index, focused)
+      {
+        return changed;
+      }
+
+      let current = index
+        .node(focused)
+        .map(collect_text_children_value)
+        .unwrap_or_default();
+      let mut next = current;
+      next.push_str(text);
+
+      let old_index = index;
+      let mut index = DomIndexMut::new(dom);
+      let Some(node_mut) = index.node_mut(focused) else {
+        return changed;
+      };
+      let (changed_value, inserted) = set_textarea_text_children_value(node_mut, &next);
+      changed |= changed_value;
+      if changed_value {
+        changed |= dom_mutation::mark_user_validity(node_mut);
+      }
+      if inserted {
+        let new_ids = enumerate_dom_ids(dom);
+        self.remap_engine_ids_after_dom_change(&old_index, &new_ids);
+      }
+      return changed;
+    }
+
+    changed
+  }
+
+  /// Cancel any active IME preedit string without mutating the DOM value.
+  pub fn ime_cancel(&mut self, dom: &mut DomNode) -> bool {
+    let mut index = DomIndexMut::new(dom);
+    self.ime_cancel_with_index(&mut index)
   }
 
   /// Handle keyboard actions that mutate the DOM without performing navigation.

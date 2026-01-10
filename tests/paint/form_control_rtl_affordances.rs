@@ -65,6 +65,7 @@ fn select_dropdown_arrow_mirrors_in_rtl() {
     focus_visible: false,
     required: false,
     invalid: false,
+    ime_preedit: None,
   };
 
   let mut ltr_style = ComputedStyle::default();
@@ -123,6 +124,7 @@ fn range_thumb_mirrors_in_rtl_at_min() {
     focus_visible: false,
     required: false,
     invalid: false,
+    ime_preedit: None,
   };
 
   let mut ltr_style = ComputedStyle::default();
@@ -182,6 +184,7 @@ fn file_input_button_and_label_mirror_in_rtl() {
     focus_visible: false,
     required: false,
     invalid: false,
+    ime_preedit: None,
   };
 
   let mut ltr_style = ComputedStyle::default();

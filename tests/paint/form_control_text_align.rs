@@ -32,6 +32,7 @@ fn text_input_fragment(style: ComputedStyle, focused: bool, value: &str) -> Frag
     meter_suboptimum_value_style: None,
     meter_even_less_good_value_style: None,
     file_selector_button_style: None,
+    ime_preedit: None,
   };
 
   FragmentNode::new_with_style(

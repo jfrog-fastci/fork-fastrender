@@ -14548,6 +14548,7 @@ mod tests {
         focus_visible: false,
         required: false,
         invalid: false,
+        ime_preedit: None,
       }),
       Some(Size::new(120.0, 40.0)),
       None,

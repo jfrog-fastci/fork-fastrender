@@ -58,6 +58,7 @@ fn form_control_overflow_clip_uses_padding_box_not_content_box() {
     meter_suboptimum_value_style: None,
     meter_even_less_good_value_style: None,
     file_selector_button_style: None,
+    ime_preedit: None,
   };
 
   let border_rect = Rect::from_xywh(0.0, 0.0, 50.0, 20.0);
@@ -159,6 +160,7 @@ fn form_control_overflow_clip_uses_padding_box_radii() {
     meter_suboptimum_value_style: None,
     meter_even_less_good_value_style: None,
     file_selector_button_style: None,
+    ime_preedit: None,
   };
 
   let border_rect = Rect::from_xywh(0.0, 0.0, 50.0, 20.0);

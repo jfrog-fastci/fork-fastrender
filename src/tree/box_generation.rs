@@ -4322,28 +4322,52 @@ fn build_appearance_none_form_control_fallback(
       kind,
       ..
     } => {
+      let preedit = form_control.ime_preedit.as_deref().filter(|t| !t.is_empty());
       let mut text: Option<String> = None;
       let mut style = Arc::clone(&styled.styles);
       let mut pseudo = None;
 
       if !value.is_empty() {
         text = Some(value.clone());
-      } else if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
+      } else if preedit.is_none() {
+        if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
         text = Some(ph.clone());
         if let Some(ph_style) = placeholder_style.as_ref().or(form_control.placeholder_style.as_ref()) {
           style = Arc::clone(ph_style);
           pseudo = Some(GeneratedPseudoElement::Placeholder);
         }
-      }
-
-      if matches!(kind, TextControlKind::Password) {
-        if let Some(raw) = text.as_ref().filter(|t| *t == value) {
-          let mask_len = raw.chars().count().clamp(3, 50);
-          text = Some("•".repeat(mask_len));
         }
       }
 
-      if let Some(text) = text {
+      if matches!(kind, TextControlKind::Password) {
+        // Password fields are rendered as a bullet mask. Approximate preedit by including it in the
+        // masked character count (without underlining).
+        let committed_len = value.chars().count();
+        let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
+        let total_len = committed_len.saturating_add(preedit_len);
+        if total_len > 0 {
+          let mask_len = total_len.clamp(3, 50);
+          push_text(&mut children, style, "•".repeat(mask_len), pseudo);
+        } else if let Some(text) = text {
+          push_text(&mut children, style, text, pseudo);
+        }
+      } else if preedit.is_some() {
+        // Render committed value (if any) followed by an underlined preedit string.
+        if let Some(text) = text.filter(|t| !t.is_empty()) {
+          push_text(&mut children, Arc::clone(&style), text, pseudo);
+        }
+        let mut underline_style = (*style).clone();
+        underline_style
+          .text_decoration
+          .lines
+          .insert(crate::style::types::TextDecorationLine::UNDERLINE);
+        push_text(
+          &mut children,
+          Arc::new(underline_style),
+          preedit.unwrap_or_default().to_string(),
+          None,
+        );
+      } else if let Some(text) = text {
         push_text(&mut children, style, text, pseudo);
       }
     }
@@ -4354,20 +4378,38 @@ fn build_appearance_none_form_control_fallback(
       ..
     } => {
       suppress_dom_children = true;
+      let preedit = form_control.ime_preedit.as_deref().filter(|t| !t.is_empty());
       let mut text: Option<String> = None;
       let mut style = Arc::clone(&styled.styles);
       let mut pseudo = None;
       if !value.is_empty() {
         text = Some(value.clone());
-      } else if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
+      } else if preedit.is_none() {
+        if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
         text = Some(ph.clone());
         if let Some(ph_style) = placeholder_style.as_ref().or(form_control.placeholder_style.as_ref()) {
           style = Arc::clone(ph_style);
           pseudo = Some(GeneratedPseudoElement::Placeholder);
         }
+        }
       }
 
-      if let Some(text) = text {
+      if preedit.is_some() {
+        if let Some(text) = text.filter(|t| !t.is_empty()) {
+          push_text(&mut children, Arc::clone(&style), text, pseudo);
+        }
+        let mut underline_style = (*style).clone();
+        underline_style
+          .text_decoration
+          .lines
+          .insert(crate::style::types::TextDecorationLine::UNDERLINE);
+        push_text(
+          &mut children,
+          Arc::new(underline_style),
+          preedit.unwrap_or_default().to_string(),
+          None,
+        );
+      } else if let Some(text) = text {
         push_text(&mut children, style, text, pseudo);
       }
     }
@@ -5263,6 +5305,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       focus_visible,
       required: false,
       invalid: false,
+      ime_preedit: None,
     });
   }
 
@@ -5314,6 +5357,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       focus_visible,
       required: false,
       invalid: false,
+      ime_preedit: None,
     });
   }
 
@@ -5441,6 +5485,15 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         _ => (None, None, None, None),
     };
 
+    let ime_preedit = match &control {
+      FormControlKind::Text { .. } => styled
+        .node
+        .get_attribute_ref("data-fastr-ime-preedit")
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string()),
+      _ => None,
+    };
+
     Some(FormControl {
       control,
       appearance,
@@ -5459,6 +5512,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       focus_visible,
       required,
       invalid,
+      ime_preedit,
     })
   } else if tag.eq_ignore_ascii_case("textarea") {
     let placeholder = styled
@@ -5497,6 +5551,11 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       focus_visible,
       required,
       invalid,
+      ime_preedit: styled
+        .node
+        .get_attribute_ref("data-fastr-ime-preedit")
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string()),
     })
   } else if tag.eq_ignore_ascii_case("select") {
     let control = select_control.unwrap_or_else(|| build_select_control(styled));
@@ -5518,6 +5577,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       focus_visible,
       required,
       invalid,
+      ime_preedit: None,
     })
   } else {
     None

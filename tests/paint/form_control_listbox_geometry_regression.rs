@@ -84,6 +84,7 @@ fn listbox_select_uses_border_box_geometry_once() {
     meter_suboptimum_value_style: None,
     meter_even_less_good_value_style: None,
     file_selector_button_style: None,
+    ime_preedit: None,
   };
 
   let border_rect = Rect::from_xywh(0.0, 0.0, 50.0, 40.0);

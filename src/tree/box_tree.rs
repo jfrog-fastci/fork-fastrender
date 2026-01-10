@@ -208,6 +208,11 @@ pub struct FormControl {
   pub required: bool,
   /// Whether the control currently fails HTML constraint validation
   pub invalid: bool,
+  /// Optional IME preedit (composition) string for focused text controls.
+  ///
+  /// This is a browser-UI hint used to render in-progress IME text at the caret without mutating
+  /// the DOM value attribute/textarea contents.
+  pub ime_preedit: Option<String>,
 }
 
 impl PartialEq for FormControl {
@@ -219,6 +224,7 @@ impl PartialEq for FormControl {
       && self.focus_visible == other.focus_visible
       && self.required == other.required
       && self.invalid == other.invalid
+      && self.ime_preedit == other.ime_preedit
   }
 }
 

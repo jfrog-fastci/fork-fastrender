@@ -73,6 +73,7 @@ fn baseline_and_control_bottom(
       meter_suboptimum_value_style: None,
       meter_even_less_good_value_style: None,
       file_selector_button_style: None,
+      ime_preedit: None,
     }),
     Some(intrinsic_size),
     None,

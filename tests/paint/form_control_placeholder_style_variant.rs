@@ -44,6 +44,7 @@ fn placeholder_style_from_form_control_kind_is_used() {
     meter_suboptimum_value_style: None,
     meter_even_less_good_value_style: None,
     file_selector_button_style: None,
+    ime_preedit: None,
   };
 
   let fragment = FragmentNode::new_with_style(

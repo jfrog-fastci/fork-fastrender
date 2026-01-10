@@ -585,6 +585,10 @@ impl App {
     ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
     worker_join: std::thread::JoinHandle<()>,
   ) -> Result<Self, Box<dyn std::error::Error>> {
+    // Enable OS IME integration (WindowEvent::Ime) so the page can handle non-Latin input methods.
+    // Egui manages IME for chrome text fields; we forward IME events to the page when appropriate.
+    window.set_ime_allowed(true);
+
     let pixels_per_point = window.scale_factor() as f32;
 
     let egui_ctx = egui::Context::default();
@@ -809,6 +813,9 @@ impl App {
       | UiToWorker::SelectDropdownCancel { tab_id }
       | UiToWorker::SelectDropdownPick { tab_id, .. }
       | UiToWorker::TextInput { tab_id, .. }
+      | UiToWorker::ImePreedit { tab_id, .. }
+      | UiToWorker::ImeCommit { tab_id, .. }
+      | UiToWorker::ImeCancel { tab_id }
       | UiToWorker::KeyAction { tab_id, .. }
       | UiToWorker::RequestRepaint { tab_id, .. } => *tab_id,
     };
@@ -831,6 +838,9 @@ impl App {
         | UiToWorker::SelectDropdownCancel { .. }
         | UiToWorker::SelectDropdownPick { .. }
         | UiToWorker::TextInput { .. }
+        | UiToWorker::ImePreedit { .. }
+        | UiToWorker::ImeCommit { .. }
+        | UiToWorker::ImeCancel { .. }
         | UiToWorker::KeyAction { .. }
         | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
         // `Tick` and tab-management messages should not force cancellation.
@@ -1584,6 +1594,7 @@ impl App {
 
   fn handle_winit_input_event(&mut self, event: &winit::event::WindowEvent<'_>) {
     use winit::event::ElementState;
+    use winit::event::Ime;
     use winit::event::VirtualKeyCode;
     use winit::event::WindowEvent;
 
@@ -2016,6 +2027,54 @@ impl App {
           tab_id,
           key: key_action,
         });
+      }
+      WindowEvent::Ime(ime) => {
+        // If egui is actively editing text (e.g. the address bar), don't handle page-level IME
+        // events.
+        if !self.page_has_focus || self.egui_ctx.wants_keyboard_input() {
+          return;
+        }
+
+        let Some(tab_id) = self.browser_state.active_tab_id() else {
+          return;
+        };
+
+        // `<select>` dropdown popups own keyboard interaction; dismiss them before IME editing.
+        if self.open_select_dropdown.is_some() {
+          self.cancel_select_dropdown();
+        }
+
+        match ime {
+          Ime::Preedit(text, cursor_range) => {
+            if text.is_empty() {
+              self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
+            } else {
+              let cursor = cursor_range.as_ref().copied();
+              self.send_worker_msg(fastrender::ui::UiToWorker::ImePreedit {
+                tab_id,
+                text: text.clone(),
+                cursor,
+              });
+            }
+            self.window.request_redraw();
+          }
+          Ime::Commit(text) => {
+            if text.is_empty() {
+              self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
+            } else {
+              self.send_worker_msg(fastrender::ui::UiToWorker::ImeCommit {
+                tab_id,
+                text: text.clone(),
+              });
+            }
+            self.window.request_redraw();
+          }
+          Ime::Disabled => {
+            self.send_worker_msg(fastrender::ui::UiToWorker::ImeCancel { tab_id });
+            self.window.request_redraw();
+          }
+          Ime::Enabled => {}
+        }
       }
       WindowEvent::ReceivedCharacter(ch) => {
         if !self.page_has_focus || self.egui_ctx.wants_keyboard_input() {

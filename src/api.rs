@@ -20120,6 +20120,7 @@ mod tests {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     });
 
     let mut input = BoxNode::new_replaced(base_style.clone(), control.clone(), None, None);
@@ -25424,6 +25425,7 @@ mod tests {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     };
     let mut node = BoxNode::new_replaced(
       Arc::clone(&style),
@@ -25492,6 +25494,7 @@ mod tests {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     };
     let mut node = BoxNode::new_replaced(
       Arc::clone(&style),
@@ -25565,6 +25568,7 @@ mod tests {
         focus_visible: false,
         required: false,
         invalid: false,
+        ime_preedit: None,
       };
       BoxNode::new_replaced(
         Arc::clone(&style),
@@ -25627,6 +25631,7 @@ mod tests {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     };
     let mut node = BoxNode::new_replaced(
       Arc::clone(&style),

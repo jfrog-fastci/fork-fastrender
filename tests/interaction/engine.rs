@@ -2763,6 +2763,7 @@ fn select_listbox_click_marks_user_validity() {
     meter_suboptimum_value_style: None,
     meter_even_less_good_value_style: None,
     file_selector_button_style: None,
+    ime_preedit: None,
   };
 
   let mut select_box = BoxNode::new_replaced(
@@ -3243,6 +3244,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
     focus_visible: false,
     required: false,
     invalid: false,
+    ime_preedit: None,
   };
 
   let mut select_box = BoxNode::new_replaced(
@@ -3906,6 +3908,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     }),
     None,
     None,
@@ -4070,6 +4073,7 @@ fn listbox_select_click_uses_painted_row_list_not_dom_options() {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     }),
     None,
     None,
@@ -4204,6 +4208,7 @@ fn listbox_select_click_in_blank_area_is_noop() {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     }),
     None,
     None,
@@ -4342,6 +4347,7 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     }),
     None,
     None,
@@ -4556,6 +4562,7 @@ fn listbox_select_click_accounts_for_element_scroll_offset() {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     }),
     None,
     None,
@@ -5172,6 +5179,7 @@ fn select_home_end_keys_jump_to_first_and_last_enabled_option_box_tree_snapshot(
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     }),
     None,
     None,
@@ -5768,6 +5776,7 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
     }),
     None,
     None,

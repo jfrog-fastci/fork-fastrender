@@ -19289,6 +19289,7 @@ mod tests {
       focus_visible: false,
       required: false,
       invalid: false,
+      ime_preedit: None,
       placeholder_style: None,
       slider_thumb_style: Some(Arc::new(thumb_style)),
       slider_track_style: Some(Arc::new(track_style)),
