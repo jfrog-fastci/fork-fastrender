@@ -1992,6 +1992,7 @@ impl InteractionEngine {
       modality: InputModality::Pointer,
     }
   }
+
   fn set_focus(
     &mut self,
     index: &mut DomIndexMut,

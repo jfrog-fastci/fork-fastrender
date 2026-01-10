@@ -438,14 +438,16 @@ mod tests {
 
   #[test]
   fn dynamic_script_src_trims_ascii_whitespace() -> Result<()> {
+    // `prepare_dynamic_script_on_insertion` is for scripts created/inserted via DOM APIs. Build a
+    // DOM-created `<script>` element so `Node::script_parser_document` is false.
     let mut dom = Document::new(QuirksMode::NoQuirks);
     let script = dom.create_element("script", "");
     dom
-      .append_child(dom.root(), script)
-      .expect("append_child should succeed");
-    dom
       .set_attribute(script, "src", "\thttps://example.com/a.js\n")
       .expect("set_attribute should succeed");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
 
     let mut host = TestHost::new(dom);
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
@@ -459,14 +461,16 @@ mod tests {
 
   #[test]
   fn dynamic_script_relative_src_is_preserved_without_base_url() -> Result<()> {
+    // Like the test above, use a DOM-created `<script>` element to exercise the dynamic insertion
+    // helper.
     let mut dom = Document::new(QuirksMode::NoQuirks);
     let script = dom.create_element("script", "");
     dom
-      .append_child(dom.root(), script)
-      .expect("append_child should succeed");
-    dom
       .set_attribute(script, "src", "a.js")
       .expect("set_attribute should succeed");
+    dom
+      .append_child(dom.root(), script)
+      .expect("append_child should succeed");
 
     let mut host = TestHost::new(dom);
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
@@ -547,7 +551,7 @@ mod tests {
   }
 
   #[test]
-  fn dynamic_inline_nomodule_script_is_ignored() -> Result<()> {
+  fn dynamic_inline_nomodule_script_executes_when_module_scripts_not_supported() -> Result<()> {
     let dom =
       parse_html("<!doctype html><html><body><script id=s nomodule>RUN</script></body></html>")?;
     let script = dom.get_element_by_id("s").expect("script element not found");
@@ -562,12 +566,16 @@ mod tests {
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
     assert!(host.started_loads.is_empty());
-    assert!(host.executed.is_empty());
+    assert_eq!(
+      host.executed,
+      vec!["RUN".to_string()],
+      "nomodule does not suppress scripts when module scripts are not supported"
+    );
     Ok(())
   }
 
   #[test]
-  fn dynamic_external_nomodule_script_is_ignored() -> Result<()> {
+  fn dynamic_external_nomodule_script_starts_fetch_when_module_scripts_not_supported() -> Result<()> {
     let dom = parse_html(
       "<!doctype html><html><body><script id=s nomodule src=a.js></script></body></html>",
     )?;
@@ -582,7 +590,11 @@ mod tests {
     prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
 
-    assert!(host.started_loads.is_empty());
+    assert_eq!(
+      host.started_loads,
+      vec!["a.js".to_string()],
+      "nomodule does not suppress external scripts when module scripts are not supported"
+    );
     assert!(host.executed.is_empty());
     Ok(())
   }

@@ -164,6 +164,8 @@ where
     if spec.script_type != ScriptType::Classic {
       return Ok(());
     }
+    // HTML: When a user agent supports module scripts, classic scripts with the `nomodule`
+    // attribute must be ignored completely (not fetched/executed).
     if spec.is_suppressed_by_nomodule(&self.options) {
       return Ok(());
     }
