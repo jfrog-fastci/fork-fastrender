@@ -14,7 +14,7 @@ pub struct ImportMap {
   pub integrity: ModuleIntegrityMap,
 }
 
-/// Record stored in the document's "resolved module set".
+/// Record stored in the global object's "resolved module set".
 ///
 /// This is used by the HTML Standard to avoid resolving the same specifier/base URL combination
 /// multiple times.
@@ -26,7 +26,7 @@ pub struct SpecifierResolutionRecord {
   pub as_url_kind: SpecifierAsUrlKind,
 }
 
-/// The document's "resolved module set".
+/// The global object's "resolved module set".
 pub type ResolvedModuleSet = Vec<SpecifierResolutionRecord>;
 
 /// Host-side global state for import map resolution/merging.
