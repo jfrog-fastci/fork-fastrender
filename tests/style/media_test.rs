@@ -1259,6 +1259,22 @@ fn test_length_units() {
   assert!(ctx.evaluate(&zero_query));
 }
 
+#[test]
+fn media_query_font_relative_units_resolve_against_initial_font_metrics() {
+  // Media queries evaluate font-relative units (cap/ic + root variants) against the initial font
+  // metrics. FastRender models this via `MediaContext::base_font_size` (default 16px).
+
+  // 1cap ~= 0.7em => 11.2px with a 16px base font.
+  let cap_query = MediaQuery::parse("(min-width: 1cap)").unwrap();
+  assert!(MediaContext::screen(12.0, 10.0).evaluate(&cap_query));
+  assert!(!MediaContext::screen(10.0, 10.0).evaluate(&cap_query));
+
+  // Root font-relative units resolve identically in MQ context.
+  let rcap_query = MediaQuery::parse("(min-width: 1rcap)").unwrap();
+  assert!(MediaContext::screen(12.0, 10.0).evaluate(&rcap_query));
+  assert!(!MediaContext::screen(10.0, 10.0).evaluate(&rcap_query));
+}
+
 // ============================================================================
 // Real-World Pattern Tests
 // ============================================================================
