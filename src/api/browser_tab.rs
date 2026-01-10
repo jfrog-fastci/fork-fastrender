@@ -2658,9 +2658,12 @@ impl BrowserTab {
       },
     );
     event.is_trusted = true;
-    self
-      .host
-      .dispatch_dom_event(EventTargetId::Node(node_id).normalize(), event)
+    // Install the tab's event loop in TLS so JS Web APIs like `setTimeout` can schedule tasks
+    // during event listener invocation.
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    with_event_loop(event_loop, || {
+      host.dispatch_dom_event(EventTargetId::Node(node_id).normalize(), event)
+    })
   }
 
   /// Simulate a user click on `node_id` and return the resolved navigation target URL if the
