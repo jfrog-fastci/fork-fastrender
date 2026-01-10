@@ -21,18 +21,29 @@ operations = ["cloneNode", "appendChild"]
 [[interface]]
 name = "Element"
 constructors = false
-attributes = []
-operations = ["querySelector"]
+attributes = ["classList"]
+operations = ["querySelector", "querySelectorAll"]
 
 [[interface]]
 name = "Document"
 constructors = true
 attributes = ["body"]
-operations = ["createElement", "querySelector"]
+operations = ["createElement", "getElementById", "querySelector", "querySelectorAll"]
+
+[[interface]]
+name = "DocumentFragment"
+constructors = false
+attributes = []
+operations = ["getElementById", "querySelector", "querySelectorAll"]
+
+[[interface]]
+name = "DOMTokenList"
+constructors = false
+attributes = []
+operations = ["add", "remove", "toggle", "contains"]
 
 [[interface]]
 name = "Window"
 constructors = false
 attributes = ["event"]
 operations = []
-

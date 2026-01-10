@@ -17,6 +17,8 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   let tag_node: Value = rt.alloc_string_value("Node")?;
   let tag_element: Value = rt.alloc_string_value("Element")?;
   let tag_document: Value = rt.alloc_string_value("Document")?;
+  let tag_document_fragment: Value = rt.alloc_string_value("DocumentFragment")?;
+  let tag_domtoken_list: Value = rt.alloc_string_value("DOMTokenList")?;
   let tag_window: Value = rt.alloc_string_value("Window")?;
 
   let proto_event_target: Value = rt.alloc_object_value()?;
@@ -63,6 +65,35 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   rt.define_data_property(ctor_document, k_prototype, proto_document, false)?;
   rt.define_data_property(proto_document, k_constructor, ctor_document, false)?;
 
+  let proto_document_fragment: Value = rt.alloc_object_value()?;
+  let ctor_document_fragment: Value = rt.alloc_function_value({
+    move |rt, _this, _args| Err(rt.throw_type_error("Illegal constructor"))
+  })?;
+  rt.define_data_property(
+    ctor_document_fragment,
+    k_prototype,
+    proto_document_fragment,
+    false,
+  )?;
+  rt.define_data_property(
+    proto_document_fragment,
+    k_constructor,
+    ctor_document_fragment,
+    false,
+  )?;
+
+  let proto_domtoken_list: Value = rt.alloc_object_value()?;
+  let ctor_domtoken_list: Value = rt.alloc_function_value({
+    move |rt, _this, _args| Err(rt.throw_type_error("Illegal constructor"))
+  })?;
+  rt.define_data_property(ctor_domtoken_list, k_prototype, proto_domtoken_list, false)?;
+  rt.define_data_property(
+    proto_domtoken_list,
+    k_constructor,
+    ctor_domtoken_list,
+    false,
+  )?;
+
   let proto_window: Value = rt.alloc_object_value()?;
   let ctor_window: Value = rt.alloc_function_value({
     move |rt, _this, _args| Err(rt.throw_type_error("Illegal constructor"))
@@ -73,12 +104,14 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   rt.set_prototype(proto_node, Some(proto_event_target))?;
   rt.set_prototype(proto_element, Some(proto_node))?;
   rt.set_prototype(proto_document, Some(proto_node))?;
+  rt.set_prototype(proto_document_fragment, Some(proto_node))?;
   rt.set_prototype(proto_window, Some(proto_event_target))?;
 
   let k_event_target_add_event_listener: PropertyKey = rt.prop_key("addEventListener")?;
   let fn_event_target_add_event_listener: Value = rt.alloc_function_value({
     let k_dom_type: PropertyKey = k_dom_type;
     let tag_document: Value = tag_document;
+    let tag_document_fragment: Value = tag_document_fragment;
     let tag_element: Value = tag_element;
     let tag_event_target: Value = tag_event_target;
     let tag_node: Value = tag_node;
@@ -89,6 +122,7 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
       }
       let this_type: Value = rt.get(this, k_dom_type)?;
       if !(this_type == tag_document
+        || this_type == tag_document_fragment
         || this_type == tag_element
         || this_type == tag_event_target
         || this_type == tag_node
@@ -126,6 +160,7 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   let fn_event_target_remove_event_listener: Value = rt.alloc_function_value({
     let k_dom_type: PropertyKey = k_dom_type;
     let tag_document: Value = tag_document;
+    let tag_document_fragment: Value = tag_document_fragment;
     let tag_element: Value = tag_element;
     let tag_event_target: Value = tag_event_target;
     let tag_node: Value = tag_node;
@@ -136,6 +171,7 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
       }
       let this_type: Value = rt.get(this, k_dom_type)?;
       if !(this_type == tag_document
+        || this_type == tag_document_fragment
         || this_type == tag_element
         || this_type == tag_event_target
         || this_type == tag_node
@@ -173,6 +209,7 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   let fn_event_target_dispatch_event: Value = rt.alloc_function_value({
     let k_dom_type: PropertyKey = k_dom_type;
     let tag_document: Value = tag_document;
+    let tag_document_fragment: Value = tag_document_fragment;
     let tag_element: Value = tag_element;
     let tag_event_target: Value = tag_event_target;
     let tag_node: Value = tag_node;
@@ -183,6 +220,7 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
       }
       let this_type: Value = rt.get(this, k_dom_type)?;
       if !(this_type == tag_document
+        || this_type == tag_document_fragment
         || this_type == tag_element
         || this_type == tag_event_target
         || this_type == tag_node
@@ -210,6 +248,7 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   let get_node_node_type: Value = rt.alloc_function_value({
     let k_dom_type: PropertyKey = k_dom_type;
     let tag_document: Value = tag_document;
+    let tag_document_fragment: Value = tag_document_fragment;
     let tag_element: Value = tag_element;
     let tag_node: Value = tag_node;
     move |rt, this, _args| {
@@ -217,7 +256,11 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
         return Err(rt.throw_type_error("Illegal invocation"));
       }
       let this_type: Value = rt.get(this, k_dom_type)?;
-      if !(this_type == tag_document || this_type == tag_element || this_type == tag_node) {
+      if !(this_type == tag_document
+        || this_type == tag_document_fragment
+        || this_type == tag_element
+        || this_type == tag_node)
+      {
         return Err(rt.throw_type_error("Illegal invocation"));
       }
       Ok(Value::Undefined)
@@ -234,6 +277,7 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   let fn_node_clone_node: Value = rt.alloc_function_value({
     let k_dom_type: PropertyKey = k_dom_type;
     let tag_document: Value = tag_document;
+    let tag_document_fragment: Value = tag_document_fragment;
     let tag_element: Value = tag_element;
     let tag_node: Value = tag_node;
     move |rt, this, args| {
@@ -241,7 +285,11 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
         return Err(rt.throw_type_error("Illegal invocation"));
       }
       let this_type: Value = rt.get(this, k_dom_type)?;
-      if !(this_type == tag_document || this_type == tag_element || this_type == tag_node) {
+      if !(this_type == tag_document
+        || this_type == tag_document_fragment
+        || this_type == tag_element
+        || this_type == tag_node)
+      {
         return Err(rt.throw_type_error("Illegal invocation"));
       }
       Err(rt.throw_type_error("not implemented"))
@@ -252,6 +300,7 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   let fn_node_append_child: Value = rt.alloc_function_value({
     let k_dom_type: PropertyKey = k_dom_type;
     let tag_document: Value = tag_document;
+    let tag_document_fragment: Value = tag_document_fragment;
     let tag_element: Value = tag_element;
     let tag_node: Value = tag_node;
     move |rt, this, args| {
@@ -259,7 +308,11 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
         return Err(rt.throw_type_error("Illegal invocation"));
       }
       let this_type: Value = rt.get(this, k_dom_type)?;
-      if !(this_type == tag_document || this_type == tag_element || this_type == tag_node) {
+      if !(this_type == tag_document
+        || this_type == tag_document_fragment
+        || this_type == tag_element
+        || this_type == tag_node)
+      {
         return Err(rt.throw_type_error("Illegal invocation"));
       }
       if args.len() < 1 {
@@ -273,6 +326,28 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   })?;
   rt.define_data_property(proto_node, k_node_append_child, fn_node_append_child, false)?;
 
+  let k_element_class_list: PropertyKey = rt.prop_key("classList")?;
+  let get_element_class_list: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_element: Value = tag_element;
+    move |rt, this, _args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_element) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      Ok(Value::Undefined)
+    }
+  })?;
+  rt.define_accessor_property(
+    proto_element,
+    k_element_class_list,
+    get_element_class_list,
+    Value::Undefined,
+    false,
+  )?;
   let k_element_query_selector: PropertyKey = rt.prop_key("querySelector")?;
   let fn_element_query_selector: Value = rt.alloc_function_value({
     let k_dom_type: PropertyKey = k_dom_type;
@@ -298,6 +373,33 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
     proto_element,
     k_element_query_selector,
     fn_element_query_selector,
+    false,
+  )?;
+  let k_element_query_selector_all: PropertyKey = rt.prop_key("querySelectorAll")?;
+  let fn_element_query_selector_all: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_element: Value = tag_element;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_element) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "Element.querySelectorAll: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_element,
+    k_element_query_selector_all,
+    fn_element_query_selector_all,
     false,
   )?;
 
@@ -364,6 +466,33 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
     fn_document_create_element,
     false,
   )?;
+  let k_document_get_element_by_id: PropertyKey = rt.prop_key("getElementById")?;
+  let fn_document_get_element_by_id: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_document: Value = tag_document;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_document) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "Document.getElementById: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_document,
+    k_document_get_element_by_id,
+    fn_document_get_element_by_id,
+    false,
+  )?;
   let k_document_query_selector: PropertyKey = rt.prop_key("querySelector")?;
   let fn_document_query_selector: Value = rt.alloc_function_value({
     let k_dom_type: PropertyKey = k_dom_type;
@@ -389,6 +518,212 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
     proto_document,
     k_document_query_selector,
     fn_document_query_selector,
+    false,
+  )?;
+  let k_document_query_selector_all: PropertyKey = rt.prop_key("querySelectorAll")?;
+  let fn_document_query_selector_all: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_document: Value = tag_document;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_document) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "Document.querySelectorAll: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_document,
+    k_document_query_selector_all,
+    fn_document_query_selector_all,
+    false,
+  )?;
+
+  let k_document_fragment_get_element_by_id: PropertyKey = rt.prop_key("getElementById")?;
+  let fn_document_fragment_get_element_by_id: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_document_fragment: Value = tag_document_fragment;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_document_fragment) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "DocumentFragment.getElementById: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_document_fragment,
+    k_document_fragment_get_element_by_id,
+    fn_document_fragment_get_element_by_id,
+    false,
+  )?;
+  let k_document_fragment_query_selector: PropertyKey = rt.prop_key("querySelector")?;
+  let fn_document_fragment_query_selector: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_document_fragment: Value = tag_document_fragment;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_document_fragment) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "DocumentFragment.querySelector: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_document_fragment,
+    k_document_fragment_query_selector,
+    fn_document_fragment_query_selector,
+    false,
+  )?;
+  let k_document_fragment_query_selector_all: PropertyKey = rt.prop_key("querySelectorAll")?;
+  let fn_document_fragment_query_selector_all: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_document_fragment: Value = tag_document_fragment;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_document_fragment) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "DocumentFragment.querySelectorAll: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_document_fragment,
+    k_document_fragment_query_selector_all,
+    fn_document_fragment_query_selector_all,
+    false,
+  )?;
+
+  let k_domtoken_list_add: PropertyKey = rt.prop_key("add")?;
+  let fn_domtoken_list_add: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_domtoken_list: Value = tag_domtoken_list;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_domtoken_list) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_domtoken_list,
+    k_domtoken_list_add,
+    fn_domtoken_list_add,
+    false,
+  )?;
+  let k_domtoken_list_remove: PropertyKey = rt.prop_key("remove")?;
+  let fn_domtoken_list_remove: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_domtoken_list: Value = tag_domtoken_list;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_domtoken_list) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_domtoken_list,
+    k_domtoken_list_remove,
+    fn_domtoken_list_remove,
+    false,
+  )?;
+  let k_domtoken_list_toggle: PropertyKey = rt.prop_key("toggle")?;
+  let fn_domtoken_list_toggle: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_domtoken_list: Value = tag_domtoken_list;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_domtoken_list) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "DOMTokenList.toggle: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_domtoken_list,
+    k_domtoken_list_toggle,
+    fn_domtoken_list_toggle,
+    false,
+  )?;
+  let k_domtoken_list_contains: PropertyKey = rt.prop_key("contains")?;
+  let fn_domtoken_list_contains: Value = rt.alloc_function_value({
+    let k_dom_type: PropertyKey = k_dom_type;
+    let tag_domtoken_list: Value = tag_domtoken_list;
+    move |rt, this, args| {
+      if !rt.is_object(this) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      let this_type: Value = rt.get(this, k_dom_type)?;
+      if !(this_type == tag_domtoken_list) {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      }
+      if args.len() < 1 {
+        return Err(rt.throw_type_error(&format!(
+          "DOMTokenList.contains: expected at least 1 arguments, got {}",
+          args.len()
+        )));
+      }
+      Err(rt.throw_type_error("not implemented"))
+    }
+  })?;
+  rt.define_data_property(
+    proto_domtoken_list,
+    k_domtoken_list_contains,
+    fn_domtoken_list_contains,
     false,
   )?;
 
@@ -429,6 +764,20 @@ pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Re
   rt.define_data_property(global, k_global_iface_element, ctor_element, false)?;
   let k_global_iface_document: PropertyKey = rt.prop_key("Document")?;
   rt.define_data_property(global, k_global_iface_document, ctor_document, false)?;
+  let k_global_iface_document_fragment: PropertyKey = rt.prop_key("DocumentFragment")?;
+  rt.define_data_property(
+    global,
+    k_global_iface_document_fragment,
+    ctor_document_fragment,
+    false,
+  )?;
+  let k_global_iface_domtoken_list: PropertyKey = rt.prop_key("DOMTokenList")?;
+  rt.define_data_property(
+    global,
+    k_global_iface_domtoken_list,
+    ctor_domtoken_list,
+    false,
+  )?;
   let k_global_iface_window: PropertyKey = rt.prop_key("Window")?;
   rt.define_data_property(global, k_global_iface_window, ctor_window, false)?;
   rt.set_prototype(global, Some(proto_window))?;

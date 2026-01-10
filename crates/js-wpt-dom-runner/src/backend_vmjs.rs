@@ -583,6 +583,8 @@ struct DomNodeState {
   template_content: Vec<GcObject>,
   /// Cached `childNodes` object so stored references behave like a live NodeList.
   child_nodes: Option<GcObject>,
+  /// Cached `classList` object so stored references behave like a stable DOMTokenList.
+  class_list: Option<GcObject>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -813,9 +815,11 @@ struct JsWptRuntime {
   event_targets: HashMap<GcObject, EventTargetState>,
   events: HashMap<GcObject, EventState>,
   dom_nodes: HashMap<GcObject, DomNodeState>,
+  dom_token_lists: HashMap<GcObject, GcObject>,
   urls: HashMap<GcObject, UrlState>,
   url_search_params: HashMap<GcObject, UrlSearchParamsState>,
   dom_element_proto: Option<GcObject>,
+  dom_token_list_proto: Option<GcObject>,
   document_fragment_proto: Option<GcObject>,
   text_proto: Option<GcObject>,
   document_body: Option<GcObject>,
@@ -880,9 +884,11 @@ impl JsWptRuntime {
       event_targets: HashMap::new(),
       events: HashMap::new(),
       dom_nodes: HashMap::new(),
+      dom_token_lists: HashMap::new(),
       urls: HashMap::new(),
       url_search_params: HashMap::new(),
       dom_element_proto: None,
+      dom_token_list_proto: None,
       document_fragment_proto: None,
       text_proto: None,
       document_body: None,
@@ -1207,6 +1213,63 @@ impl JsWptRuntime {
       Value::Object(class_set),
     )?;
 
+    // --- Element.classList / DOMTokenList ---
+    let dom_token_list_proto = self.alloc_object()?;
+    let token_list_add = self.alloc_native_function(native_dom_token_list_add)?;
+    let token_list_remove = self.alloc_native_function(native_dom_token_list_remove)?;
+    let token_list_toggle = self.alloc_native_function(native_dom_token_list_toggle)?;
+    let token_list_contains = self.alloc_native_function(native_dom_token_list_contains)?;
+
+    let token_list_add_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("add")?)
+    };
+    let token_list_remove_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("remove")?)
+    };
+    let token_list_toggle_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("toggle")?)
+    };
+    let token_list_contains_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("contains")?)
+    };
+    self.define_data_prop(
+      dom_token_list_proto,
+      token_list_add_key,
+      Value::Object(token_list_add),
+    )?;
+    self.define_data_prop(
+      dom_token_list_proto,
+      token_list_remove_key,
+      Value::Object(token_list_remove),
+    )?;
+    self.define_data_prop(
+      dom_token_list_proto,
+      token_list_toggle_key,
+      Value::Object(token_list_toggle),
+    )?;
+    self.define_data_prop(
+      dom_token_list_proto,
+      token_list_contains_key,
+      Value::Object(token_list_contains),
+    )?;
+    self.dom_token_list_proto = Some(dom_token_list_proto);
+
+    let class_list_get = self.alloc_native_function(native_dom_element_get_class_list)?;
+    let class_list_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("classList")?)
+    };
+    self.define_accessor_prop(
+      element_proto,
+      class_list_key,
+      Value::Object(class_list_get),
+      Value::Undefined,
+    )?;
+
     self.dom_element_proto = Some(element_proto);
 
     // DocumentFragment prototype (inherits Node, adds NonElementParentNode APIs like getElementById).
@@ -1215,14 +1278,35 @@ impl JsWptRuntime {
       .heap
       .object_set_prototype(document_fragment_proto, Some(node_proto))?;
     let fragment_get_element_by_id = self.alloc_native_function(native_document_fragment_get_element_by_id)?;
+    let fragment_query_selector = self.alloc_native_function(native_document_fragment_query_selector)?;
+    let fragment_query_selector_all =
+      self.alloc_native_function(native_document_fragment_query_selector_all)?;
     let fragment_get_element_by_id_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("getElementById")?)
+    };
+    let fragment_query_selector_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("querySelector")?)
+    };
+    let fragment_query_selector_all_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("querySelectorAll")?)
     };
     self.define_data_prop(
       document_fragment_proto,
       fragment_get_element_by_id_key,
       Value::Object(fragment_get_element_by_id),
+    )?;
+    self.define_data_prop(
+      document_fragment_proto,
+      fragment_query_selector_key,
+      Value::Object(fragment_query_selector),
+    )?;
+    self.define_data_prop(
+      document_fragment_proto,
+      fragment_query_selector_all_key,
+      Value::Object(fragment_query_selector_all),
     )?;
     self.document_fragment_proto = Some(document_fragment_proto);
 
@@ -1304,6 +1388,28 @@ impl JsWptRuntime {
       cookie_key,
       Value::Object(cookie_get),
       Value::Object(cookie_set),
+    )?;
+
+    // ParentNode selector APIs on `Document.prototype`.
+    let doc_query_selector = self.alloc_native_function(native_document_query_selector)?;
+    let doc_query_selector_all = self.alloc_native_function(native_document_query_selector_all)?;
+    let doc_query_selector_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("querySelector")?)
+    };
+    let doc_query_selector_all_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("querySelectorAll")?)
+    };
+    self.define_data_prop(
+      document_proto,
+      doc_query_selector_key,
+      Value::Object(doc_query_selector),
+    )?;
+    self.define_data_prop(
+      document_proto,
+      doc_query_selector_all_key,
+      Value::Object(doc_query_selector_all),
     )?;
 
     // `document` object: Node + createElement + URL.
@@ -1979,6 +2085,12 @@ impl JsWptRuntime {
       .ok_or_else(|| JsError::Vm(VmError::Unimplemented("DOM Element prototype")))
   }
 
+  fn dom_token_list_proto(&self) -> Result<GcObject, JsError> {
+    self
+      .dom_token_list_proto
+      .ok_or_else(|| JsError::Vm(VmError::Unimplemented("DOMTokenList prototype")))
+  }
+
   fn document_fragment_proto(&self) -> Result<GcObject, JsError> {
     self
       .document_fragment_proto
@@ -2049,6 +2161,7 @@ impl JsWptRuntime {
         children: Vec::new(),
         template_content: Vec::new(),
         child_nodes: None,
+        class_list: None,
       },
     );
 
@@ -2106,6 +2219,7 @@ impl JsWptRuntime {
         children: Vec::new(),
         template_content: Vec::new(),
         child_nodes: None,
+        class_list: None,
       },
     );
     self.update_dom_child_nodes(obj)?;
@@ -2163,6 +2277,7 @@ impl JsWptRuntime {
         children: Vec::new(),
         template_content: Vec::new(),
         child_nodes: None,
+        class_list: None,
       },
     );
     self.update_dom_child_nodes(obj)?;
@@ -4844,6 +4959,219 @@ fn native_document_get_element_by_id(
   Ok(Value::Null)
 }
 
+fn native_document_query_selector(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(document) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelector called on non-object",
+    )?)));
+  };
+  let env_document = match rt.env.get("document") {
+    Some(Value::Object(doc)) => doc,
+    _ => {
+      return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+        "TypeError: querySelector called without a document",
+      )?)));
+    }
+  };
+  if document != env_document {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelector called on non-document",
+    )?)));
+  }
+
+  let selector_text = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let selectors = match parse_dom_selector_list(&selector_text) {
+    Ok(selectors) => selectors,
+    Err(_) => {
+      let message = format!("invalid selector: {selector_text}");
+      return dom_throw_syntax_error(rt, &message);
+    }
+  };
+
+  let Some(body) = rt.document_body else {
+    return Ok(Value::Null);
+  };
+  // `document.querySelector(All)` scopes to the document element in browsers.
+  let scope = rt
+    .dom_nodes
+    .get(&body)
+    .and_then(|state| state.parent)
+    .unwrap_or(body);
+
+  let nodes = dom_subtree_preorder(rt, scope);
+  for node in nodes {
+    let is_element = rt
+      .dom_nodes
+      .get(&node)
+      .is_some_and(|state| state.kind == DomNodeKind::Element);
+    if !is_element {
+      continue;
+    }
+    if dom_matches_any_selector(rt, node, &selectors, scope, /* allow_self_without_scope */ false)? {
+      return Ok(Value::Object(node));
+    }
+  }
+  Ok(Value::Null)
+}
+
+fn native_document_query_selector_all(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(document) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelectorAll called on non-object",
+    )?)));
+  };
+  let env_document = match rt.env.get("document") {
+    Some(Value::Object(doc)) => doc,
+    _ => {
+      return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+        "TypeError: querySelectorAll called without a document",
+      )?)));
+    }
+  };
+  if document != env_document {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelectorAll called on non-document",
+    )?)));
+  }
+
+  let selector_text = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let selectors = match parse_dom_selector_list(&selector_text) {
+    Ok(selectors) => selectors,
+    Err(_) => {
+      let message = format!("invalid selector: {selector_text}");
+      return dom_throw_syntax_error(rt, &message);
+    }
+  };
+
+  let Some(body) = rt.document_body else {
+    return Ok(Value::Object(rt.make_dom_nodelist(&[])?));
+  };
+  let scope = rt
+    .dom_nodes
+    .get(&body)
+    .and_then(|state| state.parent)
+    .unwrap_or(body);
+
+  let nodes = dom_subtree_preorder(rt, scope);
+  let mut matches = Vec::new();
+  for node in nodes {
+    let is_element = rt
+      .dom_nodes
+      .get(&node)
+      .is_some_and(|state| state.kind == DomNodeKind::Element);
+    if !is_element {
+      continue;
+    }
+    if dom_matches_any_selector(rt, node, &selectors, scope, /* allow_self_without_scope */ false)? {
+      matches.push(node);
+    }
+  }
+  Ok(Value::Object(rt.make_dom_nodelist(&matches)?))
+}
+
+fn native_document_fragment_query_selector(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(fragment) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelector called on non-object",
+    )?)));
+  };
+  let Some(state) = rt.dom_nodes.get(&fragment) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelector called on non-DocumentFragment",
+    )?)));
+  };
+  if state.kind != DomNodeKind::DocumentFragment {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelector called on non-DocumentFragment",
+    )?)));
+  }
+
+  let selector_text = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let selectors = match parse_dom_selector_list(&selector_text) {
+    Ok(selectors) => selectors,
+    Err(_) => {
+      let message = format!("invalid selector: {selector_text}");
+      return dom_throw_syntax_error(rt, &message);
+    }
+  };
+
+  let nodes = dom_subtree_preorder(rt, fragment);
+  for node in nodes {
+    let is_element = rt
+      .dom_nodes
+      .get(&node)
+      .is_some_and(|state| state.kind == DomNodeKind::Element);
+    if !is_element {
+      continue;
+    }
+    if dom_matches_any_selector(rt, node, &selectors, fragment, /* allow_self_without_scope */ false)?
+    {
+      return Ok(Value::Object(node));
+    }
+  }
+  Ok(Value::Null)
+}
+
+fn native_document_fragment_query_selector_all(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(fragment) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelectorAll called on non-object",
+    )?)));
+  };
+  let Some(state) = rt.dom_nodes.get(&fragment) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelectorAll called on non-DocumentFragment",
+    )?)));
+  };
+  if state.kind != DomNodeKind::DocumentFragment {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: querySelectorAll called on non-DocumentFragment",
+    )?)));
+  }
+
+  let selector_text = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let selectors = match parse_dom_selector_list(&selector_text) {
+    Ok(selectors) => selectors,
+    Err(_) => {
+      let message = format!("invalid selector: {selector_text}");
+      return dom_throw_syntax_error(rt, &message);
+    }
+  };
+
+  let nodes = dom_subtree_preorder(rt, fragment);
+  let mut matches = Vec::new();
+  for node in nodes {
+    let is_element = rt
+      .dom_nodes
+      .get(&node)
+      .is_some_and(|state| state.kind == DomNodeKind::Element);
+    if !is_element {
+      continue;
+    }
+    if dom_matches_any_selector(rt, node, &selectors, fragment, /* allow_self_without_scope */ false)?
+    {
+      matches.push(node);
+    }
+  }
+  Ok(Value::Object(rt.make_dom_nodelist(&matches)?))
+}
+
 fn native_document_fragment_get_element_by_id(
   rt: &mut JsWptRuntime,
   this: Value,
@@ -6991,6 +7319,168 @@ fn native_dom_element_set_class_name(
     state.attributes.insert("class".to_string(), handle);
   }
   Ok(Value::Undefined)
+}
+
+fn dom_token_list_validate_token(rt: &mut JsWptRuntime, token: &str) -> Result<(), JsError> {
+  if token.is_empty() {
+    return dom_throw_syntax_error(rt, "DOMTokenList token must not be empty").map(|_| ());
+  }
+  if token
+    .as_bytes()
+    .iter()
+    .any(|&b| matches!(b, b'\t' | b'\n' | 0x0C | b'\r' | b' '))
+  {
+    return dom_throw_invalid_character_error(rt, "DOMTokenList token must not contain whitespace")
+      .map(|_| ());
+  }
+  Ok(())
+}
+
+fn dom_token_list_tokens_from_element(rt: &JsWptRuntime, element: GcObject) -> Result<Vec<String>, JsError> {
+  let Some(state) = rt.dom_nodes.get(&element) else {
+    return Ok(Vec::new());
+  };
+  let class_value = state
+    .attributes
+    .get("class")
+    .copied()
+    .and_then(|s| rt.heap.get_string(s).ok())
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let mut out = Vec::new();
+  let mut seen: HashSet<String> = HashSet::new();
+  for token in class_value
+    .split(|ch| matches!(ch, '\t' | '\n' | '\u{000c}' | '\r' | ' '))
+    .filter(|t| !t.is_empty())
+  {
+    if seen.insert(token.to_string()) {
+      out.push(token.to_string());
+    }
+  }
+  Ok(out)
+}
+
+fn dom_token_list_write_tokens_to_element(
+  rt: &mut JsWptRuntime,
+  element: GcObject,
+  tokens: &[String],
+) -> Result<(), JsError> {
+  let class_value = tokens.join(" ");
+  let Value::String(handle) = rt.alloc_string_value(&class_value)? else {
+    return Ok(());
+  };
+  if let Some(state) = rt.dom_nodes.get_mut(&element) {
+    state.attributes.insert("class".to_string(), handle);
+  }
+  Ok(())
+}
+
+fn dom_require_dom_token_list(
+  rt: &mut JsWptRuntime,
+  value: Value,
+  method: &str,
+) -> Result<(GcObject, GcObject), JsError> {
+  let Value::Object(obj) = value else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(&format!(
+      "TypeError: DOMTokenList.{method} called on non-object"
+    ))?)));
+  };
+  let Some(&element) = rt.dom_token_lists.get(&obj) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(&format!(
+      "TypeError: DOMTokenList.{method} called on non-DOMTokenList"
+    ))?)));
+  };
+  Ok((obj, element))
+}
+
+fn native_dom_element_get_class_list(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
+  let element = dom_require_element(rt, this, "classList")?;
+  if let Some(existing) = rt.dom_nodes.get(&element).and_then(|s| s.class_list) {
+    return Ok(Value::Object(existing));
+  }
+
+  let obj = rt.alloc_object()?;
+  let proto = rt.dom_token_list_proto()?;
+  rt.heap.object_set_prototype(obj, Some(proto))?;
+  rt.dom_token_lists.insert(obj, element);
+  if let Some(state) = rt.dom_nodes.get_mut(&element) {
+    state.class_list = Some(obj);
+  }
+  Ok(Value::Object(obj))
+}
+
+fn native_dom_token_list_contains(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let (_list, element) = dom_require_dom_token_list(rt, this, "contains")?;
+  let token = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  dom_token_list_validate_token(rt, &token)?;
+
+  let tokens = dom_token_list_tokens_from_element(rt, element)?;
+  Ok(Value::Bool(tokens.iter().any(|t| t == &token)))
+}
+
+fn native_dom_token_list_add(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let (_list, element) = dom_require_dom_token_list(rt, this, "add")?;
+  let mut tokens = dom_token_list_tokens_from_element(rt, element)?;
+  let mut seen: HashSet<String> = tokens.iter().cloned().collect();
+
+  for arg in args.iter().copied() {
+    let token = string_from_value(rt, arg)?;
+    dom_token_list_validate_token(rt, &token)?;
+    if seen.insert(token.clone()) {
+      tokens.push(token);
+    }
+  }
+
+  dom_token_list_write_tokens_to_element(rt, element, &tokens)?;
+  Ok(Value::Undefined)
+}
+
+fn native_dom_token_list_remove(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let (_list, element) = dom_require_dom_token_list(rt, this, "remove")?;
+  let mut to_remove: HashSet<String> = HashSet::new();
+  for arg in args.iter().copied() {
+    let token = string_from_value(rt, arg)?;
+    dom_token_list_validate_token(rt, &token)?;
+    to_remove.insert(token);
+  }
+
+  let mut tokens = dom_token_list_tokens_from_element(rt, element)?;
+  tokens.retain(|t| !to_remove.contains(t));
+  dom_token_list_write_tokens_to_element(rt, element, &tokens)?;
+  Ok(Value::Undefined)
+}
+
+fn native_dom_token_list_toggle(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let (_list, element) = dom_require_dom_token_list(rt, this, "toggle")?;
+  let token = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  dom_token_list_validate_token(rt, &token)?;
+
+  let force = match args.get(1).copied() {
+    None | Some(Value::Undefined) => None,
+    Some(v) => Some(to_boolean(&mut rt.heap, v)?),
+  };
+
+  let mut tokens = dom_token_list_tokens_from_element(rt, element)?;
+  let has = tokens.iter().any(|t| t == &token);
+  let should_add = match force {
+    Some(true) => true,
+    Some(false) => false,
+    None => !has,
+  };
+
+  let new_has = if should_add {
+    if !has {
+      tokens.push(token);
+    }
+    true
+  } else {
+    tokens.retain(|t| t != &token);
+    false
+  };
+
+  dom_token_list_write_tokens_to_element(rt, element, &tokens)?;
+  Ok(Value::Bool(new_has))
 }
 
 fn native_text_get_data(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
