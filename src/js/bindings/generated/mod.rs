@@ -1052,8 +1052,6 @@ pub mod worker {
 
   use super::{BindingValue, WebHostBindings};
 
-  use crate::js::webidl::conversions;
-
   fn binding_value_to_js<Host, R>(
     rt: &mut R,
     value: BindingValue<R::JsValue>,
@@ -1072,15 +1070,6 @@ pub mod worker {
         Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
       }
       BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
-        let obj = rt.create_object()?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(obj, &key, value, true)?;
-        }
-        Ok(obj)
-      }
-      BindingValue::FrozenArray(values) => {
         let obj = rt.create_object()?;
         for (idx, item) in values.into_iter().enumerate() {
           let key = idx.to_string();

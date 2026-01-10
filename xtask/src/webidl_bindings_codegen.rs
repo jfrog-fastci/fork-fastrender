@@ -1570,6 +1570,10 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("  Ok(())\n");
   out.push_str("}\n");
 
+  if !out.contains("conversions::") {
+    out = out.replace("use crate::js::webidl::conversions;\n\n", "");
+  }
+
   Ok(out)
 }
 
