@@ -74,6 +74,20 @@ fn find_table_fragment<'a>(
   None
 }
 
+fn collect_table_fragments<'a>(
+  node: &'a FragmentNode,
+  offset: Point,
+  out: &mut Vec<(&'a FragmentNode, Rect)>,
+) {
+  let abs_rect = node.bounds.translate(offset);
+  if node.table_borders.is_some() {
+    out.push((node, abs_rect));
+  }
+  for child in node.children.iter() {
+    collect_table_fragments(child, abs_rect.origin, out);
+  }
+}
+
 fn assert_point_eq_eps(actual: Point, expected: Point, eps: f32) {
   assert!(
     (actual.x - expected.x).abs() < eps && (actual.y - expected.y).abs() < eps,
@@ -348,7 +362,7 @@ fn collapsed_table_borders_use_fragment_local_origin_with_repeated_thead_in_prin
     "expected at least one continuation page with a non-zero slice_offset"
   );
 }
-
+ 
 #[test]
 fn collapsed_table_borders_use_fragment_local_origin_with_repeated_tfoot_in_print_pagination() {
   const EPSILON: f32 = 0.1;
@@ -425,4 +439,99 @@ fn collapsed_table_borders_use_fragment_local_origin_with_repeated_tfoot_in_prin
     saw_target_page,
     "expected at least one continuation page that is not the last table fragment"
   );
+}
+
+#[test]
+fn collapsed_table_borders_align_with_repeated_headers_in_multicol() {
+  const EPSILON: f32 = 0.1;
+
+  let body_rows: String = (1..=16)
+    .map(|i| format!(r#"<tr><td>{i}</td></tr>"#))
+    .collect();
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          html, body {{ margin: 0; padding: 0; }}
+          div.columns {{
+            column-count: 2;
+            column-gap: 20px;
+            width: 260px;
+          }}
+          table {{ width: 100%; border-collapse: collapse; box-decoration-break: slice; }}
+          td, th {{ border: 2px solid black; height: 32px; padding: 0; }}
+        </style>
+      </head>
+      <body>
+        <div class="columns">
+          <table>
+            <thead><tr><th>Header</th></tr></thead>
+            <tbody>{body_rows}</tbody>
+          </table>
+        </div>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer.layout_document(&dom, 320, 400).unwrap();
+
+  let mut table_fragments = Vec::new();
+  collect_table_fragments(&tree.root, Point::ZERO, &mut table_fragments);
+  assert!(
+    !table_fragments.is_empty(),
+    "expected to find table fragments with collapsed border metadata"
+  );
+
+  let continuation_fragments: Vec<_> = table_fragments
+    .iter()
+    .filter(|(node, _)| node.slice_info.slice_offset > EPSILON)
+    .collect();
+  assert!(
+    !continuation_fragments.is_empty(),
+    "expected at least one continuation column fragment (table fragments={:?})",
+    table_fragments
+      .iter()
+      .map(|(node, rect)| (rect.origin.x, rect.origin.y, node.slice_info.slice_offset))
+      .collect::<Vec<_>>()
+  );
+
+  let list = DisplayListBuilder::new().build(&tree.root);
+  let collapsed_items: Vec<_> = list
+    .items()
+    .iter()
+    .filter_map(|item| match item {
+      DisplayItem::TableCollapsedBorders(item) => Some(item),
+      _ => None,
+    })
+    .collect();
+  assert!(
+    collapsed_items.len() >= 2,
+    "expected the table to fragment into multiple column slices (got {} TableCollapsedBorders items)",
+    collapsed_items.len()
+  );
+
+  for (table_fragment, table_rect) in continuation_fragments {
+    let origin = table_rect.origin;
+    let found = collapsed_items.iter().any(|item| {
+      item.borders.fragment_local
+        && (item.origin.x - origin.x).abs() < EPSILON
+        && (item.origin.y - origin.y).abs() < EPSILON
+    });
+    assert!(
+      found,
+      "expected TableCollapsedBorders item origin to match continuation fragment origin ({}, {}) \
+       (slice_offset={}); got origins={:?}",
+      origin.x,
+      origin.y,
+      table_fragment.slice_info.slice_offset,
+      collapsed_items
+        .iter()
+        .map(|item| (item.origin.x, item.origin.y))
+        .collect::<Vec<_>>()
+    );
+  }
 }
