@@ -326,11 +326,21 @@ fi
 
 # Some non-Linux environments ship a `flock` binary that doesn't support locking inherited file
 # descriptors. Probe it once so we don't deadlock in the retry loop below.
-if ! exec 199>"${lock_dir}/.flock_probe.lock" 2>/dev/null; then
+#
+# IMPORTANT: `exec` redirections persist for the rest of the shell process. Do **not** attach
+# `2>/dev/null` directly to `exec` here, or we'd permanently silence stderr for the remainder of this
+# script (including cargo diagnostics).
+exec 198>&2
+exec 2>/dev/null
+if ! exec 199>"${lock_dir}/.flock_probe.lock"; then
+  exec 2>&198
+  exec 198>&-
   echo "warning: unable to open flock probe lock; running cargo without slot throttling" >&2
   run_cargo "$@"
   exit $?
 fi
+exec 2>&198
+exec 198>&-
 if ! flock -n 199 >/dev/null 2>&1; then
   echo "warning: flock appears unusable; running cargo without slot throttling" >&2
   exec 199>&- || true
