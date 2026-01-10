@@ -240,6 +240,14 @@ pub struct BrowserTabHost {
   document_referrer_policy: ReferrerPolicy,
   csp: Option<CspPolicy>,
   pending_navigation: Option<LocationNavigationRequest>,
+  /// Root render deadline captured when `pending_navigation` is set.
+  ///
+  /// Navigation requests are often produced while a render deadline is active (during streaming
+  /// parsing or event-loop driven script execution). When the host later commits the navigation
+  /// outside that immediate deadline scope, we must preserve the original deadline start instant so
+  /// `RenderOptions::{timeout,cancel_callback}` cannot be bypassed by resetting the clock at commit
+  /// time.
+  pending_navigation_deadline: Option<RenderDeadline>,
   html_sources: HashMap<String, String>,
   external_script_sources: HashMap<String, String>,
   script_blocking_stylesheets: ScriptBlockingStyleSheetSet,
@@ -293,6 +301,7 @@ impl BrowserTabHost {
       document_referrer_policy: ReferrerPolicy::default(),
       csp: None,
       pending_navigation: None,
+      pending_navigation_deadline: None,
       html_sources: HashMap::new(),
       external_script_sources: HashMap::new(),
       script_blocking_stylesheets: ScriptBlockingStyleSheetSet::new(),
@@ -391,6 +400,7 @@ impl BrowserTabHost {
       .and_then(|url| origin_from_url(url));
     self.document_referrer_policy = document_referrer_policy;
     self.pending_navigation = None;
+    self.pending_navigation_deadline = None;
     self.executor.on_navigation_committed(self.document_url.as_deref());
     // Mirror the renderer's view of the active CSP policy (populated when navigating to a URL).
     // HTML-string entry points may overwrite this with `<meta http-equiv="Content-Security-Policy">`
@@ -1768,6 +1778,7 @@ impl BrowserTabHost {
           executor,
           document,
           pending_navigation,
+          pending_navigation_deadline,
           document_write_state,
           ..
         } = host;
@@ -1797,6 +1808,8 @@ impl BrowserTabHost {
         });
         if let Some(req) = executor.take_navigation_request() {
           *pending_navigation = Some(req);
+          *pending_navigation_deadline =
+            crate::render_control::root_deadline().filter(|deadline| deadline.is_enabled());
         }
         result
       }
@@ -2160,6 +2173,8 @@ impl DocumentLifecycleHost for BrowserTabHost {
     };
     if let Some(req) = self.executor.take_navigation_request() {
       self.pending_navigation = Some(req);
+      self.pending_navigation_deadline =
+        crate::render_control::root_deadline().filter(|deadline| deadline.is_enabled());
     }
     match result {
       Ok(()) => {
@@ -2847,6 +2862,20 @@ impl BrowserTab {
   fn commit_pending_navigation(&mut self) -> Result<bool> {
     let Some(req) = self.host.pending_navigation.take() else {
       return Ok(false);
+    };
+    let deadline = self.host.pending_navigation_deadline.take();
+    let root_deadline_is_enabled =
+      crate::render_control::root_deadline().is_some_and(|deadline| deadline.is_enabled());
+    // If the navigation request was produced while a root deadline was active (e.g. during parsing),
+    // preserve it across the commit so render timeouts/cancellation cannot be bypassed by resetting
+    // the clock at navigation time.
+    let _deadline_guard = if root_deadline_is_enabled {
+      None
+    } else {
+      deadline
+        .as_ref()
+        .filter(|deadline| deadline.is_enabled())
+        .map(|deadline| DeadlineGuard::install(Some(deadline)))
     };
     let options = self.host.document.options().clone();
     self.navigate_to_url_with_replace(&req.url, options, req.replace)?;
@@ -6918,6 +6947,143 @@ html, body { margin: 0; padding: 0; }
       fetcher,
     ) {
       Ok(_) => panic!("expected deadline to span script-triggered navigation"),
+      Err(err) => err,
+    };
+
+    match err {
+      Error::Render(RenderError::Timeout {
+        stage: RenderStage::DomParse,
+        ..
+      }) => {}
+      other => panic!("expected dom_parse timeout, got {other:?}"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn from_html_with_document_url_timeout_spans_delayed_script_triggered_navigation() -> Result<()> {
+    use crate::error::{RenderError, RenderStage};
+    use std::time::Duration;
+
+    struct SlowStyleFetcher {
+      url: String,
+      delay: Duration,
+    }
+
+    impl ResourceFetcher for SlowStyleFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        if req.url != self.url {
+          return Err(Error::Other(format!("unexpected fetch url {}", req.url)));
+        }
+        std::thread::sleep(self.delay);
+        Ok(FetchedResource::with_final_url(
+          b"body { color: red; }".to_vec(),
+          Some("text/css".to_string()),
+          Some(req.url.to_string()),
+        ))
+      }
+    }
+
+    struct SleepyNavigateExecutor {
+      target_url: String,
+      pending: Option<LocationNavigationRequest>,
+    }
+
+    impl BrowserTabJsExecutor for SleepyNavigateExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          // Sleep long enough that the overall from_html deadline expires *after* the stylesheet load
+          // unblocks this parser-inserted script.
+          std::thread::sleep(Duration::from_millis(60));
+          self.pending = Some(LocationNavigationRequest {
+            url: self.target_url.clone(),
+            replace: false,
+          });
+        }
+        Ok(())
+      }
+
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        spec: &ScriptElementSpec,
+        current_script: Option<NodeId>,
+        document: &mut BrowserDocumentDom2,
+        event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.execute_classic_script(script_text, spec, current_script, document, event_loop)
+      }
+
+      fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+        self.pending.take()
+      }
+    }
+
+    let document_url = "https://example.com/index.html";
+    let style_url = "https://example.com/style.css".to_string();
+    let target_url = "https://example.com/target.html".to_string();
+    let html = format!(
+      "<!doctype html><html><head><link rel=\"stylesheet\" href=\"{style_url}\"></head><body><script>NAVIGATE</script></body></html>"
+    );
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SlowStyleFetcher {
+      url: style_url,
+      delay: Duration::from_millis(30),
+    });
+    let executor = SleepyNavigateExecutor {
+      target_url: target_url.clone(),
+      pending: None,
+    };
+
+    let mut tab = BrowserTab::from_html_with_document_url_and_fetcher(
+      &html,
+      document_url,
+      RenderOptions::default().with_timeout(Some(Duration::from_millis(70))),
+      executor,
+      fetcher,
+    )?;
+    tab.register_html_source(
+      &target_url,
+      "<!doctype html><html><body><div id=done></div></body></html>",
+    );
+
+    // Drive the event loop manually without rendering: `BrowserTab::run_event_loop_until_idle`
+    // renders between tasks, which can introduce unrelated timeouts in later pipeline stages. We
+    // want to specifically assert that the *navigation commit* observes the original from_html
+    // deadline (instead of resetting the clock at commit time).
+    let _outcome = tab.event_loop.run_until_idle_handling_errors_with_hook(
+      &mut tab.host,
+      RunLimits::unbounded(),
+      &mut |_err| {},
+      |host, event_loop| -> Result<()> {
+        if host.pending_navigation.is_some() {
+          event_loop.clear_all_pending_work();
+          return Ok(());
+        }
+        host.discover_dynamic_scripts(event_loop)?;
+        Ok(())
+      },
+    )?;
+
+    assert!(
+      tab.host.pending_navigation.is_some(),
+      "expected delayed script to request a navigation"
+    );
+
+    let err = match tab.commit_pending_navigation() {
+      Ok(_) => panic!("expected from_html deadline to span delayed script-triggered navigation"),
       Err(err) => err,
     };
 
