@@ -801,10 +801,12 @@ impl ResourceFetcher for BundledFetcher {
       return Ok(res);
     }
 
-    // Allow callers (notably fixture import tooling) to fetch a specific `Vary` variant by its
-    // synthetic manifest key (`<url>@@fastr:bundle:vary_v1@@<vary_key>`). These keys are not valid
-    // URLs, so they are not stored in `Bundle::resources`; we instead resolve them via the bundle's
-    // `vary_resources` buckets.
+    // Bundles store Vary-partitioned variants under synthetic manifest keys:
+    //   "<url>@@fastr:bundle:vary_v1@@<vary_key>"
+    //
+    // Most callers should fetch the canonical URL (without the suffix) and let BundledFetcher
+    // select the correct variant based on request headers. But tooling (e.g. fixture import) may
+    // iterate `bundle.json` keys directly and expects `fetch()` to succeed for every manifest key.
     if let Some((base_url, vary_key)) = parse_vary_partitioned_resource_key(url) {
       let Some(bucket) = self.bundle.vary_bucket_for_url(base_url) else {
         return Err(Error::Other(format!(
@@ -821,8 +823,14 @@ impl ResourceFetcher for BundledFetcher {
       if let Some(resource) = bucket.variants.get(vary_key) {
         return resource.as_fetched();
       }
+      // Back-compat: older bundles may include a single Vary entry without the `vary` field.
+      if bucket.vary.is_none() && bucket.variants.len() == 1 {
+        if let Some(resource) = bucket.variants.values().next() {
+          return resource.as_fetched();
+        }
+      }
       return Err(Error::Other(format!(
-        "Resource not found in bundle (missing Vary variant): {}",
+        "Resource not found in bundle (unknown Vary variant): {}",
         url
       )));
     }

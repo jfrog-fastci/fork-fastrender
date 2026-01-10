@@ -879,26 +879,16 @@ fn constraints_from_taffy(
   let mut constraints = LayoutConstraints::new(width, height);
   constraints.used_border_box_width = known_width;
   constraints.used_border_box_height = known_height;
-  // Percentages in grid items resolve against the available size offered by the grid area.
+  // Percentages on grid items resolve against the available size offered by the grid area.
   //
-  // Taffy provides that size as `AvailableSpace::Definite(width)` during layout and many
-  // measurement probes. Prefer it over the parent percentage base so percentage widths like
-  // `width: 100%` do not incorrectly resolve against the grid container's full width during track
-  // sizing (which can force columns to overflow instead of sharing available space).
-  constraints.inline_percentage_base = constraints
-    .inline_percentage_base
-    .or(match available.width {
-      taffy::style::AvailableSpace::Definite(w) if w > 1.0 => Some(w),
-      _ => None,
-    })
-    // When the grid area width is not definite (e.g. intrinsic sizing probes like min/max-content),
-    // percentages on grid items must behave as if the containing block is indefinite, i.e. the
-    // percentage can't be resolved and should be treated as `auto` per CSS Sizing.
-    //
-    // Do not fall back to the grid container's percentage base here, otherwise values like
-    // `width: 100%` will resolve against the container during intrinsic measurement and can force
-    // tracks (notably `fit-content(<percentage>)`) to consume the full container width.
-    ;
+  // Prefer that over any parent percentage base so `width: 100%` does not incorrectly resolve
+  // against the grid container's full width during track sizing. When the grid area width is not
+  // definite (e.g. intrinsic sizing probes like min/max-content), keep the base unset so
+  // percentages behave like `auto` per CSS Sizing.
+  constraints.inline_percentage_base = constraints.inline_percentage_base.or(match available.width {
+    taffy::style::AvailableSpace::Definite(w) if w > 1.0 => Some(w),
+    _ => None,
+  });
   constraints
 }
 
@@ -2953,20 +2943,32 @@ impl GridFormattingContext {
     }
 
     // Size
-    taffy_style.size = taffy::geometry::Size {
-      width: self.convert_sizing_property_to_dimension_box_sizing(
-        &style.width,
-        &style.width_keyword,
-        style,
-        Axis::Horizontal,
-      ),
-      height: self.convert_sizing_property_to_dimension_box_sizing(
-        &style.height,
-        &style.height_keyword,
-        style,
-        Axis::Vertical,
-      ),
-    };
+    let mut width = self.convert_sizing_property_to_dimension_box_sizing(
+      &style.width,
+      &style.width_keyword,
+      style,
+      Axis::Horizontal,
+    );
+    let mut height = self.convert_sizing_property_to_dimension_box_sizing(
+      &style.height,
+      &style.height_keyword,
+      style,
+      Axis::Vertical,
+    );
+    if containing_grid.is_some() {
+      // CSS percentages on grid items resolve against the grid *area* size, not the grid container.
+      // Taffy currently resolves percentage preferred sizes against the grid container, which can
+      // make items in `fr` tracks as wide as the entire grid and cause huge horizontal overflow on
+      // real-world pages (e.g. howtogeek.com). Treat percentage preferred sizes as `auto` in Taffy
+      // so our measure callback resolves the percentage against the supplied grid area size.
+      if style.width.is_some_and(|len| len.has_percentage()) {
+        width = Dimension::auto();
+      }
+      if style.height.is_some_and(|len| len.has_percentage()) {
+        height = Dimension::auto();
+      }
+    }
+    taffy_style.size = taffy::geometry::Size { width, height };
 
     // Min/Max size
     taffy_style.min_size = taffy::geometry::Size {

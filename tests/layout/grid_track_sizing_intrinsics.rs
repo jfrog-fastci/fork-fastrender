@@ -1,6 +1,7 @@
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::grid::GridFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
+use fastrender::geometry::Size;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::AspectRatio;
@@ -14,6 +15,7 @@ use fastrender::style::values::Length;
 use fastrender::LengthUnit;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::box_tree::ReplacedType;
 use std::sync::Arc;
 
 fn assert_approx(val: f32, expected: f32, msg: &str) {
@@ -396,5 +398,210 @@ fn grid_fr_max_content_uses_cross_axis_estimate_for_auto_ratio() {
     fragment.bounds.width(),
     80.0,
     "intrinsic max-content width from stretched auto-ratio child",
+  );
+}
+
+#[test]
+fn grid_fr_tracks_do_not_overflow_from_percent_items_during_track_sizing() {
+  // Regression for grid track sizing: when Taffy probes grid items under
+  // `AvailableSpace::{MinContent,MaxContent}`, the grid area size is unknown. Percentage sizes on
+  // the grid item must not resolve against the *parent* percentage base (typically the grid
+  // container width), or the intrinsic contribution becomes huge and forces `fr` tracks to
+  // overflow.
+
+  let fc = GridFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(20.0));
+  container_style.grid_template_columns = vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)];
+  container_style.grid_template_rows = vec![GridTrack::Auto];
+  container_style.grid_column_gap = Length::px(0.0);
+  container_style.grid_row_gap = Length::px(0.0);
+  let container_style = Arc::new(container_style);
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+
+  let mut percent_child_style = ComputedStyle::default();
+  percent_child_style.display = Display::Block;
+  percent_child_style.width = Some(Length::percent(100.0));
+  percent_child_style.height = Some(Length::px(10.0));
+
+  let percent_child =
+    |style: Arc<ComputedStyle>| BoxNode::new_block(style, FormattingContextType::Block, vec![]);
+
+  let mut first = BoxNode::new_block(
+    Arc::new(item_style.clone()),
+    FormattingContextType::Block,
+    vec![percent_child(Arc::new(percent_child_style.clone()))],
+  );
+  first.id = 1;
+  let mut second = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![percent_child(Arc::new(percent_child_style))],
+  );
+  second.id = 2;
+
+  let grid = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Grid,
+    vec![first, second],
+  );
+
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 20.0))
+    .expect("grid layout");
+
+  assert_eq!(fragment.children.len(), 2);
+  let first_fragment = &fragment.children[0];
+  let second_fragment = &fragment.children[1];
+
+  assert_approx(first_fragment.bounds.x(), 0.0, "first column origin");
+  assert_approx(first_fragment.bounds.width(), 100.0, "first column width");
+  assert_approx(second_fragment.bounds.x(), 100.0, "second column origin");
+  assert_approx(second_fragment.bounds.width(), 100.0, "second column width");
+
+  let eps = 0.5;
+  assert!(
+    second_fragment.bounds.max_x() <= 200.0 + eps,
+    "expected second item to fit inside container; got {:#?}",
+    second_fragment.bounds
+  );
+}
+
+#[test]
+fn grid_fr_tracks_do_not_overflow_from_percent_sized_replaced_items_during_track_sizing() {
+  // Regression: replaced elements frequently use `width/max-width: 100%` for responsiveness. When
+  // a replaced element is measured during intrinsic sizing (e.g. as part of a grid item during
+  // `fr` track sizing), unresolved percentage sizes must not force the item's min-content
+  // contribution to its intrinsic width, or the `fr` tracks overflow.
+
+  let fc = GridFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(20.0));
+  container_style.grid_template_columns = vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)];
+  container_style.grid_template_rows = vec![GridTrack::Auto];
+  container_style.grid_column_gap = Length::px(0.0);
+  container_style.grid_row_gap = Length::px(0.0);
+  let container_style = Arc::new(container_style);
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+
+  let mut replaced_style = ComputedStyle::default();
+  replaced_style.display = Display::Block;
+  replaced_style.width = Some(Length::percent(100.0));
+  replaced_style.max_width = Some(Length::percent(100.0));
+
+  let replaced_child = || {
+    BoxNode::new_replaced(
+      Arc::new(replaced_style.clone()),
+      ReplacedType::Canvas,
+      Some(Size::new(1000.0, 10.0)),
+      None,
+    )
+  };
+
+  let mut first = BoxNode::new_block(
+    Arc::new(item_style.clone()),
+    FormattingContextType::Block,
+    vec![replaced_child()],
+  );
+  first.id = 1;
+  let mut second = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![replaced_child()],
+  );
+  second.id = 2;
+
+  let grid = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Grid,
+    vec![first, second],
+  );
+
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 20.0))
+    .expect("grid layout");
+
+  assert_eq!(fragment.children.len(), 2);
+  let first_fragment = &fragment.children[0];
+  let second_fragment = &fragment.children[1];
+
+  assert_approx(first_fragment.bounds.x(), 0.0, "first column origin");
+  assert_approx(first_fragment.bounds.width(), 100.0, "first column width");
+  assert_approx(second_fragment.bounds.x(), 100.0, "second column origin");
+  assert_approx(second_fragment.bounds.width(), 100.0, "second column width");
+
+  let eps = 0.5;
+  assert!(
+    second_fragment.bounds.max_x() <= 200.0 + eps,
+    "expected second item to fit inside container; got {:#?}",
+    second_fragment.bounds
+  );
+}
+
+#[test]
+fn grid_percent_width_items_resolve_against_grid_area() {
+  // Regression: percentage preferred sizes on grid items (e.g. `width: 100%`) resolve against the
+  // grid area, not the grid container. When handed to Taffy as `Dimension::Percent`, Taffy resolves
+  // against the container width, making every item as wide as the entire grid and causing massive
+  // overflow.
+
+  let fc = GridFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.width = Some(Length::px(400.0));
+  container_style.height = Some(Length::px(20.0));
+  container_style.grid_template_columns = vec![
+    GridTrack::Fr(1.0),
+    GridTrack::Fr(1.0),
+    GridTrack::Fr(1.0),
+    GridTrack::Fr(1.0),
+  ];
+  container_style.grid_template_rows = vec![GridTrack::Auto];
+  container_style.grid_column_gap = Length::px(0.0);
+  container_style.grid_row_gap = Length::px(0.0);
+  let container_style = Arc::new(container_style);
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  item_style.width = Some(Length::percent(100.0));
+  item_style.height = Some(Length::px(10.0));
+  let item_style = Arc::new(item_style);
+
+  let mut children = Vec::new();
+  for id in 1..=4 {
+    let mut item = BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
+    item.id = id;
+    children.push(item);
+  }
+
+  let grid = BoxNode::new_block(container_style, FormattingContextType::Grid, children);
+
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(400.0, 20.0))
+    .expect("grid layout");
+
+  assert_eq!(fragment.children.len(), 4);
+  for (idx, child) in fragment.children.iter().enumerate() {
+    let expected_x = idx as f32 * 100.0;
+    assert_approx(child.bounds.x(), expected_x, "item column origin");
+    assert_approx(child.bounds.width(), 100.0, "item column width");
+  }
+
+  let eps = 0.5;
+  assert!(
+    fragment.children.last().unwrap().bounds.max_x() <= 400.0 + eps,
+    "expected items to fit inside container; got {:#?}",
+    fragment.children.last().unwrap().bounds
   );
 }
