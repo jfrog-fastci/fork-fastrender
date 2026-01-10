@@ -14,15 +14,15 @@
     "layout": 124.04265844094488,
     "paint": 98.03371392913384
   },
-  "notes": "Fixed legacy stacking-context viewport culling (inverse transform) and background-image culling for offscreen layers (origin_offset). Remaining diffs are mostly minor header/shadow tint and text rasterization differences.",
+  "notes": "Fixed legacy stacking-context viewport culling (inverse transform) and background-image culling for offscreen layers (origin_offset). Remaining diffs are primarily text rasterization plus a subtle header tint band.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 36235,
-    "diff_percent": 2.8098,
-    "perceptual": 0.4509,
+    "diff_pixels": 22122,
+    "diff_percent": 1.7154,
+    "perceptual": 0.1847,
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "d58b40a19c5bab3e27a180c77b808356bf16672f"
+    "computed_at_commit": "b2ae46f536f1ef9725c17630df5b34c6067c0d3f"
   },
   "hotspot": "cascade",
   "failure_stage": null,
