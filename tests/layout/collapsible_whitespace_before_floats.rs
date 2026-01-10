@@ -7,7 +7,28 @@ use fastrender::BoxNode;
 use fastrender::ComputedStyle;
 use fastrender::FormattingContext;
 use fastrender::FormattingContextType;
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use std::sync::Arc;
+
+fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+  let mut stack = vec![fragment];
+  while let Some(node) = stack.pop() {
+    let matches_id = match &node.content {
+      FragmentContent::Block { box_id: Some(id) }
+      | FragmentContent::Inline { box_id: Some(id), .. }
+      | FragmentContent::Text { box_id: Some(id), .. }
+      | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+      _ => false,
+    };
+    if matches_id {
+      return Some(node);
+    }
+    for child in node.children.iter() {
+      stack.push(child);
+    }
+  }
+  None
+}
 
 /// Collapsible whitespace runs that are the *only* in-flow content in a block formatting context
 /// must not generate empty line boxes.
@@ -30,8 +51,10 @@ fn collapsible_whitespace_only_buffer_does_not_push_floats_down() {
   float_style.height = Some(Length::px(10.0));
   let float_style = Arc::new(float_style);
 
-  let float_a = BoxNode::new_inline_block(float_style.clone(), FormattingContextType::Block, vec![]);
-  let float_b = BoxNode::new_inline_block(float_style, FormattingContextType::Block, vec![]);
+  let mut float_a = BoxNode::new_inline_block(float_style.clone(), FormattingContextType::Block, vec![]);
+  float_a.id = 1;
+  let mut float_b = BoxNode::new_inline_block(float_style, FormattingContextType::Block, vec![]);
+  float_b.id = 2;
 
   let root = BoxNode::new_block(
     Arc::new(root_style),
@@ -43,32 +66,26 @@ fn collapsible_whitespace_only_buffer_does_not_push_floats_down() {
   let constraints = LayoutConstraints::definite(200.0, 200.0);
   let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
 
-  let float_frags: Vec<_> = fragment
-    .children
-    .iter()
-    .filter(|child| (child.bounds.width() - 50.0).abs() < 0.01 && (child.bounds.height() - 10.0).abs() < 0.01)
-    .collect();
-
-  assert_eq!(
-    float_frags.len(),
-    2,
-    "expected two float fragments; got {} children",
-    fragment.children.len()
-  );
+  let float_a_frag = find_fragment_by_box_id(&fragment, 1).expect("float A fragment should exist");
+  let float_b_frag = find_fragment_by_box_id(&fragment, 2).expect("float B fragment should exist");
   assert!(
-    float_frags[0].bounds.y().abs() < 0.01,
+    float_a_frag.bounds.y().abs() < 0.01,
     "expected first float to start at y=0, got y={:.2}",
-    float_frags[0].bounds.y()
+    float_a_frag.bounds.y()
   );
   assert!(
-    float_frags[1].bounds.y().abs() < 0.01,
+    float_b_frag.bounds.y().abs() < 0.01,
     "expected second float to start at y=0, got y={:.2}",
-    float_frags[1].bounds.y()
+    float_b_frag.bounds.y()
   );
   assert!(
-    (float_frags[1].bounds.x() - 50.0).abs() < 0.01,
+    float_a_frag.bounds.x().abs() < 0.01,
+    "expected first float to start at x=0, got x={:.2}",
+    float_a_frag.bounds.x()
+  );
+  assert!(
+    (float_b_frag.bounds.x() - 50.0).abs() < 0.01,
     "expected second float to be placed next to the first, got x={:.2}",
-    float_frags[1].bounds.x()
+    float_b_frag.bounds.x()
   );
 }
-

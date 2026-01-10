@@ -1741,7 +1741,29 @@ impl InlineFormattingContext {
           maybe_push_footnote_anchor(&mut current_items, whitespace);
         }
         _ => {
-          if is_inline_level || float {
+          if float {
+            self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+            let metrics = self.compute_strut_metrics(&child.style);
+            let va = self.convert_vertical_align(
+              child.style.vertical_align,
+              child.style.font_size,
+              child.style.root_font_size,
+              metrics.line_height,
+              child.style.writing_mode,
+            );
+            let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
+              box_node: child.clone(),
+              metrics,
+              vertical_align: va,
+              direction: child.style.direction,
+              unicode_bidi: child.style.unicode_bidi,
+            };
+            current_items.push(InlineItem::Floating(floating));
+            whitespace.note_ignorable();
+            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
+            continue;
+          }
+          if is_inline_level {
             continue;
           }
           self.flush_pending_collapsible_space(whitespace, &mut current_items)?;

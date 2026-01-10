@@ -324,6 +324,12 @@ impl AnonymousBoxCreator {
     if matches!(child.style.position, Position::Absolute | Position::Fixed) {
       return false;
     }
+    // Floats are out-of-flow and should not trigger anonymous block-run wrapping. Treat them as
+    // inline-level content for fixup purposes so they remain in the same inline run as surrounding
+    // text (CSS 2.1 §9.5.1, §9.2.1.1).
+    if child.style.float.is_floating() {
+      return true;
+    }
     match &child.box_type {
       BoxType::Replaced(_) => child.style.display.is_inline_level(),
       _ => child.is_inline_level(),
@@ -337,6 +343,10 @@ impl AnonymousBoxCreator {
   fn is_block_level_child(child: &BoxNode) -> bool {
     // Out-of-flow positioned boxes do not participate in anonymous in-flow box fixup.
     if matches!(child.style.position, Position::Absolute | Position::Fixed) {
+      return false;
+    }
+    // Floats are out-of-flow; they must not force block/inline splitting into anonymous block runs.
+    if child.style.float.is_floating() {
       return false;
     }
     match &child.box_type {

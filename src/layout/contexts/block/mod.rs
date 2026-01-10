@@ -4757,7 +4757,9 @@ impl BlockFormattingContext {
       // If the buffer contains any block-level boxes (or only collapsible whitespace),
       // lay each out separately to avoid creating an inline formatting context that spans
       // mixed block content or empty lines.
-      let has_block = buffer.iter().any(|b| b.is_block_level());
+      let has_block = buffer
+        .iter()
+        .any(|b| b.is_block_level() && !b.style.float.is_floating());
       let all_whitespace = buffer.iter().all(|b| match &b.box_type {
         BoxType::Text(text) => trim_ascii_whitespace(&text.text).is_empty(),
         _ => false,
@@ -5378,7 +5380,11 @@ impl BlockFormattingContext {
       if child.style.float.is_floating()
         && !matches!(child.style.position, Position::Absolute | Position::Fixed)
       {
-        if child.is_inline_level() {
+        // If we've already buffered inline content, the float's "as high as possible" vertical
+        // position depends on the line box currently being built. Defer float placement to the
+        // inline formatting context so it can be positioned relative to the correct line top (CSS
+        // 2.1 §9.5.1), even when the floated box itself is block-level.
+        if !inline_buffer.is_empty() || child.is_inline_level() {
           inline_buffer.push(child.clone());
           continue;
         }

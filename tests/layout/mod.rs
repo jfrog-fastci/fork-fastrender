@@ -210,6 +210,7 @@ mod grid_writing_mode_in_block;
 mod image_percent_height_missing_uses_alt_intrinsic;
 mod inline_max_content_accumulates;
 mod inline_float_after_inline_content;
+mod block_float_after_inline_content;
 mod inline_float_min_width;
 mod inline_float_in_inline_box;
 mod inline_float_only_does_not_advance_block_height;
