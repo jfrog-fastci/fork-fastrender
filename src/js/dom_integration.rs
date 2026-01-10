@@ -146,7 +146,7 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     .ok()
     .flatten()
     .map(|value| {
-      let value = super::trim_ascii_whitespace(value);
+      let value = trim_ascii_whitespace(value);
       if value.eq_ignore_ascii_case("use-credentials") {
         crate::resource::CorsMode::UseCredentials
       } else {
@@ -167,10 +167,9 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
   let raw_src = dom
     .get_attribute(script, "src")
     .ok()
-    .flatten()
-    .map(|v| v.to_string());
+    .flatten();
   let src_attr_present = raw_src.is_some();
-  let src = raw_src.as_deref().and_then(|raw| resolve_script_src_at_parse_time(None, raw));
+  let src = raw_src.and_then(|raw| resolve_script_src_at_parse_time(None, raw));
 
   let mut inline_text = String::new();
   for &child in &dom.node(script).children {
@@ -215,8 +214,130 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
   namespace.is_empty() || namespace == HTML_NAMESPACE
 }
 
-// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
-// Notably, this does *not* include U+000B VT (vertical tab).
-fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+#[cfg(test)]
+mod tests {
+  use super::prepare_dynamic_script_on_insertion;
+  use crate::dom2::{parse_html, Document};
+  use crate::error::Result;
+  use crate::js::{
+    ClassicScriptScheduler, DomHost, EventLoop, ScriptElementEvent, ScriptElementSpec,
+    ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
+  };
+
+  struct TestHost {
+    dom: Document,
+    started_loads: Vec<String>,
+    executed: Vec<String>,
+    next_handle: u32,
+  }
+
+  impl TestHost {
+    fn new(dom: Document) -> Self {
+      Self {
+        dom,
+        started_loads: Vec::new(),
+        executed: Vec::new(),
+        next_handle: 1,
+      }
+    }
+  }
+
+  impl DomHost for TestHost {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&Document) -> R,
+    {
+      f(&self.dom)
+    }
+
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut Document) -> (R, bool),
+    {
+      let (result, _changed) = f(&mut self.dom);
+      result
+    }
+  }
+
+  impl ScriptLoader for TestHost {
+    type Handle = u32;
+
+    fn load_blocking(&mut self, url: &str) -> Result<String> {
+      self.started_loads.push(url.to_string());
+      Ok(String::new())
+    }
+
+    fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
+      self.started_loads.push(url.to_string());
+      let handle = self.next_handle;
+      self.next_handle = self.next_handle.wrapping_add(1);
+      Ok(handle)
+    }
+
+    fn poll_complete(&mut self) -> Result<Option<(Self::Handle, String)>> {
+      Ok(None)
+    }
+  }
+
+  impl ScriptExecutor for TestHost {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      self.executed.push(script_text.to_string());
+      Ok(())
+    }
+  }
+
+  impl ScriptEventDispatcher for TestHost {
+    fn dispatch_script_event(
+      &mut self,
+      _event: ScriptElementEvent,
+      _spec: &ScriptElementSpec,
+    ) -> Result<()> {
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn dynamic_script_javascript_src_does_not_start_fetch() -> Result<()> {
+    let dom = parse_html(
+      "<!doctype html><html><body><script id=s src=\"javascript:alert(1)\">INLINE</script></body></html>",
+    )?;
+    let script = dom.get_element_by_id("s").expect("script element not found");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+
+    assert!(
+      host.started_loads.is_empty(),
+      "expected no loader fetch for javascript: src"
+    );
+    assert!(
+      host.executed.is_empty(),
+      "expected no inline execution when src attribute is present"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_script_relative_src_is_preserved_without_base_url() -> Result<()> {
+    let dom =
+      parse_html("<!doctype html><html><body><script id=s src=\"a.js\"></script></body></html>")?;
+    let script = dom.get_element_by_id("s").expect("script element not found");
+
+    let mut host = TestHost::new(dom);
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    prepare_dynamic_script_on_insertion(&mut host, &mut scheduler, &mut event_loop, script)?;
+
+    assert_eq!(host.started_loads, vec!["a.js".to_string()]);
+    Ok(())
+  }
 }
