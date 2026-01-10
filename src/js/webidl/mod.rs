@@ -1,6 +1,6 @@
 //! Web IDL scaffolding for JS bindings.
 //!
-//! FastRender uses the `engines/ecma-rs/webidl` crate as the authoritative source of:
+//! FastRender uses the `vendor/ecma-rs/webidl` crate as the authoritative source of:
 //! - WebIDL conversion helpers (e.g. `DOMString`)
 //! - the `JsRuntime` trait boundary used by those helpers
 //!

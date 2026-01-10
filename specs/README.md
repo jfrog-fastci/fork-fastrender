@@ -16,7 +16,7 @@ If your checkout did not initialize submodules, run:
 git submodule update --init
 ```
 
-Note: `--recursive` will also initialize any **nested** submodules inside other submodules (for example, `engines/ecma-rs` has optional large corpora submodules). Only use `--recursive` when you explicitly want those.
+Note: `--recursive` will also initialize any **nested** submodules inside other submodules (for example, `vendor/ecma-rs` has test corpora submodules). Only use `--recursive` when you explicitly want those.
 
 Tips:
 - Search within specs using ripgrep, e.g. `rg "shrink-to-fit" specs/csswg-drafts`.

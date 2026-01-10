@@ -1,0 +1,29 @@
+{
+  "$t": "Call",
+  "arguments": [
+    {
+      "spread": false,
+      "value": {
+        "$t": "Binary",
+        "left": {
+          "$t": "Member",
+          "left": {
+            "$t": "ImportMeta"
+          },
+          "optional_chaining": false,
+          "right": "url"
+        },
+        "operator": "Addition",
+        "right": {
+          "$t": "LitStr",
+          "value": ""
+        }
+      }
+    }
+  ],
+  "callee": {
+    "$t": "Id",
+    "name": "h"
+  },
+  "optional_chaining": false
+}

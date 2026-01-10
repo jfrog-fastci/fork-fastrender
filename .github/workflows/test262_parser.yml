@@ -50,16 +50,16 @@ jobs:
 
           bash scripts/ci_init_ecma_rs_submodule.sh
 
-          if ! grep -q "test262/data" engines/ecma-rs/.gitmodules; then
-            echo "::error::Missing test262 parser corpus submodule entry (engines/ecma-rs/test262/data). Update the ecma-rs submodule pointer to a revision that includes it." >&2
+          if ! grep -q "test262/data" vendor/ecma-rs/.gitmodules; then
+            echo "::error::Missing test262 parser corpus submodule entry (vendor/ecma-rs/test262/data). Update the ecma-rs submodule pointer to a revision that includes it." >&2
             exit 1
           fi
 
           # Only initialize the parser corpus, not all optional nested submodules.
-          git -C engines/ecma-rs submodule update --init test262/data
+          git -C vendor/ecma-rs submodule update --init test262/data
 
-          if [ ! -d engines/ecma-rs/test262/data ]; then
-            echo "::error::test262 parser corpus directory engines/ecma-rs/test262/data is missing after submodule init." >&2
+          if [ ! -d vendor/ecma-rs/test262/data ]; then
+            echo "::error::test262 parser corpus directory vendor/ecma-rs/test262/data is missing after submodule init." >&2
             exit 1
           fi
 
@@ -67,9 +67,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
-            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
-            echo "Run: git submodule update --init engines/ecma-rs" >&2
+          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
+            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
 

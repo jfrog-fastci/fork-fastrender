@@ -5,7 +5,7 @@
 //! and provides a concrete implementation backed by `ecma-rs`'s `vm-js` value types.
 //!
 //! Note: core WebIDL types like [`InterfaceId`], [`WebIdlHooks`], [`WebIdlLimits`], and
-//! [`WebIdlLimits`] are re-exported from `engines/ecma-rs/webidl` so FastRender does not maintain
+//! [`WebIdlLimits`] are re-exported from `vendor/ecma-rs/webidl` so FastRender does not maintain
 //! duplicated definitions across crates.
 
 pub mod conversions;
@@ -26,6 +26,6 @@ pub use runtime::{
 };
 pub use to_js::{to_js, to_js_with_limits, ToJsLimits};
 
-// Re-export the canonical runtime trait from `engines/ecma-rs/webidl` under an explicit name so
+// Re-export the canonical runtime trait from `vendor/ecma-rs/webidl` under an explicit name so
 // callers can migrate without conflicting with this crate's legacy runtime traits.
 pub use webidl::JsRuntime as EcmaJsRuntime;

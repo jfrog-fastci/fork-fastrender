@@ -1,0 +1,248 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt-js:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: prettier --check
+        run: >
+          npx --yes prettier@3.4.2 --check
+          'version'
+          '.github/workflows/*.yaml'
+          'minify-js-nodejs/**/*.{js,json,ts,d.ts}'
+          'optimize-js-debugger/src/**/*.{ts,tsx,css,html}'
+          'optimize-js-debugger/*.ts'
+          'typecheck-ts-harness/scripts/*.js'
+
+  test:
+    runs-on: ubuntu-24.04
+    needs: fmt-js
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      # Cargo.lock is intentionally untracked for this library workspace.
+      # Generate it on the fly so we can use --locked for reproducible
+      # dependency resolution in CI.
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+      - name: Check UTF-8 source-text public APIs
+        run: ./scripts/check_utf8_apis.sh
+      - name: Check diagnostic codes
+        run: ./scripts/check_diagnostic_codes.sh
+
+      - name: cargo clippy (workspace)
+        run: >
+          cargo clippy --workspace --all-targets --all-features --locked --
+          -A clippy::style
+          -A clippy::complexity
+          -A clippy::perf
+          -A clippy::nursery
+          -A clippy::pedantic
+          -D clippy::correctness
+          -D clippy::suspicious
+
+      - name: cargo check (workspace)
+        run: cargo check --workspace --all-targets --locked
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace --locked
+
+      - name: Smoke fuzz (bounded)
+        run: |
+          cargo test -p typecheck-ts --features fuzzing --test fuzz_smoke --locked -- --ignored
+          cargo test -p semantic-js --features fuzzing --test fuzz_smoke --locked -- --ignored
+          cargo test -p typecheck-ts-harness --test fuzz_smoke --locked -- --ignored
+
+      - name: Regenerate docs/deps.md
+        run: ./scripts/gen_deps_graph.sh
+
+      - name: Ensure docs/deps.md is up to date
+        run: git diff --exit-code docs/deps.md
+
+  typecheck-ts-harness:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Run conformance mini suite (snapshots)
+        run: >
+          cargo run -p typecheck-ts-harness --release --locked --
+          conformance
+          --root typecheck-ts-harness/fixtures/conformance-mini
+          --compare snapshot
+          --manifest typecheck-ts-harness/fixtures/conformance-mini/manifest.toml
+          --json
+          > typecheck-conformance-mini.json
+
+      - name: Upload conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-conformance-mini
+          path: typecheck-conformance-mini.json
+
+  difftsc:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Run difftsc against baselines
+        run: >
+          cargo run -p typecheck-ts-harness --release --locked --
+          difftsc
+          --suite typecheck-ts-harness/fixtures/difftsc
+          --compare-rust
+          --use-baselines
+          --manifest typecheck-ts-harness/fixtures/difftsc/manifest.toml
+          --json
+          > difftsc-report.json
+
+      - name: Upload difftsc report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: difftsc-report
+          path: difftsc-report.json
+
+  difftsc-live-tsc:
+    runs-on: ubuntu-24.04
+    needs: test
+    env:
+      TYPESCRIPT_VERSION: 5.9.3
+      RAYON_NUM_THREADS: 2
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Install TypeScript (npm)
+        working-directory: ./typecheck-ts-harness
+        run: npm install --no-save --no-package-lock --ignore-scripts "typescript@${TYPESCRIPT_VERSION}"
+
+      - name: Show TypeScript version
+        working-directory: ./typecheck-ts-harness
+        run: node -p "require('typescript').version"
+
+      - name: Run difftsc against live tsc
+        run: >
+          cargo run -p typecheck-ts-harness --release --locked --jobs 2 --
+          difftsc
+          --suite typecheck-ts-harness/fixtures/difftsc
+          --compare-rust
+          --manifest typecheck-ts-harness/fixtures/difftsc/manifest.toml
+          --json
+          > difftsc-live-tsc.json
+
+      - name: Verify conformance snapshots (tsc vs baselines)
+        run: >
+          cargo run -p typecheck-ts-harness --release --locked --
+          verify-snapshots
+          --root typecheck-ts-harness/fixtures/conformance-mini
+          --node node
+          --jobs 2
+          --timeout-secs 20
+          --json
+          > conformance-mini-snapshot-verify.json
+
+      - name: Upload live difftsc report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: difftsc-live-tsc
+          path: difftsc-live-tsc.json
+
+      - name: Upload conformance snapshot verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-mini-snapshot-verify
+          path: conformance-mini-snapshot-verify.json
+
+  test262-parser:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch test262 parser tests corpus
+        run: git submodule update --init test262/data
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Run test262 parser tests
+        run: |
+          mkdir -p reports
+          cargo run -p test262 --release --locked -- \
+            --data-dir test262/data \
+            --manifest test262/manifest.toml \
+            --report-path reports/test262-parser-report.json \
+            --fail-on new
+
+      - name: Upload test262 parser report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test262-parser-report
+          path: reports/test262-parser-report.json

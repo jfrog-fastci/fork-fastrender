@@ -47,7 +47,7 @@ Status legend: ✅ Supported, ⚠️ Partial/targeted, 🚫 Not supported.
 | Parse | Base URL & meta viewport | ✅ | [src/html/mod.rs](../src/html/mod.rs)<br>[src/html/viewport.rs](../src/html/viewport.rs) | [tests/misc/integration_test.rs](../tests/misc/integration_test.rs) | `<base href>` resolution drives URL absolutization; `<meta name="viewport">` parsed/applied when enabled via `FastRenderConfig::with_meta_viewport`; `<meta name="color-scheme">` parsed/applied when enabled via `FastRenderConfig::with_meta_color_scheme`. |
 | Parse | Shadow DOM snapshots | ⚠️ | [src/dom.rs](../src/dom.rs) | [tests/tree/shadow_dom.rs](../tests/tree/shadow_dom.rs) | `<template shadowroot>` is attached eagerly and slots distributed; no runtime attach/detach or JS-driven shadow roots. |
 | Parse | Target fragments | ✅ | [src/dom.rs](../src/dom.rs) | Target pseudo tests in [src/dom.rs](../src/dom.rs) | `with_target_fragment` drives :target/:target-within matching. |
-| JS | ECMAScript execution (engine embed) | 🚫 | — | — | Planned: embed `engines/ecma-rs/` as the JS engine/VM boundary (see [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)). |
+| JS | ECMAScript execution (engine embed) | 🚫 | — | — | Planned: use `vendor/ecma-rs/` as the JS engine/VM boundary (see [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)). |
 | JS | `<script>` classic scripts | 🚫 | — | — | Planned: HTML classic script processing model (parser-inserted, `async`/`defer`, ordering) with microtask checkpoints. |
 | JS | `<script>` module scripts | 🚫 | — | — | Planned: module scripts after host hooks + module graph caching exist. |
 | JS | Event loop + microtasks | 🚫 | — | — | Planned: HTML event loop task queues plus microtask queue integration (Promise jobs / `queueMicrotask`). |

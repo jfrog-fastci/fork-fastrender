@@ -1,0 +1,264 @@
+pub mod decl;
+
+use super::expr::pat::Pat;
+use super::expr::Expr;
+use super::import_export::ExportNames;
+use super::import_export::ImportNames;
+use super::node::Node;
+use super::ts_stmt::*;
+use super::type_expr::TypeExpr;
+use decl::ClassDecl;
+use decl::FuncDecl;
+use decl::PatDecl;
+use decl::VarDecl;
+use decl::VarDeclMode;
+use derive_more::derive::From;
+use derive_more::derive::TryInto;
+use derive_visitor::Drive;
+use derive_visitor::DriveMut;
+
+// We must wrap each variant with Node<T> as otherwise we won't be able to visit Node<T> instead of just T.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "$t"))]
+#[derive(Debug, Drive, DriveMut, From, TryInto)]
+pub enum Stmt {
+  Block(Node<BlockStmt>),
+  Break(Node<BreakStmt>),
+  Continue(Node<ContinueStmt>),
+  Debugger(Node<DebuggerStmt>),
+  DoWhile(Node<DoWhileStmt>),
+  Empty(Node<EmptyStmt>),
+  ExportDefaultExpr(Node<ExportDefaultExprStmt>),
+  ExportList(Node<ExportListStmt>),
+  Expr(Node<ExprStmt>),
+  ForIn(Node<ForInStmt>),
+  ForOf(Node<ForOfStmt>),
+  ForTriple(Node<ForTripleStmt>),
+  If(Node<IfStmt>),
+  Import(Node<ImportStmt>),
+  Label(Node<LabelStmt>),
+  Return(Node<ReturnStmt>),
+  Switch(Node<SwitchStmt>),
+  Throw(Node<ThrowStmt>),
+  Try(Node<TryStmt>),
+  While(Node<WhileStmt>),
+  With(Node<WithStmt>),
+
+  ClassDecl(Node<ClassDecl>),
+  FunctionDecl(Node<FuncDecl>),
+  VarDecl(Node<VarDecl>),
+
+  // TypeScript statements
+  InterfaceDecl(Node<InterfaceDecl>),
+  TypeAliasDecl(Node<TypeAliasDecl>),
+  EnumDecl(Node<EnumDecl>),
+  NamespaceDecl(Node<NamespaceDecl>),
+  ModuleDecl(Node<ModuleDecl>),
+  GlobalDecl(Node<GlobalDecl>),
+  AmbientVarDecl(Node<AmbientVarDecl>),
+  AmbientFunctionDecl(Node<AmbientFunctionDecl>),
+  AmbientClassDecl(Node<AmbientClassDecl>),
+  ImportTypeDecl(Node<ImportTypeDecl>),
+  ExportTypeDecl(Node<ExportTypeDecl>),
+  ImportEqualsDecl(Node<ImportEqualsDecl>),
+  ExportAssignmentDecl(Node<ExportAssignmentDecl>),
+  ExportAsNamespaceDecl(Node<ExportAsNamespaceDecl>),
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct CatchBlock {
+  pub parameter: Option<Node<PatDecl>>,
+  pub type_annotation: Option<Node<TypeExpr>>,
+  pub body: Vec<Node<Stmt>>, // We don't want to use BlockStmt as the new block scope starts with the parameter, not the braces. This differentiation ensures BlockStmt specifically means a new scope, helpful for downstream usages. See also: FunctionBody.
+}
+
+// Similar purpose to CatchBlock and FunctionBody. (The scope for a `for` statement starts before the braces, so don't mix with BlockStmt.)
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ForBody {
+  pub body: Vec<Node<Stmt>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct SwitchBranch {
+  // If None, it's `default`.
+  pub case: Option<Node<Expr>>,
+  pub body: Vec<Node<Stmt>>,
+}
+
+// Statements.
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct BlockStmt {
+  pub body: Vec<Node<Stmt>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct BreakStmt {
+  #[drive(skip)]
+  pub label: Option<String>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ContinueStmt {
+  #[drive(skip)]
+  pub label: Option<String>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct DebuggerStmt {}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct DoWhileStmt {
+  pub condition: Node<Expr>,
+  pub body: Node<Stmt>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct EmptyStmt {}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ExportDefaultExprStmt {
+  pub expression: Node<Expr>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ExportListStmt {
+  #[drive(skip)]
+  pub type_only: bool, // TypeScript: export type
+  pub names: ExportNames,
+  #[drive(skip)]
+  pub from: Option<String>,
+  pub attributes: Option<Node<Expr>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ExprStmt {
+  pub expr: Node<Expr>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct IfStmt {
+  pub test: Node<Expr>,
+  pub consequent: Node<Stmt>,
+  pub alternate: Option<Node<Stmt>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ImportStmt {
+  #[drive(skip)]
+  pub type_only: bool, // TypeScript: import type
+  // PatDecl always contains IdPat.
+  pub default: Option<Node<PatDecl>>,
+  pub names: Option<ImportNames>,
+  #[drive(skip)]
+  pub module: String,
+  pub attributes: Option<Node<Expr>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ForTripleStmt {
+  pub init: ForTripleStmtInit,
+  pub cond: Option<Node<Expr>>,
+  pub post: Option<Node<Expr>>,
+  pub body: Node<ForBody>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub enum ForTripleStmtInit {
+  None,
+  Expr(Node<Expr>),
+  Decl(Node<VarDecl>),
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub enum ForInOfLhs {
+  // Assignment target.
+  Assign(Node<Pat>),
+  // Scoped variable declaration.
+  Decl((VarDeclMode, Node<PatDecl>)),
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ForInStmt {
+  pub lhs: ForInOfLhs,
+  pub rhs: Node<Expr>,
+  pub body: Node<ForBody>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ForOfStmt {
+  #[drive(skip)]
+  pub await_: bool,
+  pub lhs: ForInOfLhs,
+  pub rhs: Node<Expr>,
+  pub body: Node<ForBody>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct LabelStmt {
+  #[drive(skip)]
+  pub name: String,
+  pub statement: Node<Stmt>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ReturnStmt {
+  pub value: Option<Node<Expr>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct SwitchStmt {
+  pub test: Node<Expr>,
+  pub branches: Vec<Node<SwitchBranch>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct ThrowStmt {
+  pub value: Node<Expr>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct TryStmt {
+  pub wrapped: Node<BlockStmt>,
+  // One of these must be present.
+  pub catch: Option<Node<CatchBlock>>,
+  pub finally: Option<Node<BlockStmt>>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct WhileStmt {
+  pub condition: Node<Expr>,
+  pub body: Node<Stmt>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Debug, Drive, DriveMut)]
+pub struct WithStmt {
+  pub object: Node<Expr>,
+  pub body: Node<Stmt>,
+}

@@ -1,0 +1,31 @@
+{
+  "$t": "Call",
+  "arguments": [
+    {
+      "spread": false,
+      "value": {
+        "$t": "LitNum",
+        "value": 1.0
+      }
+    },
+    {
+      "spread": false,
+      "value": {
+        "$t": "LitNum",
+        "value": 2.0
+      }
+    },
+    {
+      "spread": false,
+      "value": {
+        "$t": "LitNum",
+        "value": 3.0
+      }
+    }
+  ],
+  "callee": {
+    "$t": "Id",
+    "name": "ab"
+  },
+  "optional_chaining": false
+}

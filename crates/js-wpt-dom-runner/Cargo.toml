@@ -18,7 +18,7 @@ quickjs = ["dep:rquickjs", "dep:markup5ever"]
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-conformance-harness = { path = "../../engines/ecma-rs/conformance-harness" }
+conformance-harness = { path = "../../vendor/ecma-rs/conformance-harness" }
 globset = "0.4"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
@@ -31,5 +31,5 @@ html5ever = "0.35"
 markup5ever = { version = "0.35", optional = true }
 markup5ever_rcdom = "0.35"
 rquickjs = { version = "0.9", optional = true }
-vm-js = { path = "../../engines/ecma-rs/vm-js", optional = true }
-parse-js = { path = "../../engines/ecma-rs/parse-js", optional = true }
+vm-js = { path = "../../vendor/ecma-rs/vm-js", optional = true }
+parse-js = { path = "../../vendor/ecma-rs/parse-js", optional = true }

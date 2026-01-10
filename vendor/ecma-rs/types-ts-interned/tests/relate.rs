@@ -1,0 +1,1942 @@
+use types_ts_interned::Accessibility;
+use types_ts_interned::DefId;
+use types_ts_interned::Indexer;
+use types_ts_interned::IntrinsicKind;
+use types_ts_interned::ObjectType;
+use types_ts_interned::Param;
+use types_ts_interned::PropData;
+use types_ts_interned::PropKey;
+use types_ts_interned::Property;
+use types_ts_interned::ReasonNode;
+use types_ts_interned::RelateCtx;
+use types_ts_interned::RelateHooks;
+use types_ts_interned::RelateTypeExpander;
+use types_ts_interned::RelationLimits;
+use types_ts_interned::TupleElem;
+use types_ts_interned::TypeKind;
+use types_ts_interned::TypeOptions;
+use types_ts_interned::TypeParamId;
+use types_ts_interned::TypeStore;
+use types_ts_interned::{
+  MappedModifier, MappedType, Shape, Signature, TemplateChunk, TemplateLiteralType,
+};
+
+fn default_options() -> TypeOptions {
+  TypeOptions {
+    strict_null_checks: true,
+    strict_function_types: true,
+    exact_optional_property_types: false,
+    no_unchecked_indexed_access: false,
+  }
+}
+
+fn object_type(store: &TypeStore, shape: Shape) -> types_ts_interned::TypeId {
+  let shape_id = store.intern_shape(shape);
+  let obj = store.intern_object(ObjectType { shape: shape_id });
+  store.intern_type(TypeKind::Object(obj))
+}
+
+fn callable(
+  store: &TypeStore,
+  params: Vec<Param>,
+  ret: types_ts_interned::TypeId,
+) -> types_ts_interned::TypeId {
+  let sig = store.intern_signature(Signature::new(params, ret));
+  store.intern_type(TypeKind::Callable {
+    overloads: vec![sig],
+  })
+}
+
+#[test]
+fn relation_depth_limit_short_circuits_with_reason_note() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let ctx = RelateCtx::new(store.clone(), store.options()).with_limits(RelationLimits {
+    max_relation_depth: 0,
+    ..RelationLimits::default()
+  });
+  assert_eq!(ctx.limits().max_relation_depth, 0);
+
+  let result = ctx.explain_assignable(primitives.string, primitives.number);
+  assert!(
+    result.result,
+    "expected depth limit to conservatively assume success"
+  );
+  let reason = result.reason.expect("expected reason node");
+  assert_eq!(reason.note.as_deref(), Some("depth limit"));
+}
+
+#[test]
+fn relation_step_limit_short_circuits_with_reason_note() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let ctx = RelateCtx::new(store.clone(), store.options()).with_limits(RelationLimits {
+    step_limit: 0,
+    ..RelationLimits::default()
+  });
+  assert_eq!(ctx.limits().step_limit, 0);
+
+  let result = ctx.explain_assignable(primitives.string, primitives.number);
+  assert!(
+    result.result,
+    "expected step limit to conservatively assume success"
+  );
+  let reason = result.reason.expect("expected reason node");
+  assert_eq!(reason.note.as_deref(), Some("step limit"));
+}
+
+#[test]
+fn primitives_and_special_types() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), store.options());
+
+  assert!(ctx.is_assignable(primitives.string, primitives.any));
+  assert!(ctx.is_assignable(primitives.any, primitives.string));
+  assert!(ctx.is_assignable(primitives.number, primitives.unknown));
+  assert!(!ctx.is_assignable(primitives.unknown, primitives.number));
+
+  assert!(ctx.is_assignable(primitives.never, primitives.string));
+  assert!(!ctx.is_assignable(primitives.string, primitives.never));
+
+  assert!(!ctx.is_assignable(primitives.null, primitives.string));
+  assert!(!ctx.is_assignable(primitives.undefined, primitives.number));
+
+  let relaxed_store = TypeStore::with_options(TypeOptions {
+    strict_null_checks: false,
+    ..default_options()
+  });
+  let relaxed_primitives = relaxed_store.primitive_ids();
+  let relaxed = RelateCtx::new(relaxed_store.clone(), relaxed_store.options());
+  assert!(relaxed.is_assignable(relaxed_primitives.null, relaxed_primitives.string));
+  assert!(relaxed.is_assignable(relaxed_primitives.string, relaxed_primitives.null));
+}
+
+#[test]
+fn number_assignable_to_empty_object() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let object_keyword = object_type(&store, Shape::new());
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  assert!(ctx.is_assignable(primitives.number, empty_object));
+  assert!(!ctx.is_assignable(primitives.number, object_keyword));
+}
+
+#[test]
+fn null_not_assignable_to_empty_object_under_strict_null_checks() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  assert!(!ctx.is_assignable(primitives.null, empty_object));
+  assert!(!ctx.is_assignable(primitives.undefined, empty_object));
+}
+
+#[test]
+fn nullish_assignable_to_empty_object_without_strict_null_checks() {
+  let store = TypeStore::with_options(TypeOptions {
+    strict_null_checks: false,
+    ..default_options()
+  });
+  let primitives = store.primitive_ids();
+  let empty_object = store.intern_type(TypeKind::EmptyObject);
+  let ctx = RelateCtx::new(store.clone(), store.options());
+
+  assert!(ctx.is_assignable(primitives.null, empty_object));
+  assert!(ctx.is_assignable(primitives.undefined, empty_object));
+  assert!(ctx.is_assignable(primitives.void, empty_object));
+}
+
+#[test]
+fn null_assignable_to_union_target_with_null_member() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let ref_ty = store.intern_type(TypeKind::Ref {
+    def: DefId(0),
+    args: Vec::new(),
+  });
+  let union = store.union(vec![ref_ty, primitives.null]);
+  assert!(ctx.is_assignable(primitives.null, union));
+}
+
+#[test]
+fn array_and_tuple_assignable_to_object_keyword() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let object_keyword = object_type(&store, Shape::new());
+  let array = store.intern_type(TypeKind::Array {
+    ty: primitives.string,
+    readonly: false,
+  });
+  assert!(ctx.is_assignable(array, object_keyword));
+
+  let tuple = store.intern_type(TypeKind::Tuple(vec![TupleElem {
+    ty: primitives.string,
+    optional: false,
+    rest: false,
+    readonly: false,
+  }]));
+  assert!(ctx.is_assignable(tuple, object_keyword));
+}
+
+#[test]
+fn array_assignable_to_number_like_intersection_indexer() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let array = store.intern_type(TypeKind::Array {
+    ty: primitives.string,
+    readonly: false,
+  });
+
+  // key_type: (string | number) & number behaves like `number`.
+  let number_like_key = store.intersection(vec![
+    store.union(vec![primitives.string, primitives.number]),
+    primitives.number,
+  ]);
+  let dst_number_like = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: number_like_key,
+        value_type: primitives.string,
+        readonly: false,
+      }],
+    },
+  );
+  assert!(ctx.is_assignable(array, dst_number_like));
+
+  // key_type: (string | number) & string behaves like `string`, so it must not be satisfied by an
+  // array (arrays only model a number index signature here).
+  let string_like_key = store.intersection(vec![
+    store.union(vec![primitives.string, primitives.number]),
+    primitives.string,
+  ]);
+  let dst_string_like = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: string_like_key,
+        value_type: primitives.string,
+        readonly: false,
+      }],
+    },
+  );
+  assert!(!ctx.is_assignable(array, dst_string_like));
+}
+
+#[test]
+fn type_params_treated_as_unknown() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let tp_a = store.intern_type(TypeKind::TypeParam(TypeParamId(0)));
+  let tp_b = store.intern_type(TypeKind::TypeParam(TypeParamId(1)));
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  assert!(ctx.is_assignable(primitives.number, tp_a));
+  assert!(ctx.is_assignable(primitives.unknown, tp_a));
+  assert!(ctx.is_assignable(primitives.any, tp_a));
+  assert!(ctx.is_assignable(tp_a, primitives.unknown));
+  assert!(ctx.is_assignable(tp_a, primitives.any));
+  assert!(ctx.is_assignable(tp_a, tp_a));
+  assert!(!ctx.is_assignable(tp_a, primitives.number));
+  assert!(!ctx.is_assignable(tp_a, tp_b));
+  assert!(!ctx.is_comparable(tp_a, primitives.unknown));
+  assert!(ctx.is_comparable(tp_a, tp_a));
+}
+
+#[test]
+fn intrinsic_assignability_is_not_universal() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let uppercase_string = store.intern_type(TypeKind::Intrinsic {
+    kind: IntrinsicKind::Uppercase,
+    ty: primitives.string,
+  });
+
+  assert!(ctx.is_assignable(uppercase_string, primitives.string));
+  assert!(!ctx.is_assignable(uppercase_string, primitives.number));
+
+  assert!(ctx.is_assignable(primitives.string, uppercase_string));
+  assert!(!ctx.is_assignable(primitives.number, uppercase_string));
+
+  let builtin_iter_return = store.intern_type(TypeKind::Intrinsic {
+    kind: IntrinsicKind::BuiltinIteratorReturn,
+    ty: primitives.never,
+  });
+
+  assert!(ctx.is_assignable(builtin_iter_return, primitives.number));
+  assert!(ctx.is_assignable(primitives.number, builtin_iter_return));
+}
+
+#[test]
+fn strict_null_checks_propagate_through_objects() {
+  let build_required_types = |store: &TypeStore| {
+    let primitives = store.primitive_ids();
+    let nullable_number = store.union(vec![primitives.number, primitives.null]);
+    let required_nullable = object_type(
+      store,
+      Shape {
+        properties: vec![Property {
+          key: PropKey::String(store.intern_name("a")),
+          data: PropData {
+            ty: nullable_number,
+            optional: false,
+            readonly: false,
+            accessibility: None,
+            is_method: false,
+            origin: None,
+            declared_on: None,
+          },
+        }],
+        call_signatures: vec![],
+        construct_signatures: vec![],
+        indexers: vec![],
+      },
+    );
+    let required_number = object_type(
+      store,
+      Shape {
+        properties: vec![Property {
+          key: PropKey::String(store.intern_name("a")),
+          data: PropData {
+            ty: primitives.number,
+            optional: false,
+            readonly: false,
+            accessibility: None,
+            is_method: false,
+            origin: None,
+            declared_on: None,
+          },
+        }],
+        call_signatures: vec![],
+        construct_signatures: vec![],
+        indexers: vec![],
+      },
+    );
+    (required_nullable, required_number)
+  };
+
+  let strict_store = TypeStore::new();
+  let (required_nullable, required_number) = build_required_types(&strict_store);
+  let strict = RelateCtx::new(strict_store.clone(), strict_store.options());
+  assert!(!strict.is_assignable(required_nullable, required_number));
+
+  let loose_store = TypeStore::with_options(TypeOptions {
+    strict_null_checks: false,
+    ..default_options()
+  });
+  let (required_nullable, required_number) = build_required_types(&loose_store);
+  let loose = RelateCtx::new(loose_store.clone(), loose_store.options());
+  assert!(loose.is_assignable(required_nullable, required_number));
+}
+
+#[test]
+fn unions_and_intersections() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let num = primitives.number;
+  let str_ty = primitives.string;
+  let boolean = primitives.boolean;
+  let num_or_str = store.union(vec![num, str_ty]);
+  let num_str_bool = store.union(vec![num_or_str, boolean]);
+
+  let prop_a = Property {
+    key: PropKey::String(store.intern_name("a")),
+    data: PropData {
+      ty: str_ty,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+  let prop_b = Property {
+    key: PropKey::String(store.intern_name("b")),
+    data: PropData {
+      ty: num,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+  let obj_a = object_type(
+    &store,
+    Shape {
+      properties: vec![prop_a.clone()],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let obj_b = object_type(
+    &store,
+    Shape {
+      properties: vec![prop_b.clone()],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let intersection = store.intersection(vec![obj_a, obj_b]);
+  let combined = object_type(
+    &store,
+    Shape {
+      properties: vec![prop_a, prop_b],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  assert!(ctx.is_assignable(str_ty, num_or_str));
+  assert!(!ctx.is_assignable(num_or_str, num));
+  assert!(ctx.is_assignable(num_or_str, num_str_bool));
+  assert!(ctx.is_assignable(intersection, combined));
+}
+
+#[test]
+fn arrays_are_not_assignable_to_fixed_tuples() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let number_array = store.intern_type(TypeKind::Array {
+    ty: primitives.number,
+    readonly: false,
+  });
+  let fixed_tuple = store.intern_type(TypeKind::Tuple(vec![
+    TupleElem {
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+    TupleElem {
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+    TupleElem {
+      ty: primitives.number,
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+  ]));
+  assert!(!ctx.is_assignable(number_array, fixed_tuple));
+
+  let rest_tuple = store.intern_type(TypeKind::Tuple(vec![TupleElem {
+    ty: number_array,
+    optional: false,
+    rest: true,
+    readonly: false,
+  }]));
+  assert!(ctx.is_assignable(number_array, rest_tuple));
+
+  let readonly_array = store.intern_type(TypeKind::Array {
+    ty: primitives.number,
+    readonly: true,
+  });
+  assert!(!ctx.is_assignable(readonly_array, rest_tuple));
+}
+
+#[test]
+fn function_variance_and_methods() {
+  let strict_store = TypeStore::new();
+  let primitives = strict_store.primitive_ids();
+  let num = primitives.number;
+  let str_ty = primitives.string;
+  let num_or_str = strict_store.union(vec![num, str_ty]);
+
+  let param_num = Param {
+    name: None,
+    ty: num,
+    optional: false,
+    rest: false,
+  };
+  let param_num_or_str = Param {
+    name: None,
+    ty: num_or_str,
+    optional: false,
+    rest: false,
+  };
+
+  let f_num = callable(&strict_store, vec![param_num.clone()], num);
+  let f_num_or_str = callable(&strict_store, vec![param_num_or_str.clone()], num);
+
+  let method_num = callable(&strict_store, vec![param_num], num);
+  let method_num_or_str = callable(&strict_store, vec![param_num_or_str], num);
+
+  let prop_method_n = Property {
+    key: PropKey::String(strict_store.intern_name("m")),
+    data: PropData {
+      ty: method_num,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: true,
+      origin: None,
+      declared_on: None,
+    },
+  };
+  let prop_method_ns = Property {
+    key: PropKey::String(strict_store.intern_name("m")),
+    data: PropData {
+      ty: method_num_or_str,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: true,
+      origin: None,
+      declared_on: None,
+    },
+  };
+
+  let obj_n = object_type(
+    &strict_store,
+    Shape {
+      properties: vec![prop_method_n],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let obj_ns = object_type(
+    &strict_store,
+    Shape {
+      properties: vec![prop_method_ns],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx_strict = RelateCtx::new(strict_store.clone(), strict_store.options());
+  assert!(!ctx_strict.is_assignable(f_num, f_num_or_str));
+  assert!(ctx_strict.is_assignable(f_num_or_str, f_num));
+
+  let loose_store = TypeStore::with_options(TypeOptions {
+    strict_function_types: false,
+    ..default_options()
+  });
+  let loose_primitives = loose_store.primitive_ids();
+  let loose_num = loose_primitives.number;
+  let loose_num_or_str = loose_store.union(vec![loose_num, loose_primitives.string]);
+  let loose_param_num = Param {
+    name: None,
+    ty: loose_num,
+    optional: false,
+    rest: false,
+  };
+  let loose_param_num_or_str = Param {
+    name: None,
+    ty: loose_num_or_str,
+    optional: false,
+    rest: false,
+  };
+  let loose_f_num = callable(&loose_store, vec![loose_param_num], loose_num);
+  let loose_f_num_or_str = callable(&loose_store, vec![loose_param_num_or_str], loose_num);
+  let ctx_loose = RelateCtx::new(loose_store.clone(), loose_store.options());
+  assert!(ctx_loose.is_assignable(loose_f_num, loose_f_num_or_str));
+  assert!(ctx_loose.is_assignable(loose_f_num_or_str, loose_f_num));
+
+  assert!(ctx_strict.is_assignable(obj_n, obj_ns));
+  assert!(ctx_strict.is_assignable(obj_ns, obj_n));
+}
+
+#[test]
+fn function_properties_respect_strict_function_types() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let num = primitives.number;
+  let num_or_str = store.union(vec![primitives.number, primitives.string]);
+
+  let param_num = Param {
+    name: None,
+    ty: num,
+    optional: false,
+    rest: false,
+  };
+  let param_num_or_str = Param {
+    name: None,
+    ty: num_or_str,
+    optional: false,
+    rest: false,
+  };
+
+  let fn_narrow = callable(&store, vec![param_num.clone()], num);
+  let fn_wide = callable(&store, vec![param_num_or_str.clone()], num);
+
+  let prop_narrow = Property {
+    key: PropKey::String(store.intern_name("f")),
+    data: PropData {
+      ty: fn_narrow,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+  let prop_wide = Property {
+    key: PropKey::String(store.intern_name("f")),
+    data: PropData {
+      ty: fn_wide,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+
+  let obj_narrow = object_type(
+    &store,
+    Shape {
+      properties: vec![prop_narrow],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let obj_wide = object_type(
+    &store,
+    Shape {
+      properties: vec![prop_wide],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(!ctx.is_assignable(obj_narrow, obj_wide));
+  assert!(ctx.is_assignable(obj_wide, obj_narrow));
+}
+
+#[test]
+fn function_arity_allows_dropping_parameters() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let param_num = Param {
+    name: None,
+    ty: primitives.number,
+    optional: false,
+    rest: false,
+  };
+
+  let src = callable(&store, vec![param_num.clone()], primitives.void);
+  let dst = callable(&store, vec![param_num.clone(), param_num], primitives.void);
+
+  assert!(ctx.is_assignable(src, dst));
+  assert!(!ctx.is_assignable(dst, src));
+}
+
+#[test]
+fn optional_param_is_assignable_to_required_param() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let param_optional = Param {
+    name: None,
+    ty: primitives.number,
+    optional: true,
+    rest: false,
+  };
+  let param_required = Param {
+    name: None,
+    ty: primitives.number,
+    optional: false,
+    rest: false,
+  };
+
+  let fn_optional = callable(&store, vec![param_optional.clone()], primitives.void);
+  let fn_required = callable(&store, vec![param_required.clone()], primitives.void);
+
+  assert!(ctx.is_assignable(fn_optional, fn_required));
+  assert!(!ctx.is_assignable(fn_required, fn_optional));
+}
+
+#[test]
+fn rest_param_compares_by_element_type() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let string_array = store.intern_type(TypeKind::Array {
+    ty: primitives.string,
+    readonly: false,
+  });
+  let rest_param = Param {
+    name: None,
+    ty: string_array,
+    optional: false,
+    rest: true,
+  };
+
+  let fn_rest = callable(&store, vec![rest_param], primitives.void);
+
+  let param_string = Param {
+    name: None,
+    ty: primitives.string,
+    optional: false,
+    rest: false,
+  };
+  let param_number = Param {
+    name: None,
+    ty: primitives.number,
+    optional: false,
+    rest: false,
+  };
+
+  let fn_one = callable(&store, vec![param_string.clone()], primitives.void);
+  let fn_two = callable(&store, vec![param_string, param_number], primitives.void);
+
+  assert!(ctx.is_assignable(fn_rest, fn_one));
+  assert!(!ctx.is_assignable(fn_rest, fn_two));
+}
+
+#[test]
+fn index_signatures_cover_properties() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let num = primitives.number;
+  let prop = Property {
+    key: PropKey::String(store.intern_name("a")),
+    data: PropData {
+      ty: num,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![prop],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let target_index = Indexer {
+    key_type: primitives.string,
+    value_type: num,
+    readonly: false,
+  };
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![target_index],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(ctx.is_assignable(src, dst));
+}
+
+#[test]
+fn string_indexer_covers_numeric_property() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.string,
+        value_type: primitives.number,
+        readonly: false,
+      }],
+    },
+  );
+
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![Property {
+        key: PropKey::Number(0),
+        data: PropData {
+          ty: primitives.number,
+          optional: false,
+          readonly: false,
+          accessibility: None,
+          is_method: false,
+          origin: None,
+          declared_on: None,
+        },
+      }],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(ctx.is_assignable(src, dst));
+}
+
+#[test]
+fn number_indexer_satisfies_string_numeric_property() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.number,
+        value_type: primitives.string,
+        readonly: false,
+      }],
+    },
+  );
+
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![Property {
+        key: PropKey::String(store.intern_name("0")),
+        data: PropData {
+          ty: primitives.string,
+          optional: false,
+          readonly: false,
+          accessibility: None,
+          is_method: false,
+          origin: None,
+          declared_on: None,
+        },
+      }],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(ctx.is_assignable(src, dst));
+}
+
+#[test]
+fn string_indexer_satisfies_number_indexer() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.string,
+        value_type: primitives.number,
+        readonly: false,
+      }],
+    },
+  );
+
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.number,
+        value_type: primitives.number,
+        readonly: false,
+      }],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(ctx.is_assignable(src, dst));
+}
+
+#[test]
+fn number_indexer_does_not_satisfy_string_indexer() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.number,
+        value_type: primitives.number,
+        readonly: false,
+      }],
+    },
+  );
+
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.string,
+        value_type: primitives.number,
+        readonly: false,
+      }],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(!ctx.is_assignable(src, dst));
+}
+
+#[test]
+fn intersection_indexer_key_behaves_like_string() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  // key_type: (string | number) & string
+  let key_type = store.intersection(vec![
+    store.union(vec![primitives.string, primitives.number]),
+    primitives.string,
+  ]);
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type,
+        value_type: primitives.boolean,
+        readonly: false,
+      }],
+    },
+  );
+
+  let dst_string = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.string,
+        value_type: primitives.boolean,
+        readonly: false,
+      }],
+    },
+  );
+
+  let dst_symbol = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.symbol,
+        value_type: primitives.boolean,
+        readonly: false,
+      }],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(ctx.is_assignable(src, dst_string));
+  assert!(!ctx.is_assignable(src, dst_symbol));
+}
+
+#[test]
+fn intersection_indexer_key_requires_all_members() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let union_key = store.union(vec![primitives.string, primitives.symbol]);
+  let intersection_key = store.intersection(vec![union_key, primitives.string]);
+
+  let make_obj = |key_type| {
+    object_type(
+      &store,
+      Shape {
+        properties: vec![],
+        call_signatures: vec![],
+        construct_signatures: vec![],
+        indexers: vec![Indexer {
+          key_type,
+          value_type: primitives.boolean,
+          readonly: false,
+        }],
+      },
+    )
+  };
+
+  let src_union = make_obj(union_key);
+  let src_intersection = make_obj(intersection_key);
+
+  let dst_symbol = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.symbol,
+        value_type: primitives.boolean,
+        readonly: false,
+      }],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  // Union is OR: (string | symbol) should satisfy a symbol indexer.
+  assert!(ctx.is_assignable(src_union, dst_symbol));
+
+  // Intersection is AND: (string | symbol) & string behaves like `string`, so it must not satisfy
+  // a symbol indexer.
+  assert!(!ctx.is_assignable(src_intersection, dst_symbol));
+}
+
+#[test]
+fn relation_uses_merged_indexer() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let src_first_readonly = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![
+        Indexer {
+          key_type: primitives.string,
+          value_type: primitives.number,
+          readonly: true,
+        },
+        Indexer {
+          key_type: primitives.string,
+          value_type: primitives.number,
+          readonly: false,
+        },
+      ],
+    },
+  );
+  let src_first_mutable = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![
+        Indexer {
+          key_type: primitives.string,
+          value_type: primitives.number,
+          readonly: false,
+        },
+        Indexer {
+          key_type: primitives.string,
+          value_type: primitives.number,
+          readonly: true,
+        },
+      ],
+    },
+  );
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.string,
+        value_type: primitives.number,
+        readonly: false,
+      }],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  let a = ctx.is_assignable(src_first_readonly, dst);
+  let b = ctx.is_assignable(src_first_mutable, dst);
+  assert_eq!(
+    a, b,
+    "assignability must not depend on indexer insertion order"
+  );
+  assert!(
+    !a,
+    "a readonly + mutable indexer intersection should canonicalize to readonly"
+  );
+}
+
+#[test]
+fn no_unchecked_indexed_access_makes_indexers_optional() {
+  let store = TypeStore::with_options(TypeOptions {
+    no_unchecked_indexed_access: true,
+    ..default_options()
+  });
+  let primitives = store.primitive_ids();
+  let num = primitives.number;
+  let target_prop = Property {
+    key: PropKey::String(store.intern_name("a")),
+    data: PropData {
+      ty: num,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![Indexer {
+        key_type: primitives.string,
+        value_type: num,
+        readonly: false,
+      }],
+    },
+  );
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![target_prop],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), store.options());
+  assert!(!ctx.is_assignable(src, dst));
+}
+
+#[test]
+fn private_member_hook() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let private_prop = Property {
+    key: PropKey::String(store.intern_name("x")),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: Some(Accessibility::Private),
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+  let extra_prop = Property {
+    key: PropKey::String(store.intern_name("y")),
+    data: PropData {
+      ty: primitives.string,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![private_prop.clone(), extra_prop],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![private_prop],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx_default = RelateCtx::new(store.clone(), default_options());
+  assert!(!ctx_default.is_assignable(src, dst));
+
+  let hook = RelateHooks {
+    expander: None,
+    is_same_origin_private_member: Some(&|_, _| true),
+  };
+  let ctx_hook = RelateCtx::with_hooks(store.clone(), default_options(), hook);
+  assert!(ctx_hook.is_assignable(src, dst));
+}
+
+#[test]
+fn private_members_with_same_origin_are_compatible_by_default() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let private_prop_src = Property {
+    key: PropKey::String(store.intern_name("p")),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: Some(Accessibility::Private),
+      is_method: false,
+      origin: Some(1),
+      declared_on: Some(DefId(1)),
+    },
+  };
+  let private_prop_dst = Property {
+    key: PropKey::String(store.intern_name("p")),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: Some(Accessibility::Private),
+      is_method: false,
+      origin: Some(1),
+      declared_on: Some(DefId(1)),
+    },
+  };
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![private_prop_src],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![private_prop_dst],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(ctx.is_assignable(src, dst));
+}
+
+#[test]
+fn protected_members_require_same_origin() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let protected_prop_src = Property {
+    key: PropKey::String(store.intern_name("p")),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: Some(Accessibility::Protected),
+      is_method: false,
+      origin: Some(1),
+      declared_on: Some(DefId(1)),
+    },
+  };
+  let protected_prop_dst = Property {
+    key: PropKey::String(store.intern_name("p")),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: Some(Accessibility::Protected),
+      is_method: false,
+      origin: Some(2),
+      declared_on: Some(DefId(2)),
+    },
+  };
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![protected_prop_src],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![protected_prop_dst],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(!ctx.is_assignable(src, dst));
+}
+
+#[test]
+fn derived_types_are_normalized_during_relation() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let base_obj = object_type(
+    &store,
+    Shape {
+      properties: vec![Property {
+        key: PropKey::String(store.intern_name("a")),
+        data: PropData {
+          ty: primitives.number,
+          optional: false,
+          readonly: false,
+          accessibility: None,
+          is_method: false,
+          origin: None,
+          declared_on: None,
+        },
+      }],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let key_a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  let keyof_obj = store.intern_type(TypeKind::KeyOf(base_obj));
+  let indexed = store.intern_type(TypeKind::IndexedAccess {
+    obj: base_obj,
+    index: key_a,
+  });
+  let conditional = store.intern_type(TypeKind::Conditional {
+    check: primitives.string,
+    extends: primitives.string,
+    true_ty: primitives.number,
+    false_ty: primitives.boolean,
+    distributive: false,
+  });
+  let mapped = store.intern_type(TypeKind::Mapped(MappedType {
+    param: TypeParamId(0),
+    source: keyof_obj,
+    value: primitives.string,
+    readonly: MappedModifier::Preserve,
+    optional: MappedModifier::Preserve,
+    name_type: None,
+    as_type: None,
+  }));
+  let mapped_expected = object_type(
+    &store,
+    Shape {
+      properties: vec![Property {
+        key: PropKey::String(store.intern_name("a")),
+        data: PropData {
+          ty: primitives.string,
+          optional: false,
+          readonly: false,
+          accessibility: None,
+          is_method: false,
+          origin: None,
+          declared_on: None,
+        },
+      }],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let ctx = RelateCtx::new(store.clone(), default_options());
+  assert!(ctx.is_assignable(key_a, keyof_obj));
+  assert!(!ctx.is_assignable(primitives.number, keyof_obj));
+
+  assert!(ctx.is_assignable(primitives.number, indexed));
+  assert!(!ctx.is_assignable(primitives.string, indexed));
+
+  assert!(ctx.is_assignable(primitives.number, conditional));
+  assert!(!ctx.is_assignable(primitives.boolean, conditional));
+
+  assert!(ctx.is_assignable(mapped_expected, mapped));
+  assert!(ctx.is_assignable(mapped, mapped_expected));
+}
+
+#[test]
+fn conditional_normalization_uses_relation_ctx_hooks() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let private_prop = Property {
+    key: PropKey::String(store.intern_name("x")),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: Some(Accessibility::Private),
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+
+  let public_prop = Property {
+    key: PropKey::String(store.intern_name("y")),
+    data: PropData {
+      ty: primitives.string,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: None,
+      declared_on: None,
+    },
+  };
+
+  let check_obj = object_type(
+    &store,
+    Shape {
+      properties: vec![private_prop.clone(), public_prop],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let extends_obj = object_type(
+    &store,
+    Shape {
+      properties: vec![private_prop],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  assert_ne!(check_obj, extends_obj);
+
+  let conditional = store.intern_type(TypeKind::Conditional {
+    check: check_obj,
+    extends: extends_obj,
+    true_ty: primitives.number,
+    false_ty: primitives.boolean,
+    distributive: false,
+  });
+
+  // Without the hook, private members are incompatible, so the conditional
+  // reduces to the false branch.
+  let ctx_default = RelateCtx::new(store.clone(), default_options());
+  assert!(ctx_default.is_assignable(primitives.boolean, conditional));
+  assert!(!ctx_default.is_assignable(primitives.number, conditional));
+
+  // With the hook enabled, private members are treated as same-origin, so the
+  // conditional reduces to the true branch.
+  let hook = RelateHooks {
+    expander: None,
+    is_same_origin_private_member: Some(&|_, _| true),
+  };
+  let ctx_hook = RelateCtx::with_hooks(store.clone(), default_options(), hook);
+  assert!(ctx_hook.is_assignable(primitives.number, conditional));
+  assert!(!ctx_hook.is_assignable(primitives.boolean, conditional));
+}
+
+#[test]
+fn conditional_normalization_uses_structural_assignability() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![
+        Property {
+          key: PropKey::String(store.intern_name("a")),
+          data: PropData {
+            ty: primitives.number,
+            optional: false,
+            readonly: false,
+            accessibility: None,
+            is_method: false,
+            origin: None,
+            declared_on: None,
+          },
+        },
+        Property {
+          key: PropKey::String(store.intern_name("b")),
+          data: PropData {
+            ty: primitives.string,
+            optional: false,
+            readonly: false,
+            accessibility: None,
+            is_method: false,
+            origin: None,
+            declared_on: None,
+          },
+        },
+      ],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![Property {
+        key: PropKey::String(store.intern_name("a")),
+        data: PropData {
+          ty: primitives.number,
+          optional: false,
+          readonly: false,
+          accessibility: None,
+          is_method: false,
+          origin: None,
+          declared_on: None,
+        },
+      }],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  let conditional = store.intern_type(TypeKind::Conditional {
+    check: src,
+    extends: dst,
+    true_ty: primitives.number,
+    false_ty: primitives.boolean,
+    distributive: false,
+  });
+
+  let ctx = RelateCtx::new(store.clone(), store.options());
+  assert!(ctx.is_assignable(primitives.number, conditional));
+  assert!(!ctx.is_assignable(primitives.boolean, conditional));
+}
+
+#[test]
+fn unevaluated_conditional_types_flow_like_union_of_branches() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let t = store.intern_type(TypeKind::TypeParam(TypeParamId(0)));
+  let conditional = store.intern_type(TypeKind::Conditional {
+    check: t,
+    extends: primitives.string,
+    true_ty: primitives.number,
+    false_ty: primitives.boolean,
+    distributive: true,
+  });
+
+  let num_or_bool = store.union(vec![primitives.number, primitives.boolean]);
+
+  let explain = ctx.explain_assignable(conditional, num_or_bool);
+  assert!(explain.result);
+  let reason = explain.reason.expect("expected reason tree");
+  assert_eq!(reason.note.as_deref(), Some("conditional source"));
+  assert_eq!(
+    reason.children.len(),
+    2,
+    "expected both branch checks to be recorded"
+  );
+  assert_eq!(reason.children[0].src, primitives.number);
+  assert_eq!(reason.children[1].src, primitives.boolean);
+
+  let explain = ctx.explain_assignable(primitives.number, conditional);
+  assert!(!explain.result);
+  let reason = explain.reason.expect("expected reason tree");
+  assert_eq!(reason.note.as_deref(), Some("conditional target"));
+  assert_eq!(
+    reason.children.len(),
+    2,
+    "expected both branch checks to be recorded"
+  );
+  assert_eq!(reason.children[0].dst, primitives.number);
+  assert_eq!(reason.children[1].dst, primitives.boolean);
+
+  assert!(ctx.is_assignable(conditional, num_or_bool));
+  assert!(!ctx.is_assignable(primitives.number, conditional));
+  assert!(!ctx.is_assignable(primitives.boolean, conditional));
+}
+
+#[test]
+fn unevaluated_conditional_types_with_never_branch() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let t = store.intern_type(TypeKind::TypeParam(TypeParamId(0)));
+  let conditional = store.intern_type(TypeKind::Conditional {
+    check: t,
+    extends: primitives.string,
+    true_ty: primitives.number,
+    false_ty: primitives.never,
+    distributive: true,
+  });
+
+  assert!(ctx.is_assignable(conditional, primitives.number));
+  assert!(!ctx.is_assignable(primitives.number, conditional));
+}
+
+#[test]
+fn cyclic_reference_terminates() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let tref = store.intern_type(TypeKind::Ref {
+    def: DefId(1),
+    args: vec![],
+  });
+  let cycle_union = store.union(vec![primitives.string, tref]);
+
+  struct Expand {
+    ty: types_ts_interned::TypeId,
+  }
+  impl RelateTypeExpander for Expand {
+    fn expand_ref(
+      &self,
+      _store: &TypeStore,
+      _def: DefId,
+      _args: &[types_ts_interned::TypeId],
+    ) -> Option<types_ts_interned::TypeId> {
+      Some(self.ty)
+    }
+  }
+
+  let expander = Expand { ty: cycle_union };
+  let hooks = RelateHooks {
+    expander: Some(&expander),
+    is_same_origin_private_member: None,
+  };
+
+  let ctx = RelateCtx::with_hooks(store.clone(), default_options(), hooks);
+  assert!(ctx.is_assignable(tref, tref));
+  assert!(ctx.is_assignable(tref, primitives.string));
+  assert!(ctx.explain_assignable(tref, tref).result);
+}
+
+#[test]
+fn explain_assignable_reason_nodes_only_reference_interned_type_ids() {
+  fn walk_reason(store: &TypeStore, node: &ReasonNode) {
+    assert!(
+      store.contains_type_id(node.src),
+      "uninterned reason src TypeId: {:?}",
+      node.src
+    );
+    assert!(
+      store.contains_type_id(node.dst),
+      "uninterned reason dst TypeId: {:?}",
+      node.dst
+    );
+    for child in &node.children {
+      walk_reason(store, child);
+    }
+  }
+
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let num = primitives.number;
+  let num_or_str = store.union(vec![primitives.number, primitives.string]);
+
+  let src = callable(
+    &store,
+    vec![Param {
+      name: None,
+      ty: num_or_str,
+      optional: false,
+      rest: false,
+    }],
+    num,
+  );
+  let dst = callable(
+    &store,
+    vec![Param {
+      name: None,
+      ty: num,
+      optional: false,
+      rest: false,
+    }],
+    num,
+  );
+
+  let result = ctx.explain_assignable(src, dst);
+  assert!(result.result);
+  let reason = result.reason.expect("expected reason tree");
+  walk_reason(&store, &reason);
+}
+
+#[test]
+fn explain_assignable_reason_tree_is_deterministic_for_union_targets() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let union_a = store.union(vec![primitives.string, primitives.number]);
+  let union_b = store.union(vec![primitives.number, primitives.string]);
+  assert_eq!(union_a, union_b, "union canonicalization should be stable");
+
+  let result = ctx.explain_assignable(primitives.boolean, union_a);
+  assert!(!result.result);
+  let reason = result.reason.expect("expected reason tree");
+
+  let TypeKind::Union(members) = store.type_kind(union_a) else {
+    panic!("expected union type kind");
+  };
+
+  let child_dsts: Vec<_> = reason.children.iter().map(|child| child.dst).collect();
+  assert_eq!(
+    child_dsts, members,
+    "union member checks should be ordered deterministically"
+  );
+}
+
+#[test]
+fn explain_assignable_reason_tree_truncates_large_unions_deterministically() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let mut members = Vec::new();
+  for idx in 0u32..300 {
+    members.push(store.intern_type(TypeKind::Ref {
+      def: DefId(idx.into()),
+      args: Vec::new(),
+    }));
+  }
+  let big_union = store.union(members);
+  let TypeKind::Union(ordered_members) = store.type_kind(big_union) else {
+    panic!("expected union type kind");
+  };
+  assert!(
+    ordered_members.len() >= 300,
+    "expected a union with many members; got {}",
+    ordered_members.len()
+  );
+
+  let ctx1 = RelateCtx::new(store.clone(), default_options());
+  let ctx2 = RelateCtx::new(store.clone(), default_options());
+
+  let tree1 = ctx1
+    .explain_assignable(primitives.boolean, big_union)
+    .reason
+    .expect("expected reason tree");
+  let tree2 = ctx2
+    .explain_assignable(primitives.boolean, big_union)
+    .reason
+    .expect("expected reason tree");
+
+  assert_eq!(
+    tree1, tree2,
+    "reason trees should be identical across contexts"
+  );
+
+  #[cfg(feature = "serde-json")]
+  {
+    let json1 = serde_json::to_string(&tree1).expect("serialize reason tree");
+    let json2 = serde_json::to_string(&tree2).expect("serialize reason tree");
+    assert_eq!(
+      json1, json2,
+      "serialized reason trees should also be identical across contexts"
+    );
+  }
+
+  let recorded: Vec<_> = tree1.children.iter().map(|child| child.dst).collect();
+  assert!(
+    recorded.len() < ordered_members.len(),
+    "expected the reason tree to be truncated; recorded {} of {} members",
+    recorded.len(),
+    ordered_members.len()
+  );
+  assert_eq!(
+    recorded,
+    ordered_members
+      .iter()
+      .copied()
+      .take(recorded.len())
+      .collect::<Vec<_>>(),
+    "truncation should preserve union member order deterministically"
+  );
+}
+
+#[test]
+fn cyclic_reference_conditional_normalization_terminates() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tref = store.intern_type(TypeKind::Ref {
+    def: DefId(1),
+    args: vec![],
+  });
+
+  let src = object_type(
+    &store,
+    Shape {
+      properties: vec![
+        Property {
+          key: PropKey::String(store.intern_name("a")),
+          data: PropData {
+            ty: primitives.number,
+            optional: false,
+            readonly: false,
+            accessibility: None,
+            is_method: false,
+            origin: None,
+            declared_on: None,
+          },
+        },
+        Property {
+          key: PropKey::String(store.intern_name("b")),
+          data: PropData {
+            ty: primitives.string,
+            optional: false,
+            readonly: false,
+            accessibility: None,
+            is_method: false,
+            origin: None,
+            declared_on: None,
+          },
+        },
+      ],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+  let dst = object_type(
+    &store,
+    Shape {
+      properties: vec![Property {
+        key: PropKey::String(store.intern_name("a")),
+        data: PropData {
+          ty: primitives.number,
+          optional: false,
+          readonly: false,
+          accessibility: None,
+          is_method: false,
+          origin: None,
+          declared_on: None,
+        },
+      }],
+      call_signatures: vec![],
+      construct_signatures: vec![],
+      indexers: vec![],
+    },
+  );
+
+  // `tref` expands to a conditional type whose true branch is a union containing
+  // `tref` again. The relation engine must normalize through this cycle without
+  // overflowing the stack.
+  let cycle_union = store.union(vec![primitives.number, tref]);
+  let conditional = store.intern_type(TypeKind::Conditional {
+    check: src,
+    extends: dst,
+    true_ty: cycle_union,
+    false_ty: primitives.boolean,
+    distributive: false,
+  });
+
+  struct Expand {
+    ty: types_ts_interned::TypeId,
+  }
+  impl RelateTypeExpander for Expand {
+    fn expand_ref(
+      &self,
+      _store: &TypeStore,
+      _def: DefId,
+      _args: &[types_ts_interned::TypeId],
+    ) -> Option<types_ts_interned::TypeId> {
+      Some(self.ty)
+    }
+  }
+
+  let expander = Expand { ty: conditional };
+  let hooks = RelateHooks {
+    expander: Some(&expander),
+    is_same_origin_private_member: None,
+  };
+
+  let ctx = RelateCtx::with_hooks(store.clone(), store.options(), hooks);
+  assert!(ctx.is_assignable(primitives.number, tref));
+}
+
+#[test]
+fn string_literal_assignable_to_template_literal_pattern() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let foo_bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo_bar")));
+  let foo = store.intern_type(TypeKind::StringLiteral(store.intern_name("foo")));
+
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "foo".into(),
+    spans: vec![TemplateChunk {
+      ty: primitives.string,
+      literal: "".into(),
+    }],
+  }));
+
+  assert!(ctx.is_assignable(foo_bar, template));
+  assert!(ctx.is_assignable(foo, template));
+}
+
+#[test]
+fn string_literal_not_assignable_to_template_literal_pattern() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let ctx = RelateCtx::new(store.clone(), default_options());
+
+  let bar = store.intern_type(TypeKind::StringLiteral(store.intern_name("bar")));
+
+  let template = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "foo".into(),
+    spans: vec![TemplateChunk {
+      ty: primitives.string,
+      literal: "".into(),
+    }],
+  }));
+
+  assert!(!ctx.is_assignable(bar, template));
+}

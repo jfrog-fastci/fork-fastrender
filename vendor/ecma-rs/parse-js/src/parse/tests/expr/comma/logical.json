@@ -1,0 +1,44 @@
+{
+  "$t": "Binary",
+  "left": {
+    "$t": "Binary",
+    "left": {
+      "$t": "Binary",
+      "left": {
+        "$t": "Binary",
+        "left": {
+          "$t": "Id",
+          "name": "a"
+        },
+        "operator": "Comma",
+        "right": {
+          "$t": "Id",
+          "name": "b"
+        }
+      },
+      "operator": "Comma",
+      "right": {
+        "$t": "Binary",
+        "left": {
+          "$t": "Id",
+          "name": "c"
+        },
+        "operator": "LogicalAnd",
+        "right": {
+          "$t": "Id",
+          "name": "d"
+        }
+      }
+    },
+    "operator": "Comma",
+    "right": {
+      "$t": "Id",
+      "name": "e"
+    }
+  },
+  "operator": "Comma",
+  "right": {
+    "$t": "Id",
+    "name": "f"
+  }
+}

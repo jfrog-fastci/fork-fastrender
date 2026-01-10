@@ -1,0 +1,689 @@
+use globset::{Glob, GlobSet, GlobSetBuilder};
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use typecheck_ts::lib_support::{CompilerOptions, JsxMode, LibName, ModuleKind, ScriptTarget};
+use walkdir::WalkDir;
+
+#[derive(Debug, Clone)]
+pub struct ProjectConfig {
+  pub root_dir: PathBuf,
+  pub compiler_options: CompilerOptions,
+  pub base_url: Option<PathBuf>,
+  pub paths: BTreeMap<String, Vec<String>>,
+  pub root_files: Vec<PathBuf>,
+  /// Raw `compilerOptions.types` list (distinguishes between unset and empty).
+  pub types: Option<Vec<String>>,
+  /// Raw `compilerOptions.typeRoots` list, resolved to absolute paths.
+  pub type_roots: Option<Vec<PathBuf>>,
+  pub jsx_import_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawTsConfig {
+  #[serde(default)]
+  extends: Option<String>,
+  #[serde(default)]
+  compiler_options: RawCompilerOptions,
+  #[serde(default)]
+  files: Option<Vec<String>>,
+  #[serde(default)]
+  include: Option<Vec<String>>,
+  #[serde(default)]
+  exclude: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCompilerOptions {
+  #[serde(default)]
+  target: Option<String>,
+  #[serde(default)]
+  module: Option<String>,
+  #[serde(default)]
+  lib: Option<Vec<String>>,
+  #[serde(default)]
+  types: Option<Vec<String>>,
+  #[serde(default)]
+  type_roots: Option<Vec<String>>,
+  #[serde(default)]
+  module_resolution: Option<String>,
+  #[serde(default)]
+  skip_lib_check: Option<bool>,
+  #[serde(default)]
+  no_emit: Option<bool>,
+  #[serde(default)]
+  no_emit_on_error: Option<bool>,
+  #[serde(default)]
+  declaration: Option<bool>,
+  #[serde(default)]
+  strict: Option<bool>,
+  #[serde(default)]
+  no_implicit_any: Option<bool>,
+  #[serde(default)]
+  strict_null_checks: Option<bool>,
+  #[serde(default)]
+  strict_function_types: Option<bool>,
+  #[serde(default)]
+  exact_optional_property_types: Option<bool>,
+  #[serde(default)]
+  no_unchecked_indexed_access: Option<bool>,
+  #[serde(default)]
+  no_lib: Option<bool>,
+  #[serde(default)]
+  no_default_lib: Option<bool>,
+  #[serde(default)]
+  use_define_for_class_fields: Option<bool>,
+  #[serde(default)]
+  jsx: Option<String>,
+  #[serde(default)]
+  jsx_import_source: Option<String>,
+  #[serde(default)]
+  base_url: Option<String>,
+  #[serde(default)]
+  paths: Option<BTreeMap<String, Vec<String>>>,
+}
+
+pub fn load_project_config(project: &Path) -> Result<ProjectConfig, String> {
+  let tsconfig_path = resolve_tsconfig_path(project)?;
+  let root_dir = tsconfig_path
+    .parent()
+    .ok_or_else(|| format!("invalid tsconfig path {}", tsconfig_path.display()))?
+    .to_path_buf();
+  let mut visited = HashSet::new();
+  let raw = load_raw_config(&tsconfig_path, &root_dir, &mut visited)?;
+
+  let compiler_options = compiler_options_from_raw(&raw.compiler_options)?;
+  let mut base_url = raw
+    .compiler_options
+    .base_url
+    .as_deref()
+    .map(|raw| resolve_path_relative_to(&root_dir, Path::new(raw)));
+  let paths = raw.compiler_options.paths.clone().unwrap_or_default();
+  if base_url.is_none() && !paths.is_empty() {
+    base_url = Some(root_dir.clone());
+  }
+
+  let root_files = discover_root_files(&root_dir, &raw)?;
+
+  let types = raw
+    .compiler_options
+    .types
+    .as_ref()
+    .map(|types| normalize_string_list(types));
+  let type_roots = raw.compiler_options.type_roots.as_ref().map(|roots| {
+    normalize_string_list(roots)
+      .into_iter()
+      .map(|raw| resolve_path_relative_to(&root_dir, Path::new(&raw)))
+      .collect()
+  });
+  let jsx_import_source = raw
+    .compiler_options
+    .jsx_import_source
+    .as_deref()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
+
+  Ok(ProjectConfig {
+    root_dir,
+    compiler_options,
+    base_url,
+    paths,
+    root_files,
+    types,
+    type_roots,
+    jsx_import_source,
+  })
+}
+
+fn resolve_tsconfig_path(project: &Path) -> Result<PathBuf, String> {
+  let candidate = if project.is_dir() {
+    project.join("tsconfig.json")
+  } else {
+    project.to_path_buf()
+  };
+  let absolute = if candidate.is_absolute() {
+    candidate
+  } else {
+    std::env::current_dir()
+      .map_err(|err| format!("failed to resolve current directory: {err}"))?
+      .join(candidate)
+  };
+  absolute
+    .canonicalize()
+    .map_err(|err| format!("failed to read tsconfig {}: {err}", absolute.display()))
+}
+
+fn load_raw_config(
+  path: &Path,
+  root_dir: &Path,
+  visited: &mut HashSet<PathBuf>,
+) -> Result<RawTsConfig, String> {
+  let canonical = path
+    .canonicalize()
+    .map_err(|err| format!("failed to read tsconfig {}: {err}", path.display()))?;
+  if !visited.insert(canonical.clone()) {
+    return Err(format!(
+      "cycle detected while resolving tsconfig extends: {}",
+      canonical.display()
+    ));
+  }
+
+  let text = fs::read_to_string(&canonical)
+    .map_err(|err| format!("failed to read {}: {err}", canonical.display()))?;
+  let mut current: RawTsConfig = json5::from_str(&text)
+    .map_err(|err| format!("failed to parse {}: {err}", canonical.display()))?;
+  let config_dir = canonical
+    .parent()
+    .ok_or_else(|| format!("invalid tsconfig path {}", canonical.display()))?;
+  resolve_raw_config_paths(&mut current, config_dir, root_dir);
+
+  let Some(extends) = current.extends.take() else {
+    return Ok(current);
+  };
+
+  let extends_path = resolve_extends_path(config_dir, &extends)?;
+  let base = load_raw_config(&extends_path, root_dir, visited)?;
+  Ok(merge_raw_configs(base, current))
+}
+
+fn resolve_raw_config_paths(config: &mut RawTsConfig, config_dir: &Path, root_dir: &Path) {
+  if let Some(files) = config.files.as_mut() {
+    for file in files.iter_mut() {
+      *file = resolve_path_string_relative_to(config_dir, file);
+    }
+  }
+  if let Some(include) = config.include.as_mut() {
+    for pattern in include.iter_mut() {
+      *pattern = rewrite_glob_pattern(config_dir, root_dir, pattern);
+    }
+  }
+  if let Some(exclude) = config.exclude.as_mut() {
+    for pattern in exclude.iter_mut() {
+      *pattern = rewrite_glob_pattern(config_dir, root_dir, pattern);
+    }
+  }
+
+  let opts = &mut config.compiler_options;
+  if let Some(base_url) = opts.base_url.as_mut() {
+    *base_url = resolve_path_string_relative_to(config_dir, base_url);
+  } else if opts.paths.as_ref().is_some_and(|paths| !paths.is_empty()) {
+    opts.base_url = Some(config_dir.to_string_lossy().to_string());
+  }
+
+  if let Some(type_roots) = opts.type_roots.as_mut() {
+    for root in type_roots.iter_mut() {
+      *root = resolve_path_string_relative_to(config_dir, root);
+    }
+  }
+}
+
+fn resolve_path_string_relative_to(base: &Path, raw: &str) -> String {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return raw.to_string();
+  }
+  let path = Path::new(raw);
+  let resolved = if path.is_absolute() {
+    path.to_path_buf()
+  } else {
+    base.join(path)
+  };
+  normalize_path(&resolved).to_string_lossy().to_string()
+}
+
+fn rewrite_glob_pattern(config_dir: &Path, root_dir: &Path, raw: &str) -> String {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return trimmed.to_string();
+  }
+  let normalized = trimmed.replace('\\', "/");
+  let magic_index = normalized
+    .find(|ch| matches!(ch, '*' | '?' | '[' | ']'))
+    .unwrap_or_else(|| normalized.len());
+  let (prefix_str, suffix) = normalized.split_at(magic_index);
+  let prefix_path = if prefix_str.is_empty() {
+    config_dir.to_path_buf()
+  } else {
+    resolve_joined_path(config_dir, Path::new(prefix_str))
+  };
+  let relative_prefix = match prefix_path.strip_prefix(root_dir) {
+    Ok(rel) => rel,
+    Err(_) => return normalized,
+  };
+  let mut rel_str = relative_prefix.to_string_lossy().replace('\\', "/");
+  let needs_sep = (!prefix_str.is_empty()
+    && (prefix_str.ends_with('/') || prefix_str.ends_with('\\')))
+    || (prefix_str.is_empty() && !rel_str.is_empty());
+  if needs_sep && !rel_str.is_empty() && !rel_str.ends_with('/') {
+    rel_str.push('/');
+  }
+  if rel_str.is_empty() {
+    suffix.to_string()
+  } else {
+    format!("{rel_str}{suffix}")
+  }
+}
+
+fn resolve_joined_path(base: &Path, path: &Path) -> PathBuf {
+  if path.is_absolute() {
+    normalize_path(path)
+  } else {
+    normalize_path(&base.join(path))
+  }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+  use std::path::Component;
+  let mut out = PathBuf::new();
+  for component in path.components() {
+    match component {
+      Component::CurDir => {}
+      Component::ParentDir => {
+        out.pop();
+      }
+      other => out.push(other.as_os_str()),
+    }
+  }
+  out
+}
+
+fn resolve_extends_path(config_dir: &Path, extends: &str) -> Result<PathBuf, String> {
+  if extends.starts_with('.') || Path::new(extends).is_absolute() {
+    return resolve_extends_file(&resolve_path_relative_to(config_dir, Path::new(extends)));
+  }
+
+  for ancestor in config_dir.ancestors() {
+    let base = ancestor.join("node_modules").join(extends);
+    if let Ok(resolved) = resolve_extends_file(&base) {
+      return Ok(resolved);
+    }
+  }
+
+  Err(format!(
+    "failed to resolve tsconfig extends '{extends}' from {}",
+    config_dir.display()
+  ))
+}
+
+fn resolve_extends_file(candidate: &Path) -> Result<PathBuf, String> {
+  let mut attempts = Vec::new();
+  attempts.push(candidate.to_path_buf());
+  if candidate.extension().is_none() {
+    attempts.push(candidate.with_extension("json"));
+  }
+  if candidate.is_dir() {
+    attempts.push(candidate.join("tsconfig.json"));
+  }
+
+  for attempt in attempts {
+    if attempt.is_file() {
+      return attempt.canonicalize().map_err(|err| {
+        format!(
+          "failed to read extended tsconfig {}: {err}",
+          attempt.display()
+        )
+      });
+    }
+  }
+
+  Err(format!(
+    "extended tsconfig {} does not exist",
+    candidate.display()
+  ))
+}
+
+fn merge_raw_configs(base: RawTsConfig, overlay: RawTsConfig) -> RawTsConfig {
+  RawTsConfig {
+    extends: None,
+    compiler_options: merge_raw_compiler_options(base.compiler_options, overlay.compiler_options),
+    files: overlay.files.or(base.files),
+    include: overlay.include.or(base.include),
+    exclude: overlay.exclude.or(base.exclude),
+  }
+}
+
+fn merge_raw_compiler_options(
+  base: RawCompilerOptions,
+  overlay: RawCompilerOptions,
+) -> RawCompilerOptions {
+  RawCompilerOptions {
+    target: overlay.target.or(base.target),
+    module: overlay.module.or(base.module),
+    lib: overlay.lib.or(base.lib),
+    types: overlay.types.or(base.types),
+    type_roots: overlay.type_roots.or(base.type_roots),
+    module_resolution: overlay.module_resolution.or(base.module_resolution),
+    skip_lib_check: overlay.skip_lib_check.or(base.skip_lib_check),
+    no_emit: overlay.no_emit.or(base.no_emit),
+    no_emit_on_error: overlay.no_emit_on_error.or(base.no_emit_on_error),
+    declaration: overlay.declaration.or(base.declaration),
+    strict: overlay.strict.or(base.strict),
+    no_implicit_any: overlay.no_implicit_any.or(base.no_implicit_any),
+    strict_null_checks: overlay.strict_null_checks.or(base.strict_null_checks),
+    strict_function_types: overlay.strict_function_types.or(base.strict_function_types),
+    exact_optional_property_types: overlay
+      .exact_optional_property_types
+      .or(base.exact_optional_property_types),
+    no_unchecked_indexed_access: overlay
+      .no_unchecked_indexed_access
+      .or(base.no_unchecked_indexed_access),
+    no_lib: overlay.no_lib.or(base.no_lib),
+    no_default_lib: overlay.no_default_lib.or(base.no_default_lib),
+    use_define_for_class_fields: overlay
+      .use_define_for_class_fields
+      .or(base.use_define_for_class_fields),
+    jsx: overlay.jsx.or(base.jsx),
+    jsx_import_source: overlay.jsx_import_source.or(base.jsx_import_source),
+    base_url: overlay.base_url.or(base.base_url),
+    paths: overlay.paths.or(base.paths),
+  }
+}
+
+fn compiler_options_from_raw(raw: &RawCompilerOptions) -> Result<CompilerOptions, String> {
+  let mut options = CompilerOptions::default();
+
+  if let Some(raw) = raw.target.as_deref() {
+    options.target =
+      parse_script_target(raw).ok_or_else(|| format!("unknown compilerOptions.target '{raw}'"))?;
+  }
+
+  if let Some(raw) = raw.module.as_deref() {
+    let raw = raw.trim();
+    if !raw.is_empty() {
+      const MODULE_KIND_VALUES: &str =
+        "none, commonjs, amd, umd, system, es2015, es2020, es2022, esnext, node16, nodenext";
+      options.module = Some(parse_module_kind(raw).ok_or_else(|| {
+        format!("unknown compilerOptions.module '{raw}' (expected one of: {MODULE_KIND_VALUES})")
+      })?);
+    }
+  }
+
+  if let Some(libs) = raw.lib.as_ref() {
+    let mut parsed = Vec::new();
+    for raw in libs {
+      if let Some(lib) = LibName::parse(raw) {
+        parsed.push(lib);
+      }
+    }
+    if parsed.is_empty() && !libs.is_empty() {
+      return Err("compilerOptions.lib did not include any supported libs".to_string());
+    }
+    parsed.sort();
+    parsed.dedup();
+    options.libs = parsed;
+  }
+
+  if raw.no_lib.unwrap_or(false) || raw.no_default_lib.unwrap_or(false) {
+    options.no_default_lib = true;
+  }
+
+  if let Some(module_resolution) = raw.module_resolution.as_deref() {
+    let normalized = module_resolution.trim().to_ascii_lowercase();
+    if !normalized.is_empty() {
+      options.module_resolution = Some(normalized);
+    }
+  }
+  if let Some(value) = raw.skip_lib_check {
+    options.skip_lib_check = value;
+  }
+
+  if let Some(value) = raw.no_emit {
+    options.no_emit = value;
+  }
+  if let Some(value) = raw.no_emit_on_error {
+    options.no_emit_on_error = value;
+  }
+  if let Some(value) = raw.declaration {
+    options.declaration = value;
+  }
+
+  if let Some(strict) = raw.strict {
+    options.strict_null_checks = strict;
+    options.no_implicit_any = strict;
+    options.strict_function_types = strict;
+  }
+  if let Some(value) = raw.no_implicit_any {
+    options.no_implicit_any = value;
+  }
+  if let Some(value) = raw.strict_null_checks {
+    options.strict_null_checks = value;
+  }
+  if let Some(value) = raw.strict_function_types {
+    options.strict_function_types = value;
+  }
+  if let Some(value) = raw.exact_optional_property_types {
+    options.exact_optional_property_types = value;
+  }
+  if let Some(value) = raw.no_unchecked_indexed_access {
+    options.no_unchecked_indexed_access = value;
+  }
+
+  if let Some(types) = raw.types.as_ref() {
+    options.types = normalize_string_list(types);
+  }
+
+  if let Some(value) = raw.use_define_for_class_fields {
+    options.use_define_for_class_fields = value;
+  }
+
+  if let Some(raw) = raw.jsx.as_deref() {
+    options.jsx = Some(parse_jsx_mode(raw)?);
+  }
+
+  Ok(options)
+}
+
+fn normalize_string_list(list: &[String]) -> Vec<String> {
+  let mut out: Vec<String> = list
+    .iter()
+    .map(|s| s.trim())
+    .filter(|s| !s.is_empty())
+    .map(|s| s.to_string())
+    .collect();
+  out.sort();
+  out.dedup();
+  out
+}
+
+fn parse_script_target(raw: &str) -> Option<ScriptTarget> {
+  let normalized = raw.trim().to_ascii_lowercase();
+  match normalized.as_str() {
+    "es3" => Some(ScriptTarget::Es3),
+    "es5" => Some(ScriptTarget::Es5),
+    "es2015" | "es6" => Some(ScriptTarget::Es2015),
+    "es2016" => Some(ScriptTarget::Es2016),
+    "es2017" => Some(ScriptTarget::Es2017),
+    "es2018" => Some(ScriptTarget::Es2018),
+    "es2019" => Some(ScriptTarget::Es2019),
+    "es2020" => Some(ScriptTarget::Es2020),
+    "es2021" => Some(ScriptTarget::Es2021),
+    "es2022" => Some(ScriptTarget::Es2022),
+    "esnext" => Some(ScriptTarget::EsNext),
+    _ => None,
+  }
+}
+
+fn parse_module_kind(raw: &str) -> Option<ModuleKind> {
+  let normalized = raw.trim().to_ascii_lowercase();
+  match normalized.as_str() {
+    "none" => Some(ModuleKind::None),
+    "commonjs" => Some(ModuleKind::CommonJs),
+    "amd" => Some(ModuleKind::Amd),
+    "umd" => Some(ModuleKind::Umd),
+    "system" => Some(ModuleKind::System),
+    "es2015" | "es6" => Some(ModuleKind::Es2015),
+    "es2020" => Some(ModuleKind::Es2020),
+    "es2022" => Some(ModuleKind::Es2022),
+    "esnext" => Some(ModuleKind::EsNext),
+    "node16" => Some(ModuleKind::Node16),
+    "nodenext" => Some(ModuleKind::NodeNext),
+    _ => None,
+  }
+}
+
+fn parse_jsx_mode(raw: &str) -> Result<JsxMode, String> {
+  let normalized = raw.trim().to_ascii_lowercase();
+  match normalized.as_str() {
+    "preserve" | "react-native" => Ok(JsxMode::Preserve),
+    "react" => Ok(JsxMode::React),
+    "react-jsx" => Ok(JsxMode::ReactJsx),
+    "react-jsxdev" => Ok(JsxMode::ReactJsxdev),
+    other => Err(format!("unknown compilerOptions.jsx '{other}'")),
+  }
+}
+
+fn discover_root_files(root_dir: &Path, raw: &RawTsConfig) -> Result<Vec<PathBuf>, String> {
+  let mut files = Vec::new();
+  if let Some(explicit) = raw.files.as_ref() {
+    for file in explicit {
+      let path = resolve_path_relative_to(root_dir, Path::new(file));
+      files.push(
+        path
+          .canonicalize()
+          .map_err(|err| format!("failed to read project file {}: {err}", path.display()))?,
+      );
+    }
+  }
+
+  let include = match raw.include.clone() {
+    Some(patterns) => patterns,
+    None if raw.files.is_some() => Vec::new(),
+    None => vec!["**/*".to_string()],
+  };
+  if include.is_empty() {
+    files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
+    files.dedup();
+    return Ok(files);
+  }
+
+  let exclude = match raw.exclude.clone() {
+    Some(patterns) => patterns,
+    None => vec![
+      "node_modules".to_string(),
+      "bower_components".to_string(),
+      "jspm_packages".to_string(),
+    ],
+  };
+
+  let include_set = build_globset(&include)?;
+  let exclude_set = build_globset(&exclude)?;
+
+  for entry in WalkDir::new(root_dir)
+    .follow_links(false)
+    .into_iter()
+    .filter_map(|entry| entry.ok())
+  {
+    if !entry.file_type().is_file() {
+      continue;
+    }
+    if !is_supported_source_file(entry.path()) {
+      continue;
+    }
+    let rel = match entry.path().strip_prefix(root_dir) {
+      Ok(rel) => rel,
+      Err(_) => continue,
+    };
+    if !include_set.is_match(rel) {
+      continue;
+    }
+    if exclude_set.is_match(rel) {
+      continue;
+    }
+    files.push(
+      entry
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| entry.path().to_path_buf()),
+    );
+  }
+
+  files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
+  files.dedup();
+  Ok(files)
+}
+
+fn build_globset(patterns: &[String]) -> Result<GlobSet, String> {
+  let mut builder = GlobSetBuilder::new();
+  for pat in patterns {
+    let normalized = normalize_glob_pattern(pat)?;
+    if normalized.is_empty() {
+      continue;
+    }
+    let glob =
+      Glob::new(&normalized).map_err(|err| format!("invalid glob pattern '{pat}': {err}"))?;
+    builder.add(glob);
+  }
+  builder
+    .build()
+    .map_err(|err| format!("failed to build glob matcher: {err}"))
+}
+
+fn normalize_glob_pattern(pattern: &str) -> Result<String, String> {
+  let trimmed = pattern.trim();
+  if trimmed.is_empty() {
+    return Ok(trimmed.to_string());
+  }
+  let mut normalized = trimmed.replace('\\', "/");
+  while let Some(rest) = normalized.strip_prefix("./") {
+    normalized = rest.to_string();
+  }
+  if normalized.starts_with('/') {
+    normalized = normalized.trim_start_matches('/').to_string();
+  }
+  Ok(expand_directory_pattern(&normalized))
+}
+
+fn expand_directory_pattern(pattern: &str) -> String {
+  if contains_glob_magic(pattern) {
+    return pattern.to_string();
+  }
+
+  let trimmed = pattern.trim_end_matches('/');
+  if trimmed.is_empty() {
+    return "**/*".to_string();
+  }
+  let file_name = Path::new(trimmed)
+    .file_name()
+    .and_then(|s| s.to_str())
+    .unwrap_or("");
+  if file_name.ends_with(".d.ts") || file_name.ends_with(".d.mts") || file_name.ends_with(".d.cts")
+  {
+    return trimmed.to_string();
+  }
+  match Path::new(trimmed).extension().and_then(|e| e.to_str()) {
+    Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "json") => {
+      trimmed.to_string()
+    }
+    Some(_) => trimmed.to_string(),
+    None => format!("{trimmed}/**/*"),
+  }
+}
+
+fn contains_glob_magic(pattern: &str) -> bool {
+  pattern
+    .chars()
+    .any(|ch| matches!(ch, '*' | '?' | '[' | ']'))
+}
+
+fn is_supported_source_file(path: &Path) -> bool {
+  let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+  let name = name.to_ascii_lowercase();
+  if name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts") {
+    return true;
+  }
+  name.ends_with(".ts")
+    || name.ends_with(".tsx")
+    || name.ends_with(".mts")
+    || name.ends_with(".cts")
+}
+
+fn resolve_path_relative_to(base: &Path, path: &Path) -> PathBuf {
+  if path.is_absolute() {
+    path.to_path_buf()
+  } else {
+    base.join(path)
+  }
+}

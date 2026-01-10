@@ -6,7 +6,7 @@ use vm_js::{
 // representation (internal slots + reaction lists).
 //
 // `vm-js` has its own unit tests, but keeping one or two invariants covered here helps catch
-// accidental regressions when bumping the `engines/ecma-rs` submodule.
+// accidental regressions when updating `vendor/ecma-rs`.
 
 #[test]
 fn promise_result_is_traced_by_gc_and_brand_check_works() -> Result<(), VmError> {

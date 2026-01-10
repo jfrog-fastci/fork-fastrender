@@ -1,0 +1,23 @@
+dist/
+node_modules/
+!typecheck-ts-cli/tests/fixtures/node_project/node_modules/
+!typecheck-ts-cli/tests/fixtures/node_project/node_modules/**
+!typecheck-ts-cli/tests/fixtures/project_mode/**/node_modules/
+!typecheck-ts-cli/tests/fixtures/project_mode/**/node_modules/**
+package-lock.json
+!typecheck-ts-harness/package-lock.json
+!minify-js-nodejs/package-lock.json
+!optimize-js-debugger/package-lock.json
+target/
+*.proptest-regressions
+
+# Auto-generated test reports
+typescript_conformance_failures.txt
+
+# Workspace lockfile is intentionally untracked
+Cargo.lock
+
+# Agent scratchpads (never commit)
+branch_cleanup_scratchpad.md
+scratchpad.md
+branch_cleanup/

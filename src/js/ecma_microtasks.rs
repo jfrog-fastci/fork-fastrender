@@ -170,7 +170,7 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
 // --- Compile-time regression guard (vm-js Promise-job GC safety) ---
 //
 // FastRender relies on `vm-js` jobs being able to own persistent roots because FastRender's host
-// microtask queue is not GC-traced. If the `engines/ecma-rs` submodule is bumped to a commit before
+// microtask queue is not GC-traced. If the vendored `vendor/ecma-rs` is updated to a version before
 // `vm-js` gained job-root support, we want compilation to fail *immediately* with a clear "missing
 // API" error instead of silently reintroducing stale-handle bugs.
 #[allow(dead_code)]

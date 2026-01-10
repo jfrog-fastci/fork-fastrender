@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2454,
+      "file": "a.ts",
+      "start": 44,
+      "end": 45,
+      "category": "error",
+      "message": "Variable 'v' is used before being assigned."
+    },
+    {
+      "code": 2454,
+      "file": "a.ts",
+      "start": 47,
+      "end": 48,
+      "category": "error",
+      "message": "Variable 'v' is used before being assigned."
+    }
+  ],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "m.ts",
+        "name": "Foo",
+        "type": "any"
+      },
+      {
+        "file": "re.ts",
+        "name": "Foo",
+        "type": "any"
+      }
+    ],
+    "markers": [
+      {
+        "file": "a.ts",
+        "offset": 49,
+        "line": 4,
+        "column": 2,
+        "type": "number"
+      }
+    ]
+  }
+}

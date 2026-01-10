@@ -1,0 +1,22 @@
+{
+  "$t": "ForOf",
+  "await_": true,
+  "body": {
+    "body": []
+  },
+  "lhs": {
+    "Decl": [
+      "Const",
+      {
+        "pat": {
+          "$t": "Id",
+          "name": "s"
+        }
+      }
+    ]
+  },
+  "rhs": {
+    "$t": "Id",
+    "name": "expr"
+  }
+}

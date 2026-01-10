@@ -270,7 +270,7 @@ The long-term plan is to plumb renderer-level budgets into the JS VM.
 
 What exists today:
 
-- `crates/webidl-js-runtime` builds on `engines/ecma-rs/vm-js`, which supports `HeapLimits`.
+- `crates/webidl-js-runtime` builds on `vendor/ecma-rs/vm-js`, which supports `HeapLimits`.
 - The adapter currently constructs a `Heap` with conservative fixed limits (see
   `crates/webidl-js-runtime/src/ecma_runtime.rs`).
 
@@ -286,8 +286,7 @@ budgeting story (alongside renderer stage budgets and OS caps).
 1) Initialize submodules:
 
 ```bash
-git submodule update --init engines/ecma-rs
-git -C engines/ecma-rs submodule update --init test262-semantic/data
+git submodule update --init vendor/ecma-rs/test262-semantic/data
 ```
 
 2) Run the curated suite (recommended wrapper):
@@ -299,7 +298,7 @@ bash scripts/cargo_agent.sh xtask js test262
 Notes:
 
 - `bash scripts/cargo_agent.sh xtask ...` uses Cargo aliases (see `.cargo/config.toml`).
-- The suite runner lives in the `engines/ecma-rs` submodule; `xtask` just drives it.
+- The suite runner lives in the vendored `vendor/ecma-rs`; `xtask` just drives it.
 - See [`docs/js_test262.md`](js_test262.md) for flags and interpreting results.
 
 ### `bash scripts/cargo_agent.sh xtask js wpt-dom` (Web API behavior)

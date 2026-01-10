@@ -1,0 +1,373 @@
+use emit_js::{emit_param_decl, emit_pat, emit_pat_decl, Emitter};
+use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjMemberDirectKey};
+use parse_js::ast::expr::lit::LitNumExpr;
+use parse_js::ast::expr::pat::{ArrPat, ArrPatElem, IdPat, ObjPat, ObjPatProp, Pat};
+use parse_js::ast::expr::{Decorator, Expr, IdExpr};
+use parse_js::ast::node::Node;
+use parse_js::ast::stmt::decl::{Accessibility, ParamDecl, PatDecl};
+use parse_js::loc::Loc;
+use parse_js::num::JsNumber;
+use parse_js::token::TT;
+
+fn dummy_loc() -> Loc {
+  Loc(0, 0)
+}
+
+fn id_pat(name: &str) -> Node<Pat> {
+  Node::new(
+    dummy_loc(),
+    Pat::Id(Node::new(dummy_loc(), IdPat { name: name.into() })),
+  )
+}
+
+fn id_expr(name: &str) -> Node<Expr> {
+  Node::new(
+    dummy_loc(),
+    Expr::Id(Node::new(dummy_loc(), IdExpr { name: name.into() })),
+  )
+}
+
+fn num_expr(value: f64) -> Node<Expr> {
+  Node::new(
+    dummy_loc(),
+    Expr::LitNum(Node::new(
+      dummy_loc(),
+      LitNumExpr {
+        value: JsNumber(value),
+      },
+    )),
+  )
+}
+
+fn emit_to_string(f: impl FnOnce(&mut Emitter)) -> String {
+  let mut emitter = Emitter::default();
+  f(&mut emitter);
+  String::from_utf8(emitter.into_bytes()).unwrap()
+}
+
+fn direct_key_with_tt(name: &str, tt: TT) -> ClassOrObjKey {
+  ClassOrObjKey::Direct(Node::new(
+    dummy_loc(),
+    ClassOrObjMemberDirectKey {
+      key: name.into(),
+      tt,
+    },
+  ))
+}
+
+fn direct_key(name: &str) -> ClassOrObjKey {
+  direct_key_with_tt(name, TT::Identifier)
+}
+
+fn emit_pat_to_string(pat: &Node<Pat>) -> String {
+  emit_to_string(|emitter| {
+    emit_pat(emitter, pat).unwrap();
+  })
+}
+
+#[test]
+fn emits_array_pattern_with_elisions_and_rest() {
+  let pattern = Node::new(
+    dummy_loc(),
+    Pat::Arr(Node::new(
+      dummy_loc(),
+      ArrPat {
+        elements: vec![
+          None,
+          Some(ArrPatElem {
+            target: id_pat("a"),
+            default_value: None,
+          }),
+          None,
+        ],
+        rest: Some(id_pat("b")),
+      },
+    )),
+  );
+
+  assert_eq!(emit_pat_to_string(&pattern), "[,a,,...b]");
+}
+
+#[test]
+fn emits_object_pattern_with_defaults_rest_and_computed_keys() {
+  let properties = vec![
+    Node::new(
+      dummy_loc(),
+      ObjPatProp {
+        key: direct_key("a"),
+        target: id_pat("a"),
+        shorthand: true,
+        default_value: None,
+      },
+    ),
+    Node::new(
+      dummy_loc(),
+      ObjPatProp {
+        key: direct_key("b"),
+        target: id_pat("c"),
+        shorthand: false,
+        default_value: Some(num_expr(1.0)),
+      },
+    ),
+    Node::new(
+      dummy_loc(),
+      ObjPatProp {
+        key: ClassOrObjKey::Computed(id_expr("d")),
+        target: id_pat("e"),
+        shorthand: false,
+        default_value: None,
+      },
+    ),
+  ];
+
+  let pattern = Node::new(
+    dummy_loc(),
+    Pat::Obj(Node::new(
+      dummy_loc(),
+      ObjPat {
+        properties,
+        rest: Some(id_pat("rest")),
+      },
+    )),
+  );
+
+  assert_eq!(emit_pat_to_string(&pattern), "{a,b:c=1,[d]:e,...rest}");
+}
+
+#[test]
+fn emits_nested_patterns_with_defaults() {
+  let nested_array = Node::new(
+    dummy_loc(),
+    Pat::Arr(Node::new(
+      dummy_loc(),
+      ArrPat {
+        elements: vec![Some(ArrPatElem {
+          target: id_pat("b"),
+          default_value: Some(id_expr("c")),
+        })],
+        rest: None,
+      },
+    )),
+  );
+
+  let object = Node::new(
+    dummy_loc(),
+    Pat::Obj(Node::new(
+      dummy_loc(),
+      ObjPat {
+        properties: vec![Node::new(
+          dummy_loc(),
+          ObjPatProp {
+            key: direct_key("a"),
+            target: nested_array,
+            shorthand: false,
+            default_value: None,
+          },
+        )],
+        rest: None,
+      },
+    )),
+  );
+
+  let pattern = Node::new(
+    dummy_loc(),
+    Pat::Arr(Node::new(
+      dummy_loc(),
+      ArrPat {
+        elements: vec![Some(ArrPatElem {
+          target: object,
+          default_value: Some(id_expr("d")),
+        })],
+        rest: None,
+      },
+    )),
+  );
+
+  assert_eq!(emit_pat_to_string(&pattern), "[{a:[b=c]}=d]");
+}
+
+#[test]
+fn emits_pat_decl_wrapper() {
+  let decl = Node::new(dummy_loc(), PatDecl { pat: id_pat("x") });
+  let emitted = emit_to_string(|emitter| emit_pat_decl(emitter, &decl).unwrap());
+  assert_eq!(emitted, "x");
+}
+
+#[test]
+fn emits_param_decl_with_rest() {
+  let param = Node::new(
+    dummy_loc(),
+    ParamDecl {
+      decorators: Vec::new(),
+      rest: true,
+      optional: false,
+      accessibility: None,
+      readonly: false,
+      pattern: Node::new(
+        dummy_loc(),
+        PatDecl {
+          pat: id_pat("args"),
+        },
+      ),
+      type_annotation: None,
+      default_value: None,
+    },
+  );
+  let emitted = emit_to_string(|emitter| emit_param_decl(emitter, &param).unwrap());
+  assert_eq!(emitted, "...args");
+}
+
+#[test]
+fn emits_param_decl_decorators_before_array_pattern() {
+  let decorator = Node::new(
+    dummy_loc(),
+    Decorator {
+      expression: id_expr("dec"),
+    },
+  );
+
+  let pattern = Node::new(
+    dummy_loc(),
+    Pat::Arr(Node::new(
+      dummy_loc(),
+      ArrPat {
+        elements: vec![Some(ArrPatElem {
+          target: id_pat("a"),
+          default_value: None,
+        })],
+        rest: None,
+      },
+    )),
+  );
+
+  let param = Node::new(
+    dummy_loc(),
+    ParamDecl {
+      decorators: vec![decorator],
+      rest: false,
+      optional: false,
+      accessibility: None,
+      readonly: false,
+      pattern: Node::new(dummy_loc(), PatDecl { pat: pattern }),
+      type_annotation: None,
+      default_value: None,
+    },
+  );
+
+  let emitted = emit_to_string(|emitter| emit_param_decl(emitter, &param).unwrap());
+  assert_eq!(emitted, "@dec [a]");
+}
+
+#[test]
+fn emits_param_decl_with_multiple_decorators_and_modifiers() {
+  let deco_a = Node::new(
+    dummy_loc(),
+    Decorator {
+      expression: id_expr("a"),
+    },
+  );
+  let deco_b = Node::new(
+    dummy_loc(),
+    Decorator {
+      expression: id_expr("b"),
+    },
+  );
+
+  let param = Node::new(
+    dummy_loc(),
+    ParamDecl {
+      decorators: vec![deco_a, deco_b],
+      rest: false,
+      optional: false,
+      accessibility: Some(Accessibility::Public),
+      readonly: true,
+      pattern: Node::new(dummy_loc(), PatDecl { pat: id_pat("x") }),
+      type_annotation: None,
+      default_value: None,
+    },
+  );
+
+  let emitted = emit_to_string(|emitter| emit_param_decl(emitter, &param).unwrap());
+  assert_eq!(emitted, "@a @b public readonly x");
+}
+
+#[test]
+fn emits_assignment_target_pattern() {
+  let pat = Node::new(dummy_loc(), Pat::AssignTarget(id_expr("value")));
+  assert_eq!(emit_pat_to_string(&pat), "value");
+}
+
+#[test]
+fn emits_object_pattern_with_string_key() {
+  let prop = Node::new(
+    dummy_loc(),
+    ObjPatProp {
+      key: direct_key_with_tt("x", TT::LiteralString),
+      target: id_pat("a"),
+      shorthand: false,
+      default_value: None,
+    },
+  );
+  let pattern = Node::new(
+    dummy_loc(),
+    Pat::Obj(Node::new(
+      dummy_loc(),
+      ObjPat {
+        properties: vec![prop],
+        rest: None,
+      },
+    )),
+  );
+
+  assert_eq!(emit_pat_to_string(&pattern), "{\"x\":a}");
+}
+
+#[test]
+fn emits_object_pattern_with_numeric_key() {
+  let prop = Node::new(
+    dummy_loc(),
+    ObjPatProp {
+      key: direct_key_with_tt("1", TT::LiteralNumber),
+      target: id_pat("a"),
+      shorthand: false,
+      default_value: None,
+    },
+  );
+  let pattern = Node::new(
+    dummy_loc(),
+    Pat::Obj(Node::new(
+      dummy_loc(),
+      ObjPat {
+        properties: vec![prop],
+        rest: None,
+      },
+    )),
+  );
+
+  assert_eq!(emit_pat_to_string(&pattern), "{1:a}");
+}
+
+#[test]
+fn emits_object_pattern_with_unhandled_direct_key_raw() {
+  let prop = Node::new(
+    dummy_loc(),
+    ObjPatProp {
+      key: direct_key_with_tt("@", TT::At),
+      target: id_pat("a"),
+      shorthand: false,
+      default_value: None,
+    },
+  );
+  let pattern = Node::new(
+    dummy_loc(),
+    Pat::Obj(Node::new(
+      dummy_loc(),
+      ObjPat {
+        properties: vec![prop],
+        rest: None,
+      },
+    )),
+  );
+
+  assert_eq!(emit_pat_to_string(&pattern), "{@:a}");
+}

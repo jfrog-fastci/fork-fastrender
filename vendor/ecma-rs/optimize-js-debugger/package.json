@@ -1,0 +1,31 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "npm run esbuild -- --minify && cp -v src/index.html dist/index.html",
+    "esbuild": "esbuild --bundle --legal-comments=none --outdir=dist --sourcemap src/index.tsx",
+    "format": "prettier --write 'src/**/*.{css,html,ts,tsx}'",
+    "start": "npm run esbuild -- --servedir=dist --serve-fallback=src/index.html --watch",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "^1.1.4",
+    "@monaco-editor/react": "^4.6.0",
+    "@msgpack/msgpack": "^2",
+    "@wzlin/valid": "^0.4.3",
+    "@xtjs/lib": "^0.57.1",
+    "@xyflow/react": "^12.3.6",
+    "react": "^18",
+    "react-dom": "^18"
+  },
+  "devDependencies": {
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@types/node": "^22.9.4",
+    "esbuild": "^0.24.0",
+    "jsdom": "^25.0.1",
+    "prettier": "^3.4.2",
+    "prettier-plugin-organize-imports": "^4.1.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.4"
+  }
+}

@@ -11,14 +11,8 @@ under deterministic resource limits, and interpret the output.
 From the FastRender repo root:
 
 ```bash
-# JS engine (submodule)
-git submodule update --init engines/ecma-rs
-
-# test262 semantics corpus (nested submodule inside ecma-rs)
-git -C engines/ecma-rs submodule update --init test262-semantic/data
-
-# Alternative (pull all nested submodules in ecma-rs):
-# git -C engines/ecma-rs submodule update --init --recursive
+# test262 semantics corpus (submodule inside vendored ecma-rs)
+git submodule update --init vendor/ecma-rs/test262-semantic/data
 ```
 
 ## 2) Run the curated suite
@@ -30,17 +24,17 @@ bash scripts/cargo_agent.sh xtask js test262
 ```
 
 `bash scripts/cargo_agent.sh xtask js test262` is a thin wrapper over the **ecma-rs**
-[`test262-semantic`](../engines/ecma-rs/test262-semantic/README.md) runner. It forwards the actual
-test execution/reporting to the submodule and pins the corpus directory via:
-`--test262-dir engines/ecma-rs/test262-semantic/data`.
+[`test262-semantic`](../vendor/ecma-rs/test262-semantic/README.md) runner. It forwards the actual
+test execution/reporting to the vendored ecma-rs and pins the corpus directory via:
+`--test262-dir vendor/ecma-rs/test262-semantic/data`.
 
 By default, xtask runs the suite with a **minimal built-in harness prelude** (equivalent to
 `--harness minimal`). This avoids executing upstream `harness/assert.js` + `harness/sta.js`, which
 is useful during early VM bring-up when the upstream harness depends on JS features that may not be
 implemented yet.
 
-Note: the `engines/ecma-rs` submodule does not commit a `Cargo.lock`, so the child invocation inside
-the submodule is intentionally **not** run with `--locked` (even if you run the top-level xtask with
+Note: the vendored `vendor/ecma-rs` does not commit a `Cargo.lock`, so the child invocation inside
+that directory is intentionally **not** run with `--locked` (even if you run the top-level xtask with
 `--locked`).
 
 By default, the runner writes a JSON report to:

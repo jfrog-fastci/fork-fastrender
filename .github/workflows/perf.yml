@@ -48,9 +48,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f engines/ecma-rs/Cargo.toml ]; then
-            echo "Missing engines/ecma-rs submodule checkout (expected engines/ecma-rs/Cargo.toml)." >&2
-            echo "Run: git submodule update --init engines/ecma-rs" >&2
+          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
+            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
 

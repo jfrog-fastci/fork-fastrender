@@ -1,0 +1,28 @@
+{
+  "$t": "Binary",
+  "left": {
+    "$t": "Binary",
+    "left": {
+      "$t": "Id",
+      "name": "a"
+    },
+    "operator": "Division",
+    "right": {
+      "$t": "Id",
+      "name": "b"
+    }
+  },
+  "operator": "Division",
+  "right": {
+    "$t": "Binary",
+    "left": {
+      "$t": "Id",
+      "name": "c"
+    },
+    "operator": "Division",
+    "right": {
+      "$t": "Id",
+      "name": "d"
+    }
+  }
+}

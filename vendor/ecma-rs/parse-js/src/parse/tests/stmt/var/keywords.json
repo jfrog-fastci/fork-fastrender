@@ -1,0 +1,197 @@
+{
+  "$t": "VarDecl",
+  "declarators": [
+    {
+      "definite_assignment": false,
+      "initializer": {
+        "$t": "LitObj",
+        "members": [
+          {
+            "typ": {
+              "Valued": {
+                "key": {
+                  "Direct": {
+                    "key": "get",
+                    "tt": "KeywordGet"
+                  }
+                },
+                "val": {
+                  "Prop": {
+                    "$t": "LitArr",
+                    "elements": [
+                      {
+                        "Single": {
+                          "$t": "Id",
+                          "name": "set"
+                        }
+                      },
+                      {
+                        "Single": {
+                          "$t": "Id",
+                          "name": "get"
+                        }
+                      },
+                      {
+                        "Single": {
+                          "$t": "Id",
+                          "name": "await"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "pattern": {
+        "pat": {
+          "$t": "Id",
+          "name": "set"
+        }
+      },
+      "type_annotation": null
+    },
+    {
+      "definite_assignment": false,
+      "initializer": null,
+      "pattern": {
+        "pat": {
+          "$t": "Id",
+          "name": "of"
+        }
+      },
+      "type_annotation": null
+    },
+    {
+      "definite_assignment": false,
+      "initializer": {
+        "$t": "LitObj",
+        "members": [
+          {
+            "typ": {
+              "Shorthand": {
+                "id": {
+                  "name": "await"
+                }
+              }
+            }
+          },
+          {
+            "typ": {
+              "Shorthand": {
+                "id": {
+                  "name": "of"
+                }
+              }
+            }
+          },
+          {
+            "typ": {
+              "Shorthand": {
+                "id": {
+                  "name": "let"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "pattern": {
+        "pat": {
+          "$t": "Obj",
+          "properties": [
+            {
+              "default_value": null,
+              "key": {
+                "Direct": {
+                  "key": "get",
+                  "tt": "KeywordGet"
+                }
+              },
+              "shorthand": true,
+              "target": {
+                "$t": "Id",
+                "name": "get"
+              }
+            },
+            {
+              "default_value": null,
+              "key": {
+                "Direct": {
+                  "key": "set",
+                  "tt": "KeywordSet"
+                }
+              },
+              "shorthand": true,
+              "target": {
+                "$t": "Id",
+                "name": "set"
+              }
+            },
+            {
+              "default_value": null,
+              "key": {
+                "Direct": {
+                  "key": "yield",
+                  "tt": "KeywordYield"
+                }
+              },
+              "shorthand": false,
+              "target": {
+                "$t": "Arr",
+                "elements": [
+                  {
+                    "default_value": null,
+                    "target": {
+                      "$t": "Id",
+                      "name": "await"
+                    }
+                  },
+                  {
+                    "default_value": null,
+                    "target": {
+                      "$t": "Id",
+                      "name": "of"
+                    }
+                  }
+                ],
+                "rest": null
+              }
+            }
+          ],
+          "rest": null
+        }
+      },
+      "type_annotation": null
+    },
+    {
+      "definite_assignment": false,
+      "initializer": {
+        "$t": "Id",
+        "name": "let"
+      },
+      "pattern": {
+        "pat": {
+          "$t": "Id",
+          "name": "await"
+        }
+      },
+      "type_annotation": null
+    },
+    {
+      "definite_assignment": false,
+      "initializer": null,
+      "pattern": {
+        "pat": {
+          "$t": "Id",
+          "name": "yield"
+        }
+      },
+      "type_annotation": null
+    }
+  ],
+  "export": false,
+  "mode": "Var"
+}

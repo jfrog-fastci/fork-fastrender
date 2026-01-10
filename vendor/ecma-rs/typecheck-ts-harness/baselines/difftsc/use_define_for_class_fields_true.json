@@ -1,0 +1,53 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 99,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 2729,
+      "file": "use_define_for_class_fields_true.ts",
+      "start": 76,
+      "end": 79,
+      "category": "error",
+      "message": "Property 'bar' is used before its initialization."
+    },
+    {
+      "code": 2729,
+      "file": "use_define_for_class_fields_true.ts",
+      "start": 186,
+      "end": 187,
+      "category": "error",
+      "message": "Property 'x' is used before its initialization."
+    },
+    {
+      "code": 2729,
+      "file": "use_define_for_class_fields_true.ts",
+      "start": 233,
+      "end": 236,
+      "category": "error",
+      "message": "Property 'baz' is used before its initialization."
+    },
+    {
+      "code": 2612,
+      "file": "use_define_for_class_fields_true.ts",
+      "start": 342,
+      "end": 343,
+      "category": "error",
+      "message": "Property 'x' will overwrite the base property in 'BaseOverwrite'. If this is intentional, add an initializer. Otherwise, add a 'declare' modifier or remove the redundant declaration."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "$t": "ImportEqualsDecl",
+  "export": true,
+  "type_only": false,
+  "name": "ns",
+  "rhs": {
+    "$t": "EntityName",
+    "path": [
+      "Foo",
+      "Bar"
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "minify-js-nodejs"
+publish = false
+version = "0.6.0"
+description = "Node.js bindings for minify-js"
+authors = ["Wilson Lin <npm@wilsonl.in>"]
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+diagnostics = { workspace = true, features = ["serde"] }
+minify-js = { workspace = true }
+neon = { workspace = true, default-features = false, features = ["napi-1"] }
+serde_json = { workspace = true }

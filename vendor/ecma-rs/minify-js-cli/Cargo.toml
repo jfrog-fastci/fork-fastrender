@@ -1,0 +1,17 @@
+[package]
+authors = ["Wilson Lin <code@wilsonl.in>"]
+description = "Extremely fast JS minifier"
+edition.workspace = true
+name = "minify-js-cli"
+publish = false
+version = "0.6.0"
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+diagnostics = { workspace = true, features = ["serde"] }
+minify-js = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }

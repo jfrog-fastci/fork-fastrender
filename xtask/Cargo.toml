@@ -16,7 +16,7 @@ test = false
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
-conformance-harness = { path = "../engines/ecma-rs/conformance-harness" }
+conformance-harness = { path = "../vendor/ecma-rs/conformance-harness" }
 fastrender = { path = ".." }
 # `xtask js wpt-dom` defaults to exercising the in-tree vm-js backend, so ensure that backend is
 # compiled in when building xtask.

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::test262::FailOn;
 
-const DEFAULT_TEST262_DIR: &str = "engines/ecma-rs/test262/data";
+const DEFAULT_TEST262_DIR: &str = "vendor/ecma-rs/test262/data";
 const DEFAULT_REPORT_PATH: &str = "target/js/test262-parser.json";
 const DEFAULT_MANIFEST_PATH: &str = "tests/js/test262_parser_expectations.toml";
 
@@ -45,12 +45,10 @@ pub struct Test262ParserArgs {
 
 pub fn run_test262_parser(args: Test262ParserArgs) -> Result<()> {
   let repo_root = crate::repo_root();
-  let ecma_rs_root = repo_root.join("engines/ecma-rs");
+  let ecma_rs_root = repo_root.join("vendor/ecma-rs");
   if !ecma_rs_root.join("Cargo.toml").is_file() {
     bail!(
-      "Missing engines/ecma-rs submodule checkout (expected {}).\n\
-       Run:\n\
-         git submodule update --init engines/ecma-rs",
+      "Missing vendor/ecma-rs (expected {}).",
       ecma_rs_root.join("Cargo.toml").display()
     );
   }
@@ -128,8 +126,8 @@ fn ensure_test262_dir(repo_root: &Path, test262_dir: &Path) -> Result<()> {
   if test262_dir == default_dir {
     bail!(
       "test262 parser corpus is missing at {}.\n\
-       This is a nested submodule; initialize it with:\n\
-         git -C engines/ecma-rs submodule update --init test262/data\n\
+       Initialize it with:\n\
+         git submodule update --init vendor/ecma-rs/test262/data\n\
        \n\
        See docs/js_test262_parser.md for the full workflow.",
       test262_dir.display()

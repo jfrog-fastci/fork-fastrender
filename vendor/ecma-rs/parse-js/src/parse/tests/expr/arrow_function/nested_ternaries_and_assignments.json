@@ -1,0 +1,63 @@
+{
+  "$t": "Binary",
+  "left": {
+    "$t": "IdPat",
+    "name": "x"
+  },
+  "operator": "Assignment",
+  "right": {
+    "$t": "Cond",
+    "alternate": {
+      "$t": "LitNum",
+      "value": 5.0
+    },
+    "consequent": {
+      "$t": "ArrowFunc",
+      "func": {
+        "arrow": true,
+        "async_": false,
+        "body": {
+          "Expression": {
+            "$t": "Cond",
+            "alternate": {
+              "$t": "Id",
+              "name": "x"
+            },
+            "consequent": {
+              "$t": "Id",
+              "name": "x"
+            },
+            "test": {
+              "$t": "Id",
+              "name": "x"
+            }
+          }
+        },
+        "generator": false,
+        "parameters": [
+          {
+            "accessibility": null,
+            "decorators": [],
+            "default_value": null,
+            "optional": false,
+            "pattern": {
+              "pat": {
+                "$t": "Id",
+                "name": "x"
+              }
+            },
+            "readonly": false,
+            "rest": false,
+            "type_annotation": null
+          }
+        ],
+        "return_type": null,
+        "type_parameters": null
+      }
+    },
+    "test": {
+      "$t": "LitBool",
+      "value": true
+    }
+  }
+}

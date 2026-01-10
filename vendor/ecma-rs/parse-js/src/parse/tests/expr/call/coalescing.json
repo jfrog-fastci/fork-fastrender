@@ -1,0 +1,189 @@
+{
+  "$t": "Call",
+  "arguments": [
+    {
+      "spread": false,
+      "value": {
+        "$t": "Call",
+        "arguments": [],
+        "callee": {
+          "$t": "Member",
+          "left": {
+            "$t": "Id",
+            "name": "a"
+          },
+          "optional_chaining": true,
+          "right": "b"
+        },
+        "optional_chaining": true
+      }
+    },
+    {
+      "spread": false,
+      "value": {
+        "$t": "Call",
+        "arguments": [
+          {
+            "spread": false,
+            "value": {
+              "$t": "Id",
+              "name": "a"
+            }
+          },
+          {
+            "spread": false,
+            "value": {
+              "$t": "Id",
+              "name": "b"
+            }
+          }
+        ],
+        "callee": {
+          "$t": "Member",
+          "left": {
+            "$t": "Id",
+            "name": "a"
+          },
+          "optional_chaining": true,
+          "right": "b"
+        },
+        "optional_chaining": true
+      }
+    },
+    {
+      "spread": false,
+      "value": {
+        "$t": "Call",
+        "arguments": [
+          {
+            "spread": false,
+            "value": {
+              "$t": "Id",
+              "name": "a"
+            }
+          }
+        ],
+        "callee": {
+          "$t": "Member",
+          "left": {
+            "$t": "Id",
+            "name": "a"
+          },
+          "optional_chaining": true,
+          "right": "b"
+        },
+        "optional_chaining": true
+      }
+    },
+    {
+      "spread": false,
+      "value": {
+        "$t": "Call",
+        "arguments": [],
+        "callee": {
+          "$t": "Member",
+          "left": {
+            "$t": "Id",
+            "name": "a"
+          },
+          "optional_chaining": true,
+          "right": "b"
+        },
+        "optional_chaining": false
+      }
+    },
+    {
+      "spread": false,
+      "value": {
+        "$t": "Call",
+        "arguments": [
+          {
+            "spread": false,
+            "value": {
+              "$t": "Id",
+              "name": "a"
+            }
+          },
+          {
+            "spread": false,
+            "value": {
+              "$t": "Id",
+              "name": "b"
+            }
+          }
+        ],
+        "callee": {
+          "$t": "Member",
+          "left": {
+            "$t": "Id",
+            "name": "a"
+          },
+          "optional_chaining": true,
+          "right": "b"
+        },
+        "optional_chaining": false
+      }
+    },
+    {
+      "spread": false,
+      "value": {
+        "$t": "Call",
+        "arguments": [],
+        "callee": {
+          "$t": "Member",
+          "left": {
+            "$t": "Id",
+            "name": "a"
+          },
+          "optional_chaining": false,
+          "right": "b"
+        },
+        "optional_chaining": true
+      }
+    },
+    {
+      "spread": false,
+      "value": {
+        "$t": "Call",
+        "arguments": [],
+        "callee": {
+          "$t": "Id",
+          "name": "ab"
+        },
+        "optional_chaining": true
+      }
+    },
+    {
+      "spread": false,
+      "value": {
+        "$t": "Call",
+        "arguments": [
+          {
+            "spread": false,
+            "value": {
+              "$t": "Id",
+              "name": "a"
+            }
+          },
+          {
+            "spread": false,
+            "value": {
+              "$t": "Id",
+              "name": "b"
+            }
+          }
+        ],
+        "callee": {
+          "$t": "Id",
+          "name": "ab"
+        },
+        "optional_chaining": true
+      }
+    }
+  ],
+  "callee": {
+    "$t": "Id",
+    "name": "call"
+  },
+  "optional_chaining": false
+}

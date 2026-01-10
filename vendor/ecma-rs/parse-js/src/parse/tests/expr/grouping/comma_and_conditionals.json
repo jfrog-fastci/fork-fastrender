@@ -1,0 +1,39 @@
+{
+  "$t": "Binary",
+  "left": {
+    "$t": "Binary",
+    "left": {
+      "$t": "Id",
+      "name": "a"
+    },
+    "operator": "Comma",
+    "right": {
+      "$t": "Cond",
+      "alternate": {
+        "$t": "Binary",
+        "left": {
+          "$t": "Id",
+          "name": "c"
+        },
+        "operator": "LogicalAnd",
+        "right": {
+          "$t": "Id",
+          "name": "d"
+        }
+      },
+      "consequent": {
+        "$t": "Id",
+        "name": "b"
+      },
+      "test": {
+        "$t": "Id",
+        "name": "a"
+      }
+    }
+  },
+  "operator": "Comma",
+  "right": {
+    "$t": "Id",
+    "name": "d"
+  }
+}

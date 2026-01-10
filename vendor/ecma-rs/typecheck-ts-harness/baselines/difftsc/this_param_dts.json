@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": true,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strict": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "m.d.ts",
+        "name": "m",
+        "type": "({ x: number }, number) => number"
+      }
+    ],
+    "markers": [
+      {
+        "file": "a.ts",
+        "offset": 50,
+        "line": 3,
+        "column": 7,
+        "type": "number"
+      }
+    ]
+  }
+}

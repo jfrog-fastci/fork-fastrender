@@ -1,0 +1,191 @@
+{
+  "$t": "JsxElem",
+  "attributes": [
+    {
+      "Named": {
+        "name": {
+          "name": "x",
+          "namespace": null
+        },
+        "value": {
+          "Expression": {
+            "spread": false,
+            "value": {
+              "$t": "LitNum",
+              "value": 1.0
+            }
+          }
+        }
+      }
+    },
+    {
+      "Named": {
+        "name": {
+          "name": "y",
+          "namespace": null
+        },
+        "value": {
+          "Text": {
+            "value": "a"
+          }
+        }
+      }
+    }
+  ],
+  "children": [
+    {
+      "Text": {
+        "value": "  a\n  "
+      }
+    },
+    {
+      "Element": {
+        "attributes": [
+          {
+            "Named": {
+              "name": {
+                "name": "z",
+                "namespace": "xLa"
+              },
+              "value": {
+                "Text": {
+                  "value": "a"
+                }
+              }
+            }
+          }
+        ],
+        "children": [
+          {
+            "Expr": {
+              "spread": false,
+              "value": {
+                "$t": "LitNum",
+                "value": 1.0
+              }
+            }
+          },
+          {
+            "Expr": {
+              "spread": false,
+              "value": {
+                "$t": "LitNum",
+                "value": 2.0
+              }
+            }
+          },
+          {
+            "Text": {
+              "value": " "
+            }
+          },
+          {
+            "Expr": {
+              "spread": false,
+              "value": {
+                "$t": "JsxElem",
+                "attributes": [
+                  {
+                    "Spread": {
+                      "value": {
+                        "value": {
+                          "$t": "LitObj",
+                          "members": [
+                            {
+                              "typ": {
+                                "Valued": {
+                                  "key": {
+                                    "Direct": {
+                                      "key": "a",
+                                      "tt": "Identifier"
+                                    }
+                                  },
+                                  "val": {
+                                    "Prop": {
+                                      "$t": "Id",
+                                      "name": "b"
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "typ": {
+                                "Shorthand": {
+                                  "id": {
+                                    "name": "c"
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ],
+                "children": [],
+                "name": {
+                  "Name": {
+                    "name": "a",
+                    "namespace": "nu"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "name": {
+          "Name": {
+            "name": "a4-3",
+            "namespace": "bc1--"
+          }
+        }
+      }
+    },
+    {
+      "Text": {
+        "value": "\n  a "
+      }
+    },
+    {
+      "Element": {
+        "attributes": [],
+        "children": [],
+        "name": {
+          "Member": {
+            "base": {
+              "name": "red"
+            },
+            "path": [
+              "a"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "Text": {
+        "value": " bb\n    bb  "
+      }
+    },
+    {
+      "Element": {
+        "attributes": [],
+        "children": [],
+        "name": null
+      }
+    }
+  ],
+  "name": {
+    "Member": {
+      "base": {
+        "name": "a"
+      },
+      "path": [
+        "b",
+        "c"
+      ]
+    }
+  }
+}

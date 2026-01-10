@@ -1,0 +1,526 @@
+use num_bigint::BigInt;
+use ordered_float::OrderedFloat;
+use types_ts_interned::Accessibility;
+use types_ts_interned::DefId;
+use types_ts_interned::Indexer;
+use types_ts_interned::ObjectType;
+use types_ts_interned::PropData;
+use types_ts_interned::PropKey;
+use types_ts_interned::Property;
+use types_ts_interned::Shape;
+use types_ts_interned::TemplateChunk;
+use types_ts_interned::TemplateLiteralType;
+use types_ts_interned::TupleElem;
+use types_ts_interned::TypeKind;
+use types_ts_interned::TypeParamId;
+use types_ts_interned::TypeStore;
+
+#[test]
+fn union_canonicalization_is_idempotent_and_sorted() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let union1 = store.union(vec![
+    primitives.string,
+    primitives.never,
+    primitives.number,
+    primitives.string,
+  ]);
+  let union2 = store.canon(union1);
+  assert_eq!(union1, union2);
+
+  let union3 = store.union(vec![primitives.number, primitives.string]);
+  let union4 = store.union(vec![primitives.string, primitives.number]);
+  assert_eq!(union1, union3);
+  assert_eq!(union3, union4);
+
+  // Ordering should be stable regardless of input order.
+  let members = match store.type_kind(union1) {
+    TypeKind::Union(m) => m,
+    other => panic!("expected union, got {:?}", other),
+  };
+  assert_eq!(members, vec![primitives.number, primitives.string]);
+}
+
+#[test]
+fn intersection_simplifies_special_members() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let inter1 = store.intersection(vec![primitives.string, primitives.unknown]);
+  assert_eq!(inter1, primitives.string);
+
+  let inter2 = store.intersection(vec![primitives.string, primitives.any]);
+  assert_eq!(inter2, primitives.any);
+
+  let inter3 = store.intersection(vec![primitives.never, primitives.string]);
+  assert_eq!(inter3, primitives.never);
+}
+
+#[test]
+fn union_absorbs_literals_and_unique_symbols() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let bool_lit = store.intern_type(TypeKind::BooleanLiteral(true));
+  assert_eq!(store.union(vec![bool_lit]), bool_lit);
+  assert_eq!(
+    store.union(vec![primitives.boolean, bool_lit]),
+    primitives.boolean
+  );
+
+  let num_lit = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0)));
+  assert_eq!(store.union(vec![num_lit]), num_lit);
+  assert_eq!(
+    store.union(vec![primitives.number, num_lit]),
+    primitives.number
+  );
+
+  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  assert_eq!(store.union(vec![str_lit]), str_lit);
+  assert_eq!(
+    store.union(vec![primitives.string, str_lit]),
+    primitives.string
+  );
+
+  let bigint_lit = store.intern_type(TypeKind::BigIntLiteral(BigInt::from(5u8)));
+  assert_eq!(store.union(vec![bigint_lit]), bigint_lit);
+  assert_eq!(
+    store.union(vec![primitives.bigint, bigint_lit]),
+    primitives.bigint
+  );
+
+  assert_eq!(
+    store.union(vec![primitives.unique_symbol, primitives.symbol]),
+    primitives.symbol
+  );
+}
+
+#[test]
+fn union_absorbs_template_literals_when_string_present() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "a".to_owned(),
+    spans: vec![TemplateChunk {
+      literal: "b".to_owned(),
+      ty: primitives.string,
+    }],
+  }));
+
+  assert_eq!(store.union(vec![primitives.string, tpl]), primitives.string);
+  assert_eq!(store.union(vec![tpl, primitives.string]), primitives.string);
+}
+
+#[test]
+fn intersection_prefers_literals() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let bool_lit = store.intern_type(TypeKind::BooleanLiteral(false));
+  assert_eq!(
+    store.intersection(vec![primitives.boolean, bool_lit]),
+    bool_lit
+  );
+
+  let str_lit = store.intern_type(TypeKind::StringLiteral(store.intern_name("b")));
+  assert_eq!(
+    store.intersection(vec![primitives.string, str_lit]),
+    str_lit
+  );
+
+  let num_lit = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(2.0)));
+  assert_eq!(
+    store.intersection(vec![primitives.number, num_lit]),
+    num_lit
+  );
+
+  let bigint_lit = store.intern_type(TypeKind::BigIntLiteral(BigInt::from(7u8)));
+  assert_eq!(
+    store.intersection(vec![primitives.bigint, bigint_lit]),
+    bigint_lit
+  );
+}
+
+#[test]
+fn intersection_prefers_template_literals_and_unique_symbols() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let tpl = store.intern_type(TypeKind::TemplateLiteral(TemplateLiteralType {
+    head: "x".to_owned(),
+    spans: vec![TemplateChunk {
+      literal: "y".to_owned(),
+      ty: primitives.string,
+    }],
+  }));
+
+  assert_eq!(store.intersection(vec![primitives.string, tpl]), tpl);
+  assert_eq!(store.intersection(vec![tpl, primitives.string]), tpl);
+
+  assert_eq!(
+    store.intersection(vec![primitives.symbol, primitives.unique_symbol]),
+    primitives.unique_symbol
+  );
+  assert_eq!(
+    store.intersection(vec![primitives.unique_symbol, primitives.symbol]),
+    primitives.unique_symbol
+  );
+}
+
+#[test]
+fn empty_intersection_is_unknown() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  assert_eq!(store.intersection(vec![]), primitives.unknown);
+}
+
+#[test]
+fn intersection_contradictions_reduce_to_never() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  assert_eq!(
+    store.intersection(vec![primitives.string, primitives.number]),
+    primitives.never
+  );
+
+  let true_lit = store.intern_type(TypeKind::BooleanLiteral(true));
+  let false_lit = store.intern_type(TypeKind::BooleanLiteral(false));
+  assert_eq!(
+    store.intersection(vec![true_lit, false_lit]),
+    primitives.never
+  );
+
+  let str_a = store.intern_type(TypeKind::StringLiteral(store.intern_name("a")));
+  let str_b = store.intern_type(TypeKind::StringLiteral(store.intern_name("b")));
+  assert_eq!(store.intersection(vec![str_a, str_b]), primitives.never);
+
+  let one = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(1.0)));
+  let two = store.intern_type(TypeKind::NumberLiteral(OrderedFloat::from(2.0)));
+  assert_eq!(store.intersection(vec![one, two]), primitives.never);
+}
+
+#[test]
+fn union_of_boolean_literals_collapses_to_boolean() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let true_lit = store.intern_type(TypeKind::BooleanLiteral(true));
+  let false_lit = store.intern_type(TypeKind::BooleanLiteral(false));
+  assert_eq!(store.union(vec![true_lit, false_lit]), primitives.boolean);
+}
+
+#[test]
+fn shape_canonicalization_merges_duplicate_properties() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let name = store.intern_name("x");
+
+  let shape = Shape {
+    properties: vec![
+      Property {
+        key: PropKey::String(name),
+        data: PropData {
+          ty: primitives.string,
+          optional: false,
+          readonly: false,
+          accessibility: None,
+          is_method: false,
+          origin: None,
+          declared_on: None,
+        },
+      },
+      Property {
+        key: PropKey::String(name),
+        data: PropData {
+          ty: primitives.number,
+          optional: true,
+          readonly: true,
+          accessibility: Some(Accessibility::Private),
+          is_method: false,
+          origin: None,
+          declared_on: None,
+        },
+      },
+    ],
+    call_signatures: vec![],
+    construct_signatures: vec![],
+    indexers: vec![],
+  };
+
+  let shape_id = store.intern_shape(shape);
+  let merged = store.shape(shape_id);
+  assert_eq!(merged.properties.len(), 1);
+  let prop = &merged.properties[0];
+  assert_eq!(
+    prop.data.ty,
+    store.intersection(vec![primitives.string, primitives.number])
+  );
+  assert!(!prop.data.optional);
+  assert!(prop.data.readonly);
+  assert_eq!(prop.data.accessibility, Some(Accessibility::Private));
+}
+
+#[test]
+fn shape_canonicalization_declared_on_merge_is_order_independent() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let name = store.intern_name("x");
+
+  let prop_a = Property {
+    key: PropKey::String(name),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: Some(Accessibility::Protected),
+      is_method: false,
+      origin: None,
+      declared_on: Some(DefId(1)),
+    },
+  };
+  let prop_b = Property {
+    key: PropKey::String(name),
+    data: PropData {
+      ty: primitives.number,
+      optional: false,
+      readonly: false,
+      accessibility: Some(Accessibility::Protected),
+      is_method: false,
+      origin: None,
+      declared_on: Some(DefId(2)),
+    },
+  };
+
+  let shape_a = Shape {
+    properties: vec![prop_a.clone(), prop_b.clone()],
+    call_signatures: vec![],
+    construct_signatures: vec![],
+    indexers: vec![],
+  };
+  let shape_b = Shape {
+    properties: vec![prop_b, prop_a],
+    call_signatures: vec![],
+    construct_signatures: vec![],
+    indexers: vec![],
+  };
+
+  let id_a = store.intern_shape(shape_a);
+  let id_b = store.intern_shape(shape_b);
+  assert_eq!(id_a, id_b);
+
+  let merged = store.shape(id_a);
+  assert_eq!(merged.properties.len(), 1);
+  assert_eq!(merged.properties[0].data.declared_on, None);
+}
+
+#[test]
+fn duplicate_string_indexers_are_merged() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let shape = Shape {
+    properties: vec![],
+    call_signatures: vec![],
+    construct_signatures: vec![],
+    indexers: vec![
+      Indexer {
+        key_type: primitives.string,
+        value_type: primitives.number,
+        readonly: false,
+      },
+      Indexer {
+        key_type: primitives.string,
+        value_type: primitives.string,
+        readonly: true,
+      },
+    ],
+  };
+
+  let shape_id = store.intern_shape(shape);
+  let merged = store.shape(shape_id);
+  assert_eq!(merged.indexers.len(), 1);
+  let indexer = &merged.indexers[0];
+  assert_eq!(indexer.key_type, primitives.string);
+  assert_eq!(
+    indexer.value_type,
+    store.intersection(vec![primitives.number, primitives.string])
+  );
+  assert!(indexer.readonly);
+}
+
+#[test]
+fn canon_is_idempotent_on_nested_unions() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let nested = store.union(vec![
+    store.union(vec![primitives.string, primitives.number]),
+    store.union(vec![primitives.number, primitives.string]),
+  ]);
+
+  let once = store.canon(nested);
+  let twice = store.canon(once);
+  assert_eq!(once, twice);
+}
+
+#[test]
+fn canon_is_idempotent_for_new_variants() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let readonly_array = store.intern_type(TypeKind::Array {
+    ty: store.union(vec![
+      primitives.string,
+      primitives.number,
+      primitives.string,
+    ]),
+    readonly: true,
+  });
+  let array_once = store.canon(readonly_array);
+  let array_twice = store.canon(array_once);
+  assert_eq!(array_once, array_twice);
+
+  match store.type_kind(readonly_array) {
+    TypeKind::Array { ty, .. } => match store.type_kind(ty) {
+      TypeKind::Union(members) => assert_eq!(members, vec![primitives.number, primitives.string]),
+      other => panic!("expected union, got {:?}", other),
+    },
+    other => panic!("expected array, got {:?}", other),
+  }
+
+  let tuple = store.intern_type(TypeKind::Tuple(vec![
+    TupleElem {
+      ty: store.union(vec![primitives.string, primitives.number]),
+      optional: false,
+      rest: false,
+      readonly: false,
+    },
+    TupleElem {
+      ty: primitives.boolean,
+      optional: true,
+      rest: false,
+      readonly: true,
+    },
+  ]));
+  let tuple_once = store.canon(tuple);
+  let tuple_twice = store.canon(tuple_once);
+  assert_eq!(tuple_once, tuple_twice);
+
+  match store.type_kind(tuple) {
+    TypeKind::Tuple(elems) => match store.type_kind(elems[0].ty) {
+      TypeKind::Union(members) => assert_eq!(members, vec![primitives.number, primitives.string]),
+      other => panic!("expected union, got {:?}", other),
+    },
+    other => panic!("expected tuple, got {:?}", other),
+  }
+
+  let infer = store.intern_type(TypeKind::Infer {
+    param: TypeParamId(42),
+    constraint: None,
+  });
+  assert_eq!(infer, store.canon(store.canon(infer)));
+
+  let this_ty = store.intern_type(TypeKind::This);
+  assert_eq!(this_ty, store.canon(store.canon(this_ty)));
+}
+
+#[test]
+fn shape_indexer_readonly_merge_is_deterministic() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+
+  let mut shape_a = Shape::new();
+  shape_a.indexers.push(Indexer {
+    key_type: primitives.string,
+    value_type: primitives.number,
+    readonly: false,
+  });
+  shape_a.indexers.push(Indexer {
+    key_type: primitives.string,
+    value_type: primitives.number,
+    readonly: true,
+  });
+  let id_a = store.intern_shape(shape_a);
+
+  let mut shape_b = Shape::new();
+  shape_b.indexers.push(Indexer {
+    key_type: primitives.string,
+    value_type: primitives.number,
+    readonly: true,
+  });
+  shape_b.indexers.push(Indexer {
+    key_type: primitives.string,
+    value_type: primitives.number,
+    readonly: false,
+  });
+  let id_b = store.intern_shape(shape_b);
+
+  assert_eq!(id_a, id_b);
+  assert_eq!(
+    store.shape(id_a).indexers,
+    vec![Indexer {
+      key_type: primitives.string,
+      value_type: primitives.number,
+      readonly: true,
+    }]
+  );
+}
+
+#[test]
+fn union_canonicalization_is_deterministic_when_type_cmp_collides() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let name = store.intern_name("x");
+
+  let mut shape_a = Shape::new();
+  shape_a.properties.push(Property {
+    key: PropKey::String(name),
+    data: PropData {
+      ty: primitives.string,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: Some(1),
+      declared_on: None,
+    },
+  });
+  let mut shape_b = Shape::new();
+  shape_b.properties.push(Property {
+    key: PropKey::String(name),
+    data: PropData {
+      ty: primitives.string,
+      optional: false,
+      readonly: false,
+      accessibility: None,
+      is_method: false,
+      origin: Some(2),
+      declared_on: None,
+    },
+  });
+
+  let ty_a = store.intern_type(TypeKind::Object(store.intern_object(ObjectType {
+    shape: store.intern_shape(shape_a),
+  })));
+  let ty_b = store.intern_type(TypeKind::Object(store.intern_object(ObjectType {
+    shape: store.intern_shape(shape_b),
+  })));
+
+  assert_ne!(ty_a, ty_b);
+
+  let union_ab = store.union(vec![ty_a, ty_b]);
+  let union_ba = store.union(vec![ty_b, ty_a]);
+  assert_eq!(union_ab, union_ba);
+
+  let members = match store.type_kind(union_ab) {
+    TypeKind::Union(members) => members,
+    other => panic!("expected union, got {:?}", other),
+  };
+
+  let mut expected = vec![ty_a, ty_b];
+  expected.sort();
+  assert_eq!(members, expected);
+}

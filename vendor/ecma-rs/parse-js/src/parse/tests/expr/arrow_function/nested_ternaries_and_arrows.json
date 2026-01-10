@@ -1,0 +1,148 @@
+{
+  "$t": "ArrowFunc",
+  "func": {
+    "arrow": true,
+    "async_": false,
+    "body": {
+      "Expression": {
+        "$t": "ArrowFunc",
+        "func": {
+          "arrow": true,
+          "async_": false,
+          "body": {
+            "Expression": {
+              "$t": "Cond",
+              "alternate": {
+                "$t": "LitNum",
+                "value": 5.0
+              },
+              "consequent": {
+                "$t": "Cond",
+                "alternate": {
+                  "$t": "LitNum",
+                  "value": 4.0
+                },
+                "consequent": {
+                  "$t": "LitNum",
+                  "value": 3.0
+                },
+                "test": {
+                  "$t": "Call",
+                  "arguments": [],
+                  "callee": {
+                    "$t": "ArrowFunc",
+                    "func": {
+                      "arrow": true,
+                      "async_": false,
+                      "body": {
+                        "Expression": {
+                          "$t": "LitNum",
+                          "value": 2.0
+                        }
+                      },
+                      "generator": false,
+                      "parameters": [
+                        {
+                          "accessibility": null,
+                          "decorators": [],
+                          "default_value": null,
+                          "optional": false,
+                          "pattern": {
+                            "pat": {
+                              "$t": "Id",
+                              "name": "y"
+                            }
+                          },
+                          "readonly": false,
+                          "rest": false,
+                          "type_annotation": null
+                        }
+                      ],
+                      "return_type": null,
+                      "type_parameters": null
+                    }
+                  },
+                  "optional_chaining": false
+                }
+              },
+              "test": {
+                "$t": "LitNum",
+                "value": 1.0
+              }
+            }
+          },
+          "generator": false,
+          "parameters": [
+            {
+              "accessibility": null,
+              "decorators": [],
+              "default_value": null,
+              "optional": false,
+              "pattern": {
+                "pat": {
+                  "$t": "Id",
+                  "name": "x"
+                }
+              },
+              "readonly": false,
+              "rest": false,
+              "type_annotation": null
+            }
+          ],
+          "return_type": null,
+          "type_parameters": null
+        }
+      }
+    },
+    "generator": false,
+    "parameters": [
+      {
+        "accessibility": null,
+        "decorators": [],
+        "default_value": null,
+        "optional": false,
+        "pattern": {
+          "pat": {
+            "$t": "Id",
+            "name": "a"
+          }
+        },
+        "readonly": false,
+        "rest": false,
+        "type_annotation": null
+      },
+      {
+        "accessibility": null,
+        "decorators": [],
+        "default_value": null,
+        "optional": false,
+        "pattern": {
+          "pat": {
+            "$t": "Id",
+            "name": "b"
+          }
+        },
+        "readonly": false,
+        "rest": false,
+        "type_annotation": null
+      },
+      {
+        "accessibility": null,
+        "decorators": [],
+        "default_value": null,
+        "optional": false,
+        "pattern": {
+          "pat": {
+            "$t": "Id",
+            "name": "c"
+          }
+        },
+        "readonly": false,
+        "rest": false,
+        "type_annotation": null
+      }
+    ],
+    "return_type": null,
+    "type_parameters": null
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "$t": "Unary",
+  "argument": {
+    "$t": "Unary",
+    "argument": {
+      "$t": "Call",
+      "arguments": [],
+      "callee": {
+        "$t": "Member",
+        "left": {
+          "$t": "Id",
+          "name": "abc"
+        },
+        "optional_chaining": true,
+        "right": "def"
+      },
+      "optional_chaining": false
+    },
+    "operator": "New"
+  },
+  "operator": "UnaryPlus"
+}

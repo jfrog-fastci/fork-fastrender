@@ -1,0 +1,21 @@
+[package]
+name = "hir-js"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+diagnostics = { workspace = true }
+derive-visitor = { workspace = true }
+parse-js = { workspace = true, features = ["diagnostics"] }
+serde = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[features]
+default = []
+fuzzing = []
+serde = ["dep:serde"]

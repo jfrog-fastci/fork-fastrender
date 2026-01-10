@@ -1,0 +1,831 @@
+use crate::ast::expr::pat::Pat;
+use crate::ast::expr::Expr;
+use crate::ast::node::Node;
+use crate::error::SyntaxError;
+use crate::error::SyntaxErrorType;
+use crate::error::SyntaxResult;
+use crate::lex::lex_next;
+use crate::lex::LexMode;
+use crate::lex::Lexer;
+use crate::loc::Loc;
+use crate::operator::Arity;
+use crate::token::Token;
+use crate::token::TT;
+use crate::token::UNRESERVED_KEYWORDS;
+use crate::Dialect;
+use crate::ParseOptions;
+use crate::SourceType;
+use expr::pat::ParsePatternRules;
+use operator::MULTARY_OPERATOR_MAPPING;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
+
+pub mod class_or_object;
+pub mod drive;
+pub mod expr;
+pub mod func;
+pub mod import_export;
+pub mod operator;
+pub mod stmt;
+#[cfg(test)]
+mod tests;
+pub mod top_level;
+pub mod ts_decl;
+pub mod type_expr;
+
+// Almost every parse_* function takes these field values as parameters. Instead of having to enumerate them as parameters on every function and ordered unnamed arguments on every call, we simply pass this struct around. Fields are public to allow destructuring, but the value should be immutable; the with_* methods can be used to create an altered copy for passing into other functions, which is useful as most calls simply pass through the values unchanged. This struct should be received as a value, not a reference (i.e. `ctx: ParseCtx` not `ctx: &ParseCtx`) as the latter will require a separate lifetime.
+// All fields except `session` can (although not often) change between calls, so we don't simply put them in Parser, as otherwise we'd have to "unwind" (i.e. reset) those values after each call returns.
+#[derive(Clone, Copy)]
+pub struct ParseCtx {
+  pub rules: ParsePatternRules, // For simplicity, this is a copy, not a non-mutable reference, to avoid having a separate lifetime for it. The value is a small set of booleans, so a reference is probably slower, and it's supposed to be immutable (i.e. changes come from altered copying, not mutating the original single instance), so there shouldn't be any difference between a reference and a copy.
+  pub top_level: bool,
+  pub in_namespace: bool,
+  pub asi: AsiContext,
+}
+
+impl ParseCtx {
+  pub fn with_rules(&self, rules: ParsePatternRules) -> ParseCtx {
+    ParseCtx { rules, ..*self }
+  }
+
+  pub fn with_top_level(&self, top_level: bool) -> ParseCtx {
+    ParseCtx { top_level, ..*self }
+  }
+
+  pub fn with_namespace(&self, in_namespace: bool) -> ParseCtx {
+    ParseCtx {
+      in_namespace,
+      ..*self
+    }
+  }
+
+  pub fn non_top_level(&self) -> ParseCtx {
+    ParseCtx {
+      top_level: false,
+      ..*self
+    }
+  }
+
+  pub fn namespace_body(&self) -> ParseCtx {
+    ParseCtx {
+      top_level: true,
+      in_namespace: true,
+      ..*self
+    }
+  }
+
+  pub fn with_asi(&self, asi: AsiContext) -> ParseCtx {
+    ParseCtx { asi, ..*self }
+  }
+
+  pub fn for_statement_header(&self) -> ParseCtx {
+    self.with_asi(AsiContext::StatementHeader)
+  }
+}
+
+#[derive(Clone, Copy)]
+pub enum AsiContext {
+  Statements,
+  StatementHeader,
+}
+
+impl AsiContext {
+  pub fn allows_asi(self) -> bool {
+    matches!(self, AsiContext::Statements)
+  }
+}
+
+#[derive(Debug)]
+#[must_use]
+pub struct MaybeToken {
+  typ: TT,
+  loc: Loc,
+  matched: bool,
+}
+
+impl MaybeToken {
+  pub fn is_match(&self) -> bool {
+    self.matched
+  }
+
+  pub fn match_loc(&self) -> Option<Loc> {
+    if self.matched {
+      Some(self.loc)
+    } else {
+      None
+    }
+  }
+
+  pub fn error(&self, err: SyntaxErrorType) -> SyntaxError {
+    debug_assert!(!self.matched);
+    self.loc.error(err, Some(self.typ))
+  }
+
+  pub fn map<R, F: FnOnce(Self) -> R>(self, f: F) -> Option<R> {
+    if self.matched {
+      Some(f(self))
+    } else {
+      None
+    }
+  }
+
+  pub fn and_then<R, F: FnOnce() -> SyntaxResult<R>>(self, f: F) -> SyntaxResult<Option<R>> {
+    Ok(if self.matched { Some(f()?) } else { None })
+  }
+}
+
+#[derive(Clone, Copy)]
+pub struct ParserCheckpoint {
+  next_tok_i: usize,
+}
+
+/// To get the lexer's `next` after this token was lexed, use `token.loc.1`.
+struct BufferedToken {
+  token: Token,
+  lex_mode: LexMode,
+}
+
+#[derive(Clone)]
+struct LabelInfo {
+  name: String,
+  is_iteration: bool,
+}
+
+pub struct Parser<'a> {
+  lexer: Lexer<'a>,
+  buf: Vec<BufferedToken>,
+  next_tok_i: usize,
+  options: ParseOptions,
+  allow_bare_ts_type_args: bool,
+  strict_mode: u32,
+  in_function: u32,
+  new_target_allowed: u32,
+  super_prop_allowed: u32,
+  super_call_allowed: u32,
+  class_is_derived: Vec<bool>,
+  in_iteration: u32,
+  in_switch: u32,
+  labels: Vec<LabelInfo>,
+  cancel: Option<Arc<AtomicBool>>,
+}
+
+// We extend this struct with added methods in the various submodules, instead of simply using free functions and passing `&mut Parser` around, for several reasons:
+// - Avoid needing to redeclare `<'a>` on every function.
+// - More lifetime elision is available for `self` than if it was just another reference parameter.
+// - Don't need to import each function.
+// - Autocomplete is more specific since `self.*` narrows down the options instead of just listing all visible functions.
+// - For general consistency; if there's no reason why it should be a free function (e.g. more than one ambiguous base type), it should be a method.
+// - Makes free functions truly separate independent utility functions.
+impl<'a> Parser<'a> {
+  pub fn new(lexer: Lexer<'a>, options: ParseOptions) -> Parser<'a> {
+    Self::new_cancellable(lexer, options, None)
+  }
+
+  pub fn new_cancellable(
+    lexer: Lexer<'a>,
+    options: ParseOptions,
+    cancel: Option<Arc<AtomicBool>>,
+  ) -> Parser<'a> {
+    Parser {
+      lexer,
+      buf: Vec::new(),
+      next_tok_i: 0,
+      options,
+      allow_bare_ts_type_args: false,
+      strict_mode: 0,
+      in_function: 0,
+      new_target_allowed: 0,
+      super_prop_allowed: 0,
+      super_call_allowed: 0,
+      class_is_derived: Vec::new(),
+      in_iteration: 0,
+      in_switch: 0,
+      labels: Vec::new(),
+      cancel,
+    }
+  }
+
+  pub fn options(&self) -> ParseOptions {
+    self.options
+  }
+
+  pub fn dialect(&self) -> Dialect {
+    self.options.dialect
+  }
+
+  pub fn source_type(&self) -> SourceType {
+    self.options.source_type
+  }
+
+  pub fn is_module(&self) -> bool {
+    matches!(self.source_type(), SourceType::Module)
+  }
+
+  pub fn is_strict_mode(&self) -> bool {
+    self.is_module() || self.strict_mode > 0
+  }
+
+  pub fn allows_jsx(&self) -> bool {
+    self.dialect().allows_jsx()
+  }
+
+  pub fn is_typescript(&self) -> bool {
+    self.dialect().is_typescript()
+  }
+
+  pub fn allows_angle_bracket_type_assertions(&self) -> bool {
+    self.dialect().allows_angle_bracket_type_assertions()
+  }
+
+  pub fn is_strict_ecmascript(&self) -> bool {
+    self.dialect().is_strict_ecmascript()
+  }
+
+  pub fn should_recover(&self) -> bool {
+    !self.is_strict_ecmascript()
+  }
+
+  pub(crate) fn is_strict_mode_reserved_word(name: &str) -> bool {
+    matches!(
+      name,
+      "implements"
+        | "interface"
+        | "let"
+        | "package"
+        | "private"
+        | "protected"
+        | "public"
+        | "static"
+        | "yield"
+    )
+  }
+
+  pub(crate) fn is_strict_mode_restricted_binding_identifier(name: &str) -> bool {
+    matches!(name, "eval" | "arguments")
+  }
+
+  pub(crate) fn is_strict_mode_restricted_assignment_target(name: &str) -> bool {
+    // ES strict mode: `eval` and `arguments` are not valid assignment targets.
+    Self::is_strict_mode_restricted_binding_identifier(name)
+  }
+
+  pub(crate) fn validate_strict_binding_identifier_name(
+    &self,
+    loc: Loc,
+    name: &str,
+  ) -> SyntaxResult<()> {
+    if self.is_strict_ecmascript() && self.is_strict_mode() {
+      if Self::is_strict_mode_reserved_word(name)
+        || Self::is_strict_mode_restricted_binding_identifier(name)
+      {
+        return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
+      }
+    }
+    Ok(())
+  }
+
+  fn validate_strict_assignment_target_name(&self, loc: Loc, name: &str) -> SyntaxResult<()> {
+    if self.is_strict_ecmascript()
+      && self.is_strict_mode()
+      && Self::is_strict_mode_restricted_assignment_target(name)
+    {
+      return Err(loc.error(
+        SyntaxErrorType::ExpectedSyntax(
+          "assignment to `eval` or `arguments` is not allowed in strict mode",
+        ),
+        None,
+      ));
+    }
+    Ok(())
+  }
+
+  pub(crate) fn validate_strict_assignment_target_expr(
+    &self,
+    expr: &Node<Expr>,
+  ) -> SyntaxResult<()> {
+    if !self.is_strict_ecmascript() || !self.is_strict_mode() {
+      return Ok(());
+    }
+    match expr.stx.as_ref() {
+      Expr::Id(id) => self.validate_strict_assignment_target_name(expr.loc, &id.stx.name),
+      Expr::IdPat(id) => self.validate_strict_assignment_target_name(id.loc, &id.stx.name),
+      Expr::ArrPat(arr) => {
+        for elem in arr.stx.elements.iter() {
+          if let Some(elem) = elem.as_ref() {
+            self.validate_strict_assignment_target_pat(&elem.target)?;
+          }
+        }
+        if let Some(rest) = arr.stx.rest.as_ref() {
+          self.validate_strict_assignment_target_pat(rest)?;
+        }
+        Ok(())
+      }
+      Expr::ObjPat(obj) => {
+        for prop in obj.stx.properties.iter() {
+          self.validate_strict_assignment_target_pat(&prop.stx.target)?;
+        }
+        if let Some(rest) = obj.stx.rest.as_ref() {
+          self.validate_strict_assignment_target_pat(rest)?;
+        }
+        Ok(())
+      }
+      _ => Ok(()),
+    }
+  }
+
+  pub(crate) fn validate_strict_assignment_target_pat(&self, pat: &Node<Pat>) -> SyntaxResult<()> {
+    if !self.is_strict_ecmascript() || !self.is_strict_mode() {
+      return Ok(());
+    }
+    match pat.stx.as_ref() {
+      Pat::Id(id) => self.validate_strict_assignment_target_name(id.loc, &id.stx.name),
+      Pat::Arr(arr) => {
+        for elem in arr.stx.elements.iter() {
+          if let Some(elem) = elem.as_ref() {
+            self.validate_strict_assignment_target_pat(&elem.target)?;
+          }
+        }
+        if let Some(rest) = arr.stx.rest.as_ref() {
+          self.validate_strict_assignment_target_pat(rest)?;
+        }
+        Ok(())
+      }
+      Pat::Obj(obj) => {
+        for prop in obj.stx.properties.iter() {
+          self.validate_strict_assignment_target_pat(&prop.stx.target)?;
+        }
+        if let Some(rest) = obj.stx.rest.as_ref() {
+          self.validate_strict_assignment_target_pat(rest)?;
+        }
+        Ok(())
+      }
+      Pat::AssignTarget(expr) => self.validate_strict_assignment_target_expr(expr),
+    }
+  }
+
+  fn token_continues_expression_after_directive_string(next: &Token) -> bool {
+    // Tagged templates allow line terminators between the tag expression and the template.
+    if matches!(
+      next.typ,
+      TT::LiteralTemplatePartString | TT::LiteralTemplatePartStringEnd
+    ) {
+      return true;
+    }
+    // Postfix update operators require no line terminator between operand and operator.
+    if matches!(next.typ, TT::PlusPlus | TT::HyphenHyphen) {
+      return !next.preceded_by_line_terminator;
+    }
+    MULTARY_OPERATOR_MAPPING
+      .get(&next.typ)
+      .is_some_and(|op| !matches!(op.arity, Arity::Unary))
+  }
+
+  pub(crate) fn has_use_strict_directive_in_prologue(&mut self, end: TT) -> SyntaxResult<bool> {
+    let checkpoint = self.checkpoint();
+    let mut found = false;
+    loop {
+      let t = self.peek();
+      if t.typ != TT::LiteralString {
+        break;
+      }
+      let value = self.lit_str_val_with_mode(LexMode::Standard)?;
+      let next = self.peek();
+      if Self::token_continues_expression_after_directive_string(&next) {
+        break;
+      }
+      if value == "use strict" {
+        found = true;
+      }
+      if next.typ == TT::Semicolon {
+        self.consume();
+      }
+      if self.peek().typ == end {
+        break;
+      }
+    }
+    self.restore_checkpoint(checkpoint);
+    Ok(found)
+  }
+
+  pub(crate) fn has_use_strict_directive_in_block_body(&mut self) -> SyntaxResult<bool> {
+    let checkpoint = self.checkpoint();
+    self.require(TT::BraceOpen)?;
+    let found = self.has_use_strict_directive_in_prologue(TT::BraceClose)?;
+    self.restore_checkpoint(checkpoint);
+    Ok(found)
+  }
+
+  pub fn source_range(&self) -> Loc {
+    self.lexer.source_range()
+  }
+
+  pub fn bytes(&self, loc: Loc) -> &str {
+    let limit = self.source_range().1;
+    if loc.0 > loc.1 {
+      return "";
+    }
+    let start = loc.0.min(limit);
+    let end = loc.1.min(limit);
+    if start >= end {
+      ""
+    } else {
+      &self.lexer[Loc(start, end)]
+    }
+  }
+
+  pub fn str(&self, loc: Loc) -> &str {
+    self.bytes(loc)
+  }
+
+  pub fn string(&self, loc: Loc) -> String {
+    self.str(loc).to_string()
+  }
+
+  pub fn checkpoint(&self) -> ParserCheckpoint {
+    ParserCheckpoint {
+      next_tok_i: self.next_tok_i,
+    }
+  }
+
+  pub fn since_checkpoint(&self, checkpoint: &ParserCheckpoint) -> Loc {
+    // `Lexer::next()` tracks the end of the **furthest lexed** token, not the end of the
+    // **furthest consumed** token. Many parser routines use lookahead (`peek`, `peek_n`) which
+    // lexes tokens into `buf` without advancing `next_tok_i`; using `lexer.next()` would
+    // incorrectly widen node spans to include unconsumed terminators (e.g. `)` that ends the
+    // surrounding call expression).
+    //
+    // For accurate node locations (and correct downstream source slicing, e.g. in `vm-js` lazy
+    // function parsing), compute the span based on the last token actually consumed since the
+    // checkpoint.
+    let start = self
+      .buf
+      .get(checkpoint.next_tok_i)
+      .map(|tok| tok.token.loc.0)
+      .unwrap_or_else(|| self.lexer.next());
+    let end = if self.next_tok_i > checkpoint.next_tok_i {
+      self
+        .buf
+        .get(self.next_tok_i.saturating_sub(1))
+        .map(|tok| tok.token.loc.1)
+        .unwrap_or(start)
+    } else {
+      start
+    };
+    Loc(start, end)
+  }
+
+  pub fn restore_checkpoint(&mut self, checkpoint: ParserCheckpoint) {
+    self.next_tok_i = checkpoint.next_tok_i;
+  }
+
+  fn panic_if_cancelled(&self) {
+    if let Some(cancel) = self.cancel.as_ref() {
+      if cancel.load(AtomicOrdering::Relaxed) {
+        std::panic::panic_any(crate::ParseCancelled);
+      }
+    }
+  }
+
+  fn reset_to(&mut self, n: usize) {
+    self.next_tok_i = n;
+    self.buf.truncate(n);
+    match self.buf.last() {
+      Some(t) => self.lexer.set_next(t.token.loc.1),
+      None => self.lexer.set_next(0),
+    };
+  }
+
+  fn forward<K: FnOnce(&Token) -> bool>(&mut self, mode: LexMode, keep: K) -> (bool, Token) {
+    self.panic_if_cancelled();
+    if self
+      .buf
+      .get(self.next_tok_i)
+      .is_some_and(|t| t.lex_mode != mode)
+    {
+      self.reset_to(self.next_tok_i);
+    }
+    assert!(self.next_tok_i <= self.buf.len());
+    if self.buf.len() == self.next_tok_i {
+      let dialect = self.dialect();
+      let token = lex_next(&mut self.lexer, mode, dialect);
+      self.buf.push(BufferedToken {
+        token,
+        lex_mode: mode,
+      });
+    }
+    let t = self.buf[self.next_tok_i].token.clone();
+    let k = keep(&t);
+    if k {
+      self.next_tok_i += 1;
+    };
+    (k, t)
+  }
+
+  pub fn consume_with_mode(&mut self, mode: LexMode) -> Token {
+    self.forward(mode, |_| true).1
+  }
+
+  pub fn consume(&mut self) -> Token {
+    self.consume_with_mode(LexMode::Standard)
+  }
+
+  /// Consumes the next token regardless of type, and returns its raw source code as a string.
+  pub fn consume_as_string(&mut self) -> String {
+    let loc = self.consume().loc;
+    self.string(loc)
+  }
+
+  pub fn peek_with_mode(&mut self, mode: LexMode) -> Token {
+    self.forward(mode, |_| false).1
+  }
+
+  pub fn peek(&mut self) -> Token {
+    self.peek_with_mode(LexMode::Standard)
+  }
+
+  pub fn peek_n_with_mode<const N: usize>(&mut self, modes: [LexMode; N]) -> [Token; N] {
+    let cp = self.checkpoint();
+    let tokens = modes
+      .into_iter()
+      .map(|m| self.forward(m, |_| true).1)
+      .collect::<Vec<_>>();
+    let tokens: [Token; N] = tokens.try_into().unwrap();
+    self.restore_checkpoint(cp);
+    tokens
+  }
+
+  pub fn peek_n<const N: usize>(&mut self) -> [Token; N] {
+    let cp = self.checkpoint();
+    let tokens = (0..N)
+      .map(|_| self.forward(LexMode::Standard, |_| true).1)
+      .collect::<Vec<_>>();
+    let tokens: [Token; N] = tokens.try_into().unwrap();
+    self.restore_checkpoint(cp);
+    tokens
+  }
+
+  pub fn maybe_consume_with_mode(&mut self, typ: TT, mode: LexMode) -> MaybeToken {
+    let (matched, t) = self.forward(mode, |t| t.typ == typ);
+    MaybeToken {
+      typ,
+      matched,
+      loc: t.loc,
+    }
+  }
+
+  pub fn consume_if(&mut self, typ: TT) -> MaybeToken {
+    self.maybe_consume_with_mode(typ, LexMode::Standard)
+  }
+
+  pub fn consume_if_pred<F: FnOnce(&Token) -> bool>(&mut self, pred: F) -> MaybeToken {
+    let (matched, t) = self.forward(LexMode::Standard, pred);
+    MaybeToken {
+      typ: t.typ,
+      matched,
+      loc: t.loc,
+    }
+  }
+
+  pub fn require_with_mode(&mut self, typ: TT, mode: LexMode) -> SyntaxResult<Token> {
+    let t = self.consume_with_mode(mode);
+    if t.typ != typ {
+      Err(t.error(SyntaxErrorType::RequiredTokenNotFound(typ)))
+    } else {
+      Ok(t)
+    }
+  }
+
+  pub fn require_predicate<P: FnOnce(TT) -> bool>(
+    &mut self,
+    pred: P,
+    expected: &'static str,
+  ) -> SyntaxResult<Token> {
+    let t = self.consume_with_mode(LexMode::Standard);
+    if !pred(t.typ) {
+      Err(t.error(SyntaxErrorType::ExpectedSyntax(expected)))
+    } else {
+      Ok(t)
+    }
+  }
+
+  pub fn require(&mut self, typ: TT) -> SyntaxResult<Token> {
+    self.require_with_mode(typ, LexMode::Standard)
+  }
+
+  /// Require ChevronRight with support for splitting >> and >>> tokens
+  /// This is needed for parsing nested generic types like List<List<T>>
+  pub fn require_chevron_right(&mut self) -> SyntaxResult<Token> {
+    let t = self.peek();
+    match t.typ {
+      TT::ChevronRight => {
+        // Normal case - consume and return
+        Ok(self.consume())
+      }
+      TT::ChevronRightEquals => {
+        // Split >= into > and =
+        self.consume();
+        let equals_token = Token {
+          typ: TT::Equals,
+          loc: Loc(t.loc.1 - 1, t.loc.1),
+          preceded_by_line_terminator: false,
+        };
+        self.buf.insert(
+          self.next_tok_i,
+          BufferedToken {
+            token: equals_token,
+            lex_mode: LexMode::Standard,
+          },
+        );
+        Ok(Token {
+          typ: TT::ChevronRight,
+          loc: Loc(t.loc.0, t.loc.0 + 1),
+          preceded_by_line_terminator: t.preceded_by_line_terminator,
+        })
+      }
+      TT::ChevronRightChevronRight => {
+        // Split >> into > and >
+        self.consume(); // Consume the >>
+                        // Create a replacement > token to push back
+        let split_token = Token {
+          typ: TT::ChevronRight,
+          loc: Loc(t.loc.0 + 1, t.loc.1), // Second > starts one char later
+          preceded_by_line_terminator: false,
+        };
+        // Insert the second > into the buffer at current position
+        self.buf.insert(
+          self.next_tok_i,
+          BufferedToken {
+            token: split_token,
+            lex_mode: LexMode::Standard,
+          },
+        );
+        // Return a token representing the first >
+        Ok(Token {
+          typ: TT::ChevronRight,
+          loc: Loc(t.loc.0, t.loc.0 + 1),
+          preceded_by_line_terminator: t.preceded_by_line_terminator,
+        })
+      }
+      TT::ChevronRightChevronRightEquals => {
+        // Split >>= into >, >, =
+        self.consume();
+        let equals_token = Token {
+          typ: TT::Equals,
+          loc: Loc(t.loc.1 - 1, t.loc.1),
+          preceded_by_line_terminator: false,
+        };
+        let second = Token {
+          typ: TT::ChevronRight,
+          loc: Loc(t.loc.0 + 1, t.loc.1 - 1),
+          preceded_by_line_terminator: false,
+        };
+        // Insert in reverse order so the second > is seen before =
+        self.buf.insert(
+          self.next_tok_i,
+          BufferedToken {
+            token: equals_token,
+            lex_mode: LexMode::Standard,
+          },
+        );
+        self.buf.insert(
+          self.next_tok_i,
+          BufferedToken {
+            token: second,
+            lex_mode: LexMode::Standard,
+          },
+        );
+        Ok(Token {
+          typ: TT::ChevronRight,
+          loc: Loc(t.loc.0, t.loc.0 + 1),
+          preceded_by_line_terminator: t.preceded_by_line_terminator,
+        })
+      }
+      TT::ChevronRightChevronRightChevronRight => {
+        // Split >>> into > and >>
+        self.consume(); // Consume the >>>
+                        // Create a >> token to push back
+        let split_token = Token {
+          typ: TT::ChevronRightChevronRight,
+          loc: Loc(t.loc.0 + 1, t.loc.1), // >> starts one char later
+          preceded_by_line_terminator: false,
+        };
+        // Insert the >> into the buffer at current position
+        self.buf.insert(
+          self.next_tok_i,
+          BufferedToken {
+            token: split_token,
+            lex_mode: LexMode::Standard,
+          },
+        );
+        // Return a token representing the first >
+        Ok(Token {
+          typ: TT::ChevronRight,
+          loc: Loc(t.loc.0, t.loc.0 + 1),
+          preceded_by_line_terminator: t.preceded_by_line_terminator,
+        })
+      }
+      TT::ChevronRightChevronRightChevronRightEquals => {
+        // Split >>>= into >, >>, =
+        self.consume();
+        let equals_token = Token {
+          typ: TT::Equals,
+          loc: Loc(t.loc.1 - 1, t.loc.1),
+          preceded_by_line_terminator: false,
+        };
+        let split_token = Token {
+          typ: TT::ChevronRightChevronRight,
+          loc: Loc(t.loc.0 + 1, t.loc.1 - 1),
+          preceded_by_line_terminator: false,
+        };
+        self.buf.insert(
+          self.next_tok_i,
+          BufferedToken {
+            token: equals_token,
+            lex_mode: LexMode::Standard,
+          },
+        );
+        self.buf.insert(
+          self.next_tok_i,
+          BufferedToken {
+            token: split_token,
+            lex_mode: LexMode::Standard,
+          },
+        );
+        Ok(Token {
+          typ: TT::ChevronRight,
+          loc: Loc(t.loc.0, t.loc.0 + 1),
+          preceded_by_line_terminator: t.preceded_by_line_terminator,
+        })
+      }
+      _ => Err(t.error(SyntaxErrorType::RequiredTokenNotFound(TT::ChevronRight))),
+    }
+  }
+
+  /// Require and consume an identifier, returning its string value
+  pub fn require_identifier(&mut self) -> SyntaxResult<String> {
+    let t = self.consume();
+    if t.typ != TT::Identifier {
+      return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+    }
+    Ok(self.string(t.loc))
+  }
+
+  /// Require an identifier, but allow TypeScript type keywords as identifiers
+  /// TypeScript allows unreserved/contextual keywords like "as", "of", etc. as identifiers in some contexts.
+  /// For error recovery, it also allows type keywords like "any", "string", "number", etc. as identifiers.
+  pub fn require_identifier_or_ts_keyword(&mut self) -> SyntaxResult<String> {
+    let t = self.consume();
+    // Allow regular identifiers and unreserved/contextual keywords.
+    if t.typ == TT::Identifier
+      || UNRESERVED_KEYWORDS.contains(&t.typ)
+      || (t.typ == TT::KeywordAwait && !self.is_module())
+      // NOTE: `yield` is treated as an identifier outside generator contexts for parse recovery.
+      || t.typ == TT::KeywordYield
+    {
+      return Ok(self.string(t.loc));
+    }
+    // Allow TypeScript type keywords as identifiers
+    match t.typ {
+      TT::KeywordAny
+      | TT::KeywordBooleanType
+      | TT::KeywordNumberType
+      | TT::KeywordStringType
+      | TT::KeywordSymbolType
+      | TT::KeywordVoid
+      | TT::KeywordNever
+      | TT::KeywordUndefinedType
+      | TT::KeywordUnknown
+      | TT::KeywordObjectType
+      | TT::KeywordBigIntType => Ok(self.string(t.loc)),
+      _ => Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier"))),
+    }
+  }
+
+  /// Get string value of a template part literal
+  pub fn lit_template_part_str_val(&mut self) -> SyntaxResult<String> {
+    let t = self.require(TT::LiteralTemplatePartString)?;
+    let raw = self.str(t.loc);
+    // Template part tokens include the surrounding delimiters, e.g.:
+    // - head:   `foo${
+    // - middle: bar${
+    // - tail:   baz`
+    //
+    // This helper is used by the type-expression parser for template literal
+    // types, where we want the *cooked* string content of the chunk.
+    let raw = raw.strip_prefix('`').unwrap_or(raw);
+    let Some(body) = raw.strip_suffix("${") else {
+      return Err(t.error(SyntaxErrorType::ExpectedSyntax(
+        "template literal continuation",
+      )));
+    };
+
+    // Be permissive: TypeScript allows parsing templates with invalid escape
+    // sequences (semantic errors are reported later). If decoding fails, fall
+    // back to the raw body so we still produce an AST.
+    Ok(
+      crate::parse::expr::lit::normalise_literal_string_or_template_inner(body)
+        .unwrap_or_else(|| body.to_string()),
+    )
+  }
+}

@@ -1,0 +1,50 @@
+[package]
+name = "optimize-js"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+typed = ["dep:typecheck-ts", "dep:types-ts-interned"]
+serde = [
+  "dep:serde",
+  "ahash/serde",
+  "dashmap/serde",
+  "num-bigint/serde",
+  "parse-js/serde",
+]
+
+[dependencies]
+ahash = { workspace = true }
+dashmap = { workspace = true }
+derive-visitor = { workspace = true }
+itertools = { workspace = true }
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
+once_cell = { workspace = true }
+diagnostics = { workspace = true }
+parse-js = { workspace = true, features = ["diagnostics"] }
+semantic-js = { workspace = true }
+serde = { workspace = true, optional = true }
+emit-js = { workspace = true }
+hir-js = { workspace = true }
+typecheck-ts = { workspace = true, optional = true }
+types-ts-interned = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "analysis"
+harness = false
+
+[[bench]]
+name = "optimize"
+harness = false
+
+[[bench]]
+name = "typed"
+harness = false

@@ -7,7 +7,7 @@ use vm_js::{
 // - can participate in `[[Prototype]]` chains
 //
 // vm-js has its own unit tests for this behaviour, but keeping a small high-level check here helps
-// catch accidental regressions when bumping the engines/ecma-rs submodule.
+// catch accidental regressions when updating vendor/ecma-rs.
 
 #[test]
 fn function_objects_support_properties_and_prototype_chain_smoke() -> Result<(), VmError> {

@@ -1,0 +1,212 @@
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+fn new_runtime() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
+#[test]
+fn closure_captures_param() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script("function make(x){ return function(){ return x; }; } var f = make(3); f()")
+    .unwrap();
+  assert_eq!(value, Value::Number(3.0));
+}
+
+#[test]
+fn closure_mutates_captured_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script("function make(){ let x = 1; return function(){ x = 2; return x; }; } make()()")
+    .unwrap();
+  assert_eq!(value, Value::Number(2.0));
+}
+
+#[test]
+fn multiple_closures_share_captured_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      "function make(){ let x = 0; function inc(){ x = x + 1; } function get(){ return x; } return [inc, get]; } var a = make(); a[0](); a[0](); a[1]()",
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(2.0));
+}
+
+#[test]
+fn closure_capture_survives_gc() {
+  let mut rt = new_runtime();
+  rt
+    .exec_script("function make(){ let x = {a:3}; return function(){ return x.a; }; } var f = make();")
+    .unwrap();
+
+  rt.heap.collect_garbage();
+
+  let value = rt.exec_script("f()").unwrap();
+  assert_eq!(value, Value::Number(3.0));
+}
+
+#[test]
+fn function_decl_closure_captures_lexical_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script("function make(){ let x = 1; function inner(){ return x; } return inner; } make()()")
+    .unwrap();
+  assert_eq!(value, Value::Number(1.0));
+}
+
+#[test]
+#[ignore = "arrow expressions in function bodies are not yet supported by the parser"]
+fn arrow_captures_lexical_this_across_calls_and_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script("function makeArrow(){ return (x) => this; }")?;
+  let make_arrow = rt.exec_script("makeArrow")?;
+  let make_arrow_root = rt.heap.add_root(make_arrow)?;
+
+  let (this_obj, arrow_root) = {
+    let mut scope = rt.heap.scope();
+
+    let this_obj = scope.alloc_object()?;
+    // Root the this value while calling `makeArrow`; the call itself may allocate while creating
+    // the returned arrow.
+    scope.push_root(Value::Object(this_obj))?;
+
+    let make_arrow = scope
+      .heap()
+      .get_root(make_arrow_root)
+      .expect("makeArrow root missing");
+    let arrow = rt
+      .vm
+      .call_without_host(&mut scope, make_arrow, Value::Object(this_obj), &[])?;
+    let arrow_root = scope.heap_mut().add_root(arrow)?;
+    (this_obj, arrow_root)
+  };
+
+  // After dropping stack roots, `this_obj` is only reachable through the arrow's captured this.
+  rt.heap.collect_garbage();
+  assert!(
+    rt.heap.is_valid_object(this_obj),
+    "arrow should keep captured lexical this alive across GC"
+  );
+
+  {
+    let arrow = rt.heap.get_root(arrow_root).expect("arrow root missing");
+    let mut scope = rt.heap.scope();
+    let value = rt.vm.call_without_host(&mut scope, arrow, Value::Undefined, &[])?;
+    assert_eq!(value, Value::Object(this_obj));
+  }
+
+  rt.heap.remove_root(make_arrow_root);
+  rt.heap.remove_root(arrow_root);
+  Ok(())
+}
+
+#[test]
+#[ignore = "arrow expressions in function bodies are not yet supported by the parser"]
+fn arrow_captures_lexical_new_target_across_calls_and_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // Return a constructor function that returns an arrow capturing `new.target`.
+  //
+  // Use a non-constructor object as `new_target` so the captured value cannot be kept alive via the
+  // constructed `this` object's prototype chain; the only GC edge should be the arrow's captured
+  // lexical `new.target`.
+  //
+  let outer = rt.exec_script("(function outer(){ return (x) => new.target; })")?;
+  let outer_root = rt.heap.add_root(outer)?;
+
+  let new_target = rt.exec_script("({})")?;
+  let Value::Object(new_target_obj) = new_target else {
+    panic!("expected new_target to evaluate to an object, got {new_target:?}");
+  };
+  let new_target_root = rt.heap.add_root(new_target)?;
+
+  let arrow_root = {
+    let mut scope = rt.heap.scope();
+    let outer = scope.heap().get_root(outer_root).expect("outer root missing");
+    let new_target = scope
+      .heap()
+      .get_root(new_target_root)
+      .expect("new_target root missing");
+    let arrow = rt
+      .vm
+      .construct_without_host(&mut scope, outer, &[], new_target)?;
+    scope.heap_mut().add_root(arrow)?
+  };
+
+  // `new_target_obj` is no longer rooted directly; it should stay alive via the arrow's captured
+  // lexical `new.target`.
+  rt.heap.remove_root(outer_root);
+  rt.heap.remove_root(new_target_root);
+  rt.heap.collect_garbage();
+  assert!(
+    rt.heap.is_valid_object(new_target_obj),
+    "arrow should keep captured lexical new.target alive across GC"
+  );
+
+  {
+    let arrow = rt.heap.get_root(arrow_root).expect("arrow root missing");
+    let mut scope = rt.heap.scope();
+    let value = rt.vm.call_without_host(&mut scope, arrow, Value::Undefined, &[])?;
+    assert_eq!(value, Value::Object(new_target_obj));
+  }
+
+  rt.heap.remove_root(arrow_root);
+  Ok(())
+}
+
+#[test]
+fn arrow_functions_are_not_constructable() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"new ((x) => x)"#)
+    .expect_err("constructing an arrow function should fail");
+  let thrown = match err {
+    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => value,
+    other => panic!("expected throw, got {other:?}"),
+  };
+  let Value::Object(obj) = thrown else {
+    panic!("expected thrown object, got {thrown:?}");
+  };
+  let type_error_proto = rt.realm().intrinsics().type_error_prototype();
+  assert_eq!(rt.heap.object_prototype(obj)?, Some(type_error_proto));
+  Ok(())
+}
+
+#[test]
+#[ignore = "arrow expressions in function bodies are not yet supported by the parser"]
+fn arrow_this_is_lexical_and_ignores_call_site() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var a = {};
+        var b = {};
+        function makeArrow(){ return (x) => this; }
+        var arrow = makeArrow.call(a);
+        b.f = arrow;
+        (arrow.call(b) === a) && (b.f() === a)
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+#[ignore = "arrow expressions in function bodies are not yet supported by the parser"]
+fn arrow_new_target_is_lexical_undefined_in_plain_call() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function outer(){ return (x) => new.target; }
+        var arrow = outer();
+        arrow() === undefined
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

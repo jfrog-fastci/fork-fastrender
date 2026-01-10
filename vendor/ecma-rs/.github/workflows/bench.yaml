@@ -1,0 +1,48 @@
+name: Run benchmark and upload results
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  bench:
+    # Use a supported runner; benchmark comparisons remain within the same workflow run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: echo "VERSION=$([[ \"$GITHUB_REF\" == refs/tags/v* ]] && echo ${GITHUB_REF#refs/tags/v} || echo '0.0.0')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: Install bench dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnuplot jq bc
+
+      - name: Build bench
+        working-directory: ./bench
+        run: ./build
+
+      - name: Set up Backblaze B2 CLI
+        uses: wilsonzlin/setup-b2@v3
+
+      - name: Run bench and upload results
+        working-directory: ./bench
+        run: |
+          b2 authorize-account ${{ secrets.B2_KEY_ID }} ${{ secrets.B2_APPLICATION_KEY }}
+          ./run
+          ./graph
+          b2 sync ./graphs/ b2://${{ secrets.B2_BUCKET_NAME }}/minify-js/bench/${{ steps.version.outputs.VERSION }}/
+          b2 sync ./results/ b2://${{ secrets.B2_BUCKET_NAME }}/minify-js/bench/${{ steps.version.outputs.VERSION }}/

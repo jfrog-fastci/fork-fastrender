@@ -1,0 +1,6 @@
+{
+  "compilerOptions": {
+    "lib": ["lib.es2015.d.ts", "WebWorker"],
+  },
+  "include": ["src/main.ts"],
+}

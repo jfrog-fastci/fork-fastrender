@@ -1,0 +1,151 @@
+{
+  "$t": "Binary",
+  "left": {
+    "$t": "ArrowFunc",
+    "func": {
+      "arrow": true,
+      "async_": false,
+      "body": {
+        "Block": []
+      },
+      "generator": false,
+      "parameters": [
+        {
+          "accessibility": null,
+          "decorators": [],
+          "default_value": null,
+          "optional": false,
+          "pattern": {
+            "pat": {
+              "$t": "Obj",
+              "properties": [],
+              "rest": null
+            }
+          },
+          "readonly": false,
+          "rest": false,
+          "type_annotation": null
+        }
+      ],
+      "return_type": null,
+      "type_parameters": null
+    }
+  },
+  "operator": "Comma",
+  "right": {
+    "$t": "ArrowFunc",
+    "func": {
+      "arrow": true,
+      "async_": false,
+      "body": {
+        "Expression": {
+          "$t": "Binary",
+          "left": {
+            "$t": "LitNum",
+            "value": 1.0
+          },
+          "operator": "Comma",
+          "right": {
+            "$t": "ArrowFunc",
+            "func": {
+              "arrow": true,
+              "async_": false,
+              "body": {
+                "Expression": {
+                  "$t": "LitArr",
+                  "elements": []
+                }
+              },
+              "generator": false,
+              "parameters": [
+                {
+                  "accessibility": null,
+                  "decorators": [],
+                  "default_value": null,
+                  "optional": false,
+                  "pattern": {
+                    "pat": {
+                      "$t": "Obj",
+                      "properties": [
+                        {
+                          "default_value": null,
+                          "key": {
+                            "Direct": {
+                              "key": "a",
+                              "tt": "Identifier"
+                            }
+                          },
+                          "shorthand": true,
+                          "target": {
+                            "$t": "Id",
+                            "name": "a"
+                          }
+                        },
+                        {
+                          "default_value": null,
+                          "key": {
+                            "Direct": {
+                              "key": "b",
+                              "tt": "Identifier"
+                            }
+                          },
+                          "shorthand": true,
+                          "target": {
+                            "$t": "Id",
+                            "name": "b"
+                          }
+                        }
+                      ],
+                      "rest": null
+                    }
+                  },
+                  "readonly": false,
+                  "rest": false,
+                  "type_annotation": null
+                }
+              ],
+              "return_type": null,
+              "type_parameters": null
+            }
+          }
+        }
+      },
+      "generator": false,
+      "parameters": [
+        {
+          "accessibility": null,
+          "decorators": [],
+          "default_value": null,
+          "optional": false,
+          "pattern": {
+            "pat": {
+              "$t": "Obj",
+              "properties": [
+                {
+                  "default_value": null,
+                  "key": {
+                    "Direct": {
+                      "key": "a",
+                      "tt": "Identifier"
+                    }
+                  },
+                  "shorthand": true,
+                  "target": {
+                    "$t": "Id",
+                    "name": "a"
+                  }
+                }
+              ],
+              "rest": null
+            }
+          },
+          "readonly": false,
+          "rest": false,
+          "type_annotation": null
+        }
+      ],
+      "return_type": null,
+      "type_parameters": null
+    }
+  }
+}

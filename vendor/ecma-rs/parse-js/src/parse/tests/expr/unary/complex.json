@@ -1,0 +1,30 @@
+{
+  "$t": "Unary",
+  "argument": {
+    "$t": "Unary",
+    "argument": {
+      "$t": "Unary",
+      "argument": {
+        "$t": "Unary",
+        "argument": {
+          "$t": "Member",
+          "left": {
+            "$t": "Member",
+            "left": {
+              "$t": "Id",
+              "name": "abc"
+            },
+            "optional_chaining": true,
+            "right": "def"
+          },
+          "optional_chaining": false,
+          "right": "ghi"
+        },
+        "operator": "BitwiseNot"
+      },
+      "operator": "PrefixIncrement"
+    },
+    "operator": "LogicalNot"
+  },
+  "operator": "LogicalNot"
+}

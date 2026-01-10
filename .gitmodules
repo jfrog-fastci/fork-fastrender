@@ -4,9 +4,6 @@
 [submodule "specs/csswg-drafts"]
 	path = specs/csswg-drafts
 	url = https://github.com/w3c/csswg-drafts.git
-[submodule "engines/ecma-rs"]
-	path = engines/ecma-rs
-	url = https://github.com/wilsonzlin/ecma-rs.git
 [submodule "specs/tc39-ecma262"]
 	path = specs/tc39-ecma262
 	url = https://github.com/tc39/ecma262.git
@@ -22,3 +19,12 @@
 [submodule "specs/whatwg-fetch"]
 	path = specs/whatwg-fetch
 	url = https://github.com/whatwg/fetch.git
+[submodule "vendor/ecma-rs/test262/data"]
+	path = vendor/ecma-rs/test262/data
+	url = https://github.com/tc39/test262-parser-tests.git
+[submodule "vendor/ecma-rs/test262-semantic/data"]
+	path = vendor/ecma-rs/test262-semantic/data
+	url = https://github.com/tc39/test262.git
+[submodule "vendor/ecma-rs/parse-js/tests/TypeScript"]
+	path = vendor/ecma-rs/parse-js/tests/TypeScript
+	url = https://github.com/microsoft/TypeScript.git

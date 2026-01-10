@@ -1,0 +1,15 @@
+{
+  "$t": "Cond",
+  "alternate": {
+    "$t": "Id",
+    "name": "c"
+  },
+  "consequent": {
+    "$t": "Id",
+    "name": "b"
+  },
+  "test": {
+    "$t": "Id",
+    "name": "a"
+  }
+}

@@ -1,0 +1,796 @@
+use std::sync::Arc;
+
+use diagnostics::{FileId, Span, TextRange};
+use typecheck_ts::check::expr::resolve_call;
+use typecheck_ts::check::instantiate::InstantiationCache;
+use typecheck_ts::check::overload::CallArgType;
+use typecheck_ts::codes;
+use types_ts_interned::{
+  Param, RelateCtx, Signature, TypeId, TypeKind, TypeOptions, TypeParamDecl, TypeParamId, TypeStore,
+};
+
+fn span() -> Span {
+  Span::new(FileId(0), TextRange::new(0, 0))
+}
+
+fn param(name: &str, ty: TypeId, store: &Arc<TypeStore>) -> Param {
+  Param {
+    name: Some(store.intern_name(name)),
+    ty,
+    optional: false,
+    rest: false,
+  }
+}
+
+#[test]
+fn selects_literal_overload() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let click = store.intern_type(TypeKind::StringLiteral(store.intern_name("click")));
+  let dom_ret = store.intern_type(TypeKind::StringLiteral(store.intern_name("dom")));
+  let fallback_ret = store.intern_type(TypeKind::StringLiteral(store.intern_name("fallback")));
+
+  let handler_sig = Signature {
+    params: vec![param("ev", primitives.number, &store)],
+    ret: primitives.void,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let handler = store.intern_type(TypeKind::Callable {
+    overloads: vec![store.intern_signature(handler_sig)],
+  });
+
+  let literal_sig = Signature {
+    params: vec![
+      param("type", click, &store),
+      param("handler", handler, &store),
+    ],
+    ret: dom_ret,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let literal_id = store.intern_signature(literal_sig);
+
+  let wide_sig = Signature {
+    params: vec![
+      param("type", primitives.string, &store),
+      param("handler", handler, &store),
+    ],
+    ret: fallback_ret,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let wide_id = store.intern_signature(wide_sig);
+
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![literal_id, wide_id],
+  });
+
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    callable,
+    &[CallArgType::new(click), CallArgType::new(handler)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(resolution.diagnostics.is_empty());
+  assert_eq!(resolution.signature, Some(literal_id));
+  assert_eq!(resolution.return_type, dom_ret);
+}
+
+#[test]
+fn infers_generic_return_type() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let t_param = types_ts_interned::TypeParamId(0);
+  let t_type = store.intern_type(TypeKind::TypeParam(t_param));
+  let sig = Signature {
+    params: vec![param("value", t_type, &store)],
+    ret: t_type,
+    type_params: vec![TypeParamDecl::new(t_param)],
+    this_param: None,
+  };
+  let sig_id = store.intern_signature(sig);
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_id],
+  });
+
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    callable,
+    &[CallArgType::new(primitives.number)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(resolution.diagnostics.is_empty());
+  assert!(resolution.signature.is_some());
+  assert_eq!(resolution.return_type, primitives.number);
+}
+
+#[test]
+fn reports_no_matching_overload_with_reasons() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let sig = Signature {
+    params: vec![param("value", primitives.number, &store)],
+    ret: primitives.number,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_id = store.intern_signature(sig);
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_id],
+  });
+
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    callable,
+    &[CallArgType::new(primitives.string)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(resolution.signature.is_none());
+  assert_eq!(resolution.return_type, primitives.number);
+  assert_eq!(resolution.diagnostics.len(), 1);
+  let diag = &resolution.diagnostics[0];
+  assert_eq!(diag.code.as_str(), codes::NO_OVERLOAD.as_str());
+  assert_eq!(diag.notes.len(), 1);
+  assert!(
+    diag.notes[0].contains("argument 1"),
+    "unexpected note: {}",
+    diag.notes[0]
+  );
+}
+
+#[test]
+fn selects_first_overload_on_tie() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let sig_a = Signature {
+    params: vec![param("value", primitives.string, &store)],
+    ret: primitives.boolean,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_a_id = store.intern_signature(sig_a);
+  let sig_b = Signature {
+    params: vec![param("value", primitives.string, &store)],
+    ret: primitives.number,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_b_id = store.intern_signature(sig_b);
+
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_a_id, sig_b_id],
+  });
+
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    callable,
+    &[CallArgType::new(primitives.string)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(resolution.diagnostics.is_empty());
+  assert_eq!(resolution.signature, Some(sig_a_id));
+  assert_eq!(resolution.return_type, primitives.boolean);
+}
+
+#[test]
+fn union_of_compatible_functions_is_callable() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let sig_a = Signature {
+    params: vec![param("value", primitives.number, &store)],
+    ret: primitives.string,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_a_id = store.intern_signature(sig_a);
+  let callable_a = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_a_id],
+  });
+
+  let sig_b = Signature {
+    params: vec![param("value", primitives.number, &store)],
+    ret: primitives.boolean,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_b_id = store.intern_signature(sig_b);
+  let callable_b = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_b_id],
+  });
+
+  let union = store.union(vec![callable_a, callable_b]);
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    union,
+    &[CallArgType::new(primitives.number)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(
+    resolution.diagnostics.is_empty(),
+    "unexpected diagnostics: {:?}",
+    resolution.diagnostics
+  );
+  assert!(resolution.signature.is_some());
+  assert_eq!(
+    resolution.return_type,
+    store.union(vec![primitives.string, primitives.boolean])
+  );
+}
+
+#[test]
+fn union_callables_drop_trailing_optional_parameters() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let sig_a = Signature {
+    params: vec![param("value", primitives.number, &store)],
+    ret: primitives.string,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_a_id = store.intern_signature(sig_a);
+  let callable_a = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_a_id],
+  });
+
+  let sig_b = Signature {
+    params: vec![
+      param("value", primitives.number, &store),
+      Param {
+        name: Some(store.intern_name("flag")),
+        ty: primitives.boolean,
+        optional: true,
+        rest: false,
+      },
+    ],
+    ret: primitives.boolean,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_b_id = store.intern_signature(sig_b);
+  let callable_b = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_b_id],
+  });
+
+  let union = store.union(vec![callable_a, callable_b]);
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    union,
+    &[CallArgType::new(primitives.number)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(
+    resolution.diagnostics.is_empty(),
+    "unexpected diagnostics: {:?}",
+    resolution.diagnostics
+  );
+  assert!(resolution.signature.is_some());
+  assert_eq!(
+    resolution.return_type,
+    store.union(vec![primitives.string, primitives.boolean])
+  );
+}
+
+#[test]
+fn union_callables_require_parameter_when_any_member_requires_it() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let sig_optional = Signature {
+    params: vec![Param {
+      name: Some(store.intern_name("value")),
+      ty: primitives.number,
+      optional: true,
+      rest: false,
+    }],
+    ret: primitives.string,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_optional_id = store.intern_signature(sig_optional);
+  let callable_optional = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_optional_id],
+  });
+
+  let sig_required = Signature {
+    params: vec![param("value", primitives.number, &store)],
+    ret: primitives.boolean,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_required_id = store.intern_signature(sig_required);
+  let callable_required = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_required_id],
+  });
+
+  let union = store.union(vec![callable_optional, callable_required]);
+
+  let resolution_ok = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    union,
+    &[CallArgType::new(primitives.number)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+  assert!(resolution_ok.diagnostics.is_empty());
+  assert!(resolution_ok.signature.is_some());
+  assert_eq!(
+    resolution_ok.return_type,
+    store.union(vec![primitives.string, primitives.boolean])
+  );
+
+  let resolution_err = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    union,
+    &[],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+  assert!(resolution_err.signature.is_none());
+  assert_eq!(resolution_err.diagnostics.len(), 1);
+  assert_eq!(
+    resolution_err.diagnostics[0].code.as_str(),
+    codes::NO_OVERLOAD.as_str()
+  );
+}
+
+#[test]
+fn union_of_incompatible_functions_is_not_callable() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let sig_a = Signature {
+    params: vec![param("value", primitives.string, &store)],
+    ret: primitives.void,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_a_id = store.intern_signature(sig_a);
+  let callable_a = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_a_id],
+  });
+
+  let sig_b = Signature {
+    params: vec![param("value", primitives.number, &store)],
+    ret: primitives.void,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_b_id = store.intern_signature(sig_b);
+  let callable_b = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_b_id],
+  });
+
+  let union = store.union(vec![callable_a, callable_b]);
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    union,
+    &[CallArgType::new(primitives.string)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(resolution.signature.is_none());
+  assert_eq!(resolution.return_type, primitives.unknown);
+  assert_eq!(resolution.diagnostics.len(), 1);
+  assert_eq!(
+    resolution.diagnostics[0].code.as_str(),
+    codes::NO_OVERLOAD.as_str()
+  );
+}
+
+#[test]
+fn enforces_constraints_for_structurally_identical_generics() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let t_param = TypeParamId(0);
+  let t_type = store.intern_type(TypeKind::TypeParam(t_param));
+
+  let mut string_sig = Signature::new(vec![param("value", t_type, &store)], t_type);
+  string_sig.type_params = vec![TypeParamDecl {
+    id: t_param,
+    constraint: Some(primitives.string),
+    default: None,
+    variance: None,
+    const_: false,
+  }];
+  let string_sig_id = store.intern_signature(string_sig);
+  let string_callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![string_sig_id],
+  });
+
+  let mut number_sig = Signature::new(vec![param("value", t_type, &store)], t_type);
+  number_sig.type_params = vec![TypeParamDecl {
+    id: t_param,
+    constraint: Some(primitives.number),
+    default: None,
+    variance: None,
+    const_: false,
+  }];
+  let number_sig_id = store.intern_signature(number_sig);
+  let number_callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![number_sig_id],
+  });
+
+  assert_ne!(string_sig_id, number_sig_id);
+  assert_eq!(
+    store.signature(string_sig_id).type_params[0].constraint,
+    Some(primitives.string)
+  );
+  assert_eq!(
+    store.signature(number_sig_id).type_params[0].constraint,
+    Some(primitives.number)
+  );
+
+  let string_resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    string_callable,
+    &[CallArgType::new(primitives.number)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+  assert!(string_resolution.signature.is_none());
+  assert_eq!(string_resolution.diagnostics.len(), 1);
+  assert_eq!(
+    string_resolution.diagnostics[0].code.as_str(),
+    codes::NO_OVERLOAD.as_str()
+  );
+
+  let number_resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    number_callable,
+    &[CallArgType::new(primitives.string)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+  assert!(number_resolution.signature.is_none());
+  assert_eq!(number_resolution.diagnostics.len(), 1);
+  assert_eq!(
+    number_resolution.diagnostics[0].code.as_str(),
+    codes::NO_OVERLOAD.as_str()
+  );
+}
+
+#[test]
+fn applies_default_type_argument_from_interned_signature() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let t_param = TypeParamId(0);
+  let t_type = store.intern_type(TypeKind::TypeParam(t_param));
+  let mut sig = Signature::new(Vec::new(), t_type);
+  sig.type_params = vec![TypeParamDecl {
+    id: t_param,
+    constraint: None,
+    default: Some(primitives.string),
+    variance: None,
+    const_: false,
+  }];
+  let sig_id = store.intern_signature(sig);
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_id],
+  });
+
+  assert_eq!(
+    store.signature(sig_id).type_params[0].default,
+    Some(primitives.string)
+  );
+
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    callable,
+    &[],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+  assert!(resolution.diagnostics.is_empty());
+  let instantiated = resolution
+    .signature
+    .expect("expected an instantiated signature");
+  let instantiated_sig = store.signature(instantiated);
+  assert!(instantiated_sig.type_params.is_empty());
+  assert_eq!(instantiated_sig.ret, primitives.string);
+  assert_eq!(resolution.return_type, primitives.string);
+}
+
+#[test]
+fn prefers_union_compatible_overload() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let union = store.union(vec![primitives.string, primitives.number]);
+
+  let sig_string = Signature {
+    params: vec![param("value", primitives.string, &store)],
+    ret: primitives.string,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_string_id = store.intern_signature(sig_string);
+
+  let sig_number = Signature {
+    params: vec![param("value", primitives.number, &store)],
+    ret: primitives.number,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_number_id = store.intern_signature(sig_number);
+
+  let sig_union = Signature {
+    params: vec![param("value", union, &store)],
+    ret: union,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_union_id = store.intern_signature(sig_union);
+
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_string_id, sig_number_id, sig_union_id],
+  });
+
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    callable,
+    &[CallArgType::new(union)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(resolution.diagnostics.is_empty());
+  assert_eq!(resolution.signature, Some(sig_union_id));
+  assert_eq!(resolution.return_type, union);
+}
+
+// Test for contextual callback inference was removed since OverloadContext
+// trait no longer exists in the current API. The functionality may have
+// moved to the checker itself.
+
+#[test]
+fn prefers_fixed_arity_over_rest() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let sig_rest = Signature {
+    params: vec![
+      param("first", primitives.string, &store),
+      Param {
+        name: Some(store.intern_name("rest")),
+        ty: primitives.string,
+        optional: false,
+        rest: true,
+      },
+    ],
+    ret: primitives.string,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_rest_id = store.intern_signature(sig_rest);
+
+  let sig_fixed = Signature {
+    params: vec![
+      param("first", primitives.string, &store),
+      param("second", primitives.string, &store),
+    ],
+    ret: primitives.number,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_fixed_id = store.intern_signature(sig_fixed);
+
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_rest_id, sig_fixed_id],
+  });
+
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    callable,
+    &[
+      CallArgType::new(primitives.string),
+      CallArgType::new(primitives.string),
+    ],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(resolution.diagnostics.is_empty());
+  assert_eq!(resolution.signature, Some(sig_fixed_id));
+  assert_eq!(resolution.return_type, primitives.number);
+}
+
+#[test]
+fn prefers_non_generic_when_inference_is_unknown() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let t_param = types_ts_interned::TypeParamId(0);
+  let t_type = store.intern_type(TypeKind::TypeParam(t_param));
+
+  let sig_generic = Signature {
+    params: vec![param("value", t_type, &store)],
+    ret: t_type,
+    type_params: vec![TypeParamDecl::new(t_param)],
+    this_param: None,
+  };
+  let sig_generic_id = store.intern_signature(sig_generic);
+
+  let sig_any = Signature {
+    params: vec![param("value", primitives.any, &store)],
+    ret: primitives.string,
+    type_params: Vec::new(),
+    this_param: None,
+  };
+  let sig_any_id = store.intern_signature(sig_any);
+
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_generic_id, sig_any_id],
+  });
+
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    callable,
+    &[CallArgType::new(primitives.any)],
+    None,
+    None,
+    None,
+    span(),
+    None,
+  );
+
+  assert!(resolution.diagnostics.is_empty());
+  assert_eq!(resolution.signature, Some(sig_any_id));
+  assert_eq!(resolution.return_type, primitives.string);
+}
+
+#[test]
+fn uses_contextual_return_for_generic_inference() {
+  let store = TypeStore::new();
+  let primitives = store.primitive_ids();
+  let relate = RelateCtx::new(store.clone(), TypeOptions::default());
+  let instantiation = InstantiationCache::default();
+
+  let t_param = types_ts_interned::TypeParamId(0);
+  let t_type = store.intern_type(TypeKind::TypeParam(t_param));
+  let sig = Signature {
+    params: vec![param("value", t_type, &store)],
+    ret: t_type,
+    type_params: vec![TypeParamDecl::new(t_param)],
+    this_param: None,
+  };
+  let sig_id = store.intern_signature(sig);
+  let callable = store.intern_type(TypeKind::Callable {
+    overloads: vec![sig_id],
+  });
+
+  let resolution = resolve_call(
+    &store,
+    &relate,
+    &instantiation,
+    callable,
+    &[CallArgType::new(primitives.any)],
+    None,
+    None,
+    Some(primitives.number),
+    span(),
+    None,
+  );
+
+  assert!(resolution.diagnostics.is_empty());
+  assert_eq!(resolution.return_type, primitives.number);
+}

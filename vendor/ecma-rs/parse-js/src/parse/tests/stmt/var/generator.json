@@ -1,0 +1,31 @@
+{
+  "$t": "FunctionDecl",
+  "export": false,
+  "export_default": false,
+  "function": {
+    "arrow": false,
+    "async_": false,
+    "body": {
+      "Block": [
+        {
+          "$t": "Expr",
+          "expr": {
+            "$t": "Unary",
+            "argument": {
+              "$t": "LitNum",
+              "value": 1.0
+            },
+            "operator": "Yield"
+          }
+        }
+      ]
+    },
+    "generator": true,
+    "parameters": [],
+    "return_type": null,
+    "type_parameters": null
+  },
+  "name": {
+    "name": "a"
+  }
+}

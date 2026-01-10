@@ -6,7 +6,7 @@ use vm_js::{
 // Lightweight integration-smoke test for vm-js' Object intrinsics/builtins.
 //
 // vm-js has its own unit tests, but keeping a small high-level check here helps catch accidental
-// regressions when bumping the engines/ecma-rs submodule.
+// regressions when updating vendor/ecma-rs.
 
 struct TestRealm {
   vm: Vm,

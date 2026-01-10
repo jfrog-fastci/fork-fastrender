@@ -1,0 +1,60 @@
+{
+  "$t": "ArrowFunc",
+  "func": {
+    "arrow": true,
+    "async_": false,
+    "body": {
+      "Block": []
+    },
+    "generator": false,
+    "parameters": [
+      {
+        "accessibility": null,
+        "decorators": [],
+        "default_value": null,
+        "optional": false,
+        "pattern": {
+          "pat": {
+            "$t": "Id",
+            "name": "a"
+          }
+        },
+        "readonly": false,
+        "rest": false,
+        "type_annotation": null
+      },
+      {
+        "accessibility": null,
+        "decorators": [],
+        "default_value": null,
+        "optional": false,
+        "pattern": {
+          "pat": {
+            "$t": "Id",
+            "name": "b"
+          }
+        },
+        "readonly": false,
+        "rest": false,
+        "type_annotation": null
+      },
+      {
+        "accessibility": null,
+        "decorators": [],
+        "default_value": null,
+        "optional": false,
+        "pattern": {
+          "pat": {
+            "$t": "Id",
+            "name": "c"
+          }
+        },
+        "readonly": false,
+        "rest": false,
+        "type_annotation": null
+      }
+    ],
+    "return_type": null,
+    "type_parameters": null
+  }
+}

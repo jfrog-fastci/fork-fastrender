@@ -1,0 +1,20 @@
+{
+  "$t": "Binary",
+  "left": {
+    "$t": "Binary",
+    "left": {
+      "$t": "LitNum",
+      "value": 1.0
+    },
+    "operator": "Comma",
+    "right": {
+      "$t": "LitBool",
+      "value": true
+    }
+  },
+  "operator": "Comma",
+  "right": {
+    "$t": "LitStr",
+    "value": ""
+  }
+}

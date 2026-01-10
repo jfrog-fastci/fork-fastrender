@@ -31,8 +31,8 @@ Contributor-facing guide (architecture + workflow): [`docs/js_embedding.md`](../
 
 ### JS engine source
 
-- `engines/ecma-rs/` — git submodule (`https://github.com/wilsonzlin/ecma-rs.git`)
-  - Submodule workflow is documented in `instructions/ecma_rs.md`.
+- `vendor/ecma-rs/` — vendored (originally from `https://github.com/wilsonzlin/ecma-rs.git`)
+  - Vendored workflow is documented in `instructions/ecma_rs.md`.
 
 ### Specs (offline references)
 
@@ -221,8 +221,7 @@ See [`docs/js_test262.md`](../docs/js_test262.md) for the full workflow.
 Quickstart:
 
 ```bash
-git submodule update --init engines/ecma-rs
-git -C engines/ecma-rs submodule update --init test262-semantic/data
+git submodule update --init vendor/ecma-rs/test262-semantic/data
 
 # Use the mandatory cargo wrapper (AGENTS.md):
 bash scripts/cargo_agent.sh xtask js test262

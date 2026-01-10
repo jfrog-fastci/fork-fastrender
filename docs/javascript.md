@@ -6,7 +6,7 @@ It is intended to be a contributor-facing mental model, not an implementation lo
 Workstreams/spec anchors:
 
 - JS support goals + milestones: [`instructions/javascript_support.md`](../instructions/javascript_support.md)
-- `ecma-rs` submodule workflow: [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)
+- `ecma-rs` integration: [`instructions/ecma_rs.md`](../instructions/ecma_rs.md)
 - Renderer pipeline overview: [`docs/architecture.md`](architecture.md)
 - Conformance matrix (repo reality): [`docs/conformance.md`](conformance.md)
 
@@ -43,7 +43,7 @@ FastRender’s role is to provide the **host environment** that ECMAScript expec
 - task scheduling (timers, async scripts, networking integration),
 - Web IDL-backed DOM and web APIs.
 
-The JavaScript language implementation itself should live in `engines/ecma-rs/` (per the workstream).
+The JavaScript language implementation itself lives in `vendor/ecma-rs/` (per the workstream).
 
 ## 3) `<script>` processing model (HTML Standard)
 

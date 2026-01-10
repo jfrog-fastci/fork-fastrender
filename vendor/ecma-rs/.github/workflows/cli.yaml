@@ -1,0 +1,55 @@
+name: Build and upload CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  cli:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-12, macos-14, ubuntu-latest, windows-latest]
+        include:
+          - os: macos-12
+            ARCH: macos-x86_64
+            MIME: application/octet-stream
+            EXT: ""
+          - os: macos-14
+            ARCH: macos-arm64
+            MIME: application/octet-stream
+            EXT: ""
+          - os: ubuntu-latest
+            ARCH: linux-x86_64
+            MIME: application/octet-stream
+            EXT: ""
+          - os: windows-latest
+            ARCH: windows-x86_64
+            MIME: application/vnd.microsoft.portable-executable
+            EXT: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: echo "VERSION=$([[ \"$GITHUB_REF\" == refs/tags/v* ]] && echo ${GITHUB_REF#refs/tags/v} || echo '0.0.0')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Build CLI
+        working-directory: ./minify-js-cli
+        run: cargo build --release -vvv
+
+      - name: Upload to B2
+        uses: wilsonzlin/b2-upload-action@v1.0.0
+        with:
+          bucket: ${{ secrets.B2_BUCKET_NAME }}
+          uploadKey: minify-js/cli/${{ steps.version.outputs.VERSION }}/${{ matrix.ARCH }}/minify-js${{ matrix.EXT }}
+          keyId: ${{ secrets.B2_KEY_ID }}
+          applicationKey: ${{ secrets.B2_APPLICATION_KEY }}
+          file: ./target/release/minify-js-cli${{ matrix.EXT }}
+          contentType: ${{ matrix.MIME }}

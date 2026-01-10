@@ -1,0 +1,10 @@
+{
+  "$t": "ImportEqualsDecl",
+  "export": false,
+  "type_only": false,
+  "name": "foo",
+  "rhs": {
+    "$t": "Require",
+    "module": "bar"
+  }
+}

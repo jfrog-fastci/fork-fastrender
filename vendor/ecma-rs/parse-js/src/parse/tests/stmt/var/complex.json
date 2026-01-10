@@ -1,0 +1,306 @@
+{
+  "$t": "VarDecl",
+  "declarators": [
+    {
+      "definite_assignment": false,
+      "initializer": {
+        "$t": "Call",
+        "arguments": [
+          {
+            "spread": false,
+            "value": {
+              "$t": "Unary",
+              "argument": {
+                "$t": "LitNum",
+                "value": 0.0
+              },
+              "operator": "Void"
+            }
+          }
+        ],
+        "callee": {
+          "$t": "Id",
+          "name": "d"
+        },
+        "optional_chaining": false
+      },
+      "pattern": {
+        "pat": {
+          "$t": "Id",
+          "name": "f"
+        }
+      },
+      "type_annotation": null
+    },
+    {
+      "definite_assignment": false,
+      "initializer": {
+        "$t": "ArrowFunc",
+        "func": {
+          "arrow": true,
+          "async_": false,
+          "body": {
+            "Block": [
+              {
+                "$t": "VarDecl",
+                "declarators": [
+                  {
+                    "definite_assignment": false,
+                    "initializer": {
+                      "$t": "Call",
+                      "arguments": [
+                        {
+                          "spread": false,
+                          "value": {
+                            "$t": "Call",
+                            "arguments": [],
+                            "callee": {
+                              "$t": "Member",
+                              "left": {
+                                "$t": "Id",
+                                "name": "t"
+                              },
+                              "optional_chaining": false,
+                              "right": "current"
+                            },
+                            "optional_chaining": false
+                          }
+                        }
+                      ],
+                      "callee": {
+                        "$t": "Id",
+                        "name": "p"
+                      },
+                      "optional_chaining": false
+                    },
+                    "pattern": {
+                      "pat": {
+                        "$t": "Arr",
+                        "elements": [
+                          {
+                            "default_value": null,
+                            "target": {
+                              "$t": "Id",
+                              "name": "e"
+                            }
+                          },
+                          {
+                            "default_value": null,
+                            "target": {
+                              "$t": "Id",
+                              "name": "n"
+                            }
+                          }
+                        ],
+                        "rest": null
+                      }
+                    },
+                    "type_annotation": null
+                  }
+                ],
+                "export": false,
+                "mode": "Const"
+              },
+              {
+                "$t": "Return",
+                "value": {
+                  "$t": "Binary",
+                  "left": {
+                    "$t": "Call",
+                    "arguments": [
+                      {
+                        "spread": false,
+                        "value": {
+                          "$t": "ArrowFunc",
+                          "func": {
+                            "arrow": true,
+                            "async_": false,
+                            "body": {
+                              "Block": [
+                                {
+                                  "$t": "VarDecl",
+                                  "declarators": [
+                                    {
+                                      "definite_assignment": false,
+                                      "initializer": {
+                                        "$t": "ArrowFunc",
+                                        "func": {
+                                          "arrow": true,
+                                          "async_": false,
+                                          "body": {
+                                            "Expression": {
+                                              "$t": "Call",
+                                              "arguments": [
+                                                {
+                                                  "spread": false,
+                                                  "value": {
+                                                    "$t": "Call",
+                                                    "arguments": [],
+                                                    "callee": {
+                                                      "$t": "Member",
+                                                      "left": {
+                                                        "$t": "Id",
+                                                        "name": "t"
+                                                      },
+                                                      "optional_chaining": false,
+                                                      "right": "current"
+                                                    },
+                                                    "optional_chaining": false
+                                                  }
+                                                }
+                                              ],
+                                              "callee": {
+                                                "$t": "Id",
+                                                "name": "n"
+                                              },
+                                              "optional_chaining": false
+                                            }
+                                          },
+                                          "generator": false,
+                                          "parameters": [],
+                                          "return_type": null,
+                                          "type_parameters": null
+                                        }
+                                      },
+                                      "pattern": {
+                                        "pat": {
+                                          "$t": "Id",
+                                          "name": "r"
+                                        }
+                                      },
+                                      "type_annotation": null
+                                    }
+                                  ],
+                                  "export": false,
+                                  "mode": "Const"
+                                },
+                                {
+                                  "$t": "Return",
+                                  "value": {
+                                    "$t": "Binary",
+                                    "left": {
+                                      "$t": "Call",
+                                      "arguments": [
+                                        {
+                                          "spread": false,
+                                          "value": {
+                                            "$t": "Id",
+                                            "name": "r"
+                                          }
+                                        }
+                                      ],
+                                      "callee": {
+                                        "$t": "Member",
+                                        "left": {
+                                          "$t": "Id",
+                                          "name": "t"
+                                        },
+                                        "optional_chaining": false,
+                                        "right": "addListener"
+                                      },
+                                      "optional_chaining": false
+                                    },
+                                    "operator": "Comma",
+                                    "right": {
+                                      "$t": "ArrowFunc",
+                                      "func": {
+                                        "arrow": true,
+                                        "async_": false,
+                                        "body": {
+                                          "Expression": {
+                                            "$t": "Call",
+                                            "arguments": [
+                                              {
+                                                "spread": false,
+                                                "value": {
+                                                  "$t": "Id",
+                                                  "name": "r"
+                                                }
+                                              }
+                                            ],
+                                            "callee": {
+                                              "$t": "Member",
+                                              "left": {
+                                                "$t": "Id",
+                                                "name": "t"
+                                              },
+                                              "optional_chaining": false,
+                                              "right": "removeListener"
+                                            },
+                                            "optional_chaining": false
+                                          }
+                                        },
+                                        "generator": false,
+                                        "parameters": [],
+                                        "return_type": null,
+                                        "type_parameters": null
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            },
+                            "generator": false,
+                            "parameters": [],
+                            "return_type": null,
+                            "type_parameters": null
+                          }
+                        }
+                      },
+                      {
+                        "spread": false,
+                        "value": {
+                          "$t": "LitArr",
+                          "elements": []
+                        }
+                      }
+                    ],
+                    "callee": {
+                      "$t": "Id",
+                      "name": "h"
+                    },
+                    "optional_chaining": false
+                  },
+                  "operator": "Comma",
+                  "right": {
+                    "$t": "Id",
+                    "name": "e"
+                  }
+                }
+              }
+            ]
+          },
+          "generator": false,
+          "parameters": [
+            {
+              "accessibility": null,
+              "decorators": [],
+              "default_value": null,
+              "optional": false,
+              "pattern": {
+                "pat": {
+                  "$t": "Id",
+                  "name": "t"
+                }
+              },
+              "readonly": false,
+              "rest": false,
+              "type_annotation": null
+            }
+          ],
+          "return_type": null,
+          "type_parameters": null
+        }
+      },
+      "pattern": {
+        "pat": {
+          "$t": "Id",
+          "name": "y"
+        }
+      },
+      "type_annotation": null
+    }
+  ],
+  "export": false,
+  "mode": "Const"
+}

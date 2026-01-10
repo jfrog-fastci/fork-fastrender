@@ -5,6 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-vm-js = { path = "../../engines/ecma-rs/vm-js" }
-webidl = { path = "../../engines/ecma-rs/webidl" }
+vm-js = { path = "../../vendor/ecma-rs/vm-js" }
+webidl = { path = "../../vendor/ecma-rs/webidl" }
 

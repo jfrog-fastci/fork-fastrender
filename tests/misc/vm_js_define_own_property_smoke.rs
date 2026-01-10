@@ -7,7 +7,7 @@ use vm_js::{
 // `[[DefineOwnProperty]]` implementation.
 //
 // `vm-js` has its own unit tests, but keeping one or two invariants covered here helps catch
-// accidental regressions when bumping the `engines/ecma-rs` submodule.
+// accidental regressions when updating `vendor/ecma-rs`.
 
 #[test]
 fn define_own_property_rejects_changing_enumerable_on_non_configurable_property() -> Result<(), VmError> {

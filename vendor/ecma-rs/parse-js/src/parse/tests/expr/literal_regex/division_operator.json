@@ -1,0 +1,12 @@
+{
+  "$t": "Binary",
+  "left": {
+    "$t": "LitRegex",
+    "value": "/a/g"
+  },
+  "operator": "Division",
+  "right": {
+    "$t": "LitRegex",
+    "value": "/a/"
+  }
+}

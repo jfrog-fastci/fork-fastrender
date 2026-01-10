@@ -1,22 +1,19 @@
 # JS test262 parser harness
 
 FastRender tracks JavaScript **parser** conformance via the ecma-rs
-[`test262` parser harness](../engines/ecma-rs/test262/README.md) (which drives
+[`test262` parser harness](../vendor/ecma-rs/test262/README.md) (which drives
 `tc39/test262-parser-tests`).
 
 This suite is heavier than the curated semantics runner and is primarily useful when working on
-parsing in `engines/ecma-rs`.
+parsing in `vendor/ecma-rs`.
 
 ## 1) Initialize required submodules
 
 From the FastRender repo root:
 
 ```bash
-# JS engine (submodule)
-git submodule update --init engines/ecma-rs
-
-# test262 parser corpus (nested submodule inside ecma-rs)
-git -C engines/ecma-rs submodule update --init test262/data
+# test262 parser corpus (submodule inside vendored ecma-rs)
+git submodule update --init vendor/ecma-rs/test262/data
 ```
 
 ## 2) Run the harness

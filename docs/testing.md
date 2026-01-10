@@ -303,7 +303,7 @@ The standalone workflow (`bash scripts/cargo_agent.sh xtask capture-accuracy-fix
 
 ## test262 parser harness (optional)
 
-When working on JavaScript parsing (via the `engines/ecma-rs` submodule), the repository provides an **optional** GitHub Actions workflow that runs the `test262` parser harness and uploads a JSON report artifact:
+When working on JavaScript parsing (via the vendored `vendor/ecma-rs`), the repository provides an **optional** GitHub Actions workflow that runs the `test262` parser harness and uploads a JSON report artifact:
 
 - Local workflow: see [js_test262_parser.md](js_test262_parser.md) (`bash scripts/cargo_agent.sh xtask js test262-parser`).
 

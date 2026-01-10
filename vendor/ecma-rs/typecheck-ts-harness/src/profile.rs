@@ -1,0 +1,335 @@
+use crate::discover::Filter;
+use crate::runner::Summary;
+use crate::{CompareMode, ConformanceOptions, HarnessError, TestOutcome, TestResult};
+use serde::Serialize;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use typecheck_ts::QueryStats;
+
+const PROFILE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize)]
+pub struct ProfileReport {
+  pub schema_version: u32,
+  pub metadata: RunMetadata,
+  pub tests: Vec<TestEntry>,
+  pub summary: ProfileSummary,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub query_stats: Option<QueryStats>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct RunMetadata {
+  pub mode: &'static str,
+  pub timestamp_ms: u128,
+  pub git_sha: Option<String>,
+  pub args: Vec<String>,
+  pub options: ProfileOptions,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ProfileOptions {
+  pub root: String,
+  pub filter: String,
+  pub shard: Option<String>,
+  pub json: bool,
+  pub update_snapshots: bool,
+  pub compare_mode: CompareMode,
+  pub span_tolerance: u32,
+  pub timeout_secs: u64,
+  pub trace: bool,
+  pub profile: bool,
+  pub profile_out: String,
+  pub jobs: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileSummary {
+  pub total: usize,
+  pub passed: usize,
+  pub failed: usize,
+  pub timed_out: usize,
+  pub wall_time_ms: u128,
+  pub percentiles_ms: Percentiles,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct Percentiles {
+  pub p50: f64,
+  pub p90: f64,
+  pub p99: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestEntry {
+  pub id: String,
+  pub status: TestOutcome,
+  pub durations: TestDurations,
+}
+
+#[derive(Debug, Serialize, Clone, Copy)]
+pub struct TestDurations {
+  pub rust_ms: Option<u128>,
+  pub tsc_ms: Option<u128>,
+  pub diff_ms: Option<u128>,
+  pub total_ms: u128,
+}
+
+pub struct ProfileBuilder {
+  metadata: RunMetadata,
+  tests: Vec<TestEntry>,
+  query_stats: QueryStats,
+}
+
+impl ProfileBuilder {
+  pub fn new(opts: &ConformanceOptions) -> Self {
+    Self {
+      metadata: RunMetadata {
+        mode: "conformance",
+        timestamp_ms: timestamp_ms(),
+        git_sha: git_sha(),
+        args: std::env::args().collect(),
+        options: ProfileOptions::from_options(opts),
+      },
+      tests: Vec::new(),
+      query_stats: QueryStats::default(),
+    }
+  }
+
+  pub fn set_compare_mode(&mut self, compare_mode: CompareMode) {
+    self.metadata.options.compare_mode = compare_mode;
+  }
+
+  pub fn record_test(&mut self, result: &TestResult) {
+    if let Some(stats) = &result.query_stats {
+      self.query_stats.merge(stats);
+    }
+    self.tests.push(TestEntry {
+      id: result.id.clone(),
+      status: result.outcome,
+      durations: TestDurations {
+        rust_ms: result.rust_ms,
+        tsc_ms: result.tsc_ms,
+        diff_ms: result.diff_ms,
+        total_ms: result.duration_ms,
+      },
+    });
+  }
+
+  pub fn write(
+    mut self,
+    summary: &Summary,
+    wall_time: Duration,
+    path: &Path,
+  ) -> Result<(), HarnessError> {
+    let report = self.finish(summary, wall_time);
+
+    if let Some(parent) = path.parent() {
+      if !parent.as_os_str().is_empty() {
+        fs::create_dir_all(parent)
+          .map_err(|err| HarnessError::Output(format!("create profile directory: {err}")))?;
+      }
+    }
+
+    let file = fs::File::create(path)
+      .map_err(|err| HarnessError::Output(format!("write profile: {err}")))?;
+    let mut writer = std::io::BufWriter::new(file);
+    serde_json::to_writer_pretty(&mut writer, &report)
+      .map_err(|err| HarnessError::Output(err.to_string()))?;
+    writeln!(writer).map_err(|err| HarnessError::Output(format!("write profile: {err}")))?;
+
+    Ok(())
+  }
+
+  fn finish(&mut self, summary: &Summary, wall_time: Duration) -> ProfileReport {
+    self.tests.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut samples: Vec<_> = self.tests.iter().map(|t| t.durations.total_ms).collect();
+    samples.sort_unstable();
+
+    let percentiles_ms = Percentiles::from_samples(&samples);
+
+    ProfileReport {
+      schema_version: PROFILE_SCHEMA_VERSION,
+      metadata: RunMetadata {
+        mode: self.metadata.mode,
+        timestamp_ms: self.metadata.timestamp_ms,
+        git_sha: self.metadata.git_sha.clone(),
+        args: self.metadata.args.clone(),
+        options: self.metadata.options.clone(),
+      },
+      tests: std::mem::take(&mut self.tests),
+      summary: ProfileSummary {
+        total: summary.total,
+        passed: summary.outcomes.match_,
+        failed: summary
+          .total
+          .saturating_sub(summary.outcomes.match_ + summary.outcomes.timeout),
+        timed_out: summary.outcomes.timeout,
+        wall_time_ms: wall_time.as_millis(),
+        percentiles_ms,
+      },
+      query_stats: (!self.query_stats.is_empty()).then(|| self.query_stats.clone()),
+    }
+  }
+}
+
+impl ProfileOptions {
+  fn from_options(opts: &ConformanceOptions) -> Self {
+    let shard = opts
+      .shard
+      .as_ref()
+      .map(|shard| format!("{}/{}", shard.index, shard.total));
+    let filter = opts
+      .filter_pattern
+      .clone()
+      .unwrap_or_else(|| describe_filter(&opts.filter));
+
+    ProfileOptions {
+      root: opts.root.display().to_string(),
+      filter,
+      shard,
+      json: opts.json,
+      update_snapshots: opts.update_snapshots,
+      compare_mode: opts.compare,
+      span_tolerance: opts.span_tolerance,
+      timeout_secs: opts.timeout.as_secs(),
+      trace: opts.trace,
+      profile: opts.profile,
+      profile_out: opts.profile_out.display().to_string(),
+      jobs: opts.jobs,
+    }
+  }
+}
+
+impl Percentiles {
+  fn from_samples(samples: &[u128]) -> Self {
+    if samples.is_empty() {
+      return Percentiles::default();
+    }
+
+    Percentiles {
+      p50: percentile(samples, 0.5),
+      p90: percentile(samples, 0.9),
+      p99: percentile(samples, 0.99),
+    }
+  }
+}
+
+fn percentile(samples: &[u128], fraction: f64) -> f64 {
+  if samples.is_empty() {
+    return 0.0;
+  }
+
+  let max_index = samples.len() - 1;
+  let rank = fraction * max_index as f64;
+  let lower = rank.floor() as usize;
+  let upper = rank.ceil() as usize;
+
+  if lower == upper {
+    return samples[lower] as f64;
+  }
+
+  let lower_v = samples[lower] as f64;
+  let upper_v = samples[upper] as f64;
+  lower_v + (upper_v - lower_v) * (rank - lower as f64)
+}
+
+fn timestamp_ms() -> u128 {
+  SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|d| d.as_millis())
+    .unwrap_or_default()
+}
+
+fn git_sha() -> Option<String> {
+  let mut command = Command::new("git");
+  command.args(["rev-parse", "HEAD"]);
+  let output = command_stdout_with_timeout(command, Duration::from_secs(2))?;
+  let sha = String::from_utf8_lossy(&output).trim().to_string();
+  if sha.is_empty() {
+    None
+  } else {
+    Some(sha)
+  }
+}
+
+fn reap_child_with_timeout(
+  child: &mut std::process::Child,
+  timeout: Duration,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+  let deadline = Instant::now() + timeout;
+  loop {
+    match child.try_wait()? {
+      Some(status) => return Ok(Some(status)),
+      None => {
+        if Instant::now() >= deadline {
+          return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+      }
+    }
+  }
+}
+
+fn command_stdout_with_timeout(mut command: Command, timeout: Duration) -> Option<Vec<u8>> {
+  command.stdin(Stdio::null());
+  command.stdout(Stdio::piped());
+  command.stderr(Stdio::null());
+  let mut child = command.spawn().ok()?;
+  let mut stdout = child.stdout.take()?;
+
+  let deadline = Instant::now() + timeout;
+  loop {
+    match child.try_wait() {
+      Ok(Some(status)) => {
+        if !status.success() {
+          return None;
+        }
+        let mut out = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        return Some(out);
+      }
+      Ok(None) => {
+        if Instant::now() >= deadline {
+          let _ = child.kill();
+          let _ = reap_child_with_timeout(&mut child, Duration::from_millis(200));
+          return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+      }
+      Err(_) => return None,
+    }
+  }
+}
+
+fn describe_filter(filter: &Filter) -> String {
+  match filter {
+    Filter::All => "all".to_string(),
+    Filter::Glob(_) => "glob".to_string(),
+    Filter::Regex(_) => "regex".to_string(),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn percentiles_empty_samples_are_zeroed() {
+    let percentiles = Percentiles::from_samples(&[]);
+    assert_eq!(percentiles.p50, 0.0);
+    assert_eq!(percentiles.p90, 0.0);
+    assert_eq!(percentiles.p99, 0.0);
+  }
+
+  #[test]
+  fn percentiles_single_sample_returns_that_value() {
+    let percentiles = Percentiles::from_samples(&[42]);
+    assert_eq!(percentiles.p50, 42.0);
+    assert_eq!(percentiles.p90, 42.0);
+    assert_eq!(percentiles.p99, 42.0);
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 99,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 1492,
+      "file": "using_valid.ts",
+      "start": 233,
+      "end": 242,
+      "category": "error",
+      "message": "'using' declarations may not have binding patterns."
+    }
+  ],
+  "type_facts": {
+    "markers": [
+      {
+        "file": "using_valid.ts",
+        "offset": 113,
+        "line": 8,
+        "column": 6,
+        "type": "D"
+      },
+      {
+        "file": "using_valid.ts",
+        "offset": 235,
+        "line": 17,
+        "column": 8,
+        "type": "number"
+      }
+    ]
+  }
+}

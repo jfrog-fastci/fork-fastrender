@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "metadata": {
+    "typescript_version": "5.9.3",
+    "options": {
+      "exactOptionalPropertyTypes": false,
+      "moduleResolution": 2,
+      "noEmit": true,
+      "noImplicitAny": false,
+      "noUncheckedIndexedAccess": false,
+      "pretty": false,
+      "skipLibCheck": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "target": 2,
+      "useDefineForClassFields": true
+    }
+  },
+  "diagnostics": [
+    {
+      "code": 1203,
+      "file": "export_assignment_mixed_exports.ts",
+      "start": 15,
+      "end": 28,
+      "category": "error",
+      "message": "Export assignment cannot be used when targeting ECMAScript modules. Consider using 'export default' or another module format instead."
+    },
+    {
+      "code": 2309,
+      "file": "export_assignment_mixed_exports.ts",
+      "start": 15,
+      "end": 28,
+      "category": "error",
+      "message": "An export assignment cannot be used in a module with other exported elements."
+    }
+  ],
+  "type_facts": {
+    "exports": [
+      {
+        "file": "export_assignment_mixed_exports.ts",
+        "name": "export=",
+        "type": "1"
+      },
+      {
+        "file": "export_assignment_mixed_exports.ts",
+        "name": "x",
+        "type": "2"
+      }
+    ]
+  }
+}

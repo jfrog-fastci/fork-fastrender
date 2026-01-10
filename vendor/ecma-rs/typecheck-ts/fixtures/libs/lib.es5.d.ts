@@ -1,0 +1,20 @@
+// Minimal ES5 lib for tests
+declare const console: {
+  log(msg: string): void;
+};
+
+declare const Array: any[];
+
+interface Array<T> {
+  length: number;
+  [n: number]: T;
+}
+
+type Uppercase<S extends string> = intrinsic;
+type Lowercase<S extends string> = intrinsic;
+type Capitalize<S extends string> = intrinsic;
+type Uncapitalize<S extends string> = intrinsic;
+type NoInfer<T> = intrinsic;
+type BuiltinIteratorReturn = intrinsic;
+
+declare const esVersion: "es5";

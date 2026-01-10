@@ -1,0 +1,9 @@
+error[TEST0101]: broken function
+ --> main.ts:1:1
+  |
+1 | function test() {
+  | ^^^^^^^^^^^^^^^^^ broken function
+2 |   return 1;
+  | ^^^^^^^^^^^
+3 | }
+  | ^

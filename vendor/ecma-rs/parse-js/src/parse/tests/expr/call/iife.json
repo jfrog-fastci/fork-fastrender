@@ -1,0 +1,66 @@
+{
+  "$t": "Binary",
+  "left": {
+    "$t": "Binary",
+    "left": {
+      "$t": "Call",
+      "arguments": [],
+      "callee": {
+        "$t": "Func",
+        "func": {
+          "arrow": false,
+          "async_": false,
+          "body": {
+            "Block": []
+          },
+          "generator": false,
+          "parameters": [],
+          "return_type": null,
+          "type_parameters": null
+        },
+        "name": null
+      },
+      "optional_chaining": false
+    },
+    "operator": "Comma",
+    "right": {
+      "$t": "Call",
+      "arguments": [],
+      "callee": {
+        "$t": "ArrowFunc",
+        "func": {
+          "arrow": true,
+          "async_": false,
+          "body": {
+            "Block": []
+          },
+          "generator": false,
+          "parameters": [],
+          "return_type": null,
+          "type_parameters": null
+        }
+      },
+      "optional_chaining": false
+    }
+  },
+  "operator": "Comma",
+  "right": {
+    "$t": "Call",
+    "arguments": [],
+    "callee": {
+      "$t": "ArrowFunc",
+      "func": {
+        "arrow": true,
+        "async_": true,
+        "body": {
+          "Block": []
+        },
+        "generator": false,
+        "parameters": [],
+        "return_type": null,
+        "type_parameters": null
+      }
+    },
+    "optional_chaining": false
+  }
+}

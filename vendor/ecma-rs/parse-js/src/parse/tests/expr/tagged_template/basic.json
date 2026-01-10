@@ -1,0 +1,12 @@
+{
+  "$t": "TaggedTemplate",
+  "function": {
+    "$t": "Id",
+    "name": "a"
+  },
+  "parts": [
+    {
+      "String": ""
+    }
+  ]
+}
