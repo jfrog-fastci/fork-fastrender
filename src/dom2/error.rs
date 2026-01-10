@@ -12,12 +12,12 @@ pub enum DomError {
   NotFoundError,
   #[error("NotSupportedError")]
   NotSupportedError,
+  #[error("InvalidCharacterError")]
+  InvalidCharacterError,
   #[error("InvalidNodeType")]
   InvalidNodeType,
   #[error("NoModificationAllowedError")]
   NoModificationAllowedError,
-  #[error("InvalidCharacterError")]
-  InvalidCharacterError,
   #[error("SyntaxError")]
   SyntaxError,
 }
@@ -28,9 +28,9 @@ impl DomError {
       Self::HierarchyRequestError => "HierarchyRequestError",
       Self::NotFoundError => "NotFoundError",
       Self::NotSupportedError => "NotSupportedError",
+      Self::InvalidCharacterError => "InvalidCharacterError",
       Self::InvalidNodeType => "InvalidNodeType",
       Self::NoModificationAllowedError => "NoModificationAllowedError",
-      Self::InvalidCharacterError => "InvalidCharacterError",
       Self::SyntaxError => "SyntaxError",
     }
   }

@@ -1,8 +1,8 @@
 use crate::css::selectors::FastRenderSelectorImpl;
 use crate::dom::HTML_NAMESPACE;
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
-use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
 use crate::web::dom::DocumentReadyState;
+use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
 use crate::web::dom::DomException;
 use crate::web::events as web_events;
 use rustc_hash::FxHashSet;
@@ -1246,20 +1246,78 @@ impl Document {
 
     let use_document_snapshot =
       scope.is_none() || scope.is_some_and(|id| self.is_connected_for_scripting(id));
+    let scope_is_virtual = scope.is_some_and(|scope_id| {
+      matches!(
+        self.node(scope_id).kind,
+        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. }
+      )
+    });
+    let scope_host = if scope_is_virtual && use_document_snapshot {
+      scope.and_then(|scope_id| match &self.node(scope_id).kind {
+        NodeKind::ShadowRoot { .. } => self.parent_node(scope_id),
+        _ => None,
+      })
+    } else {
+      None
+    };
+
     let (snapshot_dom, mapping) = if use_document_snapshot {
       self.selector_snapshot()
     } else {
       let Some(scope_id) = scope else {
         return Ok(None);
       };
-      let Some(dom) = self.to_renderer_dom_subtree(scope_id) else {
+      let Some(mut dom) = self.to_renderer_dom_subtree(scope_id) else {
         return Ok(None);
       };
-      let Some(mapping) = self.build_selector_preorder_mapping_from(scope_id) else {
+      let Some(mut mapping) = self.build_selector_preorder_mapping_from(scope_id) else {
         return Ok(None);
       };
+
+      if scope_is_virtual {
+        // Selectors4 defines `:scope` for DocumentFragments and ShadowRoots as a virtual scoping root:
+        // it is featureless, cannot be the subject of the selector, and acts as the parent of any
+        // top-level elements. The upstream `selectors` crate models this featureless-parent behavior
+        // via shadow-root traversal (see `next_element_for_combinator`).
+        //
+        // To support `DocumentFragment.querySelector(":scope > span")`, wrap the fragment subtree in a
+        // synthetic shadow root under a synthetic host element. The synthetic host is mapped to the
+        // fragment's `NodeId` so scope activation still works, but we filter it out from results since
+        // document fragments cannot be querySelector subjects.
+        let children = std::mem::take(&mut dom.children);
+        let shadow_root = DomNode {
+          node_type: DomNodeType::ShadowRoot {
+            mode: ShadowRootMode::Open,
+            delegates_focus: false,
+          },
+          children,
+        };
+        dom = DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "__fastrender_scope".to_string(),
+            namespace: String::new(),
+            attributes: Vec::new(),
+          },
+          children: vec![shadow_root],
+        };
+
+        let mut preorder_to_node_id: Vec<Option<NodeId>> =
+          Vec::with_capacity(mapping.preorder_to_node_id.len() + 1);
+        preorder_to_node_id.push(None);
+        preorder_to_node_id.push(Some(scope_id));
+        preorder_to_node_id.push(Some(scope_id));
+        preorder_to_node_id.extend_from_slice(&mapping.preorder_to_node_id[2..]);
+        mapping.preorder_to_node_id = preorder_to_node_id;
+        for v in mapping.node_id_to_preorder.iter_mut() {
+          if *v >= 2 {
+            *v += 1;
+          }
+        }
+      }
+
       (Arc::new(dom), Arc::new(mapping))
     };
+
     let snapshot_dom = snapshot_dom.as_ref();
     let mapping = mapping.as_ref();
 
@@ -1274,11 +1332,17 @@ impl Document {
 
     // `document.querySelector` (and `Element.querySelector`) do not pierce shadow roots by default.
     // If a scope is provided inside a shadow tree, allow matching only inside that same shadow root.
-    let allowed_shadow_root = scope.and_then(|scope_id| {
-      self
-        .ancestors(scope_id)
-        .find(|&ancestor| matches!(self.node(ancestor).kind, NodeKind::ShadowRoot { .. }))
-    });
+    let allowed_shadow_root = if scope_is_virtual {
+      // Virtual scoping roots are treated as their own shadow-root boundary for selector matching
+      // (`:scope >` selectors should match direct children).
+      scope
+    } else {
+      scope.and_then(|scope_id| {
+        self
+          .ancestors(scope_id)
+          .find(|&ancestor| matches!(self.node(ancestor).kind, NodeKind::ShadowRoot { .. }))
+      })
+    };
 
     struct StackItem<'a> {
       node: &'a DomNode,
@@ -1329,6 +1393,9 @@ impl Document {
       }
 
       if let Some(dom2_id) = dom2_id {
+        if Some(dom2_id) == scope_host && scope_anchor.is_none() && item.node.is_element() {
+          scope_anchor = Some(OpaqueElement::new(item.node));
+        }
         if scope == Some(dom2_id) {
           scope_active = true;
           if item.node.is_element() {
@@ -1401,22 +1468,71 @@ impl Document {
     let mut selector_caches = SelectorCaches::default();
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
+    let scope_is_virtual = scope.is_some_and(|scope_id| {
+      matches!(
+        self.node(scope_id).kind,
+        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. }
+      )
+    });
     let use_document_snapshot =
       scope.is_none() || scope.is_some_and(|id| self.is_connected_for_scripting(id));
+    let scope_host = if scope_is_virtual && use_document_snapshot {
+      scope.and_then(|scope_id| match &self.node(scope_id).kind {
+        NodeKind::ShadowRoot { .. } => self.parent_node(scope_id),
+        _ => None,
+      })
+    } else {
+      None
+    };
+
     let (snapshot_dom, mapping) = if use_document_snapshot {
       self.selector_snapshot()
     } else {
       let Some(scope_id) = scope else {
         return Ok(Vec::new());
       };
-      let Some(dom) = self.to_renderer_dom_subtree(scope_id) else {
+      let Some(mut dom) = self.to_renderer_dom_subtree(scope_id) else {
         return Ok(Vec::new());
       };
-      let Some(mapping) = self.build_selector_preorder_mapping_from(scope_id) else {
+      let Some(mut mapping) = self.build_selector_preorder_mapping_from(scope_id) else {
         return Ok(Vec::new());
       };
+
+      if scope_is_virtual {
+        let children = std::mem::take(&mut dom.children);
+        let shadow_root = DomNode {
+          node_type: DomNodeType::ShadowRoot {
+            mode: ShadowRootMode::Open,
+            delegates_focus: false,
+          },
+          children,
+        };
+        dom = DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "__fastrender_scope".to_string(),
+            namespace: String::new(),
+            attributes: Vec::new(),
+          },
+          children: vec![shadow_root],
+        };
+
+        let mut preorder_to_node_id: Vec<Option<NodeId>> =
+          Vec::with_capacity(mapping.preorder_to_node_id.len() + 1);
+        preorder_to_node_id.push(None);
+        preorder_to_node_id.push(Some(scope_id));
+        preorder_to_node_id.push(Some(scope_id));
+        preorder_to_node_id.extend_from_slice(&mapping.preorder_to_node_id[2..]);
+        mapping.preorder_to_node_id = preorder_to_node_id;
+        for v in mapping.node_id_to_preorder.iter_mut() {
+          if *v >= 2 {
+            *v += 1;
+          }
+        }
+      }
+
       (Arc::new(dom), Arc::new(mapping))
     };
+
     let snapshot_dom = snapshot_dom.as_ref();
     let mapping = mapping.as_ref();
 
@@ -1427,11 +1543,15 @@ impl Document {
       }
     }
 
-    let allowed_shadow_root = scope.and_then(|scope_id| {
-      self
-        .ancestors(scope_id)
-        .find(|&ancestor| matches!(self.node(ancestor).kind, NodeKind::ShadowRoot { .. }))
-    });
+    let allowed_shadow_root = if scope_is_virtual {
+      scope
+    } else {
+      scope.and_then(|scope_id| {
+        self
+          .ancestors(scope_id)
+          .find(|&ancestor| matches!(self.node(ancestor).kind, NodeKind::ShadowRoot { .. }))
+      })
+    };
 
     struct StackItem<'a> {
       node: &'a DomNode,
@@ -1483,6 +1603,9 @@ impl Document {
       }
 
       if let Some(dom2_id) = dom2_id {
+        if Some(dom2_id) == scope_host && scope_anchor.is_none() && item.node.is_element() {
+          scope_anchor = Some(OpaqueElement::new(item.node));
+        }
         if scope == Some(dom2_id) {
           scope_active = true;
           if item.node.is_element() {

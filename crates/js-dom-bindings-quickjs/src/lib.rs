@@ -1315,6 +1315,7 @@ fn dom_error_to_js<'js>(ctx: &Ctx<'js>, err: DomError) -> rquickjs::Error {
     DomError::HierarchyRequestError
     | DomError::NotFoundError
     | DomError::NotSupportedError
+    | DomError::InvalidCharacterError
     | DomError::InvalidNodeType
     | DomError::NoModificationAllowedError => {
       let name = err.code();

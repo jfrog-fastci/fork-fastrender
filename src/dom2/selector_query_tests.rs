@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use crate::dom::parse_html;
-use crate::dom::{DomNode, DomNodeType};
+use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use selectors::context::QuirksMode;
 
 use super::{Document, NodeId, NodeKind};
@@ -210,6 +210,59 @@ fn query_selector_handles_wbr_synthetic_zwsp_nodes_and_scope() {
   // in matching.
   assert_eq!(doc.query_selector(":scope", Some(wbr)).unwrap(), Some(wbr));
   assert_eq!(doc.query_selector_all(":scope", Some(wbr)).unwrap(), vec![wbr]);
+}
+
+#[test]
+fn query_selector_supports_virtual_scoping_roots_for_document_fragments() {
+  // Selectors4 defines a virtual scoping root for document fragments. The virtual root cannot be
+  // the subject of the selector (`:scope` alone matches nothing), but it acts as the parent of any
+  // top-level elements in the fragment so relationship selectors like `:scope > span` work.
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let frag = doc.create_document_fragment();
+  let span = doc.create_element("span", "");
+  doc.append_child(frag, span).unwrap();
+
+  assert_eq!(doc.query_selector("span", Some(frag)).unwrap(), Some(span));
+  assert_eq!(
+    doc.query_selector(":scope > span", Some(frag)).unwrap(),
+    Some(span)
+  );
+  assert_eq!(doc.query_selector(":scope", Some(frag)).unwrap(), None);
+  assert!(doc.query_selector_all(":scope", Some(frag)).unwrap().is_empty());
+  assert_eq!(doc.query_selector("* > span", Some(frag)).unwrap(), None);
+}
+
+#[test]
+fn query_selector_supports_virtual_scoping_roots_for_shadow_roots() {
+  // Selectors4 defines `:scope` for shadow roots as a virtual scoping root. Similar to document
+  // fragments, the virtual root cannot be the subject of the selector, but it is treated as the
+  // parent of the shadow root's top-level elements for relationship selectors.
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let host = doc.create_element("div", "");
+  doc.append_child(doc.root(), host).unwrap();
+
+  let shadow_root = doc.push_node(
+    NodeKind::ShadowRoot {
+      mode: ShadowRootMode::Open,
+      delegates_focus: false,
+    },
+    Some(host),
+    /* inert_subtree */ false,
+  );
+  let span = doc.create_element("span", "");
+  doc.append_child(shadow_root, span).unwrap();
+
+  assert_eq!(doc.query_selector("span", Some(shadow_root)).unwrap(), Some(span));
+  assert_eq!(
+    doc.query_selector(":scope > span", Some(shadow_root)).unwrap(),
+    Some(span)
+  );
+  assert_eq!(doc.query_selector(":scope", Some(shadow_root)).unwrap(), None);
+  assert!(doc
+    .query_selector_all(":scope", Some(shadow_root))
+    .unwrap()
+    .is_empty());
+  assert_eq!(doc.query_selector("* > span", Some(shadow_root)).unwrap(), None);
 }
 
 #[test]
