@@ -6343,9 +6343,32 @@ impl InlineFormattingContext {
       _ => (0.0, 0.0),
     };
 
+    // For inter-word justification opportunities that span inline items (e.g. `<span>a </span><span>b</span>`),
+    // try to attribute the extra space to the trailing whitespace glyph. When that succeeds the
+    // preceding inline box grows (so backgrounds/borders cover the expanded space) and no external
+    // gap is inserted between items.
+    let mut external_gaps: Vec<bool> = vec![false; items.len().saturating_sub(1)];
     if should_justify && gap_extra > 0.0 {
       for positioned in &mut items {
         Self::apply_internal_justification(&mut positioned.item, resolved_justify, gap_extra);
+      }
+
+      let supports_inter_char =
+        matches!(resolved_justify, TextJustify::InterCharacter | TextJustify::Distribute);
+      let supports_word = matches!(resolved_justify, TextJustify::InterWord | TextJustify::Distribute);
+
+      for i in 0..external_gaps.len() {
+        let prev = &items[i].item;
+        let next = &items[i + 1].item;
+        if supports_inter_char && allows_inter_character_gap(prev, next) {
+          external_gaps[i] = true;
+          continue;
+        }
+
+        if supports_word && is_space_boundary_between(prev, next) {
+          let applied = Self::apply_space_boundary_justification(&mut items[i].item, gap_extra);
+          external_gaps[i] = !applied;
+        }
       }
     }
 
@@ -6469,7 +6492,7 @@ impl InlineFormattingContext {
         cursor -= item_width;
         if should_justify
           && gap_extra > 0.0
-          && Self::is_justifiable_gap(&items, i, resolved_justify)
+          && external_gaps.get(i).copied().unwrap_or(false)
         {
           cursor -= gap_extra;
         }
@@ -6477,7 +6500,7 @@ impl InlineFormattingContext {
         cursor += item_width;
         if should_justify
           && gap_extra > 0.0
-          && Self::is_justifiable_gap(&items, i, resolved_justify)
+          && external_gaps.get(i).copied().unwrap_or(false)
         {
           cursor += gap_extra;
         }
@@ -6535,17 +6558,48 @@ impl InlineFormattingContext {
           Self::apply_internal_justification(child, mode, gap_extra);
         }
         b.justify_gaps.clear();
-        if gap_extra > 0.0 {
-          for i in 0..b.children.len().saturating_sub(1) {
-            let prev = &b.children[i];
-            let next = &b.children[i + 1];
-            let extra = if Self::is_justifiable_pair(prev, next, mode) {
-              gap_extra
-            } else {
-              0.0
+        if gap_extra <= 0.0 {
+          return;
+        }
+
+        let supports_inter_char = matches!(mode, TextJustify::InterCharacter | TextJustify::Distribute);
+        let supports_word = matches!(mode, TextJustify::InterWord | TextJustify::Distribute);
+        let gap_len = b.children.len().saturating_sub(1);
+        let mut applied_word_boundary: Vec<bool> = vec![false; gap_len];
+
+        // Word-boundary justification is defined in terms of the expandable whitespace glyphs
+        // themselves (similar to `word-spacing`). When the whitespace is split across inline item
+        // boundaries, attribute the extra space to the trailing whitespace glyph so the owning
+        // inline box grows (backgrounds/borders cover the extra spacing) rather than inserting a
+        // gap between styled runs.
+        if supports_word {
+          for i in 0..gap_len {
+            let is_word_boundary = {
+              let prev = &b.children[i];
+              let next = &b.children[i + 1];
+              is_space_boundary_between(prev, next)
             };
-            b.justify_gaps.push(extra);
+            if is_word_boundary {
+              applied_word_boundary[i] =
+                Self::apply_space_boundary_justification(&mut b.children[i], gap_extra);
+            }
           }
+        }
+
+        for i in 0..gap_len {
+          let prev = &b.children[i];
+          let next = &b.children[i + 1];
+          let mut extra = 0.0;
+          if supports_inter_char && allows_inter_character_gap(prev, next) {
+            extra = gap_extra;
+          } else if supports_word && is_space_boundary_between(prev, next) && !applied_word_boundary[i]
+          {
+            // Fallback: if we cannot attribute the extra to a trailing-space glyph (e.g. the
+            // boundary involves a non-text placeholder), preserve legacy behavior by inserting a
+            // gap between the children.
+            extra = gap_extra;
+          }
+          b.justify_gaps.push(extra);
         }
       }
       InlineItem::Ruby(_) => {}
@@ -6556,6 +6610,36 @@ impl InlineFormattingContext {
       | InlineItem::Replaced(_)
       | InlineItem::Floating(_)
       | InlineItem::StaticPositionAnchor(_) => {}
+    }
+  }
+
+  fn apply_space_boundary_justification(item: &mut InlineItem, gap_extra: f32) -> bool {
+    if gap_extra <= 0.0 {
+      return false;
+    }
+
+    match item {
+      InlineItem::Text(t) => t.apply_trailing_space_boundary_justification(gap_extra),
+      InlineItem::InlineBox(b) => {
+        for child in b.children.iter_mut().rev() {
+          match child {
+            InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) => continue,
+            _ => {}
+          }
+          if Self::apply_space_boundary_justification(child, gap_extra) {
+            return true;
+          }
+        }
+        false
+      }
+      InlineItem::Ruby(_)
+      | InlineItem::SoftBreak
+      | InlineItem::Tab(_)
+      | InlineItem::HardBreak
+      | InlineItem::InlineBlock(_)
+      | InlineItem::Replaced(_)
+      | InlineItem::Floating(_)
+      | InlineItem::StaticPositionAnchor(_) => false,
     }
   }
 
@@ -6610,13 +6694,6 @@ impl InlineFormattingContext {
       .map(|p| Self::count_nested_justifiable_gaps(&p.item, mode))
       .sum();
     between + nested
-  }
-
-  fn is_justifiable_gap(items: &[PositionedItem], index: usize, mode: TextJustify) -> bool {
-    if index + 1 >= items.len() {
-      return false;
-    }
-    Self::is_justifiable_pair(&items[index].item, &items[index + 1].item, mode)
   }
 
   /// Creates a fragment for an inline item in block/inline coordinates.
@@ -18922,6 +18999,37 @@ mod tests {
       (span - line.bounds.width()).abs() < 1.0,
       "expected nested inline boxes to still participate in inter-word justification span={span:.2} line_width={:.2}",
       line.bounds.width()
+    );
+
+    fn collect_inline_bounds_with_direct_text(node: &FragmentNode, offset: Point, out: &mut Vec<Rect>) {
+      let origin = offset.translate(Point::new(node.bounds.x(), node.bounds.y()));
+      if matches!(node.content, FragmentContent::Inline { .. })
+        && node
+          .children
+          .iter()
+          .any(|child| matches!(child.content, FragmentContent::Text { .. }))
+      {
+        out.push(Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height()));
+      }
+      for child in &node.children {
+        collect_inline_bounds_with_direct_text(child, origin, out);
+      }
+    }
+
+    let mut inline_bounds = Vec::new();
+    collect_inline_bounds_with_direct_text(line, Point::ZERO, &mut inline_bounds);
+    assert!(
+      inline_bounds.len() >= 2,
+      "expected at least two inline fragments (one per span), got {}",
+      inline_bounds.len()
+    );
+    inline_bounds.sort_by(|a, b| a.x().partial_cmp(&b.x()).unwrap());
+    let a = inline_bounds[0];
+    let b = inline_bounds[1];
+    let gap = b.x() - (a.x() + a.width());
+    assert!(
+      gap.abs() < 1.0,
+      "expected inter-word justification to expand the trailing space inside the preceding span (no external gap between inline boxes); gap={gap:.2}"
     );
   }
 

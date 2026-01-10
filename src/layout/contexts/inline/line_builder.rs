@@ -1449,6 +1449,99 @@ impl TextItem {
     })
   }
 
+  /// Applies extra justification space to the **trailing** expandable-space cluster of this text
+  /// item.
+  ///
+  /// This is used when an inter-word justification opportunity spans inline item boundaries (for
+  /// example, `<span>a </span><span>b</span>`). In that scenario the trailing space lives in this
+  /// `TextItem`, but the "next" non-space character lives in a different item, so the standard
+  /// internal scan (which only looks at cluster boundaries *inside* this text run) would miss the
+  /// opportunity.
+  ///
+  /// Returning `true` indicates that the extra space was applied to the underlying shaped run so
+  /// the owning inline box grows (backgrounds/borders cover the expanded space) instead of
+  /// inserting an external gap between inline boxes.
+  pub fn apply_trailing_space_boundary_justification(&mut self, gap_extra: f32) -> bool {
+    if gap_extra == 0.0 || self.text.is_empty() || self.is_marker {
+      return false;
+    }
+    let Some(last_char) = self.text.chars().next_back() else {
+      return false;
+    };
+    if !Self::is_expandable_space_for_justify(last_char) {
+      return false;
+    }
+    // When the item is *only* whitespace (e.g. an anonymous inline box generated from an
+    // inter-element space), keep legacy behavior and let justification insert spacing between
+    // items. This preserves display-list expectations that the whitespace glyph itself is not
+    // widened.
+    if self.text.chars().all(Self::is_expandable_space_for_justify) {
+      return false;
+    }
+
+    if self.cluster_advances.is_empty() {
+      self.advance += gap_extra;
+      self.advance_for_layout = self.advance;
+      return true;
+    }
+
+    // Fast path for synthetic items used in tests that don't carry shaped runs.
+    if self.runs.is_empty() {
+      self.advance += gap_extra;
+      self.advance_for_layout = self.advance;
+      let text_len = self.text.len();
+      for boundary in &mut self.cluster_advances {
+        if boundary.byte_offset == text_len {
+          boundary.advance += gap_extra;
+          boundary.run_advance += gap_extra;
+        }
+      }
+      return true;
+    }
+
+    let Some((run_idx, glyph_end)) = self
+      .cluster_advances
+      .iter()
+      .rev()
+      .find_map(|b| b.run_index.zip(b.glyph_end))
+    else {
+      // Should not happen for shaped runs, but keep justification monotonic if cluster metadata is
+      // missing.
+      self.advance += gap_extra;
+      self.advance_for_layout = self.advance;
+      if let Some(last) = self.cluster_advances.last_mut() {
+        last.advance += gap_extra;
+        last.run_advance += gap_extra;
+      }
+      return true;
+    };
+
+    if let Some(run) = self.runs.get_mut(run_idx) {
+      if run.glyphs.is_empty() {
+        run.advance += gap_extra;
+      } else {
+        let axis = run_inline_axis(run);
+        let last_glyph = glyph_end.saturating_sub(1);
+        if let Some(glyph) = run.glyphs.get_mut(last_glyph) {
+          add_inline_advance(glyph, axis, gap_extra);
+        } else if let Some(glyph) = run.glyphs.last_mut() {
+          add_inline_advance(glyph, axis, gap_extra);
+        }
+        run.advance += gap_extra;
+      }
+    }
+
+    self.cluster_advances = Self::compute_cluster_advances(&self.runs, &self.text, self.font_size);
+    let new_advance = self
+      .cluster_advances
+      .last()
+      .map(|c| c.advance)
+      .unwrap_or_else(|| self.runs.iter().map(|r| r.advance).sum());
+    self.advance = new_advance;
+    self.advance_for_layout = self.advance;
+    true
+  }
+
   fn apply_internal_justification(
     &mut self,
     gap_extra: f32,
