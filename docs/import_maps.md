@@ -7,9 +7,14 @@ In the HTML platform, import maps influence **module specifier → URL** resolut
 * `<script type="module">` imports
 * `import()` (dynamic import)
 
-This module is deliberately scoped to **import map parsing + normalization** (and, later, merging and
-resolution). Module script fetching/execution is separate, but module loading must call into the
-import map APIs described here.
+This module is deliberately scoped to **import map parsing + normalization**, plus the spec-mapped
+utilities needed to wire import maps into HTML/script and module loading:
+
+* `create_import_map_parse_result(...)` (HTML “import map parse result”)
+* `resolve_imports_match(...)` (HTML “resolve an imports match” helper)
+
+Module script fetching/execution is separate, but module loading must call into the import map APIs
+described here.
 
 ---
 
@@ -84,10 +89,13 @@ Use these `rg -n` commands to jump to the normative algorithms.
 * `register an import map`:
   * `rg -n 'register an import map' specs/whatwg-html/source`
 
-### Merging + resolution (not implemented yet)
+### Merging (not implemented yet)
 
 * `merge existing and new import maps`:
   * `rg -n 'merge existing and new import maps' specs/whatwg-html/source`
+
+### Resolution (imports-match helper implemented; full resolution not implemented yet)
+
 * `resolve a module specifier`:
   * `rg -n '<dfn>resolve a module specifier' specs/whatwg-html/source`
 * `resolve an imports match`:
