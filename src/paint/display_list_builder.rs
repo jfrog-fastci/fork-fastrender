@@ -10941,6 +10941,26 @@ impl DisplayListBuilder {
       }
     }
 
+    let caret_snap_dpr = self.device_pixel_ratio;
+    let snap_form_control_caret_rect = move |rect: Rect| -> Rect {
+      let dpr = caret_snap_dpr;
+      if !dpr.is_finite() || dpr <= f32::EPSILON {
+        return rect;
+      }
+      if !rect.x().is_finite()
+        || !rect.y().is_finite()
+        || !rect.width().is_finite()
+        || !rect.height().is_finite()
+      {
+        return rect;
+      }
+      let x = (rect.x() * dpr).round() / dpr;
+      let y = (rect.y() * dpr).round() / dpr;
+      let w = (rect.width() * dpr).round().max(1.0) / dpr;
+      let h = (rect.height() * dpr).round().max(1.0) / dpr;
+      Rect::from_xywh(x, y, w, h)
+    };
+
     match &control.control {
       FormControlKind::Text {
         value,
@@ -11223,6 +11243,7 @@ impl DisplayListBuilder {
             let caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
 
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            let caret_rect_raw = snap_form_control_caret_rect(caret_rect_raw);
             if let Some(clipped) = caret_rect_raw.intersection(padding_rect) {
               if clipped.width() > 0.0 && clipped.height() > 0.0 {
                 caret_rect = Some((clipped, caret_color));
@@ -11537,6 +11558,7 @@ impl DisplayListBuilder {
               let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
               let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
               let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+              let caret_rect_raw = snap_form_control_caret_rect(caret_rect_raw);
               caret_rect = caret_rect_raw
                 .intersection(rect)
                 .filter(|r| r.width() > 0.0 && r.height() > 0.0);
@@ -11570,6 +11592,7 @@ impl DisplayListBuilder {
             let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
             let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            let caret_rect_raw = snap_form_control_caret_rect(caret_rect_raw);
             caret_rect = caret_rect_raw
               .intersection(rect)
               .filter(|r| r.width() > 0.0 && r.height() > 0.0);

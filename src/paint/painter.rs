@@ -9331,6 +9331,24 @@ impl Painter {
       );
     }
 
+    fn fill_rect_masked_crisp(pixmap: &mut Pixmap, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+      if color.a <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+      }
+      let Some(sk_rect) = SkiaRect::from_xywh(rect.x(), rect.y(), rect.width(), rect.height()) else {
+        return;
+      };
+      let mut paint = Paint::default();
+      paint.set_color(tiny_skia::Color::from_rgba8(
+        color.r,
+        color.g,
+        color.b,
+        color.alpha_u8(),
+      ));
+      paint.anti_alias = false;
+      pixmap.fill_rect(sk_rect, &paint, Transform::identity(), clip_mask);
+    }
+
     let mut accent = Self::resolved_accent_color(style);
     if control.invalid {
       accent = Rgba {
@@ -9719,8 +9737,14 @@ impl Painter {
         }
 
         if let Some((caret_rect, caret_color)) = caret_rect {
-          let device_rect = self.device_rect(caret_rect);
-          fill_rect_masked(&mut self.pixmap, device_rect, caret_color, clip_mask);
+          let device_rect_raw = self.device_rect(caret_rect);
+          let device_rect = Rect::from_xywh(
+            device_rect_raw.x().round(),
+            device_rect_raw.y().round(),
+            device_rect_raw.width().round().max(1.0),
+            device_rect_raw.height().round().max(1.0),
+          );
+          fill_rect_masked_crisp(&mut self.pixmap, device_rect, caret_color, clip_mask);
         }
         true
       }
@@ -9953,8 +9977,14 @@ impl Painter {
         }
 
         if let Some((caret_rect, caret_color)) = caret_rect {
-          let device_rect = self.device_rect(caret_rect);
-          fill_rect_masked(&mut self.pixmap, device_rect, caret_color, clip_mask);
+          let device_rect_raw = self.device_rect(caret_rect);
+          let device_rect = Rect::from_xywh(
+            device_rect_raw.x().round(),
+            device_rect_raw.y().round(),
+            device_rect_raw.width().round().max(1.0),
+            device_rect_raw.height().round().max(1.0),
+          );
+          fill_rect_masked_crisp(&mut self.pixmap, device_rect, caret_color, clip_mask);
         }
         true
       }
