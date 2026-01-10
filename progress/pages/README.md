@@ -2,7 +2,7 @@
 
 This directory contains the **committed pageset scoreboard**: one tiny JSON file per cached page stem.
 
-- Bootstrap with `pageset_progress sync` (`cargo run --release --bin pageset_progress -- sync [--prune]`) to materialize one placeholder per official pageset URL, even on a fresh checkout with no caches.
+- Bootstrap with `pageset_progress sync` (`bash scripts/cargo_agent.sh run --release --bin pageset_progress -- sync [--prune]`) to materialize one placeholder per official pageset URL, even on a fresh checkout with no caches.
 - `sync` writes minimal `status: error` entries with `auto_notes: "not run"` or `auto_notes: "missing cache"`; `--prune` removes files for URLs no longer in the pageset list.
 - `pageset_progress run` updates these files after caches exist.
 - `pageset_progress migrate` rewrites existing progress files without rendering, applying legacy schema migrations (e.g. splitting mixed legacy `notes` into durable `notes` + machine `auto_notes`), backfilling missing `inputs` fingerprints when cached HTML exists, and reserializing deterministically.
@@ -37,9 +37,14 @@ This directory contains the **committed pageset scoreboard**: one tiny JSON file
 - To seed initial `accuracy` values for pages that have offline fixtures under `tests/pages/fixtures/<stem>/index.html`, diff those fixtures against Chrome and sync the metrics into `progress/pages/*.json`:
   - Recommended starter set: `tests/pages/pageset_guardrails.json` (curated high-signal pages).
   - Commands:
-    - `cargo xtask fixture-chrome-diff --fixtures <stem1,stem2,...> --viewport 1200x800 --js off --tolerance 0 --max-diff-percent 0`
-    - `cargo xtask sync-progress-accuracy --report target/fixture_chrome_diff/report.json --progress-dir progress/pages`
+    - `bash scripts/cargo_agent.sh xtask refresh-progress-accuracy --fixtures <stem1,stem2,...>`
+    - (manual) `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --fixtures <stem1,stem2,...>` (defaults: viewport `1040x1240`, `--js off`, `tolerance=0`, `max-diff-percent=0`)
+    - (manual) `bash scripts/cargo_agent.sh xtask sync-progress-accuracy --report target/fixture_chrome_diff/report.json --progress-dir progress/pages`
   - Note: baselines depend on the installed Chrome/Chromium build, so reruns can cause churn when Chrome versions differ.
+  - Viewport defaults differ between harnesses:
+    - `pageset_progress run` (cached pageset renders + `fetches/chrome_renders` baselines) defaults to `1200x800`.
+    - Regression/fixture harnesses (`xtask page-loop`, `xtask fixture-chrome-diff`) default to `1040x1240`.
+    - Use the viewport that matches the baseline you are comparing against; override with `--viewport WxH` when needed.
 - Renderer-provided `failure_stage`/`timeout_stage` fields stay `null` on placeholders and are populated directly from diagnostics during runs for programmatic triage.
 - `stages_ms` buckets are a coarse **wall-time** attribution (mutually exclusive buckets; `fetch`,
   `css`, `cascade`, `box_tree`, `layout`, `paint`) derived
