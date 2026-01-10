@@ -2,7 +2,8 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
+  KeyAction, PointerButton, PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker,
+  WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -433,6 +434,128 @@ fn ui_clipboard_respects_readonly_input() {
     .expect("select all after paste");
   ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
   assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello");
+
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
+}
+
+#[test]
+fn ui_clipboard_copy_cut_respects_selection() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; }
+
+      #t {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 180px;
+        height: 30px;
+      }
+
+      /* A probe element whose background is driven by the input's current value attribute. */
+      #probe {
+        position: absolute;
+        left: 10px;
+        top: 50px;
+        width: 20px;
+        height: 20px;
+        background: rgb(0, 0, 0);
+      }
+
+      #t[value="hello"] + #probe { background: rgb(0, 255, 0); }
+      #t[value="o"] + #probe { background: rgb(255, 255, 0); }
+      #t[value=""] + #probe { background: rgb(255, 0, 0); }
+    </style>
+  </head>
+  <body>
+    <input id="t" type="text" value="hello"><div id="probe"></div>
+  </body>
+</html>
+"#,
+  );
+
+  let handle = spawn_ui_worker("fastr-ui-worker-clipboard-selection").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: Some(url.clone()),
+      cancel: Default::default(),
+    })
+    .expect("create tab");
+  ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 100),
+      dpr: 1.0,
+    })
+    .expect("viewport");
+  ui_tx
+    .send(UiToWorker::SetActiveTab { tab_id })
+    .expect("active tab");
+
+  // Wait for the initial paint and assert the probe is green (value="hello").
+  let frame0 = next_frame_ready(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame0.pixmap, 20, 60),
+    [0, 255, 0, 255],
+    "expected probe to reflect initial input value"
+  );
+
+  // Click the input to focus it.
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (15.0, 15.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer down");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (15.0, 15.0),
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("pointer up");
+  let _ = next_frame_ready(&ui_rx, tab_id);
+
+  // Select all, then shrink the selection by one character so the selected text is "hell".
+  ui_tx
+    .send(UiToWorker::SelectAll { tab_id })
+    .expect("select all");
+  ui_tx
+    .send(UiToWorker::KeyAction {
+      tab_id,
+      key: KeyAction::ShiftArrowLeft,
+    })
+    .expect("shift arrow left");
+
+  // Copy should copy the selection, not the full value.
+  ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hell");
+
+  // Cut should copy the selection and delete it, leaving only the last character (value="o").
+  ui_tx.send(UiToWorker::Cut { tab_id }).expect("cut");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hell");
+  let frame_cut = next_frame_ready(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame_cut.pixmap, 20, 60),
+    [255, 255, 0, 255],
+    "expected probe to reflect value after cutting selection"
+  );
 
   drop(ui_tx);
   join.join().expect("join ui worker thread");
