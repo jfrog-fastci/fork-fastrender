@@ -18,7 +18,7 @@ pub fn parse_import_map_string(
   let parsed: OrderedJsonValue = serde_json::from_str(input)?;
   let OrderedJsonValue::Object(top_level) = parsed else {
     return Err(ImportMapError::TypeError(
-      "top-level value needs to be a JSON object".to_string(),
+      "top-level value needs to be a JSON object.".to_string(),
     ));
   };
 
@@ -36,7 +36,7 @@ pub fn parse_import_map_string(
   if let Some(imports_value) = get_last_property(&top_level, "imports") {
     let OrderedJsonValue::Object(map) = imports_value else {
       return Err(ImportMapError::TypeError(
-        r#"value for the "imports" top-level key needs to be a JSON object."#.to_string(),
+        "the value for the \"imports\" top-level key needs to be a JSON object.".to_string(),
       ));
     };
     imports = sort_and_normalize_module_specifier_map(map, base_url, &mut warnings);
@@ -46,7 +46,7 @@ pub fn parse_import_map_string(
   if let Some(scopes_value) = get_last_property(&top_level, "scopes") {
     let OrderedJsonValue::Object(map) = scopes_value else {
       return Err(ImportMapError::TypeError(
-        r#"value for the "scopes" top-level key needs to be a JSON object."#.to_string(),
+        "the value for the \"scopes\" top-level key needs to be a JSON object.".to_string(),
       ));
     };
     scopes = sort_and_normalize_scopes(map, base_url, &mut warnings)?;
@@ -56,7 +56,7 @@ pub fn parse_import_map_string(
   if let Some(integrity_value) = get_last_property(&top_level, "integrity") {
     let OrderedJsonValue::Object(map) = integrity_value else {
       return Err(ImportMapError::TypeError(
-        r#"value for the "integrity" top-level key needs to be a JSON object."#.to_string(),
+        "the value for the \"integrity\" top-level key needs to be a JSON object.".to_string(),
       ));
     };
     integrity = normalize_module_integrity_map(map, base_url, &mut warnings);
@@ -188,7 +188,7 @@ fn sort_and_normalize_scopes(
   for (scope_prefix, potential_specifier_map) in original_map {
     let OrderedJsonValue::Object(map) = potential_specifier_map else {
       return Err(ImportMapError::TypeError(format!(
-        "value of the scope with prefix {scope_prefix} needs to be a JSON object."
+        "the value of the scope with prefix {scope_prefix} needs to be a JSON object."
       )));
     };
 
