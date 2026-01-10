@@ -2039,7 +2039,7 @@ impl ResourceContext {
 
     if let Some(csp) = self.csp.as_ref() {
       let directive = match kind {
-        ResourceKind::Stylesheet => CspDirective::StyleSrc,
+        ResourceKind::Stylesheet => CspDirective::StyleSrcElem,
         ResourceKind::Image => CspDirective::ImgSrc,
         ResourceKind::Font => CspDirective::FontSrc,
         ResourceKind::Other => CspDirective::ConnectSrc,

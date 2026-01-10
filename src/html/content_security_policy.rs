@@ -4,8 +4,8 @@
 //! mixed content, etc). Many real pages additionally gate resource loading via Content Security
 //! Policy. This module implements a deliberately small-but-useful subset:
 //!
-//! - Directives: `default-src`, `style-src`, `img-src`, `font-src`, `connect-src`, `frame-src`,
-//!   `script-src`, `script-src-elem`, `script-src-attr`
+//! - Directives: `default-src`, `style-src`, `style-src-elem`, `style-src-attr`, `img-src`,
+//!   `font-src`, `connect-src`, `frame-src`, `script-src`, `script-src-elem`, `script-src-attr`
 //! - Source expressions:
 //!   - `'self'`, `'none'`
 //!   - `'unsafe-inline'` (inline scripts only; ignored when a nonce/hash is present, matching
@@ -47,6 +47,8 @@ pub enum CspDirective {
   ScriptSrcElem,
   ScriptSrcAttr,
   StyleSrc,
+  StyleSrcElem,
+  StyleSrcAttr,
   ImgSrc,
   FontSrc,
   ConnectSrc,
@@ -61,6 +63,8 @@ impl CspDirective {
       CspDirective::ScriptSrcElem => "script-src-elem",
       CspDirective::ScriptSrcAttr => "script-src-attr",
       CspDirective::StyleSrc => "style-src",
+      CspDirective::StyleSrcElem => "style-src-elem",
+      CspDirective::StyleSrcAttr => "style-src-attr",
       CspDirective::ImgSrc => "img-src",
       CspDirective::FontSrc => "font-src",
       CspDirective::ConnectSrc => "connect-src",
@@ -228,6 +232,16 @@ fn directive_sources_for_set(set: &CspDirectiveSet, directive: CspDirective) -> 
       .directives
       .get(&CspDirective::ScriptSrcAttr)
       .or_else(|| set.directives.get(&CspDirective::ScriptSrc))
+      .or_else(|| set.directives.get(&CspDirective::DefaultSrc)),
+    CspDirective::StyleSrcElem => set
+      .directives
+      .get(&CspDirective::StyleSrcElem)
+      .or_else(|| set.directives.get(&CspDirective::StyleSrc))
+      .or_else(|| set.directives.get(&CspDirective::DefaultSrc)),
+    CspDirective::StyleSrcAttr => set
+      .directives
+      .get(&CspDirective::StyleSrcAttr)
+      .or_else(|| set.directives.get(&CspDirective::StyleSrc))
       .or_else(|| set.directives.get(&CspDirective::DefaultSrc)),
     CspDirective::ScriptSrc => set
       .directives
@@ -437,6 +451,10 @@ fn match_lower_directive(name: &str) -> Option<CspDirective> {
     Some(CspDirective::ScriptSrcAttr)
   } else if name.eq_ignore_ascii_case("style-src") {
     Some(CspDirective::StyleSrc)
+  } else if name.eq_ignore_ascii_case("style-src-elem") {
+    Some(CspDirective::StyleSrcElem)
+  } else if name.eq_ignore_ascii_case("style-src-attr") {
+    Some(CspDirective::StyleSrcAttr)
   } else if name.eq_ignore_ascii_case("img-src") {
     Some(CspDirective::ImgSrc)
   } else if name.eq_ignore_ascii_case("font-src") {
@@ -1198,5 +1216,28 @@ mod tests {
     let policy = CspPolicy::from_values(["script-src-elem https:; script-src 'none'"]).expect("parse");
     let url = Url::parse("https://example.com/a.js").expect("url");
     assert!(policy.allows_script_url(Some(&doc_origin("https://example.com/")), None, &url));
+  }
+
+  #[test]
+  fn style_src_elem_overrides_style_src_for_stylesheet_resources() {
+    // `style-src-elem` takes precedence over `style-src` regardless of order.
+    let policy = CspPolicy::from_values(["style-src-elem https:; style-src 'none'"]).expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::StyleSrcElem,
+      "https://example.com/",
+      "https://example.com/a.css"
+    ));
+  }
+
+  #[test]
+  fn style_src_elem_falls_back_to_style_src() {
+    let policy = CspPolicy::from_values(["style-src https:"]).expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::StyleSrcElem,
+      "https://example.com/",
+      "https://example.com/a.css"
+    ));
   }
 }

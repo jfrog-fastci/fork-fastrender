@@ -4720,8 +4720,9 @@ mod tests {
       document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<()> {
-      // These lifecycle tests only need a minimal JS environment; treat module scripts the same as
-      // classic scripts.
+      // These lifecycle tests exercise event dispatch and microtask checkpoints; module-specific
+      // semantics are validated by dedicated tests elsewhere. Treat module scripts like classic
+      // scripts here.
       self.execute_classic_script(script_text, spec, current_script, document, event_loop)
     }
 
