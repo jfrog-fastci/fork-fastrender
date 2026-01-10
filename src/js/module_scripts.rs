@@ -294,7 +294,10 @@ if (!globalThis.__fastrModuleRegistry) {
     if (rec.state === 2) return rec.exports;
     if (rec.state === 1) return rec.exports; // circular import: return partial exports
     rec.state = 1;
-    rec.fn(rec.exports, globalThis.__fastrImportModule);
+    // Invoke module wrapper as a plain function call so `this` is `undefined` inside the wrapper,
+    // matching ESM top-level `this` semantics.
+    var fn = rec.fn;
+    fn(rec.exports, globalThis.__fastrImportModule);
     rec.state = 2;
     return rec.exports;
   };
@@ -1008,5 +1011,19 @@ mod tests {
       Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Script),
       other => panic!("expected script timeout render error, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn module_runtime_invokes_wrappers_without_binding_this() {
+    // Ensure the embedded runtime does not invoke module wrappers as a method call (`rec.fn(...)`),
+    // which would bind `this` to the record object. Module top-level `this` is `undefined`.
+    assert!(
+      MODULE_RUNTIME_SOURCE.contains("var fn = rec.fn"),
+      "expected runtime to stash rec.fn into a local before calling it"
+    );
+    assert!(
+      !MODULE_RUNTIME_SOURCE.contains("rec.fn(rec.exports"),
+      "expected runtime to avoid method-call invocation, got:\n{MODULE_RUNTIME_SOURCE}"
+    );
   }
 }
