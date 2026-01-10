@@ -2164,19 +2164,142 @@ impl App {
             self.window.request_redraw();
             return;
           }
+ 
+           let dropdown_nav_key = match key {
+             VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
+             VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
+             VirtualKeyCode::Home => Some(fastrender::interaction::KeyAction::Home),
+             VirtualKeyCode::End => Some(fastrender::interaction::KeyAction::End),
+             _ => None,
+           };
+           if let Some(nav_key) = dropdown_nav_key {
+             self.update_open_select_dropdown_selection_for_key(nav_key);
+             self.window.request_redraw();
+             return;
+           } else {
+             self.cancel_select_dropdown();
+             self.window.request_redraw();
+           }
+         }
 
-          let dropdown_nav_key = match key {
-            VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
-            VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
-            VirtualKeyCode::Home => Some(fastrender::interaction::KeyAction::Home),
-            VirtualKeyCode::End => Some(fastrender::interaction::KeyAction::End),
-            _ => None,
-          };
-          if let Some(nav_key) = dropdown_nav_key {
-            self.update_open_select_dropdown_selection_for_key(nav_key);
-          } else {
-            self.cancel_select_dropdown();
-            self.window.request_redraw();
+        // Centralised shortcut handling: interpret as a browser shortcut first, and only forward
+        // to the page when it isn't reserved.
+        if let Some(shortcut_key) = map_winit_key_to_shortcuts_key(key) {
+          let shortcut_modifiers = winit_modifiers_to_shortcuts_modifiers(self.modifiers);
+          let shortcut_action = fastrender::ui::shortcuts::map_shortcut(
+            fastrender::ui::shortcuts::KeyEvent::new(shortcut_key, shortcut_modifiers),
+          );
+          if let Some(action) = shortcut_action {
+            use fastrender::ui::shortcuts::ShortcutAction;
+
+            match action {
+              // Chrome-level shortcuts are evaluated inside the egui frame (`ui::chrome_ui`) so we
+              // can respect its editing focus rules. Ensure they never reach page input.
+              ShortcutAction::FocusAddressBar
+              | ShortcutAction::NewTab
+              | ShortcutAction::CloseTab
+              | ShortcutAction::ReopenClosedTab
+              | ShortcutAction::NextTab
+              | ShortcutAction::PrevTab
+              | ShortcutAction::Back
+              | ShortcutAction::Forward
+              | ShortcutAction::Reload
+              | ShortcutAction::ActivateTabNumber(_)
+              | ShortcutAction::ZoomIn
+              | ShortcutAction::ZoomOut
+              | ShortcutAction::ZoomReset => {
+                return;
+              }
+
+              // Page-level shortcuts only apply when the rendered page has focus and egui isn't
+              // actively editing text (e.g. address bar).
+              ShortcutAction::Copy
+              | ShortcutAction::Cut
+              | ShortcutAction::Paste
+              | ShortcutAction::SelectAll
+              | ShortcutAction::PageUp
+              | ShortcutAction::PageDown
+              | ShortcutAction::Space
+              | ShortcutAction::Home
+              | ShortcutAction::End => {
+                // If egui is actively editing text (e.g. the address bar), don't handle page-level
+                // key events.
+                if self.egui_ctx.wants_keyboard_input() {
+                  return;
+                }
+                if !self.page_has_focus {
+                  return;
+                }
+                let Some(tab_id) = self.browser_state.active_tab_id() else {
+                  return;
+                };
+ 
+                 match action {
+                   ShortcutAction::PageUp | ShortcutAction::PageDown | ShortcutAction::Space => {
+                     let viewport_css = self
+                       .page_viewport_css
+                       .or_else(|| {
+                         self
+                           .browser_state
+                           .tab(tab_id)
+                           .and_then(|tab| tab.latest_frame_meta.as_ref())
+                           .map(|meta| meta.viewport_css)
+                       })
+                       .unwrap_or((0, 0));
+                     let h = viewport_css.1.max(1) as f32;
+                     let mut dy = (h * 0.9).max(1.0);
+                     if matches!(action, ShortcutAction::PageUp)
+                       || (matches!(action, ShortcutAction::Space) && shortcut_modifiers.shift)
+                     {
+                       dy = -dy;
+                     }
+                     self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                       tab_id,
+                       delta_css: (0.0, dy),
+                       pointer_css: None,
+                     });
+                   }
+                   ShortcutAction::Home => {
+                     let current_scroll_y_css = self
+                       .browser_state
+                       .tab(tab_id)
+                       .map(|tab| tab.scroll_state.viewport.y)
+                       .unwrap_or(0.0);
+                     if current_scroll_y_css.is_finite() && current_scroll_y_css.abs() > 1e-6 {
+                       self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                         tab_id,
+                         delta_css: (0.0, -current_scroll_y_css),
+                         pointer_css: None,
+                       });
+                     }
+                   }
+                   // Scroll to the end by applying a large positive delta and letting the worker clamp.
+                   ShortcutAction::End => self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
+                     tab_id,
+                     delta_css: (0.0, 1_000_000_000.0),
+                     pointer_css: None,
+                   }),
+                    ShortcutAction::Copy => self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id }),
+                    ShortcutAction::Cut => self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id }),
+                    ShortcutAction::SelectAll => {
+                      self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id })
+                    }
+                    ShortcutAction::Paste => {
+                      if let Ok(mut clipboard) = Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                          // egui-winit can also emit `egui::Event::Paste` from Ctrl/Cmd+V. Suppress
+                          // it for this frame to avoid double pastes.
+                          self.suppress_paste_events = true;
+                          self
+                            .send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+                        }
+                      }
+                    }
+                    _ => {}
+                  }
+                 return;
+               }
+            }
           }
         }
 
@@ -2185,43 +2308,6 @@ impl App {
         if self.egui_ctx.wants_keyboard_input() {
           return;
         }
-
-        // Ctrl/Cmd+Tab is reserved for chrome tab switching; don't forward it to the page as a Tab
-        // key press.
-        if (self.modifiers.ctrl() || self.modifiers.logo()) && matches!(key, VirtualKeyCode::Tab) {
-          return;
-        }
-
-        // Clipboard shortcuts for the rendered page (focused input/textarea).
-        if (self.modifiers.ctrl() || self.modifiers.logo()) && self.page_has_focus {
-          if let Some(tab_id) = self.browser_state.active_tab_id() {
-            match key {
-              VirtualKeyCode::C => {
-                self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id });
-                return;
-              }
-              VirtualKeyCode::X => {
-                self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
-                return;
-              }
-              VirtualKeyCode::V => {
-                if let Ok(mut clipboard) = Clipboard::new() {
-                  if let Ok(text) = clipboard.get_text() {
-                    self.suppress_paste_events = true;
-                    self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
-                  }
-                }
-                return;
-              }
-              VirtualKeyCode::A => {
-                self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id });
-                return;
-              }
-              _ => {}
-            }
-          }
-        }
-
         if !self.page_has_focus {
           return;
         }
@@ -2229,58 +2315,9 @@ impl App {
           return;
         };
 
-        // ---------------------------------------------------------------------
-        // Keyboard scrolling (PageUp/PageDown/Space/Home/End)
-        // ---------------------------------------------------------------------
-        //
-        // When the page view is focused and egui is not editing a text field, mimic common browser
-        // keyboard scrolling behaviour. This operates on the viewport scroll container rather than
-        // forwarding key events into the page.
-        if self.open_select_dropdown.is_none() {
-          let viewport_h_css = self
-            .page_viewport_css
-            .map(|(_, h)| h)
-            .or_else(|| {
-              self
-                .browser_state
-                .tab(tab_id)
-                .and_then(|tab| tab.latest_frame_meta.as_ref().map(|m| m.viewport_css.1))
-            })
-            .or_else(|| (self.viewport_cache_tab == Some(tab_id)).then_some(self.viewport_cache_css.1))
-            .unwrap_or(1)
-            .max(1);
-          let step_y_css = (viewport_h_css as f32) * 0.9;
-          let current_scroll_y_css = self
-            .browser_state
-            .tab(tab_id)
-            .map(|tab| tab.scroll_state.viewport.y)
-            .unwrap_or(0.0);
-
-          let scroll_delta_y_css = match key {
-            VirtualKeyCode::PageDown => Some(step_y_css),
-            VirtualKeyCode::PageUp => Some(-step_y_css),
-            VirtualKeyCode::Space => Some(if self.modifiers.shift() { -step_y_css } else { step_y_css }),
-            VirtualKeyCode::Home => current_scroll_y_css.is_finite().then_some(-current_scroll_y_css),
-            // Scroll to the end by applying a large positive delta and letting the worker clamp.
-            VirtualKeyCode::End => Some(1_000_000_000.0),
-            _ => None,
-          };
-          if let Some(delta_y) = scroll_delta_y_css {
-            if delta_y != 0.0 && delta_y.is_finite() {
-              self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-                tab_id,
-                delta_css: (0.0, delta_y),
-                pointer_css: None,
-              });
-            }
-            return;
-          }
-        }
-
         let key_action = match key {
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
           VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),
-          VirtualKeyCode::Space => Some(fastrender::interaction::KeyAction::Space),
           VirtualKeyCode::Tab => Some(if self.modifiers.shift() {
             fastrender::interaction::KeyAction::ShiftTab
           } else {
@@ -2288,8 +2325,6 @@ impl App {
           }),
           VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
           VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
-          VirtualKeyCode::Home => Some(fastrender::interaction::KeyAction::Home),
-          VirtualKeyCode::End => Some(fastrender::interaction::KeyAction::End),
           _ => None,
         };
         let Some(key_action) = key_action else {
@@ -3042,6 +3077,61 @@ impl App {
     for id in &full_output.textures_delta.free {
       self.egui_renderer.free_texture(id);
     }
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+fn map_winit_key_to_shortcuts_key(
+  key: winit::event::VirtualKeyCode,
+) -> Option<fastrender::ui::shortcuts::Key> {
+  use fastrender::ui::shortcuts::Key as ShortcutKey;
+  use winit::event::VirtualKeyCode;
+
+  Some(match key {
+    VirtualKeyCode::A => ShortcutKey::A,
+    VirtualKeyCode::C => ShortcutKey::C,
+    VirtualKeyCode::K => ShortcutKey::K,
+    VirtualKeyCode::L => ShortcutKey::L,
+    VirtualKeyCode::R => ShortcutKey::R,
+    VirtualKeyCode::T => ShortcutKey::T,
+    VirtualKeyCode::V => ShortcutKey::V,
+    VirtualKeyCode::W => ShortcutKey::W,
+    VirtualKeyCode::X => ShortcutKey::X,
+    VirtualKeyCode::Tab => ShortcutKey::Tab,
+    VirtualKeyCode::Left => ShortcutKey::Left,
+    VirtualKeyCode::Right => ShortcutKey::Right,
+    VirtualKeyCode::F5 => ShortcutKey::F5,
+    VirtualKeyCode::Key0 | VirtualKeyCode::Numpad0 => ShortcutKey::Num0,
+    VirtualKeyCode::Key1 | VirtualKeyCode::Numpad1 => ShortcutKey::Num1,
+    VirtualKeyCode::Key2 | VirtualKeyCode::Numpad2 => ShortcutKey::Num2,
+    VirtualKeyCode::Key3 | VirtualKeyCode::Numpad3 => ShortcutKey::Num3,
+    VirtualKeyCode::Key4 | VirtualKeyCode::Numpad4 => ShortcutKey::Num4,
+    VirtualKeyCode::Key5 | VirtualKeyCode::Numpad5 => ShortcutKey::Num5,
+    VirtualKeyCode::Key6 | VirtualKeyCode::Numpad6 => ShortcutKey::Num6,
+    VirtualKeyCode::Key7 | VirtualKeyCode::Numpad7 => ShortcutKey::Num7,
+    VirtualKeyCode::Key8 | VirtualKeyCode::Numpad8 => ShortcutKey::Num8,
+    VirtualKeyCode::Key9 | VirtualKeyCode::Numpad9 => ShortcutKey::Num9,
+    VirtualKeyCode::Equals | VirtualKeyCode::NumpadEquals => ShortcutKey::Equals,
+    VirtualKeyCode::Minus | VirtualKeyCode::Subtract => ShortcutKey::Minus,
+    VirtualKeyCode::Add => ShortcutKey::Plus,
+    VirtualKeyCode::PageUp => ShortcutKey::PageUp,
+    VirtualKeyCode::PageDown => ShortcutKey::PageDown,
+    VirtualKeyCode::Space => ShortcutKey::Space,
+    VirtualKeyCode::Home => ShortcutKey::Home,
+    VirtualKeyCode::End => ShortcutKey::End,
+    _ => return None,
+  })
+}
+
+#[cfg(feature = "browser_ui")]
+fn winit_modifiers_to_shortcuts_modifiers(
+  modifiers: winit::event::ModifiersState,
+) -> fastrender::ui::shortcuts::Modifiers {
+  fastrender::ui::shortcuts::Modifiers {
+    ctrl: modifiers.ctrl(),
+    shift: modifiers.shift(),
+    alt: modifiers.alt(),
+    meta: modifiers.logo(),
   }
 }
 

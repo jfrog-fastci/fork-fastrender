@@ -3,6 +3,7 @@
 use crate::ui::browser_app::BrowserAppState;
 use crate::render_control::StageHeartbeat;
 use crate::ui::messages::TabId;
+use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::zoom;
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,63 @@ pub enum ChromeAction {
   Forward,
   Reload,
   AddressBarFocusChanged(bool),
+}
+
+fn egui_modifiers_to_shortcuts_modifiers(modifiers: egui::Modifiers) -> Modifiers {
+  // Egui exposes a cross-platform `command` flag (Cmd on macOS, Ctrl elsewhere). For our canonical
+  // shortcut mapping we want explicit `ctrl` + `meta`.
+  let (ctrl, meta) = if cfg!(target_os = "macos") {
+    // On macOS, `command` and `mac_cmd` both represent Cmd. Allow Ctrl as well (useful for
+    // Ctrl+Tab-style navigation in some apps, and matches the previous chrome implementation).
+    (modifiers.ctrl, modifiers.command || modifiers.mac_cmd)
+  } else {
+    // On non-mac platforms, `command` is effectively Ctrl. Egui does not currently expose the
+    // Windows/Super key separately, so leave `meta` false here.
+    (modifiers.command || modifiers.ctrl, false)
+  };
+
+  Modifiers {
+    ctrl,
+    shift: modifiers.shift,
+    alt: modifiers.alt,
+    meta,
+  }
+}
+
+fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
+  Some(match key {
+    egui::Key::A => Key::A,
+    egui::Key::C => Key::C,
+    egui::Key::K => Key::K,
+    egui::Key::L => Key::L,
+    egui::Key::R => Key::R,
+    egui::Key::T => Key::T,
+    egui::Key::V => Key::V,
+    egui::Key::W => Key::W,
+    egui::Key::X => Key::X,
+    egui::Key::Tab => Key::Tab,
+    egui::Key::ArrowLeft => Key::Left,
+    egui::Key::ArrowRight => Key::Right,
+    egui::Key::Num0 => Key::Num0,
+    egui::Key::Num1 => Key::Num1,
+    egui::Key::Num2 => Key::Num2,
+    egui::Key::Num3 => Key::Num3,
+    egui::Key::Num4 => Key::Num4,
+    egui::Key::Num5 => Key::Num5,
+    egui::Key::Num6 => Key::Num6,
+    egui::Key::Num7 => Key::Num7,
+    egui::Key::Num8 => Key::Num8,
+    egui::Key::Num9 => Key::Num9,
+    egui::Key::F5 => Key::F5,
+    egui::Key::PlusEquals => Key::Equals,
+    egui::Key::Minus => Key::Minus,
+    egui::Key::PageUp => Key::PageUp,
+    egui::Key::PageDown => Key::PageDown,
+    egui::Key::Space => Key::Space,
+    egui::Key::Home => Key::Home,
+    egui::Key::End => Key::End,
+    _ => return None,
+  })
 }
 
 pub fn chrome_ui(
@@ -47,13 +105,7 @@ pub fn chrome_ui(
   // Ctrl/Cmd+L should not steal focus from other egui text fields (e.g. devtools inputs), but we
   // still want it to re-select the URL when the address bar is already focused.
   let allow_focus_address_bar = !ctx.wants_keyboard_input() || app.chrome.address_bar_has_focus;
-  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-  enum ZoomAction {
-    In,
-    Out,
-    Reset,
-  }
-
+  let allow_history_navigation = !ctx.wants_keyboard_input() && !app.chrome.address_bar_has_focus;
   let (
     focus_address_bar,
     new_tab,
@@ -62,6 +114,8 @@ pub fn chrome_ui(
     reload,
     tab_delta,
     tab_number,
+    back,
+    forward,
     zoom_action,
   ) = ctx.input(|i| {
     // Use the key event's modifier snapshot rather than `i.modifiers`: the winit integration feeds
@@ -73,7 +127,9 @@ pub fn chrome_ui(
     let mut reload = false;
     let mut tab_delta: Option<isize> = None;
     let mut tab_number: Option<u8> = None;
-    let mut zoom_action: Option<ZoomAction> = None;
+    let mut back = false;
+    let mut forward = false;
+    let mut zoom_action: Option<ShortcutAction> = None;
 
     for event in &i.events {
       let egui::Event::Key {
@@ -86,39 +142,29 @@ pub fn chrome_ui(
         continue;
       };
 
-      // Guard against AltGr (often encoded as Ctrl+Alt).
-      let cmd_or_ctrl = (modifiers.command || modifiers.ctrl) && !modifiers.alt;
+      let Some(shortcut_key) = egui_key_to_shortcuts_key(*key) else {
+        continue;
+      };
+      let shortcut_modifiers = egui_modifiers_to_shortcuts_modifiers(*modifiers);
+      let Some(action) = map_shortcut(KeyEvent::new(shortcut_key, shortcut_modifiers)) else {
+        continue;
+      };
 
-      match key {
-        // Many browsers support both Ctrl/Cmd+L and Ctrl/Cmd+K for focusing the address bar.
-        egui::Key::L | egui::Key::K if cmd_or_ctrl && allow_focus_address_bar => {
-          focus_address_bar = true
+      match action {
+        ShortcutAction::FocusAddressBar if allow_focus_address_bar => {
+          focus_address_bar = true;
         }
-        // Ctrl/Cmd+T creates a new tab; Ctrl/Cmd+Shift+T reopens the last closed tab.
-        egui::Key::T if cmd_or_ctrl && modifiers.shift => reopen_closed_tab = true,
-        egui::Key::T if cmd_or_ctrl => new_tab = true,
-        egui::Key::W if cmd_or_ctrl => close_tab = true,
-        egui::Key::R if cmd_or_ctrl => reload = true,
-        // Browser-like zoom shortcuts.
-        egui::Key::PlusEquals if cmd_or_ctrl => zoom_action = Some(ZoomAction::In),
-        egui::Key::Minus if cmd_or_ctrl => zoom_action = Some(ZoomAction::Out),
-        egui::Key::Num0 if cmd_or_ctrl => zoom_action = Some(ZoomAction::Reset),
-        egui::Key::Tab if cmd_or_ctrl => {
-          tab_delta = Some(if modifiers.shift { -1isize } else { 1isize })
-        }
-        // Ctrl/Cmd+1..9 activate tabs by index (9 = last tab), matching common browser shortcuts.
-        egui::Key::Num1 if cmd_or_ctrl => tab_number = Some(1),
-        egui::Key::Num2 if cmd_or_ctrl => tab_number = Some(2),
-        egui::Key::Num3 if cmd_or_ctrl => tab_number = Some(3),
-        egui::Key::Num4 if cmd_or_ctrl => tab_number = Some(4),
-        egui::Key::Num5 if cmd_or_ctrl => tab_number = Some(5),
-        egui::Key::Num6 if cmd_or_ctrl => tab_number = Some(6),
-        egui::Key::Num7 if cmd_or_ctrl => tab_number = Some(7),
-        egui::Key::Num8 if cmd_or_ctrl => tab_number = Some(8),
-        egui::Key::Num9 if cmd_or_ctrl => tab_number = Some(9),
-        // F5 is a common reload shortcut. Ignore modified F5 (Ctrl/Cmd+F5 / Alt+F5).
-        egui::Key::F5 if !(modifiers.command || modifiers.ctrl || modifiers.mac_cmd) && !modifiers.alt => {
-          reload = true
+        ShortcutAction::NewTab => new_tab = true,
+        ShortcutAction::CloseTab => close_tab = true,
+        ShortcutAction::ReopenClosedTab => reopen_closed_tab = true,
+        ShortcutAction::Reload => reload = true,
+        ShortcutAction::NextTab => tab_delta = Some(1),
+        ShortcutAction::PrevTab => tab_delta = Some(-1),
+        ShortcutAction::ActivateTabNumber(n) => tab_number = Some(n),
+        ShortcutAction::Back if allow_history_navigation => back = true,
+        ShortcutAction::Forward if allow_history_navigation => forward = true,
+        ShortcutAction::ZoomIn | ShortcutAction::ZoomOut | ShortcutAction::ZoomReset => {
+          zoom_action = Some(action);
         }
         _ => {}
       }
@@ -132,6 +178,8 @@ pub fn chrome_ui(
       reload,
       tab_delta,
       tab_number,
+      back,
+      forward,
       zoom_action,
     )
   });
@@ -162,9 +210,10 @@ pub fn chrome_ui(
   if let Some(zoom_action) = zoom_action {
     if let Some(tab) = app.active_tab_mut() {
       tab.zoom = match zoom_action {
-        ZoomAction::In => zoom::zoom_in(tab.zoom),
-        ZoomAction::Out => zoom::zoom_out(tab.zoom),
-        ZoomAction::Reset => zoom::zoom_reset(),
+        ShortcutAction::ZoomIn => zoom::zoom_in(tab.zoom),
+        ShortcutAction::ZoomOut => zoom::zoom_out(tab.zoom),
+        ShortcutAction::ZoomReset => zoom::zoom_reset(),
+        _ => tab.zoom,
       };
     }
   }
@@ -194,41 +243,11 @@ pub fn chrome_ui(
     }
   }
 
-  if !app.chrome.address_bar_has_focus && !ctx.wants_keyboard_input() {
-    let (back, forward) = ctx.input(|i| {
-      // Like the Ctrl/Cmd shortcuts above, use the key event's modifier snapshot instead of
-      // `i.modifiers` so this stays robust in unit tests.
-      let mut back = false;
-      let mut forward = false;
-      for event in &i.events {
-        let egui::Event::Key {
-          key,
-          pressed: true,
-          repeat: false,
-          modifiers,
-        } = event
-        else {
-          continue;
-        };
-        // Guard against AltGr (often encoded as Ctrl+Alt).
-        let alt_only = modifiers.alt && !(modifiers.command || modifiers.ctrl || modifiers.mac_cmd);
-        if !alt_only {
-          continue;
-        }
-        match key {
-          egui::Key::ArrowLeft => back = true,
-          egui::Key::ArrowRight => forward = true,
-          _ => {}
-        }
-      }
-      (back, forward)
-    });
-    if back {
-      actions.push(ChromeAction::Back);
-    }
-    if forward {
-      actions.push(ChromeAction::Forward);
-    }
+  if back {
+    actions.push(ChromeAction::Back);
+  }
+  if forward {
+    actions.push(ChromeAction::Forward);
   }
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
     // Tabs row.
@@ -597,7 +616,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let actions = chrome_ui(&ctx, &mut app);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -675,7 +694,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let _actions = chrome_ui(&ctx, &mut app);
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     let zoom = app.active_tab().unwrap().zoom;
@@ -695,7 +714,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let _actions = chrome_ui(&ctx, &mut app);
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
     let zoom = app.active_tab().unwrap().zoom;
@@ -716,7 +735,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let _actions = chrome_ui(&ctx, &mut app);
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
     assert!(app.active_tab().unwrap().zoom > 1.0);
 
@@ -728,7 +747,7 @@ mod tests {
         ..Default::default()
       },
     );
-    let _actions = chrome_ui(&ctx, &mut app);
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
     assert!(
       (app.active_tab().unwrap().zoom - crate::ui::zoom::DEFAULT_ZOOM).abs() < f32::EPSILON
@@ -760,6 +779,35 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_b)),
       "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_shift_tab_cycles_tabs_backward_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), false);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), true);
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::Tab,
+      egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_a)),
+      "expected ChromeAction::ActivateTab({tab_a:?}), got {actions:?}"
     );
   }
 
@@ -814,6 +862,27 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_b)),
       "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_alt_shortcuts_are_ignored_to_avoid_altgr() {
+    let mut app = BrowserAppState::new();
+
+    let ctx = new_context_with_key(
+      egui::Key::T,
+      egui::Modifiers {
+        command: true,
+        alt: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      !actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
+      "expected Ctrl+Alt+T to be ignored (AltGr guard), got {actions:?}"
     );
   }
 
