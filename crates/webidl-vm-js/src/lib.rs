@@ -1323,6 +1323,11 @@ mod tests {
     getter_calls: usize,
   }
 
+  #[derive(Default)]
+  struct TestHostCtx {
+    host_calls: usize,
+  }
+
   impl VmHostHooks for TestHostHooks {
     fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {
       panic!("unexpected promise job enqueued during iterator conversion");
@@ -1349,6 +1354,29 @@ mod tests {
     }
 
     // Return any object to satisfy `GetIteratorFromMethod`.
+    let iter_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(iter_obj))?;
+    Ok(Value::Object(iter_obj))
+  }
+
+  fn iterator_method_observes_host_ctx_and_hooks(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    if let Some(any) = host.as_any_mut().downcast_mut::<TestHostCtx>() {
+      any.host_calls += 1;
+    }
+    if let Some(any) = hooks.as_any_mut() {
+      if let Some(hooks) = any.downcast_mut::<TestHostHooks>() {
+        hooks.iterator_calls += 1;
+      }
+    }
+
     let iter_obj = scope.alloc_object()?;
     scope.push_root(Value::Object(iter_obj))?;
     Ok(Value::Object(iter_obj))
@@ -1426,6 +1454,62 @@ mod tests {
 
     assert_eq!(host_hooks.iterator_calls, 1);
     assert_eq!(host_hooks.getter_calls, 0);
+    Ok(())
+  }
+
+  #[test]
+  fn iterator_method_call_propagates_host_context_from_native_call() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let hooks = NoHooks;
+    let limits = WebIdlLimits::default();
+    let mut host_ctx = TestHostCtx::default();
+    let mut host_hooks = TestHostHooks::default();
+
+    {
+      let mut outer = heap.scope();
+      let mut cx = VmJsWebIdlCx::from_native_call(
+        &mut vm,
+        &mut outer,
+        &mut host_ctx,
+        &mut host_hooks,
+        limits,
+        &hooks,
+      );
+
+      // iterable = { [Symbol.iterator]: <native fn> }
+      let iterable = cx.scope.alloc_object()?;
+      cx.scope.push_root(Value::Object(iterable))?;
+
+      let iter_name = cx.scope.alloc_string("iterator")?;
+      let iter_id = cx
+        .vm
+        .register_native_call(iterator_method_observes_host_ctx_and_hooks)?;
+      let iter_fn = cx.scope.alloc_native_function(iter_id, None, iter_name, 0)?;
+      cx.scope.push_root(Value::Object(iter_fn))?;
+
+      let sym = cx.well_known_symbol(webidl::WellKnownSymbol::Iterator)?;
+      let key = VmPropertyKey::from_symbol(sym);
+      cx.scope.define_property(
+        iterable,
+        key,
+        PropertyDescriptor {
+          enumerable: true,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(iter_fn),
+            writable: true,
+          },
+        },
+      )?;
+
+      let iterator = cx.get_iterator(Value::Object(iterable))?;
+      cx.scope.push_root(Value::Object(iterator))?;
+    }
+
+    assert_eq!(host_ctx.host_calls, 1);
+    assert_eq!(host_hooks.iterator_calls, 1);
     Ok(())
   }
 
