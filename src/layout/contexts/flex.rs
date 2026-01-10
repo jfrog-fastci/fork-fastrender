@@ -8804,6 +8804,7 @@ impl FlexFormattingContext {
           }
         })
         .max(0.0);
+      let rect_eps = 0.01;
       let resolved_definite_height = || {
         // If the parent layout mode provided an explicit used border-box height override, that's
         // the authoritative border-box height for this formatting context (including `0px`).
