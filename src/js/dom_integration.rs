@@ -8,6 +8,7 @@ use super::{
   ScriptElementEvent, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
   trim_ascii_whitespace,
 };
+use super::trim_ascii_whitespace;
 
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
 /// `<script>` elements.
