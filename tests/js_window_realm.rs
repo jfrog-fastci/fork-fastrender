@@ -491,6 +491,51 @@ Promise.any([Promise.reject("x"), Promise.reject("y")]).then(
 }
 
 #[test]
+fn promise_all_settled_reports_fulfilled_and_rejected_entries() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new(dom, "https://example.com/")?;
+  host.exec_script(
+    r#"
+globalThis.__status0 = "";
+globalThis.__value0 = "";
+globalThis.__status1 = "";
+globalThis.__reason1 = "";
+Promise.allSettled([Promise.resolve("a"), Promise.reject("b")]).then(function (res) {
+  globalThis.__status0 = res[0].status;
+  globalThis.__value0 = res[0].value;
+  globalThis.__status1 = res[1].status;
+  globalThis.__reason1 = res[1].reason;
+});
+"#,
+  )?;
+
+  host.perform_microtask_checkpoint()?;
+
+  let (status0, value0, status1, reason1) = {
+    let window = host.host_mut().window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let status0 = get_data_prop(&mut scope, global, "__status0");
+    let value0 = get_data_prop(&mut scope, global, "__value0");
+    let status1 = get_data_prop(&mut scope, global, "__status1");
+    let reason1 = get_data_prop(&mut scope, global, "__reason1");
+    (
+      get_string(scope.heap(), status0),
+      get_string(scope.heap(), value0),
+      get_string(scope.heap(), status1),
+      get_string(scope.heap(), reason1),
+    )
+  };
+
+  assert_eq!(status0, "fulfilled");
+  assert_eq!(value0, "a");
+  assert_eq!(status1, "rejected");
+  assert_eq!(reason1, "b");
+  Ok(())
+}
+
+#[test]
 fn location_url_components_are_exposed_to_js_execution() -> Result<()> {
   let url = "https://example.com:8080/path/to/page?query=1#hash";
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url))
