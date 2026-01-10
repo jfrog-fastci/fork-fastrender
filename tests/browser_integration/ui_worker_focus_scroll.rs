@@ -522,3 +522,112 @@ fn tab_focus_scrolls_viewport_and_nested_scroller_when_scroller_is_below_fold() 
   drop(ui_tx);
   join.join().expect("join ui worker");
 }
+
+#[test]
+fn shift_tab_scrolls_viewport_back_up_to_reveal_previous_focus_target() {
+  let _lock = super::stage_listener_test_lock();
+
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          body { height: 2000px; background: rgb(0,0,0); position: relative; }
+          input {
+            position: absolute;
+            left: 10px;
+            width: 120px;
+            height: 30px;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: rgb(255,0,0);
+          }
+          #top { top: 0px; }
+          #bottom { top: 1500px; }
+        </style>
+      </head>
+      <body>
+        <input id="top" value="top" />
+        <input id="bottom" value="bottom" />
+      </body>
+    </html>
+  "#;
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = format!("file://{}/index.html", dir.path().display());
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-focus-scroll-shift-tab").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+
+  ui_tx
+    .send(create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (200, 200), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  let frame = wait_for_frame(&ui_rx, tab_id, DEFAULT_TIMEOUT);
+  assert_eq!(frame.scroll_state.viewport.y, 0.0);
+
+  // Tab from no focus should focus the first input without needing to scroll.
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab to top");
+  let frame = wait_for_frame(&ui_rx, tab_id, DEFAULT_TIMEOUT);
+  assert_eq!(
+    frame.scroll_state.viewport.y, 0.0,
+    "expected top input focus to keep viewport at y=0"
+  );
+
+  // Tab to the second input should scroll down.
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab to bottom");
+  let frame = {
+    let deadline = Instant::now() + DEFAULT_TIMEOUT;
+    loop {
+      let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or(Duration::from_secs(0));
+      assert!(remaining > Duration::ZERO, "timed out waiting for bottom focus scroll");
+      let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
+      if let WorkerToUi::FrameReady { tab_id: got, frame } = msg {
+        if got == tab_id && frame.scroll_state.viewport.y > 0.0 {
+          break frame;
+        }
+      }
+    }
+  };
+  let bottom_scroll_y = frame.scroll_state.viewport.y;
+  assert!(bottom_scroll_y > 0.0);
+
+  // Shift+Tab should move focus back to the first input and scroll up to reveal it.
+  ui_tx
+    .send(key_action(tab_id, KeyAction::ShiftTab))
+    .expect("ShiftTab to top");
+  let frame = {
+    let deadline = Instant::now() + DEFAULT_TIMEOUT;
+    loop {
+      let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or(Duration::from_secs(0));
+      assert!(remaining > Duration::ZERO, "timed out waiting for top focus scroll");
+      let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
+      if let WorkerToUi::FrameReady { tab_id: got, frame } = msg {
+        if got == tab_id && frame.scroll_state.viewport.y < bottom_scroll_y {
+          break frame;
+        }
+      }
+    }
+  };
+  assert!(
+    frame.scroll_state.viewport.y <= 8.0,
+    "expected viewport to scroll back near top (got {})",
+    frame.scroll_state.viewport.y
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
