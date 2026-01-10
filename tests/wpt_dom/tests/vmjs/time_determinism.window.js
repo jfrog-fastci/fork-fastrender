@@ -16,12 +16,12 @@ function report_fail(message) {
   __fastrender_wpt_report({ file_status: "fail", message: message });
 }
 
-var start_date = Date.now();
-var start_perf = performance.now();
+var start_date = globalThis.Date.now();
+var start_perf = globalThis.performance.now();
 
 function on_timeout_1010() {
-  var now_date = Date.now();
-  var now_perf = performance.now();
+  var now_date = globalThis.Date.now();
+  var now_perf = globalThis.performance.now();
 
   if (now_date !== 1010) {
     report_fail("Date.now() should be 1010 in long setTimeout callback");
@@ -40,8 +40,8 @@ function on_timeout_1010() {
 }
 
 function on_timeout_10() {
-  var now_date = Date.now();
-  var now_perf = performance.now();
+  var now_date = globalThis.Date.now();
+  var now_perf = globalThis.performance.now();
 
   if (now_date !== 10) {
     report_fail("Date.now() should be 10 in setTimeout callback");
@@ -56,7 +56,7 @@ function on_timeout_10() {
     return;
   }
 
-  setTimeout(on_timeout_1010, 1000);
+  globalThis.setTimeout(on_timeout_1010, 1000);
 }
 
 if (start_date !== 0) {
@@ -66,5 +66,5 @@ if (start_date !== 0) {
 } else if (start_perf !== start_date) {
   report_fail("performance.now() should match Date.now() at start");
 } else {
-  setTimeout(on_timeout_10, 10);
+  globalThis.setTimeout(on_timeout_10, 10);
 }
