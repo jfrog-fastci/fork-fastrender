@@ -801,11 +801,12 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
             },
           );
 
-          let (destination, credentials_mode) = if let Some(cors_mode) = element.crossorigin {
-            (FetchDestination::ScriptCors, cors_mode.credentials_mode())
-          } else {
-            (FetchDestination::Script, FetchCredentialsMode::Include)
-          };
+          // Module scripts are fetched in CORS mode per HTML.
+          let destination = FetchDestination::ScriptCors;
+          let credentials_mode = element
+            .crossorigin
+            .map(|cors_mode| cors_mode.credentials_mode())
+            .unwrap_or(FetchCredentialsMode::SameOrigin);
           actions.push(ScriptSchedulerAction::StartFetch {
             script_id: id,
             node_id: node_id.clone(),
@@ -1691,6 +1692,38 @@ mod tests {
       .expect_err("expected oversized script to be rejected");
     assert!(matches!(err, Error::Other(msg) if msg.contains("max_script_bytes")));
     assert_eq!(host.log, Vec::<String>::new());
+  }
+
+  #[test]
+  fn nomodule_inline_script_executes_when_module_scripts_not_supported() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    let mut spec = inline_script("RUN");
+    spec.nomodule_attr = true;
+    scheduler.handle_script(&mut host, &mut event_loop, spec)?;
+
+    assert_eq!(host.log, vec!["RUN".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn nomodule_external_script_executes_when_module_scripts_not_supported() -> Result<()> {
+    let mut host = TestHost::new(false);
+    host
+      .loader
+      .blocking_sources
+      .insert("https://example.com/a.js".to_string(), "A".to_string());
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    let mut spec = external_script("https://example.com/a.js", false, false);
+    spec.nomodule_attr = true;
+    scheduler.handle_script(&mut host, &mut event_loop, spec)?;
+
+    assert_eq!(host.log, vec!["A".to_string()]);
+    Ok(())
   }
 }
 

@@ -903,7 +903,7 @@ mod tests {
  
   impl ScriptLoader for DynHost {
     type Handle = usize;
-  
+
     fn load_blocking(
       &mut self,
       url: &str,
@@ -912,7 +912,7 @@ mod tests {
     ) -> Result<String> {
       Err(Error::Other(format!("unexpected load_blocking for url={url}")))
     }
-  
+
     fn start_load(
       &mut self,
       url: &str,
