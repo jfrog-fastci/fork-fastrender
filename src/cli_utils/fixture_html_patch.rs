@@ -24,6 +24,95 @@ pub fn patch_html_bytes(
   disable_animations: bool,
   allow_dark_mode: bool,
 ) -> Vec<u8> {
+  // Chrome fixture baselines use host/system fonts, while FastRender fixture renders typically run
+  // with bundled fonts for determinism. That mismatch can dominate pixel diffs even when layout is
+  // otherwise correct.
+  //
+  // To make fixture diffs more actionable, alias a small set of common "system" families to the
+  // deterministic bundled fonts shipped with the repo. The relative URLs assume the baseline patch
+  // sets `<base href=".../tests/pages/fixtures/<stem>/">` (see callers); the `../../../` prefix
+  // walks back up to the `tests/` directory.
+  const BUNDLED_FONT_ALIASES_STYLE: &str = r#"<style>
+@font-face {
+  font-family: "Liberation Sans";
+  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: Arial;
+  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: Helvetica;
+  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Helvetica Neue";
+  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: Roboto;
+  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Segoe UI";
+  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: Ubuntu;
+  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: Cantarell;
+  src: url("../../../fonts/RobotoFlex-VF.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Times New Roman";
+  src: url("../../../fixtures/fonts/STIXTwoMath-Regular.otf") format("opentype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: Times;
+  src: url("../../../fixtures/fonts/STIXTwoMath-Regular.otf") format("opentype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Courier New";
+  src: url("../../../fixtures/fonts/NotoSansMono-subset.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: Courier;
+  src: url("../../../fixtures/fonts/NotoSansMono-subset.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Liberation Mono";
+  src: url("../../../fixtures/fonts/NotoSansMono-subset.ttf") format("truetype");
+  font-weight: 100 1000;
+  font-style: normal;
+}
+</style>
+"#;
   const DISABLE_ANIMATIONS_STYLE: &str =
     "<style>*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }</style>\n";
   // Chrome baselines are rendered with `--hide-scrollbars`, which removes scrollbar gutters from
@@ -53,6 +142,7 @@ pub fn patch_html_bytes(
   inserts.extend_from_slice(
     format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n").as_bytes(),
   );
+  inserts.extend_from_slice(BUNDLED_FONT_ALIASES_STYLE.as_bytes());
   inserts.extend_from_slice(HIDE_SCROLLBARS_STYLE.as_bytes());
   if disable_animations {
     inserts.extend_from_slice(DISABLE_ANIMATIONS_STYLE.as_bytes());
@@ -189,6 +279,18 @@ mod tests {
       output_str.contains("animation: none !important"),
       "patched HTML should disable animations for deterministic baselines"
     );
+    assert!(
+      output_str.contains("@font-face"),
+      "patched HTML should alias common system fonts to bundled fonts"
+    );
+    assert!(
+      output_str.contains("RobotoFlex-VF.ttf"),
+      "patched HTML should reference the bundled Roboto Flex font"
+    );
+    assert!(
+      output_str.contains("NotoSansMono-subset.ttf"),
+      "patched HTML should reference the bundled monospace font"
+    );
   }
 
   #[test]
@@ -207,6 +309,10 @@ mod tests {
     assert!(
       output_str.contains("scrollbar-width: none"),
       "patched HTML should hide scrollbars to keep layout viewport aligned with Chrome"
+    );
+    assert!(
+      output_str.contains("@font-face"),
+      "patched HTML should alias common system fonts to bundled fonts"
     );
   }
 }
