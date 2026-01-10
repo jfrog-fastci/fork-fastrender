@@ -240,6 +240,7 @@ pub struct WindowHostState {
   dom_source_id: Option<u64>,
   document: Box<DocumentHostState>,
   window: WindowRealm,
+  fetcher: Arc<dyn ResourceFetcher>,
   _fetch_bindings: WindowFetchBindings,
   js_execution_options: JsExecutionOptions,
 }
@@ -302,6 +303,7 @@ impl WindowHostState {
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self> {
     let document_url = document_url.into();
+    let host_fetcher = fetcher.clone();
     // The JS bindings store a `dom_source_id` that resolves to a raw pointer in a thread-local
     // registry. That pointer must remain stable for the lifetime of this host, so keep the
     // `DocumentHostState` on the heap.
@@ -356,6 +358,7 @@ impl WindowHostState {
       dom_source_id: Some(dom_source_id),
       document,
       window,
+      fetcher: host_fetcher,
       _fetch_bindings: fetch_bindings,
       js_execution_options,
     })
@@ -395,6 +398,10 @@ impl WindowHostState {
 
   pub fn window_mut(&mut self) -> &mut WindowRealm {
     &mut self.window
+  }
+
+  pub(crate) fn fetcher(&self) -> &Arc<dyn ResourceFetcher> {
+    &self.fetcher
   }
 
   pub fn js_execution_options(&self) -> JsExecutionOptions {
@@ -509,6 +516,7 @@ mod tests {
 
   use crate::resource::FetchedResource;
   use selectors::context::QuirksMode;
+  use std::collections::HashMap;
   use std::io::{Read, Write};
   use std::net::TcpListener;
   use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2020,6 +2028,192 @@ mod tests {
       err.to_string().contains("out of memory"),
       "expected out-of-memory error, got {err}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_inline_script_executes_as_task_on_insertion() -> Result<()> {
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let container = dom.create_element("div", "");
+    dom
+      .set_attribute(container, "id", "c")
+      .expect("set container id");
+    dom.append_child(dom.root(), container).expect("append container");
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__log = "";
+      const container = document.getElementById("c");
+      const s = document.createElement("script");
+      s.textContent = "globalThis.__log += 'S';";
+      container.appendChild(s);
+      globalThis.__log += "A";
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("A"));
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("AS"));
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_script_executes_once_after_text_content_set() -> Result<()> {
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let container = dom.create_element("div", "");
+    dom
+      .set_attribute(container, "id", "c")
+      .expect("set container id");
+    dom.append_child(dom.root(), container).expect("append container");
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__log = "";
+      const container = document.getElementById("c");
+      const s = document.createElement("script");
+      container.appendChild(s);
+      // Empty scripts must not start on insertion; they should start once content becomes non-empty.
+      s.textContent = "globalThis.__log += 'S';";
+      globalThis.__log += "A";
+      globalThis.__s = s;
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("A"));
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("AS"));
+
+    // Mutating the script again must not re-execute it.
+    host.exec_script(
+      r#"
+      globalThis.__s.textContent = "globalThis.__log += 'X';";
+      globalThis.__log += "B";
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("ASB"));
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct ScriptMapFetcher {
+    entries: Mutex<HashMap<String, Vec<u8>>>,
+  }
+
+  impl ScriptMapFetcher {
+    fn insert(&self, url: &str, bytes: Vec<u8>) {
+      self
+        .entries
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(url.to_string(), bytes);
+    }
+  }
+
+  impl ResourceFetcher for ScriptMapFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      let bytes = self
+        .entries
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(url)
+        .cloned()
+        .ok_or_else(|| Error::Other(format!("no entry for url={url}")))?;
+      Ok(FetchedResource {
+        bytes,
+        content_type: None,
+        nosniff: false,
+        content_encoding: None,
+        status: None,
+        etag: None,
+        last_modified: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+        response_referrer_policy: None,
+        access_control_allow_credentials: false,
+        final_url: None,
+        cache_policy: None,
+        response_headers: None,
+      })
+    }
+  }
+
+  #[test]
+  fn dynamic_script_executes_once_after_src_set() -> Result<()> {
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let container = dom.create_element("div", "");
+    dom
+      .set_attribute(container, "id", "c")
+      .expect("set container id");
+    dom.append_child(dom.root(), container).expect("append container");
+    let fetcher = Arc::new(ScriptMapFetcher::default());
+    fetcher.insert(
+      "https://example.invalid/a.js",
+      b"globalThis.__log += 'S';".to_vec(),
+    );
+    fetcher.insert(
+      "https://example.invalid/b.js",
+      b"globalThis.__log += 'X';".to_vec(),
+    );
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__log = "";
+      const container = document.getElementById("c");
+      const s = document.createElement("script");
+      container.appendChild(s);
+      s.src = "https://example.invalid/a.js";
+      globalThis.__log += "A";
+      globalThis.__s = s;
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("A"));
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("AS"));
+
+    host.exec_script(
+      r#"
+      globalThis.__s.src = "https://example.invalid/b.js";
+      globalThis.__log += "B";
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__log").as_deref(), Some("ASB"));
     Ok(())
   }
 }

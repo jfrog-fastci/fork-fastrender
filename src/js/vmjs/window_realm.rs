@@ -1,5 +1,6 @@
 use crate::api::ConsoleMessageLevel;
 use crate::dom2::{self, NodeId, NodeKind};
+use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
@@ -8,10 +9,11 @@ use crate::js::time::{TimeBindings, WebTime};
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
+use crate::js::{runtime, ScriptOrchestrator, ScriptType, TaskSource, WindowHostState};
 use crate::js::CurrentScriptStateHandle;
 use crate::js::JsExecutionOptions;
 use crate::render_control;
-use crate::resource::ResourceFetcher;
+use crate::resource::{ensure_script_mime_sane, CorsMode, FetchDestination, FetchRequest, ResourceFetcher};
 use crate::style::media::MediaContext;
 use crate::web::events as web_events;
 use base64::engine::general_purpose;
@@ -6078,6 +6080,7 @@ fn node_append_child_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(parent_obj) = this else {
     return Err(VmError::TypeError(
       "Node.appendChild must be called on a node object",
@@ -6153,7 +6156,7 @@ fn node_append_child_native(
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
-  let (parent_node_id, child_node_id, old_parent, child_is_fragment) = {
+  let (parent_node_id, child_node_id, old_parent, child_is_fragment, fragment_children) = {
     let dom = unsafe { dom_ptr.as_mut() };
 
     let parent_node_id = dom
@@ -6165,12 +6168,23 @@ fn node_append_child_native(
 
     let old_parent = dom.parent_node(child_node_id);
     let child_is_fragment = matches!(&dom.node(child_node_id).kind, NodeKind::DocumentFragment);
+    let fragment_children = if child_is_fragment {
+      dom.node(child_node_id).children.clone()
+    } else {
+      Vec::new()
+    };
 
     if let Err(err) = dom.append_child(parent_node_id, child_node_id) {
       return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
     }
 
-    (parent_node_id, child_node_id, old_parent, child_is_fragment)
+    (
+      parent_node_id,
+      child_node_id,
+      old_parent,
+      child_is_fragment,
+      fragment_children,
+    )
   };
 
   let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
@@ -6191,6 +6205,23 @@ fn node_append_child_native(
     )?;
   }
 
+  // Dynamic `<script>` preparation: run after insertion so nodes are connected.
+  {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if child_is_fragment {
+      for node in fragment_children {
+        prepare_dynamic_scripts_on_subtree_insertion(dom, node, &base_url)?;
+      }
+    } else {
+      prepare_dynamic_scripts_on_subtree_insertion(dom, child_node_id, &base_url)?;
+    }
+    if is_html_script_element(dom, parent_node_id) {
+      prepare_dynamic_script(dom, parent_node_id, &base_url)?;
+    }
+  }
+
   Ok(child_value)
 }
 
@@ -6203,6 +6234,7 @@ fn node_insert_before_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(parent_obj) = this else {
     return Err(VmError::TypeError(
       "Node.insertBefore must be called on a node object",
@@ -6318,7 +6350,7 @@ fn node_insert_before_native(
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
-  let (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment) = {
+  let (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment, fragment_children) = {
     let dom = unsafe { dom_ptr.as_mut() };
 
     let parent_node_id = dom
@@ -6338,12 +6370,23 @@ fn node_insert_before_native(
 
     let old_parent = dom.parent_node(new_child_node_id);
     let new_child_is_fragment = matches!(&dom.node(new_child_node_id).kind, NodeKind::DocumentFragment);
+    let fragment_children = if new_child_is_fragment {
+      dom.node(new_child_node_id).children.clone()
+    } else {
+      Vec::new()
+    };
 
     if let Err(err) = dom.insert_before(parent_node_id, new_child_node_id, reference_node_id) {
       return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
     }
 
-    (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment)
+    (
+      parent_node_id,
+      new_child_node_id,
+      old_parent,
+      new_child_is_fragment,
+      fragment_children,
+    )
   };
 
   let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
@@ -6364,6 +6407,23 @@ fn node_insert_before_native(
     )?;
   }
 
+  // Dynamic `<script>` preparation: run after insertion so nodes are connected.
+  {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if new_child_is_fragment {
+      for node in fragment_children {
+        prepare_dynamic_scripts_on_subtree_insertion(dom, node, &base_url)?;
+      }
+    } else {
+      prepare_dynamic_scripts_on_subtree_insertion(dom, new_child_node_id, &base_url)?;
+    }
+    if is_html_script_element(dom, parent_node_id) {
+      prepare_dynamic_script(dom, parent_node_id, &base_url)?;
+    }
+  }
+
   Ok(new_child_value)
 }
 
@@ -6376,6 +6436,7 @@ fn node_remove_child_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(parent_obj) = this else {
     return Err(VmError::TypeError(
       "Node.removeChild must be called on a node object",
@@ -6471,6 +6532,17 @@ fn node_remove_child_native(
   let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
   sync_cached_child_nodes_for_wrapper(vm, scope, source_id, document_obj, parent_obj, parent_node_id)?;
 
+  // Dynamic `<script>` children-changed preparation: removing child nodes from a `<script>` can
+  // trigger execution when the element had not started yet.
+  {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if is_html_script_element(dom, parent_node_id) {
+      prepare_dynamic_script(dom, parent_node_id, &base_url)?;
+    }
+  }
+
   Ok(child_value)
 }
 
@@ -6483,6 +6555,7 @@ fn node_replace_child_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(parent_obj) = this else {
     return Err(VmError::TypeError(
       "Node.replaceChild must be called on a node object",
@@ -6594,7 +6667,7 @@ fn node_replace_child_native(
   };
   // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
   // lifetime of the associated host document.
-  let (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment) = {
+  let (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment, fragment_children) = {
     let dom = unsafe { dom_ptr.as_mut() };
 
     let parent_node_id = dom
@@ -6609,12 +6682,23 @@ fn node_replace_child_native(
 
     let old_parent = dom.parent_node(new_child_node_id);
     let new_child_is_fragment = matches!(&dom.node(new_child_node_id).kind, NodeKind::DocumentFragment);
+    let fragment_children = if new_child_is_fragment {
+      dom.node(new_child_node_id).children.clone()
+    } else {
+      Vec::new()
+    };
 
     if let Err(err) = dom.replace_child(parent_node_id, new_child_node_id, old_child_node_id) {
       return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
     }
 
-    (parent_node_id, new_child_node_id, old_parent, new_child_is_fragment)
+    (
+      parent_node_id,
+      new_child_node_id,
+      old_parent,
+      new_child_is_fragment,
+      fragment_children,
+    )
   };
 
   let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_node_id)?;
@@ -6633,6 +6717,23 @@ fn node_replace_child_native(
       new_child_obj,
       new_child_node_id,
     )?;
+  }
+
+  // Dynamic `<script>` preparation: run after insertion so nodes are connected.
+  {
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if new_child_is_fragment {
+      for node in fragment_children {
+        prepare_dynamic_scripts_on_subtree_insertion(dom, node, &base_url)?;
+      }
+    } else {
+      prepare_dynamic_scripts_on_subtree_insertion(dom, new_child_node_id, &base_url)?;
+    }
+    if is_html_script_element(dom, parent_node_id) {
+      prepare_dynamic_script(dom, parent_node_id, &base_url)?;
+    }
   }
 
   Ok(old_child_value)
@@ -7325,7 +7426,7 @@ fn node_text_content_get_native(
 }
 
 fn node_text_content_set_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -7333,6 +7434,7 @@ fn node_text_content_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(wrapper_obj) = this else {
     return Err(VmError::TypeError(
       "Node.textContent must be called on a node object",
@@ -7415,10 +7517,16 @@ fn node_text_content_set_native(
     NodeKind::Document { .. } | NodeKind::Doctype { .. } => TextContentTarget::NoOp,
   };
 
+  let mut maybe_script_children_changed: Option<NodeId> = None;
   match target {
     TextContentTarget::Text => {
       if let Err(err) = dom.set_text_data(node_id, &value) {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      if let Some(parent) = dom.node(node_id).parent {
+        if is_html_script_element(dom, parent) {
+          maybe_script_children_changed = Some(parent);
+        }
       }
     }
     TextContentTarget::Comment => {
@@ -7472,8 +7580,16 @@ fn node_text_content_set_native(
           return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
         }
       }
+
+      if is_html_script_element(dom, node_id) {
+        maybe_script_children_changed = Some(node_id);
+      }
     }
     TextContentTarget::NoOp => {}
+  }
+
+  if let Some(script) = maybe_script_children_changed {
+    prepare_dynamic_script(dom, script, &base_url)?;
   }
 
   Ok(Value::Undefined)
@@ -7520,6 +7636,7 @@ fn text_data_set_native(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let base_url = current_base_url_for_dynamic_scripts(vm);
   let Value::Object(text_obj) = this else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
@@ -7547,6 +7664,12 @@ fn text_data_set_native(
 
   if let Err(err) = dom.set_text_data(text_id, &new_value) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  if let Some(parent) = dom.node(text_id).parent {
+    if is_html_script_element(dom, parent) {
+      prepare_dynamic_script(dom, parent, &base_url)?;
+    }
   }
 
   Ok(Value::Undefined)
@@ -7866,7 +7989,7 @@ fn element_reflected_string_get_native(
 }
 
 fn element_reflected_string_set_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -7896,6 +8019,11 @@ fn element_reflected_string_set_native(
   let dom = unsafe { dom_ptr.as_mut() };
   if let Err(err) = dom.set_attribute(node_id, &attr, &new_value) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  if attr == "src" && is_html_script_element(dom, node_id) {
+    let base_url = current_base_url_for_dynamic_scripts(vm);
+    prepare_dynamic_script(dom, node_id, &base_url)?;
   }
 
   Ok(Value::Undefined)
@@ -7989,6 +8117,266 @@ fn is_html_script_element(dom: &dom2::Document, node_id: NodeId) -> bool {
     }
     _ => false,
   }
+}
+
+fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
+  vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.base_url.clone())
+}
+
+// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn build_dynamic_script_spec(
+  dom: &dom2::Document,
+  script: NodeId,
+  base_url: Option<String>,
+) -> crate::js::ScriptElementSpec {
+  let async_attr = dom.has_attribute(script, "async").unwrap_or(false);
+  let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
+  let nomodule_attr = dom.has_attribute(script, "nomodule").unwrap_or(false);
+  let crossorigin = dom
+    .get_attribute(script, "crossorigin")
+    .ok()
+    .flatten()
+    .map(|value| {
+      let value = trim_ascii_whitespace(value);
+      if value.eq_ignore_ascii_case("use-credentials") {
+        CorsMode::UseCredentials
+      } else {
+        CorsMode::Anonymous
+      }
+    });
+  let integrity = dom
+    .get_attribute(script, "integrity")
+    .ok()
+    .flatten()
+    .map(|value| value.to_string());
+  let referrer_policy = dom
+    .get_attribute(script, "referrerpolicy")
+    .ok()
+    .flatten()
+    .and_then(crate::resource::ReferrerPolicy::from_attribute);
+
+  let base_for_resolve = base_url.as_deref();
+  let raw_src = dom.get_attribute(script, "src").ok().flatten();
+  let src_attr_present = raw_src.is_some();
+  let src = raw_src.and_then(|raw| resolve_script_src_at_parse_time(base_for_resolve, raw));
+
+  let mut inline_text = String::new();
+  for &child in &dom.node(script).children {
+    if let NodeKind::Text { content } = &dom.node(child).kind {
+      inline_text.push_str(content);
+    }
+  }
+
+  crate::js::ScriptElementSpec {
+    base_url,
+    src,
+    src_attr_present,
+    inline_text,
+    async_attr,
+    defer_attr,
+    nomodule_attr,
+    crossorigin,
+    integrity,
+    referrer_policy,
+    parser_inserted: false,
+    force_async: dom.node(script).script_force_async,
+    node_id: Some(script),
+    script_type: super::determine_script_type_dom2(dom, script),
+  }
+}
+
+fn node_root_is_shadow_root(dom: &dom2::Document, mut node: NodeId) -> bool {
+  loop {
+    match &dom.node(node).kind {
+      NodeKind::ShadowRoot { .. } => return true,
+      NodeKind::Document { .. } => return false,
+      _ => {}
+    }
+
+    // DOM's "root" concept treats ShadowRoot as the root of a separate tree (i.e. its parent is
+    // null). `dom2` currently stores ShadowRoot nodes in the main tree with a parent pointer (the
+    // host element) so that the renderer can traverse them. For `currentScript`, we still need the
+    // DOM notion of root, so we stop when we see a ShadowRoot.
+    let Some(parent) = dom.node(node).parent else {
+      return false;
+    };
+    node = parent;
+  }
+}
+
+fn queue_dynamic_script_task_inline(
+  script: NodeId,
+  source_name: String,
+  source_text: String,
+  nomodule_attr: bool,
+) -> Result<(), VmError> {
+  let Some(event_loop) = runtime::current_event_loop_mut::<WindowHostState>() else {
+    return Ok(());
+  };
+
+  event_loop
+    .queue_task(TaskSource::Script, move |host, event_loop| {
+      // `nomodule` classic scripts must be suppressed when module scripts are supported.
+      if host.js_execution_options().supports_module_scripts && nomodule_attr {
+        return Ok(());
+      }
+
+      host
+        .js_execution_options()
+        .check_script_source(&source_text, "source=inline")?;
+
+      let new_current_script = {
+        let dom = host.dom();
+        (dom.is_connected_for_scripting(script) && !node_root_is_shadow_root(dom, script)).then_some(script)
+      };
+
+      let current_script_state = host.document_host().current_script_handle().clone();
+      let mut orchestrator = ScriptOrchestrator::new();
+      orchestrator.execute_with_current_script_state_resolved(
+        &current_script_state,
+        new_current_script,
+        || {
+          host.exec_script_with_name_in_event_loop(event_loop, source_name, source_text)?;
+          Ok(())
+        },
+      )
+    })
+    .map_err(|_| VmError::TypeError("Failed to queue dynamic script task"))?;
+
+  Ok(())
+}
+
+fn queue_dynamic_script_task_external(
+  script: NodeId,
+  url: String,
+  destination: FetchDestination,
+  nomodule_attr: bool,
+) -> Result<(), VmError> {
+  let Some(event_loop) = runtime::current_event_loop_mut::<WindowHostState>() else {
+    return Ok(());
+  };
+
+  event_loop
+    .queue_task(TaskSource::Script, move |host, event_loop| {
+      if host.js_execution_options().supports_module_scripts && nomodule_attr {
+        return Ok(());
+      }
+
+      let req = FetchRequest::new(&url, destination).with_referrer_url(&host.document_url);
+      let res = host.fetcher().fetch_with_request(req)?;
+      ensure_script_mime_sane(&res, &url)?;
+      let source_text = crate::js::script_encoding::decode_classic_script_bytes(
+        &res.bytes,
+        res.content_type.as_deref(),
+        encoding_rs::UTF_8,
+      );
+      host
+        .js_execution_options()
+        .check_script_source(&source_text, "source=external")?;
+
+      let new_current_script = {
+        let dom = host.dom();
+        (dom.is_connected_for_scripting(script) && !node_root_is_shadow_root(dom, script)).then_some(script)
+      };
+
+      let current_script_state = host.document_host().current_script_handle().clone();
+      let mut orchestrator = ScriptOrchestrator::new();
+      orchestrator.execute_with_current_script_state_resolved(
+        &current_script_state,
+        new_current_script,
+        || {
+          host.exec_script_with_name_in_event_loop(event_loop, url, source_text)?;
+          Ok(())
+        },
+      )
+    })
+    .map_err(|_| VmError::TypeError("Failed to queue dynamic script task"))?;
+
+  Ok(())
+}
+
+fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &Option<String>) -> Result<(), VmError> {
+  if !is_html_script_element(dom, script) {
+    return Ok(());
+  }
+
+  // HTML element post-connection steps: parser-inserted scripts are prepared by the parser, not by
+  // DOM insertion.
+  if dom.node(script).script_parser_document {
+    return Ok(());
+  }
+
+  // HTML: scripts inside inert `<template>` contents are treated as disconnected and must not
+  // execute.
+  if !dom.is_connected_for_scripting(script) {
+    return Ok(());
+  }
+
+  // HTML: do nothing when "already started" is true.
+  if dom.node(script).script_already_started {
+    return Ok(());
+  }
+
+  let spec = build_dynamic_script_spec(dom, script, base_url.clone());
+
+  // HTML: if there is no `src` attribute and the inline text is empty, do nothing. Importantly,
+  // this must *not* set the "already started" flag so later `src`/text mutations can trigger
+  // preparation.
+  if !spec.src_attr_present && spec.inline_text.is_empty() {
+    return Ok(());
+  }
+
+  dom.node_mut(script).script_already_started = true;
+
+  // Only classic scripts are executed by this vm-js DOM integration helper for now.
+  if spec.script_type != ScriptType::Classic {
+    return Ok(());
+  }
+
+  if spec.src_attr_present {
+    if let Some(url) = spec.src {
+      let destination = if spec.crossorigin.is_some() {
+        FetchDestination::ScriptCors
+      } else {
+        FetchDestination::Script
+      };
+      return queue_dynamic_script_task_external(script, url, destination, spec.nomodule_attr);
+    }
+    return Ok(());
+  }
+
+  // Inline script: queue as a task to keep DOM mutation calls non-reentrant.
+  let source_name = format!("<script {}>", script.index());
+  let source_text = spec.inline_text;
+  queue_dynamic_script_task_inline(script, source_name, source_text, spec.nomodule_attr)
+}
+
+fn collect_html_script_elements(dom: &dom2::Document, node: NodeId, out: &mut Vec<NodeId>) {
+  if is_html_script_element(dom, node) {
+    out.push(node);
+  }
+  for &child in &dom.node(node).children {
+    collect_html_script_elements(dom, child, out);
+  }
+}
+
+fn prepare_dynamic_scripts_on_subtree_insertion(
+  dom: &mut dom2::Document,
+  inserted_root: NodeId,
+  base_url: &Option<String>,
+) -> Result<(), VmError> {
+  let mut scripts = Vec::new();
+  collect_html_script_elements(dom, inserted_root, &mut scripts);
+  for script in scripts {
+    prepare_dynamic_script(dom, script, base_url)?;
+  }
+  Ok(())
 }
 
 fn css_style_get_property_value_native(
@@ -8601,7 +8989,7 @@ fn element_get_attribute_native(
 }
 
 fn element_set_attribute_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -8673,11 +9061,16 @@ fn element_set_attribute_native(
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
   }
 
+  if name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id) {
+    let base_url = current_base_url_for_dynamic_scripts(vm);
+    prepare_dynamic_script(dom, node_id, &base_url)?;
+  }
+
   Ok(Value::Undefined)
 }
 
 fn element_remove_attribute_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -8739,6 +9132,11 @@ fn element_remove_attribute_native(
 
   if let Err(err) = dom.remove_attribute(node_id, &name) {
     return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  if name.eq_ignore_ascii_case("src") && is_html_script_element(dom, node_id) {
+    let base_url = current_base_url_for_dynamic_scripts(vm);
+    prepare_dynamic_script(dom, node_id, &base_url)?;
   }
 
   Ok(Value::Undefined)

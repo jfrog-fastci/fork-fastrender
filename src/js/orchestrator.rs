@@ -174,6 +174,35 @@ impl ScriptOrchestrator {
     Self
   }
 
+  /// Execute `f` while temporarily overriding `Document.currentScript` bookkeeping.
+  ///
+  /// This is a lower-level helper used by embeddings that need to run script code while:
+  /// - setting `Document.currentScript` to a precomputed value, and
+  /// - ensuring the previous value is always restored (even on error).
+  ///
+  /// Callers are responsible for computing `new_current_script` according to the HTML Standard
+  /// (e.g. whether the script element is connected and in the document tree vs a shadow tree).
+  pub fn execute_with_current_script_state_resolved(
+    &mut self,
+    current_script_state: &CurrentScriptStateHandle,
+    new_current_script: Option<NodeId>,
+    f: impl FnOnce() -> Result<()>,
+  ) -> Result<()> {
+    current_script_state
+      .borrow_mut()
+      .push(new_current_script)?;
+    let result = f();
+    let pop_result = current_script_state.borrow_mut().pop();
+    match (result, pop_result) {
+      (Ok(()), Ok(())) => Ok(()),
+      (Err(err), Ok(())) => Err(err),
+      (Ok(()), Err(pop_err)) => Err(pop_err),
+      (Err(err), Err(pop_err)) => Err(Error::Other(format!(
+        "script execution failed ({err}); additionally failed to restore Document.currentScript ({pop_err})"
+      ))),
+    }
+  }
+
   /// Execute a script element while performing `Document.currentScript` bookkeeping using an
   /// explicit [`CurrentScriptStateHandle`] handle.
   ///
@@ -204,19 +233,7 @@ impl ScriptOrchestrator {
       ScriptType::ImportMap | ScriptType::Unknown => None,
     };
 
-    current_script_state
-      .borrow_mut()
-      .push(new_current_script)?;
-    let result = f();
-    let pop_result = current_script_state.borrow_mut().pop();
-    match (result, pop_result) {
-      (Ok(()), Ok(())) => Ok(()),
-      (Err(err), Ok(())) => Err(err),
-      (Ok(()), Err(pop_err)) => Err(pop_err),
-      (Err(err), Err(pop_err)) => Err(Error::Other(format!(
-        "script execution failed ({err}); additionally failed to restore Document.currentScript ({pop_err})"
-      ))),
-    }
+    self.execute_with_current_script_state_resolved(current_script_state, new_current_script, f)
   }
 
   /// Execute a script element while performing `Document.currentScript` bookkeeping.
