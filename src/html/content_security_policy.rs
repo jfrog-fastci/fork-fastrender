@@ -12,7 +12,6 @@
 //!   - host sources like `example.com`, `https://example.com`, `*.example.com`
 //!
 //! Notes / intentionally omitted (v1):
-//! - Path matching in host sources.
 //! - Nonce/hash/`'unsafe-inline'` semantics (they still effectively restrict external loads because
 //!   they don't match any URL, so a directive that only contains those tokens becomes "deny all"
 //!   for our external resource destinations).
@@ -67,6 +66,7 @@ struct CspHostSource {
   scheme: Option<String>,
   host: CspHostPattern,
   port: Option<CspPort>,
+  path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,19 +218,29 @@ fn set_allows_url(
           continue;
         };
         let host = host.trim_end_matches('.').to_ascii_lowercase();
-        match &host_source.host {
+        let host_matches = match &host_source.host {
           CspHostPattern::Exact(expected) => {
-            if host == *expected {
-              return true;
-            }
+            host == *expected
           }
           CspHostPattern::SubdomainWildcard(base) => {
             let suffix = format!(".{base}");
-            if host.ends_with(&suffix) && host != *base {
-              return true;
+            host.ends_with(&suffix) && host != *base
+          }
+        };
+        if !host_matches {
+          continue;
+        }
+        if let Some(source_path) = host_source.path.as_deref() {
+          let url_path = url.path();
+          if source_path.ends_with('/') {
+            if !url_path.starts_with(source_path) {
+              continue;
             }
+          } else if url_path != source_path {
+            continue;
           }
         }
+        return true;
       }
     }
   }
@@ -332,10 +342,12 @@ fn parse_host_source(token: &str) -> Option<CspHostSource> {
     if let Ok(parsed) = Url::parse(token) {
       if let Some(host) = parsed.host_str() {
         let host = host.trim_end_matches('.').to_ascii_lowercase();
+        let path = normalize_csp_source_path(parsed.path());
         return Some(CspHostSource {
           scheme: Some(parsed.scheme().to_ascii_lowercase()),
           host: CspHostPattern::Exact(host),
           port: parsed.port().map(CspPort::Exact),
+          path,
         });
       }
     }
@@ -353,13 +365,19 @@ fn parse_host_source_manual(token: &str) -> Option<CspHostSource> {
     ),
     None => (None, token),
   };
-  let host_port = rest
-    .split(|c: char| matches!(c, '/' | '?' | '#'))
-    .next()
-    .unwrap_or(rest);
+  let host_port_end = rest
+    .find(|c: char| matches!(c, '/' | '?' | '#'))
+    .unwrap_or(rest.len());
+  let host_port = rest.get(..host_port_end).unwrap_or(rest);
   if host_port.is_empty() {
     return None;
   }
+  let path = rest
+    .get(host_port_end..)
+    .and_then(|tail| tail.strip_prefix('/'))
+    .map(|tail| format!("/{tail}"))
+    .map(|path| path.split(|c| matches!(c, '?' | '#')).next().unwrap_or("").to_string())
+    .and_then(|path| normalize_csp_source_path(&path));
 
   let (host, port) = if host_port.starts_with('[') {
     let end = host_port.find(']')?;
@@ -412,7 +430,19 @@ fn parse_host_source_manual(token: &str) -> Option<CspHostSource> {
     scheme,
     host: pattern,
     port,
+    path,
   })
+}
+
+fn normalize_csp_source_path(path: &str) -> Option<String> {
+  let path = path.trim();
+  if path.is_empty() || path == "/" {
+    return None;
+  }
+  if !path.starts_with('/') {
+    return None;
+  }
+  Some(path.to_string())
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -872,6 +902,40 @@ mod tests {
       CspDirective::ImgSrc,
       "http://[::1]/",
       "http://[::1]/a.png"
+    ));
+  }
+
+  #[test]
+  fn host_source_path_prefix_matching() {
+    let policy = CspPolicy::from_values(["img-src https://example.com/images/"]).expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com/images/a.png"
+    ));
+    assert!(!allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com/other/a.png"
+    ));
+  }
+
+  #[test]
+  fn host_source_path_exact_matching() {
+    let policy = CspPolicy::from_values(["img-src https://example.com/images/logo.png"]).expect("parse");
+    assert!(allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com/images/logo.png"
+    ));
+    assert!(!allows(
+      &policy,
+      CspDirective::ImgSrc,
+      "https://example.com/",
+      "https://example.com/images/other.png"
     ));
   }
 }
