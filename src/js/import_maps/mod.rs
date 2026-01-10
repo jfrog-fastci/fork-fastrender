@@ -1,7 +1,8 @@
 //! WHATWG HTML import maps.
 //!
+//!
 //! This module contains spec-mapped import map plumbing used by HTML `<script type="importmap">`
-//! and (eventually) module specifier resolution:
+//! and module specifier resolution:
 //!
 //! - Parsing/normalization:
 //!   - "parse an import map string"
@@ -11,27 +12,30 @@
 //!   - "normalize a module integrity map"
 //! - Script-element parse result:
 //!   - "create an import map parse result"
-//! - Resolution helper:
+//! - Resolution:
+//!   - "resolve a module specifier"
 //!   - "resolve an imports match"
-//!
-//! What is not implemented yet:
-//! - "register an import map"
-//! - "merge existing and new import maps"
-//! - full "resolve a module specifier" (scopes + fallbacks + error reporting + resolved-module-set)
-//!
-//! See `docs/import_maps.md` for a spec-mapped developer guide to the intended full pipeline.
+//!   - "add module to resolved module set"
+//! - Merging:
+//!   - "merge module specifier maps"
+//!   - "merge existing and new import maps"
+//!   - "register an import map"
 
+mod merge;
 mod parse;
 mod resolve;
 mod types;
 
-pub use parse::create_import_map_parse_result;
-pub use parse::parse_import_map_string;
-pub use resolve::resolve_imports_match;
+pub use merge::{merge_existing_and_new_import_maps, merge_module_specifier_maps, register_import_map};
+pub use parse::{create_import_map_parse_result, parse_import_map_string};
+pub use resolve::{add_module_to_resolved_module_set, resolve_imports_match, resolve_module_specifier};
 pub use types::{
-  ImportMap, ImportMapError, ImportMapParseResult, ImportMapWarning, ImportMapWarningKind, ModuleIntegrityMap,
-  ModuleSpecifierMap, ScopesMap,
+  ImportMap, ImportMapError, ImportMapParseResult, ImportMapState, ImportMapWarning, ImportMapWarningKind,
+  ModuleIntegrityMap, ModuleSpecifierMap, ScopesMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
 };
 
 #[cfg(test)]
 mod parse_tests;
+
+#[cfg(test)]
+mod tests;

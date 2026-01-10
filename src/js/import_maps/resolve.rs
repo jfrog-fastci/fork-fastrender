@@ -1,60 +1,160 @@
 use url::Url;
 
-use super::ModuleSpecifierMap;
+use super::parse::resolve_url_like_module_specifier;
+use super::types::{
+  ImportMapError, ImportMapState, ModuleSpecifierMap, SpecifierAsUrlKind, SpecifierResolutionRecord,
+};
 
-fn is_special_scheme(scheme: &str) -> bool {
-  matches!(scheme, "ftp" | "file" | "http" | "https" | "ws" | "wss")
+fn is_special_url(url: &Url) -> bool {
+  matches!(
+    url.scheme(),
+    "ftp" | "file" | "http" | "https" | "ws" | "wss"
+  )
 }
 
-/// Resolve an imports match per WHATWG HTML ("resolve an imports match").
-///
-/// Return value:
-/// - `None`: no match in the map
-/// - `Some(None)`: matched a null entry (blocked / invalid mapping)
-/// - `Some(Some(url))`: matched a URL entry, returning the resolved URL
-pub fn resolve_imports_match(
+fn resolve_imports_match_impl(
   normalized_specifier: &str,
   as_url: Option<&Url>,
   specifier_map: &ModuleSpecifierMap,
-) -> Option<Option<Url>> {
-  let allow_prefix_matches = as_url.is_none() || as_url.is_some_and(|u| is_special_scheme(u.scheme()));
+) -> Result<Option<Url>, ImportMapError> {
+  let allow_prefix_matches = as_url.map(is_special_url).unwrap_or(true);
 
   for (specifier_key, resolution_result) in &specifier_map.entries {
     if specifier_key == normalized_specifier {
-      return Some(resolution_result.clone());
+      let Some(url) = resolution_result else {
+        return Err(ImportMapError::TypeError(format!(
+          "resolution of {specifier_key} was blocked by a null entry."
+        )));
+      };
+      return Ok(Some(url.clone()));
     }
 
     if allow_prefix_matches
       && specifier_key.ends_with('/')
       && normalized_specifier.starts_with(specifier_key)
     {
-      let Some(base) = resolution_result else {
-        return Some(None);
+      let Some(base_url) = resolution_result else {
+        return Err(ImportMapError::TypeError(format!(
+          "resolution of {specifier_key} was blocked by a null entry."
+        )));
       };
-
-      // Spec invariant: enforced during parsing.
-      if !base.as_str().ends_with('/') {
-        debug_assert!(
-          false,
-          "import map invariant violation: prefix key \"{specifier_key}\" maps to non-slash URL \"{}\"",
-          base.as_str()
-        );
-        return Some(None);
-      }
+      debug_assert!(
+        base_url.as_str().ends_with('/'),
+        "parser must enforce trailing-slash invariant"
+      );
 
       let after_prefix = &normalized_specifier[specifier_key.len()..];
-      let Ok(url) = base.join(after_prefix) else {
-        return Some(None);
-      };
+      let url = base_url.join(after_prefix).map_err(|_| {
+        ImportMapError::TypeError(format!(
+          "resolution of {normalized_specifier} was blocked since the afterPrefix portion could not be URL-parsed relative to the resolutionResult mapped to by the {specifier_key} prefix."
+        ))
+      })?;
 
-      // Backtracking protection: the resolved URL must not escape above the mapped prefix base.
-      if !url.as_str().starts_with(base.as_str()) {
-        return Some(None);
+      if !url.as_str().starts_with(base_url.as_str()) {
+        return Err(ImportMapError::TypeError(format!(
+          "resolution of {normalized_specifier} was blocked due to it backtracking above its prefix {specifier_key}."
+        )));
       }
 
-      return Some(Some(url));
+      return Ok(Some(url));
     }
   }
 
-  None
+  Ok(None)
 }
+
+/// WHATWG HTML: "resolve an imports match".
+///
+/// This is a helper for testing and debugging. Unlike the spec algorithm, it does not throw; if a
+/// match is found but would have thrown (e.g. null entry or backtracking), this returns `Some(None)`.
+pub fn resolve_imports_match(
+  normalized_specifier: &str,
+  as_url: Option<&Url>,
+  specifier_map: &ModuleSpecifierMap,
+) -> Option<Option<Url>> {
+  match resolve_imports_match_impl(normalized_specifier, as_url, specifier_map) {
+    Ok(Some(url)) => Some(Some(url)),
+    Ok(None) => None,
+    Err(_) => Some(None),
+  }
+}
+
+/// WHATWG HTML: "add module to resolved module set".
+pub fn add_module_to_resolved_module_set(
+  state: &mut ImportMapState,
+  serialized_base_url: String,
+  normalized_specifier: String,
+  as_url: Option<&Url>,
+) {
+  let as_url_kind = match as_url {
+    None => SpecifierAsUrlKind::NotUrl,
+    Some(url) if is_special_url(url) => SpecifierAsUrlKind::Special,
+    Some(_) => SpecifierAsUrlKind::NonSpecial,
+  };
+
+  state.resolved_module_set.push(SpecifierResolutionRecord {
+    serialized_base_url: Some(serialized_base_url),
+    specifier: normalized_specifier,
+    as_url_kind,
+  });
+}
+
+/// WHATWG HTML: "resolve a module specifier" (host-facing entry point).
+pub fn resolve_module_specifier(
+  state: &mut ImportMapState,
+  specifier: &str,
+  base_url: &Url,
+) -> Result<Url, ImportMapError> {
+  let serialized_base_url = base_url.to_string();
+
+  let as_url = resolve_url_like_module_specifier(specifier, base_url);
+  let normalized_specifier = as_url
+    .as_ref()
+    .map(|url| url.to_string())
+    .unwrap_or_else(|| specifier.to_string());
+
+  let mut result: Option<Url> = None;
+
+  for (scope_prefix, scope_imports) in state.import_map.scopes.iter() {
+    if scope_prefix == serialized_base_url
+      || (scope_prefix.ends_with('/') && serialized_base_url.starts_with(scope_prefix))
+    {
+      let match_result = resolve_imports_match_impl(
+        normalized_specifier.as_str(),
+        as_url.as_ref(),
+        scope_imports,
+      )?;
+      if match_result.is_some() {
+        result = match_result;
+        break;
+      }
+    }
+  }
+
+  if result.is_none() {
+    result = resolve_imports_match_impl(
+      normalized_specifier.as_str(),
+      as_url.as_ref(),
+      &state.import_map.imports,
+    )?;
+  }
+
+  if result.is_none() {
+    result = as_url.clone();
+  }
+
+  if let Some(url) = result {
+    add_module_to_resolved_module_set(
+      state,
+      serialized_base_url,
+      normalized_specifier,
+      as_url.as_ref(),
+    );
+    return Ok(url);
+  }
+
+  Err(ImportMapError::TypeError(format!(
+    "{specifier} was a bare specifier, but was not remapped to anything by the import map."
+  )))
+}
+

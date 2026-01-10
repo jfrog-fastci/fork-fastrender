@@ -14,6 +14,41 @@ pub struct ImportMap {
   pub integrity: ModuleIntegrityMap,
 }
 
+/// Host-side global state for import map resolution/merging.
+#[derive(Debug, Clone, Default)]
+pub struct ImportMapState {
+  pub import_map: ImportMap,
+  pub resolved_module_set: Vec<SpecifierResolutionRecord>,
+}
+
+/// Whether a "specifier as a URL" is null, special, or non-special.
+///
+/// HTML notes that implementations can store this as a boolean (`asURL` is null OR special). We
+/// keep the full tri-state so merge filtering remains readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecifierAsUrlKind {
+  /// Specifier was not URL-like (`asURL` was null).
+  NotUrl,
+  /// Specifier was URL-like and the resulting URL is special (http/https/file/...).
+  Special,
+  /// Specifier was URL-like and the resulting URL is non-special (data:, blob:, ...).
+  NonSpecial,
+}
+
+impl SpecifierAsUrlKind {
+  pub fn permits_prefix_match(self) -> bool {
+    matches!(self, Self::NotUrl | Self::Special)
+  }
+}
+
+/// HTML: "specifier resolution record" (stored in the global "resolved module set").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecifierResolutionRecord {
+  pub serialized_base_url: Option<String>,
+  pub specifier: String,
+  pub as_url_kind: SpecifierAsUrlKind,
+}
+
 /// A "module specifier map" with keys sorted in descending code-unit order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModuleSpecifierMap {
@@ -24,6 +59,14 @@ pub struct ModuleSpecifierMap {
 impl ModuleSpecifierMap {
   pub fn iter(&self) -> impl Iterator<Item = (&str, &Option<Url>)> {
     self.entries.iter().map(|(k, v)| (k.as_str(), v))
+  }
+
+  pub fn contains_key(&self, key: &str) -> bool {
+    self.entries.iter().any(|(k, _)| k == key)
+  }
+
+  pub fn get(&self, key: &str) -> Option<&Option<Url>> {
+    self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
   }
 }
 
@@ -37,6 +80,10 @@ pub struct ScopesMap {
 impl ScopesMap {
   pub fn iter(&self) -> impl Iterator<Item = (&str, &ModuleSpecifierMap)> {
     self.entries.iter().map(|(k, v)| (k.as_str(), v))
+  }
+
+  pub fn get(&self, key: &str) -> Option<&ModuleSpecifierMap> {
+    self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
   }
 }
 
@@ -52,6 +99,14 @@ pub struct ModuleIntegrityMap {
 impl ModuleIntegrityMap {
   pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
     self.entries.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+  }
+
+  pub fn contains_key(&self, key: &str) -> bool {
+    self.entries.iter().any(|(k, _)| k == key)
+  }
+
+  pub fn get(&self, key: &str) -> Option<&str> {
+    self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
   }
 }
 
@@ -116,3 +171,4 @@ pub(crate) fn code_unit_cmp(a: &str, b: &str) -> Ordering {
     }
   }
 }
+

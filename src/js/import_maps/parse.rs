@@ -92,7 +92,10 @@ fn get_last_property<'a>(
     .map(|(_, v)| v)
 }
 
-fn resolve_url_like_module_specifier(specifier: &str, base_url: &Url) -> Option<Url> {
+/// WHATWG HTML: "resolve a URL-like module specifier".
+///
+/// Exposed within the `import_maps` module so resolution + merge code can share the canonicalizer.
+pub(super) fn resolve_url_like_module_specifier(specifier: &str, base_url: &Url) -> Option<Url> {
   if specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../") {
     base_url.join(specifier).ok()
   } else {
@@ -129,9 +132,7 @@ fn sort_and_normalize_module_specifier_map(
   let mut normalized: HashMap<String, Option<Url>> = HashMap::new();
 
   for (specifier_key, value) in original_map {
-    let Some(normalized_specifier_key) =
-      normalize_specifier_key(specifier_key, base_url, warnings)
-    else {
+    let Some(normalized_specifier_key) = normalize_specifier_key(specifier_key, base_url, warnings) else {
       continue;
     };
 
@@ -238,6 +239,7 @@ fn normalize_module_integrity_map(
       continue;
     };
 
+    // Preserve insertion order but dedupe by resolved key (last wins).
     let resolved_key = resolved_url.to_string();
     if let Some((_, existing_value)) = entries.iter_mut().find(|(k, _)| k == &resolved_key) {
       *existing_value = metadata.clone();
@@ -338,3 +340,4 @@ impl<'de> Visitor<'de> for OrderedJsonVisitor {
     Ok(OrderedJsonValue::Object(entries))
   }
 }
+
