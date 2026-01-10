@@ -9807,11 +9807,20 @@ impl FlexFormattingContext {
         let uses_content_base_size = matches!(work.child_box.style.flex_basis, FlexBasis::Content)
           && ((main_axis_is_row && work.layout_width <= eps)
             || (!main_axis_is_row && work.layout_height <= eps));
-        let intrinsic_size = if uses_content_base_size {
+        let mut intrinsic_size = if uses_content_base_size {
           Self::fragment_descendant_span(&child_fragment, deadline_counter)?.unwrap_or(Size::ZERO)
         } else {
           Self::fragment_subtree_size(&child_fragment, deadline_counter)?
         };
+        if intrinsic_size.width <= eps || intrinsic_size.height <= eps {
+          let visual_size = Self::fragment_subtree_visual_size(&child_fragment, deadline_counter)?;
+          if intrinsic_size.width <= eps && visual_size.width > eps {
+            intrinsic_size.width = visual_size.width;
+          }
+          if intrinsic_size.height <= eps && visual_size.height > eps {
+            intrinsic_size.height = visual_size.height;
+          }
+        }
 
         if !trace_flex_text_ids().is_empty() && trace_flex_text_ids().contains(&work.child_box.id) {
           let mut text_count = 0;
@@ -9903,6 +9912,16 @@ impl FlexFormattingContext {
               } else {
                 Self::fragment_subtree_size(&mc_fragment, deadline_counter)?
               };
+              if mc_size.width <= eps || mc_size.height <= eps {
+                let visual_size =
+                  Self::fragment_subtree_visual_size(&mc_fragment, deadline_counter)?;
+                if mc_size.width <= eps && visual_size.width > eps {
+                  mc_size.width = visual_size.width;
+                }
+                if mc_size.height <= eps && visual_size.height > eps {
+                  mc_size.height = visual_size.height;
+                }
+              }
               if rect.width().is_finite() && rect.width() > 0.0 {
                 mc_size.width = mc_size.width.min(rect.width());
               }
@@ -10042,8 +10061,18 @@ impl FlexFormattingContext {
           store_remembered_size = true;
           record_fragment_clone(CloneSite::FlexMeasureReuse, fragment.as_ref());
           let template = CachedFragmentTemplate::new(fragment);
-           let intrinsic_size =
-             Self::fragment_subtree_size(template.fragment(), &mut deadline_counter)?;
+          let mut intrinsic_size =
+            Self::fragment_subtree_size(template.fragment(), &mut deadline_counter)?;
+          if intrinsic_size.width <= eps || intrinsic_size.height <= eps {
+            let visual_size =
+              Self::fragment_subtree_visual_size(template.fragment(), &mut deadline_counter)?;
+            if intrinsic_size.width <= eps && visual_size.width > eps {
+              intrinsic_size.width = visual_size.width;
+            }
+            if intrinsic_size.height <= eps && visual_size.height > eps {
+              intrinsic_size.height = visual_size.height;
+            }
+          }
            let mut resolved_width = layout_width;
            let mut resolved_height = layout_height;
            let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
@@ -11325,6 +11354,59 @@ impl FlexFormattingContext {
       max.y = max.y.max(bounds.max_y());
       for child in node.children.iter() {
         if is_out_of_flow_positioned(child) {
+          continue;
+        }
+        walk(child, origin, min, max, deadline_counter)?;
+      }
+      Ok(())
+    }
+    let mut min = Point::new(0.0, 0.0);
+    let mut max = Point::new(0.0, 0.0);
+    walk(fragment, Point::ZERO, &mut min, &mut max, deadline_counter)?;
+    Ok(Size::new(
+      (max.x - min.x).max(0.0),
+      (max.y - min.y).max(0.0),
+    ))
+  }
+
+  /// Returns the tight bounds of the fragment subtree, including absolutely positioned descendants.
+  ///
+  /// This is intentionally different from `fragment_subtree_size()`: while abspos fragments do not
+  /// contribute to intrinsic sizing, flex child assembly sometimes needs to "inflate" a 0×0 flex
+  /// item so that `justify-content`/`align-items` centering can adjust the child's origin based on
+  /// the actual painted content (e.g. ad labels rendered via `::before { position:absolute; ... }`).
+  ///
+  /// Fixed-position and running elements are still excluded because they are anchored outside the
+  /// local flow (viewport/margin boxes) and should not affect a flex item's local overflow bounds.
+  fn fragment_subtree_visual_size(
+    fragment: &FragmentNode,
+    deadline_counter: &mut usize,
+  ) -> Result<Size, LayoutError> {
+    #[inline]
+    fn is_excluded(fragment: &FragmentNode) -> bool {
+      fragment.style.as_deref().is_some_and(|style| {
+        style.running_position.is_some() || matches!(style.position, Position::Fixed)
+      })
+    }
+    fn walk(
+      node: &FragmentNode,
+      offset: Point,
+      min: &mut Point,
+      max: &mut Point,
+      deadline_counter: &mut usize,
+    ) -> Result<(), LayoutError> {
+      check_layout_deadline(deadline_counter)?;
+      if is_excluded(node) {
+        return Ok(());
+      }
+      let origin = Point::new(node.bounds.x() + offset.x, node.bounds.y() + offset.y);
+      let bounds = Rect::new(origin, node.bounds.size);
+      min.x = min.x.min(bounds.x());
+      min.y = min.y.min(bounds.y());
+      max.x = max.x.max(bounds.max_x());
+      max.y = max.y.max(bounds.max_y());
+      for child in node.children.iter() {
+        if is_excluded(child) {
           continue;
         }
         walk(child, origin, min, max, deadline_counter)?;
