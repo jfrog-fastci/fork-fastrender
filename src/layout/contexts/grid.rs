@@ -7675,8 +7675,12 @@ impl GridFormattingContext {
             }
           };
 
+          // Taffy expresses intrinsic sizing probes via `AvailableSpace::{MinContent,MaxContent}`
+          // on the physical axis being queried. Unlike the `FormattingContext` APIs, these probes
+          // are not expressed in the box's logical axes, so we must always answer them in physical
+          // width/height regardless of `writing-mode`.
           let mut intrinsic_width: Option<f32> = None;
-          if inline_is_horizontal && known_dimensions.width.is_none() {
+          if known_dimensions.width.is_none() {
             intrinsic_width = match available_space.width {
               taffy::style::AvailableSpace::MinContent => Some(
                 match intrinsic_physical_width(IntrinsicSizingMode::MinContent) {
@@ -7697,7 +7701,7 @@ impl GridFormattingContext {
           }
 
           let mut intrinsic_height: Option<f32> = None;
-          if !inline_is_horizontal && known_dimensions.height.is_none() {
+          if known_dimensions.height.is_none() {
             intrinsic_height = match available_space.height {
               taffy::style::AvailableSpace::MinContent => Some(
                 match intrinsic_physical_height(IntrinsicSizingMode::MinContent) {
@@ -8088,7 +8092,6 @@ impl GridFormattingContext {
         factory.get(fc_type)
       };
 
-    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(box_node.style.writing_mode);
     let intrinsic_physical_width = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
       crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
         fc.as_ref(),
@@ -8482,8 +8485,11 @@ impl GridFormattingContext {
       }
     }
 
+    // Taffy requests intrinsic min-/max-content measurements by setting
+    // `AvailableSpace::{MinContent,MaxContent}` on the *physical* axis being queried. These probes
+    // are independent of CSS writing mode, so always answer them in physical X/Y space.
     let mut intrinsic_width: Option<f32> = None;
-    if inline_is_horizontal && known_dimensions.width.is_none() {
+    if known_dimensions.width.is_none() {
       intrinsic_width = match available_space.width {
         taffy::style::AvailableSpace::MinContent => fit_border_box_width.or_else(|| {
           Some(
@@ -8542,28 +8548,28 @@ impl GridFormattingContext {
         .map(|px| border_size_from_box_sizing(px.max(0.0), edges_h, style.box_sizing));
 
       intrinsic_height = match available_space.height {
-        taffy::style::AvailableSpace::MinContent => {
-          fit_border_box_height.or(definite_border_box_height).or_else(|| {
-            (!inline_is_horizontal).then(|| {
+        taffy::style::AvailableSpace::MinContent => fit_border_box_height
+          .or(definite_border_box_height)
+          .or_else(|| {
+            Some(
               match intrinsic_physical_height(IntrinsicSizingMode::MinContent) {
                 Ok(size) => size,
                 Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
                 Err(_) => 0.0,
-              }
-            })
-          })
-        }
-        taffy::style::AvailableSpace::MaxContent => {
-          fit_border_box_height.or(definite_border_box_height).or_else(|| {
-            (!inline_is_horizontal).then(|| {
+              },
+            )
+          }),
+        taffy::style::AvailableSpace::MaxContent => fit_border_box_height
+          .or(definite_border_box_height)
+          .or_else(|| {
+            Some(
               match intrinsic_physical_height(IntrinsicSizingMode::MaxContent) {
                 Ok(size) => size,
                 Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
                 Err(_) => 0.0,
-              }
-            })
-          })
-        }
+              },
+            )
+          }),
         _ => None,
       };
     }
@@ -11821,8 +11827,12 @@ impl FormattingContext for GridFormattingContext {
             }
           };
 
+          // Taffy expresses intrinsic sizing probes via `AvailableSpace::{MinContent,MaxContent}`
+          // on the physical axis being queried. Unlike the `FormattingContext` APIs, these probes
+          // are not expressed in the box's logical axes, so we must always answer them in physical
+          // width/height regardless of `writing-mode`.
           let mut intrinsic_width: Option<f32> = None;
-          if inline_is_horizontal && known_dimensions.width.is_none() {
+          if known_dimensions.width.is_none() {
             intrinsic_width = match available_space.width {
               taffy::style::AvailableSpace::MinContent => Some(
                 match intrinsic_physical_width(IntrinsicSizingMode::MinContent) {
@@ -11843,7 +11853,7 @@ impl FormattingContext for GridFormattingContext {
           }
 
           let mut intrinsic_height: Option<f32> = None;
-          if !inline_is_horizontal && known_dimensions.height.is_none() {
+          if known_dimensions.height.is_none() {
             intrinsic_height = match available_space.height {
               taffy::style::AvailableSpace::MinContent => Some(
                 match intrinsic_physical_height(IntrinsicSizingMode::MinContent) {
