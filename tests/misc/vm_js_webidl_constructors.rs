@@ -6,41 +6,6 @@ use vm_js::{
 };
 use webidl_vm_js::{WebIdlBindingsHost, WebIdlBindingsHostSlot};
 
-struct TestHost;
-
-impl WebIdlBindingsHost for TestHost {
-  fn call_operation(
-    &mut self,
-    _vm: &mut Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _receiver: Option<Value>,
-    interface: &'static str,
-    operation: &'static str,
-    overload: usize,
-    _args: &[Value],
-  ) -> Result<Value, VmError> {
-    match (interface, operation, overload) {
-      // For constructor semantics tests we only need a no-op initialization hook.
-      ("URLSearchParams", "constructor", 0) => Ok(Value::Undefined),
-      _ => Err(VmError::Unimplemented("unexpected host operation call in test")),
-    }
-  }
-
-  fn call_constructor(
-    &mut self,
-    _vm: &mut Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _interface: &'static str,
-    _overload: usize,
-    _args: &[Value],
-    _new_target: Value,
-  ) -> Result<Value, VmError> {
-    Err(VmError::Unimplemented(
-      "unexpected host constructor call in test",
-    ))
-  }
-}
-
 struct HostHooksWithBindingsHost {
   slot: WebIdlBindingsHostSlot,
 }
@@ -58,6 +23,45 @@ impl VmHostHooks for HostHooksWithBindingsHost {
 
   fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
     Some(&mut self.slot)
+  }
+}
+
+struct TestHost;
+
+impl WebIdlBindingsHost for TestHost {
+  fn call_operation(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    receiver: Option<Value>,
+    interface: &'static str,
+    operation: &'static str,
+    overload: usize,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    match (interface, operation, overload) {
+      ("URLSearchParams", "constructor", 0) => match receiver {
+        Some(Value::Object(_)) => Ok(Value::Undefined),
+        _ => Err(VmError::InvariantViolation(
+          "URLSearchParams constructor called without wrapper object receiver",
+        )),
+      },
+      _ => Err(VmError::Unimplemented("unexpected host operation call in test")),
+    }
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented(
+      "unexpected host constructor call in test",
+    ))
   }
 }
 
@@ -141,6 +145,11 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
       panic!("expected URLSearchParams to be an object");
     };
 
+    let node_ctor = get_global(&mut vm, &mut scope, global, "Node");
+    let Value::Object(_node_ctor_obj) = node_ctor else {
+      panic!("expected Node to be an object");
+    };
+
     let mut host = TestHost;
     let mut hooks = HostHooksWithBindingsHost::new(&mut host);
 
@@ -172,7 +181,8 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
 
     // If `new_target` differs, the constructed wrapper's `[[Prototype]]` is derived from
     // `new_target.prototype` (subclassing semantics).
-    let custom_proto = scope.alloc_object_with_prototype(Some(realm.intrinsics().object_prototype()))?;
+    let custom_proto =
+      scope.alloc_object_with_prototype(Some(realm.intrinsics().object_prototype()))?;
     scope.push_root(Value::Object(custom_proto))?;
 
     let call_id = vm.register_native_call(dummy_call)?;
@@ -220,7 +230,7 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
       "expected constructed object to use new_target.prototype"
     );
 
-    // Calling without `new` throws a TypeError.
+    // Calling without `new` throws a `TypeError`.
     let arg = Value::String(scope.alloc_string("a=b")?);
     let err = vm
       .call_with_host(&mut scope, &mut hooks, urlsp_ctor, Value::Undefined, &[arg])
@@ -231,6 +241,12 @@ fn webidl_interface_objects_have_constructor_semantics() -> Result<(), VmError> 
       err,
       "Illegal constructor",
     );
+
+    // Interfaces without constructors are still exposed on the global object, but `new` throws.
+    let err = vm
+      .construct_with_host(&mut scope, &mut hooks, node_ctor, &[], node_ctor)
+      .unwrap_err();
+    assert_thrown_type_error_message(&mut vm, &mut scope, err, "Illegal constructor");
 
     Ok(())
   }));

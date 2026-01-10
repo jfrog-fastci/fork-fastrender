@@ -344,8 +344,16 @@ pub mod window {
     let proto = match new_target {
       Value::Object(new_target_obj) => {
         let key = rt.property_key("prototype")?;
-        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
-          Value::Object(proto) => proto,
+        let proto = rt.scope.ordinary_get_with_host_and_hooks(
+          &mut *rt.vm,
+          host,
+          hooks,
+          new_target_obj,
+          key,
+          Value::Object(new_target_obj),
+        )?;
+        match proto {
+          Value::Object(o) => o,
           _ => default_proto,
         }
       }
@@ -369,6 +377,35 @@ pub mod window {
       )?;
       Ok(Value::Object(obj))
     }
+  }
+
+  #[allow(dead_code)]
+  fn node_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn node_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
   }
 
   #[allow(dead_code)]
@@ -530,8 +567,16 @@ pub mod window {
     let proto = match new_target {
       Value::Object(new_target_obj) => {
         let key = rt.property_key("prototype")?;
-        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
-          Value::Object(proto) => proto,
+        let proto = rt.scope.ordinary_get_with_host_and_hooks(
+          &mut *rt.vm,
+          host,
+          hooks,
+          new_target_obj,
+          key,
+          Value::Object(new_target_obj),
+        )?;
+        match proto {
+          Value::Object(o) => o,
           _ => default_proto,
         }
       }
@@ -1002,8 +1047,16 @@ pub mod window {
     let proto = match new_target {
       Value::Object(new_target_obj) => {
         let key = rt.property_key("prototype")?;
-        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
-          Value::Object(proto) => proto,
+        let proto = rt.scope.ordinary_get_with_host_and_hooks(
+          &mut *rt.vm,
+          host,
+          hooks,
+          new_target_obj,
+          key,
+          Value::Object(new_target_obj),
+        )?;
+        match proto {
+          Value::Object(o) => o,
           _ => default_proto,
         }
       }
@@ -1382,6 +1435,135 @@ pub mod window {
       "constructor",
       Value::Object(ctor_event_target),
       ctor_link_attrs,
+    )?;
+    let slots = [Value::Object(proto_node)];
+    let ctor_node = rt.alloc_native_function_with_slots(
+      node_call_without_new,
+      Some(node_construct),
+      "Node",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(global, "Node", Value::Object(ctor_node), global_var_attrs)?;
+    rt.define_data_property_str(
+      ctor_node,
+      "prototype",
+      Value::Object(proto_node),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_node,
+      "constructor",
+      Value::Object(ctor_node),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "ATTRIBUTE_NODE",
+      Value::Number(2.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "CDATA_SECTION_NODE",
+      Value::Number(4.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "COMMENT_NODE",
+      Value::Number(8.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "DOCUMENT_FRAGMENT_NODE",
+      Value::Number(11.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "DOCUMENT_NODE",
+      Value::Number(9.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "DOCUMENT_POSITION_CONTAINED_BY",
+      Value::Number(16.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "DOCUMENT_POSITION_CONTAINS",
+      Value::Number(8.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "DOCUMENT_POSITION_DISCONNECTED",
+      Value::Number(1.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "DOCUMENT_POSITION_FOLLOWING",
+      Value::Number(4.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
+      Value::Number(32.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "DOCUMENT_POSITION_PRECEDING",
+      Value::Number(2.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "DOCUMENT_TYPE_NODE",
+      Value::Number(10.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "ELEMENT_NODE",
+      Value::Number(1.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "ENTITY_NODE",
+      Value::Number(6.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "ENTITY_REFERENCE_NODE",
+      Value::Number(5.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "NOTATION_NODE",
+      Value::Number(12.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "PROCESSING_INSTRUCTION_NODE",
+      Value::Number(7.0),
+      DataPropertyAttributes::CONST,
+    )?;
+    rt.define_data_property_str(
+      ctor_node,
+      "TEXT_NODE",
+      Value::Number(3.0),
+      DataPropertyAttributes::CONST,
     )?;
     let func = rt.alloc_native_function(u_r_l_to_j_s_o_n, None, "toJSON", 0)?;
     rt.define_data_property_str(
@@ -1893,8 +2075,16 @@ pub mod worker {
     let proto = match new_target {
       Value::Object(new_target_obj) => {
         let key = rt.property_key("prototype")?;
-        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
-          Value::Object(proto) => proto,
+        let proto = rt.scope.ordinary_get_with_host_and_hooks(
+          &mut *rt.vm,
+          host,
+          hooks,
+          new_target_obj,
+          key,
+          Value::Object(new_target_obj),
+        )?;
+        match proto {
+          Value::Object(o) => o,
           _ => default_proto,
         }
       }
@@ -2079,8 +2269,16 @@ pub mod worker {
     let proto = match new_target {
       Value::Object(new_target_obj) => {
         let key = rt.property_key("prototype")?;
-        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
-          Value::Object(proto) => proto,
+        let proto = rt.scope.ordinary_get_with_host_and_hooks(
+          &mut *rt.vm,
+          host,
+          hooks,
+          new_target_obj,
+          key,
+          Value::Object(new_target_obj),
+        )?;
+        match proto {
+          Value::Object(o) => o,
           _ => default_proto,
         }
       }
@@ -2551,8 +2749,16 @@ pub mod worker {
     let proto = match new_target {
       Value::Object(new_target_obj) => {
         let key = rt.property_key("prototype")?;
-        match rt.vm.get(&mut rt.scope, new_target_obj, key)? {
-          Value::Object(proto) => proto,
+        let proto = rt.scope.ordinary_get_with_host_and_hooks(
+          &mut *rt.vm,
+          host,
+          hooks,
+          new_target_obj,
+          key,
+          Value::Object(new_target_obj),
+        )?;
+        match proto {
+          Value::Object(o) => o,
           _ => default_proto,
         }
       }

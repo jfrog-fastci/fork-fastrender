@@ -1862,7 +1862,9 @@ fn to_uint32_f64(n: f64) -> u32 {
         global,
       );
     }
-    if !iface.constructors.is_empty() || !iface.static_operations.is_empty() {
+    let needs_ctor_obj =
+      !iface.constructors.is_empty() || !iface.static_operations.is_empty() || !iface.constants.is_empty();
+    if needs_ctor_obj {
       write_constructor_wrapper_vmjs(&mut out, resolved, &iface.name, &iface.constructors);
     }
   }
@@ -1938,18 +1940,16 @@ fn to_uint32_f64(n: f64) -> u32 {
       ));
     }
 
-    if iface.constructors.is_empty() && iface.static_operations.is_empty() {
+    let needs_ctor_obj =
+      !iface.constructors.is_empty() || !iface.static_operations.is_empty() || !iface.constants.is_empty();
+    if !needs_ctor_obj {
       continue;
     }
 
     // Constructor function (even for static-only interfaces like URL).
     let ctor_call_fn = ctor_call_without_new_fn_name(&iface.name);
     let ctor_construct_fn = ctor_construct_fn_name(&iface.name);
-    let construct_expr = if iface.constructors.is_empty() {
-      "None".to_string()
-    } else {
-      format!("Some({ctor_construct_fn})")
-    };
+    let construct_expr = format!("Some({ctor_construct_fn})");
     let length = iface
       .constructors
       .get(0)
@@ -1975,6 +1975,17 @@ fn to_uint32_f64(n: f64) -> u32 {
         name_lit = rust_string_literal(op_name),
         snake = to_snake_ident(&iface.name),
         length = length,
+      ));
+    }
+
+    // Constants.
+    for constant in iface.constants.values() {
+      let expr = emit_constant_value_expr_vmjs(&constant.value);
+      out.push_str(&format!(
+        "  rt.define_data_property_str(ctor_{snake}, {name_lit}, {expr}, DataPropertyAttributes::CONST)?;\n",
+        snake = to_snake_ident(&iface.name),
+        name_lit = rust_string_literal(&constant.name),
+        expr = expr,
       ));
     }
   }
@@ -4792,25 +4803,32 @@ fn write_constructor_wrapper_vmjs(
 ) {
   // Call without `new`.
   let call_fn_name = ctor_call_without_new_fn_name(interface);
+  let call_without_new_msg = if overloads.is_empty() {
+    "Illegal constructor".to_string()
+  } else {
+    format!("{interface} constructor must be called with new")
+  };
   out.push_str(&format!(
     "#[allow(dead_code)]\nfn {call_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  _host: &mut dyn VmHost,\n  _hooks: &mut dyn VmHostHooks,\n  _callee: GcObject,\n  _this: Value,\n  _args: &[Value],\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
   out.push_str(&format!(
     "  Err(rt.throw_type_error({msg_lit}))\n",
-    msg_lit = rust_string_literal("Illegal constructor")
+    msg_lit = rust_string_literal(&call_without_new_msg)
   ));
   out.push_str("}\n\n");
-
-  if overloads.is_empty() {
-    return;
-  }
 
   let construct_fn_name = ctor_construct_fn_name(interface);
   out.push_str(&format!(
     "#[allow(dead_code)]\nfn {construct_fn_name}(\n  vm: &mut Vm,\n  scope: &mut Scope<'_>,\n  host: &mut dyn VmHost,\n  hooks: &mut dyn VmHostHooks,\n  callee: GcObject,\n  args: &[Value],\n  new_target: Value,\n) -> Result<Value, VmError>\n{{\n",
   ));
   out.push_str("  let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());\n");
+  if overloads.is_empty() {
+    out.push_str("  let _ = (host, hooks, callee, args, new_target);\n");
+    out.push_str("  Err(rt.throw_type_error(\"Illegal constructor\"))\n");
+    out.push_str("}\n\n");
+    return;
+  }
   out.push_str("  let slots = rt.scope.heap().get_function_native_slots(callee)?;\n");
   out.push_str("  let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);\n");
   out.push_str("  let Value::Object(default_proto) = proto_slot else {\n");
@@ -4824,8 +4842,16 @@ fn write_constructor_wrapper_vmjs(
   out.push_str("  let proto = match new_target {\n");
   out.push_str("    Value::Object(new_target_obj) => {\n");
   out.push_str("      let key = rt.property_key(\"prototype\")?;\n");
-  out.push_str("      match rt.vm.get(&mut rt.scope, new_target_obj, key)? {\n");
-  out.push_str("        Value::Object(proto) => proto,\n");
+  out.push_str("      let proto = rt.scope.ordinary_get_with_host_and_hooks(\n");
+  out.push_str("        &mut *rt.vm,\n");
+  out.push_str("        host,\n");
+  out.push_str("        hooks,\n");
+  out.push_str("        new_target_obj,\n");
+  out.push_str("        key,\n");
+  out.push_str("        Value::Object(new_target_obj),\n");
+  out.push_str("      )?;\n");
+  out.push_str("      match proto {\n");
+  out.push_str("        Value::Object(o) => o,\n");
   out.push_str("        _ => default_proto,\n");
   out.push_str("      }\n");
   out.push_str("    }\n");
@@ -4949,6 +4975,71 @@ fn emit_default_literal_vmjs(lit: &IdlLiteral) -> String {
     IdlLiteral::EmptyObject => "{ let obj = rt.alloc_object()?; Value::Object(obj) }".to_string(),
     IdlLiteral::EmptyArray => "{ let arr = rt.alloc_array(0)?; Value::Object(arr) }".to_string(),
     IdlLiteral::Identifier(_id) => "Value::Undefined".to_string(),
+  }
+}
+
+fn emit_constant_value_expr_vmjs(lit: &IdlLiteral) -> String {
+  fn parse_idl_number_literal(text: &str) -> Option<f64> {
+    let s = text.trim();
+    if s.eq_ignore_ascii_case("nan") {
+      return Some(f64::NAN);
+    }
+    if s.eq_ignore_ascii_case("infinity") {
+      return Some(f64::INFINITY);
+    }
+    if s.eq_ignore_ascii_case("-infinity") {
+      return Some(f64::NEG_INFINITY);
+    }
+
+    let (sign, rest) = if let Some(rest) = s.strip_prefix('-') {
+      (-1.0, rest)
+    } else if let Some(rest) = s.strip_prefix('+') {
+      (1.0, rest)
+    } else {
+      (1.0, s)
+    };
+
+    let rest = rest.trim();
+    let (radix, digits) = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X"))
+    {
+      (16, hex)
+    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+      (8, oct)
+    } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+      (2, bin)
+    } else {
+      // Plain decimal / exponent form.
+      return rest.parse::<f64>().ok().map(|v| v * sign);
+    };
+
+    let int = u64::from_str_radix(digits.trim(), radix).ok()?;
+    Some(sign * int as f64)
+  }
+
+  fn render_f64_expr(v: f64) -> String {
+    if v.is_nan() {
+      "f64::NAN".to_string()
+    } else if v == f64::INFINITY {
+      "f64::INFINITY".to_string()
+    } else if v == f64::NEG_INFINITY {
+      "f64::NEG_INFINITY".to_string()
+    } else {
+      format!("{v:?}")
+    }
+  }
+
+  match lit {
+    IdlLiteral::Undefined => "Value::Undefined".to_string(),
+    IdlLiteral::Null => "Value::Null".to_string(),
+    IdlLiteral::Boolean(b) => format!("Value::Bool({})", if *b { "true" } else { "false" }),
+    IdlLiteral::Number(n) => {
+      let v = parse_idl_number_literal(n).unwrap_or(0.0);
+      format!("Value::Number({})", render_f64_expr(v))
+    }
+    IdlLiteral::String(s) => format!("Value::String(rt.alloc_string({})?)", rust_string_literal(s)),
+    IdlLiteral::EmptyObject | IdlLiteral::EmptyArray | IdlLiteral::Identifier(_) => {
+      "Value::Undefined".to_string()
+    }
   }
 }
 
