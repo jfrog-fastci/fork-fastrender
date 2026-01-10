@@ -430,6 +430,19 @@ the resolved module set to drop rules that would affect already-resolved specifi
 In practice, most callers should use `register_import_map(...)` instead; this lower-level API is
 useful if the host wants to parse import maps separately or merge pre-parsed import maps.
 
+### Supporting helper: `merge_module_specifier_maps` (implemented)
+
+Rust API:
+
+* `fastrender::js::import_maps::merge_module_specifier_maps(new_map: &ModuleSpecifierMap, old_map: &ModuleSpecifierMap)
+  -> ModuleSpecifierMap`
+
+Spec mapping: “merge module specifier maps”.
+
+This is a low-level helper used by `merge_existing_and_new_import_maps(...)`. Conflicts are resolved
+in favor of the existing map (old wins): if a key exists in `old_map`, the entry from `new_map` is
+ignored.
+
 ### 5) `resolve_module_specifier` (implemented)
 
 Spec mapping:
