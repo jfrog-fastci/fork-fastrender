@@ -2,7 +2,7 @@
 
 use js_wpt_dom_runner::{discover_tests, BackendSelection, RunOutcome, Runner, RunnerConfig, WptFs};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn corpus_root() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -31,15 +31,21 @@ fn vmjs_backend_uses_deterministic_virtual_time() {
   let runner = Runner::new(
     fs,
     RunnerConfig {
-      // Tight timeout so a regression back to wall-clock sleeps doesn't stall CI.
-      default_timeout: Duration::from_millis(50),
-      long_timeout: Duration::from_millis(50),
+      // Virtual timeout must be long enough to allow the test's 1000ms timer to fire.
+      default_timeout: Duration::from_secs(2),
+      long_timeout: Duration::from_secs(2),
       backend: BackendSelection::VmJs,
       ..RunnerConfig::default()
     },
   );
 
+  let start = Instant::now();
   let result = runner.run_test(test).expect("run test");
+  let elapsed = start.elapsed();
+  assert!(
+    elapsed < Duration::from_millis(500),
+    "test should complete without wall-clock waiting (elapsed={elapsed:?})"
+  );
   assert_eq!(
     result.outcome,
     RunOutcome::Pass,
@@ -50,4 +56,3 @@ fn vmjs_backend_uses_deterministic_virtual_time() {
     .unwrap_or_else(|| panic!("{id} should include report payload"));
   assert_eq!(report.file_status, "pass");
 }
-
