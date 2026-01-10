@@ -1590,7 +1590,7 @@ impl BrowserTabHost {
     // This matters even when the script ultimately does not run (e.g. empty inline scripts), as the
     // checkpoint can mutate the document (including this `<script>` element).
     if spec.parser_inserted && self.js_execution_depth.get() == 0 {
-      event_loop.perform_microtask_checkpoint(self)?;
+      self.with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))?;
     }
 
     // HTML: "prepare the script element" can return early without executing the script (e.g.
