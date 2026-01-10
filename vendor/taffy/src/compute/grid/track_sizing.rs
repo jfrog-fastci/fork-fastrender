@@ -671,7 +671,21 @@ pub(super) fn resolve_item_baselines(
         AbstractAxis::Block => item.extra_margin.left,
       };
 
+      let baseline = baseline.filter(|b| b.is_finite());
+      let fallback_size = if fallback_size.is_finite() {
+        fallback_size
+      } else {
+        0.0
+      };
+      let margin_start = if margin_start.is_finite() { margin_start } else { 0.0 };
+      let extra_margin_start = if extra_margin_start.is_finite() {
+        extra_margin_start
+      } else {
+        0.0
+      };
+
       let value = baseline.unwrap_or(fallback_size) + margin_start + extra_margin_start;
+      let value = if value.is_finite() { value } else { 0.0 };
       if axis == AbstractAxis::Inline {
         // Record the vertical baseline for computing the grid container baseline.
         item.baseline = Some(value);
@@ -695,10 +709,12 @@ pub(super) fn resolve_item_baselines(
     for (idx, value) in baseline_values {
       match axis {
         AbstractAxis::Inline => {
-          row_items[idx].baseline_shim.y = group_max_baseline - value;
+          let shim = group_max_baseline - value;
+          row_items[idx].baseline_shim.y = if shim.is_finite() { shim } else { 0.0 };
         }
         AbstractAxis::Block => {
-          row_items[idx].baseline_shim.x = group_max_baseline - value;
+          let shim = group_max_baseline - value;
+          row_items[idx].baseline_shim.x = if shim.is_finite() { shim } else { 0.0 };
         }
       }
     }
@@ -1738,4 +1754,99 @@ fn distribute_space_up_to_limits(
   }
 
   space_to_distribute
+}
+
+#[cfg(all(test, feature = "taffy_tree"))]
+mod tests {
+  use crate::prelude::*;
+  use crate::tree::MeasureOutput;
+
+  use crate::geometry::Point;
+
+  fn build_grid_baseline_tree() -> (TaffyTree<()>, NodeId, [NodeId; 2]) {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child_style = Style {
+      size: Size::from_lengths(10.0, 10.0),
+      align_self: Some(AlignSelf::Baseline),
+      ..Default::default()
+    };
+
+    let child1 = taffy.new_leaf(child_style.clone()).unwrap();
+    let child2 = taffy.new_leaf(child_style).unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          size: Size::from_lengths(100.0, 100.0),
+          grid_template_columns: vec![fr(1.0); 2],
+          grid_template_rows: vec![fr(1.0); 1],
+          ..Default::default()
+        },
+        &[child1, child2],
+      )
+      .unwrap();
+
+    (taffy, root, [child1, child2])
+  }
+
+  #[test]
+  fn grid_non_finite_baseline_is_treated_as_none_for_baseline_shims() {
+    let (mut taffy_expected, root_expected, [child1_expected, child2_expected]) =
+      build_grid_baseline_tree();
+    taffy_expected
+      .compute_layout_with_measure(
+        root_expected,
+        Size::MAX_CONTENT,
+        |_, _, node_id, _, _| MeasureOutput {
+          size: Size {
+            width: 10.0,
+            height: 10.0,
+          },
+          first_baselines: Point {
+            x: None,
+            y: if node_id == child1_expected {
+              None
+            } else {
+              Some(0.0)
+            },
+          },
+        },
+      )
+      .unwrap();
+
+    let expected_child1 = taffy_expected.layout(child1_expected).unwrap();
+    let expected_child2 = taffy_expected.layout(child2_expected).unwrap();
+
+    for baseline in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+      let (mut taffy, root, [child1, child2]) = build_grid_baseline_tree();
+      taffy
+        .compute_layout_with_measure(
+          root,
+          Size::MAX_CONTENT,
+          |_, _, node_id, _, _| MeasureOutput {
+            size: Size {
+              width: 10.0,
+              height: 10.0,
+            },
+            first_baselines: Point {
+              x: None,
+              y: if node_id == child1 { Some(baseline) } else { Some(0.0) },
+            },
+          },
+        )
+        .unwrap();
+
+      let child1_layout = taffy.layout(child1).unwrap();
+      let child2_layout = taffy.layout(child2).unwrap();
+      assert!(child1_layout.location.x.is_finite());
+      assert!(child1_layout.location.y.is_finite());
+      assert!(child2_layout.location.x.is_finite());
+      assert!(child2_layout.location.y.is_finite());
+
+      assert_eq!(child1_layout.location, expected_child1.location);
+      assert_eq!(child2_layout.location, expected_child2.location);
+    }
+  }
 }

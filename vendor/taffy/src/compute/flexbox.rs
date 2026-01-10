@@ -469,13 +469,14 @@ fn compute_preliminary(
       .iter()
       .find(|item| constants.is_column || item.align_self == AlignSelf::Baseline)
       .or_else(|| flex_lines[0].items.iter().next())
-      .map(|child| {
+      .and_then(|child| {
         let offset_vertical = if constants.is_row {
           child.offset_cross
         } else {
           child.offset_main
         };
-        offset_vertical + child.baseline
+        let baseline = offset_vertical + child.baseline;
+        if baseline.is_finite() { Some(baseline) } else { None }
       })
   };
 
@@ -1754,7 +1755,20 @@ fn calculate_children_base_lines(
         )
       };
 
-      child.baseline = baseline.unwrap_or(fallback_extent) + margin_start;
+      let baseline = baseline.filter(|b| b.is_finite());
+      let fallback_extent = if fallback_extent.is_finite() {
+        fallback_extent
+      } else {
+        0.0
+      };
+      let margin_start = if margin_start.is_finite() { margin_start } else { 0.0 };
+
+      let baseline_value = baseline.unwrap_or(fallback_extent) + margin_start;
+      child.baseline = if baseline_value.is_finite() {
+        baseline_value
+      } else {
+        0.0
+      };
     }
   }
 }
@@ -2314,12 +2328,24 @@ fn calculate_flex_item(
   if direction.is_row() {
     let baseline_offset_cross =
       total_offset_cross + line_offset_cross + item.margin.cross_start(direction);
-    let inner_baseline = layout_output.first_baselines.y.unwrap_or(size.height);
-    item.baseline = baseline_offset_cross + inner_baseline;
+    let mut inner_baseline =
+      layout_output.first_baselines.y.filter(|b| b.is_finite()).unwrap_or(size.height);
+    if !inner_baseline.is_finite() {
+      inner_baseline = 0.0;
+    }
+
+    let baseline = baseline_offset_cross + inner_baseline;
+    item.baseline = if baseline.is_finite() { baseline } else { 0.0 };
   } else {
     let baseline_offset_main = *total_offset_main + item.margin.main_start(direction);
-    let inner_baseline = layout_output.first_baselines.y.unwrap_or(size.height);
-    item.baseline = baseline_offset_main + inner_baseline;
+    let mut inner_baseline =
+      layout_output.first_baselines.y.filter(|b| b.is_finite()).unwrap_or(size.height);
+    if !inner_baseline.is_finite() {
+      inner_baseline = 0.0;
+    }
+
+    let baseline = baseline_offset_main + inner_baseline;
+    item.baseline = if baseline.is_finite() { baseline } else { 0.0 };
   }
 
   let location = match direction.is_row() {
@@ -2856,6 +2882,9 @@ fn sum_axis_gaps(gap: f32, num_items: usize) -> f32 {
 #[cfg(all(test, feature = "taffy_tree"))]
 mod tests {
   use crate::prelude::*;
+  use crate::tree::MeasureOutput;
+
+  use crate::geometry::Point;
 
   fn build_row_wrap_reverse_tree(
     align_content: AlignContent,
@@ -2893,6 +2922,33 @@ mod tests {
     taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
 
     (taffy, [child1, child2, child3])
+  }
+
+  fn build_row_baseline_tree() -> (TaffyTree<()>, NodeId, [NodeId; 2]) {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child_style = Style {
+      size: Size::from_lengths(10.0, 10.0),
+      ..Default::default()
+    };
+
+    let child1 = taffy.new_leaf(child_style.clone()).unwrap();
+    let child2 = taffy.new_leaf(child_style).unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          size: Size::from_lengths(20.0, 20.0),
+          flex_direction: FlexDirection::Row,
+          align_items: Some(AlignItems::Baseline),
+          ..Default::default()
+        },
+        &[child1, child2],
+      )
+      .unwrap();
+
+    (taffy, root, [child1, child2])
   }
 
   #[test]
@@ -3115,6 +3171,62 @@ mod tests {
       assert!(child2_x.is_finite());
       assert_eq!(child1_x, expected_child1_x);
       assert_eq!(child2_x, expected_child2_x);
+    }
+  }
+
+  #[test]
+  fn flexbox_non_finite_baseline_is_treated_as_none() {
+    let (mut taffy_expected, root_expected, [child1_expected, child2_expected]) =
+      build_row_baseline_tree();
+    taffy_expected
+      .compute_layout_with_measure(
+        root_expected,
+        Size::MAX_CONTENT,
+        |_, _, node_id, _, _| MeasureOutput {
+          size: Size {
+            width: 10.0,
+            height: 10.0,
+          },
+          first_baselines: Point {
+            x: None,
+            y: if node_id == child1_expected {
+              None
+            } else {
+              Some(0.0)
+            },
+          },
+        },
+      )
+      .unwrap();
+
+    let expected_child1_y = taffy_expected.layout(child1_expected).unwrap().location.y;
+    let expected_child2_y = taffy_expected.layout(child2_expected).unwrap().location.y;
+
+    for baseline in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+      let (mut taffy, root, [child1, child2]) = build_row_baseline_tree();
+      taffy
+        .compute_layout_with_measure(
+          root,
+          Size::MAX_CONTENT,
+          |_, _, node_id, _, _| MeasureOutput {
+            size: Size {
+              width: 10.0,
+              height: 10.0,
+            },
+            first_baselines: Point {
+              x: None,
+              y: if node_id == child1 { Some(baseline) } else { Some(0.0) },
+            },
+          },
+        )
+        .unwrap();
+
+      let child1_y = taffy.layout(child1).unwrap().location.y;
+      let child2_y = taffy.layout(child2).unwrap().location.y;
+      assert!(child1_y.is_finite());
+      assert!(child2_y.is_finite());
+      assert_eq!(child1_y, expected_child1_y);
+      assert_eq!(child2_y, expected_child2_y);
     }
   }
 }
