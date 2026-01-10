@@ -494,6 +494,19 @@ impl Vm {
   /// Any calls/constructs performed by queued jobs (for example `Promise.then` callbacks) will be
   /// executed with the provided `host` and therefore can access embedder state in native call and
   /// construct handlers.
+  ///
+  /// ## Errors
+  ///
+  /// This method mirrors HTML microtask checkpoint semantics for ordinary job failures (exceptions,
+  /// `TypeError`, etc): it captures the **first non-termination error** but continues draining the
+  /// queue so queued job roots are cleaned up.
+  ///
+  /// [`VmError::Termination`] is different: it represents a non-catchable termination condition
+  /// (fuel exhausted, deadline exceeded, interrupt, stack overflow). Termination is treated as a
+  /// **hard stop**: once a job returns `Err(VmError::Termination(..))`, the checkpoint stops
+  /// executing any further jobs, discards all remaining queued jobs to clean up persistent roots,
+  /// and returns the termination error (even if earlier jobs already failed with a non-termination
+  /// error).
   pub fn perform_microtask_checkpoint_with_host(
     &mut self,
     host: &mut dyn VmHost,
@@ -591,40 +604,103 @@ impl Vm {
       return Ok(());
     }
 
-    // Keep running jobs until the queue becomes empty, capturing the first error but continuing to
-    // drain so we don't leak job roots on drop.
+    // Keep running jobs until the queue becomes empty, capturing the first non-termination error
+    // but continuing to drain so we don't leak job roots.
+    //
+    // Termination errors are treated as a hard stop: we stop running further jobs and discard the
+    // remainder of the queue (including any jobs enqueued by the failing job).
     let mut first_err: Option<VmError> = None;
+    let mut termination_err: Option<VmError> = None;
 
     loop {
       let Some((_realm, job)) = self.microtasks.pop_front() else {
         break;
       };
 
-      let mut ctx = Ctx {
-        vm: self,
-        host,
-        heap,
+      let job_result = {
+        let mut ctx = Ctx {
+          vm: self,
+          host,
+          heap,
+        };
+        let mut hooks = LocalHost::new();
+
+        let job_result = job.run(&mut ctx, &mut hooks);
+
+        // Some job types may schedule new Promise jobs via `VmHostHooks`; enqueue them into the VM's
+        // microtask queue before proceeding (or before discarding the remaining queue on
+        // termination).
+        hooks.drain_into(&mut ctx.vm.microtasks);
+
+        job_result
       };
-      let mut hooks = LocalHost::new();
 
-      let job_result = job.run(&mut ctx, &mut hooks);
-
-      // Some job types may schedule new Promise jobs via `VmHostHooks`; enqueue them into the VM's
-      // microtask queue before proceeding.
-      hooks.drain_into(&mut ctx.vm.microtasks);
-
-      if first_err.is_none() {
-        if let Err(e) = job_result {
-          first_err = Some(e);
+      match job_result {
+        Ok(()) => {}
+        Err(e @ VmError::Termination(_)) => {
+          termination_err = Some(e);
+          break;
+        }
+        Err(e) => {
+          if first_err.is_none() {
+            first_err = Some(e);
+          }
         }
       }
     }
 
+    if termination_err.is_some() {
+      // A termination condition was observed. Discard all remaining queued jobs so we don't run
+      // arbitrary host-side closures after termination, and so we don't leak any persistent roots.
+      //
+      // Note: jobs enqueued by the failing job into `LocalHost.pending` are drained into
+      // `self.microtasks` above before we reach this point.
+      struct TeardownCtx<'a> {
+        heap: &'a mut Heap,
+      }
+
+      impl VmJobContext for TeardownCtx<'_> {
+        fn call(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _this: Value,
+          _args: &[Value],
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("TeardownCtx::call"))
+        }
+
+        fn construct(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _args: &[Value],
+          _new_target: Value,
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("TeardownCtx::construct"))
+        }
+
+        fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+          self.heap.add_root(value)
+        }
+
+        fn remove_root(&mut self, id: RootId) {
+          self.heap.remove_root(id)
+        }
+      }
+
+      let mut ctx = TeardownCtx { heap };
+      self.microtasks.teardown(&mut ctx);
+    }
+
     self.microtasks.end_checkpoint();
 
-    match first_err {
-      None => Ok(()),
+    match termination_err {
       Some(e) => Err(e),
+      None => match first_err {
+        None => Ok(()),
+        Some(e) => Err(e),
+      },
     }
   }
 

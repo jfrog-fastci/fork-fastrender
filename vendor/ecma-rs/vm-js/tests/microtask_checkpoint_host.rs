@@ -1,5 +1,9 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use vm_js::{
-  GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  Budget, GcObject, Heap, HeapLimits, Job, JobKind, JsRuntime, Scope, TerminationReason, Value, Vm,
+  VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 #[derive(Default)]
@@ -27,6 +31,22 @@ fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
+}
+
+fn tick_and_terminate(
+  vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // `Vm::call`/`Vm::call_with_host_and_hooks` already charge one tick on entry. With a fuel budget
+  // of 1, that entry tick consumes the last fuel, so this extra tick triggers
+  // `TerminationReason::OutOfFuel`.
+  vm.tick()?;
+  Ok(Value::Undefined)
 }
 
 #[test]
@@ -73,3 +93,57 @@ fn microtask_checkpoint_without_host_uses_dummy_host_context() -> Result<(), VmE
   Ok(())
 }
 
+#[test]
+fn microtask_checkpoint_terminates_and_discards_remaining_jobs() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions {
+    check_time_every: 1,
+    ..VmOptions::default()
+  });
+  vm.set_budget(Budget {
+    fuel: Some(1),
+    deadline: None,
+    check_time_every: 1,
+  });
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  let call_id = vm.register_native_call(tick_and_terminate)?;
+
+  let tick_fn = {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("tickAndTerminate")?;
+    scope.alloc_native_function(call_id, None, name, 0)?
+  };
+  let tick_fn_root = heap.add_root(Value::Object(tick_fn))?;
+  let tick_fn_value = Value::Object(tick_fn);
+
+  // First job triggers a termination error via a VM call.
+  let mut job1 = Job::new(JobKind::Promise, move |ctx, hooks| {
+    ctx.call(hooks, tick_fn_value, Value::Undefined, &[])?;
+    Ok(())
+  });
+  job1.push_root(tick_fn_root);
+
+  // Second job has a Rust-side side effect but does not call into the VM (so it won't tick).
+  let counter = Arc::new(AtomicUsize::new(0));
+  let counter_for_job2 = counter.clone();
+  let job2 = Job::new(JobKind::Promise, move |_ctx, _hooks| {
+    counter_for_job2.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+  });
+
+  vm.microtask_queue_mut().enqueue_promise_job(job1, None);
+  vm.microtask_queue_mut().enqueue_promise_job(job2, None);
+
+  let mut host = ();
+  let err = vm
+    .perform_microtask_checkpoint_with_host(&mut host, &mut heap)
+    .unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected termination, got {other:?}"),
+  }
+
+  // The checkpoint must not execute further jobs after termination.
+  assert_eq!(counter.load(Ordering::SeqCst), 0);
+  Ok(())
+}

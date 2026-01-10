@@ -69,6 +69,17 @@ impl MicrotaskQueue {
   /// Any errors returned by jobs are collected and returned; the checkpoint continues to run later
   /// jobs even if earlier ones fail (HTML's "report the exception and keep draining microtasks"
   /// behavior).
+  ///
+  /// ## Termination errors
+  ///
+  /// [`VmError::Termination`] represents a non-catchable, host-enforced termination condition
+  /// (fuel exhausted, deadline exceeded, interrupt, stack overflow). Unlike ordinary job failures
+  /// (exceptions), termination is treated as a **hard stop**:
+  ///
+  /// - Once a job returns `Err(VmError::Termination(..))`, the checkpoint stops executing any
+  ///   further jobs.
+  /// - Any remaining queued jobs (including jobs enqueued by the failing job) are discarded via
+  ///   [`MicrotaskQueue::teardown`] so persistent roots are cleaned up.
   pub fn perform_microtask_checkpoint(&mut self, ctx: &mut dyn VmJobContext) -> Vec<VmError> {
     if self.performing_microtask_checkpoint {
       return Vec::new();
@@ -78,7 +89,14 @@ impl MicrotaskQueue {
     let mut errors = Vec::new();
     while let Some((_realm, job)) = self.queue.pop_front() {
       if let Err(err) = job.run(ctx, self) {
+        let is_termination = matches!(err, VmError::Termination(_));
         errors.push(err);
+        if is_termination {
+          // Termination is a hard stop: discard any remaining queued jobs (and any jobs enqueued by
+          // the failing job) so we don't leak persistent roots.
+          self.teardown(ctx);
+          break;
+        }
       }
     }
     self.performing_microtask_checkpoint = false;

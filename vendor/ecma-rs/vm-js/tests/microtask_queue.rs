@@ -7,6 +7,8 @@ use vm_js::Job;
 use vm_js::JobKind;
 use vm_js::MicrotaskQueue;
 use vm_js::RootId;
+use vm_js::Termination;
+use vm_js::TerminationReason;
 use vm_js::Value;
 use vm_js::VmError;
 use vm_js::VmHostHooks;
@@ -219,6 +221,44 @@ fn checkpoint_continues_after_errors_and_collects_them() -> Result<(), VmError> 
   assert!(matches!(errors[0], VmError::Unimplemented("job1 failed")));
   assert!(matches!(errors[1], VmError::Unimplemented("job3 failed")));
   assert_eq!(&*log.lock().unwrap(), &["job2"]);
+  Ok(())
+}
+
+#[test]
+fn checkpoint_stops_after_termination_and_discards_remaining_jobs() -> Result<(), VmError> {
+  let mut ctx = TestContext::new();
+  let mut queue = MicrotaskQueue::new();
+
+  let counter: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+  let counter_for_job2 = counter.clone();
+
+  queue.enqueue_promise_job(
+    Job::new(JobKind::Promise, |_ctx, _host| {
+      Err(VmError::Termination(Termination::new(
+        TerminationReason::OutOfFuel,
+        Vec::new(),
+      )))
+    }),
+    None,
+  );
+
+  queue.enqueue_promise_job(
+    Job::new(JobKind::Promise, move |_ctx, _host| {
+      *counter_for_job2.lock().unwrap() += 1;
+      Ok(())
+    }),
+    None,
+  );
+
+  let errors = queue.perform_microtask_checkpoint(&mut ctx);
+  assert_eq!(errors.len(), 1);
+  assert!(matches!(
+    errors[0],
+    VmError::Termination(ref term) if term.reason == TerminationReason::OutOfFuel
+  ));
+
+  // Termination is a hard stop: later jobs must not run.
+  assert_eq!(*counter.lock().unwrap(), 0);
   Ok(())
 }
 
