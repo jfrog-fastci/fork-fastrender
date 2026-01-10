@@ -520,7 +520,7 @@ fn capture_and_bubble_ordering_across_opaque_parent_chain() {
       ..Default::default()
     },
   );
-  dispatch_event(target, &mut event, &doc, &registry, &mut invoker).unwrap();
+  assert!(dispatch_event(target, &mut event, &doc, &registry, &mut invoker).unwrap());
   assert_eq!(
     invoker.calls.as_slice(),
     &[

@@ -8,12 +8,12 @@ use thiserror::Error;
 pub enum DomError {
   #[error("HierarchyRequestError")]
   HierarchyRequestError,
+  #[error("InvalidCharacterError")]
+  InvalidCharacterError,
   #[error("NotFoundError")]
   NotFoundError,
   #[error("NotSupportedError")]
   NotSupportedError,
-  #[error("InvalidCharacterError")]
-  InvalidCharacterError,
   #[error("InvalidNodeType")]
   InvalidNodeType,
   #[error("NoModificationAllowedError")]
@@ -26,9 +26,9 @@ impl DomError {
   pub fn code(self) -> &'static str {
     match self {
       Self::HierarchyRequestError => "HierarchyRequestError",
+      Self::InvalidCharacterError => "InvalidCharacterError",
       Self::NotFoundError => "NotFoundError",
       Self::NotSupportedError => "NotSupportedError",
-      Self::InvalidCharacterError => "InvalidCharacterError",
       Self::InvalidNodeType => "InvalidNodeType",
       Self::NoModificationAllowedError => "NoModificationAllowedError",
       Self::SyntaxError => "SyntaxError",

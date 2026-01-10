@@ -3923,67 +3923,6 @@ fn document_body_get_native(
   get_or_create_node_wrapper(vm, scope, document_obj, node_id)
 }
 
-fn document_append_child_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let Value::Object(document_obj) = this else {
-    return Err(VmError::TypeError(
-      "document.appendChild must be called on a document object",
-    ));
-  };
-
-  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
-  let source_id = match scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &id_key)?
-  {
-    Some(Value::Number(n)) => n as u64,
-    _ => {
-      return Err(VmError::TypeError(
-        "document.appendChild requires a DOM-backed document",
-      ));
-    }
-  };
-
-  let Some(dom_ptr) = dom_for_source(source_id) else {
-    return Err(VmError::TypeError(
-      "document.appendChild requires a DOM-backed document",
-    ));
-  };
-  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-  // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_ref() };
-
-  // The curated WPT harness builds a document skeleton (html/head/body). Appending directly to the
-  // document node would violate the document-child insertion constraints, so route this through
-  // `document.body` when present (falling back to `document.documentElement`, then the document
-  // root).
-  let target_parent = dom
-    .body()
-    .or_else(|| dom.document_element())
-    .unwrap_or_else(|| dom.root());
-  if target_parent.index() == 0 {
-    return node_append_child_native(
-      vm,
-      scope,
-      host,
-      hooks,
-      callee,
-      Value::Object(document_obj),
-      args,
-    );
-  }
-
-  let parent_wrapper = get_or_create_node_wrapper(vm, scope, document_obj, target_parent)?;
-  node_append_child_native(vm, scope, host, hooks, callee, parent_wrapper, args)
-}
-
 fn document_get_element_by_id_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -5450,35 +5389,35 @@ fn event_target_constructor_construct_native(
     match parent_value {
       Value::Undefined | Value::Null => {}
       Value::Object(parent_obj) => {
-    let parent_target = resolve_dom_event_target(vm, scope, parent_obj)
-      .ok()
-      .map(|(resolved, _dom_ptr)| resolved.target_id)
-      .or_else(|| {
-        is_branded_event_target(scope, parent_obj)
+        let parent_target = resolve_dom_event_target(vm, scope, parent_obj)
           .ok()
-          .and_then(|is_branded| is_branded.then_some(web_events::EventTargetId::Opaque(gc_object_id(parent_obj))))
-      });
+          .map(|(resolved, _dom_ptr)| resolved.target_id)
+          .or_else(|| {
+            is_branded_event_target(scope, parent_obj).ok().and_then(|is_branded| {
+              is_branded.then_some(web_events::EventTargetId::Opaque(gc_object_id(parent_obj)))
+            })
+          });
 
-    let Some(parent_target) = parent_target else {
-      return Err(VmError::TypeError("EventTarget parent must be an EventTarget"));
-    };
+        let Some(parent_target) = parent_target else {
+          return Err(VmError::TypeError("EventTarget parent must be an EventTarget"));
+        };
 
-    if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
-      if let Some(platform) = data.dom_platform.as_ref() {
-        let dom_source_id = platform.dom_source_id();
-        if let Some(dom_ptr) = dom_for_source(dom_source_id) {
-          // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for
-          // the lifetime of the associated host document.
-          let dom = unsafe { dom_ptr.as_ref() };
-          dom.events().set_opaque_parent(child_id, Some(parent_target));
+        if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+          if let Some(platform) = data.dom_platform.as_ref() {
+            let dom_source_id = platform.dom_source_id();
+            if let Some(dom_ptr) = dom_for_source(dom_source_id) {
+              // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for
+              // the lifetime of the associated host document.
+              let dom = unsafe { dom_ptr.as_ref() };
+              dom.events().set_opaque_parent(child_id, Some(parent_target));
+            }
+          } else {
+            data
+              .events_dom_fallback
+              .events()
+              .set_opaque_parent(child_id, Some(parent_target));
+          }
         }
-      } else {
-        data
-          .events_dom_fallback
-          .events()
-          .set_opaque_parent(child_id, Some(parent_target));
-      }
-    }
       }
       _ => return Err(VmError::TypeError("EventTarget parent must be an EventTarget")),
     }
@@ -12964,28 +12903,6 @@ fn init_window_globals(
         set: Value::Undefined,
       },
     },
-  )?;
-
-  // document.appendChild (curated WPT harness convenience: appends to `document.body`)
-  let document_append_child_key = alloc_key(&mut scope, "appendChild")?;
-  let document_append_child_call_id = vm.register_native_call(document_append_child_native)?;
-  let document_append_child_name = scope.alloc_string("appendChild")?;
-  scope.push_root(Value::String(document_append_child_name))?;
-  let document_append_child_func = scope.alloc_native_function(
-    document_append_child_call_id,
-    None,
-    document_append_child_name,
-    1,
-  )?;
-  scope.heap_mut().object_set_prototype(
-    document_append_child_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(document_append_child_func))?;
-  scope.define_property(
-    document_obj,
-    document_append_child_key,
-    data_desc(Value::Object(document_append_child_func)),
   )?;
 
   // document.write / document.writeln
