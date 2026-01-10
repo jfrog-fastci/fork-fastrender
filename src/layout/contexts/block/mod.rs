@@ -9142,8 +9142,28 @@ impl FormattingContext for BlockFormattingContext {
         } else {
           factory.get(fc_type).compute_intrinsic_inline_sizes(child)?
         };
-        block_min_width = block_min_width.max(child_min);
-        block_max_width = block_max_width.max(child_max);
+        // Intrinsic sizes are defined in terms of the *outer* size of in-flow children, i.e. the
+        // margin box. Include the child's inline-axis margins when accumulating the min/max-content
+        // widths of this block container.
+        let (margin_start_side, margin_end_side) = inline_axis_sides(&child.style);
+        let margin_start = resolve_margin_side(
+          &child.style,
+          margin_start_side,
+          0.0,
+          &self.font_context,
+          self.viewport_size,
+        );
+        let margin_end = resolve_margin_side(
+          &child.style,
+          margin_end_side,
+          0.0,
+          &self.font_context,
+          self.viewport_size,
+        );
+        let outer_min = (child_min + margin_start + margin_end).max(0.0);
+        let outer_max = (child_max + margin_start + margin_end).max(0.0);
+        block_min_width = block_min_width.max(outer_min);
+        block_max_width = block_max_width.max(outer_max);
         if log_children {
           let sel = child
             .debug_info

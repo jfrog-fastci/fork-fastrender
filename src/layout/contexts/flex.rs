@@ -7209,35 +7209,51 @@ impl FlexFormattingContext {
       .or_else(|| constraints.width().filter(|w| w.is_finite()))
       .unwrap_or(self.viewport_size.width)
       .max(0.0);
+    // `padding`/`border-width` cannot be negative (even when authored via `calc()`). Clamp the used
+    // values here so a negative `calc()` (e.g. `calc(50% - 599px)`) does not inflate the inferred
+    // content-box size, which would in turn mis-resolve percentage sizing on flex items.
+    let clamp_non_negative = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
 
-    let border_left = self.resolve_length_for_width(
+    let border_left = clamp_non_negative(self.resolve_length_for_width(
       container_style.used_border_left_width(),
       inline_base,
       container_style,
-    );
-    let border_right = self.resolve_length_for_width(
+    ));
+    let border_right = clamp_non_negative(self.resolve_length_for_width(
       container_style.used_border_right_width(),
       inline_base,
       container_style,
-    );
-    let border_top = self.resolve_length_for_width(
+    ));
+    let border_top = clamp_non_negative(self.resolve_length_for_width(
       container_style.used_border_top_width(),
       inline_base,
       container_style,
-    );
-    let border_bottom = self.resolve_length_for_width(
+    ));
+    let border_bottom = clamp_non_negative(self.resolve_length_for_width(
       container_style.used_border_bottom_width(),
       inline_base,
       container_style,
-    );
-    let padding_left =
-      self.resolve_length_for_width(container_style.padding_left, inline_base, container_style);
-    let padding_right =
-      self.resolve_length_for_width(container_style.padding_right, inline_base, container_style);
-    let padding_top =
-      self.resolve_length_for_width(container_style.padding_top, inline_base, container_style);
-    let padding_bottom =
-      self.resolve_length_for_width(container_style.padding_bottom, inline_base, container_style);
+    ));
+    let padding_left = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_left,
+      inline_base,
+      container_style,
+    ));
+    let padding_right = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_right,
+      inline_base,
+      container_style,
+    ));
+    let padding_top = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_top,
+      inline_base,
+      container_style,
+    ));
+    let padding_bottom = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_bottom,
+      inline_base,
+      container_style,
+    ));
 
     let horizontal_edges = border_left + border_right + padding_left + padding_right;
     let vertical_edges = border_top + border_bottom + padding_top + padding_bottom;
@@ -7411,15 +7427,31 @@ impl FlexFormattingContext {
       .or(border_box_width)
       .unwrap_or(self.viewport_size.width)
       .max(0.0);
+    // `padding`/`border-width` are non-negative by definition; clamp calc() results to avoid
+    // negative insets inflating the inferred content-box width.
+    let inline_base = if inline_base.is_finite() { inline_base } else { 0.0 };
+    let clamp_non_negative = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
 
-    let border_left =
-      self.resolve_length_for_width(container_style.used_border_left_width(), inline_base, container_style);
-    let border_right =
-      self.resolve_length_for_width(container_style.used_border_right_width(), inline_base, container_style);
-    let padding_left =
-      self.resolve_length_for_width(container_style.padding_left, inline_base, container_style);
-    let padding_right =
-      self.resolve_length_for_width(container_style.padding_right, inline_base, container_style);
+    let border_left = clamp_non_negative(self.resolve_length_for_width(
+      container_style.used_border_left_width(),
+      inline_base,
+      container_style,
+    ));
+    let border_right = clamp_non_negative(self.resolve_length_for_width(
+      container_style.used_border_right_width(),
+      inline_base,
+      container_style,
+    ));
+    let padding_left = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_left,
+      inline_base,
+      container_style,
+    ));
+    let padding_right = clamp_non_negative(self.resolve_length_for_width(
+      container_style.padding_right,
+      inline_base,
+      container_style,
+    ));
 
     border_box_width
       .map(|w| (w - border_left - border_right - padding_left - padding_right).max(0.0))
