@@ -387,6 +387,7 @@ fn response_type_to_string(r#type: ResponseType) -> &'static str {
 fn normalize_and_validate_method(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   method: &str,
 ) -> Result<String, VmError> {
@@ -394,6 +395,7 @@ fn normalize_and_validate_method(
     return Err(throw_type_error(
       vm,
       scope,
+      host,
       host_hooks,
       "Request.method is not a valid HTTP method token",
     ));
@@ -403,7 +405,13 @@ fn normalize_and_validate_method(
     || method.eq_ignore_ascii_case("TRACE")
     || method.eq_ignore_ascii_case("TRACK")
   {
-    return Err(throw_type_error(vm, scope, host_hooks, "Request.method is forbidden"));
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host,
+      host_hooks,
+      "Request.method is forbidden",
+    ));
   }
 
   let normalized = if method.eq_ignore_ascii_case("DELETE") {
@@ -428,64 +436,63 @@ fn normalize_and_validate_method(
 fn create_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   ctor: GcObject,
   message: &str,
 ) -> Result<Value, VmError> {
   let msg = scope.alloc_string(message)?;
   scope.push_root(Value::String(msg))?;
-  vm.construct_with_host(
-    scope,
-    host,
-    Value::Object(ctor),
-    &[Value::String(msg)],
-    Value::Object(ctor),
-  )
+  vm.construct_with_host_and_hooks(host, scope, hooks, Value::Object(ctor), &[Value::String(msg)], Value::Object(ctor))
 }
 
 fn create_type_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   message: &str,
 ) -> Result<Value, VmError> {
   let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
     "TypeError requires intrinsics (create a Realm first)",
   ))?;
-  create_error(vm, scope, host, intr.type_error(), message)
+  create_error(vm, scope, host, hooks, intr.type_error(), message)
 }
 
 fn create_range_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   message: &str,
 ) -> Result<Value, VmError> {
   let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
     "RangeError requires intrinsics (create a Realm first)",
   ))?;
-  create_error(vm, scope, host, intr.range_error(), message)
+  create_error(vm, scope, host, hooks, intr.range_error(), message)
 }
 
 fn create_syntax_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   message: &str,
 ) -> Result<Value, VmError> {
   let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
     "SyntaxError requires intrinsics (create a Realm first)",
   ))?;
-  create_error(vm, scope, host, intr.syntax_error(), message)
+  create_error(vm, scope, host, hooks, intr.syntax_error(), message)
 }
 
 fn throw_type_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   message: &str,
 ) -> VmError {
-  match create_type_error(vm, scope, host, message) {
+  match create_type_error(vm, scope, host, hooks, message) {
     Ok(err) => VmError::Throw(err),
     Err(_) => VmError::Throw(Value::Undefined),
   }
@@ -494,10 +501,11 @@ fn throw_type_error(
 fn throw_range_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   message: &str,
 ) -> VmError {
-  match create_range_error(vm, scope, host, message) {
+  match create_range_error(vm, scope, host, hooks, message) {
     Ok(err) => VmError::Throw(err),
     Err(_) => VmError::Throw(Value::Undefined),
   }
@@ -506,10 +514,11 @@ fn throw_range_error(
 fn throw_syntax_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   message: &str,
 ) -> VmError {
-  match create_syntax_error(vm, scope, host, message) {
+  match create_syntax_error(vm, scope, host, hooks, message) {
     Ok(err) => VmError::Throw(err),
     Err(_) => VmError::Throw(Value::Undefined),
   }
@@ -518,12 +527,13 @@ fn throw_syntax_error(
 fn map_web_fetch_error_to_throw(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   err: WebFetchError,
 ) -> VmError {
   match err {
-    WebFetchError::BodyInvalidJson(e) => throw_syntax_error(vm, scope, host, &e.to_string()),
-    other => throw_type_error(vm, scope, host, &other.to_string()),
+    WebFetchError::BodyInvalidJson(e) => throw_syntax_error(vm, scope, host, hooks, &e.to_string()),
+    other => throw_type_error(vm, scope, host, hooks, &other.to_string()),
   }
 }
 
@@ -600,11 +610,7 @@ struct WindowRealmJobContext<'a> {
 }
 
 impl<'a> WindowRealmJobContext<'a> {
-  fn new(
-    window_realm: &'a mut WindowRealm,
-    host: &'a mut dyn VmHost,
-    realm: Option<RealmId>,
-  ) -> Self {
+  fn new(window_realm: &'a mut WindowRealm, host: &'a mut dyn VmHost, realm: Option<RealmId>) -> Self {
     Self {
       window_realm,
       host,
@@ -864,7 +870,8 @@ fn promise_capability_executor_call(
 fn new_promise_capability_for_env(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   env_id: u64,
 ) -> Result<JsPromiseCapability, VmError> {
   let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
@@ -891,9 +898,10 @@ fn new_promise_capability_for_env(
   scope.push_root(Value::Object(executor))?;
 
   let promise_ctor = intr.promise();
-  let promise = vm.construct_with_host(
-    scope,
+  let promise = vm.construct_with_host_and_hooks(
     host,
+    scope,
+    hooks,
     Value::Object(promise_ctor),
     &[Value::Object(executor)],
     Value::Object(promise_ctor),
@@ -1011,7 +1019,8 @@ fn get_headers_ref<'a>(state: &'a EnvState, kind: u8, owner: u64) -> Result<&'a 
 fn fill_headers_from_init(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   env_id: u64,
   headers: &mut CoreHeaders,
   init: Value,
@@ -1030,6 +1039,7 @@ fn fill_headers_from_init(
       vm,
       scope,
       host,
+      hooks,
       "Headers init must be an object",
     ));
   };
@@ -1044,7 +1054,7 @@ fn fill_headers_from_init(
       })?;
       headers
         .fill_from_pairs(pairs)
-        .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, err))?;
+        .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, hooks, err))?;
       return Ok(());
     }
   }
@@ -1057,17 +1067,17 @@ fn fill_headers_from_init(
     let len_u64 = number_to_u64(len_value)?;
     let len: usize = len_u64
       .try_into()
-      .map_err(|_| throw_type_error(vm, scope, host, "Headers init array too large"))?;
+      .map_err(|_| throw_type_error(vm, scope, host, hooks, "Headers init array too large"))?;
 
     let mut sequence: Vec<[String; 2]> = Vec::with_capacity(len);
     for idx in 0..len {
       let key = alloc_key(scope, &idx.to_string())?;
       let entry = vm.get(scope, obj, key)?;
       let Value::Object(entry_obj) = entry else {
-        return Err(throw_type_error(vm, scope, host, "Invalid Headers init sequence item"));
+        return Err(throw_type_error(vm, scope, host, hooks, "Invalid Headers init sequence item"));
       };
       if scope.heap().object_prototype(entry_obj)? != Some(array_proto) {
-        return Err(throw_type_error(vm, scope, host, "Invalid Headers init sequence item"));
+        return Err(throw_type_error(vm, scope, host, hooks, "Invalid Headers init sequence item"));
       }
       let entry_len_key = alloc_key(scope, "length")?;
       let entry_len = vm.get(scope, entry_obj, entry_len_key)?;
@@ -1077,6 +1087,7 @@ fn fill_headers_from_init(
           vm,
           scope,
           host,
+          hooks,
           "Invalid Headers init sequence item length",
         ));
       }
@@ -1101,7 +1112,7 @@ fn fill_headers_from_init(
     }
     headers
       .fill_from_sequence(&sequence)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, err))?;
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, hooks, err))?;
     return Ok(());
   }
 
@@ -1130,7 +1141,7 @@ fn fill_headers_from_init(
   }
   headers
     .fill_from_pairs(pairs)
-    .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, err))?;
+    .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, hooks, err))?;
 
   // Prevent unused warning for env_id (future: cross-env copy checks).
   let _ = env_id;
@@ -1140,7 +1151,7 @@ fn fill_headers_from_init(
 fn headers_append_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -1168,7 +1179,7 @@ fn headers_append_native(
     let headers = get_headers_mut(state, kind, owner)?;
     headers
       .append(&name, &value)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, &mut *host, host_hooks, err))?;
     Ok(())
   })?;
 
@@ -1178,7 +1189,7 @@ fn headers_append_native(
 fn headers_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -1206,7 +1217,7 @@ fn headers_set_native(
     let headers = get_headers_mut(state, kind, owner)?;
     headers
       .set(&name, &value)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, &mut *host, host_hooks, err))?;
     Ok(())
   })?;
 
@@ -1216,7 +1227,7 @@ fn headers_set_native(
 fn headers_delete_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -1238,7 +1249,7 @@ fn headers_delete_native(
     let headers = get_headers_mut(state, kind, owner)?;
     headers
       .delete(&name)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, &mut *host, host_hooks, err))?;
     Ok(())
   })?;
 
@@ -1248,7 +1259,7 @@ fn headers_delete_native(
 fn headers_has_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -1269,7 +1280,7 @@ fn headers_has_native(
     let headers = get_headers_ref(state, kind, owner)?;
     headers
       .has(&name)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))
   })?;
   Ok(Value::Bool(has))
 }
@@ -1277,7 +1288,7 @@ fn headers_has_native(
 fn headers_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -1298,7 +1309,7 @@ fn headers_get_native(
     let headers = get_headers_ref(state, kind, owner)?;
     headers
       .get(&name)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))
   })?;
   match value {
     Some(v) => {
@@ -1312,7 +1323,7 @@ fn headers_get_native(
 fn headers_for_each_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -1326,6 +1337,7 @@ fn headers_for_each_native(
     return Err(throw_type_error(
       vm,
       scope,
+      &mut *host,
       host_hooks,
       "Headers.forEach callback is not callable",
     ));
@@ -1345,7 +1357,8 @@ fn headers_for_each_native(
     scope.push_root(Value::String(value_s))?;
     let name_s = scope.alloc_string(&name)?;
     scope.push_root(Value::String(name_s))?;
-    vm.call_with_host(
+    vm.call_with_host_and_hooks(
+      &mut *host,
       scope,
       host_hooks,
       callback,
@@ -1608,19 +1621,25 @@ fn headers_iterator_iterator_native(
 fn headers_ctor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(throw_type_error(vm, scope, host_hooks, "Illegal constructor"))
+  Err(throw_type_error(
+    vm,
+    scope,
+    host,
+    host_hooks,
+    "Illegal constructor",
+  ))
 }
 
 fn headers_ctor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
@@ -1632,7 +1651,7 @@ fn headers_ctor_construct(
   let mut core = CoreHeaders::new_with_guard_and_limits(HeadersGuard::None, &limits);
   if let Some(init) = args.get(0).copied() {
     // Fill before installing into the env state so errors don't leave partial state behind.
-    fill_headers_from_init(vm, scope, host_hooks, env_id, &mut core, init)?;
+    fill_headers_from_init(vm, scope, &mut *host, host_hooks, env_id, &mut core, init)?;
   }
 
   let headers_id = with_env_state_mut(env_id, |state| {
@@ -1668,6 +1687,7 @@ fn headers_ctor_construct(
 fn apply_request_init(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   env_id: u64,
   limits: &WebFetchLimits,
@@ -1697,6 +1717,7 @@ fn apply_request_init(
         return Err(throw_type_error(
           vm,
           scope,
+          host,
           host_hooks,
           "Request.mode must be \"navigate\", \"same-origin\", \"no-cors\", or \"cors\"",
         ));
@@ -1713,7 +1734,7 @@ fn apply_request_init(
   let headers_val = vm.get(scope, init_obj, headers_key)?;
   if !matches!(headers_val, Value::Undefined | Value::Null) {
     let mut headers = CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
-    fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
+    fill_headers_from_init(vm, scope, host, host_hooks, env_id, &mut headers, headers_val)?;
     request.headers = headers;
   } else if mode_changed {
     // If mode changed (e.g. "cors" -> "no-cors"), re-apply the header list so any now-forbidden
@@ -1722,7 +1743,7 @@ fn apply_request_init(
     let mut headers = CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
     headers
       .fill_from_pairs(existing)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
     request.headers = headers;
   }
 
@@ -1735,10 +1756,11 @@ fn apply_request_init(
       limits.max_url_bytes,
       FETCH_METHOD_TOO_LONG_ERROR,
     )?;
-    request.method = normalize_and_validate_method(vm, scope, host_hooks, &raw)?;
+    request.method = normalize_and_validate_method(vm, scope, host, host_hooks, &raw)?;
   } else {
     // Even when not overridden, normalize/validate so `new Request(req)` preserves browser casing.
-    request.method = normalize_and_validate_method(vm, scope, host_hooks, request.method.as_str())?;
+    request.method =
+      normalize_and_validate_method(vm, scope, host, host_hooks, request.method.as_str())?;
   }
 
   let redirect_key = alloc_key(scope, "redirect")?;
@@ -1753,6 +1775,7 @@ fn apply_request_init(
         return Err(throw_type_error(
           vm,
           scope,
+          host,
           host_hooks,
           "Request.redirect must be \"follow\", \"error\", or \"manual\"",
         ));
@@ -1780,6 +1803,7 @@ fn apply_request_init(
       throw_type_error(
         vm,
         scope,
+        host,
         host_hooks,
         "Request.referrerPolicy must be a valid referrer policy token",
       )
@@ -1803,6 +1827,7 @@ fn apply_request_init(
         return Err(throw_type_error(
           vm,
           scope,
+          host,
           host_hooks,
           "Request.credentials must be \"omit\", \"same-origin\", or \"include\"",
         ));
@@ -1821,14 +1846,20 @@ fn apply_request_init(
     )?
     .into_bytes();
     let body = Body::new_with_limits(bytes, request.headers.limits())
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
     request.body = Some(body);
   }
 
   // Fetch invariants.
   if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
     if request.body.is_some() {
-      return Err(throw_type_error(vm, scope, host_hooks, "Request body is not allowed for GET/HEAD"));
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "Request body is not allowed for GET/HEAD",
+      ));
     }
   }
 
@@ -1837,6 +1868,7 @@ fn apply_request_init(
       return Err(throw_type_error(
         vm,
         scope,
+        host,
         host_hooks,
         "Request.redirect must be \"follow\" for mode \"no-cors\"",
       ));
@@ -1848,6 +1880,7 @@ fn apply_request_init(
       return Err(throw_type_error(
         vm,
         scope,
+        host,
         host_hooks,
         "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
       ));
@@ -1860,19 +1893,25 @@ fn apply_request_init(
 fn request_ctor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(throw_type_error(vm, scope, host_hooks, "Illegal constructor"))
+  Err(throw_type_error(
+    vm,
+    scope,
+    host,
+    host_hooks,
+    "Illegal constructor",
+  ))
 }
 
 fn request_ctor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
@@ -1898,7 +1937,13 @@ fn request_ctor_construct(
         .ok_or(VmError::TypeError("Request: invalid backing request"))
         .and_then(|req| {
           if req.body.as_ref().map_or(false, |b| b.body_used()) {
-            return Err(throw_type_error(vm, scope, host_hooks, "Request body is already used"));
+            return Err(throw_type_error(
+              vm,
+              scope,
+              host,
+              host_hooks,
+              "Request body is already used",
+            ));
           }
           Ok(req.clone())
         })
@@ -1912,7 +1957,7 @@ fn request_ctor_construct(
     )?;
     let base_url = current_document_base_url(vm);
     let url = resolve_url(&url, base_url.as_deref())
-      .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
+      .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
     CoreRequest::new_with_limits("GET", url, &limits)
   };
 
@@ -1920,13 +1965,20 @@ fn request_ctor_construct(
   let mut signal: Option<Value> = None;
   let mut init_specified_signal = false;
 
-  apply_request_init(vm, scope, host_hooks, env_id, &limits, &mut request, init)?;
+  apply_request_init(vm, scope, host, host_hooks, env_id, &limits, &mut request, init)?;
 
   // Enforce invariants even when `init` is omitted (e.g. `new Request(existingRequest)`).
-  request.method = normalize_and_validate_method(vm, scope, host_hooks, request.method.as_str())?;
+  request.method =
+    normalize_and_validate_method(vm, scope, host, host_hooks, request.method.as_str())?;
   if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
     if request.body.is_some() {
-      return Err(throw_type_error(vm, scope, host_hooks, "Request body is not allowed for GET/HEAD"));
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "Request body is not allowed for GET/HEAD",
+      ));
     }
   }
   if request.mode == RequestMode::NoCors {
@@ -1934,6 +1986,7 @@ fn request_ctor_construct(
       return Err(throw_type_error(
         vm,
         scope,
+        host,
         host_hooks,
         "Request.redirect must be \"follow\" for mode \"no-cors\"",
       ));
@@ -1945,6 +1998,7 @@ fn request_ctor_construct(
       return Err(throw_type_error(
         vm,
         scope,
+        host,
         host_hooks,
         "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
       ));
@@ -1972,6 +2026,7 @@ fn request_ctor_construct(
           return Err(throw_type_error(
             vm,
             scope,
+            host,
             host_hooks,
             "RequestInit.signal must be an AbortSignal or null",
           ));
@@ -2021,7 +2076,7 @@ fn request_ctor_construct(
 fn request_clone_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
@@ -2043,7 +2098,13 @@ fn request_clone_native(
       .get(&request_id)
       .ok_or(VmError::TypeError("Request: invalid backing request"))?;
     if req.body.as_ref().map_or(false, |b| b.body_used()) {
-      return Err(throw_type_error(vm, scope, host_hooks, "Request body is already used"));
+      return Err(throw_type_error(
+        vm,
+        scope,
+        &mut *host,
+        host_hooks,
+        "Request body is already used",
+      ));
     }
     Ok(req.clone())
   })?;
@@ -2068,7 +2129,7 @@ fn request_clone_native(
 fn request_text_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -2076,7 +2137,7 @@ fn request_text_native(
 ) -> Result<Value, VmError> {
   let (env_id, request_id) = request_info_from_this(scope, this)?;
 
-  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   let result: std::result::Result<String, WebFetchError> = with_env_state_mut(env_id, |state| {
     let req = state
@@ -2093,11 +2154,25 @@ fn request_text_native(
   match result {
     Ok(text) => {
       let s = scope.alloc_string(&text)?;
-      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::String(s)])?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[Value::String(s)],
+      )?;
     }
     Err(err) => {
-      let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
-      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
     }
   }
 
@@ -2107,7 +2182,7 @@ fn request_text_native(
 fn request_array_buffer_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -2115,7 +2190,7 @@ fn request_array_buffer_native(
 ) -> Result<Value, VmError> {
   let (env_id, request_id) = request_info_from_this(scope, this)?;
 
-  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   let result: std::result::Result<Vec<u8>, WebFetchError> = with_env_state_mut(env_id, |state| {
     let req = state
@@ -2138,11 +2213,25 @@ fn request_array_buffer_native(
       scope
         .heap_mut()
         .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::Object(ab)])?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[Value::Object(ab)],
+      )?;
     }
     Err(err) => {
-      let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
-      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
     }
   }
 
@@ -2152,7 +2241,7 @@ fn request_array_buffer_native(
 fn request_json_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -2160,7 +2249,7 @@ fn request_json_native(
 ) -> Result<Value, VmError> {
   let (env_id, request_id) = request_info_from_this(scope, this)?;
 
-  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   let parsed: Option<std::result::Result<serde_json::Value, WebFetchError>> =
     with_env_state_mut(env_id, |state| {
@@ -2175,21 +2264,49 @@ fn request_json_native(
   match parsed {
     Some(Ok(value)) => {
       let js_value = json_to_js(vm, scope, &value)?;
-      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[js_value])?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[js_value],
+      )?;
     }
     Some(Err(err)) => match err {
       WebFetchError::BodyInvalidJson(e) => {
-        let err_value = create_syntax_error(vm, scope, host_hooks, &e.to_string())?;
-        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+        let err_value = create_syntax_error(vm, scope, &mut *host, host_hooks, &e.to_string())?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
       }
       other => {
-        let err_value = create_type_error(vm, scope, host_hooks, &other.to_string())?;
-        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+        let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &other.to_string())?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
       }
     },
     None => {
-      let err_value = create_type_error(vm, scope, host_hooks, "Request body is null")?;
-      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Request body is null")?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
     }
   }
 
@@ -2219,13 +2336,19 @@ fn request_body_used_get_native(
 fn response_ctor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(throw_type_error(vm, scope, host_hooks, "Illegal constructor"))
+  Err(throw_type_error(
+    vm,
+    scope,
+    host,
+    host_hooks,
+    "Illegal constructor",
+  ))
 }
 
 fn response_error_native(
@@ -2258,7 +2381,7 @@ fn response_error_native(
 fn response_redirect_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -2282,12 +2405,19 @@ fn response_redirect_native(
       return Err(throw_type_error(
         vm,
         scope,
+        &mut *host,
         host_hooks,
         "Response.redirect URL is relative without a base URL",
       ));
     }
     Err(UrlResolveError::Url(_)) => {
-      return Err(throw_type_error(vm, scope, host_hooks, "Response.redirect URL is invalid"));
+      return Err(throw_type_error(
+        vm,
+        scope,
+        &mut *host,
+        host_hooks,
+        "Response.redirect URL is invalid",
+      ));
     }
   };
 
@@ -2298,6 +2428,7 @@ fn response_redirect_native(
     return Err(throw_range_error(
       vm,
       scope,
+      &mut *host,
       host_hooks,
       "Response.redirect status must be a redirect status",
     ));
@@ -2307,7 +2438,7 @@ fn response_redirect_native(
   let mut headers = CoreHeaders::new_with_guard(HeadersGuard::Response);
   headers
     .append("Location", &resolved_url)
-    .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+    .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
   headers.set_guard(HeadersGuard::Immutable);
 
   let mut response = CoreResponse::new(status);
@@ -2326,7 +2457,7 @@ fn response_redirect_native(
 fn response_text_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -2334,7 +2465,7 @@ fn response_text_native(
 ) -> Result<Value, VmError> {
   let (env_id, response_id) = response_info_from_this(scope, this)?;
 
-  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   let result: std::result::Result<String, WebFetchError> = with_env_state_mut(env_id, |state| {
     let res = state
@@ -2351,11 +2482,25 @@ fn response_text_native(
   match result {
     Ok(text) => {
       let s = scope.alloc_string(&text)?;
-      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::String(s)])?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[Value::String(s)],
+      )?;
     }
     Err(err) => {
-      let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
-      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
     }
   }
 
@@ -2365,7 +2510,7 @@ fn response_text_native(
 fn response_array_buffer_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -2373,7 +2518,7 @@ fn response_array_buffer_native(
 ) -> Result<Value, VmError> {
   let (env_id, response_id) = response_info_from_this(scope, this)?;
 
-  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   let result: std::result::Result<Vec<u8>, WebFetchError> = with_env_state_mut(env_id, |state| {
     let res = state
@@ -2396,11 +2541,25 @@ fn response_array_buffer_native(
       scope
         .heap_mut()
         .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::Object(ab)])?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[Value::Object(ab)],
+      )?;
     }
     Err(err) => {
-      let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
-      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
     }
   }
 
@@ -2448,7 +2607,7 @@ fn json_to_js(vm: &mut Vm, scope: &mut Scope<'_>, value: &serde_json::Value) -> 
 fn response_json_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -2456,7 +2615,7 @@ fn response_json_native(
 ) -> Result<Value, VmError> {
   let (env_id, response_id) = response_info_from_this(scope, this)?;
 
-  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
 
   let parsed: Option<std::result::Result<serde_json::Value, WebFetchError>> =
     with_env_state_mut(env_id, |state| {
@@ -2471,21 +2630,49 @@ fn response_json_native(
   match parsed {
     Some(Ok(value)) => {
       let js_value = json_to_js(vm, scope, &value)?;
-      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[js_value])?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[js_value],
+      )?;
     }
     Some(Err(err)) => match err {
       WebFetchError::BodyInvalidJson(e) => {
-        let err_value = create_syntax_error(vm, scope, host_hooks, &e.to_string())?;
-        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+        let err_value = create_syntax_error(vm, scope, &mut *host, host_hooks, &e.to_string())?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
       }
       other => {
-        let err_value = create_type_error(vm, scope, host_hooks, &other.to_string())?;
-        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+        let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &other.to_string())?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
       }
     },
     None => {
-      let err_value = create_type_error(vm, scope, host_hooks, "Response body is null")?;
-      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is null")?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
     }
   }
 
@@ -2495,7 +2682,7 @@ fn response_json_native(
 fn response_clone_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   this: Value,
@@ -2513,7 +2700,13 @@ fn response_clone_native(
       .get(&response_id)
       .ok_or(VmError::TypeError("Response: invalid backing response"))?;
     if res.body.as_ref().map_or(false, |b| b.body_used()) {
-      return Err(throw_type_error(vm, scope, host_hooks, "Response body is already used"));
+      return Err(throw_type_error(
+        vm,
+        scope,
+        &mut *host,
+        host_hooks,
+        "Response body is already used",
+      ));
     }
     Ok(res.clone())
   })?;
@@ -2665,7 +2858,7 @@ fn make_response_wrapper(
 fn response_ctor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
@@ -2718,7 +2911,7 @@ fn response_ctor_construct(
     let headers_key = alloc_key(scope, "headers")?;
     let headers_val = vm.get(scope, init_obj, headers_key)?;
     if !matches!(headers_val, Value::Undefined | Value::Null) {
-      fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
+      fill_headers_from_init(vm, scope, &mut *host, host_hooks, env_id, &mut headers, headers_val)?;
     }
   }
 
@@ -2726,6 +2919,7 @@ fn response_ctor_construct(
     return Err(throw_range_error(
       vm,
       scope,
+      &mut *host,
       host_hooks,
       "Response status must be in range 200 to 599, inclusive",
     ));
@@ -2734,6 +2928,7 @@ fn response_ctor_construct(
     return Err(throw_type_error(
       vm,
       scope,
+      &mut *host,
       host_hooks,
       "Response statusText must be a valid reason phrase",
     ));
@@ -2742,6 +2937,7 @@ fn response_ctor_construct(
     return Err(throw_type_error(
       vm,
       scope,
+      &mut *host,
       host_hooks,
       "Response cannot have a body with a null body status",
     ));
@@ -2753,7 +2949,7 @@ fn response_ctor_construct(
   if let Some(bytes) = body_bytes {
     response.body = Some(
       crate::resource::web_fetch::Body::new_response(bytes, response.headers.limits())
-        .map_err(|e| map_web_fetch_error_to_throw(vm, scope, host_hooks, e))?,
+        .map_err(|e| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, e))?,
     );
   }
 
@@ -2781,7 +2977,7 @@ fn response_ctor_construct(
 fn fetch_call<Host: WindowRealmHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
@@ -2809,7 +3005,13 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         .ok_or(VmError::TypeError("Request: invalid backing request"))
         .and_then(|req| {
           if req.body.as_ref().map_or(false, |b| b.body_used()) {
-            return Err(throw_type_error(vm, scope, host_hooks, "Request body is already used"));
+            return Err(throw_type_error(
+              vm,
+              scope,
+              host,
+              host_hooks,
+              "Request body is already used",
+            ));
           }
           Ok(req.clone())
         })
@@ -2823,17 +3025,24 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     )?;
     let base_url = current_document_base_url(vm);
     let url = resolve_url(&url, base_url.as_deref())
-      .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
+      .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
     CoreRequest::new_with_limits("GET", url, &limits)
   };
 
-  apply_request_init(vm, scope, host_hooks, env_id, &limits, &mut request, init)?;
+  apply_request_init(vm, scope, host, host_hooks, env_id, &limits, &mut request, init)?;
 
   // Enforce invariants even when `init` is omitted (e.g. `fetch(existingRequest)`).
-  request.method = normalize_and_validate_method(vm, scope, host_hooks, request.method.as_str())?;
+  request.method =
+    normalize_and_validate_method(vm, scope, host, host_hooks, request.method.as_str())?;
   if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
     if request.body.is_some() {
-      return Err(throw_type_error(vm, scope, host_hooks, "Request body is not allowed for GET/HEAD"));
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "Request body is not allowed for GET/HEAD",
+      ));
     }
   }
   if request.mode == RequestMode::NoCors {
@@ -2841,6 +3050,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       return Err(throw_type_error(
         vm,
         scope,
+        host,
         host_hooks,
         "Request.redirect must be \"follow\" for mode \"no-cors\"",
       ));
@@ -2852,6 +3062,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       return Err(throw_type_error(
         vm,
         scope,
+        host,
         host_hooks,
         "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
       ));
@@ -2882,6 +3093,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           return Err(throw_type_error(
             vm,
             scope,
+            host,
             host_hooks,
             "RequestInit.signal must be an AbortSignal or null",
           ));
@@ -2900,7 +3112,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   }
 
   // Create a Promise capability for the returned Promise.
-  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
   let promise = cap.promise;
 
   // Resolve/reject later; keep them rooted until settlement.
@@ -2921,7 +3133,14 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       if scope.heap().to_boolean(aborted)? {
         let reason_key = alloc_key(scope, "reason")?;
         let reason = vm.get(scope, signal_obj, reason_key)?;
-        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[reason])?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[reason],
+        )?;
         scope.heap_mut().remove_root(resolve_root);
         scope.heap_mut().remove_root(reject_root);
         scope.heap_mut().remove_root(promise_root);
@@ -2939,8 +3158,21 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     if let Some(signal_root) = signal_root {
       scope.heap_mut().remove_root(signal_root);
     }
-    let err = create_type_error(vm, scope, host_hooks, "fetch called without an active EventLoop")?;
-    vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err])?;
+    let err = create_type_error(
+      vm,
+      scope,
+      &mut *host,
+      host_hooks,
+      "fetch called without an active EventLoop",
+    )?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err],
+    )?;
     return Ok(promise);
   };
 
@@ -2958,8 +3190,8 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       Ok(tuple) => tuple,
       Err(err) => {
         let message = format!("fetch failed: {err}");
-        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-          let window_realm = host.window_realm();
+        let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
+          let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           with_event_loop(event_loop, || {
             let vm = window_realm.vm_mut();
@@ -2970,8 +3202,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               let (vm, heap) = window_realm.vm_and_heap_mut();
               let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
-              let type_error = create_type_error(vm, &mut scope, &mut hooks, &message)?;
-              vm.call_with_host(
+              let type_error = create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+              vm.call_with_host_and_hooks(
+                &mut *vm_host,
                 &mut scope,
                 &mut hooks,
                 reject,
@@ -3037,13 +3270,13 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         scope.heap().to_boolean(value).ok()
       })();
 
-      if aborted.unwrap_or(false) {
-        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-          let window_realm = host.window_realm();
-          window_realm.reset_interrupt();
-          with_event_loop(event_loop, || {
-            let vm = window_realm.vm_mut();
-            vm.set_budget(callback_budget_from_render_deadline());
+        if aborted.unwrap_or(false) {
+          let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
+            let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
+            window_realm.reset_interrupt();
+            with_event_loop(event_loop, || {
+              let vm = window_realm.vm_mut();
+              vm.set_budget(callback_budget_from_render_deadline());
             let tick_result = vm.tick();
             let mut hooks = VmJsEventLoopHooks::<Host>::new();
             let call_result = tick_result.and_then(|_| {
@@ -3058,13 +3291,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                 }
                 _ => Value::Undefined,
               };
-              vm.call_with_host(
-                &mut scope,
-                &mut hooks,
-                reject,
-                Value::Undefined,
-                &[reason],
-              )?;
+              vm.call_with_host_and_hooks(&mut *vm_host, &mut scope, &mut hooks, reject, Value::Undefined, &[reason])?;
               Ok(())
             });
 
@@ -3121,8 +3348,8 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           Ok(id) => id,
           Err(err) => {
             let message = format!("fetch failed: {err}");
-            let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-              let window_realm = host.window_realm();
+            let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
+              let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
               window_realm.reset_interrupt();
               with_event_loop(event_loop, || {
                 let vm = window_realm.vm_mut();
@@ -3133,8 +3360,10 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                   let (vm, heap) = window_realm.vm_and_heap_mut();
                   let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
                   let mut scope = heap.scope();
-                  let type_error = create_type_error(vm, &mut scope, &mut hooks, &message)?;
-                  vm.call_with_host(
+                  let type_error =
+                    create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+                  vm.call_with_host_and_hooks(
+                    &mut *vm_host,
                     &mut scope,
                     &mut hooks,
                     reject,
@@ -3178,9 +3407,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
           }
         };
 
-        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
+        let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
           // Resolve the promise with a JS Response wrapper.
-          let window_realm = host.window_realm();
+          let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           with_event_loop(event_loop, || {
             let vm = window_realm.vm_mut();
@@ -3197,7 +3426,8 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
 
               // Call resolve(responseObj) with host hooks so Promise jobs are enqueued onto the
               // EventLoop microtask queue.
-              vm.call_with_host(
+              vm.call_with_host_and_hooks(
+                &mut *vm_host,
                 &mut scope,
                 &mut hooks,
                 resolve,
@@ -3245,8 +3475,8 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       }
       Err(err) => {
         let message = format!("fetch failed: {err}");
-        let queue_result = event_loop.queue_microtask(move |host, event_loop| {
-          let window_realm = host.window_realm();
+        let queue_result = event_loop.queue_microtask(move |window_host, event_loop| {
+          let (vm_host, window_realm) = window_host.vm_host_and_window_realm();
           window_realm.reset_interrupt();
           with_event_loop(event_loop, || {
             let vm = window_realm.vm_mut();
@@ -3257,8 +3487,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
               let (vm, heap) = window_realm.vm_and_heap_mut();
               let reject = heap.get_root(reject_root).ok_or(VmError::InvalidHandle)?;
               let mut scope = heap.scope();
-              let type_error = create_type_error(vm, &mut scope, &mut hooks, &message)?;
-              vm.call_with_host(
+              let type_error = create_type_error(vm, &mut scope, &mut *vm_host, &mut hooks, &message)?;
+              vm.call_with_host_and_hooks(
+                &mut *vm_host,
                 &mut scope,
                 &mut hooks,
                 reject,
@@ -3311,8 +3542,15 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     if let Some(signal_root) = signal_root {
       scope.heap_mut().remove_root(signal_root);
     }
-    let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
-    vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
+    let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
   }
 
   Ok(promise)

@@ -665,6 +665,146 @@ mod tests {
   }
 
   #[test]
+  fn fetch_thenable_assimilation_runs_with_real_vm_host() -> Result<()> {
+    let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
+      // Some sandboxed CI environments may forbid binding sockets; skip in that case.
+      return Ok(());
+    };
+    listener
+      .set_nonblocking(true)
+      .expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+    let url = format!("http://{addr}/");
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      let mut stream = accept_with_deadline(&listener, deadline).expect("accept request");
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("set_read_timeout");
+      let _req = read_http_request(&mut stream).expect("read request");
+      let body = b"ok";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).expect("write headers");
+      stream.write_all(body).expect("write body");
+    });
+
+    fn record_host_native(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> std::result::Result<Value, VmError> {
+      if host.as_any_mut().downcast_mut::<DocumentHostState>().is_some() {
+        Ok(Value::Bool(true))
+      } else {
+        Err(VmError::TypeError(
+          "recordHost called without the embedder DocumentHostState VmHost context",
+        ))
+      }
+    }
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+    let mut host = WindowHost::new_with_fetcher(dom, url, fetcher)?;
+
+    // Install the `recordHost` native into the global object so JS can assert a real VmHost is
+    // threaded through thenable assimilation.
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+
+      scope.push_root(Value::Object(global)).expect("push root global");
+
+      let id = vm
+        .register_native_call(record_host_native)
+        .expect("register recordHost native");
+      let name_s = scope.alloc_string("recordHost").expect("alloc recordHost name");
+      scope
+        .push_root(Value::String(name_s))
+        .expect("push root recordHost name");
+
+      let func = scope
+        .alloc_native_function(id, None, name_s, 0)
+        .expect("alloc recordHost function");
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))
+        .expect("set recordHost prototype");
+      scope
+        .push_root(Value::Object(func))
+        .expect("push root recordHost function");
+
+      let key = PropertyKey::from_string(name_s);
+      scope
+        .define_property(
+          global,
+          key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: Value::Object(func),
+              writable: true,
+            },
+          },
+        )
+        .expect("define recordHost global");
+    }
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      globalThis.__result = "";
+      globalThis.__err = "";
+
+      // Make Response thenable so Promise resolution runs thenable assimilation during fetch's
+      // internal `resolve(response)` call.
+      Response.prototype.then = function(resolve, reject) {
+        globalThis.__host_ok = recordHost();
+        resolve("thenable_ok");
+      };
+
+      fetch("/")
+        .then(v => { globalThis.__result = v; })
+        .catch(e => { globalThis.__err = String(e && e.stack || e); });
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
+
+    assert!(
+      get_global_prop_utf8(&mut host, "__err")
+        .unwrap_or_default()
+        .is_empty(),
+      "fetch thenable test errored: {:?}",
+      get_global_prop_utf8(&mut host, "__err")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__result").as_deref(),
+      Some("thenable_ok")
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
   fn exec_script_installs_event_loop_for_queue_microtask() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

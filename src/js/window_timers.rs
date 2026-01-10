@@ -940,16 +940,16 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use crate::js::clock::VirtualClock;
-  use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
-  use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
-  use std::collections::HashMap;
-  use std::sync::{Arc, Mutex, OnceLock};
-  use std::time::Duration;
-  use vm_js::Realm;
+  #[cfg(test)]
+  mod tests {
+    use super::*;
+    use crate::js::clock::VirtualClock;
+    use crate::js::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
+    use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::Duration;
+    use vm_js::Realm;
 
   const CALLBACK_GLOBAL_KEY: &str = "__test_global";
 
@@ -1223,7 +1223,7 @@ mod tests {
   fn cb_interval_tick(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn VmHost,
+    host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
@@ -1252,7 +1252,7 @@ mod tests {
         _ => Value::Number(0.0),
       };
       let clear_interval = get_prop(scope, global, "clearInterval");
-      let _ = vm.call_with_host(scope, hooks, clear_interval, Value::Undefined, &[id])?;
+      let _ = vm.call_with_host_and_hooks(host, scope, hooks, clear_interval, Value::Undefined, &[id])?;
     }
 
     Ok(Value::Undefined)
