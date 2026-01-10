@@ -1129,6 +1129,15 @@ impl BrowserTab {
     }
   }
 
+  fn commit_pending_navigation(&mut self) -> Result<bool> {
+    let Some(req) = self.host.pending_navigation.take() else {
+      return Ok(false);
+    };
+    let options = self.host.document.options().clone();
+    self.navigate_to_url(&req.url, options)?;
+    Ok(true)
+  }
+
   fn run_event_loop_until_idle_with_render_hook(
     &mut self,
     limits: RunLimits,
@@ -1139,7 +1148,13 @@ impl BrowserTab {
       &mut self.host,
       limits,
       &mut on_error,
-      |host, _event_loop| -> Result<()> {
+      |host, event_loop| -> Result<()> {
+        if host.pending_navigation.is_some() {
+          // Abort the current document's task processing immediately; the embedding will commit the
+          // navigation synchronously (clearing all outstanding work for the old document).
+          event_loop.clear_all_pending_work();
+          return Ok(());
+        }
         if host.document.is_dirty() {
           if host.document.render_if_needed()?.is_some() {
             on_render();
@@ -1153,7 +1168,7 @@ impl BrowserTab {
 
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     let trace = self.trace.clone();
-    self.run_event_loop_until_idle_with_render_hook(
+    let outcome = self.run_event_loop_until_idle_with_render_hook(
       limits,
       move |err| {
         // Match browser behavior: report uncaught task errors but keep the event loop running.
@@ -1163,7 +1178,11 @@ impl BrowserTab {
         }
       },
       || {},
-    )
+    )?;
+    if matches!(outcome, RunUntilIdleOutcome::Idle) {
+      let _ = self.commit_pending_navigation()?;
+    }
+    Ok(outcome)
   }
 
   pub fn js_execution_options(&self) -> JsExecutionOptions {
@@ -1185,6 +1204,7 @@ impl BrowserTab {
     max_frames: usize,
   ) -> Result<RunUntilStableOutcome> {
     let mut frames_rendered = 0usize;
+    let _ = self.commit_pending_navigation()?;
     if !self.host.document.is_dirty()
       && self.event_loop.is_idle()
       && !self.event_loop.has_pending_animation_frame_callbacks()
@@ -1221,6 +1241,12 @@ impl BrowserTab {
             frames_rendered,
           });
         }
+      }
+
+      if self.commit_pending_navigation()? {
+        // We just replaced the document; restart the stable loop so we drain tasks and render the
+        // new document before running rAF callbacks.
+        continue;
       }
 
       let raf_outcome = self
@@ -1263,6 +1289,12 @@ impl BrowserTab {
             });
           }
         }
+      }
+
+      if self.commit_pending_navigation()? {
+        // Navigation can be requested by rAF callbacks or microtasks drained after the frame.
+        // Restart so the new document's tasks run before we attempt to render another frame.
+        continue;
       }
 
       if self.host.document.render_if_needed()?.is_some() {
@@ -1315,6 +1347,12 @@ impl BrowserTab {
         }
       }
     }
+
+    if self.commit_pending_navigation()? {
+      // Navigation resets the document/event loop; render the new document if needed.
+      return self.render_if_needed();
+    }
+
     self.render_if_needed()
   }
 

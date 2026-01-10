@@ -324,6 +324,26 @@ impl<Host: 'static> EventLoop<Host> {
     !self.animation_frame_callbacks.is_empty()
   }
 
+  /// Clears all queued work from this event loop.
+  ///
+  /// This removes:
+  /// - pending tasks and microtasks,
+  /// - scheduled timers (including their priority queue entries), and
+  /// - pending `requestAnimationFrame` callbacks.
+  ///
+  /// Embeddings can use this when abandoning the current document's execution context (for example
+  /// when committing a `window.location` navigation). This should be called when no task is
+  /// currently running.
+  pub fn clear_all_pending_work(&mut self) {
+    self.task_queues.clear();
+    self.microtask_queue.clear();
+    self.timers.clear();
+    self.timer_queue.clear();
+    self.timer_nesting_level = 0;
+    self.animation_frame_callbacks.clear();
+    self.animation_frame_queue.clear();
+  }
+
   pub fn queue_task<F>(&mut self, source: TaskSource, runnable: F) -> Result<()>
   where
     F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
