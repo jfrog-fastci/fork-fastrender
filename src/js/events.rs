@@ -241,6 +241,7 @@ impl EventWrapper {
                 EventTargetId::Window => window_target,
                 EventTargetId::Document => document_target,
                 EventTargetId::Node(node_id) => Value::Number(node_id.index() as f64),
+                EventTargetId::Opaque(_) => Value::Null,
               };
               rt.define_data_property(arr, key, value, true)?;
             }
@@ -351,6 +352,7 @@ impl EventWrapper {
       Some(EventTargetId::Window) => self.window_target,
       Some(EventTargetId::Document) => self.document_target,
       Some(EventTargetId::Node(node_id)) => Value::Number(node_id.index() as f64),
+      Some(EventTargetId::Opaque(_)) => Value::Null,
     }
   }
 }

@@ -703,6 +703,9 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
   /// - the script must be treated as "done" (it must not execute),
   /// - parser-blocking scripts must unblock parsing (handled by the host),
   /// - deferred scripts are skipped so later deferred scripts can still run.
+  ///
+  /// The scheduler does not currently surface the failure reason; the host is expected to dispatch
+  /// an `error` event at the script element.
   pub fn fetch_failed(&mut self, script_id: ScriptId) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
     let mode = {
       let Some(entry) = self.scripts.get_mut(&script_id) else {

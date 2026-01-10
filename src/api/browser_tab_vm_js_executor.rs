@@ -138,7 +138,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let dispatch_expr = match target {
       EventTargetId::Document => "document.dispatchEvent(e);",
       EventTargetId::Window => "dispatchEvent(e);",
-      EventTargetId::Node(_) => return Ok(()),
+      EventTargetId::Node(_) | EventTargetId::Opaque(_) => return Ok(()),
     };
 
     let type_lit = serde_json::to_string(&event.type_).unwrap_or_else(|_| "\"\"".to_string());

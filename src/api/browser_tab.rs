@@ -130,10 +130,23 @@ impl Drop for JsExecutionGuard {
   }
 }
 
+struct NoopEventInvoker;
+
+impl crate::web::events::EventListenerInvoker for NoopEventInvoker {
+  fn invoke(
+    &mut self,
+    _listener_id: crate::web::events::ListenerId,
+    _event: &mut crate::web::events::Event,
+  ) -> std::result::Result<(), crate::web::events::DomError> {
+    Ok(())
+  }
+}
+
 pub struct BrowserTabHost {
   trace: TraceHandle,
   document: Box<BrowserDocumentDom2>,
   executor: Box<dyn BrowserTabJsExecutor>,
+  event_invoker: Box<dyn crate::web::events::EventListenerInvoker>,
   current_script: CurrentScriptStateHandle,
   orchestrator: ScriptOrchestrator,
   scheduler: ScriptScheduler<NodeId>,
@@ -177,6 +190,7 @@ impl BrowserTabHost {
       trace,
       document: Box::new(document),
       executor,
+      event_invoker: Box::new(NoopEventInvoker),
       current_script: CurrentScriptStateHandle::default(),
       orchestrator: ScriptOrchestrator::new(),
       scheduler: ScriptScheduler::new(),
@@ -204,6 +218,40 @@ impl BrowserTabHost {
 
   fn register_external_script_source(&mut self, url: String, source: String) {
     self.external_script_sources.insert(url, source);
+  }
+
+  fn set_event_invoker(&mut self, invoker: Box<dyn crate::web::events::EventListenerInvoker>) {
+    self.event_invoker = invoker;
+  }
+
+  fn dispatch_dom_event(&mut self, target: EventTargetId, mut event: Event) -> Result<()> {
+    let dom: &crate::dom2::Document = self.document.dom();
+    crate::web::events::dispatch_event(
+      target,
+      &mut event,
+      dom,
+      dom.events(),
+      self.event_invoker.as_mut(),
+    )
+    .map(|_default_not_prevented| ())
+    .map_err(|err| Error::Other(err.to_string()))
+  }
+
+  fn dispatch_script_event(&mut self, script_node_id: NodeId, type_: &str) -> Result<()> {
+    let mut event = Event::new(
+      type_,
+      EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    self.dispatch_dom_event(EventTargetId::Node(script_node_id), event)
+  }
+
+  fn dispatch_script_error_event(&mut self, script_node_id: NodeId) -> Result<()> {
+    self.dispatch_script_event(script_node_id, "error")
   }
 
   pub fn dom(&self) -> &Document {
@@ -568,19 +616,6 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn dispatch_script_error_event(&mut self, script: NodeId) -> Result<()> {
-    let mut event = Event::new(
-      "error",
-      EventInit {
-        bubbles: false,
-        cancelable: false,
-        composed: false,
-      },
-    );
-    event.is_trusted = true;
-    self.dispatch_lifecycle_event(EventTargetId::Node(script), event)
-  }
-
   fn fail_external_script_fetch(
     &mut self,
     script_id: ScriptId,
@@ -589,7 +624,7 @@ impl BrowserTabHost {
   ) -> Result<()> {
     // HTML: external script fetch failure should dispatch an `error` event and the script should not
     // execute.
-    self.dispatch_script_error_event(script_node)?;
+    self.dispatch_script_event(script_node, "error")?;
     // Mark the element as already-started so future scheduling attempts short-circuit.
     self.mutate_dom(|dom| {
       dom.node_mut(script_node).script_already_started = true;
@@ -848,8 +883,9 @@ impl BrowserTabHost {
           source_text,
           ..
         } => {
+          let entry = self.scripts.get(&script_id).cloned();
           if let Some(csp) = self.csp.as_ref() {
-            let is_inline_classic = self.scripts.get(&script_id).is_some_and(|entry| {
+            let is_inline_classic = entry.as_ref().is_some_and(|entry| {
               entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present
             });
             if is_inline_classic {
@@ -896,7 +932,26 @@ impl BrowserTabHost {
           };
           // Ensure a script failure doesn't leave parsing blocked forever.
           self.finish_script_execution(script_id, event_loop)?;
-          exec_result?;
+          match exec_result {
+            Ok(()) => {
+              if let Some(entry) = entry {
+                if entry.spec.src_attr_present && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty()) {
+                  self.dispatch_script_event(entry.node_id, "load")?;
+                }
+              }
+            }
+            Err(err) => {
+              let Some(entry) = entry else {
+                return Err(err);
+              };
+              self.dispatch_script_event(entry.node_id, "error")?;
+              // Uncaught exceptions from scripts should not abort parsing/task scheduling (browser
+              // behavior). Still propagate host-level render timeouts/cancellation.
+              if matches!(err, Error::Render(_)) {
+                return Err(err);
+              }
+            }
+          }
 
           // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
           // execution context stack is empty. Nested (re-entrant) script execution must not drain
@@ -949,6 +1004,7 @@ impl BrowserTabHost {
             }
           }
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+            let entry = host.scripts.get(&script_id).cloned();
             let wait_result = host.wait_for_stylesheets_if_needed(script_id, event_loop);
             let result = match wait_result {
               Ok(()) => {
@@ -958,7 +1014,27 @@ impl BrowserTabHost {
               Err(err) => Err(err),
             };
             host.finish_script_execution(script_id, event_loop)?;
-            result
+            match result {
+              Ok(()) => {
+                if let Some(entry) = entry {
+                  if entry.spec.src_attr_present && entry.spec.src.as_deref().is_some_and(|s| !s.is_empty()) {
+                    host.dispatch_script_event(entry.node_id, "load")?;
+                  }
+                }
+                Ok(())
+              }
+              Err(err) => {
+                let Some(entry) = entry else {
+                  return Err(err);
+                };
+                host.dispatch_script_event(entry.node_id, "error")?;
+                if matches!(err, Error::Render(_)) {
+                  Err(err)
+                } else {
+                  Ok(())
+                }
+              }
+            }
           })?;
         }
         ScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
@@ -1124,15 +1200,26 @@ impl BrowserTabHost {
       .is_some_and(|entry| entry.spec.src_attr_present && !entry.spec.async_attr && !entry.spec.defer_attr);
 
     if is_blocking {
+      let script_node_id = self
+        .scripts
+        .get(&script_id)
+        .map(|entry| entry.node_id)
+        .ok_or_else(|| {
+          Error::Other(format!(
+            "ScriptScheduler requested fetch for unknown script_id={}",
+            script_id.as_u64()
+          ))
+        })?;
       match self.fetch_script_source(script_id, &url, destination) {
         Ok(source) => {
           let actions = self.scheduler.fetch_completed(script_id, source)?;
           self.apply_scheduler_actions(actions, event_loop)?;
         }
-        Err(_err) => {
-          let actions = self.scheduler.fetch_failed(script_id)?;
-          self.apply_scheduler_actions(actions, event_loop)?;
-          self.finish_script_execution(script_id, event_loop)?;
+        Err(err) => {
+          self.fail_external_script_fetch(script_id, script_node_id, event_loop)?;
+          if matches!(err, Error::Render(_)) {
+            return Err(err);
+          }
         }
       }
       return Ok(());
@@ -1145,10 +1232,21 @@ impl BrowserTabHost {
           let actions = host.scheduler.fetch_completed(script_id, source)?;
           host.apply_scheduler_actions(actions, event_loop)?;
         }
-        Err(_err) => {
-          let actions = host.scheduler.fetch_failed(script_id)?;
-          host.apply_scheduler_actions(actions, event_loop)?;
-          host.finish_script_execution(script_id, event_loop)?;
+        Err(err) => {
+          let script_node_id = host
+            .scripts
+            .get(&script_id)
+            .map(|entry| entry.node_id)
+            .ok_or_else(|| {
+              Error::Other(format!(
+                "ScriptScheduler requested fetch for unknown script_id={}",
+                script_id.as_u64()
+              ))
+            })?;
+          host.fail_external_script_fetch(script_id, script_node_id, event_loop)?;
+          if matches!(err, Error::Render(_)) {
+            return Err(err);
+          }
         }
       }
       Ok(())
@@ -2299,6 +2397,20 @@ mod tests {
   use tempfile::tempdir;
   use url::Url;
 
+  use crate::web::events::{AddEventListenerOptions, DomError, EventListenerInvoker, ListenerId};
+
+  struct RecordingInvoker {
+    log: Rc<RefCell<Vec<String>>>,
+  }
+
+  impl EventListenerInvoker for RecordingInvoker {
+    fn invoke(&mut self, _listener_id: ListenerId, event: &mut Event) -> std::result::Result<(), DomError> {
+      assert!(event.is_trusted, "expected host-dispatched events to be trusted");
+      self.log.borrow_mut().push(event.type_.clone());
+      Ok(())
+    }
+  }
+
   struct TestExecutor {
     log: Rc<RefCell<Vec<String>>>,
   }
@@ -2543,6 +2655,201 @@ mod tests {
     let idx = (y as usize * width as usize + x as usize) * 4;
     let data = pixmap.data();
     [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
+  }
+
+  #[test]
+  fn dispatches_load_event_for_successful_external_script() -> Result<()> {
+    let mut host = BrowserTabHost::new(
+      BrowserDocumentDom2::from_html("<script src=a.js></script>", RenderOptions::default())?,
+      Box::new(NoopExecutor::default()),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    host.register_external_script_source("a.js".to_string(), "/* ok */".to_string());
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+
+    let load_listener = ListenerId::new(1);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(node_id),
+        "load",
+        load_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected load listener to be inserted"
+    );
+    let error_listener = ListenerId::new(2);
+    assert!(
+      host.dom().events().add_event_listener(
+        EventTargetId::Node(node_id),
+        "error",
+        error_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected error listener to be inserted"
+    );
+
+    let mut event_loop = EventLoop::new();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    assert_eq!(&*event_log.borrow(), &["load".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn dispatches_error_event_for_external_script_fetch_failure_and_continues() -> Result<()> {
+    struct LoggingExecutor {
+      log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl BrowserTabJsExecutor for LoggingExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.log.borrow_mut().push(script_text.to_string());
+        Ok(())
+      }
+    }
+
+    let js_options = JsExecutionOptions {
+      max_script_bytes: 1,
+      ..JsExecutionOptions::default()
+    };
+    let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut host = BrowserTabHost::new(
+      BrowserDocumentDom2::from_html("<script src=a.js></script><script>B</script>", RenderOptions::default())?,
+      Box::new(LoggingExecutor {
+        log: Rc::clone(&script_log),
+      }),
+      TraceHandle::default(),
+      js_options,
+    );
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    // Trigger a deterministic fetch failure via the max_script_bytes check.
+    host.register_external_script_source("a.js".to_string(), "XX".to_string());
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+     let discovered = host.discover_scripts_best_effort(None);
+     assert_eq!(discovered.len(), 2);
+     // Discovery is in document order; schedule scripts in that order.
+     let (first_node_id, first_spec) = discovered[0].clone();
+     let (second_node_id, second_spec) = discovered[1].clone();
+
+    let error_listener = ListenerId::new(1);
+    host.dom().events().add_event_listener(
+      EventTargetId::Node(first_node_id),
+      "error",
+      error_listener,
+      AddEventListenerOptions::default(),
+    );
+
+    let mut event_loop = EventLoop::new();
+    host.register_and_schedule_script(
+      first_node_id,
+      first_spec.clone(),
+      first_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+    host.register_and_schedule_script(
+      second_node_id,
+      second_spec.clone(),
+      second_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+
+    assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+    assert_eq!(&*script_log.borrow(), &["B".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn dispatches_error_event_for_script_execution_failure_and_continues() -> Result<()> {
+    struct ErroringExecutor {
+      log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl BrowserTabJsExecutor for ErroringExecutor {
+      fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        self.log.borrow_mut().push(script_text.to_string());
+        if script_text == "bad" {
+          return Err(Error::Other("boom".to_string()));
+        }
+        Ok(())
+      }
+    }
+
+    let script_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut host = BrowserTabHost::new(
+      BrowserDocumentDom2::from_html("<script>bad</script><script>ok</script>", RenderOptions::default())?,
+      Box::new(ErroringExecutor {
+        log: Rc::clone(&script_log),
+      }),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+
+    let event_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    host.set_event_invoker(Box::new(RecordingInvoker {
+      log: Rc::clone(&event_log),
+    }));
+
+     let discovered = host.discover_scripts_best_effort(None);
+     assert_eq!(discovered.len(), 2);
+     let (first_node_id, first_spec) = discovered[0].clone();
+     let (second_node_id, second_spec) = discovered[1].clone();
+
+    let error_listener = ListenerId::new(1);
+    host.dom().events().add_event_listener(
+      EventTargetId::Node(first_node_id),
+      "error",
+      error_listener,
+      AddEventListenerOptions::default(),
+    );
+
+    let mut event_loop = EventLoop::new();
+    host.register_and_schedule_script(
+      first_node_id,
+      first_spec.clone(),
+      first_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+    host.register_and_schedule_script(
+      second_node_id,
+      second_spec.clone(),
+      second_spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+
+    assert_eq!(&*event_log.borrow(), &["error".to_string()]);
+    assert_eq!(&*script_log.borrow(), &["bad".to_string(), "ok".to_string()]);
+    Ok(())
   }
 
   #[test]

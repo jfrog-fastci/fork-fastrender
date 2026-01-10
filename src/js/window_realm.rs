@@ -971,6 +971,8 @@ const STORAGE_METHOD_THIS_SLOT: usize = 0;
 const STORAGE_METHOD_DATA_SLOT: usize = 1;
 const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
+const EVENT_TARGET_CONTEXT_GLOBAL_SLOT: usize = 1;
+const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 const CURRENT_SCRIPT_SOURCE_ID_KEY: &str = "__fastrender_current_script_source_id";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
@@ -4327,6 +4329,21 @@ fn event_target_constructor_construct_native(
   if let Some(proto) = proto {
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
   }
+  // Brand-check for EventTarget.prototype methods (so borrowing the methods onto random objects
+  // throws, matching web platform behavior).
+  let brand_key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
+  scope.define_property(
+    obj,
+    brand_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Bool(true),
+        writable: false,
+      },
+    },
+  )?;
   Ok(Value::Object(obj))
 }
 
@@ -4343,6 +4360,23 @@ fn event_target_default_this_from_callee(
     Value::Object(obj) => Some(obj),
     _ => None,
   })
+}
+
+fn event_target_context_global_from_callee(
+  scope: &Scope<'_>,
+  callee: GcObject,
+) -> Result<GcObject, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots
+    .get(EVENT_TARGET_CONTEXT_GLOBAL_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::InvariantViolation(
+      "EventTarget method missing required global slot",
+    )),
+  }
 }
 
 fn event_target_resolve_this(
@@ -4502,6 +4536,74 @@ fn resolve_dom_event_target(
   Err(VmError::TypeError("Illegal invocation"))
 }
 
+struct ResolvedEventTarget {
+  resolved: ResolvedDomEventTarget,
+  dom_ptr: NonNull<dom2::Document>,
+  listener_roots_owner: GcObject,
+  opaque_target_obj: Option<GcObject>,
+}
+
+fn gc_object_id(obj: GcObject) -> u64 {
+  (obj.index() as u64) | ((obj.generation() as u64) << 32)
+}
+
+fn is_branded_event_target(scope: &mut Scope<'_>, obj: GcObject) -> Result<bool, VmError> {
+  let key = alloc_key(scope, EVENT_TARGET_BRAND_KEY)?;
+  Ok(matches!(
+    scope.heap().object_get_own_data_property_value(obj, &key)?,
+    Some(Value::Bool(true))
+  ))
+}
+
+fn resolve_event_target(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  callee: GcObject,
+  target_obj: GcObject,
+) -> Result<ResolvedEventTarget, VmError> {
+  let (resolved_dom, dom_ptr) = match resolve_dom_event_target(scope, target_obj) {
+    Ok(ok) => ok,
+    Err(err) => {
+      // Non-DOM EventTarget objects (e.g. `AbortSignal`, `new EventTarget()`).
+      if !is_branded_event_target(scope, target_obj)? {
+        return Err(err);
+      }
+
+      let window_obj = event_target_context_global_from_callee(scope, callee)?;
+      let document_key = alloc_key(scope, "document")?;
+      let document_obj = match vm.get(scope, window_obj, document_key)? {
+        Value::Object(obj) => obj,
+        _ => return Err(VmError::TypeError("Illegal invocation")),
+      };
+      let dom_source_id = dom_source_id_from_document(scope, document_obj)?;
+      let Some(dom_ptr) = dom_for_source(dom_source_id) else {
+        return Err(VmError::TypeError(
+          "EventTarget method requires a DOM-backed document",
+        ));
+      };
+
+      return Ok(ResolvedEventTarget {
+        listener_roots_owner: target_obj,
+        resolved: ResolvedDomEventTarget {
+          window_obj,
+          document_obj,
+          dom_source_id,
+          target_id: web_events::EventTargetId::Opaque(gc_object_id(target_obj)),
+        },
+        dom_ptr,
+        opaque_target_obj: Some(target_obj),
+      });
+    }
+  };
+
+  Ok(ResolvedEventTarget {
+    listener_roots_owner: resolved_dom.document_obj,
+    resolved: resolved_dom,
+    dom_ptr,
+    opaque_target_obj: None,
+  })
+}
+
 fn parse_add_event_listener_options(
   scope: &mut Scope<'_>,
   value: Value,
@@ -4560,14 +4662,9 @@ fn parse_event_listener_capture(scope: &mut Scope<'_>, value: Value) -> Result<b
   })
 }
 
-fn get_or_create_event_listener_roots(
-  scope: &mut Scope<'_>,
-  document_obj: GcObject,
-) -> Result<GcObject, VmError> {
+fn get_or_create_event_listener_roots(scope: &mut Scope<'_>, owner_obj: GcObject) -> Result<GcObject, VmError> {
   let key = alloc_key(scope, EVENT_LISTENER_ROOTS_KEY)?;
-  if let Some(Value::Object(obj)) = scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &key)?
+  if let Some(Value::Object(obj)) = scope.heap().object_get_own_data_property_value(owner_obj, &key)?
   {
     return Ok(obj);
   }
@@ -4575,7 +4672,7 @@ fn get_or_create_event_listener_roots(
   let roots = scope.alloc_object()?;
   scope.push_root(Value::Object(roots))?;
   scope.define_property(
-    document_obj,
+    owner_obj,
     key,
     PropertyDescriptor {
       enumerable: false,
@@ -4601,7 +4698,7 @@ fn listener_id_property_key(
 
 fn remove_listener_root_if_unused(
   scope: &mut Scope<'_>,
-  document_obj: GcObject,
+  roots_owner_obj: GcObject,
   registry: &web_events::EventListenerRegistry,
   listener_id: web_events::ListenerId,
 ) -> Result<(), VmError> {
@@ -4610,9 +4707,7 @@ fn remove_listener_root_if_unused(
   }
 
   let roots_key = alloc_key(scope, EVENT_LISTENER_ROOTS_KEY)?;
-  let Some(Value::Object(roots)) = scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &roots_key)?
+  let Some(Value::Object(roots)) = scope.heap().object_get_own_data_property_value(roots_owner_obj, &roots_key)?
   else {
     return Ok(());
   };
@@ -4641,7 +4736,9 @@ struct VmJsDomEventInvoker<'a, 'hooks> {
   window_obj: GcObject,
   document_obj: GcObject,
   event_obj: GcObject,
+  listener_roots_owner: GcObject,
   listener_roots: GcObject,
+  opaque_target_obj: Option<GcObject>,
   registry: *const web_events::EventListenerRegistry,
 }
 
@@ -4659,6 +4756,10 @@ impl<'a, 'hooks> VmJsDomEventInvoker<'a, 'hooks> {
         let vm = unsafe { &mut *self.vm };
         get_or_create_node_wrapper(vm, scope, self.document_obj, node_id)
       }
+      Some(web_events::EventTargetId::Opaque(_)) => Ok(match self.opaque_target_obj {
+        Some(obj) => Value::Object(obj),
+        None => Value::Null,
+      }),
     }
   }
 
@@ -4855,7 +4956,12 @@ impl web_events::EventListenerInvoker for VmJsDomEventInvoker<'_, '_> {
 
     // `dispatch_event` can remove listeners during dispatch (`{ once: true }`). Drop the callback
     // root if the listener ID is no longer referenced.
-    if let Err(err) = remove_listener_root_if_unused(scope, self.document_obj, registry, listener_id) {
+    if let Err(err) = remove_listener_root_if_unused(
+      scope,
+      self.listener_roots_owner,
+      registry,
+      listener_id,
+    ) {
       return Err(web_events::DomError::new(err.to_string()));
     }
 
@@ -4947,7 +5053,7 @@ fn rust_event_from_js_event(
 }
 
 fn event_target_add_event_listener_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -4956,7 +5062,13 @@ fn event_target_add_event_listener_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let target_obj = event_target_resolve_this(scope, callee, this)?;
-  let (resolved, mut dom_ptr) = resolve_dom_event_target(scope, target_obj)?;
+  let resolved = resolve_event_target(vm, scope, callee, target_obj)?;
+  let ResolvedEventTarget {
+    resolved,
+    mut dom_ptr,
+    listener_roots_owner,
+    ..
+  } = resolved;
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let type_string = scope.heap_mut().to_string(type_arg)?;
@@ -4984,7 +5096,7 @@ fn event_target_add_event_listener_native(
     .add_event_listener(resolved.target_id, &type_name, listener_id, options);
 
   // Root the callback while it's registered so it survives GC.
-  let roots = get_or_create_event_listener_roots(scope, resolved.document_obj)?;
+  let roots = get_or_create_event_listener_roots(scope, listener_roots_owner)?;
   let listener_key = listener_id_property_key(scope, listener_id)?;
   scope.push_root(callback)?;
   scope.define_property(roots, listener_key, data_desc(callback))?;
@@ -4993,7 +5105,7 @@ fn event_target_add_event_listener_native(
 }
 
 fn event_target_remove_event_listener_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -5002,7 +5114,13 @@ fn event_target_remove_event_listener_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let target_obj = event_target_resolve_this(scope, callee, this)?;
-  let (resolved, mut dom_ptr) = resolve_dom_event_target(scope, target_obj)?;
+  let resolved = resolve_event_target(vm, scope, callee, target_obj)?;
+  let ResolvedEventTarget {
+    resolved,
+    mut dom_ptr,
+    listener_roots_owner,
+    ..
+  } = resolved;
 
   let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let type_string = scope.heap_mut().to_string(type_arg)?;
@@ -5028,7 +5146,7 @@ fn event_target_remove_event_listener_native(
     .events_mut()
     .remove_event_listener(resolved.target_id, &type_name, listener_id, capture);
   if removed {
-    remove_listener_root_if_unused(scope, resolved.document_obj, dom.events(), listener_id)?;
+    remove_listener_root_if_unused(scope, listener_roots_owner, dom.events(), listener_id)?;
   }
 
   Ok(Value::Undefined)
@@ -5044,7 +5162,13 @@ fn event_target_dispatch_event_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let target_obj = event_target_resolve_this(scope, callee, this)?;
-  let (resolved, dom_ptr) = resolve_dom_event_target(scope, target_obj)?;
+  let resolved = resolve_event_target(vm, scope, callee, target_obj)?;
+  let ResolvedEventTarget {
+    resolved,
+    dom_ptr,
+    listener_roots_owner,
+    opaque_target_obj,
+  } = resolved;
 
   let event_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(event_obj) = event_value else {
@@ -5065,6 +5189,11 @@ fn event_target_dispatch_event_native(
       web_events::EventTargetId::Node(node_id) => {
         get_or_create_node_wrapper(vm, scope, resolved.document_obj, node_id)?
       }
+      web_events::EventTargetId::Opaque(_) => Value::Object(
+        opaque_target_obj.ok_or_else(|| {
+          VmError::InvariantViolation("opaque EventTarget is missing required JS object handle")
+        })?,
+      ),
     };
     scope.define_property(event_obj, target_key, data_desc(target_v))?;
 
@@ -5079,7 +5208,7 @@ fn event_target_dispatch_event_native(
   let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
   scope.define_property(event_obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
 
-  let roots = get_or_create_event_listener_roots(scope, resolved.document_obj)?;
+  let roots = get_or_create_event_listener_roots(scope, listener_roots_owner)?;
   let mut invoker = VmJsDomEventInvoker {
     vm,
     scope,
@@ -5087,7 +5216,9 @@ fn event_target_dispatch_event_native(
     window_obj: resolved.window_obj,
     document_obj: resolved.document_obj,
     event_obj,
+    listener_roots_owner,
     listener_roots: roots,
+    opaque_target_obj,
     registry: unsafe { dom_ptr.as_ref() }.events(),
   };
 
@@ -8936,21 +9067,31 @@ fn init_window_globals(
     vm.register_native_call(event_target_add_event_listener_native)?;
   let add_event_listener_name = scope.alloc_string("addEventListener")?;
   scope.push_root(Value::String(add_event_listener_name))?;
-  let event_target_slots = [Value::Object(global)];
+  // EventTarget method native slots:
+  // - slot 0: default `this` for global functions (see `event_target_resolve_this`)
+  // - slot 1: the realm's global object (used to find `document` for non-DOM EventTargets like
+  //   `AbortSignal` / `new EventTarget()`).
+  let event_target_global_slots = [Value::Object(global), Value::Object(global)];
+  let event_target_method_slots = [Value::Undefined, Value::Object(global)];
   let add_event_listener_global_func = scope.alloc_native_function_with_slots(
     add_event_listener_call_id,
     None,
     add_event_listener_name,
     2,
-    &event_target_slots,
+    &event_target_global_slots,
   )?;
   scope.heap_mut().object_set_prototype(
     add_event_listener_global_func,
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(add_event_listener_global_func))?;
-  let add_event_listener_func =
-    scope.alloc_native_function(add_event_listener_call_id, None, add_event_listener_name, 2)?;
+  let add_event_listener_func = scope.alloc_native_function_with_slots(
+    add_event_listener_call_id,
+    None,
+    add_event_listener_name,
+    2,
+    &event_target_method_slots,
+  )?;
   scope.heap_mut().object_set_prototype(
     add_event_listener_func,
     Some(realm.intrinsics().function_prototype()),
@@ -8966,18 +9107,19 @@ fn init_window_globals(
     None,
     remove_event_listener_name,
     2,
-    &event_target_slots,
+    &event_target_global_slots,
   )?;
   scope.heap_mut().object_set_prototype(
     remove_event_listener_global_func,
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(remove_event_listener_global_func))?;
-  let remove_event_listener_func = scope.alloc_native_function(
+  let remove_event_listener_func = scope.alloc_native_function_with_slots(
     remove_event_listener_call_id,
     None,
     remove_event_listener_name,
     2,
+    &event_target_method_slots,
   )?;
   scope.heap_mut().object_set_prototype(
     remove_event_listener_func,
@@ -8993,15 +9135,20 @@ fn init_window_globals(
     None,
     dispatch_event_name,
     1,
-    &event_target_slots,
+    &event_target_global_slots,
   )?;
   scope.heap_mut().object_set_prototype(
     dispatch_event_global_func,
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(dispatch_event_global_func))?;
-  let dispatch_event_func =
-    scope.alloc_native_function(dispatch_event_call_id, None, dispatch_event_name, 1)?;
+  let dispatch_event_func = scope.alloc_native_function_with_slots(
+    dispatch_event_call_id,
+    None,
+    dispatch_event_name,
+    1,
+    &event_target_method_slots,
+  )?;
   scope.heap_mut().object_set_prototype(
     dispatch_event_func,
     Some(realm.intrinsics().function_prototype()),
@@ -10656,7 +10803,9 @@ mod tests {
         window_obj: global,
         document_obj,
         event_obj,
+        listener_roots_owner: document_obj,
         listener_roots,
+        opaque_target_obj: None,
         registry: dom.events(),
       };
 
@@ -10726,7 +10875,9 @@ mod tests {
         window_obj: global,
         document_obj,
         event_obj,
+        listener_roots_owner: document_obj,
         listener_roots,
+        opaque_target_obj: None,
         registry: dom.events(),
       };
 
@@ -10796,7 +10947,9 @@ mod tests {
         window_obj: global,
         document_obj,
         event_obj,
+        listener_roots_owner: document_obj,
         listener_roots,
+        opaque_target_obj: None,
         registry: dom.events(),
       };
       let mut event = web_events::Event::new(
@@ -10861,7 +11014,9 @@ mod tests {
       window_obj: global,
       document_obj,
       event_obj,
+      listener_roots_owner: document_obj,
       listener_roots,
+      opaque_target_obj: None,
       registry: dom.events(),
     };
 

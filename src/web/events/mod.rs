@@ -79,6 +79,10 @@ pub enum EventTargetId {
   Window,
   Document,
   Node(dom2::NodeId),
+  /// An event target that is not part of the DOM tree (e.g. `AbortSignal`, `new EventTarget()`).
+  ///
+  /// The value is an embedding-defined stable identifier.
+  Opaque(u64),
 }
 
 impl EventTargetId {
@@ -449,6 +453,10 @@ fn build_event_path(target: EventTargetId, dom: &dom2::Document) -> Vec<EventPat
       }
       rev.reverse();
       path.extend(rev);
+    }
+    EventTargetId::Opaque(id) => {
+      // Non-DOM targets do not participate in the DOM event path; dispatch is at-target only.
+      path.push(EventTargetId::Opaque(id));
     }
   }
 

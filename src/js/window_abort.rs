@@ -29,6 +29,7 @@ use vm_js::{
 
 const CONTROLLER_SIGNAL_INTERNAL_KEY: &str = "__fastrender_abort_controller_signal";
 const SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
+const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
 
 fn data_desc(value: Value, writable: bool) -> PropertyDescriptor {
   PropertyDescriptor {
@@ -251,6 +252,7 @@ fn abort_controller_ctor_construct(
 
   let signal = scope.alloc_object_with_prototype(Some(signal_proto))?;
   scope.push_root(Value::Object(signal))?;
+  set_own_data_prop(scope, signal, EVENT_TARGET_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   set_own_data_prop(scope, signal, "aborted", Value::Bool(false), /* writable */ false)?;
   set_own_data_prop(scope, signal, "reason", Value::Undefined, /* writable */ false)?;
@@ -381,6 +383,7 @@ fn abort_signal_static_abort_native(
 
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
+  set_own_data_prop(scope, signal, EVENT_TARGET_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
 
   let reason_arg = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -423,6 +426,7 @@ fn abort_signal_static_timeout_native(
   // Create the signal and schedule a `setTimeout` to abort it.
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
+  set_own_data_prop(scope, signal, EVENT_TARGET_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   set_own_data_prop(scope, signal, "aborted", Value::Bool(false), /* writable */ false)?;
   set_own_data_prop(scope, signal, "reason", Value::Undefined, /* writable */ false)?;
@@ -505,6 +509,7 @@ fn abort_signal_static_any_native(
 
   let signal = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(signal))?;
+  set_own_data_prop(scope, signal, EVENT_TARGET_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   set_own_data_prop(scope, signal, SIGNAL_BRAND_KEY, Value::Bool(true), /* writable */ false)?;
   set_own_data_prop(scope, signal, "aborted", Value::Bool(false), /* writable */ false)?;
   set_own_data_prop(scope, signal, "reason", Value::Undefined, /* writable */ false)?;

@@ -987,6 +987,7 @@ fn wrap_event_target(
       prototypes,
       node_id,
     ),
+    events::EventTargetId::Opaque(_) => Ok(Value::Null),
   }
 }
 
