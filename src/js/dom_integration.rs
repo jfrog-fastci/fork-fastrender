@@ -5,8 +5,7 @@ use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 
 use super::{
   determine_script_type_dom2, ClassicScriptScheduler, DomHost, EventLoop, ScriptElementEvent,
-  trim_ascii_whitespace, ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader,
-  ScriptType, TaskSource,
+  ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
 };
 
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
