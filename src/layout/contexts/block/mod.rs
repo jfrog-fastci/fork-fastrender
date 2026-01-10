@@ -1597,6 +1597,12 @@ impl BlockFormattingContext {
           0.0
         };
 
+        // If the float context does not reduce the available width at this Y, there are no
+        // overlapping floats to avoid, so do not clamp margins. In particular, Bootstrap gutters
+        // rely on negative margins on flex containers (e.g. `.row { margin-left: -12px; }`) which
+        // legitimately overflow the containing block even in the absence of floats.
+        const FLOAT_FIT_EPSILON: f32 = 0.01;
+
         // If the block's border box cannot fit in the available band next to floats at the
         // computed y-position, push it down until it does (matching the float placement loop).
         if border_box_width > 0.0 {
@@ -1606,8 +1612,9 @@ impl BlockFormattingContext {
             external_float_base_x,
             containing_width,
           );
+          let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
 
-          if available_width + 0.01 < border_box_width {
+          if has_overlapping_floats && available_width + FLOAT_FIT_EPSILON < border_box_width {
             let fit_y = ctx.find_fit_in_containing_block(
               border_box_width,
               0.0,
@@ -1626,17 +1633,20 @@ impl BlockFormattingContext {
             external_float_base_x,
             containing_width,
           );
-          let band_left = (left_edge - external_float_base_x).max(0.0);
-          let band_right = (band_left + available_width).max(band_left);
+          let has_overlapping_floats = available_width + FLOAT_FIT_EPSILON < containing_width;
+          if has_overlapping_floats {
+            let band_left = (left_edge - external_float_base_x).max(0.0);
+            let band_right = (band_left + available_width).max(band_left);
 
-          let desired_x = computed_width.margin_left;
-          let max_x = band_right - border_box_width;
-          let clamped_x = if max_x >= band_left {
-            desired_x.clamp(band_left, max_x)
-          } else {
-            band_left
-          };
-          float_avoidance_offset = clamped_x - desired_x;
+            let desired_x = computed_width.margin_left;
+            let max_x = band_right - border_box_width;
+            let clamped_x = if max_x >= band_left {
+              desired_x.clamp(band_left, max_x)
+            } else {
+              band_left
+            };
+            float_avoidance_offset = clamped_x - desired_x;
+          }
         }
       }
     }
