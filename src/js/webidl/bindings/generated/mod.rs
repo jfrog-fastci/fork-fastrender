@@ -6,8 +6,9 @@
 pub mod window {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
   use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
-  use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
+  use webidl_vm_js::host_from_hooks;
 
+  #[allow(dead_code)]
   fn to_int32_f64(n: f64) -> i32 {
     if !n.is_finite() || n == 0.0 {
       return 0;
@@ -25,6 +26,7 @@ pub mod window {
     }
   }
 
+  #[allow(dead_code)]
   fn to_uint32_f64(n: f64) -> u32 {
     if !n.is_finite() || n == 0.0 {
       return 0;
@@ -1517,8 +1519,9 @@ pub mod window {
 pub mod worker {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
   use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
-  use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};
+  use webidl_vm_js::host_from_hooks;
 
+  #[allow(dead_code)]
   fn to_int32_f64(n: f64) -> i32 {
     if !n.is_finite() || n == 0.0 {
       return 0;
@@ -1536,6 +1539,7 @@ pub mod worker {
     }
   }
 
+  #[allow(dead_code)]
   fn to_uint32_f64(n: f64) -> u32 {
     if !n.is_finite() || n == 0.0 {
       return 0;

@@ -1786,10 +1786,11 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
 
   out.push_str("use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};\n");
   out.push_str("use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};\n");
-  out.push_str("use webidl_vm_js::{host_from_hooks, WebIdlBindingsHost};\n\n");
+  out.push_str("use webidl_vm_js::host_from_hooks;\n\n");
 
   out.push_str(
-    r#"fn to_int32_f64(n: f64) -> i32 {
+    r#"#[allow(dead_code)]
+fn to_int32_f64(n: f64) -> i32 {
   if !n.is_finite() || n == 0.0 {
     return 0;
   }
@@ -1806,6 +1807,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
   }
 }
 
+#[allow(dead_code)]
 fn to_uint32_f64(n: f64) -> u32 {
   if !n.is_finite() || n == 0.0 {
     return 0;
