@@ -368,7 +368,7 @@ mod tests {
       "expected dom2 create_element('script') to default script_force_async=true"
     );
 
-    let spec = super::build_non_parser_inserted_script_spec(&dom, script);
+    let spec = build_non_parser_inserted_script_spec(&dom, script);
     assert!(
       spec.force_async,
       "expected ScriptElementSpec.force_async=true for DOM-created dynamic scripts"
@@ -399,7 +399,7 @@ mod tests {
       "innerHTML/outerHTML parsing must set script_force_async=false"
     );
 
-    let spec = super::build_non_parser_inserted_script_spec(&dom, script);
+    let spec = build_non_parser_inserted_script_spec(&dom, script);
     assert!(
       !spec.force_async,
       "expected ScriptElementSpec.force_async=false for fragment-parser-created scripts"
