@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use vm_js::{
-  GcObject, Heap, HeapLimits, Job, JsRuntime, MicrotaskQueue, RealmId, RootId, Scope, SourceText,
-  Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  GcObject, Heap, HeapLimits, Job, JobKind, JsRuntime, MicrotaskQueue, RealmId, RootId, Scope,
+  SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
 #[derive(Debug, Default)]
@@ -44,6 +45,33 @@ fn inc_host_counter(
     .downcast_mut::<Host>()
     .ok_or(VmError::Unimplemented("host context has unexpected type"))?;
   host.counter += 1;
+  Ok(Value::Undefined)
+}
+
+fn enqueue_vm_microtask_job(
+  vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let counter = vm
+    .user_data::<Arc<AtomicUsize>>()
+    .cloned()
+    .ok_or(VmError::Unimplemented("missing Arc<AtomicUsize> user_data"))?;
+
+  // Intentionally enqueue onto the VM-owned microtask queue (instead of the supplied host hooks).
+  // The script execution entry points should drain this queue into the provided hooks as a safety
+  // net.
+  vm.microtask_queue_mut().host_enqueue_promise_job(
+    Job::new(JobKind::Promise, move |_ctx, _host| {
+      counter.fetch_add(1, Ordering::SeqCst);
+      Ok(())
+    }),
+    None,
+  );
   Ok(Value::Undefined)
 }
 
@@ -176,6 +204,40 @@ fn exec_script_with_hooks_passes_dummy_vmhost_context_for_native_calls() -> Resu
     .exec_script_with_hooks(&mut hooks, "inc();")
     .expect_err("expected dummy host context to fail Host downcast");
   assert!(matches!(err, VmError::Unimplemented(_)));
+  Ok(())
+}
+
+#[test]
+fn exec_script_source_with_host_and_hooks_drains_vm_microtask_queue_into_host_hooks() -> Result<(), VmError>
+{
+  // Regression guard: even when a native handler enqueues work onto the VM-owned microtask queue,
+  // the script execution entry point should drain that queue into the provided host hooks as a
+  // safety net.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let counter = Arc::new(AtomicUsize::new(0));
+  rt.vm.set_user_data(counter.clone());
+
+  rt.register_global_native_function("enqueue", enqueue_vm_microtask_job, 0)?;
+
+  let mut host = ();
+  let mut hooks = RecordingHooks::default();
+
+  rt.exec_script_source_with_host_and_hooks(
+    &mut host,
+    &mut hooks,
+    Arc::new(SourceText::new("<inline>", "enqueue();")),
+  )?;
+
+  assert_eq!(hooks.jobs.len(), 1, "expected VM microtask to be forwarded to hooks");
+
+  let mut noop_hooks = NoopHooks::default();
+  let (_realm, job) = hooks.jobs.pop().unwrap();
+  job.run(&mut rt, &mut noop_hooks)?;
+
+  assert_eq!(counter.load(Ordering::SeqCst), 1);
   Ok(())
 }
 
