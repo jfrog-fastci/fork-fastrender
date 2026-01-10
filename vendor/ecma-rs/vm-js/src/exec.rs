@@ -3628,13 +3628,11 @@ impl<'a> Evaluator<'a> {
     call_scope.push_root(Value::Object(template_obj))?;
 
     let mut args: Vec<Value> = Vec::new();
-    let subst_count = expr
-      .parts
-      .iter()
-      .filter(|p| matches!(p, LitTemplatePart::Substitution(_)))
-      .count();
+    // Pre-reserve based on the total part count (an upper bound on the number of substitutions) so
+    // we don't need an extra unbudgeted scan over the parts list.
+    let subst_count = expr.parts.len();
     args
-      .try_reserve_exact(subst_count + 1)
+      .try_reserve_exact(subst_count.saturating_add(1))
       .map_err(|_| VmError::OutOfMemory)?;
     args.push(Value::Object(template_obj));
 
@@ -3656,23 +3654,21 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     parts: &[LitTemplatePart],
   ) -> Result<GcObject, VmError> {
-    let seg_count = parts
-      .iter()
-      .filter(|p| matches!(p, LitTemplatePart::String(_)))
-      .count();
-
     let intr = self
       .vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
-    let cooked = scope.alloc_array(seg_count)?;
+    // Allocate with `length = 0` and let `CreateDataProperty` grow the array length as we define
+    // indexed elements. This avoids an extra `O(N)` segment-count scan before we start ticking in
+    // the main segment loop.
+    let cooked = scope.alloc_array(0)?;
     scope.push_root(Value::Object(cooked))?;
     scope
       .heap_mut()
       .object_set_prototype(cooked, Some(intr.array_prototype()))?;
 
-    let raw = scope.alloc_array(seg_count)?;
+    let raw = scope.alloc_array(0)?;
     scope.push_root(Value::Object(raw))?;
     scope
       .heap_mut()
