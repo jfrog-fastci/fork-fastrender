@@ -4448,6 +4448,82 @@ pub fn string_prototype_slice(
   Ok(Value::String(out))
 }
 
+/// `String.prototype.indexOf` (ECMA-262) (minimal).
+pub fn string_prototype_index_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let search = scope.to_string(vm, host, hooks, search_value)?;
+  scope.push_root(Value::String(search))?;
+
+  // `position` is clamped to [0, len] (negative -> 0).
+  let len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+  let position = args.get(1).copied().unwrap_or(Value::Undefined);
+  let pos = if matches!(position, Value::Undefined) {
+    0usize
+  } else {
+    let n = scope.to_number(vm, host, hooks, position)?;
+    if n.is_nan() || n.is_sign_negative() {
+      0usize
+    } else if !n.is_finite() {
+      len
+    } else {
+      let n = n.trunc();
+      if n <= 0.0 {
+        0usize
+      } else if n >= len as f64 {
+        len
+      } else {
+        n as usize
+      }
+    }
+  };
+
+  // Borrow code unit slices for the search. Avoid allocating intermediate vectors: these inputs
+  // can be attacker-controlled.
+  let (haystack, needle) = {
+    let haystack = scope.heap().get_string(s)?;
+    let needle = scope.heap().get_string(search)?;
+    (haystack.as_code_units(), needle.as_code_units())
+  };
+
+  if needle.is_empty() {
+    return Ok(Value::Number(pos as f64));
+  }
+  if needle.len() > haystack.len() {
+    return Ok(Value::Number(-1.0));
+  }
+  if pos > haystack.len() {
+    return Ok(Value::Number(-1.0));
+  }
+
+  let last = haystack.len().saturating_sub(needle.len());
+  for i in pos..=last {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    if &haystack[i..i + needle.len()] == needle {
+      return Ok(Value::Number(i as f64));
+    }
+  }
+
+  Ok(Value::Number(-1.0))
+}
+
 /// `%String.prototype%[@@iterator]` (ECMA-262).
 ///
 /// This returns an iterator object with internal slots:

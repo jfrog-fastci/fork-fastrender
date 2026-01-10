@@ -370,3 +370,25 @@ fn string_prototype_slice_is_generic_and_coerces_args() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn string_prototype_index_of_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""abcd".indexOf("bc")===1 && "abcd".indexOf("x")===-1 && "abcd".indexOf("", 2)===2 && "ab".indexOf("a", -1)===0"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_index_of_is_generic_and_coerces_position() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var o={toString:function(){return "ab";}}; var pos={valueOf:function(){return 1;}}; String.prototype.indexOf.call(o,"b",pos)===1"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

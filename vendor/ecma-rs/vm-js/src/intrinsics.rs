@@ -410,6 +410,7 @@ impl Intrinsics {
     let array_is_array = vm.register_native_call(builtins::array_is_array)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
     let string_prototype_slice = vm.register_native_call(builtins::string_prototype_slice)?;
+    let string_prototype_index_of = vm.register_native_call(builtins::string_prototype_index_of)?;
     let string_prototype_iterator = vm.register_native_call(builtins::string_prototype_iterator)?;
     let string_iterator_next = vm.register_native_call(builtins::string_iterator_next)?;
     let number_prototype_value_of = vm.register_native_call(builtins::number_prototype_value_of)?;
@@ -800,6 +801,24 @@ impl Intrinsics {
         scope.push_root(Value::String(slice_s))?;
         let key = PropertyKey::from_string(slice_s);
         let func = scope.alloc_native_function(string_prototype_slice, None, slice_s, 2)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        string_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+      // String.prototype.indexOf
+      {
+        let index_of_s = scope.alloc_string("indexOf")?;
+        scope.push_root(Value::String(index_of_s))?;
+        let key = PropertyKey::from_string(index_of_s);
+        let func =
+          scope.alloc_native_function(string_prototype_index_of, None, index_of_s, 1)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()
