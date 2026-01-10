@@ -14,6 +14,14 @@ struct MapImportLoader {
   styles: HashMap<String, String>,
 }
 
+struct PanicImportLoader;
+
+impl CssImportLoader for PanicImportLoader {
+  fn load(&self, url: &str) -> fastrender::error::Result<String> {
+    panic!("unexpected @import load: {url}");
+  }
+}
+
 impl MapImportLoader {
   fn new() -> Self {
     Self {
@@ -154,6 +162,36 @@ fn layer_statements_can_precede_import_rules() {
     "#,
     &loader,
   );
+
+  assert_eq!(target.styles.display, Display::Inline);
+}
+
+#[test]
+fn import_media_modifiers_skip_import_when_query_does_not_match() {
+  let media = MediaContext::screen(800.0, 600.0);
+  let stylesheet = parse_stylesheet(r#"@import "display.css" print;"#).unwrap();
+  let resolved = stylesheet
+    .resolve_imports(&PanicImportLoader, Some(BASE_URL), &media)
+    .unwrap();
+  let dom = dom::parse_html(r#"<div id="t"></div>"#).unwrap();
+  let styled = apply_styles_with_media(&dom, &resolved, &media);
+  let target = find_by_id(&styled, "t").expect("target element should be styled");
+
+  assert_eq!(target.styles.display, Display::Block);
+}
+
+#[test]
+fn import_media_modifiers_apply_import_when_query_matches() {
+  let loader =
+    MapImportLoader::new().with("https://example.com/display.css", "#t { display: inline; }");
+  let media = MediaContext::print(800.0, 600.0);
+  let stylesheet = parse_stylesheet(r#"@import "display.css" print;"#).unwrap();
+  let resolved = stylesheet
+    .resolve_imports(&loader, Some(BASE_URL), &media)
+    .unwrap();
+  let dom = dom::parse_html(r#"<div id="t"></div>"#).unwrap();
+  let styled = apply_styles_with_media(&dom, &resolved, &media);
+  let target = find_by_id(&styled, "t").expect("target element should be styled");
 
   assert_eq!(target.styles.display, Display::Inline);
 }

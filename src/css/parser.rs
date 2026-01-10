@@ -1116,6 +1116,16 @@ fn parse_import_modifiers_and_media(
     break;
   }
 
+  // `cssparser::Parser::slice_from` returns the span between `media_start` and the current parser
+  // position, so we must advance to the end of the prelude before slicing to capture the media
+  // query list (if any).
+  while !parser.is_exhausted() {
+    if !css_deadline_allows_progress() {
+      break;
+    }
+    let _ = parser.next_including_whitespace();
+  }
+
   let media_tokens = trim_ascii_whitespace(parser.slice_from(media_start));
   let media = if media_tokens.is_empty() {
     Vec::new()
