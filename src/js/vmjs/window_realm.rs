@@ -559,6 +559,17 @@ fn data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn read_only_data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: false,
+    },
+  }
+}
+
 fn create_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4361,6 +4372,101 @@ fn custom_event_constructor_native(
   Ok(Value::Object(obj))
 }
 
+fn promise_rejection_event_constructor_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let type_string = scope.heap_mut().to_string(type_arg)?;
+
+  let init_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let Value::Object(init_obj) = init_value else {
+    return Err(VmError::TypeError(
+      "PromiseRejectionEvent constructor requires an eventInitDict",
+    ));
+  };
+
+  let bubbles_key = alloc_key(scope, "bubbles")?;
+  let cancelable_key = alloc_key(scope, "cancelable")?;
+  let composed_key = alloc_key(scope, "composed")?;
+  let promise_key = alloc_key(scope, "promise")?;
+  let reason_key = alloc_key(scope, "reason")?;
+
+  let bubbles = scope
+    .heap()
+    .object_get_own_data_property_value(init_obj, &bubbles_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?
+    .unwrap_or(false);
+  let cancelable = scope
+    .heap()
+    .object_get_own_data_property_value(init_obj, &cancelable_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?
+    .unwrap_or(false);
+  let composed = scope
+    .heap()
+    .object_get_own_data_property_value(init_obj, &composed_key)?
+    .map(|v| scope.heap().to_boolean(v))
+    .transpose()?
+    .unwrap_or(false);
+
+  let promise_value = scope
+    .heap()
+    .object_get_own_data_property_value(init_obj, &promise_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(promise_obj) = promise_value else {
+    return Err(VmError::TypeError(
+      "PromiseRejectionEventInit.promise must be an object",
+    ));
+  };
+
+  let reason = scope
+    .heap()
+    .object_get_own_data_property_value(init_obj, &reason_key)?
+    .unwrap_or(Value::Undefined);
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(callee, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  let type_key = alloc_key(scope, "type")?;
+  scope.define_property(obj, type_key, data_desc(Value::String(type_string)))?;
+  scope.define_property(obj, bubbles_key, data_desc(Value::Bool(bubbles)))?;
+  scope.define_property(obj, cancelable_key, data_desc(Value::Bool(cancelable)))?;
+  scope.define_property(obj, composed_key, data_desc(Value::Bool(composed)))?;
+
+  let default_prevented_key = alloc_key(scope, "defaultPrevented")?;
+  scope.define_property(
+    obj,
+    default_prevented_key,
+    data_desc(Value::Bool(false)),
+  )?;
+  let cancel_bubble_key = alloc_key(scope, "cancelBubble")?;
+  scope.define_property(obj, cancel_bubble_key, data_desc(Value::Bool(false)))?;
+
+  scope.define_property(obj, promise_key, read_only_data_desc(Value::Object(promise_obj)))?;
+  scope.define_property(obj, reason_key, read_only_data_desc(reason))?;
+
+  Ok(Value::Object(obj))
+}
+
 fn event_constructor_construct_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -4391,6 +4497,22 @@ fn custom_event_constructor_construct_native(
     _ => callee,
   };
   custom_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
+}
+
+fn promise_rejection_event_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+  promise_rejection_event_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
 }
 
 fn event_init_event_native(
@@ -10786,6 +10908,12 @@ fn init_window_globals(
     data_desc(Value::Object(init_custom_event_func)),
   )?;
 
+  let promise_rejection_event_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(promise_rejection_event_proto))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(promise_rejection_event_proto, Some(event_proto))?;
+
   // Constructors on the global object.
   let prototype_key = alloc_key(&mut scope, "prototype")?;
   let constructor_key = alloc_key(&mut scope, "constructor")?;
@@ -10853,6 +10981,40 @@ fn init_window_globals(
     global,
     custom_event_ctor_key,
     data_desc(Value::Object(custom_event_ctor_func)),
+  )?;
+
+  let promise_rejection_event_ctor_call_id =
+    vm.register_native_call(promise_rejection_event_constructor_native)?;
+  let promise_rejection_event_ctor_construct_id =
+    vm.register_native_construct(promise_rejection_event_constructor_construct_native)?;
+  let promise_rejection_event_ctor_name = scope.alloc_string("PromiseRejectionEvent")?;
+  scope.push_root(Value::String(promise_rejection_event_ctor_name))?;
+  let promise_rejection_event_ctor_func = scope.alloc_native_function(
+    promise_rejection_event_ctor_call_id,
+    Some(promise_rejection_event_ctor_construct_id),
+    promise_rejection_event_ctor_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    promise_rejection_event_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(promise_rejection_event_ctor_func))?;
+  scope.define_property(
+    promise_rejection_event_ctor_func,
+    prototype_key,
+    data_desc(Value::Object(promise_rejection_event_proto)),
+  )?;
+  scope.define_property(
+    promise_rejection_event_proto,
+    constructor_key,
+    data_desc(Value::Object(promise_rejection_event_ctor_func)),
+  )?;
+  let promise_rejection_event_ctor_key = alloc_key(&mut scope, "PromiseRejectionEvent")?;
+  scope.define_property(
+    global,
+    promise_rejection_event_ctor_key,
+    data_desc(Value::Object(promise_rejection_event_ctor_func)),
   )?;
 
   // Expose the prototypes on document for `document.createEvent`.

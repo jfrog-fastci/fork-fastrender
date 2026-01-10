@@ -1618,6 +1618,78 @@ mod tests {
   }
 
   #[test]
+  fn promise_rejection_events_use_promise_rejection_event_and_are_read_only() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host_state, event_loop| {
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        "this.__has_ctor = (typeof PromiseRejectionEvent === 'function');\n\
+         this.__ctor_name = undefined;\n\
+         this.__is_instance = false;\n\
+         this.__promise_then = false;\n\
+         this.__promise_then_after = false;\n\
+         this.__reason = undefined;\n\
+         this.__reason_after = undefined;\n\
+         this.__reason_assign_err = undefined;\n\
+         this.__promise_assign_err = undefined;\n\
+         addEventListener('unhandledrejection', function (e) {\n\
+           \"use strict\";\n\
+           this.__ctor_name = e && e.constructor && e.constructor.name;\n\
+           this.__is_instance = (typeof PromiseRejectionEvent === 'function') && (e instanceof PromiseRejectionEvent);\n\
+           this.__promise_then = !!(e.promise && typeof e.promise.then === 'function');\n\
+           this.__reason = e.reason;\n\
+           try { e.reason = 'y'; } catch (err) { this.__reason_assign_err = err && err.name; }\n\
+           try { e.promise = null; } catch (err) { this.__promise_assign_err = err && err.name; }\n\
+           this.__reason_after = e.reason;\n\
+           this.__promise_then_after = !!(e.promise && typeof e.promise.then === 'function');\n\
+         });\n\
+         Promise.reject('x');\n",
+      )?;
+      Ok(())
+    })?;
+
+    assert_eq!(
+      host.run_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert!(matches!(get_global_prop(&mut host, "__has_ctor"), Value::Bool(true)));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__ctor_name").as_deref(),
+      Some("PromiseRejectionEvent")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__is_instance"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__promise_then"),
+      Value::Bool(true)
+    ));
+    assert_eq!(get_global_prop_utf8(&mut host, "__reason").as_deref(), Some("x"));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__reason_assign_err").as_deref(),
+      Some("TypeError")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__promise_assign_err").as_deref(),
+      Some("TypeError")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__reason_after").as_deref(),
+      Some("x")
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__promise_then_after"),
+      Value::Bool(true)
+    ));
+
+    Ok(())
+  }
+
+  #[test]
   fn handled_after_notification_dispatches_rejectionhandled_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

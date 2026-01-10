@@ -50,6 +50,17 @@ fn data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn read_only_data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: false,
+    },
+  }
+}
+
 fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
   let s = scope.alloc_string(name)?;
   scope.push_root(Value::String(s))?;
@@ -577,48 +588,81 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         scope.push_root(Value::Object(promise_obj))?;
         scope.push_root(reason)?;
 
-        // Use the realm's `Event` constructor so `unhandledrejection` listeners can call
-        // `preventDefault()` (matches web platform behavior more closely than a plain object).
+        // Use the realm's `PromiseRejectionEvent` constructor (if available) so promise rejection
+        // events look like the web platform:
+        // - cancelable `unhandledrejection` events support `preventDefault()`
+        // - `promise`/`reason` are exposed as read-only properties.
         let type_s = scope.alloc_string(event_type)?;
         scope.push_root(Value::String(type_s))?;
 
         let cancelable = event_type == "unhandledrejection";
-        let event_ctor_key = alloc_key(&mut scope, "Event")?;
-        let event_ctor = vm.get(&mut scope, global_obj, event_ctor_key)?;
-        scope.push_root(event_ctor)?;
 
-        let event_value = if cancelable {
-          let init_obj = scope.alloc_object()?;
-          scope.push_root(Value::Object(init_obj))?;
+        let init_obj = scope.alloc_object()?;
+        scope.push_root(Value::Object(init_obj))?;
+        if cancelable {
           let cancelable_key = alloc_key(&mut scope, "cancelable")?;
           scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
-          vm.call_with_host(
-            &mut scope,
-            &mut hooks,
-            event_ctor,
-            Value::Undefined,
-            &[Value::String(type_s), Value::Object(init_obj)],
-          )?
-        } else {
-          vm.call_with_host(
-            &mut scope,
-            &mut hooks,
-            event_ctor,
-            Value::Undefined,
-            &[Value::String(type_s)],
-          )?
-        };
+        }
+        let promise_key = alloc_key(&mut scope, "promise")?;
+        scope.define_property(
+          init_obj,
+          promise_key,
+          data_desc(Value::Object(promise_obj)),
+        )?;
+        let reason_key = alloc_key(&mut scope, "reason")?;
+        scope.define_property(init_obj, reason_key, data_desc(reason))?;
+
+        let promise_rejection_ctor_key = alloc_key(&mut scope, "PromiseRejectionEvent")?;
+        let promise_rejection_ctor = vm.get(&mut scope, global_obj, promise_rejection_ctor_key)?;
+        scope.push_root(promise_rejection_ctor)?;
+
+        let (event_value, needs_payload_define) =
+          if scope.heap().is_callable(promise_rejection_ctor).unwrap_or(false) {
+            (
+              vm.call_with_host(
+                &mut scope,
+                &mut hooks,
+                promise_rejection_ctor,
+                Value::Undefined,
+                &[Value::String(type_s), Value::Object(init_obj)],
+              )?,
+              false,
+            )
+          } else {
+            let event_ctor_key = alloc_key(&mut scope, "Event")?;
+            let event_ctor = vm.get(&mut scope, global_obj, event_ctor_key)?;
+            scope.push_root(event_ctor)?;
+            (
+              vm.call_with_host(
+                &mut scope,
+                &mut hooks,
+                event_ctor,
+                Value::Undefined,
+                &[Value::String(type_s), Value::Object(init_obj)],
+              )?,
+              true,
+            )
+          };
 
         let Value::Object(event_obj) = event_value else {
-          return Err(VmError::Unimplemented("Event constructor returned non-object"));
+          return Err(VmError::Unimplemented(
+            "PromiseRejectionEvent/Event constructor returned non-object",
+          ));
         };
         scope.push_root(Value::Object(event_obj))?;
 
-        // `PromiseRejectionEvent`-like payload (minimal).
-        let reason_key = alloc_key(&mut scope, "reason")?;
-        scope.define_property(event_obj, reason_key, data_desc(reason))?;
-        let promise_key = alloc_key(&mut scope, "promise")?;
-        scope.define_property(event_obj, promise_key, data_desc(Value::Object(promise_obj)))?;
+        if needs_payload_define {
+          scope.define_property(
+            event_obj,
+            reason_key,
+            read_only_data_desc(reason),
+          )?;
+          scope.define_property(
+            event_obj,
+            promise_key,
+            read_only_data_desc(Value::Object(promise_obj)),
+          )?;
+        }
 
         let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
         let dispatch = vm.get(&mut scope, global_obj, dispatch_key)?;
