@@ -2292,6 +2292,74 @@ mod tests {
   }
 
   #[test]
+  fn scheduled_promise_job_respects_max_instruction_count() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut opts = JsExecutionOptions::default();
+    // Keep this small so the test runs quickly (the promise job callback is an infinite loop).
+    opts.max_instruction_count = Some(500);
+    // Keep wall-time generous so we deterministically hit OutOfFuel first.
+    opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
+    let mut host = Host::new_with_js_execution_options(opts);
+
+    // Pre-set the marker so the scheduling script doesn't need to do any extra work under the fuel
+    // budget.
+    {
+      let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      set_prop(&mut scope, global, "__ran", Value::Bool(false));
+    }
+
+    // Enqueue a Promise job whose callback is an infinite loop.
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
+        let (host_ctx, window_realm) = host.vm_host_and_window_realm();
+        let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut *host_ctx);
+        window_realm.reset_interrupt();
+
+        let result = window_realm.exec_script_with_hooks(
+          &mut hooks,
+          "Promise.resolve().then(() => {\n\
+             while (true) {}\n\
+             globalThis.__ran = true;\n\
+           });",
+        );
+
+        if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+          return Err(err);
+        }
+
+        result
+          .map(|_| ())
+          .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+      })
+    })?;
+
+    let err = event_loop
+      .run_until_idle(&mut host, RunLimits::unbounded())
+      .expect_err("expected Promise job to terminate due to instruction budget");
+    let msg = err.to_string().to_ascii_lowercase();
+    assert!(
+      msg.contains("out of fuel"),
+      "expected OutOfFuel termination, got: {msg}"
+    );
+
+    let ran = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      match get_prop(&mut scope, global, "__ran") {
+        Value::Bool(b) => b,
+        other => panic!("expected bool, got {other:?}"),
+      }
+    };
+    assert!(!ran, "Promise job callback ran despite fuel budget");
+
+    Ok(())
+  }
+
+  #[test]
   fn hooks_as_any_mut_downcasts_to_host_for_script_and_tasks() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
