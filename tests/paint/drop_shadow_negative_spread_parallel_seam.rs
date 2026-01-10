@@ -8,9 +8,6 @@ use fastrender::{Rect, Rgba};
 use rayon::ThreadPoolBuilder;
 use tiny_skia::Pixmap;
 
-const WIDTH: u32 = 64;
-const HEIGHT: u32 = 32;
-
 fn assert_pixmap_eq(serial: &Pixmap, parallel: &Pixmap) {
   assert_eq!(serial.width(), parallel.width(), "pixmap width mismatch");
   assert_eq!(serial.height(), parallel.height(), "pixmap height mismatch");
@@ -58,9 +55,12 @@ fn assert_pixmap_eq(serial: &Pixmap, parallel: &Pixmap) {
 fn build_display_list() -> DisplayList {
   let mut list = DisplayList::new();
 
-  // A single stacking context that crosses the x=32 tile boundary (tile_size=32). The negative
-  // spread on the drop-shadow filter requires a kernel halo of `abs(spread)` even though the
-  // visible shadow outsets collapse to zero.
+  // A single stacking context that crosses the x=32 tile boundary (tile_size=32).
+  //
+  // The filter is `drop-shadow(..., spread:-N)` with zero blur and offset. Negative spread performs
+  // an erosion pass; when the tile halo is computed using *visible* outsets, the renderer can omit
+  // `abs(spread)` and each tile can observe the tile boundary as an artificial edge, producing a
+  // seam vs serial rendering.
   let bounds = Rect::from_xywh(16.0, 4.0, 32.0, 24.0);
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
@@ -81,8 +81,8 @@ fn build_display_list() -> DisplayList {
       offset_x: 0.0,
       offset_y: 0.0,
       blur_radius: 0.0,
-      spread: -10.0,
-      color: Rgba::from_rgba8(255, 0, 0, 255),
+      spread: -8.0,
+      color: Rgba::new(0, 0, 0, 1.0),
     }],
     backdrop_filters: Vec::new(),
     radii: Default::default(),
@@ -90,11 +90,11 @@ fn build_display_list() -> DisplayList {
     has_clip_path: false,
   }));
 
-  // Semi-transparent content spanning the tile boundary so the destination-over shadow contributes
-  // to the final pixels even where it overlaps the source.
+  // Solid content spanning the tile boundary. Use semi-transparent fill so the shadow drawn behind
+  // the content contributes to the final pixels (making seams observable).
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: bounds,
-    color: Rgba::from_rgba8(0, 0, 0, 128),
+    color: Rgba::new(255, 0, 0, 0.5),
   }));
 
   list.push(DisplayItem::PopStackingContext);
@@ -103,8 +103,12 @@ fn build_display_list() -> DisplayList {
 
 #[test]
 fn drop_shadow_negative_spread_parallel_matches_serial_across_tile_boundaries() {
+  const WIDTH: u32 = 64;
+  const HEIGHT: u32 = 32;
+
   let list = build_display_list();
   let font_ctx = FontContext::new();
+  let cpu_budget = fastrender::system::cpu_budget();
 
   let serial_pixmap = DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, font_ctx.clone())
     .expect("renderer")
@@ -117,8 +121,6 @@ fn drop_shadow_negative_spread_parallel_matches_serial_across_tile_boundaries() 
     log_timing: false,
     min_display_items: 1,
     min_tiles: 1,
-    min_build_fragments: 1,
-    build_chunk_size: 1,
     max_threads: Some(4),
     ..PaintParallelism::enabled()
   };
@@ -135,12 +137,14 @@ fn drop_shadow_negative_spread_parallel_matches_serial_across_tile_boundaries() 
       .expect("parallel render")
   });
 
-  assert!(
-    parallel.parallel_used,
-    "expected scene to use parallel tiling (fallback={:?})",
-    parallel.fallback_reason
-  );
-  assert!(parallel.tiles > 1, "expected multiple tiles to be rendered");
+  if cpu_budget > 1 {
+    assert!(
+      parallel.parallel_used,
+      "expected drop-shadow scene to use parallel tiling (fallback={:?})",
+      parallel.fallback_reason
+    );
+    assert!(parallel.tiles > 1, "expected multiple tiles to be rendered");
+  }
   assert_pixmap_eq(&serial_pixmap, &parallel.pixmap);
 }
 
