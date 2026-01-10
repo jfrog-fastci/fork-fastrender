@@ -454,6 +454,7 @@ impl Intrinsics {
     let symbol_prototype_to_primitive =
       vm.register_native_call(builtins::symbol_prototype_to_primitive)?;
     let error_prototype_to_string = vm.register_native_call(builtins::error_prototype_to_string)?;
+    let json_parse = vm.register_native_call(builtins::json_parse)?;
     let json_stringify = vm.register_native_call(builtins::json_stringify)?;
 
     // `%Number%`, `%Boolean%`, `%Date%`, and global functions.
@@ -1957,6 +1958,17 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(json, Some(object_prototype))?;
+    {
+      let parse_s = scope.alloc_string("parse")?;
+      scope.push_root(Value::String(parse_s))?;
+      let key = PropertyKey::from_string(parse_s);
+      let func = scope.alloc_native_function(json_parse, None, parse_s, 2)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(json, key, data_desc(Value::Object(func), true, false, true))?;
+    }
     {
       let stringify_s = scope.alloc_string("stringify")?;
       scope.push_root(Value::String(stringify_s))?;

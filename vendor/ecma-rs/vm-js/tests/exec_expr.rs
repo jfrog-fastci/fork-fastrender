@@ -647,3 +647,20 @@ fn string_prototype_to_lower_upper_case_works() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn json_parse_works_with_objects_arrays_and_reviver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var o = JSON.parse(' { "a": 1, "b": [true, null, "x"], "c": {"d": 2} } ');
+         var ok = o.a === 1 && o.b.length === 3 && o.b[0] === true && o.b[1] === null && o.b[2] === "x" && o.c.d === 2;
+         ok = ok && JSON.parse(' "hi\\n" ') === "hi\n";
+         var bad = false;
+         try { JSON.parse("{"); } catch(e) { bad = e.name === "SyntaxError"; }
+         var r = JSON.parse('{"a":1,"b":2}', function(k,v){ if (k === "b") return undefined; if (typeof v === "number") return v + 1; return v; });
+         ok && bad && r.a === 2 && !r.hasOwnProperty("b")"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

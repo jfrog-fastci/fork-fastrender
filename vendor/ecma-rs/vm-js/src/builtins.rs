@@ -7214,6 +7214,487 @@ pub fn error_prototype_to_string(
   Ok(Value::String(s))
 }
 
+fn json_syntax_error(vm: &mut Vm, scope: &mut Scope<'_>) -> VmError {
+  let intr = match require_intrinsics(vm) {
+    Ok(intr) => intr,
+    Err(err) => return err,
+  };
+  match crate::new_syntax_error_object(scope, &intr, "Invalid JSON") {
+    Ok(err) => VmError::Throw(err),
+    Err(err) => err,
+  }
+}
+
+struct JsonParser<'a> {
+  units: &'a [u16],
+  pos: usize,
+  steps: u64,
+}
+
+impl<'a> JsonParser<'a> {
+  const QUOTE: u16 = b'"' as u16;
+  const BACKSLASH: u16 = b'\\' as u16;
+
+  fn new(units: &'a [u16]) -> Self {
+    Self {
+      units,
+      pos: 0,
+      steps: 0,
+    }
+  }
+
+  fn peek(&self) -> Option<u16> {
+    self.units.get(self.pos).copied()
+  }
+
+  fn bump(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<u16, VmError> {
+    let Some(u) = self.peek() else {
+      return Err(json_syntax_error(vm, scope));
+    };
+    self.pos += 1;
+    self.steps = self.steps.wrapping_add(1);
+    if self.steps % 1024 == 0 {
+      vm.tick()?;
+    }
+    Ok(u)
+  }
+
+  fn skip_ws(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<(), VmError> {
+    while matches!(self.peek(), Some(0x20 | 0x09 | 0x0A | 0x0D)) {
+      let _ = self.bump(vm, scope)?;
+    }
+    Ok(())
+  }
+
+  fn expect(&mut self, vm: &mut Vm, scope: &mut Scope<'_>, expected: u16) -> Result<(), VmError> {
+    let u = self.bump(vm, scope)?;
+    if u != expected {
+      return Err(json_syntax_error(vm, scope));
+    }
+    Ok(())
+  }
+
+  fn parse_value(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    self.skip_ws(vm, scope)?;
+    match self.peek() {
+      Some(u) if u == b'n' as u16 => self.parse_null(vm, scope),
+      Some(u) if u == b't' as u16 => self.parse_true(vm, scope),
+      Some(u) if u == b'f' as u16 => self.parse_false(vm, scope),
+      Some(Self::QUOTE) => Ok(Value::String(self.parse_string(vm, scope)?)),
+      Some(u) if u == b'[' as u16 => self.parse_array(vm, scope),
+      Some(u) if u == b'{' as u16 => self.parse_object(vm, scope),
+      Some(u) if u == b'-' as u16 || (u >= b'0' as u16 && u <= b'9' as u16) => {
+        Ok(Value::Number(self.parse_number(vm, scope)?))
+      }
+      _ => Err(json_syntax_error(vm, scope)),
+    }
+  }
+
+  fn parse_null(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    self.expect(vm, scope, b'n' as u16)?;
+    self.expect(vm, scope, b'u' as u16)?;
+    self.expect(vm, scope, b'l' as u16)?;
+    self.expect(vm, scope, b'l' as u16)?;
+    Ok(Value::Null)
+  }
+
+  fn parse_true(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    self.expect(vm, scope, b't' as u16)?;
+    self.expect(vm, scope, b'r' as u16)?;
+    self.expect(vm, scope, b'u' as u16)?;
+    self.expect(vm, scope, b'e' as u16)?;
+    Ok(Value::Bool(true))
+  }
+
+  fn parse_false(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    self.expect(vm, scope, b'f' as u16)?;
+    self.expect(vm, scope, b'a' as u16)?;
+    self.expect(vm, scope, b'l' as u16)?;
+    self.expect(vm, scope, b's' as u16)?;
+    self.expect(vm, scope, b'e' as u16)?;
+    Ok(Value::Bool(false))
+  }
+
+  fn hex_digit(u: u16) -> Option<u16> {
+    if (0x30..=0x39).contains(&u) {
+      Some(u - 0x30)
+    } else if (0x61..=0x66).contains(&u) {
+      Some(10 + (u - 0x61))
+    } else if (0x41..=0x46).contains(&u) {
+      Some(10 + (u - 0x41))
+    } else {
+      None
+    }
+  }
+
+  fn parse_string(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<crate::GcString, VmError> {
+    self.expect(vm, scope, Self::QUOTE)?;
+    let mut out: Vec<u16> = Vec::new();
+
+    loop {
+      let u = self.bump(vm, scope)?;
+      match u {
+        Self::QUOTE => break,
+        Self::BACKSLASH => {
+          let esc = self.bump(vm, scope)?;
+          match esc {
+            u if u == b'"' as u16 => vec_try_push(&mut out, b'"' as u16)?,
+            u if u == b'\\' as u16 => vec_try_push(&mut out, b'\\' as u16)?,
+            u if u == b'/' as u16 => vec_try_push(&mut out, b'/' as u16)?,
+            u if u == b'b' as u16 => vec_try_push(&mut out, 0x08)?,
+            u if u == b'f' as u16 => vec_try_push(&mut out, 0x0C)?,
+            u if u == b'n' as u16 => vec_try_push(&mut out, 0x0A)?,
+            u if u == b'r' as u16 => vec_try_push(&mut out, 0x0D)?,
+            u if u == b't' as u16 => vec_try_push(&mut out, 0x09)?,
+            u if u == b'u' as u16 => {
+              let mut code: u16 = 0;
+              for _ in 0..4 {
+                let h = self.bump(vm, scope)?;
+                let Some(d) = Self::hex_digit(h) else {
+                  return Err(json_syntax_error(vm, scope));
+                };
+                code = (code << 4) | d;
+              }
+              vec_try_push(&mut out, code)?;
+            }
+            _ => return Err(json_syntax_error(vm, scope)),
+          }
+        }
+        0x0000..=0x001F => return Err(json_syntax_error(vm, scope)),
+        other => vec_try_push(&mut out, other)?,
+      }
+    }
+
+    scope.alloc_string_from_u16_vec(out)
+  }
+
+  fn parse_number(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<f64, VmError> {
+    let start = self.pos;
+
+    if matches!(self.peek(), Some(u) if u == b'-' as u16) {
+      let _ = self.bump(vm, scope)?;
+    }
+
+    match self.peek() {
+      Some(u) if u == b'0' as u16 => {
+        let _ = self.bump(vm, scope)?;
+        // Leading zeros are not allowed unless the integer part is exactly "0".
+        if matches!(self.peek(), Some(d) if d >= b'0' as u16 && d <= b'9' as u16) {
+          return Err(json_syntax_error(vm, scope));
+        }
+      }
+      Some(u) if u >= b'1' as u16 && u <= b'9' as u16 => {
+        let _ = self.bump(vm, scope)?;
+        while matches!(self.peek(), Some(d) if d >= b'0' as u16 && d <= b'9' as u16) {
+          let _ = self.bump(vm, scope)?;
+        }
+      }
+      _ => return Err(json_syntax_error(vm, scope)),
+    }
+
+    if matches!(self.peek(), Some(u) if u == b'.' as u16) {
+      let _ = self.bump(vm, scope)?;
+      if !matches!(self.peek(), Some(d) if d >= b'0' as u16 && d <= b'9' as u16) {
+        return Err(json_syntax_error(vm, scope));
+      }
+      while matches!(self.peek(), Some(d) if d >= b'0' as u16 && d <= b'9' as u16) {
+        let _ = self.bump(vm, scope)?;
+      }
+    }
+
+    if matches!(self.peek(), Some(u) if u == b'e' as u16 || u == b'E' as u16) {
+      let _ = self.bump(vm, scope)?;
+      if matches!(self.peek(), Some(u) if u == b'+' as u16 || u == b'-' as u16) {
+        let _ = self.bump(vm, scope)?;
+      }
+      if !matches!(self.peek(), Some(d) if d >= b'0' as u16 && d <= b'9' as u16) {
+        return Err(json_syntax_error(vm, scope));
+      }
+      while matches!(self.peek(), Some(d) if d >= b'0' as u16 && d <= b'9' as u16) {
+        let _ = self.bump(vm, scope)?;
+      }
+    }
+
+    let end = self.pos;
+    let mut s = String::with_capacity(end.saturating_sub(start));
+    for &u in &self.units[start..end] {
+      // Valid JSON numbers are ASCII-only.
+      if u > 0x7F {
+        return Err(json_syntax_error(vm, scope));
+      }
+      s.push((u as u8) as char);
+    }
+
+    s.parse::<f64>().map_err(|_| json_syntax_error(vm, scope))
+  }
+
+  fn parse_array(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    self.expect(vm, scope, b'[' as u16)?;
+
+    let array = create_array_object(vm, scope, 0)?;
+    scope.push_root(Value::Object(array))?;
+
+    self.skip_ws(vm, scope)?;
+    if matches!(self.peek(), Some(u) if u == b']' as u16) {
+      let _ = self.bump(vm, scope)?;
+      return Ok(Value::Object(array));
+    }
+
+    let mut idx: usize = 0;
+    loop {
+      {
+        let mut el_scope = scope.reborrow();
+        el_scope.push_root(Value::Object(array))?;
+
+        let value = self.parse_value(vm, &mut el_scope)?;
+        el_scope.push_root(value)?;
+
+        let key_s = el_scope.alloc_string(&idx.to_string())?;
+        el_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        el_scope.define_property(array, key, data_desc(value, true, true, true))?;
+      }
+
+      idx = idx.saturating_add(1);
+
+      self.skip_ws(vm, scope)?;
+      match self.peek() {
+        Some(u) if u == b',' as u16 => {
+          let _ = self.bump(vm, scope)?;
+          self.skip_ws(vm, scope)?;
+          continue;
+        }
+        Some(u) if u == b']' as u16 => {
+          let _ = self.bump(vm, scope)?;
+          break;
+        }
+        _ => return Err(json_syntax_error(vm, scope)),
+      }
+    }
+
+    Ok(Value::Object(array))
+  }
+
+  fn parse_object(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    self.expect(vm, scope, b'{' as u16)?;
+
+    let intr = require_intrinsics(vm)?;
+    let obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(obj))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(obj, Some(intr.object_prototype()))?;
+
+    self.skip_ws(vm, scope)?;
+    if matches!(self.peek(), Some(u) if u == b'}' as u16) {
+      let _ = self.bump(vm, scope)?;
+      return Ok(Value::Object(obj));
+    }
+
+    loop {
+      {
+        let mut member_scope = scope.reborrow();
+        member_scope.push_root(Value::Object(obj))?;
+
+        self.skip_ws(vm, &mut member_scope)?;
+        let key_str = self.parse_string(vm, &mut member_scope)?;
+        member_scope.push_root(Value::String(key_str))?;
+
+        self.skip_ws(vm, &mut member_scope)?;
+        self.expect(vm, &mut member_scope, b':' as u16)?;
+        self.skip_ws(vm, &mut member_scope)?;
+
+        let value = self.parse_value(vm, &mut member_scope)?;
+        member_scope.push_root(value)?;
+
+        member_scope.define_property(
+          obj,
+          PropertyKey::from_string(key_str),
+          data_desc(value, true, true, true),
+        )?;
+      }
+
+      self.skip_ws(vm, scope)?;
+      match self.peek() {
+        Some(u) if u == b',' as u16 => {
+          let _ = self.bump(vm, scope)?;
+          self.skip_ws(vm, scope)?;
+          continue;
+        }
+        Some(u) if u == b'}' as u16 => {
+          let _ = self.bump(vm, scope)?;
+          break;
+        }
+        _ => return Err(json_syntax_error(vm, scope)),
+      }
+    }
+
+    Ok(Value::Object(obj))
+  }
+}
+
+/// `JSON.parse` (minimal).
+pub fn json_parse(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let text = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = scope.to_string(vm, host, hooks, text)?;
+  scope.push_root(Value::String(s))?;
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units().to_vec()
+  };
+
+  let mut parser = JsonParser::new(&units);
+  let parsed = parser.parse_value(vm, &mut scope)?;
+  scope.push_root(parsed)?;
+  parser.skip_ws(vm, &mut scope)?;
+  if parser.pos != units.len() {
+    return Err(json_syntax_error(vm, &mut scope));
+  }
+
+  let reviver = args.get(1).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(reviver)? {
+    return Ok(parsed);
+  }
+
+  // Internalize with reviver.
+  let intr = require_intrinsics(vm)?;
+  let root = scope.alloc_object()?;
+  scope.push_root(Value::Object(root))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(root, Some(intr.object_prototype()))?;
+
+  let empty = scope.alloc_string("")?;
+  scope.push_root(Value::String(empty))?;
+  let empty_key = PropertyKey::from_string(empty);
+  scope.define_property(root, empty_key, data_desc(parsed, true, true, true))?;
+
+  fn internalize_json_property(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    holder: GcObject,
+    name: crate::GcString,
+    reviver: Value,
+  ) -> Result<Value, VmError> {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(holder))?;
+    scope.push_root(Value::String(name))?;
+    scope.push_root(reviver)?;
+
+    let key = PropertyKey::from_string(name);
+    let mut val =
+      scope.ordinary_get_with_host_and_hooks(vm, host, hooks, holder, key, Value::Object(holder))?;
+    scope.push_root(val)?;
+
+    if let Value::Object(obj) = val {
+      if scope.heap().object_is_array(obj)? {
+        let length_key = string_key(&mut scope, "length")?;
+        let len_value = scope.ordinary_get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          length_key,
+          Value::Object(obj),
+        )?;
+        let len = to_length(len_value);
+
+        for i in 0..len {
+          if i % 1024 == 0 {
+            vm.tick()?;
+          }
+          let mut idx_scope = scope.reborrow();
+          idx_scope.push_root(Value::Object(obj))?;
+
+          let idx_s = idx_scope.alloc_string(&i.to_string())?;
+          idx_scope.push_root(Value::String(idx_s))?;
+          let new_element = internalize_json_property(vm, &mut idx_scope, host, hooks, obj, idx_s, reviver)?;
+
+          if matches!(new_element, Value::Undefined) {
+            let ok =
+              idx_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, PropertyKey::from_string(idx_s))?;
+            if !ok {
+              let intr = require_intrinsics(vm)?;
+              return Err(crate::throw_type_error(&mut idx_scope, intr, "DeletePropertyOrThrow failed"));
+            }
+          } else {
+            idx_scope.define_property(
+              obj,
+              PropertyKey::from_string(idx_s),
+              data_desc(new_element, true, true, true),
+            )?;
+          }
+        }
+      } else {
+        let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+        let mut enumerable: Vec<crate::GcString> = Vec::new();
+        enumerable
+          .try_reserve_exact(keys.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+
+        for (i, k) in keys.into_iter().enumerate() {
+          if i % 1024 == 0 {
+            vm.tick()?;
+          }
+          let PropertyKey::String(s) = k else {
+            continue;
+          };
+          let Some(desc) = scope.ordinary_get_own_property(obj, k)? else {
+            continue;
+          };
+          if desc.enumerable {
+            enumerable.push(s);
+          }
+        }
+
+        for (i, p) in enumerable.into_iter().enumerate() {
+          if i % 1024 == 0 {
+            vm.tick()?;
+          }
+          let mut p_scope = scope.reborrow();
+          p_scope.push_root(Value::Object(obj))?;
+          p_scope.push_root(Value::String(p))?;
+
+          let new_element = internalize_json_property(vm, &mut p_scope, host, hooks, obj, p, reviver)?;
+          if matches!(new_element, Value::Undefined) {
+            let ok =
+              p_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, PropertyKey::from_string(p))?;
+            if !ok {
+              let intr = require_intrinsics(vm)?;
+              return Err(crate::throw_type_error(&mut p_scope, intr, "DeletePropertyOrThrow failed"));
+            }
+          } else {
+            p_scope.define_property(
+              obj,
+              PropertyKey::from_string(p),
+              data_desc(new_element, true, true, true),
+            )?;
+          }
+        }
+      }
+
+      val = Value::Object(obj);
+    }
+
+    let args = [Value::String(name), val];
+    vm.call_with_host_and_hooks(host, &mut scope, hooks, reviver, Value::Object(holder), &args)
+  }
+
+  internalize_json_property(vm, &mut scope, host, hooks, root, empty, reviver)
+}
+
 /// `JSON.stringify` (minimal).
 pub fn json_stringify(
   vm: &mut Vm,
