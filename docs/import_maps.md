@@ -441,6 +441,35 @@ Note: `resolve_imports_match` currently reports “blocked/invalid” cases as `
 can surface a TypeError-style exception message). It does not yet construct spec-accurate error
 messages.
 
+#### Computing `normalized_specifier` / `as_url` (caller responsibility)
+
+`resolve_imports_match` expects the caller to compute the same inputs as the HTML “resolve a module
+specifier” algorithm:
+
+* `as_url`: the result of “resolve a URL-like module specifier” (URL-or-null)
+* `normalized_specifier`:
+  * if `as_url` is non-null: its serialization
+  * otherwise: the original (bare) specifier string
+
+Example (equivalent to the HTML algorithm’s normalization step):
+
+```rust
+use url::Url;
+
+fn compute_as_url_and_normalized(specifier: &str, base_url: &Url) -> (Option<Url>, String) {
+    let as_url = if specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../") {
+        base_url.join(specifier).ok()
+    } else {
+        Url::parse(specifier).ok()
+    };
+    let normalized = as_url
+        .as_ref()
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| specifier.to_string());
+    (as_url, normalized)
+}
+```
+
 ---
 
 ## Integration notes (who should call what)
