@@ -483,8 +483,8 @@ pub mod window {
     if !rt.is_object(this) {
       return Err(rt.throw_type_error("Illegal invocation"));
     }
-    let origin = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, origin)
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -1935,8 +1935,8 @@ pub mod worker {
     if !rt.is_object(this) {
       return Err(rt.throw_type_error("Illegal invocation"));
     }
-    let origin = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, origin)
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]

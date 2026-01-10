@@ -28,6 +28,23 @@ fn find_first_block_with_line_children<'a>(node: &'a FragmentNode) -> Option<&'a
   None
 }
 
+fn find_first_line_y_with_text(node: &FragmentNode, origin: (f32, f32), needle: &str) -> Option<f32> {
+  let pos = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
+  if matches!(node.content, FragmentContent::Line { .. }) {
+    let mut text = String::new();
+    collect_text(node, &mut text);
+    if text.trim() == needle {
+      return Some(pos.1);
+    }
+  }
+  for child in node.children.iter() {
+    if let Some(y) = find_first_line_y_with_text(child, pos, needle) {
+      return Some(y);
+    }
+  }
+  None
+}
+
 fn line_texts(html: &str) -> Vec<String> {
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())
@@ -144,4 +161,35 @@ fn br_before_block_does_not_create_trailing_empty_line() {
 fn leading_br_before_block_still_creates_empty_line() {
   let lines = line_texts("<div><br><div>block</div></div>");
   assert_eq!(lines, ["", ""]);
+}
+
+#[test]
+fn br_clear_attribute_clears_floats() {
+  let html = r#"
+    <style>
+      body { margin: 0; font-size: 0; line-height: 0; }
+      .float { float: right; width: 10px; height: 50px; }
+      p { margin: 0; font-family: 'DejaVu Sans', sans-serif; font-size: 16px; line-height: 16px; }
+    </style>
+    <div class="float"></div>
+    <br clear="both">
+    <p>after</p>
+  "#;
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+
+  let dom = renderer.parse_html(html).expect("parse HTML");
+  let fragments = renderer
+    .layout_document(&dom, 200, 200)
+    .expect("layout document");
+
+  let y = find_first_line_y_with_text(&fragments.root, (0.0, 0.0), "after")
+    .expect("expected a line fragment containing 'after'");
+  assert!(
+    (y - 50.0).abs() < 0.5,
+    "expected text after <br clear=both> to start below the float (y={y})"
+  );
 }

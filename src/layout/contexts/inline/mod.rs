@@ -55,6 +55,7 @@ use crate::layout::contexts::inline::line_builder::ReshapeCache;
 use crate::layout::contexts::node_ref::BoxNodeRef;
 use crate::layout::contexts::positioned::ContainingBlock;
 use crate::layout::engine::LayoutParallelism;
+use crate::layout::float_context::ClearSide;
 use crate::layout::float_context::FloatContext;
 use crate::layout::float_shape::build_float_shape;
 use crate::layout::formatting_context::count_inline_intrinsic_call;
@@ -684,6 +685,8 @@ impl InlineFormattingContext {
       available_height,
       &mut whitespace,
       base_direction,
+      box_node.style.writing_mode,
+      box_node.style.direction,
       positioned_children,
       &mut bidi_stack,
       &mut abs_cb_stack,
@@ -769,7 +772,13 @@ impl InlineFormattingContext {
       // otherwise appear at the end of the line.
       if matches!(child.box_type, BoxType::LineBreak(_)) {
         whitespace.reset();
-        current_items.push(InlineItem::HardBreak);
+        current_items.push(InlineItem::HardBreak(
+          crate::layout::float_context::resolve_clear_side(
+            child.style.clear,
+            box_node.style.writing_mode,
+            box_node.style.direction,
+          ),
+        ));
         continue;
       }
 
@@ -1834,12 +1843,12 @@ impl InlineFormattingContext {
           // block-level box, browsers do not create an extra empty line box between the inline
           // content and the following block. The block starts on the line immediately after the
           // break, so drop the final hard break before flushing this inline segment.
-          if matches!(current_items.last(), Some(InlineItem::HardBreak)) {
+          if matches!(current_items.last(), Some(InlineItem::HardBreak(_))) {
             // A leading `<br>` (e.g. `<div><br><div>block</div></div>`) should still create an
             // empty line, so only drop the trailing hard break when the inline segment contains
             // real in-flow content before it.
             let has_non_break_content = current_items.iter().any(|item| {
-              !matches!(item, InlineItem::HardBreak | InlineItem::StaticPositionAnchor(_))
+              !matches!(item, InlineItem::HardBreak(_) | InlineItem::StaticPositionAnchor(_))
             });
             if has_non_break_content {
               current_items.pop();
@@ -1867,6 +1876,8 @@ impl InlineFormattingContext {
     available_height: Option<f32>,
     whitespace: &mut CollapsibleWhitespaceState,
     base_direction: crate::style::types::Direction,
+    float_writing_mode: WritingMode,
+    float_direction: Direction,
     positioned_children: &mut Vec<PositionedChild>,
     bidi_stack: &mut Vec<(UnicodeBidi, Direction)>,
     abs_cb_stack: &mut Vec<usize>,
@@ -1905,6 +1916,8 @@ impl InlineFormattingContext {
       available_height,
       whitespace,
       base_direction,
+      float_writing_mode,
+      float_direction,
       positioned_children,
       bidi_stack,
       abs_cb_stack,
@@ -1923,6 +1936,8 @@ impl InlineFormattingContext {
     available_height: Option<f32>,
     whitespace: &mut CollapsibleWhitespaceState,
     base_direction: crate::style::types::Direction,
+    float_writing_mode: WritingMode,
+    float_direction: Direction,
     positioned_children: &mut Vec<PositionedChild>,
     bidi_stack: &mut Vec<(UnicodeBidi, Direction)>,
     abs_cb_stack: &mut Vec<usize>,
@@ -1964,7 +1979,13 @@ impl InlineFormattingContext {
       // otherwise appear at the end of the line.
       if matches!(child.box_type, BoxType::LineBreak(_)) {
         whitespace.reset();
-        items.push(InlineItem::HardBreak);
+        items.push(InlineItem::HardBreak(
+          crate::layout::float_context::resolve_clear_side(
+            child.style.clear,
+            float_writing_mode,
+            float_direction,
+          ),
+        ));
         continue;
       }
 
@@ -2344,6 +2365,8 @@ impl InlineFormattingContext {
             available_height,
             whitespace,
             base_direction,
+            float_writing_mode,
+            float_direction,
             positioned_children,
             bidi_stack,
             abs_cb_stack,
@@ -2708,6 +2731,8 @@ impl InlineFormattingContext {
             available_height,
             whitespace,
             base_direction,
+            float_writing_mode,
+            float_direction,
             positioned_children,
             bidi_stack,
             abs_cb_stack,
@@ -3575,6 +3600,8 @@ impl InlineFormattingContext {
       available_height,
       &mut whitespace,
       base_direction,
+      container.style.writing_mode,
+      container.style.direction,
       positioned_children,
       bidi_stack,
       abs_cb_stack,
@@ -4445,7 +4472,7 @@ impl InlineFormattingContext {
       items.extend(segment_items);
 
       if seg_index < hard_offsets.len() {
-        items.push(InlineItem::HardBreak);
+        items.push(InlineItem::HardBreak(ClearSide::None));
       }
       start = end;
     }
@@ -4965,9 +4992,9 @@ impl InlineFormattingContext {
   ) -> Result<(), LayoutError> {
     for item in produced {
       match item {
-        InlineItem::HardBreak => {
+        InlineItem::HardBreak(clear) => {
           whitespace.reset();
-          items.push(InlineItem::HardBreak);
+          items.push(InlineItem::HardBreak(clear));
         }
         InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => {
           items.push(item);
@@ -4987,7 +5014,7 @@ impl InlineFormattingContext {
     for item in items {
       match item {
         InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) => continue,
-        InlineItem::HardBreak => return true,
+        InlineItem::HardBreak(_) => return true,
         InlineItem::InlineBox(b) => {
           if Self::inline_items_start_with_hard_break(&b.children) {
             return true;
@@ -6752,7 +6779,7 @@ impl InlineFormattingContext {
       InlineItem::Ruby(_) => 0,
       InlineItem::SoftBreak
       | InlineItem::Tab(_)
-      | InlineItem::HardBreak
+      | InlineItem::HardBreak(_)
       | InlineItem::InlineBlock(_)
       | InlineItem::Replaced(_)
       | InlineItem::Floating(_)
@@ -6825,7 +6852,7 @@ impl InlineFormattingContext {
       InlineItem::Ruby(_) => {}
       InlineItem::SoftBreak
       | InlineItem::Tab(_)
-      | InlineItem::HardBreak
+      | InlineItem::HardBreak(_)
       | InlineItem::InlineBlock(_)
       | InlineItem::Replaced(_)
       | InlineItem::Floating(_)
@@ -6855,7 +6882,7 @@ impl InlineFormattingContext {
       InlineItem::Ruby(_)
       | InlineItem::SoftBreak
       | InlineItem::Tab(_)
-      | InlineItem::HardBreak
+      | InlineItem::HardBreak(_)
       | InlineItem::InlineBlock(_)
       | InlineItem::Replaced(_)
       | InlineItem::Floating(_)
@@ -6895,7 +6922,7 @@ impl InlineFormattingContext {
       InlineItem::Ruby(_) => 0,
       InlineItem::SoftBreak
       | InlineItem::Tab(_)
-      | InlineItem::HardBreak
+      | InlineItem::HardBreak(_)
       | InlineItem::Text(_)
       | InlineItem::InlineBlock(_)
       | InlineItem::Replaced(_)
@@ -6938,7 +6965,7 @@ impl InlineFormattingContext {
       InlineItem::Text(_)
       | InlineItem::SoftBreak
       | InlineItem::Tab(_)
-      | InlineItem::HardBreak
+      | InlineItem::HardBreak(_)
       | InlineItem::Floating(_)
       | InlineItem::StaticPositionAnchor(_) => None,
     };
@@ -7003,7 +7030,7 @@ impl InlineFormattingContext {
           tab_item.style().clone(),
         )
       }
-      InlineItem::HardBreak => {
+      InlineItem::HardBreak(_) => {
         // Hard breaks are consumed by `LineBuilder` and should never reach fragment creation.
         debug_assert!(false, "InlineItem::HardBreak should not produce fragments");
         let bounds = Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0);
@@ -7420,7 +7447,7 @@ impl InlineFormattingContext {
           tab_item.style().clone(),
         )
       }
-      InlineItem::HardBreak => {
+      InlineItem::HardBreak(_) => {
         // Hard breaks are consumed by `LineBuilder` and should never reach fragment creation.
         debug_assert!(false, "InlineItem::HardBreak should not produce fragments");
         FragmentNode::new_line(Rect::from_xywh(x, y, 0.0, 0.0), 0.0, Vec::new())
@@ -7963,6 +7990,8 @@ impl InlineFormattingContext {
       available_height,
       &mut whitespace,
       base_direction,
+      container_style.writing_mode,
+      container_style.direction,
       positioned_children,
       &mut bidi_stack,
       &mut abs_cb_stack,
@@ -8138,7 +8167,7 @@ impl InlineFormattingContext {
             tracker.add_width(tab.width());
           }
         }
-        InlineItem::HardBreak => {
+        InlineItem::HardBreak(_) => {
           tracker.break_segment();
         }
         InlineItem::InlineBox(inline_box) => {
@@ -8186,7 +8215,7 @@ impl InlineFormattingContext {
         InlineItem::Tab(tab) => {
           tracker.add_width(tab.width());
         }
-        InlineItem::HardBreak => {
+        InlineItem::HardBreak(_) => {
           tracker.break_segment();
         }
         InlineItem::InlineBox(inline_box) => {
@@ -11952,7 +11981,7 @@ impl InlineFormattingContext {
                 let label = match item {
                   InlineItem::Text(t) => format!("Text(len={})", t.text.len()),
                   InlineItem::Tab(_) => "Tab".to_string(),
-                  InlineItem::HardBreak => "HardBreak".to_string(),
+                  InlineItem::HardBreak(_) => "HardBreak".to_string(),
                   InlineItem::SoftBreak => "SoftBreak".to_string(),
                   InlineItem::InlineBox(b) => format!(
                     "InlineBox(children={}, text_children={})",
@@ -11988,7 +12017,7 @@ impl InlineFormattingContext {
             match item {
               InlineItem::Text(t) => format!("Text({:?})", truncate_text(&t.text, 20)),
               InlineItem::Tab(_) => "Tab".to_string(),
-              InlineItem::HardBreak => "HardBreak".to_string(),
+              InlineItem::HardBreak(_) => "HardBreak".to_string(),
               InlineItem::SoftBreak => "SoftBreak".to_string(),
               InlineItem::InlineBox(b) => {
                 let mut child_desc = Vec::new();
@@ -12237,6 +12266,7 @@ impl InlineFormattingContext {
       let line_builder::LineBuildResult {
         lines: mut seg_lines,
         truncated,
+        max_clear_offset,
       } = self.layout_segment_lines(
         std::mem::take(pending),
         *use_first_line_width,
@@ -12314,12 +12344,30 @@ impl InlineFormattingContext {
         // No visible line boxes were produced; preserve first-line state (indentation, etc.).
         return Ok(None);
       }
-      let seg_height = seg_lines
+      let last_top = seg_lines.last().map(|l| l.y_offset).unwrap_or(0.0);
+      let last_height = seg_lines.last().map(|l| l.height).unwrap_or(0.0);
+      let ends_with_hard_break = seg_lines
+        .last()
+        .is_some_and(|line| line.ends_with_hard_break);
+      let mut seg_height = seg_lines
         .iter()
         .map(|l| l.y_offset + l.height)
         .fold(0.0, f32::max);
-      let last_top = seg_lines.last().map(|l| l.y_offset).unwrap_or(0.0);
-      let last_height = seg_lines.last().map(|l| l.height).unwrap_or(0.0);
+      // `LineBuilder` can apply float clearance after a hard break (legacy `<br clear=...>`).
+      // When no line box is emitted at the cleared Y position (e.g. the clearing `<br>` is the last
+      // inline content before a block-level sibling), we still need to advance by the cleared
+      // offset so following flow content starts below floats.
+      seg_height = seg_height.max(max_clear_offset);
+      // `LineBuilder` does not emit an empty line box for the post-break cursor position when the
+      // inline segment ends immediately after a hard break (`<br>`). Append a zero-height line at
+      // the cursor position so:
+      // - block layout observes the cleared offset (legacy `<br clear>`), and
+      // - fragment trees preserve the expected extra empty line before a block sibling.
+      if ends_with_hard_break {
+        let mut cursor_line = Line::new();
+        cursor_line.y_offset = seg_height;
+        seg_lines.push(cursor_line);
+      }
       for mut line in seg_lines {
         line.y_offset += *line_offset;
         lines_out.push(line);
@@ -12575,7 +12623,10 @@ impl InlineFormattingContext {
       .iter()
       .map(|f| f.bounds.max_y())
       .fold(0.0, f32::max);
-    let flow_height = total_height_lines.max(blocks_bottom);
+    // `line_offset` tracks the cursor position as we lay out inline and block segments. Prefer it
+    // when it exceeds the max fragment bounds so we account for float clearance that doesn't
+    // materialize as a line box (e.g. terminal `<br clear>` used as a clearfix).
+    let flow_height = total_height_lines.max(blocks_bottom).max(line_offset);
     let total_height = if float_ctx.is_none() {
       flow_height.max(max_float_bottom)
     } else {
@@ -13930,7 +13981,7 @@ fn first_non_whitespace_shaped_run_in_item<'a>(
     }
     InlineItem::SoftBreak
     | InlineItem::Tab(_)
-    | InlineItem::HardBreak
+    | InlineItem::HardBreak(_)
     | InlineItem::InlineBlock(_)
     | InlineItem::Replaced(_)
     | InlineItem::Floating(_)
@@ -13944,7 +13995,7 @@ fn first_char_of_item(item: &InlineItem) -> Option<char> {
     InlineItem::Text(t) => t.text.chars().next(),
     InlineItem::SoftBreak => Some(OBJECT_REPLACEMENT),
     InlineItem::Tab(_) => Some('\t'),
-    InlineItem::HardBreak => Some('\n'),
+    InlineItem::HardBreak(_) => Some('\n'),
     InlineItem::InlineBox(b) => b.children.iter().find_map(first_char_of_item),
     InlineItem::Ruby(r) => r
       .segments
@@ -13964,7 +14015,7 @@ fn last_char_of_item(item: &InlineItem) -> Option<char> {
     InlineItem::Text(t) => t.text.chars().next_back(),
     InlineItem::SoftBreak => Some(OBJECT_REPLACEMENT),
     InlineItem::Tab(_) => Some('\t'),
-    InlineItem::HardBreak => Some('\n'),
+    InlineItem::HardBreak(_) => Some('\n'),
     InlineItem::InlineBox(b) => b.children.iter().rev().find_map(last_char_of_item),
     InlineItem::Ruby(r) => r
       .segments
@@ -14405,7 +14456,7 @@ fn determine_paragraph_direction(items: &[InlineItem]) -> Option<crate::style::t
     match item {
       InlineItem::Text(t) => out.push_str(&t.text),
       InlineItem::Tab(_) => out.push('\t'),
-      InlineItem::HardBreak => out.push('\n'),
+      InlineItem::HardBreak(_) => out.push('\n'),
       InlineItem::SoftBreak => out.push(' '),
       InlineItem::InlineBox(b) => {
         for child in &b.children {
@@ -14649,7 +14700,7 @@ pub(crate) fn apply_plaintext_paragraph_direction(
       InlineItem::Tab(t) => {
         t.set_direction(direction);
       }
-      InlineItem::HardBreak => {}
+      InlineItem::HardBreak(_) => {}
       InlineItem::InlineBox(b) => {
         b.direction = direction;
         apply_plaintext_paragraph_direction(&mut b.children, direction);
@@ -14766,7 +14817,7 @@ fn item_has_interchar_opportunity(item: &InlineItem) -> bool {
       .segments
       .iter()
       .any(|seg| seg.base_items.iter().any(item_has_interchar_opportunity)),
-    InlineItem::HardBreak => false,
+    InlineItem::HardBreak(_) => false,
     InlineItem::InlineBlock(_)
     | InlineItem::Replaced(_)
     | InlineItem::Floating(_)
@@ -14789,7 +14840,7 @@ fn item_has_space_boundary(item: &InlineItem) -> bool {
       .segments
       .iter()
       .any(|seg| seg.base_items.iter().any(item_has_space_boundary)),
-    InlineItem::HardBreak => false,
+    InlineItem::HardBreak(_) => false,
     InlineItem::InlineBlock(_)
     | InlineItem::Replaced(_)
     | InlineItem::Floating(_)
@@ -14872,7 +14923,7 @@ fn accumulate_scripts(item: &InlineItem, counts: &mut ScriptCounts) {
     }
     InlineItem::SoftBreak => {}
     InlineItem::Tab(_) => {}
-    InlineItem::HardBreak => {}
+    InlineItem::HardBreak(_) => {}
     InlineItem::InlineBox(b) => {
       for child in &b.children {
         accumulate_scripts(child, counts);
@@ -14964,7 +15015,7 @@ fn inline_item_ends_with_hyphen(item: &InlineItem) -> bool {
       .last()
       .and_then(|seg| seg.base_items.last())
       .map_or(false, inline_item_ends_with_hyphen),
-    InlineItem::HardBreak => false,
+    InlineItem::HardBreak(_) => false,
     InlineItem::InlineBlock(_)
     | InlineItem::Replaced(_)
     | InlineItem::Floating(_)
@@ -15030,7 +15081,7 @@ fn append_text_content(item: &InlineItem, out: &mut String) {
         }
       }
     }
-    InlineItem::HardBreak => out.push('\n'),
+    InlineItem::HardBreak(_) => out.push('\n'),
     InlineItem::StaticPositionAnchor(_)
     | InlineItem::InlineBlock(_)
     | InlineItem::Replaced(_)
@@ -21844,7 +21895,7 @@ mod tests {
     assert!(
       inline_items
         .iter()
-        .any(|item| matches!(item, InlineItem::HardBreak)),
+        .any(|item| matches!(item, InlineItem::HardBreak(_))),
       "hard breaks should be emitted as explicit break items during inline item collection"
     );
 

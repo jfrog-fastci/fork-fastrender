@@ -422,6 +422,13 @@ impl<'a> InlineFloatIntegration<'a> {
     self.find_line_space(cleared_y, options)
   }
 
+  /// Computes clearance needed at a position.
+  ///
+  /// Returns the Y position after applying clearance.
+  pub fn compute_clearance(&self, y: f32, clear: ClearSide) -> f32 {
+    self.float_ctx.compute_clearance(y, clear)
+  }
+
   /// Gets the left edge at a specific Y position
   ///
   /// Returns the X coordinate where content can start.

@@ -38,6 +38,7 @@ use crate::debug::runtime;
 use crate::error::{RenderError, RenderStage};
 use crate::geometry::Size;
 use crate::layout::formatting_context::LayoutError;
+use crate::layout::float_context::ClearSide;
 use crate::layout::inline::float_integration::InlineFloatIntegration;
 use crate::layout::inline::float_integration::LineSpaceOptions;
 use crate::render_control::check_active_periodic;
@@ -134,7 +135,7 @@ pub enum InlineItem {
   ///
   /// This item does not produce a fragment and does not paint a glyph. It exists purely to force
   /// the line builder to end the current line immediately.
-  HardBreak,
+  HardBreak(ClearSide),
 
   /// An inline box (span, a, em, etc.) with children
   InlineBox(InlineBoxItem),
@@ -162,7 +163,7 @@ impl InlineItem {
       InlineItem::Text(t) => t.advance_for_layout,
       InlineItem::SoftBreak => 0.0,
       InlineItem::Tab(t) => t.width(),
-      InlineItem::HardBreak => 0.0,
+      InlineItem::HardBreak(_) => 0.0,
       InlineItem::InlineBox(b) => b.width(),
       InlineItem::InlineBlock(b) => b.total_width(),
       InlineItem::Ruby(r) => r.width(),
@@ -178,7 +179,7 @@ impl InlineItem {
       InlineItem::Text(t) => t.advance_for_layout,
       InlineItem::SoftBreak => 0.0,
       InlineItem::Tab(t) => t.width(),
-      InlineItem::HardBreak => 0.0,
+      InlineItem::HardBreak(_) => 0.0,
       InlineItem::InlineBox(b) => b.width(),
       InlineItem::InlineBlock(b) => b.width,
       InlineItem::Ruby(r) => r.intrinsic_width(),
@@ -194,7 +195,7 @@ impl InlineItem {
       InlineItem::Text(t) => t.metrics,
       InlineItem::SoftBreak => BaselineMetrics::new(0.0, 0.0, 0.0, 0.0),
       InlineItem::Tab(t) => t.metrics,
-      InlineItem::HardBreak => StaticPositionAnchor::metrics(),
+      InlineItem::HardBreak(_) => StaticPositionAnchor::metrics(),
       InlineItem::InlineBox(b) => b.metrics,
       InlineItem::InlineBlock(b) => b.metrics,
       InlineItem::Ruby(r) => r.metrics,
@@ -223,7 +224,7 @@ impl InlineItem {
       InlineItem::Text(t) => t.vertical_align,
       InlineItem::SoftBreak => VerticalAlign::Baseline,
       InlineItem::Tab(t) => t.vertical_align,
-      InlineItem::HardBreak => VerticalAlign::Baseline,
+      InlineItem::HardBreak(_) => VerticalAlign::Baseline,
       InlineItem::InlineBox(b) => b.vertical_align,
       InlineItem::InlineBlock(b) => b.vertical_align,
       InlineItem::Ruby(r) => r.vertical_align,
@@ -243,7 +244,7 @@ impl InlineItem {
       InlineItem::Text(t) => t.style.direction,
       InlineItem::SoftBreak => Direction::Ltr,
       InlineItem::Tab(t) => t.direction,
-      InlineItem::HardBreak => Direction::Ltr,
+      InlineItem::HardBreak(_) => Direction::Ltr,
       InlineItem::InlineBox(b) => b.direction,
       InlineItem::InlineBlock(b) => b.direction,
       InlineItem::Ruby(r) => r.direction,
@@ -258,7 +259,7 @@ impl InlineItem {
       InlineItem::Text(t) => t.style.unicode_bidi,
       InlineItem::SoftBreak => UnicodeBidi::Normal,
       InlineItem::Tab(t) => t.unicode_bidi,
-      InlineItem::HardBreak => UnicodeBidi::Normal,
+      InlineItem::HardBreak(_) => UnicodeBidi::Normal,
       InlineItem::InlineBox(b) => b.unicode_bidi,
       InlineItem::InlineBlock(b) => b.unicode_bidi,
       InlineItem::Ruby(r) => r.unicode_bidi,
@@ -277,7 +278,7 @@ impl InlineItem {
         let width = tab.resolve_width(start_x);
         (self, width)
       }
-      InlineItem::HardBreak => (self, 0.0),
+      InlineItem::HardBreak(_) => (self, 0.0),
       _ => {
         let width = self.width();
         (self, width)
@@ -287,7 +288,7 @@ impl InlineItem {
 
   fn contains_hard_break(&self) -> bool {
     match self {
-      InlineItem::HardBreak => true,
+      InlineItem::HardBreak(_) => true,
       InlineItem::InlineBox(b) => b.children.iter().any(|c| c.contains_hard_break()),
       InlineItem::Ruby(r) => r.segments.iter().any(|seg| {
         seg.base_items.iter().any(|c| c.contains_hard_break())
@@ -317,7 +318,7 @@ impl InlineItem {
   /// creation will hit the debug assertions meant to enforce that invariant.
   fn hoist_hard_breaks(self) -> Vec<Self> {
     match self {
-      InlineItem::HardBreak => vec![InlineItem::HardBreak],
+      InlineItem::HardBreak(clear) => vec![InlineItem::HardBreak(clear)],
       InlineItem::InlineBox(inline_box) => {
         let InlineBoxItem {
           box_id,
@@ -341,12 +342,14 @@ impl InlineItem {
         } = inline_box;
 
         let mut segments: Vec<Vec<InlineItem>> = Vec::new();
+        let mut breaks: Vec<ClearSide> = Vec::new();
         let mut current: Vec<InlineItem> = Vec::new();
 
         for child in children {
           for part in child.hoist_hard_breaks() {
-            if matches!(part, InlineItem::HardBreak) {
+            if let InlineItem::HardBreak(clear) = part {
               segments.push(std::mem::take(&mut current));
+              breaks.push(clear);
             } else {
               current.push(part);
             }
@@ -362,7 +365,6 @@ impl InlineItem {
         let first_non_empty = non_empty.first().copied();
         let last_non_empty = non_empty.last().copied();
 
-        let segments_len = segments.len();
         let mut out = Vec::new();
         for (idx, segment_children) in segments.into_iter().enumerate() {
           if !segment_children.is_empty() {
@@ -405,8 +407,8 @@ impl InlineItem {
               style: style.clone(),
             }));
           }
-          if idx + 1 < segments_len {
-            out.push(InlineItem::HardBreak);
+          if idx < breaks.len() {
+            out.push(InlineItem::HardBreak(breaks[idx]));
           }
         }
 
@@ -511,7 +513,7 @@ fn item_allows_soft_wrap(item: &InlineItem) -> bool {
     InlineItem::Tab(tab) => tab.allow_wrap(),
     // Soft breaks are inserted deliberately (e.g. `text-wrap`), so honor them regardless of
     // `white-space`. Hard breaks are handled earlier.
-    InlineItem::SoftBreak | InlineItem::HardBreak => true,
+    InlineItem::SoftBreak | InlineItem::HardBreak(_) => true,
     // Floats/anchors do not participate in line breaking the way normal in-flow items do.
     InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => true,
   }
@@ -544,7 +546,7 @@ fn last_text_char_for_soft_wrap(item: &InlineItem) -> Option<char> {
     }),
     InlineItem::SoftBreak
     | InlineItem::Tab(_)
-    | InlineItem::HardBreak
+    | InlineItem::HardBreak(_)
     | InlineItem::InlineBlock(_)
     | InlineItem::Replaced(_)
     | InlineItem::Floating(_)
@@ -3040,6 +3042,14 @@ impl Default for Line {
 pub struct LineBuildResult {
   pub lines: Vec<Line>,
   pub truncated: bool,
+  /// Maximum block-axis offset reached due to applying float clearance for hard breaks (e.g.
+  /// `<br clear="both">`).
+  ///
+  /// This is used by the inline formatting context to advance past cleared floats even when no
+  /// line box is emitted at the cleared position (for example when a clearing `<br>` is followed
+  /// immediately by a block-level sibling, or when only static-position anchors remain after the
+  /// break and are later discarded).
+  pub max_clear_offset: f32,
 }
 
 enum SplitInlineBoxForLineResult {
@@ -3071,6 +3081,17 @@ pub struct LineBuilder<'a> {
   indent_each_line: bool,
   /// Whether the next line to start is a paragraph start (first or after hard break)
   next_line_is_para_start: bool,
+  /// Clear value requested by the most recently processed hard break (e.g. `<br clear=...>`).
+  ///
+  /// This is applied after the line ends so the next line starts below the relevant floats.
+  pending_clear: Option<ClearSide>,
+  /// Block-axis offset (relative to `float_base_y`) reached after applying float clearance for a
+  /// hard break.
+  ///
+  /// `LineBuilder` normally advances vertical layout by emitting line boxes. When a clearing hard
+  /// break is the final in-flow content, no subsequent line box is emitted at the cleared Y
+  /// position; we record it here so the caller can still advance the containing block cursor.
+  max_clear_offset: f32,
   /// Float-aware line width provider
   float_integration: Option<InlineFloatIntegration<'a>>,
   /// Current line space when floats are present
@@ -3390,6 +3411,8 @@ impl<'a> LineBuilder<'a> {
       indent_hanging,
       indent_each_line,
       next_line_is_para_start: start_is_para_start,
+      pending_clear: None,
+      max_clear_offset: 0.0,
       float_integration,
       current_line_space: None,
       current_y: 0.0,
@@ -3430,7 +3453,10 @@ impl<'a> LineBuilder<'a> {
     if self.line_is_at_start_for_whitespace_trim() && Self::is_collapsible_space_item(&item) {
       return Ok(());
     }
-    if matches!(item, InlineItem::HardBreak) {
+    if let InlineItem::HardBreak(clear) = item {
+      if clear.is_clearing() {
+        self.pending_clear = Some(clear);
+      }
       return self.force_break();
     }
     if self.line_clamp_reached {
@@ -3465,7 +3491,7 @@ impl<'a> LineBuilder<'a> {
         InlineItem::Text(_) => "text",
         InlineItem::SoftBreak => "soft-break",
         InlineItem::Tab(_) => "tab",
-        InlineItem::HardBreak => "hard-break",
+        InlineItem::HardBreak(_) => "hard-break",
         InlineItem::InlineBox(_) => "inline-box",
         InlineItem::InlineBlock(_) => "inline-block",
         InlineItem::Ruby(_) => "ruby",
@@ -3549,7 +3575,7 @@ impl<'a> LineBuilder<'a> {
         .iter()
         .rev()
         .find_map(|pos| match &pos.item {
-          InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) | InlineItem::HardBreak => {
+          InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) | InlineItem::HardBreak(_) => {
             None
           }
           other => Some(other),
@@ -3634,7 +3660,7 @@ impl<'a> LineBuilder<'a> {
         }
         first.is_some_and(|child| self.inline_item_can_fragment_for_float_reposition(child))
       }
-      InlineItem::SoftBreak | InlineItem::HardBreak => true,
+      InlineItem::SoftBreak | InlineItem::HardBreak(_) => true,
       InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => false,
       InlineItem::Tab(_)
       | InlineItem::InlineBlock(_)
@@ -3944,7 +3970,7 @@ impl<'a> LineBuilder<'a> {
           force_break = true;
           break;
         }
-        InlineItem::HardBreak => {
+        InlineItem::HardBreak(_) => {
           ends_with_hard_break = true;
           force_break = true;
           break;
@@ -3976,7 +4002,7 @@ impl<'a> LineBuilder<'a> {
                 child,
                 InlineItem::StaticPositionAnchor(_)
                   | InlineItem::Floating(_)
-                  | InlineItem::HardBreak
+                  | InlineItem::HardBreak(_)
               )
             }) {
               if last_text_char_for_soft_wrap(prev).is_some_and(is_no_break_after_character) {
@@ -4516,7 +4542,7 @@ impl<'a> LineBuilder<'a> {
         self.current_line.items.last().map(|p| &p.item),
         Some(InlineItem::StaticPositionAnchor(_))
           | Some(InlineItem::Floating(_))
-          | Some(InlineItem::HardBreak)
+          | Some(InlineItem::HardBreak(_))
       ) {
         if let Some(item) = self.current_line.items.pop() {
           trailing_zero_width.push(item);
@@ -4622,6 +4648,22 @@ impl<'a> LineBuilder<'a> {
       let finished_height = self.current_line.height;
       self.lines.push(std::mem::take(&mut self.current_line));
       self.current_y += finished_height;
+      if let Some(clear) = self.pending_clear.take() {
+        if let Some(integration) = self.float_integration.as_ref() {
+          let query_y = self.float_base_y + self.current_y;
+          let cleared_y = integration.compute_clearance(query_y, clear);
+          if cleared_y.is_finite() && query_y.is_finite() {
+            self.current_y =
+              self.current_y.max((cleared_y - self.float_base_y).max(0.0));
+          }
+          // Record the cleared offset only when clearance actually moved the cursor; callers use
+          // this to advance the containing block even if no line box is emitted at the cleared
+          // position.
+          if self.current_y > (query_y - self.float_base_y) + 0.0001 {
+            self.max_clear_offset = self.max_clear_offset.max(self.current_y);
+          }
+        }
+      }
       self.next_line_is_para_start = ended_hard;
 
       if let Some(limit) = self.line_clamp {
@@ -4724,7 +4766,7 @@ impl<'a> LineBuilder<'a> {
           false
         }
       }
-      InlineItem::HardBreak => true,
+      InlineItem::HardBreak(_) => true,
       InlineItem::InlineBox(b) => {
         if matches!(b.unicode_bidi, UnicodeBidi::Plaintext) {
           *saw_plaintext = true;
@@ -4772,6 +4814,7 @@ impl<'a> LineBuilder<'a> {
     Ok(LineBuildResult {
       lines: self.lines,
       truncated: self.truncated,
+      max_clear_offset: self.max_clear_offset,
     })
   }
 
@@ -4987,7 +5030,7 @@ fn reorder_paragraph(
           }
           InlineItem::SoftBreak => leaf_index as u64,
           InlineItem::Tab(_) => leaf_index as u64,
-          InlineItem::HardBreak => leaf_index as u64,
+          InlineItem::HardBreak(_) => leaf_index as u64,
           InlineItem::InlineBox(_) => leaf_index as u64,
           InlineItem::InlineBlock(_) => leaf_index as u64,
           InlineItem::Ruby(_) => leaf_index as u64,
@@ -6053,7 +6096,7 @@ mod tests {
     );
 
     inline_box.add_child(InlineItem::Text(make_text_item("foo", 30.0)));
-    inline_box.add_child(InlineItem::HardBreak);
+    inline_box.add_child(InlineItem::HardBreak(ClearSide::None));
     inline_box.add_child(InlineItem::Text(make_text_item("bar", 30.0)));
     builder.add_item(InlineItem::InlineBox(inline_box)).unwrap();
 
@@ -7003,7 +7046,7 @@ mod tests {
     builder
       .add_item(InlineItem::Text(make_text_item("Hello", 50.0)))
       .unwrap();
-    builder.add_item(InlineItem::HardBreak).unwrap();
+    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 1);
@@ -7014,7 +7057,7 @@ mod tests {
   #[test]
   fn hard_break_only_produces_single_empty_line() {
     let mut builder = make_builder(200.0);
-    builder.add_item(InlineItem::HardBreak).unwrap();
+    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 1);
@@ -7025,8 +7068,8 @@ mod tests {
   #[test]
   fn consecutive_hard_breaks_produce_multiple_empty_lines() {
     let mut builder = make_builder(200.0);
-    builder.add_item(InlineItem::HardBreak).unwrap();
-    builder.add_item(InlineItem::HardBreak).unwrap();
+    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
+    builder.add_item(InlineItem::HardBreak(ClearSide::None)).unwrap();
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 2);
@@ -8988,7 +9031,7 @@ mod tests {
       InlineItem::Text(t) => t.text.clone(),
       InlineItem::SoftBreak => "\n".to_string(),
       InlineItem::Tab(_) => "\t".to_string(),
-      InlineItem::HardBreak => "\n".to_string(),
+      InlineItem::HardBreak(_) => "\n".to_string(),
       InlineItem::InlineBox(b) => b.children.iter().map(flatten_text).collect(),
       InlineItem::Ruby(r) => r
         .segments

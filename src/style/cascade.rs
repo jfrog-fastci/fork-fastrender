@@ -4486,6 +4486,9 @@ static PRESENTATIONAL_DIR_ISOLATE_RTL_DECLS: OnceLock<Vec<Declaration>> = OnceLo
 static PRESENTATIONAL_DIR_OVERRIDE_LTR_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 static PRESENTATIONAL_DIR_OVERRIDE_RTL_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 static PRESENTATIONAL_NOWRAP_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
+static PRESENTATIONAL_BR_CLEAR_LEFT_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
+static PRESENTATIONAL_BR_CLEAR_RIGHT_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
+static PRESENTATIONAL_BR_CLEAR_BOTH_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 static PRESENTATIONAL_HIDDEN_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 
 fn cached_declarations(
@@ -13346,6 +13349,9 @@ fn append_presentational_hints<'a>(
     matching_rules.push(presentational_rule);
   }
   if let Some(presentational_rule) = svg_presentation_attribute_hints(node, &layer_order, 12) {
+    matching_rules.push(presentational_rule);
+  }
+  if let Some(presentational_rule) = br_clear_presentational_hint(node, &layer_order, 13) {
     matching_rules.push(presentational_rule);
   }
 }
@@ -37752,6 +37758,37 @@ fn nowrap_presentational_hint(
     order,
     layer_order: layer_order.clone(),
     declarations: cached_declarations(&PRESENTATIONAL_NOWRAP_DECLS, "white-space: nowrap;"),
+    starting_style: false,
+  })
+}
+
+fn br_clear_presentational_hint(
+  node: &DomNode,
+  layer_order: &Arc<[u32]>,
+  order: usize,
+) -> Option<MatchedRule<'static>> {
+  let tag = node.tag_name()?;
+  if !tag.eq_ignore_ascii_case("br") {
+    return None;
+  }
+
+  let clear = trim_ascii_whitespace_html_css(node.get_attribute_ref("clear")?);
+  let declarations = if clear.eq_ignore_ascii_case("left") {
+    cached_declarations(&PRESENTATIONAL_BR_CLEAR_LEFT_DECLS, "clear: left;")
+  } else if clear.eq_ignore_ascii_case("right") {
+    cached_declarations(&PRESENTATIONAL_BR_CLEAR_RIGHT_DECLS, "clear: right;")
+  } else if clear.eq_ignore_ascii_case("both") || clear.eq_ignore_ascii_case("all") {
+    cached_declarations(&PRESENTATIONAL_BR_CLEAR_BOTH_DECLS, "clear: both;")
+  } else {
+    return None;
+  };
+
+  Some(MatchedRule {
+    origin: StyleOrigin::Author,
+    specificity: 0,
+    order,
+    layer_order: layer_order.clone(),
+    declarations,
     starting_style: false,
   })
 }

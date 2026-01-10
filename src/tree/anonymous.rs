@@ -44,7 +44,7 @@ use crate::error::{RenderStage, Result};
 use crate::render_control::active_deadline;
 use crate::style::display::FormattingContextType;
 use crate::style::display::Display;
-use crate::style::float::Float;
+use crate::style::float::{Clear, Float};
 use crate::style::position::Position;
 use crate::style::types::WhiteSpace;
 use crate::style::ComputedStyle;
@@ -781,7 +781,12 @@ impl AnonymousBoxCreator {
               !matches!(node.box_type, BoxType::LineBreak(_))
                 && !Self::is_collapsible_whitespace_text_node(node)
             });
-            if has_non_break_content {
+            // Preserve legacy clearing line breaks (`<br clear=...>`) because dropping them would
+            // prevent float clearance from being applied (common clearfix pattern).
+            let is_clearing = inline_run
+              .last()
+              .is_some_and(|node| node.style.clear != Clear::None);
+            if has_non_break_content && !is_clearing {
               inline_run.pop();
             }
           }
