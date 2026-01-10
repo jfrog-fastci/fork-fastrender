@@ -5631,6 +5631,23 @@ html, body { margin: 0; padding: 0; }
         Ok(())
       }
 
+      fn execute_module_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          self.pending = Some(LocationNavigationRequest {
+            url: self.target_url.clone(),
+            replace: self.replace,
+          });
+        }
+        Ok(())
+      }
+
       fn take_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
         self.pending.take()
       }
@@ -5673,6 +5690,23 @@ html, body { margin: 0; padding: 0; }
 
     impl BrowserTabJsExecutor for ScriptNavigationExecutor {
       fn execute_classic_script(
+        &mut self,
+        script_text: &str,
+        _spec: &ScriptElementSpec,
+        _current_script: Option<NodeId>,
+        _document: &mut BrowserDocumentDom2,
+        _event_loop: &mut EventLoop<BrowserTabHost>,
+      ) -> Result<()> {
+        if script_text == "NAVIGATE" && self.pending.is_none() {
+          self.pending = Some(LocationNavigationRequest {
+            url: self.target_url.clone(),
+            replace: self.replace,
+          });
+        }
+        Ok(())
+      }
+
+      fn execute_module_script(
         &mut self,
         script_text: &str,
         _spec: &ScriptElementSpec,
