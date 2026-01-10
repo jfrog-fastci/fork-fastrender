@@ -8,11 +8,11 @@
 //!   `font-src`, `connect-src`, `frame-src`, `script-src`, `script-src-elem`, `script-src-attr`
 //! - Source expressions:
 //!   - `'self'`, `'none'`
-//!   - `'unsafe-inline'` (inline scripts only; ignored when a nonce/hash is present, matching
+//!   - `'unsafe-inline'` (inline `<script>`/`<style>` only; ignored when a nonce/hash is present, matching
 //!     modern browser behavior)
 //!   - `'strict-dynamic'` (only affects script directives; treated conservatively)
-//!   - `'nonce-…'` (inline + external `<script nonce=...>`)
-//!   - `'sha256-…'` (inline scripts only; base64-encoded SHA-256 of the inline source bytes)
+//!   - `'nonce-…'` (inline `<script>`/`<style>` + external `<script nonce=...>`)
+//!   - `'sha256-…'` (inline `<script>`/`<style>` only; base64-encoded SHA-256 of the inline source bytes)
 //!   - `*`
 //!   - scheme sources like `https:`, `http:`, `data:` (and other valid `scheme:` tokens)
 //!   - host sources like `example.com`, `https://example.com`, `*.example.com`
@@ -23,9 +23,9 @@
 //!   present alongside a nonce/hash, we conservatively treat URL-based allowlisting as disabled,
 //!   requiring explicit nonces on `<script>` elements.
 //! - Hash sources other than `'sha256-…'` (sha384/sha512, etc.).
-//! - Nonce/hash/`'unsafe-inline'` semantics for non-script inline contexts (styles, event handlers,
-//!   etc.). These tokens are ignored for URL-based matching and therefore do not allow external
-//!   loads by themselves.
+//! - Nonce/hash/`'unsafe-inline'` semantics for inline *attributes* (event handlers, `style=""`, etc.).
+//!   These tokens are also ignored for URL-based matching (they do not allow external loads by
+//!   themselves).
 
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{Error, RenderStage, Result};
@@ -184,6 +184,17 @@ impl CspPolicy {
       .policies
       .iter()
       .all(|set| set_allows_inline_script(set, nonce, source_text))
+  }
+
+  /// True if this policy allows an inline `<style>` element to apply.
+  ///
+  /// This mirrors the `allows_inline_script` subset of semantics, but uses `style-src-elem`
+  /// (fallback: `style-src` → `default-src`).
+  pub fn allows_inline_style_element(&self, nonce: Option<&str>, source_text: &str) -> bool {
+    self
+      .policies
+      .iter()
+      .all(|set| set_allows_inline_style_element(set, nonce, source_text))
   }
 
   /// True if this policy allows a classic external `<script src=...>` element to load/execute.
@@ -522,6 +533,63 @@ fn non_empty_trimmed_ascii(value: &str) -> Option<&str> {
 fn set_allows_inline_script(set: &CspDirectiveSet, nonce: Option<&str>, source_text: &str) -> bool {
   // Inline `<script>` elements use `script-src-elem` (fallback: `script-src` → `default-src`).
   let list = directive_sources_for_set(set, CspDirective::ScriptSrcElem);
+  let Some(list) = list else {
+    // No directive and no default-src => allow.
+    return true;
+  };
+  if list.is_empty() {
+    return false;
+  }
+
+  let nonce = nonce.and_then(non_empty_trimmed_ascii);
+
+  let has_nonce_or_hash = list
+    .iter()
+    .any(|s| matches!(s, CspSource::Nonce(_) | CspSource::Sha256(_)));
+
+  if let Some(nonce) = nonce {
+    if list.iter().any(|s| matches!(s, CspSource::Nonce(n) if n == nonce)) {
+      return true;
+    }
+  }
+
+  // Compute SHA-256 once, but only if needed.
+  let mut computed_sha256: Option<String> = None;
+  if list.iter().any(|s| matches!(s, CspSource::Sha256(_))) {
+    use base64::{engine::general_purpose, Engine as _};
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(source_text.as_bytes());
+    computed_sha256 = Some(general_purpose::STANDARD.encode(digest));
+  }
+
+  if let Some(computed) = computed_sha256.as_deref() {
+    let computed_trimmed = computed.trim_end_matches('=');
+    for source in list {
+      let CspSource::Sha256(expected) = source else {
+        continue;
+      };
+      // Be tolerant of optional base64 padding.
+      if expected.trim_end_matches('=') == computed_trimmed {
+        return true;
+      }
+    }
+  }
+
+  // `unsafe-inline` is ignored when a nonce/hash is present (modern browsers).
+  if !has_nonce_or_hash && list.iter().any(|s| matches!(s, CspSource::UnsafeInline)) {
+    return true;
+  }
+
+  false
+}
+
+fn set_allows_inline_style_element(
+  set: &CspDirectiveSet,
+  nonce: Option<&str>,
+  source_text: &str,
+) -> bool {
+  // Inline `<style>` elements use `style-src-elem` (fallback: `style-src` → `default-src`).
+  let list = directive_sources_for_set(set, CspDirective::StyleSrcElem);
   let Some(list) = list else {
     // No directive and no default-src => allow.
     return true;
@@ -1239,5 +1307,23 @@ mod tests {
       "https://example.com/",
       "https://example.com/a.css"
     ));
+  }
+
+  #[test]
+  fn style_src_elem_none_blocks_inline_style_elements() {
+    let policy = CspPolicy::from_values(["style-src-elem 'none'"]).expect("parse");
+    assert!(
+      !policy.allows_inline_style_element(None, "body { color: red }"),
+      "expected style-src-elem 'none' to block inline <style> elements"
+    );
+  }
+
+  #[test]
+  fn style_src_elem_nonce_allows_inline_style_elements() {
+    let policy = CspPolicy::from_values(["style-src-elem 'nonce-abc'"]).expect("parse");
+    assert!(
+      policy.allows_inline_style_element(Some("abc"), "body { color: red }"),
+      "expected matching nonce to allow inline <style> elements"
+    );
   }
 }

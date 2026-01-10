@@ -6253,6 +6253,10 @@ pub struct InlineStyle {
   pub media: Option<String>,
   /// Optional `type` attribute value.
   pub type_attr: Option<String>,
+  /// Optional `nonce` attribute value.
+  ///
+  /// Used for Content Security Policy (`style-src-elem`) enforcement.
+  pub nonce: Option<String>,
   /// Whether the element is disabled via the boolean `disabled` attribute.
   pub disabled: bool,
 }
@@ -6376,6 +6380,7 @@ pub fn extract_css_sources(dom: &DomNode) -> Vec<ScopedStylesheetSource> {
               css,
               media: frame.node.get_attribute("media"),
               type_attr: frame.node.get_attribute("type"),
+              nonce: frame.node.get_attribute("nonce"),
               disabled: frame.node.get_attribute_ref("disabled").is_some(),
             }),
           });
@@ -6495,6 +6500,7 @@ pub fn extract_scoped_css_sources(dom: &DomNode) -> ScopedStylesheetSources {
           css,
           media: node.get_attribute("media"),
           type_attr: node.get_attribute("type"),
+          nonce: node.get_attribute("nonce"),
           disabled: node.get_attribute_ref("disabled").is_some(),
         }));
       } else if tag.eq_ignore_ascii_case("link")

@@ -9704,6 +9704,13 @@ impl FastRender {
               if trim_ascii_whitespace(&css).is_empty() {
                 continue;
               }
+              if let Some(ctx) = resource_context.as_ref() {
+                if let Some(csp) = ctx.csp.as_ref() {
+                  if !csp.allows_inline_style_element(inline.nonce.as_deref(), &css) {
+                    continue;
+                  }
+                }
+              }
               tasks.push(StylesheetTask::Inline { css });
             }
             StylesheetSource::External(link) => {
@@ -9889,6 +9896,13 @@ impl FastRender {
           }
           if trim_ascii_whitespace(&inline.css).is_empty() {
             continue;
+          }
+          if let Some(ctx) = resource_context {
+            if let Some(csp) = ctx.csp.as_ref() {
+              if !csp.allows_inline_style_element(inline.nonce.as_deref(), &inline.css) {
+                continue;
+              }
+            }
           }
 
           let mut sheet =
@@ -27857,6 +27871,39 @@ mod tests {
           && e.message.contains("Content-Security-Policy")
           && e.message.contains("style-src")),
       "expected CSP violation to be recorded for blocked stylesheet"
+    );
+  }
+
+  #[test]
+  fn csp_style_src_elem_none_blocks_inline_style_element() {
+    // Regression test: `style-src-elem` should apply to inline `<style>` elements (not just external
+    // `<link rel=stylesheet>` fetches).
+    //
+    // Additionally, ensure per-document CSP state does not leak across repeated `render_html` calls
+    // on a reused `FastRender` instance.
+    let baseline_html = "<!doctype html><html><body></body></html>";
+    let styled_html = r#"<!doctype html><html><head>
+        <style>body { background: rgb(1, 2, 3); }</style>
+      </head><body></body></html>"#;
+    let blocked_html = r#"<!doctype html><html><head>
+        <meta http-equiv="Content-Security-Policy" content="style-src-elem 'none'">
+        <style>body { background: rgb(1, 2, 3); }</style>
+      </head><body></body></html>"#;
+
+    let mut renderer = FastRender::new().expect("renderer");
+    let baseline = renderer.render_html(baseline_html, 16, 16).expect("baseline render");
+    let blocked = renderer.render_html(blocked_html, 16, 16).expect("blocked render");
+    let styled = renderer.render_html(styled_html, 16, 16).expect("styled render");
+
+    assert_ne!(
+      styled.data(),
+      baseline.data(),
+      "expected inline <style> to affect rendering when no CSP blocks it"
+    );
+    assert_eq!(
+      blocked.data(),
+      baseline.data(),
+      "expected CSP style-src-elem 'none' to suppress inline <style> rules"
     );
   }
 
