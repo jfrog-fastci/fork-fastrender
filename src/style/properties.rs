@@ -19825,43 +19825,52 @@ pub(crate) fn resolve_font_size_length(
   if len.unit.is_absolute() {
     return Some(len.to_px());
   }
-  if len.unit == LengthUnit::Em {
-    return Some(len.value * parent_font_size);
+  match len.unit {
+    // Font-relative units must break cycles when used in `font-size`, so resolve against the
+    // *parent* element's font size rather than the element's own computed font size.
+    LengthUnit::Em => Some(len.value * parent_font_size),
+    LengthUnit::Ex | LengthUnit::Ch => Some(len.value * parent_font_size * 0.5),
+    LengthUnit::Cap => Some(len.value * parent_font_size * 0.7),
+    LengthUnit::Ic => Some(len.value * parent_font_size),
+    LengthUnit::Lh => Some(len.value * parent_font_size * 1.2),
+
+    // Root-relative font units resolve against the root font size.
+    LengthUnit::Rem => Some(len.value * root_font_size),
+    LengthUnit::Rex | LengthUnit::Rch => Some(len.value * root_font_size * 0.5),
+    LengthUnit::Rcap => Some(len.value * root_font_size * 0.7),
+    LengthUnit::Ric => Some(len.value * root_font_size),
+    LengthUnit::Rlh => Some(len.value * root_font_size * 1.2),
+
+    LengthUnit::Percent => Some((len.value / 100.0) * parent_font_size),
+    unit if unit.is_viewport_relative() => len.resolve_with_viewport(viewport.width, viewport.height),
+    _ => None,
   }
-  if len.unit == LengthUnit::Rem {
-    return Some(len.value * root_font_size);
-  }
-  if len.unit == LengthUnit::Percent {
-    return Some((len.value / 100.0) * parent_font_size);
-  }
-  if len.unit.is_viewport_relative() {
-    return len.resolve_with_viewport(viewport.width, viewport.height);
-  }
-  if len.unit == LengthUnit::Ex {
-    return Some(len.value * parent_font_size * 0.5);
-  }
-  if len.unit == LengthUnit::Ch {
-    return Some(len.value * parent_font_size * 0.5);
-  }
-  None
 }
 
 fn length_from_token(token: &Token) -> Option<Length> {
   match token {
     Token::Dimension {
       value, ref unit, ..
-    } => {
-      let unit = unit.as_ref().to_ascii_lowercase();
-      match unit.as_str() {
-        "px" => Some(Length::px(*value)),
-        "em" => Some(Length::em(*value)),
-        "rem" => Some(Length::rem(*value)),
-        "ex" => Some(Length::ex(*value)),
-        "ch" => Some(Length::ch(*value)),
-        "pt" => Some(Length::pt(*value)),
-        "pc" => Some(Length::pc(*value)),
-        "in" => Some(Length::inches(*value)),
-        "cm" => Some(Length::cm(*value)),
+      } => {
+        let unit = unit.as_ref().to_ascii_lowercase();
+        match unit.as_str() {
+          "px" => Some(Length::px(*value)),
+          "em" => Some(Length::em(*value)),
+          "rem" => Some(Length::rem(*value)),
+          "ex" => Some(Length::ex(*value)),
+          "ch" => Some(Length::ch(*value)),
+          "lh" => Some(Length::new(*value, LengthUnit::Lh)),
+          "cap" => Some(Length::new(*value, LengthUnit::Cap)),
+          "ic" => Some(Length::new(*value, LengthUnit::Ic)),
+          "rex" => Some(Length::new(*value, LengthUnit::Rex)),
+          "rch" => Some(Length::new(*value, LengthUnit::Rch)),
+          "rcap" => Some(Length::new(*value, LengthUnit::Rcap)),
+          "ric" => Some(Length::new(*value, LengthUnit::Ric)),
+          "rlh" => Some(Length::new(*value, LengthUnit::Rlh)),
+          "pt" => Some(Length::pt(*value)),
+          "pc" => Some(Length::pc(*value)),
+          "in" => Some(Length::inches(*value)),
+          "cm" => Some(Length::cm(*value)),
         "mm" => Some(Length::mm(*value)),
         "q" => Some(Length::q(*value)),
         "vh" => Some(Length::new(*value, LengthUnit::Vh)),
@@ -19921,6 +19930,14 @@ fn parse_length_component<'i, 't>(
         "rem" => Length::rem(*value),
         "ex" => Length::ex(*value),
         "ch" => Length::ch(*value),
+        "lh" => Length::new(*value, LengthUnit::Lh),
+        "cap" => Length::new(*value, LengthUnit::Cap),
+        "ic" => Length::new(*value, LengthUnit::Ic),
+        "rex" => Length::new(*value, LengthUnit::Rex),
+        "rch" => Length::new(*value, LengthUnit::Rch),
+        "rcap" => Length::new(*value, LengthUnit::Rcap),
+        "ric" => Length::new(*value, LengthUnit::Ric),
+        "rlh" => Length::new(*value, LengthUnit::Rlh),
         "pt" => Length::pt(*value),
         "pc" => Length::pc(*value),
         "in" => Length::inches(*value),
@@ -19929,16 +19946,34 @@ fn parse_length_component<'i, 't>(
         "q" => Length::q(*value),
         "vw" => Length::new(*value, LengthUnit::Vw),
         "vh" => Length::new(*value, LengthUnit::Vh),
+        "vi" => Length::new(*value, LengthUnit::Vi),
+        "vb" => Length::new(*value, LengthUnit::Vb),
         "vmin" => Length::new(*value, LengthUnit::Vmin),
         "vmax" => Length::new(*value, LengthUnit::Vmax),
+        "dvw" => Length::new(*value, LengthUnit::Dvw),
+        "dvh" => Length::new(*value, LengthUnit::Dvh),
+        "dvi" => Length::new(*value, LengthUnit::Dvi),
+        "dvb" => Length::new(*value, LengthUnit::Dvb),
+        "dvmin" => Length::new(*value, LengthUnit::Dvmin),
+        "dvmax" => Length::new(*value, LengthUnit::Dvmax),
+        "cqw" => Length::new(*value, LengthUnit::Cqw),
+        "cqh" => Length::new(*value, LengthUnit::Cqh),
+        "cqi" => Length::new(*value, LengthUnit::Cqi),
+        "cqb" => Length::new(*value, LengthUnit::Cqb),
+        "cqmin" => Length::new(*value, LengthUnit::Cqmin),
+        "cqmax" => Length::new(*value, LengthUnit::Cqmax),
         // CSS Values and Units Level 4 viewport units.
         // FastRender renders with a fixed headless viewport, so sv*/lv* behave like v*.
         "svw" => Length::new(*value, LengthUnit::Vw),
         "svh" => Length::new(*value, LengthUnit::Vh),
+        "svi" => Length::new(*value, LengthUnit::Vi),
+        "svb" => Length::new(*value, LengthUnit::Vb),
         "svmin" => Length::new(*value, LengthUnit::Vmin),
         "svmax" => Length::new(*value, LengthUnit::Vmax),
         "lvw" => Length::new(*value, LengthUnit::Vw),
         "lvh" => Length::new(*value, LengthUnit::Vh),
+        "lvi" => Length::new(*value, LengthUnit::Vi),
+        "lvb" => Length::new(*value, LengthUnit::Vb),
         "lvmin" => Length::new(*value, LengthUnit::Vmin),
         "lvmax" => Length::new(*value, LengthUnit::Vmax),
         _ => return Err(location.new_custom_error(())),
@@ -26546,6 +26581,13 @@ mod tests {
       ("3EM", LengthUnit::Em),
       ("1ex", LengthUnit::Ex),
       ("1ch", LengthUnit::Ch),
+      ("1lh", LengthUnit::Lh),
+      ("1cap", LengthUnit::Cap),
+      ("1ic", LengthUnit::Ic),
+      ("1rex", LengthUnit::Rex),
+      ("1rch", LengthUnit::Rch),
+      ("1rCAP", LengthUnit::Rcap),
+      ("1rlh", LengthUnit::Rlh),
       ("5pt", LengthUnit::Pt),
       ("4pc", LengthUnit::Pc),
       ("2in", LengthUnit::In),
@@ -26554,11 +26596,27 @@ mod tests {
       ("6q", LengthUnit::Q),
       ("12vw", LengthUnit::Vw),
       ("14vh", LengthUnit::Vh),
+      ("15vi", LengthUnit::Vi),
+      ("16vb", LengthUnit::Vb),
       ("16vmin", LengthUnit::Vmin),
       ("18vmax", LengthUnit::Vmax),
+      ("90dvw", LengthUnit::Dvw),
+      ("80dvh", LengthUnit::Dvh),
+      ("70dvi", LengthUnit::Dvi),
+      ("60dvb", LengthUnit::Dvb),
+      ("50dvmin", LengthUnit::Dvmin),
+      ("40dvmax", LengthUnit::Dvmax),
+      ("25cqw", LengthUnit::Cqw),
+      ("20cqh", LengthUnit::Cqh),
+      ("15cqi", LengthUnit::Cqi),
+      ("10cqb", LengthUnit::Cqb),
+      ("5cqmin", LengthUnit::Cqmin),
+      ("7cqmax", LengthUnit::Cqmax),
       // Modern viewport units (CSS Values and Units Level 4).
       ("80svh", LengthUnit::Vh),
+      ("50sVi", LengthUnit::Vi),
       ("50LVW", LengthUnit::Vw),
+      ("50lVb", LengthUnit::Vb),
     ];
 
     for (text, unit) in cases {
