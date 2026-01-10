@@ -482,74 +482,92 @@ impl ModuleGraph {
     host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
   ) -> Result<Value, VmError> {
-    self.link_with_scope(vm, scope, global_object, module)?;
+    // Ensure dynamic `import()` expressions executed during module evaluation can resolve the active
+    // module graph even when the embedding uses the low-level `ModuleGraph::{link,evaluate}` APIs
+    // directly (without constructing a `JsRuntime`, which sets this pointer at runtime creation).
+    let prev_graph = vm.module_graph_ptr();
+    vm.set_module_graph(self);
 
-    let mut eval_scope = scope.reborrow();
-    let intr = vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
-    let cap = crate::builtins::new_promise_capability(
-      vm,
-      &mut eval_scope,
-      hooks,
-      Value::Object(intr.promise()),
-    )?;
+    let result = (|| -> Result<Value, VmError> {
+      self.link_with_scope(vm, scope, global_object, module)?;
 
-    let promise = cap.promise;
-    let roots = [cap.promise, cap.resolve, cap.reject];
-    eval_scope.push_roots(&roots)?;
-
-    let result = if self.modules[module_index(module)].has_tla {
-      Err(VmError::Unimplemented("top-level await"))
-    } else {
-      self.eval_inner(
+      let mut eval_scope = scope.reborrow();
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
+      let cap = crate::builtins::new_promise_capability(
         vm,
         &mut eval_scope,
-        global_object,
-        realm_id,
-        module,
-        host,
         hooks,
-      )
-    };
+        Value::Object(intr.promise()),
+      )?;
 
-    match result {
-      Ok(()) => {
-        eval_scope.push_root(cap.resolve)?;
-        let _ = vm.call_with_host_and_hooks(
-          host,
+      let promise = cap.promise;
+      let roots = [cap.promise, cap.resolve, cap.reject];
+      eval_scope.push_roots(&roots)?;
+
+      let result = if self.modules[module_index(module)].has_tla {
+        Err(VmError::Unimplemented("top-level await"))
+      } else {
+        self.eval_inner(
+          vm,
           &mut eval_scope,
-          hooks,
-          cap.resolve,
-          Value::Undefined,
-          &[Value::Undefined],
-        )?;
-      }
-      Err(err) => {
-        // For JS throw completions, reject with the thrown value. For internal VM errors (OOM,
-        // InvalidHandle, unimplemented paths), prefer rejecting with an `Error` object so callers
-        // have some debugging signal instead of a bare `undefined`.
-        let reason = if let Some(thrown) = err.thrown_value() {
-          thrown
-        } else {
-          let message = err.to_string();
-          crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", &message)
-            .unwrap_or(Value::Undefined)
-        };
-        eval_scope.push_root(cap.reject)?;
-        eval_scope.push_root(reason)?;
-        let _ = vm.call_with_host_and_hooks(
+          global_object,
+          realm_id,
+          module,
           host,
-          &mut eval_scope,
           hooks,
-          cap.reject,
-          Value::Undefined,
-          &[reason],
-        )?;
+        )
+      };
+
+      match result {
+        Ok(()) => {
+          eval_scope.push_root(cap.resolve)?;
+          let _ = vm.call_with_host_and_hooks(
+            host,
+            &mut eval_scope,
+            hooks,
+            cap.resolve,
+            Value::Undefined,
+            &[Value::Undefined],
+          )?;
+        }
+        Err(err) => {
+          // For JS throw completions, reject with the thrown value. For internal VM errors (OOM,
+          // InvalidHandle, unimplemented paths), prefer rejecting with an `Error` object so callers
+          // have some debugging signal instead of a bare `undefined`.
+          let reason = if let Some(thrown) = err.thrown_value() {
+            thrown
+          } else {
+            let message = err.to_string();
+            crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", &message)
+              .unwrap_or(Value::Undefined)
+          };
+          eval_scope.push_root(cap.reject)?;
+          eval_scope.push_root(reason)?;
+          let _ = vm.call_with_host_and_hooks(
+            host,
+            &mut eval_scope,
+            hooks,
+            cap.reject,
+            Value::Undefined,
+            &[reason],
+          )?;
+        }
       }
+
+      Ok(promise)
+    })();
+
+    // Restore any previous module graph pointer.
+    match prev_graph {
+      Some(ptr) => unsafe {
+        vm.set_module_graph(&mut *ptr);
+      },
+      None => vm.clear_module_graph(),
     }
 
-    Ok(promise)
+    result
   }
 
   pub fn evaluate(
