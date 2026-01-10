@@ -658,6 +658,34 @@ impl InlineFormattingContext {
     boundary: CombineBoundary,
   ) -> Result<Vec<InlineFlowSegment>, LayoutError> {
     let mut whitespace = CollapsibleWhitespaceState::default();
+    self.collect_inline_flow_segments_with_base_internal(
+      box_node,
+      available_width,
+      available_height,
+      base_direction,
+      positioned_children,
+      bidi_stack,
+      abs_cb_stack,
+      fixed_cb_stack,
+      boundary,
+      &mut whitespace,
+    )
+  }
+
+  #[allow(clippy::cognitive_complexity)]
+  fn collect_inline_flow_segments_with_base_internal(
+    &self,
+    box_node: &BoxNode,
+    available_width: f32,
+    available_height: Option<f32>,
+    base_direction: crate::style::types::Direction,
+    positioned_children: &mut Vec<PositionedChild>,
+    bidi_stack: &mut Vec<(UnicodeBidi, Direction)>,
+    abs_cb_stack: &mut Vec<usize>,
+    fixed_cb_stack: &mut Vec<usize>,
+    boundary: CombineBoundary,
+    whitespace: &mut CollapsibleWhitespaceState,
+  ) -> Result<Vec<InlineFlowSegment>, LayoutError> {
     let mut segments = Vec::new();
     let mut current_items: Vec<InlineItem> = Vec::new();
     let mut deadline_counter = 0usize;
@@ -728,7 +756,7 @@ impl InlineFormattingContext {
           // `position: running()` only applies to element boxes. Anonymous wrappers can share the
           // same `ComputedStyle` allocation; don't treat them as running elements.
           if !child.is_anonymous() {
-            self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+            self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
             let running = self.snapshot_running_fragment(child, available_width, running_name)?;
             let anchor = self.create_running_anchor(child, running);
             current_items.push(anchor);
@@ -742,7 +770,7 @@ impl InlineFormattingContext {
         child.style.position,
         crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
       ) {
-        self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+        self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
         let box_id = ensure_box_id(child);
         let containing_block_id = if matches!(
           child.style.position,
@@ -820,7 +848,7 @@ impl InlineFormattingContext {
               boundary,
             )?;
             self.append_inline_items_with_whitespace(
-              &mut whitespace,
+              whitespace,
               &mut current_items,
               produced,
             )?;
@@ -856,7 +884,7 @@ impl InlineFormattingContext {
               leading_collapsible: false,
               trailing_collapsible: false,
             };
-            self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+            self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
             let mut produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
@@ -875,7 +903,7 @@ impl InlineFormattingContext {
             }
           }
           MarkerContent::Image(replaced_box) => {
-            self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+            self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
             let mut item =
               self.create_replaced_item(child, replaced_box, available_width, available_height)?;
             let gap = marker_inline_gap(&child.style, &self.font_context, self.viewport_size);
@@ -889,7 +917,7 @@ impl InlineFormattingContext {
           }
         },
         BoxType::Inline(_) => {
-          let mut pending_space = self.take_pending_collapsible_space_item(&mut whitespace)?;
+          let mut pending_space = self.take_pending_collapsible_space_item(whitespace)?;
           if matches!(child.style.display, Display::Ruby) {
             if let Some(space_item) = pending_space.take() {
               current_items.push(space_item);
@@ -906,7 +934,7 @@ impl InlineFormattingContext {
             )?;
             current_items.push(item);
             whitespace.note_content();
-            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
+            maybe_push_footnote_anchor(&mut current_items, whitespace);
             continue;
           }
           if float {
@@ -930,7 +958,7 @@ impl InlineFormattingContext {
             };
             current_items.push(InlineItem::Floating(floating));
             whitespace.note_ignorable();
-            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
+            maybe_push_footnote_anchor(&mut current_items, whitespace);
             continue;
           }
           if formatting_context.is_some() {
@@ -940,7 +968,7 @@ impl InlineFormattingContext {
             let item = self.layout_inline_block(child, available_width, available_height)?;
             current_items.push(InlineItem::InlineBlock(item));
             whitespace.note_content();
-            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
+            maybe_push_footnote_anchor(&mut current_items, whitespace);
             continue;
           }
 
@@ -1045,63 +1073,19 @@ impl InlineFormattingContext {
           } else {
             inherited_boundary
           };
-          let child_items = self.collect_inline_items_internal(
+          let child_segments = self.collect_inline_flow_segments_with_base_internal(
             child,
             available_width,
             available_height,
-            &mut whitespace,
             base_direction,
             positioned_children,
             bidi_stack,
             abs_cb_stack,
             fixed_cb_stack,
             child_boundary,
+            whitespace,
           )?;
-          let child_starts_with_hard_break = Self::inline_items_start_with_hard_break(&child_items);
-          if !child_starts_with_hard_break {
-            if let Some(space_item) = pending_space.take() {
-              current_items.push(space_item);
-            }
-          }
-          if dump_text_enabled() {
-            static INLINE_ANON_ITEMS_LOG: OnceLock<AtomicUsize> = OnceLock::new();
-            let logged = INLINE_ANON_ITEMS_LOG.get_or_init(|| AtomicUsize::new(0));
-            if logged.fetch_add(1, Ordering::Relaxed) < 20 {
-              fn text_desc(node: &BoxNode) -> usize {
-                let mut total = 0;
-                if matches!(node.box_type, BoxType::Text(_)) {
-                  total += 1;
-                }
-                for child in node.children.iter() {
-                  total += text_desc(child);
-                }
-                total
-              }
-              eprintln!(
-                "ifc anon inline child box_id={} children={} text_desc={} -> items={}",
-                child.id,
-                child.children.len(),
-                text_desc(child),
-                child_items.len()
-              );
-              if child_items.is_empty() && !child.children.is_empty() {
-                let mut child_kinds = Vec::new();
-                for grand in child.children.iter().take(5) {
-                  child_kinds.push(format!(
-                    "{:?}/display={:?}/children={}/text_desc={}",
-                    grand.box_type,
-                    grand.style.display,
-                    grand.children.len(),
-                    text_desc(grand)
-                  ));
-                }
-                eprintln!(
-                  "    anon inline child descendants: {}",
-                  child_kinds.join(" | ")
-                );
-              }
-            }
-          }
+
           bidi_stack.pop();
           if establishes_fixed_cb {
             fixed_cb_stack.pop();
@@ -1109,501 +1093,203 @@ impl InlineFormattingContext {
           if establishes_abs_cb {
             abs_cb_stack.pop();
           }
-          let fallback_metrics = self.compute_strut_metrics_for_items(&child.style, &child_items);
-          let has_floats = child_items
-            .iter()
-            .any(|item| matches!(item, InlineItem::Floating(_)));
+
           let bottom_inset = padding_bottom + border_bottom;
-          let only_bookkeeping_anchors = !child_items.is_empty()
-            && child_items.iter().all(|item| match item {
-              InlineItem::StaticPositionAnchor(anchor) => {
-                anchor.running.is_none() && anchor.footnote.is_none()
-              }
-              _ => false,
-            });
-          if !has_floats
-            && (child_items.is_empty() || only_bookkeeping_anchors)
-            && start_edge == 0.0
-            && end_edge == 0.0
-            && content_offset_y == 0.0
-            && bottom_inset == 0.0
-            && !establishes_abs_cb
-          {
-            // Empty inline boxes are normally skipped, but footnote calls still need a zero-sized
-            // anchor so pagination can place the footnote body even when `::footnote-call` has
-            // `content: none`.
-            if only_bookkeeping_anchors {
-              // Static-position anchors for out-of-flow positioned descendants are bookkeeping-only;
-              // don't create an inline box that would force an empty line box, but keep the anchors
-              // in the inline stream so absolute positioning can still fall back to a sensible
-              // static position when needed.
-              for item in child_items {
-                current_items.push(item);
-              }
-              whitespace.note_ignorable();
-            }
-            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
-            continue;
-          }
-          let vertical_align = self.convert_vertical_align(
-            child.style.vertical_align,
-            child.style.font_size,
-            child.style.root_font_size,
-            fallback_metrics.line_height,
-            child.style.writing_mode,
-          );
-          let make_inline_box = |segment_children: Vec<InlineItem>,
-                                 is_first: bool,
-                                 is_last: bool|
-           -> InlineItem {
-            let start_edge = if is_first { start_edge } else { 0.0 };
-            let end_edge = if is_last { end_edge } else { 0.0 };
-            let border_left = if is_first { border_left } else { 0.0 };
-            let border_right = if is_last { border_right } else { 0.0 };
-            let metrics = compute_inline_box_metrics(
-              &segment_children,
-              content_offset_y,
-              bottom_inset,
-              fallback_metrics,
-            );
-            let mut inline_box = InlineBoxItem::new(
-              start_edge,
-              end_edge,
-              content_offset_y,
-              metrics,
-              child.style.clone(),
-              0,
-              child_bidi_direction,
-              child.style.unicode_bidi,
-            );
-            inline_box.box_id = box_id;
-            inline_box.border_left = border_left;
-            inline_box.border_right = border_right;
-            inline_box.border_top = border_top;
-            inline_box.border_bottom = border_bottom;
-            inline_box.bottom_inset = bottom_inset;
-            inline_box.strut_metrics = fallback_metrics;
-            inline_box.vertical_align = vertical_align;
-            for item in segment_children {
-              inline_box.add_child(item);
-            }
-            InlineItem::InlineBox(inline_box)
-          };
-
-          if has_floats {
-            enum Piece {
-              Segment(Vec<InlineItem>),
-              Float(InlineItem),
-            }
-            let mut pieces: Vec<Piece> = Vec::new();
-            let mut current_segment: Vec<InlineItem> = Vec::new();
-            for item in child_items {
-              if matches!(item, InlineItem::Floating(_)) {
-                pieces.push(Piece::Segment(std::mem::take(&mut current_segment)));
-                pieces.push(Piece::Float(item));
-              } else {
-                current_segment.push(item);
-              }
-            }
-            pieces.push(Piece::Segment(current_segment));
-
-            let mut first_segment: Option<usize> = None;
-            let mut last_segment: Option<usize> = None;
-            for (idx, piece) in pieces.iter().enumerate() {
-              if let Piece::Segment(children) = piece {
-                if !children.is_empty() {
-                  if first_segment.is_none() {
-                    first_segment = Some(idx);
-                  }
-                  last_segment = Some(idx);
+          let fallback_metrics = self.compute_strut_metrics_for_segments(&child.style, &child_segments);
+          let first_inline_segment = child_segments.iter().enumerate().find_map(|(idx, seg)| {
+            let InlineFlowSegment::InlineItems(items) = seg else {
+              return None;
+            };
+            let only_bookkeeping_anchors = !items.is_empty()
+              && items.iter().all(|item| match item {
+                InlineItem::StaticPositionAnchor(anchor) => {
+                  anchor.running.is_none() && anchor.footnote.is_none()
                 }
-              }
-            }
+                _ => false,
+              });
+            (!items.is_empty() && !only_bookkeeping_anchors).then_some(idx)
+          });
+          let last_inline_segment =
+            child_segments
+              .iter()
+              .enumerate()
+              .rev()
+              .find_map(|(idx, seg)| {
+                let InlineFlowSegment::InlineItems(items) = seg else {
+                  return None;
+                };
+                let only_bookkeeping_anchors = !items.is_empty()
+                  && items.iter().all(|item| match item {
+                    InlineItem::StaticPositionAnchor(anchor) => {
+                      anchor.running.is_none() && anchor.footnote.is_none()
+                    }
+                    _ => false,
+                  });
+                (!items.is_empty() && !only_bookkeeping_anchors).then_some(idx)
+              });
 
-            let mut emit_empty_segment = false;
-            if first_segment.is_none()
-              && !(start_edge == 0.0
-                && end_edge == 0.0
-                && content_offset_y == 0.0
-                && bottom_inset == 0.0
-                && !establishes_abs_cb)
-            {
-              first_segment = Some(0);
-              last_segment = Some(0);
-              emit_empty_segment = true;
-            }
+          for (segment_index, segment) in child_segments.into_iter().enumerate() {
+            match segment {
+              InlineFlowSegment::InlineItems(segment_items) => {
+                let segment_is_first = first_inline_segment == Some(segment_index);
+                let segment_is_last = last_inline_segment == Some(segment_index);
+                let segment_start_edge = if segment_is_first { start_edge } else { 0.0 };
+                let segment_end_edge = if segment_is_last { end_edge } else { 0.0 };
+                let segment_border_left = if segment_is_first { border_left } else { 0.0 };
+                let segment_border_right = if segment_is_last { border_right } else { 0.0 };
 
-            for (idx, piece) in pieces.into_iter().enumerate() {
-              match piece {
-                Piece::Float(item) => {
-                  current_items.push(item);
-                  whitespace.note_ignorable();
-                }
-                Piece::Segment(children) => {
-                  if children.is_empty() && !(emit_empty_segment && idx == 0) {
-                    continue;
-                  }
-                  let is_first = first_segment.is_some_and(|first| first == idx);
-                  let is_last = last_segment.is_some_and(|last| last == idx);
-                  let inline_item = make_inline_box(children, is_first, is_last);
-                  let width = match &inline_item {
-                    InlineItem::InlineBox(b) => b.width(),
-                    _ => 0.0,
-                  };
-                  current_items.push(inline_item);
-                  if width > 0.0 {
-                    whitespace.note_content();
-                  } else {
+                let has_floats = segment_items
+                  .iter()
+                  .any(|item| matches!(item, InlineItem::Floating(_)));
+                let only_bookkeeping_anchors = !segment_items.is_empty()
+                  && segment_items.iter().all(|item| match item {
+                    InlineItem::StaticPositionAnchor(anchor) => {
+                      anchor.running.is_none() && anchor.footnote.is_none()
+                    }
+                    _ => false,
+                  });
+                if !has_floats
+                  && (segment_items.is_empty() || only_bookkeeping_anchors)
+                  && segment_start_edge == 0.0
+                  && segment_end_edge == 0.0
+                  && content_offset_y == 0.0
+                  && bottom_inset == 0.0
+                  && !establishes_abs_cb
+                {
+                  if only_bookkeeping_anchors {
+                    if let Some(space_item) = pending_space.take() {
+                      current_items.push(space_item);
+                    }
+                    for item in segment_items {
+                      current_items.push(item);
+                    }
                     whitespace.note_ignorable();
                   }
+                  continue;
                 }
-              }
-            }
-          } else {
-            let inline_item = make_inline_box(child_items, true, true);
-            let width = match &inline_item {
-              InlineItem::InlineBox(b) => b.width(),
-              _ => 0.0,
-            };
-            current_items.push(inline_item);
-            if width > 0.0 {
-              whitespace.note_content();
-            } else {
-              whitespace.note_ignorable();
-            }
-          }
-          maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
-        }
-        BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => {
-          let mut pending_space = self.take_pending_collapsible_space_item(&mut whitespace)?;
-          if float {
-            if let Some(space_item) = pending_space.take() {
-              current_items.push(space_item);
-            }
-            let metrics = self.compute_strut_metrics(&child.style);
-            let va = self.convert_vertical_align(
-              child.style.vertical_align,
-              child.style.font_size,
-              child.style.root_font_size,
-              metrics.line_height,
-              child.style.writing_mode,
-            );
-            let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
-              box_node: child.clone(),
-              metrics,
-              vertical_align: va,
-              direction: child.style.direction,
-              unicode_bidi: child.style.unicode_bidi,
-            };
-            current_items.push(InlineItem::Floating(floating));
-            whitespace.note_ignorable();
-            continue;
-          }
-          if formatting_context.is_some() {
-            if let Some(space_item) = pending_space.take() {
-              current_items.push(space_item);
-            }
-            let item = self.layout_inline_block(child, available_width, available_height)?;
-            current_items.push(InlineItem::InlineBlock(item));
-            whitespace.note_content();
-            continue;
-          }
 
-          let percentage_base = if available_width.is_finite() {
-            available_width
-          } else {
-            0.0
-          };
-          let padding_left = resolve_length_for_width(
-            child.style.padding_left,
-            percentage_base,
-            &child.style,
-            &self.font_context,
-            self.viewport_size,
-          );
-          let padding_right = resolve_length_for_width(
-            child.style.padding_right,
-            percentage_base,
-            &child.style,
-            &self.font_context,
-            self.viewport_size,
-          );
-          let padding_top = resolve_length_for_width(
-            child.style.padding_top,
-            percentage_base,
-            &child.style,
-            &self.font_context,
-            self.viewport_size,
-          );
-          let padding_bottom = resolve_length_for_width(
-            child.style.padding_bottom,
-            percentage_base,
-            &child.style,
-            &self.font_context,
-            self.viewport_size,
-          );
-          let border_left = resolve_length_for_width(
-            child.style.used_border_left_width(),
-            percentage_base,
-            &child.style,
-            &self.font_context,
-            self.viewport_size,
-          );
-          let border_right = resolve_length_for_width(
-            child.style.used_border_right_width(),
-            percentage_base,
-            &child.style,
-            &self.font_context,
-            self.viewport_size,
-          );
-          let border_top = resolve_length_for_width(
-            child.style.used_border_top_width(),
-            percentage_base,
-            &child.style,
-            &self.font_context,
-            self.viewport_size,
-          );
-          let border_bottom = resolve_length_for_width(
-            child.style.used_border_bottom_width(),
-            percentage_base,
-            &child.style,
-            &self.font_context,
-            self.viewport_size,
-          );
-
-          let start_edge = padding_left + border_left;
-          let end_edge = padding_right + border_right;
-          let content_offset_y = padding_top + border_top;
-
-          let box_id = ensure_box_id(child);
-          let establishes_abs_cb = child.style.establishes_abs_containing_block();
-          let establishes_fixed_cb = child.style.establishes_fixed_containing_block();
-          if establishes_abs_cb {
-            abs_cb_stack.push(box_id);
-          }
-          if establishes_fixed_cb {
-            fixed_cb_stack.push(box_id);
-          }
-          let child_bidi_direction = if matches!(child.style.unicode_bidi, UnicodeBidi::Plaintext) {
-            let mut logical = String::new();
-            collect_logical_text_for_direction(child, &mut logical);
-            first_strong_direction(&logical).unwrap_or(child.style.direction)
-          } else {
-            child.style.direction
-          };
-          bidi_stack.push((child.style.unicode_bidi, child_bidi_direction));
-          let mut inherited_boundary = CombineBoundary::default();
-          if Some(idx) == first_combinable {
-            inherited_boundary.prev = boundary.prev;
-          }
-          if Some(idx) == last_combinable {
-            inherited_boundary.next = boundary.next;
-          }
-          let child_boundary = if is_vertical_typographic_mode(child.style.writing_mode)
-            && !matches!(child.style.text_combine_upright, TextCombineUpright::None)
-          {
-            let mut b =
-              compute_combine_boundary(&box_node.children, idx, child.style.text_combine_upright);
-            b.prev |= inherited_boundary.prev;
-            b.next |= inherited_boundary.next;
-            b
-          } else {
-            inherited_boundary
-          };
-          let child_items = self.collect_inline_items_internal(
-            child,
-            available_width,
-            available_height,
-            &mut whitespace,
-            base_direction,
-            positioned_children,
-            bidi_stack,
-            abs_cb_stack,
-            fixed_cb_stack,
-            child_boundary,
-          )?;
-          let child_starts_with_hard_break = Self::inline_items_start_with_hard_break(&child_items);
-          if !child_starts_with_hard_break {
-            if let Some(space_item) = pending_space.take() {
-              current_items.push(space_item);
-            }
-          }
-          if dump_text_enabled() {
-            static INLINE_ANON_LOG: OnceLock<AtomicUsize> = OnceLock::new();
-            let logged = INLINE_ANON_LOG.get_or_init(|| AtomicUsize::new(0));
-            if logged.fetch_add(1, Ordering::Relaxed) < 20 {
-              fn text_desc(node: &BoxNode) -> usize {
-                let mut total = 0;
-                if matches!(node.box_type, BoxType::Text(_)) {
-                  total += 1;
+                if let Some(space_item) = pending_space.take() {
+                  if !Self::inline_items_start_with_hard_break(&segment_items) {
+                    current_items.push(space_item);
+                  }
                 }
-                for child in node.children.iter() {
-                  total += text_desc(child);
-                }
-                total
-              }
-              fn first_text(node: &BoxNode) -> Option<String> {
-                match &node.box_type {
-                  BoxType::Text(t) => Some(truncate_text(&t.text, 40)),
-                  _ => {
-                    for child in node.children.iter() {
-                      if let Some(found) = first_text(child) {
-                        return Some(found);
+
+                let vertical_align = self.convert_vertical_align(
+                  child.style.vertical_align,
+                  child.style.font_size,
+                  child.style.root_font_size,
+                  fallback_metrics.line_height,
+                  child.style.writing_mode,
+                );
+                let make_inline_box = |segment_children: Vec<InlineItem>,
+                                       is_first: bool,
+                                       is_last: bool|
+                 -> InlineItem {
+                  let start_edge = if is_first { segment_start_edge } else { 0.0 };
+                  let end_edge = if is_last { segment_end_edge } else { 0.0 };
+                  let border_left = if is_first { segment_border_left } else { 0.0 };
+                  let border_right = if is_last { segment_border_right } else { 0.0 };
+                  let metrics = compute_inline_box_metrics(
+                    &segment_children,
+                    content_offset_y,
+                    bottom_inset,
+                    fallback_metrics,
+                  );
+                  let mut inline_box = InlineBoxItem::new(
+                    start_edge,
+                    end_edge,
+                    content_offset_y,
+                    metrics,
+                    child.style.clone(),
+                    0,
+                    child_bidi_direction,
+                    child.style.unicode_bidi,
+                  );
+                  inline_box.box_id = box_id;
+                  inline_box.border_left = border_left;
+                  inline_box.border_right = border_right;
+                  inline_box.border_top = border_top;
+                  inline_box.border_bottom = border_bottom;
+                  inline_box.bottom_inset = bottom_inset;
+                  inline_box.strut_metrics = fallback_metrics;
+                  inline_box.vertical_align = vertical_align;
+                  for item in segment_children {
+                    inline_box.add_child(item);
+                  }
+                  InlineItem::InlineBox(inline_box)
+                };
+
+                if has_floats {
+                  enum Piece {
+                    Segment(Vec<InlineItem>),
+                    Float(InlineItem),
+                  }
+                  let mut pieces: Vec<Piece> = Vec::new();
+                  let mut current_segment: Vec<InlineItem> = Vec::new();
+                  for item in segment_items {
+                    if matches!(item, InlineItem::Floating(_)) {
+                      pieces.push(Piece::Segment(std::mem::take(&mut current_segment)));
+                      pieces.push(Piece::Float(item));
+                    } else {
+                      current_segment.push(item);
+                    }
+                  }
+                  pieces.push(Piece::Segment(current_segment));
+
+                  let mut first_segment: Option<usize> = None;
+                  let mut last_segment: Option<usize> = None;
+                  for (idx, piece) in pieces.iter().enumerate() {
+                    if let Piece::Segment(children) = piece {
+                      if !children.is_empty() {
+                        if first_segment.is_none() {
+                          first_segment = Some(idx);
+                        }
+                        last_segment = Some(idx);
                       }
                     }
-                    None
                   }
-                }
-              }
-              eprintln!(
-                                "ifc anon inline child box_id={} children={} text_desc={} -> items={} first_text={:?}",
-                                child.id,
-                                child.children.len(),
-                                text_desc(child),
-                                child_items.len(),
-                                first_text(child)
-                            );
-              if child_items.is_empty() && !child.children.is_empty() {
-                let mut child_kinds = Vec::new();
-                for grand in child.children.iter().take(5) {
-                  child_kinds.push(format!(
-                    "{:?}/display={:?}/children={}/text_desc={}",
-                    grand.box_type,
-                    grand.style.display,
-                    grand.children.len(),
-                    text_desc(grand)
-                  ));
-                }
-                eprintln!(
-                  "    anon inline child descendants: {}",
-                  child_kinds.join(" | ")
-                );
-              }
-            }
-          }
-          bidi_stack.pop();
-          if establishes_fixed_cb {
-            fixed_cb_stack.pop();
-          }
-          if establishes_abs_cb {
-            abs_cb_stack.pop();
-          }
-          let fallback_metrics = self.compute_strut_metrics_for_items(&child.style, &child_items);
-          let has_floats = child_items
-            .iter()
-            .any(|item| matches!(item, InlineItem::Floating(_)));
-          let bottom_inset = padding_bottom + border_bottom;
-          if !has_floats
-            && child_items.is_empty()
-            && start_edge == 0.0
-            && end_edge == 0.0
-            && content_offset_y == 0.0
-            && bottom_inset == 0.0
-            && !establishes_abs_cb
-          {
-            continue;
-          }
-          let vertical_align = self.convert_vertical_align(
-            child.style.vertical_align,
-            child.style.font_size,
-            child.style.root_font_size,
-            fallback_metrics.line_height,
-            child.style.writing_mode,
-          );
-          let make_inline_box = |segment_children: Vec<InlineItem>,
-                                 is_first: bool,
-                                 is_last: bool|
-           -> InlineItem {
-            let start_edge = if is_first { start_edge } else { 0.0 };
-            let end_edge = if is_last { end_edge } else { 0.0 };
-            let border_left = if is_first { border_left } else { 0.0 };
-            let border_right = if is_last { border_right } else { 0.0 };
-            let metrics = compute_inline_box_metrics(
-              &segment_children,
-              content_offset_y,
-              bottom_inset,
-              fallback_metrics,
-            );
-            let mut inline_box = InlineBoxItem::new(
-              start_edge,
-              end_edge,
-              content_offset_y,
-              metrics,
-              child.style.clone(),
-              0,
-              child_bidi_direction,
-              child.style.unicode_bidi,
-            );
-            inline_box.box_id = box_id;
-            inline_box.border_left = border_left;
-            inline_box.border_right = border_right;
-            inline_box.border_top = border_top;
-            inline_box.border_bottom = border_bottom;
-            inline_box.bottom_inset = bottom_inset;
-            inline_box.strut_metrics = fallback_metrics;
-            inline_box.vertical_align = vertical_align;
-            for item in segment_children {
-              inline_box.add_child(item);
-            }
-            InlineItem::InlineBox(inline_box)
-          };
 
-          if has_floats {
-            enum Piece {
-              Segment(Vec<InlineItem>),
-              Float(InlineItem),
-            }
-            let mut pieces: Vec<Piece> = Vec::new();
-            let mut current_segment: Vec<InlineItem> = Vec::new();
-            for item in child_items {
-              if matches!(item, InlineItem::Floating(_)) {
-                pieces.push(Piece::Segment(std::mem::take(&mut current_segment)));
-                pieces.push(Piece::Float(item));
-              } else {
-                current_segment.push(item);
-              }
-            }
-            pieces.push(Piece::Segment(current_segment));
-
-            let mut first_segment: Option<usize> = None;
-            let mut last_segment: Option<usize> = None;
-            for (idx, piece) in pieces.iter().enumerate() {
-              if let Piece::Segment(children) = piece {
-                if !children.is_empty() {
-                  if first_segment.is_none() {
-                    first_segment = Some(idx);
+                  let mut emit_empty_segment = false;
+                  if first_segment.is_none()
+                    && !(segment_start_edge == 0.0
+                      && segment_end_edge == 0.0
+                      && content_offset_y == 0.0
+                      && bottom_inset == 0.0
+                      && !establishes_abs_cb)
+                  {
+                    first_segment = Some(0);
+                    last_segment = Some(0);
+                    emit_empty_segment = true;
                   }
-                  last_segment = Some(idx);
-                }
-              }
-            }
 
-            let mut emit_empty_segment = false;
-            if first_segment.is_none()
-              && !(start_edge == 0.0
-                && end_edge == 0.0
-                && content_offset_y == 0.0
-                && bottom_inset == 0.0
-                && !establishes_abs_cb)
-            {
-              first_segment = Some(0);
-              last_segment = Some(0);
-              emit_empty_segment = true;
-            }
-
-            for (idx, piece) in pieces.into_iter().enumerate() {
-              match piece {
-                Piece::Float(item) => {
-                  current_items.push(item);
-                  whitespace.note_ignorable();
-                }
-                Piece::Segment(children) => {
-                  if children.is_empty() && !(emit_empty_segment && idx == 0) {
-                    continue;
+                  for (idx, piece) in pieces.into_iter().enumerate() {
+                    match piece {
+                      Piece::Float(item) => {
+                        current_items.push(item);
+                        whitespace.note_ignorable();
+                      }
+                      Piece::Segment(children) => {
+                        if children.is_empty() && !(emit_empty_segment && idx == 0) {
+                          continue;
+                        }
+                        let is_first = first_segment.is_some_and(|first| first == idx);
+                        let is_last = last_segment.is_some_and(|last| last == idx);
+                        let inline_item = make_inline_box(children, is_first, is_last);
+                        let width = match &inline_item {
+                          InlineItem::InlineBox(b) => b.width(),
+                          _ => 0.0,
+                        };
+                        current_items.push(inline_item);
+                        if width > 0.0 {
+                          whitespace.note_content();
+                        } else {
+                          whitespace.note_ignorable();
+                        }
+                      }
+                    }
                   }
-                  let is_first = first_segment.is_some_and(|first| first == idx);
-                  let is_last = last_segment.is_some_and(|last| last == idx);
-                  let inline_item = make_inline_box(children, is_first, is_last);
+                } else {
+                  let inline_item = make_inline_box(segment_items, true, true);
                   let width = match &inline_item {
                     InlineItem::InlineBox(b) => b.width(),
                     _ => 0.0,
@@ -1616,21 +1302,397 @@ impl InlineFormattingContext {
                   }
                 }
               }
-            }
-          } else {
-            let inline_item = make_inline_box(child_items, true, true);
-            let width = match &inline_item {
-              InlineItem::InlineBox(b) => b.width(),
-              _ => 0.0,
-            };
-            current_items.push(inline_item);
-            if width > 0.0 {
-              whitespace.note_content();
-            } else {
-              whitespace.note_ignorable();
+              InlineFlowSegment::Block(block_box) => {
+                pending_space = None;
+                flush_current(&mut segments, &mut current_items);
+                whitespace.reset();
+                segments.push(InlineFlowSegment::Block(block_box));
+              }
             }
           }
-          maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
+
+          if let Some(space_item) = pending_space.take() {
+            current_items.push(space_item);
+          }
+          maybe_push_footnote_anchor(&mut current_items, whitespace);
+        }
+        BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => {
+          let mut pending_space = self.take_pending_collapsible_space_item(whitespace)?;
+          if float {
+            if let Some(space_item) = pending_space.take() {
+              current_items.push(space_item);
+            }
+            let metrics = self.compute_strut_metrics(&child.style);
+            let va = self.convert_vertical_align(
+              child.style.vertical_align,
+              child.style.font_size,
+              child.style.root_font_size,
+              metrics.line_height,
+              child.style.writing_mode,
+            );
+            let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
+              box_node: child.clone(),
+              metrics,
+              vertical_align: va,
+              direction: child.style.direction,
+              unicode_bidi: child.style.unicode_bidi,
+            };
+            current_items.push(InlineItem::Floating(floating));
+            whitespace.note_ignorable();
+            continue;
+          }
+          if formatting_context.is_some() {
+            if let Some(space_item) = pending_space.take() {
+              current_items.push(space_item);
+            }
+            let item = self.layout_inline_block(child, available_width, available_height)?;
+            current_items.push(InlineItem::InlineBlock(item));
+            whitespace.note_content();
+            continue;
+          }
+
+          let percentage_base = if available_width.is_finite() {
+            available_width
+          } else {
+            0.0
+          };
+          let padding_left = resolve_length_for_width(
+            child.style.padding_left,
+            percentage_base,
+            &child.style,
+            &self.font_context,
+            self.viewport_size,
+          );
+          let padding_right = resolve_length_for_width(
+            child.style.padding_right,
+            percentage_base,
+            &child.style,
+            &self.font_context,
+            self.viewport_size,
+          );
+          let padding_top = resolve_length_for_width(
+            child.style.padding_top,
+            percentage_base,
+            &child.style,
+            &self.font_context,
+            self.viewport_size,
+          );
+          let padding_bottom = resolve_length_for_width(
+            child.style.padding_bottom,
+            percentage_base,
+            &child.style,
+            &self.font_context,
+            self.viewport_size,
+          );
+          let border_left = resolve_length_for_width(
+            child.style.used_border_left_width(),
+            percentage_base,
+            &child.style,
+            &self.font_context,
+            self.viewport_size,
+          );
+          let border_right = resolve_length_for_width(
+            child.style.used_border_right_width(),
+            percentage_base,
+            &child.style,
+            &self.font_context,
+            self.viewport_size,
+          );
+          let border_top = resolve_length_for_width(
+            child.style.used_border_top_width(),
+            percentage_base,
+            &child.style,
+            &self.font_context,
+            self.viewport_size,
+          );
+          let border_bottom = resolve_length_for_width(
+            child.style.used_border_bottom_width(),
+            percentage_base,
+            &child.style,
+            &self.font_context,
+            self.viewport_size,
+          );
+
+          let start_edge = padding_left + border_left;
+          let end_edge = padding_right + border_right;
+          let content_offset_y = padding_top + border_top;
+
+          let box_id = ensure_box_id(child);
+          let establishes_abs_cb = child.style.establishes_abs_containing_block();
+          let establishes_fixed_cb = child.style.establishes_fixed_containing_block();
+          if establishes_abs_cb {
+            abs_cb_stack.push(box_id);
+          }
+          if establishes_fixed_cb {
+            fixed_cb_stack.push(box_id);
+          }
+          let child_bidi_direction = if matches!(child.style.unicode_bidi, UnicodeBidi::Plaintext) {
+            let mut logical = String::new();
+            collect_logical_text_for_direction(child, &mut logical);
+            first_strong_direction(&logical).unwrap_or(child.style.direction)
+          } else {
+            child.style.direction
+          };
+          bidi_stack.push((child.style.unicode_bidi, child_bidi_direction));
+          let mut inherited_boundary = CombineBoundary::default();
+          if Some(idx) == first_combinable {
+            inherited_boundary.prev = boundary.prev;
+          }
+          if Some(idx) == last_combinable {
+            inherited_boundary.next = boundary.next;
+          }
+          let child_boundary = if is_vertical_typographic_mode(child.style.writing_mode)
+            && !matches!(child.style.text_combine_upright, TextCombineUpright::None)
+          {
+            let mut b =
+              compute_combine_boundary(&box_node.children, idx, child.style.text_combine_upright);
+            b.prev |= inherited_boundary.prev;
+            b.next |= inherited_boundary.next;
+            b
+          } else {
+            inherited_boundary
+          };
+          let child_segments = self.collect_inline_flow_segments_with_base_internal(
+            child,
+            available_width,
+            available_height,
+            base_direction,
+            positioned_children,
+            bidi_stack,
+            abs_cb_stack,
+            fixed_cb_stack,
+            child_boundary,
+            whitespace,
+          )?;
+          bidi_stack.pop();
+          if establishes_fixed_cb {
+            fixed_cb_stack.pop();
+          }
+          if establishes_abs_cb {
+            abs_cb_stack.pop();
+          }
+          let bottom_inset = padding_bottom + border_bottom;
+          let fallback_metrics =
+            self.compute_strut_metrics_for_segments(&child.style, &child_segments);
+          let first_inline_segment = child_segments.iter().enumerate().find_map(|(idx, seg)| {
+            let InlineFlowSegment::InlineItems(items) = seg else {
+              return None;
+            };
+            let only_bookkeeping_anchors = !items.is_empty()
+              && items.iter().all(|item| match item {
+                InlineItem::StaticPositionAnchor(anchor) => {
+                  anchor.running.is_none() && anchor.footnote.is_none()
+                }
+                _ => false,
+              });
+            (!items.is_empty() && !only_bookkeeping_anchors).then_some(idx)
+          });
+          let last_inline_segment =
+            child_segments
+              .iter()
+              .enumerate()
+              .rev()
+              .find_map(|(idx, seg)| {
+                let InlineFlowSegment::InlineItems(items) = seg else {
+                  return None;
+                };
+                let only_bookkeeping_anchors = !items.is_empty()
+                  && items.iter().all(|item| match item {
+                    InlineItem::StaticPositionAnchor(anchor) => {
+                      anchor.running.is_none() && anchor.footnote.is_none()
+                    }
+                    _ => false,
+                  });
+                (!items.is_empty() && !only_bookkeeping_anchors).then_some(idx)
+              });
+
+          for (segment_index, segment) in child_segments.into_iter().enumerate() {
+            match segment {
+              InlineFlowSegment::InlineItems(segment_items) => {
+                let segment_is_first = first_inline_segment == Some(segment_index);
+                let segment_is_last = last_inline_segment == Some(segment_index);
+                let segment_start_edge = if segment_is_first { start_edge } else { 0.0 };
+                let segment_end_edge = if segment_is_last { end_edge } else { 0.0 };
+                let segment_border_left = if segment_is_first { border_left } else { 0.0 };
+                let segment_border_right = if segment_is_last { border_right } else { 0.0 };
+
+                let has_floats = segment_items
+                  .iter()
+                  .any(|item| matches!(item, InlineItem::Floating(_)));
+                let only_bookkeeping_anchors = !segment_items.is_empty()
+                  && segment_items.iter().all(|item| match item {
+                    InlineItem::StaticPositionAnchor(anchor) => {
+                      anchor.running.is_none() && anchor.footnote.is_none()
+                    }
+                    _ => false,
+                  });
+                if !has_floats
+                  && (segment_items.is_empty() || only_bookkeeping_anchors)
+                  && segment_start_edge == 0.0
+                  && segment_end_edge == 0.0
+                  && content_offset_y == 0.0
+                  && bottom_inset == 0.0
+                  && !establishes_abs_cb
+                {
+                  if only_bookkeeping_anchors {
+                    if let Some(space_item) = pending_space.take() {
+                      current_items.push(space_item);
+                    }
+                    for item in segment_items {
+                      current_items.push(item);
+                    }
+                    whitespace.note_ignorable();
+                  }
+                  continue;
+                }
+
+                if let Some(space_item) = pending_space.take() {
+                  if !Self::inline_items_start_with_hard_break(&segment_items) {
+                    current_items.push(space_item);
+                  }
+                }
+
+                let vertical_align = self.convert_vertical_align(
+                  child.style.vertical_align,
+                  child.style.font_size,
+                  child.style.root_font_size,
+                  fallback_metrics.line_height,
+                  child.style.writing_mode,
+                );
+                let make_inline_box = |segment_children: Vec<InlineItem>,
+                                       is_first: bool,
+                                       is_last: bool|
+                 -> InlineItem {
+                  let start_edge = if is_first { segment_start_edge } else { 0.0 };
+                  let end_edge = if is_last { segment_end_edge } else { 0.0 };
+                  let border_left = if is_first { segment_border_left } else { 0.0 };
+                  let border_right = if is_last { segment_border_right } else { 0.0 };
+                  let metrics = compute_inline_box_metrics(
+                    &segment_children,
+                    content_offset_y,
+                    bottom_inset,
+                    fallback_metrics,
+                  );
+                  let mut inline_box = InlineBoxItem::new(
+                    start_edge,
+                    end_edge,
+                    content_offset_y,
+                    metrics,
+                    child.style.clone(),
+                    0,
+                    child_bidi_direction,
+                    child.style.unicode_bidi,
+                  );
+                  inline_box.box_id = box_id;
+                  inline_box.border_left = border_left;
+                  inline_box.border_right = border_right;
+                  inline_box.border_top = border_top;
+                  inline_box.border_bottom = border_bottom;
+                  inline_box.bottom_inset = bottom_inset;
+                  inline_box.strut_metrics = fallback_metrics;
+                  inline_box.vertical_align = vertical_align;
+                  for item in segment_children {
+                    inline_box.add_child(item);
+                  }
+                  InlineItem::InlineBox(inline_box)
+                };
+
+                if has_floats {
+                  enum Piece {
+                    Segment(Vec<InlineItem>),
+                    Float(InlineItem),
+                  }
+                  let mut pieces: Vec<Piece> = Vec::new();
+                  let mut current_segment: Vec<InlineItem> = Vec::new();
+                  for item in segment_items {
+                    if matches!(item, InlineItem::Floating(_)) {
+                      pieces.push(Piece::Segment(std::mem::take(&mut current_segment)));
+                      pieces.push(Piece::Float(item));
+                    } else {
+                      current_segment.push(item);
+                    }
+                  }
+                  pieces.push(Piece::Segment(current_segment));
+
+                  let mut first_segment: Option<usize> = None;
+                  let mut last_segment: Option<usize> = None;
+                  for (idx, piece) in pieces.iter().enumerate() {
+                    if let Piece::Segment(children) = piece {
+                      if !children.is_empty() {
+                        if first_segment.is_none() {
+                          first_segment = Some(idx);
+                        }
+                        last_segment = Some(idx);
+                      }
+                    }
+                  }
+
+                  let mut emit_empty_segment = false;
+                  if first_segment.is_none()
+                    && !(segment_start_edge == 0.0
+                      && segment_end_edge == 0.0
+                      && content_offset_y == 0.0
+                      && bottom_inset == 0.0
+                      && !establishes_abs_cb)
+                  {
+                    first_segment = Some(0);
+                    last_segment = Some(0);
+                    emit_empty_segment = true;
+                  }
+
+                  for (idx, piece) in pieces.into_iter().enumerate() {
+                    match piece {
+                      Piece::Float(item) => {
+                        current_items.push(item);
+                        whitespace.note_ignorable();
+                      }
+                      Piece::Segment(children) => {
+                        if children.is_empty() && !(emit_empty_segment && idx == 0) {
+                          continue;
+                        }
+                        let is_first = first_segment.is_some_and(|first| first == idx);
+                        let is_last = last_segment.is_some_and(|last| last == idx);
+                        let inline_item = make_inline_box(children, is_first, is_last);
+                        let width = match &inline_item {
+                          InlineItem::InlineBox(b) => b.width(),
+                          _ => 0.0,
+                        };
+                        current_items.push(inline_item);
+                        if width > 0.0 {
+                          whitespace.note_content();
+                        } else {
+                          whitespace.note_ignorable();
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  let inline_item = make_inline_box(segment_items, true, true);
+                  let width = match &inline_item {
+                    InlineItem::InlineBox(b) => b.width(),
+                    _ => 0.0,
+                  };
+                  current_items.push(inline_item);
+                  if width > 0.0 {
+                    whitespace.note_content();
+                  } else {
+                    whitespace.note_ignorable();
+                  }
+                }
+              }
+              InlineFlowSegment::Block(block_box) => {
+                pending_space = None;
+                flush_current(&mut segments, &mut current_items);
+                whitespace.reset();
+                segments.push(InlineFlowSegment::Block(block_box));
+              }
+            }
+          }
+
+          if let Some(space_item) = pending_space.take() {
+            current_items.push(space_item);
+          }
+          maybe_push_footnote_anchor(&mut current_items, whitespace);
         }
         BoxType::Replaced(replaced_box) => {
           // Replaced boxes are usually treated as leaves, but form controls can have generated
@@ -1651,7 +1713,7 @@ impl InlineFormattingContext {
               parent_box_id: replaced_parent_box_id,
             });
           }
-          self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+          self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
           if float {
             let metrics = self.compute_strut_metrics(&child.style);
             let va = self.convert_vertical_align(
@@ -1676,13 +1738,13 @@ impl InlineFormattingContext {
             current_items.push(InlineItem::Replaced(item));
             whitespace.note_content();
           }
-          maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
+          maybe_push_footnote_anchor(&mut current_items, whitespace);
         }
         _ => {
           if is_inline_level || float {
             continue;
           }
-          self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+          self.flush_pending_collapsible_space(whitespace, &mut current_items)?;
           // If the inline flow ends with a hard break (`<br>`) and the next in-flow child is a
           // block-level box, browsers do not create an extra empty line box between the inline
           // content and the following block. The block starts on the line immediately after the
@@ -19558,6 +19620,47 @@ mod tests {
     assert!(
       kinds.iter().any(|k| k.1),
       "block child should create a block fragment in inline layout"
+    );
+    assert!(
+      kinds.windows(2).all(|w| w[0].3 <= w[1].2),
+      "fragments should stack in document order without overlap: {kinds:?}"
+    );
+    assert!(
+      kinds.iter().filter(|k| k.0).count() >= 2,
+      "lines before and after block should remain"
+    );
+  }
+
+  #[test]
+  fn inline_layout_splits_anonymous_inline_around_block_children() {
+    let ifc = InlineFormattingContext::new();
+    let before = BoxNode::new_text(default_style(), "before".to_string());
+    let mut block_style = (*default_style()).clone();
+    block_style.display = crate::style::display::Display::Block;
+    let block_child = BoxNode::new_block(
+      Arc::new(block_style),
+      FormattingContextType::Block,
+      vec![make_text_box("block")],
+    );
+    let anon_inline = BoxNode::new_anonymous_inline(default_style(), vec![block_child]);
+    let after = BoxNode::new_text(default_style(), "after".to_string());
+    let root = BoxNode::new_inline(default_style(), vec![before, anon_inline, after]);
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let fragment = ifc.layout(&root, &constraints).unwrap();
+    let mut kinds = Vec::new();
+    for child in fragment.children.iter() {
+      kinds.push((
+        child.content.is_line(),
+        child.content.is_block(),
+        child.bounds.y(),
+        child.bounds.max_y(),
+      ));
+    }
+
+    assert!(
+      kinds.iter().any(|k| k.1),
+      "block inside anonymous inline should create a block fragment in inline layout"
     );
     assert!(
       kinds.windows(2).all(|w| w[0].3 <= w[1].2),

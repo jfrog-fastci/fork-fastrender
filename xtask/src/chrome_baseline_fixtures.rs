@@ -1229,7 +1229,27 @@ fn run_chrome_screenshot(
   let args_new = build_chrome_args(HeadlessMode::New, profile_dir, window_size, dpr, screenshot_path)?;
   let mut last_status = run_chrome_with_timeout(chrome, &args_new, url, log_path, timeout, false);
   if last_status.as_ref().is_ok_and(|status| status.success()) && screenshot_path.is_file() {
-    return Ok(HeadlessMode::New);
+    // Some headless-new runs exit successfully yet fail to produce a real render (e.g. transient GPU
+    // context failures in container environments). These produce mostly blank screenshots but still
+    // satisfy the exit-status + "file exists" checks above, which makes fixture-vs-Chrome diffs
+    // non-deterministic and unusable.
+    //
+    // If we detect a known compositor/GPU failure signature, treat the run as failed and retry
+    // with legacy headless (`--headless --disable-gpu`), which is typically more robust.
+    if !chrome_log_indicates_transient_gpu_failure(log_path) {
+      return Ok(HeadlessMode::New);
+    }
+    let _ = fs::remove_file(screenshot_path);
+    let mut file = OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(log_path)
+      .with_context(|| format!("open log file {}", log_path.display()))?;
+    writeln!(
+      file,
+      "\n\n# Retrying with --headless (headless=new reported GPU compositor failure)\n"
+    )
+    .ok();
   }
 
   let args_legacy =
@@ -1254,6 +1274,20 @@ fn run_chrome_screenshot(
   }
 
   bail!("chrome did not produce a screenshot; see {}", log_path.display());
+}
+
+fn chrome_log_indicates_transient_gpu_failure(log_path: &Path) -> bool {
+  let Ok(contents) = fs::read_to_string(log_path) else {
+    return false;
+  };
+  // This error shows up in container/CI environments when Chrome's GPU process fails to initialize
+  // a command buffer; the resulting `--screenshot` output is frequently blank even though Chrome
+  // exits 0.
+  //
+  // Example:
+  //   ContextResult::kTransientFailure: Failed to send GpuControl.CreateCommandBuffer.
+  contents.contains("GpuControl.CreateCommandBuffer")
+    || contents.contains("ContextResult::kTransientFailure")
 }
 
 fn build_chrome_args(
@@ -1461,7 +1495,10 @@ fn absolutize_path(repo_root: &Path, path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-  use super::{build_fixture_metadata, is_snap_chromium, ChromeBaselineFixturesArgs};
+  use super::{
+    build_fixture_metadata, chrome_log_indicates_transient_gpu_failure, is_snap_chromium,
+    ChromeBaselineFixturesArgs,
+  };
   use sha2::{Digest, Sha256};
   use std::fs;
   use std::path::{Path, PathBuf};
@@ -1543,5 +1580,19 @@ mod tests {
       json.contains("\"input_sha256\""),
       "metadata JSON should include input_sha256; got: {json}"
     );
+  }
+
+  #[test]
+  fn chrome_gpu_failure_detection_matches_expected_signatures() {
+    let temp = tempdir().expect("tempdir");
+    let log = temp.path().join("chrome.log");
+    fs::write(
+      &log,
+      "[123:456] ContextResult::kTransientFailure: Failed to send GpuControl.CreateCommandBuffer.\n",
+    )
+    .expect("write log");
+    assert!(chrome_log_indicates_transient_gpu_failure(&log));
+    fs::write(&log, "everything is fine\n").expect("write log");
+    assert!(!chrome_log_indicates_transient_gpu_failure(&log));
   }
 }
