@@ -291,7 +291,11 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.runtime.exec_script_with_host_and_hooks(host, hooks, source)
+    self.exec_script_source_with_host_and_hooks(
+      host,
+      hooks,
+      Arc::new(SourceText::new("<inline>", source)),
+    )
   }
 
   /// Execute a classic script in this window realm using a custom host hook implementation.
@@ -304,8 +308,7 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    let mut dummy_host = ();
-    self.exec_script_with_host_and_hooks(&mut dummy_host, hooks, source)
+    self.exec_script_source_with_hooks(hooks, Arc::new(SourceText::new("<inline>", source)))
   }
 
   pub(crate) fn exec_script_source_with_host_and_hooks(

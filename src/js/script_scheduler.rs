@@ -687,8 +687,9 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
   /// mismatch, etc).
   ///
   /// Failed scripts are treated as "completed" for ordering purposes:
-  /// - blocking scripts unblock the parser
-  /// - deferred scripts are skipped so later deferred scripts can still run
+  /// - the script must be treated as "done" (it must not execute),
+  /// - parser-blocking scripts must unblock parsing (handled by the host),
+  /// - deferred scripts are skipped so later deferred scripts can still run.
   pub fn fetch_failed(&mut self, script_id: ScriptId) -> Result<Vec<ScriptSchedulerAction<NodeId>>> {
     let mode = {
       let Some(entry) = self.scripts.get_mut(&script_id) else {
@@ -700,13 +701,14 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
       if entry.fetch_completed {
         return Err(Error::Other(format!(
-          "fetch_failed called more than once for script_id={}",
+          "fetch_failed called after fetch completion for script_id={}",
           script_id.as_u64()
         )));
       }
 
       entry.fetch_completed = true;
       entry.queued_for_execution = true;
+      entry.source_text = None;
       entry.mode
     };
 

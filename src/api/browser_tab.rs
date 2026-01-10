@@ -3,6 +3,7 @@ use crate::debug::trace::TraceHandle;
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
+use crate::html::content_security_policy::{CspDirective, CspPolicy};
 use crate::html::encoding::decode_html_bytes;
 use crate::html::document_write::with_active_streaming_parser;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
@@ -30,6 +31,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use selectors::context::QuirksMode;
+use url::Url;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason};
 
@@ -152,6 +154,7 @@ pub struct BrowserTabHost {
   document_origin: Option<crate::resource::DocumentOrigin>,
   document_referrer_policy: ReferrerPolicy,
   pending_navigation: Option<LocationNavigationRequest>,
+  csp: Option<CspPolicy>,
   external_script_sources: HashMap<String, String>,
   script_blocking_stylesheets: ScriptBlockingStyleSheetSet,
   stylesheet_keys_by_node: HashMap<NodeId, usize>,
@@ -186,6 +189,7 @@ impl BrowserTabHost {
       document_origin: None,
       document_referrer_policy: ReferrerPolicy::default(),
       pending_navigation: None,
+      csp: None,
       external_script_sources: HashMap::new(),
       script_blocking_stylesheets: ScriptBlockingStyleSheetSet::new(),
       stylesheet_keys_by_node: HashMap::new(),
@@ -239,6 +243,15 @@ impl BrowserTabHost {
     self.document_referrer_policy = document_referrer_policy;
     self.pending_navigation = None;
     self.executor.on_navigation_committed(self.document_url.as_deref());
+    // Mirror the renderer's view of the active CSP policy (populated when navigating to a URL).
+    // HTML-string entry points may overwrite this with `<meta http-equiv="Content-Security-Policy">`
+    // extraction before scripts run.
+    self.csp = self
+      .document
+      .renderer_mut()
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.csp.clone());
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
     self.script_blocking_stylesheets = ScriptBlockingStyleSheetSet::new();
@@ -555,6 +568,41 @@ impl BrowserTabHost {
     Ok(())
   }
 
+  fn dispatch_script_error_event(&mut self, script: NodeId) -> Result<()> {
+    let mut event = Event::new(
+      "error",
+      EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    self.dispatch_lifecycle_event(EventTargetId::Node(script), event)
+  }
+
+  fn fail_external_script_fetch(
+    &mut self,
+    script_id: ScriptId,
+    script_node: NodeId,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    // HTML: external script fetch failure should dispatch an `error` event and the script should not
+    // execute.
+    self.dispatch_script_error_event(script_node)?;
+    // Mark the element as already-started so future scheduling attempts short-circuit.
+    self.mutate_dom(|dom| {
+      dom.node_mut(script_node).script_already_started = true;
+      ((), false)
+    });
+
+    let actions = self.scheduler.fetch_failed(script_id)?;
+    // Treat the script as "done" for parser blocking + deferred-script lifecycle gates.
+    self.finish_script_execution(script_id, event_loop)?;
+    self.apply_scheduler_actions(actions, event_loop)?;
+    Ok(())
+  }
+
   fn discover_scripts_best_effort(
     &mut self,
     document_url: Option<&str>,
@@ -730,6 +778,29 @@ impl BrowserTabHost {
           source_text,
           ..
         } => {
+          if self
+            .csp
+            .as_ref()
+            .is_some_and(|csp| csp.blocks_inline_scripts_mvp())
+            && self
+              .scripts
+              .get(&script_id)
+              .is_some_and(|entry| entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present)
+          {
+            let script_node = self
+              .scripts
+              .get(&script_id)
+              .map(|entry| entry.node_id)
+              .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
+            self.dispatch_script_error_event(script_node)?;
+            self.mutate_dom(|dom| {
+              dom.node_mut(script_node).script_already_started = true;
+              ((), false)
+            });
+            self.finish_script_execution(script_id, event_loop)?;
+            continue;
+          }
+
           let wait_result = self.wait_for_stylesheets_if_needed(script_id, event_loop);
           let exec_result = match wait_result {
             Ok(()) => {
@@ -879,6 +950,32 @@ impl BrowserTabHost {
     url: String,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
+    if let Some(csp) = self.csp.as_ref() {
+      let parsed = Url::parse(&url).ok();
+      let doc_origin = self
+        .document_url
+        .as_deref()
+        .and_then(crate::resource::origin_from_url)
+        .or_else(|| {
+          self
+            .scripts
+            .get(&script_id)
+            .and_then(|entry| entry.spec.base_url.as_deref())
+            .and_then(crate::resource::origin_from_url)
+        });
+      let allowed = parsed
+        .as_ref()
+        .is_some_and(|parsed| csp.allows_url(CspDirective::ScriptSrc, doc_origin.as_ref(), parsed));
+      if !allowed {
+        let script_node = self
+          .scripts
+          .get(&script_id)
+          .map(|entry| entry.node_id)
+          .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
+        return self.fail_external_script_fetch(script_id, script_node, event_loop);
+      }
+    }
+
     let is_blocking = self
       .scripts
       .get(&script_id)
@@ -1140,6 +1237,18 @@ impl BrowserTab {
   ) -> Result<Option<String>> {
     self.host.document_url = document_url.map(|url| url.to_string());
     self.host.update_stylesheet_media_context(options);
+    // Seed/extend the CSP policy before any scripts execute. This is a bounded scan of the document
+    // head and keeps behavior deterministic for large HTML strings.
+    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_from_html(html) {
+      match self.host.csp.as_mut() {
+        Some(existing) => {
+          existing.extend(meta_csp);
+        }
+        None => {
+          self.host.csp = Some(meta_csp);
+        }
+      }
+    }
     // `StreamingHtmlParser` cooperatively checks any *active* render deadline via
     // `check_active_periodic`, but it does not accept `RenderOptions` directly. Install a scoped
     // deadline so callers can cancel/timeout large HTML parses via `RenderOptions::{timeout,cancel_callback}`.
@@ -1429,10 +1538,18 @@ impl BrowserTab {
     };
     let document_referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
-    tab
-      .host
-      .reset_scripting_state(None, document_referrer_policy)?;
+    tab.host.reset_scripting_state(None, document_referrer_policy)?;
     tab.host.update_stylesheet_media_context(&options_for_media);
+    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_from_html(html) {
+      match tab.host.csp.as_mut() {
+        Some(existing) => {
+          existing.extend(meta_csp);
+        }
+        None => {
+          tab.host.csp = Some(meta_csp);
+        }
+      }
+    }
     tab.discover_and_schedule_scripts(None)?;
     Ok(tab)
   }
@@ -1515,6 +1632,7 @@ impl BrowserTab {
       // committed DOM.
       let fetcher = self.host.document.fetcher();
       let resource = fetcher.fetch_with_request(FetchRequest::document(&target_url))?;
+      let header_csp = CspPolicy::from_response_headers(&resource);
       let hint = resource
         .final_url
         .as_deref()
@@ -1550,6 +1668,7 @@ impl BrowserTab {
       self
         .host
         .reset_scripting_state(Some(final_url.clone()), document_referrer_policy)?;
+      self.host.csp = header_csp;
 
       // Avoid installing a nested deadline: the outer guard already enforces the render budget
       // across fetch + parse.
@@ -1963,11 +2082,11 @@ mod tests {
   use crate::js::window_realm::{register_dom_source, unregister_dom_source};
   use crate::js::{WindowRealm, WindowRealmConfig};
   use std::cell::{Cell, RefCell};
+  use std::collections::HashMap;
   use std::ptr::NonNull;
   use std::rc::Rc;
-  use std::sync::Mutex;
   use std::sync::atomic::{AtomicUsize, Ordering};
-  use std::sync::Arc;
+  use std::sync::{Arc, Mutex};
   use vm_js::Value;
 
   use tempfile::tempdir;
@@ -2002,6 +2121,67 @@ mod tests {
 
   fn build_host(html: &str, log: Rc<RefCell<Vec<String>>>) -> Result<(BrowserTabHost, EventLoop<BrowserTabHost>)> {
     let document = BrowserDocumentDom2::from_html(html, RenderOptions::default())?;
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(TestExecutor { log }),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    Ok((host, EventLoop::new()))
+  }
+
+  #[derive(Default)]
+  struct ScriptSourceFetcher {
+    calls: AtomicUsize,
+    sources: Mutex<HashMap<String, Vec<u8>>>,
+  }
+
+  impl ScriptSourceFetcher {
+    fn new(sources: &[(&str, &str)]) -> Self {
+      let mut map = HashMap::new();
+      for (url, source) in sources {
+        map.insert((*url).to_string(), (*source).as_bytes().to_vec());
+      }
+      Self {
+        calls: AtomicUsize::new(0),
+        sources: Mutex::new(map),
+      }
+    }
+
+    fn call_count(&self) -> usize {
+      self.calls.load(Ordering::Relaxed)
+    }
+  }
+
+  impl crate::resource::ResourceFetcher for ScriptSourceFetcher {
+    fn fetch(&self, url: &str) -> Result<crate::resource::FetchedResource> {
+      self.calls.fetch_add(1, Ordering::Relaxed);
+      let map = self.sources.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let bytes = map.get(url).cloned().ok_or_else(|| {
+        Error::Other(format!("ScriptSourceFetcher has no source registered for url={url}"))
+      })?;
+      Ok(crate::resource::FetchedResource::new(
+        bytes,
+        Some("application/javascript".to_string()),
+      ))
+    }
+
+    fn fetch_with_request(&self, req: crate::resource::FetchRequest<'_>) -> Result<crate::resource::FetchedResource> {
+      self.fetch(req.url)
+    }
+  }
+
+  fn build_host_with_fetcher(
+    html: &str,
+    log: Rc<RefCell<Vec<String>>>,
+    fetcher: Arc<dyn crate::resource::ResourceFetcher>,
+  ) -> Result<(BrowserTabHost, EventLoop<BrowserTabHost>)> {
+    let renderer = super::super::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let document = BrowserDocumentDom2::new(renderer, html, RenderOptions::default())?;
     let mut host = BrowserTabHost::new(
       document,
       Box::new(TestExecutor { log }),
@@ -2199,7 +2379,7 @@ mod tests {
 
     // Simulate re-entrant parsing while already in JS execution (e.g. future document.write).
     let outer_guard = JsExecutionGuard::enter(&tab.host.js_execution_depth);
-    tab.parse_html_streaming_and_schedule_scripts("<script>A</script>", None, &RenderOptions::default())?;
+    let _ = tab.parse_html_streaming_and_schedule_scripts("<script>A</script>", None, &RenderOptions::default())?;
 
     // No checkpoint should have run at the script boundary while the JS stack is non-empty.
     assert_eq!(&*log.borrow(), &["script:A".to_string()]);
@@ -2715,6 +2895,57 @@ html, body { margin: 0; padding: 0; }
     assert!(
       log_index(&entries, "print.css").is_none(),
       "did not expect print.css to be fetched for screen media; log={entries:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn csp_blocks_external_script_fetch_and_execution() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let fetcher = Arc::new(ScriptSourceFetcher::new(&[("https://evil.com/a.js", "EVIL")]));
+    let fetcher_for_renderer: Arc<dyn crate::resource::ResourceFetcher> = fetcher.clone();
+    let (mut host, mut event_loop) =
+      build_host_with_fetcher("<script src=\"https://evil.com/a.js\"></script>", Rc::clone(&log), fetcher_for_renderer)?;
+
+    host.reset_scripting_state(Some("https://example.com/".to_string()), ReferrerPolicy::default())?;
+    host.csp = CspPolicy::from_values(["script-src 'self'"]);
+
+    let scripts = host.discover_scripts_best_effort(Some("https://example.com/"));
+    assert_eq!(scripts.len(), 1);
+    let (node_id, spec) = scripts.into_iter().next().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    assert_eq!(
+      fetcher.call_count(),
+      0,
+      "external script fetch should be blocked by CSP before starting the request"
+    );
+    assert_eq!(&*log.borrow(), &Vec::<String>::new());
+    Ok(())
+  }
+
+  #[test]
+  fn csp_allows_external_script_fetch_and_execution() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let fetcher = Arc::new(ScriptSourceFetcher::new(&[("https://evil.com/a.js", "OK")]));
+    let fetcher_for_renderer: Arc<dyn crate::resource::ResourceFetcher> = fetcher.clone();
+    let (mut host, mut event_loop) =
+      build_host_with_fetcher("<script src=\"https://evil.com/a.js\"></script>", Rc::clone(&log), fetcher_for_renderer)?;
+
+    host.reset_scripting_state(Some("https://example.com/".to_string()), ReferrerPolicy::default())?;
+    host.csp = CspPolicy::from_values(["script-src https:"]);
+
+    let scripts = host.discover_scripts_best_effort(Some("https://example.com/"));
+    assert_eq!(scripts.len(), 1);
+    let (node_id, spec) = scripts.into_iter().next().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    assert_eq!(fetcher.call_count(), 1);
+    assert_eq!(
+      &*log.borrow(),
+      &["script:OK".to_string(), "microtask:OK".to_string()]
     );
     Ok(())
   }

@@ -4,7 +4,8 @@
 //! mixed content, etc). Many real pages additionally gate resource loading via Content Security
 //! Policy. This module implements a deliberately small-but-useful subset:
 //!
-//! - Directives: `default-src`, `style-src`, `img-src`, `font-src`, `connect-src`, `frame-src`
+//! - Directives: `default-src`, `style-src`, `img-src`, `font-src`, `connect-src`, `frame-src`,
+//!   `script-src`
 //! - Source expressions:
 //!   - `'self'`, `'none'`
 //!   - `*`
@@ -37,6 +38,7 @@ pub enum CspDirective {
   FontSrc,
   ConnectSrc,
   FrameSrc,
+  ScriptSrc,
 }
 
 impl CspDirective {
@@ -48,6 +50,7 @@ impl CspDirective {
       CspDirective::FontSrc => "font-src",
       CspDirective::ConnectSrc => "connect-src",
       CspDirective::FrameSrc => "frame-src",
+      CspDirective::ScriptSrc => "script-src",
     }
   }
 }
@@ -142,6 +145,23 @@ impl CspPolicy {
       .policies
       .iter()
       .all(|set| set_allows_url(set, directive, document_origin, url))
+  }
+
+  /// MVP inline-script gate:
+  /// - If a policy contains an explicit `script-src` directive and it has no URL-matching sources
+  ///   (e.g. it only contains nonces/hashes or `'none'`), then inline scripts should be blocked.
+  ///
+  /// FastRender does not yet implement nonce/hash/`'unsafe-inline'` semantics, so this is a
+  /// conservative approximation used by the script pipeline.
+  pub fn blocks_inline_scripts_mvp(&self) -> bool {
+    // Multiple policies combine by intersection: if *any* policy set blocks inline scripts, we
+    // block them.
+    self.policies.iter().any(|set| {
+      set
+        .directives
+        .get(&CspDirective::ScriptSrc)
+        .is_some_and(|list| list.iter().all(|src| matches!(src, CspSource::None)))
+    })
   }
 }
 
@@ -302,6 +322,12 @@ fn match_lower_directive(name: &str) -> Option<CspDirective> {
     Some(CspDirective::ConnectSrc)
   } else if name.eq_ignore_ascii_case("frame-src") {
     Some(CspDirective::FrameSrc)
+  } else if name.eq_ignore_ascii_case("script-src")
+    || name.eq_ignore_ascii_case("script-src-elem")
+    || name.eq_ignore_ascii_case("script-src-attr")
+  {
+    // MVP: treat script-src-elem/script-src-attr as equivalent to script-src.
+    Some(CspDirective::ScriptSrc)
   } else {
     None
   }

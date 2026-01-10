@@ -217,13 +217,6 @@ mod vm_js_host_hooks_api_guard {
       std::sync::Arc<vm_js::SourceText>,
     ) -> Result<vm_js::Value, vm_js::VmError> = vm_js::JsRuntime::exec_script_source_with_host_and_hooks;
 
-    let _exec_script_with_host_and_hooks: fn(
-      &mut vm_js::JsRuntime,
-      &mut dyn vm_js::VmHost,
-      &mut dyn vm_js::VmHostHooks,
-      &str,
-    ) -> Result<vm_js::Value, vm_js::VmError> = vm_js::JsRuntime::exec_script_with_host_and_hooks;
-
     let _perform_microtask_checkpoint_with_host: fn(
       &mut vm_js::Vm,
       &mut dyn vm_js::VmHost,

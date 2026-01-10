@@ -600,8 +600,7 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    let mut host = ();
-    self.exec_script_with_host_and_hooks(&mut host, hooks, source)
+    self.exec_script_source_with_hooks(hooks, Arc::new(SourceText::new("<inline>", source)))
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`).
