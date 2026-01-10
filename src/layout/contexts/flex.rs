@@ -8781,6 +8781,7 @@ impl FlexFormattingContext {
       if !rect.size.height.is_finite() || rect.size.height < 0.0 {
         rect.size.height = 0.0;
       }
+      let rect_eps = 0.01;
 
       let rect_eps = 0.01;
 
