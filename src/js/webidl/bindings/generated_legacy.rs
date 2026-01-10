@@ -1275,8 +1275,6 @@ pub mod window {
       ctor_u_r_l_search_params,
       proto_u_r_l_search_params,
     )?;
-    let func = rt.create_function("alert", 0, window_alert::<Host, R>)?;
-    rt.define_method(global, "alert", func)?;
     let func = rt.create_function("clearInterval", 0, window_clear_interval::<Host, R>)?;
     rt.define_method(global, "clearInterval", func)?;
     let func = rt.create_function("clearTimeout", 0, window_clear_timeout::<Host, R>)?;
