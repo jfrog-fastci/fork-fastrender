@@ -98,6 +98,25 @@ fn img_decoding_async_defers_only_for_large_destinations() {
     "expected deferred async decode to keep img transparent (show background)"
   );
 
+  // `loading="eager"` should override the async decode deferral heuristics so that above-the-fold
+  // hero images still paint even when `decoding="async"` is set.
+  let html_async_eager = r#"
+      <!doctype html>
+      <style>
+        html, body { margin: 0; background: rgb(0, 255, 0); }
+        img { display: block; width: 512px; height: 512px; }
+      </style>
+      <img loading="eager" decoding="async" src="test://big.png">
+    "#;
+  let pixmap_async_eager =
+    render_single_img(html_async_eager, Arc::clone(&fetcher), 512, 512).expect("render async eager");
+  let px = pixmap_async_eager.pixel(256, 256).expect("pixel");
+  assert_eq!(
+    (px.red(), px.green(), px.blue()),
+    (255, 0, 0),
+    "expected decoding=async + loading=eager image to paint"
+  );
+
   let html_sync = r#"
       <!doctype html>
       <style>
@@ -116,7 +135,7 @@ fn img_decoding_async_defers_only_for_large_destinations() {
 }
 
 #[test]
-fn img_loading_lazy_paints_when_in_viewport() {
+fn img_loading_lazy_paints_when_visible() {
   let png = png_with_dimensions_and_color(100, 100, [255, 0, 0, 255]);
   let resources = HashMap::from([("test://img.png".to_string(), png)]);
   let fetcher = Arc::new(MapFetcher {
@@ -137,7 +156,7 @@ fn img_loading_lazy_paints_when_in_viewport() {
   assert_eq!(
     (px.red(), px.green(), px.blue()),
     (255, 0, 0),
-    "expected loading=lazy image to paint when it intersects the viewport"
+    "expected loading=lazy image to paint when visible in the viewport"
   );
 
   let html_eager = r#"

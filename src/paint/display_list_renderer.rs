@@ -15603,9 +15603,17 @@ impl DisplayListRenderer {
       quality: item.filter_quality.into(),
     };
 
-    let src_rect = item.src_rect.unwrap_or_else(|| {
-      Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
-    });
+    let full_src_rect =
+      Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
+    let src_rect = match item.src_rect {
+      // When we return a full-size pixmap (same dimensions as the decoded image), `src_rect` is in
+      // that same pixel coordinate space and can be applied directly.
+      Some(src_rect) if pixmap.width() == item.image.width && pixmap.height() == item.image.height => src_rect,
+      // When `image_to_pixmap` already baked the crop/scale (e.g. clipped downscales), treat the
+      // pixmap itself as the source coordinate space.
+      Some(_) => full_src_rect,
+      None => full_src_rect,
+    };
     if src_rect.width() <= 0.0 || src_rect.height() <= 0.0 {
       return Ok(());
     }
@@ -16039,11 +16047,8 @@ impl DisplayListRenderer {
     // fractional device-pixel offset: the subpixel translation influences sampling.
     //
     // Prefer fidelity over caching for those subpixel cases by falling back to the full-resolution
-    // image pixmap. This avoids large fixture diffs for photo-heavy pages where images often end up
-    // on fractional coordinates due to percentage widths.
-    let can_use_scaled_pixmap = if item.src_rect.is_some() {
-      false
-    } else {
+    // image pixmap.
+    let can_use_scaled_pixmap = {
       let transform = self.canvas.transform();
       if transform == Transform::identity() {
         Self::is_near_integer(dest_rect_device.x()) && Self::is_near_integer(dest_rect_device.y())
@@ -16058,20 +16063,105 @@ impl DisplayListRenderer {
       }
     };
 
-    let Some(full) = (if item.src_rect.is_none() && can_use_scaled_pixmap {
-      self.image_data_to_pixmap_at_size(&item.image, target_w, target_h, item.filter_quality)?
-    } else {
-      self.image_data_to_pixmap(&item.image)?
-    }) else {
-      return Ok(None);
-    };
+    if let Some(src) = item.src_rect {
+      // `ImageItem::src_rect` is in the source image's pixel coordinate space. When it includes
+      // fractional offsets (common with `background-size: cover/contain`), cropping to integer
+      // pixel bounds would lose information that affects sampling. Keep the full pixmap in those
+      // cases and let `render_image` apply the source-rect transform.
+      if !(Self::is_near_integer(src.x())
+        && Self::is_near_integer(src.y())
+        && Self::is_near_integer(src.width())
+        && Self::is_near_integer(src.height()))
+      {
+        return self.image_data_to_pixmap(&item.image);
+      }
 
-    // `ImageItem::src_rect` represents a source rectangle in the image's pixel coordinate space.
-    // Cropping this to integer pixel bounds loses the fractional offset needed for spec-correct
-    // `drawImage`-style mapping (notably for `background-size: cover/contain`, which often yields
-    // fractional source coordinates). Keep the full pixmap and let `render_image` apply the
-    // source-rect transform so filtering can take the subpixel offsets into account.
-    Ok(Some(full))
+      let crop_diag = self.image_pixmap_diagnostics.clone();
+      let crop_timer = crop_diag.as_ref().map(|_| Instant::now());
+
+      let src_x = src.x().max(0.0).round() as u32;
+      let src_y = src.y().max(0.0).round() as u32;
+      let src_w = src.width().round().max(0.0) as u32;
+      let src_h = src.height().round().max(0.0) as u32;
+      if src_w == 0 || src_h == 0 {
+        return Ok(None);
+      }
+
+      let max_x = item.image.width.saturating_sub(src_x);
+      let max_y = item.image.height.saturating_sub(src_y);
+      let crop_w = src_w.min(max_x);
+      let crop_h = src_h.min(max_y);
+      if crop_w == 0 || crop_h == 0 {
+        return Ok(None);
+      }
+
+      // `src_rect` covers the entire image; treat it like a normal draw so we still get downscale
+      // caching (and avoid baking a no-op crop).
+      if src_x == 0 && src_y == 0 && crop_w == item.image.width && crop_h == item.image.height {
+        if can_use_scaled_pixmap {
+          return self.image_data_to_pixmap_at_size(&item.image, target_w, target_h, item.filter_quality);
+        }
+        return self.image_data_to_pixmap(&item.image);
+      }
+
+      // If the cropped region is being downscaled, sample directly from the original `ImageData`
+      // into a scaled pixmap. This avoids building an intermediate cropped pixmap and ensures we
+      // still use the Skia-aligned bilinear sampler for clipped draws.
+      if can_use_scaled_pixmap
+        && Self::should_use_scaled_image_pixmap(item.filter_quality, crop_w, crop_h, target_w, target_h)
+      {
+        if let Some(pixmap) = image_data_to_scaled_pixmap_from_rect_inner(
+          &item.image,
+          src_x,
+          src_y,
+          crop_w,
+          crop_h,
+          target_w,
+          target_h,
+          item.filter_quality,
+        )? {
+          return Ok(Some(Arc::new(pixmap)));
+        }
+      }
+
+      let Some(full) = self.image_data_to_pixmap(&item.image)? else {
+        return Ok(None);
+      };
+      let key = ImageCropKey {
+        image: ImageKey::new(&item.image),
+        src_x,
+        src_y,
+        crop_w,
+        crop_h,
+      };
+      let cropped = if let Some(cached) = self.cropped_image_cache.get(&key) {
+        cached.clone()
+      } else {
+        check_active(RenderStage::Paint)?;
+        let Some(mut cropped) = new_pixmap(crop_w, crop_h) else {
+          return Ok(None);
+        };
+        let mut deadline_counter = 0usize;
+        for row in 0..crop_h {
+          check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
+          let src_index = ((src_y + row) * item.image.width + src_x) as usize * 4;
+          let dst_index = (row * crop_w) as usize * 4;
+          cropped.data_mut()[dst_index..dst_index + (crop_w as usize * 4)]
+            .copy_from_slice(&full.data()[src_index..src_index + (crop_w as usize * 4)]);
+        }
+        if let (Some(diag), Some(start)) = (crop_diag.as_ref(), crop_timer) {
+          diag.record_duration(start.elapsed());
+        }
+        let cropped = Arc::new(cropped);
+        self.cropped_image_cache.put(key, cropped.clone());
+        cropped
+      };
+      Ok(Some(cropped))
+    } else if can_use_scaled_pixmap {
+      self.image_data_to_pixmap_at_size(&item.image, target_w, target_h, item.filter_quality)
+    } else {
+      self.image_data_to_pixmap(&item.image)
+    }
   }
 
   #[inline]
@@ -16102,16 +16192,17 @@ impl DisplayListRenderer {
     let src_pixels = u64::from(src_width).saturating_mul(u64::from(src_height));
     let target_pixels = u64::from(target_width).saturating_mul(u64::from(target_height));
 
-    // We pre-scale some images into a dedicated pixmap so we can use our own sampling path when
-    // scaling would otherwise be handled by tiny-skia. This is both:
-    //  - a perf win for large downscales (avoid sampling 4 source pixels per output pixel every
-    //    time the image is drawn), and
-    //  - a fidelity win for very large scales where tiny-skia's sampling diverges from
-    //    Chrome/Skia, causing pervasive pixel drift (notably full-viewport background images).
+    // For downscaled images, we opportunistically rasterize a scaled pixmap up-front (and cache
+    // it) instead of letting `tiny-skia` resample at draw time.
     //
-    // Only do this when the scale factor is "large enough" to matter; otherwise let tiny-skia
-    // handle the common case.
-    target_pixels.saturating_mul(4) <= src_pixels || target_pixels >= src_pixels.saturating_mul(4)
+    // This is both a performance win (smaller pixmap + cheaper draw) and, importantly, it lets us
+    // use our Skia-aligned bilinear sampler (see `image_data_to_scaled_pixmap_inner`), which has
+    // significantly better fixture-vs-Chrome stability for common news-site thumbnails.
+    //
+    // Avoid generating nearly-identical copies for tiny downscales (which can explode cache
+    // memory). The threshold here is intentionally conservative: a <= 10% reduction in pixel area
+    // is treated as a "slight" downscale.
+    target_pixels.saturating_mul(10) <= src_pixels.saturating_mul(9)
   }
 
   fn image_data_to_pixmap_at_size(
@@ -16488,6 +16579,198 @@ fn image_data_to_scaled_pixmap_inner(
       let a = lerp(top_a, bot_a, fy).floor().clamp(0.0, 255.0) as u8;
 
       // Keep premultiplied invariants stable even after rounding.
+      r = r.min(a);
+      g = g.min(a);
+      b = b.min(a);
+
+      let dst_idx = (y * target_width + x as u32) as usize * 4;
+      data[dst_idx] = r;
+      data[dst_idx + 1] = g;
+      data[dst_idx + 2] = b;
+      data[dst_idx + 3] = a;
+    }
+  }
+
+  Ok(Pixmap::from_vec(data, size))
+}
+
+fn image_data_to_scaled_pixmap_from_rect_inner(
+  image: &ImageData,
+  src_x: u32,
+  src_y: u32,
+  src_width: u32,
+  src_height: u32,
+  target_width: u32,
+  target_height: u32,
+  quality: ImageFilterQuality,
+) -> RenderResult<Option<Pixmap>> {
+  if target_width == 0 || target_height == 0 {
+    return Ok(None);
+  }
+  let full_w = image.width;
+  let full_h = image.height;
+  if full_w == 0 || full_h == 0 {
+    return Ok(None);
+  }
+  if src_width == 0 || src_height == 0 {
+    return Ok(None);
+  }
+  if src_x >= full_w || src_y >= full_h {
+    return Ok(None);
+  }
+  if quality != ImageFilterQuality::Linear {
+    return Ok(None);
+  }
+
+  let max_w = full_w.saturating_sub(src_x);
+  let max_h = full_h.saturating_sub(src_y);
+  let src_w = src_width.min(max_w);
+  let src_h = src_height.min(max_h);
+  if src_w == 0 || src_h == 0 {
+    return Ok(None);
+  }
+  if target_width >= src_w || target_height >= src_h {
+    return Ok(None);
+  }
+
+  let Some(size) = IntSize::from_wh(target_width, target_height) else {
+    return Ok(None);
+  };
+  let Some(bytes) = u64::from(target_width)
+    .checked_mul(u64::from(target_height))
+    .and_then(|px| px.checked_mul(4))
+  else {
+    return Ok(None);
+  };
+
+  let mut data = match reserve_buffer(bytes, "scaled image pixmap") {
+    Ok(buf) => buf,
+    Err(_) => return Ok(None),
+  };
+  data.resize(bytes as usize, 0);
+
+  check_active(RenderStage::Paint)?;
+  let src_pixels = image.pixels.as_ref().as_slice();
+  let Some(expected_src_bytes) = u64::from(full_w)
+    .checked_mul(u64::from(full_h))
+    .and_then(|px| px.checked_mul(4))
+  else {
+    return Ok(None);
+  };
+  let Ok(expected_src_len) = usize::try_from(expected_src_bytes) else {
+    return Ok(None);
+  };
+  if src_pixels.len() != expected_src_len {
+    return Ok(None);
+  }
+
+  #[derive(Clone, Copy)]
+  struct AxisSample {
+    i0: u32,
+    i1: u32,
+    t: f32,
+  }
+
+  let scale_x = src_w as f32 / target_width as f32;
+  let scale_y = src_h as f32 / target_height as f32;
+  if !scale_x.is_finite() || !scale_y.is_finite() {
+    return Ok(None);
+  }
+  let max_x = src_w as f32 - 1.0;
+  let max_y = src_h as f32 - 1.0;
+
+  let mut xs = Vec::new();
+  if xs.try_reserve_exact(target_width as usize).is_err() {
+    return Ok(None);
+  }
+  for x in 0..target_width {
+    let mut sx = (x as f32 + 0.5) * scale_x - 0.5;
+    if !sx.is_finite() {
+      return Ok(None);
+    }
+    sx = sx.clamp(0.0, max_x);
+    let sx0 = sx.floor() as u32;
+    let sx1 = (sx0 + 1).min(src_w - 1);
+    xs.push(AxisSample {
+      i0: src_x + sx0,
+      i1: src_x + sx1,
+      t: sx - sx0 as f32,
+    });
+  }
+
+  let mut ys = Vec::new();
+  if ys.try_reserve_exact(target_height as usize).is_err() {
+    return Ok(None);
+  }
+  for y in 0..target_height {
+    let mut sy = (y as f32 + 0.5) * scale_y - 0.5;
+    if !sy.is_finite() {
+      return Ok(None);
+    }
+    sy = sy.clamp(0.0, max_y);
+    let sy0 = sy.floor() as u32;
+    let sy1 = (sy0 + 1).min(src_h - 1);
+    ys.push(AxisSample {
+      i0: src_y + sy0,
+      i1: src_y + sy1,
+      t: sy - sy0 as f32,
+    });
+  }
+
+  let premultiplied = image.premultiplied;
+  let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+  let mut pixel_counter = 0usize;
+  for (y, ysamp) in ys.iter().enumerate() {
+    let y = y as u32;
+    let (sy0, sy1, fy) = (ysamp.i0, ysamp.i1, ysamp.t);
+    let row0 = sy0 as usize * full_w as usize;
+    let row1 = sy1 as usize * full_w as usize;
+    for (x, xsamp) in xs.iter().enumerate() {
+      if (pixel_counter & 4095) == 0 {
+        check_active(RenderStage::Paint)?;
+      }
+      pixel_counter = pixel_counter.wrapping_add(1);
+
+      let (sx0, sx1, fx) = (xsamp.i0, xsamp.i1, xsamp.t);
+
+      let idx00 = (row0 + sx0 as usize) * 4;
+      let idx10 = (row0 + sx1 as usize) * 4;
+      let idx01 = (row1 + sx0 as usize) * 4;
+      let idx11 = (row1 + sx1 as usize) * 4;
+
+      let read = |idx: usize| -> (f32, f32, f32, f32) {
+        let r = src_pixels[idx] as f32;
+        let g = src_pixels[idx + 1] as f32;
+        let b = src_pixels[idx + 2] as f32;
+        let a = src_pixels[idx + 3] as f32;
+        if premultiplied {
+          (r, g, b, a)
+        } else {
+          let af = a / 255.0;
+          (r * af, g * af, b * af, a)
+        }
+      };
+
+      let (r00, g00, b00, a00) = read(idx00);
+      let (r10, g10, b10, a10) = read(idx10);
+      let (r01, g01, b01, a01) = read(idx01);
+      let (r11, g11, b11, a11) = read(idx11);
+
+      let top_r = lerp(r00, r10, fx);
+      let top_g = lerp(g00, g10, fx);
+      let top_b = lerp(b00, b10, fx);
+      let top_a = lerp(a00, a10, fx);
+
+      let bot_r = lerp(r01, r11, fx);
+      let bot_g = lerp(g01, g11, fx);
+      let bot_b = lerp(b01, b11, fx);
+      let bot_a = lerp(a01, a11, fx);
+
+      let mut r = lerp(top_r, bot_r, fy).floor().clamp(0.0, 255.0) as u8;
+      let mut g = lerp(top_g, bot_g, fy).floor().clamp(0.0, 255.0) as u8;
+      let mut b = lerp(top_b, bot_b, fy).floor().clamp(0.0, 255.0) as u8;
+      let a = lerp(top_a, bot_a, fy).floor().clamp(0.0, 255.0) as u8;
+
       r = r.min(a);
       g = g.min(a);
       b = b.min(a);

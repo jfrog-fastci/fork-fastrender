@@ -512,6 +512,8 @@ impl GradientLut {
       if seg1 == seg0 + 1 && seg1 < self.stop_positions.len() && seg1 < self.stop_colors.len() {
         let stop_pos = unsafe { *self.stop_positions.get_unchecked(seg1) };
         let stop_color = unsafe { *self.stop_colors.get_unchecked(seg1) };
+        // `stop_positions` are stored relative to `offset` (see `build_gradient_lut`), and `t` is
+        // already in this same normalized coordinate space.
         let stop_scaled = stop_pos * self.scale;
         let boundary = (stop_scaled - idx as f32).clamp(0.0, 1.0);
         if boundary <= 0.0 {
@@ -572,13 +574,13 @@ impl GradientLut {
     if self.stop_positions.is_empty() || self.stop_colors.is_empty() {
       return [0.0, 0.0, 0.0, 0.0];
     }
-    // `t` is in the same offset-adjusted coordinate system used by `sample_mapped_f32`:
-    // callers subtract `self.offset` before sampling.
-    let t = t.clamp(0.0, self.span);
+    let last = self.stop_positions.len().saturating_sub(1);
+    // `t` is already in LUT-local coordinates (offset-subtracted); stop positions are stored in
+    // this same coordinate space (see `build_gradient_lut`).
+    let t = t.clamp(self.stop_positions[0], self.stop_positions[last]);
     if t <= self.stop_positions[0] {
       return self.stop_colors[0];
     }
-    let last = self.stop_positions.len().saturating_sub(1);
     if t >= self.stop_positions[last] {
       return self.stop_colors[last];
     }

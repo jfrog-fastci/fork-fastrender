@@ -448,6 +448,511 @@ impl<'a> Seek for DeadlineCursor<'a> {
   }
 }
 
+// ============================================================================
+// Embedded ICC profile decoding + color conversion
+// ============================================================================
+
+#[derive(Clone)]
+enum IccTransferCurve {
+  /// `y = x^gamma`
+  Gamma(f32),
+  /// `curveType` table entries (0..65535 mapped to 0..1), sampled at `i/(n-1)`.
+  Table(Vec<f32>),
+  /// `parametricCurveType` (ICC v4).
+  Parametric {
+    kind: u16,
+    g: f32,
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+  },
+}
+
+impl IccTransferCurve {
+  fn apply(&self, x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    match self {
+      IccTransferCurve::Gamma(gamma) => x.powf(*gamma),
+      IccTransferCurve::Table(table) => {
+        let n = table.len();
+        if n == 0 {
+          return x;
+        }
+        if n == 1 {
+          return table[0];
+        }
+        let pos = x * (n - 1) as f32;
+        let idx = pos.floor() as usize;
+        let frac = pos - idx as f32;
+        let a = table[idx];
+        let b = table[(idx + 1).min(n - 1)];
+        a + (b - a) * frac
+      }
+      IccTransferCurve::Parametric {
+        kind,
+        g,
+        a,
+        b,
+        c,
+        d,
+        e,
+        f,
+      } => {
+        let pow = |base: f32, g: f32| {
+          if base <= 0.0 {
+            0.0
+          } else {
+            base.powf(g)
+          }
+        };
+        match *kind {
+          // Y = X^g
+          0 => pow(x, *g),
+          // Y = (aX + b)^g  for X >= -b/a else 0
+          1 => {
+            let cutoff = if *a == 0.0 { f32::INFINITY } else { -(*b) / *a };
+            if x >= cutoff {
+              pow(*a * x + *b, *g)
+            } else {
+              0.0
+            }
+          }
+          // Y = (aX + b)^g + c  for X >= -b/a else c
+          2 => {
+            let cutoff = if *a == 0.0 { f32::INFINITY } else { -(*b) / *a };
+            if x >= cutoff {
+              pow(*a * x + *b, *g) + *c
+            } else {
+              *c
+            }
+          }
+          // Y = (aX + b)^g  for X >= d else cX
+          3 => {
+            if x >= *d {
+              pow(*a * x + *b, *g)
+            } else {
+              *c * x
+            }
+          }
+          // Y = (aX + b)^g + e  for X >= d else cX + f
+          4 => {
+            if x >= *d {
+              pow(*a * x + *b, *g) + *e
+            } else {
+              *c * x + *f
+            }
+          }
+          _ => x,
+        }
+      }
+    }
+  }
+}
+
+#[derive(Clone)]
+struct IccToSrgbTransform {
+  // Convert linear RGB in the embedded profile to linear sRGB.
+  m_profile_to_srgb: [[f32; 3]; 3],
+  r_trc_lut: [f32; 256],
+  g_trc_lut: [f32; 256],
+  b_trc_lut: [f32; 256],
+}
+
+impl IccToSrgbTransform {
+  fn convert_rgb8(&self, r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+    let r_lin = self.r_trc_lut[r as usize];
+    let g_lin = self.g_trc_lut[g as usize];
+    let b_lin = self.b_trc_lut[b as usize];
+
+    let m = &self.m_profile_to_srgb;
+    let sr = m[0][0] * r_lin + m[0][1] * g_lin + m[0][2] * b_lin;
+    let sg = m[1][0] * r_lin + m[1][1] * g_lin + m[1][2] * b_lin;
+    let sb = m[2][0] * r_lin + m[2][1] * g_lin + m[2][2] * b_lin;
+
+    let lut = srgb_encode_lut();
+    let enc = |v: f32| -> u8 {
+      let v = v.clamp(0.0, 1.0);
+      let idx = (v * 65535.0).round().clamp(0.0, 65535.0) as usize;
+      lut[idx]
+    };
+    (enc(sr), enc(sg), enc(sb))
+  }
+
+  fn apply_rgba8_in_place(&self, rgba: &mut [u8]) -> Result<()> {
+    let mut stride_counter = 0usize;
+    for px in rgba.chunks_exact_mut(4) {
+      if stride_counter == 0 {
+        check_root(RenderStage::Paint).map_err(Error::Render)?;
+      }
+      stride_counter += 1;
+      if stride_counter >= IMAGE_DECODE_DEADLINE_STRIDE {
+        stride_counter = 0;
+      }
+      let (r, g, b) = self.convert_rgb8(px[0], px[1], px[2]);
+      px[0] = r;
+      px[1] = g;
+      px[2] = b;
+    }
+    Ok(())
+  }
+}
+
+fn srgb_encode_lut() -> &'static [u8; 65536] {
+  static LUT: OnceLock<[u8; 65536]> = OnceLock::new();
+  LUT.get_or_init(|| {
+    let mut table = [0u8; 65536];
+    for (idx, out) in table.iter_mut().enumerate() {
+      let linear = idx as f32 / 65535.0;
+      let srgb = if linear <= 0.0031308 {
+        12.92 * linear
+      } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+      };
+      *out = (srgb.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    table
+  })
+}
+
+fn icc_s15fixed16_to_f32(value: i32) -> f32 {
+  value as f32 / 65536.0
+}
+
+fn read_be_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+  bytes
+    .get(offset..offset + 2)
+    .and_then(|s| <[u8; 2]>::try_from(s).ok())
+    .map(u16::from_be_bytes)
+}
+
+fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+  bytes
+    .get(offset..offset + 4)
+    .and_then(|s| <[u8; 4]>::try_from(s).ok())
+    .map(u32::from_be_bytes)
+}
+
+fn read_be_i32(bytes: &[u8], offset: usize) -> Option<i32> {
+  read_be_u32(bytes, offset).map(|v| v as i32)
+}
+
+fn icc_tag_slice<'a>(profile: &'a [u8], sig: &[u8; 4]) -> Option<&'a [u8]> {
+  let count = read_be_u32(profile, 128)? as usize;
+  let table_start = 132usize;
+  let entry_size = 12usize;
+  let table_end = table_start.checked_add(count.checked_mul(entry_size)?)?;
+  if table_end > profile.len() {
+    return None;
+  }
+
+  for i in 0..count {
+    let off = table_start + i * entry_size;
+    let entry_sig = profile.get(off..off + 4)?;
+    if entry_sig == sig {
+      let tag_off = read_be_u32(profile, off + 4)? as usize;
+      let tag_size = read_be_u32(profile, off + 8)? as usize;
+      let end = tag_off.checked_add(tag_size)?;
+      if end > profile.len() {
+        return None;
+      }
+      return profile.get(tag_off..end);
+    }
+  }
+  None
+}
+
+fn icc_profile_description(profile: &[u8]) -> Option<String> {
+  if profile.len() < 132 {
+    return None;
+  }
+
+  // Prefer `mluc` when present.
+  if let Some(tag) = icc_tag_slice(profile, b"mluc") {
+    if tag.len() >= 16 && &tag[0..4] == b"mluc" {
+      let count = read_be_u32(tag, 8)? as usize;
+      let record_size = read_be_u32(tag, 12)? as usize;
+      if record_size < 12 {
+        return None;
+      }
+      let records_start = 16usize;
+      let first = records_start.checked_add(record_size)?;
+      if count == 0 || first > tag.len() {
+        return None;
+      }
+      let rec = &tag[records_start..first];
+      let str_len = read_be_u32(rec, 4)? as usize;
+      let str_off = read_be_u32(rec, 8)? as usize;
+      let end = str_off.checked_add(str_len)?;
+      if end > tag.len() || str_len % 2 != 0 {
+        return None;
+      }
+      let utf16: Vec<u16> = tag[str_off..end]
+        .chunks_exact(2)
+        .filter_map(|b| <[u8; 2]>::try_from(b).ok())
+        .map(u16::from_be_bytes)
+        .collect();
+      return String::from_utf16(&utf16).ok();
+    }
+  }
+
+  if let Some(tag) = icc_tag_slice(profile, b"desc") {
+    if tag.len() >= 12 && &tag[0..4] == b"desc" {
+      let len = read_be_u32(tag, 8)? as usize;
+      let start = 12usize;
+      let end = start.checked_add(len)?;
+      if end > tag.len() || len == 0 {
+        return None;
+      }
+      let mut s = tag[start..end].to_vec();
+      if let Some(&0) = s.last() {
+        s.pop();
+      }
+      return String::from_utf8(s).ok();
+    }
+  }
+
+  None
+}
+
+fn icc_parse_xyz_tag(tag: &[u8]) -> Option<[f32; 3]> {
+  if tag.len() < 20 || &tag[0..4] != b"XYZ " {
+    return None;
+  }
+  let x = icc_s15fixed16_to_f32(read_be_i32(tag, 8)?);
+  let y = icc_s15fixed16_to_f32(read_be_i32(tag, 12)?);
+  let z = icc_s15fixed16_to_f32(read_be_i32(tag, 16)?);
+  Some([x, y, z])
+}
+
+fn icc_parse_trc_tag(tag: &[u8]) -> Option<IccTransferCurve> {
+  if tag.len() < 12 {
+    return None;
+  }
+  match &tag[0..4] {
+    b"curv" => {
+      let count = read_be_u32(tag, 8)? as usize;
+      if count == 0 {
+        return Some(IccTransferCurve::Gamma(1.0));
+      }
+      if count == 1 {
+        let gamma_u16 = read_be_u16(tag, 12)?;
+        let gamma = gamma_u16 as f32 / 256.0;
+        return Some(IccTransferCurve::Gamma(gamma));
+      }
+      let table_bytes = count.checked_mul(2)?;
+      let end = 12usize.checked_add(table_bytes)?;
+      if end > tag.len() {
+        return None;
+      }
+      let mut table = Vec::with_capacity(count);
+      for chunk in tag[12..end].chunks_exact(2) {
+        let v = u16::from_be_bytes(chunk.try_into().ok()?);
+        table.push(v as f32 / 65535.0);
+      }
+      Some(IccTransferCurve::Table(table))
+    }
+    b"para" => {
+      if tag.len() < 16 {
+        return None;
+      }
+      let kind = read_be_u16(tag, 8)?;
+      // tag[10..12] reserved
+      let mut params = [0.0f32; 7];
+      let needed: usize = match kind {
+        0 => 1,
+        1 => 3,
+        2 => 4,
+        3 => 5,
+        4 => 7,
+        _ => 0,
+      };
+      if needed == 0 {
+        return None;
+      }
+      let bytes_needed = 12usize.checked_add(needed.checked_mul(4)?)?;
+      if tag.len() < bytes_needed {
+        return None;
+      }
+      for i in 0..needed {
+        params[i] = icc_s15fixed16_to_f32(read_be_i32(tag, 12 + i * 4)?);
+      }
+      let (g, a, b, c, d, e, f) = (
+        params[0],
+        params[1],
+        params[2],
+        params[3],
+        params[4],
+        params[5],
+        params[6],
+      );
+      Some(IccTransferCurve::Parametric {
+        kind,
+        g,
+        a,
+        b,
+        c,
+        d,
+        e,
+        f,
+      })
+    }
+    _ => None,
+  }
+}
+
+fn mat3_mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+  let mut out = [[0.0f32; 3]; 3];
+  for i in 0..3 {
+    for j in 0..3 {
+      out[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+    }
+  }
+  out
+}
+
+fn icc_transform_to_srgb(profile: &[u8]) -> Option<IccToSrgbTransform> {
+  // Only handle RGB profiles.
+  if profile.len() < 40 || &profile[16..20] != b"RGB " {
+    return None;
+  }
+
+  // Skip conversion for sRGB profiles: the pixel bytes are already in sRGB, and going through a
+  // float round-trip can introduce unnecessary quantization differences.
+  if icc_profile_description(profile)
+    .map(|d| d.to_ascii_lowercase().contains("srgb"))
+    .unwrap_or(false)
+  {
+    return None;
+  }
+
+  let r_xyz = icc_tag_slice(profile, b"rXYZ").and_then(icc_parse_xyz_tag)?;
+  let g_xyz = icc_tag_slice(profile, b"gXYZ").and_then(icc_parse_xyz_tag)?;
+  let b_xyz = icc_tag_slice(profile, b"bXYZ").and_then(icc_parse_xyz_tag)?;
+
+  let r_trc = icc_tag_slice(profile, b"rTRC").and_then(icc_parse_trc_tag)?;
+  let g_trc = icc_tag_slice(profile, b"gTRC").and_then(icc_parse_trc_tag)?;
+  let b_trc = icc_tag_slice(profile, b"bTRC").and_then(icc_parse_trc_tag)?;
+
+  // Matrix mapping linear profile RGB -> XYZ (PCS, D50).
+  let m_profile_to_xyz_d50 = [
+    [r_xyz[0], g_xyz[0], b_xyz[0]],
+    [r_xyz[1], g_xyz[1], b_xyz[1]],
+    [r_xyz[2], g_xyz[2], b_xyz[2]],
+  ];
+
+  // Bradford chromatic adaptation matrix: XYZ D50 -> XYZ D65.
+  // Values match the standard used by Skia and other browsers.
+  let m_d50_to_d65 = [
+    [0.9555766, -0.0230393, 0.0631636],
+    [-0.0282895, 1.0099416, 0.0210077],
+    [0.0122982, -0.0204830, 1.3299098],
+  ];
+
+  // XYZ D65 -> linear sRGB.
+  let m_xyz_d65_to_srgb = [
+    [3.2406, -1.5372, -0.4986],
+    [-0.9689, 1.8758, 0.0415],
+    [0.0557, -0.2040, 1.0570],
+  ];
+
+  let m_profile_to_srgb = mat3_mul(m_xyz_d65_to_srgb, mat3_mul(m_d50_to_d65, m_profile_to_xyz_d50));
+
+  let build_trc_lut = |curve: &IccTransferCurve| -> [f32; 256] {
+    let mut lut = [0.0f32; 256];
+    for (idx, slot) in lut.iter_mut().enumerate() {
+      let v = idx as f32 / 255.0;
+      *slot = curve.apply(v);
+    }
+    lut
+  };
+
+  Some(IccToSrgbTransform {
+    m_profile_to_srgb,
+    r_trc_lut: build_trc_lut(&r_trc),
+    g_trc_lut: build_trc_lut(&g_trc),
+    b_trc_lut: build_trc_lut(&b_trc),
+  })
+}
+
+fn extract_jpeg_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
+  if bytes.len() < 4 || bytes.get(0..2) != Some(&[0xFF, 0xD8]) {
+    return None;
+  }
+
+  let mut offset = 2usize;
+  let mut segments: Vec<Option<Vec<u8>>> = Vec::new();
+  let mut total_segments: Option<u8> = None;
+
+  while offset + 4 <= bytes.len() {
+    // Skip padding 0xFF bytes.
+    if bytes[offset] != 0xFF {
+      break;
+    }
+    while offset < bytes.len() && bytes[offset] == 0xFF {
+      offset += 1;
+    }
+    if offset >= bytes.len() {
+      break;
+    }
+    let marker = bytes[offset];
+    offset += 1;
+
+    // Start of scan / end of image: metadata ends.
+    if marker == 0xDA || marker == 0xD9 {
+      break;
+    }
+    // Standalone markers without a length (rare before SOS).
+    if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+      continue;
+    }
+
+    let seg_len = read_be_u16(bytes, offset)? as usize;
+    offset = offset.checked_add(2)?;
+    if seg_len < 2 {
+      return None;
+    }
+    let payload_len = seg_len - 2;
+    let payload_end = offset.checked_add(payload_len)?;
+    if payload_end > bytes.len() {
+      return None;
+    }
+    let payload = &bytes[offset..payload_end];
+    offset = payload_end;
+
+    // APP2 = ICC_PROFILE
+    if marker == 0xE2 && payload.len() >= 14 && payload.starts_with(b"ICC_PROFILE\0") {
+      let seq = payload[12];
+      let count = payload[13];
+      if seq == 0 || count == 0 {
+        continue;
+      }
+      if total_segments.is_none() {
+        total_segments = Some(count);
+        segments.resize(count as usize, None);
+      } else if total_segments != Some(count) {
+        // Inconsistent ICC segment counts; ignore.
+        return None;
+      }
+      if let Some(slot) = segments.get_mut(seq.saturating_sub(1) as usize) {
+        *slot = Some(payload[14..].to_vec());
+      }
+    }
+  }
+
+  let count = total_segments? as usize;
+  if count == 0 || segments.len() != count || segments.iter().any(|s| s.is_none()) {
+    return None;
+  }
+  let mut out = Vec::new();
+  for seg in segments.into_iter().flatten() {
+    out.extend_from_slice(&seg);
+  }
+  Some(out)
+}
+
 enum AvifDecodeError {
   Timeout(RenderError),
   Image(image::ImageError),
@@ -5936,6 +6441,7 @@ impl ImageCache {
     check_root(RenderStage::Paint).map_err(Error::Render)?;
     let format_from_content_type = Self::format_from_content_type(content_type);
     let (sniffed_format, sniff_panic) = Self::sniff_image_format(bytes);
+    let icc_transform = extract_jpeg_icc_profile(bytes).and_then(|icc| icc_transform_to_srgb(&icc));
     let (pre_dims, dims_panic) =
       self.predecoded_dimensions(bytes, format_from_content_type, sniffed_format);
     let panic_error = dims_panic.or(sniff_panic).map(|panic| {
@@ -5968,6 +6474,13 @@ impl ImageCache {
         check_root(RenderStage::Paint).map_err(Error::Render)?;
         match self.decode_with_format(bytes, format, url) {
           Ok((img, has_alpha)) => {
+            let img = if let Some(transform) = icc_transform.as_ref() {
+              let mut rgba = img.to_rgba8();
+              transform.apply_rgba8_in_place(rgba.as_mut())?;
+              DynamicImage::ImageRgba8(rgba)
+            } else {
+              img
+            };
             let img = self.finish_bitmap_decode(img, url)?;
             return Ok((img, has_alpha));
           }
@@ -5986,6 +6499,13 @@ impl ImageCache {
         check_root(RenderStage::Paint).map_err(Error::Render)?;
         match self.decode_with_format(bytes, format, url) {
           Ok((img, has_alpha)) => {
+            let img = if let Some(transform) = icc_transform.as_ref() {
+              let mut rgba = img.to_rgba8();
+              transform.apply_rgba8_in_place(rgba.as_mut())?;
+              DynamicImage::ImageRgba8(rgba)
+            } else {
+              img
+            };
             let img = self.finish_bitmap_decode(img, url)?;
             return Ok((img, has_alpha));
           }
@@ -6006,7 +6526,15 @@ impl ImageCache {
           .or(sniffed_format)
           .and_then(|format| Self::source_has_alpha(bytes, format));
         let has_alpha = has_alpha_hint.unwrap_or_else(|| img.color().has_alpha());
-        self.finish_bitmap_decode(img, url).map(|img| (img, has_alpha))
+        let img = if let Some(transform) = icc_transform.as_ref() {
+          let mut rgba = img.to_rgba8();
+          transform.apply_rgba8_in_place(rgba.as_mut())?;
+          DynamicImage::ImageRgba8(rgba)
+        } else {
+          img
+        };
+        let img = self.finish_bitmap_decode(img, url)?;
+        Ok((img, has_alpha))
       }
       Err(err) => Err(match err {
         Error::Render(_) => err,
@@ -13054,5 +13582,43 @@ mod tests {
     release.wait();
     let _ = owner_handle.join();
     let _ = waiter_handle.join();
+  }
+
+  #[test]
+  fn icc_adobe_rgb_profile_converts_to_srgb_reference_values() {
+    let bytes = include_bytes!("../tests/pages/fixtures/arstechnica.com/assets/52a1160fbdf01f8511cf15e24a23ec7e.jpg");
+    let icc = extract_jpeg_icc_profile(bytes).expect("extract icc profile");
+    let transform = icc_transform_to_srgb(&icc).expect("build ICC transform");
+
+    // Reference values computed via LittleCMS (Pillow/ImageCms) converting Adobe RGB (1998) -> sRGB.
+    let (r, g, b) = transform.convert_rgb8(100, 150, 200);
+    assert!(
+      (r as i32 - 66).abs() <= 2 && (g as i32 - 151).abs() <= 2 && (b as i32 - 203).abs() <= 2,
+      "unexpected AdobeRGB->sRGB conversion result: ({r}, {g}, {b})"
+    );
+  }
+
+  #[test]
+  fn image_cache_decodes_adobe_rgb_jpeg_with_color_management() {
+    let bytes = include_bytes!("../tests/pages/fixtures/arstechnica.com/assets/52a1160fbdf01f8511cf15e24a23ec7e.jpg");
+    let icc = extract_jpeg_icc_profile(bytes).expect("extract icc profile");
+    let transform = icc_transform_to_srgb(&icc).expect("build ICC transform");
+
+    let cache = ImageCache::new();
+    let (raw, _has_alpha) = cache
+      .decode_with_format(bytes, ImageFormat::Jpeg, "icc-adobe-rgb")
+      .expect("decode without color management");
+    let raw_px = raw.to_rgba8().get_pixel(10, 10).0;
+    let expected = transform.convert_rgb8(raw_px[0], raw_px[1], raw_px[2]);
+
+    let (decoded, _has_alpha) = cache
+      .decode_bitmap(bytes, Some("image/jpeg"), "icc-adobe-rgb")
+      .expect("decode with color management");
+    let decoded_px = decoded.to_rgba8().get_pixel(10, 10).0;
+    assert_eq!(
+      (decoded_px[0], decoded_px[1], decoded_px[2]),
+      expected,
+      "decoded pixels should be color corrected"
+    );
   }
 }

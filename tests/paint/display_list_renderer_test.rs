@@ -21,6 +21,8 @@ use fastrender::paint::display_list::GlyphInstance;
 use fastrender::paint::display_list::GradientSpread;
 use fastrender::paint::display_list::GradientStop;
 use fastrender::paint::display_list::ImageData;
+use fastrender::paint::display_list::ImageFilterQuality;
+use fastrender::paint::display_list::ImageItem;
 use fastrender::paint::display_list::LinearGradientItem;
 use fastrender::paint::display_list::MaskReferenceRects;
 use fastrender::paint::display_list::OutlineItem;
@@ -2200,6 +2202,81 @@ fn display_list_background_smooth_blends_when_upscaled() {
     "mid pixel should be blended: {:?}",
     mid
   );
+}
+
+#[test]
+fn display_list_image_downscale_uses_skia_bilinear_rounding() {
+  // `tiny-skia`'s bilinear resampling historically disagreed with Chrome/Skia for mildly-downscaled
+  // raster images, especially around exact-halfway values (e.g. 127.5). We keep fixture diffs more
+  // stable by pre-scaling into a cached pixmap using our own Skia-aligned sampler.
+  let mut pixels = Vec::new();
+  for _y in 0..4 {
+    for x in 0..4 {
+      if x < 2 {
+        pixels.extend_from_slice(&[255, 0, 0, 255]);
+      } else {
+        pixels.extend_from_slice(&[0, 0, 255, 255]);
+      }
+    }
+  }
+
+  let image = Arc::new(ImageData::new_pixels(4, 4, pixels));
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::Image(ImageItem {
+    dest_rect: Rect::from_xywh(0.0, 0.0, 3.0, 3.0),
+    image,
+    filter_quality: ImageFilterQuality::Linear,
+    src_rect: None,
+  }));
+
+  let renderer = DisplayListRenderer::new(3, 3, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // Center column should be the 50/50 blend between the red and blue stripes.
+  // Chrome/Skia floors fractional channel values, so (255 + 0) / 2 = 127.5 becomes 127.
+  assert_eq!(pixel(&pixmap, 1, 1), (127, 0, 127, 255));
+}
+
+#[test]
+fn display_list_image_downscale_with_clip_still_uses_skia_bilinear_rounding() {
+  // When an image draw is clipped (common with `object-fit: cover`), the renderer may crop the
+  // source rectangle and then rely on `draw_pixmap` to scale. Ensure we still pre-scale the cropped
+  // region so bilinear rounding matches Chrome/Skia.
+  let mut pixels = Vec::new();
+  for _y in 0..8 {
+    for x in 0..8 {
+      if x < 4 {
+        pixels.extend_from_slice(&[255, 0, 0, 255]);
+      } else {
+        pixels.extend_from_slice(&[0, 0, 255, 255]);
+      }
+    }
+  }
+
+  let image = Arc::new(ImageData::new_pixels(8, 8, pixels));
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushClip(ClipItem {
+    shape: ClipShape::Rect {
+      rect: Rect::from_xywh(0.0, 0.0, 3.0, 3.0),
+      radii: None,
+    },
+  }));
+  list.push(DisplayItem::Image(ImageItem {
+    // The image is drawn larger than the clip and partially off-canvas, forcing the renderer to
+    // crop the source rectangle.
+    dest_rect: Rect::from_xywh(-1.5, -1.5, 6.0, 6.0),
+    image,
+    filter_quality: ImageFilterQuality::Linear,
+    src_rect: None,
+  }));
+  list.push(DisplayItem::PopClip);
+
+  let renderer = DisplayListRenderer::new(3, 3, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  // The clip selects a centered 50% slice of the downscaled image. The center pixel is again the
+  // exact-halfway blend between red and blue, so we should see 127 rather than 128.
+  assert_eq!(pixel(&pixmap, 1, 1), (127, 0, 127, 255));
 }
 
 #[test]

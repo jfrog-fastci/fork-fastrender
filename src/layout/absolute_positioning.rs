@@ -266,7 +266,7 @@ impl AbsoluteLayout {
     let block_base = containing_block.block_percentage_base();
 
     // Resolve horizontal position and width
-    let (x, mut width, margin_left, margin_right, min_width, max_width) = self.compute_horizontal(
+    let (mut x, mut width, margin_left, margin_right, min_width, max_width) = self.compute_horizontal(
       style,
       cb_width,
       inline_base,
@@ -279,7 +279,7 @@ impl AbsoluteLayout {
     )?;
 
     // Resolve vertical position and height
-    let (y, mut height, margin_top, margin_bottom, min_height, max_height) = self
+    let (mut y, mut height, margin_top, margin_bottom, min_height, max_height) = self
       .compute_vertical(
         style,
         cb_height,
@@ -291,10 +291,53 @@ impl AbsoluteLayout {
         input.static_position.y,
       )?;
 
-    // Apply aspect-ratio (CSS Sizing L4).
+    // Apply aspect-ratio / intrinsic ratios for auto sizing.
     //
-    // Note that replaced elements have an intrinsic aspect ratio even when `aspect-ratio:auto`
-    // (the initial value), so we treat that as "use the natural ratio" here.
+    // Absolutely positioned replaced elements (e.g. `<img>`) still follow the CSS2.1 replaced sizing
+    // rules: when one axis is `auto` and an intrinsic ratio is available, the other axis determines
+    // the used size. This needs to happen *after* min/max constraints because those can clamp the
+    // resolved width/height (e.g. `max-width: 100%` + `height: auto`).
+    //
+    // For non-replaced elements, this also mirrors the intent of the `aspect-ratio` property from
+    // CSS Sizing L4, but avoid applying it when both axes are auto because
+    // `AbsoluteLayoutInput::intrinsic_size` is a best-effort content measurement.
+    let left = resolve_offset_for_positioned(
+      &style.left,
+      inline_base,
+      viewport,
+      style,
+      &self.font_context,
+    );
+    let right = resolve_offset_for_positioned(
+      &style.right,
+      inline_base,
+      viewport,
+      style,
+      &self.font_context,
+    );
+    let top = resolve_offset_for_positioned(
+      &style.top,
+      block_base,
+      viewport,
+      style,
+      &self.font_context,
+    );
+    let bottom = resolve_offset_for_positioned(
+      &style.bottom,
+      block_base,
+      viewport,
+      style,
+      &self.font_context,
+    );
+
+    let width_auto = matches!(style.width, LengthOrAuto::Auto) && style.width_keyword.is_none();
+    let height_auto = matches!(style.height, LengthOrAuto::Auto) && style.height_keyword.is_none();
+
+    // When both insets are specified, the constraint equation determines the used size even if the
+    // corresponding dimension is `auto`. Avoid overriding that with ratio-derived sizing.
+    let width_auto_for_ratio = width_auto && !(left.is_some() && right.is_some());
+    let height_auto_for_ratio = height_auto && !(top.is_some() && bottom.is_some());
+
     let natural_ratio = if input.is_replaced
       && input.intrinsic_size.width.is_finite()
       && input.intrinsic_size.height.is_finite()
@@ -305,89 +348,73 @@ impl AbsoluteLayout {
     } else {
       None
     };
-
     let (uses_auto_ratio, specified_ratio) = match style.aspect_ratio {
       crate::style::types::AspectRatio::Auto => (true, None),
       crate::style::types::AspectRatio::Ratio(r) if r.is_finite() && r > 0.0 => (false, Some(r)),
       crate::style::types::AspectRatio::AutoRatio(r) if r.is_finite() && r > 0.0 => (true, Some(r)),
       _ => (true, None),
     };
-
-    let ratio = if uses_auto_ratio {
+    let intrinsic_ratio = if uses_auto_ratio {
       natural_ratio.or(specified_ratio)
     } else {
       specified_ratio
     };
 
-    if let Some(ratio) = ratio {
-      // If an auto size is resolved by *both* insets (e.g. `top:0; bottom:0; height:auto`),
-      // then the constraint equation determines the used size, and we must not override it via
-      // `aspect-ratio`/natural ratio.
-      let left = resolve_offset_for_positioned(
-        &style.left,
-        inline_base,
-        viewport,
-        style,
-        &self.font_context,
-      );
-      let right = resolve_offset_for_positioned(
-        &style.right,
-        inline_base,
-        viewport,
-        style,
-        &self.font_context,
-      );
-      let top = resolve_offset_for_positioned(
-        &style.top,
-        block_base,
-        viewport,
-        style,
-        &self.font_context,
-      );
-      let bottom = resolve_offset_for_positioned(
-        &style.bottom,
-        block_base,
-        viewport,
-        style,
-        &self.font_context,
-      );
+    if let Some(ratio) = intrinsic_ratio.filter(|r| r.is_finite() && *r > 0.0) {
+      // Avoid applying aspect-ratio to non-replaced abspos boxes when both axes are auto: for
+      // non-replaced elements, `AbsoluteLayoutInput::intrinsic_size` is a best-effort content
+      // measurement and can be as large as the containing block (e.g. a flex container laid out
+      // in-flow before being taken out of flow).
+      let allow_ratio = input.is_replaced || !(width_auto_for_ratio && height_auto_for_ratio);
+      if allow_ratio {
+        let width_known_for_ratio = !width_auto_for_ratio;
+        let height_known_for_ratio = !height_auto_for_ratio;
 
-      let has_horizontal_insets = left.is_some() && right.is_some();
-      let has_vertical_insets = top.is_some() && bottom.is_some();
-
-      let width_auto = matches!(style.width, crate::style::values::LengthOrAuto::Auto)
-        && style.width_keyword.is_none();
-      let height_auto = matches!(style.height, crate::style::values::LengthOrAuto::Auto)
-        && style.height_keyword.is_none();
-
-      let width_auto_effective = width_auto && !has_horizontal_insets;
-      let height_auto_effective = height_auto && !has_vertical_insets;
-
-      if width_auto_effective && !height_auto_effective {
-        width = height * ratio;
-      } else if height_auto_effective && !width_auto_effective {
-        height = width / ratio;
-      } else if width_auto_effective && height_auto_effective {
-        // Only replaced elements have an intrinsic size in the sense required by `aspect-ratio`
-        // when both axes are auto. For non-replaced absolutely positioned boxes, the
-        // `AbsoluteLayoutInput::intrinsic_size` field is a best-effort content measurement from a
-        // previous layout pass and can be as large as the containing block, which would
-        // incorrectly turn `aspect-ratio: 1/1` into a huge square.
-        if input.is_replaced {
-          if input.intrinsic_size.width > 0.0 {
-            width = input.intrinsic_size.width;
+        // Apply ratio to resolve the auto axis when possible.
+        if width_auto_for_ratio && height_auto_for_ratio {
+          if width.is_finite() && width > 0.0 {
             height = width / ratio;
-          } else if input.intrinsic_size.height > 0.0 {
-            height = input.intrinsic_size.height;
+          } else if height.is_finite() && height > 0.0 {
             width = height * ratio;
           }
+        } else if width_auto_for_ratio && height_known_for_ratio {
+          width = height * ratio;
+        } else if height_auto_for_ratio && width_known_for_ratio {
+          height = width / ratio;
+        }
+
+        // Re-apply constraints, preserving the ratio when the opposite axis is still auto.
+        let prev_width = width;
+        width = crate::layout::utils::clamp_with_order(width, min_width, max_width);
+        if (width - prev_width).abs() > 0.01 && height_auto_for_ratio {
+          height = width / ratio;
+        }
+
+        let prev_height = height;
+        height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
+        if (height - prev_height).abs() > 0.01 && width_auto_for_ratio {
+          width = height * ratio;
+          width = crate::layout::utils::clamp_with_order(width, min_width, max_width);
         }
       }
     }
 
-    // Re-apply min/max constraints after aspect-ratio adjustments.
-    width = crate::layout::utils::clamp_with_order(width, min_width, max_width);
-    height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
+    // Keep the authored trailing inset satisfied for the "leading inset is auto" cases after
+    // ratio/constraint adjustments (CSS 2.1 constraint equations).
+    if left.is_none() {
+      if let Some(r) = right {
+        let padding_right = style.padding.right;
+        let border_right = style.border_width.right;
+        x = cb_width - r - margin_right - border_right - padding_right - width;
+      }
+    }
+    if top.is_none() {
+      if let Some(b) = bottom {
+        let padding_bottom = style.padding.bottom;
+        let border_bottom = style.border_width.bottom;
+        y = cb_height - b - margin_bottom - border_bottom - padding_bottom - height;
+      }
+    }
 
     // Position relative to containing block origin
     let position = Point::new(

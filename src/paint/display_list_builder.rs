@@ -6452,27 +6452,39 @@ impl DisplayListBuilder {
           let mut deferred_async = false;
           let candidate = sources.first().copied();
           let decoded = candidate.and_then(|source| {
+            // When an element is clipped by `overflow`/`clip`, `slot_rect` can be much larger than
+            // the pixels that are actually visible in the current paint. Prefer the intersection
+            // with the current culling rect when deciding whether to defer expensive image work.
+            //
+            // NOTE: `culling_rect` is already mapped into the local (pre-transform) coordinate space
+            // at stacking-context boundaries (see `visible_in_local_space`), so it can safely be
+            // compared against `slot_rect` even when ancestor transforms move the element into view
+            // (common for carousels and centered layouts).
+            let visible_slot = culling_rect
+              .and_then(|vis| vis.intersection(slot_rect))
+              .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+            let (visible_w, visible_h) = visible_slot
+              .map(|rect| (rect.width(), rect.height()))
+              .unwrap_or((slot_rect.width(), slot_rect.height()));
+
             if loading == ImageLoadingAttribute::Lazy {
-              if let Some(visible) = culling_rect {
-                if !slot_rect.intersects(visible) {
-                  // `loading="lazy"` images typically fetch/decode after the initial page load.
-                  // When the image is outside the visible culling rectangle, keep it transparent
-                  // so author-supplied placeholders (e.g. background-image blur SVGs) remain
-                  // visible.
-                  //
-                  // NOTE: `culling_rect` is already mapped into the local (pre-transform)
-                  // coordinate space at stacking-context boundaries (see `visible_in_local_space`),
-                  // so it can safely be compared against `slot_rect` even when ancestor transforms
-                  // move the element into view (common for carousels and centered layouts).
-                  deferred_async = true;
-                  return None;
-                }
+              // HTML `loading="lazy"` allows deferring images that are not needed for the current
+              // render. When we have culling bounds (typical viewport paints), the fragment walker
+              // has already culled fully offscreen fragments, so reaching this point usually means
+              // the image intersects the viewport and should be fetched/decoded like Chrome.
+              //
+              // When painting without culling bounds (e.g. full-content renders), treat lazy images
+              // like eager images so the output is complete.
+              if culling_rect.is_some() && visible_slot.is_none() {
+                deferred_async = true;
+                return None;
               }
             }
             if decoding == ImageDecodingAttribute::Async
+              && loading != ImageLoadingAttribute::Eager
               && self.should_defer_async_image_decode(
-                slot_rect.width(),
-                slot_rect.height(),
+                visible_w,
+                visible_h,
                 source.url,
                 crossorigin,
                 referrer_policy,
@@ -6727,10 +6739,10 @@ impl DisplayListBuilder {
             break 'paint;
           }
 
-            if deferred_async {
-              // `decoding="async"` is a hint that the UA is allowed to postpone expensive image
-              // decodes. When we choose to defer decoding, we keep the image transparent (no UA
-              // placeholder) to match browser behavior while decoding is still pending.
+          if deferred_async {
+            // `loading="lazy"` / `decoding="async"` allow deferring image work. When we choose to
+            // defer, keep the image transparent (no UA placeholder) to match browser behavior while
+            // loading/decoding is still pending.
             break 'paint;
           }
 
