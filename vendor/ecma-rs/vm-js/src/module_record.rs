@@ -1056,7 +1056,10 @@ fn push_requested_module(
 ) -> Result<(), VmError> {
   for existing in out.iter() {
     ctx.budget_tick()?;
-    if existing.spec_equal(&request) {
+    // All `ModuleRequest`s we create here are canonicalized via `ModuleRequest::new` (attribute list
+    // sorting), so a direct equality check is equivalent to `ModuleRequestsEqual` while being much
+    // cheaper than the spec-shaped order-insensitive comparison.
+    if existing == &request {
       return Ok(());
     }
   }
@@ -1083,7 +1086,7 @@ fn with_clause_to_attributes(
     ));
   };
 
-  let mut seen = HashSet::<String>::new();
+  let mut seen = HashSet::<&str>::new();
   let mut out = Vec::<ImportAttribute>::new();
 
   seen
@@ -1096,7 +1099,7 @@ fn with_clause_to_attributes(
   for member in &obj.stx.members {
     ctx.budget_tick()?;
 
-    let (key, key_loc, value_expr) = match &member.stx.typ {
+    let (key_str, key_loc, value_expr) = match &member.stx.typ {
       ObjMemberType::Valued { key, val } => {
         let key_node = match key {
           ClassOrObjKey::Direct(direct) => direct,
@@ -1128,7 +1131,7 @@ fn with_clause_to_attributes(
           }
         };
 
-        (try_string_from_str(&key_node.stx.key)?, key_node.loc, value_expr)
+        (key_node.stx.key.as_str(), key_node.loc, value_expr)
       }
       ObjMemberType::Shorthand { .. } => {
         return Err(syntax_error(
@@ -1144,10 +1147,11 @@ fn with_clause_to_attributes(
       }
     };
 
-    if !seen.insert(try_string_from_str(&key)?) {
+    if !seen.insert(key_str) {
       return Err(syntax_error(key_loc, "duplicate import attribute key"));
     }
 
+    let key = try_string_from_str(key_str)?;
     let value = match &*value_expr.stx {
       Expr::LitStr(str_lit) => try_string_from_str(&str_lit.stx.value)?,
       _ => {
