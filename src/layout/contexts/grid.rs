@@ -1089,7 +1089,7 @@ impl GridFormattingContext {
     if style.align_items != AlignItems::Stretch
       || style.justify_items != AlignItems::Stretch
       || style.align_content != AlignContent::Stretch
-      || style.justify_content != JustifyContent::FlexStart
+      || style.justify_content != JustifyContent::Normal
     {
       return Ok(false);
     }
@@ -4578,6 +4578,7 @@ impl GridFormattingContext {
     axis_positive: bool,
   ) -> TaffyAlignContent {
     match justify {
+      JustifyContent::Normal => TaffyAlignContent::Stretch,
       JustifyContent::Start | JustifyContent::FlexStart => {
         if axis_positive {
           TaffyAlignContent::Start

@@ -11857,7 +11857,7 @@ fn apply_declaration_with_base_internal_with_order(
           "end" => JustifyContent::End,
           "flex-start" => JustifyContent::FlexStart,
           "flex-end" => JustifyContent::FlexEnd,
-          "normal" => JustifyContent::FlexStart,
+          "normal" => JustifyContent::Normal,
           "center" => JustifyContent::Center,
           "stretch" => JustifyContent::Stretch,
           // Legacy aliases. See CSS Box Alignment (legacy alignment keywords).
@@ -16827,7 +16827,7 @@ fn parse_place_content_pair(value: &PropertyValue) -> Option<(AlignContent, Just
       "end" => Some(JustifyContent::End),
       "flex-start" => Some(JustifyContent::FlexStart),
       "flex-end" => Some(JustifyContent::FlexEnd),
-      "normal" => Some(JustifyContent::FlexStart),
+      "normal" => Some(JustifyContent::Normal),
       "center" => Some(JustifyContent::Center),
       "stretch" => Some(JustifyContent::Stretch),
       "space-between" => Some(JustifyContent::SpaceBetween),

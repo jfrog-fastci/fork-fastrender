@@ -2530,6 +2530,14 @@ pub enum OffsetAnchor {
 /// Reference: CSS Flexible Box Layout Module Level 1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JustifyContent {
+  /// CSS initial value (`normal`).
+  ///
+  /// This resolves at used-value time depending on the layout model:
+  /// - Flex containers: behaves like `flex-start`.
+  /// - Grid containers: behaves like `stretch`.
+  ///
+  /// Ref: <https://www.w3.org/TR/css-align-3/#valdef-justify-content-normal>
+  Normal,
   Start,
   End,
   FlexStart,

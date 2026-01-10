@@ -28,7 +28,7 @@ fn justify_content_normal_overrides_previous_declarations() {
   .unwrap();
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
   let target = find_by_id(&styled, "t").expect("element with id t");
-  assert_eq!(target.styles.justify_content, JustifyContent::FlexStart);
+  assert_eq!(target.styles.justify_content, JustifyContent::Normal);
 }
 
 #[test]
@@ -38,4 +38,3 @@ fn supports_declaration_accepts_justify_content_normal() {
     "normal"
   ));
 }
-

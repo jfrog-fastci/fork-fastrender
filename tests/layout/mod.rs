@@ -189,6 +189,7 @@ mod grid_percent_height_auto_track;
 mod grid_percent_rows_indefinite_height;
 mod grid_percent_tracks_definite;
 mod grid_percent_tracks_indefinite_shrinkwrap;
+mod grid_justify_content_normal_stretches_auto_tracks;
 mod grid_self_start_self_end_alignment;
 mod grid_simple_grid_fast_path;
 mod grid_template_areas_explicit_grid_size;

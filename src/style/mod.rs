@@ -1550,7 +1550,7 @@ impl Default for ComputedStyle {
 
       flex_direction: FlexDirection::Row,
       flex_wrap: FlexWrap::NoWrap,
-      justify_content: JustifyContent::FlexStart,
+      justify_content: JustifyContent::Normal,
       align_items: AlignItems::Stretch,
       align_content: AlignContent::Stretch,
       align_self: None,
