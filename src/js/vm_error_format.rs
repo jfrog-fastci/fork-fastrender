@@ -6,6 +6,7 @@ const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
 const MAX_STACK_TRACE_FRAMES: usize = 32;
 const MAX_STACK_FRAME_TEXT_BYTES: usize = 256;
 const MAX_STACK_TRACE_BYTES: usize = 16 * 1024;
+const MAX_THROWN_OBJECT_PROTOTYPE_CHAIN: usize = 16;
 
 fn truncate_utf8(s: &str, max_bytes: usize) -> Cow<'_, str> {
   if s.len() <= max_bytes {
@@ -117,21 +118,28 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
     let key_s = scope.alloc_string(name).ok()?;
     scope.push_root(Value::String(key_s)).ok()?;
     let key = PropertyKey::from_string(key_s);
-    let value = scope
-      .heap()
-      .object_get_own_data_property_value(obj, &key)
-      .ok()?
-      .unwrap_or(Value::Undefined);
-    match value {
-      Value::String(s) => {
-        let js = scope.heap().get_string(s).ok()?;
-        if js.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
-          return Some("[exception string exceeded limit]".to_string());
+
+    let mut current = obj;
+    for _ in 0..MAX_THROWN_OBJECT_PROTOTYPE_CHAIN {
+      match scope.heap().object_get_own_data_property_value(current, &key) {
+        Ok(Some(Value::String(s))) => {
+          let js = scope.heap().get_string(s).ok()?;
+          if js.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
+            return Some("[exception string exceeded limit]".to_string());
+          }
+          return Some(js.to_utf8_lossy());
         }
-        Some(js.to_utf8_lossy())
+        Ok(Some(_)) => return None,
+        Ok(None) => {}
+        Err(_) => return None,
       }
-      _ => None,
+
+      match scope.object_get_prototype(current) {
+        Ok(Some(proto)) => current = proto,
+        _ => return None,
+      }
     }
+    None
   };
 
   let name = get_prop_str("name");
@@ -297,6 +305,84 @@ mod tests {
     assert!(
       msg.starts_with("Error: [exception string exceeded limit]"),
       "expected over-limit message property to be replaced with marker, got {msg:?}"
+    );
+    assert!(
+      msg.contains("at f (<test>:1:2)"),
+      "expected stack trace to be included, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn thrown_object_name_on_prototype_is_used() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let proto = scope.alloc_object().expect("alloc prototype");
+    scope
+      .push_root(Value::Object(proto))
+      .expect("root prototype");
+    let obj = scope.alloc_object().expect("alloc thrown object");
+    scope
+      .push_root(Value::Object(obj))
+      .expect("root thrown object");
+    scope
+      .object_set_prototype(obj, Some(proto))
+      .expect("set prototype");
+
+    let name_s = scope.alloc_string("Error").expect("alloc name");
+    scope.push_root(Value::String(name_s)).expect("root name");
+    let name_key_s = scope.alloc_string("name").expect("alloc key");
+    scope.push_root(Value::String(name_key_s)).expect("root key");
+    let name_key = PropertyKey::from_string(name_key_s);
+    scope
+      .define_property(
+        proto,
+        name_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::String(name_s),
+            writable: true,
+          },
+        },
+      )
+      .expect("define prototype name");
+
+    let message_s = scope.alloc_string("boom").expect("alloc message");
+    scope.push_root(Value::String(message_s)).expect("root message");
+    let msg_key_s = scope.alloc_string("message").expect("alloc key");
+    scope.push_root(Value::String(msg_key_s)).expect("root key");
+    let msg_key = PropertyKey::from_string(msg_key_s);
+    scope
+      .define_property(
+        obj,
+        msg_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::String(message_s),
+            writable: true,
+          },
+        },
+      )
+      .expect("define message");
+
+    let err = VmError::ThrowWithStack {
+      value: Value::Object(obj),
+      stack: vec![StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("<test>"),
+        line: 1,
+        col: 2,
+      }],
+    };
+
+    let msg = vm_error_to_string(scope.heap_mut(), err);
+    assert!(
+      msg.starts_with("Error: boom"),
+      "expected name from prototype to be included, got {msg:?}"
     );
     assert!(
       msg.contains("at f (<test>:1:2)"),
