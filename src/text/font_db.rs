@@ -1209,9 +1209,9 @@ impl GenericFamily {
         "Times New Roman",
         "Times",
         "Georgia",
-        "DejaVu Serif",
         "Liberation Serif",
         "Noto Serif",
+        "DejaVu Serif",
         "FreeSerif",
       ],
       GenericFamily::SansSerif | GenericFamily::UiSansSerif | GenericFamily::UiRounded => &[
@@ -1219,9 +1219,9 @@ impl GenericFamily {
         "Helvetica",
         "Helvetica Neue",
         "Verdana",
-        "DejaVu Sans",
         "Liberation Sans",
         "Noto Sans",
+        "DejaVu Sans",
         "FreeSans",
         "Roboto",
       ],
@@ -1532,29 +1532,33 @@ impl FontDatabase {
       return;
     };
 
-    let first_matching_family = |fallbacks: &[&str]| -> Option<String> {
-      for face in faces.iter().filter(|face| !Self::face_is_emoji_font(face)) {
+    // Resolve generic families deterministically by honoring the fallback list order instead of
+    // depending on the host font enumeration order (fontdb loads system fonts in whatever order the
+    // OS/fontconfig reports). This matches typical browser font fallback behavior more closely and
+    // keeps fixture renders stable as long as the same candidate fonts are present.
+    let non_emoji_faces: Vec<&fontdb::FaceInfo> =
+      faces.iter().copied().filter(|face| !Self::face_is_emoji_font(face)).collect();
+    let find_candidate = |candidate: &str, faces: &[&fontdb::FaceInfo]| -> Option<String> {
+      for face in faces {
         for (name, _) in &face.families {
-          if fallbacks
-            .iter()
-            .any(|fallback| fallback.eq_ignore_ascii_case(name))
-          {
+          if candidate.eq_ignore_ascii_case(name) {
             return Some(name.clone());
           }
         }
       }
-
-      for face in &faces {
-        for (name, _) in &face.families {
-          if fallbacks
-            .iter()
-            .any(|fallback| fallback.eq_ignore_ascii_case(name))
-          {
-            return Some(name.clone());
-          }
+      None
+    };
+    let first_matching_family = |candidates: &[&str]| -> Option<String> {
+      for candidate in candidates {
+        if let Some(name) = find_candidate(candidate, &non_emoji_faces) {
+          return Some(name);
         }
       }
-
+      for candidate in candidates {
+        if let Some(name) = find_candidate(candidate, &faces) {
+          return Some(name);
+        }
+      }
       None
     };
 
@@ -2623,6 +2627,29 @@ mod tests {
     assert!(GenericFamily::Serif.prefers_named_fallbacks_first());
     assert!(GenericFamily::SansSerif.prefers_named_fallbacks_first());
     assert!(GenericFamily::Monospace.prefers_named_fallbacks_first());
+  }
+
+  #[test]
+  fn generic_fallback_selection_honors_fallback_list_order() {
+    // Historically `FontDatabase::set_generic_fallbacks` could pick the first matching font in
+    // `fontdb`'s face enumeration order, which depends on load order / platform font discovery.
+    //
+    // This test loads multiple candidate sans-serif families in a deliberately "wrong" order
+    // (DejaVu before Noto) and asserts we still select the preferred candidate according to
+    // `GenericFamily::SansSerif.fallback_families()`.
+    let dejavu = include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let noto = include_bytes!("../../tests/fixtures/fonts/NotoSans-subset.ttf");
+
+    let mut db = FontDatabase::empty();
+    db.load_font_data(dejavu.to_vec()).expect("load DejaVu Sans");
+    db.load_font_data(noto.to_vec()).expect("load Noto Sans");
+    db.refresh_generic_fallbacks();
+
+    let id = db
+      .query("sans-serif", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("resolve sans-serif");
+    let font = db.load_font(id).expect("load resolved sans-serif font");
+    assert_eq!(font.family, "Noto Sans");
   }
 
   #[test]
