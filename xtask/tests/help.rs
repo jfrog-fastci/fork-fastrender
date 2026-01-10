@@ -16,6 +16,7 @@ fn help_lists_commands() {
   let js_count = stdout.matches("\n  js ").count();
   assert!(
     stdout.contains("render-page")
+      && stdout.contains("page-loop")
       && stdout.contains("update-goldens")
       && stdout.contains("diff-renders")
       && stdout.contains("freeze-page-fixture")
@@ -286,6 +287,42 @@ fn fixture_determinism_help_mentions_flags() {
       && stdout.contains("--allow-differences")
       && stdout.contains("--no-build"),
     "help output should mention key flags; got:\n{stdout}"
+  );
+}
+
+#[test]
+fn page_loop_help_mentions_flags() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["page-loop", "--help"])
+    .output()
+    .expect("run cargo xtask page-loop --help");
+
+  assert!(
+    output.status.success(),
+    "page-loop help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--fixture")
+      && stdout.contains("--pageset")
+      && stdout.contains("--from-progress")
+      && stdout.contains("--top-worst-accuracy")
+      && stdout.contains("--top-slowest")
+      && stdout.contains("--only-failures")
+      && stdout.contains("--hotspot")
+      && stdout.contains("--viewport")
+      && stdout.contains("--dpr")
+      && stdout.contains("--jobs")
+      && stdout.contains("--timeout")
+      && stdout.contains("--media")
+      && stdout.contains("--out-dir")
+      && stdout.contains("--write-snapshot")
+      && stdout.contains("--overlay")
+      && stdout.contains("--chrome")
+      && stdout.contains("--no-chrome")
+      && stdout.contains("--dry-run"),
+    "page-loop help should mention key flags; got:\n{stdout}"
   );
 }
 
