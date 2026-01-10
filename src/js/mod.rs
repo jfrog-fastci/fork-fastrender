@@ -116,6 +116,9 @@ pub mod events_bindings;
 pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
+//
+// NOTE: `dom_integration` is declared above (it is still referenced by some integration tests and
+// DOM-mutation plumbing). Do not re-declare it here.
 
 // Legacy DOM integration helpers (used by some non-streaming DOM mutation call sites).
 #[path = "legacy/dom_integration.rs"]
