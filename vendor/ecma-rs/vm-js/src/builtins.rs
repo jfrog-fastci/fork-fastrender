@@ -5282,6 +5282,56 @@ pub fn string_prototype_char_code_at(
   Ok(Value::Number(units[idx] as f64))
 }
 
+/// `String.prototype.charAt(pos)` (ECMA-262) (minimal).
+pub fn string_prototype_char_at(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut n = if matches!(pos_value, Value::Undefined) {
+    0.0
+  } else {
+    scope.to_number(vm, host, hooks, pos_value)?
+  };
+
+  // `ToIntegerOrInfinity` rounds toward zero.
+  if n.is_nan() {
+    n = 0.0;
+  }
+  if !n.is_finite() {
+    let empty = scope.alloc_string("")?;
+    return Ok(Value::String(empty));
+  }
+  n = n.trunc();
+  if n < 0.0 {
+    let empty = scope.alloc_string("")?;
+    return Ok(Value::String(empty));
+  }
+
+  let idx = n as usize;
+  let unit = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units().get(idx).copied()
+  };
+
+  let Some(unit) = unit else {
+    let empty = scope.alloc_string("")?;
+    return Ok(Value::String(empty));
+  };
+
+  let out = scope.alloc_string_from_u16_vec(vec![unit])?;
+  Ok(Value::String(out))
+}
+
 /// `String.prototype.slice` (ECMA-262) (minimal).
 pub fn string_prototype_slice(
   vm: &mut Vm,
@@ -5603,6 +5653,68 @@ pub fn string_prototype_substring(
   let units: Vec<u16> = {
     let js = scope.heap().get_string(s)?;
     js.as_code_units()[from..to].to_vec()
+  };
+  let out = scope.alloc_string_from_u16_vec(units)?;
+  Ok(Value::String(out))
+}
+
+/// `String.prototype.substr(start, length)` (Annex B) (minimal).
+pub fn string_prototype_substr(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+
+  let start_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let start = slice_index_from_value(vm, &mut scope, host, hooks, start_arg, len, 0)?;
+
+  let length_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  let end = if matches!(length_arg, Value::Undefined) {
+    len
+  } else {
+    let mut n = scope.to_number(vm, host, hooks, length_arg)?;
+    if n.is_nan() {
+      n = 0.0;
+    }
+    if !n.is_finite() {
+      if n.is_sign_negative() {
+        start
+      } else {
+        len
+      }
+    } else {
+      n = n.trunc();
+      if n <= 0.0 {
+        start
+      } else {
+        start.saturating_add(n as usize).min(len)
+      }
+    }
+  };
+
+  if start == 0 && end == len {
+    return Ok(Value::String(s));
+  }
+  if end <= start {
+    let empty = scope.alloc_string("")?;
+    return Ok(Value::String(empty));
+  }
+
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(s)?;
+    js.as_code_units()[start..end].to_vec()
   };
   let out = scope.alloc_string_from_u16_vec(units)?;
   Ok(Value::String(out))

@@ -421,8 +421,10 @@ impl Intrinsics {
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
     let string_prototype_char_code_at =
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
+    let string_prototype_char_at = vm.register_native_call(builtins::string_prototype_char_at)?;
     let string_prototype_trim = vm.register_native_call(builtins::string_prototype_trim)?;
     let string_prototype_substring = vm.register_native_call(builtins::string_prototype_substring)?;
+    let string_prototype_substr = vm.register_native_call(builtins::string_prototype_substr)?;
     let string_prototype_to_lower_case =
       vm.register_native_call(builtins::string_prototype_to_lower_case)?;
     let string_prototype_to_upper_case =
@@ -977,6 +979,23 @@ impl Intrinsics {
         )?;
       }
 
+      // String.prototype.charAt
+      {
+        let char_at_s = scope.alloc_string("charAt")?;
+        scope.push_root(Value::String(char_at_s))?;
+        let key = PropertyKey::from_string(char_at_s);
+        let func = scope.alloc_native_function(string_prototype_char_at, None, char_at_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
       // String.prototype.trim
       {
         let trim_s = scope.alloc_string("trim")?;
@@ -1000,6 +1019,23 @@ impl Intrinsics {
         scope.push_root(Value::String(substring_s))?;
         let key = PropertyKey::from_string(substring_s);
         let func = scope.alloc_native_function(string_prototype_substring, None, substring_s, 2)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.substr (Annex B)
+      {
+        let substr_s = scope.alloc_string("substr")?;
+        scope.push_root(Value::String(substr_s))?;
+        let key = PropertyKey::from_string(substr_s);
+        let func = scope.alloc_native_function(string_prototype_substr, None, substr_s, 2)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()

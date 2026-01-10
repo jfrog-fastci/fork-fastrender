@@ -440,6 +440,17 @@ fn string_primitive_has_length_and_index_properties() {
 }
 
 #[test]
+fn string_prototype_char_at_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""abc".charAt(1) === "b" && "abc".charAt(9) === "" && "abc".charAt(-1) === "" && String.prototype.charAt.call(123, 1) === "2""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_prototype_slice_works() {
   let mut rt = new_runtime();
   let value = rt
@@ -531,6 +542,17 @@ fn string_prototype_substring_works_and_is_generic() {
   let value = rt
     .exec_script(
       r#""abcd".substring(1, 3) === "bc" && "abcd".substring(2) === "cd" && "abcd".substring(-1, 2) === "ab" && "abcd".substring(3, 1) === "bc" && "abcd".substring(1, 1e999) === "bcd" && String.prototype.substring.call({toString:function(){return "ab";}}, 1) === "b""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_substr_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""abcd".substr(1, 2) === "bc" && "abcd".substr(-2) === "cd" && "abcd".substr(1, -1) === "" && String.prototype.substr.call(123, 1) === "23""#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
