@@ -611,7 +611,11 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.exec_script_source_with_host_and_hooks(host, hooks, Arc::new(SourceText::new("<inline>", source)))
+    self.exec_script_source_with_host_and_hooks(
+      host,
+      hooks,
+      Arc::new(SourceText::new("<inline>", source)),
+    )
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
