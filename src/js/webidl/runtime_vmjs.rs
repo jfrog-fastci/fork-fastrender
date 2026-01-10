@@ -1376,10 +1376,10 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     // Follow the Web IDL JavaScript binding:
     // - `global[name]`: writable + configurable, non-enumerable
     // - `ctor.prototype`: non-writable, non-enumerable, non-configurable
-    // - `proto.constructor`: writable + configurable, non-enumerable
+    // - `proto.constructor`: non-writable, non-enumerable, non-configurable
     self.define_data_property_str_with_attrs(global, name, ctor, true, false, true)?;
     self.define_data_property_str_with_attrs(ctor, "prototype", proto, false, false, false)?;
-    self.define_data_property_str_with_attrs(proto, "constructor", ctor, true, false, true)?;
+    self.define_data_property_str_with_attrs(proto, "constructor", ctor, false, false, false)?;
     Ok(())
   }
 

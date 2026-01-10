@@ -79,8 +79,8 @@ impl DataPropertyAttributes {
     }
   }
 
-  /// Typical attributes for WebIDL operations: writable, enumerable, configurable.
-  pub const METHOD: Self = Self::new(true, true, true);
+  /// Typical attributes for WebIDL operations: writable, **non-enumerable**, configurable.
+  pub const METHOD: Self = Self::new(true, false, true);
 
   /// Typical attributes for WebIDL `const` values: non-writable, enumerable, non-configurable.
   pub const CONST: Self = Self::new(false, true, false);
