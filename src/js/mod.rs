@@ -122,9 +122,9 @@ pub mod events_bindings;
 pub mod url_bindings;
 
 // --- Legacy runtimes (`src/js/legacy/*`) ---
-//
-// NOTE: `dom_integration` is declared above (it is still referenced by some integration tests and
-// DOM-mutation plumbing). Do not re-declare it here.
+// HTML "prepare the script element" helpers for dynamically inserted `<script>` elements.
+#[path = "legacy/dom_integration.rs"]
+pub mod dom_integration;
 
 #[cfg(feature = "quickjs")]
 #[path = "legacy/vm_host.rs"]
@@ -136,6 +136,7 @@ pub mod quickjs_dom;
 // Legacy vm-js DOM bindings (pre-WebIDL scaffolding). Kept for tests/experiments.
 #[path = "legacy/vm_dom.rs"]
 pub mod vm_dom;
+
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use dom_host::DomHost;
