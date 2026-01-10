@@ -1108,6 +1108,11 @@ fn dom_for_source(id: u64) -> Option<NonNull<dom2::Document>> {
   DOM_SOURCES.with(|sources| sources.borrow().get(&id).copied())
 }
 
+#[cfg(test)]
+pub(crate) fn is_dom_source_registered(id: u64) -> bool {
+  DOM_SOURCES.with(|sources| sources.borrow().contains_key(&id))
+}
+
 fn event_active_event_id(scope: &mut Scope<'_>, event_obj: GcObject) -> Result<Option<u64>, VmError> {
   let key = alloc_key(scope, EVENT_ID_KEY)?;
   Ok(match scope.heap().object_get_own_data_property_value(event_obj, &key)? {

@@ -1,11 +1,8 @@
 use crate::error::{Error, Result};
-use crate::js::window_realm::{
-  register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig,
-};
+use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
 use crate::js::time::update_time_bindings_clock;
 use crate::js::{CurrentScriptStateHandle, JsExecutionOptions, LocationNavigationRequest, ScriptElementSpec};
 use crate::web::events::{Event, EventTargetId};
-use std::ptr::NonNull;
 use std::sync::Arc;
 
 use super::BrowserDocumentDom2;
@@ -13,10 +10,10 @@ use super::{BrowserTabHost, BrowserTabJsExecutor, SharedRenderDiagnostics};
 
 /// `vm-js`-backed [`BrowserTabJsExecutor`] that provides a minimal `window`/`document` environment.
 ///
-/// Navigation creates a fresh JS realm for each document (matching browser semantics) while keeping
-/// a stable host-owned DOM pointer registration for the lifetime of the tab.
+/// Navigation creates a fresh JS realm for each document (matching browser semantics). The realm
+/// receives a `dom_source_id` that resolves to a stable `NonNull<dom2::Document>` pointer for the
+/// lifetime of the currently committed document.
 pub struct VmJsBrowserTabExecutor {
-  dom_source_id: Option<u64>,
   realm: Option<WindowRealm>,
   pending_navigation: Option<LocationNavigationRequest>,
   diagnostics: Option<SharedRenderDiagnostics>,
@@ -25,23 +22,10 @@ pub struct VmJsBrowserTabExecutor {
 impl VmJsBrowserTabExecutor {
   pub fn new() -> Self {
     Self {
-      dom_source_id: None,
       realm: None,
       pending_navigation: None,
       diagnostics: None,
     }
-  }
-
-  fn ensure_dom_source_id(&mut self, document: &mut BrowserDocumentDom2) -> u64 {
-    if let Some(id) = self.dom_source_id {
-      return id;
-    }
-    // SAFETY: `BrowserTabHost` stores `BrowserDocumentDom2` behind a `Box`, so the `dom2::Document`
-    // field address is stable for the lifetime of the tab (even if the tab is moved). The DOM tree
-    // itself can be replaced in-place on navigation/parsing, but the pointer remains valid.
-    let id = register_dom_source(NonNull::from(document.dom_mut()));
-    self.dom_source_id = Some(id);
-    id
   }
 }
 
@@ -55,9 +39,6 @@ impl Drop for VmJsBrowserTabExecutor {
   fn drop(&mut self) {
     // Drop the realm first so any remaining JS globals stop referencing the DOM source id.
     self.realm = None;
-    if let Some(id) = self.dom_source_id.take() {
-      unregister_dom_source(id);
-    }
   }
 }
 
@@ -82,7 +63,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // navigations.
     self.realm = None;
 
-    let dom_source_id = self.ensure_dom_source_id(document);
+    let dom_source_id = document.ensure_dom_source_registered();
 
     let url = document_url.unwrap_or("about:blank");
     let mut config = WindowRealmConfig::new(url)

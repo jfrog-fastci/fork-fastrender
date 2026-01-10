@@ -39,6 +39,7 @@ pub struct BrowserDocumentDom2InvalidationCounters {
 pub struct BrowserDocumentDom2 {
   renderer: super::FastRender,
   dom: Box<crate::dom2::Document>,
+  dom_source_id: Option<u64>,
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
   last_dom_mapping: Option<crate::dom2::RendererDomMapping>,
@@ -81,6 +82,7 @@ impl BrowserDocumentDom2 {
     Ok(Self {
       renderer,
       dom,
+      dom_source_id: None,
       options,
       prepared: None,
       last_dom_mapping: None,
@@ -190,10 +192,28 @@ impl BrowserDocumentDom2 {
     &self.options
   }
 
+  pub(crate) fn ensure_dom_source_registered(&mut self) -> u64 {
+    if let Some(id) = self.dom_source_id {
+      return id;
+    }
+    let id = crate::js::window_realm::register_dom_source(self.dom_non_null());
+    self.dom_source_id = Some(id);
+    id
+  }
+
+  #[inline]
+  fn unregister_dom_source_if_needed(&mut self) {
+    if let Some(id) = self.dom_source_id.take() {
+      crate::js::window_realm::unregister_dom_source(id);
+    }
+  }
+
   /// Replaces the live DOM and clears any cached preparation state.
   pub fn reset_with_dom(&mut self, dom: crate::dom2::Document, options: RenderOptions) {
-    *self.dom = dom;
-    self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+    self.unregister_dom_source_if_needed();
+    self.last_seen_dom_mutation_generation = dom.mutation_generation();
+    let dom = Box::new(dom);
+    self.dom = dom;
     self.options = options;
     self.prepared = None;
     self.last_dom_mapping = None;
@@ -207,8 +227,11 @@ impl BrowserDocumentDom2 {
   /// The next `render_if_needed` call will paint using the prepared layout without re-running
   /// cascade/layout.
   pub fn reset_with_prepared(&mut self, prepared: PreparedDocument, options: RenderOptions) {
-    *self.dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
-    self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+    self.unregister_dom_source_if_needed();
+    let dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
+    self.last_seen_dom_mutation_generation = dom.mutation_generation();
+    let dom = Box::new(dom);
+    self.dom = dom;
     self.options = options;
     self.prepared = Some(prepared);
     self.last_dom_mapping = Some(self.dom.as_ref().to_renderer_dom_with_mapping().mapping);
@@ -915,9 +938,16 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
   }
 }
 
+impl Drop for BrowserDocumentDom2 {
+  fn drop(&mut self) {
+    self.unregister_dom_source_if_needed();
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use selectors::context::QuirksMode;
 
   fn renderer_for_tests() -> super::super::FastRender {
     super::super::FastRender::builder()
@@ -1069,6 +1099,66 @@ mod tests {
     let changed = doc.mutate_dom(|dom| dom.append_child(body, child).expect("append child"));
     assert!(!changed);
     assert!(doc.render_if_needed().unwrap().is_none());
+  }
+
+  #[test]
+  fn dom2_document_address_is_stable_across_moves_and_changes_on_reset() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+
+    // The underlying `dom2::Document` must not move when the host is moved.
+    let ptr0 = doc.dom() as *const crate::dom2::Document;
+    let mut doc = doc;
+    let ptr1 = doc.dom() as *const crate::dom2::Document;
+    assert_eq!(ptr0, ptr1);
+
+    // Rendering must not relocate the DOM.
+    doc.render_frame()?;
+    let ptr2 = doc.dom() as *const crate::dom2::Document;
+    assert_eq!(ptr1, ptr2);
+
+    // Register with the vm-js DOM source registry and ensure it is cleaned up across resets.
+    let dom_source_id = doc.ensure_dom_source_registered();
+    assert!(crate::js::window_realm::is_dom_source_registered(dom_source_id));
+
+    let before_reset = doc.dom() as *const crate::dom2::Document;
+    doc.reset_with_dom(
+      crate::dom2::Document::new(QuirksMode::NoQuirks),
+      RenderOptions::new().with_viewport(32, 32),
+    );
+    let after_reset = doc.dom() as *const crate::dom2::Document;
+    assert_ne!(before_reset, after_reset);
+    assert!(
+      !crate::js::window_realm::is_dom_source_registered(dom_source_id),
+      "expected dom_source_id to be unregistered when the document is replaced"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn dom_source_id_is_unregistered_on_drop() -> Result<()> {
+    let dom_source_id = {
+      let renderer = renderer_for_tests();
+      let mut doc = BrowserDocumentDom2::new(
+        renderer,
+        "<!doctype html><html><body></body></html>",
+        RenderOptions::default(),
+      )?;
+      let id = doc.ensure_dom_source_registered();
+      assert!(crate::js::window_realm::is_dom_source_registered(id));
+      id
+    };
+
+    assert!(
+      !crate::js::window_realm::is_dom_source_registered(dom_source_id),
+      "expected dom_source_id to be unregistered when BrowserDocumentDom2 is dropped"
+    );
+    Ok(())
   }
 
   #[test]
@@ -1281,7 +1371,7 @@ mod tests {
   }
 
   #[test]
-  fn dom_pointer_is_stable_across_moves_and_resets() -> Result<()> {
+  fn dom_pointer_is_stable_across_moves_and_changes_on_reset_paths() -> Result<()> {
     let renderer = renderer_for_tests();
     let options = RenderOptions::new().with_viewport(16, 16);
     let mut doc = BrowserDocumentDom2::new(
@@ -1289,24 +1379,25 @@ mod tests {
       "<!doctype html><html><body><div>hi</div></body></html>",
       options.clone(),
     )?;
-    let ptr = doc.dom_ptr().as_ptr();
+    let ptr0 = doc.dom_ptr().as_ptr();
 
     // Moving the host must not change the address of the underlying `dom2::Document`, since JS
     // shims store the document pointer in a registry.
     let mut doc = doc;
-    assert_eq!(ptr, doc.dom_ptr().as_ptr());
+    assert_eq!(ptr0, doc.dom_ptr().as_ptr());
 
-    // Reset paths must also keep the `Document` allocation stable so existing registrations stay
-    // valid.
+    // Reset paths replace the underlying document allocation, so the pointer must change.
     doc.reset_with_html(
       "<!doctype html><html><body><span>reset</span></body></html>",
       options.clone(),
     )?;
-    assert_eq!(ptr, doc.dom_ptr().as_ptr());
+    let ptr1 = doc.dom_ptr().as_ptr();
+    assert_ne!(ptr0, ptr1);
 
     let prepared = doc.prepare_dom_with_options()?;
     doc.reset_with_prepared(prepared, options);
-    assert_eq!(ptr, doc.dom_ptr().as_ptr());
+    let ptr2 = doc.dom_ptr().as_ptr();
+    assert_ne!(ptr1, ptr2);
 
     Ok(())
   }
