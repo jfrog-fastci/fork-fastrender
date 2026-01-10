@@ -22,7 +22,15 @@ fn supports_declaration_accepts_targeted_vendor_properties() {
   assert!(!supports_declaration("-moz-not-a-real-prop", "none"));
   assert!(!supports_declaration("-ms-not-a-real-prop", "none"));
   assert!(!supports_declaration("-o-not-a-real-prop", "none"));
-  assert!(!supports_declaration("-ms-grid-row", "1"));
+  assert!(supports_declaration("-ms-grid-row", "1"));
+  assert!(
+    !supports_declaration("-ms-grid-row", "0"),
+    "legacy -ms-grid-row requires a positive integer value"
+  );
+  assert!(
+    !supports_declaration("-ms-filter", "none"),
+    "legacy IE -ms-filter must not alias to modern filter() syntax"
+  );
   assert!(
     !supports_declaration("page-break-before", "column"),
     "legacy page-break properties should reject modern break keywords"
@@ -88,7 +96,7 @@ fn supports_not_vendor_properties_do_not_invert_feature_queries() {
   let css = r#"
     @supports (-webkit-appearance: none)
       and (not (-moz-not-a-real-prop: none))
-      and (not (-ms-grid-row: 1))
+      and (not (-ms-filter: none))
       and (text-size-adjust: none) {
       .a { color: red; }
     }
