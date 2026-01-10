@@ -3413,6 +3413,15 @@ impl GridFormattingContext {
       _ => {
         if let Some(px) = self.resolve_length_px(length, style) {
           Dimension::length(px)
+        } else if length.has_percentage() {
+          // `calc()` values mixing lengths + percentages cannot be represented in Taffy without a
+          // percentage base. Falling back to `Length::to_px()` would treat the percentage term as a
+          // raw number and bake a bogus definite pixel size into the cached template.
+          //
+          // Represent these as `auto` so Taffy continues to treat them as indefinite and we can
+          // resolve them later when a definite base is available (root style patch) or inside the
+          // measure callback (grid items).
+          Dimension::auto()
         } else {
           Dimension::length(length.to_px())
         }
@@ -3434,6 +3443,10 @@ impl GridFormattingContext {
         _ => {
           if let Some(px) = self.resolve_length_px(len, style) {
             LengthPercentageAuto::length(px)
+          } else if len.has_percentage() {
+            // Unresolved `calc()` percentages can't be represented in Taffy. Use a safe 0px
+            // fallback instead of `Length::to_px()` (which treats percentages as raw numbers).
+            LengthPercentageAuto::length(0.0)
           } else {
             LengthPercentageAuto::length(len.to_px())
           }
@@ -3450,6 +3463,10 @@ impl GridFormattingContext {
       _ => {
         if let Some(px) = self.resolve_length_px(length, style) {
           LengthPercentage::length(px)
+        } else if length.has_percentage() {
+          // Unresolved `calc()` percentages can't be represented in Taffy. Use a safe 0px fallback
+          // instead of `Length::to_px()` (which treats percentages as raw numbers).
+          LengthPercentage::length(0.0)
         } else {
           LengthPercentage::length(length.to_px())
         }
@@ -3529,6 +3546,248 @@ impl GridFormattingContext {
       LengthUnit::Ch => Some(len.value * style.font_size * 0.5),
       _ => None,
     }
+  }
+
+  fn length_has_calc_percentage(len: &Length) -> bool {
+    use crate::style::values::LengthUnit;
+    len.has_percentage() && (len.unit == LengthUnit::Calc || len.calc.is_some())
+  }
+
+  fn style_has_calc_percentage_sizing_or_edges(style: &ComputedStyle) -> bool {
+    Self::length_has_calc_percentage(&style.padding_left)
+      || Self::length_has_calc_percentage(&style.padding_right)
+      || Self::length_has_calc_percentage(&style.padding_top)
+      || Self::length_has_calc_percentage(&style.padding_bottom)
+      || Self::length_has_calc_percentage(&style.used_border_left_width())
+      || Self::length_has_calc_percentage(&style.used_border_right_width())
+      || Self::length_has_calc_percentage(&style.used_border_top_width())
+      || Self::length_has_calc_percentage(&style.used_border_bottom_width())
+      || style
+        .margin_left
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+      || style
+        .margin_right
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+      || style
+        .margin_top
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+      || style
+        .margin_bottom
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+      || style.width.as_ref().is_some_and(Self::length_has_calc_percentage)
+      || style.height.as_ref().is_some_and(Self::length_has_calc_percentage)
+      || style
+        .min_width
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+      || style
+        .min_height
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+      || style
+        .max_width
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+      || style
+        .max_height
+        .as_ref()
+        .is_some_and(Self::length_has_calc_percentage)
+  }
+
+  /// Patch root sizing + edge properties that contain `calc()` expressions with percentage terms.
+  ///
+  /// Taffy supports raw percentages for many style fields but does not support arbitrary `calc()`
+  /// expressions. When the percentage base is unknown during cached template conversion, falling
+  /// back to `Length::to_px()` can bake bogus/negative definite pixel values into the style (because
+  /// `Length::to_px()` treats unresolved percentages as raw numbers).
+  ///
+  /// Instead:
+  /// - sizing properties (`width/height/min/max`) fall back to `auto` when the base is unknown, and
+  ///   are resolved here when the root container has a definite base available.
+  /// - padding/border/margin fall back to `0px` when the base is unknown, and are resolved here for
+  ///   the root container when the containing block width is definite.
+  fn patch_root_calc_percentage_sizing_and_edges(
+    &self,
+    taffy: &mut TaffyTree<*const BoxNode>,
+    root_id: TaffyNodeId,
+    style: &ComputedStyle,
+    constraints: &LayoutConstraints,
+  ) -> Result<(), LayoutError> {
+    use crate::style::values::LengthUnit;
+
+    if !Self::style_has_calc_percentage_sizing_or_edges(style) {
+      return Ok(());
+    }
+
+    let Ok(existing) = taffy.style(root_id) else {
+      return Ok(());
+    };
+
+    // Percentage widths resolve against the containing block's width. For horizontal writing modes
+    // we additionally thread a stable `inline_percentage_base` even when `available_width` is
+    // intrinsic/indefinite so percentages do not fall back to the viewport.
+    let cb_width = constraints.width().filter(|w| w.is_finite() && *w >= 0.0).or_else(|| {
+      if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+        constraints
+          .inline_percentage_base
+          .filter(|w| w.is_finite() && *w >= 0.0)
+      } else {
+        None
+      }
+    });
+    let cb_height = constraints.height().filter(|h| h.is_finite() && *h >= 0.0);
+
+    let resolve = |len: Length, base: Option<f32>| -> Option<f32> {
+      self
+        .resolve_length_px_with_base(len, base.filter(|b| b.is_finite()), style)
+        .filter(|v| v.is_finite())
+    };
+
+    let mut updated = existing.clone();
+    let mut changed = false;
+
+    // Patch edge properties first so we can use the resolved values when converting content-box
+    // sizing into Taffy's border-box sizing model.
+    let mut patch_edge = |len: Length, base: Option<f32>, slot: &mut LengthPercentage| {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        let px = resolve(len, base).unwrap_or(0.0).max(0.0);
+        *slot = LengthPercentage::length(px);
+        changed = true;
+      }
+    };
+    patch_edge(style.padding_left, cb_width, &mut updated.padding.left);
+    patch_edge(style.padding_right, cb_width, &mut updated.padding.right);
+    patch_edge(style.padding_top, cb_width, &mut updated.padding.top);
+    patch_edge(style.padding_bottom, cb_width, &mut updated.padding.bottom);
+
+    patch_edge(
+      style.used_border_left_width(),
+      cb_width,
+      &mut updated.border.left,
+    );
+    patch_edge(
+      style.used_border_right_width(),
+      cb_width,
+      &mut updated.border.right,
+    );
+    patch_edge(style.used_border_top_width(), cb_width, &mut updated.border.top);
+    patch_edge(
+      style.used_border_bottom_width(),
+      cb_width,
+      &mut updated.border.bottom,
+    );
+
+    let mut patch_margin = |len: Option<Length>, base: Option<f32>, slot: &mut LengthPercentageAuto| {
+      let Some(len) = len else { return };
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        let px = resolve(len, base).unwrap_or(0.0);
+        *slot = LengthPercentageAuto::length(px);
+        changed = true;
+      }
+    };
+    patch_margin(style.margin_left, cb_width, &mut updated.margin.left);
+    patch_margin(style.margin_right, cb_width, &mut updated.margin.right);
+    patch_margin(style.margin_top, cb_width, &mut updated.margin.top);
+    patch_margin(style.margin_bottom, cb_width, &mut updated.margin.bottom);
+
+    let edges_base = cb_width.unwrap_or(0.0).max(0.0);
+    let resolve_edge_px = |len: Length| -> f32 {
+      // When the containing block width is unknown, treat `calc(% + length)` edges as `0` instead
+      // of leaking the absolute term into layout.
+      if len.unit == LengthUnit::Calc && len.has_percentage() && cb_width.is_none() {
+        return 0.0;
+      }
+      let mut px = self.resolve_length_for_width(len, edges_base, style);
+      if !px.is_finite() {
+        px = 0.0;
+      }
+      px.max(0.0)
+    };
+    let padding_left_px = resolve_edge_px(style.padding_left);
+    let padding_right_px = resolve_edge_px(style.padding_right);
+    let padding_top_px = resolve_edge_px(style.padding_top);
+    let padding_bottom_px = resolve_edge_px(style.padding_bottom);
+    let border_left_px = resolve_edge_px(style.used_border_left_width());
+    let border_right_px = resolve_edge_px(style.used_border_right_width());
+    let border_top_px = resolve_edge_px(style.used_border_top_width());
+    let border_bottom_px = resolve_edge_px(style.used_border_bottom_width());
+
+    let horizontal_edges = padding_left_px + padding_right_px + border_left_px + border_right_px;
+    let vertical_edges = padding_top_px + padding_bottom_px + border_top_px + border_bottom_px;
+
+    let to_border_box = |specified: f32, axis: Axis| -> f32 {
+      let specified = specified.max(0.0);
+      if style.box_sizing == BoxSizing::ContentBox {
+        match axis {
+          Axis::Horizontal => (specified + horizontal_edges).max(0.0),
+          Axis::Vertical => (specified + vertical_edges).max(0.0),
+        }
+      } else {
+        specified
+      }
+    };
+
+    let resolve_dimension =
+      |len: &Length, axis: Axis, base: Option<f32>| -> Dimension {
+        let Some(px) = resolve(*len, base) else {
+          return Dimension::auto();
+        };
+        Dimension::length(to_border_box(px, axis))
+      };
+
+    if constraints.used_border_box_width.is_none() {
+      if let Some(len) = style.width.as_ref() {
+        if len.unit == LengthUnit::Calc && len.has_percentage() {
+          updated.size.width = resolve_dimension(len, Axis::Horizontal, cb_width);
+          changed = true;
+        }
+      }
+    }
+    if constraints.used_border_box_height.is_none() {
+      if let Some(len) = style.height.as_ref() {
+        if len.unit == LengthUnit::Calc && len.has_percentage() {
+          updated.size.height = resolve_dimension(len, Axis::Vertical, cb_height);
+          changed = true;
+        }
+      }
+    }
+
+    if let Some(len) = style.min_width.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        updated.min_size.width = resolve_dimension(len, Axis::Horizontal, cb_width);
+        changed = true;
+      }
+    }
+    if let Some(len) = style.min_height.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        updated.min_size.height = resolve_dimension(len, Axis::Vertical, cb_height);
+        changed = true;
+      }
+    }
+    if let Some(len) = style.max_width.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        updated.max_size.width = resolve_dimension(len, Axis::Horizontal, cb_width);
+        changed = true;
+      }
+    }
+    if let Some(len) = style.max_height.as_ref() {
+      if len.unit == LengthUnit::Calc && len.has_percentage() {
+        updated.max_size.height = resolve_dimension(len, Axis::Vertical, cb_height);
+        changed = true;
+      }
+    }
+
+    if changed {
+      taffy
+        .set_style(root_id, updated)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+    }
+
+    Ok(())
   }
 
   fn grid_track_has_calc_percentage(track: &GridTrack) -> bool {
@@ -4044,6 +4303,11 @@ impl GridFormattingContext {
         _ => {
           if let Some(px) = self.resolve_length_px(len, style) {
             MinTrackSizingFunction::length(px)
+          } else if len.has_percentage() {
+            // `calc()` lengths containing percentages require a percentage base. When the base is
+            // unknown (cached template conversion), treat them as `auto` instead of falling back to
+            // `Length::to_px()` (which treats percentages as raw numbers).
+            MinTrackSizingFunction::auto()
           } else {
             MinTrackSizingFunction::length(len.to_px())
           }
@@ -4065,6 +4329,11 @@ impl GridFormattingContext {
         _ => {
           if let Some(px) = self.resolve_length_px(len, style) {
             MaxTrackSizingFunction::length(px)
+          } else if len.has_percentage() {
+            // `calc()` lengths containing percentages require a percentage base. When the base is
+            // unknown (cached template conversion), treat them as `auto` instead of falling back to
+            // `Length::to_px()` (which treats percentages as raw numbers).
+            MaxTrackSizingFunction::auto()
           } else {
             MaxTrackSizingFunction::length(len.to_px())
           }
@@ -7050,6 +7319,18 @@ impl GridFormattingContext {
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
     }
 
+    self.patch_root_calc_percentage_sizing_and_edges(
+      &mut taffy,
+      root_id,
+      style,
+      &intrinsic_constraints,
+    )?;
+    self.patch_root_calc_percentage_sizing_and_edges(
+      &mut taffy,
+      root_id,
+      style,
+      &intrinsic_constraints,
+    )?;
     self.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, &intrinsic_constraints)?;
 
     // Use appropriate available space for intrinsic sizing
@@ -9667,6 +9948,7 @@ impl FormattingContext for GridFormattingContext {
       }
     }
 
+    ctx.patch_root_calc_percentage_sizing_and_edges(&mut taffy, root_id, style, constraints)?;
     ctx.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, constraints)?;
 
     let mut available_space = taffy_available_space_for_grid_container(style, constraints);

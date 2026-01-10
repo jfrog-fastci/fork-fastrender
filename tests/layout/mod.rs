@@ -122,6 +122,8 @@ mod grid_auto_placement_dense;
 mod grid_auto_min_size_compressible_replaced;
 mod grid_baseline_column_sizing;
 mod grid_baseline_row_sizing;
+mod grid_calc_percentage_padding;
+mod grid_calc_percentage_width;
 mod grid_calc_length_rem;
 mod grid_column_shorthand_longhand_merge;
 mod grid_calc_tracks_viewport_units;
