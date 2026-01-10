@@ -170,6 +170,31 @@ pub fn install_time_bindings(
       global_data_desc(Value::Object(date_now)),
     )?;
 
+    // --- Date.prototype.getTime() ---
+    //
+    // `vm-js` provides a minimal Date constructor/prototype pair, but it intentionally omits many
+    // real-world methods for test262 bootstrapping. Many pages still call `new Date().getTime()`;
+    // defining `getTime` in terms of the internal `DateData` slot preserves compatibility without
+    // requiring a full Date implementation.
+    let date_prototype = realm.intrinsics().date_prototype();
+    scope.push_root(Value::Object(date_prototype))?;
+    let date_get_time_id = vm.register_native_call(date_get_time_native)?;
+    let date_get_time_name = scope.alloc_string("getTime")?;
+    let date_get_time = scope.alloc_native_function(date_get_time_id, None, date_get_time_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(date_get_time, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(date_get_time))?;
+
+    let date_get_time_key_s = scope.alloc_string("getTime")?;
+    scope.push_root(Value::String(date_get_time_key_s))?;
+    let date_get_time_key = PropertyKey::from_string(date_get_time_key_s);
+    scope.define_property(
+      date_prototype,
+      date_get_time_key,
+      global_data_desc(Value::Object(date_get_time)),
+    )?;
+
     // --- performance.now() ---
     let performance = scope.alloc_object()?;
     scope.push_root(Value::Object(performance))?;
@@ -291,6 +316,34 @@ fn performance_now_native(
 ) -> Result<Value, VmError> {
   let clock = with_time_context(scope, |ctx| ctx.clock.clone())?;
   Ok(Value::Number(duration_to_ms_f64(clock.now())))
+}
+
+fn date_get_time_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "Date.prototype.getTime called on non-object",
+    ));
+  };
+  let marker = scope.alloc_string("vm-js.internal.DateData")?;
+  let marker_sym = scope.heap_mut().symbol_for(marker)?;
+  let marker_key = PropertyKey::from_symbol(marker_sym);
+  match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &marker_key)?
+  {
+    Some(Value::Number(n)) => Ok(Value::Number(n)),
+    _ => Err(VmError::TypeError(
+      "Date.prototype.getTime called on non-Date object",
+    )),
+  }
 }
 
 pub(crate) fn duration_to_ms_f64(duration: Duration) -> f64 {
