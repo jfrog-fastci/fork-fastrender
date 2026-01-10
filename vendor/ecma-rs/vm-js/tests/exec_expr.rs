@@ -108,6 +108,39 @@ fn array_prototype_push_appends_and_returns_length() {
 }
 
 #[test]
+fn array_prototype_splice_removes_elements() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3]; var r=a.splice(1,1); r.length===1 && r[0]===2 && a.length===2 && a[0]===1 && a[1]===3"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_prototype_splice_inserts_elements() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3]; var r=a.splice(1,0,9); r.length===0 && a.length===4 && a[0]===1 && a[1]===9 && a[2]===2 && a[3]===3"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn array_prototype_splice_converts_start_and_delete_count_via_to_number() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a=[1,2,3,4]; var start={valueOf:function(){return 1;}}; var dc={valueOf:function(){return 2;}}; var r=a.splice(start,dc,9); r.length===2 && r[0]===2 && r[1]===3 && a.length===3 && a[0]===1 && a[1]===9 && a[2]===4"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn arithmetic_precedence() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"1 + 2 * 3 === 7"#).unwrap();

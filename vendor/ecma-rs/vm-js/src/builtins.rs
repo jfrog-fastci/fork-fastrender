@@ -3968,6 +3968,262 @@ pub fn array_prototype_push(
   Ok(Value::Number(len as f64))
 }
 
+/// `Array.prototype.splice` (minimal).
+///
+/// This is implemented in a spec-shaped way so it works on array-like objects (e.g.
+/// `Array.prototype.splice.call(obj, ...)`) and respects accessors/prototype properties.
+pub fn array_prototype_splice(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let length_key = string_key(&mut scope, "length")?;
+  let len_value =
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
+  let len = to_length(len_value);
+
+  let start = args.get(0).copied().unwrap_or(Value::Undefined);
+  let actual_start = slice_index_from_value(vm, &mut scope, host, hooks, start, len, 0)?;
+
+  let insert_count = args.len().saturating_sub(2);
+
+  let actual_delete_count = if args.len() < 2 {
+    len.saturating_sub(actual_start)
+  } else {
+    let delete_count_val = args.get(1).copied().unwrap_or(Value::Undefined);
+    let n = scope.to_number(vm, host, hooks, delete_count_val)?;
+    if n.is_nan() || n <= 0.0 {
+      0usize
+    } else if !n.is_finite() {
+      len.saturating_sub(actual_start)
+    } else {
+      let n = n.trunc();
+      let max = len.saturating_sub(actual_start);
+      if n >= max as f64 {
+        max
+      } else {
+        (n as usize).min(max)
+      }
+    }
+  };
+
+  let new_len = len
+    .checked_sub(actual_delete_count)
+    .and_then(|v| v.checked_add(insert_count))
+    .ok_or(VmError::OutOfMemory)?;
+
+  let intr = require_intrinsics(vm)?;
+
+  // Create the returned array of deleted elements.
+  let removed = scope.alloc_array(actual_delete_count)?;
+  scope.push_root(Value::Object(removed))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(removed, Some(intr.array_prototype()))?;
+
+  // Copy deleted elements.
+  for k in 0..actual_delete_count {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+    let from = actual_start
+      .checked_add(k)
+      .ok_or(VmError::OutOfMemory)?;
+
+    let mut iter_scope = scope.reborrow();
+
+    let from_s = iter_scope.alloc_string(&from.to_string())?;
+    iter_scope.push_root(Value::String(from_s))?;
+    let to_s = iter_scope.alloc_string(&k.to_string())?;
+    iter_scope.push_root(Value::String(to_s))?;
+
+    let from_key = PropertyKey::from_string(from_s);
+    let to_key = PropertyKey::from_string(to_s);
+
+    if !iter_scope.ordinary_has_property(obj, from_key)? {
+      continue;
+    }
+    let value = iter_scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      obj,
+      from_key,
+      Value::Object(obj),
+    )?;
+    iter_scope.create_data_property_or_throw(removed, to_key, value)?;
+  }
+
+  // Shift existing elements to close/open the gap.
+  if insert_count < actual_delete_count {
+    let limit = len
+      .checked_sub(actual_delete_count)
+      .ok_or(VmError::OutOfMemory)?;
+    for k in actual_start..limit {
+      if k % 1024 == 0 {
+        vm.tick()?;
+      }
+      let from = k
+        .checked_add(actual_delete_count)
+        .ok_or(VmError::OutOfMemory)?;
+      let to = k.checked_add(insert_count).ok_or(VmError::OutOfMemory)?;
+
+      let mut iter_scope = scope.reborrow();
+
+      let from_s = iter_scope.alloc_string(&from.to_string())?;
+      iter_scope.push_root(Value::String(from_s))?;
+      let to_s = iter_scope.alloc_string(&to.to_string())?;
+      iter_scope.push_root(Value::String(to_s))?;
+
+      let from_key = PropertyKey::from_string(from_s);
+      let to_key = PropertyKey::from_string(to_s);
+
+      if iter_scope.ordinary_has_property(obj, from_key)? {
+        let value = iter_scope.ordinary_get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          from_key,
+          Value::Object(obj),
+        )?;
+        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          to_key,
+          value,
+          Value::Object(obj),
+        )?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.splice failed"));
+        }
+      } else {
+        let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.splice failed"));
+        }
+      }
+    }
+
+    // Delete trailing properties.
+    let mut k = len;
+    while k > new_len {
+      if k % 1024 == 0 {
+        vm.tick()?;
+      }
+      let idx = k - 1;
+      let mut del_scope = scope.reborrow();
+      let idx_s = del_scope.alloc_string(&idx.to_string())?;
+      let key = PropertyKey::from_string(idx_s);
+      let ok = del_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
+      if !ok {
+        return Err(VmError::TypeError("Array.prototype.splice failed"));
+      }
+      k -= 1;
+    }
+  } else if insert_count > actual_delete_count {
+    let mut k = len
+      .checked_sub(actual_delete_count)
+      .ok_or(VmError::OutOfMemory)?;
+    while k > actual_start {
+      if k % 1024 == 0 {
+        vm.tick()?;
+      }
+      let from = k
+        .checked_add(actual_delete_count)
+        .and_then(|v| v.checked_sub(1))
+        .ok_or(VmError::OutOfMemory)?;
+      let to = k
+        .checked_add(insert_count)
+        .and_then(|v| v.checked_sub(1))
+        .ok_or(VmError::OutOfMemory)?;
+
+      let mut iter_scope = scope.reborrow();
+
+      let from_s = iter_scope.alloc_string(&from.to_string())?;
+      iter_scope.push_root(Value::String(from_s))?;
+      let to_s = iter_scope.alloc_string(&to.to_string())?;
+      iter_scope.push_root(Value::String(to_s))?;
+
+      let from_key = PropertyKey::from_string(from_s);
+      let to_key = PropertyKey::from_string(to_s);
+
+      if iter_scope.ordinary_has_property(obj, from_key)? {
+        let value = iter_scope.ordinary_get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          from_key,
+          Value::Object(obj),
+        )?;
+        let ok = iter_scope.ordinary_set_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          obj,
+          to_key,
+          value,
+          Value::Object(obj),
+        )?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.splice failed"));
+        }
+      } else {
+        let ok = iter_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, to_key)?;
+        if !ok {
+          return Err(VmError::TypeError("Array.prototype.splice failed"));
+        }
+      }
+
+      k -= 1;
+    }
+  }
+
+  // Insert new items.
+  for (j, item) in args.get(2..).unwrap_or(&[]).iter().copied().enumerate() {
+    if j % 1024 == 0 {
+      vm.tick()?;
+    }
+    let to = actual_start.checked_add(j).ok_or(VmError::OutOfMemory)?;
+    let mut set_scope = scope.reborrow();
+    let to_s = set_scope.alloc_string(&to.to_string())?;
+    let key = PropertyKey::from_string(to_s);
+    let ok =
+      set_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, obj, key, item, Value::Object(obj))?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.splice failed"));
+    }
+  }
+
+  // Update length.
+  let ok = scope.ordinary_set_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    obj,
+    length_key,
+    Value::Number(new_len as f64),
+    Value::Object(obj),
+  )?;
+  if !ok {
+    return Err(VmError::TypeError("Array.prototype.splice failed"));
+  }
+
+  Ok(Value::Object(removed))
+}
+
 /// `String` constructor called as a function.
 pub fn string_constructor_call(
   vm: &mut Vm,
