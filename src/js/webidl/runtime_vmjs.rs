@@ -1514,8 +1514,12 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     )
   }
 
-  fn create_array(&mut self, _len: usize) -> Result<Self::JsValue, Self::Error> {
-    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::alloc_array(self)
+  fn create_array(&mut self, len: usize) -> Result<Self::JsValue, Self::Error> {
+    let obj = {
+      let mut scope = self.heap_mut().scope();
+      scope.alloc_array(len)?
+    };
+    Ok(Value::Object(obj))
   }
 
   fn create_function(
