@@ -340,6 +340,58 @@ fn call_without_host_respects_host_hooks_override() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn construct_without_host_respects_host_hooks_override() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let ctor = rt.exec_script(
+    r#"
+      function C() {
+        Promise.resolve().then(function () {});
+      }
+      C
+    "#,
+  )?;
+
+  assert_eq!(rt.vm.microtask_queue().len(), 0);
+
+  let exec_ctx = ExecutionContext {
+    realm: rt.realm().id(),
+    script_or_module: None,
+  };
+
+  let mut host_queue = MicrotaskQueue::new();
+
+  {
+    let vm = &mut rt.vm;
+    let heap = &mut rt.heap;
+    let mut vm_ctx = vm.execution_context_guard(exec_ctx);
+    let mut scope = heap.scope();
+
+    vm_ctx.with_host_hooks_override(&mut host_queue, |vm| {
+      let _obj = vm
+        .construct_without_host(&mut scope, ctor, &[], ctor)
+        .expect("new C() failed");
+    });
+  }
+
+  assert!(
+    host_queue.len() > 0,
+    "new C() should enqueue at least one Promise job onto the active host hooks override"
+  );
+  assert_eq!(
+    rt.vm.microtask_queue().len(),
+    0,
+    "construct_without_host should not enqueue onto the VM-owned microtask queue when an override is active"
+  );
+
+  let errors = host_queue.perform_microtask_checkpoint(&mut rt);
+  assert!(errors.is_empty());
+  Ok(())
+}
+
 struct HostJobContext<'a> {
   rt: &'a mut JsRuntime,
   host: &'a mut Host,
