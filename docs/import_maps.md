@@ -55,8 +55,11 @@ subsystems (also see [`docs/html_script_processing.md`](html_script_processing.m
 
 ### How to run tests
 
-Import map parsing/normalization is covered by small, deterministic unit tests in
-`src/js/import_maps/parse_tests.rs`.
+Import map parsing/normalization + merge/registration/resolution is covered by small, deterministic
+unit tests in:
+
+* `src/js/import_maps/parse_tests.rs`
+* `src/js/import_maps/tests.rs`
 
 Run them (scoped) with:
 
@@ -158,8 +161,10 @@ Rust type: `ModuleIntegrityMap { entries: Vec<(String, String)> }`
 
 * Unlike `imports`/`scopes`, HTML does **not** require sorting this map; FastRender keeps entries in
   insertion order.
-* Duplicate keys are treated as “last one wins” (implemented by overwriting the previous entry in
-  the vector).
+* Duplicate keys **within a single import map** are treated as “last one wins” during normalization
+  (implemented by overwriting the previous entry in the vector).
+* When merging multiple import maps, integrity conflicts are resolved in favor of the existing state
+  (old wins), matching the HTML “merge existing and new import maps” behavior.
 
 ### `ImportMapWarning` / `ImportMapWarningKind` (implemented)
 
@@ -560,8 +565,11 @@ These matter when implementing “resolve an imports match”, and are enforced 
   URL must still have the mapped base URL serialization as a prefix.
 
 Note: `resolve_imports_match` currently reports “blocked/invalid” cases as `Some(None)` (so the caller
-can surface a TypeError-style exception message). It does not yet construct spec-accurate error
-messages.
+can treat them as blocked) and intentionally drops the specific error message.
+
+For host-facing error reporting, use `resolve_module_specifier(...)`, which returns
+`ImportMapError::TypeError(...)` for blocked cases. Error strings are not yet guaranteed to be
+spec-accurate.
 
 #### Computing `normalized_specifier` / `as_url` (caller responsibility)
 
