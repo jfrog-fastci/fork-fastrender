@@ -11938,6 +11938,37 @@ impl InlineFormattingContext {
     let indent_each_line = style.text_indent.each_line;
     let first_line_width = available_inline;
     let subsequent_line_width = available_inline;
+    // Cache paragraph bidi settings so float placement can query the current line top using the
+    // same line-building logic as `flush_pending`.
+    //
+    // `text-orientation: upright` forces vertical typographic paragraphs to behave as strong LTR
+    // for bidi, regardless of the authored `direction`. This must match the shaping pipeline so
+    // paragraph-level bidi reordering does not swap RTL scripts.
+    let upright_vertical_bidi_override = is_vertical_typographic_mode(style.writing_mode)
+      && matches!(
+        style.text_orientation,
+        crate::style::types::TextOrientation::Upright
+      );
+    let paragraph_direction = if upright_vertical_bidi_override {
+      crate::style::types::Direction::Ltr
+    } else {
+      base_direction
+    };
+    let (paragraph_unicode_bidi, paragraph_base_level) = if upright_vertical_bidi_override {
+      (
+        crate::style::types::UnicodeBidi::BidiOverride,
+        Some(unicode_bidi::Level::ltr()),
+      )
+    } else {
+      let paragraph_base_level = match style.unicode_bidi {
+        crate::style::types::UnicodeBidi::Plaintext => None,
+        _ => match paragraph_direction {
+          crate::style::types::Direction::Rtl => Some(unicode_bidi::Level::rtl()),
+          crate::style::types::Direction::Ltr => Some(unicode_bidi::Level::ltr()),
+        },
+      };
+      (style.unicode_bidi, paragraph_base_level)
+    };
     let active_line_clamp = style.line_clamp.and_then(|value| {
       let value = value as usize;
       if value == 0 {
@@ -12088,37 +12119,6 @@ impl InlineFormattingContext {
         pending.clear();
         return Ok(None);
       }
-      // `text-orientation: upright` forces vertical typographic paragraphs to behave as strong
-      // LTR for bidi, regardless of the authored `direction`. The shaping pipeline already
-      // applies this override when `writing-mode` is vertical-rl/lr; inline layout must match so
-      // paragraph-level bidi reordering does not swap RTL scripts.
-      let upright_vertical_bidi_override = is_vertical_typographic_mode(style.writing_mode)
-        && matches!(
-          style.text_orientation,
-          crate::style::types::TextOrientation::Upright
-        );
-
-      let paragraph_direction = if upright_vertical_bidi_override {
-        crate::style::types::Direction::Ltr
-      } else {
-        base_direction
-      };
-
-      let (paragraph_unicode_bidi, paragraph_base_level) = if upright_vertical_bidi_override {
-        (
-          crate::style::types::UnicodeBidi::BidiOverride,
-          Some(unicode_bidi::Level::ltr()),
-        )
-      } else {
-        let paragraph_base_level = match style.unicode_bidi {
-          crate::style::types::UnicodeBidi::Plaintext => None,
-          _ => match paragraph_direction {
-            crate::style::types::Direction::Rtl => Some(unicode_bidi::Level::rtl()),
-            crate::style::types::Direction::Ltr => Some(unicode_bidi::Level::ltr()),
-          },
-        };
-        (style.unicode_bidi, paragraph_base_level)
-      };
       let remaining_clamp = active_line_clamp.map(|limit| limit.saturating_sub(lines_out.len()));
       if matches!(remaining_clamp, Some(0)) {
         // There's in-flow content remaining but we've already produced the maximum number of
@@ -12257,13 +12257,50 @@ impl InlineFormattingContext {
                 local_float_ctx = Some(FloatContext::new(available_inline.max(0.0)));
               }
 
+              // Floats are positioned relative to the current line box (CSS 2.1 §9.5.1). When a
+              // float appears after inline content that already wrapped onto later lines, the
+              // float's minimum Y must be the top of the current line, not the segment start.
+              //
+              // Because this inline formatting context defers line building until later (so it can
+              // interleave blocks, handle `text-wrap`, etc.), compute the current line top by
+              // probing the line builder with the pending items seen so far. This probe does not
+              // mutate `pending` or emit any line fragments.
+              let ctx_ref_for_probe = float_ctx
+                .as_deref()
+                .filter(|ctx| !ctx.is_empty())
+                .or(local_float_ctx.as_ref());
+              let float_min_y = if pending.is_empty() {
+                float_base_y + line_offset
+              } else {
+                let remaining_clamp = active_line_clamp.map(|limit| limit.saturating_sub(lines.len()));
+                let line_builder::LineBuildResult { lines: seg_lines, .. } = self.layout_segment_lines(
+                  pending.clone(),
+                  use_first_line_width,
+                  first_line_width,
+                  subsequent_line_width,
+                  style.text_wrap,
+                  indent_value,
+                  indent_hanging,
+                  indent_each_line,
+                  &strut_metrics,
+                  paragraph_base_level,
+                  paragraph_direction,
+                  paragraph_unicode_bidi,
+                  ctx_ref_for_probe,
+                  float_base_x,
+                  float_base_y + line_offset,
+                  remaining_clamp,
+                )?;
+                let last_top = seg_lines.last().map(|l| l.y_offset).unwrap_or(0.0);
+                float_base_y + line_offset + last_top
+              };
+
               let mut candidate_ctx = float_ctx
                 .as_deref()
                 .or(local_float_ctx.as_ref())
                 .cloned()
                 .unwrap_or_else(|| FloatContext::new(available_inline.max(0.0)));
 
-              let float_min_y = float_base_y + line_offset;
               let (fragment, _, bottom_rel) = self.layout_inline_float_fragment(
                 &floating,
                 available_inline,

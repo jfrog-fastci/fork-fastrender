@@ -235,6 +235,7 @@ mkdir -p "${lock_dir}"
 
 run_cargo() {
   local cargo_cmd=(cargo)
+  local toolchain_arg=""
   local subcommand=""
 
   # Cargo expects `-j/--jobs` to appear after the subcommand (`cargo test -j 1`, not `cargo -j 1 test`).
@@ -248,6 +249,7 @@ run_cargo() {
   fi
 
   if [[ "$1" == +* ]]; then
+    toolchain_arg="$1"
     cargo_cmd+=("$1")
     shift
     if [[ $# -lt 1 ]]; then
@@ -259,6 +261,56 @@ run_cargo() {
   subcommand="$1"
   cargo_cmd+=("${subcommand}")
   shift
+
+  # IMPORTANT: `cargo xtask ...` is a cargo alias for `cargo run -p xtask -- ...` (see
+  # `.cargo/config.toml`). `cargo run` holds the target-dir lock for the entire duration of the
+  # process, including while the xtask binary is running.
+  #
+  # Several xtask subcommands (notably `page-loop`) spawn additional cargo commands via this same
+  # wrapper. If we run xtask via `cargo run`, those nested cargo commands will deadlock waiting on
+  # Cargo's target-dir lock.
+  #
+  # To avoid that, build the xtask binary first and then execute it directly (still under the same
+  # RLIMIT_AS cap). This keeps the wrapper compatible with `scripts/cargo_agent.sh xtask ...` while
+  # allowing xtask to run nested cargo commands.
+  if [[ "${subcommand}" == "xtask" ]]; then
+    local build_cmd=(cargo)
+    if [[ -n "${toolchain_arg}" ]]; then
+      build_cmd+=("${toolchain_arg}")
+    fi
+    build_cmd+=(build -p xtask --bin xtask)
+    if [[ -n "${jobs}" ]]; then
+      build_cmd+=(-j "${jobs}")
+    fi
+    if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" ]]; then
+      "${build_cmd[@]}"
+    else
+      bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${build_cmd[@]}"
+    fi
+
+    local target_dir="${CARGO_TARGET_DIR:-}"
+    if [[ -z "${target_dir}" ]]; then
+      target_dir="${repo_root}/target"
+    elif [[ "${target_dir}" != /* ]]; then
+      target_dir="${repo_root}/${target_dir}"
+    fi
+    local exe_suffix=""
+    case "${OSTYPE:-}" in
+      msys*|cygwin*|win32*) exe_suffix=".exe" ;;
+    esac
+    local xtask_bin="${target_dir}/debug/xtask${exe_suffix}"
+    if [[ ! -f "${xtask_bin}" ]]; then
+      echo "xtask binary not found at ${xtask_bin}" >&2
+      return 1
+    fi
+
+    if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" ]]; then
+      "${xtask_bin}" "$@"
+    else
+      bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${xtask_bin}" "$@"
+    fi
+    return $?
+  fi
 
   if [[ "${subcommand}" == "test" && -z "${RUST_TEST_THREADS:-}" ]]; then
     local rust_test_threads="${FASTR_RUST_TEST_THREADS:-}"

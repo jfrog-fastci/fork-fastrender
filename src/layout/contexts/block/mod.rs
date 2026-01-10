@@ -4763,6 +4763,15 @@ impl BlockFormattingContext {
       Ok(())
     };
 
+    // Flushes buffered inline-level siblings by creating an inline formatting context wrapper.
+    //
+    // Returns the Y position (in this BFC's local coordinate space) of the *last* line box top, if
+    // the flushed content generated line boxes.
+    //
+    // Floats are positioned relative to the current line box (CSS 2.1 §9.5.1). Flushing inline
+    // content advances `current_y` to after the line boxes, which would incorrectly push a
+    // following float down by one line. Callers that need the current line top must use this
+    // return value instead of `current_y`.
     let flush_inline_buffer = |buffer: &mut Vec<BoxNode>,
                                fragments: &mut Vec<FragmentNode>,
                                current_y: &mut f32,
@@ -4772,10 +4781,10 @@ impl BlockFormattingContext {
                                float_ctx_ref: &mut FloatContext,
                                deadline_counter: &mut usize,
                                positioned_children: &mut Vec<PositionedCandidate>|
-     -> Result<(), LayoutError> {
-       if buffer.is_empty() {
-         return Ok(());
-       }
+     -> Result<Option<f32>, LayoutError> {
+        if buffer.is_empty() {
+          return Ok(None);
+        }
 
       // Collapsible whitespace that is the *only* in-flow content should not generate an empty
       // line box (CSS 2.1 §9.4.2: line boxes are created only when there are inline-level boxes).
@@ -4783,7 +4792,7 @@ impl BlockFormattingContext {
       // non-zero strut height, which advances the cursor and pushes subsequent floats down.
       if buffer.iter().all(is_collapsible_whitespace_run) {
         buffer.clear();
-        return Ok(());
+        return Ok(None);
       }
 
       // A run of inline-level siblings can contain only out-of-flow positioned boxes (e.g.
@@ -4824,7 +4833,7 @@ impl BlockFormattingContext {
             query_parent_id: parent.id,
           });
         }
-        return Ok(());
+        return Ok(None);
       }
 
       // If the buffer contains any block-level boxes (or only collapsible whitespace),
@@ -4889,7 +4898,7 @@ impl BlockFormattingContext {
           }
           fragments.push(fragment);
         }
-        return Ok(());
+        return Ok(None);
       }
 
       // Inline content only breaks margin collapsing when it generates line boxes (CSS 2.1 §8.3.1).
@@ -4971,10 +4980,15 @@ impl BlockFormattingContext {
 
       let mut line_boxes_bottom: f32 = 0.0;
       let mut has_line_boxes = false;
+      let mut last_line_top_y: Option<f32> = None;
       for child in inline_fragment.children.iter() {
         if matches!(child.content, FragmentContent::Line { .. }) {
           has_line_boxes = true;
           line_boxes_bottom = line_boxes_bottom.max(child.bounds.max_y());
+          let y = inline_y + child.bounds.y();
+          if y.is_finite() {
+            last_line_top_y = Some(last_line_top_y.map_or(y, |cur| cur.max(y)));
+          }
         }
       }
 
@@ -4994,9 +5008,12 @@ impl BlockFormattingContext {
         // paint, but should not prevent margin collapsing between in-flow blocks.
         fragments.push(inline_fragment);
       }
+      // Restore the buffered inline-level children back to the caller. Most call sites immediately
+      // clear the buffer, but floats need to keep the just-laid-out inline run around temporarily
+      // so it can be re-laid out after placing the float (to account for float intrusion when
+      // applying `text-align` and line breaking).
       *buffer = std::mem::take(&mut inline_container.children);
-      buffer.clear();
-      Ok(())
+      Ok(last_line_top_y)
     };
 
     for (child_idx, child) in parent.children.iter().enumerate() {
@@ -5447,7 +5464,8 @@ impl BlockFormattingContext {
           inline_buffer.push(child.clone());
           continue;
         }
-        flush_inline_buffer(
+
+        let _ = flush_inline_buffer(
           &mut inline_buffer,
           &mut fragments,
           &mut current_y,
@@ -5458,6 +5476,7 @@ impl BlockFormattingContext {
           &mut deadline_counter,
           &mut positioned_children,
         )?;
+        inline_buffer.clear();
 
         // Floats are out-of-flow: their own margins never collapse, but they also must not break
         // the sibling margin collapsing chain between in-flow blocks.
@@ -6002,6 +6021,7 @@ impl BlockFormattingContext {
         if owns_float_ctx {
           content_height = content_height.max(fy + float_height - float_base_y);
         }
+
         if child.style.position.is_relative() {
           let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
             &child.style,
@@ -6021,7 +6041,7 @@ impl BlockFormattingContext {
         || matches!(child.box_type, BoxType::Replaced(_) if !child.style.display.is_inline_level());
 
       if treated_as_block {
-        flush_inline_buffer(
+        let _ = flush_inline_buffer(
           &mut inline_buffer,
           &mut fragments,
           &mut current_y,
@@ -6032,6 +6052,7 @@ impl BlockFormattingContext {
           &mut deadline_counter,
           &mut positioned_children,
         )?;
+        inline_buffer.clear();
 
         if dump_cell_child_y && matches!(parent.style.display, Display::TableCell) {
           eprintln!(
@@ -6109,7 +6130,7 @@ impl BlockFormattingContext {
         // if this inline itself establishes a block formatting context (e.g., display:block
         // on an inline ancestor), flush the buffer and lay it out as a block.
         if child.is_block_level() {
-          flush_inline_buffer(
+          let _ = flush_inline_buffer(
             &mut inline_buffer,
             &mut fragments,
             &mut current_y,
@@ -6120,6 +6141,7 @@ impl BlockFormattingContext {
             &mut deadline_counter,
             &mut positioned_children,
           )?;
+          inline_buffer.clear();
            let (fragment, next_y) =
              layout_in_flow_block_child(child, &mut margin_ctx, current_y, float_ctx)?;
            content_height_before_last_cursor = content_height;
@@ -6144,7 +6166,7 @@ impl BlockFormattingContext {
       }
     }
 
-    flush_inline_buffer(
+    let _ = flush_inline_buffer(
       &mut inline_buffer,
       &mut fragments,
       &mut current_y,
@@ -6155,6 +6177,7 @@ impl BlockFormattingContext {
       &mut deadline_counter,
       &mut positioned_children,
     )?;
+    inline_buffer.clear();
 
     // Resolve any trailing margins
     let trailing_margin = margin_ctx.pending_margin();

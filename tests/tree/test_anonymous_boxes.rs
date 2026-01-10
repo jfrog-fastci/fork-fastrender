@@ -8,6 +8,7 @@ use fastrender::tree::box_tree::BoxType;
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
 use fastrender::Display;
+use fastrender::Float;
 use fastrender::FormattingContextType;
 use std::sync::Arc;
 
@@ -545,6 +546,38 @@ fn test_multiple_inlines_no_block_mixing() {
     assert!(!child.is_anonymous());
     assert!(child.is_inline_level());
   }
+}
+
+#[test]
+fn test_float_does_not_force_anonymous_block_wrapping() {
+  let text = BoxNode::new_text(default_style(), "Hello".to_string());
+
+  let mut float_style = ComputedStyle::default();
+  float_style.display = Display::Block;
+  float_style.float = Float::Right;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let container = BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![text, float_box],
+  );
+
+  let fixed = fixup_tree(container);
+
+  // The inline content should be wrapped only as an anonymous *inline* (for bare text), not as an
+  // anonymous block run split triggered by the float.
+  assert_eq!(fixed.children.len(), 2);
+  assert!(
+    matches!(
+      fixed.children[0].box_type,
+      BoxType::Anonymous(ref anon) if anon.anonymous_type == AnonymousType::Inline
+    ),
+    "expected first child to be an anonymous inline, got {:?}",
+    fixed.children[0].box_type
+  );
+  assert!(subtree_contains_text(&fixed.children[0], "Hello"));
+  assert!(!fixed.children[1].is_anonymous());
 }
 
 // =============================================================================

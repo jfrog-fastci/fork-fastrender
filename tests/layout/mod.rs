@@ -31,6 +31,7 @@ mod container_query_scrollbar_gutter;
 mod content_visibility_auto_skip;
 mod collapsible_whitespace_before_floats;
 mod bfc_root_float_avoidance;
+mod inline_content_before_floats;
 mod details_open_state;
 mod display_contents;
 mod empty_inline_boxes;

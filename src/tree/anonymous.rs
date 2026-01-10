@@ -44,6 +44,7 @@ use crate::error::{RenderStage, Result};
 use crate::render_control::active_deadline;
 use crate::style::display::FormattingContextType;
 use crate::style::display::Display;
+use crate::style::float::Float;
 use crate::style::position::Position;
 use crate::style::types::WhiteSpace;
 use crate::style::ComputedStyle;
@@ -324,9 +325,27 @@ impl AnonymousBoxCreator {
     if matches!(child.style.position, Position::Absolute | Position::Fixed) {
       return false;
     }
-    // Floats are out-of-flow and should not trigger anonymous block-run wrapping. Treat them as
-    // inline-level content for fixup purposes so they remain in the same inline run as surrounding
-    // text (CSS 2.1 §9.5.1, §9.2.1.1).
+    // Floats are out-of-flow and should not participate in the anonymous block-run splitting
+    // decision (CSS 2.1 §9.2.1.1 only considers in-flow block-level boxes). Treat them as neither
+    // inline nor block for the purposes of determining mixed content.
+    if child.style.float != Float::None {
+      return false;
+    }
+    match &child.box_type {
+      BoxType::Replaced(_) => child.style.display.is_inline_level(),
+      _ => child.is_inline_level(),
+    }
+  }
+
+  /// Returns true if this child should be included in an inline run when splitting mixed inline
+  /// and block-level content into anonymous block boxes.
+  ///
+  /// Unlike `is_inline_level_child`, this includes floating boxes so they stay inside the inline
+  /// run where they occur in the source, matching the float insertion rules in CSS 2.1 §9.5.1.
+  fn is_inline_run_child(child: &BoxNode) -> bool {
+    if matches!(child.style.position, Position::Absolute | Position::Fixed) {
+      return false;
+    }
     if child.style.float.is_floating() {
       return true;
     }
@@ -345,8 +364,7 @@ impl AnonymousBoxCreator {
     if matches!(child.style.position, Position::Absolute | Position::Fixed) {
       return false;
     }
-    // Floats are out-of-flow; they must not force block/inline splitting into anonymous block runs.
-    if child.style.float.is_floating() {
+    if child.style.float != Float::None {
       return false;
     }
     match &child.box_type {
@@ -739,7 +757,7 @@ impl AnonymousBoxCreator {
     };
 
     for child in children {
-      if Self::is_inline_level_child(&child) {
+      if Self::is_inline_run_child(&child) {
         // Accumulate inline boxes
         inline_run.push(child);
       } else {
