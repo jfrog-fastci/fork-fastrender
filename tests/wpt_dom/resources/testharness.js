@@ -1,166 +1,316 @@
-// Minimal `testharness.js` shim for FastRender's offline DOM WPT runner.
+// Minimal deterministic subset of WPT `testharness.js` for FastRender's offline DOM runner.
 //
-// This file is intentionally tiny: the current `vm-js`-backed runner executes only a small
-// JavaScript subset, and the curated smoke tests use the `__fastrender_wpt_report(...)` hook
-// directly.
+// The upstream `testharness.js` is large; FastRender only needs a small, spec-shaped subset:
 //
-// As the JS engine grows, we can replace this with a closer upstream `testharness.js` copy.
+// - synchronous tests (`test`)
+// - async tests (`async_test`) with `t.done()` and `t.step_func_done(cb)`
+// - promise tests (`promise_test`)
+// - reporter callbacks (`add_result_callback`, `add_completion_callback`)
+//
+// Reporting is *entirely* callback-driven. This shim must not call `__fastrender_wpt_report`
+// directly; `resources/fastrender_testharness_report.js` is responsible for producing the final
+// host report payload.
 
+// WPT status constants.
 var PASS = 0;
 var FAIL = 1;
 var TIMEOUT = 2;
 var NOTRUN = 3;
 
-function assert_true(value) {
-  if (value !== true) {
-    throw "assert_true";
+// Reporter callback registries.
+var __result_callbacks = [];
+var __completion_callbacks = [];
+
+// Test records surfaced to reporters.
+var __tests = [];
+
+// Number of pending async/promise tests.
+var __pending = 0;
+
+// Script completion tracking: the runner performs a microtask checkpoint after each evaluated
+// script. We schedule a microtask from the first test registration so `__script_done` flips only
+// after the test file finishes executing.
+var __script_done = false;
+var __script_done_scheduled = false;
+var __reported_completion = false;
+
+// Harness status object passed to completion callbacks (shape-compatible with upstream).
+var __harness_status = { status: 0, message: null, stack: null };
+
+function add_result_callback(fn) {
+  if (typeof fn !== "function") return;
+  __result_callbacks.push(fn);
+}
+
+function add_completion_callback(fn) {
+  if (typeof fn !== "function") return;
+  __completion_callbacks.push(fn);
+}
+
+function __queue_microtask(cb) {
+  if (typeof queueMicrotask === "function") {
+    queueMicrotask(cb);
+    return;
+  }
+
+  // Fallback for partial environments: promise jobs are microtasks.
+  try {
+    if (typeof Promise !== "undefined" && Promise !== null && typeof Promise.resolve === "function") {
+      Promise.resolve().then(cb);
+      return;
+    }
+  } catch (_e) {}
+
+  // Last resort fallback: schedule a task.
+  if (typeof setTimeout === "function") {
+    setTimeout(cb, 0);
+  } else {
+    cb();
   }
 }
 
-function assert_false(value) {
-  if (value !== false) {
-    throw "assert_false";
+function __schedule_script_done() {
+  if (__script_done_scheduled === true) return;
+  __script_done_scheduled = true;
+  __queue_microtask(__mark_script_done);
+}
+
+function __same_value(x, y) {
+  // Minimal SameValue: strict equality, plus NaN equality.
+  //
+  // Note: This intentionally treats +0 and -0 as equal. The curated offline corpus does not
+  // currently rely on the distinction, and keeping this shim arithmetic-free makes it runnable on
+  // the minimal vm-js backend.
+  if (x === y) return true;
+  return x !== x && y !== y;
+}
+
+function __error_to_message(err) {
+  // Prefer `.message` when present (Error-like objects).
+  try {
+    if (err && typeof err === "object" && typeof err.message === "string") {
+      return err.message;
+    }
+  } catch (_e) {}
+
+  // If the thrown value is already a string, surface it directly.
+  try {
+    if (typeof err === "string") return err;
+  } catch (_e) {}
+
+  return "error";
+}
+
+function __error_to_stack(err) {
+  try {
+    if (err && typeof err === "object" && typeof err.stack === "string") {
+      return err.stack;
+    }
+  } catch (_e) {}
+  return null;
+}
+
+function __fail_test_record(t, err) {
+  t.status = FAIL;
+  t.message = __error_to_message(err);
+  t.stack = __error_to_stack(err);
+}
+
+function __report_test_result(t) {
+  for (var i = 0; i !== __result_callbacks.length; i++) {
+    __result_callbacks[i](t);
   }
 }
 
-function assert_equals(actual, expected) {
-  if (actual !== expected) {
-    throw "assert_equals";
+function __check_complete() {
+  if (__reported_completion === true) return;
+  if (__script_done !== true) return;
+  if (__pending !== 0) return;
+
+  __reported_completion = true;
+  for (var i = 0; i !== __completion_callbacks.length; i++) {
+    __completion_callbacks[i](__tests, __harness_status);
   }
+}
+
+function __make_test_record(name) {
+  var resolved_name = name;
+  if (resolved_name === undefined) resolved_name = "";
+  return {
+    name: resolved_name,
+    status: NOTRUN,
+    message: null,
+    stack: null,
+    // Internal bookkeeping.
+    _done: false
+  };
+}
+
+function __push_test_record(t) {
+  __tests.push(t);
+  __schedule_script_done();
+}
+
+function __mark_script_done() {
+  __script_done = true;
+  __check_complete();
 }
 
 // ---------------------------------------------------------------------------
-// Minimal synchronous `test()` support.
-//
-// The upstream WPT `testharness.js` supports asynchronous tests, subtests, and rich reporting.
-// FastRender's in-tree `vm-js` backend is still a small interpreter, so this shim only supports
-// a small subset of the API surface and collapses the file result into a single pass/fail status
-// via the host hook `__fastrender_wpt_report(...)`.
-//
-// Note: The runner always loads this script (and `fastrender_testharness_report.js`) before each
-// WPT file; we defer "pass" reporting to a microtask so all `test(...)` calls in the file have a
-// chance to run first.
+// Assertions (minimal subset used by the curated corpus).
 
-var __fastrender_wpt_reported = false;
-var __fastrender_wpt_failed = false;
-var __fastrender_wpt_script_done = false;
-var __fastrender_wpt_script_done_scheduled = false;
-var __fastrender_wpt_pending = false;
-var __fastrender_wpt_async_step_fn = null;
-
-function __fastrender_wpt_fail(message) {
-  if (__fastrender_wpt_reported === true) return;
-  __fastrender_wpt_failed = true;
-  __fastrender_wpt_reported = true;
-  __fastrender_wpt_report({ file_status: "fail", message: message });
+function assert_true(value, message) {
+  if (value !== true) {
+    throw Error(message || "assert_true");
+  }
 }
 
-function __fastrender_wpt_maybe_complete() {
-  if (__fastrender_wpt_reported === true) return;
-  if (__fastrender_wpt_failed === true) return;
-  if (__fastrender_wpt_script_done !== true) return;
-  if (__fastrender_wpt_pending === true) return;
-  __fastrender_wpt_reported = true;
-  __fastrender_wpt_report({ file_status: "pass" });
+function assert_false(value, message) {
+  if (value !== false) {
+    throw Error(message || "assert_false");
+  }
 }
 
-function __fastrender_wpt_mark_script_done() {
-  __fastrender_wpt_script_done = true;
-  __fastrender_wpt_maybe_complete();
+function assert_equals(actual, expected, message) {
+  if (!__same_value(actual, expected)) {
+    throw Error(message || "assert_equals");
+  }
 }
 
-function __fastrender_wpt_schedule_script_done() {
-  if (__fastrender_wpt_script_done_scheduled === true) return;
-  __fastrender_wpt_script_done_scheduled = true;
-  queueMicrotask(__fastrender_wpt_mark_script_done);
+function assert_unreached(message) {
+  throw Error(message || "assert_unreached");
 }
 
-function __fastrender_wpt_error_message(e) {
-  return e;
-}
+// ---------------------------------------------------------------------------
+// Test entry points.
 
-function test(fn, _name) {
-  __fastrender_wpt_schedule_script_done();
-
-  if (__fastrender_wpt_reported === true) return;
+function test(fn, name) {
+  var t = __make_test_record(name);
+  __push_test_record(t);
 
   try {
     fn();
+    t.status = PASS;
   } catch (e) {
-    // Encode the test name in the thrown value without depending on full stack trace support.
-    __fastrender_wpt_fail({ name: _name, message: __fastrender_wpt_error_message(e) });
+    __fail_test_record(t, e);
   }
+
+  __report_test_result(t);
+  __check_complete();
+  return t;
 }
 
-// ---------------------------------------------------------------------------
-// Minimal async_test/promise_test support.
-//
-// The vm-js-backed runner doesn't support enough JavaScript (e.g. closures, arithmetic operators)
-// to run upstream WPT testharness in full. These helpers are just enough for the curated offline
-// smoke tests under `tests/wpt_dom/tests/smoke`.
+function async_test(fn, name) {
+  if (typeof fn === "string" && name === undefined) {
+    name = fn;
+    fn = null;
+  }
 
-function __fastrender_wpt_async_done() {
-  if (__fastrender_wpt_reported === true) return;
-  __fastrender_wpt_pending = false;
-  __fastrender_wpt_maybe_complete();
-}
+  var t = __make_test_record(name);
+  __push_test_record(t);
+  __pending++;
 
-function __fastrender_wpt_async_step_wrapper() {
-  if (__fastrender_wpt_reported === true) return;
-  try {
-    if (__fastrender_wpt_async_step_fn) {
-      __fastrender_wpt_async_step_fn();
+  // Assign methods without relying on function expressions (the minimal vm-js backend only supports
+  // arrow functions as expressions).
+  t.done = __async_test_done;
+  t.step_func_done = __async_test_step_func_done;
+
+  if (typeof fn === "function") {
+    try {
+      fn(t);
+    } catch (e) {
+      __fail_test_record(t, e);
+      t.done();
     }
-  } catch (e) {
-    __fastrender_wpt_fail(__fastrender_wpt_error_message(e));
-  }
-  __fastrender_wpt_async_done();
-}
-
-function __fastrender_wpt_async_step_func_done(fn) {
-  __fastrender_wpt_async_step_fn = fn;
-  return __fastrender_wpt_async_step_wrapper;
-}
-
-function async_test(fn, _name) {
-  __fastrender_wpt_schedule_script_done();
-  if (__fastrender_wpt_reported === true) return;
-
-  __fastrender_wpt_pending = true;
-  var t = {
-    done: __fastrender_wpt_async_done,
-    step_func_done: __fastrender_wpt_async_step_func_done
-  };
-
-  try {
-    fn(t);
-  } catch (e) {
-    __fastrender_wpt_fail(__fastrender_wpt_error_message(e));
-    __fastrender_wpt_async_done();
   }
 
   return t;
 }
 
-function __fastrender_wpt_promise_fulfilled(_value) {
-  __fastrender_wpt_async_done();
-}
+function promise_test(fn, name) {
+  var t = __make_test_record(name);
+  __push_test_record(t);
+  __pending++;
 
-function __fastrender_wpt_promise_rejected(reason) {
-  __fastrender_wpt_fail(__fastrender_wpt_error_message(reason));
-  __fastrender_wpt_async_done();
-}
+  // Minimal promise_test plumbing without relying on closures: store the current test record in a
+  // global slot so the shared fulfill/reject handlers can resolve it.
+  __promise_test_current = t;
 
-function promise_test(fn, _name) {
-  __fastrender_wpt_schedule_script_done();
-  if (__fastrender_wpt_reported === true) return;
-
-  __fastrender_wpt_pending = true;
   try {
     var p = fn();
-    p.then(__fastrender_wpt_promise_fulfilled, __fastrender_wpt_promise_rejected);
+    if (!p || typeof p.then !== "function") {
+      __promise_test_rejected(Error("promise_test: returned value is not a Promise"));
+      return t;
+    }
+    p.then(__promise_test_fulfilled, __promise_test_rejected);
   } catch (e) {
-    __fastrender_wpt_fail(__fastrender_wpt_error_message(e));
-    __fastrender_wpt_async_done();
+    __promise_test_rejected(e);
   }
+
+  return t;
+}
+
+// ---------------------------------------------------------------------------
+// Minimal async helpers (closure-free).
+
+function __async_test_done() {
+  var t = this;
+  if (t._done === true) return;
+  t._done = true;
+
+  if (t.status === NOTRUN) {
+    t.status = PASS;
+  }
+
+  __pending--;
+  __report_test_result(t);
+  __check_complete();
+}
+
+var __step_func_done_test = null;
+var __step_func_done_callback = null;
+
+function __async_test_step_func_done(cb) {
+  __step_func_done_test = this;
+  __step_func_done_callback = cb;
+  return __async_test_step_func_done_wrapper;
+}
+
+function __async_test_step_func_done_wrapper(a0, a1, a2, a3) {
+  var t = __step_func_done_test;
+  if (!t || t._done === true) return;
+
+  try {
+    if (typeof __step_func_done_callback === "function") {
+      __step_func_done_callback(a0, a1, a2, a3);
+    } else {
+      __fail_test_record(t, Error("step_func_done: callback is not callable"));
+    }
+  } catch (e) {
+    __fail_test_record(t, e);
+  }
+
+  t.done();
+}
+
+var __promise_test_current = null;
+
+function __promise_test_fulfilled(_value) {
+  var t = __promise_test_current;
+  if (!t || t._done === true) return;
+  t._done = true;
+  t.status = PASS;
+  __pending--;
+  __report_test_result(t);
+  __check_complete();
+}
+
+function __promise_test_rejected(reason) {
+  var t = __promise_test_current;
+  if (!t || t._done === true) return;
+  t._done = true;
+  __fail_test_record(t, reason);
+  __pending--;
+  __report_test_result(t);
+  __check_complete();
 }
