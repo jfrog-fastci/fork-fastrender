@@ -2675,7 +2675,33 @@ impl TableStructure {
     match length.unit {
       LengthUnit::Percent => SpecifiedHeight::Percent(length.value),
       LengthUnit::Em => SpecifiedHeight::Fixed(length.value * font_size),
+      LengthUnit::Ex | LengthUnit::Ch => SpecifiedHeight::Fixed(length.value * font_size * 0.5),
+      LengthUnit::Cap => SpecifiedHeight::Fixed(length.value * font_size * 0.7),
+      LengthUnit::Ic => SpecifiedHeight::Fixed(length.value * font_size),
       LengthUnit::Rem => SpecifiedHeight::Fixed(length.value * root_font_size),
+      LengthUnit::Rex | LengthUnit::Rch => {
+        SpecifiedHeight::Fixed(length.value * root_font_size * 0.5)
+      }
+      LengthUnit::Rcap => SpecifiedHeight::Fixed(length.value * root_font_size * 0.7),
+      LengthUnit::Ric => SpecifiedHeight::Fixed(length.value * root_font_size),
+      // Without access to computed `line-height`, fall back to the `normal` approximation.
+      LengthUnit::Lh => SpecifiedHeight::Fixed(length.value * font_size * 1.2),
+      LengthUnit::Rlh => SpecifiedHeight::Fixed(length.value * root_font_size * 1.2),
+      LengthUnit::Calc => {
+        // `Length::resolve_with_context` needs finite viewport dimensions even when the expression
+        // has no viewport units. Use 0 as a sentinel and bail out if the calc expression contains
+        // viewport-relative or container-query units that we cannot resolve here.
+        let Some(calc) = length.calc else {
+          return SpecifiedHeight::Auto;
+        };
+        if calc.has_viewport_relative() || calc.has_container_query_relative() {
+          return SpecifiedHeight::Auto;
+        }
+        match length.resolve_with_context(None, 0.0, 0.0, font_size, root_font_size) {
+          Some(px) => SpecifiedHeight::Fixed(px),
+          None => SpecifiedHeight::Auto,
+        }
+      }
       _ if length.unit.is_absolute() => SpecifiedHeight::Fixed(length.to_px()),
       _ => SpecifiedHeight::Auto,
     }
@@ -2728,19 +2754,26 @@ fn resolve_length_against(
   root_font_size: f32,
   containing_width: Option<f32>,
 ) -> Option<f32> {
-  if length.unit == LengthUnit::Calc {
-    return length.resolve_with_context(
-      containing_width,
-      containing_width.unwrap_or(f32::NAN),
-      f32::NAN,
-      font_size,
-      root_font_size,
-    );
-  }
   match length.unit {
     LengthUnit::Percent => containing_width.map(|w| (length.value / 100.0) * w),
     LengthUnit::Em => Some(length.value * font_size),
+    LengthUnit::Ex | LengthUnit::Ch => Some(length.value * font_size * 0.5),
+    LengthUnit::Cap => Some(length.value * font_size * 0.7),
+    LengthUnit::Ic => Some(length.value * font_size),
     LengthUnit::Rem => Some(length.value * root_font_size),
+    LengthUnit::Rex | LengthUnit::Rch => Some(length.value * root_font_size * 0.5),
+    LengthUnit::Rcap => Some(length.value * root_font_size * 0.7),
+    LengthUnit::Ric => Some(length.value * root_font_size),
+    // Without access to computed `line-height`, fall back to the `normal` approximation.
+    LengthUnit::Lh => Some(length.value * font_size * 1.2),
+    LengthUnit::Rlh => Some(length.value * root_font_size * 1.2),
+    LengthUnit::Calc => {
+      let calc = length.calc?;
+      if calc.has_viewport_relative() || calc.has_container_query_relative() {
+        return None;
+      }
+      length.resolve_with_context(containing_width, 0.0, 0.0, font_size, root_font_size)
+    }
     _ if length.unit.is_absolute() => Some(length.to_px()),
     _ => None,
   }
@@ -9049,7 +9082,7 @@ mod tests {
   }
 
   #[test]
-  fn table_length_helpers_resolve_rem_against_root_font_size() {
+  fn table_length_helpers_resolve_root_font_relative_units() {
     let font_size = 10.0;
     let root_font_size = 20.0;
 
@@ -9061,6 +9094,40 @@ mod tests {
     assert_eq!(
       TableStructure::length_to_specified_height(&Length::rem(1.0), font_size, root_font_size),
       SpecifiedHeight::Fixed(20.0)
+    );
+
+    assert_eq!(
+      resolve_length_against(
+        &Length::new(2.0, LengthUnit::Rch),
+        font_size,
+        root_font_size,
+        Some(100.0)
+      ),
+      Some(20.0)
+    );
+
+    let rlh = resolve_length_against(
+      &Length::new(1.0, LengthUnit::Rlh),
+      font_size,
+      root_font_size,
+      Some(100.0),
+    )
+    .expect("resolve rlh");
+    assert!((rlh - 24.0).abs() < 0.01);
+
+    match TableStructure::length_to_specified_height(
+      &Length::new(1.0, LengthUnit::Rlh),
+      font_size,
+      root_font_size,
+    ) {
+      SpecifiedHeight::Fixed(px) => assert!((px - 24.0).abs() < 0.01),
+      other => panic!("expected fixed rlh height, got {other:?}"),
+    }
+
+    let calc_rch = Length::calc(CalcLength::single(LengthUnit::Rch, 2.0));
+    assert_eq!(
+      resolve_length_against(&calc_rch, font_size, root_font_size, Some(100.0)),
+      Some(20.0)
     );
 
     assert!((resolve_border_spacing_length(&Length::rem(1.5), font_size, root_font_size) - 30.0).abs() < 0.01);

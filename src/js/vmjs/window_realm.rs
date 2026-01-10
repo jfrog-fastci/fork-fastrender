@@ -14,7 +14,7 @@ use crate::js::{runtime, ScriptOrchestrator, ScriptType, TaskSource, WindowHostS
 use crate::js::CurrentScriptStateHandle;
 use crate::js::JsExecutionOptions;
 use crate::render_control;
-use crate::resource::{ensure_script_mime_sane, CorsMode, FetchDestination, FetchRequest, ResourceFetcher};
+use crate::resource::{ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher};
 use crate::style::media::MediaContext;
 use crate::web::events as web_events;
 use base64::engine::general_purpose;
@@ -8074,11 +8074,6 @@ fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
     .and_then(|data| data.base_url.clone())
 }
 
-// HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
-fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
-}
-
 fn build_dynamic_script_spec(
   dom: &dom2::Document,
   script: NodeId,
@@ -8087,18 +8082,8 @@ fn build_dynamic_script_spec(
   let async_attr = dom.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = dom.has_attribute(script, "defer").unwrap_or(false);
   let nomodule_attr = dom.has_attribute(script, "nomodule").unwrap_or(false);
-  let crossorigin = dom
-    .get_attribute(script, "crossorigin")
-    .ok()
-    .flatten()
-    .map(|value| {
-      let value = trim_ascii_whitespace(value);
-      if value.eq_ignore_ascii_case("use-credentials") {
-        CorsMode::UseCredentials
-      } else {
-        CorsMode::Anonymous
-      }
-    });
+  let crossorigin =
+    super::parse_crossorigin_attr(dom.get_attribute(script, "crossorigin").ok().flatten());
   let (integrity_attr_present, integrity) =
     super::clamp_integrity_attribute(dom.get_attribute(script, "integrity").ok().flatten());
   let referrer_policy = dom
