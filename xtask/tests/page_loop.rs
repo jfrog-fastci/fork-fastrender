@@ -353,3 +353,40 @@ fn from_progress_defaults_to_top_worst_accuracy_1() {
     "expected default selection to pick the worst-accuracy ok page (amazon.com); got:\n{stdout}"
   );
 }
+
+#[test]
+fn from_progress_errors_when_no_offline_fixture_exists() {
+  let temp = tempdir().expect("tempdir");
+  let progress_dir = temp.path().join("progress/pages");
+
+  write_progress_file(&progress_dir, "zzz_page_loop_missing_fixture_a", r#"{"status":"timeout"}"#);
+  write_progress_file(&progress_dir, "zzz_page_loop_missing_fixture_b", r#"{"status":"error"}"#);
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "page-loop",
+      "--from-progress",
+      progress_dir.to_string_lossy().as_ref(),
+      "--only-failures",
+    ])
+    .output()
+    .expect("run cargo xtask page-loop --from-progress --only-failures");
+
+  assert!(
+    !output.status.success(),
+    "expected page-loop to fail when the selected progress page has no offline fixture.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("zzz_page_loop_missing_fixture_a") && stderr.contains("does not have an offline fixture"),
+    "expected missing-fixture error to mention the selected stem; got:\n{stderr}"
+  );
+  assert!(
+    stderr.contains("import-page-fixture") || stderr.contains("recapture-page-fixtures"),
+    "expected missing-fixture error to include a fixture capture hint; got:\n{stderr}"
+  );
+}
