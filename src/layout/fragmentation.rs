@@ -285,15 +285,6 @@ pub(crate) fn fragmentation_axis(root: &FragmentNode) -> FragmentAxis {
   FragmentAxis::from_writing_mode(writing_mode)
 }
 
-fn axis_for_child_in_context(
-  parent_axis: &FragmentAxis,
-  _context: FragmentationContext,
-  _parent_writing_mode: WritingMode,
-  _child_writing_mode: WritingMode,
-) -> FragmentAxis {
-  *parent_axis
-}
-
 fn axis_from_fragment_axes(axes: FragmentAxes) -> FragmentAxis {
   FragmentAxis {
     block_is_horizontal: axes.block_axis() == PhysicalAxis::X,
@@ -1147,7 +1138,6 @@ impl FragmentationAnalyzer {
       &axis,
       axis.block_size(&root.bounds),
       context,
-      root_writing_mode,
     );
 
     collection.opportunities.sort_by(|a, b| {
@@ -1165,7 +1155,6 @@ impl FragmentationAnalyzer {
       0.0,
       &axis,
       context,
-      root_writing_mode,
     );
     let line_containers = collection.line_containers;
     let line_starts = vec![0; line_containers.len()];
@@ -2362,17 +2351,9 @@ pub(crate) fn clip_node(
       }
       continue;
     }
-
-    let child_writing_mode = child
-      .style
-      .as_ref()
-      .map(|s| s.writing_mode)
-      .unwrap_or(style.writing_mode);
-    let child_axis =
-      axis_for_child_in_context(axis, context, style.writing_mode, child_writing_mode);
     if let Some(child_clipped) = clip_node(
       child,
-      &child_axis,
+      axis,
       fragment_start,
       fragment_end,
       node_flow_start,
@@ -2530,7 +2511,6 @@ fn collect_table_repetition_info_with_axis(
   abs_start: f32,
   axis: &FragmentAxis,
   context: FragmentationContext,
-  inherited_writing_mode: WritingMode,
 ) -> Vec<TableRepetitionInfo> {
   let mut out = Vec::new();
   let default_style = default_style();
@@ -2539,8 +2519,7 @@ fn collect_table_repetition_info_with_axis(
     node: &FragmentNode,
     abs_start: f32,
     axis: &FragmentAxis,
-    context: FragmentationContext,
-    inherited_writing_mode: WritingMode,
+    _context: FragmentationContext,
     default_style: &ComputedStyle,
     out: &mut Vec<TableRepetitionInfo>,
   ) {
@@ -2549,11 +2528,6 @@ fn collect_table_repetition_info_with_axis(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
-    let node_writing_mode = node
-      .style
-      .as_ref()
-      .map(|s| s.writing_mode)
-      .unwrap_or(inherited_writing_mode);
     let node_block_size = axis.block_size(&node.bounds);
 
     if matches!(style.display, Display::Table | Display::InlineTable) {
@@ -2578,20 +2552,12 @@ fn collect_table_repetition_info_with_axis(
     }
 
     for child in node.children.iter() {
-      let child_writing_mode = child
-        .style
-        .as_ref()
-        .map(|s| s.writing_mode)
-        .unwrap_or(node_writing_mode);
-      let child_axis =
-        axis_for_child_in_context(axis, context, node_writing_mode, child_writing_mode);
-      let child_abs_start = child_axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+      let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
       walk(
         child,
         child_abs_start,
-        &child_axis,
-        context,
-        child_writing_mode,
+        axis,
+        _context,
         default_style,
         out,
       );
@@ -2603,7 +2569,6 @@ fn collect_table_repetition_info_with_axis(
     abs_start,
     axis,
     context,
-    inherited_writing_mode,
     default_style,
     &mut out,
   );
@@ -2616,13 +2581,7 @@ pub(crate) fn collect_table_repetition_info_with_axes(
   context: FragmentationContext,
 ) -> Vec<TableRepetitionInfo> {
   let axis = axis_from_fragment_axes(axes);
-  let default_style = default_style();
-  let root_writing_mode = root
-    .style
-    .as_ref()
-    .map(|s| s.writing_mode)
-    .unwrap_or(default_style.writing_mode);
-  collect_table_repetition_info_with_axis(root, 0.0, &axis, context, root_writing_mode)
+  collect_table_repetition_info_with_axis(root, 0.0, &axis, context)
 }
 
 fn table_header_overhead_at(tables: &[TableRepetitionInfo], pos: f32) -> f32 {
@@ -2657,23 +2616,8 @@ fn inject_table_headers_and_footers(
   fragment_index: usize,
   fragment_count: usize,
   axis: &FragmentAxis,
-  context: FragmentationContext,
+  _context: FragmentationContext,
 ) {
-  let default_style = default_style();
-  let table_writing_mode = original
-    .style
-    .as_ref()
-    .map(|s| s.writing_mode)
-    .unwrap_or(default_style.writing_mode);
-  let axis_for_candidate = |candidate: &FragmentNode| -> FragmentAxis {
-    let candidate_writing_mode = candidate
-      .style
-      .as_ref()
-      .map(|s| s.writing_mode)
-      .unwrap_or(table_writing_mode);
-    axis_for_child_in_context(axis, context, table_writing_mode, candidate_writing_mode)
-  };
-
   let headers: Vec<_> = original
     .children
     .iter()
@@ -2711,14 +2655,12 @@ fn inject_table_headers_and_footers(
   if !headers.is_empty() && !has_header && !clipped.slice_info.is_first {
     let mut regions = Vec::new();
     for header in &headers {
-      let header_axis = axis_for_candidate(header);
-      let (start, end) = header_axis.flow_range(0.0, original_block_size, &header.bounds);
+      let (start, end) = axis.flow_range(0.0, original_block_size, &header.bounds);
       regions.push((start, end));
     }
     let region_height: f32 = regions.iter().map(|(s, e)| e - s).sum();
     for child in clipped.children_mut() {
-      let child_axis = axis_for_candidate(child);
-      translate_fragment_in_parent_space(child, child_axis.block_translation(region_height));
+      translate_fragment_in_parent_space(child, axis.block_translation(region_height));
     }
     let mut offset = 0.0;
     let mut clones = Vec::new();
@@ -2737,9 +2679,7 @@ fn inject_table_headers_and_footers(
         ) {
           continue;
         }
-        let candidate_axis = axis_for_candidate(candidate);
-        let (c_start, c_end) =
-          candidate_axis.flow_range(0.0, original_block_size, &candidate.bounds);
+        let (c_start, c_end) = axis.flow_range(0.0, original_block_size, &candidate.bounds);
         if c_start + 0.01 >= start && c_end <= end + 0.01 {
           let mut clone = candidate.clone();
           translate_fragment_in_parent_space(
@@ -2760,16 +2700,14 @@ fn inject_table_headers_and_footers(
   if !footers.is_empty() && !has_footer && !clipped.slice_info.is_last {
     let mut regions = Vec::new();
     for footer in &footers {
-      let footer_axis = axis_for_candidate(footer);
-      let (start, end) = footer_axis.flow_range(0.0, original_block_size, &footer.bounds);
+      let (start, end) = axis.flow_range(0.0, original_block_size, &footer.bounds);
       regions.push((start, end));
     }
     let footer_start = clipped
       .children
       .iter()
       .map(|c| {
-        let child_axis = axis_for_candidate(c);
-        child_axis.flow_range(0.0, clipped_block_size, &c.bounds).1
+        axis.flow_range(0.0, clipped_block_size, &c.bounds).1
       })
       .fold(0.0, f32::max);
     let mut footer_offset = footer_start;
@@ -2790,9 +2728,7 @@ fn inject_table_headers_and_footers(
         ) {
           continue;
         }
-        let candidate_axis = axis_for_candidate(candidate);
-        let (c_start, c_end) =
-          candidate_axis.flow_range(0.0, original_block_size, &candidate.bounds);
+        let (c_start, c_end) = axis.flow_range(0.0, original_block_size, &candidate.bounds);
         if c_start + 0.01 >= start && c_end <= end + 0.01 {
           let mut clone = candidate.clone();
           translate_fragment_in_parent_space(
@@ -2814,8 +2750,7 @@ fn inject_table_headers_and_footers(
     .children
     .iter()
     .map(|c| {
-      let child_axis = axis_for_candidate(c);
-      child_axis.flow_range(0.0, clipped_block_size, &c.bounds).1
+      axis.flow_range(0.0, clipped_block_size, &c.bounds).1
     })
     .fold(0.0, f32::max);
   let new_block_size = clipped_block_size
@@ -3221,16 +3156,7 @@ fn collect_break_opportunities(
           .as_ref()
           .map(|s| s.as_ref())
           .unwrap_or(default_style);
-        let child_writing_mode = child
-          .style
-          .as_ref()
-          .map(|s| s.writing_mode)
-          .unwrap_or(node_writing_mode);
-        let child_axis =
-          axis_for_child_in_context(axis, context, node_writing_mode, child_writing_mode);
-        let child_abs_start = child_axis
-          .flow_range(node_flow_start, node_block_size, &child.bounds)
-          .0;
+        let child_abs_start = axis.flow_range(node_flow_start, node_block_size, &child.bounds).0;
         collect_break_opportunities(
           child,
           child_abs_start,
@@ -3238,8 +3164,8 @@ fn collect_break_opportunities(
           inside_avoid,
           inside_inline,
           context,
-          &child_axis,
-          child_writing_mode,
+          axis,
+          node_writing_mode,
           suppress_parallel_flow_descendants,
           suppress_forced_breaks
             || (is_row_flex_container_in_context && child_style.position.is_in_flow()),
@@ -3281,15 +3207,7 @@ fn collect_break_opportunities(
   };
 
   for (idx, child) in node.children.iter().enumerate() {
-    let child_writing_mode = child
-      .style
-      .as_ref()
-      .map(|s| s.writing_mode)
-      .unwrap_or(node_writing_mode);
-    let child_axis =
-      axis_for_child_in_context(axis, context, node_writing_mode, child_writing_mode);
-    let (child_abs_start, child_abs_end) =
-      child_axis.flow_range(node_flow_start, node_block_size, &child.bounds);
+    let (child_abs_start, child_abs_end) = axis.flow_range(node_flow_start, node_block_size, &child.bounds);
     let child_style = child
       .style
       .as_ref()
@@ -3301,16 +3219,7 @@ fn collect_break_opportunities(
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
     let next_abs_start = next_child.map(|next| {
-      let next_writing_mode = next
-        .style
-        .as_ref()
-        .map(|s| s.writing_mode)
-        .unwrap_or(node_writing_mode);
-      let next_axis =
-        axis_for_child_in_context(axis, context, node_writing_mode, next_writing_mode);
-      next_axis
-        .flow_range(node_flow_start, node_block_size, &next.bounds)
-        .0
+      axis.flow_range(node_flow_start, node_block_size, &next.bounds).0
     });
 
     if let (Some(container_id), Some((line_index_end, line_end))) =
@@ -3373,8 +3282,8 @@ fn collect_break_opportunities(
         inside_avoid,
         inside_inline,
         context,
-        &child_axis,
-        child_writing_mode,
+        axis,
+        node_writing_mode,
         suppress_parallel_flow_descendants,
         suppress_forced_breaks
           || (is_row_flex_container_in_context && child_style.position.is_in_flow()),
@@ -4081,7 +3990,6 @@ fn collect_atomic_candidates_with_axis(
   axis: &FragmentAxis,
   parent_block_size: f32,
   context: FragmentationContext,
-  inherited_writing_mode: WritingMode,
 ) {
   collect_atomic_candidate_for_node(
     node,
@@ -4093,11 +4001,6 @@ fn collect_atomic_candidates_with_axis(
   );
 
   let node_block_size = axis.block_size(&node.bounds);
-  let node_writing_mode = node
-    .style
-    .as_ref()
-    .map(|s| s.writing_mode)
-    .unwrap_or(inherited_writing_mode);
 
   let default_style = default_style();
   let style = node
@@ -4124,22 +4027,14 @@ fn collect_atomic_candidates_with_axis(
       continue;
     }
 
-    let child_writing_mode = child
-      .style
-      .as_ref()
-      .map(|s| s.writing_mode)
-      .unwrap_or(node_writing_mode);
-    let child_axis =
-      axis_for_child_in_context(axis, context, node_writing_mode, child_writing_mode);
-    let child_abs_start = child_axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+    let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
     collect_atomic_candidates_with_axis(
       child,
       child_abs_start,
       candidates,
-      &child_axis,
+      axis,
       node_block_size,
       context,
-      child_writing_mode,
     );
   }
 }
@@ -4302,11 +4197,6 @@ pub(crate) fn collect_atomic_ranges(
   fragmentainer_size: Option<f32>,
 ) {
   let axis = fragmentation_axis(node);
-  let writing_mode = node
-    .style
-    .as_ref()
-    .map(|s| s.writing_mode)
-    .unwrap_or(WritingMode::HorizontalTb);
   collect_atomic_ranges_with_axis(
     node,
     abs_start,
@@ -4315,7 +4205,6 @@ pub(crate) fn collect_atomic_ranges(
     axis.block_size(&node.bounds),
     context,
     fragmentainer_size,
-    writing_mode,
   );
 }
 
@@ -4327,7 +4216,6 @@ fn collect_atomic_ranges_with_axis(
   parent_block_size: f32,
   context: FragmentationContext,
   fragmentainer_size: Option<f32>,
-  inherited_writing_mode: WritingMode,
 ) {
   collect_atomic_range_for_node(
     node,
@@ -4340,11 +4228,6 @@ fn collect_atomic_ranges_with_axis(
   );
 
   let node_block_size = axis.block_size(&node.bounds);
-  let node_writing_mode = node
-    .style
-    .as_ref()
-    .map(|s| s.writing_mode)
-    .unwrap_or(inherited_writing_mode);
 
   let default_style = default_style();
   let style = node
@@ -4371,25 +4254,15 @@ fn collect_atomic_ranges_with_axis(
       continue;
     }
 
-    let child_writing_mode = child
-      .style
-      .as_ref()
-      .map(|s| s.writing_mode)
-      .unwrap_or(node_writing_mode);
-    let child_axis =
-      axis_for_child_in_context(axis, context, node_writing_mode, child_writing_mode);
-    let child_abs_start = child_axis
-      .flow_range(abs_start, node_block_size, &child.bounds)
-      .0;
+    let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
     collect_atomic_ranges_with_axis(
       child,
       child_abs_start,
       ranges,
-      &child_axis,
+      axis,
       node_block_size,
       context,
       fragmentainer_size,
-      child_writing_mode,
     );
   }
 }
@@ -4403,11 +4276,6 @@ pub(crate) fn collect_atomic_ranges_with_axes(
   fragmentainer_size: Option<f32>,
 ) {
   let axis = axis_from_fragment_axes(axes);
-  let writing_mode = node
-    .style
-    .as_ref()
-    .map(|s| s.writing_mode)
-    .unwrap_or(WritingMode::HorizontalTb);
   collect_atomic_ranges_with_axis(
     node,
     abs_start,
@@ -4416,7 +4284,6 @@ pub(crate) fn collect_atomic_ranges_with_axes(
     axis.block_size(&node.bounds),
     context,
     fragmentainer_size,
-    writing_mode,
   );
 }
 

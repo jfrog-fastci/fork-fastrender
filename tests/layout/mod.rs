@@ -113,6 +113,7 @@ mod progress_meter_intrinsic_sizing;
 mod field_sizing_intrinsic_sizing;
 mod fragmentation;
 mod fragmentation_axes;
+mod fragmentation_writing_mode_invariance;
 mod fragmentation_widows_orphans;
 mod grid_abspos_static_position;
 mod grid_auto_placement_dense;
