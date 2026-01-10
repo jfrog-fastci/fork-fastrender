@@ -6097,6 +6097,183 @@ pub fn string_prototype_substr(
   Ok(Value::String(out))
 }
 
+/// `String.prototype.split(separator, limit)` (ECMA-262) (minimal, string separator only).
+pub fn string_prototype_split(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let separator = args.get(0).copied().unwrap_or(Value::Undefined);
+  let limit_val = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  // Per spec, `limit` is `ToUint32(limit)`. If it is not provided, the limit is `2^32 - 1`.
+  let limit: u32 = if matches!(limit_val, Value::Undefined) {
+    u32::MAX
+  } else {
+    let n = scope.to_number(vm, host, hooks, limit_val)?;
+    if !n.is_finite() || n == 0.0 {
+      0
+    } else {
+      let int = n.trunc();
+      let modulo = int.rem_euclid(4294967296.0);
+      modulo as u32
+    }
+  };
+
+  if limit == 0 {
+    return Ok(Value::Object(create_array_object(vm, &mut scope, 0)?));
+  }
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  // `separator === undefined` => return [S].
+  if matches!(separator, Value::Undefined) {
+    let array = create_array_object(vm, &mut scope, 1)?;
+    let mut idx_scope = scope.reborrow();
+    idx_scope.push_root(Value::Object(array))?;
+    idx_scope.push_root(Value::String(s))?;
+    let key = string_key(&mut idx_scope, "0")?;
+    idx_scope.define_property(array, key, data_desc(Value::String(s), true, true, true))?;
+    return Ok(Value::Object(array));
+  }
+
+  let sep = scope.to_string(vm, host, hooks, separator)?;
+  scope.push_root(Value::String(sep))?;
+
+  let s_len = {
+    let js = scope.heap().get_string(s)?;
+    js.len_code_units()
+  };
+  let sep_len = {
+    let js = scope.heap().get_string(sep)?;
+    js.len_code_units()
+  };
+
+  // Special-case: split by empty string yields one element per UTF-16 code unit.
+  if sep_len == 0 {
+    let count = s_len.min(limit as usize);
+    let count_u32 = u32::try_from(count).map_err(|_| VmError::OutOfMemory)?;
+    let array = create_array_object(vm, &mut scope, count_u32)?;
+
+    for i in 0..count {
+      if i % 1024 == 0 {
+        vm.tick()?;
+      }
+
+      let unit = {
+        let js = scope.heap().get_string(s)?;
+        js.as_code_units()[i]
+      };
+
+      let mut iter_scope = scope.reborrow();
+      iter_scope.push_root(Value::Object(array))?;
+
+      let part = iter_scope.alloc_string_from_u16_vec(vec![unit])?;
+      iter_scope.push_root(Value::String(part))?;
+
+      let key_s = iter_scope.alloc_string(&i.to_string())?;
+      iter_scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      iter_scope.define_property(array, key, data_desc(Value::String(part), true, true, true))?;
+    }
+
+    return Ok(Value::Object(array));
+  }
+
+  let limit_usize = limit as usize;
+
+  // Collect the substring boundaries first so we don't hold a borrow of the string's code units
+  // while allocating substring strings.
+  let ranges: Vec<(usize, usize)> = {
+    let haystack = scope.heap().get_string(s)?;
+    let needle = scope.heap().get_string(sep)?;
+    let hay_units = haystack.as_code_units();
+    let needle_units = needle.as_code_units();
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0usize;
+
+    if needle_units.len() > hay_units.len() {
+      ranges.push((0, hay_units.len()));
+      ranges
+    } else {
+      while ranges.len() < limit_usize {
+        let last = hay_units.len() - needle_units.len();
+        if start > last {
+          break;
+        }
+
+        let mut found: Option<usize> = None;
+        for i in start..=last {
+          if i % 1024 == 0 {
+            vm.tick()?;
+          }
+          if &hay_units[i..i + needle_units.len()] == needle_units {
+            found = Some(i);
+            break;
+          }
+        }
+
+        let Some(pos) = found else {
+          break;
+        };
+
+        ranges.push((start, pos));
+        if ranges.len() >= limit_usize {
+          break;
+        }
+        start = pos + needle_units.len();
+      }
+
+      // Remainder.
+      if ranges.len() < limit_usize {
+        ranges.push((start, hay_units.len()));
+      }
+      ranges
+    }
+  };
+
+  let out_len_u32 = u32::try_from(ranges.len()).map_err(|_| VmError::OutOfMemory)?;
+  let array = create_array_object(vm, &mut scope, out_len_u32)?;
+
+  for (i, (from, to)) in ranges.into_iter().enumerate() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    iter_scope.push_root(Value::Object(array))?;
+
+    let part = if from == to {
+      // Avoid allocating an intermediate Vec for empty segments.
+      iter_scope.alloc_string("")?
+    } else {
+      let units: Vec<u16> = {
+        let js = iter_scope.heap().get_string(s)?;
+        js.as_code_units()[from..to].to_vec()
+      };
+      iter_scope.alloc_string_from_u16_vec(units)?
+    };
+    iter_scope.push_root(Value::String(part))?;
+
+    let key_s = iter_scope.alloc_string(&i.to_string())?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    iter_scope.define_property(array, key, data_desc(Value::String(part), true, true, true))?;
+  }
+
+  Ok(Value::Object(array))
+}
+
 /// `String.prototype.toLowerCase` (ECMA-262) (minimal).
 pub fn string_prototype_to_lower_case(
   vm: &mut Vm,

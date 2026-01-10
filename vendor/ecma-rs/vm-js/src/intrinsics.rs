@@ -430,6 +430,7 @@ impl Intrinsics {
     let string_prototype_trim_end = vm.register_native_call(builtins::string_prototype_trim_end)?;
     let string_prototype_substring = vm.register_native_call(builtins::string_prototype_substring)?;
     let string_prototype_substr = vm.register_native_call(builtins::string_prototype_substr)?;
+    let string_prototype_split = vm.register_native_call(builtins::string_prototype_split)?;
     let string_prototype_to_lower_case =
       vm.register_native_call(builtins::string_prototype_to_lower_case)?;
     let string_prototype_to_upper_case =
@@ -1151,6 +1152,23 @@ impl Intrinsics {
         scope.push_root(Value::String(substr_s))?;
         let key = PropertyKey::from_string(substr_s);
         let func = scope.alloc_native_function(string_prototype_substr, None, substr_s, 2)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.split
+      {
+        let split_s = scope.alloc_string("split")?;
+        scope.push_root(Value::String(split_s))?;
+        let key = PropertyKey::from_string(split_s);
+        let func = scope.alloc_native_function(string_prototype_split, None, split_s, 2)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()

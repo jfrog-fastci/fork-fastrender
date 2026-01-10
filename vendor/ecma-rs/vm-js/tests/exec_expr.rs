@@ -597,6 +597,17 @@ fn string_prototype_substring_works_and_is_generic() {
 }
 
 #[test]
+fn string_prototype_split_works_and_is_generic() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var a="a,b,c".split(","); var b="a,".split(","); var c=",".split(","); var d="abc".split(); var e="ab".split(""); var f="".split(","); var g="".split(""); a.length===3 && a[0]==="a" && a[2]==="c" && b.length===2 && b[1]==="" && c.length===2 && c[0]==="" && d.length===1 && d[0]==="abc" && "a,b".split(",", 1)[0]==="a" && "a,b".split(",", 2)[1]==="b" && e.length===2 && e[1]==="b" && f.length===1 && f[0]==="" && g.length===0 && String.prototype.split.call(123, "")[2]==="3""#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_prototype_substr_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt
