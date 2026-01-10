@@ -4013,24 +4013,44 @@ impl FormattingContext for FlexFormattingContext {
       };
 
       let mut max_child_bottom = 0.0f32;
+      let mut first_in_flow_start: Option<f32> = None;
+      let mut first_in_flow_style: Option<Arc<ComputedStyle>> = None;
+      let mut has_negative_vertical_margin = false;
       let mut deadline_counter = 0usize;
       for child in fragment.children.iter() {
         check_layout_deadline(&mut deadline_counter)?;
-        let mut bottom = child.bounds.max_y();
-        if let Some(style) = child.style.as_deref() {
-          if style.running_position.is_some()
-            || matches!(style.position, Position::Absolute | Position::Fixed)
-          {
-            continue;
+        let Some(style) = child.style.as_deref() else {
+          continue;
+        };
+        if style.running_position.is_some()
+          || matches!(style.position, Position::Absolute | Position::Fixed)
+        {
+          continue;
+        }
+
+        if first_in_flow_style.is_none() {
+          let start = child.bounds.y();
+          if start.is_finite() {
+            first_in_flow_start = Some(start);
+            first_in_flow_style = child.style.clone();
           }
-          // Use the flex item's margin box edge rather than its border-box edge. Patterns like
-          // `align-items:center` with negative margins (common for vertically centered logos) can
-          // legitimately overflow the container without affecting its used cross size.
-          if let Some(margin_bottom) = style.margin_bottom {
-            let margin = self.resolve_length_for_width(margin_bottom, child_percentage_base, style);
-            if margin.is_finite() {
-              bottom += margin;
-            }
+        }
+
+        let margin_negative = |len: Option<Length>| -> bool {
+          len.is_some_and(|l| self.resolve_length_for_width(l, child_percentage_base, style) < -0.01)
+        };
+        if margin_negative(style.margin_top) || margin_negative(style.margin_bottom) {
+          has_negative_vertical_margin = true;
+        }
+
+        let mut bottom = child.bounds.max_y();
+        // Use the flex item's margin box edge rather than its border-box edge. Patterns like
+        // `align-items:center` with negative margins (common for vertically centered logos) can
+        // legitimately overflow the container without affecting its used cross size.
+        if let Some(margin_bottom) = style.margin_bottom {
+          let margin = self.resolve_length_for_width(margin_bottom, child_percentage_base, style);
+          if margin.is_finite() {
+            bottom += margin;
           }
         }
         if bottom.is_finite() {
@@ -4038,7 +4058,31 @@ impl FormattingContext for FlexFormattingContext {
         }
       }
       if max_child_bottom.is_finite() {
-        let required = (max_child_bottom + padding_bottom + border_bottom).max(0.0);
+        let mut required = (max_child_bottom + padding_bottom + border_bottom).max(0.0);
+        let mut shift_offset = 0.0f32;
+
+        // When negative vertical margins reduce the actual content height of an auto-sized flex
+        // container, Taffy can leave extra free space and apply `justify-content` offsets, shifting
+        // all items down. If the container is truly content-sized (not constrained by min/max
+        // height), remove the uniform offset so the first item's margin edge sits on the padding
+        // edge and shrink the container accordingly.
+        if has_negative_vertical_margin {
+          if let (Some(start), Some(first_style)) =
+            (first_in_flow_start, first_in_flow_style.as_deref())
+          {
+            if let Some(margin_top) = first_style.margin_top {
+              let margin_top =
+                self.resolve_length_for_width(margin_top, child_percentage_base, first_style);
+              let expected_start = border_top + padding_top + margin_top;
+              let offset = start - expected_start;
+              if offset.is_finite() && offset.abs() > 0.01 {
+                shift_offset = offset;
+                required =
+                  (max_child_bottom - shift_offset + padding_bottom + border_bottom).max(0.0);
+              }
+            }
+          }
+        }
 
         let vertical_edges = (padding_top + padding_bottom + border_top + border_bottom).max(0.0);
         let resolve_block_size_len = |len: Length| -> Option<f32> {
@@ -4080,9 +4124,33 @@ impl FormattingContext for FlexFormattingContext {
           max_height = min_height;
         }
 
-        let required = crate::layout::utils::clamp_with_order(required, min_height, max_height);
-        if required > fragment.bounds.height() + 0.01 {
-          fragment.bounds.size.height = required;
+        let clamped = crate::layout::utils::clamp_with_order(required, min_height, max_height);
+
+        if has_negative_vertical_margin
+          && shift_offset.abs() > 0.01
+          && (clamped - required).abs() < 0.01
+        {
+          let mut translate_counter = 0usize;
+          for child in fragment.children_mut() {
+            check_layout_deadline(&mut translate_counter)?;
+            let Some(style) = child.style.as_deref() else {
+              continue;
+            };
+            if style.running_position.is_some()
+              || matches!(style.position, Position::Absolute | Position::Fixed)
+            {
+              continue;
+            }
+            translate_fragment_tree(child, Point::new(0.0, -shift_offset), &mut translate_counter)?;
+          }
+        }
+
+        if has_negative_vertical_margin {
+          if (clamped - fragment.bounds.height()).abs() > 0.01 {
+            fragment.bounds.size.height = clamped;
+          }
+        } else if clamped > fragment.bounds.height() + 0.01 {
+          fragment.bounds.size.height = clamped;
         }
       }
     }

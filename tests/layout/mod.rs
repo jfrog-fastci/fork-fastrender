@@ -83,6 +83,7 @@ mod flex_wrap_subpixel_overflow_rounding_does_not_wrap;
 mod flex_item_blockification;
 mod flex_nested_wrap_item_cross_size;
 mod flex_leaf_remeasure_after_main_size_flexing;
+mod flex_negative_margin_overlap;
 mod flex_item_used_border_box_override;
 mod flex_item_blockification_inline_replaced;
 mod flex_item_flex_container_intrinsic_main_size;
