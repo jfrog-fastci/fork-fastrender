@@ -5245,6 +5245,80 @@ mod tests {
   }
 
   #[test]
+  fn parallel_grid_items_clip_first_fragment_when_item_starts_in_continued_grid_fragment() {
+    let fragmentainer_size = 100.0;
+
+    // The grid container spans multiple pages; the single-track grid item begins at y=130, so its
+    // start is on the second page at an offset of 30px within the fragmentainer slice [100, 200].
+    //
+    // Regression: parallel grid-item clipping must respect that offset, limiting the first item
+    // fragment on the start page to 70px instead of treating it as a full 100px fragment.
+    let item_child = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 200.0), vec![]);
+    let mut item =
+      FragmentNode::new_block(Rect::from_xywh(0.0, 130.0, 100.0, 200.0), vec![item_child]);
+    item.content = FragmentContent::Block { box_id: Some(1) };
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 200.0),
+      vec![item],
+      Arc::new(grid_style),
+    );
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![GridItemFragmentationData {
+        box_id: 1,
+        row_start: 2,
+        row_end: 3,
+        column_start: 1,
+        column_end: 2,
+      }],
+    }));
+
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 400.0), vec![grid]);
+    let fragments = fragment_tree(&root, &FragmentationOptions::new(fragmentainer_size)).unwrap();
+    assert!(
+      fragments.len() >= 3,
+      "expected pagination to create multiple pages, got {fragments:?}"
+    );
+
+    let start_page = &fragments[1];
+    let grid_start = start_page
+      .children
+      .first()
+      .expect("expected grid container to appear on the item start page");
+    let item_start = grid_start
+      .children
+      .first()
+      .expect("expected grid item fragment on the start page");
+    assert!(
+      (item_start.bounds.height() - 70.0).abs() < 0.01,
+      "expected item fragment height to equal remaining space (70px), got {:?}",
+      item_start.bounds
+    );
+    assert!(
+      item_start.bounds.max_y() <= fragmentainer_size + BREAK_EPSILON,
+      "expected item fragment to stay within the page clip window (max_y<=100), got {:?}",
+      item_start.bounds
+    );
+
+    let next_page = &fragments[2];
+    let grid_next = next_page
+      .children
+      .first()
+      .expect("expected grid container to appear on the continuation page");
+    let item_next = grid_next
+      .children
+      .first()
+      .expect("expected grid item continuation on the next page");
+    assert!(
+      (item_next.slice_info.slice_offset - 70.0).abs() < 0.01,
+      "expected continuation slice offset to be 70px, got {:?}",
+      item_next.slice_info
+    );
+  }
+
+  #[test]
   fn grid_parallel_flow_forced_break_shifts_respect_item_offset() {
     let axes = default_axes();
     let axis = axis_from_fragment_axes(axes);
