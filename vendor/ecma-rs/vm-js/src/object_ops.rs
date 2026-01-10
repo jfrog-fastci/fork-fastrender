@@ -162,7 +162,11 @@ impl<'a> Scope<'a> {
           if !self.heap().is_callable(get)? {
             return Err(VmError::TypeError("accessor getter is not callable"));
           }
-          vm.call_without_host(self, get, receiver, &[])
+          // Use `Vm::call` (with a dummy host context) so an embedder-provided
+          // `Vm::with_host_hooks_override` is respected. `call_without_host` always forces the
+          // VM-owned microtask queue, bypassing any active host hooks override.
+          let mut dummy_host = ();
+          vm.call(&mut dummy_host, self, get, receiver, &[])
         }
       }
     }
@@ -311,7 +315,9 @@ impl<'a> Scope<'a> {
         if !self.heap().is_callable(set)? {
           return Err(VmError::TypeError("accessor setter is not callable"));
         }
-        let _ = vm.call_without_host(self, set, receiver, &[value])?;
+        // See `ordinary_get`: prefer `Vm::call` so any active host hook override is honored.
+        let mut dummy_host = ();
+        let _ = vm.call(&mut dummy_host, self, set, receiver, &[value])?;
         Ok(true)
       }
     }
