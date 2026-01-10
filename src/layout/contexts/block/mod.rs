@@ -3445,6 +3445,7 @@ impl BlockFormattingContext {
         self.viewport_size,
       ) > 0.0;
 
+    let mut flow_height = current_y;
     if !allow_collapse_last || parent_has_bottom_separation {
       // Trailing margins apply after the last in-flow cursor (CSS 2.1 §10.6.3). They must be
       // applied relative to `current_y` (the last cursor position), not `content_height` (which can
@@ -3459,10 +3460,15 @@ impl BlockFormattingContext {
       } else {
         content_height
       };
-      content_height = base_height.max(end_y).max(0.0);
+      flow_height = base_height.max(end_y).max(0.0);
+      content_height = flow_height;
     }
+    if !flow_height.is_finite() {
+      flow_height = 0.0;
+    }
+    flow_height = flow_height.max(0.0);
 
-    Some(Ok((fragments, content_height, Vec::new())))
+    Some(Ok((fragments, flow_height, Vec::new())))
   }
 
   fn layout_replaced_child(
@@ -6107,6 +6113,7 @@ impl BlockFormattingContext {
         self.viewport_size,
       ) > 0.0;
 
+    let mut flow_height = current_y;
     if !allow_collapse_last || parent_has_bottom_separation {
       // Trailing margins apply after the last in-flow cursor (CSS 2.1 §10.6.3). Apply them
       // relative to `current_y` (the last cursor position), not `content_height` (which can be
@@ -6121,8 +6128,13 @@ impl BlockFormattingContext {
       } else {
         content_height
       };
-      content_height = base_height.max(end_y).max(0.0);
+      flow_height = base_height.max(end_y).max(0.0);
+      content_height = flow_height;
     }
+    if !flow_height.is_finite() {
+      flow_height = 0.0;
+    }
+    flow_height = flow_height.max(0.0);
 
     // Float boxes extend the formatting context height for BFC roots.
     let float_bottom = if owns_float_ctx {
@@ -6131,9 +6143,9 @@ impl BlockFormattingContext {
         .iter()
         .chain(float_ctx.right_floats())
         .map(|f| f.bottom())
-        .fold(content_height, f32::max)
+        .fold(flow_height, f32::max)
     } else {
-      content_height
+      flow_height
     };
 
     if let Some(err) = float_ctx.take_timeout_error() {

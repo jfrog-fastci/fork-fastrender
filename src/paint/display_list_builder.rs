@@ -6449,47 +6449,29 @@ impl DisplayListBuilder {
           // `srcset` points at markup). Instead they render the "broken image" placeholder (+alt).
           //
           // Only attempt to decode the selected candidate (the first entry in `sources`).
-          let mut deferred_async = false;
-          let should_defer_lazy = if loading == ImageLoadingAttribute::Lazy {
-            // `loading="lazy"` is a hint; Chrome still eagerly loads images that are within (or
-            // close to) the initial viewport when capturing a screenshot. However, deferring
-            // decoding for offscreen lazy images keeps headless Chrome baselines deterministic and
-            // avoids doing work for content the user cannot see.
-            //
-            // Defer only when the image is entirely outside the viewport. Partial intersection
-            // still loads the image because it can affect pixels in the capture.
-            match self.viewport {
-              Some((vw, vh))
-                if vw.is_finite()
-                  && vh.is_finite()
-                  && vw > 0.0
-                  && vh > 0.0
-                  && slot_rect.x().is_finite()
-                  && slot_rect.y().is_finite()
-                  && slot_rect.width().is_finite()
-                  && slot_rect.height().is_finite() =>
-              {
-                let x0 = slot_rect.x();
-                let y0 = slot_rect.y();
-                let x1 = x0 + slot_rect.width();
-                let y1 = y0 + slot_rect.height();
-                x1 <= 0.0 || y1 <= 0.0 || x0 >= vw || y0 >= vh
-              }
-              _ => false,
-            }
-          } else {
-            false
-          };
-
-          let decoded = sources.first().and_then(|source| {
-            if should_defer_lazy {
-              deferred_async = true;
-              return None;
-            }
-            if decoding == ImageDecodingAttribute::Async
-              && self.should_defer_async_image_decode(
-                slot_rect.width(),
-                slot_rect.height(),
+           let mut deferred_async = false;
+           let decoded = sources.first().and_then(|source| {
+             if loading == ImageLoadingAttribute::Lazy {
+               if let Some(visible) = culling_rect {
+                 if !slot_rect.intersects(visible) {
+                   // `loading="lazy"` images typically fetch/decode after the initial page load.
+                   // When the image is outside the visible culling rectangle, keep it transparent
+                   // so author-supplied placeholders (e.g. background-image blur SVGs) remain
+                   // visible.
+                   //
+                   // NOTE: `culling_rect` is already mapped into the local (pre-transform)
+                   // coordinate space at stacking-context boundaries (see `visible_in_local_space`),
+                   // so it can safely be compared against `slot_rect` even when ancestor transforms
+                   // move the element into view (common for carousels and centered layouts).
+                   deferred_async = true;
+                   return None;
+                 }
+               }
+             }
+             if decoding == ImageDecodingAttribute::Async
+               && self.should_defer_async_image_decode(
+                 slot_rect.width(),
+                 slot_rect.height(),
                 source.url,
                 crossorigin,
                 referrer_policy,
@@ -6565,10 +6547,10 @@ impl DisplayListBuilder {
             break 'paint;
           }
 
-          if deferred_async {
-            // `decoding="async"` is a hint that the UA is allowed to postpone expensive image
-            // decodes. When we choose to defer decoding, we keep the image transparent (no UA
-            // placeholder) to match browser behavior while decoding is still pending.
+            if deferred_async {
+              // `decoding="async"` is a hint that the UA is allowed to postpone expensive image
+              // decodes. When we choose to defer decoding, we keep the image transparent (no UA
+              // placeholder) to match browser behavior while decoding is still pending.
             break 'paint;
           }
 
@@ -10533,7 +10515,10 @@ impl DisplayListBuilder {
             .floor()
             .clamp(0.0, max_icon_size)
         };
-        if icon_size > 0.0 {
+        // The broken-image icon is UA-defined; Chrome appears to suppress it when the available
+        // space is too small (e.g. narrow banner images). Keep the minimum size large enough to
+        // avoid flooding small content rects with extra paint items.
+        if icon_size >= 8.0 {
           let icon_rect = Rect::from_xywh(
             content_rect.x() + icon_inset,
             content_rect.y() + icon_inset,
@@ -10795,13 +10780,12 @@ impl DisplayListBuilder {
         compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), Some(viewport));
       let metrics =
         InlineTextItem::metrics_from_runs(&builder.font_ctx, &runs, line_height, style.font_size);
-      let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
       let baseline_offset_y = if center_y {
         (rect.height() - line_height) / 2.0
       } else {
         0.0
       };
-      let baseline = rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
+      let baseline = rect.y() + baseline_offset_y + metrics.baseline_offset;
 
       let advance_width: f32 = runs.iter().map(|run| run.advance).sum();
       let start_x = if center_x {
@@ -12537,7 +12521,47 @@ impl DisplayListBuilder {
     if let Some(clip) = clip_contents.as_ref() {
       self.list.push(DisplayItem::PushClip(clip.clone()));
     }
-    let ok = self.emit_text_with_style(alt, style, content_rect);
+    // Browser UAs paint broken-image alt text alongside the "broken image" icon rather than
+    // starting at the very left edge of the image box (which would overlap the icon/border).
+    //
+    // Keep the behavior stable by matching the placeholder icon sizing rules from
+    // `emit_replaced_placeholder`.
+    let text_rect = if matches!(
+      fragment.content,
+      FragmentContent::Replaced {
+        replaced_type: ReplacedType::Image { .. },
+        ..
+      }
+    ) {
+      let icon_inset = 2.0;
+      let max_icon_size = 16.0;
+      let icon_size = {
+        let available_w = (content_rect.width() - icon_inset * 2.0).max(0.0);
+        let available_h = (content_rect.height() - icon_inset * 2.0).max(0.0);
+        (available_w.min(available_h) * 0.5)
+          .floor()
+          .clamp(0.0, max_icon_size)
+      };
+      // Leave room for the icon plus a small gap. When the icon isn't drawn, still inset the text
+      // slightly so it doesn't abut the border.
+      let icon_gap = if icon_size > 0.0 { 2.0 } else { 0.0 };
+      let left_inset = icon_inset + icon_size + icon_gap;
+      let right_inset = icon_inset;
+      let top_inset = icon_inset;
+      let bottom_inset = icon_inset;
+
+      let w = (content_rect.width() - left_inset - right_inset).max(0.0);
+      let h = (content_rect.height() - top_inset - bottom_inset).max(0.0);
+      Rect::from_xywh(
+        content_rect.x() + left_inset,
+        content_rect.y() + top_inset,
+        w,
+        h,
+      )
+    } else {
+      content_rect
+    };
+    let ok = self.emit_text_with_style(alt, style, text_rect);
     if clip_contents.is_some() {
       self.list.push(DisplayItem::PopClip);
     }
@@ -12639,8 +12663,7 @@ impl DisplayListBuilder {
       compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), viewport);
     let metrics =
       InlineTextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
-    let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
-    let baseline = rect.y() + half_leading + metrics.baseline_offset;
+    let baseline = rect.y() + metrics.baseline_offset;
     let advance_width: f32 = runs.iter().map(|run| run.advance).sum();
     let start_x = Self::aligned_text_start_x(style, rect, advance_width);
 
@@ -13404,6 +13427,7 @@ mod tests {
   use crate::style::types::Containment;
   use crate::style::types::ImageOrientation;
   use crate::style::types::ImageRendering;
+  use crate::style::types::LineHeight;
   use crate::style::types::MixBlendMode;
   use crate::style::types::MotionPathCommand;
   use crate::style::types::MotionPosition;
@@ -13529,6 +13553,66 @@ mod tests {
       builder.emit_text_with_style("\u{00A0}", Some(&style), rect),
       "NBSP must not be treated as trim() whitespace when emitting text"
     );
+  }
+
+  #[test]
+  fn emit_text_with_style_baseline_offset_does_not_double_count_half_leading() {
+    let mut builder = DisplayListBuilder::new();
+    let mut style = ComputedStyle::default();
+    style.color = Rgba::BLACK;
+    style.font_size = 20.0;
+    style.line_height = LineHeight::Length(Length::px(60.0));
+
+    let rect = Rect::from_xywh(0.0, 0.0, 200.0, 80.0);
+    let text = "baseline test";
+    assert!(
+      builder.emit_text_with_style(text, Some(&style), rect),
+      "expected text emission to succeed"
+    );
+
+    let items: Vec<&TextItem> = builder
+      .list
+      .items()
+      .iter()
+      .filter_map(|item| match item {
+        DisplayItem::Text(text) => Some(text),
+        _ => None,
+      })
+      .collect();
+    assert!(!items.is_empty(), "expected at least one text item");
+
+    let mut runs = builder
+      .shaper
+      .shape(text, &style, &builder.font_ctx)
+      .expect("shape");
+    InlineTextItem::apply_spacing_to_runs(
+      &mut runs,
+      text,
+      style.letter_spacing,
+      style.word_spacing,
+    );
+    let metrics_scaled = DisplayListBuilder::resolve_scaled_metrics(&style, &builder.font_ctx);
+    let viewport = builder.viewport.map(|(w, h)| Size::new(w, h));
+    let line_height =
+      compute_line_height_with_metrics_viewport(&style, metrics_scaled.as_ref(), viewport);
+    let metrics =
+      InlineTextItem::metrics_from_runs(&builder.font_ctx, &runs, line_height, style.font_size);
+    let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+    assert!(
+      half_leading > 0.5,
+      "expected non-zero half-leading for regression coverage"
+    );
+    let expected_baseline = rect.y() + metrics.baseline_offset;
+
+    for item in items {
+      assert!(
+        (item.origin.y - expected_baseline).abs() < 1e-3,
+        "expected baseline to be rect.y() + metrics.baseline_offset; got {} expected {} (half-leading {})",
+        item.origin.y,
+        expected_baseline,
+        half_leading
+      );
+    }
   }
 
   #[test]
@@ -17575,6 +17659,55 @@ mod tests {
         )
       }),
       "Expected placeholder border for missing image"
+    );
+  }
+
+  #[test]
+  fn missing_image_alt_text_is_inset_past_icon() {
+    let mut style = ComputedStyle::default();
+    style.color = Rgba::BLACK;
+    style.font_size = 12.0;
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
+      FragmentContent::Replaced {
+        box_id: None,
+        replaced_type: ReplacedType::Image {
+          src: String::new(),
+          alt: Some("alt text".to_string()),
+          loading: Default::default(),
+          decoding: ImageDecodingAttribute::Auto,
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
+          sizes: None,
+          srcset: Vec::new(),
+          picture_sources: Vec::new(),
+        },
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let builder = DisplayListBuilder::new();
+    let list = builder.build(&fragment);
+
+    let text = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Text(text) => Some(text),
+        _ => None,
+      })
+      .expect("Expected text item for alt fallback");
+
+    // Placeholder icon sizing in `emit_replaced_placeholder` yields a 16px icon with a 2px inset +
+    // 2px gap inside a 100×40 image box.
+    let expected_x = 20.0;
+    assert!(
+      (text.origin.x - expected_x).abs() < 0.01,
+      "expected missing-image alt text to start at x≈{}, got x={}",
+      expected_x,
+      text.origin.x
     );
   }
 

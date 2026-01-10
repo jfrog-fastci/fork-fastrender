@@ -4993,6 +4993,13 @@ impl ImageCache {
     resource: &FetchedResource,
     crossorigin: CrossOriginAttribute,
   ) -> Result<Arc<CachedImage>> {
+    // Offline fixtures replace missing file payloads with a deterministic 1×1 transparent PNG so
+    // layout can still derive an intrinsic size. Treat that specific payload as the same placeholder
+    // image used for `about:` URLs so callers can detect it (notably, replaced-content painters
+    // render UA missing-image UI when `ImageCache::is_placeholder_image` is true).
+    if resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes() {
+      return Ok(self.cache_placeholder_image(cache_key));
+    }
     if resource.bytes.is_empty() {
       return Ok(self.cache_placeholder_image(cache_key));
     }
@@ -9063,6 +9070,34 @@ mod tests {
     let rgba = image.image.to_rgba8();
     assert_eq!(rgba.dimensions(), (1, 1));
     assert_eq!(rgba.get_pixel(0, 0).0, [0, 0, 0, 0]);
+  }
+
+  #[test]
+  fn image_cache_load_reuses_offline_placeholder_png_from_raw_cache() {
+    // Offline fixtures substitute missing file payloads with a deterministic 1×1 transparent PNG.
+    // When image dimensions are probed first, the raw bytes can be cached and later decoded via
+    // `decode_resource_into_cache`. Ensure that decode path still recognizes the placeholder and
+    // returns the shared `about:` placeholder image so replaced-content paint can render UA fallback
+    // UI instead of a silent transparent 1×1.
+    let url = "https://example.com/missing.png";
+    let mut res = FetchedResource::new(
+      crate::resource::offline_placeholder_png_bytes().to_vec(),
+      Some("image/png".to_string()),
+    );
+    res.status = Some(200);
+    res.final_url = Some(url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(url.to_string(), res)]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    // Populate the probe/raw caches first to force `load()` down the `decode_resource_into_cache`
+    // path.
+    cache.probe(url).expect("probe should succeed");
+    let image = cache.load(url).expect("load should succeed");
+    assert!(
+      cache.is_placeholder_image(&image),
+      "expected offline placeholder PNG bytes to map to the shared placeholder image"
+    );
   }
 
   #[test]

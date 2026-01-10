@@ -688,6 +688,59 @@ fn bfc_prevents_parent_last_child_margin_collapse() {
 }
 
 #[test]
+fn negative_trailing_margin_can_shrink_auto_height_when_not_collapsing_with_parent() {
+  // Regression: a negative bottom margin on the last in-flow child should be able to *shrink* the
+  // parent's used auto height when the child's margin does not collapse with the parent (e.g. the
+  // parent establishes a new BFC via overflow != visible).
+  //
+  // Chrome relies on this behavior for layout of `forbes.com` (the edition selector bar uses
+  // negative vertical margins to pull the next section upward).
+  let mut inner_style = block_style_with_height(Some(41.0));
+  inner_style.margin_top = Some(Length::px(-8.0));
+  inner_style.margin_bottom = Some(Length::px(-8.0));
+  let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+  let mut outer_style = block_style_with_height(None);
+  outer_style.overflow_x = Overflow::Hidden;
+  outer_style.overflow_y = Overflow::Hidden;
+  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![inner]);
+
+  let after = block_with_height_and_margins(10.0, 0.0, 0.0);
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![outer, after],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let outer_fragment = &fragment.children[0];
+  let inner_fragment = &outer_fragment.children[0];
+  let after_fragment = &fragment.children[1];
+
+  assert_approx(
+    outer_fragment.bounds.height(),
+    25.0,
+    "expected negative trailing margin to shrink the parent's used height (-8 + 41 + -8 = 25)",
+  );
+  assert_approx(
+    inner_fragment.bounds.max_y(),
+    33.0,
+    "expected the child's border box to protrude below the parent's used height",
+  );
+  assert_approx(
+    after_fragment.bounds.y() - outer_fragment.bounds.max_y(),
+    0.0,
+    "expected following siblings to be positioned using the parent's used height (not the protruding child border box)",
+  );
+}
+
+#[test]
 fn collapse_through_empty_blocks() {
   let red = block_with_height_and_margins(10.0, 0.0, 10.0);
   let empty = empty_block_with_margins(20.0, 30.0);
