@@ -82,8 +82,9 @@ pub use ecma_vm_runtime::{EcmaVmRuntime, EcmaVmRuntimeConfig};
 pub use document_lifecycle::{DocumentLifecycle, DocumentLifecycleHost};
 pub use crate::web::dom::DocumentReadyState;
 pub use event_loop::{
-  AnimationFrameId, EventLoop, QueueLimits, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome,
-  RunUntilIdleStopReason, SpinOutcome, Task, TaskSource, TimerId,
+  AnimationFrameId, EventLoop, MicrotaskCheckpointLimitedOutcome, QueueLimits, RunAnimationFrameOutcome,
+  RunLimits, RunNextTaskLimitedOutcome, RunState, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome,
+  Task, TaskSource, TimerId,
 };
 pub use options::JsExecutionOptions;
 pub use ecma_microtasks::{VmJsEngineHost, VmJsHostHooks, VmJsJobContext};

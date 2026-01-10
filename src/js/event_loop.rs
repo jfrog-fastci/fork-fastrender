@@ -141,6 +141,24 @@ pub enum RunUntilIdleOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicrotaskCheckpointLimitedOutcome {
+  /// The microtask queue was fully drained.
+  Completed,
+  /// The checkpoint stopped early due to a run limit (e.g. max microtasks or wall time).
+  Stopped(RunUntilIdleStopReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunNextTaskLimitedOutcome {
+  /// A task was executed (including its post-task microtask checkpoint).
+  Ran,
+  /// No task was available to run.
+  NoTask,
+  /// The step stopped early due to a run limit (e.g. max tasks/max microtasks/wall time).
+  Stopped(RunUntilIdleStopReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpinOutcome {
   ConditionMet,
   Idle,
@@ -617,6 +635,46 @@ impl<Host: 'static> EventLoop<Host> {
     Ok(true)
   }
 
+  /// Perform a microtask checkpoint while respecting the provided run limits.
+  ///
+  /// This is the bounded counterpart to [`EventLoop::perform_microtask_checkpoint`]. The
+  /// `run_state` counters are updated and preserved across calls, allowing embeddings to drive the
+  /// event loop one checkpoint at a time.
+  pub fn perform_microtask_checkpoint_limited(
+    &mut self,
+    host: &mut Host,
+    run_state: &mut RunState,
+  ) -> Result<MicrotaskCheckpointLimitedOutcome> {
+    match self.perform_microtask_checkpoint_limited_inner(host, run_state) {
+      Ok(()) => Ok(MicrotaskCheckpointLimitedOutcome::Completed),
+      Err(RunStepError::Stop(reason)) => Ok(MicrotaskCheckpointLimitedOutcome::Stopped(reason)),
+      Err(RunStepError::Error(err)) => Err(err),
+    }
+  }
+
+  /// Run a single task turn while respecting the provided run limits.
+  ///
+  /// This method executes at most one queued task (if any) and always performs the post-task
+  /// microtask checkpoint, updating `run_state` counters along the way.
+  pub fn run_next_task_limited(
+    &mut self,
+    host: &mut Host,
+    run_state: &mut RunState,
+  ) -> Result<RunNextTaskLimitedOutcome> {
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
+
+    match self.run_next_task_limited_inner(host, run_state) {
+      Ok(true) => Ok(RunNextTaskLimitedOutcome::Ran),
+      Ok(false) => Ok(RunNextTaskLimitedOutcome::NoTask),
+      Err(RunStepError::Stop(reason)) => Ok(RunNextTaskLimitedOutcome::Stopped(reason)),
+      Err(RunStepError::Error(err)) => Err(err),
+    }
+  }
+
   pub fn run_until_idle(
     &mut self,
     host: &mut Host,
@@ -756,11 +814,11 @@ impl<Host: 'static> EventLoop<Host> {
       self.queue_due_timers().map_err(RunStepError::Error)?;
 
       if !self.microtask_queue.is_empty() {
-        self.perform_microtask_checkpoint_limited(host, run_state)?;
+        self.perform_microtask_checkpoint_limited_inner(host, run_state)?;
         continue;
       }
 
-      if self.run_next_task_limited(host, run_state)? {
+      if self.run_next_task_limited_inner(host, run_state)? {
         continue;
       }
 
@@ -779,12 +837,12 @@ impl<Host: 'static> EventLoop<Host> {
       self.queue_due_timers().map_err(RunStepError::Error)?;
 
       if !self.microtask_queue.is_empty() {
-        self.perform_microtask_checkpoint_limited(host, run_state)?;
+        self.perform_microtask_checkpoint_limited_inner(host, run_state)?;
         hook(host, self).map_err(RunStepError::Error)?;
         continue;
       }
 
-      if self.run_next_task_limited(host, run_state)? {
+      if self.run_next_task_limited_inner(host, run_state)? {
         hook(host, self).map_err(RunStepError::Error)?;
         continue;
       }
@@ -807,11 +865,11 @@ impl<Host: 'static> EventLoop<Host> {
       self.queue_due_timers().map_err(RunStepError::Error)?;
 
       if !self.microtask_queue.is_empty() {
-        self.perform_microtask_checkpoint_limited_handling_errors(host, run_state, on_error)?;
+        self.perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error)?;
         continue;
       }
 
-      if self.run_next_task_limited_handling_errors(host, run_state, on_error)? {
+      if self.run_next_task_limited_handling_errors_inner(host, run_state, on_error)? {
         continue;
       }
 
@@ -835,12 +893,12 @@ impl<Host: 'static> EventLoop<Host> {
       self.queue_due_timers().map_err(RunStepError::Error)?;
 
       if !self.microtask_queue.is_empty() {
-        self.perform_microtask_checkpoint_limited_handling_errors(host, run_state, on_error)?;
+        self.perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error)?;
         hook(host, self).map_err(RunStepError::Error)?;
         continue;
       }
 
-      if self.run_next_task_limited_handling_errors(host, run_state, on_error)? {
+      if self.run_next_task_limited_handling_errors_inner(host, run_state, on_error)? {
         hook(host, self).map_err(RunStepError::Error)?;
         continue;
       }
@@ -849,7 +907,7 @@ impl<Host: 'static> EventLoop<Host> {
     }
   }
 
-  fn run_next_task_limited(
+  fn run_next_task_limited_inner(
     &mut self,
     host: &mut Host,
     run_state: &mut RunState,
@@ -892,7 +950,7 @@ impl<Host: 'static> EventLoop<Host> {
     self.currently_running_task = None;
     // HTML performs a microtask checkpoint at the end of every task. Even if the task threw an
     // exception, queued microtasks must still be drained.
-    let microtask_result = self.perform_microtask_checkpoint_limited(host, run_state);
+    let microtask_result = self.perform_microtask_checkpoint_limited_inner(host, run_state);
     self.timer_nesting_level = previous_timer_nesting_level;
     self.currently_running_task = previous_running_task;
     // Prefer surfacing the task error if the task failed, even if the microtask checkpoint also hit
@@ -908,7 +966,7 @@ impl<Host: 'static> EventLoop<Host> {
     Ok(true)
   }
 
-  fn run_next_task_limited_handling_errors<F>(
+  fn run_next_task_limited_handling_errors_inner<F>(
     &mut self,
     host: &mut Host,
     run_state: &mut RunState,
@@ -948,14 +1006,14 @@ impl<Host: 'static> EventLoop<Host> {
     }
 
     let microtask_result =
-      self.perform_microtask_checkpoint_limited_handling_errors(host, run_state, on_error);
+      self.perform_microtask_checkpoint_limited_handling_errors_inner(host, run_state, on_error);
     self.timer_nesting_level = previous_timer_nesting_level;
     self.currently_running_task = previous_running_task;
     microtask_result?;
     Ok(true)
   }
 
-  fn perform_microtask_checkpoint_limited(
+  fn perform_microtask_checkpoint_limited_inner(
     &mut self,
     host: &mut Host,
     run_state: &mut RunState,
@@ -1048,7 +1106,7 @@ impl<Host: 'static> EventLoop<Host> {
     result
   }
 
-  fn perform_microtask_checkpoint_limited_handling_errors<F>(
+  fn perform_microtask_checkpoint_limited_handling_errors_inner<F>(
     &mut self,
     host: &mut Host,
     run_state: &mut RunState,
@@ -1444,11 +1502,11 @@ impl<Host: 'static> EventLoop<Host> {
       }
 
       if !self.microtask_queue.is_empty() {
-        self.perform_microtask_checkpoint_limited(host, run_state)?;
+        self.perform_microtask_checkpoint_limited_inner(host, run_state)?;
         continue;
       }
 
-      if self.run_next_task_limited(host, run_state)? {
+      if self.run_next_task_limited_inner(host, run_state)? {
         continue;
       }
 
@@ -1457,7 +1515,12 @@ impl<Host: 'static> EventLoop<Host> {
   }
 }
 
-struct RunState {
+/// Stateful run bookkeeping for bounded/step-wise event loop execution.
+///
+/// Embeddings that need deterministic "stepping" can create one `RunState` per run and reuse it
+/// across multiple calls to [`EventLoop::run_next_task_limited`] and
+/// [`EventLoop::perform_microtask_checkpoint_limited`].
+pub struct RunState {
   limits: RunLimits,
   clock: Arc<dyn Clock>,
   started_at: Duration,
@@ -1467,7 +1530,7 @@ struct RunState {
 }
 
 impl RunState {
-  fn new(limits: RunLimits, clock: Arc<dyn Clock>, default_deadline_stage: RenderStage) -> Self {
+  pub fn new(limits: RunLimits, clock: Arc<dyn Clock>, default_deadline_stage: RenderStage) -> Self {
     Self {
       limits,
       started_at: clock.now(),
@@ -1476,6 +1539,40 @@ impl RunState {
       tasks_executed: 0,
       microtasks_executed: 0,
     }
+  }
+
+  pub fn limits(&self) -> RunLimits {
+    self.limits
+  }
+
+  pub fn tasks_executed(&self) -> usize {
+    self.tasks_executed
+  }
+
+  pub fn microtasks_executed(&self) -> usize {
+    self.microtasks_executed
+  }
+
+  pub fn tasks_remaining(&self) -> usize {
+    self.limits.max_tasks.saturating_sub(self.tasks_executed)
+  }
+
+  pub fn microtasks_remaining(&self) -> usize {
+    self
+      .limits
+      .max_microtasks
+      .saturating_sub(self.microtasks_executed)
+  }
+
+  pub fn elapsed_wall_time(&self) -> Duration {
+    self.clock.now().saturating_sub(self.started_at)
+  }
+
+  pub fn wall_time_remaining(&self) -> Option<Duration> {
+    self
+      .limits
+      .max_wall_time
+      .map(|limit| limit.saturating_sub(self.elapsed_wall_time()))
   }
 
   fn check_deadline(&self) -> RunStepResult<()> {
@@ -1974,6 +2071,39 @@ mod tests {
   }
 
   #[test]
+  fn limited_microtask_checkpoint_stops_infinite_microtask_chains() -> Result<()> {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = Arc::clone(&clock);
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
+
+    event_loop.queue_microtask(self_requeue_microtask)?;
+
+    let mut run_state = RunState::new(
+      RunLimits {
+        max_tasks: usize::MAX,
+        max_microtasks: 5,
+        max_wall_time: None,
+      },
+      clock,
+      event_loop.default_deadline_stage(),
+    );
+
+    assert_eq!(
+      event_loop.perform_microtask_checkpoint_limited(&mut host, &mut run_state)?,
+      MicrotaskCheckpointLimitedOutcome::Stopped(RunUntilIdleStopReason::MaxMicrotasks {
+        executed: 5,
+        limit: 5
+      })
+    );
+    assert_eq!(host.count, 5);
+    assert_eq!(run_state.microtasks_executed(), 5);
+    // The next microtask should still be queued: the limit is enforced before popping.
+    assert_eq!(event_loop.pending_microtask_count(), 1);
+    Ok(())
+  }
+
+  #[test]
   fn run_until_idle_max_tasks_does_not_drop_next_task() -> Result<()> {
     #[derive(Default)]
     struct Host {
@@ -2022,6 +2152,147 @@ mod tests {
       RunUntilIdleOutcome::Idle
     );
     assert_eq!(host.log, vec!["task1", "task2"]);
+    Ok(())
+  }
+
+  #[test]
+  fn run_next_task_limited_stops_before_dropping_next_task_at_max_tasks() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = Arc::clone(&clock);
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut host = Host::default();
+
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task1");
+      Ok(())
+    })?;
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task2");
+      Ok(())
+    })?;
+
+    let mut run_state = RunState::new(
+      RunLimits {
+        max_tasks: 1,
+        max_microtasks: usize::MAX,
+        max_wall_time: None,
+      },
+      Arc::clone(&clock),
+      event_loop.default_deadline_stage(),
+    );
+
+    assert_eq!(
+      event_loop.run_next_task_limited(&mut host, &mut run_state)?,
+      RunNextTaskLimitedOutcome::Ran
+    );
+    assert_eq!(run_state.tasks_executed(), 1);
+    assert_eq!(host.log, vec!["task1"]);
+
+    // The second task should not be popped when the max-task limit is hit.
+    assert_eq!(
+      event_loop.run_next_task_limited(&mut host, &mut run_state)?,
+      RunNextTaskLimitedOutcome::Stopped(RunUntilIdleStopReason::MaxTasks {
+        executed: 1,
+        limit: 1
+      })
+    );
+    assert_eq!(run_state.tasks_executed(), 1);
+    assert_eq!(host.log, vec!["task1"]);
+
+    // Reset budgets with a fresh run state and verify the second task still runs.
+    let mut run_state2 = RunState::new(
+      RunLimits {
+        max_tasks: 1,
+        max_microtasks: usize::MAX,
+        max_wall_time: None,
+      },
+      clock,
+      event_loop.default_deadline_stage(),
+    );
+    assert_eq!(
+      event_loop.run_next_task_limited(&mut host, &mut run_state2)?,
+      RunNextTaskLimitedOutcome::Ran
+    );
+    assert_eq!(host.log, vec!["task1", "task2"]);
+    Ok(())
+  }
+
+  #[test]
+  fn limited_stepping_apis_advance_counters_and_are_reusable() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = Arc::clone(&clock);
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut host = Host::default();
+
+    event_loop.queue_microtask(|host, _event_loop| {
+      host.log.push("microtask1");
+      Ok(())
+    })?;
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      host.log.push("task1");
+      event_loop.queue_microtask(|host, _event_loop| {
+        host.log.push("microtask2");
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task2");
+      Ok(())
+    })?;
+
+    let mut run_state = RunState::new(
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 10,
+        max_wall_time: None,
+      },
+      clock,
+      event_loop.default_deadline_stage(),
+    );
+
+    assert_eq!(run_state.tasks_executed(), 0);
+    assert_eq!(run_state.microtasks_executed(), 0);
+
+    assert_eq!(
+      event_loop.perform_microtask_checkpoint_limited(&mut host, &mut run_state)?,
+      MicrotaskCheckpointLimitedOutcome::Completed
+    );
+    assert_eq!(host.log, vec!["microtask1"]);
+    assert_eq!(run_state.tasks_executed(), 0);
+    assert_eq!(run_state.microtasks_executed(), 1);
+
+    assert_eq!(
+      event_loop.run_next_task_limited(&mut host, &mut run_state)?,
+      RunNextTaskLimitedOutcome::Ran
+    );
+    assert_eq!(host.log, vec!["microtask1", "task1", "microtask2"]);
+    assert_eq!(run_state.tasks_executed(), 1);
+    assert_eq!(run_state.microtasks_executed(), 2);
+
+    assert_eq!(
+      event_loop.run_next_task_limited(&mut host, &mut run_state)?,
+      RunNextTaskLimitedOutcome::Ran
+    );
+    assert_eq!(host.log, vec!["microtask1", "task1", "microtask2", "task2"]);
+    assert_eq!(run_state.tasks_executed(), 2);
+    assert_eq!(run_state.microtasks_executed(), 2);
+
+    assert_eq!(
+      event_loop.run_next_task_limited(&mut host, &mut run_state)?,
+      RunNextTaskLimitedOutcome::NoTask
+    );
+    assert_eq!(run_state.tasks_executed(), 2);
     Ok(())
   }
 
