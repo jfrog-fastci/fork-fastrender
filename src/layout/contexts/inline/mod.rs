@@ -18812,6 +18812,74 @@ mod tests {
   }
 
   #[test]
+  fn text_justify_inter_word_spans_nested_inline_boxes() {
+    // Regression: if the expandable space lives in one styled span and the following text lives in a
+    // sibling span, inter-word justification must still expand the boundary rather than giving up.
+    let mut root_style = ComputedStyle::default();
+    root_style.font_size = 16.0;
+    root_style.text_align = TextAlign::Justify;
+    root_style.text_align_last = crate::style::types::TextAlignLast::Justify;
+    root_style.text_justify = TextJustify::InterWord;
+    root_style.width = Some(Length::px(200.0));
+    root_style.width_keyword = None;
+    let root_style = Arc::new(root_style);
+
+    let mut text_style_a = ComputedStyle::default();
+    text_style_a.font_size = 16.0;
+    text_style_a.white_space = WhiteSpace::PreWrap;
+    let text_style_a = Arc::new(text_style_a);
+
+    let mut text_style_b = ComputedStyle::default();
+    text_style_b.font_size = 16.0;
+    text_style_b.white_space = WhiteSpace::PreWrap;
+    text_style_b.color = Rgba::BLUE;
+    let text_style_b = Arc::new(text_style_b);
+
+    let inner_a = BoxNode::new_inline(
+      text_style_a.clone(),
+      vec![BoxNode::new_text(text_style_a.clone(), "a ".into())],
+    );
+    let inner_b = BoxNode::new_inline(
+      text_style_b.clone(),
+      vec![BoxNode::new_text(text_style_b.clone(), "b".into())],
+    );
+    let outer = BoxNode::new_inline(Arc::new(ComputedStyle::default()), vec![inner_a, inner_b]);
+    let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![outer]);
+
+    let constraints = LayoutConstraints::definite_width(200.0);
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    let line = fragment.children.first().expect("line fragment");
+
+    fn collect_text_bounds(node: &FragmentNode, offset: Point, out: &mut Vec<Rect>) {
+      let origin = offset.translate(Point::new(node.bounds.x(), node.bounds.y()));
+      if matches!(node.content, FragmentContent::Text { .. }) {
+        out.push(Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height()));
+      }
+      for child in &node.children {
+        collect_text_bounds(child, origin, out);
+      }
+    }
+
+    let mut text_bounds = Vec::new();
+    collect_text_bounds(line, Point::ZERO, &mut text_bounds);
+    assert!(
+      text_bounds.len() >= 2,
+      "expected at least two text fragments, got {}",
+      text_bounds.len()
+    );
+    text_bounds.sort_by(|a, b| a.x().partial_cmp(&b.x()).unwrap());
+    let min_x = text_bounds.first().unwrap().min_x();
+    let max_x = text_bounds.last().unwrap().max_x();
+    let span = max_x - min_x;
+    assert!(
+      (span - line.bounds.width()).abs() < 1.0,
+      "expected nested inline boxes to still participate in inter-word justification span={span:.2} line_width={:.2}",
+      line.bounds.width()
+    );
+  }
+
+  #[test]
   fn justify_fallback_keeps_combining_clusters_intact() {
     let ctx = InlineFormattingContext::new();
     let mut style = ComputedStyle::default();
