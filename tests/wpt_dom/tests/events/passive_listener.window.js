@@ -1,34 +1,22 @@
 // META: script=/resources/testharness.js
 //
-// Curated passive listener check.
+// Curated passive listener check expressed as a testharness subtest.
 
-function report_pass() {
-  __fastrender_wpt_report({ file_status: "pass" });
-}
+test(() => {
+  var target = new EventTarget();
+  var ran = false;
 
-function report_fail(message) {
-  __fastrender_wpt_report({ file_status: "fail", message: message });
-}
+  function listener(e) {
+    ran = true;
+    e.preventDefault();
+  }
 
-var target = new EventTarget();
-var ran = false;
+  target.addEventListener("passive", listener, { passive: true });
 
-function listener(e) {
-  ran = true;
-  e.preventDefault();
-}
+  var ev = new Event("passive", { cancelable: true });
+  var res = target.dispatchEvent(ev);
 
-target.addEventListener("x", listener, { passive: true });
-
-var ev = new Event("x", { cancelable: true });
-var res = target.dispatchEvent(ev);
-
-if (ran !== true) {
-  report_fail("passive listener did not run");
-} else if (ev.defaultPrevented !== false) {
-  report_fail("preventDefault must be ignored in passive listeners");
-} else if (res !== true) {
-  report_fail("dispatchEvent must return true when default was not prevented");
-} else {
-  report_pass();
-}
+  assert_true(ran, "passive listener did not run");
+  assert_false(ev.defaultPrevented, "preventDefault must be ignored in passive listeners");
+  assert_true(res, "dispatchEvent must return true when default was not prevented");
+}, "passive listeners ignore preventDefault()");

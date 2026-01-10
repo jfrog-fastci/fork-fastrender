@@ -3,164 +3,108 @@
 // Curated EventTarget propagation checks using an explicit parent chain:
 // `new EventTarget(parent)`.
 
-function report_pass() {
-  __fastrender_wpt_report({ file_status: "pass" });
-}
+test(() => {
+  var order_step = 0;
 
-function report_fail(message) {
-  __fastrender_wpt_report({ file_status: "fail", message: message });
-}
-
-var failed = false;
-
-function fail(message) {
-  if (failed) return;
-  failed = true;
-  report_fail(message);
-}
-
-// --- capture/target/bubble ordering ---
-var order_step = 0;
-
-function order_root_capture(_e) {
-  if (failed) return;
-  if (order_step !== 0) {
-    fail("root capture ran out of order");
-    return;
+  function order_root_capture(_e) {
+    assert_equals(order_step, 0, "root capture ran out of order");
+    order_step = 1;
   }
-  order_step = 1;
-}
 
-function order_parent_capture(_e) {
-  if (failed) return;
-  if (order_step !== 1) {
-    fail("parent capture ran out of order");
-    return;
+  function order_parent_capture(_e) {
+    assert_equals(order_step, 1, "parent capture ran out of order");
+    order_step = 2;
   }
-  order_step = 2;
-}
 
-function order_target_capture(_e) {
-  if (failed) return;
-  if (order_step !== 2) {
-    fail("target capture ran out of order");
-    return;
+  function order_target_capture(_e) {
+    assert_equals(order_step, 2, "target capture ran out of order");
+    order_step = 3;
   }
-  order_step = 3;
-}
 
-function order_target_bubble(_e) {
-  if (failed) return;
-  if (order_step !== 3) {
-    fail("target bubble ran out of order");
-    return;
+  function order_target_bubble(_e) {
+    assert_equals(order_step, 3, "target bubble ran out of order");
+    order_step = 4;
   }
-  order_step = 4;
-}
 
-function order_parent_bubble(_e) {
-  if (failed) return;
-  if (order_step !== 4) {
-    fail("parent bubble ran out of order");
-    return;
+  function order_parent_bubble(_e) {
+    assert_equals(order_step, 4, "parent bubble ran out of order");
+    order_step = 5;
   }
-  order_step = 5;
-}
 
-function order_root_bubble(_e) {
-  if (failed) return;
-  if (order_step !== 5) {
-    fail("root bubble ran out of order");
-    return;
+  function order_root_bubble(_e) {
+    assert_equals(order_step, 5, "root bubble ran out of order");
+    order_step = 6;
   }
-  order_step = 6;
-}
 
-var order_root = new EventTarget();
-var order_parent = new EventTarget(order_root);
-var order_target = new EventTarget(order_parent);
+  var root = new EventTarget();
+  var parent = new EventTarget(root);
+  var target = new EventTarget(parent);
 
-order_root.addEventListener("x", order_root_capture, { capture: true });
-order_parent.addEventListener("x", order_parent_capture, { capture: true });
-order_target.addEventListener("x", order_target_capture, { capture: true });
-order_target.addEventListener("x", order_target_bubble);
-order_parent.addEventListener("x", order_parent_bubble);
-order_root.addEventListener("x", order_root_bubble);
+  root.addEventListener("order", order_root_capture, { capture: true });
+  parent.addEventListener("order", order_parent_capture, { capture: true });
+  target.addEventListener("order", order_target_capture, { capture: true });
+  target.addEventListener("order", order_target_bubble);
+  parent.addEventListener("order", order_parent_bubble);
+  root.addEventListener("order", order_root_bubble);
 
-order_target.dispatchEvent(new Event("x", { bubbles: true }));
-if (!failed) {
-  if (order_step !== 6) {
-    fail("expected capture/target/bubble listeners to all run");
+  target.dispatchEvent(new Event("order", { bubbles: true }));
+  assert_equals(order_step, 6, "expected capture/target/bubble listeners to all run");
+}, "capture/target/bubble ordering through an explicit EventTarget parent chain");
+
+test(() => {
+  var parent_ran = false;
+  var root_ran = false;
+
+  function stop_parent_listener(e) {
+    parent_ran = true;
+    e.stopPropagation();
   }
-}
 
-// --- stopPropagation ---
-var stop_parent_ran = false;
-var stop_root_ran = false;
-
-function stop_parent_listener(e) {
-  stop_parent_ran = true;
-  e.stopPropagation();
-}
-
-function stop_root_listener(_e) {
-  stop_root_ran = true;
-}
-
-if (!failed) {
-  var stop_root = new EventTarget();
-  var stop_parent = new EventTarget(stop_root);
-  var stop_target = new EventTarget(stop_parent);
-
-  stop_parent.addEventListener("x", stop_parent_listener);
-  stop_root.addEventListener("x", stop_root_listener);
-  stop_target.dispatchEvent(new Event("x", { bubbles: true }));
-
-  if (stop_parent_ran !== true) {
-    fail("parent listener did not run");
-  } else if (stop_root_ran !== false) {
-    fail("stopPropagation should prevent dispatch to root");
+  function stop_root_listener(_e) {
+    root_ran = true;
   }
-}
 
-// --- stopImmediatePropagation ---
-var immediate_first_ran = false;
-var immediate_second_ran = false;
-var immediate_parent_ran = false;
+  var root = new EventTarget();
+  var parent = new EventTarget(root);
+  var target = new EventTarget(parent);
 
-function immediate_first_listener(e) {
-  immediate_first_ran = true;
-  e.stopImmediatePropagation();
-}
+  parent.addEventListener("stop-propagation", stop_parent_listener);
+  root.addEventListener("stop-propagation", stop_root_listener);
+  target.dispatchEvent(new Event("stop-propagation", { bubbles: true }));
 
-function immediate_second_listener(_e) {
-  immediate_second_ran = true;
-}
+  assert_true(parent_ran, "parent listener did not run");
+  assert_false(root_ran, "stopPropagation should prevent dispatch to root");
+}, "stopPropagation stops propagation to ancestors");
 
-function immediate_parent_listener(_e) {
-  immediate_parent_ran = true;
-}
+test(() => {
+  var first_ran = false;
+  var second_ran = false;
+  var parent_ran = false;
 
-if (!failed) {
-  var immediate_root = new EventTarget();
-  var immediate_parent = new EventTarget(immediate_root);
-  var immediate_target = new EventTarget(immediate_parent);
-
-  immediate_target.addEventListener("x", immediate_first_listener);
-  immediate_target.addEventListener("x", immediate_second_listener);
-  immediate_parent.addEventListener("x", immediate_parent_listener);
-
-  immediate_target.dispatchEvent(new Event("x", { bubbles: true }));
-
-  if (immediate_first_ran !== true) {
-    fail("first listener did not run");
-  } else if (immediate_second_ran !== false) {
-    fail("stopImmediatePropagation should stop other listeners on the same target");
-  } else if (immediate_parent_ran !== false) {
-    fail("stopImmediatePropagation should stop propagation to parents");
+  function immediate_first_listener(e) {
+    first_ran = true;
+    e.stopImmediatePropagation();
   }
-}
 
-if (!failed) {
-  report_pass();
-}
+  function immediate_second_listener(_e) {
+    second_ran = true;
+  }
+
+  function immediate_parent_listener(_e) {
+    parent_ran = true;
+  }
+
+  var root = new EventTarget();
+  var parent = new EventTarget(root);
+  var target = new EventTarget(parent);
+
+  target.addEventListener("stop-immediate", immediate_first_listener);
+  target.addEventListener("stop-immediate", immediate_second_listener);
+  parent.addEventListener("stop-immediate", immediate_parent_listener);
+
+  target.dispatchEvent(new Event("stop-immediate", { bubbles: true }));
+
+  assert_true(first_ran, "first listener did not run");
+  assert_false(second_ran, "stopImmediatePropagation should stop other listeners on the same target");
+  assert_false(parent_ran, "stopImmediatePropagation should stop propagation to parents");
+}, "stopImmediatePropagation stops remaining listeners on the current target and stops propagation");

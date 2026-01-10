@@ -957,7 +957,7 @@ impl JsWptRuntime {
     };
     rt
       .define_data_prop(rt.global_object, report_key, Value::Object(report_fn))
-      .expect("define report hook");
+      .expect("define __fastrender_wpt_report");
 
     // Timers + microtasks.
     let set_timeout = rt.alloc_native_function(native_set_timeout).expect("alloc setTimeout");
@@ -974,6 +974,24 @@ impl JsWptRuntime {
       .alloc_native_function(native_queue_microtask)
       .expect("alloc queueMicrotask");
     rt.env.set("queueMicrotask", Value::Object(queue_microtask));
+
+    // Expose timer APIs as `window.*` properties for spec-shaped code (and for harness shims that
+    // reach through `globalThis`).
+    for (name, value) in [
+      ("setTimeout", Value::Object(set_timeout)),
+      ("clearTimeout", Value::Object(clear_timeout)),
+      ("setInterval", Value::Object(set_interval)),
+      ("clearInterval", Value::Object(clear_interval)),
+      ("queueMicrotask", Value::Object(queue_microtask)),
+    ] {
+      let key = {
+        let mut scope = rt.heap.scope();
+        PropertyKey::from_string(scope.alloc_string(name).expect("alloc global key"))
+      };
+      rt
+        .define_data_prop(rt.global_object, key, value)
+        .expect("define timer global");
+    }
 
     rt.install_promise_shim().expect("install Promise");
     rt.install_array_shim().expect("install Array");
@@ -8041,6 +8059,8 @@ fn native_wpt_report(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Res
     if let Some(desc) = rt.heap.get_property(obj, &subtests_key)? {
       if let PropertyKind::Data { value, .. } = desc.kind {
         if let Value::Object(arr) = value {
+          // The vm-js runtime models arrays as ordinary objects plus an internal backing vector
+          // stored in `rt.arrays`.
           if let Some(elements) = rt.arrays.get(&arr).cloned() {
             for elem in elements {
               let Value::Object(st_obj) = elem else {

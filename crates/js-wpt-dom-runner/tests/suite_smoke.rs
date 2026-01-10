@@ -165,6 +165,17 @@ fn suite_events_tests_pass() {
     report.summary.total, report.summary.passed,
     "all events tests should pass: {report:#?}"
   );
+
+  for result in &report.results {
+    let Some(wpt_report) = &result.wpt_report else {
+      panic!("missing WptReport payload for {}", result.id);
+    };
+    assert!(
+      !wpt_report.subtests.is_empty(),
+      "expected {} to report at least one subtest: {wpt_report:#?}",
+      result.id
+    );
+  }
 }
 
 #[test]
