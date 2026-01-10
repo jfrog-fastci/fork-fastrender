@@ -3349,9 +3349,12 @@ pub enum CustomPropertySyntax {
   /// `LengthUnit::Percent` and `CalcLength` already model percentage components.
   LengthPercentage,
   Number,
+  Integer,
   Percentage,
   Color,
   Angle,
+  Time,
+  Resolution,
   Universal,
   /// Union of multiple syntaxes, e.g. `<length> | <color>`.
   Union(Box<[CustomPropertySyntax]>),
@@ -3366,9 +3369,14 @@ pub enum CustomPropertySyntax {
 pub enum CustomPropertyTypedValue {
   Length(Length),
   Number(f32),
+  Integer(i32),
   Percentage(f32),
   Color(crate::style::color::Color),
   Angle(f32),
+  /// Stored in milliseconds.
+  TimeMs(f32),
+  /// Stored in `dppx` (dots per pixel).
+  ResolutionDppx(f32),
   List {
     separator: CustomPropertyListSeparator,
     items: Vec<CustomPropertyTypedValue>,
@@ -3404,6 +3412,7 @@ impl CustomPropertyTypedValue {
           CustomPropertyTypedValue::Number(*value)
         }
       }
+      CustomPropertyTypedValue::Integer(value) => CustomPropertyTypedValue::Integer(*value),
       CustomPropertyTypedValue::Percentage(value) => {
         if *value == 0.0 {
           CustomPropertyTypedValue::Percentage(0.0)
@@ -3423,6 +3432,20 @@ impl CustomPropertyTypedValue {
         };
         CustomPropertyTypedValue::Angle(normalized)
       }
+      CustomPropertyTypedValue::TimeMs(ms) => {
+        if *ms == 0.0 {
+          CustomPropertyTypedValue::TimeMs(0.0)
+        } else {
+          CustomPropertyTypedValue::TimeMs(*ms)
+        }
+      }
+      CustomPropertyTypedValue::ResolutionDppx(dppx) => {
+        if *dppx == 0.0 {
+          CustomPropertyTypedValue::ResolutionDppx(0.0)
+        } else {
+          CustomPropertyTypedValue::ResolutionDppx(*dppx)
+        }
+      }
       CustomPropertyTypedValue::List { separator, items } => CustomPropertyTypedValue::List {
         separator: *separator,
         items: items.iter().map(|item| item.to_computed_value(ctx)).collect(),
@@ -3441,6 +3464,7 @@ impl CustomPropertyTypedValue {
           n.to_string()
         }
       }
+      CustomPropertyTypedValue::Integer(i) => i.to_string(),
       CustomPropertyTypedValue::Percentage(p) => format!("{p}%"),
       CustomPropertyTypedValue::Color(c) => c.to_string(),
       CustomPropertyTypedValue::Angle(deg) => {
@@ -3448,6 +3472,22 @@ impl CustomPropertyTypedValue {
           format!("{deg:.0}deg")
         } else {
           format!("{deg}deg")
+        }
+      }
+      CustomPropertyTypedValue::TimeMs(ms) => {
+        let ms = if *ms == 0.0 { 0.0 } else { *ms };
+        if ms.fract() == 0.0 {
+          format!("{ms:.0}ms")
+        } else {
+          format!("{ms}ms")
+        }
+      }
+      CustomPropertyTypedValue::ResolutionDppx(dppx) => {
+        let dppx = if *dppx == 0.0 { 0.0 } else { *dppx };
+        if dppx.fract() == 0.0 {
+          format!("{dppx:.0}dppx")
+        } else {
+          format!("{dppx}dppx")
         }
       }
       CustomPropertyTypedValue::List { separator, items } => {
@@ -3736,12 +3776,18 @@ impl CustomPropertySyntax {
         Some(CustomPropertySyntax::LengthPercentage)
       } else if token.eq_ignore_ascii_case("<number>") {
         Some(CustomPropertySyntax::Number)
+      } else if token.eq_ignore_ascii_case("<integer>") {
+        Some(CustomPropertySyntax::Integer)
       } else if token.eq_ignore_ascii_case("<percentage>") {
         Some(CustomPropertySyntax::Percentage)
       } else if token.eq_ignore_ascii_case("<color>") {
         Some(CustomPropertySyntax::Color)
       } else if token.eq_ignore_ascii_case("<angle>") {
         Some(CustomPropertySyntax::Angle)
+      } else if token.eq_ignore_ascii_case("<time>") {
+        Some(CustomPropertySyntax::Time)
+      } else if token.eq_ignore_ascii_case("<resolution>") {
+        Some(CustomPropertySyntax::Resolution)
       } else {
         None
       }
@@ -3815,6 +3861,10 @@ impl CustomPropertySyntax {
         .parse()
         .ok()
         .map(CustomPropertyTypedValue::Number),
+      CustomPropertySyntax::Integer => trim_ascii_whitespace(value)
+        .parse::<i32>()
+        .ok()
+        .map(CustomPropertyTypedValue::Integer),
       CustomPropertySyntax::Percentage => {
         let trimmed = trim_ascii_whitespace(value);
         if let Some(percent) = trimmed.strip_suffix('%') {
@@ -3840,6 +3890,14 @@ impl CustomPropertySyntax {
       CustomPropertySyntax::Angle => {
         parse_angle_token(trim_ascii_whitespace(value)).map(CustomPropertyTypedValue::Angle)
       }
+      CustomPropertySyntax::Time => crate::style::properties::parse_time_ms(trim_ascii_whitespace(value))
+        .filter(|ms| ms.is_finite())
+        .map(CustomPropertyTypedValue::TimeMs),
+      CustomPropertySyntax::Resolution => crate::style::media::Resolution::parse(trim_ascii_whitespace(value))
+        .ok()
+        .map(|res| res.to_dppx())
+        .filter(|dppx| dppx.is_finite())
+        .map(CustomPropertyTypedValue::ResolutionDppx),
       CustomPropertySyntax::Universal => None,
       CustomPropertySyntax::Union(members) => members.iter().find_map(|m| m.parse_value(value)),
       CustomPropertySyntax::SpaceSeparatedList(inner) => {

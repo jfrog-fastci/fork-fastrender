@@ -2890,6 +2890,10 @@ fn eval_style_range_value(
             ty: NumericType::Number,
             value: *n,
           }),
+          CustomPropertyTypedValue::Integer(i) => Some(NumericValue {
+            ty: NumericType::Number,
+            value: *i as f32,
+          }),
           CustomPropertyTypedValue::Percentage(p) => Some(NumericValue {
             ty: NumericType::Percentage,
             value: *p,
@@ -2897,6 +2901,14 @@ fn eval_style_range_value(
           CustomPropertyTypedValue::Angle(deg) => Some(NumericValue {
             ty: NumericType::AngleDeg,
             value: *deg,
+          }),
+          CustomPropertyTypedValue::TimeMs(ms) => Some(NumericValue {
+            ty: NumericType::TimeMs,
+            value: *ms,
+          }),
+          CustomPropertyTypedValue::ResolutionDppx(dppx) => Some(NumericValue {
+            ty: NumericType::ResolutionDppx,
+            value: *dppx,
           }),
           CustomPropertyTypedValue::Color(_) | CustomPropertyTypedValue::List { .. } => None,
         };
@@ -35407,8 +35419,17 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
         ),
       ),
       CustomPropertyTypedValue::Number(n) => CustomPropertyTypedValue::Number(*n),
+      CustomPropertyTypedValue::Integer(i) => CustomPropertyTypedValue::Integer(*i),
       CustomPropertyTypedValue::Percentage(p) => CustomPropertyTypedValue::Percentage(*p),
       CustomPropertyTypedValue::Angle(deg) => CustomPropertyTypedValue::Angle(*deg),
+      CustomPropertyTypedValue::TimeMs(ms) => {
+        CustomPropertyTypedValue::TimeMs(if *ms == 0.0 { 0.0 } else { *ms })
+      }
+      CustomPropertyTypedValue::ResolutionDppx(dppx) => CustomPropertyTypedValue::ResolutionDppx(if *dppx == 0.0 {
+        0.0
+      } else {
+        *dppx
+      }),
       CustomPropertyTypedValue::Color(color) => {
         let rgba = color.to_rgba_with_scheme_and_forced_colors(
           styles.color,

@@ -51,6 +51,31 @@ fn container_style_query_matches_custom_property() {
 }
 
 #[test]
+fn container_style_query_matches_registered_time_custom_property_canonical_units() {
+  let html = r#"
+    <style>
+      @property --t {
+        syntax: "<time>";
+        inherits: true;
+        initial-value: 0ms;
+      }
+      .container { container-type: inline-size; --t: 1s; }
+      .child { color: rgb(0 0 255); }
+      @container style(--t: 1000ms) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_resolves_var_in_custom_property_value() {
   let html = r#"
     <style>
