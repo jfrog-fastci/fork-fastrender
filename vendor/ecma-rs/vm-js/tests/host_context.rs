@@ -341,6 +341,34 @@ fn call_without_host_respects_host_hooks_override() -> Result<(), VmError> {
 }
 
 #[test]
+fn vm_call_preserves_jobs_enqueued_directly_on_vm_microtask_queue() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  let counter = Arc::new(AtomicUsize::new(0));
+  vm.set_user_data(counter.clone());
+
+  let func = {
+    let mut scope = heap.scope();
+    let call_id = vm.register_native_call(enqueue_vm_microtask_job)?;
+    let name = scope.alloc_string("enqueue")?;
+    scope.alloc_native_function(call_id, None, name, 0)?
+  };
+
+  {
+    let mut scope = heap.scope();
+    let mut host = ();
+    vm.call(&mut host, &mut scope, Value::Object(func), Value::Undefined, &[])?;
+  }
+
+  assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+  vm.perform_microtask_checkpoint(&mut heap)?;
+  assert_eq!(counter.load(Ordering::SeqCst), 1);
+  Ok(())
+}
+
+#[test]
 fn construct_without_host_respects_host_hooks_override() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

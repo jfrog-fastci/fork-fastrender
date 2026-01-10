@@ -1228,6 +1228,11 @@ impl Vm {
     let prev_hooks = self.push_active_host_hooks(&mut hooks);
     let result = self.call_impl(host, scope, &mut hooks, callee, this, args);
     self.pop_active_host_hooks(prev_hooks);
+    // If a native handler enqueued jobs directly onto the VM-owned microtask queue while it was
+    // temporarily moved out (via `vm.microtask_queue_mut()`), merge them back before restoring.
+    while let Some((realm, job)) = self.microtasks.pop_front() {
+      hooks.enqueue_promise_job(job, realm);
+    }
     self.microtasks = hooks;
     result
   }
@@ -1487,6 +1492,9 @@ impl Vm {
     let prev_hooks = self.push_active_host_hooks(&mut hooks);
     let result = self.construct_impl(host, scope, &mut hooks, callee, args, new_target);
     self.pop_active_host_hooks(prev_hooks);
+    while let Some((realm, job)) = self.microtasks.pop_front() {
+      hooks.enqueue_promise_job(job, realm);
+    }
     self.microtasks = hooks;
     result
   }
