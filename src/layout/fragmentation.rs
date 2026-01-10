@@ -4489,9 +4489,7 @@ fn collect_atomic_candidates_with_axis(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
-    let skip_descendants = (matches!(context, FragmentationContext::Page)
-      && idx < in_flow_grid_item_count
-      && child_style.position.is_in_flow())
+    let skip_descendants = (idx < in_flow_grid_item_count && child_style.position.is_in_flow())
       || grid_items
         .and_then(|info| info.items.get(idx))
         .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
@@ -4720,9 +4718,7 @@ fn collect_atomic_ranges_with_axis(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
-    let skip_descendants = (matches!(context, FragmentationContext::Page)
-      && idx < in_flow_grid_item_count
-      && child_style.position.is_in_flow())
+    let skip_descendants = (idx < in_flow_grid_item_count && child_style.position.is_in_flow())
       || grid_items
         .and_then(|info| info.items.get(idx))
         .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
@@ -5426,6 +5422,96 @@ mod tests {
     assert!(
       (shifted_part2_start - 100.0).abs() < BREAK_EPSILON,
       "expected the continuation content to be shifted to the next fragmentainer boundary (y≈100), got y={shifted_part2_start}"
+    );
+  }
+
+  #[test]
+  fn avoid_inside_in_spanning_grid_item_does_not_merge_row_band_atomicity_in_columns() {
+    let fragmentainer_size = 100.0;
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    let item_style = Arc::new(item_style);
+
+    let mut avoid_style = ComputedStyle::default();
+    avoid_style.display = Display::Block;
+    avoid_style.break_inside = BreakInside::AvoidColumn;
+    let avoid_style = Arc::new(avoid_style);
+
+    let mut avoid_block = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 40.0, 100.0, 40.0),
+      vec![],
+      avoid_style,
+    );
+    avoid_block.content = FragmentContent::Block { box_id: Some(20) };
+
+    let mut item = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![avoid_block],
+      item_style,
+    );
+    item.content = FragmentContent::Block { box_id: Some(1) };
+
+    let mut sibling_style = ComputedStyle::default();
+    sibling_style.display = Display::Block;
+    let sibling_style = Arc::new(sibling_style);
+    let mut sibling = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
+      vec![],
+      sibling_style,
+    );
+    sibling.content = FragmentContent::Block { box_id: Some(2) };
+
+    let mut grid = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 120.0),
+      vec![item, sibling],
+      grid_style,
+    );
+    grid.grid_tracks = Some(Arc::new(GridTrackRanges {
+      rows: vec![(0.0, 60.0), (60.0, 120.0)],
+      columns: Vec::new(),
+    }));
+    grid.grid_fragmentation = Some(Arc::new(GridFragmentationInfo {
+      items: vec![
+        GridItemFragmentationData {
+          box_id: 1,
+          row_start: 1,
+          row_end: 3,
+          column_start: 1,
+          column_end: 2,
+        },
+        GridItemFragmentationData {
+          box_id: 2,
+          row_start: 1,
+          row_end: 2,
+          column_start: 1,
+          column_end: 2,
+        },
+      ],
+    }));
+
+    let mut analyzer = FragmentationAnalyzer::new(
+      &grid,
+      FragmentationContext::Column,
+      default_axes(),
+      false,
+      None,
+    );
+    let total_extent = analyzer.content_extent().max(fragmentainer_size);
+    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let first_break = boundaries
+      .iter()
+      .copied()
+      .find(|b| *b > BREAK_EPSILON)
+      .unwrap_or(total_extent);
+
+    assert!(
+      (first_break - 60.0).abs() < BREAK_EPSILON,
+      "expected row band atomicity to preserve the 60px track boundary, got {first_break} (boundaries={boundaries:?})"
     );
   }
 
