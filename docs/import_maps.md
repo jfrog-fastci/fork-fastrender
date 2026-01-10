@@ -89,7 +89,7 @@ Use these `rg -n` commands to jump to the normative algorithms.
 ### Parsing + normalization (implemented)
 
 * `parse an import map string`:
-  * `rg -n 'parse an import map string' specs/whatwg-html/source`
+  * `rg -n '<dfn>parse an import map string' specs/whatwg-html/source`
 * `sort and normalize a module specifier map`:
   * `rg -n 'sorting and normalizing a module specifier map' specs/whatwg-html/source`
 * `normalize a specifier key`:
@@ -115,7 +115,7 @@ Use these `rg -n` commands to jump to the normative algorithms.
 ### Merging (implemented)
 
 * `merge existing and new import maps` (**implemented as** `merge_existing_and_new_import_maps`):
-  * `rg -n 'merge existing and new import maps' specs/whatwg-html/source`
+  * `rg -n '<dfn data-x="merge existing and new import maps"' specs/whatwg-html/source`
 * `merge module specifier maps` (**implemented as** `merge_module_specifier_maps`):
   * `rg -n 'merge module specifier maps' specs/whatwg-html/source`
 
