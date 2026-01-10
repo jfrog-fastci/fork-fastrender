@@ -295,3 +295,121 @@ html[data-a="root"][data-b="sub"] body { background: rgb(0, 255, 0); }
   assert_red(no_js_pixel, "baseline run should not execute scripts");
   assert_green(js_pixel, "JS run should resolve script src with correct base URL timing");
 }
+
+#[test]
+fn js_flag_allows_async_script_to_run_before_later_inline_script() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let html_path = tmp.path().join("page.html");
+  fs::write(
+    tmp.path().join("async.js"),
+    r#"document.documentElement.setAttribute('data-async', '1');"#,
+  )
+  .expect("write async.js");
+
+  fs::write(
+    &html_path,
+    r#"<!doctype html><html><head><style>
+html, body { margin: 0; width: 100%; height: 100%; }
+body { background: rgb(255, 0, 0); }
+html[data-async="1"][data-inline="1"] body { background: rgb(0, 255, 0); }
+</style>
+<script async src="async.js"></script>
+<script>
+  if (document.documentElement.getAttribute('data-async') === '1') {
+    document.documentElement.setAttribute('data-inline', '1');
+  }
+</script>
+</head><body></body></html>"#,
+  )
+  .expect("write html fixture");
+
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
+  let js_pixel = render_pixel(&url, &js_png, /* js */ true);
+
+  assert_red(no_js_pixel, "baseline run should not execute scripts");
+  assert_green(
+    js_pixel,
+    "JS run should allow an async script to execute before a later inline script",
+  );
+}
+
+#[test]
+fn js_flag_supports_document_write_injection_during_parsing() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let html_path = tmp.path().join("page.html");
+  fs::write(
+    &html_path,
+    r#"<!doctype html><html><head><style>
+html, body { margin: 0; width: 100%; height: 100%; }
+body { background: rgb(255, 0, 0); }
+</style>
+<script>
+  document.write('<style>body { background: rgb(0, 255, 0); }</style>');
+</script>
+</head><body></body></html>"#,
+  )
+  .expect("write html fixture");
+
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
+  let js_pixel = render_pixel(&url, &js_png, /* js */ true);
+
+  assert_red(no_js_pixel, "baseline run should not execute document.write");
+  assert_green(
+    js_pixel,
+    "JS run should allow document.write() to inject markup into the streaming parser",
+  );
+}
+
+#[test]
+fn js_flag_resolves_fetch_urls_using_base_href_timing() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let html_path = tmp.path().join("page.html");
+  let sub_dir = tmp.path().join("sub");
+  fs::create_dir_all(&sub_dir).expect("create sub dir");
+
+  fs::write(tmp.path().join("a.txt"), "root").expect("write root a.txt");
+  fs::write(sub_dir.join("a.txt"), "sub").expect("write sub a.txt");
+
+  fs::write(
+    &html_path,
+    r#"<!doctype html><html><head><style>
+html, body { margin: 0; width: 100%; height: 100%; }
+body { background: rgb(255, 0, 0); }
+html[data-a="root"][data-b="sub"] body { background: rgb(0, 255, 0); }
+</style>
+<script>
+  fetch('a.txt')
+    .then(function(r) { return r.text(); })
+    .then(function(t) { document.documentElement.setAttribute('data-a', t); });
+</script>
+<base href="sub/">
+<script>
+  fetch('a.txt')
+    .then(function(r) { return r.text(); })
+    .then(function(t) { document.documentElement.setAttribute('data-b', t); });
+</script>
+</head><body></body></html>"#,
+  )
+  .expect("write html fixture");
+
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
+  let js_pixel = render_pixel(&url, &js_png, /* js */ true);
+
+  assert_red(no_js_pixel, "baseline run should not execute scripts");
+  assert_green(
+    js_pixel,
+    "JS run should resolve fetch() relative URLs using the correct base URL timing",
+  );
+}

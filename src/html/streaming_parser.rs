@@ -200,6 +200,21 @@ impl StreamingHtmlParser {
   pub fn document_url(&self) -> Option<&str> {
     self.document_url.as_deref()
   }
+
+  /// Runs `f` with this parser installed as the current JS-visible streaming parser for
+  /// `document.write()` injection.
+  ///
+  /// FastRender's JS bindings implement a deterministic subset of HTML's `document.write()`:
+  /// when a streaming parser is active, writes are injected into the parser's buffered input
+  /// stream (see the internal `html::document_write` module); otherwise `document.write()` is a
+  /// no-op.
+  ///
+  /// Embeddings that execute scripts while parsing (including async script tasks interleaved with
+  /// parsing) should wrap that execution in this method so `document.write()` can reach the active
+  /// parser.
+  pub fn with_active_document_write<R>(&self, f: impl FnOnce() -> R) -> R {
+    crate::html::document_write::with_active_streaming_parser(self, f)
+  }
 }
 #[cfg(test)]
 mod tests {

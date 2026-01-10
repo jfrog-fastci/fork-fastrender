@@ -29,9 +29,10 @@ use fastrender::html::base_url_tracker::BaseUrlTracker;
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::image_output::encode_image;
 use fastrender::js::{
-  CurrentScriptHost, DomHost, EventLoop, ModuleGraphLoader, RunLimits, RunUntilIdleOutcome,
-  RunUntilIdleStopReason, ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction,
-  ScriptType, TaskSource, WindowHostState,
+  CurrentScriptHost, DomHost, EventLoop, MicrotaskCheckpointLimitedOutcome, ModuleGraphLoader,
+  RunLimits, RunNextTaskLimitedOutcome, RunState, RunUntilIdleOutcome, RunUntilIdleStopReason,
+  ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
+  WindowHostState,
 };
 use fastrender::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
@@ -416,57 +417,935 @@ fn render_page(
     let mut scripts_queued = 0usize;
     let module_loader = Rc::new(RefCell::new(ModuleGraphLoader::new(fetcher.clone())));
 
+    let mut run_state = event_loop.new_run_state(run_limits);
+    let mut js_active = true;
+
+    fn run_event_loop_until_idle_limited_handling_errors(
+      event_loop: &mut EventLoop<WindowHostState>,
+      host: &mut WindowHostState,
+      run_state: &mut RunState,
+      log: &mut dyn FnMut(&str),
+    ) -> Result<RunUntilIdleOutcome> {
+      loop {
+        // Drain microtasks first (HTML microtask checkpoint).
+        let microtasks_before = run_state.microtasks_executed();
+        match event_loop.perform_microtask_checkpoint_limited(host, run_state) {
+          Ok(MicrotaskCheckpointLimitedOutcome::Completed) => {}
+          Ok(MicrotaskCheckpointLimitedOutcome::Stopped(reason)) => {
+            return Ok(RunUntilIdleOutcome::Stopped(reason));
+          }
+          Err(err) => {
+            let progressed = run_state.microtasks_executed() != microtasks_before;
+            if progressed {
+              log(&format!("JavaScript: uncaught exception: {err}"));
+              continue;
+            }
+            return Err(err);
+          }
+        }
+
+        let tasks_before = run_state.tasks_executed();
+        let microtasks_before = run_state.microtasks_executed();
+        match event_loop.run_next_task_limited(host, run_state) {
+          Ok(RunNextTaskLimitedOutcome::Ran) => continue,
+          Ok(RunNextTaskLimitedOutcome::NoTask) => {
+            if event_loop.is_idle() {
+              return Ok(RunUntilIdleOutcome::Idle);
+            }
+            continue;
+          }
+          Ok(RunNextTaskLimitedOutcome::Stopped(reason)) => {
+            return Ok(RunUntilIdleOutcome::Stopped(reason));
+          }
+          Err(err) => {
+            let progressed = run_state.tasks_executed() != tasks_before
+              || run_state.microtasks_executed() != microtasks_before;
+            if progressed {
+              log(&format!("JavaScript: uncaught exception: {err}"));
+              continue;
+            }
+            return Err(err);
+          }
+        }
+      }
+    }
+
     let mut parser = StreamingHtmlParser::new(Some(&base_hint));
-    parser.push_str(&html);
+
+    // Feed decoded HTML incrementally (mirrors BrowserTab's navigation path). This keeps parsing
+    // cancellable and gives async script tasks an opportunity to run between chunks.
+    const INPUT_CHUNK_BYTES: usize = 8 * 1024;
+    let mut offset = 0usize;
+    while offset < html.len() {
+      let mut end = (offset + INPUT_CHUNK_BYTES).min(html.len());
+      while end < html.len() && !html.is_char_boundary(end) {
+        end += 1;
+      }
+      debug_assert!(html.is_char_boundary(offset));
+      debug_assert!(html.is_char_boundary(end));
+      parser.push_str(&html[offset..end]);
+      offset = end;
+
+      loop {
+        match parser.pump() {
+          Ok(StreamingParserYield::Script {
+            script,
+            base_url_at_this_point,
+          }) => {
+            if !js_active {
+              // Skip script execution and keep parsing.
+              continue;
+            }
+
+            let snapshot = {
+              let Some(doc) = parser.document() else {
+                log("JavaScript: streaming parser yielded a script without an active document (continuing)");
+                js_active = false;
+                event_loop.clear_all_pending_work();
+                break;
+              };
+              doc.clone_with_events()
+            };
+
+            let base_url = base_url_at_this_point.clone();
+            host.base_url = base_url.clone();
+            host.window_mut().set_base_url(base_url);
+            host.mutate_dom(|dom| {
+              *dom = snapshot;
+              ((), true)
+            });
+
+            let mut executed_sync_script = false;
+            let mut stop_reason: Option<RunUntilIdleStopReason> = None;
+            let mut fatal_error: Option<fastrender::Error> = None;
+
+            // Install the streaming parser so `document.write()` can inject while we execute scripts
+            // and/or run event loop turns during parsing.
+            parser.with_active_document_write(|| {
+              // HTML: before preparing a parser-inserted script at a script end-tag boundary, perform
+              // a microtask checkpoint when the JS execution context stack is empty.
+              if js_execution_depth.get() == 0 {
+                let before = run_state.microtasks_executed();
+                match event_loop.perform_microtask_checkpoint_limited(&mut host, &mut run_state) {
+                  Ok(MicrotaskCheckpointLimitedOutcome::Completed) => {}
+                  Ok(MicrotaskCheckpointLimitedOutcome::Stopped(reason)) => {
+                    stop_reason = Some(reason);
+                    return;
+                  }
+                  Err(err) => {
+                    let progressed = run_state.microtasks_executed() != before;
+                    if progressed {
+                      log(&format!("JavaScript: uncaught exception in microtask checkpoint: {err}"));
+                    } else {
+                      fatal_error = Some(err);
+                      return;
+                    }
+                  }
+                }
+              }
+
+              if stop_reason.is_some() || fatal_error.is_some() {
+                return;
+              }
+
+              let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
+              let spec = build_parser_inserted_script_element_spec_dom2(host.dom(), script, &base);
+
+              // Module scripts are not modeled by `ScriptScheduler` yet; execute them via the minimal
+              // `ModuleGraphLoader` bundler so `type="module"` fixtures work in `--js` mode.
+              if spec.script_type == ScriptType::Module {
+                if spec.src_attr_present {
+                  if let Some(resolved_src) = spec.src.clone().filter(|s| !s.is_empty()) {
+                    let loader = Rc::clone(&module_loader);
+                    let entry_url: Arc<str> = Arc::from(resolved_src.clone());
+                    let script_name: Arc<str> = Arc::from(format!("<module script {resolved_src}>"));
+                    if let Err(err) =
+                      event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+                        let prev = host.current_script_state().borrow().current_script;
+                        host.current_script_state().borrow_mut().current_script = None;
+
+                        let result = (|| {
+                          let bundle =
+                            loader.borrow_mut().build_bundle_for_url(&entry_url, max_script_bytes)?;
+                          let bundle_text: Arc<str> = Arc::from(bundle);
+
+                          {
+                            let window = host.window_mut();
+                            window.reset_interrupt();
+                            window.vm_mut().set_budget(js_budget_for_script(run_limits));
+                          }
+                          let result = host.exec_script_with_name_in_event_loop(
+                            event_loop,
+                            script_name.clone(),
+                            bundle_text,
+                          );
+                          {
+                            let window = host.window_mut();
+                            window
+                              .vm_mut()
+                              .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                          }
+                          result.map(|_| ())
+                        })();
+
+                        host.current_script_state().borrow_mut().current_script = prev;
+                        result.map_err(|err| {
+                          fastrender::Error::Other(format!("{}: {err}", &*script_name))
+                        })
+                      })
+                    {
+                      log(&format!("JavaScript: failed to queue module script task: {err}"));
+                    } else {
+                      scripts_queued += 1;
+                    }
+                  } else {
+                    log("JavaScript: skipping <script type=module src> with empty/invalid/unresolvable src");
+                  }
+                } else if spec.inline_text.as_bytes().len() > max_script_bytes {
+                  log(&format!(
+                    "JavaScript: skipping inline module script ({} bytes > max {})",
+                    spec.inline_text.as_bytes().len(),
+                    max_script_bytes
+                  ));
+                } else {
+                  let loader = Rc::clone(&module_loader);
+                  let inline_id: Arc<str> =
+                    Arc::from(format!("{base_hint}#inline-module-{}", script.index()));
+                  let inline_base_url: Arc<str> =
+                    Arc::from(spec.base_url.clone().unwrap_or_else(|| base_hint.clone()));
+                  let script_name: Arc<str> =
+                    Arc::from(format!("<inline module script {}>", script.index()));
+                  let script_text: Arc<str> = Arc::from(spec.inline_text.clone());
+                  if let Err(err) =
+                    event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+                      let prev = host.current_script_state().borrow().current_script;
+                      host.current_script_state().borrow_mut().current_script = None;
+
+                      let result = (|| {
+                        let bundle = loader.borrow_mut().build_bundle_for_inline(
+                          &inline_id,
+                          &inline_base_url,
+                          &script_text,
+                          max_script_bytes,
+                        )?;
+                        let bundle_text: Arc<str> = Arc::from(bundle);
+
+                        {
+                          let window = host.window_mut();
+                          window.reset_interrupt();
+                          window.vm_mut().set_budget(js_budget_for_script(run_limits));
+                        }
+                        let result = host.exec_script_with_name_in_event_loop(
+                          event_loop,
+                          script_name.clone(),
+                          bundle_text,
+                        );
+                        {
+                          let window = host.window_mut();
+                          window
+                            .vm_mut()
+                            .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                        }
+                        result.map(|_| ())
+                      })();
+
+                      host.current_script_state().borrow_mut().current_script = prev;
+                      result.map_err(|err| {
+                        fastrender::Error::Other(format!("{}: {err}", &*script_name))
+                      })
+                    })
+                  {
+                    log(&format!("JavaScript: failed to queue inline module script task: {err}"));
+                  } else {
+                    scripts_queued += 1;
+                  }
+                }
+              }
+              let base_url_at_discovery = spec.base_url.clone();
+
+              let discovered = match scheduler
+                .borrow_mut()
+                .discovered_parser_script(spec, script, base_url_at_discovery)
+              {
+                Ok(discovered) => discovered,
+                Err(err) => {
+                  log(&format!("JavaScript: scheduler error at script boundary (continuing): {err}"));
+                  // Keep parsing.
+                  return;
+                }
+              };
+
+              // Apply scheduler actions produced by discovery.
+              let mut actions = discovered.actions;
+              'apply_actions: loop {
+                let mut start_fetches: Vec<(ScriptId, fastrender::dom2::NodeId, String)> = Vec::new();
+                let mut blocking: std::collections::HashSet<ScriptId> =
+                  std::collections::HashSet::new();
+
+                for action in actions.drain(..) {
+                  match action {
+                    ScriptSchedulerAction::StartFetch {
+                      script_id,
+                      node_id,
+                      url,
+                      ..
+                    } => {
+                      start_fetches.push((script_id, node_id, url));
+                    }
+                    ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
+                      blocking.insert(script_id);
+                    }
+                    ScriptSchedulerAction::ExecuteNow {
+                      script_id: _,
+                      node_id,
+                      source_text,
+                      ..
+                    } => {
+                      executed_sync_script = true;
+                      if source_text.as_bytes().len() > max_script_bytes {
+                        log(&format!(
+                          "JavaScript: skipping script ({} bytes > max {})",
+                          source_text.as_bytes().len(),
+                          max_script_bytes
+                        ));
+                        continue;
+                      }
+
+                      struct Adapter<'a> {
+                        name: Arc<str>,
+                        source_text: &'a str,
+                        event_loop: &'a mut EventLoop<WindowHostState>,
+                        run_limits: RunLimits,
+                      }
+
+                      impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
+                        fn execute_script(
+                          &mut self,
+                          host: &mut WindowHostState,
+                          _orchestrator: &mut ScriptOrchestrator,
+                          _script: fastrender::dom2::NodeId,
+                          script_type: ScriptType,
+                        ) -> Result<()> {
+                          if script_type != ScriptType::Classic {
+                            return Ok(());
+                          }
+
+                          {
+                            let window = host.window_mut();
+                            window.reset_interrupt();
+                            window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
+                          }
+                          let result = host.exec_script_with_name_in_event_loop(
+                            self.event_loop,
+                            self.name.clone(),
+                            Arc::from(self.source_text),
+                          );
+                          {
+                            let window = host.window_mut();
+                            window
+                              .vm_mut()
+                              .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                          }
+
+                          result.map(|_| ())
+                        }
+                      }
+
+                      let _guard = JsExecutionGuard::enter(&js_execution_depth);
+                      let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
+                      let mut adapter = Adapter {
+                        name: name.clone(),
+                        source_text: &source_text,
+                        event_loop: &mut event_loop,
+                        run_limits,
+                      };
+                      let exec_result = orchestrator
+                        .borrow_mut()
+                        .execute_script_element(
+                          &mut host,
+                          node_id,
+                          ScriptType::Classic,
+                          &mut adapter,
+                        );
+                      if let Err(err) = exec_result {
+                        log(&format!("JavaScript: uncaught exception: {err}"));
+                      }
+
+                      // HTML: "clean up after running script" performs a microtask checkpoint only when
+                      // the JS execution context stack is empty.
+                      if js_execution_depth.get() == 0 {
+                        let before = run_state.microtasks_executed();
+                        match event_loop.perform_microtask_checkpoint_limited(&mut host, &mut run_state)
+                        {
+                          Ok(MicrotaskCheckpointLimitedOutcome::Completed) => {}
+                          Ok(MicrotaskCheckpointLimitedOutcome::Stopped(reason)) => {
+                            stop_reason = Some(reason);
+                            return;
+                          }
+                          Err(err) => {
+                            let progressed = run_state.microtasks_executed() != before;
+                            if progressed {
+                              log(&format!(
+                                "JavaScript: uncaught exception in microtask checkpoint: {err}"
+                              ));
+                            } else {
+                              fatal_error = Some(err);
+                              return;
+                            }
+                          }
+                        }
+                      }
+                    }
+                    ScriptSchedulerAction::QueueTask {
+                      node_id,
+                      source_text,
+                      ..
+                    } => {
+                      if source_text.as_bytes().len() > max_script_bytes {
+                        log(&format!(
+                          "JavaScript: skipping script task ({} bytes > max {})",
+                          source_text.as_bytes().len(),
+                          max_script_bytes
+                        ));
+                        continue;
+                      }
+
+                      let orchestrator = std::rc::Rc::clone(&orchestrator);
+                      let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
+                      let source_text: Arc<str> = Arc::from(source_text);
+                      let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
+                      if let Err(err) =
+                        event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+                          let _guard = JsExecutionGuard::enter(&js_execution_depth);
+
+                          struct Adapter<'a> {
+                            name: Arc<str>,
+                            source_text: Arc<str>,
+                            event_loop: &'a mut EventLoop<WindowHostState>,
+                            run_limits: RunLimits,
+                          }
+                          impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
+                            fn execute_script(
+                              &mut self,
+                              host: &mut WindowHostState,
+                              _orchestrator: &mut ScriptOrchestrator,
+                              _script: fastrender::dom2::NodeId,
+                              script_type: ScriptType,
+                            ) -> Result<()> {
+                              if script_type != ScriptType::Classic {
+                                return Ok(());
+                              }
+                              {
+                                let window = host.window_mut();
+                                window.reset_interrupt();
+                                window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
+                              }
+                              let result = host.exec_script_with_name_in_event_loop(
+                                self.event_loop,
+                                self.name.clone(),
+                                self.source_text.clone(),
+                              );
+                              {
+                                let window = host.window_mut();
+                                window
+                                  .vm_mut()
+                                  .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                              }
+                              result.map(|_| ())
+                            }
+                          }
+
+                          let mut adapter = Adapter {
+                            name: name.clone(),
+                            source_text: source_text.clone(),
+                            event_loop,
+                            run_limits,
+                          };
+                          let exec_result = orchestrator
+                            .borrow_mut()
+                            .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter);
+                          exec_result
+                            .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*name)))
+                        })
+                      {
+                        log(&format!("JavaScript: failed to queue script task: {err}"));
+                      } else {
+                        scripts_queued += 1;
+                      }
+                    }
+                    ScriptSchedulerAction::QueueScriptEventTask { .. } => {}
+                  }
+                }
+
+                for (script_id, node_id, url) in start_fetches.drain(..) {
+                  if blocking.contains(&script_id) {
+                    let charset_attr =
+                      host.dom().get_attribute(node_id, "charset").ok().flatten();
+                    let fetched = match fetch_script_source(
+                      fetcher.as_ref(),
+                      &base_hint,
+                      &url,
+                      max_script_bytes,
+                    ) {
+                      Ok(fetched) => fetched,
+                      Err(err) => {
+                        log(&format!(
+                          "JavaScript: failed to fetch blocking script {url} (continuing): {err}"
+                        ));
+                        actions = match scheduler.borrow_mut().fetch_failed(script_id) {
+                          Ok(actions) => actions,
+                          Err(err) => {
+                            log(&format!(
+                              "JavaScript: scheduler error after failed fetch (continuing): {err}"
+                            ));
+                            Vec::new()
+                          }
+                        };
+                        continue 'apply_actions;
+                      }
+                    };
+                    if max_script_bytes != usize::MAX && fetched.bytes.len() > max_script_bytes {
+                      log(&format!(
+                        "JavaScript: skipping external script {url} ({} bytes > max {})",
+                        fetched.bytes.len(),
+                        max_script_bytes
+                      ));
+                      actions = match scheduler.borrow_mut().fetch_failed(script_id) {
+                        Ok(actions) => actions,
+                        Err(err) => {
+                          log(&format!(
+                            "JavaScript: scheduler error after failed fetch (continuing): {err}"
+                          ));
+                          Vec::new()
+                        }
+                      };
+                      continue 'apply_actions;
+                    }
+                    let source_text = decode_external_classic_script_bytes(
+                      &fetched.bytes,
+                      fetched.content_type.as_deref(),
+                      charset_attr,
+                    );
+                    actions = match scheduler.borrow_mut().fetch_completed(script_id, source_text) {
+                      Ok(actions) => actions,
+                      Err(err) => {
+                        log(&format!("JavaScript: scheduler error after fetch (continuing): {err}"));
+                        Vec::new()
+                      }
+                    };
+                    // Apply actions from fetch completion (may execute now) before resuming parsing.
+                    continue 'apply_actions;
+                  }
+
+                  let scheduler = std::rc::Rc::clone(&scheduler);
+                  let orchestrator = std::rc::Rc::clone(&orchestrator);
+                  let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
+                  let node_id_for_task = node_id;
+                  let url_for_task = url.clone();
+                  let fetcher = fetcher.clone();
+                  if let Err(err) = event_loop.queue_task(
+                    TaskSource::Networking,
+                    move |host, event_loop| {
+                      let charset_attr = host
+                        .dom()
+                        .get_attribute(node_id_for_task, "charset")
+                        .ok()
+                        .flatten();
+                      let fetched = fetch_script_source(
+                        fetcher.as_ref(),
+                        &host.document_url,
+                        &url_for_task,
+                        max_script_bytes,
+                      );
+                      let actions = match fetched {
+                        Ok(fetched) => {
+                          if max_script_bytes != usize::MAX && fetched.bytes.len() > max_script_bytes {
+                            scheduler.borrow_mut().fetch_failed(script_id)?
+                          } else {
+                            let source_text = decode_external_classic_script_bytes(
+                              &fetched.bytes,
+                              fetched.content_type.as_deref(),
+                              charset_attr,
+                            );
+                            scheduler.borrow_mut().fetch_completed(script_id, source_text)?
+                          }
+                        }
+                        Err(_err) => scheduler.borrow_mut().fetch_failed(script_id)?,
+                      };
+
+                      // Apply resulting actions for this *non-blocking* external script (async/defer).
+                      let mut queued: Vec<(ScriptId, fastrender::dom2::NodeId, String)> = Vec::new();
+                      for action in actions {
+                        match action {
+                          ScriptSchedulerAction::QueueTask { node_id, source_text, .. } => {
+                            queued.push((script_id, node_id, source_text));
+                          }
+                          ScriptSchedulerAction::ExecuteNow { node_id, source_text, .. } => {
+                            // ExecuteNow is unexpected here, but run it anyway.
+                            let _guard = JsExecutionGuard::enter(&js_execution_depth);
+                            struct Adapter<'a> {
+                              name: Arc<str>,
+                              source_text: Arc<str>,
+                              event_loop: &'a mut EventLoop<WindowHostState>,
+                              run_limits: RunLimits,
+                            }
+                            impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
+                              fn execute_script(
+                                &mut self,
+                                host: &mut WindowHostState,
+                                _orchestrator: &mut ScriptOrchestrator,
+                                _script: fastrender::dom2::NodeId,
+                                script_type: ScriptType,
+                              ) -> Result<()> {
+                                if script_type != ScriptType::Classic {
+                                  return Ok(());
+                                }
+                                {
+                                  let window = host.window_mut();
+                                  window.reset_interrupt();
+                                  window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
+                                }
+                                let result = host.exec_script_with_name_in_event_loop(
+                                  self.event_loop,
+                                  self.name.clone(),
+                                  self.source_text.clone(),
+                                );
+                                {
+                                  let window = host.window_mut();
+                                  window
+                                    .vm_mut()
+                                    .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                                }
+                                result.map(|_| ())
+                              }
+                            }
+                            let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
+                            let mut adapter = Adapter {
+                              name: name.clone(),
+                              source_text: Arc::from(source_text),
+                              event_loop,
+                              run_limits,
+                            };
+                            let _ = orchestrator
+                              .borrow_mut()
+                              .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter);
+                          }
+                          _ => {}
+                        }
+                      }
+
+                      for (_id, node_id, source_text) in queued {
+                        let orchestrator = std::rc::Rc::clone(&orchestrator);
+                        let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
+                        let source_text: Arc<str> = Arc::from(source_text);
+                        let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
+                        event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+                          let _guard = JsExecutionGuard::enter(&js_execution_depth);
+                          struct Adapter<'a> {
+                            name: Arc<str>,
+                            source_text: Arc<str>,
+                            event_loop: &'a mut EventLoop<WindowHostState>,
+                            run_limits: RunLimits,
+                          }
+                          impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
+                            fn execute_script(
+                              &mut self,
+                              host: &mut WindowHostState,
+                              _orchestrator: &mut ScriptOrchestrator,
+                              _script: fastrender::dom2::NodeId,
+                              script_type: ScriptType,
+                            ) -> Result<()> {
+                              if script_type != ScriptType::Classic {
+                                return Ok(());
+                              }
+                              {
+                                let window = host.window_mut();
+                                window.reset_interrupt();
+                                window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
+                              }
+                              let result = host.exec_script_with_name_in_event_loop(
+                                self.event_loop,
+                                self.name.clone(),
+                                self.source_text.clone(),
+                              );
+                              {
+                                let window = host.window_mut();
+                                window
+                                  .vm_mut()
+                                  .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                              }
+                              result.map(|_| ())
+                            }
+                          }
+                          let mut adapter = Adapter {
+                            name: name.clone(),
+                            source_text: source_text.clone(),
+                            event_loop,
+                            run_limits,
+                          };
+                          orchestrator
+                            .borrow_mut()
+                            .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter)
+                            .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*name)))
+                        })?;
+                      }
+
+                      Ok(())
+                    },
+                  ) {
+                    log(&format!("JavaScript: failed to queue script fetch task: {err}"));
+                  } else {
+                    scripts_queued += 1;
+                  }
+                }
+
+                break;
+              }
+            });
+
+            if let Some(err) = fatal_error {
+              js_active = false;
+              event_loop.clear_all_pending_work();
+              log(&format!("JavaScript: error while running JS (continuing): {err}"));
+            } else if let Some(reason) = stop_reason {
+              js_active = false;
+              event_loop.clear_all_pending_work();
+              match reason {
+                RunUntilIdleStopReason::MaxTasks { executed, limit } => {
+                  log(&format!(
+                    "JavaScript: stopped after max tasks (executed {executed} / limit {limit})"
+                  ));
+                }
+                RunUntilIdleStopReason::MaxMicrotasks { executed, limit } => {
+                  log(&format!(
+                    "JavaScript: stopped after max microtasks (executed {executed} / limit {limit})"
+                  ));
+                }
+                RunUntilIdleStopReason::WallTime { elapsed, limit } => {
+                  log(&format!(
+                    "JavaScript: stopped after wall time (elapsed {}ms / limit {}ms)",
+                    elapsed.as_millis(),
+                    limit.as_millis()
+                  ));
+                }
+              }
+            }
+
+            // Sync any DOM mutations from executed scripts back into the streaming parser's live DOM
+            // before resuming parsing.
+            let updated = host.dom().clone_with_events();
+            if let Some(mut doc) = parser.document_mut() {
+              *doc = updated;
+            }
+
+            // If this script boundary did not execute a synchronous script (i.e. async/defer/module),
+            // allow queued async script tasks to run before the parser advances further. This mirrors
+            // the HTML requirement that async scripts execute "when ready", independent of parser
+            // progress, while still ensuring `document.write()` output from parser-blocking scripts is
+            // parsed before yielding to tasks.
+            if js_active && !executed_sync_script && !event_loop.is_idle() {
+              match parser.with_active_document_write(|| {
+                run_event_loop_until_idle_limited_handling_errors(
+                  &mut event_loop,
+                  &mut host,
+                  &mut run_state,
+                  &mut log,
+                )
+              }) {
+                Ok(RunUntilIdleOutcome::Idle) => {}
+                Ok(RunUntilIdleOutcome::Stopped(reason)) => {
+                  js_active = false;
+                  event_loop.clear_all_pending_work();
+                  match reason {
+                    RunUntilIdleStopReason::MaxTasks { executed, limit } => {
+                      log(&format!(
+                        "JavaScript: stopped after max tasks (executed {executed} / limit {limit})"
+                      ));
+                    }
+                    RunUntilIdleStopReason::MaxMicrotasks { executed, limit } => {
+                      log(&format!(
+                        "JavaScript: stopped after max microtasks (executed {executed} / limit {limit})"
+                      ));
+                    }
+                    RunUntilIdleStopReason::WallTime { elapsed, limit } => {
+                      log(&format!(
+                        "JavaScript: stopped after wall time (elapsed {}ms / limit {}ms)",
+                        elapsed.as_millis(),
+                        limit.as_millis()
+                      ));
+                    }
+                  }
+                }
+                Err(err) => {
+                  js_active = false;
+                  event_loop.clear_all_pending_work();
+                  log(&format!("JavaScript: error while running event loop (continuing): {err}"));
+                }
+              }
+
+              let updated = host.dom().clone_with_events();
+              if let Some(mut doc) = parser.document_mut() {
+                *doc = updated;
+              }
+            }
+          }
+          Ok(StreamingParserYield::NeedMoreInput) => break,
+          Ok(StreamingParserYield::Finished { .. }) => {
+            log("JavaScript: streaming HTML parser unexpectedly finished before EOF (continuing without JS)");
+            js_active = false;
+            event_loop.clear_all_pending_work();
+            break;
+          }
+          Err(err) => {
+            log(&format!("JavaScript: failed to parse HTML (continuing without JS): {err}"));
+            return render_fetched_document(renderer, &resource, Some(&base_hint), &options);
+          }
+        }
+      }
+
+      // Between input chunks, allow queued tasks (async script fetch/execution, timers, etc.) to
+      // run while parsing is still in progress.
+      if js_active && !event_loop.is_idle() {
+        let snapshot = {
+          let Some(doc) = parser.document() else {
+            js_active = false;
+            event_loop.clear_all_pending_work();
+            continue;
+          };
+          doc.clone_with_events()
+        };
+        let base_url = parser.current_base_url();
+        host.base_url = base_url.clone();
+        host.window_mut().set_base_url(base_url);
+        host.mutate_dom(|dom| {
+          *dom = snapshot;
+          ((), true)
+        });
+
+        match parser.with_active_document_write(|| {
+          run_event_loop_until_idle_limited_handling_errors(
+            &mut event_loop,
+            &mut host,
+            &mut run_state,
+            &mut log,
+          )
+        }) {
+          Ok(RunUntilIdleOutcome::Idle) => {}
+          Ok(RunUntilIdleOutcome::Stopped(reason)) => {
+            js_active = false;
+            event_loop.clear_all_pending_work();
+            match reason {
+              RunUntilIdleStopReason::MaxTasks { executed, limit } => {
+                log(&format!(
+                  "JavaScript: stopped after max tasks (executed {executed} / limit {limit})"
+                ));
+              }
+              RunUntilIdleStopReason::MaxMicrotasks { executed, limit } => {
+                log(&format!(
+                  "JavaScript: stopped after max microtasks (executed {executed} / limit {limit})"
+                ));
+              }
+              RunUntilIdleStopReason::WallTime { elapsed, limit } => {
+                log(&format!(
+                  "JavaScript: stopped after wall time (elapsed {}ms / limit {}ms)",
+                  elapsed.as_millis(),
+                  limit.as_millis()
+                ));
+              }
+            }
+          }
+          Err(err) => {
+            js_active = false;
+            event_loop.clear_all_pending_work();
+            log(&format!("JavaScript: error while running event loop (continuing): {err}"));
+          }
+        }
+
+        let updated = host.dom().clone_with_events();
+        if let Some(mut doc) = parser.document_mut() {
+          *doc = updated;
+        }
+      }
+    }
+
     parser.set_eof();
 
     loop {
       match parser.pump() {
+        Ok(StreamingParserYield::Script { .. }) if !js_active => {
+          // JS execution is disabled (limits/error); keep parsing.
+          continue;
+        }
         Ok(StreamingParserYield::Script {
           script,
           base_url_at_this_point,
         }) => {
           let snapshot = {
             let Some(doc) = parser.document() else {
-              log("JavaScript: streaming parser yielded a script without an active document (continuing)");
-              break;
+              log("JavaScript: streaming parser yielded a script without an active document (continuing without JS)");
+              js_active = false;
+              event_loop.clear_all_pending_work();
+              continue;
             };
             doc.clone_with_events()
           };
 
-          host.base_url = base_url_at_this_point.clone();
+          let base_url = base_url_at_this_point.clone();
+          host.base_url = base_url.clone();
+          host.window_mut().set_base_url(base_url);
           host.mutate_dom(|dom| {
             *dom = snapshot;
             ((), true)
           });
 
-          // HTML: before preparing a parser-inserted script at a script end-tag boundary, perform a
-          // microtask checkpoint when the JS execution context stack is empty.
-          if js_execution_depth.get() == 0 {
-            if let Err(err) = event_loop.perform_microtask_checkpoint(&mut host) {
-              log(&format!("JavaScript: uncaught exception in microtask checkpoint: {err}"));
+          let mut executed_sync_script = false;
+          let mut stop_reason: Option<RunUntilIdleStopReason> = None;
+          let mut fatal_error: Option<fastrender::Error> = None;
+
+          parser.with_active_document_write(|| {
+            // HTML: before preparing a parser-inserted script at a script end-tag boundary, perform
+            // a microtask checkpoint when the JS execution context stack is empty.
+            if js_execution_depth.get() == 0 {
+              let before = run_state.microtasks_executed();
+              match event_loop.perform_microtask_checkpoint_limited(&mut host, &mut run_state) {
+                Ok(MicrotaskCheckpointLimitedOutcome::Completed) => {}
+                Ok(MicrotaskCheckpointLimitedOutcome::Stopped(reason)) => {
+                  stop_reason = Some(reason);
+                  return;
+                }
+                Err(err) => {
+                  let progressed = run_state.microtasks_executed() != before;
+                  if progressed {
+                    log(&format!("JavaScript: uncaught exception in microtask checkpoint: {err}"));
+                  } else {
+                    fatal_error = Some(err);
+                    return;
+                  }
+                }
+              }
             }
-          }
 
-          let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
-          let spec = build_parser_inserted_script_element_spec_dom2(host.dom(), script, &base);
+            if stop_reason.is_some() || fatal_error.is_some() {
+              return;
+            }
 
-          // Module scripts are not modeled by `ScriptScheduler` yet; execute them via the minimal
-          // `ModuleGraphLoader` bundler so `type="module"` fixtures work in `--js` mode.
-          if spec.script_type == ScriptType::Module {
-            if spec.src_attr_present {
-              if let Some(resolved_src) = spec.src.clone().filter(|s| !s.is_empty()) {
-                let loader = Rc::clone(&module_loader);
-                let entry_url: Arc<str> = Arc::from(resolved_src.clone());
-                let script_name: Arc<str> = Arc::from(format!("<module script {resolved_src}>"));
-                if let Err(err) =
-                  event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+            let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
+            let spec = build_parser_inserted_script_element_spec_dom2(host.dom(), script, &base);
+
+            // Module scripts are not modeled by `ScriptScheduler` yet; execute them via the minimal
+            // `ModuleGraphLoader` bundler so `type="module"` fixtures work in `--js` mode.
+            if spec.script_type == ScriptType::Module {
+              if spec.src_attr_present {
+                if let Some(resolved_src) = spec.src.clone().filter(|s| !s.is_empty()) {
+                  let loader = Rc::clone(&module_loader);
+                  let entry_url: Arc<str> = Arc::from(resolved_src.clone());
+                  let script_name: Arc<str> = Arc::from(format!("<module script {resolved_src}>"));
+                  if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
                     let prev = host.current_script_state().borrow().current_script;
                     host.current_script_state().borrow_mut().current_script = None;
 
                     let result = (|| {
-                      let bundle =
-                        loader.borrow_mut().build_bundle_for_url(&entry_url, max_script_bytes)?;
+                      let bundle = loader.borrow_mut().build_bundle_for_url(&entry_url, max_script_bytes)?;
                       let bundle_text: Arc<str> = Arc::from(bundle);
 
                       {
@@ -489,211 +1368,109 @@ fn render_page(
                     })();
 
                     host.current_script_state().borrow_mut().current_script = prev;
-                    result.map_err(|err| {
-                      fastrender::Error::Other(format!("{}: {err}", &*script_name))
-                    })
-                  })
-                {
-                  log(&format!("JavaScript: failed to queue module script task: {err}"));
+                    result.map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*script_name)))
+                  }) {
+                    log(&format!("JavaScript: failed to queue module script task: {err}"));
+                  } else {
+                    scripts_queued += 1;
+                  }
+                } else {
+                  log("JavaScript: skipping <script type=module src> with empty/invalid/unresolvable src");
+                }
+              } else if spec.inline_text.as_bytes().len() > max_script_bytes {
+                log(&format!(
+                  "JavaScript: skipping inline module script ({} bytes > max {})",
+                  spec.inline_text.as_bytes().len(),
+                  max_script_bytes
+                ));
+              } else {
+                let loader = Rc::clone(&module_loader);
+                let inline_id: Arc<str> = Arc::from(format!("{base_hint}#inline-module-{}", script.index()));
+                let inline_base_url: Arc<str> =
+                  Arc::from(spec.base_url.clone().unwrap_or_else(|| base_hint.clone()));
+                let script_name: Arc<str> = Arc::from(format!("<inline module script {}>", script.index()));
+                let script_text: Arc<str> = Arc::from(spec.inline_text.clone());
+                if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+                  let prev = host.current_script_state().borrow().current_script;
+                  host.current_script_state().borrow_mut().current_script = None;
+
+                  let result = (|| {
+                    let bundle = loader.borrow_mut().build_bundle_for_inline(
+                      &inline_id,
+                      &inline_base_url,
+                      &script_text,
+                      max_script_bytes,
+                    )?;
+                    let bundle_text: Arc<str> = Arc::from(bundle);
+
+                    {
+                      let window = host.window_mut();
+                      window.reset_interrupt();
+                      window.vm_mut().set_budget(js_budget_for_script(run_limits));
+                    }
+                    let result = host.exec_script_with_name_in_event_loop(
+                      event_loop,
+                      script_name.clone(),
+                      bundle_text,
+                    );
+                    {
+                      let window = host.window_mut();
+                      window
+                        .vm_mut()
+                        .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                    }
+                    result.map(|_| ())
+                  })();
+
+                  host.current_script_state().borrow_mut().current_script = prev;
+                  result.map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*script_name)))
+                }) {
+                  log(&format!("JavaScript: failed to queue inline module script task: {err}"));
                 } else {
                   scripts_queued += 1;
                 }
-              } else {
-                log("JavaScript: skipping <script type=module src> with empty/invalid/unresolvable src");
-              }
-            } else if spec.inline_text.as_bytes().len() > max_script_bytes {
-              log(&format!(
-                "JavaScript: skipping inline module script ({} bytes > max {})",
-                spec.inline_text.as_bytes().len(),
-                max_script_bytes
-              ));
-            } else {
-              let loader = Rc::clone(&module_loader);
-              let inline_id: Arc<str> =
-                Arc::from(format!("{base_hint}#inline-module-{}", script.index()));
-              let inline_base_url: Arc<str> =
-                Arc::from(spec.base_url.clone().unwrap_or_else(|| base_hint.clone()));
-              let script_name: Arc<str> =
-                Arc::from(format!("<inline module script {}>", script.index()));
-              let script_text: Arc<str> = Arc::from(spec.inline_text.clone());
-              if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-                let prev = host.current_script_state().borrow().current_script;
-                host.current_script_state().borrow_mut().current_script = None;
-
-                let result = (|| {
-                  let bundle = loader.borrow_mut().build_bundle_for_inline(
-                    &inline_id,
-                    &inline_base_url,
-                    &script_text,
-                    max_script_bytes,
-                  )?;
-                  let bundle_text: Arc<str> = Arc::from(bundle);
-
-                  {
-                    let window = host.window_mut();
-                    window.reset_interrupt();
-                    window.vm_mut().set_budget(js_budget_for_script(run_limits));
-                  }
-                  let result = host.exec_script_with_name_in_event_loop(
-                    event_loop,
-                    script_name.clone(),
-                    bundle_text,
-                  );
-                  {
-                    let window = host.window_mut();
-                    window
-                      .vm_mut()
-                      .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                  }
-                  result.map(|_| ())
-                })();
-
-                host.current_script_state().borrow_mut().current_script = prev;
-                result.map_err(|err| {
-                  fastrender::Error::Other(format!("{}: {err}", &*script_name))
-                })
-              }) {
-                log(&format!("JavaScript: failed to queue inline module script task: {err}"));
-              } else {
-                scripts_queued += 1;
               }
             }
-          }
-          let base_url_at_discovery = spec.base_url.clone();
 
-          let discovered = match scheduler
-            .borrow_mut()
-            .discovered_parser_script(spec, script, base_url_at_discovery)
-          {
-            Ok(discovered) => discovered,
-            Err(err) => {
-              log(&format!("JavaScript: scheduler error at script boundary (continuing): {err}"));
-              // Keep parsing.
-              continue;
-            }
-          };
+            let base_url_at_discovery = spec.base_url.clone();
+            let discovered = match scheduler
+              .borrow_mut()
+              .discovered_parser_script(spec, script, base_url_at_discovery)
+            {
+              Ok(discovered) => discovered,
+              Err(err) => {
+                log(&format!("JavaScript: scheduler error at script boundary (continuing): {err}"));
+                return;
+              }
+            };
 
-          // Apply scheduler actions produced by discovery.
-          let mut actions = discovered.actions;
-          'apply_actions: loop {
-            let mut start_fetches: Vec<(ScriptId, fastrender::dom2::NodeId, String)> = Vec::new();
-            let mut blocking: std::collections::HashSet<ScriptId> = std::collections::HashSet::new();
+            let mut actions = discovered.actions;
+            'apply_actions: loop {
+              let mut start_fetches: Vec<(ScriptId, fastrender::dom2::NodeId, String)> = Vec::new();
+              let mut blocking: std::collections::HashSet<ScriptId> = std::collections::HashSet::new();
 
-            for action in actions.drain(..) {
-              match action {
-                ScriptSchedulerAction::StartFetch {
-                  script_id,
-                  node_id,
-                  url,
-                  ..
-                } => {
-                  start_fetches.push((script_id, node_id, url));
-                }
-                ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
-                  blocking.insert(script_id);
-                }
-                ScriptSchedulerAction::ExecuteNow {
-                  script_id: _,
-                  node_id,
-                  source_text,
-                  ..
-                } => {
-                  if source_text.as_bytes().len() > max_script_bytes {
-                    log(&format!(
-                      "JavaScript: skipping script ({} bytes > max {})",
-                      source_text.as_bytes().len(),
-                      max_script_bytes
-                    ));
-                    continue;
+              for action in actions.drain(..) {
+                match action {
+                  ScriptSchedulerAction::StartFetch { script_id, node_id, url, .. } => {
+                    start_fetches.push((script_id, node_id, url));
                   }
-
-                  struct Adapter<'a> {
-                    name: Arc<str>,
-                    source_text: &'a str,
-                    event_loop: &'a mut EventLoop<WindowHostState>,
-                    run_limits: RunLimits,
+                  ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
+                    blocking.insert(script_id);
                   }
-
-                  impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
-                    fn execute_script(
-                      &mut self,
-                      host: &mut WindowHostState,
-                      _orchestrator: &mut ScriptOrchestrator,
-                      _script: fastrender::dom2::NodeId,
-                      script_type: ScriptType,
-                    ) -> Result<()> {
-                      if script_type != ScriptType::Classic {
-                        return Ok(());
-                      }
-
-                      {
-                        let window = host.window_mut();
-                        window.reset_interrupt();
-                        window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
-                      }
-                      let result = host.exec_script_with_name_in_event_loop(
-                        self.event_loop,
-                        self.name.clone(),
-                        Arc::from(self.source_text),
-                      );
-                      {
-                        let window = host.window_mut();
-                        window
-                          .vm_mut()
-                          .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                      }
-
-                      result.map(|_| ())
+                  ScriptSchedulerAction::ExecuteNow { node_id, source_text, .. } => {
+                    executed_sync_script = true;
+                    if source_text.as_bytes().len() > max_script_bytes {
+                      log(&format!(
+                        "JavaScript: skipping script ({} bytes > max {})",
+                        source_text.as_bytes().len(),
+                        max_script_bytes
+                      ));
+                      continue;
                     }
-                  }
-
-                  let _guard = JsExecutionGuard::enter(&js_execution_depth);
-                  let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
-                  let mut adapter = Adapter {
-                    name: name.clone(),
-                    source_text: &source_text,
-                    event_loop: &mut event_loop,
-                    run_limits,
-                  };
-                  let exec_result = orchestrator
-                    .borrow_mut()
-                    .execute_script_element(&mut host, node_id, ScriptType::Classic, &mut adapter);
-                  if let Err(err) = exec_result {
-                    log(&format!("JavaScript: uncaught exception: {err}"));
-                  }
-
-                  // HTML: "clean up after running script" performs a microtask checkpoint only when
-                  // the JS execution context stack is empty.
-                  if js_execution_depth.get() == 0 {
-                    if let Err(err) = event_loop.perform_microtask_checkpoint(&mut host) {
-                      log(&format!("JavaScript: uncaught exception in microtask checkpoint: {err}"));
-                    }
-                  }
-                }
-                ScriptSchedulerAction::QueueTask {
-                  node_id,
-                  source_text,
-                  ..
-                } => {
-                  if source_text.as_bytes().len() > max_script_bytes {
-                    log(&format!(
-                      "JavaScript: skipping script task ({} bytes > max {})",
-                      source_text.as_bytes().len(),
-                      max_script_bytes
-                    ));
-                    continue;
-                  }
-
-                  let orchestrator = std::rc::Rc::clone(&orchestrator);
-                  let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
-                  let source_text: Arc<str> = Arc::from(source_text);
-                  let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
-                  if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-                    let _guard = JsExecutionGuard::enter(&js_execution_depth);
 
                     struct Adapter<'a> {
                       name: Arc<str>,
-                      source_text: Arc<str>,
+                      source_text: &'a str,
                       event_loop: &'a mut EventLoop<WindowHostState>,
                       run_limits: RunLimits,
                     }
@@ -708,6 +1485,7 @@ fn render_page(
                         if script_type != ScriptType::Classic {
                           return Ok(());
                         }
+
                         {
                           let window = host.window_mut();
                           window.reset_interrupt();
@@ -716,7 +1494,7 @@ fn render_page(
                         let result = host.exec_script_with_name_in_event_loop(
                           self.event_loop,
                           self.name.clone(),
-                          self.source_text.clone(),
+                          Arc::from(self.source_text),
                         );
                         {
                           let window = host.window_mut();
@@ -724,135 +1502,259 @@ fn render_page(
                             .vm_mut()
                             .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
                         }
+
                         result.map(|_| ())
                       }
                     }
 
+                    let _guard = JsExecutionGuard::enter(&js_execution_depth);
+                    let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
                     let mut adapter = Adapter {
                       name: name.clone(),
-                      source_text: source_text.clone(),
-                      event_loop,
+                      source_text: &source_text,
+                      event_loop: &mut event_loop,
                       run_limits,
                     };
                     let exec_result = orchestrator
                       .borrow_mut()
-                      .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter);
-                    exec_result.map_err(|err| {
-                      fastrender::Error::Other(format!("{}: {err}", &*name))
-                    })
-                  }) {
-                    log(&format!("JavaScript: failed to queue script task: {err}"));
-                  } else {
-                    scripts_queued += 1;
-                  }
-                }
-                ScriptSchedulerAction::QueueScriptEventTask { .. } => {}
-              }
-            }
+                      .execute_script_element(&mut host, node_id, ScriptType::Classic, &mut adapter);
+                    if let Err(err) = exec_result {
+                      log(&format!("JavaScript: uncaught exception: {err}"));
+                    }
 
-            for (script_id, node_id, url) in start_fetches.drain(..) {
-              if blocking.contains(&script_id) {
-                let charset_attr = host.dom().get_attribute(node_id, "charset").ok().flatten();
-                let fetched = match fetch_script_source(
-                  fetcher.as_ref(),
-                  &base_hint,
-                  &url,
-                  max_script_bytes,
-                ) {
-                  Ok(fetched) => fetched,
-                  Err(err) => {
-                    log(&format!(
-                      "JavaScript: failed to fetch blocking script {url} (continuing): {err}"
-                    ));
-                    actions = match scheduler.borrow_mut().fetch_failed(script_id) {
-                      Ok(actions) => actions,
-                      Err(err) => {
-                        log(&format!(
-                          "JavaScript: scheduler error after failed fetch (continuing): {err}"
-                        ));
-                        Vec::new()
+                    if js_execution_depth.get() == 0 {
+                      let before = run_state.microtasks_executed();
+                      match event_loop.perform_microtask_checkpoint_limited(&mut host, &mut run_state) {
+                        Ok(MicrotaskCheckpointLimitedOutcome::Completed) => {}
+                        Ok(MicrotaskCheckpointLimitedOutcome::Stopped(reason)) => {
+                          stop_reason = Some(reason);
+                          return;
+                        }
+                        Err(err) => {
+                          let progressed = run_state.microtasks_executed() != before;
+                          if progressed {
+                            log(&format!(
+                              "JavaScript: uncaught exception in microtask checkpoint: {err}"
+                            ));
+                          } else {
+                            fatal_error = Some(err);
+                            return;
+                          }
+                        }
                       }
-                    };
-                    continue 'apply_actions;
+                    }
                   }
-                };
-                if max_script_bytes != usize::MAX && fetched.bytes.len() > max_script_bytes {
-                  log(&format!(
-                    "JavaScript: skipping external script {url} ({} bytes > max {})",
-                    fetched.bytes.len(),
-                    max_script_bytes
-                  ));
-                  actions = match scheduler.borrow_mut().fetch_failed(script_id) {
-                    Ok(actions) => actions,
+                  ScriptSchedulerAction::QueueTask { node_id, source_text, .. } => {
+                    if source_text.as_bytes().len() > max_script_bytes {
+                      log(&format!(
+                        "JavaScript: skipping script task ({} bytes > max {})",
+                        source_text.as_bytes().len(),
+                        max_script_bytes
+                      ));
+                      continue;
+                    }
+
+                    let orchestrator = std::rc::Rc::clone(&orchestrator);
+                    let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
+                    let source_text: Arc<str> = Arc::from(source_text);
+                    let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
+                    if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+                      let _guard = JsExecutionGuard::enter(&js_execution_depth);
+
+                      struct Adapter<'a> {
+                        name: Arc<str>,
+                        source_text: Arc<str>,
+                        event_loop: &'a mut EventLoop<WindowHostState>,
+                        run_limits: RunLimits,
+                      }
+                      impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
+                        fn execute_script(
+                          &mut self,
+                          host: &mut WindowHostState,
+                          _orchestrator: &mut ScriptOrchestrator,
+                          _script: fastrender::dom2::NodeId,
+                          script_type: ScriptType,
+                        ) -> Result<()> {
+                          if script_type != ScriptType::Classic {
+                            return Ok(());
+                          }
+                          {
+                            let window = host.window_mut();
+                            window.reset_interrupt();
+                            window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
+                          }
+                          let result = host.exec_script_with_name_in_event_loop(
+                            self.event_loop,
+                            self.name.clone(),
+                            self.source_text.clone(),
+                          );
+                          {
+                            let window = host.window_mut();
+                            window
+                              .vm_mut()
+                              .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                          }
+                          result.map(|_| ())
+                        }
+                      }
+
+                      let mut adapter = Adapter {
+                        name: name.clone(),
+                        source_text: source_text.clone(),
+                        event_loop,
+                        run_limits,
+                      };
+                      let exec_result = orchestrator
+                        .borrow_mut()
+                        .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter);
+                      exec_result.map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*name)))
+                    }) {
+                      log(&format!("JavaScript: failed to queue script task: {err}"));
+                    } else {
+                      scripts_queued += 1;
+                    }
+                  }
+                  ScriptSchedulerAction::QueueScriptEventTask { .. } => {}
+                }
+              }
+
+              for (script_id, node_id, url) in start_fetches.drain(..) {
+                if blocking.contains(&script_id) {
+                  let charset_attr = host.dom().get_attribute(node_id, "charset").ok().flatten();
+                  let fetched = match fetch_script_source(
+                    fetcher.as_ref(),
+                    &base_hint,
+                    &url,
+                    max_script_bytes,
+                  ) {
+                    Ok(fetched) => fetched,
                     Err(err) => {
                       log(&format!(
-                        "JavaScript: scheduler error after failed fetch (continuing): {err}"
+                        "JavaScript: failed to fetch blocking script {url} (continuing): {err}"
                       ));
-                      Vec::new()
+                      actions = scheduler.borrow_mut().fetch_failed(script_id).unwrap_or_default();
+                      continue 'apply_actions;
                     }
                   };
+
+                  if max_script_bytes != usize::MAX && fetched.bytes.len() > max_script_bytes {
+                    log(&format!(
+                      "JavaScript: skipping external script {url} ({} bytes > max {})",
+                      fetched.bytes.len(),
+                      max_script_bytes
+                    ));
+                    actions = scheduler.borrow_mut().fetch_failed(script_id).unwrap_or_default();
+                    continue 'apply_actions;
+                  }
+
+                  let source_text = decode_external_classic_script_bytes(
+                    &fetched.bytes,
+                    fetched.content_type.as_deref(),
+                    charset_attr,
+                  );
+                  actions = scheduler.borrow_mut().fetch_completed(script_id, source_text).unwrap_or_default();
                   continue 'apply_actions;
                 }
-                let source_text = decode_external_classic_script_bytes(
-                  &fetched.bytes,
-                  fetched.content_type.as_deref(),
-                  charset_attr,
-                );
-                actions = match scheduler.borrow_mut().fetch_completed(script_id, source_text) {
-                  Ok(actions) => actions,
-                  Err(err) => {
-                    log(&format!("JavaScript: scheduler error after fetch (continuing): {err}"));
-                    Vec::new()
-                  }
-                };
-                // Apply actions from fetch completion (may execute now) before resuming parsing.
-                continue 'apply_actions;
-              }
 
-              let scheduler = std::rc::Rc::clone(&scheduler);
-              let orchestrator = std::rc::Rc::clone(&orchestrator);
-              let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
-              let node_id_for_task = node_id;
-              let url_for_task = url.clone();
-              let fetcher = fetcher.clone();
-              if let Err(err) = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-                let charset_attr = host
-                  .dom()
-                  .get_attribute(node_id_for_task, "charset")
-                  .ok()
-                  .flatten();
-                let fetched = fetch_script_source(
-                  fetcher.as_ref(),
-                  &host.document_url,
-                  &url_for_task,
-                  max_script_bytes,
-                );
-                let actions = match fetched {
-                  Ok(fetched) => {
-                    if max_script_bytes != usize::MAX && fetched.bytes.len() > max_script_bytes {
-                      scheduler.borrow_mut().fetch_failed(script_id)?
-                    } else {
-                      let source_text = decode_external_classic_script_bytes(
-                        &fetched.bytes,
-                        fetched.content_type.as_deref(),
-                        charset_attr,
-                      );
-                      scheduler.borrow_mut().fetch_completed(script_id, source_text)?
+                let scheduler = std::rc::Rc::clone(&scheduler);
+                let orchestrator = std::rc::Rc::clone(&orchestrator);
+                let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
+                let node_id_for_task = node_id;
+                let url_for_task = url.clone();
+                let fetcher = fetcher.clone();
+                if let Err(err) = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+                  let charset_attr = host
+                    .dom()
+                    .get_attribute(node_id_for_task, "charset")
+                    .ok()
+                    .flatten();
+                  let fetched = fetch_script_source(
+                    fetcher.as_ref(),
+                    &host.document_url,
+                    &url_for_task,
+                    max_script_bytes,
+                  );
+                  let actions = match fetched {
+                    Ok(fetched) => {
+                      if max_script_bytes != usize::MAX && fetched.bytes.len() > max_script_bytes {
+                        scheduler.borrow_mut().fetch_failed(script_id)?
+                      } else {
+                        let source_text = decode_external_classic_script_bytes(
+                          &fetched.bytes,
+                          fetched.content_type.as_deref(),
+                          charset_attr,
+                        );
+                        scheduler.borrow_mut().fetch_completed(script_id, source_text)?
+                      }
+                    }
+                    Err(_err) => scheduler.borrow_mut().fetch_failed(script_id)?,
+                  };
+
+                  let mut queued: Vec<(ScriptId, fastrender::dom2::NodeId, String)> = Vec::new();
+                  for action in actions {
+                    match action {
+                      ScriptSchedulerAction::QueueTask { node_id, source_text, .. } => {
+                        queued.push((script_id, node_id, source_text));
+                      }
+                      ScriptSchedulerAction::ExecuteNow { node_id, source_text, .. } => {
+                        let _guard = JsExecutionGuard::enter(&js_execution_depth);
+                        struct Adapter<'a> {
+                          name: Arc<str>,
+                          source_text: Arc<str>,
+                          event_loop: &'a mut EventLoop<WindowHostState>,
+                          run_limits: RunLimits,
+                        }
+                        impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
+                          fn execute_script(
+                            &mut self,
+                            host: &mut WindowHostState,
+                            _orchestrator: &mut ScriptOrchestrator,
+                            _script: fastrender::dom2::NodeId,
+                            script_type: ScriptType,
+                          ) -> Result<()> {
+                            if script_type != ScriptType::Classic {
+                              return Ok(());
+                            }
+                            {
+                              let window = host.window_mut();
+                              window.reset_interrupt();
+                              window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
+                            }
+                            let result = host.exec_script_with_name_in_event_loop(
+                              self.event_loop,
+                              self.name.clone(),
+                              self.source_text.clone(),
+                            );
+                            {
+                              let window = host.window_mut();
+                              window
+                                .vm_mut()
+                                .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+                            }
+                            result.map(|_| ())
+                          }
+                        }
+                        let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
+                        let mut adapter = Adapter {
+                          name: name.clone(),
+                          source_text: Arc::from(source_text),
+                          event_loop,
+                          run_limits,
+                        };
+                        let _ = orchestrator
+                          .borrow_mut()
+                          .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter);
+                      }
+                      _ => {}
                     }
                   }
-                  Err(_err) => scheduler.borrow_mut().fetch_failed(script_id)?,
-                };
 
-                // Apply resulting actions. These should not include any parser-blocking behavior,
-                // since the parser has already completed by the time networking tasks run.
-                let mut queued: Vec<(ScriptId, fastrender::dom2::NodeId, String)> = Vec::new();
-                for action in actions {
-                  match action {
-                    ScriptSchedulerAction::QueueTask { node_id, source_text, .. } => {
-                      queued.push((script_id, node_id, source_text));
-                    }
-                    ScriptSchedulerAction::ExecuteNow { node_id, source_text, .. } => {
-                      // ExecuteNow is unexpected here, but run it anyway.
+                  for (_id, node_id, source_text) in queued {
+                    let orchestrator = std::rc::Rc::clone(&orchestrator);
+                    let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
+                    let source_text: Arc<str> = Arc::from(source_text);
+                    let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
+                    event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
                       let _guard = JsExecutionGuard::enter(&js_execution_depth);
                       struct Adapter<'a> {
                         name: Arc<str>,
@@ -890,101 +1792,120 @@ fn render_page(
                           result.map(|_| ())
                         }
                       }
-                      let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
                       let mut adapter = Adapter {
                         name: name.clone(),
-                        source_text: Arc::from(source_text),
+                        source_text: source_text.clone(),
                         event_loop,
                         run_limits,
                       };
-                      let _ = orchestrator
+                      orchestrator
                         .borrow_mut()
-                        .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter);
-                    }
-                    _ => {}
+                        .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter)
+                        .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*name)))
+                    })?;
                   }
-                }
 
-                for (_id, node_id, source_text) in queued {
-                  let orchestrator = std::rc::Rc::clone(&orchestrator);
-                  let js_execution_depth = std::rc::Rc::clone(&js_execution_depth);
-                  let source_text: Arc<str> = Arc::from(source_text);
-                  let name: Arc<str> = Arc::from(format!("<script {}>", node_id.index()));
-                  event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-                    let _guard = JsExecutionGuard::enter(&js_execution_depth);
-                    struct Adapter<'a> {
-                      name: Arc<str>,
-                      source_text: Arc<str>,
-                      event_loop: &'a mut EventLoop<WindowHostState>,
-                      run_limits: RunLimits,
-                    }
-                    impl fastrender::js::ScriptBlockExecutor<WindowHostState> for Adapter<'_> {
-                      fn execute_script(
-                        &mut self,
-                        host: &mut WindowHostState,
-                        _orchestrator: &mut ScriptOrchestrator,
-                        _script: fastrender::dom2::NodeId,
-                        script_type: ScriptType,
-                      ) -> Result<()> {
-                        if script_type != ScriptType::Classic {
-                          return Ok(());
-                        }
-                        {
-                          let window = host.window_mut();
-                          window.reset_interrupt();
-                          window.vm_mut().set_budget(js_budget_for_script(self.run_limits));
-                        }
-                        let result = host.exec_script_with_name_in_event_loop(
-                          self.event_loop,
-                          self.name.clone(),
-                          self.source_text.clone(),
-                        );
-                        {
-                          let window = host.window_mut();
-                          window
-                            .vm_mut()
-                            .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
-                        }
-                        result.map(|_| ())
-                      }
-                    }
-                    let mut adapter = Adapter {
-                      name: name.clone(),
-                      source_text: source_text.clone(),
-                      event_loop,
-                      run_limits,
-                    };
-                    orchestrator
-                      .borrow_mut()
-                      .execute_script_element(host, node_id, ScriptType::Classic, &mut adapter)
-                      .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*name)))
-                  })?;
+                  Ok(())
+                }) {
+                  log(&format!("JavaScript: failed to queue script fetch task: {err}"));
+                } else {
+                  scripts_queued += 1;
                 }
+              }
 
-                Ok(())
-              }) {
-                log(&format!("JavaScript: failed to queue script fetch task: {err}"));
-              } else {
-                scripts_queued += 1;
+              break;
+            }
+          });
+
+          if let Some(err) = fatal_error {
+            js_active = false;
+            event_loop.clear_all_pending_work();
+            log(&format!("JavaScript: error while running JS (continuing): {err}"));
+          } else if let Some(reason) = stop_reason {
+            js_active = false;
+            event_loop.clear_all_pending_work();
+            match reason {
+              RunUntilIdleStopReason::MaxTasks { executed, limit } => {
+                log(&format!(
+                  "JavaScript: stopped after max tasks (executed {executed} / limit {limit})"
+                ));
+              }
+              RunUntilIdleStopReason::MaxMicrotasks { executed, limit } => {
+                log(&format!(
+                  "JavaScript: stopped after max microtasks (executed {executed} / limit {limit})"
+                ));
+              }
+              RunUntilIdleStopReason::WallTime { elapsed, limit } => {
+                log(&format!(
+                  "JavaScript: stopped after wall time (elapsed {}ms / limit {}ms)",
+                  elapsed.as_millis(),
+                  limit.as_millis()
+                ));
               }
             }
-
-            break;
           }
 
-          // Sync any DOM mutations from executed scripts back into the streaming parser's live DOM
-          // before resuming parsing.
           let updated = host.dom().clone_with_events();
           if let Some(mut doc) = parser.document_mut() {
             *doc = updated;
           }
+
+          if js_active && !executed_sync_script && !event_loop.is_idle() {
+            match parser.with_active_document_write(|| {
+              run_event_loop_until_idle_limited_handling_errors(
+                &mut event_loop,
+                &mut host,
+                &mut run_state,
+                &mut log,
+              )
+            }) {
+              Ok(RunUntilIdleOutcome::Idle) => {}
+              Ok(RunUntilIdleOutcome::Stopped(reason)) => {
+                js_active = false;
+                event_loop.clear_all_pending_work();
+                match reason {
+                  RunUntilIdleStopReason::MaxTasks { executed, limit } => {
+                    log(&format!(
+                      "JavaScript: stopped after max tasks (executed {executed} / limit {limit})"
+                    ));
+                  }
+                  RunUntilIdleStopReason::MaxMicrotasks { executed, limit } => {
+                    log(&format!(
+                      "JavaScript: stopped after max microtasks (executed {executed} / limit {limit})"
+                    ));
+                  }
+                  RunUntilIdleStopReason::WallTime { elapsed, limit } => {
+                    log(&format!(
+                      "JavaScript: stopped after wall time (elapsed {}ms / limit {}ms)",
+                      elapsed.as_millis(),
+                      limit.as_millis()
+                    ));
+                  }
+                }
+              }
+              Err(err) => {
+                js_active = false;
+                event_loop.clear_all_pending_work();
+                log(&format!("JavaScript: error while running event loop (continuing): {err}"));
+              }
+            }
+
+            let updated = host.dom().clone_with_events();
+            if let Some(mut doc) = parser.document_mut() {
+              *doc = updated;
+            }
+          }
         }
         Ok(StreamingParserYield::NeedMoreInput) => {
           log("JavaScript: streaming HTML parser requested more input after EOF (continuing without JS)");
-          return render_fetched_document(renderer, &resource, Some(&base_hint), &options);
+          js_active = false;
+          event_loop.clear_all_pending_work();
+          break;
         }
         Ok(StreamingParserYield::Finished { document }) => {
-          host.base_url = parser.current_base_url();
+          let base_url = parser.current_base_url();
+          host.base_url = base_url.clone();
+          host.window_mut().set_base_url(base_url);
           host.mutate_dom(|dom| {
             *dom = document;
             ((), true)
@@ -998,8 +1919,8 @@ fn render_page(
       }
     }
 
-    // Signal parsing completion to allow deferred scripts to run once fetched.
-    {
+    if js_active {
+      // Signal parsing completion to allow deferred scripts to run once fetched.
       let actions = match scheduler.borrow_mut().parsing_completed() {
         Ok(actions) => actions,
         Err(err) => {
@@ -1077,29 +1998,36 @@ fn render_page(
       ));
     }
 
-    match event_loop.run_until_idle_handling_errors(&mut host, run_limits, |err| {
-      log(&format!("JavaScript: uncaught exception: {err}"));
-    }) {
-      Ok(RunUntilIdleOutcome::Idle) => {}
-      Ok(RunUntilIdleOutcome::Stopped(reason)) => match reason {
-        RunUntilIdleStopReason::MaxTasks { executed, limit } => {
-          log(&format!("JavaScript: stopped after max tasks (executed {executed} / limit {limit})"));
+    if js_active {
+      match run_event_loop_until_idle_limited_handling_errors(
+        &mut event_loop,
+        &mut host,
+        &mut run_state,
+        &mut log,
+      ) {
+        Ok(RunUntilIdleOutcome::Idle) => {}
+        Ok(RunUntilIdleOutcome::Stopped(reason)) => match reason {
+          RunUntilIdleStopReason::MaxTasks { executed, limit } => {
+            log(&format!(
+              "JavaScript: stopped after max tasks (executed {executed} / limit {limit})"
+            ));
+          }
+          RunUntilIdleStopReason::MaxMicrotasks { executed, limit } => {
+            log(&format!(
+              "JavaScript: stopped after max microtasks (executed {executed} / limit {limit})"
+            ));
+          }
+          RunUntilIdleStopReason::WallTime { elapsed, limit } => {
+            log(&format!(
+              "JavaScript: stopped after wall time (elapsed {}ms / limit {}ms)",
+              elapsed.as_millis(),
+              limit.as_millis()
+            ));
+          }
+        },
+        Err(err) => {
+          log(&format!("JavaScript: error while running event loop (continuing): {err}"));
         }
-        RunUntilIdleStopReason::MaxMicrotasks { executed, limit } => {
-          log(&format!(
-            "JavaScript: stopped after max microtasks (executed {executed} / limit {limit})"
-          ));
-        }
-        RunUntilIdleStopReason::WallTime { elapsed, limit } => {
-          log(&format!(
-            "JavaScript: stopped after wall time (elapsed {}ms / limit {}ms)",
-            elapsed.as_millis(),
-            limit.as_millis()
-          ));
-        }
-      },
-      Err(err) => {
-        log(&format!("JavaScript: error while running event loop (continuing): {err}"));
       }
     }
 
