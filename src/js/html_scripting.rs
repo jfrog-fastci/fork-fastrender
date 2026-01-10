@@ -1,5 +1,5 @@
 use crate::error::{RenderStage, Result};
-use crate::js::{EventLoop, RunLimits, ScriptBlockingStyleSheetSet, TaskSource};
+use crate::js::{trim_ascii_whitespace, EventLoop, RunLimits, ScriptBlockingStyleSheetSet, TaskSource};
 use crate::render_control::{record_stage, StageGuard, StageHeartbeat};
 use memchr::memchr;
 use std::cell::Cell;
@@ -288,10 +288,6 @@ where
 
 fn is_ascii_whitespace_html(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
-}
-
-fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(is_ascii_whitespace_html)
 }
 
 fn link_rel_is_stylesheet(rel: &str) -> bool {
