@@ -33,7 +33,9 @@ fn assert_dl_margins(pixmap: &tiny_skia::Pixmap) {
     before.alpha()
   );
 
-  let inside = pixmap.pixel(1, 20).expect("sample pixel inside dl");
+  // Sample a point inside the dl background that avoids the first-line <dt> text glyphs, which can
+  // shift slightly when bundled fonts change.
+  let inside = pixmap.pixel(50, 20).expect("sample pixel inside dl");
   assert!(
     inside.red() > 200 && inside.green() < 80 && inside.blue() < 80,
     "expected dl background to start after 1em margin, got rgba=({}, {}, {}, {})",
