@@ -477,6 +477,62 @@ fn inner_html_sets_script_force_async_false() {
 }
 
 #[test]
+fn outer_html_setter_marks_script_elements_as_already_started() {
+  // HTML: scripts created via `outerHTML` parsing must not execute when inserted into the document.
+  let root = parse_html(
+    "<!doctype html><html><body><div id=root><span id=target>hi</span></div></body></html>",
+  )
+  .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let target = find_element_by_id(&doc, "target");
+
+  doc
+    .set_outer_html(target, "<script id=s>console.log('no')</script>")
+    .unwrap();
+
+  let script = find_element_by_id(&doc, "s");
+  assert!(
+    doc.node(script).script_already_started,
+    "scripts inserted via outerHTML should be marked already started"
+  );
+  assert!(
+    !doc.node(script).script_force_async,
+    "scripts created by outerHTML fragment parsing should have force_async=false"
+  );
+  assert!(
+    !doc.node(script).script_parser_document,
+    "scripts created by outerHTML fragment parsing must not be treated as parser-inserted"
+  );
+}
+
+#[test]
+fn insert_adjacent_html_marks_script_elements_as_already_started() {
+  // HTML: scripts created via `insertAdjacentHTML` parsing must not execute when inserted into the
+  // document.
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  doc
+    .insert_adjacent_html(div, "beforeend", "<script id=s></script>")
+    .unwrap();
+
+  let script = find_element_by_id(&doc, "s");
+  assert!(
+    doc.node(script).script_already_started,
+    "scripts inserted via insertAdjacentHTML should be marked already started"
+  );
+  assert!(
+    !doc.node(script).script_force_async,
+    "scripts created by insertAdjacentHTML fragment parsing should have force_async=false"
+  );
+  assert!(
+    !doc.node(script).script_parser_document,
+    "scripts created by insertAdjacentHTML fragment parsing must not be treated as parser-inserted"
+  );
+}
+
+#[test]
 fn create_element_sets_script_force_async_true() {
   // HTML: scripts created via `document.createElement('script')` have their "force async" flag set.
   // (Parser-inserted scripts clear the flag.)
