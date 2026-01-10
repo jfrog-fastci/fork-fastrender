@@ -10647,96 +10647,161 @@ impl FlexFormattingContext {
     // Note: main-axis "monotonicity" depends on the effective axis direction. For `row-reverse` /
     // `column-reverse` (or RTL/vertical writing modes), valid layouts naturally produce decreasing
     // physical coordinates along the main axis, so the check must respect `main_grows_positive`.
+    //
+    // Additionally, overlap/backtracking can be intentional in real flex layouts (e.g. negative
+    // margins or `position: relative` offsets). Only run this fallback when none of the in-flow
+    // flex items indicate an intentional main-axis overlap mechanism.
     if !children.is_empty() && matches!(box_node.style.flex_wrap, FlexWrap::NoWrap) {
-      let eps = 0.1;
-      if main_axis_is_horizontal {
-        // Taffy can legitimately return equal main-axis offsets for adjacent 0px items. Detect
-        // overlap/backtracking using each child's main-axis interval rather than requiring
-        // strictly monotonic start coordinates.
-        let mut non_monotonic = false;
-        let mut prev_min = children[0].bounds.x();
-        let mut prev_max = children[0].bounds.max_x();
-        for child in children.iter().skip(1) {
-          let min = child.bounds.x();
-          let max = child.bounds.max_x();
-          if !min.is_finite()
-            || !max.is_finite()
-            || !prev_min.is_finite()
-            || !prev_max.is_finite()
-          {
-            non_monotonic = true;
-            break;
+      let percentage_base = rect.width();
+      let percentage_base = percentage_base.is_finite().then_some(percentage_base);
+      let main_axis_margins_are_non_negative = |margin: Option<Length>,
+                                               style: &ComputedStyle|
+       -> bool {
+        let Some(margin) = margin else {
+          // `margin: auto` is treated as 0px for overlap purposes.
+          return true;
+        };
+        if !margin.value.is_finite() {
+          return false;
+        }
+        if margin.unit != LengthUnit::Calc {
+          return margin.value >= 0.0;
+        }
+        match resolve_length_with_percentage_metrics(
+          margin,
+          percentage_base,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
+        ) {
+          Some(px) => px >= 0.0,
+          None => false,
+        }
+      };
+      let has_intentional_main_axis_overlap = box_node.children.iter().any(|child| {
+        let style = child.style.as_ref();
+        if style.running_position.is_some() {
+          return false;
+        }
+        if matches!(style.position, Position::Absolute | Position::Fixed) {
+          return false;
+        }
+        if style.position.is_relative() {
+          if main_axis_is_horizontal {
+            if !style.left.is_auto() || !style.right.is_auto() {
+              return true;
+            }
+          } else if !style.top.is_auto() || !style.bottom.is_auto() {
+            return true;
           }
-          if main_grows_positive {
-            if min < prev_max - eps {
+        }
+        if main_axis_is_horizontal {
+          if !main_axis_margins_are_non_negative(style.margin_left, style)
+            || !main_axis_margins_are_non_negative(style.margin_right, style)
+          {
+            return true;
+          }
+        } else if !main_axis_margins_are_non_negative(style.margin_top, style)
+          || !main_axis_margins_are_non_negative(style.margin_bottom, style)
+        {
+          return true;
+        }
+        false
+      });
+
+      if !has_intentional_main_axis_overlap {
+        let eps = 0.1;
+        if main_axis_is_horizontal {
+          // Taffy can legitimately return equal main-axis offsets for adjacent 0px items. Detect
+          // overlap/backtracking using each child's main-axis interval rather than requiring
+          // strictly monotonic start coordinates.
+          let mut non_monotonic = false;
+          let mut prev_min = children[0].bounds.x();
+          let mut prev_max = children[0].bounds.max_x();
+          for child in children.iter().skip(1) {
+            let min = child.bounds.x();
+            let max = child.bounds.max_x();
+            if !min.is_finite()
+              || !max.is_finite()
+              || !prev_min.is_finite()
+              || !prev_max.is_finite()
+            {
               non_monotonic = true;
               break;
             }
-          } else if max > prev_min + eps {
-            non_monotonic = true;
-            break;
-          }
-          prev_min = min;
-          prev_max = max;
-        }
-        if non_monotonic {
-          if main_grows_positive {
-            let mut cursor = children[0].bounds.x();
-            for child in &mut children {
-              child.bounds = Rect::new(Point::new(cursor, child.bounds.y()), child.bounds.size);
-              cursor += child.bounds.width();
-            }
-          } else {
-            // When the main axis grows in the reverse direction, place children contiguously from
-            // right-to-left while preserving their order. Start from the right edge of the first
-            // child so the first item's position remains unchanged.
-            let mut cursor = children[0].bounds.max_x();
-            for child in &mut children {
-              cursor -= child.bounds.width();
-              child.bounds = Rect::new(Point::new(cursor, child.bounds.y()), child.bounds.size);
-            }
-          }
-        }
-      } else {
-        let mut non_monotonic = false;
-        let mut prev_min = children[0].bounds.y();
-        let mut prev_max = children[0].bounds.max_y();
-        for child in children.iter().skip(1) {
-          let min = child.bounds.y();
-          let max = child.bounds.max_y();
-          if !min.is_finite()
-            || !max.is_finite()
-            || !prev_min.is_finite()
-            || !prev_max.is_finite()
-          {
-            non_monotonic = true;
-            break;
-          }
-          if main_grows_positive {
-            if min < prev_max - eps {
+            if main_grows_positive {
+              if min < prev_max - eps {
+                non_monotonic = true;
+                break;
+              }
+            } else if max > prev_min + eps {
               non_monotonic = true;
               break;
             }
-          } else if max > prev_min + eps {
-            non_monotonic = true;
-            break;
+            prev_min = min;
+            prev_max = max;
           }
-          prev_min = min;
-          prev_max = max;
-        }
-        if non_monotonic {
-          if main_grows_positive {
-            let mut cursor = children[0].bounds.y();
-            for child in &mut children {
-              child.bounds = Rect::new(Point::new(child.bounds.x(), cursor), child.bounds.size);
-              cursor += child.bounds.height();
+          if non_monotonic {
+            if main_grows_positive {
+              let mut cursor = children[0].bounds.x();
+              for child in &mut children {
+                child.bounds = Rect::new(Point::new(cursor, child.bounds.y()), child.bounds.size);
+                cursor += child.bounds.width();
+              }
+            } else {
+              // When the main axis grows in the reverse direction, place children contiguously from
+              // right-to-left while preserving their order. Start from the right edge of the first
+              // child so the first item's position remains unchanged.
+              let mut cursor = children[0].bounds.max_x();
+              for child in &mut children {
+                cursor -= child.bounds.width();
+                child.bounds = Rect::new(Point::new(cursor, child.bounds.y()), child.bounds.size);
+              }
             }
-          } else {
-            // Place items bottom-to-top, keeping the first item's bottom edge fixed.
-            let mut cursor = children[0].bounds.max_y();
-            for child in &mut children {
-              cursor -= child.bounds.height();
-              child.bounds = Rect::new(Point::new(child.bounds.x(), cursor), child.bounds.size);
+          }
+        } else {
+          let mut non_monotonic = false;
+          let mut prev_min = children[0].bounds.y();
+          let mut prev_max = children[0].bounds.max_y();
+          for child in children.iter().skip(1) {
+            let min = child.bounds.y();
+            let max = child.bounds.max_y();
+            if !min.is_finite()
+              || !max.is_finite()
+              || !prev_min.is_finite()
+              || !prev_max.is_finite()
+            {
+              non_monotonic = true;
+              break;
+            }
+            if main_grows_positive {
+              if min < prev_max - eps {
+                non_monotonic = true;
+                break;
+              }
+            } else if max > prev_min + eps {
+              non_monotonic = true;
+              break;
+            }
+            prev_min = min;
+            prev_max = max;
+          }
+          if non_monotonic {
+            if main_grows_positive {
+              let mut cursor = children[0].bounds.y();
+              for child in &mut children {
+                child.bounds = Rect::new(Point::new(child.bounds.x(), cursor), child.bounds.size);
+                cursor += child.bounds.height();
+              }
+            } else {
+              // Place items bottom-to-top, keeping the first item's bottom edge fixed.
+              let mut cursor = children[0].bounds.max_y();
+              for child in &mut children {
+                cursor -= child.bounds.height();
+                child.bounds = Rect::new(Point::new(child.bounds.x(), cursor), child.bounds.size);
+              }
             }
           }
         }
