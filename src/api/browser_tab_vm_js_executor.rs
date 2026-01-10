@@ -123,7 +123,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // as the host context so Web APIs can access the current document/fetcher state.
     let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
     let result = with_event_loop(event_loop, || {
-      realm.exec_script_source_with_hooks(&mut hooks, source)
+      realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source)
     });
     if let Some(err) = hooks.finish(realm.heap_mut()) {
       return Err(err);
