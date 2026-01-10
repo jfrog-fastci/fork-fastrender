@@ -4,6 +4,7 @@ use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::html::encoding::decode_html_bytes;
+use crate::html::document_write::with_active_streaming_parser;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
@@ -698,13 +699,15 @@ impl BrowserTab {
             });
 
             let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
-            let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
-              self.host.dom(),
-              script,
-              &base,
-            );
-            let base_url_at_discovery = spec.base_url.clone();
-            self.on_parser_discovered_script(script, spec, base_url_at_discovery)?;
+             let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+               self.host.dom(),
+               script,
+               &base,
+             );
+             let base_url_at_discovery = spec.base_url.clone();
+            with_active_streaming_parser(&parser, || {
+              self.on_parser_discovered_script(script, spec, base_url_at_discovery)
+            })?;
 
             if self.host.pending_navigation.is_some() {
               // Abort the current parse/execution; the caller will commit the navigation.
@@ -759,7 +762,9 @@ impl BrowserTab {
           let spec =
             crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(self.host.dom(), script, &base);
           let base_url_at_discovery = spec.base_url.clone();
-          self.on_parser_discovered_script(script, spec, base_url_at_discovery)?;
+          with_active_streaming_parser(&parser, || {
+            self.on_parser_discovered_script(script, spec, base_url_at_discovery)
+          })?;
 
           if self.host.pending_navigation.is_some() {
             // Abort the current parse/execution; the caller will commit the navigation.
@@ -1226,7 +1231,9 @@ impl BrowserTab {
 mod tests {
   use super::*;
 
-  use crate::js::window_realm::{register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig};
+  use crate::js::runtime::with_event_loop;
+  use crate::js::window_realm::{register_dom_source, unregister_dom_source};
+  use crate::js::{WindowRealm, WindowRealmConfig};
   use std::cell::{Cell, RefCell};
   use std::ptr::NonNull;
   use std::rc::Rc;
@@ -1287,6 +1294,53 @@ mod tests {
     ) -> Result<()> {
       Ok(())
     }
+  }
+
+  struct WindowRealmExecutor {
+    realm: WindowRealm,
+    log: Rc<RefCell<Vec<String>>>,
+  }
+
+  impl WindowRealmExecutor {
+    fn new(log: Rc<RefCell<Vec<String>>>) -> Result<Self> {
+      let realm =
+        WindowRealm::new(WindowRealmConfig::new("https://example.com/")).map_err(|err| {
+          Error::Other(format!("failed to create WindowRealm: {err}"))
+        })?;
+      Ok(Self { realm, log })
+    }
+  }
+
+  impl BrowserTabJsExecutor for WindowRealmExecutor {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .log
+        .borrow_mut()
+        .push(format!("script:{script_text}"));
+      let result = with_event_loop(event_loop, || self.realm.exec_script(script_text));
+      result
+        .map(|_value| ())
+        .map_err(|err| Error::Other(err.to_string()))
+    }
+  }
+
+  fn rgba_at(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
+    let width = pixmap.width();
+    let height = pixmap.height();
+    assert!(
+      x < width && y < height,
+      "rgba_at out of bounds: requested ({x}, {y}) in {width}x{height} pixmap"
+    );
+    let idx = (y as usize * width as usize + x as usize) * 4;
+    let data = pixmap.data();
+    [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
   }
 
   #[test]
@@ -1495,7 +1549,87 @@ mod tests {
       .exec_script("document.readyState")
       .map_err(|err| Error::Other(err.to_string()))?;
     assert_eq!(value_to_string(&realm, ready_state), "complete");
+    Ok(())
+  }
 
+  #[test]
+  fn js_document_write_inserts_html_before_following_markup_and_affects_render() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = WindowRealmExecutor::new(Rc::clone(&log))?;
+    let html = r#"<!doctype html><html><head><style>
+html, body { margin: 0; padding: 0; }
+#x { width: 64px; height: 64px; background: rgb(255, 0, 0); }
+#after { width: 64px; height: 64px; background: rgb(0, 0, 255); }
+</style></head><body><script>document.write('<div id="x"></div>')</script><div id="after"></div></body></html>"#;
+    let options = RenderOptions::new().with_viewport(64, 64);
+    let mut tab = BrowserTab::from_html(html, options, executor)?;
+
+    assert_eq!(log.borrow().len(), 1, "expected exactly one script execution");
+
+    let doc = tab.dom();
+    let body = doc.body().expect("missing <body>");
+    let injected = doc
+      .get_element_by_id("x")
+      .expect("expected element inserted by document.write");
+    let after = doc
+      .get_element_by_id("after")
+      .expect("expected #after element");
+
+    let element_children: Vec<NodeId> = doc
+      .node(body)
+      .children
+      .iter()
+      .copied()
+      .filter(|&id| matches!(doc.node(id).kind, NodeKind::Element { .. }))
+      .collect();
+    assert_eq!(
+      element_children.len(),
+      3,
+      "expected <body> to have <script>, injected <div>, and following <div>"
+    );
+    assert_eq!(element_children[1], injected, "expected injected node after <script>");
+    assert_eq!(element_children[2], after, "expected #after node after injected markup");
+
+    let pixmap = tab.render_frame()?;
+    assert_eq!(rgba_at(&pixmap, 32, 32), [255, 0, 0, 255]);
+    Ok(())
+  }
+
+  #[test]
+  fn js_document_write_is_noop_when_no_active_parser() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = WindowRealmExecutor::new(Rc::clone(&log))?;
+    let html = r#"<!doctype html><html><head><style>
+html, body { margin: 0; padding: 0; }
+#after { width: 64px; height: 64px; background: rgb(0, 0, 255); }
+</style></head><body><div id="after"></div><script async src="https://example.com/async.js"></script></body></html>"#;
+    let options = RenderOptions::new().with_viewport(64, 64);
+    let mut tab = BrowserTab::from_html(html, options, executor)?;
+    tab.register_script_source(
+      "https://example.com/async.js",
+      r#"document.write('<div id="x"></div>');"#,
+    );
+
+    let pixmap = tab.render_frame()?;
+    assert_eq!(rgba_at(&pixmap, 32, 32), [0, 0, 255, 255]);
+
+    assert_eq!(
+      tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(log.borrow().len(), 1, "expected async script to execute");
+
+    assert!(
+      tab.dom().get_element_by_id("x").is_none(),
+      "document.write from an async script should not insert markup without an active parser"
+    );
+    if let Some(pixmap_after) = tab.render_if_needed()? {
+      assert_eq!(
+        rgba_at(&pixmap_after, 32, 32),
+        [0, 0, 255, 255],
+        "unexpected visual change after async script execution"
+      );
+    }
     Ok(())
   }
 

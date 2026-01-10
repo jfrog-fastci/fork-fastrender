@@ -2798,6 +2798,68 @@ fn document_body_get_native(
   get_or_create_node_wrapper(scope, document_obj, node_id)
 }
 
+fn document_write_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // HTML: concatenate arguments after applying ToString.
+  let mut out = String::new();
+  for &arg in args {
+    let value = scope.heap_mut().to_string(arg)?;
+    let s = scope
+      .heap()
+      .get_string(value)
+      .map(|s| s.to_utf8_lossy())
+      .unwrap_or_default();
+    out.push_str(&s);
+  }
+
+  if let Some(parser) = crate::html::document_write::current_streaming_parser() {
+    // Re-entrant parsing subset: inject before any buffered remainder, parsed after the current
+    // parser-blocking script returns.
+    parser.push_front_str(&out);
+  } else {
+    // Deterministic subset of HTML's ignore-destructive-writes behavior:
+    // when no streaming parser is active, treat `document.write()` as a no-op instead of
+    // implicitly calling `document.open()` and clearing the document.
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn document_writeln_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut out = String::new();
+  for &arg in args {
+    let value = scope.heap_mut().to_string(arg)?;
+    let s = scope
+      .heap()
+      .get_string(value)
+      .map(|s| s.to_utf8_lossy())
+      .unwrap_or_default();
+    out.push_str(&s);
+  }
+  out.push('\n');
+
+  if let Some(parser) = crate::html::document_write::current_streaming_parser() {
+    parser.push_front_str(&out);
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn document_get_element_by_id_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -7591,6 +7653,35 @@ fn init_window_globals(
         set: Value::Undefined,
       },
     },
+  )?;
+
+  // document.write / document.writeln
+  let write_key = alloc_key(&mut scope, "write")?;
+  let write_call_id = vm.register_native_call(document_write_native)?;
+  let write_name = scope.alloc_string("write")?;
+  scope.push_root(Value::String(write_name))?;
+  let write_func = scope.alloc_native_function(write_call_id, None, write_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    write_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(write_func))?;
+  scope.define_property(document_obj, write_key, data_desc(Value::Object(write_func)))?;
+
+  let writeln_key = alloc_key(&mut scope, "writeln")?;
+  let writeln_call_id = vm.register_native_call(document_writeln_native)?;
+  let writeln_name = scope.alloc_string("writeln")?;
+  scope.push_root(Value::String(writeln_name))?;
+  let writeln_func = scope.alloc_native_function(writeln_call_id, None, writeln_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    writeln_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(writeln_func))?;
+  scope.define_property(
+    document_obj,
+    writeln_key,
+    data_desc(Value::Object(writeln_func)),
   )?;
 
   // document.getElementById
