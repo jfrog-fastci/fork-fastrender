@@ -167,7 +167,7 @@ Key modules:
   - see [`docs/import_maps.md`](import_maps.md)
 - `src/js/orchestrator.rs`
   - host bookkeeping for `Document.currentScript` (spec-shaped, `dom2`-backed)
-- `src/js/window_timers.rs`, `src/js/window_animation_frame.rs`, `src/js/time.rs`, `src/js/url.rs`
+- `src/js/vmjs/window_timers.rs`, `src/js/vmjs/window_animation_frame.rs`, `src/js/time.rs`, `src/js/url.rs`
   - early “web platform” primitives used by tests and eventual page execution
 
 #### Promise jobs and microtasks (`vm-js` host hooks)
@@ -176,7 +176,7 @@ Key modules:
 FastRender implements these hooks by routing Promise jobs into the host-owned HTML-like
 `EventLoop` microtask queue:
 
-- `src/js/window_timers.rs`: `VmJsEventLoopHooks` implements `VmHostHooks::host_enqueue_promise_job`
+- `src/js/vmjs/window_timers.rs`: `VmJsEventLoopHooks` implements `VmHostHooks::host_enqueue_promise_job`
   by queueing an `EventLoop` microtask that runs the `vm-js::Job`.
 
 Script execution that needs correct Promise/microtask behavior must ensure Promise jobs are routed
@@ -212,7 +212,8 @@ instead of the hook-only `exec_script_*_with_hooks(...)` path.
 
 > **Why not TLS?** FastRender historically used thread-local registries/stacks to smuggle embedding
 > state into native bindings (e.g. `DOM_SOURCES` in `src/js/vmjs/window_realm.rs` and
-> `EVENT_LOOP_STACK` in `src/js/vmjs/runtime.rs`). These were pragmatic stopgaps while `vm-js` lacked an ergonomic way to
+> `EVENT_LOOP_STACK` in `src/js/vmjs/runtime.rs`). These were pragmatic stopgaps while `vm-js` lacked
+> an ergonomic way to
 > pass embedding state into both script and job execution. The long-term goal is to delete these
 > TLS workarounds and rely on explicit `VmHost` plumbing.
 
