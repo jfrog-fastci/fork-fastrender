@@ -582,24 +582,48 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         scope.push_root(Value::Object(promise_obj))?;
         scope.push_root(reason)?;
 
-        // Minimal event object: `dispatchEvent` only requires `{ type: string }`.
-        let event_obj = scope.alloc_object()?;
-        scope.push_root(Value::Object(event_obj))?;
-
+        // Use the realm's `Event` constructor so `unhandledrejection` listeners can call
+        // `preventDefault()` (matches web platform behavior more closely than a plain object).
         let type_s = scope.alloc_string(event_type)?;
         scope.push_root(Value::String(type_s))?;
-        let type_key = alloc_key(&mut scope, "type")?;
-        scope.define_property(event_obj, type_key, data_desc(Value::String(type_s)))?;
+
+        let cancelable = event_type == "unhandledrejection";
+        let event_ctor_key = alloc_key(&mut scope, "Event")?;
+        let event_ctor = vm.get(&mut scope, global_obj, event_ctor_key)?;
+        scope.push_root(event_ctor)?;
+
+        let event_value = if cancelable {
+          let init_obj = scope.alloc_object()?;
+          scope.push_root(Value::Object(init_obj))?;
+          let cancelable_key = alloc_key(&mut scope, "cancelable")?;
+          scope.define_property(init_obj, cancelable_key, data_desc(Value::Bool(true)))?;
+          vm.call_with_host(
+            &mut scope,
+            &mut hooks,
+            event_ctor,
+            Value::Undefined,
+            &[Value::String(type_s), Value::Object(init_obj)],
+          )?
+        } else {
+          vm.call_with_host(
+            &mut scope,
+            &mut hooks,
+            event_ctor,
+            Value::Undefined,
+            &[Value::String(type_s)],
+          )?
+        };
+
+        let Value::Object(event_obj) = event_value else {
+          return Err(VmError::Unimplemented("Event constructor returned non-object"));
+        };
+        scope.push_root(Value::Object(event_obj))?;
 
         // `PromiseRejectionEvent`-like payload (minimal).
         let reason_key = alloc_key(&mut scope, "reason")?;
         scope.define_property(event_obj, reason_key, data_desc(reason))?;
         let promise_key = alloc_key(&mut scope, "promise")?;
         scope.define_property(event_obj, promise_key, data_desc(Value::Object(promise_obj)))?;
-
-        // Make the event cancelable to match `unhandledrejection` behavior on the web platform.
-        let cancelable_key = alloc_key(&mut scope, "cancelable")?;
-        scope.define_property(event_obj, cancelable_key, data_desc(Value::Bool(true)))?;
 
         let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
         let dispatch = vm.get(&mut scope, global_obj, dispatch_key)?;
@@ -663,6 +687,13 @@ fn promise_rejection_microtask_checkpoint_hook<Host: WindowRealmHost + 'static>(
 
   let window_realm = host.window_realm();
   let heap = window_realm.heap_mut();
+
+  // Keep the outstanding set bounded even though it is not a real "weak set" like HTML's: if
+  // promises have been collected, drop their stale handles so new rejections can be tracked.
+  event_loop
+    .promise_rejection_tracker
+    .outstanding_rejected
+    .retain(|promise| heap.is_valid_object((*promise).into()));
 
   for promise in to_notify {
     let promise_obj: vm_js::GcObject = promise.into();

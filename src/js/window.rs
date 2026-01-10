@@ -1559,6 +1559,35 @@ mod tests {
   }
 
   #[test]
+  fn unhandledrejection_event_supports_prevent_default() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.queue_task(TaskSource::Script, |host_state, event_loop| {
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        "this.__default_prevented = false;\n\
+         addEventListener('unhandledrejection', function (e) {\n\
+           e.preventDefault();\n\
+           this.__default_prevented = e.defaultPrevented;\n\
+         });\n\
+         Promise.reject('x');\n",
+      )?;
+      Ok(())
+    })?;
+
+    assert_eq!(
+      host.run_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(matches!(
+      get_global_prop(&mut host, "__default_prevented"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
   fn handled_after_notification_dispatches_rejectionhandled_event() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
