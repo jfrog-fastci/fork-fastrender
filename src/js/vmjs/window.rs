@@ -1291,6 +1291,33 @@ mod tests {
   }
 
   #[test]
+  fn mutation_observer_callback_runs_with_real_vm_host() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
+      .expect("parse_html");
+    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      globalThis.__calls = 0;
+      const target = document.getElementById('target');
+      new MutationObserver(() => { __calls++; __host_ok = recordHost(); }).observe(target, { childList: true });
+      target.appendChild(document.createElement('span'));
+      "#,
+    )?;
+
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 0.0));
+    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(false)));
+
+    host.perform_microtask_checkpoint()?;
+
+    assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
+    assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
   fn exec_script_drains_promise_jobs_at_microtask_checkpoint() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
