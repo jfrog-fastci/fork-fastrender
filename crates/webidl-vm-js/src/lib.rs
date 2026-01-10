@@ -456,8 +456,8 @@ pub struct VmJsWebIdlCx<'a> {
   pub scope: Scope<'a>,
   pub limits: WebIdlLimits,
   pub hooks: &'a dyn WebIdlHooks<Value>,
-  host: Option<&'a mut dyn VmHost>,
-  host_hooks: Option<&'a mut dyn VmHostHooks>,
+  host: Option<NonNull<dyn VmHost + 'static>>,
+  host_hooks: Option<NonNull<dyn VmHostHooks + 'static>>,
   well_known_iterator: Option<GcSymbol>,
   well_known_async_iterator: Option<GcSymbol>,
 }
@@ -521,13 +521,54 @@ impl<'a> VmJsWebIdlCx<'a> {
     limits: WebIdlLimits,
     hooks: &'a dyn WebIdlHooks<Value>,
   ) -> Self {
+    // SAFETY: `host` and `host_hooks` are borrowed for `'a`, so they are guaranteed to outlive the
+    // returned conversion context.
+    unsafe { Self::from_native_call_unchecked(vm, scope, host, host_hooks, limits, hooks) }
+  }
+
+  /// Creates a conversion context suitable for use inside a `vm-js` native call/construct handler,
+  /// without borrowing `host`/`host_hooks` for the lifetime of the returned context.
+  ///
+  /// # Safety
+  ///
+  /// The returned [`VmJsWebIdlCx`] stores raw pointers to `host` and `host_hooks`. The caller must
+  /// ensure:
+  ///
+  /// - `host` and `host_hooks` remain alive and valid for the entire lifetime of the returned
+  ///   context, and
+  /// - no aliasing mutable access occurs while WebIDL conversions call back into JS via these
+  ///   pointers.
+  ///
+  /// This is primarily intended for bindings adapters that need to pass `&mut Host` directly to
+  /// user callbacks while also allowing WebIDL conversions (e.g. `ToPrimitive`/`ToNumber`) to call
+  /// back into JS using the same embedder host context.
+  pub unsafe fn from_native_call_unchecked(
+    vm: &'a mut Vm,
+    scope: &'a mut Scope<'_>,
+    host: &mut dyn VmHost,
+    host_hooks: &mut dyn VmHostHooks,
+    limits: WebIdlLimits,
+    hooks: &'a dyn WebIdlHooks<Value>,
+  ) -> Self {
+    // `VmHost` is only implemented for `T: Any`, and `Any` requires `'static`, so it is safe to
+    // widen the trait object lifetime to `'static` here. The pointer is still only valid for the
+    // duration promised by the caller.
+    let host_ptr: NonNull<dyn VmHost + '_> = NonNull::from(host);
+    // SAFETY: `host_ptr` points at a `'static` concrete type; only the reference lifetime is shorter.
+    let host_ptr: NonNull<dyn VmHost + 'static> = std::mem::transmute(host_ptr);
+
+    let hooks_ptr: NonNull<dyn VmHostHooks + '_> = NonNull::from(host_hooks);
+    // SAFETY: The concrete type behind `host_hooks` is assumed to be `'static` (this is true for
+    // all in-tree `VmHostHooks` implementations). The caller upholds the actual lifetime.
+    let hooks_ptr: NonNull<dyn VmHostHooks + 'static> = std::mem::transmute(hooks_ptr);
+
     Self {
       vm,
       scope: scope.reborrow(),
       limits,
       hooks,
-      host: Some(host),
-      host_hooks: Some(host_hooks),
+      host: Some(host_ptr),
+      host_hooks: Some(hooks_ptr),
       well_known_iterator: None,
       well_known_async_iterator: None,
     }
@@ -551,12 +592,26 @@ impl<'a> VmJsWebIdlCx<'a> {
   }
 
   fn call_js(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
-    match (self.host.as_deref_mut(), self.host_hooks.as_deref_mut()) {
-      (Some(host), Some(hooks)) => self
-        .vm
-        .call_with_host_and_hooks(host, &mut self.scope, hooks, callee, this, args),
-      (Some(host), None) => self.vm.call(host, &mut self.scope, callee, this, args),
-      (None, Some(hooks)) => self.vm.call_with_host(&mut self.scope, hooks, callee, this, args),
+    match (self.host, self.host_hooks) {
+      (Some(mut host), Some(mut hooks)) => {
+        // SAFETY: pointers are installed by `from_native_call`/`from_native_call_unchecked` and are
+        // required to remain valid for the lifetime of this conversion context.
+        let host = unsafe { host.as_mut() };
+        let hooks = unsafe { hooks.as_mut() };
+        self
+          .vm
+          .call_with_host_and_hooks(host, &mut self.scope, hooks, callee, this, args)
+      }
+      (Some(mut host), None) => {
+        // SAFETY: see above.
+        let host = unsafe { host.as_mut() };
+        self.vm.call(host, &mut self.scope, callee, this, args)
+      }
+      (None, Some(mut hooks)) => {
+        // SAFETY: see above.
+        let hooks = unsafe { hooks.as_mut() };
+        self.vm.call_with_host(&mut self.scope, hooks, callee, this, args)
+      }
       (None, None) => {
         let mut dummy_host = ();
         self.vm.call(&mut dummy_host, &mut self.scope, callee, this, args)

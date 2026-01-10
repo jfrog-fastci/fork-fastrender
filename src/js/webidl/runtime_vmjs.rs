@@ -1880,7 +1880,6 @@ mod tests {
       host.saw_record_host.set(true);
       Ok(Value::Undefined)
     }
-
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024));
     let mut runtime = VmJsRuntime::new(vm, heap)?;
