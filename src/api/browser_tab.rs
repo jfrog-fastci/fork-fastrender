@@ -5562,12 +5562,11 @@ mod tests {
       _spec: &ScriptElementSpec,
       _current_script: Option<NodeId>,
       _document: &mut BrowserDocumentDom2,
-      _event_loop: &mut EventLoop<BrowserTabHost>,
+      event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<()> {
       self.ensure_realm()?;
       let realm = self.realm.as_mut().expect("realm should be initialized");
-      realm
-        .exec_script(script_text)
+      with_event_loop(event_loop, || realm.exec_script(script_text))
         .map_err(|err| Error::Other(err.to_string()))?;
       Ok(())
     }

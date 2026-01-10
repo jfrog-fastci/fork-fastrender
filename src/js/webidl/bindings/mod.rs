@@ -24,9 +24,7 @@ pub use crate::js::vm_dom::{install_dom_bindings, install_dom_bindings_with_limi
 
 #[cfg(test)]
 mod tests {
-  use super::{
-    install_window_bindings, install_window_bindings_vm_js, BindingValue, WebHostBindings,
-  };
+  use super::{install_window_bindings, install_window_bindings_vm_js, BindingValue, WebHostBindings};
   use crate::js::{UrlLimits, UrlSearchParams};
   use crate::js::webidl::{
     InterfaceId, VmJsWebIdlBindingsCx, VmJsWebIdlBindingsState, WebIdlHooks, WebIdlLimits,
@@ -59,6 +57,184 @@ mod tests {
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
       Some(&mut self.slot)
     }
+  }
+
+  #[derive(Default)]
+  struct ConstructorDispatchHost {
+    last_receiver: Option<Value>,
+    last_interface: Option<&'static str>,
+    last_member: Option<&'static str>,
+  }
+
+  impl WebIdlBindingsHost for ConstructorDispatchHost {
+    fn call_operation(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      receiver: Option<Value>,
+      interface: &'static str,
+      operation: &'static str,
+      _overload: usize,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      self.last_receiver = receiver;
+      self.last_interface = Some(interface);
+      self.last_member = Some(operation);
+      Ok(Value::Undefined)
+    }
+
+    fn call_constructor(
+      &mut self,
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _interface: &'static str,
+      _overload: usize,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented("unimplemented host constructor"))
+    }
+  }
+
+  fn alloc_key(scope: &mut vm_js::Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
+    let s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(s))?;
+    Ok(PropertyKey::from_string(s))
+  }
+
+  #[test]
+  fn vmjs_bindings_constructor_uses_native_construct_and_installs_prototype_links(
+  ) -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    // Install the generated vm-js bindings into the realm.
+    install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+    let global = realm.global_object();
+    let intr = *realm.intrinsics();
+
+    let mut host_impl = ConstructorDispatchHost::default();
+    let mut hooks = HostHooksWithBindingsHost::new(&mut host_impl);
+    let mut dummy_host = ();
+    let mut scope = heap.scope();
+
+    // globalThis.URLSearchParams
+    scope.push_root(Value::Object(global))?;
+    let ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
+    let ctor = scope
+      .heap()
+      .object_get_own_data_property_value(global, &ctor_key)?
+      .expect("globalThis.URLSearchParams should be defined");
+    scope.push_root(ctor)?;
+
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(VmError::TypeError("URLSearchParams constructor should be an object"));
+    };
+
+    // URLSearchParams.prototype
+    let proto_key = alloc_key(&mut scope, "prototype")?;
+    let proto = vm.get(&mut scope, ctor_obj, proto_key)?;
+    let Value::Object(proto_obj) = proto else {
+      return Err(VmError::TypeError("URLSearchParams.prototype should be an object"));
+    };
+    scope.push_root(Value::Object(proto_obj))?;
+
+    // `.prototype` and `.constructor` links should be installed with spec-like attributes.
+    let proto_desc = scope
+      .heap()
+      .object_get_own_property(ctor_obj, &proto_key)?
+      .ok_or(VmError::TypeError("missing URLSearchParams.prototype data property"))?;
+    assert!(!proto_desc.enumerable);
+    assert!(!proto_desc.configurable);
+    match proto_desc.kind {
+      PropertyKind::Data { value, writable } => {
+        assert!(!writable);
+        assert_eq!(value, Value::Object(proto_obj));
+      }
+      _ => return Err(VmError::TypeError("URLSearchParams.prototype should be a data property")),
+    }
+
+    let ctor_prop_key = alloc_key(&mut scope, "constructor")?;
+    let ctor_desc = scope
+      .heap()
+      .object_get_own_property(proto_obj, &ctor_prop_key)?
+      .ok_or(VmError::TypeError(
+        "missing URLSearchParams.prototype.constructor data property",
+      ))?;
+    assert!(!ctor_desc.enumerable);
+    assert!(!ctor_desc.configurable);
+    match ctor_desc.kind {
+      PropertyKind::Data { value, writable } => {
+        assert!(!writable);
+        assert_eq!(value, Value::Object(ctor_obj));
+      }
+      _ => {
+        return Err(VmError::TypeError(
+          "URLSearchParams.prototype.constructor should be a data property",
+        ))
+      }
+    }
+
+    // new URLSearchParams("a=1") returns an object whose [[Prototype]] is URLSearchParams.prototype.
+    let init_str = scope.alloc_string("a=1")?;
+    scope.push_root(Value::String(init_str))?;
+    let init = Value::String(init_str);
+
+    let params_val = vm.construct_with_host_and_hooks(
+      &mut dummy_host,
+      &mut scope,
+      &mut hooks,
+      ctor,
+      &[init],
+      ctor,
+    )?;
+    scope.push_root(params_val)?;
+    let Value::Object(params_obj) = params_val else {
+      return Err(VmError::TypeError(
+        "URLSearchParams constructor should return an object",
+      ));
+    };
+    assert_eq!(scope.object_get_prototype(params_obj)?, Some(proto_obj));
+
+    // Constructor dispatch should have been observed by the host with the wrapper object receiver.
+    assert_eq!(host_impl.last_interface, Some("URLSearchParams"));
+    assert_eq!(host_impl.last_member, Some("constructor"));
+    assert_eq!(host_impl.last_receiver, Some(Value::Object(params_obj)));
+
+    // Calling without `new` throws a TypeError.
+    let err = vm
+      .call_with_host_and_hooks(
+        &mut dummy_host,
+        &mut scope,
+        &mut hooks,
+        ctor,
+        Value::Undefined,
+        &[init],
+      )
+      .expect_err("expected calling URLSearchParams() without new to throw");
+
+    match err {
+      VmError::TypeError(_) => {}
+      VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+        let Value::Object(obj) = value else {
+          return Err(VmError::TypeError("expected thrown TypeError object"));
+        };
+        scope.push_root(Value::Object(obj))?;
+        assert_eq!(scope.object_get_prototype(obj)?, Some(intr.type_error_prototype()));
+      }
+      other => {
+        return Err(VmError::TypeError(match other.thrown_value() {
+          Some(_) => "unexpected thrown error type (not TypeError)",
+          None => "expected TypeError",
+        }));
+      }
+    }
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
   }
 
   #[derive(Default)]
@@ -102,19 +278,16 @@ mod tests {
               "URLSearchParams constructor called without wrapper object receiver",
             ));
           };
-
           let init = match args.first().copied().unwrap_or(Value::Undefined) {
             Value::Undefined => String::new(),
             value => Self::value_to_rust_string(scope, value)?,
           };
-
           let params = if init.is_empty() {
             UrlSearchParams::new(&self.limits)
           } else {
             UrlSearchParams::parse(&init, &self.limits)
               .map_err(|_| VmError::TypeError("URLSearchParams constructor failed"))?
           };
-
           self.params.insert(WeakGcObject::from(obj), params);
           Ok(Value::Undefined)
         }
@@ -158,14 +331,8 @@ mod tests {
     }
   }
 
-  fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
-    let s = scope.alloc_string(name)?;
-    scope.push_root(Value::String(s))?;
-    Ok(PropertyKey::from_string(s))
-  }
-
   #[test]
-  fn generated_bindings_can_construct_and_use_url_search_params() -> Result<(), VmError> {
+  fn vmjs_bindings_can_construct_and_use_url_search_params() -> Result<(), VmError> {
     let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
     let mut heap = Heap::new(limits);
     let mut vm = Vm::new(VmOptions::default());

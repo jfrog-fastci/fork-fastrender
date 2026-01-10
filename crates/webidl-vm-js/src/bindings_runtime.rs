@@ -111,6 +111,13 @@ impl DataPropertyAttributes {
   /// - non-configurable
   /// for Web IDL prototype objects.
   pub const PROTOTYPE_CONSTRUCTOR: Self = Self::new(false, false, false);
+
+  /// Typical attributes for constructor ↔ prototype links (`ctor.prototype` and `proto.constructor`):
+  /// non-writable, non-enumerable, non-configurable.
+  ///
+  /// Alias for [`DataPropertyAttributes::CONSTRUCTOR_PROTOTYPE`] /
+  /// [`DataPropertyAttributes::PROTOTYPE_CONSTRUCTOR`].
+  pub const CONSTRUCTOR_LINK: Self = Self::CONSTRUCTOR_PROTOTYPE;
 }
 
 /// Attributes for an accessor property definition.
@@ -335,6 +342,49 @@ impl<'a> BindingsRuntime<'a> {
       self.scope.object_set_prototype(obj, Some(proto))?;
     }
     Ok(obj)
+  }
+
+  /// Allocates an ordinary object with an explicit prototype.
+  ///
+  /// This is primarily used by WebIDL constructors, which must create wrapper objects whose
+  /// `[[Prototype]]` is the interface prototype object (e.g. `URLSearchParams.prototype`).
+  pub fn alloc_object_with_prototype(&mut self, proto: Option<GcObject>) -> Result<GcObject, VmError> {
+    // Root the prototype across allocation (GC can run while allocating the new object).
+    if let Some(proto) = proto {
+      let _ = self.root(Value::Object(proto))?;
+      let obj = self.scope.alloc_object_with_prototype(Some(proto))?;
+      let _ = self.root(Value::Object(obj))?;
+      Ok(obj)
+    } else {
+      let obj = self.scope.alloc_object_with_prototype(None)?;
+      let _ = self.root(Value::Object(obj))?;
+      Ok(obj)
+    }
+  }
+
+  /// Reads a `GcObject` from a native slot on `callee`, rooting it for the lifetime of this runtime.
+  ///
+  /// Generated WebIDL constructors store their interface prototype object in a native slot so
+  /// `NativeConstruct` handlers can allocate wrapper objects without property lookups.
+  pub fn require_native_object_slot(
+    &mut self,
+    callee: GcObject,
+    slot_index: usize,
+    what: &'static str,
+  ) -> Result<GcObject, VmError> {
+    // Root callee across slot access; the heap accessor shouldn't allocate, but keep patterns
+    // consistent because the returned slot value is a GC handle.
+    let _ = self.root(Value::Object(callee))?;
+
+    let slots = self.scope.heap().get_function_native_slots(callee)?;
+    let v = slots.get(slot_index).copied().unwrap_or(Value::Undefined);
+    match v {
+      Value::Object(obj) => {
+        let _ = self.root(Value::Object(obj))?;
+        Ok(obj)
+      }
+      _ => Err(VmError::InvariantViolation(what)),
+    }
   }
 
   /// Allocates an array exotic object and sets its prototype to `%Array.prototype%` when available.
