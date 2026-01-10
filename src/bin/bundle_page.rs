@@ -66,6 +66,45 @@ fn is_data_url(url: &str) -> bool {
     .unwrap_or(false)
 }
 
+fn strip_wrapping_html_entity_quotes(raw: &str) -> &str {
+  let mut trimmed = trim_ascii_whitespace(raw);
+  // `<style>` element contents are raw text, but CSS extracted from attributes can contain HTML
+  // entities that escape quotes (common in serialized DOM dumps). Handle the most common cases
+  // without needing full HTML entity decoding.
+  loop {
+    let next = if trimmed.len() >= "&quot;&quot;".len()
+      && trimmed.starts_with("&quot;")
+      && trimmed.ends_with("&quot;")
+    {
+      &trimmed["&quot;".len()..trimmed.len() - "&quot;".len()]
+    } else if trimmed.len() >= "&#34;&#34;".len()
+      && trimmed.starts_with("&#34;")
+      && trimmed.ends_with("&#34;")
+    {
+      &trimmed["&#34;".len()..trimmed.len() - "&#34;".len()]
+    } else if trimmed.len() >= "&apos;&apos;".len()
+      && trimmed.starts_with("&apos;")
+      && trimmed.ends_with("&apos;")
+    {
+      &trimmed["&apos;".len()..trimmed.len() - "&apos;".len()]
+    } else if trimmed.len() >= "&#39;&#39;".len()
+      && trimmed.starts_with("&#39;")
+      && trimmed.ends_with("&#39;")
+    {
+      &trimmed["&#39;".len()..trimmed.len() - "&#39;".len()]
+    } else if trimmed.len() >= 2
+      && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+      &trimmed[1..trimmed.len() - 1]
+    } else {
+      break;
+    };
+    trimmed = trim_ascii_whitespace(next);
+  }
+  trimmed
+}
+
 fn is_about_url(url: &str) -> bool {
   trim_ascii_whitespace_start(url)
     .get(..6)
@@ -2569,6 +2608,7 @@ fn discover_css_urls_with_destination(
     from_import: bool,
     in_font_face: bool,
   ) {
+    let raw = strip_wrapping_html_entity_quotes(raw);
     if let Some(resolved) = resolve_href(base_url, raw) {
       if should_skip_crawl_url(&resolved) {
         return;
@@ -3047,6 +3087,18 @@ mod tests {
     }
 
     Ok(())
+  }
+
+  #[test]
+  fn discover_css_urls_strips_html_entity_quote_wrapping() {
+    let css = "body{background-image:url(&quot;//cdn.example.test/bg.png&quot;)}";
+    let urls = discover_css_urls_with_destination(css, "https://example.test/");
+    assert!(
+      urls
+        .iter()
+        .any(|(url, _dest)| url == "https://cdn.example.test/bg.png"),
+      "expected url() wrapped in &quot; to resolve to scheme-relative target: {urls:?}"
+    );
   }
 
   #[test]

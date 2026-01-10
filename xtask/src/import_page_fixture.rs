@@ -726,7 +726,8 @@ fn rewrite_reference(
   catalog: &mut AssetCatalog,
 ) -> Result<Option<String>> {
   let decoded = decode_html_entities_if_needed(raw.trim());
-  let trimmed = decoded.trim();
+  let mut trimmed = decoded.trim();
+  trimmed = strip_wrapping_quotes(trimmed);
   if trimmed.is_empty()
     || trimmed.starts_with('#')
     || trimmed.to_ascii_lowercase().starts_with("javascript:")
@@ -771,7 +772,8 @@ fn rewrite_reference_optional(
   catalog: &mut AssetCatalog,
 ) -> Result<Option<String>> {
   let decoded = decode_html_entities_if_needed(raw.trim());
-  let trimmed = decoded.trim();
+  let mut trimmed = decoded.trim();
+  trimmed = strip_wrapping_quotes(trimmed);
   if trimmed.is_empty()
     || trimmed.starts_with('#')
     || trimmed.to_ascii_lowercase().starts_with("javascript:")
@@ -808,6 +810,22 @@ fn split_fragment(url: &str) -> (String, Option<String>) {
     Some(idx) => (url[..idx].to_string(), Some(url[idx + 1..].to_string())),
     None => (url.to_string(), None),
   }
+}
+
+fn strip_wrapping_quotes(value: &str) -> &str {
+  let mut value = value;
+  loop {
+    if value.len() >= 2 {
+      let first = value.as_bytes()[0];
+      let last = *value.as_bytes().last().unwrap_or(&0);
+      if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+        value = &value[1..value.len() - 1];
+        continue;
+      }
+    }
+    break;
+  }
+  value
 }
 
 fn find_base_url(html: &str, document_base: &Url) -> Url {
@@ -2011,6 +2029,42 @@ mod tests {
     assert!(
       !not_rewritten.contains("rel=\"preload\""),
       "expected preload link tag to be stripped, got: {not_rewritten}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn rewrite_reference_strips_wrapping_quotes_after_entity_decode() -> Result<()> {
+    let base = Url::parse("https://example.test/")?;
+    let resource_url = "https://cdn.example.test/bg.png";
+    let info = BundledResourceInfo {
+      path: "resources/00000_bg.png".to_string(),
+      content_type: Some("image/png".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(resource_url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      vary: None,
+      access_control_allow_origin: None,
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+    let res = FetchedResource::new(vec![0u8, 1, 2, 3], Some("image/png".to_string()));
+
+    let mut catalog = AssetCatalog::new(false);
+    catalog.add_resource(resource_url, &info, &res)?;
+
+    let rewritten = rewrite_reference(
+      "&quot;//cdn.example.test/bg.png&quot;",
+      &base,
+      ReferenceContext::Html,
+      &mut catalog,
+    )?;
+    assert!(
+      rewritten.is_some(),
+      "expected wrapped URL to rewrite to a local asset"
     );
     Ok(())
   }
