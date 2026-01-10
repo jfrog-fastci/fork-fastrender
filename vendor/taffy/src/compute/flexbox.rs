@@ -627,7 +627,6 @@ fn generate_anonymous_flex_items(
           .maybe_resolve(constants.node_inner_size, |val, basis| {
             tree.calc(val, basis)
           })
-          .maybe_apply_aspect_ratio(aspect_ratio)
           .maybe_add(box_sizing_adjustment),
         min_size: child_style
           .min_size()
@@ -843,8 +842,6 @@ fn determine_flex_base_size(
       //    then the flex base size is calculated from its inner
       //    cross size and the flex item’s intrinsic aspect ratio.
 
-      // Note: `child.size` has already been resolved against aspect_ratio in generate_anonymous_flex_items
-      // So B will just work here by using main_size without special handling for aspect_ratio
       let main_size = child.size.main(dir);
       if let Some(flex_basis) = flex_basis.or(main_size) {
         break 'flex_basis flex_basis;
