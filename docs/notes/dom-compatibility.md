@@ -66,9 +66,12 @@ These lifts are intentionally conservative:
 These placeholder rules are reused anywhere compat mode decides whether to replace an existing
 `src`-like attribute (`<img>`, `<iframe>`, `<video>`, `<audio>`, and `<video poster>`).
 
+When lifting a URL from `data-*` candidates, placeholder values are ignored and later candidates are
+tried instead.
+
 #### `<img>`
 
-- `src`: if missing or placeholder, copy from the first non-empty candidate among:
+- `src`: if missing or placeholder, copy from the first non-empty, non-placeholder candidate among:
   - `data-gl-src`
   - `data-src`
   - `data-lazy-src`
@@ -79,6 +82,7 @@ These placeholder rules are reused anywhere compat mode decides whether to repla
   - `data-img-src`
   - `data-hires`
   - `data-src-retina`
+  - `data-default-src`
 - `srcset`: if missing or empty, copy from the first non-empty candidate among:
   - `data-gl-srcset`
   - `data-srcset`
@@ -102,6 +106,8 @@ These placeholder rules are reused anywhere compat mode decides whether to repla
 #### `<iframe>`
 
 - `src`: if missing or placeholder, copy from `data-src`.
+  - `data-src` may be a JSON-ish payload (starting with `{`, `[`, or `"`) commonly found in embed
+    widgets; compat mode will try to parse and extract a URL-like string (e.g. `{"url":"real.html"}`).
 
 #### `<video>`
 

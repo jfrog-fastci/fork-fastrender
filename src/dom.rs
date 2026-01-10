@@ -3272,7 +3272,7 @@ pub fn compute_part_export_map_with_ids(
   Ok(map)
 }
 
-pub(crate) const COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES: [&str; 10] = [
+pub(crate) const COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES: [&str; 11] = [
   "data-gl-src",
   "data-src",
   "data-lazy-src",
@@ -3283,6 +3283,7 @@ pub(crate) const COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES: [&str; 10] = [
   "data-img-src",
   "data-hires",
   "data-src-retina",
+  "data-default-src",
 ];
 
 pub(crate) const COMPAT_IMG_SRCSET_DATA_ATTR_CANDIDATES: [&str; 6] = [
@@ -3459,7 +3460,7 @@ pub(crate) fn apply_dom_compatibility_mutations(
       match value {
         serde_json::Value::String(s) => {
           let trimmed = trim_ascii_whitespace(s);
-          if trimmed.is_empty() || !looks_like_url(trimmed) {
+          if trimmed.is_empty() || !looks_like_url(trimmed) || img_src_is_placeholder(trimmed) {
             return None;
           }
           Some(trimmed.to_string())
@@ -3513,6 +3514,9 @@ pub(crate) fn apply_dom_compatibility_mutations(
         if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"') {
           continue;
         }
+        if img_src_is_placeholder(trimmed) {
+          continue;
+        }
         return Some(trimmed.to_string());
       }
     }
@@ -3543,6 +3547,9 @@ pub(crate) fn apply_dom_compatibility_mutations(
     for part in value.split(',') {
       let part = trim_ascii_whitespace(part);
       if part.is_empty() {
+        continue;
+      }
+      if img_src_is_placeholder(part) {
         continue;
       }
       if first.is_none() {
@@ -3639,7 +3646,8 @@ pub(crate) fn apply_dom_compatibility_mutations(
         // from the following attributes, in priority order:
         //
         // - `src` ← `data-gl-src`, `data-src`, `data-lazy-src`, `data-original`, `data-original-src`,
-        //   `data-url`, `data-actualsrc`, `data-img-src`, `data-hires`, `data-src-retina`
+        //   `data-url`, `data-actualsrc`, `data-img-src`, `data-hires`, `data-src-retina`,
+        //   `data-default-src`
         // - `srcset` ← `data-gl-srcset`, `data-srcset`, `data-lazy-srcset`, `data-original-srcset`,
         //   `data-original-set`, `data-actualsrcset`
         // - `sizes` ← `data-sizes`
@@ -3664,7 +3672,7 @@ pub(crate) fn apply_dom_compatibility_mutations(
 
         if needs_src {
           if let Some(candidate) =
-            first_non_empty_attr(attributes, &COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES)
+            first_non_empty_url_attr(attributes, &COMPAT_IMG_SRC_DATA_ATTR_CANDIDATES)
           {
             match src_idx {
               Some(idx) => {
@@ -3782,7 +3790,7 @@ pub(crate) fn apply_dom_compatibility_mutations(
           None => true,
         };
         if needs_src {
-          if let Some(candidate) = first_non_empty_attr(attributes, &["data-src"]) {
+          if let Some(candidate) = first_non_empty_url_attr(attributes, &["data-src"]) {
             match src_idx {
               Some(idx) => {
                 if img_src_is_placeholder(&attributes[idx].1) {
@@ -3887,6 +3895,9 @@ pub(crate) fn apply_dom_compatibility_mutations(
           return Some(url);
         }
         if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"') {
+          return None;
+        }
+        if img_src_is_placeholder(trimmed) {
           return None;
         }
         Some(trimmed.to_string())
@@ -8594,6 +8605,45 @@ mod tests {
     assert!(img_src_is_placeholder("javascript:void(0)"));
     assert!(img_src_is_placeholder("vbscript:msgbox(\"x\")"));
     assert!(img_src_is_placeholder("mailto:test@example.com"));
+  }
+
+  #[test]
+  fn compatibility_mode_lifts_img_src_from_data_default_src() {
+    let html = r#"<html><body><img id="img" data-default-src="real.jpg"></body></html>"#;
+    let dom = parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse html");
+    let img = find_node_by_id(&dom, "img").expect("img node");
+    assert_eq!(
+      img.get_attribute_ref("src"),
+      Some("real.jpg"),
+      "expected compat mode to lift data-default-src into img src"
+    );
+  }
+
+  #[test]
+  fn compatibility_mode_skips_placeholder_data_attr_candidates() {
+    let html = r##"<html><body><img id="img" src="about:blank" data-src="#" data-original="real.jpg"></body></html>"##;
+    let dom = parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse html");
+    let img = find_node_by_id(&dom, "img").expect("img node");
+    assert_eq!(
+      img.get_attribute_ref("src"),
+      Some("real.jpg"),
+      "expected compat mode to skip placeholder data-src and fall back to data-original"
+    );
+  }
+
+  #[test]
+  fn compatibility_mode_lifts_iframe_src_from_jsonish_data_src() {
+    let placeholder = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+    let html = format!(
+      r#"<html><body><iframe id="frame" data-src='{{"url":"{placeholder}","fallback":"real.html"}}'></iframe></body></html>"#
+    );
+    let dom = parse_html_with_options(&html, DomParseOptions::compatibility()).expect("parse html");
+    let iframe = find_node_by_id(&dom, "frame").expect("iframe node");
+    assert_eq!(
+      iframe.get_attribute_ref("src"),
+      Some("real.html"),
+      "expected compat mode to extract a non-placeholder URL from JSON-ish iframe data-src"
+    );
   }
 
   fn enumerate_dom_ids_legacy(root: &DomNode) -> HashMap<*const DomNode, usize> {

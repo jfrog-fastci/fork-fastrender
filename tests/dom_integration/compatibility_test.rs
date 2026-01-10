@@ -256,6 +256,19 @@ fn compatibility_mode_lifts_img_src_from_lazy_data_attributes() {
 }
 
 #[test]
+fn compatibility_mode_lifts_img_src_from_data_default_src() {
+  let html = r#"<html><body><img data-default-src="default.jpg"></body></html>"#;
+  let compat_dom =
+    parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
+  let compat_img = find_element(&compat_dom, "img").expect("compat img element");
+  assert_eq!(
+    compat_img.get_attribute_ref("src"),
+    Some("default.jpg"),
+    "compat mode should lift data-default-src into src"
+  );
+}
+
+#[test]
 fn compatibility_mode_lifts_img_src_from_data_src_retina() {
   let html = r#"<html><body><img data-src-retina="retina.jpg"></body></html>"#;
   let compat_dom =
@@ -378,6 +391,17 @@ fn compatibility_mode_lifts_iframe_src_from_data_src() {
     compat_iframe.get_attribute_ref("src"),
     Some("https://example.com/embed"),
     "compat mode should lift iframe data-src into src"
+  );
+
+  let json_html =
+    r#"<html><body><iframe data-src='{"url":"real.html"}'></iframe></body></html>"#;
+  let compat_dom =
+    parse_html_with_options(json_html, DomParseOptions::compatibility()).expect("parse compat DOM");
+  let compat_iframe = find_element(&compat_dom, "iframe").expect("compat iframe element");
+  assert_eq!(
+    compat_iframe.get_attribute_ref("src"),
+    Some("real.html"),
+    "compat mode should extract iframe src from JSON-ish data-src payloads"
   );
 
   let placeholder_html = r#"<html><body><iframe src="about:blank" data-src="https://example.com/embed"></iframe></body></html>"#;
