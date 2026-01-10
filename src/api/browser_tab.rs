@@ -651,14 +651,14 @@ impl BrowserTabHost {
             in_template,
           );
 
-          if tag_name.eq_ignore_ascii_case("script") && is_html_namespace(namespace) {
-            let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
-              dom,
-              id,
-              &base_url_tracker,
-            );
-            out.push((id, spec));
-          }
+           if tag_name.eq_ignore_ascii_case("script") && is_html_namespace(namespace) {
+             let spec = crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+               dom,
+               id,
+               &base_url_tracker,
+             );
+             out.push((id, spec));
+           }
 
           let is_head = tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace);
           next_in_head = in_head || is_head;

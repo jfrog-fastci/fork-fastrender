@@ -64,6 +64,7 @@ pub fn build_parser_inserted_script_element_spec(
     integrity,
     referrer_policy,
     parser_inserted: true,
+    force_async: false,
     node_id: None,
     script_type: determine_script_type(script),
   }

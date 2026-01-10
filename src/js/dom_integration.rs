@@ -189,6 +189,7 @@ fn build_non_parser_inserted_script_spec(dom: &Document, script: NodeId) -> Scri
     integrity,
     referrer_policy,
     parser_inserted: false,
+    force_async: true,
     node_id: Some(script),
     script_type: determine_script_type_dom2(dom, script),
   }

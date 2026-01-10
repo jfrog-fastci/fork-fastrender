@@ -288,6 +288,7 @@ impl ClassicScriptPipelineState {
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
+        force_async: false,
         node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
       };
@@ -308,6 +309,7 @@ impl ClassicScriptPipelineState {
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
+        force_async: false,
         node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
       };
@@ -326,6 +328,7 @@ impl ClassicScriptPipelineState {
         integrity: None,
         referrer_policy: None,
         parser_inserted: true,
+        force_async: false,
         node_id: Some(script_node_id),
         script_type: ScriptType::Unknown,
       };
@@ -389,6 +392,7 @@ impl ClassicScriptPipelineState {
       integrity,
       referrer_policy,
       parser_inserted: true,
+      force_async: false,
       node_id: Some(script_node_id),
       script_type,
     }

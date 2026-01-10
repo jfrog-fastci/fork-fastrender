@@ -41,6 +41,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
+      force_async: false,
       node_id: Some(script),
       script_type: ScriptType::Unknown,
     };
@@ -61,6 +62,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
+      force_async: false,
       node_id: Some(script),
       script_type: ScriptType::Unknown,
     };
@@ -83,6 +85,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
+      force_async: false,
       node_id: Some(script),
       script_type: ScriptType::Unknown,
     };
@@ -135,6 +138,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     integrity,
     referrer_policy,
     parser_inserted: true,
+    force_async: false,
     node_id: Some(script),
     script_type: determine_script_type_dom2(doc, script),
   }

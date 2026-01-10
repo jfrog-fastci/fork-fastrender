@@ -193,6 +193,17 @@ pub struct ScriptElementSpec {
   /// When building specs during HTML parsing, this should be `true`. Best-effort DOM scans may set
   /// this to `true` as a default, but dynamically inserted scripts should use `false`.
   pub parser_inserted: bool,
+  /// Whether the script element's "force async" flag is set.
+  ///
+  /// HTML's script processing model uses an internal "force async" flag to decide whether a
+  /// classic external script should be treated as async-by-default when the `async` attribute is
+  /// not present.
+  ///
+  /// Expected defaults:
+  /// - DOM-created `<script>` elements (e.g. `document.createElement("script")`): `true`
+  /// - Parser-created scripts (full document parsing): `false`
+  /// - Fragment-parser-created scripts (e.g. `innerHTML` parsing): `false`
+  pub force_async: bool,
   /// `dom2` node ID for the `<script>` element, if known.
   ///
   /// This is used for `Document.currentScript` bookkeeping during execution. For post-parse DOM
