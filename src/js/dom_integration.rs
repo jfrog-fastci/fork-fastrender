@@ -213,7 +213,6 @@ fn is_html_script_element(dom: &Document, node: NodeId) -> bool {
   // too.
   namespace.is_empty() || namespace == HTML_NAMESPACE
 }
-
 #[cfg(test)]
 mod tests {
   use super::prepare_dynamic_script_on_insertion;

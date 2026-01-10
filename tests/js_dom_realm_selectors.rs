@@ -1,7 +1,7 @@
 use fastrender::dom::parse_html;
 use fastrender::dom2::Document as Dom2Document;
 use fastrender::js::DomJsRealm;
-use fastrender::js::webidl::VmJsRuntime;
+use fastrender::js::webidl::legacy::VmJsRuntime;
 use vm_js::{Value, VmError};
 use webidl_js_runtime::JsRuntime as _;
 

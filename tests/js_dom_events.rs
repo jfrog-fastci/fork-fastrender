@@ -1,7 +1,7 @@
 use fastrender::dom::{DomNode, DomNodeType};
 use fastrender::dom2::{Document, NodeId};
 use fastrender::js::events_bindings::DomEventsRealm;
-use fastrender::js::webidl::VmJsRuntime;
+use fastrender::js::webidl::legacy::VmJsRuntime;
 use selectors::context::QuirksMode;
 use std::cell::RefCell;
 use std::rc::Rc;
