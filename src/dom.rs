@@ -4386,7 +4386,9 @@ pub(crate) fn apply_dom_compatibility_mutations(
           None => true,
         };
         if needs_src {
-          if let Some(candidate) = first_non_empty_url_attr(attributes, &["data-src"]) {
+          if let Some(candidate) =
+            first_non_empty_url_attr(attributes, &["data-src", "data-live-path"])
+          {
             match src_idx {
               Some(idx) => {
                 if img_src_is_placeholder(&attributes[idx].1) {

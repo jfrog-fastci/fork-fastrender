@@ -642,3 +642,26 @@ fn compatibility_mode_lifts_iframe_src_from_data_src() {
     "compat mode should overwrite placeholder iframe src"
   );
 }
+
+#[test]
+fn compatibility_mode_lifts_iframe_src_from_data_live_path() {
+  let html =
+    r#"<html><body><iframe src="about:blank" data-live-path="frame.html"></iframe></body></html>"#;
+
+  let standard_dom = parse_html(html).expect("parse standard DOM");
+  let standard_iframe = find_element(&standard_dom, "iframe").expect("standard iframe element");
+  assert_eq!(
+    standard_iframe.get_attribute_ref("src"),
+    Some("about:blank"),
+    "standard mode should preserve authored iframe src"
+  );
+
+  let compat_dom =
+    parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
+  let compat_iframe = find_element(&compat_dom, "iframe").expect("compat iframe element");
+  assert_eq!(
+    compat_iframe.get_attribute_ref("src"),
+    Some("frame.html"),
+    "compat mode should lift iframe data-live-path into src when authored src is placeholder"
+  );
+}
