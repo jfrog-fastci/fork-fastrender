@@ -4611,6 +4611,60 @@ pub fn string_prototype_to_string(
   }
 }
 
+/// `String.prototype.charCodeAt(pos)` (minimal).
+pub fn string_prototype_char_code_at(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Extract the underlying primitive string from either:
+  // - a string primitive (`"x"`), or
+  // - a boxed String object (`Object("x")` / `new String("x")`).
+  let prim = match this {
+    Value::String(s) => s,
+    Value::Object(obj) => {
+      let marker = scope.alloc_string("vm-js.internal.StringData")?;
+      let marker_sym = scope.heap_mut().symbol_for(marker)?;
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      match scope.heap().object_get_own_data_property_value(obj, &marker_key)? {
+        Some(Value::String(s)) => s,
+        _ => return Err(VmError::TypeError("String.prototype.charCodeAt on non-String object")),
+      }
+    }
+    _ => return Err(VmError::TypeError("String.prototype.charCodeAt on non-string")),
+  };
+
+  let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut n = match pos_value {
+    Value::Undefined => 0.0,
+    other => scope.heap_mut().to_number(other)?,
+  };
+
+  // `ToIntegerOrInfinity` rounds toward zero.
+  if n.is_nan() {
+    n = 0.0;
+  }
+  if !n.is_finite() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  n = n.trunc();
+  if n < 0.0 {
+    return Ok(Value::Number(f64::NAN));
+  }
+
+  let idx = n as usize;
+  let js = scope.heap().get_string(prim)?;
+  let units = js.as_code_units();
+  if idx >= units.len() {
+    return Ok(Value::Number(f64::NAN));
+  }
+  Ok(Value::Number(units[idx] as f64))
+}
+
 /// `String.prototype.slice` (ECMA-262) (minimal).
 pub fn string_prototype_slice(
   vm: &mut Vm,

@@ -190,6 +190,7 @@ impl Runner {
     if let Err(err) = backend.init_realm(
       BackendInit {
         test_url: test_url.clone(),
+        fs: self.fs.clone(),
         timeout,
         max_tasks: self.config.max_tasks,
         max_microtasks: self.config.max_microtasks,
@@ -264,7 +265,10 @@ impl Runner {
     }
 
     let (outcome, wpt_report) = drive_backend_until_report(&mut *backend)?;
-    Ok(RunResult { outcome, wpt_report })
+    Ok(RunResult {
+      outcome,
+      wpt_report,
+    })
   }
 }
 
@@ -518,11 +522,14 @@ fn map_backend_error(err: RunError) -> Result<RunOutcome, RunError> {
 }
 
 fn is_interrupt_error(msg: &str) -> bool {
-  msg.contains("interrupted")
-    || msg.contains("Interrupt")
-    || msg.contains("Interrupted")
-    || msg.contains("OutOfFuel")
-    || msg.contains("DeadlineExceeded")
+  let lower = msg.to_ascii_lowercase();
+  lower.contains("execution terminated: out of fuel")
+    || lower.contains("execution terminated: deadline exceeded")
+    || lower.contains("execution terminated: interrupted")
+    || lower.contains("outoffuel")
+    || lower.contains("deadlineexceeded")
+    || lower.contains("interrupted")
+    || lower.contains("interrupt")
 }
 
 fn id_dir(id: &str) -> String {

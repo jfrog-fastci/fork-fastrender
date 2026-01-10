@@ -12,6 +12,7 @@
 //! - running "tasks"/timers (an event-loop tick)
 //! - collecting the FastRender testharness report payload
 
+use crate::wpt_fs::WptFs;
 use crate::wpt_report::WptReport;
 use crate::RunError;
 use std::time::Duration;
@@ -62,6 +63,8 @@ pub type HostTask = Box<dyn FnOnce() + 'static>;
 #[derive(Debug, Clone)]
 pub struct BackendInit {
   pub test_url: String,
+  /// WPT corpus filesystem mapping used for offline resource loading (e.g. `fetch()`).
+  pub fs: WptFs,
   pub timeout: Duration,
   pub max_tasks: usize,
   pub max_microtasks: usize,

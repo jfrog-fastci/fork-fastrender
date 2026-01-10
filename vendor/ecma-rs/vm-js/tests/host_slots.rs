@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, HostSlots, VmError};
+use vm_js::{Heap, HeapLimits, HostSlots, Value, VmError};
 
 #[test]
 fn set_and_get_host_slots_on_live_object() -> Result<(), VmError> {
@@ -10,6 +10,35 @@ fn set_and_get_host_slots_on_live_object() -> Result<(), VmError> {
   let slots = HostSlots { a: 1, b: 2 };
   scope.heap_mut().object_set_host_slots(obj, slots)?;
   assert_eq!(scope.heap().object_host_slots(obj)?, Some(slots));
+
+  Ok(())
+}
+
+#[test]
+fn set_and_get_host_slots_on_promise_and_typed_arrays() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  let mut scope = heap.scope();
+
+  let promise = scope.alloc_promise()?;
+  scope.push_root(Value::Object(promise))?;
+  assert_eq!(scope.heap().object_host_slots(promise)?, None);
+
+  let slots = HostSlots { a: 1, b: 2 };
+  scope.heap_mut().object_set_host_slots(promise, slots)?;
+  assert_eq!(scope.heap().object_host_slots(promise)?, Some(slots));
+
+  let buf = scope.alloc_array_buffer(0)?;
+  scope.push_root(Value::Object(buf))?;
+  assert_eq!(scope.heap().object_host_slots(buf)?, None);
+  scope.heap_mut().object_set_host_slots(buf, slots)?;
+  assert_eq!(scope.heap().object_host_slots(buf)?, Some(slots));
+
+  let view = scope.alloc_uint8_array(buf, 0, 0)?;
+  scope.push_root(Value::Object(view))?;
+  assert_eq!(scope.heap().object_host_slots(view)?, None);
+  scope.heap_mut().object_set_host_slots(view, slots)?;
+  assert_eq!(scope.heap().object_host_slots(view)?, Some(slots));
 
   Ok(())
 }
@@ -64,4 +93,3 @@ fn host_slots_cleared_on_gc_and_reuse() -> Result<(), VmError> {
 
   Ok(())
 }
-

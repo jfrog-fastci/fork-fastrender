@@ -72,6 +72,40 @@ fn array_map_join_and_string_conversion_work() -> Result<(), VmError> {
 }
 
 #[test]
+fn array_push_appends_and_returns_new_length() -> Result<(), VmError> {
+  let mut rt = TestRt::new(HeapLimits::new(1024 * 1024, 1024 * 1024))?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+
+  // new Array(1, 2)
+  let array_ctor = Value::Object(intr.array_constructor());
+  let array = rt.vm.construct_without_host(
+    &mut scope,
+    array_ctor,
+    &[Value::Number(1.0), Value::Number(2.0)],
+    array_ctor,
+  )?;
+  let Value::Object(array_obj) = array else {
+    return Err(VmError::Unimplemented("Array constructor did not return object"));
+  };
+
+  // array.push(3, 4)
+  let push = get_data_property(&mut scope, array_obj, "push")?.unwrap();
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    push,
+    array,
+    &[Value::Number(3.0), Value::Number(4.0)],
+  )?;
+  assert_eq!(out, Value::Number(4.0));
+  assert_eq!(get_data_property(&mut scope, array_obj, "length")?, Some(Value::Number(4.0)));
+  assert_eq!(get_data_property(&mut scope, array_obj, "2")?, Some(Value::Number(3.0)));
+  assert_eq!(get_data_property(&mut scope, array_obj, "3")?, Some(Value::Number(4.0)));
+  Ok(())
+}
+
+#[test]
 fn object_prototype_to_string_works_via_function_call() -> Result<(), VmError> {
   let mut rt = TestRt::new(HeapLimits::new(1024 * 1024, 1024 * 1024))?;
   let intr = *rt.realm.intrinsics();
