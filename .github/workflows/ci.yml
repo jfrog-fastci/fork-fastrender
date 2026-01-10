@@ -380,6 +380,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Init ecma-rs submodule (if configured)
+        shell: bash
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
       - name: Install Linux GUI dependencies (winit/wgpu)
         run: bash scripts/ci_install_gui_deps_ubuntu.sh
 
