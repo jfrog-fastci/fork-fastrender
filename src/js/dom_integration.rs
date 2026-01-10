@@ -339,4 +339,19 @@ mod tests {
     assert_eq!(host.started_loads, vec!["a.js".to_string()]);
     Ok(())
   }
+
+  #[test]
+  fn dynamic_script_crossorigin_use_credentials_trims_ascii_whitespace() -> Result<()> {
+    let dom = parse_html(
+      "<!doctype html><html><body><script id=s crossorigin=\" \tuse-credentials\t \"></script></body></html>",
+    )?;
+    let script = dom.get_element_by_id("s").expect("script element not found");
+
+    let spec = super::build_non_parser_inserted_script_spec(&dom, script);
+    assert_eq!(
+      spec.crossorigin,
+      Some(crate::resource::CorsMode::UseCredentials)
+    );
+    Ok(())
+  }
 }
