@@ -127,6 +127,8 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 | Ctrl/Cmd + Mouse Wheel | Zoom in/out |
 | Middle-click tab | Close tab (no-op if only one tab) |
 | Mouse Back / Mouse Forward (buttons 8/9) | Back / Forward |
+| PageUp (page focus) | Scroll up |
+| PageDown (page focus) | Scroll down |
 | Ctrl/Cmd+A (page focus) | Select all text in the focused page `<input>`/`<textarea>` |
 | Ctrl/Cmd+C (page focus) | Copy selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
 | Ctrl/Cmd+X (page focus) | Cut selection from the focused page `<input>`/`<textarea>` to the OS clipboard |
