@@ -8617,6 +8617,12 @@ fn prepare_dynamic_script(dom: &mut dom2::Document, script: NodeId, base_url: &O
     return Ok(());
   }
 
+  // If an `integrity` attribute exceeds our bounded parsing limit, treat it as invalid metadata (per
+  // HTML) and skip execution.
+  if spec.integrity_attr_present && spec.integrity.is_none() {
+    return Ok(());
+  }
+
   if spec.src_attr_present {
     if let Some(url) = spec.src {
       let destination = if spec.crossorigin.is_some() {
