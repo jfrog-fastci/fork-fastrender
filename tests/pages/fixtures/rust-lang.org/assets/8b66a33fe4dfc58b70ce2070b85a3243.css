@@ -1,0 +1,404 @@
+/* Alfa Slab One Regular - latin */
+@font-face {
+  font-family: "Alfa Slab One";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: local("Alfa Slab One Regular"), local("AlfaSlabOne-Regular"), url("3518784a0c66be54bc7cafd59d2a9ae2.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Alfa Slab One Regular - latin-ext */
+@font-face {
+  font-family: "Alfa Slab One";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: local("Alfa Slab One Regular"), local("AlfaSlabOne-Regular"), url("93143d9ce78b1f3b66e28ad8f2c14e01.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Alfa Slab One Regular - vietnamese */
+@font-face {
+  font-family: "Alfa Slab One";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+  src: local("Alfa Slab One Regular"), local("AlfaSlabOne-Regular"), url("ee1799e9d4f42c489a60858dd15050dc.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Regular - latin */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: local("Fira Sans Regular"), local("FiraSans-Regular"), url("c5f8e21984a95830078e6c6cf7af0f71.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Regular - latin-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: local("Fira Sans Regular"), local("FiraSans-Regular"), url("bfe0341a5753cef0ed4c7b4a00bc28dc.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Regular - cyrillic */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+  src: local("Fira Sans Regular"), local("FiraSans-Regular"), url("2182297cf28576cb674bd8b9ed11d713.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Regular - cyrillic-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+  src: local("Fira Sans Regular"), local("FiraSans-Regular"), url("7d63bbd5b9c3eb44141d16219ee2ff5e.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Regular - greek */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+0370-03FF;
+  src: local("Fira Sans Regular"), local("FiraSans-Regular"), url("0c13404857d4dadbe3294d13e4badbdf.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Regular - greek-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+1F00-1FFF;
+  src: local("Fira Sans Regular"), local("FiraSans-Regular"), url("3afe0f02e93304e67412e6bf46dc6fcb.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Regular - vietnamese */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: normal;
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+  src: local("Fira Sans Regular"), local("FiraSans-Regular"), url("1f53ef69131b4f510435ea4c099e11f1.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Italic - latin */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: italic;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: local("Fira Sans Italic"), local("FiraSans-Italic"), url("caf6944ef0dc564fd8a346f92c17090a.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Italic - latin-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: italic;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: local("Fira Sans Italic"), local("FiraSans-Italic"), url("98407e15c0b1a293f087d9e325f77efe.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Italic - cyrillic */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: italic;
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+  src: local("Fira Sans Italic"), local("FiraSans-Italic"), url("4c2f50239723a670fd3d5c085c6c2e03.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Italic - cyrillic-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: italic;
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+  src: local("Fira Sans Italic"), local("FiraSans-Italic"), url("c965a307107b92875e31b7f5f2827937.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Italic - greek */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: italic;
+  unicode-range: U+0370-03FF;
+  src: local("Fira Sans Italic"), local("FiraSans-Italic"), url("21f8e03c2c226c6247f41af482dc4259.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Italic - greek-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: italic;
+  unicode-range: U+1F00-1FFF;
+  src: local("Fira Sans Italic"), local("FiraSans-Italic"), url("9ddf7564b7aad751de5bccc532f99c38.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans Italic - vietnamese */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 400;
+  font-style: italic;
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+  src: local("Fira Sans Italic"), local("FiraSans-Italic"), url("c6b16b1c03a6a04ede50f59651f04b30.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold - latin */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: normal;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: local("Fira Sans SemiBold"), local("FiraSans-SemiBold"), url("9c3268e02a502282659fc2967b7312aa.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold - latin-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: normal;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: local("Fira Sans SemiBold"), local("FiraSans-SemiBold"), url("a2081ebf09f0834c3238fa8379dd5933.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold - cyrillic */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: normal;
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+  src: local("Fira Sans SemiBold"), local("FiraSans-SemiBold"), url("32aa264c520e5cda8edcf078338e3726.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold - cyrillic-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: normal;
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+  src: local("Fira Sans SemiBold"), local("FiraSans-SemiBold"), url("de66598d279702619fc732dd0755e64b.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold - greek */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: normal;
+  unicode-range: U+0370-03FF;
+  src: local("Fira Sans SemiBold"), local("FiraSans-SemiBold"), url("8d13fba24861381bbf049151500fc3c7.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold - greek-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: normal;
+  unicode-range: U+1F00-1FFF;
+  src: local("Fira Sans SemiBold"), local("FiraSans-SemiBold"), url("344a054b0cf04f0e4ef5775422ac8623.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold - vietnamese */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: normal;
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+  src: local("Fira Sans SemiBold"), local("FiraSans-SemiBold"), url("2ee1817ab8adbad972fb3dc37fe8137a.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold Italic - latin */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: italic;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: local("Fira Sans SemiBold Italic"), local("FiraSans-SemiBoldItalic"), url("5c972b6e59c619043afde4e50910dd0e.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold Italic - latin-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: italic;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: local("Fira Sans SemiBold Italic"), local("FiraSans-SemiBoldItalic"), url("bfad2f492618524445a77d6f6027640c.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold Italic - cyrillic */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: italic;
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+  src: local("Fira Sans SemiBold Italic"), local("FiraSans-SemiBoldItalic"), url("70bbe4fa448d45934dd7ef3821a0bbc1.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold Italic - cyrillic-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: italic;
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+  src: local("Fira Sans SemiBold Italic"), local("FiraSans-SemiBoldItalic"), url("3547fe69774f25d29828445216c4359a.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold Italic - greek */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: italic;
+  unicode-range: U+0370-03FF;
+  src: local("Fira Sans SemiBold Italic"), local("FiraSans-SemiBoldItalic"), url("165e2886d77412495d67fce78b733b99.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold Italic - greek-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: italic;
+  unicode-range: U+1F00-1FFF;
+  src: local("Fira Sans SemiBold Italic"), local("FiraSans-SemiBoldItalic"), url("673d71580da4b34d457adb7a7e6d8a54.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans SemiBold Italic - vietnamese */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 600;
+  font-style: italic;
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+  src: local("Fira Sans SemiBold Italic"), local("FiraSans-SemiBoldItalic"), url("15e884e61ff8a89781628bf35808a388.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold - latin */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: normal;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: local("Fira Sans ExtraBold"), local("FiraSans-ExtraBold"), url("f5bed1081a6b6a2d7ded5a408594c3f0.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold - latin-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: normal;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: local("Fira Sans ExtraBold"), local("FiraSans-ExtraBold"), url("1df3c268422a69f8f87a78f2d633d3cd.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold - cyrillic */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: normal;
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+  src: local("Fira Sans ExtraBold"), local("FiraSans-ExtraBold"), url("b3160295742c2b514b0fcef9c30b88d3.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold - cyrillic-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: normal;
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+  src: local("Fira Sans ExtraBold"), local("FiraSans-ExtraBold"), url("b0d34a4f6816878d99fd4871158b6c9d.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold - greek */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: normal;
+  unicode-range: U+0370-03FF;
+  src: local("Fira Sans ExtraBold"), local("FiraSans-ExtraBold"), url("3549cf599377ecbccfaf7a4de8c7ede1.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold - greek-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: normal;
+  unicode-range: U+1F00-1FFF;
+  src: local("Fira Sans ExtraBold"), local("FiraSans-ExtraBold"), url("1faad5ac980b016de2cbd798e01ec4a5.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold - vietnamese */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: normal;
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+  src: local("Fira Sans ExtraBold"), local("FiraSans-ExtraBold"), url("123472598894204e050a7cf1c02f5ee6.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold Italic - latin */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: italic;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: local("Fira Sans ExtraBold Italic"), local("FiraSans-ExtraBoldItalic"), url("b141a2fcf0e3355058c627f95995b844.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold Italic - latin-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: italic;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  src: local("Fira Sans ExtraBold Italic"), local("FiraSans-ExtraBoldItalic"), url("8c8937c705596deeda3b403a9c56044d.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold Italic - cyrillic */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: italic;
+  unicode-range: U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+  src: local("Fira Sans ExtraBold Italic"), local("FiraSans-ExtraBoldItalic"), url("d5a25fb9c913d9ee506ce2e9dbf448fa.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold Italic - cyrillic-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: italic;
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+  src: local("Fira Sans ExtraBold Italic"), local("FiraSans-ExtraBoldItalic"), url("6a883871cd0e2a114c5f49dbe58120fb.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold Italic - greek */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: italic;
+  unicode-range: U+0370-03FF;
+  src: local("Fira Sans ExtraBold Italic"), local("FiraSans-ExtraBoldItalic"), url("e0acf1d200dc58aea39b1b08b1da5f40.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold Italic - greek-ext */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: italic;
+  unicode-range: U+1F00-1FFF;
+  src: local("Fira Sans ExtraBold Italic"), local("FiraSans-ExtraBoldItalic"), url("e33b4369259d609fbbca62a6160c6158.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
+
+/* Fira Sans ExtraBold Italic - vietnamese */
+@font-face {
+  font-family: "Fira Sans";
+  font-weight: 800;
+  font-style: italic;
+  unicode-range: U+0102-0103, U+0110-0111, U+1EA0-1EF9, U+20AB;
+  src: local("Fira Sans ExtraBold Italic"), local("FiraSans-ExtraBoldItalic"), url("34b78a33222707c1c8bcb8b83682decc.woff2") format("woff2"), url("d1bf8e74b313433928dc201d22656110.woff2") format("woff");
+  font-display: swap; }
