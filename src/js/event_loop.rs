@@ -277,6 +277,10 @@ impl<Host: 'static> EventLoop<Host> {
     self.microtask_checkpoint_hook = hook;
   }
 
+  pub fn microtask_checkpoint_hook(&self) -> Option<MicrotaskCheckpointHook<Host>> {
+    self.microtask_checkpoint_hook
+  }
+
   pub fn default_deadline_stage(&self) -> RenderStage {
     self.default_deadline_stage
   }
@@ -307,6 +311,20 @@ impl<Host: 'static> EventLoop<Host> {
       queue_limits,
       ..Self::default()
     }
+  }
+
+  pub(crate) fn reset_for_navigation(&mut self, trace: TraceHandle, queue_limits: QueueLimits) {
+    let clock = Arc::clone(&self.clock);
+    let hook = self.microtask_checkpoint_hook;
+    let default_deadline_stage = self.default_deadline_stage;
+    let currently_running_task = self.currently_running_task;
+
+    let mut new_event_loop = EventLoop::with_clock_and_queue_limits(clock, queue_limits);
+    new_event_loop.set_trace_handle(trace);
+    new_event_loop.set_default_deadline_stage(default_deadline_stage);
+    new_event_loop.set_microtask_checkpoint_hook(hook);
+    new_event_loop.currently_running_task = currently_running_task;
+    *self = new_event_loop;
   }
 
   pub fn now(&self) -> Duration {

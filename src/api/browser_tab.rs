@@ -181,6 +181,7 @@ pub struct BrowserTabHost {
   document_referrer_policy: ReferrerPolicy,
   csp: Option<CspPolicy>,
   pending_navigation: Option<LocationNavigationRequest>,
+  html_sources: HashMap<String, String>,
   external_script_sources: HashMap<String, String>,
   script_blocking_stylesheets: ScriptBlockingStyleSheetSet,
   stylesheet_keys_by_node: HashMap<NodeId, usize>,
@@ -219,6 +220,7 @@ impl BrowserTabHost {
       document_referrer_policy: ReferrerPolicy::default(),
       csp: None,
       pending_navigation: None,
+      html_sources: HashMap::new(),
       external_script_sources: HashMap::new(),
       script_blocking_stylesheets: ScriptBlockingStyleSheetSet::new(),
       stylesheet_keys_by_node: HashMap::new(),
@@ -230,6 +232,10 @@ impl BrowserTabHost {
       lifecycle: DocumentLifecycle::new(),
       last_dynamic_script_discovery_generation: 0,
     }
+  }
+
+  fn register_html_source(&mut self, url: String, html: String) {
+    self.html_sources.insert(url, html);
   }
 
   fn register_external_script_source(&mut self, url: String, source: String) {
@@ -1566,6 +1572,14 @@ impl BrowserTabHost {
   }
 }
 
+fn reset_event_loop_for_navigation(
+  event_loop: &mut EventLoop<BrowserTabHost>,
+  trace: TraceHandle,
+  queue_limits: crate::js::QueueLimits,
+) {
+  event_loop.reset_for_navigation(trace, queue_limits);
+}
+
 impl CurrentScriptHost for BrowserTabHost {
   fn current_script_state(&self) -> &CurrentScriptStateHandle {
     &self.current_script
@@ -2120,6 +2134,14 @@ impl BrowserTab {
       .register_external_script_source(url.into(), source.into());
   }
 
+  /// Register an in-memory HTML payload that can be navigated to by URL (including via
+  /// `window.location`-driven navigations).
+  pub fn register_html_source(&mut self, url: impl Into<String>, html: impl Into<String>) {
+    self
+      .host
+      .register_html_source(url.into(), html.into());
+  }
+
   pub fn write_trace(&self) -> Result<()> {
     let Some(path) = self.trace_output.as_deref() else {
       return Ok(());
@@ -2230,35 +2252,55 @@ impl BrowserTab {
       .map(|deadline| DeadlineGuard::install(Some(deadline)));
 
     let mut target_url = url.to_string();
+    // Even when callers pass unbounded `RunLimits`, keep navigations finite so hostile pages cannot
+    // loop forever by repeatedly assigning `window.location`.
+    const MAX_NAVIGATIONS_PER_CALL: usize = 128;
+    let mut navigations_in_call: usize = 0;
     loop {
+      navigations_in_call = navigations_in_call.saturating_add(1);
+      if navigations_in_call > MAX_NAVIGATIONS_PER_CALL {
+        return Err(Error::Other(format!(
+          "Navigation loop detected: exceeded {MAX_NAVIGATIONS_PER_CALL} navigations in one navigation chain"
+        )));
+      }
       // Fetch the document first so a failed request doesn't clobber the existing navigation's
       // committed DOM.
-      let resource = {
-        let fetcher = self.host.document.fetcher();
-        let mut req = FetchRequest::document(&target_url);
-        if let Some(referrer) = self.host.document_url.as_deref() {
-          req = req.with_referrer_url(referrer);
-        }
-        if let Some(origin) = self.host.document_origin.as_ref() {
-          req = req.with_client_origin(origin);
-        }
-        req = req.with_referrer_policy(self.host.document_referrer_policy);
-        fetcher.fetch_with_request(req)?
-      };
-      let header_csp = CspPolicy::from_response_headers(&resource);
-      let hint = resource
-        .final_url
-        .as_deref()
-        .unwrap_or_else(|| target_url.as_str());
-      let final_url = super::merge_fragment_from_url(hint, target_url.as_str());
-      let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
+      let (final_url, html, header_csp, document_referrer_policy) =
+        if let Some(html) = self.host.html_sources.get(&target_url).cloned() {
+          let final_url = target_url.clone();
+          let header_csp = None;
+          let document_referrer_policy =
+            crate::html::referrer_policy::extract_referrer_policy_from_html(&html).unwrap_or_default();
+          (final_url, html, header_csp, document_referrer_policy)
+        } else {
+          let resource = {
+            let fetcher = self.host.document.fetcher();
+            let mut req = FetchRequest::document(&target_url);
+            if let Some(referrer) = self.host.document_url.as_deref() {
+              req = req.with_referrer_url(referrer);
+            }
+            if let Some(origin) = self.host.document_origin.as_ref() {
+              req = req.with_client_origin(origin);
+            }
+            req = req.with_referrer_policy(self.host.document_referrer_policy);
+            fetcher.fetch_with_request(req)?
+          };
+          let header_csp = CspPolicy::from_response_headers(&resource);
+          let hint = resource
+            .final_url
+            .as_deref()
+            .unwrap_or_else(|| target_url.as_str());
+          let final_url = super::merge_fragment_from_url(hint, target_url.as_str());
+          let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
 
-      // The `Referrer-Policy` response header applies as the initial document referrer policy
-      // (matching `FastRender::prepare_url`). `<meta name="referrer">` can override it.
-      let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
-      let document_referrer_policy =
-        crate::html::referrer_policy::extract_referrer_policy_from_html(&html)
-          .unwrap_or(initial_referrer_policy);
+          // The `Referrer-Policy` response header applies as the initial document referrer policy
+          // (matching `FastRender::prepare_url`). `<meta name="referrer">` can override it.
+          let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
+          let document_referrer_policy =
+            crate::html::referrer_policy::extract_referrer_policy_from_html(&html)
+              .unwrap_or(initial_referrer_policy);
+          (final_url, html, header_csp, document_referrer_policy)
+        };
 
       // Seed navigation URL hints for downstream subresource fetches. Unlike the base URL, the
       // document URL is used for referrer/origin semantics and must remain stable even if `<base
@@ -2612,10 +2654,11 @@ impl BrowserTab {
   }
 
   fn reset_event_loop(&mut self) {
-    let mut event_loop = EventLoop::new();
-    event_loop.set_trace_handle(self.trace.clone());
-    event_loop.set_queue_limits(self.host.js_execution_options.event_loop_queue_limits);
-    self.event_loop = event_loop;
+    let queue_limits = self.event_loop.queue_limits();
+    reset_event_loop_for_navigation(&mut self.event_loop, self.trace.clone(), queue_limits);
+    self
+      .event_loop
+      .set_queue_limits(self.host.js_execution_options.event_loop_queue_limits);
   }
 
   /// Notify the tab that the HTML parser discovered a parser-inserted `<script>` element.
