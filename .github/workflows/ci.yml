@@ -179,6 +179,11 @@ jobs:
         #   bash scripts/cargo_agent.sh xtask webidl-bindings --check
         run: cargo xtask webidl-bindings --check
 
+      - name: Validate generated legacy WebIDL bindings
+        # To reproduce locally:
+        #   bash scripts/cargo_agent.sh xtask webidl-bindings --backend legacy --out src/js/webidl/bindings/generated_legacy.rs --check
+        run: cargo xtask webidl-bindings --backend legacy --out src/js/webidl/bindings/generated_legacy.rs --check
+
       - name: "Lint: no panics in production code"
         run: cargo xtask lint-no-panics
 
