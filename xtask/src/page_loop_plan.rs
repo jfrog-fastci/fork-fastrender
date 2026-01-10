@@ -1,6 +1,7 @@
 //! `xtask page-loop` command planning helpers.
 //!
-//! Historically `page-loop` spawned renderer binaries via `cargo run`. That keeps Cargo holding the
+//! Historically `page-loop` spawned renderer binaries via the Cargo wrapper
+//! (`bash scripts/cargo_agent.sh run --bin …`). That keeps Cargo holding the
 //! target-dir lock (and some global locks) for the entire duration of the render, which makes it
 //! easy for multi-agent hosts to stall when several workers run page-loop workflows at once.
 //!

@@ -41,8 +41,12 @@ fn dry_run_prints_expected_plan() {
     "expected fixture name in plan; got:\n{stdout}"
   );
   assert!(
-    stdout.contains("scripts/cargo_agent.sh run --release --bin render_fixtures"),
-    "expected render_fixtures command to be present; got:\n{stdout}"
+    stdout.contains("scripts/cargo_agent.sh build --release --bin render_fixtures"),
+    "expected render_fixtures build command to be present; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("target/release/render_fixtures"),
+    "expected render_fixtures execution to use target/release; got:\n{stdout}"
   );
   assert!(
     stdout.contains("target/page_loop") && stdout.contains("example.com") && stdout.contains("fastrender"),
@@ -69,17 +73,25 @@ fn dry_run_with_debug_omits_release_for_fastrender_commands() {
   );
 
   let stdout = String::from_utf8_lossy(&output.stdout);
-  let render_line = stdout
+  let build_line = stdout
     .lines()
-    .find(|line| line.contains("render_fixtures"))
-    .expect("render_fixtures command line should be printed");
+    .find(|line| line.contains("scripts/cargo_agent.sh build") && line.contains("--bin render_fixtures"))
+    .expect("render_fixtures build command line should be printed");
   assert!(
-    render_line.contains("scripts/cargo_agent.sh run") && render_line.contains("--bin render_fixtures"),
-    "expected render_fixtures command line; got:\n{render_line}"
+    build_line.contains("scripts/cargo_agent.sh build") && build_line.contains("--bin render_fixtures"),
+    "expected render_fixtures build command line; got:\n{build_line}"
   );
   assert!(
-    !render_line.contains("--release"),
-    "expected --debug to omit `--release` for render_fixtures; got:\n{render_line}"
+    !build_line.contains("--release"),
+    "expected --debug to omit `--release` for render_fixtures build; got:\n{build_line}"
+  );
+  let run_line = stdout
+    .lines()
+    .find(|line| line.contains("scripts/run_limited.sh") && line.contains("render_fixtures"))
+    .expect("render_fixtures execution command line should be printed");
+  assert!(
+    run_line.contains("target/debug/render_fixtures"),
+    "expected --debug to use target/debug/render_fixtures; got:\n{run_line}"
   );
 }
 
