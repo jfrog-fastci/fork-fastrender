@@ -384,7 +384,7 @@ fn module_record_from_top_level(
           import_stmt.stx.attributes.as_ref(),
           &mut ctx,
         )?;
-        push_requested_module(&mut record.requested_modules, req)?;
+        push_requested_module(&mut record.requested_modules, req, &mut ctx)?;
       }
 
       Stmt::ExportDefaultExpr(_) => {
@@ -413,13 +413,11 @@ fn module_record_from_top_level(
         };
 
         if let Some(req) = &from {
-          if !record
-            .requested_modules
-            .iter()
-            .any(|existing| existing.spec_equal(req))
-          {
-            push_requested_module(&mut record.requested_modules, clone_module_request(req)?)?;
-          }
+          push_requested_module(
+            &mut record.requested_modules,
+            clone_module_request(req, &mut ctx)?,
+            &mut ctx,
+          )?;
         }
 
         match (&export_stmt.stx.names, from) {
@@ -451,7 +449,7 @@ fn module_record_from_top_level(
                 ctx.budget_tick()?;
                 record.indirect_export_entries.push(IndirectExportEntry {
                   export_name: try_string_from_str(&name.stx.alias.stx.name)?,
-                  module_request: clone_module_request(&req)?,
+                  module_request: clone_module_request(&req, &mut ctx)?,
                   import_name: ImportName::Name(try_string_from_str(name.stx.exportable.as_str())?),
                 });
               }
@@ -1051,11 +1049,19 @@ fn module_request_from_specifier(
   ))
 }
 
-fn push_requested_module(out: &mut Vec<ModuleRequest>, request: ModuleRequest) -> Result<(), VmError> {
-  if !out.iter().any(|existing| existing.spec_equal(&request)) {
-    out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-    out.push(request);
+fn push_requested_module(
+  out: &mut Vec<ModuleRequest>,
+  request: ModuleRequest,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<(), VmError> {
+  for existing in out.iter() {
+    ctx.budget_tick()?;
+    if existing.spec_equal(&request) {
+      return Ok(());
+    }
   }
+  out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+  out.push(request);
   Ok(())
 }
 
@@ -1167,12 +1173,17 @@ fn try_string_from_str(value: &str) -> Result<String, VmError> {
   Ok(out)
 }
 
-fn clone_module_request(req: &ModuleRequest) -> Result<ModuleRequest, VmError> {
+fn clone_module_request(
+  req: &ModuleRequest,
+  ctx: &mut ModuleRecordParseCtx<'_>,
+) -> Result<ModuleRequest, VmError> {
+  ctx.budget_tick()?;
   let mut attrs = Vec::<ImportAttribute>::new();
   attrs
     .try_reserve(req.attributes.len())
     .map_err(|_| VmError::OutOfMemory)?;
   for attr in &req.attributes {
+    ctx.budget_tick()?;
     attrs.push(ImportAttribute {
       key: try_string_from_str(&attr.key)?,
       value: try_string_from_str(&attr.value)?,
