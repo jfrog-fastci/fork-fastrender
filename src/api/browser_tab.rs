@@ -1452,7 +1452,7 @@ impl BrowserTabHost {
         &format!("source=external url={url}"),
       )?;
       if let Some(integrity) = spec.integrity.as_deref() {
-        crate::js::sri::verify_integrity_sha256(source.as_bytes(), integrity).map_err(|message| {
+        crate::js::sri::verify_integrity(source.as_bytes(), integrity).map_err(|message| {
           Error::Other(format!("SRI blocked script {url}: {message}"))
         })?;
       }
@@ -1494,7 +1494,7 @@ impl BrowserTabHost {
       }
     }
     if let Some(integrity) = spec.integrity.as_deref() {
-      crate::js::sri::verify_integrity_sha256(&resource.bytes, integrity).map_err(|message| {
+      crate::js::sri::verify_integrity(&resource.bytes, integrity).map_err(|message| {
         Error::Other(format!("SRI blocked script {url}: {message}"))
       })?;
     }
