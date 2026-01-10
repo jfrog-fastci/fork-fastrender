@@ -135,3 +135,33 @@ pub fn parse_with_options_cancellable(
     }
   }
 }
+
+/// Parse JavaScript or TypeScript source with explicit [`ParseOptions`], allowing
+/// cooperative cancellation via `cancel_check`.
+///
+/// This is a callback-based variant of [`parse_with_options_cancellable`] that does not require
+/// threads/atomics. Cancellation is best-effort: `cancel_check` is invoked periodically during
+/// tokenization/parsing and the parser returns [`SyntaxErrorType::Cancelled`] once observed.
+pub fn parse_with_options_cancellable_by<'a>(
+  source: &'a str,
+  opts: ParseOptions,
+  cancel_check: impl FnMut() -> bool + 'a,
+) -> SyntaxResult<Node<TopLevel>> {
+  let lexer = Lexer::new(source);
+  let mut parser = Parser::new_cancellable_by(lexer, opts, Box::new(cancel_check));
+
+  let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parser.parse_top_level()));
+  match result {
+    Ok(result) => result,
+    Err(payload) => {
+      if payload.is::<ParseCancelled>() {
+        return Err(SyntaxError::new(
+          SyntaxErrorType::Cancelled,
+          loc::Loc(source.len(), source.len()),
+          None,
+        ));
+      }
+      std::panic::resume_unwind(payload)
+    }
+  }
+}

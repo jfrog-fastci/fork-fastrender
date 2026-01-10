@@ -29,7 +29,8 @@ use parse_js::ast::expr::Expr as AstExpr;
 use parse_js::ast::func::Func;
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::Stmt;
-use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+use parse_js::error::SyntaxErrorType;
+use parse_js::{parse_with_options_cancellable_by, Dialect, ParseOptions, SourceType};
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -945,8 +946,7 @@ impl Vm {
 
     let mut wrapped: String = String::new();
     let top = match kind {
-      EcmaFunctionKind::Decl => parse_with_options(snippet, opts)
-        .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?,
+      EcmaFunctionKind::Decl => self.parse_top_level_with_budget(snippet, opts)?,
       EcmaFunctionKind::ObjectMember => {
         let capacity = snippet
           .len()
@@ -956,8 +956,7 @@ impl Vm {
         wrapped.push_str("({");
         wrapped.push_str(snippet);
         wrapped.push_str("})");
-        parse_with_options(&wrapped, opts)
-          .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?
+        self.parse_top_level_with_budget(&wrapped, opts)?
       }
       EcmaFunctionKind::Expr => {
         let mut attempt: usize = 0;
@@ -972,15 +971,19 @@ impl Vm {
           wrapped.push_str(snippet);
           wrapped.push(')');
 
-          match parse_with_options(&wrapped, opts) {
+          match self.parse_top_level_with_budget(&wrapped, opts) {
             Ok(top) => break top,
             Err(err) => {
+              // Propagate non-syntax errors (VM termination, OOM, etc).
+              if !matches!(err, VmError::Syntax(_)) {
+                return Err(err);
+              }
               // Retry by stripping a likely delimiter suffix if present.
               //
               // This should be rare: it indicates our saved snippet span included a trailing token
               // from the enclosing syntax rather than the function expression itself.
               if attempt >= 4 {
-                return Err(VmError::Syntax(vec![err.to_diagnostic(FileId(0))]));
+                return Err(err);
               }
 
               let trimmed = snippet.trim_end();
@@ -993,7 +996,7 @@ impl Vm {
               }
 
               let Some(next) = next else {
-                return Err(VmError::Syntax(vec![err.to_diagnostic(FileId(0))]));
+                return Err(err);
               };
 
               snippet = next;
@@ -1270,6 +1273,38 @@ impl Vm {
     }
 
     Ok(())
+  }
+
+  pub(crate) fn parse_top_level_with_budget(
+    &mut self,
+    source: &str,
+    opts: ParseOptions,
+  ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
+    // Ensure fuel/deadline/interrupt budgets apply *during parsing* as well as during evaluation.
+    self.tick()?;
+
+    const PARSE_TICK_EVERY: u64 = 1024;
+    let mut steps: u64 = 0;
+    let mut tick_err: Option<VmError> = None;
+
+    let res = parse_with_options_cancellable_by(source, opts, || {
+      steps = steps.wrapping_add(1);
+      if steps % PARSE_TICK_EVERY == 0 {
+        if let Err(err) = self.tick() {
+          tick_err = Some(err);
+          return true;
+        }
+      }
+      false
+    });
+
+    match res {
+      Ok(top) => Ok(top),
+      Err(err) if err.typ == SyntaxErrorType::Cancelled => Err(tick_err.unwrap_or_else(|| {
+        VmError::Termination(Termination::new(TerminationReason::Interrupted, Vec::new()))
+      })),
+      Err(err) => Err(VmError::Syntax(vec![err.to_diagnostic(FileId(0))])),
+    }
   }
 
   /// Calls `callee` with the provided `this` value and arguments.

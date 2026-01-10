@@ -362,6 +362,28 @@ fn empty_script_ticks_at_entry() {
 }
 
 #[test]
+fn parsing_respects_fuel_budget() {
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = new_runtime_with_vm(vm);
+  rt.vm.set_budget(Budget {
+    fuel: Some(0),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Use a large script that would otherwise take noticeable time to parse before failing with a
+  // syntax error at the end.
+  let mut src = String::new();
+  for _ in 0..10_000 {
+    src.push_str("1;");
+  }
+  src.push('}');
+
+  let err = rt.exec_script(&src).unwrap_err();
+  assert_termination_reason(err, TerminationReason::OutOfFuel);
+}
+
+#[test]
 fn native_call_consumes_tick() {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

@@ -168,6 +168,7 @@ pub struct Parser<'a> {
   in_switch: u32,
   labels: Vec<LabelInfo>,
   cancel: Option<Arc<AtomicBool>>,
+  cancel_check: Option<Box<dyn FnMut() -> bool + 'a>>,
 }
 
 // We extend this struct with added methods in the various submodules, instead of simply using free functions and passing `&mut Parser` around, for several reasons:
@@ -203,6 +204,32 @@ impl<'a> Parser<'a> {
       in_switch: 0,
       labels: Vec::new(),
       cancel,
+      cancel_check: None,
+    }
+  }
+
+  pub fn new_cancellable_by(
+    lexer: Lexer<'a>,
+    options: ParseOptions,
+    cancel_check: Box<dyn FnMut() -> bool + 'a>,
+  ) -> Parser<'a> {
+    Parser {
+      lexer,
+      buf: Vec::new(),
+      next_tok_i: 0,
+      options,
+      allow_bare_ts_type_args: false,
+      strict_mode: 0,
+      in_function: 0,
+      new_target_allowed: 0,
+      super_prop_allowed: 0,
+      super_call_allowed: 0,
+      class_is_derived: Vec::new(),
+      in_iteration: 0,
+      in_switch: 0,
+      labels: Vec::new(),
+      cancel: None,
+      cancel_check: Some(cancel_check),
     }
   }
 
@@ -479,11 +506,18 @@ impl<'a> Parser<'a> {
     self.next_tok_i = checkpoint.next_tok_i;
   }
 
-  fn panic_if_cancelled(&self) {
+  fn panic_if_cancelled(&mut self) {
     if let Some(cancel) = self.cancel.as_ref() {
       if cancel.load(AtomicOrdering::Relaxed) {
         std::panic::panic_any(crate::ParseCancelled);
       }
+    }
+    if self
+      .cancel_check
+      .as_mut()
+      .is_some_and(|cancel_check| cancel_check())
+    {
+      std::panic::panic_any(crate::ParseCancelled);
     }
   }
 

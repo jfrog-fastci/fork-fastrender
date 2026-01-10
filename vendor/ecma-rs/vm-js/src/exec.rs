@@ -27,7 +27,7 @@ use parse_js::ast::stmt::{
 };
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
-use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+use parse_js::{Dialect, ParseOptions, SourceType};
 use std::collections::HashSet;
 use std::mem;
 use std::sync::Arc;
@@ -651,8 +651,7 @@ impl JsRuntime {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = parse_with_options(&source.text, opts)
-      .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+    let top = self.vm.parse_top_level_with_budget(&source.text, opts)?;
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -742,8 +741,7 @@ impl JsRuntime {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = parse_with_options(&source.text, opts)
-      .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+    let top = self.vm.parse_top_level_with_budget(&source.text, opts)?;
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -4527,8 +4525,7 @@ impl<'a> Evaluator<'a> {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = parse_with_options(&source.text, opts)
-      .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
+    let top = self.vm.parse_top_level_with_budget(&source.text, opts)?;
     let strict = self.strict || detect_use_strict_directive(&top.stx.body, || self.tick())?;
 
     // Save and restore the runtime's source and lexical environment while running eval code. This
