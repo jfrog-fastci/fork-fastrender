@@ -881,6 +881,15 @@ impl ResourceFetcher for BundledFetcher {
           return resource.as_fetched();
         }
       }
+
+      // `fetch(url)` does not carry enough context to reproduce request headers like `Origin`
+      // (the most common cause of `Vary: Origin`). When this happens, we still want best-effort
+      // access to the captured bytes (e.g. for `xtask import-page-fixture`, which iterates all
+      // manifest entries by key). If the bundle manifest includes a direct entry for this URL,
+      // return it deterministically instead of failing.
+      if let Some(resource) = self.bundle.resource_for_url(url) {
+        return resource.as_fetched();
+      }
       return Err(Error::Other(format!(
         "Resource not found in bundle (no matching Vary variant): {}",
         url
