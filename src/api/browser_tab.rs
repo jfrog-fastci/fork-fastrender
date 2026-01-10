@@ -3271,6 +3271,81 @@ html, body { margin: 0; padding: 0; }
   }
 
   #[test]
+  fn navigate_to_url_cancel_callback_aborts_streaming_parse() -> Result<()> {
+    // Use a large HTML body so `parse_html_streaming_and_schedule_scripts` performs multiple pump
+    // iterations and thus consults the active render deadline more than once.
+    let dir = tempdir().map_err(Error::Io)?;
+    let file_path = dir.path().join("index.html");
+    let big_body = "a".repeat(32 * 1024);
+    let html = format!("<!doctype html><html><body>{big_body}</body></html>");
+    std::fs::write(&file_path, html).map_err(Error::Io)?;
+    let file_url = Url::from_file_path(&file_path)
+      .map_err(|()| Error::Other("failed to build file:// document URL".to_string()))?
+      .to_string();
+
+    // Install a file:// fetcher that does not perform deadline checks. This ensures the cancel
+    // callback is triggered from the streaming HTML parse loop (not the document fetch phase).
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let fetcher = Arc::new(LoggingFileFetcher {
+      log: Arc::clone(&log),
+    });
+    let renderer = crate::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let base_options = RenderOptions::default();
+    let document = BrowserDocumentDom2::new(renderer, "", base_options.clone())?;
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(NoopExecutor::default()),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+
+    let mut tab = BrowserTab {
+      trace: TraceHandle::default(),
+      trace_output: None,
+      host,
+      event_loop: EventLoop::new(),
+    };
+
+    let calls: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let calls_for_cb = Arc::clone(&calls);
+    let cancel_cb: Arc<crate::render_control::CancelCallback> = Arc::new(move || {
+      assert_eq!(
+        crate::render_control::active_stage(),
+        Some(crate::error::RenderStage::DomParse)
+      );
+      let prev = calls_for_cb.fetch_add(1, Ordering::Relaxed);
+      // Cancel on the *second* deadline check so the navigation proves that streaming parsing makes
+      // multiple periodic deadline checks while consuming the input stream.
+      prev >= 1
+    });
+
+    let err = tab
+      .navigate_to_url(
+        &file_url,
+        RenderOptions::default().with_cancel_callback(Some(cancel_cb)),
+      )
+      .expect_err("expected cancellation during streaming parse");
+
+    match err {
+      Error::Render(crate::error::RenderError::Timeout {
+        stage: crate::error::RenderStage::DomParse,
+        ..
+      }) => {}
+      other => panic!("expected dom_parse timeout, got {other:?}"),
+    }
+
+    assert!(
+      calls.load(Ordering::Relaxed) >= 2,
+      "expected cancel callback to be consulted multiple times during parsing"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn non_matching_media_stylesheet_does_not_block_script() -> Result<()> {
     let temp = tempdir().map_err(Error::Io)?;
     std::fs::write(temp.path().join("print.css"), "body { color: green; }")
