@@ -705,12 +705,23 @@ fn parse_rule<'i, 't>(
 
     let kw = kw.as_ref();
     if kw.eq_ignore_ascii_case("import") {
-      if !is_top_level || !namespace_state.imports_allowed() {
+      // `@import` rules are typically restricted to the stylesheet prelude, but we intentionally
+      // parse them in nested rule lists too so the import resolver can honor imports inside
+      // matching `@media`/`@supports` branches (see `resolve_rules_owned` in `css/types.rs`).
+      //
+      // Do not allow `@import` inside nested selectors (`.foo { @import ... }`): there is no
+      // sensible interpretation for placing a full stylesheet inside a style rule's nesting
+      // context.
+      if parent_selectors.is_some() {
+        skip_at_rule(parser);
+        return Ok(None);
+      }
+      if is_top_level && !namespace_state.imports_allowed() {
         skip_at_rule(parser);
         return Ok(None);
       }
       let parsed = parse_import_rule(parser)?;
-      if parsed.is_some() {
+      if is_top_level && parsed.is_some() {
         namespace_state.note_import_rule();
       }
       return Ok(parsed);
