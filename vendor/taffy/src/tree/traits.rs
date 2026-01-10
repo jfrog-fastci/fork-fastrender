@@ -385,7 +385,12 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
   #[inline(always)]
   #[cfg(feature = "calc")]
   fn calc(&self, val: *const (), basis: f32) -> f32 {
-    self.resolve_calc_value(val, basis)
+    // Guard against integrator-provided calc resolvers returning NaN/∞ (for example due to
+    // arithmetic overflow or malformed inputs). Taffy's layout algorithms assume resolved lengths
+    // are finite; propagating non-finite values quickly turns subsequent computations into NaN/∞.
+    let basis = if basis.is_finite() { basis } else { 0.0 };
+    let resolved = self.resolve_calc_value(val, basis);
+    if resolved.is_finite() { resolved } else { 0.0 }
   }
 
   /// Alias to `resolve_calc_value` with a shorter function name
@@ -397,3 +402,89 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
 }
 
 impl<T: LayoutPartialTree> LayoutPartialTreeExt for T {}
+
+#[cfg(all(test, feature = "calc"))]
+mod tests {
+  use super::{Layout, LayoutInput, LayoutOutput, LayoutPartialTree, LayoutPartialTreeExt, NodeId};
+  use crate::geometry::Size;
+  use crate::style::Style;
+  use crate::sys::DefaultCheapStr;
+  use core::cell::Cell;
+
+  struct DummyTree {
+    style: Style<DefaultCheapStr>,
+    result: Cell<f32>,
+    last_basis: Cell<f32>,
+  }
+
+  impl super::TraversePartialTree for DummyTree {
+    type ChildIter<'a>
+      = core::iter::Empty<NodeId>
+    where
+      Self: 'a;
+
+    fn child_ids(&self, _parent_node_id: NodeId) -> Self::ChildIter<'_> {
+      core::iter::empty()
+    }
+
+    fn child_count(&self, _parent_node_id: NodeId) -> usize {
+      0
+    }
+
+    fn get_child_id(&self, _parent_node_id: NodeId, _child_index: usize) -> NodeId {
+      NodeId::new(0)
+    }
+  }
+
+  impl LayoutPartialTree for DummyTree {
+    type CoreContainerStyle<'a>
+      = &'a Style<DefaultCheapStr>
+    where
+      Self: 'a;
+
+    type CustomIdent = DefaultCheapStr;
+
+    fn get_core_container_style(&self, _node_id: NodeId) -> Self::CoreContainerStyle<'_> {
+      &self.style
+    }
+
+    fn set_unrounded_layout(&mut self, _node_id: NodeId, _layout: &Layout) {}
+
+    fn compute_child_layout(&mut self, _node_id: NodeId, _inputs: LayoutInput) -> LayoutOutput {
+      LayoutOutput::from_outer_size(Size::ZERO)
+    }
+
+    fn resolve_calc_value(&self, _val: *const (), basis: f32) -> f32 {
+      self.last_basis.set(basis);
+      self.result.get()
+    }
+  }
+
+  #[test]
+  fn calc_sanitizes_non_finite_output_to_zero() {
+    let tree = DummyTree {
+      style: Style::default(),
+      result: Cell::new(f32::NAN),
+      last_basis: Cell::new(123.0),
+    };
+    assert_eq!(tree.calc(core::ptr::null(), 100.0), 0.0);
+
+    tree.result.set(f32::INFINITY);
+    assert_eq!(tree.calc(core::ptr::null(), 100.0), 0.0);
+  }
+
+  #[test]
+  fn calc_sanitizes_non_finite_basis_to_zero_before_resolving() {
+    let tree = DummyTree {
+      style: Style::default(),
+      result: Cell::new(1.0),
+      last_basis: Cell::new(123.0),
+    };
+
+    assert_eq!(tree.calc(core::ptr::null(), f32::INFINITY), 1.0);
+    assert_eq!(tree.last_basis.get(), 0.0);
+
+    assert_eq!(tree.calc(core::ptr::null(), f32::NAN), 1.0);
+    assert_eq!(tree.last_basis.get(), 0.0);
+  }
+}
