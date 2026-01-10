@@ -329,8 +329,7 @@ fn compatibility_mode_lifts_img_src_from_data_src_retina() {
 
 #[test]
 fn compatibility_mode_lifts_img_src_from_data_delayed_url() {
-  let html =
-    r#"<html><body><img data-delayed-url="https://example.com/real.png"></body></html>"#;
+  let html = r#"<html><body><img data-delayed-url="https://example.com/real.png"></body></html>"#;
   let compat_dom =
     parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
   let compat_img = find_element(&compat_dom, "img").expect("compat img element");
@@ -365,6 +364,39 @@ fn compatibility_mode_lifts_img_src_from_data_img_url() {
     compat_img.get_attribute_ref("src"),
     Some("img.png"),
     "compat mode should lift data-img-url into src"
+  );
+
+  let html = r#"<html><body><img src="about:blank" data-img-url="https://example.com/real.png"></body></html>"#;
+
+  let standard_dom = parse_html(html).expect("parse standard DOM");
+  let standard_img = find_element(&standard_dom, "img").expect("standard img element");
+  assert_eq!(
+    standard_img.get_attribute_ref("src"),
+    Some("about:blank"),
+    "standard mode should preserve placeholder src"
+  );
+
+  let compat_dom =
+    parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
+  let compat_img = find_element(&compat_dom, "img").expect("compat img element");
+  assert_eq!(
+    compat_img.get_attribute_ref("src"),
+    Some("https://example.com/real.png"),
+    "compat mode should lift data-img-url into src"
+  );
+}
+
+#[test]
+fn compatibility_mode_ignores_placeholder_data_img_url() {
+  let html = r##"<html><body><img src="about:blank" data-img-url="#" data-default-src="real.jpg"></body></html>"##;
+
+  let compat_dom =
+    parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
+  let compat_img = find_element(&compat_dom, "img").expect("compat img element");
+  assert_eq!(
+    compat_img.get_attribute_ref("src"),
+    Some("real.jpg"),
+    "compat mode should ignore placeholder data-img-url candidates"
   );
 }
 
