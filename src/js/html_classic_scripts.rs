@@ -2,6 +2,7 @@ use crate::dom2::{Document, NodeId};
 use crate::error::{Error, Result};
 use crate::js::dom_host::DomHost;
 use crate::js::orchestrator::{CurrentScriptHost, CurrentScriptStateHandle};
+use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::js::script_scheduler::ScriptId;
 use crate::js::streaming_pipeline::{ClassicScriptPipeline, ClassicScriptPipelineHost, ParseBudget};
 use crate::js::{EventLoop, ScriptType};
@@ -49,7 +50,11 @@ impl ResourceFetcherClassicScriptFetcher {
       .fetcher
       .fetch_with_request(FetchRequest::new(url, destination))?;
     ensure_script_mime_sane(&res, url)?;
-    Ok(String::from_utf8_lossy(&res.bytes).into_owned())
+    Ok(decode_classic_script_bytes(
+      &res.bytes,
+      res.content_type.as_deref(),
+      encoding_rs::UTF_8,
+    ))
   }
 }
 

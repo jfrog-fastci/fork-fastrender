@@ -16,6 +16,7 @@ use crate::js::{
   ScriptSchedulerAction, ScriptType, TaskSource,
 };
 use crate::js::runtime::with_event_loop;
+use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::css::encoding::decode_css_bytes_cow;
 use crate::css::loader::resolve_href_with_base;
 use crate::css::parser::{parse_stylesheet_with_media, tokenize_rel_list};
@@ -24,6 +25,8 @@ use crate::render_control::{DeadlineGuard, RenderDeadline};
 use crate::resource::{origin_from_url, FetchDestination, FetchRequest, ReferrerPolicy};
 use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType};
 use crate::web::events::{Event, EventInit, EventTargetId};
+
+use encoding_rs::{Encoding, UTF_8};
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -1539,7 +1542,27 @@ impl BrowserTabHost {
         Error::Other(format!("SRI blocked script {url}: {message}"))
       })?;
     }
-    Ok(String::from_utf8_lossy(&resource.bytes).to_string())
+
+    let fallback_encoding = self
+      .scripts
+      .get(&script_id)
+      .and_then(|entry| {
+        let dom = self.document.dom();
+        dom.get_attribute(entry.node_id, "charset").ok().flatten()
+      })
+      .map(|value| {
+        value.trim_matches(|c: char| {
+          matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+        })
+      })
+      .and_then(|label| Encoding::for_label(label.as_bytes()))
+      .unwrap_or(UTF_8);
+
+    Ok(decode_classic_script_bytes(
+      &resource.bytes,
+      resource.content_type.as_deref(),
+      fallback_encoding,
+    ))
   }
 }
 
@@ -2724,17 +2747,18 @@ fn extract_referrer_policy_from_dom2_document(dom: &Document) -> Option<Referrer
 mod tests {
   use super::*;
 
+  use crate::api::FastRender;
   use crate::js::runtime::with_event_loop;
   use crate::js::window_realm::{register_dom_source, unregister_dom_source};
   use crate::js::{WindowRealm, WindowRealmConfig};
+  use crate::resource::{FetchedResource, ResourceFetcher};
+
   use std::cell::{Cell, RefCell};
   use std::collections::HashMap;
   use std::ptr::NonNull;
   use std::rc::Rc;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex};
-
-  use crate::resource::{FetchedResource, ResourceFetcher};
   use vm_js::Value;
 
   use tempfile::tempdir;
@@ -3228,6 +3252,87 @@ mod tests {
 
     assert_eq!(&*event_log.borrow(), &["error".to_string()]);
     assert_eq!(&*script_log.borrow(), &["bad".to_string(), "ok".to_string()]);
+    Ok(())
+  }
+
+  #[derive(Clone)]
+  struct SingleResourceFetcher {
+    url: String,
+    bytes: Arc<Vec<u8>>,
+  }
+
+  impl ResourceFetcher for SingleResourceFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      if url != self.url {
+        return Err(Error::Other(format!(
+          "unexpected fetch url={url} (expected {})",
+          self.url
+        )));
+      }
+      Ok(FetchedResource::new((*self.bytes).clone(), None))
+    }
+  }
+
+  #[test]
+  fn fetch_script_source_honors_script_charset_attribute() -> Result<()> {
+    let url = "https://example.com/test.js";
+    let bytes = encoding_rs::SHIFT_JIS.encode("console.log('デ')").0.into_owned();
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SingleResourceFetcher {
+      url: url.to_string(),
+      bytes: Arc::new(bytes),
+    });
+
+    let renderer = FastRender::builder()
+      .dom_scripting_enabled(true)
+      .fetcher(fetcher)
+      .build()?;
+    let document = BrowserDocumentDom2::new(
+      renderer,
+      &format!("<script src=\"{url}\" charset=\"shift_jis\"></script>"),
+      RenderOptions::default(),
+    )?;
+
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(NoopExecutor::default()),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    host.reset_scripting_state(None, ReferrerPolicy::default())?;
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+
+    // Insert the script into the host's scheduler tables without triggering fetch/execution, then
+    // call `fetch_script_source` directly so this test doesn't depend on JS execution plumbing.
+    let spec_for_table = spec.clone();
+    let discovered = host
+      .scheduler
+      .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
+    host.scripts.insert(
+      discovered.id,
+      ScriptEntry {
+        node_id,
+        spec: spec_for_table.clone(),
+      },
+    );
+
+    let destination = if spec_for_table.crossorigin.is_some() {
+      FetchDestination::ScriptCors
+    } else {
+      FetchDestination::Script
+    };
+    let source = host.fetch_script_source(
+      discovered.id,
+      spec_for_table.src.as_deref().unwrap(),
+      destination,
+    )?;
+    assert!(
+      source.contains('デ'),
+      "expected decoded source to include kana from shift_jis bytes, got {source:?}"
+    );
     Ok(())
   }
 

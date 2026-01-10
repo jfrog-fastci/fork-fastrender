@@ -56,7 +56,7 @@ fn trim_ascii_whitespace_str(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
-fn charset_from_content_type(content_type: &str) -> Option<&str> {
+pub(crate) fn charset_from_content_type(content_type: &str) -> Option<&str> {
   for param in content_type.split(';').skip(1) {
     let mut parts = param.splitn(2, '=');
     let name = trim_ascii_whitespace_str(parts.next()?);

@@ -37,6 +37,7 @@ pub mod html_script_pipeline;
 pub mod html_script_scheduler;
 pub mod import_maps;
 pub mod module_scripts;
+pub mod script_encoding;
 pub mod options;
 pub mod orchestrator;
 pub mod browser_tab;

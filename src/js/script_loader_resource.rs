@@ -1,4 +1,5 @@
-use crate::error::{Error, ResourceError, Result};
+use crate::error::{Error, Result};
+use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::js::ScriptLoader;
 use crate::resource::{ensure_script_mime_sane, FetchDestination, FetchRequest, ResourceFetcher};
 use std::collections::VecDeque;
@@ -76,11 +77,11 @@ impl<F: ResourceFetcher + 'static> ResourceScriptLoader<F> {
   fn fetch_and_decode(fetcher: &F, destination: FetchDestination, url: &str) -> Result<String> {
     let res = fetcher.fetch_with_request(FetchRequest::new(url, destination))?;
     ensure_script_mime_sane(&res, url)?;
-    String::from_utf8(res.bytes).map_err(|source| {
-      Error::Resource(
-        ResourceError::new(url, "script response was not valid UTF-8").with_source(source),
-      )
-    })
+    Ok(decode_classic_script_bytes(
+      &res.bytes,
+      res.content_type.as_deref(),
+      encoding_rs::UTF_8,
+    ))
   }
 }
 
@@ -292,26 +293,24 @@ mod tests {
   }
 
   #[test]
-  fn invalid_utf8_results_in_error() -> Result<()> {
+  fn invalid_bytes_are_decoded_lossily() -> Result<()> {
     let fetcher = MapFetcher::default();
-    fetcher.insert("bad.js", vec![0xFF, 0xFE, 0xFD]);
+    fetcher.insert("bad.js", vec![0x80]);
     let mut loader = ResourceScriptLoader::with_max_workers(fetcher, 1);
 
-    let _handle = loader.start_load("bad.js", FetchDestination::Script)?;
+    let handle = loader.start_load("bad.js", FetchDestination::Script)?;
 
-    let err = loop {
-      match loader.poll_complete() {
-        Ok(Some(_)) => panic!("expected error completion"),
-        Ok(None) => {
-          std::thread::yield_now();
-          continue;
-        }
-        Err(e) => break e,
+    let (got_handle, got_source) = loop {
+      if let Some((h, s)) = loader.poll_complete()? {
+        break (h, s);
       }
+      std::thread::yield_now();
     };
-
-    let msg = err.to_string();
-    assert!(msg.contains("not valid UTF-8"), "msg={msg}");
+    assert_eq!(got_handle, handle);
+    assert!(
+      got_source.contains('\u{FFFD}'),
+      "expected replacement char for invalid bytes, got {got_source:?}"
+    );
     Ok(())
   }
 
