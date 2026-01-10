@@ -1,0 +1,70 @@
+use fastrender::layout::constraints::LayoutConstraints;
+use fastrender::layout::contexts::block::BlockFormattingContext;
+use fastrender::style::display::Display;
+use fastrender::style::float::Float;
+use fastrender::style::types::Overflow;
+use fastrender::style::values::Length;
+use fastrender::BoxNode;
+use fastrender::ComputedStyle;
+use fastrender::FormattingContext;
+use fastrender::FormattingContextType;
+use std::sync::Arc;
+
+#[test]
+fn bfc_root_block_is_pushed_down_when_too_wide_to_fit_next_to_floats() {
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+
+  let mut float_style = ComputedStyle::default();
+  float_style.display = Display::InlineBlock;
+  float_style.float = Float::Left;
+  float_style.width = Some(Length::px(50.0));
+  float_style.height = Some(Length::px(20.0));
+  let float_node =
+    BoxNode::new_inline_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  // `overflow:hidden` establishes a BFC. Its border box must not overlap floats, so when the block
+  // is too wide to fit next to a float, it must be pushed down below the float instead of being
+  // shifted horizontally (which would overflow the containing block).
+  let mut bfc_style = ComputedStyle::default();
+  bfc_style.display = Display::Block;
+  bfc_style.overflow_x = Overflow::Hidden;
+  bfc_style.overflow_y = Overflow::Hidden;
+  bfc_style.width = Some(Length::percent(100.0));
+  bfc_style.height = Some(Length::px(10.0));
+  let bfc_node = BoxNode::new_block(Arc::new(bfc_style), FormattingContextType::Block, vec![]);
+
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![float_node, bfc_node],
+  );
+
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+
+  let bfc_frags: Vec<_> = fragment
+    .children
+    .iter()
+    .filter(|child| (child.bounds.width() - 200.0).abs() < 0.01 && (child.bounds.height() - 10.0).abs() < 0.01)
+    .collect();
+  assert_eq!(
+    bfc_frags.len(),
+    1,
+    "expected a single BFC root fragment; got {} children",
+    fragment.children.len()
+  );
+  let bfc_frag = bfc_frags[0];
+  assert!(
+    bfc_frag.bounds.x().abs() < 0.01,
+    "expected BFC root block to stay at x=0, got x={:.2}",
+    bfc_frag.bounds.x()
+  );
+  assert!(
+    (bfc_frag.bounds.y() - 20.0).abs() < 0.01,
+    "expected BFC root block to be pushed below the float to y=20, got y={:.2}",
+    bfc_frag.bounds.y()
+  );
+}
+

@@ -1421,26 +1421,66 @@ impl BlockFormattingContext {
       content_height_base + padding_top + padding_bottom,
     );
     let cb_block_base = specified_height.map(|h| h.max(0.0) + padding_top + padding_bottom);
+    let mut box_y = box_y;
     // CSS 2.1 §9.5.1: boxes that establish a new block formatting context must not overlap the
     // margin boxes of floats in the same formatting context. Real pages use this for clearfix
     // patterns (`overflow:hidden`, `display: table`, etc.). Without applying float avoidance here,
     // BFC roots can be laid out starting at x=0 and end up painting underneath floats.
-    let float_avoidance_offset = if establishes_bfc(style) {
-      external_float_ctx
-        .as_deref()
-        .map(|ctx| {
-          let (left_edge, _) = ctx.available_width_at_y_in_containing_block(
-            external_float_base_y + box_y,
+    let mut float_avoidance_offset = 0.0;
+    if establishes_bfc(style) {
+      if let Some(ctx) = external_float_ctx.as_deref() {
+        let border_box_width = computed_width.border_box_width();
+        let border_box_width = if border_box_width.is_finite() {
+          border_box_width.max(0.0)
+        } else {
+          0.0
+        };
+
+        // If the block's border box cannot fit in the available band next to floats at the
+        // computed y-position, push it down until it does (matching the float placement loop).
+        if border_box_width > 0.0 {
+          let min_y = external_float_base_y + box_y;
+          let (_, available_width) = ctx.available_width_at_y_in_containing_block(
+            min_y,
             external_float_base_x,
             containing_width,
           );
-          (left_edge - external_float_base_x).max(0.0)
-        })
-        .unwrap_or(0.0)
-    } else {
-      0.0
-    };
-    let child_border_origin = Point::new(float_avoidance_offset + computed_width.margin_left, box_y);
+
+          if available_width + 0.01 < border_box_width {
+            let fit_y = ctx.find_fit_in_containing_block(
+              border_box_width,
+              0.0,
+              min_y,
+              external_float_base_x,
+              containing_width,
+            );
+            if fit_y.is_finite() && fit_y > min_y {
+              box_y += fit_y - min_y;
+            }
+          }
+
+          let query_y = external_float_base_y + box_y;
+          let (left_edge, available_width) = ctx.available_width_at_y_in_containing_block(
+            query_y,
+            external_float_base_x,
+            containing_width,
+          );
+          let band_left = (left_edge - external_float_base_x).max(0.0);
+          let band_right = (band_left + available_width).max(band_left);
+
+          let desired_x = computed_width.margin_left;
+          let max_x = band_right - border_box_width;
+          let clamped_x = if max_x >= band_left {
+            desired_x.clamp(band_left, max_x)
+          } else {
+            band_left
+          };
+          float_avoidance_offset = clamped_x - desired_x;
+        }
+      }
+    }
+    let child_border_origin =
+      Point::new(float_avoidance_offset + computed_width.margin_left, box_y);
     // Translate viewport-relative containing blocks into the child's coordinate space. Without
     // this, absolute/fixed positioned descendants can mistakenly include the parent's placement
     // offset (e.g. after parent/child margin collapsing shifts the child).

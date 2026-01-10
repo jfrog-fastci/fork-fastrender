@@ -8,6 +8,10 @@ use super::{
   ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, TaskSource,
 };
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| c.is_ascii_whitespace())
+}
+
 /// Run a minimal subset of the HTML "prepare the script element" algorithm for dynamically inserted
 /// `<script>` elements.
 ///
