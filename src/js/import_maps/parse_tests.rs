@@ -35,6 +35,44 @@ fn normalizes_url_like_specifier_keys_to_absolute_url_strings() {
 }
 
 #[test]
+fn matches_html_spec_normalization_example() {
+  let (map, warnings) = parse_import_map_string(
+    r#"{
+  "imports": {
+    "/app/helper": "node_modules/helper/index.mjs",
+    "lodash": "/node_modules/lodash-es/lodash.js"
+  }
+}"#,
+    &base_url(),
+  )
+  .unwrap();
+
+  assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+  let helper = map
+    .imports
+    .entries
+    .iter()
+    .find(|(k, _)| k == "https://example.com/app/helper")
+    .expect("expected /app/helper entry");
+  assert_eq!(
+    helper.1.as_ref().expect("helper URL").as_str(),
+    "https://example.com/base/node_modules/helper/index.mjs"
+  );
+
+  let lodash = map
+    .imports
+    .entries
+    .iter()
+    .find(|(k, _)| k == "lodash")
+    .expect("expected lodash entry");
+  assert_eq!(
+    lodash.1.as_ref().expect("lodash URL").as_str(),
+    "https://example.com/node_modules/lodash-es/lodash.js"
+  );
+}
+
+#[test]
 fn trailing_slash_mismatch_sets_address_to_null() {
   let (map, warnings) =
     parse_import_map_string(r#"{ "imports": { "pkg/": "/not-a-dir.js" } }"#, &base_url()).unwrap();
