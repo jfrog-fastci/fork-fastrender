@@ -259,12 +259,47 @@ pub struct BrowserTabHost {
   document_write_state: DocumentWriteState,
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
+  webidl_bindings_host: BrowserTabWebIdlBindingsHost,
   last_dynamic_script_discovery_generation: u64,
   /// Whether we are currently running a streaming HTML parse (even if the parser state is
   /// temporarily moved out of `streaming_parse` by `parse_until_blocked`).
   streaming_parse_active: bool,
   streaming_parse: Option<StreamingParseState>,
   pending_parser_blocking_script: Option<PendingParserBlockingScript>,
+}
+
+#[derive(Debug, Default)]
+struct BrowserTabWebIdlBindingsHost;
+
+impl webidl_vm_js::WebIdlBindingsHost for BrowserTabWebIdlBindingsHost {
+  fn call_operation(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _receiver: Option<vm_js::Value>,
+    _interface: &'static str,
+    _operation: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "BrowserTab does not implement WebIDL binding dispatch",
+    ))
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+    _new_target: vm_js::Value,
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "BrowserTab does not implement WebIDL binding dispatch",
+    ))
+  }
 }
 
 impl BrowserTabHost {
@@ -313,6 +348,7 @@ impl BrowserTabHost {
       document_write_state,
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
+      webidl_bindings_host: BrowserTabWebIdlBindingsHost::default(),
       last_dynamic_script_discovery_generation: 0,
       streaming_parse_active: false,
       streaming_parse: None,
@@ -2284,36 +2320,9 @@ impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
     };
     (document.as_mut(), realm)
   }
-}
 
-impl webidl_vm_js::WebIdlBindingsHost for BrowserTabHost {
-  fn call_operation(
-    &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _receiver: Option<vm_js::Value>,
-    _interface: &'static str,
-    _operation: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
-  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "BrowserTabHost does not implement WebIDL binding dispatch",
-    ))
-  }
-
-  fn call_constructor(
-    &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _interface: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
-    _new_target: vm_js::Value,
-  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "BrowserTabHost does not implement WebIDL binding dispatch",
-    ))
+  fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
+    Some(&mut self.webidl_bindings_host)
   }
 }
 

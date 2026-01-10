@@ -244,7 +244,42 @@ pub struct WindowHostState {
   window: WindowRealm,
   fetcher: Arc<dyn ResourceFetcher>,
   _fetch_bindings: WindowFetchBindings,
+  webidl_bindings_host: WindowWebIdlBindingsHost,
   js_execution_options: JsExecutionOptions,
+}
+
+#[derive(Debug, Default)]
+struct WindowWebIdlBindingsHost;
+
+impl webidl_vm_js::WebIdlBindingsHost for WindowWebIdlBindingsHost {
+  fn call_operation(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _receiver: Option<vm_js::Value>,
+    _interface: &'static str,
+    _operation: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "WindowHost does not implement WebIDL binding dispatch",
+    ))
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+    _new_target: vm_js::Value,
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "WindowHost does not implement WebIDL binding dispatch",
+    ))
+  }
 }
 
 impl WindowHostState {
@@ -366,6 +401,7 @@ impl WindowHostState {
       window,
       fetcher: host_fetcher,
       _fetch_bindings: fetch_bindings,
+      webidl_bindings_host: WindowWebIdlBindingsHost::default(),
       js_execution_options,
     })
   }
@@ -563,36 +599,9 @@ impl WindowRealmHost for WindowHostState {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
     (&mut *self.document, &mut self.window)
   }
-}
 
-impl webidl_vm_js::WebIdlBindingsHost for WindowHostState {
-  fn call_operation(
-    &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _receiver: Option<vm_js::Value>,
-    _interface: &'static str,
-    _operation: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
-  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "WindowHostState does not implement WebIDL binding dispatch",
-    ))
-  }
-
-  fn call_constructor(
-    &mut self,
-    _vm: &mut vm_js::Vm,
-    _scope: &mut vm_js::Scope<'_>,
-    _interface: &'static str,
-    _overload: usize,
-    _args: &[vm_js::Value],
-    _new_target: vm_js::Value,
-  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
-    Err(vm_js::VmError::Unimplemented(
-      "WindowHostState does not implement WebIDL binding dispatch",
-    ))
+  fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
+    Some(&mut self.webidl_bindings_host)
   }
 }
 
