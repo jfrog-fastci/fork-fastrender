@@ -14,6 +14,9 @@ use crate::js::vm_error_format;
 use crate::js::window_realm::{
   dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, WindowRealmHost,
 };
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use vm_js::{
   ExecutionContext, Heap, Job, JobCallback, PromiseHandle, PromiseRejectionOperation, PromiseState,
@@ -327,6 +330,8 @@ impl VmJobContext for WindowRealmJobContext<'_> {
 pub struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
   any: VmJsHostHooksPayload,
   pending_discard: Vec<Job>,
+  heap_ptr: Option<NonNull<Heap>>,
+  heap_alive: Option<Arc<AtomicBool>>,
   enqueue_error: Option<crate::error::Error>,
   _marker: std::marker::PhantomData<fn() -> Host>,
 }
@@ -347,6 +352,8 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     Self {
       any,
       pending_discard: Vec::new(),
+      heap_ptr: None,
+      heap_alive: None,
       enqueue_error: None,
       _marker: std::marker::PhantomData,
     }
@@ -355,8 +362,11 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
   pub fn new_with_host(host: &mut Host) -> Self {
     // Initialize the payload with the active `VmHost` context.
     let mut hooks = {
-      let (host_ctx, _) = host.vm_host_and_window_realm();
-      Self::new(host_ctx)
+      let (host_ctx, window_realm) = host.vm_host_and_window_realm();
+      let mut hooks = Self::new(host_ctx);
+      hooks.heap_ptr = Some(NonNull::from(window_realm.heap_mut()));
+      hooks.heap_alive = Some(Arc::clone(window_realm.heap_alive_flag()));
+      hooks
     };
     // Populate the WebIDL bindings host slot if the embedding provides one.
     if let Some(bindings_host) = host.webidl_bindings_host() {
@@ -387,8 +397,49 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       return;
     }
 
-    let job_cell: std::rc::Rc<std::cell::RefCell<Option<Job>>> =
-      std::rc::Rc::new(std::cell::RefCell::new(Some(job)));
+    struct AutoDiscardJobCell {
+      job: Option<Job>,
+      heap_ptr: Option<NonNull<Heap>>,
+      heap_alive: Option<Arc<AtomicBool>>,
+    }
+
+    impl AutoDiscardJobCell {
+      fn take(&mut self) -> Option<Job> {
+        self.job.take()
+      }
+    }
+
+    impl Drop for AutoDiscardJobCell {
+      fn drop(&mut self) {
+        let Some(job) = self.job.take() else {
+          return;
+        };
+
+        let can_discard = self
+          .heap_alive
+          .as_ref()
+          .map(|flag| flag.load(Ordering::Relaxed))
+          .unwrap_or(false);
+        if can_discard {
+          // SAFETY: the `heap_alive` flag is set to false before the owning `WindowRealm` drops its
+          // heap. When it is still true, `heap_ptr` must point at that live heap.
+          let heap = unsafe { self.heap_ptr.expect("heap_ptr missing").as_mut() };
+          let mut ctx = HeapRootContext { heap };
+          job.discard(&mut ctx);
+        } else {
+          // We have no way to safely clean up roots once the heap is gone. Leak the job to avoid a
+          // debug-assert panic inside `vm-js`'s `Drop` implementation.
+          std::mem::forget(job);
+        }
+      }
+    }
+
+    let job_cell: std::rc::Rc<std::cell::RefCell<AutoDiscardJobCell>> =
+      std::rc::Rc::new(std::cell::RefCell::new(AutoDiscardJobCell {
+        job: Some(job),
+        heap_ptr: self.heap_ptr,
+        heap_alive: self.heap_alive.as_ref().map(Arc::clone),
+      }));
     let job_cell_for_closure = std::rc::Rc::clone(&job_cell);
 
     let enqueue_result: crate::error::Result<()> = (|| {

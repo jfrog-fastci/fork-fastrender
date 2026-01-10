@@ -160,6 +160,16 @@ pub struct WindowRealm {
   match_media_env_id: Option<u64>,
   time_bindings: Option<TimeBindings>,
   interrupt_flag: Arc<AtomicBool>,
+  /// Tracks whether `runtime.heap` is still alive.
+  ///
+  /// `vm-js` promise jobs can be queued onto the host event loop. When execution is aborted (due to
+  /// budgets/cancellation), those queued jobs may be dropped without being run. Dropping a job
+  /// without calling `Job::discard(..)` triggers debug assertions in `vm-js` because it would leak
+  /// persistent roots.
+  ///
+  /// We use this flag to safely discard any abandoned jobs while the heap is still live, and fall
+  /// back to leaking the job (only possible during teardown) once the heap is gone.
+  heap_alive: Arc<AtomicBool>,
   js_execution_options: JsExecutionOptions,
   vm_host: (),
 }
@@ -231,6 +241,7 @@ impl WindowRealm {
     // Window realms should be interruptible even before full script execution is wired up.
     // This is separate from the renderer-level interrupt flag: it's resettable per realm.
     let interrupt_flag = Arc::new(AtomicBool::new(false));
+    let heap_alive = Arc::new(AtomicBool::new(true));
     vm_options.interrupt_flag = Some(Arc::clone(&interrupt_flag));
     // Also observe the render-wide interrupt flag so host cancellation interrupts JS at the next
     // `Vm::tick()`.
@@ -281,6 +292,7 @@ impl WindowRealm {
       match_media_env_id,
       time_bindings: Some(time_bindings),
       interrupt_flag,
+      heap_alive,
       js_execution_options,
       vm_host: (),
     })
@@ -331,6 +343,10 @@ impl WindowRealm {
 
   pub fn heap_mut(&mut self) -> &mut Heap {
     &mut self.runtime.heap
+  }
+
+  pub(crate) fn heap_alive_flag(&self) -> &Arc<AtomicBool> {
+    &self.heap_alive
   }
 
   pub fn vm(&self) -> &Vm {
@@ -619,6 +635,7 @@ pub trait WindowRealmHost {
 
 impl Drop for WindowRealm {
   fn drop(&mut self) {
+    self.heap_alive.store(false, Ordering::Relaxed);
     self.teardown();
   }
 }

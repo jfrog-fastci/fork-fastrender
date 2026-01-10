@@ -67,7 +67,7 @@ use selectors::context::QuirksMode;
 const DEFAULT_ASSET_CACHE_DIR: &str = "fetches/assets";
 const DEFAULT_JS_MAX_TASKS: usize = 1024;
 const DEFAULT_JS_MAX_MICROTASKS: usize = 4096;
-const DEFAULT_JS_MAX_WALL_MS: u64 = 200;
+const DEFAULT_JS_MAX_WALL_MS: u64 = 500;
 const DEFAULT_JS_MAX_SCRIPT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy)]
