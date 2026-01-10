@@ -264,20 +264,27 @@ pub fn chrome_ui(
               let height_points = 16.0;
               let aspect = (w as f32) / (h as f32);
               let width_points = (height_points * aspect).clamp(8.0, 32.0);
-              if ui
-                .add(
-                  egui::Image::new((tex_id, egui::vec2(width_points, height_points)))
-                    .sense(egui::Sense::click()),
-                )
-                .clicked()
-              {
+              let response = ui.add(
+                egui::Image::new((tex_id, egui::vec2(width_points, height_points)))
+                  .sense(egui::Sense::click()),
+              );
+              if response.clicked_by(egui::PointerButton::Middle) {
+                if can_close_tabs {
+                  actions.push(ChromeAction::CloseTab(tab.id));
+                }
+              } else if response.clicked() {
                 actions.push(ChromeAction::ActivateTab(tab.id));
               }
             }
           }
         }
 
-        if ui.selectable_label(is_active, title).clicked() {
+        let response = ui.selectable_label(is_active, title);
+        if response.clicked_by(egui::PointerButton::Middle) {
+          if can_close_tabs {
+            actions.push(ChromeAction::CloseTab(tab.id));
+          }
+        } else if response.clicked() {
           actions.push(ChromeAction::ActivateTab(tab.id));
         }
 
@@ -496,6 +503,24 @@ mod tests {
     ));
     raw.events = events;
     ctx.begin_frame(raw);
+  }
+
+  fn middle_click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+    vec![
+      egui::Event::PointerMoved(pos),
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Middle,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+      },
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Middle,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+      },
+    ]
   }
 
   #[test]
@@ -1005,5 +1030,50 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_editing);
+  }
+
+  #[test]
+  fn middle_click_tab_label_closes_tab_when_multiple_tabs_exist() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+
+    // The first tab label should appear near the top-left of the chrome panel.
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, middle_click_at(egui::pos2(10.0, 10.0)));
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::CloseTab(id) if *id == tab_a)),
+      "expected middle-click to close tab {tab_a:?}, got {actions:?}"
+    );
+    assert!(
+      !actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_a)),
+      "expected middle-click not to activate the tab it closes, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn middle_click_tab_label_is_noop_when_only_one_tab_exists() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+
+    let ctx = egui::Context::default();
+    begin_frame(&ctx, middle_click_at(egui::pos2(10.0, 10.0)));
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      !actions.iter().any(|action| matches!(action, ChromeAction::CloseTab(_))),
+      "expected middle-click not to close the last remaining tab, got {actions:?}"
+    );
   }
 }
