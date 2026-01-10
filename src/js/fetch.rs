@@ -99,6 +99,10 @@ impl JsHeaders {
     self.with_headers(|headers| headers.get(name))
   }
 
+  pub fn get_set_cookie(&self) -> Result<Vec<String>> {
+    self.with_headers(|headers| Ok(headers.get_set_cookie()))
+  }
+
   pub fn has(&self, name: &str) -> Result<bool> {
     self.with_headers(|headers| headers.has(name))
   }
@@ -117,6 +121,26 @@ impl JsHeaders {
 
   pub fn sort_and_combine(&self) -> Result<Vec<(String, String)>> {
     self.with_headers(|headers| Ok(headers.sort_and_combine()))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn js_headers_get_set_cookie_returns_values_in_order() -> Result<()> {
+    let headers = JsHeaders::new(Some(HeadersInit::Pairs(vec![
+      ("set-cookie".to_string(), "a=b".to_string()),
+      ("x-test".to_string(), "1".to_string()),
+      ("Set-Cookie".to_string(), "c=d".to_string()),
+    ])))?;
+
+    assert_eq!(
+      headers.get_set_cookie()?,
+      vec!["a=b".to_string(), "c=d".to_string()]
+    );
+    Ok(())
   }
 }
 
