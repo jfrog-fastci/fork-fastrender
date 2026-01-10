@@ -9,6 +9,7 @@
 //!
 //! Note: Tests prefer bundled fixture fonts for deterministic results.
 
+use fastrender::style::types::FontFeatureSetting;
 use fastrender::style::types::TextOrientation;
 use fastrender::style::types::UnicodeBidi;
 use fastrender::style::types::WritingMode;
@@ -25,6 +26,7 @@ use fastrender::text::pipeline::ShapingPipeline;
 use fastrender::ComputedStyle;
 use fastrender::FontConfig;
 use fastrender::FontContext;
+use std::sync::Arc;
 use unicode_bidi::Level;
 
 fn bundled_font_context() -> FontContext {
@@ -176,6 +178,126 @@ fn vertical_shaping_uses_vertical_advances() {
     vertical_y_advance > horizontal_y_advance + 0.1,
     "vertical shaping should expose vertical advances for inline progression"
   );
+}
+
+#[test]
+fn vertical_shaping_injects_vert_vrt2_by_default() {
+  let pipeline = ShapingPipeline::new();
+  let font_ctx = bundled_font_context();
+  let mut style = ComputedStyle::default();
+  style.writing_mode = WritingMode::VerticalRl;
+  style.text_orientation = TextOrientation::Upright;
+
+  let runs = require_fonts!(pipeline.shape("abc", &style, &font_ctx));
+  assert!(!runs.is_empty(), "expected vertical shaping to yield runs");
+
+  let mut saw_vert = false;
+  let mut saw_vrt2 = false;
+  for run in runs {
+    for feature in run.features.iter() {
+      if feature.tag.to_bytes() == *b"vert" && feature.value == 1 {
+        saw_vert = true;
+      }
+      if feature.tag.to_bytes() == *b"vrt2" && feature.value == 1 {
+        saw_vrt2 = true;
+      }
+    }
+  }
+
+  assert!(saw_vert, "expected vertical shaping to enable `vert=1` by default");
+  assert!(saw_vrt2, "expected vertical shaping to enable `vrt2=1` by default");
+}
+
+#[test]
+fn vertical_shaping_respects_explicit_vert_vrt2_disable() {
+  let pipeline = ShapingPipeline::new();
+  let font_ctx = bundled_font_context();
+  let mut style = ComputedStyle::default();
+  style.writing_mode = WritingMode::VerticalRl;
+  style.text_orientation = TextOrientation::Upright;
+  style.font_feature_settings = Arc::from([
+    FontFeatureSetting {
+      tag: *b"vert",
+      value: 0,
+    },
+    FontFeatureSetting {
+      tag: *b"vrt2",
+      value: 0,
+    },
+  ]);
+
+  let runs = require_fonts!(pipeline.shape("abc", &style, &font_ctx));
+  assert!(!runs.is_empty(), "expected vertical shaping to yield runs");
+
+  let mut saw_vert_disable = false;
+  let mut saw_vrt2_disable = false;
+  for run in runs {
+    for feature in run.features.iter() {
+      if feature.tag.to_bytes() == *b"vert" {
+        assert_eq!(
+          feature.value, 0,
+          "expected explicit `vert=0` to be preserved without injecting `vert=1`"
+        );
+        saw_vert_disable = true;
+      }
+      if feature.tag.to_bytes() == *b"vrt2" {
+        assert_eq!(
+          feature.value, 0,
+          "expected explicit `vrt2=0` to be preserved without injecting `vrt2=1`"
+        );
+        saw_vrt2_disable = true;
+      }
+    }
+  }
+
+  assert!(
+    saw_vert_disable,
+    "expected features applied during shaping to include explicit `vert=0`"
+  );
+  assert!(
+    saw_vrt2_disable,
+    "expected features applied during shaping to include explicit `vrt2=0`"
+  );
+}
+
+#[test]
+fn vertical_shaping_does_not_duplicate_explicit_vert_vrt2_enable() {
+  let pipeline = ShapingPipeline::new();
+  let font_ctx = bundled_font_context();
+  let mut style = ComputedStyle::default();
+  style.writing_mode = WritingMode::VerticalRl;
+  style.text_orientation = TextOrientation::Upright;
+  style.font_feature_settings = Arc::from([
+    FontFeatureSetting {
+      tag: *b"vert",
+      value: 1,
+    },
+    FontFeatureSetting {
+      tag: *b"vrt2",
+      value: 1,
+    },
+  ]);
+
+  let runs = require_fonts!(pipeline.shape("abc", &style, &font_ctx));
+  assert!(!runs.is_empty(), "expected vertical shaping to yield runs");
+
+  for run in runs {
+    let vert: Vec<_> = run
+      .features
+      .iter()
+      .filter(|f| f.tag.to_bytes() == *b"vert")
+      .collect();
+    assert_eq!(vert.len(), 1, "expected `vert` feature to appear only once");
+    assert_eq!(vert[0].value, 1, "expected explicit `vert=1` to be preserved");
+
+    let vrt2: Vec<_> = run
+      .features
+      .iter()
+      .filter(|f| f.tag.to_bytes() == *b"vrt2")
+      .collect();
+    assert_eq!(vrt2.len(), 1, "expected `vrt2` feature to appear only once");
+    assert_eq!(vrt2[0].value, 1, "expected explicit `vrt2=1` to be preserved");
+  }
 }
 
 #[test]

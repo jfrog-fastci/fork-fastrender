@@ -5621,12 +5621,8 @@ fn shape_font_run(run: &FontRun) -> Result<ShapedRun> {
 
   let features = if run.vertical {
     let base = run.features.as_ref();
-    let need_vert = !base
-      .iter()
-      .any(|f| f.tag.to_bytes() == *b"vert" && f.value != 0);
-    let need_vrt2 = !base
-      .iter()
-      .any(|f| f.tag.to_bytes() == *b"vrt2" && f.value != 0);
+    let need_vert = !base.iter().any(|f| f.tag.to_bytes() == *b"vert");
+    let need_vrt2 = !base.iter().any(|f| f.tag.to_bytes() == *b"vrt2");
     if need_vert || need_vrt2 {
       let mut features = base.to_vec();
       if need_vert {
