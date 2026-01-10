@@ -13800,8 +13800,12 @@ mod tests {
     );
     let metrics_scaled = DisplayListBuilder::resolve_scaled_metrics(&style, &builder.font_ctx);
     let viewport = builder.viewport.map(|(w, h)| Size::new(w, h));
-    let line_height =
-      compute_line_height_with_metrics_viewport(&style, metrics_scaled.as_ref(), viewport);
+    let line_height = compute_line_height_with_metrics_viewport(
+      &style,
+      metrics_scaled.as_ref(),
+      viewport,
+      builder.font_ctx.root_font_metrics(),
+    );
     let metrics =
       InlineTextItem::metrics_from_runs(&builder.font_ctx, &runs, line_height, style.font_size);
     let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
