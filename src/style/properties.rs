@@ -12306,6 +12306,11 @@ fn apply_declaration_with_base_internal_with_order(
           styles.font_size_pending = None;
         }
       }
+      // CSS Values & Units: unitless `0` is allowed anywhere a `<length>` is accepted.
+      PropertyValue::Number(n) if *n == 0.0 => {
+        styles.font_size = 0.0;
+        styles.font_size_pending = None;
+      }
       PropertyValue::Length(len) => {
         let len = *len;
         if len.calc.is_none() && len.value < 0.0 {

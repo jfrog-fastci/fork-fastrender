@@ -5472,13 +5472,35 @@ impl Painter {
 
         let orientation = style.image_orientation.resolve(image.orientation, true);
         let (img_w_raw, img_h_raw) = image.oriented_dimensions(orientation);
-        let Some((img_w, img_h)) =
+        let Some((mut img_w, mut img_h)) =
           image.css_dimensions(orientation, &style.image_resolution, self.scale, None)
         else {
           return;
         };
         let intrinsic_ratio = image.intrinsic_ratio(orientation);
-        if img_w <= 0.0 || img_h <= 0.0 || img_w_raw == 0 || img_h_raw == 0 {
+
+        // SVGs that omit `width`/`height` (or specify them as percentages) have no intrinsic size.
+        // For CSS backgrounds, browsers treat this as “missing natural size”, so
+        // `background-size: auto` falls back to the background positioning area instead of the
+        // 300×150 default object size used for replaced elements. This matters for inline SVG data
+        // URLs used as icons/logos.
+        if image.is_vector {
+          if let Some(svg) = image.svg_content.as_deref() {
+            if let Some(intrinsic) =
+              crate::svg::svg_root_intrinsic_dimensions(svg, style.font_size, style.root_font_size)
+            {
+              if intrinsic.width.is_none() && intrinsic.height.is_none() {
+                img_w = 0.0;
+                img_h = 0.0;
+              }
+            }
+          }
+        }
+
+        if img_w_raw == 0 || img_h_raw == 0 {
+          return;
+        }
+        if !image.is_vector && (img_w <= 0.0 || img_h <= 0.0) {
           return;
         }
         let (mut tile_w, mut tile_h) = compute_background_size(

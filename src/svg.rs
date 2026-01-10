@@ -217,6 +217,38 @@ pub(crate) fn svg_intrinsic_dimensions_from_attributes(
   }
 }
 
+/// Parses an SVG document and returns intrinsic dimensions for the root `<svg>` element.
+///
+/// This is a convenience wrapper around [`svg_intrinsic_dimensions_from_attributes`] so call sites
+/// don't have to repeat `roxmltree` parsing and panic-guards.
+pub(crate) fn svg_root_intrinsic_dimensions(
+  svg_content: &str,
+  font_size: f32,
+  root_font_size: f32,
+) -> Option<SvgIntrinsicDimensions> {
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    Document::parse(svg_content)
+  })) {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) => return None,
+    Err(_) => return None,
+  };
+
+  let root = doc.root_element();
+  if !root.tag_name().name().eq_ignore_ascii_case("svg") {
+    return None;
+  }
+
+  Some(svg_intrinsic_dimensions_from_attributes(
+    root.attribute("width"),
+    root.attribute("height"),
+    root.attribute("viewBox"),
+    root.attribute("preserveAspectRatio"),
+    font_size,
+    root_font_size,
+  ))
+}
+
 fn parse_view_box_ratio(view_box: Option<&str>) -> Option<f32> {
   let raw = view_box?;
   let mut parts = raw

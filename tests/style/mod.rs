@@ -50,6 +50,7 @@ mod field_sizing_property_test;
 mod form_control_constraint_pseudo_test;
 mod form_validity_pseudo_test;
 mod font_relative_units_font_size_test;
+mod font_size_unitless_zero_test;
 mod font_variation_settings_calc_test;
 mod forgiving_selector_list_test;
 mod grid_property_test;

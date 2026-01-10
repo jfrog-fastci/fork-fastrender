@@ -8273,7 +8273,7 @@ impl DisplayListBuilder {
           };
 
           let orientation = style.image_orientation.resolve(cached.orientation, true);
-          let Some((img_w, img_h)) = cached.css_dimensions(
+          let Some((mut img_w, mut img_h)) = cached.css_dimensions(
             orientation,
             &style.image_resolution,
             self.device_pixel_ratio,
@@ -8281,7 +8281,25 @@ impl DisplayListBuilder {
           ) else {
             break 'paint_url;
           };
-          if img_w <= 0.0 || img_h <= 0.0 {
+
+          // SVGs without an explicit intrinsic size (`width`/`height` missing or percentage) are
+          // treated as having no natural size for CSS backgrounds. In that case
+          // `background-size: auto` falls back to the background positioning area size rather than
+          // the 300×150 default object size used by replaced elements.
+          if cached.is_vector {
+            if let Some(svg) = cached.svg_content.as_deref() {
+              if let Some(intrinsic) =
+                crate::svg::svg_root_intrinsic_dimensions(svg, style.font_size, style.root_font_size)
+              {
+                if intrinsic.width.is_none() && intrinsic.height.is_none() {
+                  img_w = 0.0;
+                  img_h = 0.0;
+                }
+              }
+            }
+          }
+
+          if !cached.is_vector && (img_w <= 0.0 || img_h <= 0.0) {
             break 'paint_url;
           }
           let intrinsic_ratio = cached.intrinsic_ratio(orientation);

@@ -143,6 +143,7 @@ mod stacking_context_layer_bounds_paint_overflow;
 mod stacking_context_transform_viewport_culling;
 mod positioned_auto_tree_order;
 mod svg_context_paint_font;
+mod svg_background_auto_size_viewbox_only;
 mod svg_background_intrinsic_ratio_test;
 mod svg_foreign_object_external;
 mod svg_filter_background_image;
