@@ -552,6 +552,15 @@ impl JsRuntime {
   /// This is intended for embeddings that need Promise jobs enqueued by the script to be routed via
   /// `VmHostHooks::host_enqueue_promise_job` (for example, an HTML microtask queue) instead of the
   /// VM-owned microtask queue used by [`JsRuntime::exec_script`].
+  ///
+  /// ## Host context
+  ///
+  /// This hook-only API passes a **dummy host context** (`()`) to native call/construct handlers.
+  /// It is intended for unit tests and lightweight embeddings.
+  ///
+  /// Embeddings that need native handlers to downcast and mutate real host state should use
+  /// [`JsRuntime::exec_script_with_host_and_hooks`] /
+  /// [`JsRuntime::exec_script_source_with_host_and_hooks`].
   pub fn exec_script_with_hooks(
     &mut self,
     hooks: &mut dyn VmHostHooks,
@@ -574,6 +583,17 @@ impl JsRuntime {
     source: &str,
   ) -> Result<Value, VmError> {
     self.exec_script_source_with_host(host, Arc::new(SourceText::new("<inline>", source)))
+  }
+
+  /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
+  /// embedder host context and host hook implementation.
+  pub fn exec_script_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    self.exec_script_source_with_host_and_hooks(host, hooks, Arc::new(SourceText::new("<inline>", source)))
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
@@ -643,10 +663,11 @@ impl JsRuntime {
     result
   }
 
-  /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) using a custom
-  /// host hook implementation.
-  pub fn exec_script_source_with_hooks(
+  /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) with an explicit
+  /// embedder host context and host hook implementation.
+  pub fn exec_script_source_with_host_and_hooks(
     &mut self,
+    host: &mut dyn VmHost,
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
@@ -679,14 +700,12 @@ impl JsRuntime {
     let result = (|| {
       let mut vm_frame = vm_ctx.enter_frame(frame)?;
 
-      let mut dummy_host = ();
-
       let mut scope = self.heap.scope();
       // In classic scripts, top-level `this` is the global object (even in strict mode).
       let global_this = Value::Object(global_object);
       let mut evaluator = Evaluator {
         vm: &mut *vm_frame,
-        host: &mut dummy_host,
+        host,
         hooks,
         env: &mut self.env,
         strict,
@@ -719,6 +738,25 @@ impl JsRuntime {
     }
 
     result
+  }
+
+  /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) using a custom
+  /// host hook implementation.
+  ///
+  /// ## Host context
+  ///
+  /// This hook-only API passes a **dummy host context** (`()`) to native call/construct handlers.
+  /// It is intended for unit tests and lightweight embeddings.
+  ///
+  /// Embeddings that need native handlers to downcast and mutate real host state should use
+  /// [`JsRuntime::exec_script_source_with_host_and_hooks`].
+  pub fn exec_script_source_with_hooks(
+    &mut self,
+    hooks: &mut dyn VmHostHooks,
+    source: Arc<SourceText>,
+  ) -> Result<Value, VmError> {
+    let mut dummy_host = ();
+    self.exec_script_source_with_host_and_hooks(&mut dummy_host, hooks, source)
   }
 }
 

@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use vm_js::{
-  GcObject, Heap, HeapLimits, Job, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
-  VmOptions,
+  GcObject, Heap, HeapLimits, Job, JsRuntime, MicrotaskQueue, RealmId, RootId, Scope, SourceText,
+  Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
 #[derive(Debug, Default)]
@@ -89,5 +91,92 @@ fn call_with_host_passes_dummy_vmhost_context() -> Result<(), VmError> {
   }
   assert_eq!(host.counter, 1);
 
+  Ok(())
+}
+
+#[test]
+fn exec_script_source_with_host_and_hooks_threads_host_context_into_native_calls() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  rt.register_global_native_function("inc", inc_host_counter, 0)?;
+
+  let mut host = Host::default();
+  let mut hooks = MicrotaskQueue::new();
+
+  rt.exec_script_source_with_host_and_hooks(
+    &mut host,
+    &mut hooks,
+    Arc::new(SourceText::new("<inline>", "inc();")),
+  )?;
+
+  assert_eq!(host.counter, 1);
+  Ok(())
+}
+
+struct HostJobContext<'a> {
+  rt: &'a mut JsRuntime,
+  host: &'a mut Host,
+}
+
+impl VmJobContext for HostJobContext<'_> {
+  fn call(
+    &mut self,
+    hooks: &mut dyn VmHostHooks,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let vm = &mut self.rt.vm;
+    let heap = &mut self.rt.heap;
+    let mut scope = heap.scope();
+    vm.call_with_host_and_hooks(self.host, &mut scope, hooks, callee, this, args)
+  }
+
+  fn construct(
+    &mut self,
+    hooks: &mut dyn VmHostHooks,
+    callee: Value,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let vm = &mut self.rt.vm;
+    let heap = &mut self.rt.heap;
+    let mut scope = heap.scope();
+    vm.construct_with_host_and_hooks(self.host, &mut scope, hooks, callee, args, new_target)
+  }
+
+  fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+    self.rt.heap.add_root(value)
+  }
+
+  fn remove_root(&mut self, id: RootId) {
+    self.rt.heap.remove_root(id);
+  }
+}
+
+#[test]
+fn promise_jobs_can_access_host_context_when_job_context_calls_with_host_and_hooks() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  rt.register_global_native_function("inc", inc_host_counter, 0)?;
+
+  let mut host = Host::default();
+  let mut hooks = MicrotaskQueue::new();
+
+  rt.exec_script_source_with_host_and_hooks(
+    &mut host,
+    &mut hooks,
+    Arc::new(SourceText::new("<inline>", "Promise.resolve().then(inc);")),
+  )?;
+  assert_eq!(host.counter, 0);
+
+  let errors = {
+    let mut ctx = HostJobContext { rt: &mut rt, host: &mut host };
+    hooks.perform_microtask_checkpoint(&mut ctx)
+  };
+  assert!(errors.is_empty());
+  assert_eq!(host.counter, 1);
   Ok(())
 }
