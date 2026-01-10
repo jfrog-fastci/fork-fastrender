@@ -189,6 +189,15 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
     iterator_record: &mut IteratorRecord<Self::JsValue>,
   ) -> Result<Option<Self::JsValue>, Self::Error>;
 
+  /// ECMAScript abstract operation `Call ( F, V, argumentsList )`.
+  fn call(
+    &mut self,
+    host: &mut Host,
+    callee: Self::JsValue,
+    this: Self::JsValue,
+    args: &[Self::JsValue],
+  ) -> Result<Self::JsValue, Self::Error>;
+
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error>;
 
   /// Create a JavaScript `Array` object.
@@ -1207,6 +1216,16 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     }
   }
 
+  fn call(
+    &mut self,
+    host: &mut Host,
+    callee: Self::JsValue,
+    this: Self::JsValue,
+    args: &[Self::JsValue],
+  ) -> Result<Self::JsValue, Self::Error> {
+    self.cx.vm.call(host, &mut self.cx.scope, callee, this, args)
+  }
+
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error> {
     use webidl::JsRuntime as _;
     let obj = self.cx.alloc_object()?;
@@ -1849,14 +1868,15 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn get_iterator_from_method(
     &mut self,
-    _host: &mut Host,
+    host: &mut Host,
     iterable: Self::JsValue,
     method: Self::JsValue,
   ) -> Result<IteratorRecord<Self::JsValue>, Self::Error> {
-    let record =
+    let record = self.with_host_context(host, |rt| {
       <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get_iterator_from_method(
-        self, iterable, method,
-      )?;
+        rt, iterable, method,
+      )
+    })?;
     Ok(IteratorRecord {
       iterator: record.iterator,
       next_method: record.next_method,
@@ -1867,7 +1887,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn iterator_step_value(
     &mut self,
-    _host: &mut Host,
+    host: &mut Host,
     iterator_record: &mut IteratorRecord<Self::JsValue>,
   ) -> Result<Option<Self::JsValue>, Self::Error> {
     if iterator_record.done {
@@ -1906,14 +1926,27 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
           next_method: iterator_record.next_method,
           done: iterator_record.done,
         };
-        let out =
+        let out = self.with_host_context(host, |rt| {
           <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::iterator_step_value(
-            self, &mut record,
-          )?;
+            rt, &mut record,
+          )
+        })?;
         iterator_record.done = record.done;
         Ok(out)
       }
     }
+  }
+
+  fn call(
+    &mut self,
+    host: &mut Host,
+    callee: Self::JsValue,
+    this: Self::JsValue,
+    args: &[Self::JsValue],
+  ) -> Result<Self::JsValue, Self::Error> {
+    self.with_host_context(host, |rt| {
+      <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::call(rt, callee, this, args)
+    })
   }
 
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error> {

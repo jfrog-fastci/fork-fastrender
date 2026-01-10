@@ -50,6 +50,14 @@ pub fn split_js_runtime(rt: &mut VmJsRuntime) -> (&mut Vm, &mut Heap, &Realm) {
 pub const WEBIDL_BINDINGS_HOST_NOT_AVAILABLE: &str =
   "WebIDL bindings host not available: VmHostHooks::as_any_mut did not expose WebIdlBindingsHostSlot";
 
+/// Kind of snapshot iteration requested for a WebIDL `iterable<>`/`async iterable<>` declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IterableKind {
+  Entries,
+  Keys,
+  Values,
+}
+
 /// Host-facing dispatch API used by vm-js realm WebIDL bindings.
 ///
 /// `vm-js` native call handlers (`vm_js::NativeCall`) receive both:
@@ -99,6 +107,22 @@ pub trait WebIdlBindingsHost: 'static {
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError>;
+
+  /// Snapshot the current iteration contents for an interface's WebIDL `iterable<>`/`async iterable<>`.
+  ///
+  /// MVP strategy: generated bindings request an eagerly materialized list from the host, then
+  /// expose an iterator over a JS Array containing those snapshot values.
+  fn iterable_snapshot(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    receiver: Option<Value>,
+    interface: &'static str,
+    kind: IterableKind,
+  ) -> Result<Vec<bindings_runtime::BindingValue>, VmError> {
+    let _ = (vm, scope, receiver, interface, kind);
+    Err(VmError::TypeError("unimplemented host iterable snapshot"))
+  }
 }
 
 /// Sized container used for exposing a `dyn WebIdlBindingsHost` through `VmHostHooks::as_any_mut`.

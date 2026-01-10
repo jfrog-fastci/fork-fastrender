@@ -20,6 +20,7 @@ fn assert_backend_matches_golden(backend: WebIdlBindingsBackend, expected: &str)
   let idl = r#"
     [Exposed=Window]
     interface Foo {
+      constructor();
       undefined baz(DOMString s);
       undefined baz(long x);
       undefined doThing(DOMString name, optional (FooOptions or boolean) options = {});
@@ -28,6 +29,7 @@ fn assert_backend_matches_golden(backend: WebIdlBindingsBackend, expected: &str)
       undefined qux(optional FooOptions options);
       undefined takesSequence([Clamp] sequence<long> values);
       undefined takesFrozenArray([EnforceRange] FrozenArray<long> values);
+      iterable<DOMString, DOMString>;
     };
 
     dictionary FooOptions {

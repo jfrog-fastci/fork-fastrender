@@ -33,6 +33,7 @@ pub struct Intrinsics {
   object_prototype: GcObject,
   function_prototype: GcObject,
   array_prototype: GcObject,
+  array_iterator_next: GcObject,
   string_prototype: GcObject,
   number_prototype: GcObject,
   boolean_prototype: GcObject,
@@ -458,6 +459,8 @@ impl Intrinsics {
     let array_prototype_unshift = vm.register_native_call(builtins::array_prototype_unshift)?;
     let array_prototype_splice = vm.register_native_call(builtins::array_prototype_splice)?;
     let array_is_array = vm.register_native_call(builtins::array_is_array)?;
+    let array_prototype_values = vm.register_native_call(builtins::array_prototype_values)?;
+    let array_iterator_next_call = vm.register_native_call(builtins::array_iterator_next)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
     let string_prototype_char_code_at =
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
@@ -737,6 +740,20 @@ impl Intrinsics {
       )?;
     }
 
+    // `ArrayIterator.prototype.next` (minimal).
+    let array_iterator_next_name = scope.alloc_string("next")?;
+    let array_iterator_next = alloc_rooted_native_function(
+      scope,
+      roots,
+      array_iterator_next_call,
+      None,
+      array_iterator_next_name,
+      0,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(array_iterator_next, Some(function_prototype))?;
+
       // Array.prototype.map / forEach / indexOf / includes / filter / reduce / some / every / find / findIndex / concat / reverse / join / slice / push / pop / shift / unshift / splice
       {
         let map_s = scope.alloc_string("map")?;
@@ -1002,11 +1019,29 @@ impl Intrinsics {
         scope
           .heap_mut()
           .object_set_prototype(splice_fn, Some(function_prototype))?;
-      scope.define_property(
-        array_prototype,
-        splice_key,
-        data_desc(Value::Object(splice_fn), true, false, true),
-      )?;
+        scope.define_property(
+          array_prototype,
+          splice_key,
+          data_desc(Value::Object(splice_fn), true, false, true),
+        )?;
+        let values_s = scope.alloc_string("values")?;
+        scope.push_root(Value::String(values_s))?;
+        let values_key = PropertyKey::from_string(values_s);
+        let values_fn = scope.alloc_native_function(array_prototype_values, None, values_s, 0)?;
+        scope.push_root(Value::Object(values_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(values_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          values_key,
+          data_desc(Value::Object(values_fn), true, false, true),
+        )?;
+        scope.define_property(
+          array_prototype,
+          PropertyKey::Symbol(well_known_symbols.iterator),
+          data_desc(Value::Object(values_fn), true, false, true),
+        )?;
     }
 
     // `%String%`
@@ -2558,6 +2593,7 @@ impl Intrinsics {
       object_prototype,
       function_prototype,
       array_prototype,
+      array_iterator_next,
       string_prototype,
       number_prototype,
       boolean_prototype,
@@ -2627,6 +2663,10 @@ impl Intrinsics {
 
   pub fn array_prototype(&self) -> GcObject {
     self.array_prototype
+  }
+
+  pub(crate) fn array_iterator_next(&self) -> GcObject {
+    self.array_iterator_next
   }
 
   pub fn string_prototype(&self) -> GcObject {

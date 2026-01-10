@@ -6,9 +6,9 @@
 pub mod window {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
   use webidl_vm_js::bindings_runtime::{
-    to_int32_f64, AccessorPropertyAttributes, BindingsRuntime, DataPropertyAttributes,
+    to_int32_f64, AccessorPropertyAttributes, BindingValue, BindingsRuntime, DataPropertyAttributes,
   };
-  use webidl_vm_js::host_from_hooks;
+  use webidl_vm_js::{host_from_hooks, IterableKind};
 
   #[allow(dead_code)]
   fn js_to_dict_add_event_listener_options(
@@ -782,19 +782,37 @@ pub mod window {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "URLSearchParams",
-        "entries",
-        0,
-        &converted_args,
-      )
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      IterableKind::Entries,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
     }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
@@ -810,39 +828,46 @@ pub mod window {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    {
-      let mut converted_args: Vec<Value> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        Value::Undefined
+    let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+    let callback = rt.scope.push_root(callback)?;
+    let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+    let this_arg = rt.scope.push_root(this_arg)?;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      IterableKind::Entries,
+    )?;
+    for entry in snapshot {
+      let BindingValue::Sequence(mut pair) = entry else {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
       };
-      let converted = v0;
-      let converted = rt.scope.push_root(converted)?;
-      converted_args.push(converted);
-      let v1 = if args.len() > 1 {
-        args[1]
-      } else {
-        Value::Undefined
-      };
-      let converted = if matches!(v1, Value::Undefined) {
-        Value::Undefined
-      } else {
-        v1
-      };
-      let converted = rt.scope.push_root(converted)?;
-      converted_args.push(converted);
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
+      if pair.len() != 2 {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      }
+      let mut iter = pair.into_iter();
+      let key = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let value = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let key_js = rt.binding_value_to_js(key)?;
+      let key_js = rt.scope.push_root(key_js)?;
+      let value_js = rt.binding_value_to_js(value)?;
+      let value_js = rt.scope.push_root(value_js)?;
+      let _ = rt.vm.call_with_host_and_hooks(
+        _host,
         &mut rt.scope,
-        receiver,
-        "URLSearchParams",
-        "forEach",
-        0,
-        &converted_args,
-      )
+        hooks,
+        callback,
+        this_arg,
+        &[value_js, key_js, this],
+      )?;
     }
+    Ok(Value::Undefined)
   }
 
   #[allow(dead_code)]
@@ -978,19 +1003,37 @@ pub mod window {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "URLSearchParams",
-        "keys",
-        0,
-        &converted_args,
-      )
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      IterableKind::Keys,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
     }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
@@ -1050,19 +1093,37 @@ pub mod window {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "URLSearchParams",
-        "values",
-        0,
-        &converted_args,
-      )
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      IterableKind::Values,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
     }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
@@ -1839,6 +1900,13 @@ pub mod window {
       Value::Object(func),
       DataPropertyAttributes::METHOD,
     )?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);
+    rt.define_data_property(
+      proto_u_r_l_search_params,
+      iterator_key,
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
     let func = rt.alloc_native_function(u_r_l_search_params_for_each, None, "forEach", 1)?;
     rt.define_data_property_str(
       proto_u_r_l_search_params,
@@ -1958,9 +2026,9 @@ pub mod window {
 pub mod worker {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
   use webidl_vm_js::bindings_runtime::{
-    AccessorPropertyAttributes, BindingsRuntime, DataPropertyAttributes,
+    AccessorPropertyAttributes, BindingValue, BindingsRuntime, DataPropertyAttributes,
   };
-  use webidl_vm_js::host_from_hooks;
+  use webidl_vm_js::{host_from_hooks, IterableKind};
 
   #[allow(dead_code)]
   fn js_to_dict_add_event_listener_options(
@@ -2705,19 +2773,37 @@ pub mod worker {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "URLSearchParams",
-        "entries",
-        0,
-        &converted_args,
-      )
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      IterableKind::Entries,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
     }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
@@ -2733,39 +2819,46 @@ pub mod worker {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    {
-      let mut converted_args: Vec<Value> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        Value::Undefined
+    let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+    let callback = rt.scope.push_root(callback)?;
+    let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+    let this_arg = rt.scope.push_root(this_arg)?;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      IterableKind::Entries,
+    )?;
+    for entry in snapshot {
+      let BindingValue::Sequence(mut pair) = entry else {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
       };
-      let converted = v0;
-      let converted = rt.scope.push_root(converted)?;
-      converted_args.push(converted);
-      let v1 = if args.len() > 1 {
-        args[1]
-      } else {
-        Value::Undefined
-      };
-      let converted = if matches!(v1, Value::Undefined) {
-        Value::Undefined
-      } else {
-        v1
-      };
-      let converted = rt.scope.push_root(converted)?;
-      converted_args.push(converted);
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
+      if pair.len() != 2 {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      }
+      let mut iter = pair.into_iter();
+      let key = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let value = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let key_js = rt.binding_value_to_js(key)?;
+      let key_js = rt.scope.push_root(key_js)?;
+      let value_js = rt.binding_value_to_js(value)?;
+      let value_js = rt.scope.push_root(value_js)?;
+      let _ = rt.vm.call_with_host_and_hooks(
+        _host,
         &mut rt.scope,
-        receiver,
-        "URLSearchParams",
-        "forEach",
-        0,
-        &converted_args,
-      )
+        hooks,
+        callback,
+        this_arg,
+        &[value_js, key_js, this],
+      )?;
     }
+    Ok(Value::Undefined)
   }
 
   #[allow(dead_code)]
@@ -2901,19 +2994,37 @@ pub mod worker {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "URLSearchParams",
-        "keys",
-        0,
-        &converted_args,
-      )
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      IterableKind::Keys,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
     }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
@@ -2973,19 +3084,37 @@ pub mod worker {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     rt.scope.push_root(this)?;
     let receiver = Some(this);
-    {
-      let converted_args: Vec<Value> = Vec::new();
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "URLSearchParams",
-        "values",
-        0,
-        &converted_args,
-      )
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "URLSearchParams",
+      IterableKind::Values,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
     }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
   }
 
   #[allow(dead_code)]
@@ -3248,6 +3377,13 @@ pub mod worker {
     rt.define_data_property_str(
       proto_u_r_l_search_params,
       "entries",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);
+    rt.define_data_property(
+      proto_u_r_l_search_params,
+      iterator_key,
       Value::Object(func),
       DataPropertyAttributes::METHOD,
     )?;

@@ -285,6 +285,76 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn foo_entries<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let result = host.call_operation(rt, Some(this), "Foo", "entries", 0, converted_args)?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn foo_for_each<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        rt.js_undefined()
+      };
+      converted_args.push(BindingValue::Object(v0));
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        rt.js_undefined()
+      };
+      converted_args.push(if rt.is_undefined(v1) {
+        BindingValue::Undefined
+      } else {
+        BindingValue::Object(v1)
+      });
+      let result = host.call_operation(rt, Some(this), "Foo", "forEach", 0, converted_args)?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn foo_keys<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let result = host.call_operation(rt, Some(this), "Foo", "keys", 0, converted_args)?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
   fn foo_qux<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -420,6 +490,55 @@ pub mod window {
     }
   }
 
+  #[allow(dead_code)]
+  fn foo_values<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let result = host.call_operation(rt, Some(this), "Foo", "values", 0, converted_args)?;
+      binding_value_to_js::<Host, R>(rt, result)
+    }
+  }
+
+  #[allow(dead_code)]
+  fn foo_constructor<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    {
+      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+      let _ = host.call_operation(rt, Some(this), "Foo", "constructor", 0, converted_args)?;
+      Ok(rt.js_undefined())
+    }
+  }
+
+  #[allow(dead_code)]
+  fn illegal_constructor<Host, R>(
+    rt: &mut R,
+    _host: &mut Host,
+    _this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+  {
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
   pub fn install_window_bindings<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>
   where
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
@@ -431,12 +550,34 @@ pub mod window {
     rt.define_method(proto_foo, "baz", func)?;
     let func = rt.create_function("doThing", 1, foo_do_thing::<Host, R>)?;
     rt.define_method(proto_foo, "doThing", func)?;
+    let func = rt.create_function("entries", 0, foo_entries::<Host, R>)?;
+    rt.define_method(proto_foo, "entries", func)?;
+    let iterator_key = rt.symbol_iterator()?;
+    rt.define_data_property(
+      proto_foo,
+      iterator_key,
+      func,
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.create_function("forEach", 1, foo_for_each::<Host, R>)?;
+    rt.define_method(proto_foo, "forEach", func)?;
+    let func = rt.create_function("keys", 0, foo_keys::<Host, R>)?;
+    rt.define_method(proto_foo, "keys", func)?;
     let func = rt.create_function("qux", 0, foo_qux::<Host, R>)?;
     rt.define_method(proto_foo, "qux", func)?;
     let func = rt.create_function("takesFrozenArray", 1, foo_takes_frozen_array::<Host, R>)?;
     rt.define_method(proto_foo, "takesFrozenArray", func)?;
     let func = rt.create_function("takesSequence", 1, foo_takes_sequence::<Host, R>)?;
     rt.define_method(proto_foo, "takesSequence", func)?;
+    let func = rt.create_function("values", 0, foo_values::<Host, R>)?;
+    rt.define_method(proto_foo, "values", func)?;
+    let ctor_foo = rt.create_constructor(
+      "Foo",
+      0,
+      illegal_constructor::<Host, R>,
+      foo_constructor::<Host, R>,
+    )?;
+    rt.define_constructor(global, "Foo", ctor_foo, proto_foo)?;
     let _ = host;
     Ok(())
   }
