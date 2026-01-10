@@ -428,7 +428,9 @@ fn browser_tab_task_error_does_not_prevent_later_dom_mutations_and_rendering() -
     js_execution_options,
   )?;
 
-  let frame_a = tab.render_frame()?;
+  let frame_a = tab
+    .tick_frame()?
+    .expect("expected a rendered frame after initial parse task");
   assert_eq!(rgba_at(&frame_a, 32, 32), [255, 0, 0, 255]);
 
   let outcome = tab.run_until_stable_with_run_limits(RunLimits::unbounded(), 10)?;
@@ -675,6 +677,7 @@ fn browser_tab_navigate_to_url_executes_parser_inserted_scripts_against_partial_
 
   let mut tab = BrowserTab::from_html("", options.clone(), ExecutorWithWindow::new(executor))?;
   tab.navigate_to_url(&index_url, options)?;
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
   assert!(
     find_element_by_id(tab.dom(), "after").is_some(),
@@ -715,6 +718,7 @@ fn browser_tab_navigate_to_url_resolves_script_src_against_parse_time_base_url()
 
   let mut tab = BrowserTab::from_html("", options.clone(), ExecutorWithWindow::new(executor))?;
   tab.navigate_to_url(&index_url, options)?;
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
   assert_eq!(
     log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
@@ -871,6 +875,7 @@ fn browser_tab_navigate_to_url_executes_inline_and_external_scripts_at_parse_tim
 
   let mut tab = BrowserTab::from_html("", options.clone(), ExecutorWithWindow::new(executor))?;
   tab.navigate_to_url(&html_url, options)?;
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
   assert!(
     find_element_by_id(tab.dom(), "after-inline").is_some(),

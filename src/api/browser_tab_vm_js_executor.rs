@@ -136,7 +136,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.pending_navigation = None;
     self.diagnostics = document.shared_diagnostics();
     self.vm_host = Some(NonNull::from(document as &mut dyn VmHost));
-
     // Tear down the previous realm so we don't leak rooted callbacks or global state across
     // navigations.
     self.fetch_bindings = None;

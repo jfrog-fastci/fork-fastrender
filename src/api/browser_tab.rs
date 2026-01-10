@@ -209,6 +209,15 @@ struct StreamingParseState {
   eof_set: bool,
   deadline: Option<RenderDeadline>,
   parse_task_scheduled: bool,
+  resume_task_scheduled: bool,
+  /// Whether the streaming parser's DOM has been snapshotted into the host DOM at least once.
+  ///
+  /// Until we commit the streaming DOM, the host document may contain an unrelated initial DOM
+  /// (e.g. the renderer's empty-document scaffold). Syncing that DOM *into* the streaming parser's
+  /// live sink would corrupt html5ever's internal handle state (and can introduce multiple `<html>`
+  /// roots).
+  host_snapshot_committed: bool,
+  last_synced_host_dom_generation: u64,
 }
 
 pub struct BrowserTabHost {
@@ -647,21 +656,49 @@ impl BrowserTabHost {
     let Some(state) = self.streaming_parse.as_mut() else {
       return Ok(());
     };
-    if state.parse_task_scheduled {
+    if state.parse_task_scheduled || state.resume_task_scheduled {
       return Ok(());
     }
     state.parse_task_scheduled = true;
 
     let queued = event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
-      let result = host.parse_until_blocked(event_loop);
+      let task_result = host.parse_until_blocked(event_loop);
       if let Some(state) = host.streaming_parse.as_mut() {
         state.parse_task_scheduled = false;
       }
-      result
+      let should_continue = task_result?;
+      if should_continue {
+        host.queue_parse_resume_task(event_loop)?;
+      }
+      Ok(())
     });
     if let Err(err) = queued {
       if let Some(state) = self.streaming_parse.as_mut() {
         state.parse_task_scheduled = false;
+      }
+      return Err(err);
+    }
+    Ok(())
+  }
+
+  fn queue_parse_resume_task(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
+    let Some(state) = self.streaming_parse.as_mut() else {
+      return Ok(());
+    };
+    if state.resume_task_scheduled {
+      return Ok(());
+    }
+    state.resume_task_scheduled = true;
+
+    let queued = event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
+      if let Some(state) = host.streaming_parse.as_mut() {
+        state.resume_task_scheduled = false;
+      }
+      host.queue_parse_task(event_loop)
+    });
+    if let Err(err) = queued {
+      if let Some(state) = self.streaming_parse.as_mut() {
+        state.resume_task_scheduled = false;
       }
       return Err(err);
     }
@@ -704,16 +741,16 @@ impl BrowserTabHost {
       }
       if !host.script_blocking_stylesheets.has_blocking_stylesheet() {
         // Wake parser-blocking scripts/parsing if this was the last blocking stylesheet.
-        if let Err(err) = host.queue_parse_task(event_loop) {
-          // Fallback: if we cannot queue a parse task (queue limits), resume immediately to avoid
-          // deadlocking parser-blocking scripts.
-          let _ = err;
-          host.parse_until_blocked(event_loop)?;
-        }
-      }
-      match load_result {
-        Ok(()) => Ok(()),
-        Err(err @ Error::Render(_)) => Err(err),
+         if let Err(err) = host.queue_parse_task(event_loop) {
+           // Fallback: if we cannot queue a parse task (queue limits), resume immediately to avoid
+           // deadlocking parser-blocking scripts.
+           let _ = err;
+           while host.parse_until_blocked(event_loop)? {}
+         }
+       }
+       match load_result {
+         Ok(()) => Ok(()),
+         Err(err @ Error::Render(_)) => Err(err),
         Err(_) => Ok(()),
       }
     });
@@ -733,18 +770,69 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn parse_until_blocked(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
+  fn commit_streaming_parser_dom_snapshot_to_host(
+    &mut self,
+    state: &mut StreamingParseState,
+  ) -> Result<()> {
+    let (snapshot, base_url) = {
+      let Some(doc) = state.parser.document() else {
+        return Err(Error::Other(
+          "StreamingHtmlParser document unavailable while parsing is in progress".to_string(),
+        ));
+      };
+      (doc.clone_with_events(), state.parser.current_base_url())
+    };
+ 
+    self.mutate_dom(|dom| {
+      *dom = snapshot;
+      ((), true)
+    });
+ 
+    self.base_url = base_url;
+    self
+      .executor
+      .on_document_base_url_updated(self.base_url.as_deref());
+    {
+      let renderer = self.document.renderer_mut();
+      match self.base_url.clone() {
+        Some(url) => renderer.set_base_url(url),
+        None => renderer.clear_base_url(),
+      }
+    }
+ 
+    state.host_snapshot_committed = true;
+    state.last_synced_host_dom_generation = self.document.dom_mutation_generation();
+    Ok(())
+  }
+ 
+  fn sync_host_dom_to_streaming_parser(&mut self, state: &mut StreamingParseState) -> Result<()> {
+    if !state.host_snapshot_committed {
+      return Ok(());
+    }
+ 
+    let updated = self.dom().clone_with_events();
+    let Some(mut doc) = state.parser.document_mut() else {
+      return Err(Error::Other(
+        "StreamingHtmlParser document unavailable while parsing is in progress".to_string(),
+      ));
+    };
+    *doc = updated;
+    state.last_synced_host_dom_generation = self.document.dom_mutation_generation();
+    Ok(())
+  }
+ 
+  fn parse_until_blocked(&mut self, event_loop: &mut EventLoop<Self>) -> Result<bool> {
     const INPUT_CHUNK_BYTES: usize = 8 * 1024;
 
     if self.streaming_parse_in_progress {
       // Re-entrancy guard: when parsing is already active, callers should rely on the outer parse
       // loop to continue. This can happen if a parse-resume hook tries to parse synchronously while
       // we are already parsing on the stack.
-      return Ok(());
+      return Ok(false);
     }
 
     let Some(mut state) = self.streaming_parse.take() else {
-      return Ok(());
+      return Ok(false);
     };
 
     // Mark parsing as in-progress for the duration of this call so tasks triggered while parsing
@@ -769,14 +857,24 @@ impl BrowserTabHost {
       .as_ref()
       .map(|deadline| DeadlineGuard::install(Some(deadline)));
 
+    // Sync any DOM mutations from tasks that executed since the last parse slice back into the
+    // streaming parser's live DOM before resuming parsing.
+    if state.host_snapshot_committed
+      && state.last_synced_host_dom_generation != self.document.dom_mutation_generation()
+    {
+      self.sync_host_dom_to_streaming_parser(&mut state)?;
+    }
+
     enum Outcome {
       Blocked,
       Finished,
       AbortedForNavigation,
+      BudgetExhausted,
     }
-
+ 
     let outcome = (|| -> Result<Outcome> {
-      loop {
+      let mut remaining = self.js_execution_options.dom_parse_budget.max_pump_iterations;
+      while remaining > 0 {
         // Flush any `document.write` / `document.writeln` data that was buffered during script
         // execution (or tasks) into the parser input stream before continuing.
         //
@@ -786,7 +884,7 @@ impl BrowserTabHost {
         if !pending.is_empty() {
           state.parser.push_front_str(&pending);
         }
-
+ 
         // If a parser-blocking script was delayed because there were pending script-blocking
         // stylesheets, retry execution now that we are resuming parsing.
         if let Some(pending) = self.pending_parser_blocking_script.take() {
@@ -870,19 +968,12 @@ impl BrowserTabHost {
 
           // Sync any DOM mutations from the executed script back into the streaming parser's live
           // DOM before resuming parsing.
-          let updated = self.dom().clone_with_events();
-          {
-            let Some(mut doc) = state.parser.document_mut() else {
-              return Err(Error::Other(
-                "StreamingHtmlParser yielded a script without an active document".to_string(),
-              ));
-            };
-            *doc = updated;
-          }
+          self.sync_host_dom_to_streaming_parser(&mut state)?;
           continue;
         }
 
         let yield_result = state.parser.pump()?;
+        remaining = remaining.saturating_sub(1);
 
         // Start fetching any script-blocking stylesheet links discovered during this parse step.
         //
@@ -931,27 +1022,7 @@ impl BrowserTabHost {
             script,
             base_url_at_this_point,
           } => {
-            let snapshot = {
-              let Some(doc) = state.parser.document() else {
-                return Err(Error::Other(
-                  "StreamingHtmlParser yielded a script without an active document".to_string(),
-                ));
-              };
-              doc.clone_with_events()
-            };
-
-            self.mutate_dom(|dom| {
-              *dom = snapshot;
-              ((), true)
-            });
-
-            // Keep the host's base URL in sync with the parser state so any JS executed at this pause
-            // point (including microtasks drained before script execution) resolves relative URLs
-            // against the correct base.
-            self.base_url = base_url_at_this_point.clone();
-            self
-              .executor
-              .on_document_base_url_updated(self.base_url.as_deref());
+            self.commit_streaming_parser_dom_snapshot_to_host(&mut state)?;
 
             // HTML: before preparing a parser-inserted script at a script end-tag boundary,
             // perform a microtask checkpoint when the JS execution context stack is empty.
@@ -989,15 +1060,7 @@ impl BrowserTabHost {
                 ((), false)
               });
 
-              let updated = self.dom().clone_with_events();
-              {
-                let Some(mut doc) = state.parser.document_mut() else {
-                  return Err(Error::Other(
-                    "StreamingHtmlParser yielded a script without an active document".to_string(),
-                  ));
-                };
-                *doc = updated;
-              }
+              self.sync_host_dom_to_streaming_parser(&mut state)?;
               continue;
             }
 
@@ -1021,15 +1084,7 @@ impl BrowserTabHost {
             if !should_run {
               // Sync any DOM mutations (including internal-slot updates above) back into the
               // streaming parser's live DOM before resuming parsing.
-              let updated = self.dom().clone_with_events();
-              {
-                let Some(mut doc) = state.parser.document_mut() else {
-                  return Err(Error::Other(
-                    "StreamingHtmlParser yielded a script without an active document".to_string(),
-                  ));
-                };
-                *doc = updated;
-              }
+              self.sync_host_dom_to_streaming_parser(&mut state)?;
               continue;
             }
 
@@ -1082,29 +1137,13 @@ impl BrowserTabHost {
               if !pending.is_empty() {
                 state.parser.push_front_str(&pending);
               }
-              let updated = self.dom().clone_with_events();
-              {
-                let Some(mut doc) = state.parser.document_mut() else {
-                  return Err(Error::Other(
-                    "StreamingHtmlParser yielded a script without an active document".to_string(),
-                  ));
-                };
-                *doc = updated;
-              }
+              self.sync_host_dom_to_streaming_parser(&mut state)?;
               return Ok(Outcome::Blocked);
             }
-
+ 
             // Sync any DOM mutations from the executed script back into the streaming parser's live
             // DOM before resuming parsing.
-            let updated = self.dom().clone_with_events();
-            {
-              let Some(mut doc) = state.parser.document_mut() else {
-                return Err(Error::Other(
-                  "StreamingHtmlParser yielded a script without an active document".to_string(),
-                ));
-              };
-              *doc = updated;
-            }
+            self.sync_host_dom_to_streaming_parser(&mut state)?;
 
             // Allow pending async/defer networking tasks (including async script loads) to run
             // between parser yield points when parsing is initiated outside the event loop.
@@ -1148,15 +1187,7 @@ impl BrowserTabHost {
               }
 
               // Sync any DOM mutations from tasks back into the streaming parser's live DOM.
-              let updated = self.dom().clone_with_events();
-              {
-                let Some(mut doc) = state.parser.document_mut() else {
-                  return Err(Error::Other(
-                    "StreamingHtmlParser yielded a script without an active document".to_string(),
-                  ));
-                };
-                *doc = updated;
-              }
+              self.sync_host_dom_to_streaming_parser(&mut state)?;
             }
           }
           StreamingParserYield::Finished { document } => {
@@ -1193,17 +1224,25 @@ impl BrowserTabHost {
           }
         }
       }
+      Ok(Outcome::BudgetExhausted)
     })();
 
     match outcome {
       Ok(Outcome::Blocked) => {
         self.streaming_parse = Some(state);
-        Ok(())
+        Ok(false)
+      }
+      Ok(Outcome::BudgetExhausted) => {
+        // Budget exhausted: snapshot parser DOM into the host so other tasks observe the most recent
+        // parsed DOM state, then yield back to the event loop.
+        self.commit_streaming_parser_dom_snapshot_to_host(&mut state)?;
+        self.streaming_parse = Some(state);
+        Ok(true)
       }
       Ok(Outcome::Finished | Outcome::AbortedForNavigation) => {
         self.streaming_parse_active = false;
         self.document_write_state.set_parsing_active(false);
-        Ok(())
+        Ok(false)
       }
       Err(err) => {
         self.streaming_parse_active = false;
@@ -2717,11 +2756,17 @@ impl BrowserTab {
       eof_set: false,
       deadline,
       parse_task_scheduled: false,
+      resume_task_scheduled: false,
+      host_snapshot_committed: false,
+      last_synced_host_dom_generation: 0,
     });
     self.host.streaming_parse_active = true;
     self.host.document_write_state.set_parsing_active(true);
 
-    self.host.parse_until_blocked(&mut self.event_loop)?;
+    let should_continue = self.host.parse_until_blocked(&mut self.event_loop)?;
+    if should_continue {
+      self.host.queue_parse_resume_task(&mut self.event_loop)?;
+    }
     let base_url = if let Some(state) = self.host.streaming_parse.as_ref() {
       state.parser.current_base_url()
     } else {

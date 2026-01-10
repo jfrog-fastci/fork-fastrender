@@ -153,7 +153,7 @@ pub use event_loop::{
   RunLimits, RunNextTaskLimitedOutcome, RunState, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome,
   Task, TaskSource, TimerId,
 };
-pub use options::JsExecutionOptions;
+pub use options::{JsExecutionOptions, ParseBudget};
 pub use document_write::{DocumentWriteLimitError, DocumentWriteState, with_document_write_state};
 pub use host_document::{DocumentHostState, HostDocumentState};
 pub use orchestrator::{

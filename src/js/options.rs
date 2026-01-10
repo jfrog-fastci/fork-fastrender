@@ -6,6 +6,36 @@ use vm_js::Budget as VmJsBudget;
 
 use super::{QueueLimits, RunLimits};
 
+/// Configures how much HTML parsing work is performed per event-loop "parse task".
+///
+/// This budget is used by streaming HTML parsing integrations (e.g. `api::BrowserTab`) to ensure
+/// that:
+/// - parsing yields back to the event loop regularly, and
+/// - async-ready scripts (and other tasks) can interleave with parsing before EOF is reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseBudget {
+  /// Maximum number of [`crate::html::streaming_parser::StreamingHtmlParser::pump`] iterations
+  /// performed in a single parse task.
+  pub max_pump_iterations: usize,
+}
+
+impl ParseBudget {
+  pub fn new(max_pump_iterations: usize) -> Self {
+    Self {
+      max_pump_iterations: max_pump_iterations.max(1),
+    }
+  }
+}
+
+impl Default for ParseBudget {
+  fn default() -> Self {
+    // Keep tasks small so other queued tasks (e.g. async script execution) can interleave.
+    Self {
+      max_pump_iterations: 64,
+    }
+  }
+}
+
 /// Host configuration for bounding JavaScript execution.
 ///
 /// JavaScript is hostile input. A fully safe setup typically uses *multiple* layers of limits:
@@ -25,6 +55,10 @@ pub struct JsExecutionOptions {
   pub event_loop_queue_limits: QueueLimits,
   /// Bounds for how much work can be *executed* in a single event loop "spin" (run).
   pub event_loop_run_limits: RunLimits,
+
+  /// Budget for how much HTML parsing work is performed per event-loop task turn when using a
+  /// streaming HTML parsing pipeline.
+  pub dom_parse_budget: ParseBudget,
 
   /// Whether the JS runtime supports executing module scripts (`<script type="module">`).
   ///
@@ -154,6 +188,8 @@ impl Default for JsExecutionOptions {
         // budget; this is intentionally short to avoid hangs in a single "spin".
         max_wall_time: Some(Duration::from_millis(500)),
       },
+
+      dom_parse_budget: ParseBudget::default(),
 
       supports_module_scripts: false,
 

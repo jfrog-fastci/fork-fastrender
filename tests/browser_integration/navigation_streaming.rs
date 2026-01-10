@@ -56,6 +56,31 @@ impl BrowserTabJsExecutor for LoggingExecutor {
       "EXT_ASYNC" => {
         self.log.lock().unwrap().push("ext-async".to_string());
       }
+      "EXT_ASYNC_INTERLEAVE" => {
+        let after = has_element_by_id(document.dom(), "after");
+        self
+          .log
+          .lock()
+          .unwrap()
+          .push(format!("ext-async-interleave:after={after}"));
+      }
+      "EXT_ASYNC_MUTATE" => {
+        let (after, head) = {
+          let dom = document.dom();
+          let after = has_element_by_id(dom, "after");
+          let head = dom.head().expect("expected document to have <head>");
+          (after, head)
+        };
+        document
+          .dom_mut()
+          .set_attribute(head, "data-from-async", "1")
+          .expect("set head attribute");
+        self
+          .log
+          .lock()
+          .unwrap()
+          .push(format!("ext-async-mutate:after={after}"));
+      }
       "EXT_DEFER" => {
         let eof = has_element_by_id(document.dom(), "eof");
         self
@@ -133,6 +158,92 @@ fn browser_tab_navigate_to_url_uses_streaming_parser_and_script_scheduling() -> 
       "ext-defer:eof=true".to_string(),
     ]
   );
+
+  Ok(())
+}
+
+#[test]
+fn browser_tab_async_script_executes_before_parse_completes() -> Result<()> {
+  let log = Arc::new(Mutex::new(Vec::<String>::new()));
+  let executor = LoggingExecutor { log: Arc::clone(&log) };
+  let options = RenderOptions::default();
+
+  // Use a large `<!-- ... -->` comment so the default parse budget (64 pump iterations) exhausts
+  // before the `#after` marker is parsed, without creating expensive-to-layout text nodes.
+  let big_comment = "a".repeat(520 * 1024);
+  let html = format!(
+    r#"<!doctype html>
+    <html>
+      <head>
+        <script async src="https://example.com/async.js"></script>
+        <!--{big_comment}-->
+      </head>
+      <body>
+        <div id="after"></div>
+      </body>
+    </html>"#
+  );
+
+  let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
+  tab.register_script_source("https://example.com/async.js", "EXT_ASYNC_INTERLEAVE");
+
+  tab.navigate_to_html(&html, options)?;
+
+  assert_eq!(
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let log = log.lock().unwrap().clone();
+  assert_eq!(log, vec!["ext-async-interleave:after=false".to_string()]);
+
+  assert!(has_element_by_id(tab.dom(), "after"));
+
+  Ok(())
+}
+
+#[test]
+fn browser_tab_async_script_mutation_persists_across_parse_slices() -> Result<()> {
+  let log = Arc::new(Mutex::new(Vec::<String>::new()));
+  let executor = LoggingExecutor { log: Arc::clone(&log) };
+  let options = RenderOptions::default();
+
+  let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
+  tab.register_script_source("https://example.com/async.js", "EXT_ASYNC_MUTATE");
+
+  // Use a tiny budget so parsing is forced to yield and resume via event-loop tasks.
+  let mut js_options = tab.js_execution_options();
+  js_options.dom_parse_budget = fastrender::js::ParseBudget::new(2);
+  tab.set_js_execution_options(js_options);
+
+  let filler = "a".repeat(24 * 1024);
+  let html = format!(
+    r#"<!doctype html>
+    <html>
+      <head>
+        <script async src="https://example.com/async.js"></script>
+      </head>
+      <body>
+        <div id="before"></div>
+        {filler}
+        <div id="after"></div>
+      </body>
+    </html>"#
+  );
+
+  tab.navigate_to_html(&html, options)?;
+
+  assert_eq!(
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let log = log.lock().unwrap().clone();
+  assert_eq!(log, vec!["ext-async-mutate:after=false".to_string()]);
+
+  assert!(has_element_by_id(tab.dom(), "after"));
+  let head = tab.dom().head().expect("expected head element after parse");
+  assert_eq!(tab.dom().get_attribute(head, "data-from-async").unwrap(), Some("1"));
 
   Ok(())
 }

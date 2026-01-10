@@ -23,6 +23,7 @@ use super::script_scheduler::{ScriptElementEvent, ScriptId, ScriptScheduler, Scr
 use super::DomHost;
 use super::{determine_script_type_dom2, ScriptElementSpec, ScriptType};
 use super::{EventLoop, TaskSource};
+pub use super::ParseBudget;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -50,29 +51,7 @@ impl Drop for JsExecutionGuard {
   }
 }
 
-/// Configures how much parsing work is performed per event-loop "parse task".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParseBudget {
-  /// Maximum number of [`StreamingHtmlParser::pump`] iterations performed in a single parse task.
-  pub max_pump_iterations: usize,
-}
-
-impl ParseBudget {
-  pub fn new(max_pump_iterations: usize) -> Self {
-    Self {
-      max_pump_iterations: max_pump_iterations.max(1),
-    }
-  }
-}
-
-impl Default for ParseBudget {
-  fn default() -> Self {
-    // Keep tasks small so other queued tasks (e.g. async script execution) can interleave.
-    Self {
-      max_pump_iterations: 64,
-    }
-  }
-}
+// ParseBudget lives in `js::options` and is re-exported from `js`.
 /// Host interface used by [`ClassicScriptPipeline`].
 ///
 /// This is an MVP bridge between the scheduler state machine and an eventual real networking + JS

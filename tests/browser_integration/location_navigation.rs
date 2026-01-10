@@ -53,6 +53,7 @@ fn assert_navigation_from_inline_script(script: &str) -> Result<()> {
   let mut tab = BrowserTab::from_html("", options.clone(), executor)?;
 
   tab.navigate_to_url(&page1_url, options.clone())?;
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
   let pixmap = tab.render_frame()?;
 
   assert_eq!(rgba_at(&pixmap, 32, 32), [0, 0, 255, 255]);
