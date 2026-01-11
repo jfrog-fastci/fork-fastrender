@@ -217,6 +217,18 @@ fn string_concatenation_uses_js_to_string_for_numbers() {
 }
 
 #[test]
+fn string_relational_comparison_uses_utf16_code_unit_ordering() {
+  // JS string comparison is defined over UTF-16 code units (not Unicode scalar values / UTF-8
+  // byte order). This matters for characters outside the BMP, which are represented as surrogate
+  // pairs in UTF-16.
+  let emoji = ConstStr("\u{1F600}".into()); // 😀 => [0xD83D, 0xDE00]
+  let pua = ConstStr("\u{E000}".into()); // BMP char => [0xE000]
+
+  assert_eq!(js_cmp(&emoji, &pua), Some(Ordering::Less));
+  assert_eq!(js_cmp(&pua, &emoji), Some(Ordering::Greater));
+}
+
+#[test]
 fn builtin_infinity_and_undefined_are_constant_folded() {
   assert_eq!(
     maybe_eval_const_builtin_val("Infinity"),

@@ -415,11 +415,28 @@ fn const_to_js_string(value: &Const) -> String {
   }
 }
 
+fn js_string_cmp(a: &str, b: &str) -> Ordering {
+  let mut a_units = a.encode_utf16();
+  let mut b_units = b.encode_utf16();
+  loop {
+    match (a_units.next(), b_units.next()) {
+      (None, None) => return Ordering::Equal,
+      (None, Some(_)) => return Ordering::Less,
+      (Some(_), None) => return Ordering::Greater,
+      (Some(a), Some(b)) => {
+        if a != b {
+          return a.cmp(&b);
+        }
+      }
+    }
+  }
+}
+
 // If return value is None, then all comparison operators between `a` and `b` result in false.
 // https://tc39.es/ecma262/multipage/abstract-operations.html#sec-islessthan
 pub fn js_cmp(a: &Const, b: &Const) -> Option<Ordering> {
   match (a, b) {
-    (Str(a), Str(b)) => Some(a.cmp(b)),
+    (Str(a), Str(b)) => Some(js_string_cmp(a, b)),
     (BigInt(a), BigInt(b)) => Some(a.cmp(b)),
     (BigInt(a), b) => bigint_number_cmp(a, coerce_to_num(b)),
     (a, BigInt(b)) => bigint_number_cmp(b, coerce_to_num(a)).map(Ordering::reverse),
