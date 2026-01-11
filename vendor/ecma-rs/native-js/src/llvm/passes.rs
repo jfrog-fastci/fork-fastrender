@@ -6,11 +6,17 @@ use llvm_sys::core::{
   LLVMGetReturnType, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsFunctionVarArg, LLVMPositionBuilderAtEnd,
   LLVMSetLinkage, LLVMVoidTypeInContext,
 };
+use llvm_sys::core::{
+  LLVMCountBasicBlocks, LLVMDisposeMessage, LLVMGetFirstFunction, LLVMGetFirstInstruction,
+  LLVMGetConstOpcode, LLVMGetInstructionOpcode, LLVMGetNextBasicBlock, LLVMGetNextFunction,
+  LLVMGetNextInstruction, LLVMGetNumArgOperands, LLVMGetOperand, LLVMGetValueName2,
+  LLVMIsAConstantExpr, LLVMIsAFunction, LLVMPrintValueToString,
+};
 use llvm_sys::error::{LLVMDisposeErrorMessage, LLVMGetErrorMessage};
 use llvm_sys::transforms::pass_builder::{
   LLVMCreatePassBuilderOptions, LLVMDisposePassBuilderOptions, LLVMRunPasses,
 };
-use llvm_sys::LLVMLinkage;
+use llvm_sys::{LLVMOpcode, LLVMLinkage};
 use std::ffi::{CStr, CString};
 use std::ptr;
 
@@ -18,6 +24,8 @@ use std::ptr;
 pub enum PassError {
   #[error(transparent)]
   GcLint(#[from] super::LintError),
+  #[error(transparent)]
+  GcCallsiteInvariant(#[from] CallsiteInvariantError),
   #[error("LLVMRunPasses failed for pipeline `{pipeline}`: {message}")]
   RunPasses { pipeline: String, message: String },
   #[error("LLVM module defines `{name}` with incompatible signature (expected `void ()`)")]
@@ -94,6 +102,7 @@ pub fn rewrite_statepoints_for_gc(
   run_pass_pipeline(module, target_machine, pipeline)?;
 
   super::debug_lint_module_gc_pointer_discipline(module)?;
+  verify_no_stray_calls_in_ts_generated_functions(module)?;
   Ok(())
 }
 
@@ -128,6 +137,174 @@ pub fn place_safepoints_and_rewrite_statepoints_for_gc(
   run_pass_pipeline(module, target_machine, pipeline)?;
   debug_define_weak_safepoint_poll_stub(module);
   super::debug_lint_module_gc_pointer_discipline(module)?;
+  verify_no_stray_calls_in_ts_generated_functions(module)?;
+  Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// Post-statepoint rewrite verifier: TS callsites must not be plain calls.
+// -----------------------------------------------------------------------------
+
+/// Error raised when a TS-generated function contains a stray `call`/`invoke` that was not rewritten
+/// into a `gc.statepoint`.
+#[derive(Debug, thiserror::Error)]
+pub enum CallsiteInvariantError {
+  #[error("TS-generated function `{function}` contains a non-statepoint call/invoke after rewrite: {instruction}")]
+  StrayCall { function: String, instruction: String },
+}
+
+/// Return true when a function name is considered "TS-generated" for the purpose of GC safepoint
+/// invariants.
+///
+/// We currently key off `native-js`'s stable symbol naming scheme:
+/// - `__nativejs_def_<defid-hex>...` for TS definitions
+/// - `__nativejs_file_init_<fileid-hex>` for module initializers
+fn is_ts_generated_function_name(name: &str) -> bool {
+  name.starts_with("__nativejs_def_") || name.starts_with("__nativejs_file_init_")
+}
+
+fn value_name(val: llvm_sys::prelude::LLVMValueRef) -> String {
+  unsafe {
+    let mut len: usize = 0;
+    let ptr = LLVMGetValueName2(val, &mut len as *mut usize);
+    if ptr.is_null() || len == 0 {
+      return "<anon>".to_string();
+    }
+    let bytes = std::slice::from_raw_parts(ptr as *const u8, len);
+    String::from_utf8_lossy(bytes).to_string()
+  }
+}
+
+fn value_to_string(val: llvm_sys::prelude::LLVMValueRef) -> String {
+  unsafe {
+    let s = LLVMPrintValueToString(val);
+    if s.is_null() {
+      return "<unprintable>".to_string();
+    }
+    let out = CStr::from_ptr(s).to_string_lossy().into_owned();
+    LLVMDisposeMessage(s);
+    out
+  }
+}
+
+fn strip_callee_pointer_casts(
+  mut val: llvm_sys::prelude::LLVMValueRef,
+) -> llvm_sys::prelude::LLVMValueRef {
+  unsafe {
+    loop {
+      if !LLVMIsAConstantExpr(val).is_null() {
+        match LLVMGetConstOpcode(val) {
+          LLVMOpcode::LLVMBitCast | LLVMOpcode::LLVMAddrSpaceCast => {
+            val = LLVMGetOperand(val, 0);
+            continue;
+          }
+          _ => {}
+        }
+      }
+      return val;
+    }
+  }
+}
+
+fn get_call_callee_operand(inst: llvm_sys::prelude::LLVMValueRef) -> llvm_sys::prelude::LLVMValueRef {
+  unsafe {
+    // LLVM's C API treats "called value" differently across instruction kinds. For `call`/`invoke`
+    // it is *usually* operand 0, but for some intrinsics (notably statepoints) the called value can
+    // appear after the argument operands.
+    //
+    // Use a simple heuristic:
+    // - prefer whichever candidate strips to a `Function`
+    // - otherwise default to operand 0 (covers indirect calls).
+    let op0 = LLVMGetOperand(inst, 0);
+    let op_n = LLVMGetOperand(inst, LLVMGetNumArgOperands(inst));
+
+    let op0_is_fn = !LLVMIsAFunction(strip_callee_pointer_casts(op0)).is_null();
+    let op_n_is_fn = !LLVMIsAFunction(strip_callee_pointer_casts(op_n)).is_null();
+
+    match (op0_is_fn, op_n_is_fn) {
+      (true, false) => op0,
+      (false, true) => op_n,
+      _ => op0,
+    }
+  }
+}
+
+fn is_intrinsic_function(val: llvm_sys::prelude::LLVMValueRef) -> bool {
+  unsafe {
+    // Calls emitted by LLVM's statepoint rewrite can reference intrinsics through constant-expression
+    // casts (e.g. `bitcast`). Strip those before checking the callee name.
+    let val = strip_callee_pointer_casts(val);
+
+    // Intrinsics are named `llvm.*` (including `llvm.experimental.*`).
+    //
+    // Note: some callees are represented as constant expressions or aliases and don't show up as a
+    // `Function` in the C API. Prefer the symbol name when available and fall back to a printed
+    // value check (e.g. `ptr @llvm.foo`).
+    let name = value_name(val);
+    if name.starts_with("llvm.") {
+      return true;
+    }
+    if !LLVMIsAFunction(val).is_null() {
+      return false;
+    }
+    value_to_string(val).contains("@llvm.")
+  }
+}
+
+/// Enforce the "all TS calls are statepoints" invariant.
+///
+/// Why this exists:
+/// - During GC, only the *top* frame is guaranteed to be stopped at a safepoint instruction.
+/// - Older frames are suspended at their *callsite return addresses*.
+/// - If a TS-generated function contains a plain call (not a statepoint), that return address will
+///   not correspond to a stackmap record, making precise stack scanning unsound.
+///
+/// This verifier runs **after** `rewrite-statepoints-for-gc` (see above pass pipelines) and rejects
+/// any remaining non-intrinsic `call`/`invoke` in TS-generated functions.
+fn verify_no_stray_calls_in_ts_generated_functions(
+  module: &Module<'_>,
+) -> Result<(), CallsiteInvariantError> {
+  unsafe {
+    let mut func = LLVMGetFirstFunction(module.as_mut_ptr());
+    while !func.is_null() {
+      // Skip declarations.
+      if LLVMCountBasicBlocks(func) == 0 {
+        func = LLVMGetNextFunction(func);
+        continue;
+      }
+
+      let func_name = value_name(func);
+      if !is_ts_generated_function_name(&func_name) {
+        func = LLVMGetNextFunction(func);
+        continue;
+      }
+
+      let mut bb = LLVMGetFirstBasicBlock(func);
+      while !bb.is_null() {
+        let mut inst = LLVMGetFirstInstruction(bb);
+      while !inst.is_null() {
+          match LLVMGetInstructionOpcode(inst) {
+            LLVMOpcode::LLVMCall | LLVMOpcode::LLVMInvoke | LLVMOpcode::LLVMCallBr => {
+              let callee = get_call_callee_operand(inst);
+              if !is_intrinsic_function(callee) {
+                return Err(CallsiteInvariantError::StrayCall {
+                  function: func_name,
+                  instruction: value_to_string(inst),
+                });
+              }
+            }
+            _ => {}
+          }
+
+          inst = LLVMGetNextInstruction(inst);
+        }
+        bb = LLVMGetNextBasicBlock(bb);
+      }
+
+      func = LLVMGetNextFunction(func);
+    }
+  }
+
   Ok(())
 }
 
