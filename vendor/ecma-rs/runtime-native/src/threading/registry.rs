@@ -276,6 +276,11 @@ impl ThreadState {
     self.remset.insert(obj);
   }
 
+  /// Iterate this thread's remembered-set buffer without mutating it.
+  ///
+  /// # Stop-the-world requirement
+  /// This must only be called while mutators are stopped; otherwise the write barrier could mutate
+  /// the buffer concurrently.
   #[inline]
   pub(crate) fn remset_for_each_raw(&self, f: impl FnMut(*mut u8)) {
     self.remset.for_each_raw(f);

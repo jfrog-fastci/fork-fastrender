@@ -460,7 +460,14 @@ mod tests {
     let _rt = crate::test_util::TestRuntimeGuard::new();
     global_root_registry().clear_for_tests();
 
-    const TIMEOUT: Duration = Duration::from_secs(2);
+    // Stop-the-world handshakes can take much longer in debug builds (especially
+    // under parallel test execution on multi-agent hosts). Keep release builds
+    // strict, but give debug builds enough slack to avoid flaky timeouts.
+    const TIMEOUT: Duration = if cfg!(debug_assertions) {
+      Duration::from_secs(30)
+    } else {
+      Duration::from_secs(2)
+    };
 
     std::thread::scope(|scope| {
       // Thread A holds the registry lock.

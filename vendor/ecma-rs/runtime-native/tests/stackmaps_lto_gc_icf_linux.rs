@@ -645,9 +645,8 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
     None
   };
 
-  // This test links non-PIE executables (`-no-pie`). Mirror production by using
-  // the dedicated non-PIE linker-script fragment, which keeps `.llvm_stackmaps`
-  // (and `.data.rel.ro.llvm_stackmaps`) directly.
+  // This test links non-PIE executables (`-no-pie`), so use the dedicated non-PIE linker-script
+  // fragment (`stackmaps_nopie.ld`), which keeps both `.llvm_stackmaps` and `.data.rel.ro.llvm_stackmaps`.
   let script = Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("link")
     .join("stackmaps_nopie.ld");

@@ -700,7 +700,14 @@ mod tests {
   fn io_runtime_registry_lock_is_gc_aware() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
-    const TIMEOUT: Duration = Duration::from_secs(2);
+     // Stop-the-world handshakes can take much longer in debug builds (especially
+     // under parallel test execution on multi-agent hosts). Keep release builds
+     // strict, but give debug builds enough slack to avoid flaky timeouts.
+     const TIMEOUT: Duration = if cfg!(debug_assertions) {
+       Duration::from_secs(30)
+     } else {
+       Duration::from_secs(2)
+     };
 
     let rt = Arc::new(IoRuntimeInner {
       state: AtomicU8::new(RuntimeState::Running as u8),

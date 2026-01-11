@@ -6,13 +6,12 @@ use core::slice;
 use runtime_native::stackmaps::STACKMAP_VERSION;
 
 // Define a tiny but valid StackMap v3 blob (0 functions / 1 constant / 0 records) inside
-// `.data.rel.ro.llvm_stackmaps`.
+// `.data.rel.ro.llvm_stackmaps` (the stackmaps section name used by PIE/DSO builds).
 //
 // Note: runtime-native's build script links tests with `link/stackmaps.ld`, which:
-// - keeps `.data.rel.ro.llvm_stackmaps` under `--gc-sections`, and
+// - keeps stackmaps under `--gc-sections`, and
 // - defines `__fastr_stackmaps_start/end` (and aliases) to delimit the in-memory stackmaps byte
-//   range (the entire output section, which may contain multiple concatenated stackmap blobs from
-//   all linked objects).
+//   range (which may contain multiple concatenated stackmap blobs from all linked objects).
 //
 // We inject a known-good blob so this test can assert that the symbol-delimited range returned by
 // `stackmaps_symbols::stackmaps_bytes_from_exe()` covers our bytes.

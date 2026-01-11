@@ -126,11 +126,11 @@ impl ThreadRemsetBuffer {
     }
   }
 
-  /// Iterate all recorded object pointers without modifying the buffer.
+  /// Iterate all recorded object pointers without mutating the buffer.
   ///
   /// # Stop-the-world requirement
-  /// This must only be called when no mutator threads can be concurrently
-  /// executing the write barrier on this thread state.
+  /// This must only be used while mutators are stopped; otherwise the write barrier could mutate
+  /// the buffer concurrently.
   pub(crate) fn for_each_raw(&self, mut f: impl FnMut(*mut u8)) {
     let len = self.len.load(Ordering::Acquire).min(THREAD_REMSET_CAPACITY);
     for i in 0..len {
@@ -316,12 +316,11 @@ impl RememberedSet for WorldStoppedRememberedSet {
       f(obj);
     }
 
-    // Include per-thread remembered buffers populated by registered mutators.
+    // Also scan per-thread remembered-set buffers. The write barrier records into a thread-local
+    // buffer to avoid a contended global atomic on every insertion; stop-the-world GC must treat
+    // those buffers as part of the remembered set.
     registry::for_each_thread(|thread| {
       thread.remset_for_each_raw(|obj| {
-        if obj.is_null() {
-          return;
-        }
         if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
           std::process::abort();
         }
@@ -347,13 +346,10 @@ impl RememberedSet for WorldStoppedRememberedSet {
       }
     }
 
-    // Clear per-thread buffers too: registered threads record remembered objects
-    // in their `ThreadState` remset, not in the global buffer.
+    // Clear per-thread buffers as well; otherwise the remembered bits would remain set and future
+    // write-barrier inserts would be dropped as duplicates.
     registry::for_each_thread(|thread| {
       thread.remset_drain_raw(|obj| {
-        if obj.is_null() {
-          return;
-        }
         if (obj as usize) % core::mem::align_of::<ObjHeader>() != 0 {
           std::process::abort();
         }
