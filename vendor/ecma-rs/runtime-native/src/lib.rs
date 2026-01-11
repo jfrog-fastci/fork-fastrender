@@ -10,6 +10,7 @@
 
 pub mod abi;
 pub mod gc;
+pub mod immix;
 pub mod nursery;
 pub mod threading;
 pub mod async_rt;

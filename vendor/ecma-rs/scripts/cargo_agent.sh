@@ -10,6 +10,5 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ECMA_RS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
 cd "${ECMA_RS_ROOT}"
 exec bash "${ECMA_RS_ROOT}/../../scripts/cargo_agent.sh" "$@"
