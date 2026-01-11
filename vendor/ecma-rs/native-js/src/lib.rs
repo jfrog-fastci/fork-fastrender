@@ -365,9 +365,13 @@ mod tests {
   fn compile_single_root_program() {
     use crate::{compile, CompilerOptions, EmitKind};
     use crate::llvm_symbol_for_def;
+    use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
     use typecheck_ts::{FileKey, MemoryHost, Program};
 
-    let mut host = MemoryHost::new();
+    let mut host = MemoryHost::with_options(TsCompilerOptions {
+      libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+      ..Default::default()
+    });
     let key = FileKey::new("main.ts");
     host.insert(
       key.clone(),

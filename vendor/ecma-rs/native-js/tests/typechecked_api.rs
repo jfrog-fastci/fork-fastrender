@@ -1,10 +1,16 @@
-use native_js::{compile, CompilerOptions, EmitKind, NativeJsError};
+use native_js::{compile, CompilerOptions as NativeCompilerOptions, EmitKind, NativeJsError};
 use std::process::Command;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 #[test]
 fn compile_to_llvm_ir_contains_expected_symbols() {
-  let mut host = MemoryHost::new();
+  // Avoid loading TypeScript's default lib set (which includes `dom` and is large). We only need
+  // `es5` for core built-in types like `Array`/`String`.
+  let mut host = MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+    ..Default::default()
+  });
   let entry = FileKey::new("entry.ts");
   host.insert(
     entry.clone(),
@@ -24,7 +30,7 @@ fn compile_to_llvm_ir_contains_expected_symbols() {
   let tmp = tempfile::tempdir().expect("tempdir");
   let out_path = tmp.path().join("out.ll");
 
-  let mut opts = CompilerOptions::default();
+  let mut opts = NativeCompilerOptions::default();
   opts.emit = EmitKind::LlvmIr;
   opts.output = Some(out_path.clone());
 
@@ -49,7 +55,10 @@ fn compile_to_llvm_ir_contains_expected_symbols() {
 #[test]
 #[cfg(target_os = "linux")]
 fn compile_to_executable_and_run_returns_exit_code() {
-  let mut host = MemoryHost::new();
+  let mut host = MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+    ..Default::default()
+  });
   let entry = FileKey::new("entry.ts");
   host.insert(entry.clone(), "export function main(): number { return 42; }\n");
 
@@ -66,7 +75,7 @@ fn compile_to_executable_and_run_returns_exit_code() {
   let exe_path = tmp.path().join("out");
   let ir_path = tmp.path().join("out.ll");
 
-  let mut opts = CompilerOptions::default();
+  let mut opts = NativeCompilerOptions::default();
   opts.emit = EmitKind::Executable;
   opts.output = Some(exe_path.clone());
   opts.emit_ir = Some(ir_path);
@@ -86,7 +95,10 @@ fn compile_to_executable_and_run_returns_exit_code() {
 
 #[test]
 fn compile_reports_typecheck_failed_for_type_errors() {
-  let mut host = MemoryHost::new();
+  let mut host = MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+    ..Default::default()
+  });
   let entry = FileKey::new("entry.ts");
   host.insert(
     entry.clone(),
@@ -95,7 +107,7 @@ fn compile_reports_typecheck_failed_for_type_errors() {
 
   let program = Program::new(host, vec![entry.clone()]);
 
-  let mut opts = CompilerOptions::default();
+  let mut opts = NativeCompilerOptions::default();
   opts.emit = EmitKind::LlvmIr;
 
   let err = compile(&program, &opts).expect_err("expected typecheck error");
@@ -112,7 +124,10 @@ fn compile_reports_typecheck_failed_for_type_errors() {
 
 #[test]
 fn compile_rejects_multi_root_programs() {
-  let mut host = MemoryHost::new();
+  let mut host = MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
+    ..Default::default()
+  });
   let a = FileKey::new("a.ts");
   let b = FileKey::new("b.ts");
   host.insert(a.clone(), "export function main(): number { return 0; }\n");
@@ -120,7 +135,7 @@ fn compile_rejects_multi_root_programs() {
 
   let program = Program::new(host, vec![a, b]);
 
-  let mut opts = CompilerOptions::default();
+  let mut opts = NativeCompilerOptions::default();
   opts.emit = EmitKind::LlvmIr;
 
   let err = compile(&program, &opts).expect_err("expected unsupported feature error");
