@@ -180,6 +180,70 @@ fn derived_pointers_are_relocated_from_base() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
+fn statepoints_with_custom_patchpoint_id_are_walked() {
+  use std::collections::BTreeSet;
+
+  let mut bytes = build_stackmaps_with_derived_pointer();
+  // StackMaps records store the statepoint ID as `patchpoint_id`. LLVM allows overriding this via
+  // the `"statepoint-id"` callsite attribute, so the runtime must not rely on any fixed constant.
+  //
+  // Offset: header (16) + function record (24) = 40.
+  bytes[40..48].copy_from_slice(&42u64.to_le_bytes());
+
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
+  let stack_size = callsite.stack_size;
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  // x86_64 FP_RECORD_SIZE=8.
+  let fp_delta = (stack_size - 8) as usize;
+  let caller_sp = align_up(base + 256, 16);
+  let caller_fp = caller_sp + fp_delta;
+  let start_fp = align_up(base + 128, 16);
+
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, callsite_ra);
+
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+
+  // base = [SP + 0], derived = [SP + 8]
+  let base_val = Box::into_raw(Box::new(0u8)) as u64;
+  let delta = 8u64;
+  unsafe {
+    write_u64(caller_sp + 0, base_val);
+    write_u64(caller_sp + 8, base_val + delta);
+  }
+
+  let mut visited = BTreeSet::<usize>::new();
+  unsafe {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
+      visited.insert(slot as usize);
+
+      let slot_ptr = slot as *mut *mut u8;
+      let old = slot_ptr.read() as u64;
+      slot_ptr.write((old + 0x1000) as *mut u8);
+    })
+    .expect("walk");
+  }
+
+  assert_eq!(visited.len(), 1, "expected to visit only the base root slot");
+  assert!(visited.contains(&(caller_sp + 0)));
+
+  let base_after = unsafe { read_u64(caller_sp + 0) };
+  let derived_after = unsafe { read_u64(caller_sp + 8) };
+  assert_eq!(base_after, base_val + 0x1000);
+  assert_eq!(derived_after, base_after + delta);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
 fn null_derived_pointers_remain_null_after_base_relocation() {
   use std::collections::BTreeSet;
 
@@ -249,10 +313,20 @@ fn null_derived_pointers_remain_null_after_base_relocation() {
 #[test]
 fn non_statepoint_records_are_skipped() {
   let mut bytes = build_stackmaps_with_derived_pointer();
-  // Overwrite the patchpoint id so the record no longer looks like a statepoint.
+  // The stackmap parser runs a debug-mode verifier that (by convention) only checks records with
+  // `patchpoint_id == 0xABCDEF00`. Use a different ID so we can construct an obviously non-statepoint
+  // record without tripping the verifier.
   //
   // Offset: header (16) + function record (24) = 40.
   bytes[40..48].copy_from_slice(&0x1234_5678u64.to_le_bytes());
+
+  // Overwrite the first location kind so the record no longer matches the LLVM
+  // statepoint layout (3 leading constant header locations).
+  //
+  // Offset:
+  //   header (16) + function record (24) + record header (16) = 56
+  // First location kind is a single byte at that offset.
+  bytes[56] = 1; // Register
 
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
   let (callsite_ra, _callsite) = stackmaps.iter().next().expect("callsite");

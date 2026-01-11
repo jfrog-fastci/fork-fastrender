@@ -392,26 +392,28 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   }
   match stackmaps.lookup(caller_ra) {
     Some(callsite) => {
-      if callsite.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
-        // `.llvm_stackmaps` may contain other records (e.g. from `llvm.experimental.stackmap`) in
-        // addition to GC statepoints. Only interpret records that use our statepoint marker ID.
-      } else {
-      // Prefer the captured stackmap-semantics SP for the top frame. This is
-      // required on x86_64 where the callee-entry RSP is 8 bytes lower than the
-      // stackmap base (return address pushed by `call`).
-      let caller_sp = if ctx.sp != 0 {
-        ctx.sp as u64
-      } else {
-        caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?
-      };
-      enumerate_roots_for_frame_with_caller_sp(
-        caller_fp,
-        caller_sp,
-        caller_ra,
-        callsite,
-        bounds,
-        &mut visit,
-      )?;
+      let looks_like_statepoint =
+        callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+          && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+            .iter()
+            .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+      if looks_like_statepoint {
+        // Prefer the captured stackmap-semantics SP for the top frame. This is
+        // required on x86_64 where the callee-entry RSP is 8 bytes lower than the
+        // stackmap base (return address pushed by `call`).
+        let caller_sp = if ctx.sp != 0 {
+          ctx.sp as u64
+        } else {
+          caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?
+        };
+        enumerate_roots_for_frame_with_caller_sp(
+          caller_fp,
+          caller_sp,
+          caller_ra,
+          callsite,
+          bounds,
+          &mut visit,
+        )?;
       }
     }
     None => {
@@ -533,8 +535,18 @@ fn enumerate_roots_for_frame(
   visit: &mut impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
   // `.llvm_stackmaps` may contain other records (e.g. from `llvm.experimental.stackmap`) in
-  // addition to GC statepoints. Only interpret records that use our statepoint marker ID.
-  if callsite.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+  // addition to GC statepoints. Identify statepoints by their layout (LLVM 18 observed): the first
+  // three locations are constant header entries (callconv, flags, deopt_count).
+  //
+  // Important: the StackMap record `patchpoint_id` is **not** a stable marker (LLVM supports
+  // overriding it via the `"statepoint-id"` callsite attribute), so do not rely on it to detect
+  // statepoints.
+  let looks_like_statepoint =
+    callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+      && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+        .iter()
+        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+  if !looks_like_statepoint {
     return Ok(());
   }
 
@@ -550,7 +562,12 @@ fn enumerate_roots_for_frame_with_caller_sp(
   bounds: Option<StackBounds>,
   visit: &mut impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
-  if callsite.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+  let looks_like_statepoint =
+    callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+      && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+        .iter()
+        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+  if !looks_like_statepoint {
     return Ok(());
   }
 
