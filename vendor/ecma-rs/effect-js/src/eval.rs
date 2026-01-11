@@ -342,4 +342,13 @@ mod tests {
     assert_eq!(sem.purity, Purity::ReadOnly);
     assert!(sem.effects.contains(EffectSet::NONDETERMINISTIC));
   }
+
+  #[test]
+  fn number_is_integer_is_pure() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("Number.isInteger").unwrap();
+    let sem = eval_api_call(api, &CallSiteInfo::default());
+    assert_eq!(sem.purity, Purity::Pure);
+    assert_eq!(sem.effects, EffectSet::MAY_THROW);
+  }
 }

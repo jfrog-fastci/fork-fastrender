@@ -20,6 +20,34 @@
       throws: Maybe
   purity: Pure
 
+- name: Number.parseInt
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure
+
+- name: Number.parseFloat
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure
+
+- name: Number.isInteger
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure
+
+- name: Number.isSafeInteger
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure
+
 - name: Number.prototype.toString
   effects:
     template: pure
