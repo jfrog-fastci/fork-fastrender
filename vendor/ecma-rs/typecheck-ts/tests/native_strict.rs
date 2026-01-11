@@ -938,6 +938,23 @@ fn native_strict_bans_set_prototype_of_call() {
 }
 
 #[test]
+fn native_strict_bans_set_prototype_of_bind() {
+  let source = "const value: object = {};\nObject.setPrototypeOf.bind(Object, value, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Object.setPrototypeOf.bind(Object, value, {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_set_prototype_of_via_reflect_apply() {
   let source = "const value: object = {};\nReflect.apply(Object.setPrototypeOf, Object, [value, {}]);";
   let (diagnostics, file_id) = check(source, true);
