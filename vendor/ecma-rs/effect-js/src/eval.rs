@@ -297,4 +297,13 @@ mod tests {
     assert_eq!(sem.purity, Purity::Allocating);
     assert!(sem.effects.contains(EffectSet::ALLOCATES));
   }
+
+  #[test]
+  fn string_includes_is_pure() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("String.prototype.includes").unwrap();
+    let sem = eval_api_call(api, &CallSiteInfo::default());
+    assert_eq!(sem.purity, Purity::Pure);
+    assert!(!sem.effects.contains(EffectSet::ALLOCATES));
+  }
 }

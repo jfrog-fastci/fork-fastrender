@@ -85,6 +85,42 @@
   properties:
     encoding.output: same_as_input
 
+- name: String.prototype.includes
+  semantics: Includes
+  signature: "(searchString, position?) => boolean"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: String.prototype.startsWith
+  semantics: StartsWith
+  signature: "(searchString, position?) => boolean"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: String.prototype.endsWith
+  semantics: EndsWith
+  signature: "(searchString, endPosition?) => boolean"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
 - name: String.prototype.split
   semantics: Split
   signature: "(separator) => string[]"
