@@ -3134,6 +3134,19 @@ impl DisplayListBuilder {
       rect: Self::visible_in_local_space(visibility.rect, transform.as_ref()),
       hard_clip: visibility.hard_clip,
     };
+    // Filters like `blur()` sample pixels outside the visible/clipped region. To avoid culling away
+    // offscreen content that can blur back into view, expand the inherited visibility rect by the
+    // conservative filter outsets we already compute for stacking-context bounds.
+    if expand_left > 0.0 || expand_top > 0.0 || expand_right > 0.0 || expand_bottom > 0.0 {
+      if let Some(vis) = context_visibility.rect {
+        context_visibility.rect = Some(Rect::from_xywh(
+          vis.x() - expand_left,
+          vis.y() - expand_top,
+          vis.width() + expand_left + expand_right,
+          vis.height() + expand_top + expand_bottom,
+        ));
+      }
+    }
     if child_perspective.is_none() {
       if let (Some(vis), Some(bounds)) = (visibility.rect, world_bounds) {
         if !vis.intersects(bounds) {

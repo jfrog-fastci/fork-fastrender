@@ -1041,26 +1041,28 @@ impl Canvas {
       return None;
     }
 
-    let x0 = bounds.min_x().floor();
-    let y0 = bounds.min_y().floor();
-    let x1 = bounds.max_x().ceil();
-    let y1 = bounds.max_y().ceil();
-
-    // Avoid saturating float→int casts; treat out-of-range bounds as invalid so callers can fall
-    // back to a safe (clamped) allocation strategy.
-    let i32_min = i32::MIN as f32;
-    let i32_max = i32::MAX as f32;
-    if x0 < i32_min || x0 > i32_max || y0 < i32_min || y0 > i32_max || x1 < i32_min || x1 > i32_max
-      || y1 < i32_min
-      || y1 > i32_max
-    {
+    let x0_f = bounds.min_x().floor();
+    let y0_f = bounds.min_y().floor();
+    let x1_f = bounds.max_x().ceil();
+    let y1_f = bounds.max_y().ceil();
+    if !x0_f.is_finite() || !y0_f.is_finite() || !x1_f.is_finite() || !y1_f.is_finite() {
       return None;
     }
 
-    let origin_x = x0 as i32;
-    let origin_y = y0 as i32;
-    let x1 = x1 as i32;
-    let y1 = y1 as i32;
+    // Avoid relying on saturating float→int casts for pathological coordinates.
+    let i32_min = i32::MIN as f32;
+    let i32_max = i32::MAX as f32;
+    if x0_f < i32_min || x0_f > i32_max || y0_f < i32_min || y0_f > i32_max {
+      return None;
+    }
+    if x1_f < i32_min || x1_f > i32_max || y1_f < i32_min || y1_f > i32_max {
+      return None;
+    }
+
+    let origin_x = x0_f as i32;
+    let origin_y = y0_f as i32;
+    let x1 = x1_f as i32;
+    let y1 = y1_f as i32;
 
     let width_i64 = i64::from(x1) - i64::from(origin_x);
     let height_i64 = i64::from(y1) - i64::from(origin_y);

@@ -1347,26 +1347,40 @@ where
   }
   check_active(RenderStage::Paint)?;
 
-  let x = bounds_in_src.min_x().floor() as i32;
-  let y = bounds_in_src.min_y().floor() as i32;
-  let width = bounds_in_src.width().ceil() as u32;
-  let height = bounds_in_src.height().ceil() as u32;
-  if width == 0 || height == 0 {
+  let x0_f = bounds_in_src.min_x().floor();
+  let y0_f = bounds_in_src.min_y().floor();
+  let x1_f = bounds_in_src.max_x().ceil();
+  let y1_f = bounds_in_src.max_y().ceil();
+  if !(x0_f.is_finite() && y0_f.is_finite() && x1_f.is_finite() && y1_f.is_finite()) {
     return Ok(());
   }
 
-  let src_w = src_size.0 as i32;
-  let src_h = src_size.1 as i32;
-  if x >= src_w || y >= src_h {
+  let x0 = x0_f as i64;
+  let y0 = y0_f as i64;
+  let x1 = x1_f as i64;
+  let y1 = y1_f as i64;
+  if x0 >= x1 || y0 >= y1 {
     return Ok(());
   }
 
-  let clamped_x = x.max(0) as u32;
-  let clamped_y = y.max(0) as u32;
-  let max_w = src_w.saturating_sub(clamped_x as i32).max(0) as u32;
-  let max_h = src_h.saturating_sub(clamped_y as i32).max(0) as u32;
-  let region_w = width.min(max_w);
-  let region_h = height.min(max_h);
+  let src_w = i64::from(src_size.0);
+  let src_h = i64::from(src_size.1);
+  if src_w <= 0 || src_h <= 0 {
+    return Ok(());
+  }
+
+  let sample_x0 = x0.max(0).min(src_w);
+  let sample_y0 = y0.max(0).min(src_h);
+  let sample_x1 = x1.max(0).min(src_w);
+  let sample_y1 = y1.max(0).min(src_h);
+  if sample_x0 >= sample_x1 || sample_y0 >= sample_y1 {
+    return Ok(());
+  }
+
+  let clamped_x = sample_x0 as u32;
+  let clamped_y = sample_y0 as u32;
+  let region_w = (sample_x1 - sample_x0) as u32;
+  let region_h = (sample_y1 - sample_y0) as u32;
   if region_w == 0 || region_h == 0 {
     return Ok(());
   }
@@ -1954,16 +1968,77 @@ where
     return Ok(());
   }
 
-  let dest_w = dest.width() as i32;
-  let dest_h = dest.height() as i32;
-  let write_x = write_rect.min_x().floor().max(0.0) as u32;
-  let write_y = write_rect.min_y().floor().max(0.0) as u32;
-  let mut write_w = (write_rect.width().ceil() as i32)
-    .min(dest_w - write_x as i32)
-    .max(0) as u32;
-  let mut write_h = (write_rect.height().ceil() as i32)
-    .min(dest_h - write_y as i32)
-    .max(0) as u32;
+  let dest_w = i64::from(dest.width());
+  let dest_h = i64::from(dest.height());
+  if dest_w <= 0 || dest_h <= 0 {
+    scratch.region = Some(region);
+    if let Some(mask) = radii_mask {
+      scratch.radii_mask = Some(mask);
+    }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
+    }
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
+    return Ok(());
+  }
+
+  let filtered_height = if let Some(cached) = cached_filtered.as_ref() {
+    cached.height()
+  } else {
+    region.height()
+  };
+  let filtered_width_i64 = filtered_width as i64;
+  let filtered_height_i64 = i64::from(filtered_height);
+
+  // `bounds_in_src` can extend outside `src_size` (e.g. when a tile renderer translates the canvas
+  // so some tiles see negative origins). `region` only stores the intersection that we could
+  // sample from the source/backdrop root, so we must also clamp the destination write rectangle to
+  // the corresponding dest-space intersection to keep pixels aligned (and avoid OOB indexing).
+  let region_dest_x0 = i64::from(clamped_x).saturating_sub(i64::from(dest_origin_in_src.0));
+  let region_dest_y0 = i64::from(clamped_y).saturating_sub(i64::from(dest_origin_in_src.1));
+  let region_dest_x1 = region_dest_x0.saturating_add(filtered_width_i64);
+  let region_dest_y1 = region_dest_y0.saturating_add(filtered_height_i64);
+
+  let mut write_x0 = write_rect.min_x().floor() as i64;
+  let mut write_y0 = write_rect.min_y().floor() as i64;
+  let mut write_x1 = write_rect.max_x().ceil() as i64;
+  let mut write_y1 = write_rect.max_y().ceil() as i64;
+
+  write_x0 = write_x0.max(0).min(dest_w);
+  write_y0 = write_y0.max(0).min(dest_h);
+  write_x1 = write_x1.max(0).min(dest_w);
+  write_y1 = write_y1.max(0).min(dest_h);
+
+  write_x0 = write_x0.max(region_dest_x0);
+  write_y0 = write_y0.max(region_dest_y0);
+  write_x1 = write_x1.min(region_dest_x1);
+  write_y1 = write_y1.min(region_dest_y1);
+
+  write_x0 = write_x0.max(0).min(dest_w);
+  write_y0 = write_y0.max(0).min(dest_h);
+  write_x1 = write_x1.max(0).min(dest_w);
+  write_y1 = write_y1.max(0).min(dest_h);
+
+  if write_x0 >= write_x1 || write_y0 >= write_y1 {
+    scratch.region = Some(region);
+    if let Some(mask) = radii_mask {
+      scratch.radii_mask = Some(mask);
+    }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
+    }
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
+    return Ok(());
+  }
+
+  let write_x = write_x0 as u32;
+  let write_y = write_y0 as u32;
+  let mut write_w = (write_x1 - write_x0) as u32;
+  let mut write_h = (write_y1 - write_y0) as u32;
   if write_w == 0 || write_h == 0 {
     scratch.region = Some(region);
     if let Some(mask) = radii_mask {
@@ -1978,8 +2053,30 @@ where
     return Ok(());
   }
 
-  let src_start_x = (write_x as i32 + dest_origin_in_src.0 - clamped_x as i32).max(0) as u32;
-  let src_start_y = (write_y as i32 + dest_origin_in_src.1 - clamped_y as i32).max(0) as u32;
+  let src_start_x = (write_x0
+    .saturating_add(i64::from(dest_origin_in_src.0))
+    .saturating_sub(i64::from(clamped_x)))
+  .clamp(0, filtered_width_i64) as u32;
+  let src_start_y = (write_y0
+    .saturating_add(i64::from(dest_origin_in_src.1))
+    .saturating_sub(i64::from(clamped_y)))
+  .clamp(0, filtered_height_i64) as u32;
+
+  write_w = write_w.min((filtered_width_i64 as u32).saturating_sub(src_start_x));
+  write_h = write_h.min(filtered_height.saturating_sub(src_start_y));
+  if write_w == 0 || write_h == 0 {
+    scratch.region = Some(region);
+    if let Some(mask) = radii_mask {
+      scratch.radii_mask = Some(mask);
+    }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
+    }
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
+    return Ok(());
+  }
 
   // `bounds_in_src` can extend outside the available backdrop image (e.g. due to blur outsets or
   // off-canvas stacking-context bounds). Clamp the write region to the filtered pixmap extents so
@@ -14758,7 +14855,6 @@ impl DisplayListRenderer {
                       layer_rect,
                       is_backdrop_root,
                     )?;
-                  self.push_layer_mutation_state();
                 } else {
                   self
                     .canvas
@@ -14768,14 +14864,12 @@ impl DisplayListRenderer {
                       layer_rect,
                       is_backdrop_root,
                     )?;
-                  self.push_layer_mutation_state();
                 }
+                self.push_layer_mutation_state();
+              } else if needs_unclipped_layer {
+                self.push_layer_bounded_unclipped_tracked(opacity, None, layer_rect, is_backdrop_root)?;
               } else {
-                if needs_unclipped_layer {
-                  self.push_layer_bounded_unclipped_tracked(opacity, None, layer_rect, is_backdrop_root)?;
-                } else {
-                  self.push_layer_bounded_tracked(opacity, None, layer_rect, is_backdrop_root)?;
-                }
+                self.push_layer_bounded_tracked(opacity, None, layer_rect, is_backdrop_root)?;
               }
             } else if init_from_backdrop {
               self
@@ -14802,7 +14896,6 @@ impl DisplayListRenderer {
                       layer_rect,
                       is_backdrop_root,
                     )?;
-                  self.push_layer_mutation_state();
                 } else {
                   self
                     .canvas
@@ -14812,24 +14905,22 @@ impl DisplayListRenderer {
                       layer_rect,
                       is_backdrop_root,
                     )?;
-                  self.push_layer_mutation_state();
                 }
+                self.push_layer_mutation_state();
+              } else if needs_unclipped_layer {
+                self.push_layer_bounded_unclipped_tracked(
+                  opacity,
+                  Some(blend),
+                  layer_rect,
+                  is_backdrop_root,
+                )?;
               } else {
-                if needs_unclipped_layer {
-                  self.push_layer_bounded_unclipped_tracked(
-                    opacity,
-                    Some(blend),
-                    layer_rect,
-                    is_backdrop_root,
-                  )?;
-                } else {
-                  self.push_layer_bounded_tracked(
-                    opacity,
-                    Some(blend),
-                    layer_rect,
-                    is_backdrop_root,
-                  )?;
-                }
+                self.push_layer_bounded_tracked(
+                  opacity,
+                  Some(blend),
+                  layer_rect,
+                  is_backdrop_root,
+                )?;
               }
             } else if init_from_backdrop {
               self
@@ -14845,7 +14936,14 @@ impl DisplayListRenderer {
             }
           }
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
-          if projective_transform.is_some() || !scaled_filters.is_empty() || has_backdrop {
+          // CSS `filter` / `backdrop-filter` effects are applied to the stacking context's output
+          // before ancestor clips (e.g. `overflow:hidden`) are applied. If we inherit the ancestor
+          // clip while painting into the offscreen layer, kernel-based filters like blur will treat
+          // the clip edge as transparent and produce incorrect results near the boundary.
+          //
+          // Clear the inherited clip when a filter effect is present so descendants can paint into
+          // the halo region we allocated in `stacking_layer_bounds`.
+          if projective_transform.is_some() || needs_unclipped_layer {
             self.canvas.clear_clip();
           }
         } else {
@@ -15249,8 +15347,8 @@ impl DisplayListRenderer {
                     None,
                   );
                 });
-              }
-            } else if let Some(mode) = record.manual_blend {
+            }
+          } else if let Some(mode) = record.manual_blend {
               if let Some(mask) = self.canvas.clip_mask_rc() {
                 let applied = apply_mask_with_offset(&mut layer, origin, mask.as_ref(), (0, 0))?;
                 if !applied {

@@ -5609,6 +5609,181 @@ impl ImageCache {
       return Ok(());
     };
 
+    // Avoid paying the cost of an XML parse when the SVG clearly cannot trigger any external
+    // subresource fetches. Large SVG exports (Illustrator/Figma/etc.) can contain hundreds of
+    // thousands of nodes and attributes (filters, clip paths, patterns, ...). Parsing those
+    // documents with `roxmltree` in debug builds is extremely expensive and can dominate pageset
+    // fixture runtime even though most of them only reference internal fragments (`url(#id)`) or
+    // inline data URLs.
+    //
+    // `enforce_svg_resource_policy` is purely about *network* access. If every `href`/`src`/`url()`
+    // reference is either:
+    // - an internal fragment (`#...`), or
+    // - a `data:` URL, or
+    // - an `about:` URL,
+    // then the resource policy has nothing to enforce and we can return early.
+    fn svg_may_reference_external_resources(svg_content: &str) -> bool {
+      fn is_safe_ref(value: &str) -> bool {
+        let value = trim_ascii_whitespace(value);
+        value.is_empty()
+          || value.starts_with('#')
+          || crate::resource::is_data_url(value)
+          || is_about_url(value)
+      }
+
+      fn is_attr_boundary_before(b: u8) -> bool {
+        b.is_ascii_whitespace() || matches!(b, b':' | b'<' | b'/' | b'?')
+      }
+
+      let bytes = svg_content.as_bytes();
+
+      // Any `@import` could reference an external stylesheet (even if it later resolves to same
+      // origin). Keep the conservative slow path.
+      let mut i = 0usize;
+      while i + 7 <= bytes.len() {
+        if bytes[i] == b'@'
+          && bytes[i + 1].to_ascii_lowercase() == b'i'
+          && bytes[i + 2].to_ascii_lowercase() == b'm'
+          && bytes[i + 3].to_ascii_lowercase() == b'p'
+          && bytes[i + 4].to_ascii_lowercase() == b'o'
+          && bytes[i + 5].to_ascii_lowercase() == b'r'
+          && bytes[i + 6].to_ascii_lowercase() == b't'
+        {
+          return true;
+        }
+        i += 1;
+      }
+
+      // Scan for `url(...)` references. We only care about the first non-whitespace token inside
+      // the parentheses; if it isn't a fragment/data/about URL, it may cause a fetch.
+      let mut i = 0usize;
+      while i + 4 <= bytes.len() {
+        if bytes[i].to_ascii_lowercase() == b'u'
+          && bytes[i + 1].to_ascii_lowercase() == b'r'
+          && bytes[i + 2].to_ascii_lowercase() == b'l'
+          && bytes[i + 3] == b'('
+          && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+        {
+          let mut j = i + 4;
+          while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+          }
+          if j >= bytes.len() {
+            return true;
+          }
+
+          let quote = match bytes[j] {
+            b'"' | b'\'' => {
+              let q = bytes[j];
+              j += 1;
+              Some(q)
+            }
+            _ => None,
+          };
+          let start = j;
+          let end = if let Some(q) = quote {
+            while j < bytes.len() && bytes[j] != q {
+              j += 1;
+            }
+            j
+          } else {
+            while j < bytes.len()
+              && !bytes[j].is_ascii_whitespace()
+              && bytes[j] != b')'
+              && bytes[j] != b';'
+            {
+              j += 1;
+            }
+            j
+          };
+
+          if let Ok(value) = std::str::from_utf8(&bytes[start..end]) {
+            if !is_safe_ref(value) {
+              return true;
+            }
+          } else {
+            return true;
+          }
+        }
+        i += 1;
+      }
+
+      // Scan for `href="..."` and `src="..."` style attributes. We don't attempt to validate the
+      // element name here; false positives only trigger the slower XML parse, which is fine.
+      for target in [&b"href"[..], &b"src"[..]] {
+        let mut i = 0usize;
+        while i + target.len() <= bytes.len() {
+          if bytes[i].to_ascii_lowercase() == target[0]
+            && bytes
+              .get(i..i + target.len())
+              .is_some_and(|slice| slice.eq_ignore_ascii_case(target))
+            && (i == 0 || is_attr_boundary_before(bytes[i - 1]))
+          {
+            let after = bytes.get(i + target.len()).copied().unwrap_or(b' ');
+            if !(after.is_ascii_whitespace() || after == b'=') {
+              i += 1;
+              continue;
+            }
+
+            let mut j = i + target.len();
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+              j += 1;
+            }
+            if j >= bytes.len() || bytes[j] != b'=' {
+              i += 1;
+              continue;
+            }
+            j += 1; // '='
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+              j += 1;
+            }
+            if j >= bytes.len() {
+              return true;
+            }
+
+            let quote = match bytes[j] {
+              b'"' | b'\'' => {
+                let q = bytes[j];
+                j += 1;
+                Some(q)
+              }
+              _ => None,
+            };
+            let start = j;
+            let end = if let Some(q) = quote {
+              while j < bytes.len() && bytes[j] != q {
+                j += 1;
+              }
+              j
+            } else {
+              while j < bytes.len()
+                && !bytes[j].is_ascii_whitespace()
+                && !matches!(bytes[j], b'>' | b'/')
+              {
+                j += 1;
+              }
+              j
+            };
+
+            if let Ok(value) = std::str::from_utf8(&bytes[start..end]) {
+              if !is_safe_ref(value) {
+                return true;
+              }
+            } else {
+              return true;
+            }
+          }
+          i += 1;
+        }
+      }
+
+      false
+    }
+
+    if !svg_may_reference_external_resources(svg_content) {
+      return Ok(());
+    }
+
     // SVGs can reference external resources via multiple vectors:
     // - `href` / `xlink:href` attributes on elements like <image>, <use>, <feImage>, ...
     // - inline CSS: `style="... url(...) ..."`
@@ -9296,6 +9471,156 @@ fn svg_intrinsic_target_dimensions(
   }
 }
 
+fn svg_find_root_start_tag(svg_content: &str) -> Option<&str> {
+  // We only need the root `<svg ...>` start tag to extract `width`/`height`/`viewBox` and
+  // `preserveAspectRatio`. Parsing the entire document with `roxmltree` can be *extremely* slow in
+  // debug builds for large/complex SVGs (e.g. Illustrator exports), which makes pageset fixtures
+  // time out during image metadata probing.
+  //
+  // Do a lightweight scan for the first `<svg` start tag, skipping XML prologs (`<?...?>`),
+  // doctypes/comments (`<!...>`), and end tags (`</...>`). If we fail to find a plausible root tag
+  // we fall back to the slower `roxmltree` parser.
+  let bytes = svg_content.as_bytes();
+  let mut i = 0usize;
+  while i + 4 <= bytes.len() {
+    if bytes[i] != b'<' {
+      i += 1;
+      continue;
+    }
+    match bytes.get(i + 1).copied() {
+      Some(b'!' | b'?' | b'/') | None => {
+        i += 1;
+        continue;
+      }
+      _ => {}
+    }
+
+    if bytes.get(i + 1).is_some_and(|b| b.to_ascii_lowercase() == b's')
+      && bytes.get(i + 2).is_some_and(|b| b.to_ascii_lowercase() == b'v')
+      && bytes.get(i + 3).is_some_and(|b| b.to_ascii_lowercase() == b'g')
+    {
+      // Ensure we're not matching `<svgFoo>`; require a boundary.
+      let boundary = bytes.get(i + 4).copied().unwrap_or(b'>');
+      if !(boundary.is_ascii_whitespace() || matches!(boundary, b'>' | b'/' | b':')) {
+        i += 1;
+        continue;
+      }
+
+      let mut quote: Option<u8> = None;
+      let mut j = i + 4;
+      while j < bytes.len() {
+        let b = bytes[j];
+        if let Some(q) = quote {
+          if b == q {
+            quote = None;
+          }
+          j += 1;
+          continue;
+        }
+
+        match b {
+          b'\'' | b'"' => quote = Some(b),
+          b'>' => {
+            j += 1;
+            return svg_content.get(i..j);
+          }
+          _ => {}
+        }
+        j += 1;
+      }
+      return None;
+    }
+
+    i += 1;
+  }
+  None
+}
+
+fn svg_extract_root_attr<'a>(start_tag: &'a str, target: &str) -> Option<&'a str> {
+  let bytes = start_tag.as_bytes();
+  if bytes.len() < 5 || bytes[0] != b'<' {
+    return None;
+  }
+
+  // Skip tag name (`<svg` or `<svg:svg` etc).
+  let mut i = 1usize;
+  while i < bytes.len() {
+    let b = bytes[i];
+    if b.is_ascii_whitespace() || matches!(b, b'>' | b'/') {
+      break;
+    }
+    i += 1;
+  }
+
+  while i < bytes.len() {
+    // Skip whitespace.
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() || matches!(bytes[i], b'>' | b'/') {
+      break;
+    }
+
+    // Attribute name.
+    let name_start = i;
+    while i < bytes.len()
+      && !bytes[i].is_ascii_whitespace()
+      && !matches!(bytes[i], b'=' | b'>' | b'/')
+    {
+      i += 1;
+    }
+    let name_end = i;
+
+    // Skip whitespace.
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != b'=' {
+      continue;
+    }
+    i += 1; // '='
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() {
+      break;
+    }
+
+    let (value_start, value_end) = match bytes[i] {
+      b'\'' | b'"' => {
+        let quote = bytes[i];
+        i += 1;
+        let start = i;
+        while i < bytes.len() && bytes[i] != quote {
+          i += 1;
+        }
+        let end = i.min(bytes.len());
+        if i < bytes.len() {
+          i += 1; // closing quote
+        }
+        (start, end)
+      }
+      _ => {
+        let start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'>' | b'/') {
+          i += 1;
+        }
+        (start, i)
+      }
+    };
+
+    if name_end > name_start
+      && start_tag
+        .get(name_start..name_end)
+        .is_some_and(|name| name == target)
+    {
+      return start_tag.get(value_start..value_end);
+    }
+  }
+
+  None
+}
+
 /// Returns intrinsic metadata extracted from the SVG root element: explicit width/height when
 /// present (including common font-relative units when `font_size`/`root_font_size` are provided),
 /// an intrinsic aspect ratio (if not disabled), and whether preserveAspectRatio="none" was
@@ -9305,6 +9630,25 @@ fn svg_intrinsic_metadata(
   font_size: f32,
   root_font_size: f32,
 ) -> Option<(Option<f32>, Option<f32>, Option<f32>, bool)> {
+  if let Some(start_tag) = svg_find_root_start_tag(svg_content) {
+    let intrinsic = svg_intrinsic_dimensions_from_attributes(
+      svg_extract_root_attr(start_tag, "width"),
+      svg_extract_root_attr(start_tag, "height"),
+      svg_extract_root_attr(start_tag, "viewBox"),
+      svg_extract_root_attr(start_tag, "preserveAspectRatio"),
+      font_size,
+      root_font_size,
+    );
+
+    return Some((
+      intrinsic.width,
+      intrinsic.height,
+      intrinsic.aspect_ratio,
+      intrinsic.aspect_ratio_none,
+    ));
+  }
+
+  // Slow fallback: full XML parse.
   std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     let svg_for_parse = svg_markup_for_roxmltree(svg_content);
     let doc = Document::parse(svg_for_parse.as_ref()).ok()?;
@@ -9482,6 +9826,56 @@ impl Clone for ImageCache {
     assert!(
       px[3] > 200 && px[0] > 200 && px[1] < 50 && px[2] < 50,
       "expected opaque red pixel; got {px:?}"
+    );
+  }
+
+  #[test]
+  fn probe_svg_content_extracts_intrinsic_dimensions_without_roxmltree() {
+    let cache = ImageCache::new();
+    // Real-world SVGs often start with a DOCTYPE which `roxmltree` rejects. Our probe path should
+    // still be able to extract intrinsic dimensions from the root start tag without needing a full
+    // XML parse.
+    let svg = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="300" height="150" viewBox="0 0 300 150" xmlns="http://www.w3.org/2000/svg"></svg>"#;
+    let meta = cache
+      .probe_svg_content(svg, "test.svg")
+      .expect("probe svg content");
+    assert_eq!(meta.width, 300);
+    assert_eq!(meta.height, 150);
+    assert_eq!(meta.intrinsic_ratio, Some(2.0));
+  }
+
+  #[test]
+  fn probe_svg_content_extracts_viewbox_aspect_ratio_without_intrinsic_size() {
+    let cache = ImageCache::new();
+    let svg = r#"<svg viewBox="0 0 100 50" xmlns="http://www.w3.org/2000/svg"></svg>"#;
+    let meta = cache
+      .probe_svg_content(svg, "ratio.svg")
+      .expect("probe svg content");
+    // Without width/height, SVG images behave like other replaced elements: 300x150 with a
+    // separately tracked intrinsic aspect ratio.
+    assert_eq!(meta.width, 300);
+    assert_eq!(meta.height, 150);
+    assert_eq!(meta.intrinsic_ratio, Some(2.0));
+  }
+
+  #[test]
+  #[cfg(feature = "avif")]
+  fn avif_fixture_asset_decodes() {
+    let cache = ImageCache::new();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+      "tests/pages/fixtures/gitlab.com/assets/22f6f99a9d5ab37d1feb616188f30106.avif",
+    );
+    let bytes = std::fs::read(&path).expect("read avif fixture");
+    let (img, has_alpha) = cache
+      .decode_bitmap(&bytes, Some("image/avif"), &path.to_string_lossy())
+      .expect("decode avif fixture");
+    assert!(img.width() > 0 && img.height() > 0);
+    assert!(
+      !ImageCache::decoded_bitmap_is_single_transparent_pixel(&img, has_alpha),
+      "expected avif fixture to decode into real pixels (not missing-image sentinel)"
     );
   }
 
