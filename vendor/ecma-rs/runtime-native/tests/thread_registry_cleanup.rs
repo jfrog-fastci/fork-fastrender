@@ -54,3 +54,23 @@ fn dead_threads_are_pruned_and_do_not_block_stop_the_world() {
   );
 }
 
+#[test]
+fn register_current_thread_can_upgrade_kind() {
+  let _rt = TestRuntimeGuard::new();
+
+  let id1 = threading::register_current_thread(threading::ThreadKind::External);
+  assert_eq!(
+    threading::registry::current_thread_state().unwrap().kind(),
+    threading::ThreadKind::External
+  );
+
+  // Re-registering the same OS thread should be able to upgrade its kind. This is important for
+  // threads that first enter via generic parallel APIs (`External`) but later become the main
+  // event-loop thread.
+  let id2 = threading::register_current_thread(threading::ThreadKind::Main);
+  assert_eq!(id1.get(), id2.get());
+  assert_eq!(
+    threading::registry::current_thread_state().unwrap().kind(),
+    threading::ThreadKind::Main
+  );
+}
