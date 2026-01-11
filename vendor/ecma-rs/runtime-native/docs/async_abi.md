@@ -159,6 +159,24 @@ queue, establishing a happens-before edge such that:
 - Promise settlement may occur on any worker thread.
 - Settlement wakes all awaiting coroutines by enqueuing microtasks onto the async event loop.
 - Promise continuations are stored in a FIFO list; continuations are enqueued in registration order.
+
+## Model checking the waiter/wake protocol (Loom)
+
+The promise continuation registration + wake-up protocol is a small but concurrency-sensitive
+lock-free algorithm (Treiber-stack registration + drain-on-settle + waiter-side post-push recheck).
+
+To catch lost-wakeup / double-wake bugs early, `runtime-native` includes Loom model-checking tests:
+
+- `runtime-native/tests/loom_promise_waiters.rs`
+- harness: `runtime-native/src/loom_promise_waiters.rs`
+
+Run them with the `loom` feature enabled:
+
+```bash
+# From `vendor/ecma-rs/`:
+bash scripts/cargo_llvm.sh test -p runtime-native --features loom --test loom_promise_waiters
+```
+
 ## Promise settlement (thread-safe, idempotent)
 
 Promises have a `PromiseHeader.state`:
