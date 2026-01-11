@@ -5,6 +5,7 @@ functions into `@llvm.experimental.gc.statepoint.*` intrinsics. By default, the 
 rewritten statepoint:
 
 - Default statepoint ID: `0xABCDEF00` (`2882400000`)
+- Default patch bytes: `0`
 - (If you encounter deopt bundles) default deopt ID: `0xABCDEF0F`
 
 LLVM also supports **overriding the emitted statepoint ID and patch-byte directive** by attaching *callsite string
