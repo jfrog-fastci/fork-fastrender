@@ -1,9 +1,8 @@
-// Benchmarks for the milestone bump allocator used by `rt_alloc`.
+// Benchmarks for the `rt_alloc` fast paths.
 //
-// NOTE: The allocator is leak-only (no frees). To avoid exhausting the default arena during a
-// Criterion run, we:
-// - override the arena size to a large virtual reservation (1 TiB)
-// - keep Criterion sample sizes relatively small
+// Note: `rt_alloc` allocates into the GC heap (nursery/Immix/LOS). The benchmark does not keep
+// the returned pointers live across allocations, so collections are free to reclaim everything.
+// This makes it suitable for measuring allocation throughput without needing explicit rooting.
 
 #[cfg(target_os = "linux")]
 use std::sync::Once;
@@ -38,25 +37,21 @@ static SHAPES: [RtShapeDescriptor; 1] = [RtShapeDescriptor {
 }];
 
 #[cfg(target_os = "linux")]
-fn init_bump_arena_for_bench() {
+fn init_for_bench() {
   static ONCE: Once = Once::new();
   ONCE.call_once(|| {
-    // Must be set before the first `rt_alloc` call initializes the Lazy arena.
-    std::env::set_var("RUNTIME_NATIVE_BUMP_ARENA_SIZE", "1024G");
-    std::env::set_var("RUNTIME_NATIVE_BUMP_CHUNK_SIZE", "1M");
-
     unsafe {
       shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
     }
 
-    // Force arena initialization with a non-zero allocation.
+    // Ensure one-time runtime initialization doesn't get charged to the benchmark loop.
     black_box(runtime_native::rt_alloc(16, RtShapeId(1)));
   });
 }
 
 #[cfg(target_os = "linux")]
 fn rt_alloc_single_thread(c: &mut Criterion) {
-  init_bump_arena_for_bench();
+  init_for_bench();
 
   c.bench_function("rt_alloc_16B_single_thread", |b| {
     b.iter(|| {
@@ -68,7 +63,7 @@ fn rt_alloc_single_thread(c: &mut Criterion) {
 
 #[cfg(target_os = "linux")]
 fn rt_alloc_multi_thread(c: &mut Criterion) {
-  init_bump_arena_for_bench();
+  init_for_bench();
 
   let threads = std::thread::available_parallelism()
     .map(|n| n.get())
