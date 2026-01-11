@@ -4,6 +4,7 @@ use std::ptr;
 use runtime_native::gc::ObjHeader;
 use runtime_native::gc::RememberedSet;
 use runtime_native::gc::RootStack;
+use runtime_native::gc::SimpleRememberedSet;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::GcHeap;
 
@@ -25,38 +26,13 @@ impl RememberedSet for NullRememberedSet {
   fn on_promoted_object(&mut self, _obj: *mut u8, _has_young_refs: bool) {}
 }
 
-struct VecRememberedSet {
-  objs: Vec<*mut u8>,
-  cleared: bool,
-}
-
-impl VecRememberedSet {
-  fn new(objs: Vec<*mut u8>) -> Self {
-    Self { objs, cleared: false }
-  }
-}
-
-impl RememberedSet for VecRememberedSet {
-  fn for_each_remembered_obj(&mut self, f: &mut dyn FnMut(*mut u8)) {
-    for &obj in &self.objs {
-      f(obj);
-    }
-  }
-
-  fn clear(&mut self) {
-    self.cleared = true;
-    self.objs.clear();
-  }
-
-  fn on_promoted_object(&mut self, _obj: *mut u8, _has_young_refs: bool) {}
-}
-
 #[test]
 fn pinned_object_address_is_stable_across_minor_and_major_gc() {
   let mut heap = GcHeap::new();
 
   let pinned = heap.alloc_pinned(&NODE_DESC);
   assert!(heap.is_in_los(pinned), "pinned objects must live in LOS");
+  assert!(unsafe { &*(pinned as *const ObjHeader) }.is_pinned());
 
   let pinned_addr = pinned;
   let mut root_pinned = pinned;
@@ -87,8 +63,11 @@ fn pinned_objects_are_traced_and_compat_with_minor_evacuation() {
   roots.push(&mut root_pinned as *mut *mut u8);
 
   // The pinned object now contains an old->young edge, which would normally be recorded by the
-  // write barrier. For the test, we provide it explicitly via a remembered set.
-  let mut remembered = VecRememberedSet::new(vec![pinned]);
+  // write barrier. For the test, we record it explicitly in a `SimpleRememberedSet`.
+  let mut remembered = SimpleRememberedSet::new();
+  remembered.on_promoted_object(pinned, true);
+  assert!(remembered.contains(pinned));
+  assert!(unsafe { &*(pinned as *const ObjHeader) }.is_remembered());
   heap.collect_minor(&mut roots, &mut remembered);
 
   assert_eq!(root_pinned, pinned);
@@ -96,8 +75,9 @@ fn pinned_objects_are_traced_and_compat_with_minor_evacuation() {
   assert_ne!(updated, young);
   assert!(!heap.is_in_nursery(updated));
   assert!(heap.is_in_immix(updated));
-  assert!(remembered.cleared);
-  assert!(remembered.objs.is_empty());
+  assert!(!remembered.contains(pinned));
+  assert!(!unsafe { &*(pinned as *const ObjHeader) }.is_remembered());
+  assert!(unsafe { &*(pinned as *const ObjHeader) }.is_pinned());
 
   // Major GC should keep both pinned + its child alive.
   heap.collect_major(&mut roots, &mut NullRememberedSet::default());
