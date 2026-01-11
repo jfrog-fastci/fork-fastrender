@@ -100,11 +100,25 @@ impl Default for LinkOpts {
 /// empty `.rodata` output section, and will error if an `INSERT AFTER .rodata` fragment is used
 /// when the input objects don't contribute any `.rodata` (common in minimal binaries/tests).
 ///
-/// Keep this in sync with `runtime-native/link/stackmaps.ld`.
+/// Keep this in sync with `runtime-native/link/stackmaps*.ld`.
 const LLVM_STACKMAPS_LD_FRAGMENT: &str = include_str!("../../runtime-native/link/stackmaps.ld");
+const LLVM_STACKMAPS_LD_GNULD_FRAGMENT: &str =
+  include_str!("../../runtime-native/link/stackmaps_gnuld.ld");
 
-fn write_stackmaps_linker_script(path: &Path) -> anyhow::Result<()> {
-  fs::write(path, LLVM_STACKMAPS_LD_FRAGMENT).with_context(|| {
+fn stackmaps_linker_script_fragment(opts: LinkOpts) -> &'static str {
+  // GNU ld: when linking PIE, inserting `.data.rel.ro.llvm_stackmaps` "after .text"
+  // can land the section in the same LOAD segment as `.text`, producing an RWX
+  // segment once the dynamic loader needs the section to be writable for
+  // relocations. Prefer the GNU ld-specific fragment in that configuration.
+  if cfg!(target_os = "linux") && opts.pie && matches!(opts.linker, LinkerFlavor::System) {
+    LLVM_STACKMAPS_LD_GNULD_FRAGMENT
+  } else {
+    LLVM_STACKMAPS_LD_FRAGMENT
+  }
+}
+
+fn write_stackmaps_linker_script(path: &Path, opts: LinkOpts) -> anyhow::Result<()> {
+  fs::write(path, stackmaps_linker_script_fragment(opts)).with_context(|| {
     format!(
       "failed to write linker script fragment to {}",
       path.display()
@@ -190,7 +204,7 @@ pub fn link_elf_executable_with_options(
   //   (e.g. temp file outputs in `/tmp`).
   let script_dir = tempfile::tempdir().context("failed to create tempdir for stackmaps linker script")?;
   let script_path = script_dir.path().join("llvm_stackmaps.ld");
-  write_stackmaps_linker_script(&script_path)?;
+  write_stackmaps_linker_script(&script_path, opts)?;
 
   // If producing a PIE, relocate `.llvm_stackmaps` / `.llvm_faultmaps` into
   // `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps` in the input objects so lld can
@@ -321,7 +335,7 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
 
   fs::write(&bc_path, bitcode)
     .with_context(|| format!("failed to write bitcode to {}", bc_path.display()))?;
-  write_stackmaps_linker_script(&script_path)?;
+  write_stackmaps_linker_script(&script_path, opts)?;
 
   let mut cmd = Command::new(clang);
   cmd.arg("-flto");
@@ -414,7 +428,7 @@ pub fn link_elf_executable_lto(
     .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
 
   let script_path = out_dir.join("llvm_stackmaps.ld");
-  write_stackmaps_linker_script(&script_path)?;
+  write_stackmaps_linker_script(&script_path, opts)?;
 
   let mut cmd = Command::new(clang);
   cmd.arg("-flto=full");
@@ -496,7 +510,11 @@ pub fn link_object_to_executable(
   // - `KEEP`s `.llvm_stackmaps` so `--gc-sections` can't discard it.
   let td = tempfile::tempdir().map_err(crate::NativeJsError::TempDirCreateFailed)?;
   let script_path = td.path().join("fastr_stackmaps.ld");
-  fs::write(&script_path, LLVM_STACKMAPS_LD_FRAGMENT).map_err(|source| {
+  fs::write(
+    &script_path,
+    stackmaps_linker_script_fragment(LinkOpts::default()),
+  )
+  .map_err(|source| {
     crate::NativeJsError::Io {
       path: script_path.clone(),
       source,
