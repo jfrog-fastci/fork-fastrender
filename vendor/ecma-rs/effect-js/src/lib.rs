@@ -76,6 +76,12 @@ mod tests {
   use effect_model::ThrowBehavior;
 
   #[test]
+  fn api_id_is_kb_api_id() {
+    fn assert_kb_id(_: knowledge_base::ApiId) {}
+    assert_kb_id(ApiId::from_name("JSON.parse"));
+  }
+
+  #[test]
   fn bundled_kb_contains_core_semantics() {
     let db = load_default_api_database();
 
