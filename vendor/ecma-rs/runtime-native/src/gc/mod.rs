@@ -34,6 +34,8 @@ use crate::trap;
 
 pub mod config;
 pub mod global_remset;
+pub mod card_table;
+pub mod write_barrier;
 pub mod heap;
 pub mod roots;
 pub mod handle_table;
@@ -396,7 +398,9 @@ impl ObjHeader {
       !self.is_pinned(),
       "attempted to evacuate/forward a pinned object"
     );
-    self.meta.store((new_location as usize) | META_FORWARDED, Ordering::Release);
+    self
+      .meta
+      .store((new_location as usize) | META_FORWARDED, Ordering::Release);
   }
 
   #[inline]
@@ -426,13 +430,29 @@ impl ObjHeader {
     !self.is_forwarded() && (self.meta.load(Ordering::Acquire) & META_PINNED) != 0
   }
 
+  /// Atomically set the remembered bit if it is currently unset.
+  ///
+  /// Returns `true` if this call transitioned `REMEMBERED` from 0 → 1.
   #[inline]
   pub(crate) fn set_remembered_idempotent(&self) -> bool {
+    // Forwarded objects store relocation pointers in `meta` (used during minor
+    // GC and optional major compaction). Remembered bits are not meaningful on
+    // forwarded from-space objects, and setting bits would corrupt the pointer.
     if self.is_forwarded() {
       return false;
     }
     let prev = self.meta.fetch_or(META_REMEMBERED, Ordering::Relaxed);
     (prev & META_REMEMBERED) == 0
+  }
+
+  /// Alias for [`ObjHeader::set_remembered_idempotent`].
+  ///
+  /// This exists for generational write barrier code and tests that prefer a
+  /// name describing the 0→1 transition.
+  #[inline]
+  #[doc(hidden)]
+  pub fn set_remembered_if_unset(&self) -> bool {
+    self.set_remembered_idempotent()
   }
 
   #[inline]

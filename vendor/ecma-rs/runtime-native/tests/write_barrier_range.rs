@@ -3,6 +3,7 @@ use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use runtime_native::gc::{ObjHeader, TypeDescriptor, CARD_SIZE};
+use runtime_native::mutator::{MutatorThread, ThreadContextGuard};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::GcHeap;
 
@@ -59,6 +60,9 @@ fn write_barrier_range_marks_all_covered_cards_and_remembers_object() {
   // but ensure it drops *before* `heap` so reset doesn't dereference freed objects.
   let _rt = TestRuntimeGuard::new();
 
+  let mut thread = MutatorThread::new();
+  let _guard = ThreadContextGuard::install(&mut thread);
+
   // Treat all objects as old for this test.
   runtime_native::rt_gc_set_young_range(core::ptr::null_mut(), core::ptr::null_mut());
 
@@ -75,8 +79,9 @@ fn write_barrier_range_marks_all_covered_cards_and_remembers_object() {
   assert_eq!(cards.word(0) & 0b111, 0b111);
   assert_eq!(cards.word(0) & (1u64 << 3), 0);
 
-  // Must be remembered (header flag).
+  // Must be remembered (header flag + remembered set membership).
   assert!(header.is_remembered());
+  assert_eq!(thread.new_remembered, vec![obj]);
 }
 
 #[test]

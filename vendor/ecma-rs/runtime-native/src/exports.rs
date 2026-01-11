@@ -514,6 +514,13 @@ pub fn clear_write_barrier_state_for_tests() {
   // the write barrier's fast paths.
   rt_gc_set_young_range(core::ptr::null_mut(), core::ptr::null_mut());
   global_remset::remset_clear();
+  // Tests that install a per-thread write-barrier context should not leak newly-remembered objects
+  // across test cases.
+  let thread = crate::mutator::current_mutator_thread_ptr();
+  if !thread.is_null() {
+    // Safety: tests install the pointer via `ThreadContextGuard`.
+    unsafe { (*thread).new_remembered.clear() };
+  }
 }
 
 /// Debug/test helper: is the given object base pointer currently in the remembered set?
@@ -895,6 +902,11 @@ pub extern "C" fn rt_gc_collect() {
 
     #[cfg(feature = "gc_stats")]
     crate::gc_stats::record_gc_collect();
+
+    // Tests (and some embedders) may reset the exported young range between runs.
+    // Ensure it always reflects the nursery backing the process-global heap before
+    // starting a collection.
+    crate::rt_alloc::ensure_global_heap_init();
 
     // If a stop-the-world is already active, join it as a mutator safepoint at
     // this callsite (so we still publish a safepoint context for stack walking).

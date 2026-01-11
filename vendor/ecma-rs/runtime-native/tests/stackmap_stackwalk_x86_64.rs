@@ -41,7 +41,7 @@ core::arch::global_asm!(
   .text
   .globl safepoint
   .type safepoint,@function
-safepoint:
+ safepoint:
   push rbp
   mov rbp, rsp
   mov rdi, rbp

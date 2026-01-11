@@ -16,6 +16,8 @@
 use core::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::mutator::current_mutator_thread_ptr;
+
 use super::ObjHeader;
 use super::RememberedSet;
 use super::SimpleRememberedSet;
@@ -205,6 +207,22 @@ pub fn remset_add(obj: *mut u8) {
   // pointer (start of `ObjHeader`).
   let header = unsafe { &*(obj as *const ObjHeader) };
   if header.set_remembered_idempotent() {
+    // If the embedding runtime installed a per-thread mutator context, enqueue
+    // newly-remembered objects in that buffer. This lets stop-the-world GC merge
+    // per-thread buffers without taking a global lock.
+    //
+    // IMPORTANT: `rt_write_barrier` is `NoGC` and must not allocate. Aborting on
+    // overflow is preferable to silently dropping old→young edges.
+    let thread = current_mutator_thread_ptr();
+    if !thread.is_null() {
+      // SAFETY: the TLS pointer is installed by the runtime/test harness.
+      let buf = unsafe { &mut (*thread).new_remembered };
+      if buf.len() == buf.capacity() {
+        std::process::abort();
+      }
+      buf.push(obj);
+    }
+
     #[cfg(feature = "gc_stats")]
     crate::gc_stats::record_remembered_object_added();
     let thread = registry::current_thread_state_ptr();
@@ -274,6 +292,13 @@ pub(crate) struct WorldStoppedRememberedSet;
 impl WorldStoppedRememberedSet {
   #[inline]
   pub(crate) fn new() -> Self {
+    // Stop-the-world GC uses `WorldStoppedRememberedSet` to iterate remembered
+    // objects without allocating. The exported write barrier records newly
+    // remembered objects into per-thread buffers (to avoid a contended global
+    // atomic on every old→young store).
+    //
+    // Before scanning we must merge those per-thread buffers into the
+    // process-global buffer that this adapter iterates.
     registry::for_each_thread(|thread| thread.remset_drain_raw(|obj| remembered_set().insert(obj)));
     Self
   }

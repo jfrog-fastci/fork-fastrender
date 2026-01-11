@@ -75,6 +75,7 @@ pub mod io;
 pub mod buffer;
 pub mod immix;
 pub mod los;
+pub mod mutator;
 pub mod nursery;
 pub mod roots;
 pub mod stackmap;
@@ -172,6 +173,7 @@ pub use thread_registry::{
 };
 pub use gc_roots::{relocate_derived_pairs, RelocPair, StackRootEnumerator};
 pub use async_rt::gc_handle::{AsyncHandle, MustDiscardOwnedAsyncHandle, OwnedAsyncHandle};
+pub use mutator::{MutatorThread, ThreadContextGuard};
 pub use stackmaps::{
   global_stackmap_registry, lookup, rt_stackmaps_register, rt_stackmaps_unregister, CallSiteHandle,
   StackMapRegistry, StackMaps,

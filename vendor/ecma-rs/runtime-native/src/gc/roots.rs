@@ -138,6 +138,16 @@ impl SimpleRememberedSet {
     self.objs.push(obj);
   }
 
+  /// Merge per-thread newly-remembered objects into this global set.
+  pub fn prepare_for_minor_gc<'a>(
+    &mut self,
+    threads: impl Iterator<Item = &'a mut crate::mutator::MutatorThread>,
+  ) {
+    for thread in threads {
+      self.objs.extend(thread.new_remembered.drain(..));
+    }
+  }
+
   pub fn contains(&self, obj: *mut u8) -> bool {
     self.objs.contains(&obj)
   }

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use proptest::prelude::*;
 
 use runtime_native::gc::{ObjHeader, CARD_SIZE, OBJ_HEADER_SIZE};
+use runtime_native::mutator::{MutatorThread, ThreadContextGuard};
 use runtime_native::test_util::TestGcGuard;
 
 const WORD_BYTES: usize = size_of::<usize>();
@@ -552,6 +553,8 @@ impl ModelHeap {
 #[test]
 fn remembered_set_and_card_table_survive_multiple_minors() {
   let _gc = TestGcGuard::new();
+  let mut thread = MutatorThread::new();
+  let _thread_guard = ThreadContextGuard::install(&mut thread);
   runtime_native::clear_write_barrier_state_for_tests();
 
   let mut heap = ModelHeap::new();
@@ -651,6 +654,8 @@ proptest! {
   #[test]
   fn proptest_remembered_set_model(ops in op_strategy()) {
     let _gc = TestGcGuard::new();
+    let mut thread = MutatorThread::new();
+    let _thread_guard = ThreadContextGuard::install(&mut thread);
     runtime_native::clear_write_barrier_state_for_tests();
 
     let mut heap = ModelHeap::new();

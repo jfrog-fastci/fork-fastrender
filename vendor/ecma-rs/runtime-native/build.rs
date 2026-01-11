@@ -443,8 +443,8 @@ fn generate_llvm_module(
   // Note: we define `@safepoint` with **weak linkage** so integration tests can override the
   // symbol with an instrumented implementation (without causing duplicate-symbol link errors).
   let ir = r#"; ModuleID = 'runtime_native_stackmap_test'
-source_filename = "runtime_native_stackmap_test"
-target triple = "x86_64-unknown-linux-gnu"
+ source_filename = "runtime_native_stackmap_test"
+ target triple = "x86_64-unknown-linux-gnu"
 
 ; Keep the safepoint callee defined in this module so linking the generated
 ; object into Rust test binaries does not require any extra runtime stubs.
@@ -460,7 +460,7 @@ define ptr addrspace(1) @test_fn(ptr addrspace(1) %p) gc "coreclr" {
 entry:
   call void @safepoint()
   ret ptr addrspace(1) %p
-}
+ }
 "#;
 
   fs::write(input_ll, ir).map_err(|e| format!("write {input_ll:?}: {e}"))?;

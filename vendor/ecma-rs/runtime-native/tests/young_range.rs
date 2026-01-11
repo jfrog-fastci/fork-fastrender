@@ -2,6 +2,7 @@ use std::mem;
 use std::ptr;
 
 use runtime_native::gc::ObjHeader;
+use runtime_native::mutator::{MutatorThread, ThreadContextGuard};
 use runtime_native::test_util::TestGcGuard;
 
 #[repr(C)]
@@ -28,6 +29,8 @@ fn ptr_range_for_obj(obj: &mut FakeObj) -> (*mut u8, *mut u8) {
 #[test]
 fn write_barrier_uses_updateable_young_range() {
   let _gc = TestGcGuard::new();
+  let mut thread = MutatorThread::new();
+  let _guard = ThreadContextGuard::install(&mut thread);
   runtime_native::clear_write_barrier_state_for_tests();
   let mut young_a = new_fake_obj();
   let mut young_b = new_fake_obj();
