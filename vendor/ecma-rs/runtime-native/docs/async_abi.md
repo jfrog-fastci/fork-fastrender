@@ -370,6 +370,7 @@ Contract:
 
 ### Microtasks + timers
 
+- `rt_async_sleep(delay_ms: u64) -> PromiseRef`
 - `rt_queue_microtask(task: Microtask)`
 - `rt_queue_microtask_with_drop(cb: extern "C" fn(*mut u8), data: *mut u8, drop_data: extern "C" fn(*mut u8))`
 - `rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: *mut u8)`
