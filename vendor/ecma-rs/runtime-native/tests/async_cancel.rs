@@ -6,6 +6,8 @@ use runtime_native::async_abi::{
 use runtime_native::test_util::{new_promise_header_pending, TestRuntimeGuard};
 use runtime_native::{rt_async_cancel_all, rt_drain_microtasks, rt_queue_microtask, CoroutineId};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 #[repr(C)]
 struct DropPayload {
@@ -26,6 +28,8 @@ extern "C" fn microtask_drop(data: *mut u8) {
   let dropped = unsafe { &*payload.dropped };
   dropped.fetch_add(1, Ordering::SeqCst);
 }
+
+extern "C" fn noop(_data: *mut u8) {}
 
 #[repr(C)]
 struct AwaitCoro {
@@ -128,6 +132,86 @@ fn cancel_drops_pending_native_promise_reactions() {
     unsafe { &(*awaited_hdr).waiters }.load(Ordering::Acquire),
     0,
     "rt_async_cancel_all must detach and drop pending promise reactions"
+  );
+
+  unsafe {
+    drop(Box::from_raw(awaited_hdr));
+  }
+}
+
+#[test]
+fn cancel_clears_block_on_waker_reactions_when_executor_enters_error_state() {
+  let _rt = TestRuntimeGuard::new();
+
+  // Warm up the runtime so this test doesn't include one-time initialization, and to ensure the
+  // current thread is registered in the threading registry.
+  unsafe {
+    let _ = runtime_native::rt_async_run_until_idle_abi();
+  }
+  let this_thread_id = runtime_native::threading::registry::current_thread_id()
+    .expect("rt_async_run_until_idle_abi should register the current thread");
+
+  let awaited = Box::new(new_promise_header_pending());
+  let awaited_hdr: PromiseRef = Box::into_raw(awaited);
+  let p = runtime_native::PromiseRef(awaited_hdr.cast());
+  unsafe {
+    runtime_native::rt_promise_init(p);
+  }
+
+  runtime_native::rt_async_set_limits(1, 1);
+
+  let (tx, rx) = mpsc::channel::<bool>();
+  let error_thread = std::thread::spawn(move || unsafe {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut saw_parked = false;
+    while Instant::now() < deadline {
+      if runtime_native::threading::all_threads()
+        .iter()
+        .any(|t| t.id() == this_thread_id && t.is_parked())
+      {
+        saw_parked = true;
+        break;
+      }
+      std::thread::yield_now();
+    }
+
+    // Enqueue two microtasks with a ready queue limit of 1: the second enqueue sets the async
+    // executor error state and wakes the event loop.
+    runtime_native::rt_queue_microtask(Microtask {
+      func: noop,
+      data: core::ptr::null_mut(),
+      drop: None,
+    });
+    runtime_native::rt_queue_microtask(Microtask {
+      func: noop,
+      data: core::ptr::null_mut(),
+      drop: None,
+    });
+
+    let _ = tx.send(saw_parked);
+  });
+
+  // Safety: ABI call.
+  unsafe {
+    runtime_native::rt_async_block_on(p);
+  }
+
+  error_thread.join().unwrap();
+  let saw_parked = rx.recv_timeout(Duration::from_secs(1)).unwrap_or(false);
+  assert!(saw_parked, "error injector did not observe the event-loop thread parked inside the runtime");
+
+  assert_ne!(
+    unsafe { &(*awaited_hdr).waiters }.load(Ordering::Acquire),
+    0,
+    "rt_async_block_on should register a waiter reaction before entering the error state"
+  );
+
+  rt_async_cancel_all();
+
+  assert_eq!(
+    unsafe { &(*awaited_hdr).waiters }.load(Ordering::Acquire),
+    0,
+    "rt_async_cancel_all should drop the block_on waker reaction node"
   );
 
   unsafe {

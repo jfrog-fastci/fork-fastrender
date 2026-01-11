@@ -702,6 +702,7 @@ pub(crate) fn clear_state_for_tests() {
   let _ = with_driver_guard("clear_state_for_tests", || {
     let _guard = POLL_LOCK.lock();
     global().loop_.reset_for_tests();
+    promise::cancel_all_pending_reactions();
     crate::unhandled_rejection::clear_state_for_tests();
   });
 

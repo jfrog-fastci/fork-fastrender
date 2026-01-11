@@ -130,8 +130,11 @@ fn drain_reactions(promise: *mut PromiseHeader) {
   let head_val = waiters.swap(0, Ordering::AcqRel);
   let mut head = crate::promise_reactions::decode_waiters_ptr(head_val);
   if head.is_null() {
+    async_rt::promise::untrack_pending_reactions(promise);
     return;
   }
+
+  async_rt::promise::untrack_pending_reactions(promise);
 
   // Preserve FIFO registration order.
   head = unsafe { crate::promise_reactions::reverse_list(head) };
@@ -156,6 +159,7 @@ fn register_block_on_waker(p: PromiseRef) {
 
   let node = alloc_block_on_reaction();
   push_reaction(promise, node);
+  async_rt::promise::track_pending_reactions(promise);
 
   // If the promise is already settled, drain and schedule immediately.
   let state = unsafe { &(*promise).state }.load(Ordering::Acquire);
