@@ -186,6 +186,17 @@ fn rejects_eval() {
 }
 
 #[test]
+fn rejects_eval_call() {
+  let diags = validate(
+    r#"
+      eval.call(null, "1 + 1");
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0004");
+}
+
+#[test]
 fn rejects_member_eval() {
   let diags = validate(
     r#"
@@ -215,6 +226,17 @@ fn rejects_new_function() {
     r#"
       const f = new Function("return 1;");
       void f;
+    "#,
+    FileKind::Ts,
+  );
+  assert_has_code(&diags, "NJS0005");
+}
+
+#[test]
+fn rejects_function_call() {
+  let diags = validate(
+    r#"
+      Function.call(null, "return 1;");
     "#,
     FileKind::Ts,
   );

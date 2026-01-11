@@ -269,7 +269,7 @@ fn check_hir_body(
         ));
       }
       ExprKind::Call(call) => {
-        if !call.is_new && callee_matches_name(body_data, lowered, call.callee, "eval") {
+        if !call.is_new && call_targets_name(body_data, lowered, call.callee, "eval") {
           let span = span_of_expr(body_data, file, call.callee).unwrap_or(Span::new(file, expr.span));
           out.push(Diagnostic::error(
             CODE_EVAL,
@@ -277,7 +277,7 @@ fn check_hir_body(
             span,
           ));
         }
-        if callee_matches_name(body_data, lowered, call.callee, "Function") {
+        if call_targets_name(body_data, lowered, call.callee, "Function") {
           let span = span_of_expr(body_data, file, call.callee).unwrap_or(Span::new(file, expr.span));
           out.push(Diagnostic::error(
             CODE_NEW_FUNCTION,
@@ -411,6 +411,24 @@ fn callee_matches_name(
     ExprKind::Member(member) => member_property_matches_name(body, lowered, &member.property, target),
     _ => false,
   }
+}
+
+fn call_targets_name(
+  body: &hir_js::Body,
+  lowered: &hir_js::LowerResult,
+  callee: ExprId,
+  target: &str,
+) -> bool {
+  if callee_matches_name(body, lowered, callee, target) {
+    return true;
+  }
+  let Some(ExprKind::Member(member)) = body.exprs.get(callee.0 as usize).map(|e| &e.kind) else {
+    return false;
+  };
+
+  let is_call_or_apply = member_property_matches_name(body, lowered, &member.property, "call")
+    || member_property_matches_name(body, lowered, &member.property, "apply");
+  is_call_or_apply && callee_matches_name(body, lowered, member.object, target)
 }
 
 fn member_property_matches_name(
