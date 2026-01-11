@@ -185,6 +185,16 @@ pub struct InternedId(pub u32);
 #[repr(transparent)]
 pub struct TaskId(pub u64);
 
+/// Stable generational handle ID used for referencing GC-managed runtime entities.
+///
+/// The async runtime must be able to store coroutine identities in OS/userdata
+/// (epoll/kqueue) and cross-thread wakers across awaits, so coroutine IDs must
+/// remain stable even under a moving/compacting GC.
+pub type HandleId = u64;
+
+/// Stable identifier for an async coroutine frame.
+pub type CoroutineId = HandleId;
+
 /// An FFI-friendly UTF-8 byte string reference.
 ///
 /// Milestone 1 representation is a `{ptr,len}` pair (used by the current
@@ -233,7 +243,12 @@ pub fn rt_parallel_for(
 );
 
 // Async
-pub fn rt_async_spawn(coro: *mut core::ffi::c_void) -> PromiseRef; // opaque for now
+// NOTE: GC is moving/compacting (Immix + opportunistic copying).
+// The async runtime must store something stable in OS/userdata (epoll/kqueue) and
+// cross-thread wakers across awaits, so it cannot retain raw `*mut Coroutine`.
+// Use a stable generational handle id (u64) that indexes a pinned handle table
+// cell, and the GC updates the cell's pointer when the coroutine relocates.
+pub fn rt_async_spawn(coro: CoroutineId /* = HandleId(u64) */) -> PromiseRef;
 pub fn rt_async_poll() -> bool;
 ```
 
