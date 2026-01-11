@@ -33,17 +33,6 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 22900.0
-    },
-    {
-      "name": "figma.com",
-      "url": "https://www.figma.com/unsupported_browser",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
       "budget_ms": 5000.0
     },
     {
@@ -55,29 +44,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 13100.0
-    },
-    {
-      "name": "openstreetmap.org",
-      "url": "https://www.openstreetmap.org/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
       "budget_ms": 5000.0
-    },
-    {
-      "name": "buzzfeed.com",
-      "url": "https://www.buzzfeed.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 9900.0
     },
     {
       "name": "gitlab.com",
@@ -88,55 +55,11 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 41300.0
+      "budget_ms": 5000.0
     },
     {
-      "name": "ebay.com",
-      "url": "https://www.ebay.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 27200.0
-    },
-    {
-      "name": "ndtv.com",
-      "url": "https://www.ndtv.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 41100.0
-    },
-    {
-      "name": "britannica.com",
-      "url": "https://www.britannica.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 22000.0
-    },
-    {
-      "name": "howtogeek.com",
-      "url": "https://www.howtogeek.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 37500.0
-    },
-    {
-      "name": "youtube.com",
-      "url": "https://www.youtube.com/",
+      "name": "ietf.org",
+      "url": "https://www.ietf.org/",
       "viewport": [
         1200,
         800
@@ -154,18 +77,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 21700.0
-    },
-    {
-      "name": "bbc.co.uk",
-      "url": "https://www.bbc.co.uk/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 73800.0
+      "budget_ms": 5000.0
     },
     {
       "name": "netflix.com",
@@ -176,117 +88,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 14100.0
-    },
-    {
-      "name": "washington.edu",
-      "url": "https://www.washington.edu/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 13100.0
-    },
-    {
-      "name": "techcrunch.com",
-      "url": "https://techcrunch.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 59300.0
-    },
-    {
-      "name": "airbnb.com",
-      "url": "https://www.airbnb.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 12600.0
-    },
-    {
-      "name": "fandom.com",
-      "url": "https://www.fandom.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 9900.0
-    },
-    {
-      "name": "stripe.com",
-      "url": "https://stripe.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 151300.0
-    },
-    {
-      "name": "ietf.org",
-      "url": "https://www.ietf.org/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 7000.0
-    },
-    {
-      "name": "vogue.com",
-      "url": "https://www.vogue.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 41800.0
-    },
-    {
-      "name": "bbc.com",
-      "url": "https://www.bbc.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 15100.0
-    },
-    {
-      "name": "espn.com",
-      "url": "https://www.espn.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 6100.0
-    },
-    {
-      "name": "cnn.com",
-      "url": "https://www.cnn.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 220000.0
+      "budget_ms": 5000.0
     },
     {
       "name": "cdc.gov",
@@ -297,11 +99,11 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 14200.0
+      "budget_ms": 5000.0
     },
     {
-      "name": "python.org",
-      "url": "https://www.python.org/",
+      "name": "espn.com",
+      "url": "https://www.espn.com/",
       "viewport": [
         1200,
         800
@@ -311,8 +113,8 @@
       "budget_ms": 5000.0
     },
     {
-      "name": "kotlinlang.org",
-      "url": "https://kotlinlang.org/",
+      "name": "ebay.com",
+      "url": "https://www.ebay.com/",
       "viewport": [
         1200,
         800
@@ -322,19 +124,8 @@
       "budget_ms": 5000.0
     },
     {
-      "name": "debian.org",
-      "url": "https://www.debian.org/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 6100.0
-    },
-    {
-      "name": "gentoo.org",
-      "url": "https://www.gentoo.org/",
+      "name": "stripe.com",
+      "url": "https://stripe.com/",
       "viewport": [
         1200,
         800
@@ -344,52 +135,8 @@
       "budget_ms": 5000.0
     },
     {
-      "name": "apnews.com",
-      "url": "https://apnews.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 36500.0
-    },
-    {
-      "name": "arstechnica.com",
-      "url": "https://arstechnica.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 26800.0
-    },
-    {
-      "name": "aljazeera.com",
-      "url": "https://www.aljazeera.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 7700.0
-    },
-    {
-      "name": "ft.com",
-      "url": "https://www.ft.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 35300.0
-    },
-    {
-      "name": "apache.org",
-      "url": "https://apache.org/",
+      "name": "howtogeek.com",
+      "url": "https://www.howtogeek.com/",
       "viewport": [
         1200,
         800
@@ -399,96 +146,8 @@
       "budget_ms": 5000.0
     },
     {
-      "name": "techmeme.com",
-      "url": "https://techmeme.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 10000.0
-    },
-    {
-      "name": "archlinux.org",
-      "url": "https://archlinux.org/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 5000.0
-    },
-    {
-      "name": "wired.com",
-      "url": "https://www.wired.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 60000.0
-    },
-    {
-      "name": "rust-lang.org",
-      "url": "https://rust-lang.org/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 5000.0
-    },
-    {
-      "name": "nginx.org",
-      "url": "https://nginx.org/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 5000.0
-    },
-    {
-      "name": "imdb.com",
-      "url": "https://www.imdb.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 100000.0
-    },
-    {
-      "name": "cbsnews.com",
-      "url": "https://www.cbsnews.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 18900.0
-    },
-    {
-      "name": "yelp.com",
-      "url": "https://www.yelp.com/",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 8300.0
-    },
-    {
-      "name": "hbr.org",
-      "url": "https://hbr.org/",
+      "name": "washington.edu",
+      "url": "https://www.washington.edu/",
       "viewport": [
         1200,
         800
@@ -506,11 +165,352 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 150500.0
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "britannica.com",
+      "url": "https://www.britannica.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "buzzfeed.com",
+      "url": "https://www.buzzfeed.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "fandom.com",
+      "url": "https://www.fandom.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "bbc.co.uk",
+      "url": "https://www.bbc.co.uk/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "ft.com",
+      "url": "https://www.ft.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "bbc.com",
+      "url": "https://www.bbc.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "gentoo.org",
+      "url": "https://www.gentoo.org/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "vogue.com",
+      "url": "https://www.vogue.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "hbr.org",
+      "url": "https://hbr.org/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "techcrunch.com",
+      "url": "https://techcrunch.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "python.org",
+      "url": "https://www.python.org/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "manjaro.org",
+      "url": "https://manjaro.org/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "cbsnews.com",
+      "url": "https://www.cbsnews.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "imdb.com",
+      "url": "https://www.imdb.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 7100.0
+    },
+    {
+      "name": "cnn.com",
+      "url": "https://www.cnn.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5200.0
+    },
+    {
+      "name": "techmeme.com",
+      "url": "https://techmeme.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "quora.com",
+      "url": "https://www.quora.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "go.dev",
+      "url": "https://go.dev/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "ndtv.com",
+      "url": "https://www.ndtv.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "bing.com",
+      "url": "https://www.bing.com",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "usatoday.com",
+      "url": "https://www.usatoday.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "arstechnica.com",
+      "url": "https://arstechnica.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "archlinux.org",
+      "url": "https://archlinux.org/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "debian.org",
+      "url": "https://www.debian.org/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
     },
     {
       "name": "phoronix.com",
       "url": "https://www.phoronix.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "github.com",
+      "url": "https://github.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5800.0
+    },
+    {
+      "name": "engadget.com",
+      "url": "https://www.engadget.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "w3.org",
+      "url": "https://www.w3.org/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "fortune.com",
+      "url": "https://fortune.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "nbcnews.com",
+      "url": "https://www.nbcnews.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "yelp.com",
+      "url": "https://www.yelp.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "alibaba.com",
+      "url": "https://www.alibaba.com/",
       "viewport": [
         1200,
         800
@@ -531,15 +531,15 @@
       "budget_ms": 5000.0
     },
     {
-      "name": "fortune.com",
-      "url": "https://fortune.com/",
+      "name": "stackoverflow.com",
+      "url": "https://stackoverflow.com/questions",
       "viewport": [
         1200,
         800
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 14600.0
+      "budget_ms": 5000.0
     }
   ]
 }
