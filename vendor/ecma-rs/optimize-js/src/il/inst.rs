@@ -1,3 +1,4 @@
+use crate::analysis::purity::Purity;
 use crate::symbol::semantics::SymbolId;
 use num_bigint::BigInt;
 use parse_js::num::JsNumber;
@@ -160,6 +161,11 @@ pub struct InstMeta {
   pub ownership: OwnershipState,
   #[cfg_attr(
     feature = "serde",
+    serde(default, skip_serializing_if = "Purity::is_default")
+  )]
+  pub callee_purity: Purity,
+  #[cfg_attr(
+    feature = "serde",
     serde(default, skip_serializing_if = "Option::is_none")
   )]
   pub nullability_narrowing: Option<NullabilityNarrowing>,
@@ -170,6 +176,7 @@ impl InstMeta {
     self.effects.is_default()
       && self.result_type.is_default()
       && self.ownership.is_default()
+      && self.callee_purity.is_default()
       && self.nullability_narrowing.is_none()
   }
 
@@ -429,6 +436,7 @@ impl Eq for Inst {}
 
 impl Debug for Inst {
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    // Keep the debug output stable (tests assert on it) by not including `meta`.
     f.debug_struct("Inst")
       .field("t", &self.t)
       .field("tgts", &self.tgts)

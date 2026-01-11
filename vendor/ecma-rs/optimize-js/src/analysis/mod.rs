@@ -13,6 +13,7 @@ pub mod liveness;
 pub mod loop_info;
 pub mod nullability;
 pub mod ownership;
+pub mod purity;
 pub mod range;
 pub mod registers;
 pub mod single_use_insts;

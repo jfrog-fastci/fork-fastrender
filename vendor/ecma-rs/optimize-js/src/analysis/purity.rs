@@ -1,0 +1,215 @@
+use crate::analysis::effect::FnEffectMap;
+use crate::cfg::cfg::Cfg;
+use crate::il::inst::EffectSet;
+use crate::il::inst::{Arg, InstTyp};
+use crate::{FnId, Program};
+
+/// Conservative purity lattice for JS operations.
+///
+/// Ordering is deterministic (via `Ord`) and reflects "less pure" moving upwards.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum Purity {
+  /// No reads, writes, allocation, or unknown effects.
+  Pure,
+  /// May read program state but does not write/allocate/unknown.
+  ReadOnly,
+  /// Pure except for allocation.
+  Allocating,
+  /// May write state or has unknown effects.
+  #[default]
+  Impure,
+}
+
+impl Purity {
+  pub fn is_default(&self) -> bool {
+    matches!(self, Self::Impure)
+  }
+}
+
+/// Purity summaries for every function in a [`crate::Program`].
+///
+/// `functions` is index-aligned with `Program::functions` and `FnId`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct FnPurityMap {
+  pub top_level: Purity,
+  pub functions: Vec<Purity>,
+}
+
+impl FnPurityMap {
+  pub fn for_fn(&self, id: FnId) -> Purity {
+    self.functions.get(id).copied().unwrap_or(Purity::Impure)
+  }
+}
+
+fn purity_from_effects(effects: &EffectSet) -> Purity {
+  if effects.unknown || !effects.writes.is_empty() || effects.may_throw {
+    return Purity::Impure;
+  }
+
+  if !effects.reads.is_empty() {
+    return Purity::ReadOnly;
+  }
+
+  if effects.allocates {
+    return Purity::Allocating;
+  }
+
+  Purity::Pure
+}
+
+pub fn compute_program_purity(program: &Program, effects: &FnEffectMap) -> FnPurityMap {
+  assert_eq!(
+    program.functions.len(),
+    effects.functions.len(),
+    "FnEffectMap must be index-aligned with Program::functions"
+  );
+
+  FnPurityMap {
+    top_level: purity_from_effects(&effects.top_level),
+    functions: effects.functions.iter().map(purity_from_effects).collect(),
+  }
+}
+
+fn builtin_callee_purity(path: &str) -> Purity {
+  // Keep in sync with `eval/consteval.rs:maybe_eval_const_builtin_call` for calls we treat as pure.
+  match path {
+    "Math.abs"
+    | "Math.acos"
+    | "Math.asin"
+    | "Math.atan"
+    | "Math.ceil"
+    | "Math.cos"
+    | "Math.floor"
+    | "Math.log"
+    | "Math.log10"
+    | "Math.log1p"
+    | "Math.log2"
+    | "Math.round"
+    | "Math.sin"
+    | "Math.sqrt"
+    | "Math.tan"
+    | "Math.trunc"
+    | "Number" => Purity::Pure,
+
+    // Internal lowering helpers that construct literals / allocate.
+    "__optimize_js_array"
+    | "__optimize_js_object"
+    | "__optimize_js_regex"
+    | "__optimize_js_template" => Purity::Allocating,
+
+    _ => Purity::Impure,
+  }
+}
+
+fn callee_purity(callee: &Arg, purities: &FnPurityMap) -> Purity {
+  match callee {
+    Arg::Fn(id) => purities.for_fn(*id),
+    Arg::Builtin(path) => builtin_callee_purity(path),
+    _ => Purity::Impure,
+  }
+}
+
+pub fn annotate_cfg_purity(cfg: &mut Cfg, purities: &FnPurityMap) {
+  for (_, block) in cfg.bblocks.all_mut() {
+    for inst in block.iter_mut() {
+      if inst.t != InstTyp::Call {
+        continue;
+      }
+
+      let (_, callee, _, _, _) = inst.as_call();
+      inst.meta.callee_purity = callee_purity(callee, purities);
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::cfg::cfg::{CfgBBlocks, CfgGraph};
+  use crate::il::inst::{Const, Inst};
+  use crate::OptimizationStats;
+  use crate::ProgramFunction;
+  use crate::TopLevelMode;
+
+  fn cfg_with_single_call(callee: Arg) -> Cfg {
+    let graph = CfgGraph::default();
+    let mut bblocks = CfgBBlocks::default();
+    bblocks.add(
+      0,
+      vec![Inst::call(
+        None::<u32>,
+        callee,
+        Arg::Const(Const::Undefined),
+        Vec::new(),
+        Vec::new(),
+      )],
+    );
+    Cfg {
+      graph,
+      bblocks,
+      entry: 0,
+    }
+  }
+
+  fn empty_program_function() -> ProgramFunction {
+    let graph = CfgGraph::default();
+    let mut bblocks = CfgBBlocks::default();
+    bblocks.add(0, Vec::new());
+    ProgramFunction {
+      debug: None,
+      body: Cfg {
+        graph,
+        bblocks,
+        entry: 0,
+      },
+      stats: OptimizationStats::default(),
+    }
+  }
+
+  #[test]
+  fn pure_builtin_call_is_pure() {
+    let mut cfg = cfg_with_single_call(Arg::Builtin("Math.abs".to_string()));
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default());
+    assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Pure);
+  }
+
+  #[test]
+  fn internal_array_literal_call_is_allocating() {
+    let mut cfg = cfg_with_single_call(Arg::Builtin("__optimize_js_array".to_string()));
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default());
+    assert_eq!(
+      cfg.bblocks.get(0)[0].meta.callee_purity,
+      Purity::Allocating
+    );
+  }
+
+  #[test]
+  fn unknown_call_is_impure() {
+    let mut cfg = cfg_with_single_call(Arg::Var(0));
+    annotate_cfg_purity(&mut cfg, &FnPurityMap::default());
+    assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Impure);
+  }
+
+  #[test]
+  fn fn_call_uses_computed_purity() {
+    let program = Program {
+      functions: vec![empty_program_function()],
+      top_level: empty_program_function(),
+      top_level_mode: TopLevelMode::Module,
+      symbols: None,
+    };
+
+    let effects = FnEffectMap {
+      top_level: EffectSet::default(),
+      functions: vec![EffectSet::default()],
+    };
+
+    let purities = compute_program_purity(&program, &effects);
+
+    let mut cfg = cfg_with_single_call(Arg::Fn(0));
+    annotate_cfg_purity(&mut cfg, &purities);
+    assert_eq!(cfg.bblocks.get(0)[0].meta.callee_purity, Purity::Pure);
+  }
+}
