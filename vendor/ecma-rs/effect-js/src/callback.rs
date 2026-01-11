@@ -2240,7 +2240,7 @@ mod tests {
   }
 
   #[test]
-  fn var_decl_shadows_index_param_when_params_are_not_simple() {
+  fn var_decl_does_not_shadow_index_param_when_params_are_not_simple() {
     let kb = crate::load_default_api_database();
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
