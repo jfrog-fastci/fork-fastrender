@@ -45,6 +45,10 @@ fn verifier_rejects_register_locations() {
   // statepoint entries.
   let location3_kind_offset =
     HEADER_SIZE + FUNCTION_RECORD_SIZE + RECORD_HEADER_SIZE + LOCATION_SIZE * 3;
+  let location3_offset_bytes: [u8; 4] = bytes[location3_kind_offset + 8..location3_kind_offset + 12]
+    .try_into()
+    .unwrap();
+  let location3_offset = i32::from_le_bytes(location3_offset_bytes);
   bytes[location3_kind_offset] = 1; // Register (LLVM stackmap kind)
 
   let stackmap = StackMap::parse(&bytes).unwrap();
@@ -62,7 +66,7 @@ fn verifier_rejects_register_locations() {
   let loc = err.location.expect("expected location details for VerifyError");
   assert_eq!(loc.kind, "Register");
   assert_eq!(loc.dwarf_reg, 7);
-  assert_eq!(loc.offset, 16);
+  assert_eq!(loc.offset, location3_offset as i64);
 
   let msg = err.to_string();
   assert!(msg.contains("callsite"));
@@ -70,5 +74,5 @@ fn verifier_rejects_register_locations() {
   assert!(msg.contains("location[3]"));
   assert!(msg.contains("kind=Register"));
   assert!(msg.contains("dwarf_reg=7"));
-  assert!(msg.contains("offset=16"));
+  assert!(msg.contains(&format!("offset={location3_offset}")));
 }

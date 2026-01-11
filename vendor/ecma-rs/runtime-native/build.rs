@@ -3,6 +3,13 @@ use std::path::PathBuf;
 fn main() {
   println!("cargo:rerun-if-changed=stackmaps.ld");
 
+  // Only inject the linker script when the consumer opted in to linker-defined
+  // stackmap symbols. This keeps runtime-native usable as a general-purpose
+  // library (tests, tools, C linking) without requiring a custom linker script.
+  if std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_none() {
+    return;
+  }
+
   // Linux/ELF: expose `.llvm_stackmaps` as a loaded in-memory byte slice via
   // linker-defined start/end symbols (see `stackmaps.ld`).
   //
@@ -20,4 +27,3 @@ fn main() {
   // current working directory Cargo uses for the link step.
   println!("cargo:rustc-link-arg=-Wl,-T,{}", script.display());
 }
-

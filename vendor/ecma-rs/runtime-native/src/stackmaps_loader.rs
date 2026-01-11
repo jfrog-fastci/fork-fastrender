@@ -1,4 +1,4 @@
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "llvm_stackmaps_linker", target_os = "linux"))]
 extern "C" {
   static __llvm_stackmaps_start: u8;
   static __llvm_stackmaps_end: u8;
@@ -10,7 +10,7 @@ extern "C" {
 /// The boundaries are provided by linker-defined symbols from `stackmaps.ld`:
 /// `__llvm_stackmaps_start` and `__llvm_stackmaps_end`.
 pub fn stackmaps_section() -> &'static [u8] {
-  #[cfg(target_os = "linux")]
+  #[cfg(all(feature = "llvm_stackmaps_linker", target_os = "linux"))]
   unsafe {
     let start = core::ptr::addr_of!(__llvm_stackmaps_start) as usize;
     let end = core::ptr::addr_of!(__llvm_stackmaps_end) as usize;
@@ -36,7 +36,7 @@ pub fn stackmaps_section() -> &'static [u8] {
     core::slice::from_raw_parts(start as *const u8, len)
   }
 
-  #[cfg(not(target_os = "linux"))]
+  #[cfg(not(all(feature = "llvm_stackmaps_linker", target_os = "linux")))]
   {
     &[]
   }
@@ -48,4 +48,3 @@ pub fn stackmaps_section() -> &'static [u8] {
 pub fn load_stackmaps_from_self() -> &'static [u8] {
   stackmaps_section()
 }
-

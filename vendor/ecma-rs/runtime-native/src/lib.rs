@@ -349,7 +349,7 @@ mod tests {
   #[test]
   fn stackmaps_section_is_accessible_and_parses() {
     let bytes = stackmaps_section();
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
     assert!(
       !bytes.is_empty(),
       "expected .llvm_stackmaps to be linked in (test includes a dummy section)"
