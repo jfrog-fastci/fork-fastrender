@@ -34,14 +34,12 @@ struct CounterCoro {
   counter: *const AtomicUsize,
 }
 
-extern "C" fn counter_resume(coro: *mut Coroutine) -> CoroutineStep {
+unsafe extern "C" fn counter_resume(coro: *mut Coroutine) -> CoroutineStep {
   // Safety: CounterCoro is #[repr(C)] and Coroutine is its first field.
   let coro = coro as *mut CounterCoro;
   assert!(!coro.is_null());
-  unsafe {
-    (&*(*coro).counter).fetch_add(1, Ordering::SeqCst);
-    runtime_native::rt_promise_fulfill(abi_promise_from_header((*coro).header.promise));
-  }
+  (&*(*coro).counter).fetch_add(1, Ordering::SeqCst);
+  runtime_native::rt_promise_fulfill(abi_promise_from_header((*coro).header.promise));
   CoroutineStep::complete()
 }
 
@@ -103,27 +101,25 @@ struct YieldOnceCoro {
   awaited: *mut PromiseHeader,
 }
 
-extern "C" fn yield_once_resume(coro: *mut Coroutine) -> CoroutineStep {
+unsafe extern "C" fn yield_once_resume(coro: *mut Coroutine) -> CoroutineStep {
   let coro = coro as *mut YieldOnceCoro;
   assert!(!coro.is_null());
 
-  unsafe {
-    match (*coro).state {
-      0 => {
-        *(*coro).started = true;
-        (*coro).state = 1;
-        CoroutineStep {
-          tag: CoroutineStepTag::Await,
-          await_promise: (*coro).awaited,
-        }
+  match (*coro).state {
+    0 => {
+      *(*coro).started = true;
+      (*coro).state = 1;
+      CoroutineStep {
+        tag: CoroutineStepTag::Await,
+        await_promise: (*coro).awaited,
       }
-      1 => {
-        *(*coro).completed = true;
-        runtime_native::rt_promise_fulfill(abi_promise_from_header((*coro).header.promise));
-        CoroutineStep::complete()
-      }
-      other => panic!("unexpected coroutine state: {other}"),
     }
+    1 => {
+      *(*coro).completed = true;
+      runtime_native::rt_promise_fulfill(abi_promise_from_header((*coro).header.promise));
+      CoroutineStep::complete()
+    }
+    other => panic!("unexpected coroutine state: {other}"),
   }
 }
 
