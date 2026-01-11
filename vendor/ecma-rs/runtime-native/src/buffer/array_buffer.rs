@@ -546,6 +546,24 @@ mod borrow_tests {
   }
 
   #[test]
+  fn try_with_slice_mut_requires_unique_backing_store_handle() {
+    let mut buf = ArrayBuffer::new_zeroed(4).unwrap();
+    let handle = buf.backing_store_handle().unwrap();
+
+    assert_eq!(
+      buf.try_with_slice_mut(|_| ()).unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::NotUnique)
+    );
+
+    drop(handle);
+
+    assert_eq!(
+      buf.try_with_slice_mut(|s| { s[0] = 1; s[0] }).unwrap(),
+      1
+    );
+  }
+
+  #[test]
   fn detach_transfer_resize_slice_fail_while_io_borrowed() {
     let mut buf = ArrayBuffer::new_zeroed(4).unwrap();
 
