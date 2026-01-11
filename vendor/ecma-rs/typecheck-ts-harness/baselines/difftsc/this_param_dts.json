@@ -4,6 +4,9 @@
     "typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
+      "lib": [
+        "lib.es5.d.ts"
+      ],
       "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": true,
@@ -29,8 +32,8 @@
     "markers": [
       {
         "file": "a.ts",
-        "offset": 50,
-        "line": 3,
+        "offset": 63,
+        "line": 4,
         "column": 7,
         "type": "number"
       }

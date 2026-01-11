@@ -4,6 +4,9 @@
     "typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
+      "lib": [
+        "lib.es5.d.ts"
+      ],
       "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": true,

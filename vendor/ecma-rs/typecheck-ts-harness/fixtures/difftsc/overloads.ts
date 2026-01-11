@@ -1,3 +1,4 @@
+// @lib: es5
 function formatValue(x: string): string;
 function formatValue(x: number): string;
 function formatValue(x: string | number) {

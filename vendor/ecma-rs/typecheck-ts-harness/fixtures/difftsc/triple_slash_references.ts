@@ -4,3 +4,5 @@
 
 export const disposable: Disposable | null = null;
              // ^?
+
+// @lib: es5

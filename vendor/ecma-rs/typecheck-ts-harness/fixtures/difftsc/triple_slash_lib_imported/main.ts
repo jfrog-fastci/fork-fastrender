@@ -1,3 +1,4 @@
+// @lib: es5
 // @moduleResolution: node
 import { value } from "dep";
 

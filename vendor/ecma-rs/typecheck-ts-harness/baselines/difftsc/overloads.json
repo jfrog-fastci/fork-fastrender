@@ -4,6 +4,9 @@
     "typescript_version": "5.9.3",
     "options": {
       "exactOptionalPropertyTypes": false,
+      "lib": [
+        "lib.es5.d.ts"
+      ],
       "moduleResolution": 2,
       "noEmit": true,
       "noImplicitAny": false,
@@ -28,8 +31,8 @@
     "markers": [
       {
         "file": "overloads.ts",
-        "offset": 175,
-        "line": 6,
+        "offset": 188,
+        "line": 7,
         "column": 24,
         "type": "string"
       }

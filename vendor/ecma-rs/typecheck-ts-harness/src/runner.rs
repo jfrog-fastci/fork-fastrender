@@ -3345,7 +3345,9 @@ echo '{"diagnostics":[]}'
     )
     .unwrap();
     // Allow enough time for a small "fast" case to complete while still
-    // ensuring a deliberately slowed case times out quickly.
+    // ensuring a deliberately slowed case times out quickly. This test runs
+    // under the default Rust test runner parallelism, so keep some buffer for
+    // CPU contention on slower/oversubscribed machines.
     let _env = EnvGuard::set(HARNESS_SLEEP_ENV, "slow=5000");
 
     let start = Instant::now();
@@ -3357,7 +3359,7 @@ echo '{"diagnostics":[]}'
       shard_strategy: ShardStrategy::Index,
       json: false,
       update_snapshots: false,
-      timeout: Duration::from_secs(1),
+      timeout: Duration::from_secs(2),
       trace: false,
       profile: false,
       profile_out: crate::DEFAULT_PROFILE_OUT.into(),
