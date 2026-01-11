@@ -162,6 +162,13 @@ void rt_parallel_join(const TaskId* tasks, size_t count);
 void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);
 
 // -----------------------------------------------------------------------------
+// Blocking thread pool
+// -----------------------------------------------------------------------------
+// Run `task(data, promise)` on the runtime's dedicated blocking thread pool (for I/O, crypto,
+// etc.). The task must resolve/reject `promise` via `rt_promise_resolve` / `rt_promise_reject`.
+PromiseRef rt_spawn_blocking(void (*task)(uint8_t*, PromiseRef), uint8_t* data);
+
+// -----------------------------------------------------------------------------
 // Promise placeholder
 // -----------------------------------------------------------------------------
 PromiseRef rt_promise_new(void);
@@ -197,6 +204,9 @@ PromiseRef rt_async_spawn(RtCoroutineHeader* coro);
 
 // Drive the async runtime. Returns true if any work was performed.
 bool rt_async_poll(void);
+
+// Resolve a promise after `delay_ms` milliseconds.
+PromiseRef rt_async_sleep(uint64_t delay_ms);
 
 // Suspend the coroutine on an awaited promise.
 // Registers a continuation and sets `coro->state = next_state`.

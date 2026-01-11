@@ -294,8 +294,10 @@ mod tests {
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
       "void rt_parallel_join(const TaskId* tasks, size_t count);",
       "void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);",
+      "PromiseRef rt_spawn_blocking(void (*task)(uint8_t*, PromiseRef), uint8_t* data);",
       "PromiseRef rt_async_spawn(RtCoroutineHeader* coro);",
       "bool rt_async_poll(void);",
+      "PromiseRef rt_async_sleep(uint64_t delay_ms);",
       "PromiseRef rt_promise_new(void);",
       "void rt_promise_resolve(PromiseRef p, ValueRef value);",
       "void rt_promise_reject(PromiseRef p, ValueRef err);",
@@ -341,8 +343,11 @@ mod tests {
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
     let _join: extern "C" fn(*const abi::TaskId, usize) = rt_parallel_join;
     let _for: extern "C" fn(usize, usize, extern "C" fn(usize, *mut u8), *mut u8) = rt_parallel_for;
+    let _spawn_blocking: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
+      rt_spawn_blocking;
     let _async_spawn: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef = rt_async_spawn;
     let _async_poll: extern "C" fn() -> bool = rt_async_poll;
+    let _async_sleep: extern "C" fn(u64) -> abi::PromiseRef = rt_async_sleep;
     let _promise_new: extern "C" fn() -> abi::PromiseRef = rt_promise_new;
     let _promise_resolve: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve;
     let _promise_reject: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject;
@@ -378,8 +383,10 @@ mod tests {
       _spawn,
       _join,
       _for,
+      _spawn_blocking,
       _async_spawn,
       _async_poll,
+      _async_sleep,
       _promise_new,
       _promise_resolve,
       _promise_reject,
