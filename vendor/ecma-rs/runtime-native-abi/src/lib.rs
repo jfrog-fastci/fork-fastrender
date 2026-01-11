@@ -268,6 +268,28 @@ impl PromiseRef {
 unsafe impl Send for PromiseRef {}
 unsafe impl Sync for PromiseRef {}
 
+/// Payload layout for promises returned from [`rt_parallel_spawn_promise`].
+///
+/// The runtime allocates a payload buffer described by this struct. The worker task can write its
+/// result into `rt_promise_payload_ptr(promise)` and then call `rt_promise_fulfill` (or
+/// `rt_promise_reject`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PromiseLayout {
+  pub size: usize,
+  pub align: usize,
+}
+
+impl PromiseLayout {
+  #[inline]
+  pub const fn of<T>() -> Self {
+    Self {
+      size: core::mem::size_of::<T>(),
+      align: core::mem::align_of::<T>(),
+    }
+  }
+}
+
 /// An FFI-friendly UTF-8 byte string reference.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,14 +374,6 @@ pub struct RtPromise {
 
 pub type LegacyPromiseRef = *mut RtPromise;
 
-/// Payload layout for promises returned from `rt_parallel_spawn_promise`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct PromiseLayout {
-  pub size: usize,
-  pub align: usize,
-}
-
 // -----------------------------------------------------------------------------
 // Legacy promise resolution ABI (PromiseResolve / thenable assimilation)
 // -----------------------------------------------------------------------------
@@ -439,6 +453,9 @@ pub type RtTaskFn = extern "C" fn(*mut u8);
 /// Function pointer type for `rt_parallel_for` loop bodies.
 pub type RtParallelForBodyFn = extern "C" fn(usize, *mut u8);
 
+/// Function pointer type for tasks spawned via [`rt_parallel_spawn_promise`].
+pub type RtParallelPromiseTaskFn = extern "C" fn(*mut u8, PromiseRef);
+
 extern "C" {
   // Thread registration / state
   pub fn rt_thread_init(kind: u32);
@@ -516,11 +533,14 @@ extern "C" {
   pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
   pub fn rt_parallel_for(start: usize, end: usize, body: RtParallelForBodyFn, data: *mut u8);
   pub fn rt_parallel_spawn_promise(
-    task: extern "C" fn(*mut u8, PromiseRef),
+    task: RtParallelPromiseTaskFn,
     data: *mut u8,
     layout: PromiseLayout,
   ) -> PromiseRef;
-  pub fn rt_spawn_blocking(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef;
+  pub fn rt_spawn_blocking(
+    task: extern "C" fn(*mut u8, LegacyPromiseRef),
+    data: *mut u8,
+  ) -> LegacyPromiseRef;
   pub fn rt_spawn_blocking_rooted(
     task: extern "C" fn(*mut u8, LegacyPromiseRef),
     data: GcPtr,
@@ -704,6 +724,9 @@ mod tests {
     assert!(size_of::<PromiseRef>() == 8);
     assert!(align_of::<PromiseRef>() == 8);
 
+    assert!(size_of::<PromiseLayout>() == 16);
+    assert!(align_of::<PromiseLayout>() == 8);
+
     assert!(size_of::<GcPtr>() == 8);
     assert!(align_of::<GcPtr>() == 8);
     assert!(size_of::<GcHandle>() == 8);
@@ -711,9 +734,6 @@ mod tests {
 
     assert!(size_of::<StringRef>() == 16);
     assert!(align_of::<StringRef>() == 8);
-
-    assert!(size_of::<PromiseLayout>() == 16);
-    assert!(align_of::<PromiseLayout>() == 8);
 
     assert!(size_of::<ValueRef>() == 8);
     assert!(align_of::<ValueRef>() == 8);
@@ -845,6 +865,11 @@ mod tests {
     ] {
       assert!(header.contains(ty), "missing type `{ty}` in generated header");
     }
+    assert!(
+      header.contains("typedef struct PromiseLayout")
+        || header.contains("typedef struct PromiseLayout {"),
+      "missing PromiseLayout typedef"
+    );
     assert!(
       header.contains("typedef struct Coroutine {") || header.contains("struct Coroutine {"),
       "missing Coroutine definition"

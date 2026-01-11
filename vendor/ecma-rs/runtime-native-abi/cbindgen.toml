@@ -55,6 +55,7 @@ include = [
   "Thread",
   "RtTaskFn",
   "RtParallelForBodyFn",
+  "RtParallelPromiseTaskFn",
   "rt_thread_init",
   "rt_thread_deinit",
   "rt_thread_register",
