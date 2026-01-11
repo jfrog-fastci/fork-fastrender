@@ -103,6 +103,18 @@ fn builtin_infinity_and_undefined_are_constant_folded() {
     Some(ConstNum(JN(f64::INFINITY)))
   );
   assert_eq!(
+    maybe_eval_const_builtin_val("Math.LN2"),
+    Some(ConstNum(JN(std::f64::consts::LN_2)))
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_val("Number.MAX_VALUE"),
+    Some(ConstNum(JN(f64::MAX)))
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_val("Number.MIN_VALUE"),
+    Some(ConstNum(JN(f64::from_bits(1))))
+  );
+  assert_eq!(
     maybe_eval_const_builtin_val("undefined"),
     Some(optimize_js::il::inst::Const::Undefined)
   );

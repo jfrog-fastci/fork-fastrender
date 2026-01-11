@@ -9,8 +9,7 @@ use num_traits::ToPrimitive;
 use parse_js::char::{ECMASCRIPT_LINE_TERMINATORS, ECMASCRIPT_WHITESPACE};
 use parse_js::num::JsNumber as JN;
 use std::cmp::Ordering;
-use std::f64::consts::E;
-use std::f64::consts::PI;
+use std::f64::consts::{E, FRAC_1_SQRT_2, LN_10, LN_2, LOG10_E, LOG2_E, PI, SQRT_2};
 use std::mem::discriminant;
 
 /**
@@ -389,11 +388,20 @@ pub fn maybe_eval_const_builtin_val(path: &str) -> Option<Const> {
   let v = match path {
     "Infinity" => Num(JN(f64::INFINITY)),
     "Math.E" => Num(JN(E)),
+    "Math.LN10" => Num(JN(LN_10)),
+    "Math.LN2" => Num(JN(LN_2)),
+    "Math.LOG10E" => Num(JN(LOG10_E)),
+    "Math.LOG2E" => Num(JN(LOG2_E)),
     "Math.PI" => Num(JN(PI)),
+    "Math.SQRT1_2" => Num(JN(FRAC_1_SQRT_2)),
+    "Math.SQRT2" => Num(JN(SQRT_2)),
     "NaN" => Num(JN(f64::NAN)),
     "Number.EPSILON" => Num(JN(f64::EPSILON)),
     "Number.MAX_SAFE_INTEGER" => Num(JN((2u64.pow(53) - 1) as f64)),
+    "Number.MAX_VALUE" => Num(JN(f64::MAX)),
     "Number.MIN_SAFE_INTEGER" => Num(JN(-(2i64.pow(53) - 1) as f64)),
+    // Smallest positive subnormal.
+    "Number.MIN_VALUE" => Num(JN(f64::from_bits(1))),
     "Number.NaN" => Num(JN(f64::NAN)),
     "Number.NEGATIVE_INFINITY" => Num(JN(f64::NEG_INFINITY)),
     "Number.POSITIVE_INFINITY" => Num(JN(f64::INFINITY)),
