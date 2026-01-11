@@ -1,3 +1,38 @@
+//! Native code generation backends for `native-js`.
+//!
+//! This module currently contains:
+//! - `emit_llvm_module`: a minimal `parse-js`-driven LLVM IR emitter (used by
+//!   `compile_typescript_to_llvm_ir` / the `native-js-cli` binary).
+//! - [`codegen`]: an experimental HIR-driven backend used by the typechecked
+//!   `native-js` CLI (`native-js-cli --bin native-js`).
+//!
+//! ## Diagnostic codes
+//!
+//! The HIR backend emits stable `NJS01xx` codes for codegen failures:
+//!
+//! - `NJS0100`: failed to access lowered HIR for entry file
+//! - `NJS0101`: failed to access lowered HIR for `main` body
+//! - `NJS0102`: missing function metadata for `main` body
+//! - `NJS0103`: expression id out of bounds
+//! - `NJS0104`: numeric literal cannot be represented as a 32-bit integer
+//! - `NJS0105`: unsupported unary operator
+//! - `NJS0106`: unsupported binary operator
+//! - `NJS0107`: unsupported expression / assignment / update operator in `main`
+//! - `NJS0112`: statement id out of bounds
+//! - `NJS0113`: unsupported statement / variable declaration kind in `main`
+//! - `NJS0114`: unknown identifier in `main`
+//! - `NJS0115`: not all control-flow paths in `main` return a value
+//! - `NJS0116`: `return` without a value is not supported in `main` yet
+//! - `NJS0117`: unsupported pattern (expected identifier) / pattern id out of bounds
+//! - `NJS0118`: variable declarations must have an initializer
+//! - `NJS0119`: labeled `break` is not supported
+//! - `NJS0120`: `break` is only supported inside loops
+//! - `NJS0121`: labeled `continue` is not supported
+//! - `NJS0122`: `continue` is only supported inside loops
+//!
+//! Entrypoint-related errors are emitted by [`crate::strict::entrypoint`]
+//! (`NJS0108..NJS0111`).
+
 use crate::strict::Entrypoint;
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
