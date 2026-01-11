@@ -11,6 +11,7 @@ mod mark;
 
 pub use heap::GcHeap;
 pub use roots::RememberedSet;
+pub use roots::RootHandle;
 pub use roots::RootSet;
 pub use roots::RootStack;
 pub use roots::SimpleRememberedSet;

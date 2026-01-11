@@ -70,6 +70,7 @@ mod trap;
 pub use exports::*;
 pub use gc::GcHeap;
 pub use gc::RememberedSet;
+pub use gc::RootHandle;
 pub use gc::RootSet;
 pub use gc::RootStack;
 pub use gc::TypeDescriptor;
@@ -476,7 +477,6 @@ mod tests {
       _coro_await,
     );
   }
-
   #[test]
   fn stackmaps_section_is_accessible_and_parses() {
     let bytes = stackmaps_section();

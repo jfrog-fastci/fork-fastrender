@@ -1,3 +1,5 @@
+use std::mem;
+
 use super::roots::RememberedSet;
 use super::roots::RootSet;
 use super::weak::process_global_weak_handles_major;
@@ -39,6 +41,12 @@ impl GcHeap {
       roots.for_each_root_slot(&mut |slot| {
         marker.visit_slot(slot);
       });
+
+      let mut root_handles = mem::take(&mut marker.heap.root_handles);
+      root_handles.for_each_root_slot(&mut |slot| {
+        marker.visit_slot(slot);
+      });
+      marker.heap.root_handles = root_handles;
 
       while let Some(obj) = marker.worklist.pop() {
         marker.visit_obj(obj);

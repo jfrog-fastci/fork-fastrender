@@ -37,6 +37,12 @@ impl GcHeap {
         evac.visit_slot(slot);
       });
 
+      let mut root_handles = mem::take(&mut evac.heap.root_handles);
+      root_handles.for_each_root_slot(&mut |slot| {
+        evac.visit_slot(slot);
+      });
+      evac.heap.root_handles = root_handles;
+
       remembered.for_each_remembered_obj(&mut |obj| {
         evac.visit_obj(obj);
       });

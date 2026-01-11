@@ -128,7 +128,8 @@ int main(void) {
     None
   };
 
-  let compile = Command::new(cc)
+  let mut cmd = Command::new(cc);
+  cmd
     .arg("-std=c99")
     .arg("-I")
     .arg(&include_dir)
@@ -136,9 +137,9 @@ int main(void) {
     .arg(&staticlib)
     .args(stackmaps_ld.as_ref().map(|p| format!("-Wl,-T,{}", p.display())))
     .arg("-o")
-    .arg(&bin_path)
-    .status()
-    .expect("compile + link smoke.c");
+    .arg(&bin_path);
+
+  let compile = cmd.status().expect("compile + link smoke.c");
 
   assert!(
     compile.success(),

@@ -3,6 +3,8 @@ use std::alloc::Layout;
 use std::mem;
 use std::ptr;
 
+use super::roots::RootHandle;
+use super::roots::RootHandles;
 use super::ObjHeader;
 use super::TypeDescriptor;
 use super::weak::WeakHandle;
@@ -45,6 +47,8 @@ pub struct GcHeap {
   pub(crate) mark_epoch: u8,
 
   pub(crate) stats: GcStats,
+
+  pub(crate) root_handles: RootHandles,
 }
 
 // SAFETY: `GcHeap` is not safe for concurrent access, but it is safe to move between threads as
@@ -73,6 +77,7 @@ impl GcHeap {
       weak_handles: WeakHandles::new(),
       mark_epoch: 0,
       stats: GcStats::default(),
+      root_handles: RootHandles::new(),
     }
   }
 
@@ -106,6 +111,26 @@ impl GcHeap {
 
   pub fn weak_remove(&mut self, handle: WeakHandle) {
     self.weak_handles.weak_remove(handle);
+  }
+
+  #[inline]
+  pub fn root_add(&mut self, value: *mut u8) -> RootHandle {
+    self.root_handles.root_add(value)
+  }
+
+  #[inline]
+  pub fn root_get(&self, h: RootHandle) -> Option<*mut u8> {
+    self.root_handles.root_get(h)
+  }
+
+  #[inline]
+  pub fn root_set(&mut self, h: RootHandle, value: *mut u8) {
+    self.root_handles.root_set(h, value);
+  }
+
+  #[inline]
+  pub fn root_remove(&mut self, h: RootHandle) {
+    self.root_handles.root_remove(h);
   }
 
   pub(crate) fn process_weak_handles_minor(&mut self) {

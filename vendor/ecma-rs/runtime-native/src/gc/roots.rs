@@ -1,3 +1,7 @@
+use core::fmt;
+use core::sync::atomic::AtomicPtr;
+use core::sync::atomic::Ordering;
+
 /// A precise root set enumerator.
 ///
 /// The slots passed to the callback are mutable pointers to GC references
@@ -114,6 +118,153 @@ impl RememberedSet for SimpleRememberedSet {
       self.add(obj);
     } else {
       self.remove(obj);
+    }
+  }
+}
+
+/// A stable identifier for a persistent GC root stored in a [`RootHandles`] table.
+///
+/// This is a packed `{ index: u32, generation: u32 }`.
+/// - `index` selects a slot in the handle table.
+/// - `generation` is incremented each time that slot is removed and reused.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct RootHandle(u64);
+
+impl RootHandle {
+  #[inline]
+  pub fn from_parts(index: u32, generation: u32) -> Self {
+    Self((index as u64) | ((generation as u64) << 32))
+  }
+
+  #[inline]
+  pub fn from_u64(raw: u64) -> Self {
+    Self(raw)
+  }
+
+  #[inline]
+  pub fn as_u64(self) -> u64 {
+    self.0
+  }
+
+  #[inline]
+  pub fn index(self) -> u32 {
+    self.0 as u32
+  }
+
+  #[inline]
+  pub fn generation(self) -> u32 {
+    (self.0 >> 32) as u32
+  }
+}
+
+impl fmt::Debug for RootHandle {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("RootHandle")
+      .field("index", &self.index())
+      .field("generation", &self.generation())
+      .finish()
+  }
+}
+
+struct RootSlot {
+  value: AtomicPtr<u8>,
+  generation: u32,
+}
+
+impl RootSlot {
+  #[inline]
+  fn is_free(&self) -> bool {
+    self.value.load(Ordering::Relaxed).is_null()
+  }
+}
+
+/// Handle table for persistent roots.
+///
+/// This is intended for runtime subsystems and host/FFI code that need to keep
+/// GC objects alive across safepoints and moving collections.
+pub struct RootHandles {
+  slots: Vec<RootSlot>,
+  free_list: Vec<u32>,
+}
+
+impl Default for RootHandles {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl RootHandles {
+  pub fn new() -> Self {
+    Self {
+      slots: Vec::new(),
+      free_list: Vec::new(),
+    }
+  }
+
+  pub fn root_add(&mut self, value: *mut u8) -> RootHandle {
+    let index = if let Some(index) = self.free_list.pop() {
+      index as usize
+    } else {
+      let index = self.slots.len();
+      self.slots.push(RootSlot {
+        value: AtomicPtr::new(core::ptr::null_mut()),
+        generation: 0,
+      });
+      index
+    };
+
+    let slot = &mut self.slots[index];
+    slot.value.store(value, Ordering::Relaxed);
+    RootHandle::from_parts(index as u32, slot.generation)
+  }
+
+  pub fn root_get(&self, h: RootHandle) -> Option<*mut u8> {
+    let slot = self.slots.get(h.index() as usize)?;
+    if slot.generation != h.generation() || slot.is_free() {
+      return None;
+    };
+    Some(slot.value.load(Ordering::Relaxed))
+  }
+
+  pub fn root_set(&mut self, h: RootHandle, value: *mut u8) {
+    let Some(slot) = self.slots.get_mut(h.index() as usize) else {
+      return;
+    };
+    if slot.generation != h.generation() || slot.is_free() {
+      return;
+    }
+    if value.is_null() {
+      slot.value.store(core::ptr::null_mut(), Ordering::Relaxed);
+      slot.generation = slot.generation.wrapping_add(1);
+      self.free_list.push(h.index());
+      return;
+    }
+    slot.value.store(value, Ordering::Relaxed);
+  }
+
+  pub fn root_remove(&mut self, h: RootHandle) {
+    let Some(slot) = self.slots.get_mut(h.index() as usize) else {
+      return;
+    };
+    if slot.generation != h.generation() || slot.is_free() {
+      return;
+    }
+    slot.value.store(core::ptr::null_mut(), Ordering::Relaxed);
+    slot.generation = slot.generation.wrapping_add(1);
+    self.free_list.push(h.index());
+  }
+}
+
+impl RootSet for RootHandles {
+  fn for_each_root_slot(&mut self, f: &mut dyn FnMut(*mut *mut u8)) {
+    for slot in &self.slots {
+      if slot.is_free() {
+        continue;
+      }
+      // Expose a raw pointer to the stored GC reference so tracing/evacuation
+      // can update it in place.
+      f(slot.value.as_ptr());
     }
   }
 }
