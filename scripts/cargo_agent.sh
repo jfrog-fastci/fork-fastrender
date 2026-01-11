@@ -198,6 +198,44 @@ if [[ "$*" != *"--manifest-path"* ]]; then
   done
 fi
 
+# `runtime-native` contains an FP-based stack walker / GC root enumerator and enforces
+# `-C force-frame-pointers=yes` via its build script. Keep common invocations like:
+#   bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native
+# working by automatically injecting the flag when the caller targets the package directly.
+needs_frame_pointers=0
+argv=("$@")
+for ((i = 0; i < ${#argv[@]}; i++)); do
+  # Stop once we reach the argument delimiter. Anything after `--` is forwarded
+  # to rustc / the test harness / the executed binary.
+  if [[ "${argv[$i]}" == "--" ]]; then
+    break
+  fi
+
+  case "${argv[$i]}" in
+    -p|--package)
+      if [[ "${argv[$((i + 1))]:-}" == "runtime-native" ]]; then
+        needs_frame_pointers=1
+        break
+      fi
+      ;;
+    -p=runtime-native)
+      needs_frame_pointers=1
+      break
+      ;;
+    --package=runtime-native)
+      needs_frame_pointers=1
+      break
+      ;;
+  esac
+done
+if [[ "${needs_frame_pointers}" -eq 1 && "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+  if [[ -z "${RUSTFLAGS:-}" ]]; then
+    export RUSTFLAGS="-C force-frame-pointers=yes"
+  else
+    export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+  fi
+fi
+
 # Some CI/agent environments configure `build.rustc-wrapper = "sccache"` in a global Cargo config.
 # When the sccache daemon is unhealthy, it can fail *some* compilations mid-run and surface as a
 # spurious `could not compile ... process didn't exit successfully: sccache rustc ...` error.
