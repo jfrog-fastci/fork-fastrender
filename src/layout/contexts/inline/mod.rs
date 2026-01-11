@@ -152,6 +152,24 @@ use std::sync::OnceLock;
 use unicode_general_category::get_general_category;
 use unicode_segmentation::UnicodeSegmentation;
 
+#[derive(Debug, Clone, Copy)]
+struct StaticPositionAnchorPoint {
+  /// Baseline position of the anchor in the inline formatting context's coordinate space.
+  baseline: Point,
+  /// Line-top position corresponding to the same line box as [`Self::baseline`].
+  line_top: Point,
+}
+
+impl StaticPositionAnchorPoint {
+  #[inline]
+  fn translate(self, offset: Point) -> Self {
+    Self {
+      baseline: self.baseline.translate(offset),
+      line_top: self.line_top.translate(offset),
+    }
+  }
+}
+
 #[cfg(any(test, debug_assertions))]
 thread_local! {
   // These counters are used by unit/integration tests as guardrails against excessive churn.
@@ -6680,7 +6698,7 @@ impl InlineFormattingContext {
     inline_vertical: bool,
     strut_metrics: &BaselineMetrics,
     relative_cb: &ContainingBlock,
-    mut anchor_positions: Option<&mut HashMap<usize, Point>>,
+    mut anchor_positions: Option<&mut HashMap<usize, StaticPositionAnchorPoint>>,
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
   ) -> Vec<FragmentNode> {
     let mut fragments = Vec::new();
@@ -6765,7 +6783,7 @@ impl InlineFormattingContext {
     inline_vertical: bool,
     _strut_metrics: &BaselineMetrics,
     relative_cb: &ContainingBlock,
-    mut anchor_positions: Option<&mut HashMap<usize, Point>>,
+    mut anchor_positions: Option<&mut HashMap<usize, StaticPositionAnchorPoint>>,
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
   ) -> FragmentNode {
     static LOG_BASELINE: OnceLock<AtomicUsize> = OnceLock::new();
@@ -7026,7 +7044,10 @@ impl InlineFormattingContext {
         if anchor.running.is_none() && anchor.footnote.is_none() {
           if let Some(map) = anchor_positions.as_deref_mut() {
             let inline_origin = line.left_offset + inline_pos;
-            let anchor_point = Point::new(inline_origin, anchor_baseline_position);
+            let anchor_point = StaticPositionAnchorPoint {
+              baseline: Point::new(inline_origin, anchor_baseline_position),
+              line_top: Point::new(inline_origin, block_offset),
+            };
             map.insert(anchor.box_id, anchor_point);
           }
         } else {
@@ -7302,7 +7323,7 @@ impl InlineFormattingContext {
     line_origin: Point,
     parent_offset_in_line: Point,
     relative_cb: &ContainingBlock,
-    mut anchor_positions: Option<&mut HashMap<usize, Point>>,
+    mut anchor_positions: Option<&mut HashMap<usize, StaticPositionAnchorPoint>>,
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
     root_font_metrics: Option<RootFontMetrics>,
   ) -> FragmentNode {
@@ -7817,10 +7838,19 @@ impl InlineFormattingContext {
         if let Some(map) = anchor_positions.as_deref_mut() {
           // Nested anchors must include any inline box offsets (e.g. padding) that affect where the
           // positioned element would have appeared in flow.
-          let anchor_point = line_origin
+          let baseline = line_origin
             .translate(parent_offset_in_line)
             .translate(Point::new(inline_pos, block_pos));
-          map.insert(anchor.box_id, anchor_point);
+          let line_top = line_origin
+            .translate(parent_offset_in_line)
+            .translate(Point::new(inline_pos, 0.0));
+          map.insert(
+            anchor.box_id,
+            StaticPositionAnchorPoint {
+              baseline,
+              line_top,
+            },
+          );
         }
         if let Some(running) = anchor.running.as_ref() {
           let bounds = Rect::from_xywh(inline_pos, block_pos, 0.0, 0.01);
@@ -12935,7 +12965,7 @@ impl InlineFormattingContext {
     // Inline segments that contain only static-position anchors (e.g. blocks containing only
     // abspos/fixed descendants) should not generate line boxes, but we still need to record a
     // float-aware static position for those anchors.
-    let mut deferred_anchor_positions: HashMap<usize, Point> = HashMap::new();
+    let mut deferred_anchor_positions: HashMap<usize, StaticPositionAnchorPoint> = HashMap::new();
 
     let flush_pending = |pending: &mut Vec<InlineItem>,
                          use_first_line_width: &mut bool,
@@ -12944,8 +12974,8 @@ impl InlineFormattingContext {
                          ctx_ref: Option<&FloatContext>,
                          order: &mut Vec<FlowChunk>,
                          line_clamp_truncated: &mut bool,
-                         anchor_positions: &mut HashMap<usize, Point>|
-     -> Result<Option<(f32, f32, f32)>, LayoutError> {
+                         anchor_positions: &mut HashMap<usize, StaticPositionAnchorPoint>|
+      -> Result<Option<(f32, f32, f32)>, LayoutError> {
       if pending.is_empty() {
         return Ok(None);
       }
@@ -13047,7 +13077,10 @@ impl InlineFormattingContext {
         // Store the baseline position (line top + strut baseline offset), not the line top, so
         // the positioned layout pass can convert the baseline into a top margin-edge static
         // position using the positioned element's own baseline metrics.
-        let anchor_point = Point::new(inline_x, line_y + strut_metrics.baseline_offset);
+        let anchor_point = StaticPositionAnchorPoint {
+          baseline: Point::new(inline_x, line_y + strut_metrics.baseline_offset),
+          line_top: Point::new(inline_x, line_y),
+        };
         for id in anchor_ids {
           anchor_positions.insert(id, anchor_point);
         }
@@ -13131,10 +13164,9 @@ impl InlineFormattingContext {
           removed.indent
         };
         let inline_x = removed.left_offset + indent_offset;
-        let anchor_point = if inline_vertical {
-          Point::new(anchor_baseline_position, inline_x)
-        } else {
-          Point::new(inline_x, anchor_baseline_position)
+        let anchor_point = StaticPositionAnchorPoint {
+          baseline: Point::new(inline_x, anchor_baseline_position),
+          line_top: Point::new(inline_x, block_offset),
         };
         for id in anchor_ids {
           anchor_positions.insert(id, anchor_point);
@@ -13565,7 +13597,7 @@ impl InlineFormattingContext {
       Some(relative_cb_width),
       relative_cb_block_base,
     );
-    let mut anchor_positions: HashMap<usize, Point> = deferred_anchor_positions;
+    let mut anchor_positions: HashMap<usize, StaticPositionAnchorPoint> = deferred_anchor_positions;
     let mut positioned_containing_blocks: HashMap<usize, ContainingBlock> = HashMap::new();
     let mut line_fragments = self.create_fragments(
       lines,
@@ -14037,8 +14069,9 @@ impl InlineFormattingContext {
 
         let anchor_position = anchor_positions.get(&box_id).copied();
         let anchor_found = anchor_position.is_some();
+        let mut child_line_top = anchor_position.map(|pos| pos.line_top);
         let mut child_static_position = if let Some(anchor) = anchor_position {
-          anchor
+          anchor.baseline
         } else if let Some(id) = containing_block_id {
           positioned_containing_blocks
             .get(&id)
@@ -14051,17 +14084,18 @@ impl InlineFormattingContext {
           // Static positions are tracked in the inline formatting context's content coordinate space.
           // When the positioned containing block is the padding box (bounded by the padding edge),
           // translate them so they're relative to the padding edge instead.
-          child_static_position = Point::new(
-            child_static_position.x + padding_inline_start,
-            child_static_position.y + padding_block_start,
-          );
+          let delta = Point::new(padding_inline_start, padding_block_start);
+          child_static_position = child_static_position.translate(delta);
+          if let Some(line_top) = child_line_top.as_mut() {
+            *line_top = line_top.translate(delta);
+          }
         }
         if adjust_static_position {
           let origin = child_cb.origin();
-          child_static_position = Point::new(
-            child_static_position.x - origin.x,
-            child_static_position.y - origin.y,
-          );
+          child_static_position = Point::new(child_static_position.x - origin.x, child_static_position.y - origin.y);
+          if let Some(line_top) = child_line_top.as_mut() {
+            *line_top = Point::new(line_top.x - origin.x, line_top.y - origin.y);
+          }
         }
 
         let original_style = child.style.clone();
@@ -14151,25 +14185,40 @@ impl InlineFormattingContext {
           anchor_query,
         );
         let is_replaced = child.is_replaced();
-        // `StaticPositionAnchor`s record the baseline position of where the box would have been in
-        // the inline stream. Convert that baseline into the top margin-edge static position that
+        // `StaticPositionAnchor`s record the line baseline position of where the box would have been
+        // in the inline stream. Convert that baseline into the top margin-edge static position that
         // the absolute positioning algorithm expects.
         let mut static_position_for_abs_logical = child_static_position;
         if anchor_found {
-          let baseline_offset = if is_replaced {
-            // Replaced elements align their baseline to the bottom margin edge.
-            child_fragment.bounds.height().max(0.0)
+          if is_replaced {
+            // Replaced elements align their baseline to the bottom margin edge. When the line box is
+            // driven only by the strut (e.g., an image wrapper that contains only an abspos `<img>`),
+            // the recorded baseline can be smaller than the replaced element's own baseline offset.
+            // In that case, treat the replaced element as if it were in-flow: its baseline would
+            // become the line's baseline and its top margin edge would coincide with the line top.
+            let baseline_offset = child_fragment.bounds.height().max(0.0)
               + positioned_style.margin.top
-              + positioned_style.margin.bottom
+              + positioned_style.margin.bottom;
+            if let Some(line_top) = child_line_top {
+              let line_baseline_offset = (child_static_position.y - line_top.y).max(0.0);
+              let y = if baseline_offset > line_baseline_offset + 0.1 {
+                line_top.y
+              } else {
+                child_static_position.y - baseline_offset
+              };
+              static_position_for_abs_logical = Point::new(child_static_position.x, y);
+            } else {
+              static_position_for_abs_logical =
+                Point::new(child_static_position.x, child_static_position.y - baseline_offset);
+            }
           } else {
             // For non-replaced inline content, keep legacy behavior: treat the element as a strut
             // box so its baseline offset matches the containing line's strut metrics.
-            strut_metrics.baseline_offset
-          };
-          static_position_for_abs_logical = Point::new(
-            static_position_for_abs_logical.x,
-            static_position_for_abs_logical.y - baseline_offset,
-          );
+            static_position_for_abs_logical = Point::new(
+              child_static_position.x,
+              child_static_position.y - strut_metrics.baseline_offset,
+            );
+          }
         }
         let static_position_for_abs = if needs_physical_conversion {
           crate::layout::contexts::block::logical_rect_to_physical(
@@ -27334,6 +27383,58 @@ mod tests {
       "expected abspos replaced to overlay in-flow image ({} vs {})",
       abs_top,
       flow_top
+    );
+  }
+
+  #[test]
+  fn absolute_replaced_child_static_position_uses_line_top_for_anchor_only_line() {
+    // Regression test for arstechnica.com:
+    //
+    // Image/card wrappers often contain only a single absolutely positioned replaced element (e.g.
+    // `<img>` with all insets auto). The line box baseline in that case is driven by the strut, so
+    // converting the recorded baseline to a top margin-edge static position must not underflow by
+    // subtracting the replaced element's (larger) baseline offset.
+    let mut root_style = ComputedStyle::default();
+    root_style.position = Position::Relative;
+    root_style.font_size = 16.0;
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.position = Position::Absolute;
+    abs_style.width = Some(Length::px(100.0));
+    abs_style.height = Some(Length::px(180.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
+    let abs_img = BoxNode::new_replaced(
+      Arc::new(abs_style),
+      ReplacedType::Canvas,
+      Some(Size::new(100.0, 180.0)),
+      Some(2.0),
+    );
+
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![abs_img],
+    );
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    let abs_fragment = fragment
+      .children
+      .iter()
+      .find(|child| {
+        child
+          .style
+          .as_ref()
+          .is_some_and(|style| matches!(style.position, Position::Absolute | Position::Fixed))
+      })
+      .expect("absolute fragment");
+
+    assert!(
+      abs_fragment.bounds.y().abs() < 0.1,
+      "expected abspos replaced static position to start at line top; got {}",
+      abs_fragment.bounds.y()
     );
   }
 
