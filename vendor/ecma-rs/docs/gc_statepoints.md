@@ -455,11 +455,10 @@ small linker script fragment to both `KEEP` the section and define stable start/
 
 - `KEEP`s `.llvm_stackmaps` (even under `--gc-sections`)
 - defines:
-  - `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (preferred names)
+  - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (stable boundary symbols; preferred)
   - `__stackmaps_start` / `__stackmaps_end` (generic aliases)
-  - `__llvm_stackmaps_start`
-  - `__llvm_stackmaps_end`
-  - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (stable boundary symbols)
+  - `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (project-specific aliases)
+  - `__llvm_stackmaps_start` / `__llvm_stackmaps_end` (legacy aliases)
 
 When linking a final ELF binary, apply it (example):
 
@@ -642,7 +641,7 @@ When producing a PIE, native-js AOT output must:
 
 2. Link with a linker script fragment that:
    - `KEEP`s `.llvm_stackmaps` / `.llvm_faultmaps` so `--gc-sections` can’t discard them
-   - defines `__fastr_stackmaps_start` / `__fastr_stackmaps_end` symbols
+   - defines `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (plus aliases like `__fastr_stackmaps_start/end`)
 
    The script lives at:
    - `runtime-native/link/stackmaps.ld` (preferred)
@@ -745,13 +744,16 @@ clang-18 -fuse-ld=lld -pie \
 
 The linker script defines the following symbols:
 
-- `__fastr_stackmaps_start`
-- `__fastr_stackmaps_end`
+Canonical:
 
-It also defines legacy aliases:
+- `__start_llvm_stackmaps`
+- `__stop_llvm_stackmaps`
 
-- `__llvm_stackmaps_start`
-- `__llvm_stackmaps_end`
+Aliases:
+
+- `__stackmaps_start` / `__stackmaps_end` (generic)
+- `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (project-specific)
+- `__llvm_stackmaps_start` / `__llvm_stackmaps_end` (legacy)
 
 All of these span the retained stackmaps contents in the final binary (usually in
 `.data.rel.ro.llvm_stackmaps`, but legacy `.llvm_stackmaps` is still supported) and are intended to be the
@@ -760,8 +762,8 @@ primary runtime discovery mechanism (instead of parsing ELF section headers at r
 Example C usage:
 
 ```c
-extern const unsigned char __fastr_stackmaps_start[];
-extern const unsigned char __fastr_stackmaps_end[];
+extern const unsigned char __start_llvm_stackmaps[];
+extern const unsigned char __stop_llvm_stackmaps[];
 
-size_t size = (size_t)(__fastr_stackmaps_end - __fastr_stackmaps_start);
+size_t size = (size_t)(__stop_llvm_stackmaps - __start_llvm_stackmaps);
 ```
