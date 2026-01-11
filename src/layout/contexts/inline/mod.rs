@@ -6968,15 +6968,11 @@ impl InlineFormattingContext {
             );
     }
 
-    // Absolute/fixed descendants with `top/bottom: auto` fall back to their "static position"
-    // (CSS 2.1 §10.3.7/§10.6.4). For inline-level positioned elements, the static position is
-    // defined in terms of the top margin edge of a hypothetical in-flow box.
-    //
-    // We approximate this by anchoring to the top of the line box rather than the baseline.
-    // This matches real-world patterns (e.g. absolutely positioned `<img>` placeholders inside an
-    // inline formatting context) and avoids anchoring positioned elements to the line baseline,
-    // which would incorrectly push them towards the bottom of tall line boxes.
-    let anchor_block_position = block_offset;
+    // `StaticPositionAnchor`s represent where out-of-flow positioned elements would have appeared
+    // in the inline stream. Record their **baseline** position in the line so static positioning
+    // can account for the element's own baseline metrics (notably for replaced elements, where the
+    // baseline sits at the bottom margin edge).
+    let anchor_baseline_position = block_offset + line.baseline;
     let line_origin = Point::new(line.left_offset, block_offset);
 
     for (i, positioned) in items.iter().enumerate() {
@@ -7000,7 +6996,7 @@ impl InlineFormattingContext {
         if anchor.running.is_none() && anchor.footnote.is_none() {
           if let Some(map) = anchor_positions.as_deref_mut() {
             let inline_origin = line.left_offset + inline_pos;
-            let anchor_point = Point::new(inline_origin, anchor_block_position);
+            let anchor_point = Point::new(inline_origin, anchor_baseline_position);
             map.insert(anchor.box_id, anchor_point);
           }
         } else {
@@ -7019,16 +7015,16 @@ impl InlineFormattingContext {
           if log_line {
             let metrics = positioned.item.baseline_metrics();
             eprintln!(
-                      "  item#{i} width={:.2} block_pos={:.2} baseline_offset={:.2} metrics(base={:.2} h={:.2} asc={:.2} desc={:.2}) kind={:?}",
-                      item_width,
-                      block_pos,
-                      positioned.baseline_offset,
-                      metrics.baseline_offset,
-                      metrics.height,
-                      metrics.ascent,
-                      metrics.descent,
-                      positioned.item
-                  );
+              "  item#{i} width={:.2} block_pos={:.2} baseline_offset={:.2} metrics(base={:.2} h={:.2} asc={:.2} desc={:.2}) kind={:?}",
+              item_width,
+              block_pos,
+              positioned.baseline_offset,
+              metrics.baseline_offset,
+              metrics.height,
+              metrics.ascent,
+              metrics.descent,
+              positioned.item
+            );
           }
           children.push(fragment);
         }
@@ -7533,16 +7529,26 @@ impl InlineFormattingContext {
         }
         let line_box_origin_block = box_item.content_offset_y - half_leading;
         let paint_origin_block = block_pos + half_leading - box_item.content_offset_y;
+        let only_bookkeeping_anchors = box_item.children.iter().all(|child| match child {
+          InlineItem::StaticPositionAnchor(anchor) => {
+            anchor.running.is_none() && anchor.footnote.is_none()
+          }
+          InlineItem::Floating(_) => true,
+          _ => false,
+        });
 
         for (idx, child) in box_item.children.iter().enumerate() {
           let mut child_block = line_box_origin_block + baseline + child_offsets[idx]
             - child.baseline_metrics().baseline_offset;
-          if let InlineItem::StaticPositionAnchor(anchor) = child {
-            if anchor.running.is_none() && anchor.footnote.is_none() {
-              // Static position anchors represent where an out-of-flow element would have appeared
-              // in the normal flow. For inline layout, that is the *top* of the line box (baseline
-              // minus strut baseline), not the baseline itself.
-              child_block = line_box_origin_block + baseline - box_item.strut_metrics.baseline_offset;
+          if only_bookkeeping_anchors {
+            if let InlineItem::StaticPositionAnchor(anchor) = child {
+              if anchor.running.is_none() && anchor.footnote.is_none() {
+                // When an inline box contains only out-of-flow positioned descendants, it does not
+                // generate any in-flow line boxes. For static-position fallback, align positioned
+                // descendants to the inline box's content start (padding/border), not its strut
+                // baseline.
+                child_block += box_item.content_offset_y;
+              }
             }
           }
           let fragment = self.create_item_fragment_oriented(
@@ -12928,7 +12934,11 @@ impl InlineFormattingContext {
         let inline_x = line_left_edge + indent_offset;
         // Anchor positions are stored in the formatting context's logical coordinate system
         // (x = inline axis, y = block axis) regardless of writing mode.
-        let anchor_point = Point::new(inline_x, line_y);
+        //
+        // Store the baseline position (line top + strut baseline offset), not the line top, so
+        // the positioned layout pass can convert the baseline into a top margin-edge static
+        // position using the positioned element's own baseline metrics.
+        let anchor_point = Point::new(inline_x, line_y + strut_metrics.baseline_offset);
         for id in anchor_ids {
           anchor_positions.insert(id, anchor_point);
         }
@@ -13002,7 +13012,7 @@ impl InlineFormattingContext {
 
         let removed = seg_lines.pop().expect("last line exists");
         let block_offset = *line_offset + removed.y_offset;
-        let anchor_block_position = block_offset + removed.baseline - strut_metrics.baseline_offset;
+        let anchor_baseline_position = block_offset + removed.baseline;
         let indent_offset = if matches!(
           removed.resolved_direction,
           crate::style::types::Direction::Rtl
@@ -13013,9 +13023,9 @@ impl InlineFormattingContext {
         };
         let inline_x = removed.left_offset + indent_offset;
         let anchor_point = if inline_vertical {
-          Point::new(anchor_block_position, inline_x)
+          Point::new(anchor_baseline_position, inline_x)
         } else {
-          Point::new(inline_x, anchor_block_position)
+          Point::new(inline_x, anchor_baseline_position)
         };
         for id in anchor_ids {
           anchor_positions.insert(id, anchor_point);
@@ -13788,7 +13798,14 @@ impl InlineFormattingContext {
       // descendants. Otherwise, absolutely positioned descendants nested under inline children can
       // incorrectly use the wrapper's line-box height as their containing block, collapsing
       // "absolute fill" patterns (e.g. responsive images).
-      let root_is_element_box = box_node.id != 0;
+      // Inline formatting contexts are sometimes invoked for anonymous wrapper boxes created during
+      // layout (e.g. anonymous inline containers for runs of inline-level children). Those
+      // generated boxes can share `ComputedStyle` with their originating element, but must not
+      // establish containing blocks for positioned descendants. Gate root-level containing block
+      // establishment on the box being non-anonymous rather than having a stable box-tree id so
+      // unit tests (which often construct `BoxNode`s without assigning ids) still exercise the
+      // correct CSS behavior for element boxes.
+      let root_is_element_box = !box_node.is_anonymous();
       let root_establishes_abs_cb = root_is_element_box && style.establishes_abs_containing_block();
       let root_establishes_fixed_cb =
         root_is_element_box && style.establishes_fixed_containing_block();
@@ -13909,8 +13926,9 @@ impl InlineFormattingContext {
           crate::style::position::Position::Fixed
         ) && child_cb == viewport_fixed_cb;
 
-        let mut child_static_position = if let Some(anchor) = anchor_positions.get(&box_id).copied()
-        {
+        let anchor_position = anchor_positions.get(&box_id).copied();
+        let anchor_found = anchor_position.is_some();
+        let mut child_static_position = if let Some(anchor) = anchor_position {
           anchor
         } else if let Some(id) = containing_block_id {
           positioned_containing_blocks
@@ -13978,8 +13996,7 @@ impl InlineFormattingContext {
         // in logical coordinates, so vertical writing modes need a conversion step.
         let needs_physical_conversion = crate::style::block_axis_is_horizontal(style.writing_mode)
           && (child_cb == cb || custom_cb.is_some());
-        let (anchors_for_cb, positioning_cb, static_position_for_abs) = if needs_physical_conversion
-        {
+        let (anchors_for_cb, positioning_cb) = if needs_physical_conversion {
           let cb_rect_physical = crate::layout::contexts::block::logical_rect_to_physical(
             child_cb.rect,
             bounds.size.width,
@@ -13999,20 +14016,9 @@ impl InlineFormattingContext {
               .as_ref()
               .expect("physical anchor index should exist for vertical writing modes"),
           );
-          // Static positions are tracked in this inline formatting context's logical coordinate
-          // system. Convert them into physical coordinates so the absolute positioning algorithm
-          // can consume them consistently.
-          let static_position_for_abs = crate::layout::contexts::block::logical_rect_to_physical(
-            Rect::new(child_static_position, Size::new(0.0, 0.0)),
-            child_cb.rect.size.width,
-            child_cb.rect.size.height,
-            style.writing_mode,
-            style.direction,
-          )
-          .origin;
-          (anchors, physical_cb, static_position_for_abs)
+          (anchors, physical_cb)
         } else {
-          (Some(&anchor_index), child_cb, child_static_position)
+          (Some(&anchor_index), child_cb)
         };
 
         let child_constraints = LayoutConstraints::new(
@@ -14036,6 +14042,38 @@ impl InlineFormattingContext {
           anchor_query,
         );
         let is_replaced = child.is_replaced();
+        // `StaticPositionAnchor`s record the baseline position of where the box would have been in
+        // the inline stream. Convert that baseline into the top margin-edge static position that
+        // the absolute positioning algorithm expects.
+        let mut static_position_for_abs_logical = child_static_position;
+        if anchor_found {
+          let baseline_offset = if is_replaced {
+            // Replaced elements align their baseline to the bottom margin edge.
+            child_fragment.bounds.height().max(0.0)
+              + positioned_style.margin.top
+              + positioned_style.margin.bottom
+          } else {
+            // For non-replaced inline content, keep legacy behavior: treat the element as a strut
+            // box so its baseline offset matches the containing line's strut metrics.
+            strut_metrics.baseline_offset
+          };
+          static_position_for_abs_logical = Point::new(
+            static_position_for_abs_logical.x,
+            static_position_for_abs_logical.y - baseline_offset,
+          );
+        }
+        let static_position_for_abs = if needs_physical_conversion {
+          crate::layout::contexts::block::logical_rect_to_physical(
+            Rect::new(static_position_for_abs_logical, Size::new(0.0, 0.0)),
+            child_cb.rect.size.width,
+            child_cb.rect.size.height,
+            style.writing_mode,
+            style.direction,
+          )
+          .origin
+        } else {
+          static_position_for_abs_logical
+        };
         let has_inline_keyword = original_style.width_keyword.is_some()
           || original_style.min_width_keyword.is_some()
           || original_style.max_width_keyword.is_some();
@@ -26993,6 +27031,82 @@ mod tests {
       (positioned_fragment.bounds.y() - first_text_top).abs() < 0.1,
       "static position should anchor to first line top; got {}",
       positioned_fragment.bounds.y() - first_text_top
+    );
+  }
+
+  #[test]
+  fn absolute_replaced_child_static_position_overlays_when_line_height_is_zero() {
+    // Regression test for bbc.com:
+    // A common image wrapper pattern sets `line-height: 0` and includes an absolutely positioned
+    // fallback `<img>` (with all insets auto) that should overlay an in-flow image sibling.
+    //
+    // When the line-height strut baseline offset is 0, the line baseline is driven by the in-flow
+    // replaced element's height. Static positioning must use the replaced element's baseline
+    // metrics so the abspos fallback lands at the top of the line box rather than below it.
+    let mut root_style = ComputedStyle::default();
+    root_style.position = Position::Relative;
+    root_style.line_height = crate::style::types::LineHeight::Length(Length::px(0.0));
+    root_style.font_size = 16.0;
+
+    let mut img_style = ComputedStyle::default();
+    img_style.width = Some(Length::px(100.0));
+    img_style.height = Some(Length::px(50.0));
+    img_style.width_keyword = None;
+    img_style.height_keyword = None;
+    let flow_img = BoxNode::new_replaced(
+      Arc::new(img_style.clone()),
+      ReplacedType::Canvas,
+      Some(Size::new(100.0, 50.0)),
+      Some(2.0),
+    );
+
+    let mut abs_style = img_style;
+    abs_style.position = Position::Absolute;
+    let abs_img = BoxNode::new_replaced(
+      Arc::new(abs_style),
+      ReplacedType::Canvas,
+      Some(Size::new(100.0, 50.0)),
+      Some(2.0),
+    );
+
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![abs_img, flow_img],
+    );
+    let constraints = LayoutConstraints::definite_width(100.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    let line = fragment
+      .children
+      .iter()
+      .find(|child| matches!(child.content, FragmentContent::Line { .. }))
+      .expect("line fragment");
+    let flow_replaced = line
+      .children
+      .iter()
+      .find(|child| matches!(child.content, FragmentContent::Replaced { .. }))
+      .expect("flow replaced fragment");
+    let flow_top = line.bounds.y() + flow_replaced.bounds.y();
+
+    let abs_fragment = fragment
+      .children
+      .iter()
+      .find(|child| {
+        child
+          .style
+          .as_ref()
+          .is_some_and(|style| matches!(style.position, Position::Absolute | Position::Fixed))
+      })
+      .expect("absolute fragment");
+    let abs_top = abs_fragment.bounds.y();
+
+    assert!(
+      (abs_top - flow_top).abs() < 0.1,
+      "expected abspos replaced to overlay in-flow image ({} vs {})",
+      abs_top,
+      flow_top
     );
   }
 
