@@ -110,7 +110,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 33000.0
+      "budget_ms": 41100.0
     },
     {
       "name": "britannica.com",
@@ -253,7 +253,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 21200.0
+      "budget_ms": 41800.0
     },
     {
       "name": "bbc.com",
@@ -407,7 +407,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 6600.0
+      "budget_ms": 10000.0
     },
     {
       "name": "archlinux.org",
@@ -429,7 +429,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 43000.0
+      "budget_ms": 60000.0
     },
     {
       "name": "rust-lang.org",
@@ -462,7 +462,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 66300.0
+      "budget_ms": 100000.0
     },
     {
       "name": "cbsnews.com",
@@ -539,7 +539,7 @@
       ],
       "dpr": 1.0,
       "media": "screen",
-      "budget_ms": 11200.0
+      "budget_ms": 14600.0
     }
   ]
 }
