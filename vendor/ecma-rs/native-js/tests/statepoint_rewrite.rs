@@ -191,10 +191,21 @@ fn parse_relocate_comment_vars(line: &str) -> Option<(String, String)> {
   Some((base.trim().to_string(), derived.trim().to_string()))
 }
 
+fn expect_relocate_line<'a>(func: &'a str, base: &str, derived: &str) -> &'a str {
+  func
+    .lines()
+    .find(|line| parse_relocate_comment_vars(line) == Some((base.to_string(), derived.to_string())))
+    .unwrap_or_else(|| {
+      panic!(
+        "expected gc.relocate line with comment `; ({base}, {derived})`, but none found.\n\n{func}"
+      )
+    })
+}
+
 #[test]
 fn gc_result_for_scalar_return() {
   let before = r#"
- declare i64 @bar()
+  declare i64 @bar()
 
 define i64 @test() gc "coreclr" {
 entry:
@@ -303,9 +314,72 @@ entry:
 }
 
 #[test]
+fn gc_result_pointer_used_across_later_safepoint_is_relocated() {
+  // Important real-world pattern: allocate an object (pointer result from a
+  // statepoint) and then keep it live across a later safepoint call.
+  let before = r#"
+  declare ptr addrspace(1) @alloc()
+  declare void @bar()
+
+  define i8 @test() gc "coreclr" {
+  entry:
+    %obj = call ptr addrspace(1) @alloc()
+    call void @bar()
+    %v = load i8, ptr addrspace(1) %obj
+    ret i8 %v
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  // Capture the SSA name produced by the allocation result.
+  let gc_result_line = func
+    .lines()
+    .find(|l| l.contains("@llvm.experimental.gc.result.p1"))
+    .unwrap_or_else(|| panic!("missing gc.result.p1 in function:\n{func}"));
+  let alloc_obj = assigned_ssa(gc_result_line)
+    .unwrap_or_else(|| panic!("unexpected gc.result.p1 line: {gc_result_line}"));
+
+  let bar_statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void ()) @bar"))
+    .unwrap_or_else(|| panic!("missing @bar statepoint call in function:\n{func}"));
+  let gc_live_vars = parse_gc_live_vars(bar_statepoint_line);
+  assert!(
+    gc_live_vars.iter().any(|v| v == &alloc_obj),
+    "expected @bar statepoint gc-live to include alloc result {alloc_obj}, got {gc_live_vars:?}\n\n{func}"
+  );
+
+  // Relocation indices must reference the gc-live entry.
+  let relocate_line = expect_relocate_line(&func, &alloc_obj, &alloc_obj);
+  let relocated_obj =
+    assigned_ssa(relocate_line).unwrap_or_else(|| panic!("expected relocate assignment: {relocate_line}"));
+  let (base_idx, derived_idx) =
+    parse_relocate_indices(relocate_line).unwrap_or_else(|| panic!("failed to parse relocate indices: {relocate_line}"));
+  let pos = gc_live_vars
+    .iter()
+    .position(|v| v == &alloc_obj)
+    .expect("alloc result should be in gc-live vars");
+  assert_eq!(
+    base_idx as usize, pos,
+    "expected gc.relocate base_idx to equal gc-live position {pos} for {alloc_obj}, got {base_idx}\n\n{func}"
+  );
+  assert_eq!(
+    derived_idx as usize, pos,
+    "expected gc.relocate derived_idx to equal gc-live position {pos} for {alloc_obj}, got {derived_idx}\n\n{func}"
+  );
+
+  assert!(
+    func.contains(&format!("load i8, ptr addrspace(1) {relocated_obj}")),
+    "expected post-safepoint load to use relocated obj {relocated_obj}:\n{func}"
+  );
+}
+
+#[test]
 fn derived_pointer_relocation_has_distinct_base_and_derived_indices() {
   let before = r#"
-declare void @bar()
+ declare void @bar()
 
 define void @test(ptr addrspace(1) %base, i1 %cond) gc "coreclr" {
 entry:
@@ -462,9 +536,68 @@ entry:
 }
 
 #[test]
+fn relocation_is_chained_across_multiple_statepoints() {
+  // Real-world pattern: a pointer is live across multiple safepoints (e.g.
+  // multiple runtime calls). After each statepoint, subsequent safepoints must
+  // treat the relocated SSA value as the live root (not the original one).
+  let before = r#"
+  declare void @bar()
+  declare void @baz()
+
+  define i8 @test(ptr addrspace(1) %obj) gc "coreclr" {
+  entry:
+    call void @bar()
+    call void @baz()
+    %v = load i8, ptr addrspace(1) %obj
+    ret i8 %v
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let bar_statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void ()) @bar"))
+    .unwrap_or_else(|| panic!("missing @bar statepoint call in function:\n{func}"));
+  let bar_gc_live = parse_gc_live_vars(bar_statepoint_line);
+  assert!(
+    bar_gc_live == vec!["%obj".to_string()],
+    "expected @bar gc-live to be exactly [%obj], got {bar_gc_live:?}\n\n{func}"
+  );
+
+  let first_reloc_line = expect_relocate_line(&func, "%obj", "%obj");
+  let obj_after_bar =
+    assigned_ssa(first_reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {first_reloc_line}"));
+
+  let baz_statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void ()) @baz"))
+    .unwrap_or_else(|| panic!("missing @baz statepoint call in function:\n{func}"));
+  let baz_gc_live = parse_gc_live_vars(baz_statepoint_line);
+  assert!(
+    baz_gc_live.iter().any(|v| v == &obj_after_bar),
+    "expected @baz gc-live to include relocated obj {obj_after_bar}, got {baz_gc_live:?}\n\n{func}"
+  );
+  assert!(
+    !baz_gc_live.iter().any(|v| v == "%obj"),
+    "expected @baz gc-live to NOT include original %obj (must use relocated), got {baz_gc_live:?}\n\n{func}"
+  );
+
+  let second_reloc_line = expect_relocate_line(&func, &obj_after_bar, &obj_after_bar);
+  let obj_after_baz =
+    assigned_ssa(second_reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {second_reloc_line}"));
+
+  assert!(
+    func.contains(&format!("load i8, ptr addrspace(1) {obj_after_baz}")),
+    "expected post-safepoint load to use relocated obj {obj_after_baz}:\n{func}"
+  );
+}
+
+#[test]
 fn object_emits_llvm_stackmaps_section() {
   let before = r#"
-declare void @bar()
+ declare void @bar()
 
 define void @test(ptr addrspace(1) %base) gc "coreclr" {
 entry:
