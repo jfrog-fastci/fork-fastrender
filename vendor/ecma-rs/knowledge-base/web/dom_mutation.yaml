@@ -1,0 +1,67 @@
+# DOM node creation and mutation APIs.
+
+- name: document.createElement
+  kind: function
+  aliases:
+    - document.createElement
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Impure
+
+- name: document.createTextNode
+  kind: function
+  aliases:
+    - document.createTextNode
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Allocating
+
+- name: document.createDocumentFragment
+  kind: function
+  aliases:
+    - document.createDocumentFragment
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Allocating
+
+- name: Node.prototype.appendChild
+  kind: function
+  aliases:
+    - Node.prototype.appendChild
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: Node.prototype.removeChild
+  kind: function
+  aliases:
+    - Node.prototype.removeChild
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: Element.prototype.remove
+  kind: function
+  aliases:
+    - Element.prototype.remove
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Never
+  purity: Impure
