@@ -162,17 +162,21 @@ fn build(cli: &Cli, entry: &Path, output: &Path) -> Result<(), String> {
     "native-js code generation failed".to_string()
   })?;
 
+  let opt = opt_level(cli.opt)?;
+
+  // Emit the object first so `rewrite-statepoints-for-gc` runs exactly once on
+  // the module. This avoids the (non-guaranteed) assumption that the pass is
+  // idempotent when `--emit obj/asm` is used.
+  let mut target = native_js::emit::TargetConfig::default();
+  target.opt_level = opt;
+  let obj = native_js::emit::emit_object_with_statepoints(&module, target).map_err(|err| err.to_string())?;
+
   if let Some(kind) = cli.emit {
     let Some(path) = cli.emit_path.as_deref() else {
       unreachable!("validated --emit-path earlier");
     };
-    emit_artifact(&module, kind, path, opt_level(cli.opt)?)?;
+    emit_artifact(&module, kind, path, opt, &obj)?;
   }
-
-  let mut target = native_js::emit::TargetConfig::default();
-  target.opt_level = opt_level(cli.opt)?;
-  let obj = native_js::emit::emit_object_with_statepoints(&module, target)
-    .map_err(|err| err.to_string())?;
 
   link_object(cli.debug, &obj, output)?;
 
@@ -246,6 +250,7 @@ fn emit_artifact(
   kind: EmitKind,
   path: &Path,
   opt: OptimizationLevel,
+  obj: &[u8],
 ) -> Result<(), String> {
   if let Some(parent) = path.parent() {
     if !parent.as_os_str().is_empty() {
@@ -267,13 +272,12 @@ fn emit_artifact(
       fs::write(path, bc).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     }
     EmitKind::Obj => {
-      let obj = native_js::emit::emit_object_with_statepoints(module, target)
-        .map_err(|err| err.to_string())?;
       fs::write(path, obj).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     }
     EmitKind::Asm => {
-      let asm = native_js::emit::emit_asm_with_statepoints(module, target)
-        .map_err(|err| err.to_string())?;
+      // The module was already rewritten during object emission. Avoid rerunning
+      // `rewrite-statepoints-for-gc` by using the raw asm emission helper.
+      let asm = native_js::emit::emit_asm(module, target);
       fs::write(path, asm).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     }
   }
