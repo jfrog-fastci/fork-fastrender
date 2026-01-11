@@ -9,6 +9,9 @@ static READY: AtomicBool = AtomicBool::new(false);
 static RSP_ASM: AtomicU64 = AtomicU64::new(0);
 static RSP_CTX: AtomicU64 = AtomicU64::new(0);
 static RIP_CTX: AtomicU64 = AtomicU64::new(0);
+static RAX_CTX: AtomicU64 = AtomicU64::new(0);
+
+const MAGIC_RAX: u64 = 0x0123_4567_89ab_cdef;
 
 fn trigger_sigill() {
   unsafe {
@@ -17,7 +20,7 @@ fn trigger_sigill() {
     RSP_ASM.store(rsp, Ordering::Relaxed);
 
     // Synchronous trap so the signal ucontext reflects this frame's registers.
-    core::arch::asm!("ud2");
+    core::arch::asm!("ud2", in("rax") MAGIC_RAX);
   }
 }
 
@@ -31,6 +34,7 @@ unsafe extern "C" fn sigill_handler(
     let mut ctx = ThreadContext::from_ucontext(uc);
     let rsp_ctx = ctx.get_dwarf_reg_u64(DWARF_REG_SP).unwrap_or(0);
     let rip_ctx = ctx.get_dwarf_reg_u64(DWARF_REG_IP).unwrap_or(0);
+    let rax_ctx = ctx.get_dwarf_reg_u64(0).unwrap_or(0);
 
     // Skip the `ud2` instruction (2 bytes) so execution can resume.
     let _ = ctx.set_dwarf_reg_u64(DWARF_REG_IP, rip_ctx.wrapping_add(2));
@@ -38,6 +42,7 @@ unsafe extern "C" fn sigill_handler(
 
     RSP_CTX.store(rsp_ctx, Ordering::Relaxed);
     RIP_CTX.store(rip_ctx, Ordering::Relaxed);
+    RAX_CTX.store(rax_ctx, Ordering::Relaxed);
     READY.store(true, Ordering::Release);
   }
 }
@@ -70,6 +75,8 @@ fn ucontext_extraction_matches_handler_registers() {
       "IP {rip:#x} not in handler range {handler_addr:#x}..{:#x}",
       handler_addr + 4096
     );
+
+    assert_eq!(RAX_CTX.load(Ordering::Relaxed), MAGIC_RAX);
 
     // Restore default handler to avoid affecting other tests within the process.
     let mut sa_default: libc::sigaction = core::mem::zeroed();
