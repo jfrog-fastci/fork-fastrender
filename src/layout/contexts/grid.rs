@@ -14101,6 +14101,7 @@ mod tests {
   use crate::style::types::Direction;
   use crate::style::types::GridAutoFlow;
   use crate::style::types::GridTrack;
+  use crate::style::types::JustifyContent;
   use crate::style::types::Overflow;
   use crate::style::types::ScrollbarWidth;
   use crate::style::types::WhiteSpace;
@@ -15856,6 +15857,55 @@ mod tests {
       (item.bounds.width() - expected_width).abs() < 0.5,
       "expected spanning grid item to stretch to track width (expected={expected_width:.2}, got={:.2})",
       item.bounds.width()
+    );
+  }
+
+  #[test]
+  fn grid_auto_items_do_not_skip_earlier_rows_after_definite_row_items() {
+    // w3.org uses a 2-row grid as a sticky-footer pattern:
+    //   .grid-wrap { display: grid; grid-template-rows: 1fr auto; }
+    //   footer      { grid-row-start: 2; grid-row-end: 3; }
+    // The main content wrapper is auto-placed; browsers place it into the first row even though
+    // the footer has a definite row placement.
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+    grid_style.grid_template_rows = vec![
+      GridTrack::Length(Length::px(10.0)),
+      GridTrack::Length(Length::px(20.0)),
+    ];
+    let grid_style = Arc::new(grid_style);
+
+    let wrap_id = 1001usize;
+    let footer_id = 1002usize;
+
+    let mut wrap = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    wrap.id = wrap_id;
+
+    let mut footer_style = ComputedStyle::default();
+    footer_style.grid_row_raw = Some("2 / 3".to_string());
+    let mut footer =
+      BoxNode::new_block(Arc::new(footer_style), FormattingContextType::Block, vec![]);
+    footer.id = footer_id;
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![wrap, footer]);
+    let constraints = LayoutConstraints::definite_width(100.0);
+    let fragment = fc.layout(&grid, &constraints).unwrap();
+
+    let wrap_fragment = find_block_fragment(&fragment, wrap_id);
+    let footer_fragment = find_block_fragment(&fragment, footer_id);
+
+    assert!(
+      (wrap_fragment.bounds.y() - 0.0).abs() < 0.5,
+      "expected auto-placed first child to occupy row 1 at y=0, got {:.2}",
+      wrap_fragment.bounds.y()
+    );
+    assert!(
+      (footer_fragment.bounds.y() - 10.0).abs() < 0.5,
+      "expected definite row-placed footer to occupy row 2 at y=10, got {:.2}",
+      footer_fragment.bounds.y()
     );
   }
 
@@ -18029,43 +18079,34 @@ mod tests {
 
   #[test]
   fn convert_style_sets_overflow_and_scrollbar_width() {
-    let mut style = ComputedStyle::default();
-    style.display = CssDisplay::Grid;
-    style.overflow_x = Overflow::Scroll;
-    style.overflow_y = Overflow::Clip;
-    style.scrollbar_width = ScrollbarWidth::Thin;
+    runtime::with_thread_runtime_toggles(Arc::new(runtime::RuntimeToggles::from_map(HashMap::new())), || {
+      let mut style = ComputedStyle::default();
+      style.display = CssDisplay::Grid;
+      style.overflow_x = Overflow::Scroll;
+      style.overflow_y = Overflow::Clip;
+      style.scrollbar_width = ScrollbarWidth::Thin;
 
-    let gc = GridFormattingContext::new();
-    // Model overlay scrollbars by default: no gutter reservation unless `scrollbar-gutter: stable`
-    // is requested.
-    let node = BoxNode::new_block(Arc::new(style.clone()), FormattingContextType::Grid, vec![]);
-    let taffy_style = gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
+      let gc = GridFormattingContext::new();
+      // Model overlay scrollbars by default: no gutter reservation unless `scrollbar-gutter: stable`
+      // is requested.
+      let node = BoxNode::new_block(Arc::new(style.clone()), FormattingContextType::Grid, vec![]);
+      let taffy_style = gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
 
-    assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
-    assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
-    assert_eq!(taffy_style.scrollbar_width, 0.0);
+      assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
+      assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
+      assert_eq!(taffy_style.scrollbar_width, 0.0);
 
-    // Stable gutter requests should propagate the scrollbar width into Taffy so it can reserve
-    // space for scroll containers.
-    let mut stable = style;
-    stable.scrollbar_gutter.stable = true;
-    let node = BoxNode::new_block(Arc::new(stable), FormattingContextType::Grid, vec![]);
-    let taffy_style = gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
+      // Stable gutter requests should propagate the scrollbar width into Taffy so it can reserve
+      // space for scroll containers.
+      let mut stable = style;
+      stable.scrollbar_gutter.stable = true;
+      let node = BoxNode::new_block(Arc::new(stable), FormattingContextType::Grid, vec![]);
+      let taffy_style = gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
 
-    assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
-    assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
-    assert_eq!(taffy_style.scrollbar_width, 0.0);
-
-    let mut style = node.style.as_ref().clone();
-    style.scrollbar_gutter.stable = true;
-    let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![]);
-    let taffy_style = gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
-    assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
-    assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
-    assert_eq!(
-      taffy_style.scrollbar_width,
-      resolve_scrollbar_width(&node.style)
-    );
+      assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
+      assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
+      assert_eq!(taffy_style.scrollbar_width, resolve_scrollbar_width(&node.style));
+    });
   }
 
   #[test]
@@ -19593,8 +19634,16 @@ mod tests {
   fn grid_reuses_normalized_measured_fragments() {
     let child = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
     let child_id = child.id;
+    // Disable `justify-content: stretch` so the auto track stays at its content size. This keeps
+    // the grid item's used size equal to the measured fragment size, allowing us to exercise the
+    // measured-fragment reuse path.
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Auto];
+    grid_style.grid_template_rows = vec![GridTrack::Auto];
+    grid_style.justify_content = JustifyContent::Start;
     let grid = BoxNode::new_block(
-      make_grid_style_with_tracks(vec![GridTrack::Auto], vec![GridTrack::Auto]),
+      Arc::new(grid_style),
       FormattingContextType::Grid,
       vec![child],
     );

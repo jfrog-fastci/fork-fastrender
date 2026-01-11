@@ -391,10 +391,13 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
     }
   }
 
-  // Step 4 performs auto-placement of the remaining items. The auto-placement cursor used by this
-  // step is reset to the start of the grid, rather than continuing from any cursor state left by
-  // step 2/3 placements. This matches browser behaviour and the CSS Grid placement algorithm
-  // described in the spec.
+  // Step 4 ("auto-placement of the remaining items") should start scanning from the start of the
+  // implicit grid, not from the cursor position left behind by steps 2/3.
+  //
+  // Carrying the cursor forward can cause auto-placed items to skip earlier available cells,
+  // leaving leading holes. Real-world layouts (e.g. sticky-footer grids where the footer is
+  // explicitly placed on the second row while the main content wrapper is auto-placed) rely on
+  // auto items filling the first row even when a later item has a definite row placement.
   grid_position = grid_start_position;
 
   // Step 4. Auto placement of the remaining items

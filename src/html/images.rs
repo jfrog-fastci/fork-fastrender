@@ -503,7 +503,7 @@ impl ReplacedType {
         picture_sources,
         ..
       } => image_sources_with_fallback(src, srcset, sizes.as_ref(), picture_sources, ctx),
-      ReplacedType::Video { src: _, poster } => {
+      ReplacedType::Video { poster, .. } => {
         let mut ordered = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         if let Some(poster) = poster.as_deref() {

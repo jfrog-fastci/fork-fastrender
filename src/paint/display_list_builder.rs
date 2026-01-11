@@ -10682,11 +10682,20 @@ impl DisplayListBuilder {
   ) {
     // Replaced fallback rendering is UA-defined and varies between browsers.
     //
-    // For `<video>` with no poster/frame and `<canvas>` with no drawn content, browsers keep the
-    // element transparent. Painting a placeholder would incorrectly obscure background content.
+    // For `<canvas>` with no drawn content, browsers keep the element transparent. Painting a
+    // placeholder would incorrectly obscure background content.
+    if matches!(replaced_type, ReplacedType::Canvas) {
+      return;
+    }
+    // `<video>` without a poster often sits above a thumbnail image that should remain visible
+    // until the video loads/paints. Keep that pattern working when controls are not shown.
     if matches!(
       replaced_type,
-      ReplacedType::Video { poster: None, .. } | ReplacedType::Canvas
+      ReplacedType::Video {
+        poster: None,
+        controls: false,
+        ..
+      }
     ) {
       return;
     }
@@ -10697,6 +10706,66 @@ impl DisplayListBuilder {
       Self::replaced_content_clip_item(style, content_rect, content_rect, clip_radii);
     if let Some(clip) = clip_contents.as_ref() {
       self.list.push(DisplayItem::PushClip(clip.clone()));
+    }
+
+    // For `<video controls>` without a poster/frame, browsers still paint a dark video surface and
+    // chrome for the native controls. Emit a stable approximation rather than leaving the element
+    // transparent.
+    if matches!(
+      replaced_type,
+      ReplacedType::Video {
+        controls: true, ..
+      }
+    ) {
+      self.list.push(DisplayItem::FillRect(FillRectItem {
+        rect: content_rect,
+        color: Rgba::rgb(51, 51, 51),
+      }));
+
+      let h = content_rect.height().max(0.0);
+      let bar_h = 32.0_f32.min(h);
+      let shadow_h = 72.0_f32.min((h - bar_h).max(0.0));
+      if shadow_h > 0.0 && h > 0.0 {
+        let start = (h - bar_h - shadow_h) / h;
+        let end = (h - bar_h) / h;
+        let end_alpha = 0.85;
+        let black = |alpha: f32| Rgba::rgb(0, 0, 0).with_alpha(alpha.clamp(0.0, 1.0));
+        let mut stops = Vec::new();
+        stops.push(GradientStop {
+          position: 0.0,
+          color: black(0.0),
+        });
+        stops.push(GradientStop {
+          position: start,
+          color: black(0.0),
+        });
+        for t in [0.25_f32, 0.5, 0.75] {
+          stops.push(GradientStop {
+            position: start + (end - start) * t,
+            color: black(end_alpha * t.powf(1.5)),
+          });
+        }
+        stops.push(GradientStop {
+          position: end,
+          color: black(end_alpha),
+        });
+        stops.push(GradientStop {
+          position: 1.0,
+          color: black(end_alpha),
+        });
+        self.list.push(DisplayItem::LinearGradient(LinearGradientItem {
+          rect: content_rect,
+          start: Point::new(0.0, 0.0),
+          end: Point::new(0.0, content_rect.height()),
+          stops,
+          spread: GradientSpread::Pad,
+        }));
+      }
+
+      if clip_contents.is_some() {
+        self.list.push(DisplayItem::PopClip);
+      }
+      return;
     }
 
     fn emit_inside_border(list: &mut DisplayList, rect: Rect, color: Rgba) {
@@ -18464,6 +18533,7 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: None,
+        controls: false,
       },
     );
     let builder = DisplayListBuilder::new();
@@ -18472,6 +18542,32 @@ mod tests {
     assert!(
       list.is_empty(),
       "video without a poster should paint nothing rather than a placeholder"
+    );
+  }
+
+  #[test]
+  fn video_controls_without_poster_emits_placeholder() {
+    let fragment = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 0.0, 120.0, 100.0),
+      ReplacedType::Video {
+        src: String::new(),
+        poster: None,
+        controls: true,
+      },
+    );
+    let builder = DisplayListBuilder::new();
+    let list = builder.build(&fragment);
+
+    assert!(
+      list.items().iter().any(|item| matches!(item, DisplayItem::FillRect(_))),
+      "expected video surface fill"
+    );
+    assert!(
+      list
+        .items()
+        .iter()
+        .any(|item| matches!(item, DisplayItem::LinearGradient(_))),
+      "expected control shadow gradient"
     );
   }
 
@@ -18498,6 +18594,7 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: Some(poster.to_string()),
+        controls: false,
       },
     );
     let builder = DisplayListBuilder::with_image_cache(ImageCache::new());

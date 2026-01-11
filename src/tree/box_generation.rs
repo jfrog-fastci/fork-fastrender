@@ -7217,7 +7217,12 @@ fn create_replaced_box_from_styled(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     }
-    ReplacedType::Video { src, poster }
+    let controls = styled.node.get_attribute_ref("controls").is_some();
+    ReplacedType::Video {
+      src,
+      poster,
+      controls,
+    }
   } else if tag.eq_ignore_ascii_case("audio") {
     let src = effective_media_src(styled, MediaElementKind::Audio);
     ReplacedType::Audio { src }
@@ -7494,7 +7499,7 @@ mod tests {
 
   fn first_video_src_and_poster(node: &BoxNode) -> Option<(String, Option<String>)> {
     if let BoxType::Replaced(repl) = &node.box_type {
-      if let ReplacedType::Video { src, poster } = &repl.replaced_type {
+      if let ReplacedType::Video { src, poster, .. } = &repl.replaced_type {
         return Some((src.clone(), poster.clone()));
       }
     }
@@ -10548,6 +10553,7 @@ mod tests {
       ReplacedType::Video {
         src: "test.mp4".to_string(),
         poster: None,
+        controls: false,
       },
       None,
       None,

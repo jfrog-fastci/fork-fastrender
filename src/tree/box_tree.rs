@@ -723,6 +723,10 @@ pub enum ReplacedType {
     src: String,
     /// Poster image URL or data URI
     poster: Option<String>,
+    /// Whether the `controls` attribute is present.
+    ///
+    /// This is a boolean HTML attribute: its presence enables the UA control UI.
+    controls: bool,
   },
   /// Audio element
   Audio {
@@ -3105,6 +3109,7 @@ mod tests {
     let video = ReplacedType::Video {
       src: String::new(),
       poster: Some("   ".to_string()),
+      controls: false,
     };
     let sources = video.image_sources_with_fallback(ImageSelectionContext {
       device_pixel_ratio: 1.0,
@@ -3522,6 +3527,7 @@ mod tests {
     let video = ReplacedType::Video {
       src: "video.mp4".to_string(),
       poster: Some("thumb.png".to_string()),
+      controls: false,
     };
     let sources = video.image_sources_with_fallback(ImageSelectionContext {
       device_pixel_ratio: 2.0,

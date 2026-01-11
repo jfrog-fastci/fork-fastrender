@@ -26246,6 +26246,7 @@ mod tests {
           ReplacedType::Video {
             src: String::new(),
             poster: Some("#".into()),
+            controls: false,
           },
           None,
           None,
@@ -27284,6 +27285,7 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: Some(poster.to_string()),
+        controls: false,
       },
       None,
       None,
@@ -27327,6 +27329,7 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: Some("   ".to_string()),
+        controls: false,
       },
       Some(Size::new(200.0, 0.0)),
       None,

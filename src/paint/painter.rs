@@ -1292,7 +1292,11 @@ impl Painter {
           }
         }
       }
-      ReplacedType::Video { src: _src, poster } => {
+      ReplacedType::Video {
+        src: _src,
+        poster,
+        ..
+      } => {
         let needs_intrinsic = replaced_box.intrinsic_size.is_none();
         let needs_ratio = replaced_box.aspect_ratio.is_none();
         if !needs_intrinsic && !needs_ratio {
@@ -12154,15 +12158,91 @@ impl Painter {
     rect: Rect,
     clip_mask: Option<&Mask>,
   ) {
-    // Browsers keep `<video>` transparent when no poster/frame is available. Painting a generic
-    // placeholder breaks real pages that rely on a thumbnail image behind the video element.
+    // `replaced_type` placeholders are UA-defined and vary between browsers.
     //
-    // Likewise, `<canvas>` is transparent when nothing has been drawn (and we don't execute JS),
-    // so a placeholder would incorrectly obscure background content.
+    // `<canvas>` is transparent when nothing has been drawn (and we don't execute JS), so a
+    // placeholder would incorrectly obscure author backgrounds.
+    if matches!(replaced_type, ReplacedType::Canvas) {
+      return;
+    }
+    // `<video>` without a poster often sits above a thumbnail image that should remain visible
+    // until the video loads/paints. Keep that pattern working when controls are not shown.
     if matches!(
       replaced_type,
-      ReplacedType::Video { poster: None, .. } | ReplacedType::Canvas
+      ReplacedType::Video {
+        poster: None,
+        controls: false,
+        ..
+      }
     ) {
+      return;
+    }
+    // For `<video controls>` without a poster/frame, browsers still paint a dark video surface and
+    // chrome for the native controls. Emit a stable approximation rather than leaving the element
+    // transparent.
+    if let ReplacedType::Video {
+      poster: None,
+      controls: true,
+      ..
+    } = replaced_type
+    {
+      if rect.width() > 0.0 && rect.height() > 0.0 {
+        let device_rect = self.device_rect(rect);
+        if let Some(sk_rect) = SkiaRect::from_xywh(
+          device_rect.x(),
+          device_rect.y(),
+          device_rect.width(),
+          device_rect.height(),
+        ) {
+          let path = PathBuilder::from_rect(sk_rect);
+          let mut paint = Paint::default();
+          paint.set_color_rgba8(51, 51, 51, 255);
+          paint.anti_alias = true;
+          self.pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            clip_mask,
+          );
+
+          // Approximate Chrome's control-bar shadow: a black overlay that ramps up near the bottom
+          // of the element.
+          let h = rect.height().max(0.0);
+          let bar_h = 32.0_f32.min(h);
+          let shadow_h = 72.0_f32.min((h - bar_h).max(0.0));
+          if shadow_h > 0.0 {
+            let start = if h > 0.0 {
+              (h - bar_h - shadow_h) / h
+            } else {
+              0.0
+            };
+            let end = if h > 0.0 { (h - bar_h) / h } else { 1.0 };
+            let end_alpha = 0.85;
+            let black = |alpha: f32| Rgba::rgb(0, 0, 0).with_alpha(alpha.clamp(0.0, 1.0));
+            // Piecewise-linear approximation of an ease-in curve (t^1.5) so the top stays light.
+            let mut stops: Vec<(f32, Rgba)> = Vec::new();
+            stops.push((0.0, black(0.0)));
+            stops.push((start, black(0.0)));
+            for t in [0.25_f32, 0.5, 0.75] {
+              let pos = start + (end - start) * t;
+              let alpha = end_alpha * t.powf(1.5);
+              stops.push((pos, black(alpha)));
+            }
+            stops.push((end, black(end_alpha)));
+            stops.push((1.0, black(end_alpha)));
+            self.paint_linear_gradient(
+              rect,
+              rect,
+              clip_mask,
+              180.0,
+              &stops,
+              SpreadMode::Pad,
+              MixBlendMode::Normal,
+            );
+          }
+        }
+      }
       return;
     }
 
@@ -21286,6 +21366,7 @@ mod tests {
         replaced_type: ReplacedType::Video {
           src: String::new(),
           poster: Some(poster.to_string()),
+          controls: false,
         },
         box_id: None,
       },
@@ -21300,6 +21381,40 @@ mod tests {
       color_at(&pixmap, 5, 5),
       (0, 255, 0, 255),
       "poster content should paint instead of placeholder"
+    );
+  }
+
+  #[test]
+  fn paints_video_controls_placeholder_when_no_poster() {
+    let style = Arc::new(ComputedStyle::default());
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+      FragmentContent::Replaced {
+        replaced_type: ReplacedType::Video {
+          src: String::new(),
+          poster: None,
+          controls: true,
+        },
+        box_id: None,
+      },
+      vec![],
+      style,
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![fragment]);
+    let tree = FragmentTree::new(root);
+    let pixmap = paint_tree(&tree, 200, 200, Rgba::WHITE).expect("paint video placeholder");
+
+    let top = color_at(&pixmap, 100, 20);
+    assert_eq!(
+      top,
+      (51, 51, 51, 255),
+      "video surface should paint a stable dark background"
+    );
+
+    let bottom = color_at(&pixmap, 100, 190);
+    assert!(
+      bottom.0 < top.0,
+      "expected native control shadow to darken near the bottom (top={top:?} bottom={bottom:?})"
     );
   }
 

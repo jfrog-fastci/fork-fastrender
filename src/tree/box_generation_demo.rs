@@ -256,7 +256,11 @@ impl DOMNode {
         sizes: None,
         picture_sources: Vec::new(),
       }),
-      "video" => Some(ReplacedType::Video { src, poster }),
+      "video" => Some(ReplacedType::Video {
+        src,
+        poster,
+        controls: false,
+      }),
       "canvas" => Some(ReplacedType::Canvas),
       "svg" => Some(ReplacedType::Svg {
         content: SvgContent::raw(src),
@@ -1487,6 +1491,7 @@ mod tests {
       ReplacedType::Video {
         src: "test.mp4".to_string(),
         poster: None,
+        controls: false,
       },
       None,
       None,
