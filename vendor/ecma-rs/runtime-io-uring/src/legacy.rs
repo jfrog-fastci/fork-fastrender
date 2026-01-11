@@ -415,7 +415,7 @@ mod linux {
 
     impl Driver {
         fn submission_queue_full() -> io::Error {
-            io::Error::new(io::ErrorKind::Other, "io_uring submission queue is full")
+            io::Error::other("io_uring submission queue is full")
         }
 
         pub fn new(entries: u32) -> io::Result<Self> {
