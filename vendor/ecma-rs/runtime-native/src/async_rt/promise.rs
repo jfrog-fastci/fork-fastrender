@@ -4,11 +4,11 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
 use once_cell::sync::Lazy;
-use parking_lot::Mutex as ParkingMutex;
 use std::collections::HashSet;
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
 use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
+use crate::sync::GcAwareMutex;
 use crate::threading;
 
 use super::{gc as async_gc, global as async_global, Task};
@@ -18,8 +18,8 @@ use super::{gc as async_gc, global as async_global, Task};
 /// This enables `rt_async_cancel_all` to abandon pending async work safely by dropping reaction
 /// nodes that would otherwise never be enqueued (because the promise never settles after the host
 /// shuts down timers/I/O).
-static PROMISES_WITH_PENDING_REACTIONS: Lazy<ParkingMutex<HashSet<usize>>> =
-  Lazy::new(|| ParkingMutex::new(HashSet::new()));
+static PROMISES_WITH_PENDING_REACTIONS: Lazy<GcAwareMutex<HashSet<usize>>> =
+  Lazy::new(|| GcAwareMutex::new(HashSet::new()));
 
 fn track_pending_reactions(ptr: *mut RtPromise) {
   if ptr.is_null() {
@@ -1030,4 +1030,119 @@ pub(crate) fn promise_drop(p: PromiseRef) {
 
   // SAFETY: `PromiseRef` values are created from `Box::into_raw` in `promise_new`.
   unsafe { drop(Box::from_raw(ptr)) };
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::threading;
+  use crate::threading::ThreadKind;
+  use std::sync::mpsc;
+  use std::time::Duration;
+  use std::time::Instant;
+
+  #[test]
+  fn promises_with_pending_reactions_lock_is_gc_aware() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    const TIMEOUT: Duration = Duration::from_secs(2);
+
+    std::thread::scope(|scope| {
+      // Thread A holds the pending-reactions set lock.
+      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+      // Thread C attempts to track a promise while the lock is held.
+      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+      let (c_done_tx, c_done_rx) = mpsc::channel::<()>();
+
+      scope.spawn(move || {
+        threading::register_current_thread(ThreadKind::Worker);
+        let guard = PROMISES_WITH_PENDING_REACTIONS.lock();
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+        drop(guard);
+
+        // Cooperatively stop at the safepoint request.
+        crate::rt_gc_safepoint();
+        threading::unregister_current_thread();
+      });
+
+      a_locked_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread A should acquire the pending-reactions lock");
+
+      scope.spawn(move || {
+        let id = threading::register_current_thread(ThreadKind::Worker);
+        c_registered_tx.send(id).unwrap();
+
+        // Create a promise in this thread so we don't have to send raw pointers across threads.
+        let p = promise_new();
+        let ptr = promise_ptr(p);
+
+        c_start_rx.recv().unwrap();
+
+        track_pending_reactions(ptr);
+        // Drop cleans up the tracking set entry too.
+        promise_drop(p);
+
+        c_done_tx.send(()).unwrap();
+        threading::unregister_current_thread();
+      });
+
+      let c_id = c_registered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should register with the thread registry");
+
+      // Ensure thread C is actively contending on the lock before starting STW.
+      c_start_tx.send(()).unwrap();
+
+      // Wait until thread C is marked NativeSafe (this is what prevents STW deadlocks).
+      let start = Instant::now();
+      loop {
+        let mut native_safe = false;
+        threading::registry::for_each_thread(|t| {
+          if t.id() == c_id {
+            native_safe = t.is_native_safe();
+          }
+        });
+
+        if native_safe {
+          break;
+        }
+        if start.elapsed() > TIMEOUT {
+          panic!("thread C did not enter a GC-safe region while blocked on the pending-reactions lock");
+        }
+        std::thread::yield_now();
+      }
+
+      // Request a stop-the-world GC and ensure it can complete even though thread C is blocked.
+      let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
+        .expect("stop-the-world should not already be active");
+      assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
+      struct ResumeOnDrop;
+      impl Drop for ResumeOnDrop {
+        fn drop(&mut self) {
+          crate::threading::safepoint::rt_gc_resume_world();
+        }
+      }
+      let _resume = ResumeOnDrop;
+
+      // Let thread A release the lock and reach the safepoint.
+      a_release_tx.send(()).unwrap();
+
+      assert!(
+        crate::threading::safepoint::rt_gc_wait_for_world_stopped_timeout(TIMEOUT),
+        "world failed to stop within timeout; pending-reactions lock contention must not block STW"
+      );
+
+      // Resume the world so the contending `track_pending_reactions` can complete.
+      crate::threading::safepoint::rt_gc_resume_world();
+
+      c_done_rx
+        .recv_timeout(TIMEOUT)
+        .expect("promise tracking should complete after world is resumed");
+    });
+  }
 }
