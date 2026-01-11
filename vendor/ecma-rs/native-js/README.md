@@ -170,6 +170,14 @@ and recover return addresses.
 
 See [`docs/gc_stack_walking.md`](./docs/gc_stack_walking.md) for details.
 
+## LLVM statepoint directive attributes (LLVM 18)
+
+LLVM 18’s `rewrite-statepoints-for-gc` pass assigns a constant statepoint ID by default. `native-js`
+supports overriding the emitted `gc.statepoint` ID and patch bytes via callsite string attributes
+(`"statepoint-id"`, `"statepoint-num-patch-bytes"`).
+
+See [`../docs/llvm_statepoint_directives.md`](../docs/llvm_statepoint_directives.md).
+
 All generated functions are also marked with the LLVM GC strategy attribute
 (`gc "coreclr"`). See [`docs/llvm_gc_strategy.md`](./docs/llvm_gc_strategy.md) for
 the rationale and how to change it.

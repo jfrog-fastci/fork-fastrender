@@ -22,10 +22,16 @@ These are **string attributes** (not enum attributes):
 
 - `"statepoint-id"="<u64>"`
   - Controls the first `i64` argument to `@llvm.experimental.gc.statepoint.*`.
+  - This value is also emitted as the StackMap record **patchpoint ID** (the leading `u64` in the
+    `.llvm_stackmaps` record), so setting it is useful when you want deterministic/unique StackMap
+    IDs instead of LLVM’s default constant.
 - `"statepoint-num-patch-bytes"="<u32>"`
   - Controls the second `i32` argument to `@llvm.experimental.gc.statepoint.*`.
 
 ## native-js support
+
+`native-js` does **not** assign statepoint directive attributes by default. Consumers can opt into
+deterministic/unique IDs by attaching them before running `rewrite-statepoints-for-gc`.
 
 `native-js` exposes helpers to attach these callsite attributes via the LLVM C API:
 
@@ -39,3 +45,9 @@ that assigns deterministic/unique sequential IDs to callsites in GC-managed func
 
 This annotator is intended to run before invoking `rewrite-statepoints-for-gc`, so the resulting rewritten
 `gc.statepoint` IDs are stable across builds.
+
+Enable it with:
+
+```bash
+cargo test -p native-js --features statepoint-directives
+```
