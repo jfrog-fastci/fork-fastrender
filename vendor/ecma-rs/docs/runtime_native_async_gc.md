@@ -258,15 +258,20 @@ In practice, a usable ABI usually also needs:
 
 ### Current implementation note
 
-`runtime-native` implements `rt_handle_*` using the process-global [`RootRegistry`](../runtime-native/src/roots/registry.rs):
+`runtime-native` implements `rt_handle_*` using the process-global
+[`PersistentHandleTable`](../runtime-native/src/roots/persistent_handle_table.rs):
 
-* `rt_handle_alloc` allocates a rooted slot (equivalent to `rt_gc_pin`) and returns a `u64` handle ID.
-* `rt_handle_load`/`rt_handle_store` load/store through that slot (GC updates the slot during
-  relocation).
-* `rt_handle_free` unregisters the slot.
-
-Handle values are returned as `u64` for easy storage in OS userdata fields, but are currently encoded
-using the registry’s existing 32-bit `{ index, generation }` scheme widened to `u64`.
+* The table is backed by `gc::HandleTable` and guarded by `GcAwareRwLock`, so threads blocked on
+  handle operations enter a GC-safe region and do not deadlock stop-the-world (STW) collection.
+* Handle IDs are `gc::HandleId`: a `u64` packed `{ index: u32, generation: u32 }` generational ID.
+  This is FFI-safe as `uint64_t`.
+  * The public C header [`runtime_native.h`](../runtime-native/include/runtime_native.h) exports
+    this as `typedef uint64_t HandleId;`.
+  * The Rust ABI type is `#[repr(transparent)] struct HandleId(u64)` (see
+    [`gc/handle_table.rs`](../runtime-native/src/gc/handle_table.rs)).
+* `rt_handle_alloc`/`rt_handle_free` allocate/free a table entry (rooting/unrooting its referent).
+* `rt_handle_load`/`rt_handle_store` resolve/update the pointer stored in that entry (and the GC
+  updates entries during relocation).
 
 ### Async park/wake API
 
