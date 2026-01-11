@@ -1418,7 +1418,7 @@ fn generate_bindings_module_unformatted(
     "// - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)\n",
   );
   out.push_str("\n");
-  out.push_str("use super::host::{binding_value_to_js, BindingValue, WebHostBindings};\n\n");
+  out.push_str("use super::host::{BindingValue, WebHostBindings};\n\n");
 
   let targets: &[ExposureTarget] = match exposure_target {
     ExposureTarget::All => &[ExposureTarget::Window, ExposureTarget::Worker],
