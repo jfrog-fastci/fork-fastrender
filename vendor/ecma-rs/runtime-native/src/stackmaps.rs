@@ -908,12 +908,16 @@ impl StackMaps {
   /// This requires the final linked binary to contain a stackmaps section
   /// (`.llvm_stackmaps` or `.data.rel.ro.llvm_stackmaps`) and define:
   ///
-  /// - `__fastr_stackmaps_start`
-  /// - `__fastr_stackmaps_end`
+  /// - `__start_llvm_stackmaps`
+  /// - `__stop_llvm_stackmaps`
   ///
-  /// These symbols are provided by `runtime-native/stackmaps.ld` (or by the
-  /// `native-js` link pipeline) and the section is `KEEP`ed so `--gc-sections`
-  /// does not discard it.
+  /// These symbols are provided by `runtime-native/link/stackmaps.ld` (and are
+  /// `KEEP`ed so `--gc-sections` does not discard the section).
+  ///
+  /// The linker script also defines compatibility aliases:
+  /// - `__stackmaps_{start,end}`
+  /// - `__fastr_stackmaps_{start,end}`
+  /// - `__llvm_stackmaps_{start,end}`
   ///
   /// For a higher-level API that falls back to ELF parsing when the linker
   /// symbols are not available, see [`crate::stackmaps_loader::stackmaps_section`].

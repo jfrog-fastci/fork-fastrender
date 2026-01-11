@@ -17,15 +17,17 @@ SECTIONS
   /* Hardened location: writable during relocation, then protected by RELRO. */
   .data.rel.ro.llvm_stackmaps : ALIGN(8)
   {
-    /* Preferred symbol names (shared with native-js + runtime-native). */
+    /* Preferred stable symbol names (shared with native-js + runtime-native). */
+    __start_llvm_stackmaps = .;
+    /* Project/legacy aliases used by various tools/tests. */
     __fastr_stackmaps_start = .;
-    /* Generic / legacy aliases. */
     __stackmaps_start = .;
     __llvm_stackmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_stackmaps))
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
+    __stop_llvm_stackmaps = .;
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;

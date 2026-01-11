@@ -109,8 +109,25 @@ objs=("${tmp}/main.o" "${tmp}/mod_a.o" "${tmp}/mod_b.o" "${tmp}/callee.o")
 
 must_have_stackmaps() {
   local bin="$1"
-  if ! "${READELF}" -W -S "${bin}" | grep -Eq '\.(llvm_stackmaps|data\.rel\.ro\.llvm_stackmaps)\b'; then
-    echo "expected stackmaps section in: ${bin}" >&2
+  local line
+  line="$(
+    "${READELF}" -W -S "${bin}" \
+      | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" {print $0}' \
+      | head -n 1
+  )"
+  if [[ -z "${line}" ]]; then
+    echo "expected stackmaps section (.data.rel.ro.llvm_stackmaps or .llvm_stackmaps) in: ${bin}" >&2
+    "${READELF}" -W -S "${bin}" >&2 || true
+    exit 1
+  fi
+
+  # readelf columns: [Nr] Name Type Address Off Size ES Flags Link Info Align
+  local sec_name sec_size_hex
+  sec_name="$(awk '{print $2}' <<<"${line}")"
+  sec_size_hex="$(awk '{print $6}' <<<"${line}")"
+  local sec_size_dec=$((16#${sec_size_hex}))
+  if [[ "${sec_size_dec}" -le 0 ]]; then
+    echo "expected non-empty ${sec_name} in: ${bin} (size=0x${sec_size_hex})" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
   fi
@@ -118,7 +135,7 @@ must_have_stackmaps() {
 
 must_not_have_stackmaps() {
   local bin="$1"
-  if "${READELF}" -W -S "${bin}" | grep -Eq '\.(llvm_stackmaps|data\.rel\.ro\.llvm_stackmaps)\b'; then
+  if "${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" {found=1} END {exit !found}'; then
     echo "expected no stackmaps section in: ${bin}" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
@@ -238,7 +255,7 @@ fi
 
 if [[ -n "${LLVM_READOBJ}" ]]; then
   echo "[stackmaps] inspect: llvm-readobj --sections"
-  "${LLVM_READOBJ}" --sections "${tmp}/a_policy" | grep -Eq '\.(llvm_stackmaps|data\.rel\.ro\.llvm_stackmaps)\b'
+  "${LLVM_READOBJ}" --sections "${tmp}/a_policy" | grep -Eq 'Name: \.data\.rel\.ro\.llvm_stackmaps|Name: \.llvm_stackmaps'
 else
   echo "[stackmaps] note: llvm-readobj not found; skipping llvm-readobj check"
 fi
