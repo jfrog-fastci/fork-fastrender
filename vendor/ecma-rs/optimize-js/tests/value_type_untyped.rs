@@ -2,7 +2,7 @@
 mod common;
 
 use common::compile_source;
-use optimize_js::il::inst::{Arg, Const, Inst, InstTyp};
+use optimize_js::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
 use optimize_js::types::ValueTypeSummary;
 use optimize_js::util::debug::OptimizerDebugStep;
 use optimize_js::{ProgramFunction, TopLevelMode};
@@ -145,4 +145,50 @@ fn untyped_dvn_const_builtin_undefined_sets_value_type() {
     ValueTypeSummary::UNDEFINED,
     "expected value_type to be updated when DVN canonicalizes builtin undefined"
   );
+}
+
+#[test]
+fn untyped_always_typed_ops_seed_value_type() {
+  let program = compile_source(
+    r#"
+      let a = typeof 123;
+      let b = void 0;
+      let c = !0;
+      let d = 1 < 2;
+      console.log(a, b, c, d);
+    "#,
+    TopLevelMode::Module,
+    true,
+  );
+
+  let step = find_step(&program.top_level, "ssa_rename_targets");
+  let insts = collect_insts(step);
+
+  let typeof_inst = insts
+    .iter()
+    .copied()
+    .find(|inst| inst.t == InstTyp::Un && inst.un_op == UnOp::Typeof)
+    .expect("expected typeof unary instruction");
+  assert_eq!(typeof_inst.value_type, ValueTypeSummary::STRING);
+
+  let void_inst = insts
+    .iter()
+    .copied()
+    .find(|inst| inst.t == InstTyp::Un && inst.un_op == UnOp::Void)
+    .expect("expected void unary instruction");
+  assert_eq!(void_inst.value_type, ValueTypeSummary::UNDEFINED);
+
+  let not_inst = insts
+    .iter()
+    .copied()
+    .find(|inst| inst.t == InstTyp::Un && inst.un_op == UnOp::Not)
+    .expect("expected ! unary instruction");
+  assert_eq!(not_inst.value_type, ValueTypeSummary::BOOLEAN);
+
+  let lt_inst = insts
+    .iter()
+    .copied()
+    .find(|inst| inst.t == InstTyp::Bin && inst.bin_op == BinOp::Lt)
+    .expect("expected < binary instruction");
+  assert_eq!(lt_inst.value_type, ValueTypeSummary::BOOLEAN);
 }

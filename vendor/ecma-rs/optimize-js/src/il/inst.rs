@@ -339,20 +339,39 @@ impl Default for Inst {
 /// Convenient builders for Inst.
 impl Inst {
   pub fn bin(tgt: u32, left: Arg, op: BinOp, right: Arg) -> Self {
+    let value_type = match op {
+      BinOp::Geq
+      | BinOp::Gt
+      | BinOp::Leq
+      | BinOp::Lt
+      | BinOp::LooseEq
+      | BinOp::NotLooseEq
+      | BinOp::NotStrictEq
+      | BinOp::StrictEq => ValueTypeSummary::BOOLEAN,
+      _ => ValueTypeSummary::UNKNOWN,
+    };
     Self {
       t: InstTyp::Bin,
       tgts: vec![tgt],
       args: vec![left, right],
+      value_type,
       bin_op: op,
       ..Default::default()
     }
   }
 
   pub fn un(tgt: u32, op: UnOp, arg: Arg) -> Self {
+    let value_type = match op {
+      UnOp::Not => ValueTypeSummary::BOOLEAN,
+      UnOp::Typeof => ValueTypeSummary::STRING,
+      UnOp::Void => ValueTypeSummary::UNDEFINED,
+      _ => ValueTypeSummary::UNKNOWN,
+    };
     Self {
       t: InstTyp::Un,
       tgts: vec![tgt],
       args: vec![arg],
+      value_type,
       un_op: op,
       ..Default::default()
     }
