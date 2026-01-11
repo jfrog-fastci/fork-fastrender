@@ -117,9 +117,12 @@ cat >"${tmp}/callee.c" <<'EOF'
 void callee(void) {}
 EOF
 
-"${CLANG}" -c -O0 -o "${tmp}/mod_a.o" "${tmp}/mod_a.ll"
-"${CLANG}" -c -O0 -o "${tmp}/mod_b.o" "${tmp}/mod_b.ll"
-"${CLANG}" -c -O0 -o "${tmp}/main.o" "${tmp}/main.ll"
+"${CLANG}" -c -O0 -o "${tmp}/mod_a.o" "${tmp}/mod_a.ll" \
+  -mllvm --fixup-allow-gcptr-in-csr=false -mllvm --fixup-max-csr-statepoints=0
+"${CLANG}" -c -O0 -o "${tmp}/mod_b.o" "${tmp}/mod_b.ll" \
+  -mllvm --fixup-allow-gcptr-in-csr=false -mllvm --fixup-max-csr-statepoints=0
+"${CLANG}" -c -O0 -o "${tmp}/main.o" "${tmp}/main.ll" \
+  -mllvm --fixup-allow-gcptr-in-csr=false -mllvm --fixup-max-csr-statepoints=0
 "${CLANG}" -c -O0 -o "${tmp}/callee.o" "${tmp}/callee.c"
 
 objs=("${tmp}/main.o" "${tmp}/mod_a.o" "${tmp}/mod_b.o" "${tmp}/callee.o")

@@ -77,7 +77,9 @@ BC="${TMP_DIR}/statepoint.bc"
 OBJ="${TMP_DIR}/statepoint.o"
 
 "${LLVM_AS}" "${FIXTURE_LL}" -o "${BC}"
-LLC_BIN="${LLC}" bash "${SCRIPT_DIR}/llc_fp.sh" -filetype=obj "${BC}" -o "${OBJ}"
+LLC_BIN="${LLC}" bash "${SCRIPT_DIR}/llc_fp.sh" -filetype=obj \
+  --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 \
+  "${BC}" -o "${OBJ}"
 
 # Do not use `grep -q` under `set -o pipefail`: early pipe closure can cause
 # `llvm-readobj` to hit EPIPE/SIGPIPE and return non-zero.

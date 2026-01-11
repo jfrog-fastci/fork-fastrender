@@ -124,7 +124,9 @@ run_case() {
   local expected_indirect_re="$4"
 
   local obj="${TMP_DIR}/${case_name}.o"
-  LLC_BIN="${LLC}" bash "${SCRIPT_DIR}/llc_fp.sh" -O0 -filetype=obj -mtriple="${triple}" "${FIXTURE_LL}" -o "${obj}"
+  LLC_BIN="${LLC}" bash "${SCRIPT_DIR}/llc_fp.sh" -O0 -filetype=obj \
+    --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 \
+    -mtriple="${triple}" "${FIXTURE_LL}" -o "${obj}"
 
   local stackmap_out objdump_out
   stackmap_out="$("${LLVM_READOBJ}" --stackmap "${obj}")"
