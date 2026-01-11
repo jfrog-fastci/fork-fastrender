@@ -1020,11 +1020,19 @@ mod tests {
       header.contains("RT_THREAD;"),
       "missing RT_THREAD TLS symbol declaration"
     );
+    assert!(
+      header.contains("RT_GC_EPOCH;"),
+      "missing RT_GC_EPOCH extern declaration"
+    );
 
     // Optional ABI surfaces are guarded in the handwritten C header; keep the generated header
     // consistent so consumers don't accidentally call missing symbols in non-feature builds.
     for guard in ["RUNTIME_NATIVE_GC_STATS", "RUNTIME_NATIVE_GC_DEBUG"] {
-      assert!(header.contains(guard), "missing `{guard}` guard in generated header");
+      let directive = std::format!("#ifdef {guard}");
+      assert!(
+        header.contains(&directive),
+        "missing `{directive}` in generated header"
+      );
     }
 
     // Functions (key entrypoints).

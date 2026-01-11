@@ -396,7 +396,7 @@ fn main() {
   // Cargo features, so the C header uses a macro guard to avoid advertising unavailable symbols by
   // default. `runtime_native_abi.h` is generated from Rust ABI declarations, so inject the same
   // guards as a post-process step.
-  if !header.contains("RUNTIME_NATIVE_GC_STATS") {
+  if !header.contains("#ifdef RUNTIME_NATIVE_GC_STATS") {
     if let Some(type_pos) = header.find("typedef struct RtGcStatsSnapshot {") {
       header.insert_str(type_pos, "#ifdef RUNTIME_NATIVE_GC_STATS\n");
       modified = true;
@@ -419,7 +419,7 @@ fn main() {
     }
   }
 
-  if !header.contains("RUNTIME_NATIVE_GC_DEBUG") {
+  if !header.contains("#ifdef RUNTIME_NATIVE_GC_DEBUG") {
     if let Some(start) = header.find("extern size_t rt_debug_shape_count") {
       header.insert_str(start, "#ifdef RUNTIME_NATIVE_GC_DEBUG\n");
       modified = true;
@@ -436,7 +436,7 @@ fn main() {
   // cbindgen does not currently emit foreign `extern` statics. The runtime exports
   // `RT_GC_EPOCH` as a link-visible symbol used by codegen for fast safepoint
   // polling; inject an extern declaration so the generated header is complete.
-  if !header.contains("RT_GC_EPOCH") {
+  if !header.contains("RT_GC_EPOCH;") {
     // cbindgen's emitted prototype for `rt_alloc` depends on the Rust signature; prefer matching
     // against that, but be robust to future typedefs.
     let insert_at = header
