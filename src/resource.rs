@@ -907,10 +907,11 @@ fn http_browser_origin_and_referer_for_url(url: &Url) -> Option<(String, String)
     return None;
   }
 
-  let host = match url.host()? {
-    url::Host::Domain(domain) => domain.to_string(),
-    url::Host::Ipv4(addr) => addr.to_string(),
-    url::Host::Ipv6(addr) => format!("[{addr}]"),
+  let host = url.host_str()?.to_string();
+  let host = if host.contains(':') && !host.starts_with('[') {
+    format!("[{host}]")
+  } else {
+    host
   };
 
   let mut origin = format!("{}://{}", url.scheme(), host);
@@ -12912,6 +12913,21 @@ mod tests {
       None,
     );
     assert_eq!(origin.to_string(), "https://[fe80::1%25en0]:443");
+  }
+
+  #[test]
+  fn http_browser_origin_and_referer_for_url_brackets_ipv6_hosts() {
+    let parsed = Url::parse("https://[::1]/a").expect("parse url");
+    let (origin, referer) =
+      http_browser_origin_and_referer_for_url(&parsed).expect("origin+referer");
+    assert_eq!(origin, "https://[::1]");
+    assert_eq!(referer, "https://[::1]/");
+
+    let parsed = Url::parse("https://[::1]:8443/a").expect("parse url");
+    let (origin, referer) =
+      http_browser_origin_and_referer_for_url(&parsed).expect("origin+referer");
+    assert_eq!(origin, "https://[::1]:8443");
+    assert_eq!(referer, "https://[::1]:8443/");
   }
 
   #[test]
