@@ -72,7 +72,7 @@ Async operations must not store raw pointers to GC-managed objects across yield
 points. Instead they store:
 
 - a GC-safe handle/root to the JS value (promise, ArrayBufferView) **and/or**
-- a stable `BackingStoreHandle` (e.g. `Arc<BackingStore>`) plus `(offset, len)`.
+- a stable `BackingStore` handle (cloneable + reference-counted) plus `(offset, len)`.
 
 Raw pointers derived from GC objects are only permitted inside a short-lived
 **pinned view** object that enforces the pin lifetime.
@@ -138,7 +138,7 @@ struct BackingStore {
 
 /// A stable, owned pin guard. Holding this keeps the OS-visible pointer valid.
 struct PinnedRange {
-  store: BackingStoreHandle, // e.g. Arc<BackingStore>
+  store: BackingStore, // cloneable strong handle
   ptr: NonNull<u8>,
   len: usize,
 }

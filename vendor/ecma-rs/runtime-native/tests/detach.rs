@@ -69,3 +69,14 @@ fn transfer_moves_bytes_and_detaches_original() {
     assert_eq!(pinned.as_slice(), &[9, 8, 7]);
   }
 }
+
+#[test]
+fn resize_is_rejected_while_pinned() {
+  let mut buf = ArrayBuffer::new_zeroed(8).expect("alloc");
+  let _pinned = buf.pin().expect("pin should succeed");
+
+  assert_eq!(buf.resize(16), Err(ArrayBufferError::Pinned));
+
+  drop(_pinned);
+  assert_eq!(buf.resize(16), Err(ArrayBufferError::Unimplemented));
+}
