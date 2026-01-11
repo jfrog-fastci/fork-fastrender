@@ -3887,6 +3887,12 @@ struct HttpCacheValidators<'a> {
 // CORS preflight cache (Fetch Standard)
 // ============================================================================
 
+/// Default max-age used when `Access-Control-Max-Age` is missing or invalid.
+///
+/// Fetch specifies a default of 5 seconds so that successful preflights still populate the cache
+/// even when a server omits the header.
+const CORS_PREFLIGHT_DEFAULT_MAX_AGE_SECS: u64 = 5;
+
 /// Max cap applied to `Access-Control-Max-Age`.
 ///
 /// Fetch allows an "imposed limit on max-age". FastRender clamps to 2 hours to avoid unbounded
@@ -3935,7 +3941,14 @@ fn cors_preflight_cache_entry_match(
   if entry.url != url {
     return false;
   }
-  entry.credentials == credentialed
+  // Fetch "cache entry match" rules for the credentials flag:
+  // - A credentialed cache entry MAY match a non-credentialed request.
+  // - A non-credentialed cache entry MUST NOT match a credentialed request.
+  //
+  // This avoids re-running a preflight when a stricter (credentialed) result is already cached,
+  // while preventing anonymous wildcard (`*`) cache entries from being reused by credentialed
+  // requests.
+  !(credentialed && !entry.credentials)
 }
 
 fn cors_preflight_method_cache_entry_match(entry_method: Option<&str>, method: &str) -> bool {
@@ -5401,9 +5414,8 @@ impl HttpFetcher {
       url,
     )?;
 
-    let Some(max_age_secs) = cors_preflight_parse_max_age_secs(&preflight_response) else {
-      return Ok(());
-    };
+    let max_age_secs = cors_preflight_parse_max_age_secs(&preflight_response)
+      .unwrap_or(CORS_PREFLIGHT_DEFAULT_MAX_AGE_SECS);
     if max_age_secs == 0 {
       return Ok(());
     }
