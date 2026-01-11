@@ -5,6 +5,7 @@ use runtime_native::gc::RememberedSet;
 use runtime_native::gc::RootStack;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::GcHeap;
+use runtime_native::test_util::TestRuntimeGuard;
 
 static NO_PTR_OFFSETS: [u32; 0] = [];
 
@@ -28,6 +29,7 @@ impl RememberedSet for NullRememberedSet {
 
 #[test]
 fn weak_handle_clears_on_minor_gc_when_unreachable() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let obj = heap.alloc_young(&BOXED_USIZE_DESC);
@@ -41,6 +43,7 @@ fn weak_handle_clears_on_minor_gc_when_unreachable() {
 
 #[test]
 fn weak_handle_updates_on_minor_gc_when_reachable() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let obj = heap.alloc_young(&BOXED_USIZE_DESC);
@@ -59,6 +62,7 @@ fn weak_handle_updates_on_minor_gc_when_reachable() {
 
 #[test]
 fn weak_handle_clears_on_major_gc_when_unreachable() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let obj = heap.alloc_old(&BOXED_USIZE_DESC);
@@ -72,6 +76,7 @@ fn weak_handle_clears_on_major_gc_when_unreachable() {
 
 #[test]
 fn weak_handle_survives_major_gc_when_reachable() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let obj = heap.alloc_old(&BOXED_USIZE_DESC);
@@ -89,6 +94,7 @@ fn weak_handle_survives_major_gc_when_reachable() {
 
 #[test]
 fn weak_handle_remove_reuses_slots_with_generation_bumps() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let a = heap.alloc_old(&BOXED_USIZE_DESC);

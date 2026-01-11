@@ -3,6 +3,7 @@ use runtime_native::statepoints::{
   eval_location, RegFile, RootSlot, StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP,
   LLVM18_STATEPOINT_HEADER_CONSTANTS, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP,
 };
+use runtime_native::test_util::TestRuntimeGuard;
 
 struct FakeRegs {
   regs: std::collections::HashMap<u16, u64>,
@@ -95,6 +96,7 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
 
 #[test]
 fn statepoint_x86_64_layout() {
+  let _rt = TestRuntimeGuard::new();
   assert_statepoint_fixture(
     include_bytes!("fixtures/bin/statepoint_x86_64.bin"),
     X86_64_DWARF_REG_SP,
@@ -103,6 +105,7 @@ fn statepoint_x86_64_layout() {
 
 #[test]
 fn statepoint_aarch64_layout() {
+  let _rt = TestRuntimeGuard::new();
   assert_statepoint_fixture(
     include_bytes!("fixtures/bin/statepoint_aarch64.bin"),
     AARCH64_DWARF_REG_SP,
@@ -130,6 +133,7 @@ fn statepoint_deopt_fixture_decodes_header_and_skips_deopt() {
 
 #[test]
 fn eval_direct_location_is_immediate_value() {
+  let _rt = TestRuntimeGuard::new();
   let loc = Location::Direct {
     size: 8,
     dwarf_reg: X86_64_DWARF_REG_FP,

@@ -4,12 +4,14 @@ use runtime_native::statepoint_verify::{
   LLVM_STATEPOINT_PATCHPOINT_ID,
 };
 use runtime_native::StackMaps;
+use runtime_native::test_util::TestRuntimeGuard;
 
 const STATEPOINT_X86_64: &[u8] = include_bytes!("fixtures/bin/statepoint_x86_64.bin");
 const STATEPOINT_AARCH64: &[u8] = include_bytes!("fixtures/bin/statepoint_aarch64.bin");
 
 #[test]
 fn statepoint_x86_64_fixture_verifies() {
+  let _rt = TestRuntimeGuard::new();
   let stackmap = StackMap::parse(STATEPOINT_X86_64).unwrap();
   verify_statepoint_stackmap(
     &stackmap,
@@ -23,6 +25,7 @@ fn statepoint_x86_64_fixture_verifies() {
 
 #[test]
 fn statepoint_aarch64_fixture_verifies() {
+  let _rt = TestRuntimeGuard::new();
   let stackmap = StackMap::parse(STATEPOINT_AARCH64).unwrap();
   verify_statepoint_stackmap(
     &stackmap,
@@ -36,6 +39,7 @@ fn statepoint_aarch64_fixture_verifies() {
 
 #[test]
 fn verifier_rejects_register_locations() {
+  let _rt = TestRuntimeGuard::new();
   let mut bytes = STATEPOINT_X86_64.to_vec();
 
   const HEADER_SIZE: usize = 16;
@@ -69,18 +73,19 @@ fn verifier_rejects_register_locations() {
   assert_eq!(loc.offset, 0);
 
   let msg = err.to_string();
-  assert!(msg.contains("return address"));
-  assert!(msg.contains("patchpoint_id=0xabcdef00"));
-  assert!(msg.contains("location[3]"));
-  assert!(msg.contains("kind=Register"));
-  assert!(msg.contains("dwarf_reg=7"));
+  assert!(msg.contains("return address"), "{msg}");
+  assert!(msg.contains("patchpoint_id=0xabcdef00"), "{msg}");
+  assert!(msg.contains("location[3]"), "{msg}");
+  assert!(msg.contains("kind=Register"), "{msg}");
+  assert!(msg.contains("dwarf_reg=7"), "{msg}");
   // We zero out the old Indirect offset field above so the verifier's error message is
   // deterministic. Keep asserting the offset is surfaced for debugging.
-  assert!(msg.contains("offset=0"));
+  assert!(msg.contains("offset=0"), "{msg}");
 }
 
 #[test]
 fn verifier_rejects_register_locations_with_custom_statepoint_id() {
+  let _rt = TestRuntimeGuard::new();
   // LLVM allows overriding the statepoint ID / StackMap patchpoint_id via the
   // `"statepoint-id"` callsite directive. The verifier should still treat such
   // records as statepoints and validate their location kinds.
@@ -132,6 +137,7 @@ fn verifier_rejects_register_locations_with_custom_statepoint_id() {
 
 #[test]
 fn verifier_accepts_nonzero_flags_header() {
+  let _rt = TestRuntimeGuard::new();
   let stackmap = StackMap {
     version: 3,
     functions: vec![StackSizeRecord {
@@ -175,6 +181,7 @@ fn verifier_accepts_nonzero_flags_header() {
 
 #[test]
 fn verifier_accepts_deopt_operands() {
+  let _rt = TestRuntimeGuard::new();
   let stackmap = StackMap {
     version: 3,
     functions: vec![StackSizeRecord {
@@ -220,6 +227,7 @@ fn verifier_accepts_deopt_operands() {
 
 #[test]
 fn verifier_does_not_depend_on_patchpoint_id_constant() {
+  let _rt = TestRuntimeGuard::new();
   let mut stackmap = StackMap::parse(STATEPOINT_X86_64).unwrap();
   assert!(
     !stackmap.records.is_empty(),
@@ -242,6 +250,7 @@ fn verifier_does_not_depend_on_patchpoint_id_constant() {
 
 #[test]
 fn statepoints_only_mode_uses_layout_detection_not_patchpoint_id() {
+  let _rt = TestRuntimeGuard::new();
   let stackmap = StackMap {
     version: 3,
     functions: vec![StackSizeRecord {
@@ -294,6 +303,7 @@ fn statepoints_only_mode_uses_layout_detection_not_patchpoint_id() {
 
 #[test]
 fn stackmaps_parse_runs_statepoint_verifier() {
+  let _rt = TestRuntimeGuard::new();
   let mut bytes = if cfg!(target_arch = "x86_64") {
     STATEPOINT_X86_64.to_vec()
   } else if cfg!(target_arch = "aarch64") {

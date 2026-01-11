@@ -1,9 +1,11 @@
 #![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
 use runtime_native::stackmaps::{StackMap, StackMapError};
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[test]
 fn malformed_stackmaps_do_not_panic_or_attempt_huge_allocations() {
+  let _rt = TestRuntimeGuard::new();
   // Each case is intentionally too short for the declared counts, so the parser should return
   // `UnexpectedEof` *without* panicking (e.g. from `Vec::with_capacity`).
   let cases: &[&[u8]] = &[

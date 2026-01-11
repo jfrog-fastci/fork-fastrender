@@ -2,8 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use runtime_native::test_util::TestRuntimeGuard;
+
 #[test]
 fn runtime_native_c_header_contains_expected_abi_symbols() {
+  let _rt = TestRuntimeGuard::new();
   const HEADER: &str = include_str!("../include/runtime_native.h");
 
   // Core barrier + GC range plumbing.
@@ -113,6 +116,7 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
 
 #[test]
 fn runtime_native_exports_match_expected_abi_signatures() {
+  let _rt = TestRuntimeGuard::new();
   // KeepAlive is an exported C ABI symbol but not part of the Rust public API surface, so we bind
   // it via an extern declaration here to ensure the signature stays in sync with the header.
   extern "C" {
@@ -311,6 +315,7 @@ fn find_staticlib(target_dir: &Path, profile: &str) -> PathBuf {
 
 #[test]
 fn runtime_native_c_header_declares_all_exported_rt_symbols() {
+  let _rt = TestRuntimeGuard::new();
   // This repo's CI target is Ubuntu x86_64. Use GNU nm to sanity check that
   // every exported `rt_*` entrypoint in the staticlib is declared in the C
   // header.

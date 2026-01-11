@@ -1,9 +1,11 @@
 use std::mem::{align_of, size_of};
 
 use runtime_native::abi::{Microtask, PromiseRef, RtCoroutineHeader, RtCoroStatus, TaskId};
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[test]
 fn abi_layout_smoke() {
+  let _rt = TestRuntimeGuard::new();
   assert_eq!(size_of::<TaskId>(), 8);
   assert_eq!(align_of::<TaskId>(), align_of::<u64>());
 
@@ -31,5 +33,6 @@ fn abi_layout_smoke() {
 
 #[test]
 fn rt_async_poll_smoke() {
-  let _ = runtime_native::rt_async_poll_legacy();
+  let _rt = TestRuntimeGuard::new();
+  let _ = runtime_native::rt_async_poll();
 }

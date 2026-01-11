@@ -1,6 +1,7 @@
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
 use runtime_native::threading::safepoint::RT_GC_EPOCH as RT_GC_EPOCH_RUST;
+use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -10,6 +11,7 @@ extern "C" {
 
 #[test]
 fn gc_epoch_symbol_is_link_visible_and_controls_stw() {
+  let _rt = TestRuntimeGuard::new();
   // The exported symbol must be stable and link-visible (no Rust name mangling).
   let rust_addr = (&RT_GC_EPOCH_RUST as *const AtomicU64) as usize;
   let ffi_addr = unsafe { (&RT_GC_EPOCH as *const AtomicU64) as usize };
@@ -41,4 +43,3 @@ fn gc_epoch_symbol_is_link_visible_and_controls_stw() {
 
   threading::unregister_current_thread();
 }
-

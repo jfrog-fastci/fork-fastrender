@@ -4,9 +4,11 @@ use runtime_native::gc::SimpleRememberedSet;
 use runtime_native::GcHeap;
 use runtime_native::RootStack;
 use runtime_native::TypeDescriptor;
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[test]
 fn los_mark_sweep_frees_unreachable_objects() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   const OBJ_SIZE: usize = IMMIX_MAX_OBJECT_SIZE + 1024;

@@ -2,10 +2,12 @@
 
 use runtime_native::stackmaps::StackSize;
 use runtime_native::stackwalk::StackBounds;
+use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 
 #[test]
 fn rsp_is_derived_from_callee_fp_for_rsp_based_locations() {
+  let _rt = TestRuntimeGuard::new();
   // Minimal stackmap section containing one callsite record where GC root locations are reported
   // as Indirect [RSP + off]. This is the common case even when frame pointers are enabled.
   //

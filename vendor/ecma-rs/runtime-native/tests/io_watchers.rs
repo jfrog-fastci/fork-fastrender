@@ -788,4 +788,6 @@ mod kqueue {
   target_os = "dragonfly"
 )))]
 #[test]
-fn io_watchers_not_supported_on_this_platform() {}
+fn io_watchers_not_supported_on_this_platform() {
+  let _rt = TestRuntimeGuard::new();
+}

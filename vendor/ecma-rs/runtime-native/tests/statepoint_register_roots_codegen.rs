@@ -11,6 +11,7 @@ use runtime_native::statepoint_verify::{
   LLVM_STATEPOINT_PATCHPOINT_ID,
 };
 use runtime_native::statepoints::StatepointRecord;
+use runtime_native::test_util::TestRuntimeGuard;
 use tempfile::TempDir;
 
 const LLVM_OPT: &str = "opt-18";
@@ -220,6 +221,7 @@ fn path_in(dir: &Path, file: &str) -> PathBuf {
 
 #[test]
 fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
+  let _rt = TestRuntimeGuard::new();
   assert_cmd_available(LLVM_OPT);
   assert_cmd_available(LLVM_LLC);
 
@@ -350,6 +352,7 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
 
 #[test]
 fn fixup_max_csr_statepoints_0_forces_spills() {
+  let _rt = TestRuntimeGuard::new();
   assert_cmd_available(LLVM_OPT);
   assert_cmd_available(LLVM_LLC);
 

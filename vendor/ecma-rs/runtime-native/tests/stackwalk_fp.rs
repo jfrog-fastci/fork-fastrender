@@ -7,12 +7,15 @@ use runtime_native::stackmaps::StackSize;
 #[cfg(target_arch = "aarch64")]
 use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use runtime_native::stackwalk::StackBounds;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn synthetic_stack_enumerates_roots_from_stackmaps() {
+  let _rt = TestRuntimeGuard::new();
   use runtime_native::stackmaps::Location;
   use runtime_native::statepoints::StatepointRecord;
   use std::collections::BTreeMap;
@@ -131,6 +134,7 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
 fn derived_pointers_are_relocated_from_base() {
   use std::collections::BTreeSet;
 
+  let _rt = TestRuntimeGuard::new();
   let bytes = build_stackmaps_with_derived_pointer();
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
 
@@ -1013,13 +1017,14 @@ fn build_stackmaps_with_shared_base_derived_offsets(derived_offsets: &[i32]) -> 
   while out.len() % 8 != 0 {
     out.push(0);
   }
-
+ 
   out
 }
 
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn synthetic_stack_enumerates_roots_from_stackmaps() {
+  let _rt = TestRuntimeGuard::new();
   use runtime_native::stackmaps::Location;
   use runtime_native::statepoints::StatepointRecord;
   use std::collections::BTreeMap;

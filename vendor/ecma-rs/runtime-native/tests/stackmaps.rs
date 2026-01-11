@@ -1,5 +1,8 @@
 use runtime_native::stackmaps::{Location, StackMap};
 use runtime_native::statepoints::{StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP};
+#[cfg(target_arch = "x86_64")]
+use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
+use runtime_native::test_util::TestRuntimeGuard;
 
 const STACKMAP_CONST_X86_64: &[u8] = include_bytes!("fixtures/bin/stackmap_const_x86_64.bin");
 const STATEPOINT_X86_64: &[u8] = include_bytes!("fixtures/bin/statepoint_x86_64.bin");
@@ -7,6 +10,7 @@ const STATEPOINT_AARCH64: &[u8] = include_bytes!("fixtures/bin/statepoint_aarch6
 
 #[test]
 fn stackmap_const_has_constant_pool_and_inline_constant() {
+  let _rt = TestRuntimeGuard::new();
   let stackmap = StackMap::parse(STACKMAP_CONST_X86_64).unwrap();
   assert_eq!(stackmap.version, 3);
   assert_eq!(stackmap.functions.len(), 1);
@@ -37,6 +41,7 @@ fn stackmap_const_has_constant_pool_and_inline_constant() {
 
 #[test]
 fn statepoint_stackmap_x86_64_has_two_gc_live_pointers() {
+  let _rt = TestRuntimeGuard::new();
   let stackmap = StackMap::parse(STATEPOINT_X86_64).unwrap();
   assert_eq!(stackmap.version, 3);
   assert_eq!(stackmap.constants.len(), 0);
@@ -67,6 +72,7 @@ fn statepoint_stackmap_x86_64_has_two_gc_live_pointers() {
 
 #[test]
 fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
+  let _rt = TestRuntimeGuard::new();
   let stackmap = StackMap::parse(STATEPOINT_AARCH64).unwrap();
   assert_eq!(stackmap.version, 3);
   assert_eq!(stackmap.constants.len(), 0);

@@ -7,6 +7,7 @@
 use runtime_native::stackwalk::{
   StackBounds, StackFrame, StackWalkError, StackWalker, ThreadContext,
 };
+use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
@@ -138,6 +139,7 @@ extern "C" fn runtime_native_test_safepoint_impl(fp: u64, sp: u64) {
 
 #[test]
 fn statepoint_stackmap_indirect_sp_slot_matches() {
+  let _rt = TestRuntimeGuard::new();
   let mut obj = 0u64;
   let ptr = core::ptr::addr_of_mut!(obj).cast::<u8>() as u64;
   EXPECTED_PTR.store(ptr, Ordering::SeqCst);

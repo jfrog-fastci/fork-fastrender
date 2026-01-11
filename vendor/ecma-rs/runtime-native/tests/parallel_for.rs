@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use runtime_native::abi::TaskId;
 use runtime_native::{rt_parallel_for, rt_parallel_join, rt_parallel_spawn};
+use runtime_native::test_util::TestRuntimeGuard;
 
 type TaskFn = extern "C" fn(*mut u8);
 
@@ -12,6 +13,7 @@ extern "C" fn sum_body(i: usize, data: *mut u8) {
 
 #[test]
 fn correctness_sum() {
+  let _rt = TestRuntimeGuard::new();
   let sum = AtomicU64::new(0);
   let n: usize = 1_000_000;
 
@@ -28,6 +30,7 @@ extern "C" fn inc_body(_: usize, data: *mut u8) {
 
 #[test]
 fn small_range_sequential_fallback() {
+  let _rt = TestRuntimeGuard::new();
   let count = AtomicUsize::new(0);
   let start = 123;
   let end = 123 + 16;
@@ -75,6 +78,7 @@ extern "C" fn nested_body(i: usize, data: *mut u8) {
 
 #[test]
 fn nested_spawn_join_no_deadlock() {
+  let _rt = TestRuntimeGuard::new();
   let out = AtomicUsize::new(0);
   let n = 16 * 1024;
   rt_parallel_for(

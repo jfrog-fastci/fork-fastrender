@@ -2,6 +2,7 @@
 
 use object::{Object, ObjectSection};
 use runtime_native::stackmaps::{parse_all_stackmaps, StackMap, StackMaps};
+use runtime_native::test_util::TestRuntimeGuard;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -170,6 +171,8 @@ fn parses_linker_concatenated_stackmap_blobs_and_indexes_all_callsites() {
     eprintln!("skipping: clang-18 not found in PATH");
     return;
   };
+
+  let _rt = TestRuntimeGuard::new();
 
   let td = tempfile::tempdir().expect("create tempdir");
 

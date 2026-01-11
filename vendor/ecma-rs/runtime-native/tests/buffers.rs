@@ -8,6 +8,7 @@ use runtime_native::test_util::TestRuntimeGuard;
 
 #[test]
 fn backing_store_pointer_is_stable_across_header_relocation() {
+  let _rt = TestRuntimeGuard::new();
   let alloc = GlobalBackingStoreAllocator::default();
 
   let buf = ArrayBuffer::new_zeroed_in(&alloc, 64).expect("alloc");
@@ -64,6 +65,7 @@ fn pinned_backing_store_can_outlive_header_finalization() {
 
 #[test]
 fn uint8array_view_is_bounds_checked() {
+  let _rt = TestRuntimeGuard::new();
   let alloc = GlobalBackingStoreAllocator::default();
   let mut buf = ArrayBuffer::new_zeroed_in(&alloc, 8).expect("alloc");
 
@@ -81,6 +83,7 @@ fn uint8array_view_is_bounds_checked() {
 
 #[test]
 fn external_backing_store_bytes_are_accounted_and_released() {
+  let _rt = TestRuntimeGuard::new();
   let alloc = GlobalBackingStoreAllocator::default();
   assert_eq!(alloc.external_bytes(), 0);
 

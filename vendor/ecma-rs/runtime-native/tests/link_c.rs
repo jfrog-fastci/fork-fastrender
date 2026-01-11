@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use runtime_native::test_util::TestRuntimeGuard;
+
 fn has_command(cmd: &str) -> bool {
   Command::new(cmd)
     .arg("--version")
@@ -87,6 +89,8 @@ fn link_c_against_runtime_native_staticlib() {
     eprintln!("skipping: ld.lld-18 not found in PATH");
     return;
   }
+
+  let _rt = TestRuntimeGuard::new();
 
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   let stackmaps_ld = manifest_dir.join("stackmaps.ld");

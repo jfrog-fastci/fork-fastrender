@@ -1,6 +1,7 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SymbolScope};
+use runtime_native::test_util::TestRuntimeGuard;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -100,6 +101,7 @@ fn segment_is_readable(flags: object::SegmentFlags) -> bool {
 
 #[test]
 fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
+  let _rt = TestRuntimeGuard::new();
   let Some(lld_flag) = lld_flag() else {
     eprintln!("skipping: lld not found in PATH (need ld.lld-18 or ld.lld)");
     return;

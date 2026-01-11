@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use runtime_native::stackmaps::Location;
 use runtime_native::statepoints::{eval_location, RootSlot};
 use runtime_native::StackMaps;
+use runtime_native::test_util::TestRuntimeGuard;
 use stackmap_context::{ThreadContext, DWARF_REG_IP};
 use std::ffi::CString;
 use std::fs;
@@ -145,6 +146,7 @@ fn stackmaps_section_bytes_from_loaded_elf(path: &Path, base_addr: usize) -> &'s
 
 #[test]
 fn signal_handler_can_rewrite_register_root_via_stackmaps() {
+  let _rt = TestRuntimeGuard::new();
   for tool in ["llvm-as-18", "llc-18", "clang-18"] {
     if !tool_available(tool) {
       eprintln!("skipping: {tool} not available in PATH");

@@ -1,9 +1,11 @@
 #![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
 use runtime_native::stackmaps::{Location, StackMap, StackMaps, StackSize};
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[test]
 fn parses_stackmaps_v3_fixture_and_builds_pc_index() {
+  let _rt = TestRuntimeGuard::new();
   let bytes = include_bytes!("fixtures/bin/stackmaps_v3.bin");
 
   let stackmap = StackMap::parse(bytes).expect("fixture stackmap should parse");
@@ -76,6 +78,7 @@ fn parses_stackmaps_v3_fixture_and_builds_pc_index() {
 
 #[test]
 fn parses_patchpoint_live_outs() {
+  let _rt = TestRuntimeGuard::new();
   // A minimal LLVM 18 patchpoint stackmap extracted from an object file. This exercises the
   // live-out header + entry parsing, which differs subtly from the location array.
   let bytes = include_bytes!("fixtures/bin/patchpoint_liveouts.bin");

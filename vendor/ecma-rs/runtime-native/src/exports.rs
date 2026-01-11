@@ -1261,7 +1261,6 @@ pub extern "C" fn rt_spawn_blocking_rooted(
 #[no_mangle]
 pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> PromiseRef {
   abort_on_panic(|| {
-    let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
     async_rt::coroutine::async_spawn(coro)
   })
@@ -1274,7 +1273,6 @@ pub extern "C" fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> Promise
 #[no_mangle]
 pub extern "C" fn rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -> PromiseRef {
   abort_on_panic(|| {
-    let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
     async_rt::coroutine::async_spawn_deferred(coro)
   })

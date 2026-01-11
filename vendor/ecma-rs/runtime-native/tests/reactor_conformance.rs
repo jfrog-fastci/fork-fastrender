@@ -5,6 +5,7 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
 
 use runtime_native::reactor::{Interest, Reactor, Token};
+use runtime_native::test_util::TestRuntimeGuard;
 
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
   let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -80,6 +81,7 @@ fn drain_read_nonblocking(fd: RawFd) -> io::Result<usize> {
 
 #[test]
 fn timeout_no_events() {
+  let _rt = TestRuntimeGuard::new();
   let reactor = Reactor::new().unwrap();
   let mut events = Vec::new();
 
@@ -98,6 +100,7 @@ fn timeout_no_events() {
 
 #[test]
 fn edge_trigger_requires_drain() {
+  let _rt = TestRuntimeGuard::new();
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
@@ -146,6 +149,7 @@ fn edge_trigger_requires_drain() {
 
 #[test]
 fn register_requires_nonblocking() {
+  let _rt = TestRuntimeGuard::new();
   let (read, _write) = pipe().unwrap();
 
   let reactor = Reactor::new().unwrap();
@@ -322,6 +326,7 @@ fn fd_reuse_via_dup2_same_pipe_clears_registration() {
 
 #[test]
 fn read_ready_pipe() {
+  let _rt = TestRuntimeGuard::new();
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
@@ -352,6 +357,7 @@ fn read_ready_pipe() {
 
 #[test]
 fn modify_interests() {
+  let _rt = TestRuntimeGuard::new();
   let (a, b) = socketpair().unwrap();
   set_nonblocking(a.as_raw_fd()).unwrap();
   set_nonblocking(b.as_raw_fd()).unwrap();
@@ -394,6 +400,7 @@ fn modify_interests() {
 
 #[test]
 fn event_merge_by_token() {
+  let _rt = TestRuntimeGuard::new();
   let (a, b) = socketpair().unwrap();
   set_nonblocking(a.as_raw_fd()).unwrap();
   set_nonblocking(b.as_raw_fd()).unwrap();
@@ -444,6 +451,7 @@ fn event_merge_by_token() {
 
 #[test]
 fn hup_eof_semantics() {
+  let _rt = TestRuntimeGuard::new();
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
@@ -499,6 +507,7 @@ fn hup_eof_implies_ready_invariants_socketpair() {
 
 #[test]
 fn waker_interrupts_poll() {
+  let _rt = TestRuntimeGuard::new();
   let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
@@ -576,6 +585,7 @@ fn poll_large_timeout_does_not_panic_and_wake_works() {
 
 #[test]
 fn waker_no_loss_stress() {
+  let _rt = TestRuntimeGuard::new();
   let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 

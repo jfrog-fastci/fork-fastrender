@@ -16,6 +16,7 @@ use runtime_native::gc::RememberedSet;
 use runtime_native::gc::RootStack;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::gc::OBJ_HEADER_SIZE;
+use runtime_native::test_util::TestRuntimeGuard;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::mem;
@@ -328,6 +329,7 @@ fn run_stress(seed: u64, ops: usize) {
 
 #[test]
 fn gc_stress() {
+  let _rt = TestRuntimeGuard::new();
   // Keep this small so it runs quickly in debug builds.
   for seed in 0..8u64 {
     run_stress(seed, 2_500);
@@ -337,5 +339,6 @@ fn gc_stress() {
 #[test]
 #[ignore]
 fn gc_stress_soak() {
+  let _rt = TestRuntimeGuard::new();
   run_stress(0xA11C_E5ED_u64, 200_000);
 }

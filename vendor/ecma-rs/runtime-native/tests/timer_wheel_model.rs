@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use proptest::prelude::*;
 
 use runtime_native::{TimerKey, TimerWheel};
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[derive(Clone, Debug)]
 enum Op {
@@ -89,6 +90,7 @@ proptest! {
 
   #[test]
   fn timer_wheel_matches_reference(ops in ops_strategy()) {
+    let _rt = TestRuntimeGuard::new();
     // A random `Instant::now()` base is fine (and unavoidable); we keep all times as
     // `base + N * 1ms` so the test doesn't depend on any internal tick rounding.
     let base = Instant::now();
@@ -149,6 +151,7 @@ proptest! {
 fn regression_de09a7a0_missing_timer_fire() {
   // Regression for a historical proptest failure (see
   // `timer_wheel_model.proptest-regressions`).
+  let _rt = TestRuntimeGuard::new();
   let ops = vec![
     Op::Schedule { after_ms: 0 },
     Op::Schedule { after_ms: 0 },

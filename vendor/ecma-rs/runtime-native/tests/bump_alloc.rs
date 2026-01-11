@@ -8,6 +8,7 @@ use runtime_native::rt_alloc_array;
 use runtime_native::rt_alloc_pinned;
 use runtime_native::rt_gc_get_young_range;
 use runtime_native::shape_table;
+use runtime_native::test_util::TestRuntimeGuard;
 
 static SHAPE_TABLE_ONCE: Once = Once::new();
 static EMPTY_PTR_OFFSETS: [u32; 0] = [];
@@ -67,6 +68,7 @@ fn round_up_16(n: usize) -> usize {
 
 #[test]
 fn alloc_alignment() {
+  let _rt = TestRuntimeGuard::new();
   ensure_shape_table();
   for _ in 0..128 {
     let ptr = rt_alloc(16, RtShapeId(1));
@@ -76,6 +78,7 @@ fn alloc_alignment() {
 
 #[test]
 fn alloc_distinct() {
+  let _rt = TestRuntimeGuard::new();
   ensure_shape_table();
   let a_size = 24;
   let b_size = 40;
@@ -108,6 +111,7 @@ fn alloc_pinned_honors_shape_alignment() {
 
 #[test]
 fn alloc_array_overflow_child() {
+  let _rt = TestRuntimeGuard::new();
   if std::env::var_os("RT_ALLOC_OVERFLOW_CHILD").is_none() {
     return;
   }
@@ -118,6 +122,7 @@ fn alloc_array_overflow_child() {
 
 #[test]
 fn alloc_array_overflow_aborts_or_panics() {
+  let _rt = TestRuntimeGuard::new();
   let exe = std::env::current_exe().expect("current_exe");
 
   let status = Command::new(exe)
@@ -229,6 +234,7 @@ fn alloc_array_is_gc_backed() {
 
 #[test]
 fn thread_local_fast_path() {
+  let _rt = TestRuntimeGuard::new();
   ensure_shape_table();
   const THREADS: usize = 8;
   const ITERS: usize = 10_000;

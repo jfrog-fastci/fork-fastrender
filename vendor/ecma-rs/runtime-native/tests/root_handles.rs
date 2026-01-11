@@ -6,6 +6,7 @@ use runtime_native::gc::ObjHeader;
 use runtime_native::gc::RememberedSet;
 use runtime_native::gc::RootStack;
 use runtime_native::gc::TypeDescriptor;
+use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::GcHeap;
 
 static NO_PTR_OFFSETS: [u32; 0] = [];
@@ -32,6 +33,7 @@ impl RememberedSet for NullRememberedSet {
 
 #[test]
 fn root_handle_survives_minor_gc_and_updates_pointer() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let obj = heap.alloc_young(&BLOB_DESC);
@@ -57,6 +59,7 @@ fn root_handle_survives_minor_gc_and_updates_pointer() {
 
 #[test]
 fn root_handle_keeps_object_alive_across_major_gc() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let obj = heap.alloc_old(&BIG_OBJECT_DESC);
@@ -107,6 +110,7 @@ fn root_handle_updates_during_major_compaction() {
 
 #[test]
 fn stale_handle_detection() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let obj1 = heap.alloc_old(&BLOB_DESC);

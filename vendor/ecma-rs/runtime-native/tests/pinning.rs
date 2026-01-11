@@ -11,6 +11,7 @@ use runtime_native::gc::RootStack;
 use runtime_native::gc::SimpleRememberedSet;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::GcHeap;
+use runtime_native::test_util::TestRuntimeGuard;
 
 #[repr(C)]
 struct Node {
@@ -32,6 +33,7 @@ impl RememberedSet for NullRememberedSet {
 
 #[test]
 fn pinned_object_address_is_stable_across_minor_and_major_gc() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let pinned = heap.alloc_pinned(&NODE_DESC);
@@ -56,6 +58,7 @@ fn pinned_object_address_is_stable_across_minor_and_major_gc() {
 
 #[test]
 fn pinned_objects_are_traced_and_compat_with_minor_evacuation() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
 
   let pinned = heap.alloc_pinned(&NODE_DESC);
@@ -96,6 +99,7 @@ fn pinned_objects_are_traced_and_compat_with_minor_evacuation() {
 
 #[test]
 fn unreachable_pinned_objects_are_collectible() {
+  let _rt = TestRuntimeGuard::new();
   let mut heap = GcHeap::new();
   assert_eq!(heap.los_object_count(), 0);
 

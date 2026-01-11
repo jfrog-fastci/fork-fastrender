@@ -344,8 +344,8 @@ fn generate_llvm_module(
   // `opt -passes=rewrite-statepoints-for-gc` rewrites the call into a statepoint and produces a
   // `.llvm_stackmaps` record keyed by the return address (the instruction after the call).
   //
-  // Note: we define `@safepoint` with **weak linkage** so integration tests can override the symbol
-  // with an instrumented implementation (without causing duplicate-symbol link errors).
+  // Note: we define `@safepoint` with **weak linkage** so integration tests can override the
+  // symbol with an instrumented implementation (without causing duplicate-symbol link errors).
   let ir = r#"; ModuleID = 'runtime_native_stackmap_test'
 source_filename = "runtime_native_stackmap_test"
 target triple = "x86_64-unknown-linux-gnu"

@@ -1,5 +1,6 @@
 use runtime_native::stackmaps::{Location, StackMap};
 use runtime_native::statepoints::{eval_location, RegFile, RootSlot};
+use runtime_native::test_util::TestRuntimeGuard;
 
 struct MapRegs(std::collections::HashMap<u16, u64>);
 
@@ -11,6 +12,7 @@ impl RegFile for MapRegs {
 
 #[test]
 fn parses_register_location() {
+  let _rt = TestRuntimeGuard::new();
   let bytes = include_bytes!("fixtures/bin/stackmap_register_x86_64.bin");
   let sm = StackMap::parse(bytes).unwrap();
   assert_eq!(sm.records.len(), 1);
@@ -33,6 +35,7 @@ fn parses_register_location() {
 
 #[test]
 fn parses_direct_location() {
+  let _rt = TestRuntimeGuard::new();
   let bytes = include_bytes!("fixtures/bin/stackmap_direct_x86_64.bin");
   let sm = StackMap::parse(bytes).unwrap();
   assert_eq!(sm.records.len(), 1);
