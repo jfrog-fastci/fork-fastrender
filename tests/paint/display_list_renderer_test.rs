@@ -2359,6 +2359,43 @@ fn linear_gradient_rasterization_matches_endpoints() {
 }
 
 #[test]
+fn transformed_linear_gradient_uses_bilinear_sampling() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::PushTransform(fastrender::TransformItem {
+    transform: Transform3D::from_2d(&fastrender::Transform2D::scale(2.0, 1.0)),
+  }));
+  list.push(DisplayItem::LinearGradient(LinearGradientItem {
+    rect: Rect::from_xywh(0.0, 0.0, 2.0, 1.0),
+    // Pick start/end points so the rasterized 2px gradient's samples land exactly on the stops:
+    // t = (x + 0.5 - start.x) / (end.x - start.x).
+    // With start.x=0.5 and end.x=1.5, the 2px raster yields t=[0.0, 1.0] (stop colors only).
+    //
+    // When we then scale the rasterized gradient by 2x, nearest-neighbor sampling will pick the
+    // first stop color for pixel x=1, while bilinear sampling will interpolate between the two
+    // stop pixels.
+    start: Point::new(0.5, 0.0),
+    end: Point::new(1.5, 0.0),
+    stops: vec![
+      GradientStop {
+        position: 0.0,
+        color: Rgba::new(0, 0, 0, 1.0),
+      },
+      GradientStop {
+        position: 1.0,
+        color: Rgba::new(255, 0, 0, 1.0),
+      },
+    ],
+    spread: GradientSpread::Pad,
+  }));
+  list.push(DisplayItem::PopTransform);
+
+  let renderer = DisplayListRenderer::new(4, 1, Rgba::TRANSPARENT, FontContext::new()).unwrap();
+  let pixmap = renderer.render(&list).expect("render");
+
+  assert_eq!(pixel(&pixmap, 1, 0), (64, 0, 0, 255));
+}
+
+#[test]
 fn filters_apply_to_stacking_context_layer() {
   let renderer = DisplayListRenderer::new(2, 2, Rgba::WHITE, FontContext::new()).unwrap();
   let mut list = DisplayList::new();

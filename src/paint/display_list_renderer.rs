@@ -5456,14 +5456,27 @@ impl DisplayListRenderer {
       self.record_gradient_usage((width * height) as u64, start);
     }
 
+    let frac_x = visible_rect.x() - dest_x as f32;
+    let frac_y = visible_rect.y() - dest_y as f32;
+    let canvas_transform = self.canvas.transform();
+    let needs_filtering = canvas_transform.kx.abs() > 1e-6
+      || canvas_transform.ky.abs() > 1e-6
+      || (canvas_transform.sx - 1.0).abs() > 1e-6
+      || (canvas_transform.sy - 1.0).abs() > 1e-6
+      || canvas_transform.tx.fract().abs() > 1e-6
+      || canvas_transform.ty.fract().abs() > 1e-6
+      || frac_x.abs() > 1e-6
+      || frac_y.abs() > 1e-6;
     let paint = tiny_skia::PixmapPaint {
       opacity: 1.0,
       blend_mode: self.canvas.blend_mode(),
-      ..Default::default()
+      quality: if needs_filtering {
+        FilterQuality::Bilinear
+      } else {
+        FilterQuality::Nearest
+      },
     };
-    let frac_x = visible_rect.x() - dest_x as f32;
-    let frac_y = visible_rect.y() - dest_y as f32;
-    let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
+    let transform = Transform::from_translate(frac_x, frac_y).post_concat(canvas_transform);
     let clip = self.canvas.clip_mask().cloned();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
       pixmap.draw_pixmap(
@@ -6064,16 +6077,29 @@ impl DisplayListRenderer {
       self.record_gradient_usage((width * height) as u64, start);
     }
 
-    let paint = tiny_skia::PixmapPaint {
-      opacity: 1.0,
-      blend_mode: self.canvas.blend_mode(),
-      ..Default::default()
-    };
     let dest_x = visible_rect.x().floor() as i32;
     let dest_y = visible_rect.y().floor() as i32;
     let frac_x = visible_rect.x() - dest_x as f32;
     let frac_y = visible_rect.y() - dest_y as f32;
-    let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
+    let canvas_transform = self.canvas.transform();
+    let needs_filtering = canvas_transform.kx.abs() > 1e-6
+      || canvas_transform.ky.abs() > 1e-6
+      || (canvas_transform.sx - 1.0).abs() > 1e-6
+      || (canvas_transform.sy - 1.0).abs() > 1e-6
+      || canvas_transform.tx.fract().abs() > 1e-6
+      || canvas_transform.ty.fract().abs() > 1e-6
+      || frac_x.abs() > 1e-6
+      || frac_y.abs() > 1e-6;
+    let paint = tiny_skia::PixmapPaint {
+      opacity: 1.0,
+      blend_mode: self.canvas.blend_mode(),
+      quality: if needs_filtering {
+        FilterQuality::Bilinear
+      } else {
+        FilterQuality::Nearest
+      },
+    };
+    let transform = Transform::from_translate(frac_x, frac_y).post_concat(canvas_transform);
     let clip = self.canvas.clip_mask().cloned();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
       pixmap.draw_pixmap(

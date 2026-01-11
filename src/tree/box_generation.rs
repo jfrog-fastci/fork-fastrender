@@ -3384,6 +3384,83 @@ fn serialize_svg_subtree(
           .iter()
           .any(|(name, _)| name.eq_ignore_ascii_case("xmlns:xlink"))
     );
+
+  fn resolve_svg_attribute_var_calls(
+    attrs: &mut Vec<(String, String)>,
+    custom_properties: &crate::style::custom_property_store::CustomPropertyStore,
+  ) {
+    use crate::css::types::PropertyValue;
+    use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
+
+    fn attr_might_contain_css_value(name: &str) -> bool {
+      let local = name.rsplit_once(':').map(|(_, local)| local).unwrap_or(name);
+      // Only scan attributes that are parsed as CSS values by SVG/CSS presentation attributes.
+      // Many SVG elements contain large `d=` path data, and running var() detection over those
+      // strings is needlessly expensive.
+      local.eq_ignore_ascii_case("style")
+        || local.eq_ignore_ascii_case("fill")
+        || local.eq_ignore_ascii_case("stroke")
+        || local.eq_ignore_ascii_case("color")
+        || local.eq_ignore_ascii_case("stop-color")
+        || local.eq_ignore_ascii_case("stop-opacity")
+        || local.eq_ignore_ascii_case("opacity")
+        || local.eq_ignore_ascii_case("clip-path")
+        || local.eq_ignore_ascii_case("mask")
+        || local.eq_ignore_ascii_case("filter")
+        || local.eq_ignore_ascii_case("marker-start")
+        || local.eq_ignore_ascii_case("marker-mid")
+        || local.eq_ignore_ascii_case("marker-end")
+        || local.eq_ignore_ascii_case("x")
+        || local.eq_ignore_ascii_case("y")
+        || local.eq_ignore_ascii_case("width")
+        || local.eq_ignore_ascii_case("height")
+    }
+
+    let mut idx = 0usize;
+    while idx < attrs.len() {
+      let (name, value) = &attrs[idx];
+      if !attr_might_contain_css_value(name) || !crate::style::var_resolution::contains_var(value) {
+        idx += 1;
+        continue;
+      }
+
+      // Avoid rewriting URL-bearing attributes; `var(` in href values is almost certainly literal
+      // text and should not trigger CSS variable substitution.
+      if name.eq_ignore_ascii_case("href")
+        || name
+          .rsplit_once(':')
+          .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
+      {
+        idx += 1;
+        continue;
+      }
+
+      let is_style_attr = name.eq_ignore_ascii_case("style");
+      let raw = PropertyValue::Keyword(value.clone());
+      match resolve_var_for_property(&raw, custom_properties, "") {
+        VarResolutionResult::Resolved { css_text, .. } => {
+          attrs[idx].1 = css_text.into_owned();
+          idx += 1;
+        }
+        // If the var() call cannot be resolved, treat the attribute as invalid and drop it.
+        // Leaving an unresolved `var()` token around leads to resvg/usvg treating SVG paint
+        // attributes as `none`, which can make the entire graphic disappear.
+        //
+        // `style=""` attributes can contain many declarations; dropping them entirely would lose
+        // unrelated values, so keep the original string in that case.
+        VarResolutionResult::NotFound(_)
+        | VarResolutionResult::RecursionLimitExceeded
+        | VarResolutionResult::InvalidSyntax(_) => {
+          if is_style_attr {
+            idx += 1;
+          } else {
+            attrs.remove(idx);
+          }
+        }
+      }
+    }
+  }
+
   fn serialize_foreign_object_placeholder(
     styled: &StyledNode,
     attrs: &[(String, String)],
@@ -3820,6 +3897,35 @@ fn serialize_svg_subtree(
           if let Some(extra) = svg_color_style(&styled.styles, parent_svg_styles) {
             let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
             merge_style_attribute(attrs_mut, &extra);
+          }
+          if owned_attrs
+            .as_deref()
+            .unwrap_or(attributes)
+            .iter()
+            .any(|(name, value)| {
+              let local = name.rsplit_once(':').map(|(_, local)| local).unwrap_or(name);
+              (local.eq_ignore_ascii_case("style")
+                || local.eq_ignore_ascii_case("fill")
+                || local.eq_ignore_ascii_case("stroke")
+                || local.eq_ignore_ascii_case("color")
+                || local.eq_ignore_ascii_case("stop-color")
+                || local.eq_ignore_ascii_case("stop-opacity")
+                || local.eq_ignore_ascii_case("opacity")
+                || local.eq_ignore_ascii_case("clip-path")
+                || local.eq_ignore_ascii_case("mask")
+                || local.eq_ignore_ascii_case("filter")
+                || local.eq_ignore_ascii_case("marker-start")
+                || local.eq_ignore_ascii_case("marker-mid")
+                || local.eq_ignore_ascii_case("marker-end")
+                || local.eq_ignore_ascii_case("x")
+                || local.eq_ignore_ascii_case("y")
+                || local.eq_ignore_ascii_case("width")
+                || local.eq_ignore_ascii_case("height"))
+                && crate::style::var_resolution::contains_var(value)
+            })
+          {
+            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            resolve_svg_attribute_var_calls(attrs_mut, &styled.styles.custom_properties);
           }
           if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
             let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());

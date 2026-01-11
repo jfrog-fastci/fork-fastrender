@@ -84,6 +84,49 @@ fn inline_svg_applies_document_css_and_current_color() {
 }
 
 #[test]
+fn inline_svg_presentation_attributes_resolve_css_var_fallbacks() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20" fill="var(--missing, rgb(255, 0, 0))"></rect>
+      </svg>
+      "#;
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [255, 0, 0, 255],
+        "expected fallback color from CSS var() in SVG presentation attribute"
+      );
+
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; --logo: rgb(0, 255, 0); }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20" fill="var(--logo, rgb(255, 0, 0))"></rect>
+      </svg>
+      "#;
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [0, 255, 0, 255],
+        "expected SVG presentation attribute var() to resolve custom properties"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_use_resolves_symbols_from_other_document_svg_elements() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

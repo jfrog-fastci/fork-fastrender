@@ -65,6 +65,10 @@ pub struct RefreshProgressAccuracyArgs {
   #[arg(long, default_value_t = 0.0, value_name = "PERCENT")]
   pub max_diff_percent: f64,
 
+  /// Per-fixture hard timeout in seconds forwarded to `xtask fixture-chrome-diff --timeout`.
+  #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS, value_name = "SECS")]
+  pub timeout: u64,
+
   /// Ignore alpha differences forwarded to `diff_renders --ignore-alpha`.
   #[arg(long)]
   pub ignore_alpha: bool,
@@ -250,6 +254,8 @@ fn build_fixture_chrome_diff_args(
   argv.push(args.tolerance.to_string().into());
   argv.push("--max-diff-percent".into());
   argv.push(args.max_diff_percent.to_string().into());
+  argv.push("--timeout".into());
+  argv.push(args.timeout.to_string().into());
   if let Some(dist) = args.max_perceptual_distance {
     argv.push("--max-perceptual-distance".into());
     argv.push(dist.to_string().into());
