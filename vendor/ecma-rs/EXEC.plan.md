@@ -2779,7 +2779,7 @@ StackMap v3 invariant (LLVM 18, tested; required by our runtime):
     - runtime: statepoint stackmap verifier (`runtime-native/src/statepoint_verify.rs`)
   - Empirically, on x86_64 SysV + aarch64 SysV, across -O0/-O2 and with/without `-frame-pointer=all`,
     statepoint roots are `Indirect [SP + off]` under the above codegen settings.
-  - Repro: `opt-18 -passes=rewrite-statepoints-for-gc ...` → `llc-18 ...` → `llvm-readobj-18 --stackmap`.
+  - Repro: `opt-18 -passes=rewrite-statepoints-for-gc ...` → `llc-18 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 ...` → `llvm-readobj-18 --stackmap`.
 
 Write Barrier Elimination:
   - NoEscape objects: no barrier needed

@@ -1036,11 +1036,11 @@ Repro (LLVM 18):
 ```bash
 # out.ll contains `gc.statepoint` + `gc.relocate` after rewriting
 opt-18 -passes=rewrite-statepoints-for-gc -S in.ll -o out.ll
-llc-18 -O2 -filetype=obj out.ll -o out.o
+llc-18 -O2 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 -filetype=obj out.ll -o out.o
 llvm-readobj-18 --stackmap out.o
 
 # Cross-check AArch64:
-llc-18 -mtriple=aarch64-unknown-linux-gnu -O2 -filetype=obj out.ll -o out_aarch64.o
+llc-18 -mtriple=aarch64-unknown-linux-gnu -O2 --fixup-allow-gcptr-in-csr=false --fixup-max-csr-statepoints=0 -filetype=obj out.ll -o out_aarch64.o
 llvm-readobj-18 --stackmap out_aarch64.o
 ```
 
