@@ -5,10 +5,11 @@ use fastrender::js::runtime::with_event_loop;
 use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
   install_window_animation_frame_bindings, install_window_timers_bindings, ClassicScriptScheduler,
-  DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptElementEvent, ScriptElementSpec,
-  ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, VirtualClock, WindowHostState,
-  WindowRealm, WindowRealmHost,
+  DomHost, EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, ScriptElementEvent,
+  ScriptElementSpec, ScriptEventDispatcher, ScriptExecutor, ScriptLoader, ScriptType, VirtualClock,
+  WindowHostState, WindowRealm, WindowRealmHost,
 };
+use fastrender::resource::HttpFetcher;
 use fastrender::{Error, Result};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -241,11 +242,27 @@ impl Harness {
     let renderer_dom = fastrender::dom::parse_html(html)?;
     let dom = Document::from_renderer_dom(&renderer_dom);
 
+    let mut js_options = JsExecutionOptions::default();
+    // The JS harness aims to exercise both classic and module script execution. The production
+    // default is `supports_module_scripts=false` for safety (until embedders opt in), so enable
+    // module scripts explicitly here.
+    js_options.supports_module_scripts = true;
+    // Unit tests can run many JS harness cases concurrently; keep the per-script wall-time budget
+    // generous enough to avoid flaky deadline aborts under CPU contention while still bounding
+    // hostile `while(true){}` cases.
+    js_options.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
+
     let clock = Arc::new(VirtualClock::new());
     let event_loop = EventLoop::<HostState>::with_clock(clock.clone());
 
     let mut host = HostState {
-      window: WindowHostState::new(dom, document_url.to_string())?,
+      window: WindowHostState::new_with_fetcher_and_clock_and_options(
+        dom,
+        document_url.to_string(),
+        Arc::new(HttpFetcher::new()),
+        clock.clone(),
+        js_options,
+      )?,
       loader: ScriptLoaderState::default(),
     };
 
@@ -265,7 +282,7 @@ impl Harness {
       clock,
       host,
       event_loop,
-      script_scheduler: ClassicScriptScheduler::new(),
+      script_scheduler: ClassicScriptScheduler::with_options(js_options),
     };
 
     // Initialize logging + disable UB-prone globals.
