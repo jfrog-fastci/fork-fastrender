@@ -156,36 +156,62 @@ fn wake_from_epoll_wait() {
   let ran: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let timer_fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
 
-  // Keep the runtime non-idle so `rt_async_poll` will block in epoll_wait.
+  // Keep the runtime non-idle so `rt_async_poll` will block in the platform reactor wait syscall
+  // (`epoll_wait`/`kevent`).
   let dummy_timer = runtime_native::async_rt::global().schedule_timer(
     Instant::now() + Duration::from_secs(1),
     Task::new(set_atomic_bool, timer_fired as *const AtomicBool as *mut u8),
   );
 
-  let producer = std::thread::spawn({
-    let ran_ref: &'static AtomicBool = ran;
-    move || {
-      std::thread::sleep(Duration::from_millis(20));
-      unsafe {
-        runtime_native::rt_queue_microtask(Microtask {
-          func: set_atomic_bool,
-          data: ran_ref as *const AtomicBool as *mut u8,
-        });
-      }
-    }
+  let (tx, rx) = mpsc::channel();
+  let poll_thread = std::thread::spawn(move || {
+    let start = Instant::now();
+    let _pending = runtime_native::rt_async_poll_legacy();
+    let _ = tx.send(start.elapsed());
   });
 
-  let start = Instant::now();
-  let _pending = runtime_native::rt_async_poll_legacy();
-  let elapsed = start.elapsed();
+  // Wait until the polling thread is actually blocked in the reactor wait syscall so we know the
+  // cross-thread wake path is exercised.
+  let deadline = Instant::now() + Duration::from_secs(1);
+  let mut blocked = false;
+  loop {
+    if runtime_native::async_rt::debug_in_epoll_wait() {
+      std::thread::sleep(Duration::from_millis(10));
+      if runtime_native::async_rt::debug_in_epoll_wait() {
+        blocked = true;
+        break;
+      }
+    }
+    if Instant::now() >= deadline {
+      break;
+    }
+    std::thread::yield_now();
+  }
 
-  let _ = producer.join();
+  let wake_start = Instant::now();
+  unsafe {
+    runtime_native::rt_queue_microtask(Microtask {
+      func: set_atomic_bool,
+      data: ran as *const AtomicBool as *mut u8,
+    });
+  }
+
+  let elapsed = rx
+    .recv_timeout(Duration::from_secs(2))
+    .expect("poll thread did not return in time");
+  let wake_elapsed = wake_start.elapsed();
+
+  poll_thread.join().unwrap();
   let _ = runtime_native::async_rt::global().cancel_timer(dummy_timer);
 
-  assert!(ran.load(Ordering::SeqCst), "microtask did not run");
+  assert!(blocked, "poll thread did not enter reactor wait syscall in time");
   assert!(
-    elapsed < Duration::from_millis(500),
-    "rt_async_poll did not wake promptly (elapsed={elapsed:?})"
+    ran.load(Ordering::SeqCst),
+    "microtask did not run after reactor wake"
+  );
+  assert!(
+    wake_elapsed < Duration::from_secs(1),
+    "rt_async_poll did not wake promptly (elapsed={wake_elapsed:?}, total={elapsed:?})"
   );
   assert!(
     !timer_fired.load(Ordering::SeqCst),
