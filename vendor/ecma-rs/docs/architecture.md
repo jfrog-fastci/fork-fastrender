@@ -10,6 +10,7 @@ Start here:
 - [`docs/quickstart.md`](./quickstart.md) — local setup for conformance/difftsc
 - [`docs/runtime-native.md`](./runtime-native.md) — ABI + GC/statepoints + scheduler/async design for `native-js`
 - [`AGENTS.md`](../AGENTS.md) — north-star architecture and design principles
+- [`docs/runtime_native_io_uring.md`](./runtime_native_io_uring.md) — `io_uring` buffer lifetime + cancellation semantics for a moving GC (runtime-native)
 
 ## Data flow at a glance
 
