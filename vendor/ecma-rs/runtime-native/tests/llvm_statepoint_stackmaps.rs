@@ -90,22 +90,56 @@ fn try_run(cmd: &mut Command) -> io::Result<()> {
   Ok(())
 }
 
-fn find_llvm_tool(name: &str) -> Option<String> {
-  let candidates = [format!("{name}-18"), name.to_string()];
+fn summarize_version_output(output: &str) -> String {
+  let summary = output
+    .lines()
+    .take(2)
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .collect::<Vec<_>>()
+    .join(" ");
+
+  if summary.is_empty() {
+    "<empty>".to_string()
+  } else {
+    summary
+  }
+}
+
+fn find_llvm18_tool(base: &str) -> Result<String, String> {
+  // Prefer versioned binaries when present (Ubuntu packages often provide both).
+  let preferred = format!("{base}-18");
+  let candidates = [&preferred[..], base];
+
+  let mut mismatch: Option<(String, String)> = None;
   for candidate in candidates {
-    let output = Command::new(&candidate).arg("--version").output();
-    let output = match output {
+    let output = match Command::new(candidate).arg("--version").output() {
       Ok(output) if output.status.success() => output,
       _ => continue,
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let output = format!("{stdout}{stderr}").to_ascii_lowercase();
-    if output.contains("version 18.") {
-      return Some(candidate);
+    let output = format!("{stdout}{stderr}");
+    let output_lower = output.to_ascii_lowercase();
+
+    // Some LLVM builds print the version on line 1 ("Ubuntu LLVM version 18.1.x"),
+    // others print it on line 2 ("LLVM (http://llvm.org/):" then "LLVM version 18.1.x").
+    if output_lower.contains("version 18.") {
+      return Ok(candidate.to_string());
+    }
+
+    if mismatch.is_none() {
+      mismatch = Some((candidate.to_string(), summarize_version_output(&output)));
     }
   }
-  None
+
+  if let Some((tool, got)) = mismatch {
+    return Err(format!("expected LLVM 18.x ({tool}), got: {got}"));
+  }
+
+  Err(format!(
+    "LLVM 18 `{base}` not available (tried `{preferred}` and `{base}`)"
+  ))
 }
 
 fn dump_section(
@@ -208,24 +242,24 @@ fn parse_first_record_locations(stackmaps: &[u8]) -> io::Result<Vec<Location>> {
 
 #[test]
 fn llvm_statepoint_stackmap_has_header_and_pairs() -> io::Result<()> {
-  let opt = match find_llvm_tool("opt") {
-    Some(opt) => opt,
-    None => {
-      eprintln!("skipping: LLVM 18 `opt` not available");
+  let opt = match find_llvm18_tool("opt") {
+    Ok(opt) => opt,
+    Err(reason) => {
+      eprintln!("skipping: {reason}");
       return Ok(());
     }
   };
-  let llc = match find_llvm_tool("llc") {
-    Some(llc) => llc,
-    None => {
-      eprintln!("skipping: LLVM 18 `llc` not available");
+  let llc = match find_llvm18_tool("llc") {
+    Ok(llc) => llc,
+    Err(reason) => {
+      eprintln!("skipping: {reason}");
       return Ok(());
     }
   };
-  let llvm_objcopy = match find_llvm_tool("llvm-objcopy") {
-    Some(objcopy) => objcopy,
-    None => {
-      eprintln!("skipping: LLVM 18 `llvm-objcopy` not available");
+  let llvm_objcopy = match find_llvm18_tool("llvm-objcopy") {
+    Ok(objcopy) => objcopy,
+    Err(reason) => {
+      eprintln!("skipping: {reason}");
       return Ok(());
     }
   };
