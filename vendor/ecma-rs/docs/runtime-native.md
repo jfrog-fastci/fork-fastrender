@@ -511,6 +511,12 @@ The runtime assumes:
   - If `base_slot != derived_slot`, the runtime preserves the interior offset and
     updates the derived slot in-place after relocating the base slot:
     `derived_new = base_new + (derived_old - base_old)` (with null preserved).
+  - **Important:** LLVM stackmaps can reuse the *same base spill slot* across
+    multiple `(base, derived)` pairs when several derived pointers share one base
+    (and the base itself may also appear as `base == derived`). This means
+    derived relocation must be done **per frame** using a snapshot of the old
+    base/derived values (or equivalent fixup logic), not by relocating pairs
+    one-by-one in-place. See `runtime_native::relocate_derived_pairs`.
 - No non-pointer values are encoded as `"gc-live"` locations.
 
 See `vendor/ecma-rs/docs/llvm_statepoints_llvm18.md` for the LLVM 18

@@ -169,17 +169,42 @@ fn scan_reloc_pairs_accepts_custom_statepoint_id() {
     callsite.record.patchpoint_id, 42,
     "expected patchpoint_id override to take effect in parsed stackmap record"
   );
+  let reloc_pairs: Vec<_> = callsite.reloc_pairs().collect();
+  assert_eq!(
+    reloc_pairs.len(),
+    2,
+    "fixture should contain exactly two (base, derived) pairs (one base==derived, one base!=derived)"
+  );
 
   // Synthetic stack memory (word-aligned).
   let mut stack: Vec<usize> = vec![0; 256];
   let sp_base = stack.as_mut_ptr() as u64;
 
+  // Seed the spill slots with a base pointer and a derived pointer (base + 16).
+  let base_ptr: usize = 0x1111_2222_3333_4444;
+  let delta: usize = 16;
+
+  // Find a base!=derived pair so we can compute the derived slot address.
+  let derived_pair = reloc_pairs
+    .iter()
+    .find(|p| p.base != p.derived)
+    .expect("missing base!=derived pair");
+  let base_addr = slot_addr(sp_base, &derived_pair.base);
+  let derived_addr = slot_addr(sp_base, &derived_pair.derived);
+  unsafe {
+    (base_addr as *mut usize).write_unaligned(base_ptr);
+    (derived_addr as *mut usize).write_unaligned(base_ptr + delta);
+  }
   let mut ctx = ThreadContext::default();
   ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
   ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
 
   let pairs = scan_reloc_pairs(&ctx, &stackmaps).expect("scan");
-  assert_eq!(pairs.len(), callsite.reloc_pairs().count());
+  assert!(
+    pairs.iter().any(|&(b, d)| b as usize == base_addr && d as usize == derived_addr),
+    "expected scan to return the derived pair even with custom patchpoint_id"
+  );
+  assert_eq!(pairs.len(), reloc_pairs.len());
 }
 
 #[test]
