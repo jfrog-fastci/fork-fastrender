@@ -9,12 +9,18 @@ fn has_command(cmd: &str) -> bool {
 
 fn find_staticlib(target_dir: &Path, profile: &str) -> PathBuf {
   let direct = target_dir.join(profile).join("libruntime_native.a");
-  if direct.is_file() {
-    return direct;
-  }
-
   let deps_dir = target_dir.join(profile).join("deps");
   let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+
+  // Prefer whichever archive was built most recently. `cargo test` doesn't always refresh the
+  // top-level `target/<profile>/libruntime_native.a`, but it does build a fresh archive in `deps/`.
+  if direct.is_file() {
+    let mtime = fs::metadata(&direct)
+      .and_then(|meta| meta.modified())
+      .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    newest = Some((mtime, direct.clone()));
+  }
+
   if let Ok(entries) = fs::read_dir(&deps_dir) {
     for entry in entries.flatten() {
       let path = entry.path();

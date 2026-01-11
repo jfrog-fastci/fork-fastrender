@@ -1,7 +1,7 @@
 //! Compatibility shim for the legacy `runtime_native::stackmap` API.
 //!
-//! The canonical LLVM StackMap v3 parser lives in [`crate::stackmaps`]. This
-//! module exists for compatibility and provides:
+//! The canonical LLVM StackMap v3 parser lives in [`crate::stackmaps`]. This module exists for
+//! compatibility and provides:
 //! - Re-exports of the canonical parser/types.
 //! - A lazy global accessor ([`stackmaps`]) used by runtime stack walking / GC.
 //!
@@ -31,8 +31,8 @@ static STACKMAPS_INDEX: OnceLock<Option<crate::stackmaps::StackMaps>> = OnceLock
 
 /// Lazily parse and index the process' in-memory `.llvm_stackmaps` section.
 ///
-/// This is intended for runtime stack walking / GC root enumeration. It panics
-/// if stackmaps are unavailable or malformed.
+/// This is intended for runtime stack walking / GC root enumeration. It panics if stackmaps are
+/// unavailable or malformed.
 pub fn stackmaps() -> &'static crate::stackmaps::StackMaps {
   try_stackmaps().unwrap_or_else(|| {
     panic!(
