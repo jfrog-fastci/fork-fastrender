@@ -56,15 +56,6 @@ pub struct ObjHeader {
 
 pub const OBJ_HEADER_SIZE: usize = mem::size_of::<ObjHeader>();
 
-#[inline]
-pub(crate) fn align_up(value: usize, align: usize) -> usize {
-  assert!(align.is_power_of_two() && align != 0, "invalid align={align}");
-  value
-    .checked_add(align - 1)
-    .map(|v| v & !(align - 1))
-    .expect("align_up overflow")
-}
-
 // `meta` layout:
 // - bit 0: forwarded bit (nursery only)
 // - bit 1: mark epoch (0/1)
