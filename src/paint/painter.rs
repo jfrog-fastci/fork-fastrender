@@ -742,6 +742,7 @@ enum DisplayCommand {
   Background {
     rect: Rect,
     style: Arc<ComputedStyle>,
+    text_clip: Option<Arc<[DisplayCommand]>>,
   },
   Border {
     rect: Rect,
@@ -1690,7 +1691,7 @@ impl Painter {
 
       for (idx, (cmd, depth)) in flat.iter().take(limit).enumerate() {
         match cmd {
-          DisplayCommand::Background { rect, style } => eprintln!(
+          DisplayCommand::Background { rect, style, .. } => eprintln!(
             "  [{idx}] {:indent$}background ({:.1},{:.1},{:.1},{:.1}) color=rgba({},{},{},{:.2})",
             "",
             rect.x(),
@@ -2751,9 +2752,22 @@ impl Painter {
       } else {
         abs_bounds
       };
+      let wants_text_clip = style
+        .background_layers
+        .iter()
+        .any(|layer| layer.clip == crate::style::types::BackgroundBox::Text);
+       let text_clip = if wants_text_clip {
+         let mut clip_commands = Vec::new();
+         let offset = Point::new(abs_bounds.x() - fragment.bounds.x(), abs_bounds.y() - fragment.bounds.y());
+         self.collect_text_commands_for_clip(fragment, offset, &mut clip_commands);
+        Some(Arc::from(clip_commands.into_boxed_slice()))
+       } else {
+         None
+       };
       items.push(DisplayCommand::Background {
         rect: background_rect,
         style: style.clone(),
+        text_clip,
       });
     }
 
@@ -2964,6 +2978,63 @@ impl Painter {
     }
   }
 
+  fn collect_text_commands_for_clip(&self, fragment: &FragmentNode, offset: Point, out: &mut Vec<DisplayCommand>) {
+    let style_opt = fragment.style.as_deref();
+    if style_opt.is_some_and(|style| {
+      !matches!(
+        style.visibility,
+        crate::style::computed::Visibility::Visible
+      )
+    }) {
+      return;
+    }
+    let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
+    if opacity <= f32::EPSILON {
+      return;
+    }
+
+    if matches!(
+      fragment.content,
+      FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+    ) {
+      return;
+    }
+
+    let abs_bounds = Rect::from_xywh(
+      fragment.bounds.x() + offset.x,
+      fragment.bounds.y() + offset.y,
+      fragment.bounds.width(),
+      fragment.bounds.height(),
+    );
+
+    if let FragmentContent::Text {
+      text,
+      baseline_offset,
+      shaped,
+      is_marker,
+      ..
+    } = &fragment.content
+    {
+      if !text.is_empty() && !is_marker {
+        if let Some(style) = fragment.style.clone() {
+          out.push(DisplayCommand::Text {
+            rect: abs_bounds,
+            baseline_offset: *baseline_offset,
+            text: text.clone(),
+            runs: shaped.clone(),
+            style,
+          });
+        }
+      }
+    }
+
+    let element_scroll = self.element_scroll_offset(fragment);
+    let child_offset = Point::new(abs_bounds.x() - element_scroll.x, abs_bounds.y() - element_scroll.y);
+    for child in fragment.children.iter() {
+      self.collect_text_commands_for_clip(child, child_offset, out);
+    }
+  }
+
   fn execute_command(&mut self, command: DisplayCommand) -> Result<()> {
     let cmd_profile_threshold_ms = cmd_profile_threshold_ms();
     let cmd_profile_enabled = cmd_profile_threshold_ms.is_some();
@@ -3023,8 +3094,16 @@ impl Painter {
       }
     });
     match command {
-      DisplayCommand::Background { rect, style } => {
-        self.paint_background(rect.x(), rect.y(), rect.width(), rect.height(), &style);
+      DisplayCommand::Background {
+        rect,
+        style,
+        text_clip,
+      } => {
+        if let Some(text_clip) = text_clip.as_deref() {
+          self.paint_background_with_text_clip(rect, &style, text_clip)?;
+        } else {
+          self.paint_background(rect.x(), rect.y(), rect.width(), rect.height(), &style);
+        }
       }
       DisplayCommand::Border { rect, style, gap } => {
         self.paint_borders(rect.x(), rect.y(), rect.width(), rect.height(), &style, gap);
@@ -5293,6 +5372,322 @@ impl Painter {
       mask: Some(mask),
       dirty: Some(dirty),
     }))
+  }
+
+  fn paint_background_with_text_clip(
+    &mut self,
+    rect: Rect,
+    style: &ComputedStyle,
+    text_clip: &[DisplayCommand],
+  ) -> RenderResult<()> {
+    check_active(RenderStage::Paint)?;
+
+    let timer = self.diagnostics_enabled.then(Instant::now);
+    let rects = background_rects(
+      rect.x(),
+      rect.y(),
+      rect.width(),
+      rect.height(),
+      style,
+      Some((self.css_width, self.css_height)),
+    );
+    let scaled_rects = self.scale_background_rects(&rects);
+
+    let fallback_layer = BackgroundLayer::default();
+    let color_clip_layer = style.background_layers.first().unwrap_or(&fallback_layer);
+    let color_clip_rect = match color_clip_layer.clip {
+      crate::style::types::BackgroundBox::BorderBox => scaled_rects.border,
+      crate::style::types::BackgroundBox::PaddingBox => scaled_rects.padding,
+      crate::style::types::BackgroundBox::ContentBox | crate::style::types::BackgroundBox::Text => {
+        scaled_rects.content
+      }
+    };
+
+    if color_clip_rect.width() <= 0.0 || color_clip_rect.height() <= 0.0 {
+      if let Some(start) = timer {
+        with_paint_diagnostics(|diag| {
+          diag.background_ms += start.elapsed().as_secs_f64() * 1000.0;
+        });
+      }
+      return Ok(());
+    }
+
+    let color_clip_radii = self.device_radii(resolve_clip_radii(
+      style,
+      &rects,
+      color_clip_layer.clip,
+      Some((self.css_width, self.css_height)),
+    ));
+
+    let wants_text_clip = style
+      .background_layers
+      .iter()
+      .any(|layer| layer.clip == crate::style::types::BackgroundBox::Text);
+
+    let mut text_clip_layer_origin_css = Point::new(0.0, 0.0);
+    let mut text_clip_layer_x0 = 0i32;
+    let mut text_clip_layer_y0 = 0i32;
+    let mut text_clip_layer_w = 0u32;
+    let mut text_clip_layer_h = 0u32;
+    let mut text_mask: Option<Mask> = None;
+
+    if wants_text_clip && !text_clip.is_empty() {
+      let canvas_rect_css = if self.scale.is_finite() && self.scale.abs() > f32::EPSILON {
+        Rect::from_xywh(
+          self.origin_offset_css.x,
+          self.origin_offset_css.y,
+          self.pixmap.width() as f32 / self.scale,
+          self.pixmap.height() as f32 / self.scale,
+        )
+      } else {
+        Rect::from_xywh(0.0, 0.0, self.css_width, self.css_height)
+      };
+      if let Some(visible_content_css) = rects.content.intersection(canvas_rect_css) {
+        if visible_content_css.width() > 0.0 && visible_content_css.height() > 0.0 {
+          let device_rect = self.device_rect(visible_content_css);
+          if device_rect.width().is_finite()
+            && device_rect.height().is_finite()
+            && device_rect.width() > 0.0
+            && device_rect.height() > 0.0
+          {
+            let canvas_w = self.pixmap.width() as i32;
+            let canvas_h = self.pixmap.height() as i32;
+            if canvas_w > 0 && canvas_h > 0 {
+              const MARGIN_PX: i32 = 2;
+              let mut x0 = device_rect.x().floor() as i32 - MARGIN_PX;
+              let mut y0 = device_rect.y().floor() as i32 - MARGIN_PX;
+              let mut x1 = (device_rect.x() + device_rect.width()).ceil() as i32 + MARGIN_PX;
+              let mut y1 = (device_rect.y() + device_rect.height()).ceil() as i32 + MARGIN_PX;
+
+              x0 = x0.clamp(0, canvas_w);
+              y0 = y0.clamp(0, canvas_h);
+              x1 = x1.clamp(0, canvas_w);
+              y1 = y1.clamp(0, canvas_h);
+
+              if x1 > x0 && y1 > y0 {
+                text_clip_layer_x0 = x0;
+                text_clip_layer_y0 = y0;
+                text_clip_layer_w = (x1 - x0) as u32;
+                text_clip_layer_h = (y1 - y0) as u32;
+                text_clip_layer_origin_css = Point::new(
+                  self.origin_offset_css.x + (x0 as f32) / self.scale,
+                  self.origin_offset_css.y + (y0 as f32) / self.scale,
+                );
+
+                if let Some(dummy_pixmap) = new_pixmap(1, 1) {
+                  let mask_ctx = Painter {
+                    pixmap: dummy_pixmap,
+                    scale: self.scale,
+                    origin_offset_css: text_clip_layer_origin_css,
+                    css_width: self.css_width,
+                    css_height: self.css_height,
+                    background: Rgba::new(0, 0, 0, 0.0),
+                    shaper: ShapingPipeline::new(),
+                    font_ctx: self.font_ctx.clone(),
+                    image_cache: self.image_cache.clone(),
+                    svg_id_defs: self.svg_id_defs.clone(),
+                    svg_id_defs_raw: self.svg_id_defs_raw.clone(),
+                    text_shape_cache: Arc::clone(&self.text_shape_cache),
+                    trace: self.trace.clone(),
+                    scroll_state: self.scroll_state.clone(),
+                    max_iframe_depth: self.max_iframe_depth,
+                    gradient_cache: self.gradient_cache.clone(),
+                    gradient_stats: GradientStats::default(),
+                    diagnostics_enabled: self.diagnostics_enabled,
+                  };
+                  text_mask = mask_ctx.build_text_clip_mask_from_commands(
+                    text_clip,
+                    (text_clip_layer_w, text_clip_layer_h),
+                  )?;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if style.background_color.alpha_u8() > 0 {
+      let clips_text = color_clip_layer.clip == crate::style::types::BackgroundBox::Text;
+      if clips_text {
+        if let Some(text_mask) = text_mask.as_ref() {
+          self.paint_text_clipped_offscreen_layer(
+            text_clip_layer_x0,
+            text_clip_layer_y0,
+            text_clip_layer_origin_css,
+            text_clip_layer_w,
+            text_clip_layer_h,
+            text_mask,
+            MixBlendMode::Normal,
+            |painter| {
+              let scaled_rects = painter.scale_background_rects(&rects);
+              let color_clip_rect = match color_clip_layer.clip {
+                crate::style::types::BackgroundBox::BorderBox => scaled_rects.border,
+                crate::style::types::BackgroundBox::PaddingBox => scaled_rects.padding,
+                crate::style::types::BackgroundBox::ContentBox
+                | crate::style::types::BackgroundBox::Text => scaled_rects.content,
+              };
+              let radii = painter.device_radii(resolve_clip_radii(
+                style,
+                &rects,
+                color_clip_layer.clip,
+                Some((painter.css_width, painter.css_height)),
+              ));
+              let _ = fill_rounded_rect(
+                &mut painter.pixmap,
+                color_clip_rect.x(),
+                color_clip_rect.y(),
+                color_clip_rect.width(),
+                color_clip_rect.height(),
+                &radii,
+                style.background_color,
+              );
+            },
+          )?;
+        }
+      } else {
+        let _ = fill_rounded_rect(
+          &mut self.pixmap,
+          color_clip_rect.x(),
+          color_clip_rect.y(),
+          color_clip_rect.width(),
+          color_clip_rect.height(),
+          &color_clip_radii,
+          style.background_color,
+        );
+      }
+    }
+
+    for layer in style.background_layers.iter().rev() {
+      let Some(image) = &layer.image else { continue };
+      let clips_text = layer.clip == crate::style::types::BackgroundBox::Text;
+      if clips_text {
+        if let Some(text_mask) = text_mask.as_ref() {
+          let mut layer_src = layer.clone();
+          layer_src.blend_mode = MixBlendMode::Normal;
+          let blend_mode = layer.blend_mode;
+          self.paint_text_clipped_offscreen_layer(
+            text_clip_layer_x0,
+            text_clip_layer_y0,
+            text_clip_layer_origin_css,
+            text_clip_layer_w,
+            text_clip_layer_h,
+            text_mask,
+            blend_mode,
+            |painter| {
+              painter.paint_background_image_layer(&rects, style, &layer_src, image);
+            },
+          )?;
+        }
+      } else {
+        self.paint_background_image_layer(&rects, style, layer, image);
+      }
+    }
+
+    if let Some(start) = timer {
+      with_paint_diagnostics(|diag| {
+        diag.background_ms += start.elapsed().as_secs_f64() * 1000.0;
+      });
+    }
+
+    Ok(())
+  }
+
+  fn composite_pixmap_with_blend_mode(&mut self, x0: i32, y0: i32, pixmap: &Pixmap, mode: MixBlendMode) {
+    if is_hsl_blend(mode) {
+      composite_hsl_layer_offset(&mut self.pixmap, pixmap, 1.0, mode, x0, y0);
+      return;
+    }
+
+    let mut paint = PixmapPaint::default();
+    paint.opacity = 1.0;
+    paint.blend_mode = map_blend_mode(mode);
+    if paint.blend_mode == SkiaBlendMode::Plus {
+      draw_pixmap_with_plus_blend(
+        &mut self.pixmap,
+        x0,
+        y0,
+        pixmap.as_ref(),
+        paint.opacity,
+        paint.quality,
+        Transform::identity(),
+        None,
+      );
+    } else {
+      self.pixmap.draw_pixmap(
+        x0,
+        y0,
+        pixmap.as_ref(),
+        &paint,
+        Transform::identity(),
+        None,
+      );
+    }
+  }
+
+  fn paint_text_clipped_offscreen_layer<F>(
+    &mut self,
+    x0: i32,
+    y0: i32,
+    origin_offset_css: Point,
+    layer_w: u32,
+    layer_h: u32,
+    text_mask: &Mask,
+    blend_mode: MixBlendMode,
+    paint: F,
+  ) -> RenderResult<()>
+  where
+    F: FnOnce(&mut Painter),
+  {
+    check_active(RenderStage::Paint)?;
+    if layer_w == 0 || layer_h == 0 {
+      return Ok(());
+    }
+    let Some(mut layer_pixmap) = new_pixmap(layer_w, layer_h) else {
+      return Ok(());
+    };
+    if self.diagnostics_enabled {
+      record_layer_allocation(layer_w, layer_h);
+    }
+    layer_pixmap.data_mut().fill(0);
+
+    let mut layer_painter = Painter {
+      pixmap: layer_pixmap,
+      scale: self.scale,
+      origin_offset_css,
+      css_width: self.css_width,
+      css_height: self.css_height,
+      background: Rgba::new(0, 0, 0, 0.0),
+      shaper: ShapingPipeline::new(),
+      font_ctx: self.font_ctx.clone(),
+      image_cache: self.image_cache.clone(),
+      svg_id_defs: self.svg_id_defs.clone(),
+      svg_id_defs_raw: self.svg_id_defs_raw.clone(),
+      text_shape_cache: Arc::clone(&self.text_shape_cache),
+      trace: self.trace.clone(),
+      scroll_state: self.scroll_state.clone(),
+      max_iframe_depth: self.max_iframe_depth,
+      gradient_cache: self.gradient_cache.clone(),
+      gradient_stats: GradientStats::default(),
+      diagnostics_enabled: self.diagnostics_enabled,
+    };
+
+    paint(&mut layer_painter);
+
+    apply_text_clip_mask_to_pixmap_alpha(
+      &mut layer_painter.pixmap,
+      text_mask,
+      ClipMaskDirtyRect {
+        x0: 0,
+        y0: 0,
+        x1: layer_w,
+        y1: layer_h,
+      },
+    )?;
+
+    self.gradient_stats.merge(&layer_painter.gradient_stats);
+    self.composite_pixmap_with_blend_mode(x0, y0, &layer_painter.pixmap, blend_mode);
+    Ok(())
   }
 
   /// Paints the background of a fragment
@@ -16300,6 +16695,101 @@ fn composite_hsl_layer(
   }
 }
 
+fn composite_hsl_layer_offset(
+  dest: &mut Pixmap,
+  layer: &Pixmap,
+  opacity: f32,
+  mode: MixBlendMode,
+  offset_x: i32,
+  offset_y: i32,
+) {
+  if !is_hsl_blend(mode) {
+    return;
+  }
+  let opacity = opacity.clamp(0.0, 1.0);
+  if opacity <= 0.0 {
+    return;
+  }
+
+  let dest_w = dest.width() as i32;
+  let dest_h = dest.height() as i32;
+  let src_w = layer.width() as i32;
+  let src_h = layer.height() as i32;
+  if dest_w <= 0 || dest_h <= 0 || src_w <= 0 || src_h <= 0 {
+    return;
+  }
+
+  let dst_x0 = offset_x.max(0);
+  let dst_y0 = offset_y.max(0);
+  let dst_x1 = (offset_x + src_w).min(dest_w);
+  let dst_y1 = (offset_y + src_h).min(dest_h);
+  if dst_x0 >= dst_x1 || dst_y0 >= dst_y1 {
+    return;
+  }
+
+  let src_pixels = layer.pixels();
+  let src_stride = src_w as usize;
+  let dst_stride = dest_w as usize;
+  let dst_pixels = dest.pixels_mut();
+
+  for dy in dst_y0..dst_y1 {
+    let sy = (dy - offset_y) as usize;
+    let dst_row = dy as usize;
+    for dx in dst_x0..dst_x1 {
+      let sx = (dx - offset_x) as usize;
+      let src_px = src_pixels[sy * src_stride + sx];
+      let raw_sa = src_px.alpha() as f32 / 255.0;
+      if raw_sa == 0.0 {
+        continue;
+      }
+
+      let sa = (raw_sa * opacity).clamp(0.0, 1.0);
+      if sa == 0.0 {
+        continue;
+      }
+
+      let dst_px = &mut dst_pixels[dst_row * dst_stride + dx as usize];
+      let da = dst_px.alpha() as f32 / 255.0;
+
+      let src_rgb = (
+        (src_px.red() as f32 / 255.0) / raw_sa,
+        (src_px.green() as f32 / 255.0) / raw_sa,
+        (src_px.blue() as f32 / 255.0) / raw_sa,
+      );
+      let dst_rgb = if da > 0.0 {
+        (
+          (dst_px.red() as f32 / 255.0) / da,
+          (dst_px.green() as f32 / 255.0) / da,
+          (dst_px.blue() as f32 / 255.0) / da,
+        )
+      } else {
+        (0.0, 0.0, 0.0)
+      };
+
+      let blended_rgb = apply_hsl_blend(mode, src_rgb, dst_rgb);
+
+      let out_a = sa + da * (1.0 - sa);
+      let out_rgb = if out_a > 0.0 {
+        (
+          (blended_rgb.0 * sa + dst_rgb.0 * da * (1.0 - sa)) / out_a,
+          (blended_rgb.1 * sa + dst_rgb.1 * da * (1.0 - sa)) / out_a,
+          (blended_rgb.2 * sa + dst_rgb.2 * da * (1.0 - sa)) / out_a,
+        )
+      } else {
+        (0.0, 0.0, 0.0)
+      };
+
+      let out_a_u8 = (out_a * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+      let scale = out_a;
+      let r = ((out_rgb.0 * scale) * 255.0 + 0.5).clamp(0.0, out_a_u8 as f32) as u8;
+      let g = ((out_rgb.1 * scale) * 255.0 + 0.5).clamp(0.0, out_a_u8 as f32) as u8;
+      let b = ((out_rgb.2 * scale) * 255.0 + 0.5).clamp(0.0, out_a_u8 as f32) as u8;
+      *dst_px = PremultipliedColorU8::from_rgba(r, g, b, out_a_u8)
+        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    }
+  }
+}
+
 fn map_blend_mode(mode: MixBlendMode) -> SkiaBlendMode {
   match mode {
     MixBlendMode::Normal => SkiaBlendMode::SourceOver,
@@ -16904,9 +17394,15 @@ fn apply_text_clip_mask_to_pixmap_alpha(
       check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
       let x_end = (x + CLIP_MASK_DEADLINE_STRIDE).min(row_len);
       for _ in x..x_end {
-        let alpha = data[pix_idx] as u16;
         let clip = text_data[text_idx] as u16;
-        data[pix_idx] = div_255(alpha * clip) as u8;
+        let r = data[pix_idx - 3] as u16;
+        let g = data[pix_idx - 2] as u16;
+        let b = data[pix_idx - 1] as u16;
+        let a = data[pix_idx] as u16;
+        data[pix_idx - 3] = div_255(r * clip) as u8;
+        data[pix_idx - 2] = div_255(g * clip) as u8;
+        data[pix_idx - 1] = div_255(b * clip) as u8;
+        data[pix_idx] = div_255(a * clip) as u8;
         pix_idx += 4;
         text_idx += 1;
       }
@@ -22341,10 +22837,12 @@ mod tests {
       DisplayCommand::Background {
         rect: root_rect,
         style: style.clone(),
+        text_clip: None,
       },
       DisplayCommand::Background {
         rect: Rect::from_xywh(1000.0, 0.0, 10.0, 10.0),
         style,
+        text_clip: None,
       },
     ];
     let clip = Some(StackingClip {
@@ -23189,6 +23687,7 @@ mod tests {
       commands: vec![DisplayCommand::Background {
         rect: Rect::from_xywh(1.0, 1.0, 2.0, 2.0),
         style,
+        text_clip: None,
       }],
     };
 

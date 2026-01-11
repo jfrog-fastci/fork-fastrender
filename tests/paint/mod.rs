@@ -97,6 +97,7 @@ mod marker_text_shadow_vertical;
 mod marker_underline_order;
 mod font_smoothing_display_list_test;
 mod mask_clip_text_test;
+mod background_clip_text_test;
 mod mask_border_basic;
 mod mask_border;
 mod mask_multiple_layers_composite;
