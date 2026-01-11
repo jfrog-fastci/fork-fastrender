@@ -246,7 +246,7 @@ fn statepoints_only_mode_uses_layout_detection_not_patchpoint_id() {
     version: 3,
     functions: vec![StackSizeRecord {
       address: 0x1000,
-      stack_size: 32,
+      stack_size: StackSize::Known(32),
       record_count: 1,
     }],
     constants: vec![],
