@@ -174,3 +174,31 @@ fn stack_bounds_pthread() -> Option<(usize, usize)> {
     Some((lo.min(hi), lo.max(hi)))
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn thread_layout_is_stable() {
+    use std::mem::{align_of, offset_of, size_of};
+
+    // The runtime/native codegen contract currently assumes 64-bit pointers.
+    assert_eq!(size_of::<usize>(), 8);
+
+    // `Thread` is `repr(C)` and codegen is expected to hardcode field offsets.
+    assert_eq!(align_of::<Thread>(), 8);
+    assert_eq!(size_of::<Thread>(), 80);
+
+    assert_eq!(offset_of!(Thread, id), 0);
+    assert_eq!(offset_of!(Thread, os_tid), 8);
+    assert_eq!(offset_of!(Thread, stack_lo), 16);
+    assert_eq!(offset_of!(Thread, stack_hi), 24);
+    assert_eq!(offset_of!(Thread, state), 32);
+    assert_eq!(offset_of!(Thread, local_epoch), 40);
+    assert_eq!(offset_of!(Thread, sp), 48);
+    assert_eq!(offset_of!(Thread, fp), 56);
+    assert_eq!(offset_of!(Thread, ip), 64);
+    assert_eq!(offset_of!(Thread, runtime), 72);
+  }
+}

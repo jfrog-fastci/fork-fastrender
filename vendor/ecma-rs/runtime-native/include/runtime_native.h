@@ -171,6 +171,22 @@ void rt_unregister_thread(void);
 typedef struct Runtime Runtime;
 typedef struct Thread Thread;
 
+// TLS pointer to the current thread record (set by `rt_thread_attach`).
+//
+// Generated code may load this symbol directly to access per-thread state with
+// minimal overhead.
+#if defined(__cplusplus)
+extern thread_local Thread* RT_THREAD;
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+extern _Thread_local Thread* RT_THREAD;
+#elif defined(__GNUC__) || defined(__clang__)
+extern __thread Thread* RT_THREAD;
+#else
+// No TLS storage specifier available; declare as a normal extern as a best-effort fallback.
+// Consumers that rely on per-thread state must compile with TLS support.
+extern Thread* RT_THREAD;
+#endif
+
 Thread* rt_thread_attach(Runtime* runtime);
 void rt_thread_detach(Thread* thread);
 
