@@ -42,12 +42,12 @@ fn target_dir() -> PathBuf {
 
 fn find_staticlib(target_dir: &Path, profile: &str) -> PathBuf {
   let direct = target_dir.join(profile).join("libruntime_native.a");
-  if direct.is_file() {
-    return direct;
-  }
+  let mut newest: Option<(std::time::SystemTime, PathBuf)> = fs::metadata(&direct)
+    .and_then(|meta| meta.modified())
+    .ok()
+    .map(|mtime| (mtime, direct.clone()));
 
   let deps_dir = target_dir.join(profile).join("deps");
-  let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
   if let Ok(entries) = fs::read_dir(&deps_dir) {
     for entry in entries.flatten() {
       let path = entry.path();
