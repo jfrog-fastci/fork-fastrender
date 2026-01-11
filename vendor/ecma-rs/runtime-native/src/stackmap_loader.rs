@@ -339,6 +339,129 @@ impl<'a> Cursor<'a> {
   }
 }
 
+/// Load the current process's in-memory `.llvm_stackmaps` section (Linux x86_64).
+///
+/// This is a convenience wrapper for consumers that only care about stackmaps in
+/// the main executable. For environments that can `dlopen` managed code, prefer
+/// [`load_all_llvm_stackmaps`] + [`build_global_stackmap_index`].
+pub fn load_llvm_stackmaps() -> anyhow::Result<&'static [u8]> {
+  #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+  {
+    use std::ffi::CStr;
+    use std::os::raw::c_int;
+
+    let file = std::fs::read("/proc/self/exe").context("read /proc/self/exe for stackmap discovery")?;
+    let elf = object::File::parse(&*file).context("parse /proc/self/exe as ELF")?;
+
+    let section = find_stackmap_section_vaddr_and_size(&elf)?
+      .ok_or_else(|| anyhow::anyhow!("stackmap section not found in /proc/self/exe"))?;
+    if section.size == 0 {
+      anyhow::bail!("stackmap section exists but is empty");
+    }
+
+    // Stack maps are metadata; if this is enormous something went very wrong
+    // (e.g. we mis-parsed the ELF or are looking at the wrong section).
+    const MAX_STACKMAP_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
+    if section.size > MAX_STACKMAP_BYTES {
+      anyhow::bail!(
+        "invalid stackmaps section size: {size} bytes (max {MAX_STACKMAP_BYTES})",
+        size = section.size
+      );
+    }
+
+    struct Ctx {
+      vaddr: u64,
+      size: u64,
+      out: Option<&'static [u8]>,
+      err: Option<anyhow::Error>,
+    }
+
+    unsafe extern "C" fn cb(
+      info: *mut libc::dl_phdr_info,
+      _size: libc::size_t,
+      data: *mut libc::c_void,
+    ) -> c_int {
+      let ctx = &mut *(data as *mut Ctx);
+      if ctx.err.is_some() {
+        return 1;
+      }
+
+      let info = &*info;
+      let base: u64 = info.dlpi_addr as u64;
+      let name_bytes = if info.dlpi_name.is_null() {
+        &b""[..]
+      } else {
+        CStr::from_ptr(info.dlpi_name).to_bytes()
+      };
+      // glibc reports the main executable with an empty name.
+      if !name_bytes.is_empty() {
+        return 0;
+      }
+
+      let Some(start) = base.checked_add(ctx.vaddr) else {
+        ctx.err = Some(anyhow::anyhow!(
+          "address overflow computing stackmaps start: base={base:#x} vaddr={vaddr:#x}",
+          vaddr = ctx.vaddr
+        ));
+        return 1;
+      };
+      let Some(end) = start.checked_add(ctx.size) else {
+        ctx.err = Some(anyhow::anyhow!(
+          "address overflow computing stackmaps end: start={start:#x} size={size:#x}",
+          size = ctx.size
+        ));
+        return 1;
+      };
+
+      // Ensure the computed range is within a readable PT_LOAD segment.
+      if !range_in_readable_load_segment(info, base, start, end) {
+        ctx.err = Some(anyhow::anyhow!(
+          "stackmaps section range [{start:#x},{end:#x}) is not covered by a readable PT_LOAD segment"
+        ));
+        return 1;
+      }
+
+      let len = match usize::try_from(ctx.size) {
+        Ok(l) => l,
+        Err(_) => {
+          ctx.err = Some(anyhow::anyhow!(
+            "stackmaps section size does not fit usize: {size}",
+            size = ctx.size
+          ));
+          return 1;
+        }
+      };
+
+      // Safety: stackmaps section is expected to be mapped as a readable segment
+      // for the lifetime of the executable.
+      ctx.out = Some(std::slice::from_raw_parts(start as *const u8, len));
+      1
+    }
+
+    let mut ctx = Ctx {
+      vaddr: section.vaddr,
+      size: section.size,
+      out: None,
+      err: None,
+    };
+    unsafe {
+      libc::dl_iterate_phdr(Some(cb), (&mut ctx as *mut Ctx).cast());
+    }
+
+    if let Some(err) = ctx.err {
+      return Err(err);
+    }
+    ctx
+      .out
+      .ok_or_else(|| anyhow::anyhow!("dl_iterate_phdr did not report the main executable"))
+  }
+
+  #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+  {
+    anyhow::bail!("load_llvm_stackmaps is only supported on Linux x86_64");
+  }
+}
+
 /// Collect all in-memory `.llvm_stackmaps` sections across all loaded ELF images
 /// (main executable + DSOs).
 ///

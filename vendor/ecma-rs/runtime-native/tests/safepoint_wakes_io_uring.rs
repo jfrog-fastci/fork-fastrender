@@ -35,10 +35,12 @@ fn safepoint_request_wakes_io_uring_wait() {
   });
 
   started_rx
-    .recv_timeout(Duration::from_secs(1))
+    // CI can be heavily loaded; give the OS scheduler some slack before
+    // declaring the worker thread "stuck".
+    .recv_timeout(Duration::from_secs(5))
     .expect("wait thread did not start");
 
-  let deadline = Instant::now() + Duration::from_secs(1);
+  let deadline = Instant::now() + Duration::from_secs(5);
   loop {
     if runtime_native::io::uring::debug_in_uring_wait() {
       std::thread::sleep(Duration::from_millis(10));

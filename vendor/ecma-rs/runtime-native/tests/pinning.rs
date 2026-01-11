@@ -186,6 +186,7 @@ fn detach_transfer_and_resize_are_blocked_while_pinned() {
   assert_eq!(buffer.detach(), Err(ArrayBufferError::Pinned));
   assert_eq!(buffer.transfer().unwrap_err(), ArrayBufferError::Pinned);
   assert_eq!(buffer.resize(16), Err(ArrayBufferError::Pinned));
+  assert_eq!(buffer.resize(4), Err(ArrayBufferError::Pinned));
 
   drop(pinned);
   assert_eq!(buffer.pin_count(), 0);
@@ -225,7 +226,7 @@ fn pinned_array_buffer_can_drop_on_other_thread_after_finalize() {
 
   handle.join().unwrap();
   assert_eq!(alloc.external_bytes(), 0);
-
+ 
   // Detach is idempotent.
   buffer.detach().unwrap();
   assert!(matches!(buffer.pin(), Err(ArrayBufferError::Detached)));
