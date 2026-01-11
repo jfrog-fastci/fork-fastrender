@@ -44,7 +44,7 @@ The **current** minimal pipeline (used by `native-js-cli`) is:
 TypeScript source
   → typecheck-ts (module graph discovery only; diagnostics are ignored)
   → native-js `compile_project_to_llvm_ir` (minimal parse-js-driven emitter)
-  → clang (compile IR to native executable)
+  → LLVM (in-process object emission) + `clang`/`lld` (link)
 ```
 
 > Note: this pipeline is still **parse-js-driven** and does not use TypeScript's
@@ -103,7 +103,8 @@ bash scripts/cargo_llvm.sh test -p native-js --lib
 ### Runnable example (in-memory source → native executable)
 
 This crate ships a small runnable example that compiles an in-memory TypeScript snippet to a native
-executable (TS → textual LLVM IR → `clang` → native executable), runs it, and prints stdout:
+executable (TS → textual LLVM IR → LLVM object emission → `clang`/`lld` link → native executable),
+runs it, and prints stdout:
 
 ```bash
 # From repo root:
@@ -545,7 +546,7 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib llvm_ir_sanity
 ### Run the native pipeline smoke tests
 
 The `native-js` workspace also contains `native-js-cli`, which exercises the
-current minimal IR emitter end-to-end (TS → LLVM IR → `clang` → run):
+current minimal IR emitter end-to-end (TS → LLVM IR → object emission + link → run):
 
 ```bash
 # From repo root:

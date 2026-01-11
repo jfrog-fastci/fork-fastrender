@@ -22,7 +22,8 @@ native-js run input.ts
 The `native-js-cli` binary is intentionally narrow in scope: it compiles a
 **TypeScript module entry file** (plus a small subset of ES module imports) to
 textual LLVM IR (via a small `parse-js`-driven IR emitter in `native-js`),
-invokes `clang` to produce a temporary executable, and then runs it.
+then uses `native-js`’s artifact pipeline to emit an object file via LLVM and
+link a temporary executable (via `clang`/`lld`), and then runs it.
 
 > Note: this path is still **parse-js-driven** and does not perform real
 > TypeScript typechecking for code generation. However, it *does* invoke
@@ -53,9 +54,10 @@ This binary is primarily useful for:
 > bash scripts/cargo_llvm.sh run -p native-js-cli -- <args...>
 > ```
 
-`native-js-cli` shells out to `clang` to compile the generated `.ll` into a
-temporary executable. Using `cargo_llvm.sh` is the easiest way to ensure the
-LLVM 18 `clang` is on `PATH`.
+`native-js-cli` uses `native-js` to compile the generated `.ll` into an object
+file in-process via LLVM, and then shells out to `clang`/`lld` for linking.
+Using `cargo_llvm.sh` is the easiest way to ensure the LLVM 18 toolchain is on
+`PATH`.
 
 If you are setting up LLVM locally, see [`native-js/README.md`](../native-js/README.md)
 for required packages and the `LLVM_SYS_180_PREFIX` environment variable.
@@ -138,8 +140,9 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
 opt-18 -verify -disable-output /tmp/out.ll
 ```
 
-This is especially useful when `clang` fails to compile the generated IR (the
-CLI normally writes IR to a temporary directory that is deleted on exit).
+This is especially useful when LLVM rejects the generated IR (verification /
+codegen) or when linking fails (the CLI normally writes IR to a temporary
+directory that is deleted on exit).
 
 Note: `native-js-cli` still runs the compiled program after writing the IR. If
 you want to stop after compilation, compile the emitted IR yourself:
@@ -260,7 +263,7 @@ caret spans). For source-level debugging, consider using `parse-js-cli` or
 Exit codes:
 
 - `0` on success
-- non-zero if parsing/codegen fails, if `clang` fails, or if the compiled program
+- non-zero if parsing/codegen fails, if linking fails, or if the compiled program
   exits non-zero (the CLI forwards the program’s exit code).
 
 ## `tsconfig.json` support
