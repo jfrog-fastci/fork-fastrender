@@ -101,7 +101,6 @@ mod aarch64 {
   use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
   use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::statepoints::{AARCH64_DWARF_REG_SP, StatepointRecord};
-  use runtime_native::test_util::TestRuntimeGuard;
   use runtime_native::StackMaps;
 
   #[test]
