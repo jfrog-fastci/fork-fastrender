@@ -6,6 +6,7 @@ set -euo pipefail
 # Prefer deterministic builds by default; opt back in with FASTR_CARGO_USE_SCCACHE=1.
 if [[ "${FASTR_CARGO_USE_SCCACHE:-0}" != "1" ]]; then
   export RUSTC_WRAPPER=
+  export CARGO_BUILD_RUSTC_WRAPPER=
   export SCCACHE_DISABLE=1
 fi
 
@@ -137,6 +138,9 @@ fi
 # keeps working.
 argv=("$@")
 for ((i = 0; i < ${#argv[@]}; i++)); do
+  if [[ "${argv[$i]}" == "--" ]]; then
+    break
+  fi
   if [[ "${argv[$i]}" == "--test" && "${argv[$((i + 1))]:-}" == "layout" ]]; then
     argv[$((i + 1))]="layout_tests"
   elif [[ "${argv[$i]}" == "--test" && "${argv[$((i + 1))]:-}" == "style" ]]; then
@@ -182,32 +186,44 @@ fi
 # package can be resolved.
 if [[ "$*" != *"--manifest-path"* ]]; then
   argv=("$@")
-  pkg=""
-  for ((i = 0; i < ${#argv[@]}; i++)); do
-    case "${argv[$i]}" in
-      -p|--package)
-        pkg="${argv[$((i + 1))]:-}"
-        ;;
-      --package=*)
-        pkg="${argv[$i]#--package=}"
-        ;;
-    esac
-    if [[ -n "${pkg}" && -f "${repo_root}/vendor/ecma-rs/${pkg}/Cargo.toml" ]]; then
-      subcmd_pos=0
-      if [[ "${argv[0]:-}" == +* ]]; then
-        subcmd_pos=1
+  subcmd_pos=0
+  if [[ "${argv[0]:-}" == +* ]]; then
+    subcmd_pos=1
+  fi
+  subcmd="${argv[${subcmd_pos}]:-}"
+
+  # `xtask` is a wrapper-managed subcommand (`scripts/cargo_agent.sh xtask ...` builds the xtask
+  # binary and then executes it directly). Arguments after `xtask` are xtask CLI flags, so do not
+  # interpret `--package` / `-p` occurrences there as Cargo package selectors.
+  if [[ "${subcmd}" != "xtask" ]]; then
+    pkg=""
+    for ((i = 0; i < ${#argv[@]}; i++)); do
+      # Stop once we reach the argument delimiter. Anything after `--` is forwarded to rustc / the
+      # test harness / the executed binary, and should not be interpreted as Cargo flags.
+      if [[ "${argv[$i]}" == "--" ]]; then
+        break
       fi
-      insert_pos=$((subcmd_pos + 1))
-      argv=(
-        "${argv[@]:0:${insert_pos}}"
-        --manifest-path "${repo_root}/vendor/ecma-rs/Cargo.toml"
-        "${argv[@]:${insert_pos}}"
-      )
-      set -- "${argv[@]}"
-      cargo_workdir="${repo_root}/vendor/ecma-rs"
-      break
-    fi
-  done
+      case "${argv[$i]}" in
+        -p|--package)
+          pkg="${argv[$((i + 1))]:-}"
+          ;;
+        --package=*)
+          pkg="${argv[$i]#--package=}"
+          ;;
+      esac
+      if [[ -n "${pkg}" && -f "${repo_root}/vendor/ecma-rs/${pkg}/Cargo.toml" ]]; then
+        insert_pos=$((subcmd_pos + 1))
+        argv=(
+          "${argv[@]:0:${insert_pos}}"
+          --manifest-path "${repo_root}/vendor/ecma-rs/Cargo.toml"
+          "${argv[@]:${insert_pos}}"
+        )
+        set -- "${argv[@]}"
+        cargo_workdir="${repo_root}/vendor/ecma-rs"
+        break
+      fi
+    done
+  fi
 fi
 
 # `runtime-native` contains an FP-based stack walker / GC root enumerator and enforces
@@ -318,7 +334,12 @@ if [[ "${needs_frame_pointers}" == "1" && "${RUSTFLAGS:-}" != *"force-frame-poin
 fi
 
 nproc="${FASTR_CARGO_NPROC:-}"
-if [[ -z "${nproc}" ]]; then
+if [[ -n "${nproc}" ]]; then
+  if ! [[ "${nproc}" =~ ^[0-9]+$ ]] || [[ "${nproc}" -lt 1 ]]; then
+    echo "invalid FASTR_CARGO_NPROC: ${nproc}" >&2
+    exit 2
+  fi
+else
   if command -v nproc >/dev/null 2>&1; then
     nproc="$(nproc 2>/dev/null || true)"
   fi
@@ -348,7 +369,15 @@ fi
 
 # Default slots: keep concurrency low by default since each command uses -j nproc.
 slots="${FASTR_CARGO_SLOTS:-}"
-if [[ -z "${slots}" ]]; then
+if [[ "${slots}" == "auto" ]]; then
+  slots=""
+fi
+if [[ -n "${slots}" ]]; then
+  if ! [[ "${slots}" =~ ^[0-9]+$ ]] || [[ "${slots}" -lt 1 ]]; then
+    echo "invalid FASTR_CARGO_SLOTS: ${slots}" >&2
+    exit 2
+  fi
+else
   # Avoid cargo stampedes: allow a few concurrent cargo commands, but not "one per agent".
   # Heuristic: ~1 concurrent cargo per 48 hw threads (clamped).
   slots=$(( nproc / 48 ))
@@ -393,6 +422,9 @@ if [[ "${limit_as_defaulted}" -eq 1 ]]; then
     limit_as="${FASTR_XTASK_LIMIT_AS:-96G}"
   elif [[ "${subcmd}" == "run" ]]; then
     for ((i = subcmd_pos + 1; i < ${#argv[@]}; i++)); do
+      if [[ "${argv[$i]}" == "--" ]]; then
+        break
+      fi
       if [[ "${argv[$i]}" == "-p" || "${argv[$i]}" == "--package" ]]; then
         if [[ "${argv[$((i + 1))]:-}" == "xtask" ]]; then
           limit_as="${FASTR_XTASK_LIMIT_AS:-96G}"
@@ -496,6 +528,11 @@ run_cargo() {
     local rust_test_threads="${FASTR_RUST_TEST_THREADS:-}"
     if [[ -z "${rust_test_threads}" ]]; then
       rust_test_threads=$(( nproc < 32 ? nproc : 32 ))
+    else
+      if ! [[ "${rust_test_threads}" =~ ^[0-9]+$ ]] || [[ "${rust_test_threads}" -lt 1 ]]; then
+        echo "invalid FASTR_RUST_TEST_THREADS: ${rust_test_threads}" >&2
+        return 2
+      fi
     fi
     export RUST_TEST_THREADS="${rust_test_threads}"
   fi
