@@ -1905,6 +1905,42 @@ mod tests {
   }
 
   #[test]
+  fn callback_inline_call_to_pure_builtin_is_modeled() {
+    let kb = crate::load_default_api_database();
+    let lowered =
+      hir_js::lower_from_source_with_kind(hir_js::FileKind::Js, "arr.map(x => Math.sqrt(x));")
+        .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert_eq!(cb.purity, Purity::Pure);
+    assert!(cb.effects.contains(EffectSet::MAY_THROW));
+    assert!(
+      !cb.effects.contains(EffectSet::UNKNOWN),
+      "expected Math.sqrt call to resolve via KB"
+    );
+  }
+
+  #[test]
+  fn callback_does_not_trust_shadowed_pure_builtin() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, Math) => Math.sqrt(x));",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert!(cb.effects.contains(EffectSet::UNKNOWN));
+    assert_eq!(cb.purity, Purity::Impure);
+  }
+
+  #[test]
   fn callback_reference_to_known_variadic_api_marks_index_and_array_usage() {
     let kb = crate::load_default_api_database();
     let lowered =

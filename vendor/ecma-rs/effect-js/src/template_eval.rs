@@ -1,6 +1,10 @@
 use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate};
-use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
+use hir_js::{
+  Body, BodyId, ExprId, ExprKind, ForHead, ForInit, LowerResult, NameId, ObjectKey, PatId, PatKind,
+  StmtId, StmtKind,
+};
 use knowledge_base::{ApiSemantics, KnowledgeBase};
+use std::collections::HashSet;
 
 use crate::callback::analyze_inline_callback;
 use crate::eval::{eval_api_call, CallSiteInfo as EvalCallSiteInfo};
@@ -143,15 +147,23 @@ fn resolve_api_semantics<'a>(
     .or_else(|| resolve_api_alias(kb, &path))
     .or_else(|| strip_global_prefixes(&path).and_then(|p| resolve_api_alias(kb, p)))?;
 
-  // Avoid treating unknown local bindings as trusted *pure* builtins.
+  // Avoid treating unknown shadowed bindings as trusted *pure* builtins.
   //
   // If we resolve to an effectful API (IO/nondeterministic/throws/etc) and the
   // user actually shadowed the name with something pure, this is conservative.
   // Resolving the other way (assuming a pure built-in when the user shadowed it
   // with something impure) would be unsound.
+  //
+  // We allow pure builtins when the callee root identifier is not declared
+  // anywhere in the surrounding body chain. This is still conservative (we do
+  // not attempt precise block scoping), but captures the common case of pure
+  // callbacks like `x => Math.sqrt(x)` without breaking shadowing safety.
   let sem = eval_api_call(api, &EvalCallSiteInfo::default());
   if sem.purity == Purity::Pure {
-    return None;
+    let root = callee_root_ident(body_ref, call.callee);
+    if root.is_some_and(|name| name_shadowed_in_body_chain(lowered, body, name)) {
+      return None;
+    }
   }
 
   Some(api)
@@ -197,6 +209,185 @@ fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
       | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
       _ => return expr,
     }
+  }
+}
+
+fn callee_root_ident(body: &Body, mut expr: ExprId) -> Option<NameId> {
+  expr = strip_transparent_wrappers(body, expr);
+  loop {
+    let node = body.exprs.get(expr.0 as usize)?;
+    match &node.kind {
+      ExprKind::Ident(name) => return Some(*name),
+      ExprKind::Member(mem) => {
+        if mem.optional {
+          return None;
+        }
+        expr = mem.object;
+      }
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return None,
+    }
+  }
+}
+
+fn name_shadowed_in_body_chain(lowered: &LowerResult, mut body_id: BodyId, name: NameId) -> bool {
+  let mut seen = HashSet::new();
+  loop {
+    if !seen.insert(body_id) {
+      return true;
+    }
+    let Some(body) = lowered.body(body_id) else {
+      return true;
+    };
+    if body_declares_name_anywhere(lowered, body, name) {
+      return true;
+    }
+    let Some(parent) = parent_body_id(lowered, body) else {
+      return false;
+    };
+    body_id = parent;
+  }
+}
+
+fn parent_body_id(lowered: &LowerResult, body: &Body) -> Option<BodyId> {
+  let mut def = body.owner;
+  loop {
+    let parent_def = lowered.def(def)?.parent?;
+    let parent_data = lowered.def(parent_def)?;
+    if let Some(parent_body) = parent_data.body {
+      return Some(parent_body);
+    }
+    def = parent_def;
+  }
+}
+
+fn body_declares_name_anywhere(lowered: &LowerResult, body: &Body, name: NameId) -> bool {
+  if let Some(func) = &body.function {
+    for param in &func.params {
+      if pat_binds_name(body, param.pat, name) {
+        return true;
+      }
+    }
+  }
+
+  for stmt_id in body.root_stmts.iter().copied() {
+    if stmt_declares_name_anywhere(lowered, body, stmt_id, name) {
+      return true;
+    }
+  }
+
+  false
+}
+
+fn stmt_declares_name_anywhere(
+  lowered: &LowerResult,
+  body: &Body,
+  stmt_id: StmtId,
+  name: NameId,
+) -> bool {
+  let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
+    return false;
+  };
+  match &stmt.kind {
+    StmtKind::Decl(def) => lowered.def(*def).is_some_and(|def| def.name == name),
+    StmtKind::Var(var) => var
+      .declarators
+      .iter()
+      .any(|decl| pat_binds_name(body, decl.pat, name)),
+    StmtKind::Block(stmts) => stmts
+      .iter()
+      .any(|id| stmt_declares_name_anywhere(lowered, body, *id, name)),
+    StmtKind::If {
+      consequent,
+      alternate,
+      ..
+    } => {
+      stmt_declares_name_anywhere(lowered, body, *consequent, name)
+        || alternate
+          .as_ref()
+          .is_some_and(|id| stmt_declares_name_anywhere(lowered, body, *id, name))
+    }
+    StmtKind::While { body: inner, .. } | StmtKind::DoWhile { body: inner, .. } => {
+      stmt_declares_name_anywhere(lowered, body, *inner, name)
+    }
+    StmtKind::For { init, body: inner, .. } => {
+      let init_declares = matches!(init, Some(ForInit::Var(var)) if var
+        .declarators
+        .iter()
+        .any(|decl| pat_binds_name(body, decl.pat, name)));
+      init_declares || stmt_declares_name_anywhere(lowered, body, *inner, name)
+    }
+    StmtKind::ForIn { left, body: inner, .. } => {
+      let head_declares = match left {
+        ForHead::Pat(pat) => pat_binds_name(body, *pat, name),
+        ForHead::Var(var) => var
+          .declarators
+          .iter()
+          .any(|decl| pat_binds_name(body, decl.pat, name)),
+      };
+      head_declares || stmt_declares_name_anywhere(lowered, body, *inner, name)
+    }
+    StmtKind::Switch { cases, .. } => cases.iter().any(|case| {
+      case
+        .consequent
+        .iter()
+        .any(|id| stmt_declares_name_anywhere(lowered, body, *id, name))
+    }),
+    StmtKind::Try {
+      block,
+      catch,
+      finally_block,
+    } => {
+      stmt_declares_name_anywhere(lowered, body, *block, name)
+        || catch.as_ref().is_some_and(|clause| {
+          clause
+            .param
+            .is_some_and(|param| pat_binds_name(body, param, name))
+            || stmt_declares_name_anywhere(lowered, body, clause.body, name)
+        })
+        || finally_block
+          .as_ref()
+          .is_some_and(|id| stmt_declares_name_anywhere(lowered, body, *id, name))
+    }
+    StmtKind::Labeled { body: inner, .. } => stmt_declares_name_anywhere(lowered, body, *inner, name),
+    // `with (obj) { ... }` makes identifier resolution dynamic. Be conservative
+    // and treat it as shadowing all names.
+    StmtKind::With { .. } => true,
+    _ => false,
+  }
+}
+
+fn pat_binds_name(body: &Body, pat: PatId, name: NameId) -> bool {
+  let Some(pat) = body.pats.get(pat.0 as usize) else {
+    return false;
+  };
+  match &pat.kind {
+    PatKind::Ident(id) => *id == name,
+    PatKind::Array(arr) => {
+      for element in arr.elements.iter().flatten() {
+        if pat_binds_name(body, element.pat, name) {
+          return true;
+        }
+      }
+      arr
+        .rest
+        .is_some_and(|rest| pat_binds_name(body, rest, name))
+    }
+    PatKind::Object(obj) => {
+      for prop in &obj.props {
+        if pat_binds_name(body, prop.value, name) {
+          return true;
+        }
+      }
+      obj
+        .rest
+        .is_some_and(|rest| pat_binds_name(body, rest, name))
+    }
+    PatKind::Rest(inner) => pat_binds_name(body, **inner, name),
+    PatKind::Assign { target, .. } => pat_binds_name(body, *target, name),
+    PatKind::AssignTarget(_) => false,
   }
 }
 
