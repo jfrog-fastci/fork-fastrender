@@ -642,6 +642,8 @@ extern "C" fn rt_gc_safepoint_impl(caller_fp: u64, caller_pc: u64, regs: *mut Re
 #[cfg(target_arch = "aarch64")]
 #[cold]
 fn rt_gc_safepoint_impl_inner(caller_fp: u64, caller_pc: u64, regs: *mut RegContext) {
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_safepoint();
   // A spurious slow-path entry can happen if the GC request was resumed between
   // the assembly fast-path check and this call. Re-check the epoch and return.
   let requested_epoch = RT_GC_EPOCH.load(Ordering::Acquire);
