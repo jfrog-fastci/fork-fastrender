@@ -10,12 +10,7 @@ use optimize_js::CompileCfgOptions;
 use optimize_js::TopLevelMode;
 
 fn mode_at(inst: &optimize_js::il::inst::Inst, idx: usize) -> ArgUseMode {
-  inst
-    .meta
-    .arg_use_modes
-    .get(idx)
-    .copied()
-    .unwrap_or(ArgUseMode::Borrow)
+  inst.meta.arg_use_mode(idx)
 }
 
 fn find_unique_return_var(cfg: &Cfg) -> (u32, usize, u32) {

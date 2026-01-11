@@ -117,12 +117,7 @@ mod tests {
   }
  
   fn mode_at(inst: &crate::il::inst::Inst, idx: usize) -> ArgUseMode {
-    inst
-      .meta
-      .arg_use_modes
-      .get(idx)
-      .copied()
-      .unwrap_or(ArgUseMode::Borrow)
+    inst.meta.arg_use_mode(idx)
   }
  
   #[test]
