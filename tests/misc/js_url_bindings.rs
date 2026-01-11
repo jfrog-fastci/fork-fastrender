@@ -304,6 +304,13 @@ fn window_realm_exec_script_url_constructor_smoke() {
     as_vm_js_heap_string(realm.heap(), resolved),
     "https://example.com/dir/a"
   );
+
+  let origin = exec_script(&mut realm, r#"new URL("https://example.com/path?x=1#y").origin"#).unwrap();
+  assert_eq!(as_vm_js_heap_string(realm.heap(), origin), "https://example.com");
+
+  // Opaque origins serialize as the string "null" (WHATWG URL).
+  let opaque_origin = exec_script(&mut realm, r#"new URL("data:text/plain,hi").origin"#).unwrap();
+  assert_eq!(as_vm_js_heap_string(realm.heap(), opaque_origin), "null");
 }
 
 #[test]

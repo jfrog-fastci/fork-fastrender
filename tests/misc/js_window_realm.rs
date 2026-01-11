@@ -4072,14 +4072,16 @@ fn window_xhr_supports_sync_send_and_with_credentials() -> Result<()> {
   let fetcher: Arc<InMemoryFetcher> = Arc::new(
     InMemoryFetcher::new().with_response("https://example.com/data", b"hello", 200),
   );
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
   let mut host = host_state_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
     fetcher.clone(),
   )?;
 
-  if let Err(err) = exec_script_in_window_host(
-    &mut host,
+  host.exec_script_in_event_loop(
+    &mut event_loop,
     r#"
   globalThis.__events = "";
   globalThis.__status = 0;
@@ -4095,11 +4097,7 @@ fn window_xhr_supports_sync_send_and_with_credentials() -> Result<()> {
   globalThis.__status = xhr.status;
   globalThis.__text = xhr.responseText;
   "#,
-  ) {
-    let realm = host.window_mut();
-    let (_vm, heap) = realm.vm_and_heap_mut();
-    return Err(Error::Other(format_vm_error(heap, err)));
-  }
+  )?;
 
   let (events, status, text) = {
     let realm = host.window_mut();
