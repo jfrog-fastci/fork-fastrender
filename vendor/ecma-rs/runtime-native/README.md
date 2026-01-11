@@ -138,7 +138,8 @@ heap.
 `src/buffer/`:
 
 - `buffer::ArrayBuffer` — movable header containing length + backing store handle.
-- `buffer::Uint8Array` — bounds-checked view with `as_ptr_range()` for kernel I/O.
+- `buffer::Uint8Array` — bounds-checked view with `as_ptr_range()` for synchronous access and
+  `pin()` for async I/O pinning (enforces detach/transfer/resize pin-count checks).
 - `buffer::BackingStoreAllocator` — allocator abstraction for stable, non-moving byte storage.
 
 Design notes and invariants are documented in `docs/buffers-and-io.md`.

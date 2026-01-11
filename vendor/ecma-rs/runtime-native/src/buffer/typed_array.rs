@@ -185,4 +185,3 @@ impl PinnedUint8Array {
     core::slice::from_raw_parts_mut(self.as_ptr(), self.len)
   }
 }
-

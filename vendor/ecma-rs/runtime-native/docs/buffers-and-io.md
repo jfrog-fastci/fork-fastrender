@@ -51,8 +51,11 @@ To obtain a `(ptr, len)` pair suitable for kernel I/O:
 
 - Create an `ArrayBuffer` (`ArrayBuffer::new_zeroed`, `ArrayBuffer::from_bytes`, etc.).
 - Create a typed view (`Uint8Array::view`).
-- Call `Uint8Array::as_ptr_range()` to get `(ptr, len)` with bounds checking.
+- Call `Uint8Array::as_ptr_range()` to get `(ptr, len)` with bounds checking **for synchronous use**.
+- For async I/O (where the kernel may retain the pointer after the current call returns), use
+  `Uint8Array::pin()` instead. While pinned, `ArrayBuffer::detach`/`transfer`/`resize` must
+  deterministically fail with `*Error::Pinned` so in-flight I/O buffers cannot be invalidated.
 
 The returned pointer is stable for as long as the backing store remains alive (i.e. until the
-buffer is finalized/freed).
-
+buffer is finalized/freed) and is not detached/transferred/resized. Pinning additionally enforces
+the "no invalidation while in-flight" rule.
