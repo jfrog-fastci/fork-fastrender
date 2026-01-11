@@ -111,6 +111,7 @@ use crate::style::Direction;
 use crate::style::TopLayerKind;
 use crate::{error::RenderError, error::RenderStage};
 use cssparser::ToCss;
+use lru::LruCache;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use selectors::context::IncludeStartingStyle;
 use selectors::context::QuirksMode;
@@ -133,6 +134,7 @@ use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -258,8 +260,66 @@ thread_local! {
 // To avoid reparsing selector text, cache "self-inclusive" variants by stripping the implicit
 // `:scope` prefix when it is the only combinator in the selector.
 thread_local! {
-  static SCOPE_SELF_MATCH_SELECTOR_CACHE: RefCell<HashMap<usize, Selector<FastRenderSelectorImpl>>> =
-    RefCell::new(HashMap::new());
+  static SCOPE_SELF_MATCH_SELECTOR_CACHE: RefCell<ScopeSelfMatchSelectorCache> =
+    RefCell::new(ScopeSelfMatchSelectorCache::new(scope_self_match_selector_cache_max_entries()));
+}
+
+const SCOPE_SELF_MATCH_SELECTOR_CACHE_DEFAULT_MAX_ENTRIES: usize = 4096;
+
+#[inline]
+fn scope_self_match_selector_cache_max_entries() -> usize {
+  runtime::runtime_toggles().usize_with_default(
+    "FASTR_SCOPE_SELF_MATCH_SELECTOR_CACHE_MAX_ENTRIES",
+    SCOPE_SELF_MATCH_SELECTOR_CACHE_DEFAULT_MAX_ENTRIES,
+  )
+}
+
+struct ScopeSelfMatchSelectorCache {
+  max_entries: usize,
+  lru: Option<LruCache<usize, Selector<FastRenderSelectorImpl>>>,
+}
+
+impl ScopeSelfMatchSelectorCache {
+  fn new(max_entries: usize) -> Self {
+    let lru = NonZeroUsize::new(max_entries).map(LruCache::new);
+    Self { max_entries, lru }
+  }
+
+  #[inline]
+  fn sync(&mut self, max_entries: usize) {
+    if self.max_entries == max_entries {
+      return;
+    }
+    // Resizing is infrequent (normally only between renders/tests). Recreate the cache so we don't
+    // retain allocations from a previously larger capacity.
+    *self = Self::new(max_entries);
+  }
+
+  #[inline]
+  fn clear(&mut self) {
+    let max_entries = scope_self_match_selector_cache_max_entries();
+    self.sync(max_entries);
+    if let Some(lru) = self.lru.as_mut() {
+      lru.clear();
+    }
+  }
+
+  #[inline]
+  fn len(&self) -> usize {
+    self.lru.as_ref().map(|lru| lru.len()).unwrap_or(0)
+  }
+
+  #[inline]
+  fn get_cloned(&mut self, key: &usize) -> Option<Selector<FastRenderSelectorImpl>> {
+    self.lru.as_mut().and_then(|lru| lru.get(key).cloned())
+  }
+
+  #[inline]
+  fn put(&mut self, key: usize, value: Selector<FastRenderSelectorImpl>) {
+    if let Some(lru) = self.lru.as_mut() {
+      lru.put(key, value);
+    }
+  }
 }
 
 fn scope_selector_self_match_variant(
@@ -269,8 +329,12 @@ fn scope_selector_self_match_variant(
   use selectors::parser::Component;
 
   let key = selector as *const _ as usize;
-  if let Some(hit) = SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow().get(&key).cloned())
-  {
+  let max_entries = scope_self_match_selector_cache_max_entries();
+  if let Some(hit) = SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| {
+    let mut cache = cache.borrow_mut();
+    cache.sync(max_entries);
+    cache.get_cloned(&key)
+  }) {
     return Some(hit);
   }
 
@@ -297,7 +361,13 @@ fn scope_selector_self_match_variant(
   }
 
   let stripped = Selector::from_components(components[2..].to_vec());
-  SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow_mut().insert(key, stripped.clone()));
+  if max_entries != 0 {
+    SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| {
+      let mut cache = cache.borrow_mut();
+      cache.sync(max_entries);
+      cache.put(key, stripped.clone());
+    });
+  }
   Some(stripped)
 }
 
@@ -33536,6 +33606,70 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       Rgba::RED,
       "@container rule should match against an inline-size container when the query uses only inline-axis features"
     );
+  }
+
+  #[test]
+  fn scope_self_match_selector_cache_is_bounded() {
+    use crate::css::selectors::PseudoClassParser;
+    use crate::debug::runtime;
+    use selectors::parser::ParseRelative;
+
+    let cap = 16usize;
+    let total = cap * 4;
+
+    let _guard = runtime::set_thread_runtime_toggles(Arc::new(runtime::RuntimeToggles::from_map(
+      HashMap::from([(
+        "FASTR_SCOPE_SELF_MATCH_SELECTOR_CACHE_MAX_ENTRIES".to_string(),
+        cap.to_string(),
+      )]),
+    )));
+    SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow_mut().clear());
+
+    let selector_text = (0..total)
+      .map(|idx| format!(".c{idx}"))
+      .collect::<Vec<_>>()
+      .join(", ");
+
+    let mut input = cssparser::ParserInput::new(&selector_text);
+    let mut parser = cssparser::Parser::new(&mut input);
+    let list =
+      SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::ForScope).expect("parse");
+
+    for selector in list.iter() {
+      assert!(
+        scope_selector_self_match_variant(selector).is_some(),
+        "expected scope selector to produce a self-match variant"
+      );
+      let len = SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow().len());
+      assert!(
+        len <= cap,
+        "expected scope self-match selector cache to be bounded (len={len}, cap={cap})"
+      );
+    }
+
+    let len = SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow().len());
+    assert_eq!(len, cap);
+
+    SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow_mut().clear());
+
+    let _guard = runtime::set_thread_runtime_toggles(Arc::new(runtime::RuntimeToggles::from_map(
+      HashMap::from([(
+        "FASTR_SCOPE_SELF_MATCH_SELECTOR_CACHE_MAX_ENTRIES".to_string(),
+        "0".to_string(),
+      )]),
+    )));
+    SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow_mut().clear());
+
+    for selector in list.iter() {
+      assert!(
+        scope_selector_self_match_variant(selector).is_some(),
+        "expected scope selector to produce a self-match variant"
+      );
+      let len = SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow().len());
+      assert_eq!(len, 0);
+    }
+
+    SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow_mut().clear());
   }
 
   #[test]
