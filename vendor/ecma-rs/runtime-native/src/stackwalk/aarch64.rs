@@ -31,6 +31,10 @@ pub(crate) const FP_TO_ENTRY_SP_OFFSET: u64 = 16;
 /// Empirically (LLVM 18), the stackmap `stack_size` for AArch64 is the total SP delta, including
 /// the fixed 16-byte `{fp, lr}` save area. Therefore:
 ///   `sp_at_safepoint = (fp + 16) - stack_size`
+///
+/// Note: `stack_size` does not account for per-callsite SP adjustments (e.g. outgoing stack
+/// arguments), so this reconstruction is only valid when the callsite SP matches the function's
+/// fixed frame size.
 pub(crate) fn compute_sp(fp: u64, stack_size: u64) -> Option<u64> {
   fp.checked_add(FP_TO_ENTRY_SP_OFFSET)?.checked_sub(stack_size)
 }

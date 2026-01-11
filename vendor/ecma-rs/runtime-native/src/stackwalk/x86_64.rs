@@ -25,6 +25,10 @@ pub(crate) const FP_TO_ENTRY_SP_OFFSET: u64 = 8;
 /// LLVM's stackmap `stack_size` is the total SP delta from function entry. With frame pointers
 /// enabled on x86_64:
 ///   `sp_at_safepoint = (fp + FP_TO_ENTRY_SP_OFFSET) - stack_size`
+///
+/// Note: `stack_size` does not account for per-callsite SP adjustments (e.g. outgoing stack
+/// arguments), so this reconstruction is only valid when the callsite SP matches the function's
+/// fixed frame size.
 pub(crate) fn compute_sp(fp: u64, stack_size: u64) -> Option<u64> {
   fp.checked_add(FP_TO_ENTRY_SP_OFFSET)?.checked_sub(stack_size)
 }

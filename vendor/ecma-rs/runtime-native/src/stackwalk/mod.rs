@@ -38,7 +38,13 @@ pub const DWARF_FP_REG: u16 = arch::DWARF_FP_REG;
 
 /// Offset from the frame pointer to the stack pointer at function entry.
 ///
-/// This is used to reconstruct the SP value used as the base for SP-relative stackmap locations.
+/// This constant is used by [`compute_sp`] when reconstructing the stack pointer value used as the
+/// base for SP-relative stackmap locations.
+///
+/// Note: SP reconstruction via stackmap `stack_size` is inherently limited: `stack_size` is a fixed
+/// per-function frame size and does **not** account for per-callsite SP adjustments (e.g. outgoing
+/// stack arguments). Prefer deriving callsite SP from the callee frame pointer (`callee_fp + 16`)
+/// when walking a full frame-pointer chain (see `stackwalk_fp`).
 pub const FP_TO_ENTRY_SP_OFFSET: u64 = arch::FP_TO_ENTRY_SP_OFFSET;
 
 /// Compute the stack pointer value used as the base for SP-relative stackmap locations inside a
@@ -46,6 +52,11 @@ pub const FP_TO_ENTRY_SP_OFFSET: u64 = arch::FP_TO_ENTRY_SP_OFFSET;
 ///
 /// Architectures differ in whether the return address is pushed onto the stack and in how the FP
 /// record is saved, so the exact reconstruction is per-arch.
+///
+/// # Caveat
+/// This reconstruction assumes the callsite SP matches the function's fixed frame size. If the
+/// callsite adjusts SP (e.g. to pass outgoing stack arguments), `stack_size` is not sufficient to
+/// recover the exact stackmap SP base.
 #[inline]
 pub fn compute_sp(fp: u64, stack_size: u64) -> Option<u64> {
   arch::compute_sp(fp, stack_size)
