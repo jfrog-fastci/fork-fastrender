@@ -163,6 +163,14 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     !wb.contains("addrspacecast"),
     "rt_write_barrier_gc must not addrspacecast GC pointers out of addrspace(1):\n{wb}"
   );
+  assert!(
+    wb.contains("notail call void %") && wb.contains("ptr addrspace(1)"),
+    "expected rt_write_barrier_gc to emit a notail indirect call (prevent TCO):\n{wb}"
+  );
+  assert!(
+    has_gc_leaf_attr(fns.rt_write_barrier_gc),
+    "expected rt_write_barrier_gc to be marked as a gc-leaf-function:\n{ir}"
+  );
 
   assert!(
     ir.contains("define internal void @rt_write_barrier_range_gc"),
@@ -196,12 +204,16 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     "expected rt_keep_alive_gc_ref_gc to indirect-call @rt_keep_alive_gc_ref:\n{keep_alive}"
   );
   assert!(
+    !keep_alive.contains("addrspacecast"),
+    "rt_keep_alive_gc_ref_gc must not addrspacecast GC pointers out of addrspace(1):\n{keep_alive}"
+  );
+  assert!(
     keep_alive.contains("notail call void %") && keep_alive.contains("ptr addrspace(1)"),
     "expected rt_keep_alive_gc_ref_gc to emit a notail indirect call (prevent TCO):\n{keep_alive}"
   );
   assert!(
-    !keep_alive.contains("addrspacecast"),
-    "rt_keep_alive_gc_ref_gc must not addrspacecast GC pointers out of addrspace(1):\n{keep_alive}"
+    has_gc_leaf_attr(fns.rt_keep_alive_gc_ref_gc),
+    "expected rt_keep_alive_gc_ref_gc to be marked as a gc-leaf-function:\n{ir}"
   );
 
   // Parallel scheduler entrypoints are raw ABI (no GC pointer wrapper needed).
