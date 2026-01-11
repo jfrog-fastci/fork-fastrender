@@ -275,6 +275,105 @@ fn statepoint_decoder_skips_deopt_operands() {
 }
 
 #[test]
+fn statepoint_decoder_accepts_constindex_header_constants() {
+  // Build a minimal StackMap v3 blob where the 3 statepoint header constants are encoded via the
+  // constant pool (`ConstIndex`) rather than inline `Constant` entries.
+  //
+  // This mirrors LLVM output when it decides to place statepoint header immediates into the
+  // constant pool.
+  let mut bytes = Vec::<u8>::new();
+
+  fn push_u8(out: &mut Vec<u8>, v: u8) {
+    out.push(v);
+  }
+  fn push_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u64(out: &mut Vec<u8>, v: u64) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_i32(out: &mut Vec<u8>, v: i32) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn align_to_8(out: &mut Vec<u8>) {
+    while out.len() % 8 != 0 {
+      out.push(0);
+    }
+  }
+  fn push_loc(out: &mut Vec<u8>, kind: u8, size: u16, dwarf_reg: u16, offset_or_const: i32) {
+    push_u8(out, kind);
+    push_u8(out, 0); // reserved0
+    push_u16(out, size);
+    push_u16(out, dwarf_reg);
+    push_u16(out, 0); // reserved1
+    push_i32(out, offset_or_const);
+  }
+
+  // Header.
+  push_u8(&mut bytes, 3); // version
+  push_u8(&mut bytes, 0); // reserved0
+  push_u16(&mut bytes, 0); // reserved1
+  push_u32(&mut bytes, 1); // num_functions
+  push_u32(&mut bytes, 3); // num_constants
+  push_u32(&mut bytes, 1); // num_records
+
+  // Function record.
+  push_u64(&mut bytes, 0x1000); // address
+  push_u64(&mut bytes, 0); // stack_size (unused by this test)
+  push_u64(&mut bytes, 1); // record_count
+
+  // Constants table for the 3 header constants.
+  push_u64(&mut bytes, 8); // callconv (fastcc)
+  push_u64(&mut bytes, 1); // flags
+  push_u64(&mut bytes, 2); // deopt_count
+
+  // Record header.
+  push_u64(&mut bytes, 0); // patchpoint_id
+  push_u32(&mut bytes, 0); // instruction_offset
+  push_u16(&mut bytes, 0); // reserved
+  push_u16(&mut bytes, 7); // num_locations (3 header + 2 deopt + 1 pair)
+
+  // Header constants as ConstIndex[0..3].
+  // StackMap kind 5 = ConstIndex (see `stackmaps.rs::parse_location`).
+  push_loc(&mut bytes, 5, 8, 0, 0); // callconv -> constants[0]
+  push_loc(&mut bytes, 5, 8, 0, 1); // flags   -> constants[1]
+  push_loc(&mut bytes, 5, 8, 0, 2); // deopt_count -> constants[2]
+
+  // Two deopt operands (arbitrary constants).
+  push_loc(&mut bytes, 4, 8, 0, 11);
+  push_loc(&mut bytes, 4, 8, 0, 22);
+
+  // One GC pair: Indirect [SP + 8] (x86_64 DWARF SP = 7).
+  push_loc(&mut bytes, 3, 8, X86_64_DWARF_REG_SP, 8);
+  push_loc(&mut bytes, 3, 8, X86_64_DWARF_REG_SP, 8);
+
+  // Live-out header (8-byte aligned after locations).
+  align_to_8(&mut bytes);
+  push_u16(&mut bytes, 0); // padding
+  push_u16(&mut bytes, 0); // num_live_outs
+  align_to_8(&mut bytes);
+
+  let sm = StackMap::parse(&bytes).unwrap();
+  assert_eq!(sm.constants, vec![8, 1, 2]);
+  assert_eq!(sm.records.len(), 1);
+  let rec = &sm.records[0];
+
+  assert!(matches!(rec.locations[0], Location::ConstIndex { value: 8, .. }));
+  assert!(matches!(rec.locations[1], Location::ConstIndex { value: 1, .. }));
+  assert!(matches!(rec.locations[2], Location::ConstIndex { value: 2, .. }));
+
+  let sp = StatepointRecord::new(rec).unwrap();
+  assert_eq!(sp.header().callconv, 8);
+  assert_eq!(sp.header().flags, 1);
+  assert_eq!(sp.header().deopt_count, 2);
+  assert_eq!(sp.deopt_locations().len(), 2);
+  assert_eq!(sp.gc_pair_count(), 1);
+}
+
+#[test]
 fn eval_indirect_missing_reg_errors() {
   let loc = Location::Indirect {
     size: 8,
