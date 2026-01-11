@@ -255,6 +255,7 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
     // instruction. The state we thread through the dominator tree only contains mappings from the
     // current dominator path, so any canonical Arg we read is available on every path to this block.
     let preserved_meta = new_inst.meta.clone();
+    let preserved_value_type = new_inst.value_type;
     if let Some(value) = consteval {
       let tgt = new_inst.tgts[0];
       let canonical_value = state.canon_arg(&value);
@@ -263,6 +264,7 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
         .insert(tgt, canonical_value.clone())
         .is_none());
       new_inst = Inst::var_assign(tgt, canonical_value);
+      new_inst.value_type = preserved_value_type;
       new_inst.meta = preserved_meta;
     } else {
       let pure_val = match new_inst.t {
@@ -297,6 +299,7 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
         assert!(state.tgt_to_coc.insert(tgt, row).is_none());
         if let Some(value) = existing {
           new_inst = Inst::var_assign(tgt, value);
+          new_inst.value_type = preserved_value_type;
           new_inst.meta = preserved_meta;
         };
       };

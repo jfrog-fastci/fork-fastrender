@@ -136,6 +136,9 @@ pub fn insert_phis_for_ssa_construction(
           phi.meta.hir_expr = hir_expr;
           phi.meta.type_summary = type_summary;
           phi.meta.excludes_nullish = excludes_nullish;
+          if let Some(summary) = type_summary {
+            phi.value_type |= summary;
+          }
         }
         cfg.bblocks.get_mut(label).insert(0, phi);
         defs.get_mut(&v).unwrap().insert(label);

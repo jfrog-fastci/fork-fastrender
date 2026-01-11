@@ -60,6 +60,7 @@ fn typed_il_records_value_type_metadata() {
     .expect("expected VarAssign for numeric literal 123");
   let num_meta = &num_inst.meta;
   assert_eq!(num_meta.type_summary, Some(ValueTypeSummary::NUMBER));
+  assert_eq!(num_inst.value_type, ValueTypeSummary::NUMBER);
   assert!(num_meta.excludes_nullish);
   assert!(num_meta.hir_expr.is_some());
 
@@ -76,6 +77,7 @@ fn typed_il_records_value_type_metadata() {
     .expect("expected VarAssign for string literal \"hello\"");
   let str_meta = &str_inst.meta;
   assert_eq!(str_meta.type_summary, Some(ValueTypeSummary::STRING));
+  assert_eq!(str_inst.value_type, ValueTypeSummary::STRING);
   assert!(str_meta.excludes_nullish);
   assert!(str_meta.hir_expr.is_some());
 
@@ -91,6 +93,7 @@ fn typed_il_records_value_type_metadata() {
     union_meta.type_summary,
     Some(ValueTypeSummary::STRING | ValueTypeSummary::NULL)
   );
+  assert_eq!(union_inst.value_type, ValueTypeSummary::STRING | ValueTypeSummary::NULL);
   assert!(!union_meta.excludes_nullish);
   assert!(union_meta.hir_expr.is_some());
 }
@@ -114,6 +117,43 @@ fn dvn_var_assign_rewrite_preserves_value_type_metadata() {
     .expect("expected DVN to const-fold 1 + 2 into VarAssign 3");
   let meta = &folded.meta;
   assert_eq!(meta.type_summary, Some(ValueTypeSummary::NUMBER));
+  assert_eq!(folded.value_type, ValueTypeSummary::NUMBER);
   assert!(meta.excludes_nullish);
   assert!(meta.hir_expr.is_some());
+}
+
+#[test]
+fn ssa_insert_phis_sets_value_type_from_type_summary() {
+  let program = compile_source_typed(
+    r#"
+      function foo(): number {
+        return Math.random() > 0.5 ? 1 : 2;
+      }
+
+      let x: number = 0;
+      if (Math.random() > 0.5) {
+        x = foo();
+      } else {
+        x = foo();
+      }
+      console.log(x);
+    "#,
+    TopLevelMode::Module,
+    true,
+  );
+
+  let step = find_step(&program.top_level, "ssa_insert_phis");
+  let insts = collect_insts(step);
+
+  let phi = insts
+    .iter()
+    .copied()
+    .find(|inst| inst.t == InstTyp::Phi && inst.meta.type_summary.is_some())
+    .expect("expected at least one inserted Phi with type_summary metadata");
+
+  let summary = phi.meta.type_summary.expect("Phi should have type_summary");
+  assert_eq!(
+    phi.value_type, summary,
+    "expected Phi.value_type to be populated from meta.type_summary"
+  );
 }

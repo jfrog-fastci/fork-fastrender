@@ -207,6 +207,7 @@ pub fn simplify_phis(cfg: &mut Cfg) -> bool {
           lowered_inst
             .meta
             .copy_result_var_metadata_from(&inst.meta);
+          lowered_inst.value_type = inst.value_type;
           lowered.push(lowered_inst);
         }
         changed = true;
@@ -216,6 +217,7 @@ pub fn simplify_phis(cfg: &mut Cfg) -> bool {
         lowered_inst
           .meta
           .copy_result_var_metadata_from(&inst.meta);
+        lowered_inst.value_type = inst.value_type;
         lowered.push(lowered_inst);
         changed = true;
       } else {

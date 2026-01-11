@@ -472,6 +472,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
 
   // 4) escape
   let escape_summaries = interproc_escape::compute_program_escape_summaries(program);
+  let mut deconstructed_escapes = HashMap::default();
   for &key in &keys {
     let escapes = escape::analyze_cfg_escapes_with_params_and_summaries(
       cfg_for_key(program, key),
@@ -479,11 +480,19 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
       Some(&escape_summaries),
       Some(&call_summaries),
     );
-    annotate_cfg_escape_states(cfg_for_key_deconstructed_mut(program, key), &escapes);
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
       annotate_cfg_escape_states(cfg, &escapes);
     }
     analyses.escape.insert(key, escapes);
+
+    let deconstructed_escape = escape::analyze_cfg_escapes_with_params_and_summaries(
+      cfg_for_key_deconstructed(program, key),
+      params_for_key(program, key),
+      Some(&escape_summaries),
+      Some(&call_summaries),
+    );
+    annotate_cfg_escape_states(cfg_for_key_deconstructed_mut(program, key), &deconstructed_escape);
+    deconstructed_escapes.insert(key, deconstructed_escape);
   }
 
   // 5) ownership
@@ -502,13 +511,26 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
         Some(&call_summaries),
       )
     };
-    ownership::annotate_cfg_ownership(cfg_for_key_deconstructed_mut(program, key), &ownership_result);
-    consume::annotate_cfg_consumption(cfg_for_key_deconstructed_mut(program, key), &ownership_result);
     if let Some(cfg) = cfg_for_key_ssa_mut(program, key) {
       ownership::annotate_cfg_ownership(cfg, &ownership_result);
       consume::annotate_cfg_consumption(cfg, &ownership_result);
     }
     analyses.ownership.insert(key, ownership_result);
+
+    let deconstructed_escape = deconstructed_escapes
+      .get(&key)
+      .expect("deconstructed escape results should be populated before ownership");
+    let deconstructed_ownership = ownership::analyze_cfg_ownership_with_escapes_and_params_and_summaries(
+      cfg_for_key_deconstructed(program, key),
+      params_for_key(program, key),
+      deconstructed_escape,
+      Some(&call_summaries),
+    );
+    {
+      let cfg = cfg_for_key_deconstructed_mut(program, key);
+      ownership::annotate_cfg_ownership(cfg, &deconstructed_ownership);
+      consume::annotate_cfg_consumption(cfg, &deconstructed_ownership);
+    }
   }
 
   // 6) nullability/range/encoding

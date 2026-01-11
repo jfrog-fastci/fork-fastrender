@@ -14,14 +14,18 @@ impl ValueTypeSummaries {
     let mut vars: HashMap<u32, ValueTypeSummary> = HashMap::default();
     for (_, bblock) in cfg.bblocks.all() {
       for inst in bblock.iter() {
-        if inst.value_type.is_unknown() {
+        let mut ty = inst.value_type;
+        if let Some(meta_ty) = inst.meta.type_summary {
+          ty |= meta_ty;
+        }
+        if ty.is_unknown() {
           continue;
         }
         for &tgt in inst.tgts.iter() {
           vars
             .entry(tgt)
-            .and_modify(|existing| *existing |= inst.value_type)
-            .or_insert(inst.value_type);
+            .and_modify(|existing| *existing |= ty)
+            .or_insert(ty);
         }
       }
     }
@@ -41,4 +45,3 @@ impl ValueTypeSummaries {
     }
   }
 }
-
