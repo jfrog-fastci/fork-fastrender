@@ -30,11 +30,16 @@ fn assert_parses_as_ecma(src: &str) {
 fn erases_ts_wrappers_and_drops_type_only_stmts() {
   let source = r#"
 interface Foo { x: string }
-type Bar = number;
-import type { Foo as Foo2 } from "foo";
-import { type Foo as Foo3, baz } from "foo";
-export type { Bar };
-export { type Foo3, baz };
+ type Bar = number;
+ import type { Foo as Foo2 } from "foo";
+ import { type Foo as Foo3, baz } from "foo";
+ import { type Foo } from "type-only-import";
+ export type { Bar };
+ export { type Foo3, baz };
+ export { type Foo } from "type-only-export";
+ export { type Foo };
+ import {} from "side-effect-import";
+ export {} from "side-effect-export";
 
 // Expression wrappers.
 (x as any).y;
@@ -71,6 +76,22 @@ class C { m(this: any, x: number) { return this; } }
   assert!(
     out.contains("export{baz}") || out.contains("export {baz}"),
     "output should keep value exports when erasing type-only specifiers: {out}"
+  );
+  assert!(
+    !out.contains("type-only-import"),
+    "output should drop imports that become empty after stripping type-only specifiers: {out}"
+  );
+  assert!(
+    !out.contains("type-only-export"),
+    "output should drop exports that become empty after stripping type-only specifiers: {out}"
+  );
+  assert!(
+    out.contains("side-effect-import"),
+    "output should preserve side-effect imports (`import {{}} from ...`): {out}"
+  );
+  assert!(
+    out.contains("side-effect-export"),
+    "output should preserve side-effect exports (`export {{}} from ...`): {out}"
   );
 
   // Must erase TS-only expression wrappers.
