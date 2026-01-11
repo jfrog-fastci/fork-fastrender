@@ -898,14 +898,59 @@ impl StackMaps {
 
     callsites.sort_by_key(|e| e.pc);
 
-    // A malformed section could contain two records for the same callsite PC.
-    // Reject this to avoid ambiguous GC root enumeration.
-    for window in callsites.windows(2) {
-      if let [a, b] = window {
-        if a.pc == b.pc {
-          return Err(StackMapError::DuplicateCallSite { pc: a.pc });
-        }
+    // The runtime lookup key is the callsite *PC* (return address). We generally
+    // require this to be unique to avoid ambiguous GC root enumeration.
+    //
+    // However, lld's identical code folding (`--icf=all`) can fold identical
+    // functions into the same machine code address. When those functions each
+    // contain a statepoint/patchpoint, LLVM may emit multiple stackmap records
+    // whose `function_address + instruction_offset` resolves to the same PC.
+    //
+    // This is safe iff the records are identical (they describe the same machine
+    // instruction). In that case, deduplicate so `lookup` stays unambiguous.
+    //
+    // If the records differ, treat it as corruption/malformed input.
+    if callsites.len() > 1 {
+      fn live_outs_equal(a: &[LiveOut], b: &[LiveOut]) -> bool {
+        a.len() == b.len()
+          && a
+            .iter()
+            .zip(b.iter())
+            .all(|(a, b)| a.dwarf_reg == b.dwarf_reg && a.size == b.size)
       }
+
+      let mut out: Vec<CallsiteEntry> = Vec::with_capacity(callsites.len());
+      let mut i: usize = 0;
+      while i < callsites.len() {
+        let base = callsites[i];
+        let base_raw = &raws[base.stackmap_index];
+        let base_rec = &base_raw.records[base.record_index];
+
+        let mut j = i + 1;
+        while j < callsites.len() && callsites[j].pc == base.pc {
+          let other = callsites[j];
+          if base.stack_size != other.stack_size || base.function_address != other.function_address {
+            return Err(StackMapError::DuplicateCallSite { pc: base.pc });
+          }
+          let other_raw = &raws[other.stackmap_index];
+          let other_rec = &other_raw.records[other.record_index];
+
+          if base_rec.patchpoint_id != other_rec.patchpoint_id
+            || base_rec.instruction_offset != other_rec.instruction_offset
+            || base_rec.locations != other_rec.locations
+            || !live_outs_equal(&base_rec.live_outs, &other_rec.live_outs)
+          {
+            return Err(StackMapError::DuplicateCallSite { pc: base.pc });
+          }
+
+          j += 1;
+        }
+
+        out.push(base);
+        i = j;
+      }
+
+      callsites = out;
     }
 
     Ok(Self { raws, callsites })
@@ -1464,6 +1509,36 @@ mod tests {
     // Ensure the per-blob callsite indexes are still correct.
     assert!(sm.lookup(0x1010).is_some());
     assert!(sm.lookup(0x2020).is_some());
+  }
+
+  #[test]
+  fn parse_deduplicates_identical_duplicate_callsite_pcs() {
+    // lld `--icf=all` can fold functions and create duplicate callsite PCs.
+    // If the records are identical, `StackMaps::parse` should deduplicate them.
+    let blob_a = minimal_blob(0x1000, 1, 0x10);
+    let blob_b = minimal_blob(0x1000, 1, 0x10);
+    let mut concat = blob_a.clone();
+    concat.extend_from_slice(&blob_b);
+
+    let sm = StackMaps::parse(&concat).unwrap();
+    assert_eq!(sm.raws().len(), 2);
+    assert_eq!(sm.callsites().len(), 1);
+    assert!(sm.lookup(0x1010).is_some());
+  }
+
+  #[test]
+  fn parse_rejects_conflicting_duplicate_callsite_pcs() {
+    // Duplicate callsite PCs are only safe if the records are identical.
+    let blob_a = minimal_blob(0x1000, 1, 0x10);
+    let blob_b = minimal_blob(0x1000, 2, 0x10);
+    let mut concat = blob_a.clone();
+    concat.extend_from_slice(&blob_b);
+
+    let err = StackMaps::parse(&concat).unwrap_err();
+    assert!(
+      matches!(err, StackMapError::DuplicateCallSite { pc } if pc == 0x1010),
+      "expected DuplicateCallSite at pc=0x1010, got {err:?}"
+    );
   }
 
   #[test]

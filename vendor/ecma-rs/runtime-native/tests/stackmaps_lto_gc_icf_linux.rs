@@ -350,17 +350,29 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
       keep_stackmaps: true,
       icf_all: false,
     },
-    // Note: `--icf=all` under lld 18 + full LTO can produce duplicate callsite PCs in
-    // `.llvm_stackmaps` (two records with the same `function_address + instruction_offset`).
-    //
-    // That is currently rejected by `StackMaps::parse` to avoid ambiguous GC root enumeration.
-    // We therefore only validate ICF under ThinLTO (the production configuration).
+    // Full LTO + ICF can fold functions and produce duplicate callsite PCs in
+    // `.llvm_stackmaps`. `StackMaps::parse` is expected to deduplicate identical
+    // records so lookups remain unambiguous.
+    LinkConfig {
+      name: "fulllto_keep_icf",
+      lto: LtoMode::Full,
+      gc_sections: false,
+      keep_stackmaps: true,
+      icf_all: true,
+    },
     LinkConfig {
       name: "fulllto_gc_keep",
       lto: LtoMode::Full,
       gc_sections: true,
       keep_stackmaps: true,
       icf_all: false,
+    },
+    LinkConfig {
+      name: "fulllto_gc_keep_icf",
+      lto: LtoMode::Full,
+      gc_sections: true,
+      keep_stackmaps: true,
+      icf_all: true,
     },
   ];
 
