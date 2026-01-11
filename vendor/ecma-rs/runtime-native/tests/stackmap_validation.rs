@@ -67,6 +67,9 @@ fn llc_to_obj(opt_bc_path: &std::path::Path, obj_path: &std::path::Path, opt: &s
     Command::new("llc-18")
       .arg("-filetype=obj")
       .arg(opt)
+      // runtime-native requires statepoint roots to be spilled to stack slots.
+      .arg("--fixup-allow-gcptr-in-csr=false")
+      .arg("--fixup-max-csr-statepoints=0")
       .arg("-frame-pointer=all")
       .arg(opt_bc_path)
       .arg("-o")
@@ -254,4 +257,3 @@ fn stackmap_conformance_matrix() {
   assert_eq!(merged.raws().len(), 2, "expected two concatenated stackmap blobs");
   validate_stackmaps(&merged).expect("validate merged stackmaps");
 }
-

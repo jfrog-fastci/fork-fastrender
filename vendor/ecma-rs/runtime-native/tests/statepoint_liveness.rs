@@ -163,6 +163,9 @@ attributes #0 = { "statepoint-id"="2882400000" }
   let mut llc = Command::new("llc-18");
   llc
     .arg("-O0")
+    // runtime-native requires statepoint roots to be spilled to stack slots.
+    .arg("--fixup-allow-gcptr-in-csr=false")
+    .arg("--fixup-max-csr-statepoints=0")
     .arg("--frame-pointer=all")
     .arg("-filetype=obj")
     .arg(&rewritten_ll)

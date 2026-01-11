@@ -114,6 +114,9 @@ fn llvm18_statepoint_stackmaps_codegen_aarch64() {
   llc
     .arg("-O0")
     .arg("-filetype=obj")
+    // runtime-native requires statepoint roots to be spilled to stack slots.
+    .arg("--fixup-allow-gcptr-in-csr=false")
+    .arg("--fixup-max-csr-statepoints=0")
     .arg("-mtriple=aarch64-unknown-linux-gnu")
     .arg("-mcpu=generic")
     .arg("-frame-pointer=all")
