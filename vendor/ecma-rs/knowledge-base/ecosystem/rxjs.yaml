@@ -336,3 +336,151 @@
     kind: operator
     operator_type: timing
     timer_based: "true"
+
+- name: rxjs.Subject
+  aliases: []
+  semantics: SubjectConstructor
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: subject
+    stateful: "true"
+
+- name: rxjs.BehaviorSubject
+  aliases: []
+  semantics: BehaviorSubjectConstructor
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: subject
+    stateful: "true"
+
+- name: rxjs.operators.scan
+  aliases: []
+  semantics: Scan
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: aggregation
+
+- name: rxjs.operators.takeUntil
+  aliases: []
+  semantics: TakeUntil
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: limiting
+
+- name: rxjs.operators.retry
+  aliases: []
+  semantics: Retry
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: error_handling
+    resubscribes: "true"
+
+- name: rxjs.operators.timeout
+  aliases: []
+  semantics: Timeout
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: timing
+    timer_based: "true"
+
+- name: rxjs.operators.throttleTime
+  aliases: []
+  semantics: ThrottleTime
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: timing
+    timer_based: "true"
+
+- name: rxjs.operators.shareReplay
+  aliases: []
+  semantics: ShareReplay
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: multicasting
+    stateful: "true"

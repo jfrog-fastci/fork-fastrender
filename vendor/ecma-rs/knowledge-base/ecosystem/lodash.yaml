@@ -284,3 +284,312 @@
   properties:
     kind: collection_operator
     output: object
+
+- name: lodash.forEach
+  aliases: [_.forEach, _.each]
+  semantics: ForEach
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: input
+
+- name: lodash.find
+  aliases: [_.find]
+  semantics: Find
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: element_or_undefined
+
+- name: lodash.some
+  aliases: [_.some]
+  semantics: Some
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: boolean
+
+- name: lodash.every
+  aliases: [_.every]
+  semantics: Every
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: boolean
+
+- name: lodash.includes
+  aliases: [_.includes]
+  semantics: Includes
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: boolean
+
+- name: lodash.take
+  aliases: [_.take]
+  semantics: Take
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.drop
+  aliases: [_.drop]
+  semantics: Drop
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.pick
+  aliases: [_.pick]
+  semantics: Pick
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_operator
+    output: new_object
+
+- name: lodash.omit
+  aliases: [_.omit]
+  semantics: Omit
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_operator
+    output: new_object
+
+- name: lodash.clone
+  aliases: [_.clone]
+  semantics: Clone
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: cloning
+    shallow: "true"
+
+- name: lodash.flatten
+  aliases: [_.flatten]
+  semantics: Flatten
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+
+- name: lodash.flattenDeep
+  aliases: [_.flattenDeep]
+  semantics: FlattenDeep
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+
+- name: lodash.union
+  aliases: [_.union]
+  semantics: Union
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.intersection
+  aliases: [_.intersection]
+  semantics: Intersection
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.difference
+  aliases: [_.difference]
+  semantics: Difference
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.sum
+  aliases: [_.sum]
+  semantics: Sum
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: aggregation
+
+- name: lodash.sumBy
+  aliases: [_.sumBy]
+  semantics: SumBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: aggregation
