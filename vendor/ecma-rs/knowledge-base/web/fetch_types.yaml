@@ -71,6 +71,36 @@
       args: [0]
   purity: Impure
 
+- name: Headers.prototype.entries
+  kind: function
+  aliases:
+    - Headers.prototype.entries
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: Headers.prototype.keys
+  kind: function
+  aliases:
+    - Headers.prototype.keys
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: Headers.prototype.values
+  kind: function
+  aliases:
+    - Headers.prototype.values
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
 - name: Request
   kind: constructor
   aliases:
