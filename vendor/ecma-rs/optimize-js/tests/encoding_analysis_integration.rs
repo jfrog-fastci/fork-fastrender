@@ -109,7 +109,7 @@ fn assert_var_encoding(
 }
 
 #[test]
-fn encoding_analysis_distinguishes_ascii_latin1_and_utf8() {
+fn encoding_analysis_distinguishes_ascii_and_utf8() {
   // Compile without optimisation passes so the lowering patterns we want to
   // exercise remain visible (DCE would otherwise delete unused `let` bindings).
   let options = CompileCfgOptions {
@@ -120,8 +120,8 @@ fn encoding_analysis_distinguishes_ascii_latin1_and_utf8() {
   let program = optimize_js::compile_source_with_cfg_options(
     r#"
       let a = "hello";
-      let b = "ÿ";      // Latin1 (U+00FF)
-      let c = "π";      // Utf8 (U+03C0)
+      let b = "ÿ";      // non-ASCII (U+00FF)
+      let c = "π";      // non-ASCII (U+03C0)
       let t0 = `hello`;  // lowered as __optimize_js_template call
       let t1 = `ÿ`;
       let t2 = `π`;
@@ -145,7 +145,7 @@ fn encoding_analysis_distinguishes_ascii_latin1_and_utf8() {
   let (pi_label, pi_var) = resolve_one_hop_copy(cfg, pi_label, pi_var);
 
   assert_var_encoding(&result, hello_label, hello_var, StringEncoding::Ascii);
-  assert_var_encoding(&result, y_label, y_var, StringEncoding::Latin1);
+  assert_var_encoding(&result, y_label, y_var, StringEncoding::Utf8);
   assert_var_encoding(&result, pi_label, pi_var, StringEncoding::Utf8);
 
   // Template literals lowered as `__optimize_js_template("...")`.
@@ -158,6 +158,6 @@ fn encoding_analysis_distinguishes_ascii_latin1_and_utf8() {
   let (t2_label, t2_var) = resolve_one_hop_copy(cfg, t2_label, t2_var);
 
   assert_var_encoding(&result, t0_label, t0_var, StringEncoding::Ascii);
-  assert_var_encoding(&result, t1_label, t1_var, StringEncoding::Latin1);
+  assert_var_encoding(&result, t1_label, t1_var, StringEncoding::Utf8);
   assert_var_encoding(&result, t2_label, t2_var, StringEncoding::Utf8);
 }
