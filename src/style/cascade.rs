@@ -27851,6 +27851,106 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn britannica_fixture_external_link_icon_uses_material_icons_pua_codepoint() {
+    // Regression: the britannica.com fixture also uses Material Icons via private-use-area
+    // codepoints (not just ligatures). For example:
+    //   a.external::after { content:"   "; font-family:"material icons"; }
+    //
+    // The offline fixture font must include these codepoints so the icon glyph does not fall back
+    // to a missing-glyph box.
+    use crate::css::loader::absolutize_css_urls_cow;
+    use crate::text::font_db::FontConfig;
+    use crate::text::font_loader::FontContext;
+    use crate::text::pipeline::ShapingPipeline;
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use url::Url;
+ 
+    let media_ctx = MediaContext::screen(1200.0, 800.0);
+    let fixture_root: PathBuf = [
+      env!("CARGO_MANIFEST_DIR"),
+      "tests/pages/fixtures/britannica.com",
+    ]
+    .iter()
+    .collect();
+ 
+    let css_files = [
+      // Provides the offline Material Icons @font-face.
+      "assets/65db03ecf48e2c4b24c7020615d9d3c9.css",
+      // Contains `a.external::after { content:"   "; font-family:"material icons"; }`.
+      "assets/93b28b8d918123883e925d8af5930c63.css",
+    ];
+ 
+    let mut combined_rules = Vec::new();
+    let mut font_faces = Vec::new();
+    for rel in css_files {
+      let css_path = fixture_root.join(rel);
+      let css = std::fs::read_to_string(&css_path)
+        .unwrap_or_else(|err| panic!("failed to read fixture CSS {css_path:?}: {err}"));
+      let base_url = Url::from_file_path(&css_path)
+        .unwrap_or_else(|()| panic!("expected CSS path {css_path:?} to be convertible to file:// URL"));
+      let rewritten = absolutize_css_urls_cow(&css, base_url.as_str())
+        .expect("fixture stylesheet URL rewriting");
+      let sheet = parse_stylesheet_with_media(rewritten.as_ref(), &media_ctx, None)
+        .unwrap_or_else(|err| panic!("failed to parse fixture stylesheet {css_path:?}: {err:?}"));
+      font_faces.extend(sheet.collect_font_face_rules(&media_ctx));
+      combined_rules.extend(sheet.rules);
+    }
+ 
+    let stylesheet = StyleSheet {
+      namespaces: Default::default(),
+      rules: combined_rules,
+    };
+ 
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "a".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("class".to_string(), "external".to_string()),
+          ("href".to_string(), "https://example.com".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    let styled = apply_styles_with_media(&dom, &stylesheet, &media_ctx);
+    let after = styled
+      .after_styles
+      .as_ref()
+      .expect("expected a.external::after pseudo-element");
+ 
+    let expected = format!("   {}", '\u{E89E}');
+    assert_eq!(after.content_value, ContentValue::from_string(&expected));
+    assert!(
+      after
+        .font_family
+        .iter()
+        .any(|family| family.as_str().eq_ignore_ascii_case("material icons")),
+      "expected fixture stylesheet to set font-family:'material icons' for external link icon"
+    );
+ 
+    let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+    if !font_faces.is_empty() {
+      font_ctx
+        .load_web_fonts(&font_faces, None, None)
+        .expect("load fixture @font-face fonts");
+      assert!(
+        font_ctx.wait_for_pending_web_fonts(Duration::from_secs(1)),
+        "fixture @font-face font loading timed out"
+      );
+    }
+ 
+    let pipeline = ShapingPipeline::new();
+    let shaped_runs = pipeline
+      .shape(&expected, after, &font_ctx)
+      .expect("shape Material Icons PUA glyph");
+    assert!(
+      shaped_runs.iter().all(|run| run.font.family == "Material Icons"),
+      "expected PUA glyph to resolve to the fixture Material Icons font (runs={shaped_runs:?})"
+    );
+  }
+
+  #[test]
   fn single_colon_after_behaves_like_pseudo_element() {
     let dom = element_with_style("");
     let stylesheet =

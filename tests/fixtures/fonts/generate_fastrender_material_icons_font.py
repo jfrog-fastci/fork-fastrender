@@ -186,6 +186,72 @@ def image_glyph():
   rect(pen, 520, 360, 700, 500)
   return pen.glyph()
 
+def pua_e0c3_glyph():
+  # Used by `.md-drag-wrapper .hint::before` in the britannica.com fixture.
+  # Draw a simple "move" glyph: a cross with arrow-ish caps.
+  pen = TTGlyphPen(None)
+  # Center cross.
+  rect(pen, 460, 200, 540, 800)
+  rect(pen, 200, 460, 800, 540)
+  # Caps.
+  rect(pen, 420, 800, 580, 900)
+  rect(pen, 420, 100, 580, 200)
+  rect(pen, 800, 420, 900, 580)
+  rect(pen, 100, 420, 200, 580)
+  return pen.glyph()
+
+
+def pua_e5ca_glyph():
+  # Checkmark (done).
+  pen = TTGlyphPen(None)
+  rect(pen, 220, 420, 340, 540)
+  rect(pen, 340, 340, 460, 460)
+  rect(pen, 460, 420, 580, 540)
+  rect(pen, 580, 540, 700, 660)
+  rect(pen, 700, 660, 820, 780)
+  return pen.glyph()
+
+
+def pua_e5cc_glyph():
+  # Simple chevron/right arrow.
+  return arrow_right_glyph()
+
+
+def pua_e5d3_glyph():
+  # Three horizontal dots (more).
+  pen = TTGlyphPen(None)
+  rect(pen, 200, 440, 320, 560)
+  rect(pen, 440, 440, 560, 560)
+  rect(pen, 680, 440, 800, 560)
+  return pen.glyph()
+
+
+def pua_e5d7_glyph():
+  # Up + down chevrons (unfold more / sort).
+  pen = TTGlyphPen(None)
+  # Up chevron.
+  rect(pen, 300, 620, 700, 700)
+  rect(pen, 420, 700, 580, 820)
+  # Down chevron.
+  rect(pen, 300, 300, 700, 380)
+  rect(pen, 420, 180, 580, 300)
+  return pen.glyph()
+
+
+def pua_e89e_glyph():
+  # External/open-in-new style icon.
+  pen = TTGlyphPen(None)
+  # Box.
+  rect(pen, 200, 240, 760, 300)
+  rect(pen, 200, 240, 260, 760)
+  rect(pen, 700, 240, 760, 760)
+  rect(pen, 200, 700, 760, 760)
+  # Arrow (up-right).
+  rect(pen, 500, 520, 760, 580)
+  rect(pen, 620, 580, 760, 760)
+  rect(pen, 540, 460, 620, 700)
+  return pen.glyph()
+
 
 ICON_LIGATURES = {
   # HTML `data-icon=` values.
@@ -207,6 +273,19 @@ ICON_LIGATURES = {
   "toc": "icon_toc",
 }
 
+PUA_CODEPOINTS = {
+  # Used by the britannica.com fixture stylesheet via `content:"..."` or `'\exxx'` escapes.
+  0xE0C3: "icon_pua_e0c3",
+  0xE5CA: "icon_pua_e5ca",
+  0xE5CC: "icon_pua_e5cc",
+  0xE5D3: "icon_pua_e5d3",
+  0xE5D7: "icon_pua_e5d7",
+  0xE89E: "icon_pua_e89e",
+  # Escaped values like `'\e313'` / `'\e316'` (hex escape for U+E313/U+E316).
+  0xE313: "icon_keyboard_arrow_down",
+  0xE316: "icon_keyboard_arrow_up",
+}
+
 
 def main() -> None:
   upem = 1000
@@ -215,7 +294,7 @@ def main() -> None:
 
   glyph_order: list[str] = [".notdef", "space", "underscore"]
   glyph_order.extend([chr(cp) for cp in range(ord("a"), ord("z") + 1)])
-  glyph_order.extend(sorted(set(ICON_LIGATURES.values())))
+  glyph_order.extend(sorted(set(ICON_LIGATURES.values()) | set(PUA_CODEPOINTS.values())))
 
   fb = FontBuilder(upem, isTTF=True)
   fb.setupGlyphOrder(glyph_order)
@@ -223,6 +302,8 @@ def main() -> None:
   cmap = {0x0020: "space", 0x005F: "underscore"}
   for cp in range(ord("a"), ord("z") + 1):
     cmap[cp] = chr(cp)
+  for cp, glyph in PUA_CODEPOINTS.items():
+    cmap[cp] = glyph
   fb.setupCharacterMap(cmap)
 
   glyphs: dict[str, object] = {name: empty_glyph() for name in glyph_order}
@@ -244,12 +325,18 @@ def main() -> None:
   glyphs["icon_account_circle"] = account_circle_glyph()
   glyphs["icon_auto_awesome"] = auto_awesome_glyph()
   glyphs["icon_image"] = image_glyph()
+  glyphs["icon_pua_e0c3"] = pua_e0c3_glyph()
+  glyphs["icon_pua_e5ca"] = pua_e5ca_glyph()
+  glyphs["icon_pua_e5cc"] = pua_e5cc_glyph()
+  glyphs["icon_pua_e5d3"] = pua_e5d3_glyph()
+  glyphs["icon_pua_e5d7"] = pua_e5d7_glyph()
+  glyphs["icon_pua_e89e"] = pua_e89e_glyph()
 
   fb.setupGlyf(glyphs)
 
   metrics = {name: (0, 0) for name in glyph_order}
   metrics["space"] = (500, 0)
-  for glyph in ICON_LIGATURES.values():
+  for glyph in set(ICON_LIGATURES.values()) | set(PUA_CODEPOINTS.values()):
     metrics[glyph] = (upem, 0)
   fb.setupHorizontalMetrics(metrics)
   fb.setupHorizontalHeader(ascent=ascent, descent=descent)
