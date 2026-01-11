@@ -92,6 +92,13 @@ fn read_ready_pipe() {
 
   let fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
   let fired_ptr = fired as *const AtomicBool as *mut u8;
+  let timeout: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+
+  let timer_id = async_rt::schedule_timer(
+    Instant::now() + Duration::from_secs(2),
+    set_bool,
+    timeout as *const AtomicBool as *mut u8,
+  );
 
   extern "C" fn on_events(events: u32, data: *mut u8) {
     let fired = unsafe { &*(data as *const AtomicBool) };
@@ -108,11 +115,14 @@ fn read_ready_pipe() {
     close_fd(wfd);
   });
 
-  let deadline = Instant::now() + Duration::from_secs(1);
   while !fired.load(Ordering::SeqCst) {
-    assert!(Instant::now() < deadline, "timed out waiting for readability");
     runtime_native::rt_async_poll_legacy();
+    assert!(
+      !timeout.load(Ordering::SeqCst),
+      "timed out waiting for readability"
+    );
   }
+  let _ = async_rt::global().cancel_timer(timer_id);
 
   rt_io_unregister(id);
   close_fd(rfd);
