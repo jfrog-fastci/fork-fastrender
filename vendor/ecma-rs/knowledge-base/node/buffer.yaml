@@ -27,9 +27,7 @@
     depends_on_args: [0]
     allocates: true
     may_throw: true
-  purity:
-    kind: impure
-    template: impure
+  purity: Allocating
   async: false
   parallelizable: true
   idempotent: true
@@ -46,9 +44,7 @@
     depends_on_args: [0]
     allocates: true
     may_throw: true
-  purity:
-    kind: impure
-    template: impure
+  purity: Allocating
   async: false
   parallelizable: true
   idempotent: true
@@ -99,9 +95,7 @@
     depends_on_args: [0]
     allocates: true
     may_throw: true
-  purity:
-    kind: impure
-    template: impure
+  purity: Allocating
   async: false
   parallelizable: true
   idempotent: true
