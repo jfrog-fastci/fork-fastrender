@@ -1236,21 +1236,6 @@ pub fn recognize_patterns_typed(
 }
 
 #[cfg(feature = "typed")]
-fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
-  loop {
-    let Some(node) = body.exprs.get(expr.0 as usize) else {
-      return expr;
-    };
-    match &node.kind {
-      ExprKind::TypeAssertion { expr: inner, .. }
-      | ExprKind::NonNull { expr: inner }
-      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
-      _ => return expr,
-    }
-  }
-}
-
-#[cfg(feature = "typed")]
 fn expr_equivalent(body: &hir_js::Body, a: ExprId, b: ExprId) -> bool {
   let a = strip_transparent_wrappers(body, a);
   let b = strip_transparent_wrappers(body, b);
