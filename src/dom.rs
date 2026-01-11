@@ -7765,7 +7765,7 @@ impl<'a> Element for ElementRef<'a> {
       PseudoClass::Default => {
         if let Some(tag) = self.node.tag_name() {
           if tag.eq_ignore_ascii_case("option") {
-            return self.is_checked();
+            return self.node.get_attribute_ref("selected").is_some();
           }
           if tag.eq_ignore_ascii_case("input") {
             let t = self.node.get_attribute_ref("type").unwrap_or("text");
@@ -14475,7 +14475,7 @@ mod tests {
           node_type: DomNodeType::Element {
             tag_name: "option".to_string(),
             namespace: HTML_NAMESPACE.to_string(),
-            attributes: vec![("disabled".to_string(), "disabled".to_string())],
+            attributes: vec![("selected".to_string(), "selected".to_string())],
           },
           children: vec![],
         },
@@ -14483,7 +14483,7 @@ mod tests {
           node_type: DomNodeType::Element {
             tag_name: "option".to_string(),
             namespace: HTML_NAMESPACE.to_string(),
-            attributes: vec![],
+            attributes: vec![("selected".to_string(), "selected".to_string())],
           },
           children: vec![],
         },
@@ -14492,8 +14492,19 @@ mod tests {
     let ancestors: Vec<&DomNode> = vec![&select];
     let first = &select.children[0];
     let second = &select.children[1];
-    assert!(!matches(first, &ancestors, &PseudoClass::Default));
+    assert!(matches(first, &ancestors, &PseudoClass::Default));
     assert!(matches(second, &ancestors, &PseudoClass::Default));
+    assert!(!matches(first, &ancestors, &PseudoClass::Checked));
+    assert!(matches(second, &ancestors, &PseudoClass::Checked));
+
+    let select_no_default = element(
+      "select",
+      vec![element("option", vec![]), element("option", vec![])],
+    );
+    let ancestors: Vec<&DomNode> = vec![&select_no_default];
+    let first = &select_no_default.children[0];
+    assert!(!matches(first, &ancestors, &PseudoClass::Default));
+    assert!(matches(first, &ancestors, &PseudoClass::Checked));
 
     let checkbox = DomNode {
       node_type: DomNodeType::Element {
