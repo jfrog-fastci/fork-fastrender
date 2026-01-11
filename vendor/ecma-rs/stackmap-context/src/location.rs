@@ -20,9 +20,14 @@ impl StackMapLocation {
   pub fn evaluate(&self, ctx: &ThreadContext) -> Option<u64> {
     match *self {
       StackMapLocation::Register(regno) => ctx.get_dwarf_reg_u64(regno),
-      StackMapLocation::Indirect { base_reg, offset } => ctx
-        .get_dwarf_reg_u64(base_reg)
-        .map(|base| base.wrapping_add(offset as i64 as u64)),
+      StackMapLocation::Indirect { base_reg, offset } => {
+        let base = ctx.get_dwarf_reg_u64(base_reg)?;
+        let addr = (base as i128) + (offset as i128);
+        if !(0..=u64::MAX as i128).contains(&addr) {
+          return None;
+        }
+        Some(addr as u64)
+      }
     }
   }
 }
@@ -58,6 +63,26 @@ mod tests {
       }
       .evaluate(&ctx),
       Some(0x0ff0)
+    );
+
+    ctx.set_dwarf_reg_u64(DWARF_REG_SP, 0).unwrap();
+    assert_eq!(
+      StackMapLocation::Indirect {
+        base_reg: DWARF_REG_SP,
+        offset: -1,
+      }
+      .evaluate(&ctx),
+      None
+    );
+
+    ctx.set_dwarf_reg_u64(DWARF_REG_SP, u64::MAX).unwrap();
+    assert_eq!(
+      StackMapLocation::Indirect {
+        base_reg: DWARF_REG_SP,
+        offset: 1,
+      }
+      .evaluate(&ctx),
+      None
     );
 
     assert_eq!(StackMapLocation::Register(0xffff).evaluate(&ctx), None);
