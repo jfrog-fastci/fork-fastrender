@@ -180,6 +180,7 @@ mod float_intrinsic_includes_floats;
 mod intrinsic_float_children;
 mod intrinsic_block_child_margins;
 mod inline_level_float_after_text_floats_up;
+mod inline_float_negative_margin_left;
 mod button_inline_flex_children;
 mod ua_button_default_padding;
 mod form_control_baseline;

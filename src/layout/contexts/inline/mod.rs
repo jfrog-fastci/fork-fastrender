@@ -11501,8 +11501,7 @@ impl InlineFormattingContext {
           root_font_metrics,
         )
       })
-      .unwrap_or(0.0)
-      .max(0.0);
+      .unwrap_or(0.0);
     let margin_right = float_node
       .style
       .margin_right
@@ -11517,8 +11516,7 @@ impl InlineFormattingContext {
           root_font_metrics,
         )
       })
-      .unwrap_or(0.0)
-      .max(0.0);
+      .unwrap_or(0.0);
 
     let fc_type = float_node
       .formatting_context()
@@ -11815,8 +11813,7 @@ impl InlineFormattingContext {
           root_font_metrics,
         )
       })
-      .unwrap_or(0.0)
-      .max(0.0);
+      .unwrap_or(0.0);
     let margin_bottom = float_node
       .style
       .margin_bottom
@@ -11831,8 +11828,7 @@ impl InlineFormattingContext {
           root_font_metrics,
         )
       })
-      .unwrap_or(0.0)
-      .max(0.0);
+      .unwrap_or(0.0);
     let box_width = used_border_box;
     let float_height = margin_top + fragment.bounds.height() + margin_bottom;
 
