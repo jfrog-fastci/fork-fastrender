@@ -168,7 +168,7 @@ pub use rt_trace::RtDebugCountersSnapshot;
 pub use stack_walk::{FrameView, StackWalker};
 pub use string::*;
 pub use timer_wheel::{TimerKey, TimerWheel};
-pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section};
+pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section, try_load_via_linker_symbols};
 pub use safepoint::{visit_reloc_pairs, with_world_stopped};
 pub use stackmap_loader::{build_global_stackmap_index, load_all_llvm_stackmaps, StackMapIndex};
 pub use runtime::{AttachError, DetachError, Runtime, StopTheWorldGuard, ThreadGuard};

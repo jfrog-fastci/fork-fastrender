@@ -17,14 +17,64 @@
 
 use std::sync::OnceLock;
 
+#[cfg(target_os = "linux")]
+mod linux {
+  use core::arch::global_asm;
+
+  // Provide weak fallback definitions so `runtime-native` can link even when the final executable
+  // does not define stackmap boundary symbols (e.g. tools/tests, or binaries without statepoints).
+  //
+  // We intentionally define *non-absolute* symbols (in `.bss`) so referencing them is valid even
+  // when building `cdylib` artifacts (absolute symbols can trigger disallowed relocations).
+  //
+  // When `runtime-native/link/stackmaps.ld` defines the real range symbols, those strong
+  // definitions override these weak fallbacks.
+  global_asm!(
+    r#"
+    .pushsection .bss
+    .balign 1
+
+    // All weak fallbacks alias a single sentinel address so the runtime can
+    // distinguish:
+    // - symbols absent (start=end=sentinel) -> fall back to other discovery
+    // - symbols present but empty (start=end!=sentinel) -> return empty slice
+    .weak __runtime_native_stackmaps_fallback
+    .weak __llvm_stackmaps_start
+    .weak __llvm_stackmaps_end
+    .weak __fastr_stackmaps_start
+    .weak __fastr_stackmaps_end
+    __runtime_native_stackmaps_fallback:
+    __llvm_stackmaps_start:
+    __llvm_stackmaps_end:
+    __fastr_stackmaps_start:
+    __fastr_stackmaps_end:
+    .byte 0
+
+    .popsection
+    "#
+  );
+
+  extern "C" {
+    pub static __runtime_native_stackmaps_fallback: u8;
+    pub static __llvm_stackmaps_start: u8;
+    pub static __llvm_stackmaps_end: u8;
+    pub static __fastr_stackmaps_start: u8;
+    pub static __fastr_stackmaps_end: u8;
+  }
+}
+
 /// Output section names that may contain stackmap payloads in the final ELF.
 ///
 /// Some link setups place stackmaps into `.data.rel.ro.llvm_stackmaps` so the
 /// dynamic loader can relocate the section for PIE binaries (writable during
 /// relocation, then protected by RELRO).
 #[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
-const LLVM_STACKMAPS_ELF_SECTION_CANDIDATES: [&str; 2] =
-  [".data.rel.ro.llvm_stackmaps", ".llvm_stackmaps"];
+const LLVM_STACKMAPS_ELF_SECTION_CANDIDATES: [&str; 3] = [
+  ".data.rel.ro.llvm_stackmaps",
+  ".llvm_stackmaps",
+  // Some linker scripts export an output section without the leading dot.
+  "llvm_stackmaps",
+];
 
 // Cache the resolved stackmaps slice so we do any ELF parsing at most once.
 static STACKMAPS_SECTION: OnceLock<&'static [u8]> = OnceLock::new();
@@ -65,57 +115,78 @@ pub fn load_stackmaps_from_self() -> &'static [u8] {
   stackmaps_section()
 }
 
-/// Attempt to load `.llvm_stackmaps` via linker-defined start/stop symbols.
+/// Attempt to load `.llvm_stackmaps` via linker-defined range symbols.
 ///
 /// This is the preferred path on Linux: no `/proc` access and no ELF parsing.
-pub fn load_llvm_stackmaps_via_symbols() -> Option<&'static [u8]> {
-  #[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
+pub fn try_load_via_linker_symbols() -> Option<&'static [u8]> {
+  #[cfg(target_os = "linux")]
   unsafe {
-    const LLVM_STACKMAPS_SECTION: &str = ".llvm_stackmaps";
+    unsafe fn slice_from_range(start: *const u8, end: *const u8) -> Option<&'static [u8]> {
+      let start_addr = start as usize;
+      let end_addr = end as usize;
+      if end_addr <= start_addr {
+        return None;
+      }
 
-    extern "C" {
-      static __start_llvm_stackmaps: u8;
-      static __stop_llvm_stackmaps: u8;
+      let len = end_addr - start_addr;
+
+      // StackMap v3 payload contains 64-bit fields and is 8-byte aligned.
+      if start_addr % 8 != 0 || len % 8 != 0 {
+        return None;
+      }
+
+      // Stack maps are metadata; if this is enormous something went very wrong (e.g. the symbols
+      // resolved to unrelated addresses).
+      const MAX_LEN: usize = 512 * 1024 * 1024; // 512 MiB
+      if len > MAX_LEN {
+        return None;
+      }
+
+      Some(core::slice::from_raw_parts(start, len))
     }
 
-    let start = core::ptr::addr_of!(__start_llvm_stackmaps) as usize;
-    let end = core::ptr::addr_of!(__stop_llvm_stackmaps) as usize;
+    let fallback = core::ptr::addr_of!(linux::__runtime_native_stackmaps_fallback) as usize;
 
-    if end < start {
-      panic!(
-        "invalid {LLVM_STACKMAPS_SECTION} range: __stop_llvm_stackmaps ({end:#x}) < __start_llvm_stackmaps ({start:#x})"
-      );
-    }
+    let try_pair = |start: *const u8, end: *const u8| -> Option<&'static [u8]> {
+      let start_addr = start as usize;
+      let end_addr = end as usize;
 
-    let len = end - start;
+      // Symbols not provided by the final link (we're seeing our weak `.bss` fallbacks).
+      if start_addr == fallback && end_addr == fallback {
+        return None;
+      }
 
-    // StackMap v3 payload contains 64-bit fields and is 8-byte aligned.
-    if start % 8 != 0 {
-      panic!(
-        "{LLVM_STACKMAPS_SECTION} pointer misaligned: __start_llvm_stackmaps={start:#x}"
-      );
-    }
-    if len % 8 != 0 {
-      panic!("{LLVM_STACKMAPS_SECTION} length misaligned: len={len}");
-    }
+      if end_addr < start_addr {
+        return None;
+      }
 
-    // Stack maps are metadata; if this is enormous something went very wrong
-    // (e.g. the linker script wasn't applied and symbols resolved to unrelated
-    // addresses).
-    const MAX_LEN: usize = 512 * 1024 * 1024; // 512 MiB
-    if len > MAX_LEN {
-      panic!(
-        "invalid {LLVM_STACKMAPS_SECTION} length: {len} bytes (max {MAX_LEN}); linker script probably not applied"
-      );
-    }
+      // Symbols present but empty: treat as authoritative so we don't fall back to `/proc` I/O.
+      if end_addr == start_addr {
+        return Some(&[]);
+      }
 
-    Some(core::slice::from_raw_parts(start as *const u8, len))
+      slice_from_range(start, end)
+    };
+
+    try_pair(
+      core::ptr::addr_of!(linux::__llvm_stackmaps_start),
+      core::ptr::addr_of!(linux::__llvm_stackmaps_end),
+    )
+    .or_else(|| {
+      try_pair(
+        core::ptr::addr_of!(linux::__fastr_stackmaps_start),
+        core::ptr::addr_of!(linux::__fastr_stackmaps_end),
+      )
+    })
   }
 
-  #[cfg(not(all(target_os = "linux", feature = "llvm_stackmaps_linker")))]
-  {
-    None
-  }
+  #[cfg(not(target_os = "linux"))]
+  None
+}
+
+/// Backwards-compatible alias for older callers.
+pub fn load_llvm_stackmaps_via_symbols() -> Option<&'static [u8]> {
+  try_load_via_linker_symbols()
 }
 
 fn load_llvm_stackmaps_via_elf() -> Option<&'static [u8]> {

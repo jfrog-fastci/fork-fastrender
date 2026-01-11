@@ -20,7 +20,7 @@ fn lld_linker_script_defines_stackmaps_range_symbols() {
   }
 
   let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-  let stackmaps_ld = crate_dir.join("stackmaps.ld");
+  let stackmaps_ld = crate_dir.join("link/stackmaps.ld");
 
   let temp = tempfile::tempdir().expect("create tempdir");
   let project_dir = temp.path();
@@ -53,15 +53,26 @@ runtime-native = {{ path = "{}", features = ["llvm_stackmaps_linker"] }}
 global_asm!(
     r#"
     .section .llvm_stackmaps,"a",@progbits
-    .byte 0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08
+    // Minimal LLVM StackMap v3 header (16 bytes):
+    //   u8  version = 3
+    //   u8  reserved0 = 0
+    //   u16 reserved1 = 0
+    //   u32 num_functions = 0
+    //   u32 num_constants = 0
+    //   u32 num_records = 0
+    .byte 0x03,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00
     .previous
 "#);
 
 fn main() {
-    let expected: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8];
+    let stackmaps = runtime_native::try_load_via_linker_symbols()
+        .expect("expected linker-defined stackmap boundary symbols");
+    assert!(!stackmaps.is_empty(), "expected non-empty .llvm_stackmaps bytes");
 
-    let stackmaps = runtime_native::stackmaps_section();
-    assert_eq!(stackmaps, expected, "unexpected .llvm_stackmaps bytes");
+    let blobs = runtime_native::stackmap_loader::parse_stackmap_blobs(stackmaps)
+        .expect("expected StackMap v3 header");
+    assert!(!blobs.is_empty(), "expected at least one stackmap blob");
+    assert_eq!(blobs[0].version, 3);
 }
 "##,
   )

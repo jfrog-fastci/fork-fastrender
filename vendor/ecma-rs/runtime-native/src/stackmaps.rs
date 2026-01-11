@@ -17,10 +17,6 @@
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use anyhow::Context;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-use object::{Object, ObjectSection};
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-use std::ffi::CStr;
 use thiserror::Error;
 
 pub const STACKMAP_VERSION: u8 = 3;
@@ -1005,87 +1001,17 @@ impl StackMaps {
   /// rather than from the on-disk bytes.
   #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
   pub fn load_self() -> anyhow::Result<Self> {
-    let exe_path =
-      std::fs::read_link("/proc/self/exe").context("readlink /proc/self/exe")?;
-    let exe_bytes = std::fs::read(&exe_path)
-      .with_context(|| format!("read ELF file {}", exe_path.display()))?;
-
-    let elf = object::File::parse(&*exe_bytes).context("parse ELF")?;
-    // runtime-native's linker script (`stackmaps.ld`) places stackmaps into
-    // `.data.rel.ro.llvm_stackmaps` to avoid DT_TEXTREL for PIE/DSO builds, but
-    // other link pipelines may leave the section as `.llvm_stackmaps`.
-    const STACKMAP_SECTION_NAMES: [&str; 3] = [
-      ".data.rel.ro.llvm_stackmaps",
-      ".llvm_stackmaps",
-      // Some linker scripts export an output section without the leading dot.
-      "llvm_stackmaps",
-    ];
-    let (section_name, section) = STACKMAP_SECTION_NAMES
-      .iter()
-      .find_map(|&name| elf.section_by_name(name).map(|section| (name, section)))
-      .ok_or_else(|| {
-        anyhow::anyhow!(
-          "main executable is missing LLVM stackmap section (tried {})",
-          STACKMAP_SECTION_NAMES.join(", ")
-        )
-      })?;
-
-    let sh_addr = section.address();
-    let sh_size = section.size();
-    let sh_size_usize =
-      usize::try_from(sh_size).with_context(|| format!("{section_name} section size overflows usize"))?;
-
-    let base = main_executable_base_addr().context("find main executable base address")?;
-    let mapped_addr_u64 = (base as u64).checked_add(sh_addr).ok_or_else(|| {
-      anyhow::anyhow!("mapped address overflow (base=0x{base:x} sh_addr=0x{sh_addr:x})")
-    })?;
-    let mapped_addr = usize::try_from(mapped_addr_u64).context("mapped address overflows")?;
-
-    // SAFETY: We trust the ELF metadata for the stackmaps section and assume it is mapped as a
-    // readable segment in the current process.
-    let bytes = unsafe { std::slice::from_raw_parts(mapped_addr as *const u8, sh_size_usize) };
-    Ok(Self::parse(bytes).with_context(|| format!("parse {section_name}"))?)
+    let bytes = crate::stackmaps_loader::stackmaps_section();
+    if bytes.is_empty() {
+      anyhow::bail!("main executable is missing a stackmaps section");
+    }
+    Ok(Self::parse(bytes).context("parse stackmaps section")?)
   }
 
   #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
   pub fn load_self() -> anyhow::Result<Self> {
     anyhow::bail!("StackMaps::load_self is only supported on Linux x86_64");
   }
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn main_executable_base_addr() -> anyhow::Result<usize> {
-  unsafe extern "C" fn callback(
-    info: *mut libc::dl_phdr_info,
-    _size: libc::size_t,
-    data: *mut libc::c_void,
-  ) -> libc::c_int {
-    // SAFETY: `dl_iterate_phdr` guarantees `info` is valid for the duration of the callback.
-    let info = unsafe { &*info };
-    let out = unsafe { &mut *(data as *mut Option<usize>) };
-
-    let name = if info.dlpi_name.is_null() {
-      None
-    } else {
-      // SAFETY: `dlpi_name` is a NUL-terminated C string.
-      Some(unsafe { CStr::from_ptr(info.dlpi_name) })
-    };
-
-    // For the main executable, `dlpi_name` is typically an empty string.
-    let is_main = name.map_or(true, |s| s.to_bytes().is_empty());
-    if is_main {
-      *out = Some(info.dlpi_addr as usize);
-      return 1; // stop iterating
-    }
-    0
-  }
-
-  let mut base: Option<usize> = None;
-  let ret = unsafe { libc::dl_iterate_phdr(Some(callback), &mut base as *mut _ as *mut _) };
-  if ret < 0 {
-    anyhow::bail!("dl_iterate_phdr failed");
-  }
-  base.ok_or_else(|| anyhow::anyhow!("dl_iterate_phdr did not report the main executable"))
 }
 
 #[cfg(test)]
