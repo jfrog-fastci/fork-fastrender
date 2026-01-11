@@ -535,11 +535,22 @@ impl<'a> CallSite<'a> {
   /// - Assert the remaining count is even and chunk into `(base, derived)` pairs,
   ///   preserving the original order.
   pub fn reloc_pairs(&self) -> impl Iterator<Item = RelocPair> + '_ {
+    // `gc.relocate` pairing is only meaningful for LLVM statepoints that follow our patchpoint-id
+    // convention. For other stackmap records (e.g. plain patchpoints), return an empty iterator.
+    if self.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+      return RelocPairsIter::Empty;
+    }
+
     // `gc.relocate` pairing is only meaningful for LLVM statepoints. For other stackmap records,
     // return an empty iterator.
     let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
       Ok(sp) => sp,
-      Err(_) => {
+      Err(err) => {
+        debug_assert!(
+          false,
+          "failed to decode statepoint stackmap record for reloc_pairs (err={err:?} record={:?})",
+          self.record
+        );
         return RelocPairsIter::Empty;
       }
     };

@@ -144,3 +144,105 @@ fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands() {
   // Deopt operand at rsp_off=0 would be -24, but must not be included.
   assert_eq!(callsite.gc_root_rbp_offsets_strict().unwrap(), vec![-8]);
 }
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn callsite_reloc_pairs_skip_deopt_operands() {
+  use runtime_native::stackmaps::{CallSite, StackMapRecord};
+  use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
+
+  // Record layout:
+  //   3 header constants (callconv/flags/deopt_count)
+  //   1 deopt operand (Indirect, must NOT be treated as part of relocation pairs)
+  //   1 GC (base, derived) pair
+  let rec = StackMapRecord {
+    patchpoint_id: LLVM_STATEPOINT_PATCHPOINT_ID,
+    instruction_offset: 0,
+    locations: vec![
+      Location::Constant { size: 8, value: 0 }, // callconv
+      Location::Constant { size: 8, value: 0 }, // flags
+      Location::Constant { size: 8, value: 1 }, // deopt_count
+      // Deopt operand (must be skipped).
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 0,
+      },
+      // Relocation pair.
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 8,
+      },
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 16,
+      },
+    ],
+    live_outs: vec![],
+  };
+
+  let callsite = CallSite {
+    stack_size: 32,
+    record: &rec,
+  };
+
+  let pairs: Vec<_> = callsite.reloc_pairs().collect();
+  assert_eq!(pairs.len(), 1);
+  assert_eq!(
+    pairs[0].base,
+    Location::Indirect {
+      size: 8,
+      dwarf_reg: X86_64_DWARF_REG_SP,
+      offset: 8
+    }
+  );
+  assert_eq!(
+    pairs[0].derived,
+    Location::Indirect {
+      size: 8,
+      dwarf_reg: X86_64_DWARF_REG_SP,
+      offset: 16
+    }
+  );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn callsite_reloc_pairs_require_statepoint_patchpoint_id() {
+  use runtime_native::stackmaps::{CallSite, StackMapRecord};
+
+  // Record that looks like a statepoint (3 constant headers + even tail), but uses a non-statepoint
+  // patchpoint_id. `reloc_pairs` must not interpret it as `gc.relocate` metadata.
+  let rec = StackMapRecord {
+    patchpoint_id: 123,
+    instruction_offset: 0,
+    locations: vec![
+      Location::Constant { size: 8, value: 0 }, // callconv
+      Location::Constant { size: 8, value: 0 }, // flags
+      Location::Constant { size: 8, value: 0 }, // deopt_count
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 8,
+      },
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 8,
+      },
+    ],
+    live_outs: vec![],
+  };
+
+  let callsite = CallSite {
+    stack_size: 32,
+    record: &rec,
+  };
+
+  assert!(
+    callsite.reloc_pairs().next().is_none(),
+    "non-statepoint records must not produce relocation pairs"
+  );
+}
