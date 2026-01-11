@@ -3072,33 +3072,48 @@ fn clamp_to_min_max(value: f32, min: Option<f32>, max: Option<f32>) -> f32 {
 fn horizontal_padding_and_borders(
   style: &crate::style::ComputedStyle,
   percent_base: Option<f32>,
+  viewport: crate::geometry::Size,
+  font_context: &crate::text::font_loader::FontContext,
 ) -> f32 {
-  let resolve_abs = |l: &crate::style::values::Length| match l.unit {
-    LengthUnit::Percent => percent_base
-      .map(|base| (l.value / 100.0) * base)
-      .unwrap_or(0.0),
-    _ if l.unit.is_absolute() => l.to_px(),
-    _ => l.value,
+  let resolve = |len: Length| {
+    crate::layout::utils::resolve_length_with_percentage_metrics(
+      len,
+      percent_base,
+      viewport,
+      style.font_size,
+      style.root_font_size,
+      Some(style),
+      Some(font_context),
+    )
+    .unwrap_or(0.0)
   };
 
-  let border_left = style.used_border_left_width();
-  let border_right = style.used_border_right_width();
-  resolve_abs(&style.padding_left)
-    + resolve_abs(&style.padding_right)
-    + resolve_abs(&border_left)
-    + resolve_abs(&border_right)
+  resolve(style.padding_left)
+    + resolve(style.padding_right)
+    + resolve(style.used_border_left_width())
+    + resolve(style.used_border_right_width())
 }
 
-fn horizontal_padding(style: &crate::style::ComputedStyle, percent_base: Option<f32>) -> f32 {
-  let resolve_abs = |l: &crate::style::values::Length| match l.unit {
-    LengthUnit::Percent => percent_base
-      .map(|base| (l.value / 100.0) * base)
-      .unwrap_or(0.0),
-    _ if l.unit.is_absolute() => l.to_px(),
-    _ => l.value,
+fn horizontal_padding(
+  style: &crate::style::ComputedStyle,
+  percent_base: Option<f32>,
+  viewport: crate::geometry::Size,
+  font_context: &crate::text::font_loader::FontContext,
+) -> f32 {
+  let resolve = |len: Length| {
+    crate::layout::utils::resolve_length_with_percentage_metrics(
+      len,
+      percent_base,
+      viewport,
+      style.font_size,
+      style.root_font_size,
+      Some(style),
+      Some(font_context),
+    )
+    .unwrap_or(0.0)
   };
 
-  resolve_abs(&style.padding_left) + resolve_abs(&style.padding_right)
+  resolve(style.padding_left) + resolve(style.padding_right)
 }
 
 /// Collects table row boxes in DOM/source order, matching `CellInfo::source_row`.
@@ -5371,10 +5386,15 @@ impl TableFormattingContext {
     // Add horizontal padding (and borders in separate model) to intrinsic widths
     let style = &cell_box.style;
     let padding_and_borders = match border_collapse {
-      BorderCollapse::Separate => horizontal_padding_and_borders(style, percent_base),
+      BorderCollapse::Separate => horizontal_padding_and_borders(
+        style,
+        percent_base,
+        self.viewport_size,
+        self.factory.font_context(),
+      ),
       BorderCollapse::Collapse => {
         // Collapsed borders don't add to box width; include padding only.
-        horizontal_padding(style, percent_base)
+        horizontal_padding(style, percent_base, self.viewport_size, self.factory.font_context())
       }
     };
     min += padding_and_borders;
@@ -5610,8 +5630,18 @@ impl TableFormattingContext {
       // border-box widths already include them.
       let width_padding = if matches!(mode, DistributionMode::Fixed) {
         match structure.border_collapse {
-          BorderCollapse::Separate => horizontal_padding_and_borders(&cell_box.style, percent_base),
-          BorderCollapse::Collapse => horizontal_padding(&cell_box.style, percent_base),
+          BorderCollapse::Separate => horizontal_padding_and_borders(
+            &cell_box.style,
+            percent_base,
+            self.viewport_size,
+            self.factory.font_context(),
+          ),
+          BorderCollapse::Collapse => horizontal_padding(
+            &cell_box.style,
+            percent_base,
+            self.viewport_size,
+            self.factory.font_context(),
+          ),
         }
       } else {
         0.0

@@ -328,6 +328,7 @@ mod table_caption_percentage_width_resolves_against_wrapper;
 mod table_caption_respects_explicit_width_and_auto_margins;
 mod table_caption_wrapper_baseline_uses_grid_baseline;
 mod table_caption_wrapper_resets_grid_only_properties;
+mod table_intrinsic_padding_rem;
 mod table_cell_height_is_min_height;
 mod table_cell_placement;
 mod table_colgroup_span_background;
