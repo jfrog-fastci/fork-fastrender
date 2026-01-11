@@ -197,7 +197,10 @@ jobs:
       # `kqueue` wakeups prefer EVFILT_USER on macOS, but fall back to a pipe-based
       # mechanism when unsupported. Exercise the portable fallback in CI too.
       - name: cargo test (runtime-native, force pipe wake)
-        run: cargo test -p runtime-native --test reactor_conformance --features force_pipe_wake --locked
+        run: |
+          cargo test -p runtime-native --test reactor_conformance --features force_pipe_wake --locked
+          cargo test -p runtime-native --test reactor_kqueue_pipe_wake --features force_pipe_wake --locked
+          cargo test -p runtime-native --test async_event_loop --features force_pipe_wake --locked
 
   typecheck-ts-harness:
     runs-on: ubuntu-24.04
