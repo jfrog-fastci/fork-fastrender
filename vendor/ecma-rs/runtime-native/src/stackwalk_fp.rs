@@ -264,8 +264,11 @@ pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce
   // Preserve interior-pointer offset only when we have both a base and a derived.
   // This keeps `null` pointers `null`, and avoids underflow for weird inputs.
   let relocated_derived = if base_old != 0 && derived_old != 0 && relocated_base != 0 {
-    let offset = derived_old.wrapping_sub(base_old);
-    relocated_base.wrapping_add(offset)
+    // Use a signed delta so we preserve interior-pointer offsets even if the derived address is
+    // below the base address (should be rare, but is the most general form of:
+    //   derived_new = relocated_base + (derived_old - base_old)
+    let delta = (derived_old as isize) - (base_old as isize);
+    (relocated_base as isize + delta) as usize
   } else {
     0
   };
