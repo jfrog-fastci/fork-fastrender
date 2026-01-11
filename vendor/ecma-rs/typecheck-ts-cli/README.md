@@ -8,6 +8,9 @@ sources.
 ```bash
 cargo run -p typecheck-ts-cli -- typecheck fixtures/basic.ts
 
+# Enforce the repo's strict-native TypeScript subset (see EXEC.plan):
+cargo run -p typecheck-ts-cli -- typecheck --strict-native fixtures/basic.ts
+
 # Load a real project via tsconfig.json (entries are optional in project mode):
 cargo run -p typecheck-ts-cli -- typecheck --project path/to/tsconfig.json
 
@@ -24,6 +27,7 @@ cargo run -p typecheck-ts-cli -- typecheck fixtures/basic.ts --json
 ### Options
 
 - `--json`: emit structured JSON output (see below) with deterministic ordering.
+- `--strict-native`: enable additional strict-native diagnostics (repo-specific; codes use the `TN####` prefix).
 - `--type-at <file:offset>`: inferred type at a byte offset within the file.
 - `--symbol-at <file:offset>`: resolved symbol information at an offset.
 - `--exports <file>`: export map for the file with symbol/type information.

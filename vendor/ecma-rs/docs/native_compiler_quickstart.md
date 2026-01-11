@@ -49,7 +49,26 @@ This is **stricter than** `tsc --strict`: code that TypeScript accepts can still
 
 Strict-native rejects (hard error, not warning):
 
-**Enforced today** by `native-js`’s strict validator (`native_js::strict::validate`):
+**Strict-native design** (see [`EXEC.plan.md`](../EXEC.plan.md) for rationale):
+
+- `any` (explicit or inferred)
+- Type assertions that bypass checking (`x as T`, `<T>x`)
+- Non-null assertions (`x!`)
+- Dynamic code execution: `eval()`, `new Function()`
+- `with`
+- `arguments`
+- Computed property access with non-constant keys in strict paths (`obj[key]` where `key` is not a constant)
+- Prototype mutation after construction (e.g. patching `Foo.prototype.*` at runtime)
+- `Proxy` (disallowed or extremely restricted)
+
+**Enforced today** by `typecheck-ts` when you pass `--strict-native` (diagnostics use the `TN####` prefix):
+
+- `TN0001`: explicit `any` type annotations (the `any` keyword in a type position)
+
+> Strict-native enforcement is intentionally incremental. Expect this list to grow as native compilation work
+> proceeds.
+
+**Also enforced today** by `native-js`’s strict validator (`native_js::strict::validate`, diagnostics use the `NJS####` prefix):
 
 - `any` (explicit or inferred) (`NJS0001`)
 - Type assertions (`x as T`, `<T>x`) (`NJS0002`)
@@ -60,12 +79,7 @@ Strict-native rejects (hard error, not warning):
 - Computed property access with non-literal keys (`obj[key]` where `key` is not a string/number literal) (`NJS0007`)
 - Use of the `arguments` identifier/object (`NJS0008`)
 
-See [`native-js/README.md`](../native-js/README.md) for the canonical “enforced today” list (with diagnostic codes).
-
-**Also rejected by the overall strict-native design** (in [`EXEC.plan.md`](../EXEC.plan.md); enforcement may land later):
-
-- Prototype mutation after construction (e.g. patching `Foo.prototype.*` at runtime)
-- `Proxy` (disallowed or extremely restricted)
+See [`native-js/README.md`](../native-js/README.md) for the canonical `native_js::strict` list (with diagnostic codes).
 
 ### Restricted constructs (allowed with constraints)
 
@@ -79,42 +93,13 @@ See [`EXEC.plan.md`](../EXEC.plan.md) → “Our TypeScript Dialect” for the c
 
 ## 2) Typecheck in strict-native mode
 
-### TypeScript typechecking (tsc-like semantics)
+### Raw cargo command (inside the ecma-rs workspace)
 
 If you’re in `vendor/ecma-rs/`:
 
 ```bash
-cargo run -p typecheck-ts-cli -- typecheck path/to/file.ts
+cargo run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
 ```
-
-### Strict-native validation (native-js strict subset)
-
-Strict-native is currently enforced by `native-js`’s strict validator (see `native-js/tests/strict_validator.rs` for examples).
-
-To run the strict validator regression tests:
-
-```bash
-# From the repo root:
-bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --test strict_validator
-
-# Or, if you're already in vendor/ecma-rs/:
-bash scripts/cargo_llvm.sh test -p native-js --test strict_validator
-```
-
-> Note: a standalone CLI flag is expected to exist eventually (as described in `EXEC.plan.md`).
-> Once implemented, it should look like:
->
-> ```bash
-> cargo run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
-> ```
->
-> Or from the repo root with the wrapper:
->
-> ```bash
-> # From the repo root:
-> bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
->   typecheck --strict-native path/to/file.ts
-> ```
 
 ### Recommended wrapper (agent-safe)
 
@@ -123,11 +108,11 @@ Use the repo’s concurrency/RAM-limiting wrapper for the vendored ecma-rs works
 ```bash
 # From the repo root (recommended):
 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck typecheck-ts-cli/fixtures/basic.ts
+  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
 
 # Or, if you're already in vendor/ecma-rs/:
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck typecheck-ts-cli/fixtures/basic.ts
+  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
 ```
 
 Expected behavior:
@@ -136,6 +121,19 @@ Expected behavior:
 - On failure: diagnostics are printed and the process exits non-zero.
 
 Tip: add `--json` to emit structured diagnostics/output for tooling.
+
+### Native strict-subset validator tests (`native-js`)
+
+In addition to the checker’s `--strict-native` mode, `native-js` has a (currently broader) strict-subset validator
+with `NJS####` diagnostics. To run its regression tests:
+
+```bash
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --test strict_validator
+
+# Or, if you're already in vendor/ecma-rs/:
+bash scripts/cargo_llvm.sh test -p native-js --test strict_validator
+```
 
 ---
 
