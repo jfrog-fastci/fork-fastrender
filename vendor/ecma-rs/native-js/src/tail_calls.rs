@@ -97,8 +97,17 @@ pub fn assert_no_tail_call_jumps(objdump_dr: &str, functions: &[&str]) -> Result
       .ok_or_else(|| anyhow!("function {func:?} not found in objdump output"))?;
 
     for instr in instrs {
-      if instr.mnemonic.starts_with("jmp") && instr.relocation_symbol.is_some() {
-        bail!("tail call jump detected in function {func:?}: {text}", text = instr.text);
+      if !instr.mnemonic.starts_with("jmp") {
+        continue;
+      }
+
+      // Direct tail calls are typically encoded as `jmp <callee>`, sometimes with a relocation and
+      // sometimes (for local/internal callees) without one. Either way, if the jump targets a
+      // symbol outside the current function, it's a tail call.
+      if let Some(sym) = instruction_target_symbol(instr) {
+        if !is_symbol_within_function(func, sym) {
+          bail!("tail call jump detected in function {func:?}: {text}", text = instr.text);
+        }
       }
     }
 
@@ -190,7 +199,8 @@ pub fn assert_function_calls_symbol(objdump_dr: &str, caller: &str, callee: &str
     .ok_or_else(|| anyhow!("function {caller:?} not found in objdump output"))?;
 
   if instrs.iter().any(|i| {
-    i.mnemonic.starts_with("call") && i.relocation_symbol.as_deref() == Some(callee)
+    i.mnemonic.starts_with("call")
+      && instruction_target_symbol(i).is_some_and(|sym| sym == callee)
   }) {
     return Ok(());
   }
@@ -212,7 +222,8 @@ pub fn assert_function_does_not_jump_to_symbol(
     .ok_or_else(|| anyhow!("function {caller:?} not found in objdump output"))?;
 
   if instrs.iter().any(|i| {
-    i.mnemonic.starts_with("jmp") && i.relocation_symbol.as_deref() == Some(callee)
+    i.mnemonic.starts_with("jmp")
+      && instruction_target_symbol(i).is_some_and(|sym| sym == callee)
   }) {
     bail!(
       "expected function {caller:?} not to tailcall-jump to {callee:?}; got:\n{}",
@@ -274,4 +285,26 @@ fn parse_relocation_symbol(line: &str) -> Option<String> {
   let _reloc_type = parts.next()?;
   let sym = parts.next()?;
   Some(sym.split('-').next().unwrap_or(sym).to_owned())
+}
+
+fn instruction_target_symbol<'a>(instr: &'a DisassembledInstruction) -> Option<&'a str> {
+  if let Some(sym) = instr.relocation_symbol.as_deref() {
+    return Some(sym);
+  }
+  extract_symbol_from_text(&instr.text)
+}
+
+fn extract_symbol_from_text(text: &str) -> Option<&str> {
+  let start = text.find('<')?;
+  let end_rel = text[start + 1..].find('>')?;
+  let end = start + 1 + end_rel;
+  let sym = &text[start + 1..end];
+  // Strip common `foo+0xNN` decoration.
+  Some(sym.split('+').next().unwrap_or(sym))
+}
+
+fn is_symbol_within_function(function: &str, symbol: &str) -> bool {
+  // Local labels are typically printed as `<func+0xNN>`. LLVM can also print block labels like
+  // `<.LBB0_2>`; treat dot-prefixed names as intra-function.
+  symbol == function || symbol.starts_with('.')
 }

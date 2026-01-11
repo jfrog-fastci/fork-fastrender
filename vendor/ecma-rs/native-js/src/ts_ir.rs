@@ -26,7 +26,7 @@ target triple = "{target_triple}"
 
 declare void @llvm.experimental.stackmap(i64, i32, ...)
 
-define i64 @{callee}(i64 %x) noinline #0 {{
+define internal i64 @{callee}(i64 %x) noinline #0 {{
 entry:
   ; Force stackmap emission so we can assert stackmaps survive optimized codegen.
   call void (i64, i32, ...) @llvm.experimental.stackmap(i64 1, i32 0)
