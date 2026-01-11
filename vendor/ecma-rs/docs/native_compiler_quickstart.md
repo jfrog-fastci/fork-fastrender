@@ -234,7 +234,8 @@ The current `native-oracle-harness` crate provides the TS → JS erasure step as
 It:
 
 1. Parses the input as TypeScript (`parse-js`, `Dialect::Ts`, `SourceType::Script`).
-2. Erases TypeScript-only syntax using the shared `ts-erase` pipeline (`TsEraseMode::StrictNative`).
+   - This is a **syntax-only** parse (no `typecheck-ts` run).
+2. Erases TypeScript-only syntax using the shared `ts-erase` pipeline (`ts_erase::erase_types_strict_native` / `TsEraseMode::StrictNative`).
 3. Emits JavaScript using the `emit-js` “JS emitter” (`emit_js::emit_js_top_level`).
 4. Optionally falls back to `optimize-js` decompilation when built with the `optimize-js-fallback` feature.
 5. Executes the erased JS using `vm-js`.
@@ -243,6 +244,9 @@ Today the harness test suite primarily asserts that fixtures:
 
 - successfully erase to JS, and
 - execute successfully in the oracle runtime.
+
+It does **not** currently run the TypeScript checker in strict-native mode; run `typecheck-ts-cli --strict-native`
+as a separate step when you want strict-native enforcement.
 
 Native execution + result comparison is expected to be layered in as the native pipeline matures.
 
