@@ -138,3 +138,32 @@ fn does_not_resolve_shadowed_import_call() {
   );
   assert!(api.is_none(), "expected shadowed binding call to not resolve");
 }
+
+#[test]
+fn does_not_resolve_shadowed_import_call_in_catch_param() {
+  let (_program, _file, api) = resolve_single_call_opt(
+    r#"
+      import { readFile } from "node:fs";
+      try {
+      } catch (readFile) {
+        (readFile as any)("x");
+      }
+    "#,
+    true,
+  );
+  assert!(api.is_none(), "expected catch param shadowing to prevent resolution");
+}
+
+#[test]
+fn does_not_resolve_shadowed_import_call_in_for_loop_head() {
+  let (_program, _file, api) = resolve_single_call_opt(
+    r#"
+      import { readFile } from "node:fs";
+      for (let readFile = 0; readFile < 1; readFile++) {
+        (readFile as any)("x");
+      }
+    "#,
+    true,
+  );
+  assert!(api.is_none(), "expected loop-scoped binding to prevent resolution");
+}
