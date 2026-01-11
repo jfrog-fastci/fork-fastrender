@@ -15,6 +15,7 @@ use std::cell::Cell;
 use crate::arch::aarch64::RegContext;
 
 extern "C" {
+  #[cfg(not(target_arch = "aarch64"))]
   fn rt_gc_safepoint_slow(requested_epoch: u64);
 }
 
@@ -193,6 +194,7 @@ pub(crate) fn gc_world_lock() -> std::sync::MutexGuard<'static, ()> {
 ///
 /// This is the primitive used by the safepoint slow path to park a thread until
 /// the coordinator resumes the world.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn wait_while_epoch_is(expected_epoch: u64) {
   let coord = coordinator();
   let mut guard = coord.cv_mutex.lock().unwrap();

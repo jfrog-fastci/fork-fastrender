@@ -546,6 +546,7 @@ pub fn set_current_thread_safepoint_context(ctx: SafepointContext) {
   *state.safepoint_context.lock().unwrap() = Some(ctx);
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn set_current_thread_safepoint_cursor(cursor: FrameCursor) {
   let Some(state) = current_thread_state() else {
     return;

@@ -1,5 +1,4 @@
 use crate::arch;
-use crate::arch::SafepointContext;
 use crate::stackwalk::StackBounds;
 use crate::threading;
 use crate::WalkError;
@@ -39,6 +38,7 @@ pub fn set_rt_gc_safepoint_hook(hook: Option<RtGcSafepointHook>) {
   RT_GC_SAFEPOINT_HOOK.store(ptr, Ordering::Release);
 }
 
+#[cfg(target_arch = "x86_64")]
 fn maybe_call_safepoint_hook(cursor: FrameCursor) {
   let ptr = RT_GC_SAFEPOINT_HOOK.load(Ordering::Acquire);
   if ptr == 0 {
@@ -56,6 +56,7 @@ pub fn current_thread_safepoint_cursor() -> FrameCursor {
   state.safepoint_cursor().unwrap_or_default()
 }
 
+#[cfg(target_arch = "x86_64")]
 #[cold]
 extern "C" fn rt_gc_safepoint_slow_impl(caller_fp: usize, caller_pc: usize, sp_entry: usize) {
   #[cfg(feature = "gc_stats")]
@@ -79,11 +80,8 @@ extern "C" fn rt_gc_safepoint_slow_impl(caller_fp: usize, caller_pc: usize, sp_e
   // `stackwalk_fp::walk_gc_roots_from_safepoint_context`.
   // `sp` must match LLVM stackmap semantics: the caller's stack pointer value at
   // the safepoint return address.
-  #[cfg(target_arch = "x86_64")]
   let sp = sp_entry.wrapping_add(arch::WORD_SIZE);
-  #[cfg(target_arch = "aarch64")]
-  let sp = sp_entry;
-  let ctx = SafepointContext {
+  let ctx = arch::SafepointContext {
     sp_entry,
     sp,
     fp: caller_fp,
