@@ -34,5 +34,5 @@ if [[ -n "${LLVM_SYS_180_PREFIX:-}" && -d "${LLVM_SYS_180_PREFIX}/bin" ]]; then
   export PATH="${LLVM_SYS_180_PREFIX}/bin:${PATH}"
 fi
 
-# Delegate to the standard cargo wrapper
+# Delegate to the repo-local cargo wrapper (which runs Cargo from the ecma-rs workspace).
 exec bash "${SCRIPT_DIR}/cargo_agent.sh" "$@"

@@ -76,6 +76,10 @@ prlimit --version
 
 **Not a constraint:** CPU and disk I/O. Scheduler handles contention fine. Don't be overly conservative.
 
+**Vendored checkout note:** In this repository, ecma-rs lives under `vendor/ecma-rs/` as a nested
+workspace. The commands below are written to run from the **top-level repo root**. If you've
+already `cd vendor/ecma-rs`, drop the `vendor/ecma-rs/` prefix from paths (scripts and `target/`).
+
 ### Rules
 
 **1. Always use the wrapper scripts:**
@@ -89,10 +93,8 @@ cargo build
 cargo test
 ```
 
-For ecma-rs workspace builds (this nested workspace), use `bash vendor/ecma-rs/scripts/cargo_agent.sh ...`.
-If you are already in `vendor/ecma-rs/`, you can instead run `bash scripts/cargo_agent.sh ...`.
-
-This wrapper `cd`s into `vendor/ecma-rs/` and delegates to the top-level `scripts/cargo_agent.sh` wrapper, which enforces:
+The wrapper (`vendor/ecma-rs/scripts/cargo_agent.sh`) `cd`s into `vendor/ecma-rs/` and delegates to
+the top-level `scripts/cargo_agent.sh` wrapper. It enforces:
 - Slot-based concurrency limiting (prevents cargo stampedes)
 - Per-command RAM cap via `RLIMIT_AS` (default 64GB)
 - Reasonable test thread counts
@@ -139,20 +141,20 @@ FASTR_CARGO_JOBS=8 bash vendor/ecma-rs/scripts/cargo_agent.sh test ...
 **5. Long-running processes need timeouts:**
 ```bash
 # Running compiled binaries - always with limits:
-bash scripts/run_limited.sh --as 32G --cpu 300 -- ./target/release/my_binary
+bash vendor/ecma-rs/scripts/run_limited.sh --as 32G --cpu 300 -- ./vendor/ecma-rs/target/release/my_binary
 
 # Don't run indefinitely:
-timeout 600 bash scripts/run_limited.sh --as 32G -- ./target/release/my_binary
+timeout 600 bash vendor/ecma-rs/scripts/run_limited.sh --as 32G -- ./vendor/ecma-rs/target/release/my_binary
 ```
 
 **6. Clean up disk when over budget:**
 ```bash
-# Before long loops, check vendor/ecma-rs/target/ size:
+# Before long loops, check `vendor/ecma-rs/target/` size:
 TARGET_MAX_GB="${TARGET_MAX_GB:-400}"
 if [[ -d vendor/ecma-rs/target ]]; then
   size_gb=$(du -sg vendor/ecma-rs/target 2>/dev/null | cut -f1 || echo 0)
   if [[ "${size_gb}" -ge "${TARGET_MAX_GB}" ]]; then
-    echo "vendor/ecma-rs/target/ at ${size_gb}GB, cleaning..." >&2
+    echo "vendor/ecma-rs/target at ${size_gb}GB, cleaning..." >&2
     bash vendor/ecma-rs/scripts/cargo_agent.sh clean
   fi
 fi
@@ -192,7 +194,7 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
 FASTR_CARGO_LIMIT_AS=96G bash vendor/ecma-rs/scripts/cargo_agent.sh <command>
 
 # Running binaries:
-bash scripts/run_limited.sh --as 32G --cpu 300 -- ./target/release/binary
+bash vendor/ecma-rs/scripts/run_limited.sh --as 32G --cpu 300 -- ./vendor/ecma-rs/target/release/binary
 
 # Check if target/ needs cleaning:
 du -sh vendor/ecma-rs/target/
