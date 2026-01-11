@@ -361,6 +361,54 @@ impl IoOp {
     })
   }
 
+  /// Pins a list of backing-store rooted buffers described by a [`PinnedIoVec`] for a read-like op.
+  ///
+  /// This is intended for `read(2)`/`recv(2)`-style operations where the kernel may write into the
+  /// provided buffers. It acquires an exclusive write borrow on each unique backing store for the
+  /// lifetime of the op.
+  pub fn pin_iovecs_for_read(
+    limiter: &Arc<IoLimiter>,
+    pinned_iovecs: PinnedIoVec,
+  ) -> Result<Self, IoLimitError> {
+    let total_pinned_bytes = pinned_iovecs
+      .retained_alloc_len_deduped()
+      .ok_or(IoLimitError::LimitExceeded("max pinned bytes"))?;
+ 
+    let permit = limiter.try_acquire(total_pinned_bytes)?;
+ 
+    let mut io_bufs: Vec<IoBuf> = Vec::with_capacity(pinned_iovecs.len());
+    for iov in pinned_iovecs.as_iovecs() {
+      io_bufs.push(IoBuf {
+        ptr: iov.iov_base as *const u8,
+        len: iov.iov_len,
+      });
+    }
+ 
+    let mut stores = pinned_iovecs.unique_backing_stores();
+    stores.sort_by_key(|s| s.id());
+    let mut borrows: Vec<BorrowGuardWrite> = Vec::with_capacity(stores.len());
+    for store in stores {
+      let guard = store.try_borrow_io_write().map_err(|err| match err {
+        BorrowError::Borrowed => IoLimitError::BufferBorrowed,
+        BorrowError::ReadBorrowOverflow => IoLimitError::LimitExceeded("max read borrows"),
+        BorrowError::NotUnique => IoLimitError::BufferBorrowed,
+      })?;
+      borrows.push(guard);
+    }
+ 
+    Ok(Self {
+      bufs: io_bufs,
+      // The backing stores are owned (and pinned) by the `PinnedIoVec` itself.
+      _pinned: Vec::new(),
+      _borrows_read: Vec::new(),
+      _borrows_write: borrows,
+      pinned_iovecs: Some(pinned_iovecs),
+      #[cfg(unix)]
+      pinned_msghdr: None,
+      _permit: permit,
+    })
+  }
+
   /// Attaches a pinned `iovec[]` descriptor list to this op.
   ///
   /// This is intended for io_uring and other async APIs that require the `iovec[]` array itself to

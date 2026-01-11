@@ -173,6 +173,17 @@ impl IoRuntime {
     self.write_iovecs_with_debug_hooks(fd, iovecs, &[], None)
   }
 
+  /// Submit a non-blocking `read(2)` using pinned `ArrayBuffer`/`TypedArray` backing stores.
+  ///
+  /// The caller supplies a [`super::PinnedIoVec`] (which owns backing-store pin guards). The pinned
+  /// buffers are charged against the I/O limiter and are released on completion/cancellation.
+  ///
+  /// The backing stores are exclusively borrowed for the lifetime of the op (kernel writes into the
+  /// buffers), so safe JS-visible reads/writes are rejected while the op is in flight.
+  pub fn read_iovecs(&self, fd: OwnedFd, iovecs: super::PinnedIoVec) -> io::Result<PromiseRef> {
+    self.read_iovecs_with_debug_hooks(fd, iovecs, &[], None)
+  }
+
   #[doc(hidden)]
   pub fn write_with_debug_hooks(
     &self,
@@ -264,6 +275,57 @@ impl IoRuntime {
       .name(format!("rt-io-op-{}", id.as_u64()))
       .spawn(move || io_worker(op, rt_weak));
 
+    match spawn_res {
+      Ok(_) => Ok(promise),
+      Err(e) => {
+        // Best-effort cleanup: if the thread wasn't spawned, remove the op from the registry.
+        // Drop outside the registry lock: dropping an op record can unregister GC root pins.
+        let removed = self.inner.registry.lock().remove(id);
+        drop(removed);
+        Err(io::Error::new(io::ErrorKind::Other, e))
+      }
+    }
+  }
+
+  #[doc(hidden)]
+  pub fn read_iovecs_with_debug_hooks(
+    &self,
+    fd: OwnedFd,
+    iovecs: super::PinnedIoVec,
+    roots: &[*mut u8],
+    debug: Option<IoOpDebugHooks>,
+  ) -> io::Result<PromiseRef> {
+    if self.inner.state() != RuntimeState::Running {
+      return Err(io::Error::new(io::ErrorKind::Other, "I/O runtime is torn down"));
+    }
+ 
+    let promise = async_rt::promise::promise_new();
+    let cancel = super::op_registry::CancellationToken::new()?;
+ 
+    let pinned = super::op::IoOp::pin_iovecs_for_read(&self.inner.limiter, iovecs)?;
+    let root_pins = roots.iter().copied().map(RootPin::new).collect::<Vec<_>>();
+ 
+    let (id, op) = {
+      let mut reg = self.inner.registry.lock();
+      let id = reg.alloc_id();
+      let op = Arc::new(IoOpRecord::new(
+        id,
+        IoOpKind::Read { fd },
+        pinned,
+        promise,
+        cancel,
+        root_pins,
+        debug,
+      ));
+      reg.insert(Arc::clone(&op));
+      (id, op)
+    };
+ 
+    let rt_weak = Arc::downgrade(&self.inner);
+    let spawn_res = std::thread::Builder::new()
+      .name(format!("rt-io-op-{}", id.as_u64()))
+      .spawn(move || io_worker(op, rt_weak));
+ 
     match spawn_res {
       Ok(_) => Ok(promise),
       Err(e) => {
