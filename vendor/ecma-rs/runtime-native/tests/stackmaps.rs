@@ -90,3 +90,50 @@ fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
     }
   }
 }
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn callsite_gc_root_rbp_offsets_strict_skips_deopt_operands() {
+  use runtime_native::stackmaps::{CallSite, StackMapRecord};
+
+  // Record layout:
+  //   3 header constants (callconv/flags/deopt_count)
+  //   1 deopt operand (Indirect, must NOT be treated as a root)
+  //   1 GC (base, derived) pair
+  let rec = StackMapRecord {
+    patchpoint_id: 0,
+    instruction_offset: 0,
+    locations: vec![
+      Location::Constant { size: 8, value: 0 }, // callconv
+      Location::Constant { size: 8, value: 0 }, // flags
+      Location::Constant { size: 8, value: 1 }, // deopt_count
+      // Deopt operand (must be skipped).
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 0,
+      },
+      // GC pair: Indirect [SP + 16]
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 16,
+      },
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 16,
+      },
+    ],
+    live_outs: vec![],
+  };
+
+  let callsite = CallSite {
+    stack_size: 32,
+    record: &rec,
+  };
+
+  // For x86_64 with frame pointers: rbp_off = 8 - stack_size + rsp_off.
+  // Deopt operand at rsp_off=0 would be -24, but must not be included.
+  assert_eq!(callsite.gc_root_rbp_offsets_strict().unwrap(), vec![-8]);
+}
