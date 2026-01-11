@@ -149,7 +149,7 @@ pub extern "C" fn rt_gc_safepoint() {
 // running any Rust code.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-pub fn rt_gc_safepoint() {
+pub extern "C" fn rt_gc_safepoint() {
   extern "C" {
     #[link_name = "rt_gc_safepoint"]
     fn rt_gc_safepoint_asm();

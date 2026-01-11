@@ -14,6 +14,7 @@ use std::cell::Cell;
 #[cfg(target_arch = "aarch64")]
 use crate::arch::aarch64::RegContext;
 
+#[cfg(not(target_arch = "aarch64"))]
 extern "C" {
   #[cfg(not(target_arch = "aarch64"))]
   fn rt_gc_safepoint_slow(requested_epoch: u64);
