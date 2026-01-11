@@ -1319,6 +1319,10 @@ impl<K: Eq + Hash, V> SizedLruCache<K, V> {
     }
   }
 
+  fn len(&self) -> usize {
+    self.inner.len()
+  }
+
   fn get_cloned<Q>(&mut self, key: &Q) -> Option<V>
   where
     V: Clone,
@@ -1326,6 +1330,24 @@ impl<K: Eq + Hash, V> SizedLruCache<K, V> {
     Q: Hash + Eq + ?Sized,
   {
     self.inner.get(key).map(|entry| entry.value.clone())
+  }
+
+  fn take<Q>(&mut self, key: &Q) -> Option<V>
+  where
+    K: Borrow<Q>,
+    Q: Hash + Eq + ?Sized,
+  {
+    self.inner.pop(key).map(|entry| {
+      self.current_bytes = self.current_bytes.saturating_sub(entry.bytes);
+      entry.value
+    })
+  }
+
+  fn clear(&mut self) {
+    // `lru` versions vary in whether `clear()` is implemented on `LruCache`, so reset by
+    // reinitializing the internal map.
+    self.inner = LruCache::unbounded();
+    self.current_bytes = 0;
   }
 
   fn insert(&mut self, key: K, value: V, bytes: usize) {
@@ -3799,20 +3821,46 @@ pub struct ImageCacheConfig {
   pub max_cached_raster_pixmaps: usize,
   /// Maximum estimated bytes of cached raster pixmaps (`0` disables eviction by size).
   pub max_cached_raster_bytes: usize,
+  /// Maximum number of cached image probe metadata entries (`0` disables eviction by count).
+  pub max_cached_metadata_items: usize,
+  /// Maximum estimated bytes of cached image probe metadata (`0` disables eviction by size).
+  pub max_cached_metadata_bytes: usize,
+  /// Maximum number of raw image resources cached between `probe()` and `load()` (`0` disables
+  /// eviction by count).
+  pub max_raw_cached_items: usize,
+  /// Maximum estimated bytes of raw image resources cached between `probe()` and `load()` (`0`
+  /// disables eviction by size).
+  pub max_raw_cached_bytes: usize,
 }
 
 impl Default for ImageCacheConfig {
   fn default() -> Self {
+    const DEFAULT_MAX_METADATA_CACHE_ITEMS: usize = 2_000;
+    const DEFAULT_MAX_METADATA_CACHE_BYTES: usize = 16 * 1024 * 1024;
+    const DEFAULT_MAX_RAW_CACHE_ITEMS: usize = 64;
+    const DEFAULT_MAX_RAW_CACHE_BYTES: usize = 64 * 1024 * 1024;
     const DEFAULT_MAX_RASTER_PIXMAP_CACHE_ITEMS: usize = 256;
     const DEFAULT_MAX_RASTER_PIXMAP_CACHE_BYTES: usize = 128 * 1024 * 1024;
 
-    let max_cached_raster_pixmaps = std::env::var("FASTR_IMAGE_RASTER_PIXMAP_CACHE_ITEMS")
-      .ok()
-      .and_then(|v| v.trim().parse::<usize>().ok())
+    let toggles = runtime::runtime_toggles();
+    let max_cached_metadata_items = toggles
+      .usize("FASTR_IMAGE_META_CACHE_ITEMS")
+      .unwrap_or(DEFAULT_MAX_METADATA_CACHE_ITEMS);
+    let max_cached_metadata_bytes = toggles
+      .usize("FASTR_IMAGE_META_CACHE_BYTES")
+      .unwrap_or(DEFAULT_MAX_METADATA_CACHE_BYTES);
+    let max_raw_cached_items = toggles
+      .usize("FASTR_IMAGE_RAW_CACHE_ITEMS")
+      .unwrap_or(DEFAULT_MAX_RAW_CACHE_ITEMS);
+    let max_raw_cached_bytes = toggles
+      .usize("FASTR_IMAGE_RAW_CACHE_BYTES")
+      .unwrap_or(DEFAULT_MAX_RAW_CACHE_BYTES);
+
+    let max_cached_raster_pixmaps = toggles
+      .usize("FASTR_IMAGE_RASTER_PIXMAP_CACHE_ITEMS")
       .unwrap_or(DEFAULT_MAX_RASTER_PIXMAP_CACHE_ITEMS);
-    let max_cached_raster_bytes = std::env::var("FASTR_IMAGE_RASTER_PIXMAP_CACHE_BYTES")
-      .ok()
-      .and_then(|v| v.trim().parse::<usize>().ok())
+    let max_cached_raster_bytes = toggles
+      .usize("FASTR_IMAGE_RASTER_PIXMAP_CACHE_BYTES")
       .unwrap_or(DEFAULT_MAX_RASTER_PIXMAP_CACHE_BYTES);
 
     Self {
@@ -3824,6 +3872,10 @@ impl Default for ImageCacheConfig {
       max_cached_svg_bytes: 128 * 1024 * 1024,
       max_cached_raster_pixmaps,
       max_cached_raster_bytes,
+      max_cached_metadata_items,
+      max_cached_metadata_bytes,
+      max_raw_cached_items,
+      max_raw_cached_bytes,
     }
   }
 }
@@ -3870,6 +3922,26 @@ impl ImageCacheConfig {
 
   pub fn with_max_cached_raster_bytes(mut self, max: usize) -> Self {
     self.max_cached_raster_bytes = max;
+    self
+  }
+
+  pub fn with_max_cached_metadata_items(mut self, max: usize) -> Self {
+    self.max_cached_metadata_items = max;
+    self
+  }
+
+  pub fn with_max_cached_metadata_bytes(mut self, max: usize) -> Self {
+    self.max_cached_metadata_bytes = max;
+    self
+  }
+
+  pub fn with_max_raw_cached_items(mut self, max: usize) -> Self {
+    self.max_raw_cached_items = max;
+    self
+  }
+
+  pub fn with_max_raw_cached_bytes(mut self, max: usize) -> Self {
+    self.max_raw_cached_bytes = max;
     self
   }
 }
@@ -4052,9 +4124,9 @@ pub struct ImageCache {
   /// In-flight decodes keyed by resolved URL to de-duplicate concurrent loads.
   in_flight: Arc<Mutex<HashMap<String, Arc<DecodeInFlight>>>>,
   /// In-memory cache of probed metadata (keyed by resolved URL).
-  meta_cache: Arc<Mutex<HashMap<String, Arc<CachedImageMetadata>>>>,
+  meta_cache: Arc<Mutex<SizedLruCache<String, Arc<CachedImageMetadata>>>>,
   /// Raw resources captured during metadata probes to avoid duplicate fetches between layout and paint.
-  raw_cache: Arc<Mutex<HashMap<String, Arc<FetchedResource>>>>,
+  raw_cache: Arc<Mutex<SizedLruCache<String, Arc<FetchedResource>>>>,
   /// In-flight probes keyed by resolved URL to de-duplicate concurrent metadata loads.
   meta_in_flight: Arc<Mutex<HashMap<String, Arc<ProbeInFlight>>>>,
   /// In-memory cache of rendered inline SVG pixmaps keyed by (hash, size).
@@ -4292,8 +4364,14 @@ impl ImageCache {
         config.max_cached_image_bytes,
       ))),
       in_flight: Arc::new(Mutex::new(HashMap::new())),
-      meta_cache: Arc::new(Mutex::new(HashMap::new())),
-      raw_cache: Arc::new(Mutex::new(HashMap::new())),
+      meta_cache: Arc::new(Mutex::new(SizedLruCache::new(
+        config.max_cached_metadata_items,
+        config.max_cached_metadata_bytes,
+      ))),
+      raw_cache: Arc::new(Mutex::new(SizedLruCache::new(
+        config.max_raw_cached_items,
+        config.max_raw_cached_bytes,
+      ))),
       meta_in_flight: Arc::new(Mutex::new(HashMap::new())),
       svg_pixmap_cache: Arc::new(Mutex::new(SizedLruCache::new(
         config.max_cached_svg_pixmaps,
@@ -5127,7 +5205,9 @@ impl ImageCache {
       let shared = match &result {
         Ok(meta) => {
           if let Ok(mut cache) = self.meta_cache.lock() {
-            cache.insert(cache_key.clone(), Arc::clone(meta));
+            let key = cache_key.clone();
+            let bytes = Self::estimate_meta_cache_entry_bytes(&key, meta.as_ref());
+            cache.insert(key, Arc::clone(meta), bytes);
           }
           SharedMetaResult::Success(Arc::clone(meta))
         }
@@ -5277,7 +5357,9 @@ impl ImageCache {
       if let Some(decoded) = decode_probe_metadata_from_disk(&cached.bytes) {
         let meta = Arc::new(decoded);
         if let Ok(mut cache) = self.meta_cache.lock() {
-          cache.insert(cache_key.to_string(), Arc::clone(&meta));
+          let key = cache_key.to_string();
+          let bytes = Self::estimate_meta_cache_entry_bytes(&key, meta.as_ref());
+          cache.insert(key, Arc::clone(&meta), bytes);
         }
         record_image_cache_hit();
         inflight_guard.finish(SharedMetaResult::Success(Arc::clone(&meta)));
@@ -5333,7 +5415,7 @@ impl ImageCache {
       .meta_cache
       .lock()
       .ok()
-      .and_then(|cache| cache.get(resolved_url).cloned())
+      .and_then(|mut cache| cache.get_cloned(resolved_url))
   }
 
   fn take_raw_cached_resource(&self, resolved_url: &str) -> Option<Arc<FetchedResource>> {
@@ -5341,7 +5423,7 @@ impl ImageCache {
       .raw_cache
       .lock()
       .ok()
-      .and_then(|mut cache| cache.remove(resolved_url))
+      .and_then(|mut cache| cache.take(resolved_url))
   }
 
   fn cache_placeholder_image(&self, resolved_url: &str) -> Arc<CachedImage> {
@@ -5349,7 +5431,9 @@ impl ImageCache {
     self.insert_cached_image(resolved_url, Arc::clone(&image));
     let meta = about_url_placeholder_metadata();
     if let Ok(mut cache) = self.meta_cache.lock() {
-      cache.insert(resolved_url.to_string(), Arc::clone(&meta));
+      let key = resolved_url.to_string();
+      let bytes = Self::estimate_meta_cache_entry_bytes(&key, meta.as_ref());
+      cache.insert(key, Arc::clone(&meta), bytes);
     }
     image
   }
@@ -5357,9 +5441,38 @@ impl ImageCache {
   fn cache_placeholder_metadata(&self, resolved_url: &str) -> Arc<CachedImageMetadata> {
     let meta = about_url_placeholder_metadata();
     if let Ok(mut cache) = self.meta_cache.lock() {
-      cache.insert(resolved_url.to_string(), Arc::clone(&meta));
+      let key = resolved_url.to_string();
+      let bytes = Self::estimate_meta_cache_entry_bytes(&key, meta.as_ref());
+      cache.insert(key, Arc::clone(&meta), bytes);
     }
     meta
+  }
+
+  fn estimate_meta_cache_entry_bytes(key: &str, meta: &CachedImageMetadata) -> usize {
+    key
+      .len()
+      .saturating_add(std::mem::size_of_val(meta))
+      .saturating_add(std::mem::size_of::<Arc<CachedImageMetadata>>())
+  }
+
+  fn estimate_raw_cache_entry_bytes(key: &str, resource: &FetchedResource) -> usize {
+    let mut bytes = key.len().saturating_add(resource.bytes.len());
+    bytes = bytes.saturating_add(resource.content_type.as_ref().map(|s| s.len()).unwrap_or(0));
+    bytes = bytes.saturating_add(resource.content_encoding.as_ref().map(|s| s.len()).unwrap_or(0));
+    bytes = bytes.saturating_add(resource.etag.as_ref().map(|s| s.len()).unwrap_or(0));
+    bytes = bytes.saturating_add(resource.last_modified.as_ref().map(|s| s.len()).unwrap_or(0));
+    bytes =
+      bytes.saturating_add(resource.access_control_allow_origin.as_ref().map(|s| s.len()).unwrap_or(0));
+    bytes = bytes.saturating_add(resource.timing_allow_origin.as_ref().map(|s| s.len()).unwrap_or(0));
+    bytes = bytes.saturating_add(resource.vary.as_ref().map(|s| s.len()).unwrap_or(0));
+    bytes = bytes.saturating_add(resource.final_url.as_ref().map(|s| s.len()).unwrap_or(0));
+    if let Some(headers) = resource.response_headers.as_ref() {
+      bytes = bytes.saturating_add(headers.len().saturating_mul(2));
+      bytes = headers.iter().fold(bytes, |acc, (k, v)| {
+        acc.saturating_add(k.len().saturating_add(v.len()))
+      });
+    }
+    bytes
   }
 
   fn insert_cached_image(&self, resolved_url: &str, image: Arc<CachedImage>) {
@@ -6190,18 +6303,20 @@ impl ImageCache {
 
       let fetch_ms = fetch_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
       let attempt_probe_start = profile_enabled.then(Instant::now);
-      match self.probe_resource(&resource, resolved_url) {
-        Ok(meta) => {
-          let probe_ms = attempt_probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
-          let meta = Arc::new(meta);
+        match self.probe_resource(&resource, resolved_url) {
+          Ok(meta) => {
+            let probe_ms = attempt_probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
+            let meta = Arc::new(meta);
 
-          if let Ok(mut cache) = self.meta_cache.lock() {
-            cache.insert(cache_key.to_string(), Arc::clone(&meta));
-          }
-          if let Some(serialized) = encode_probe_metadata_for_disk(&meta) {
-            self.fetcher.write_cache_artifact_with_request(
-              request,
-              CacheArtifactKind::ImageProbeMetadata,
+            if let Ok(mut cache) = self.meta_cache.lock() {
+              let key = cache_key.to_string();
+              let bytes = Self::estimate_meta_cache_entry_bytes(&key, meta.as_ref());
+              cache.insert(key, Arc::clone(&meta), bytes);
+            }
+            if let Some(serialized) = encode_probe_metadata_for_disk(&meta) {
+              self.fetcher.write_cache_artifact_with_request(
+                request,
+                CacheArtifactKind::ImageProbeMetadata,
               &serialized,
               Some(resource.as_ref()),
             );
@@ -6209,12 +6324,14 @@ impl ImageCache {
 
           // When the image is small enough to fit in the probe prefix, keep the bytes so a later
           // decode can reuse them without issuing another HTTP request.
-          if resource.bytes.len() < limit && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES
-          {
-            if let Ok(mut cache) = self.raw_cache.lock() {
-              cache.insert(cache_key.to_string(), Arc::clone(&resource));
+            if resource.bytes.len() < limit && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES
+            {
+              if let Ok(mut cache) = self.raw_cache.lock() {
+                let key = cache_key.to_string();
+                let bytes = Self::estimate_raw_cache_entry_bytes(&key, resource.as_ref());
+                cache.insert(key, Arc::clone(&resource), bytes);
+              }
             }
-          }
 
           if let (Some(threshold_ms), Some(total_start)) = (threshold_ms, total_start) {
             let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
@@ -6303,7 +6420,9 @@ impl ImageCache {
     let meta = Arc::new(meta);
 
     if let Ok(mut cache) = self.meta_cache.lock() {
-      cache.insert(cache_key.to_string(), Arc::clone(&meta));
+      let key = cache_key.to_string();
+      let bytes = Self::estimate_meta_cache_entry_bytes(&key, meta.as_ref());
+      cache.insert(key, Arc::clone(&meta), bytes);
     }
     if let Some(serialized) = encode_probe_metadata_for_disk(&meta) {
       self.fetcher.write_cache_artifact_with_request(
@@ -6316,7 +6435,9 @@ impl ImageCache {
 
     if resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES {
       if let Ok(mut cache) = self.raw_cache.lock() {
-        cache.insert(cache_key.to_string(), Arc::clone(&resource));
+        let key = cache_key.to_string();
+        let bytes = Self::estimate_raw_cache_entry_bytes(&key, resource.as_ref());
+        cache.insert(key, Arc::clone(&resource), bytes);
       }
     }
 
@@ -11066,6 +11187,93 @@ impl Clone for ImageCache {
   }
 
   #[test]
+  fn image_meta_cache_is_bounded_by_items() {
+    #[derive(Clone)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("fetch should not be called")
+      }
+    }
+
+    let config = ImageCacheConfig::default()
+      .with_max_cached_metadata_items(2)
+      .with_max_cached_metadata_bytes(1024 * 1024);
+    let cache = ImageCache::with_fetcher_and_config(Arc::new(PanicFetcher), config);
+
+    let meta = Arc::new(CachedImageMetadata {
+      width: 1,
+      height: 1,
+      orientation: None,
+      resolution: None,
+      is_vector: false,
+      intrinsic_ratio: Some(1.0),
+      aspect_ratio_none: false,
+    });
+
+    let mut guard = cache.meta_cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.clear();
+    for i in 0..16 {
+      let key = format!("test://meta/{i}");
+      let bytes = ImageCache::estimate_meta_cache_entry_bytes(&key, meta.as_ref());
+      guard.insert(key, Arc::clone(&meta), bytes);
+      assert!(
+        guard.len() <= config.max_cached_metadata_items,
+        "meta cache should be bounded by items"
+      );
+      assert!(
+        guard.current_bytes() <= config.max_cached_metadata_bytes,
+        "meta cache bytes should not exceed configured limit"
+      );
+    }
+    assert_eq!(guard.len(), config.max_cached_metadata_items);
+  }
+
+  #[test]
+  fn image_raw_cache_is_bounded_by_bytes() {
+    #[derive(Clone)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("fetch should not be called")
+      }
+    }
+
+    let config = ImageCacheConfig::default()
+      .with_max_raw_cached_items(16)
+      .with_max_raw_cached_bytes(180);
+    let cache = ImageCache::with_fetcher_and_config(Arc::new(PanicFetcher), config);
+
+    let mut guard = cache.raw_cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.clear();
+
+    let mut last_key = String::new();
+    for i in 0..8 {
+      let key = format!("test://raw/{i}");
+      last_key = key.clone();
+      let resource = Arc::new(FetchedResource::new(vec![0u8; 120], None));
+      let bytes = ImageCache::estimate_raw_cache_entry_bytes(&key, resource.as_ref());
+      guard.insert(key, resource, bytes);
+      assert!(
+        guard.current_bytes() <= config.max_raw_cached_bytes,
+        "raw cache bytes should not exceed configured limit"
+      );
+      assert!(
+        guard.len() <= config.max_raw_cached_items,
+        "raw cache should be bounded by items"
+      );
+    }
+
+    // With an 180-byte budget and ~120-byte payloads, the cache should only retain the most recent
+    // entry after eviction.
+    assert_eq!(guard.len(), 1);
+    assert!(guard.get_cloned(last_key.as_str()).is_some());
+    assert!(guard.get_cloned("test://raw/0").is_none());
+  }
+
+  #[test]
   fn image_cache_probe_about_blank_returns_placeholder_metadata() {
     #[derive(Clone)]
     struct PanicFetcher;
@@ -11213,14 +11421,11 @@ impl Clone for ImageCache {
     resource.status = Some(200);
     let resource = Arc::new(resource);
 
-    if let Ok(mut guard) = cache.raw_cache.lock() {
-      guard.insert(cache_key, resource);
-    } else {
-      // If the lock is poisoned, reset and insert into the recovered map.
-      let mut guard = cache.raw_cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-      guard.clear();
-      guard.insert(cache_key, resource);
-    }
+    let mut guard = cache.raw_cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.clear();
+    let bytes = ImageCache::estimate_raw_cache_entry_bytes(&cache_key, resource.as_ref());
+    guard.insert(cache_key, resource, bytes);
+    drop(guard);
 
     let image = cache.load(url).expect("image should load from raw cache");
     assert!(

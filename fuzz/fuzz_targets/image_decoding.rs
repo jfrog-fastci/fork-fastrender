@@ -42,6 +42,10 @@ fuzz_target!(|data: &[u8]| {
     max_cached_svg_bytes: 8 * 1024 * 1024,
     max_cached_raster_pixmaps: 16,
     max_cached_raster_bytes: 16 * 1024 * 1024,
+    max_cached_metadata_items: 256,
+    max_cached_metadata_bytes: 1024 * 1024,
+    max_raw_cached_items: 32,
+    max_raw_cached_bytes: 8 * 1024 * 1024,
   };
 
   let fetcher = Arc::new(InMemoryFetcher {
@@ -54,4 +58,3 @@ fuzz_target!(|data: &[u8]| {
   let _ = cache.probe(url);
   let _ = cache.load(url);
 });
-

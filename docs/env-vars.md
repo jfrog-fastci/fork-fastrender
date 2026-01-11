@@ -209,6 +209,10 @@ These are emitted by the paint pipeline:
 - `FASTR_DISABLE_LAYOUT_CACHE=1` / `FASTR_DISABLE_FLEX_CACHE=1` – disable layout/flex caches.
 - `FASTR_IMAGE_PROFILE_MS=<ms>` / `FASTR_STACK_PROFILE_MS=<ms>` / `FASTR_TEXT_PROFILE_MS=<ms>` / `FASTR_CMD_PROFILE_MS=<ms>` – emit timing when operations exceed the threshold.
 - `FASTR_IMAGE_PROBE_MAX_BYTES=<bytes>` – cap bytes fetched when probing image dimensions/metadata (default 65536; the probe retries with a larger prefix before falling back to a full fetch).
+- `FASTR_IMAGE_META_CACHE_ITEMS=<N>` – max entries in the in-memory image metadata probe cache (default 2000).
+- `FASTR_IMAGE_META_CACHE_BYTES=<bytes>` – approximate byte cap for cached image probe metadata (default 16 MiB).
+- `FASTR_IMAGE_RAW_CACHE_ITEMS=<N>` – max entries in the in-memory raw image cache used to share bytes between `probe()` and `load()` (default 64).
+- `FASTR_IMAGE_RAW_CACHE_BYTES=<bytes>` – approximate byte cap for raw image bytes cached between `probe()` and `load()` (default 64 MiB).
 - `FASTR_TEXT_FALLBACK_CACHE_CAPACITY=<N>` – override the font fallback cache capacity in entries (default 131072). This applies separately to the glyph and cluster fallback caches; 0/empty/unset disables the override (use the default). Applied values are clamped to >= 1.
 
 How to interpret fallback-cache diagnostics (when render diagnostics are enabled and `RenderStats` is available):
