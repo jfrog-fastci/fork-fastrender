@@ -243,11 +243,13 @@ impl Codegen {
           }
 
            match builtin {
-             BuiltinCall::Print { arg } => {
-               let v = self.compile_expr(arg)?;
-               self.emit_print_value(v)?;
-               Ok(Value::void())
-             }
+            BuiltinCall::Print { arg } => {
+              let v = self.compile_expr(arg)?;
+              self.emit_print_value(v)?;
+              // Make stdout useful for debugging even when the program later traps (e.g. SIGSEGV).
+              self.emit("  call i32 @fflush(ptr null)".to_string());
+              Ok(Value::void())
+            }
              BuiltinCall::Assert { cond, msg } => {
               let cond_v = self.compile_expr(cond)?;
               if cond_v.ty != Ty::Bool {
