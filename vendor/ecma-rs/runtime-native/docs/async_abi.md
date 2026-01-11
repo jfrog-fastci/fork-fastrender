@@ -216,12 +216,14 @@ These are the guarantees codegen is allowed to rely on.
 
 ### `rt_async_spawn(coro: CoroutineId) -> PromiseRef`
 
-- Takes ownership of the coroutine handle (`CoroutineId`).
-- Allocates the result promise described by `coro.vtable.{promise_size,promise_align,promise_shape_id}`.
-- Stores the promise pointer into `coro.promise`.
+- Takes ownership of the coroutine handle (`CoroutineId`). The runtime consumes the handle and frees
+  it when the coroutine completes.
+- Allocates the result promise described by the coroutine frame's
+  `CoroutineVTable.{promise_size,promise_align,promise_shape_id}`.
+- Stores the promise pointer into the coroutine frame's `promise` field.
 - **Immediately resumes** the coroutine during the call (until it completes or reaches its first
   `await`).
-- Returns `coro.promise`.
+- Returns the coroutine's promise handle.
 
 `CoroutineId` is an ABI-stable `u64` (backed by the persistent handle table). The runtime resolves
 the handle to a `Coroutine*` each time it needs to resume, and frees the handle on
