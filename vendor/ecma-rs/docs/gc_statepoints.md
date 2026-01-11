@@ -306,7 +306,7 @@ LLVM supports relocating derived (interior) pointers by rooting **both** the bas
 
 #### When to root a derived pointer vs recompute it
 
-**Important:** `runtime-native` currently rejects derived pointers at safepoints (it requires `base` and `derived` to refer to the same storage location: the same spill slot or the same register). Until derived-pointer support is implemented in the runtime, `native-js` codegen should treat derived pointers as **not supported** and use the “recompute after safepoint” strategy below.
+**Important:** `runtime-native` currently rejects derived pointers at safepoints. In practice, the runtime currently requires `base` and `derived` to refer to the same **addressable spill slot** (the same `Location::Indirect` stack slot). Until derived-pointer support is implemented in the runtime, `native-js` codegen should treat derived pointers as **not supported** and use the “recompute after safepoint” strategy below.
 
 If the derived pointer is a pure function of the base pointer (for example: a constant-field offset or an index value that is still available after the safepoint), it's usually better to:
 
@@ -330,6 +330,18 @@ Generated machine code must force frame pointers (no omission), so stackmap loca
 In LLVM IR, this means ensuring safepointing functions are compiled with frame pointers enabled (e.g. via function attributes such as):
 
 - `"frame-pointer"="all"` (preferred)
+
+### GC roots must be spilled to addressable stack slots (no register roots)
+
+LLVM can legally keep some statepoint GC roots in registers and describe them as `Location::Register` in `.llvm_stackmaps`.
+
+`runtime-native`'s current stack-walking implementation for GC statepoints only supports **addressable spill slots** (`Location::Indirect`), so `native-js` codegen must ensure LLVM spills all `"gc-live"` values to the stack at safepoints.
+
+Mitigation:
+
+- Pass `llc-18 --fixup-max-csr-statepoints=0` (or the equivalent global LLVM codegen option via `LLVMParseCommandLineOptions`).
+  - `native-js` configures this globally in `native-js/src/emit/mod.rs`.
+  - See `runtime-native/tests/statepoint_register_roots_codegen.rs` for the regression matrix that locks this down.
 
 ### Safepoints must not be tail calls
 
@@ -423,12 +435,12 @@ After `rewrite-statepoints-for-gc` in LLVM 18:
 
 After `rewrite-statepoints-for-gc` (LLVM 18), each safepoint record’s `locations` list has this layout:
 
-1. A **prefix of 3 constant locations**.
-   - The second constant (`locations[1]`, shown as location `#2` in `llvm-readobj --stackmap`) corresponds
-     to the IR `gc.statepoint` `flags` immarg.
-   - Since `runtime-native` currently assumes `flags = 0`, these three constants are expected to be zero
-     in our pipeline.
-2. Then, for each `gc.relocate` call associated with that statepoint:
+1. A **prefix of 3 constant locations** (the statepoint "header"):
+   - `locations[0]`: `callconv` (expected `0` in this project)
+   - `locations[1]`: `flags` (the `gc.statepoint` `flags` immarg; expected `0` in this project)
+   - `locations[2]`: `deopt_count` (number of `"deopt"` operand locations; expected `0` — deopt operands are not supported)
+2. Then `deopt_count` deopt operand locations (not GC roots). (`deopt_count` is always `0` today.)
+3. Then, for each `gc.relocate` call associated with that statepoint:
    - 2 locations: `(base, derived)` in that order
 
 `runtime-native` enumerates and updates roots from these `(base, derived)` pairs. Practically, this means:
@@ -439,15 +451,15 @@ So:
 
 ```
 locations =
-  Constant(0)
-  Constant(<flags>)
-  Constant(0)
+  Constant(callconv=0)
+  Constant(flags)
+  Constant(deopt_count)
   base_0, derived_0
   base_1, derived_1
   ...
 ```
 
-`runtime-native` ignores the three leading constant entries and consumes the remaining locations as pairs.
+`runtime-native` interprets the header + deopt locations, then consumes the remaining locations as `(base, derived)` pairs.
 
 ### How relocation is performed in the runtime
 
@@ -455,23 +467,21 @@ locations =
 
 Current runtime contract (v1):
 
-- Root locations may be either:
-  - **addressable spill slots** (`Location::Indirect` based on SP/FP), or
-  - **register locations** (`Location::Register`, encoded as a DWARF register number).
-  - Note: LLVM statepoint lowering typically spills GC roots so the runtime can scan caller frames
-    while stopped inside the statepoint callee, but register locations are legal in the stackmap
-    format and can appear depending on LLVM/codegen and for other stackmap users (e.g. patchpoints).
+- Root locations must be **addressable spill slots**:
+  - stackmap location kind must be `Location::Indirect`
+  - base register must be the caller-frame stack pointer (SP): x86_64 DWARF reg 7 (`RSP`), AArch64 DWARF reg 31 (`SP`)
+  - slot size must be pointer-sized (8 bytes on our supported 64-bit targets)
+- Root locations in registers (`Location::Register`) or non-addressable expressions (`Location::Direct`) are currently **rejected**.
 - Derived pointers (base/derived locations that differ) are currently **rejected** to avoid silent corruption.
   - `native-js` should avoid keeping interior pointers live across safepoints; keep the base pointer live and recompute derived pointers after the safepoint if needed.
 
-For each `(base, derived)` pair (where `base` and `derived` refer to the same storage location):
+For each `(base, derived)` pair (where `base` and `derived` refer to the same spill slot):
 
 - Read the *current* pointer value from the root location.
 - If the pointer is `0` (null), treat it as non-root (skip).
 - Ask the GC to relocate it to `new_ptr` (moving/compacting collector).
 - Write `new_ptr` back to the same root location:
-  - for spill slots: write to the stack memory slot (in place)
-  - for registers: update the stopped thread's register file (e.g. Linux `ucontext_t`) before resuming
+  - write to the stack memory slot (in place)
 
 ---
 
