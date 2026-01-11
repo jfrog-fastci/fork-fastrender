@@ -70,6 +70,7 @@ pub use project::compile_project_to_llvm_ir;
 pub use resolve::Resolver;
 pub use stack_walking::CodeGen;
 
+use diagnostics::Severity;
 use llvm_sys as _;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::path::PathBuf;
@@ -147,6 +148,18 @@ pub struct Artifact {
   pub stdout_hint: Option<String>,
 }
 
+/// Backwards-compatible compilation output type.
+///
+/// Note: the native pipeline has grown beyond this initial shape. Prefer
+/// [`Artifact`] and [`compile_program`] for the typechecked backend.
+#[derive(Clone, Debug)]
+pub struct CompilationOutput {
+  /// Path to the produced artifact (executable/object file).
+  pub artifact: PathBuf,
+  /// Optional textual LLVM IR (when requested by the caller).
+  pub llvm_ir: Option<String>,
+}
+
 /// Compile a fully type-checked program starting from `entry`.
 ///
 /// This is the "real" native compiler entry point: it consumes `typecheck-ts`'s checked HIR + type
@@ -157,6 +170,29 @@ pub fn compile_program(
   opts: &CompilerOptions,
 ) -> Result<Artifact, NativeJsError> {
   compiler::compile_program(program, entry, opts)
+}
+
+/// Backwards-compatible entrypoint for the native compiler API.
+///
+/// The native compiler now requires an explicit entry file. For the typechecked
+/// pipeline, use [`compile_program`]. For a project-based workflow, use
+/// [`compile_project_to_llvm_ir`].
+///
+/// This function is kept as a small stub so downstream crates can start wiring
+/// up to the native backend without depending on the full driver interface yet.
+pub fn compile(
+  program: &Program,
+  _options: &CompilerOptions,
+) -> Result<CompilationOutput, NativeJsError> {
+  let diagnostics = program.check();
+  if diagnostics.iter().any(|diag| diag.severity == Severity::Error) {
+    return Err(NativeJsError::TypecheckFailed { diagnostics });
+  }
+
+  Err(NativeJsError::UnsupportedFeature(
+    "native-js AOT compilation entrypoint is not implemented yet; use compile_program(...) instead"
+      .to_string(),
+  ))
 }
 
 /// Parse and compile a single TypeScript module to LLVM IR.

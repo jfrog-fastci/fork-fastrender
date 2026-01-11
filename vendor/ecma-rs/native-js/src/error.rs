@@ -11,11 +11,31 @@ pub enum NativeJsError {
   #[error("native-js rejected the program")]
   Rejected { diagnostics: Vec<Diagnostic> },
 
+  /// Backwards-compatible error variant for early callers.
+  ///
+  /// Prefer [`NativeJsError::Unsupported`] when you have source-context diagnostics
+  /// to report.
+  #[error("unsupported feature: {0}")]
+  UnsupportedFeature(String),
+
   #[error("native-js unsupported feature: {message}")]
   Unsupported {
     message: String,
     diagnostics: Vec<Diagnostic>,
   },
+
+  /// Backwards-compatible error variant for clearer reporting when LLVM is
+  /// missing/misconfigured.
+  ///
+  /// Note: when using `llvm-sys`/`inkwell`, missing LLVM is often detected during
+  /// compilation via their build scripts; this variant is primarily intended for
+  /// callers that want to surface a more actionable runtime error.
+  #[error("{0}")]
+  LlvmNotAvailable(String),
+
+  /// Backwards-compatible internal error.
+  #[error("internal compiler error: {0}")]
+  Internal(String),
 
   #[error(transparent)]
   Parse(#[from] parse_js::error::SyntaxError),
