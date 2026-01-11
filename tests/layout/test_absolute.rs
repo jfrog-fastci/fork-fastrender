@@ -188,6 +188,47 @@ fn test_abspos_replaced_top_bottom_auto_height_uses_intrinsic_and_allows_auto_ma
   );
 }
 
+#[test]
+fn test_abspos_non_replaced_bottom_inset_auto_height_ignores_preferred_block_size() {
+  // Regression test: absolutely positioned *non-replaced* elements with `bottom` specified and
+  // `height: auto` should use their intrinsic/content height, even if the caller also computed
+  // intrinsic block-size keywords (min/max-content) that differ from the used auto height.
+  //
+  // Discord's homepage positions the `.home_clyde` flex container with:
+  //   position: absolute;
+  //   bottom: 0;
+  //   height: auto;
+  // while the used auto height depends on the element's resolved width (via `max-width` + image
+  // scaling). Using a max-content block size here incorrectly inflates the abspos box, shifting it
+  // upward.
+  let layout = AbsoluteLayout::new();
+
+  let mut style = default_style();
+  style.position = Position::Absolute;
+  style.bottom = LengthOrAuto::px(0.0);
+  style.height = LengthOrAuto::Auto;
+
+  let mut input = create_input(style, Size::new(10.0, 50.0));
+  // A plausible max-content block size (e.g. computed at a wider inline size) that should *not*
+  // affect `height: auto`.
+  input.preferred_min_block_size = Some(80.0);
+  input.preferred_block_size = Some(130.0);
+
+  let cb = create_cb(200.0, 200.0);
+  let result = layout.layout_absolute(&input, &cb).unwrap();
+
+  assert!(
+    (result.size.height - 50.0).abs() < 0.01,
+    "expected intrinsic/content height (got {})",
+    result.size.height
+  );
+  assert!(
+    (result.position.y - 150.0).abs() < 0.01,
+    "expected bottom alignment using intrinsic height (got {})",
+    result.position.y
+  );
+}
+
 // ============================================================================
 // Width/Height Auto Tests (Intrinsic Size)
 // ============================================================================

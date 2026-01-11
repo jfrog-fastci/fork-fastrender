@@ -14076,7 +14076,14 @@ impl InlineFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let (_positioned_style, result) =
+        let supports_used_border_box = matches!(
+          fc_type,
+          FormattingContextType::Block
+            | FormattingContextType::Flex
+            | FormattingContextType::Grid
+            | FormattingContextType::Inline
+        );
+        let (mut layout_positioned_style, mut result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
             &input,
@@ -14087,15 +14094,15 @@ impl InlineFormattingContext {
             anchors_for_cb,
             anchor_query,
           )?;
-        let border_size_physical = Size::new(
+        let mut border_size_physical = Size::new(
           result.size.width + actual_horizontal,
           result.size.height + actual_vertical,
         );
-        let border_origin_physical = Point::new(
+        let mut border_origin_physical = Point::new(
           result.position.x - content_offset.x,
           result.position.y - content_offset.y,
         );
-        let (border_origin, border_size) = if needs_physical_conversion {
+        let (mut border_origin, mut border_size) = if needs_physical_conversion {
           let border_rect = Rect::new(border_origin_physical, border_size_physical);
           let logical_rect = crate::layout::contexts::block::physical_rect_to_logical(
             border_rect,
@@ -14108,18 +14115,76 @@ impl InlineFormattingContext {
         } else {
           (border_origin_physical, border_size_physical)
         };
+
+        if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
+          &layout_positioned_style,
+          input.is_replaced,
+        ) && (border_size_physical.width - child_fragment.bounds.width()).abs() > 0.01
+        {
+          let measure_constraints = child_constraints
+            .with_width(AvailableSpace::Definite(border_size_physical.width))
+            .with_height(AvailableSpace::Indefinite)
+            .with_used_border_box_size(Some(border_size_physical.width), None);
+          let width_auto =
+            layout_child.style.width.is_none() && layout_child.style.width_keyword.is_none();
+          let height_auto =
+            layout_child.style.height.is_none() && layout_child.style.height_keyword.is_none();
+          if supports_used_border_box && width_auto && height_auto {
+            child_fragment = fc.layout(&layout_child, &measure_constraints)?;
+          } else {
+            let mut measure_child = layout_child.clone();
+            let mut measure_style = measure_child.style.clone();
+            {
+              let s = Arc::make_mut(&mut measure_style);
+              s.width = Some(Length::px(border_size_physical.width));
+              s.width_keyword = None;
+              s.min_width_keyword = None;
+              s.max_width_keyword = None;
+            }
+            measure_child.style = measure_style;
+            child_fragment = fc.layout(&measure_child, &measure_constraints)?;
+          }
+
+          input.intrinsic_size.height =
+            (child_fragment.bounds.size.height - actual_vertical).max(0.0);
+          (layout_positioned_style, result) =
+            crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+              &abs,
+              &input,
+              &original_style,
+              &positioning_cb,
+              viewport_size,
+              &font_context,
+              anchors_for_cb,
+              parent_box_id,
+            )?;
+          border_size_physical = Size::new(
+            result.size.width + actual_horizontal,
+            result.size.height + actual_vertical,
+          );
+          border_origin_physical = Point::new(
+            result.position.x - content_offset.x,
+            result.position.y - content_offset.y,
+          );
+          (border_origin, border_size) = if needs_physical_conversion {
+            let border_rect = Rect::new(border_origin_physical, border_size_physical);
+            let logical_rect = crate::layout::contexts::block::physical_rect_to_logical(
+              border_rect,
+              bounds.size.width,
+              bounds.size.height,
+              style.writing_mode,
+              style.direction,
+            );
+            (logical_rect.origin, logical_rect.size)
+          } else {
+            (border_origin_physical, border_size_physical)
+          };
+        }
         let needs_relayout = (border_size_physical.width - child_fragment.bounds.width()).abs()
           > 0.01
           || (border_size_physical.height - child_fragment.bounds.height()).abs() > 0.01
           || relayout_for_definite_insets;
         if needs_relayout {
-          let supports_used_border_box = matches!(
-            fc_type,
-            FormattingContextType::Block
-              | FormattingContextType::Flex
-              | FormattingContextType::Grid
-              | FormattingContextType::Inline
-          );
           let relayout_constraints = child_constraints.with_used_border_box_size(
             Some(border_size_physical.width),
             Some(border_size_physical.height),

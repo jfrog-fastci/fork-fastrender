@@ -2569,9 +2569,25 @@ impl FormattingContext for FlexFormattingContext {
 
                     // Replaced elements don't establish a formatting context; compute their
                     // intrinsic/used size directly to avoid block layout inflating widths.
+                    //
+                    // Important: percentage sizes on replaced elements resolve against the flex
+                    // container's content box. When the flex container itself is clamped by
+                    // `min/max-width`, the *incoming* layout constraints may still reflect the
+                    // unclamped size (e.g. `width:100%` of a 200px containing block with
+                    // `max-width:40px`). Taffy supplies the final available size to this measure
+                    // callback, so prefer that over the precomputed container metrics to ensure the
+                    // intrinsic aspect ratio is applied using the clamped width.
                     if let crate::tree::box_tree::BoxType::Replaced(replaced_box) = &measure_box.box_type {
-                        let base_width = container_content_width_for_children.filter(|w| *w > 0.0);
-                        let base_height = container_content_height_for_children.filter(|h| *h > 0.0);
+                        let base_width = match avail.width {
+                          AvailableSpace::Definite(w) if w > 1.0 => Some(w),
+                          _ => container_content_width_for_children,
+                        }
+                        .filter(|w| *w > 0.0);
+                        let base_height = match avail.height {
+                          AvailableSpace::Definite(h) if h > 1.0 => Some(h),
+                          _ => container_content_height_for_children,
+                        }
+                        .filter(|h| *h > 0.0);
                         let percentage_base = match (base_width, base_height) {
                           (None, None) => None,
                           _ => Some(Size::new(
@@ -3855,7 +3871,7 @@ impl FormattingContext for FlexFormattingContext {
                        );
                      }
 
-                    let mut measured_size =
+                    let measured_size =
                       Size::new(content_size.width.max(0.0), content_size.height.max(0.0));
                     let border_size = {
                       let reserve_scroll_x = measure_style.scrollbar_gutter.stable
@@ -4980,7 +4996,22 @@ impl FormattingContext for FlexFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let (layout_positioned_style, result) =
+
+        let fc_type = candidate
+          .layout_child
+          .formatting_context()
+          .unwrap_or(crate::style::display::FormattingContextType::Block);
+        let fc = abs_factory.get(fc_type);
+        let supports_used_border_box = matches!(
+          fc_type,
+          FormattingContextType::Block
+            | FormattingContextType::Flex
+            | FormattingContextType::Grid
+            | FormattingContextType::Inline
+            | FormattingContextType::Table
+        );
+
+        let (mut layout_positioned_style, mut result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
             &input,
@@ -4994,34 +5025,66 @@ impl FormattingContext for FlexFormattingContext {
               implicit_anchor_box_id: candidate.implicit_anchor_box_id,
             },
           )?;
-        let relayout_for_inset_resolved_size =
-          crate::layout::absolute_positioning::auto_size_resolved_by_insets(&layout_positioned_style);
         let mut child_fragment = candidate.fragment;
-        let border_size = Size::new(
+        let mut border_size = Size::new(
           result.size.width + actual_horizontal,
           result.size.height + actual_vertical,
         );
-        let border_origin = Point::new(
+        let mut border_origin = Point::new(
           result.position.x - content_offset.x,
           result.position.y - content_offset.y,
         );
+
+        if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
+          &layout_positioned_style,
+          input.is_replaced,
+        ) && (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+        {
+          let measure_constraints = child_constraints
+            .with_width(CrateAvailableSpace::Definite(border_size.width))
+            .with_height(CrateAvailableSpace::Indefinite)
+            .with_used_border_box_size(Some(border_size.width), None);
+          if supports_used_border_box {
+            child_fragment = fc.layout(&candidate.layout_child, &measure_constraints)?;
+          } else {
+            let mut relayout_child = candidate.layout_child.clone();
+            let mut measure_style = (*relayout_child.style).clone();
+            measure_style.width = Some(crate::style::values::Length::px(border_size.width));
+            measure_style.width_keyword = None;
+            measure_style.min_width_keyword = None;
+            measure_style.max_width_keyword = None;
+            relayout_child.style = Arc::new(measure_style);
+            child_fragment = fc.layout(&relayout_child, &measure_constraints)?;
+          }
+          input.intrinsic_size.height =
+            (child_fragment.bounds.size.height - actual_vertical).max(0.0);
+          (layout_positioned_style, result) =
+            crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+              &abs,
+              &input,
+              &candidate.original_style,
+              &candidate.cb,
+              self.viewport_size,
+              &self.font_context,
+              Some(&anchor_index),
+              Some(root_box_id),
+            )?;
+          border_size = Size::new(
+            result.size.width + actual_horizontal,
+            result.size.height + actual_vertical,
+          );
+          border_origin = Point::new(
+            result.position.x - content_offset.x,
+            result.position.y - content_offset.y,
+          );
+        }
+
+        let relayout_for_inset_resolved_size =
+          crate::layout::absolute_positioning::auto_size_resolved_by_insets(&layout_positioned_style);
         let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
           || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
           || relayout_for_inset_resolved_size;
         if needs_relayout {
-          let fc_type = candidate
-            .layout_child
-            .formatting_context()
-            .unwrap_or(crate::style::display::FormattingContextType::Block);
-          let fc = abs_factory.get(fc_type);
-          let supports_used_border_box = matches!(
-            fc_type,
-            FormattingContextType::Block
-              | FormattingContextType::Flex
-              | FormattingContextType::Grid
-              | FormattingContextType::Inline
-              | FormattingContextType::Table
-          );
           let relayout_constraints = child_constraints
             .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
           if supports_used_border_box {
@@ -7513,7 +7576,7 @@ impl FlexFormattingContext {
     let horizontal_edges = border_left + border_right + padding_left + padding_right;
     let vertical_edges = border_top + border_bottom + padding_top + padding_bottom;
 
-    let border_box_width = constraints
+    let mut border_box_width = constraints
       .used_border_box_width
       .filter(|w| w.is_finite())
       .or_else(|| {
@@ -7573,6 +7636,51 @@ impl FlexFormattingContext {
           BoxSizing::BorderBox => resolved,
         })
       });
+
+    // The flex container's *used* size (and therefore the percentage base for flex items) is
+    // clamped by its own min/max constraints. This matters for cases like:
+    //
+    //   width: 100%;
+    //   max-width: 2.5rem;
+    //
+    // where children with percentage widths (and responsive intrinsic heights, e.g. images) must
+    // be resolved against the clamped used width.
+    if let Some(base_width) = border_box_width {
+      let mut used_width = base_width;
+      let to_border_box = |value: f32| match container_style.box_sizing {
+        BoxSizing::ContentBox => (value + horizontal_edges).max(0.0),
+        BoxSizing::BorderBox => value.max(0.0),
+      };
+      let mut min_bound: Option<f32> = None;
+      if let Some(min_len) = container_style.min_width.as_ref() {
+        let resolved = self.resolve_length_for_width(*min_len, inline_base, container_style);
+        if resolved.is_finite() {
+          min_bound = Some(to_border_box(resolved.max(0.0)));
+        }
+      }
+      let mut max_bound: Option<f32> = None;
+      if let Some(max_len) = container_style.max_width.as_ref() {
+        let resolved = self.resolve_length_for_width(*max_len, inline_base, container_style);
+        if resolved.is_finite() {
+          max_bound = Some(to_border_box(resolved.max(0.0)));
+        }
+      }
+      if let Some(min_bound) = min_bound {
+        if used_width < min_bound {
+          used_width = min_bound;
+        }
+      }
+      if let Some(max_bound) = max_bound {
+        let max_bound = match min_bound {
+          Some(min_bound) if max_bound < min_bound => min_bound,
+          _ => max_bound,
+        };
+        if used_width > max_bound {
+          used_width = max_bound;
+        }
+      }
+      border_box_width = Some(used_width);
+    }
 
     let content_width = border_box_width
       .map(|w| (w - horizontal_edges).max(0.0));
@@ -10990,29 +11098,73 @@ impl FlexFormattingContext {
                   (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
                   (child_fragment.bounds.size.height - actual_vertical).max(0.0),
                 );
-                let input = AbsoluteLayoutInput::new(positioned_style, intrinsic_size, Point::ZERO);
-                let result = abs.layout_absolute(&input, &cb)?;
+                let mut input =
+                  AbsoluteLayoutInput::new(positioned_style, intrinsic_size, Point::ZERO);
+                input.is_replaced = positioned_child.is_replaced();
+
+                let supports_used_border_box = matches!(
+                  fc_type,
+                  FormattingContextType::Block
+                    | FormattingContextType::Flex
+                    | FormattingContextType::Grid
+                    | FormattingContextType::Inline
+                );
+
+                let mut result = abs.layout_absolute(&input, &cb)?;
                 let relayout_for_inset_resolved_size =
                   crate::layout::absolute_positioning::auto_size_resolved_by_insets(&input.style);
-                let border_size = Size::new(
+                let mut border_size = Size::new(
                   result.size.width + actual_horizontal,
                   result.size.height + actual_vertical,
                 );
-                let border_origin = Point::new(
+                let mut border_origin = Point::new(
                   result.position.x - content_offset.x,
                   result.position.y - content_offset.y,
                 );
+
+                if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
+                  &input.style,
+                  input.is_replaced,
+                ) && (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+                {
+                  let measure_constraints = child_constraints
+                    .with_width(CrateAvailableSpace::Definite(border_size.width))
+                    .with_height(CrateAvailableSpace::Indefinite)
+                    .with_used_border_box_size(Some(border_size.width), None);
+                  let width_auto = layout_child.style.width.is_none()
+                    && layout_child.style.width_keyword.is_none();
+                  if supports_used_border_box && width_auto {
+                    child_fragment = fc.layout(&layout_child, &measure_constraints)?;
+                  } else {
+                    let mut measure_child = layout_child.clone();
+                    let mut measure_style = measure_child.style.clone();
+                    {
+                      let s = Arc::make_mut(&mut measure_style);
+                      s.width = Some(Length::px(border_size.width));
+                      s.width_keyword = None;
+                      s.min_width_keyword = None;
+                      s.max_width_keyword = None;
+                    }
+                    measure_child.style = measure_style;
+                    child_fragment = fc.layout(&measure_child, &measure_constraints)?;
+                  }
+
+                  input.intrinsic_size.height =
+                    (child_fragment.bounds.size.height - actual_vertical).max(0.0);
+                  result = abs.layout_absolute(&input, &cb)?;
+                  border_size = Size::new(
+                    result.size.width + actual_horizontal,
+                    result.size.height + actual_vertical,
+                  );
+                  border_origin = Point::new(
+                    result.position.x - content_offset.x,
+                    result.position.y - content_offset.y,
+                  );
+                }
                 let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
                   || (border_size.height - child_fragment.bounds.height()).abs() > 0.01
                   || relayout_for_inset_resolved_size;
                 if needs_relayout {
-                  let supports_used_border_box = matches!(
-                    fc_type,
-                    FormattingContextType::Block
-                      | FormattingContextType::Flex
-                      | FormattingContextType::Grid
-                      | FormattingContextType::Inline
-                  );
                   let relayout_constraints = child_constraints
                     .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
                   let width_auto =
@@ -12315,7 +12467,7 @@ impl FlexFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
-        let (_positioned_style, result) =
+        let (layout_positioned_style, mut result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
             &abs,
             &input,
@@ -12329,10 +12481,74 @@ impl FlexFormattingContext {
               implicit_anchor_box_id: candidate.implicit_anchor_box_id,
             },
           )?;
-        Size::new(
+        let mut probe_size = Size::new(
           (result.size.width + actual_horizontal).max(0.0),
           (result.size.height + actual_vertical).max(0.0),
-        )
+        );
+
+        if crate::layout::absolute_positioning::auto_height_uses_intrinsic_size(
+          &layout_positioned_style,
+          input.is_replaced,
+        ) && (probe_size.width - candidate.fragment.bounds.width()).abs() > 0.01
+        {
+          let fc_type = candidate
+            .layout_child
+            .formatting_context()
+            .unwrap_or(crate::style::display::FormattingContextType::Block);
+          let fc = self.factory.get(fc_type);
+          let supports_used_border_box = matches!(
+            fc_type,
+            FormattingContextType::Block
+              | FormattingContextType::Flex
+              | FormattingContextType::Grid
+              | FormattingContextType::Inline
+              | FormattingContextType::Table
+          );
+          let base_constraints = LayoutConstraints::new(
+            CrateAvailableSpace::Definite(candidate.cb.rect.size.width),
+            candidate
+              .cb
+              .block_percentage_base()
+              .map(CrateAvailableSpace::Definite)
+              .unwrap_or(CrateAvailableSpace::Indefinite),
+          );
+          let measure_constraints = base_constraints
+            .with_width(CrateAvailableSpace::Definite(probe_size.width))
+            .with_height(CrateAvailableSpace::Indefinite)
+            .with_used_border_box_size(Some(probe_size.width), None);
+          let measured_fragment = if supports_used_border_box {
+            fc.layout(&candidate.layout_child, &measure_constraints)?
+          } else {
+            let mut measure_child = candidate.layout_child.clone();
+            let mut measure_style = (*measure_child.style).clone();
+            measure_style.width = Some(crate::style::values::Length::px(probe_size.width));
+            measure_style.width_keyword = None;
+            measure_style.min_width_keyword = None;
+            measure_style.max_width_keyword = None;
+            measure_child.style = Arc::new(measure_style);
+            fc.layout(&measure_child, &measure_constraints)?
+          };
+          input.intrinsic_size.height =
+            (measured_fragment.bounds.size.height - actual_vertical).max(0.0);
+          let (_positioned_style, rerun) =
+            crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
+              &abs,
+              &input,
+              &candidate.original_style,
+              &candidate.cb,
+              self.viewport_size,
+              &self.font_context,
+              Some(anchor_index),
+              Some(query_parent_box_id),
+            )?;
+          result = rerun;
+          probe_size = Size::new(
+            (result.size.width + actual_horizontal).max(0.0),
+            (result.size.height + actual_vertical).max(0.0),
+          );
+        }
+
+        probe_size
       };
       style.size.width = Dimension::length(
         if candidate.original_style.box_sizing == BoxSizing::ContentBox {

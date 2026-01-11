@@ -950,12 +950,10 @@ impl AbsoluteLayout {
     };
 
     // `height:auto` for absolutely positioned boxes uses the box's content height after layout.
-    // When the inline size is definite (i.e. `width` is not `auto`/intrinsic keyword), callers can
-    // provide a reliable `intrinsic_height` computed from a normal-flow layout pass at the used
-    // width. Prefer that over min/max-content block size probes, which can be wildly different for
-    // complex flex/grid subtrees (and are *not* what `height:auto` means).
-    let width_is_auto = matches!(style.width, LengthOrAuto::Auto) || style.width_keyword.is_some();
-    let use_intrinsic_height_for_auto = !width_is_auto;
+    // Callers provide this as `intrinsic_height` from an initial layout pass. If the final used
+    // width is later resolved/clamped differently (e.g. via shrink-to-fit or `max-width`), the
+    // caller must re-layout to remeasure the intrinsic height before re-running absolute
+    // positioning.
 
     // Compute shrink-to-fit candidates for auto height.
     let preferred_min = preferred_min_block_size.unwrap_or(intrinsic_height);
@@ -1156,32 +1154,25 @@ impl AbsoluteLayout {
       //
       // CSS 2.1 distinguishes between replaced and non-replaced abspos boxes:
       // - §10.6.4 (non-replaced): auto height fills the available space.
-      // - §10.6.5 (replaced): auto height uses shrink-to-fit/intrinsic sizing, with any remaining
-      //   space distributed via auto margins.
+      // - §10.6.5 (replaced): auto height uses the intrinsic height, with any remaining space
+      //   distributed via auto margins.
       (Some(t), None, Some(b)) => {
         let available = cb_height - t - b - margin_top - margin_bottom - total_vertical_spacing;
-        let height = if is_replaced {
-          shrink(available)
-        } else {
-          available.max(0.0)
-        };
+        let height = if is_replaced { intrinsic_height } else { available.max(0.0) };
         let y = t + margin_top + border_top + padding_top;
         (y, height, false)
       }
 
-      // Only top specified - shrink-to-fit
+      // Only top specified - height auto uses the box's intrinsic/content height.
       (Some(t), None, None) => {
-        let available = cb_height - t - margin_top - margin_bottom - total_vertical_spacing;
-        // For an unspecified opposite inset, CSS 2.1 treats bottom as auto; shrink-to-fit against the available CB height.
-        let height = shrink(available);
+        let height = intrinsic_height;
         let y = t + margin_top + border_top + padding_top;
         (y, height, false)
       }
 
-      // Only bottom specified - shrink-to-fit
+      // Only bottom specified - height auto uses the box's intrinsic/content height.
       (None, None, Some(b)) => {
-        let available = cb_height - b - margin_top - margin_bottom - total_vertical_spacing;
-        let height = shrink(available);
+        let height = intrinsic_height;
         let y = cb_height - b - margin_bottom - border_bottom - padding_bottom - height;
         (y, height, false)
       }
@@ -1192,13 +1183,10 @@ impl AbsoluteLayout {
         (y, h, false)
       }
 
-      // None specified - use preferred block size (shrink-to-fit without constraints)
+      // None specified - height auto uses the box's intrinsic/content height (top falls back to
+      // static position per CSS 2.1 §10.6.4).
       (None, None, None) => {
-        let height = if use_intrinsic_height_for_auto {
-          intrinsic_height
-        } else {
-          preferred
-        };
+        let height = intrinsic_height;
         let y = static_y + margin_top + border_top + padding_top;
         (y, height, false)
       }
@@ -1756,14 +1744,14 @@ impl AbsoluteLayout {
   }
 
   #[test]
-  fn layout_absolute_auto_height_uses_preferred_block_sizes_without_insets() {
+  fn layout_absolute_auto_height_ignores_preferred_block_sizes_without_insets() {
     let layout = AbsoluteLayout::new();
 
     let mut style = default_style();
     style.position = Position::Absolute;
     style.height = LengthOrAuto::Auto;
 
-    let mut input = AbsoluteLayoutInput::new(style, Size::new(10.0, 10.0), Point::ZERO);
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(10.0, 30.0), Point::ZERO);
     input.preferred_min_block_size = Some(40.0);
     input.preferred_block_size = Some(90.0);
     // available = 200 (no insets)
@@ -1771,8 +1759,8 @@ impl AbsoluteLayout {
 
     let result = layout.layout_absolute(&input, &cb).unwrap();
     assert!(
-      (result.size.height - 90.0).abs() < 0.001,
-      "auto height with no insets should shrink-to-fit preferred block size"
+      (result.size.height - 30.0).abs() < 0.001,
+      "auto height should use intrinsic/content height, not preferred block sizes"
     );
   }
 
@@ -1798,7 +1786,7 @@ impl AbsoluteLayout {
   }
 
   #[test]
-  fn layout_absolute_single_inset_shrinks_height_to_available() {
+  fn layout_absolute_single_inset_auto_height_uses_intrinsic_height() {
     let layout = AbsoluteLayout::new();
 
     let mut style = default_style();
@@ -1806,7 +1794,7 @@ impl AbsoluteLayout {
     style.top = LengthOrAuto::px(20.0);
     style.height = LengthOrAuto::Auto;
 
-    let mut input = AbsoluteLayoutInput::new(style, Size::new(10.0, 10.0), Point::ZERO);
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(10.0, 50.0), Point::ZERO);
     input.preferred_min_block_size = Some(80.0);
     input.preferred_block_size = Some(200.0);
     // available = 200 - 20 = 180
@@ -1814,8 +1802,8 @@ impl AbsoluteLayout {
 
     let result = layout.layout_absolute(&input, &cb).unwrap();
     assert!(
-      (result.size.height - 180.0).abs() < 0.001,
-      "auto height with single inset should shrink to available while respecting min-content"
+      (result.size.height - 50.0).abs() < 0.001,
+      "auto height with a single inset should use intrinsic/content height"
     );
     assert!(
       (result.position.y - 20.0).abs() < 0.001,
@@ -1902,7 +1890,7 @@ impl AbsoluteLayout {
   }
 
   #[test]
-  fn layout_absolute_auto_height_respects_max_height_in_shrink_case() {
+  fn layout_absolute_auto_height_respects_max_height() {
     let layout = AbsoluteLayout::new();
 
     let mut style = default_style();
@@ -1912,9 +1900,9 @@ impl AbsoluteLayout {
     style.max_height = Length::px(60.0);
     style.border_width = crate::geometry::EdgeOffsets::ZERO;
 
-    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 120.0), Point::ZERO);
     input.preferred_min_block_size = Some(50.0);
-    input.preferred_block_size = Some(120.0); // would shrink to 190 without max-height clamp
+    input.preferred_block_size = Some(120.0); // should be ignored for height:auto
     let cb = create_containing_block(200.0, 200.0);
 
     let result = layout.layout_absolute(&input, &cb).unwrap();
@@ -4173,4 +4161,23 @@ pub(crate) fn intrinsic_edge_sizes(
 pub(crate) fn auto_size_resolved_by_insets(style: &PositionedStyle) -> bool {
   (style.width.is_auto() && !style.left.is_auto() && !style.right.is_auto())
     || (style.height.is_auto() && !style.top.is_auto() && !style.bottom.is_auto())
+}
+
+/// Returns true when an absolutely positioned box's `height:auto` should be treated as
+/// intrinsic/content height rather than being resolved by the inset constraint equation.
+///
+/// CSS 2.1 §10.6.4/§10.6.5:
+/// - For non-replaced boxes, `height:auto` is content-based unless both `top` and `bottom` are
+///   specified (in which case the used height is the fill-available size).
+/// - For replaced boxes, `height:auto` uses the intrinsic height even when both vertical insets are
+///   specified.
+///
+/// This is used by outer layout code that performs an initial "static" layout pass to obtain an
+/// intrinsic height: if the abspos algorithm will use that intrinsic height *and* the used width is
+/// later clamped (e.g. via `max-width`), the intrinsic height must be remeasured at the resolved
+/// used width.
+pub(crate) fn auto_height_uses_intrinsic_size(style: &PositionedStyle, is_replaced: bool) -> bool {
+  style.height.is_auto()
+    && style.height_keyword.is_none()
+    && (is_replaced || style.top.is_auto() || style.bottom.is_auto())
 }
