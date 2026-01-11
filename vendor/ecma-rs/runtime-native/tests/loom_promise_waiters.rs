@@ -199,6 +199,45 @@ fn loom_two_waiters_register_after_settle() {
   });
 }
 
+#[test]
+fn loom_register_concurrent_with_double_settle() {
+  loom::model::Builder::new().check(|| {
+    let ready = Box::new(new_ready_queue());
+    let promise = Box::new(PromiseHeader::new());
+    let promise_ptr: *const PromiseHeader = &*promise;
+
+    let waiter = Box::new(Coroutine::new(1, &*ready));
+    let waiter_ptr = Box::into_raw(waiter);
+
+    let t_register = thread::spawn(move || unsafe {
+      (&*promise_ptr).register_waiter(waiter_ptr);
+    });
+
+    let t_settle1 = thread::spawn(move || unsafe {
+      (&*promise_ptr).settle();
+    });
+    let t_settle2 = thread::spawn(move || unsafe {
+      (&*promise_ptr).settle();
+    });
+
+    let r_register = t_register.join();
+    let r_settle1 = t_settle1.join();
+    let r_settle2 = t_settle2.join();
+
+    r_register.unwrap();
+    r_settle1.unwrap();
+    r_settle2.unwrap();
+
+    assert_ready_exactly_once(ready_queue_snapshot(&*ready), &[1]);
+    assert!(promise.is_settled());
+    assert!(promise.waiters_is_empty());
+
+    unsafe {
+      drop(Box::from_raw(waiter_ptr));
+    }
+  });
+}
+
 /// Sanity check: prove the test suite can actually catch the classic lost-wakeup bug.
 ///
 /// If a waiter registers with a lock-free stack but **does not** re-check the promise
