@@ -442,7 +442,7 @@ in dependency order before calling the entry file’s exported `main()`.
   - blocks (`{ ... }`)
   - `if` / `else`
   - `while`, `do { ... } while`, `for`
-  - `break` / `continue` (including labeled loops; only labeled loops are supported)
+  - `break` / `continue` (labeled and unlabeled; only loops can be labeled)
   - variable declarations (`const`/`let`/`var`) with identifier binding **and an initializer**
   - `return <expr>` (and `return;` when `main` returns `void`/`undefined`)
   - `print(<number>);` (intrinsic statement; prints decimal + `\n` to stdout)
@@ -457,6 +457,8 @@ in dependency order before calling the entry file’s exported `main()`.
     - no optional calls / `new` / spreads
     - only non-void calls are supported by this backend
 - For non-void `main`, the returned `i32` value becomes the executable’s exit code (like C `main`).
+- If `main` returns `void`/`undefined`, `return;` and falling off the end of the function are allowed and
+  the process exit code is always `0` (return values are ignored).
 
 ## Tests
 
