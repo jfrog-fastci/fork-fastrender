@@ -151,8 +151,8 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
 }
 
 fn annotate_cfg_escape_states(cfg: &mut Cfg, escapes: &escape::EscapeResult) {
-  for (_label, insts) in cfg.bblocks.all_mut() {
-    for inst in insts {
+  for label in cfg_block_labels_sorted(cfg) {
+    for inst in cfg.bblocks.get_mut(label).iter_mut() {
       let Some(&tgt) = inst.tgts.get(0) else {
         continue;
       };
