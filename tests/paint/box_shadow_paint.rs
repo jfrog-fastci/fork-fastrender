@@ -226,3 +226,56 @@ fn box_shadow_multiple_shadows_paint_front_to_back() {
   // In the ring, the top-most (first) shadow should win.
   assert_eq!(rgba_at(&pixmap, 15, 30), (255, 0, 0, 255));
 }
+
+#[test]
+fn box_shadow_figma_modal_smoke() {
+  // Real-world regression inspired by the `figma.com` fixture: a modal with two outer shadows,
+  // including fractional blur/spread radii and rounded corners.
+  let html = r#"
+    <style>
+      body { margin: 0; background: rgb(255, 255, 255); }
+      #container {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 200px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.3);
+      }
+      #modal {
+        width: 100px;
+        height: 60px;
+        background: rgb(248, 248, 248);
+        border-radius: 3px;
+        box-shadow:
+          rgba(0, 0, 0, 0.2) 0px 0px 0.5px 0.5px,
+          rgba(0, 0, 0, 0.15) 0px 2px 14px 0px;
+      }
+    </style>
+    <div id="container"><div id="modal"></div></div>
+  "#;
+
+  let pixmap = render(html, 200, 200);
+
+  // Overlay background is deterministic: white blended with rgba(0,0,0,0.3).
+  assert_eq!(rgba_at(&pixmap, 10, 10), (178, 178, 178, 255));
+
+  // Modal interior should remain unaffected by outer shadows.
+  assert_eq!(rgba_at(&pixmap, 100, 100), (248, 248, 248, 255));
+
+  // Just outside the modal's left edge (modal is centered at x=50..150) should be darkened.
+  let (nr, ng, nb, na) = rgba_at(&pixmap, 49, 100);
+  assert_eq!(na, 255);
+  assert!(nr < 178 && ng < 178 && nb < 178, "expected shadow to darken pixel");
+
+  // Further away from the box, the shadow should decay back toward the overlay background.
+  let (fr, fg, fb, fa) = rgba_at(&pixmap, 30, 100);
+  assert_eq!(fa, 255);
+  assert!(
+    fr > nr && fg > ng && fb > nb,
+    "expected shadow to fade with distance"
+  );
+}
