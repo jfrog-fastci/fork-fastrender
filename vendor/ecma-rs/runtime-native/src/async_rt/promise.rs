@@ -1,11 +1,11 @@
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::PromiseHeader;
 use crate::async_runtime::PromiseLayout;
 use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
-use std::sync::{Condvar, Mutex};
+use crate::threading;
 
 use super::{global as async_global, Task};
 
@@ -401,56 +401,49 @@ pub(crate) fn promise_header(p: PromiseRef) -> crate::async_abi::PromiseRef {
 // -----------------------------------------------------------------------------
 
 pub(crate) struct PromiseWaiterRaceHook {
-  stage: Mutex<u8>,
-  cv: Condvar,
+  stage: AtomicU8,
 }
 
 impl PromiseWaiterRaceHook {
   pub(crate) fn new() -> Self {
     Self {
-      stage: Mutex::new(0),
-      cv: Condvar::new(),
+      stage: AtomicU8::new(0),
     }
   }
 
   fn notify_waiter_checked_pending(&self) {
-    let mut stage = self.stage.lock().unwrap();
-    *stage = 1;
-    self.cv.notify_all();
+    self.stage.store(1, Ordering::Release);
   }
 
   fn wait_for_resolved(&self) {
-    let mut stage = self.stage.lock().unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while *stage < 2 {
+    while self.stage.load(Ordering::Acquire) < 2 {
       let now = std::time::Instant::now();
       if now >= deadline {
         panic!("timed out waiting for promise to be resolved during race hook");
       }
-      let timeout = deadline - now;
-      let (guard, _) = self.cv.wait_timeout(stage, timeout).unwrap();
-      stage = guard;
+      // Keep this as a pure spin/yield loop instead of blocking on a condvar/mutex: we want tests
+      // to remain stop-the-world-safe even under contention (blocked threads do not poll
+      // safepoints).
+      threading::safepoint_poll();
+      std::thread::yield_now();
     }
   }
 
   fn wait_for_waiter_checked_pending(&self) {
-    let mut stage = self.stage.lock().unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while *stage < 1 {
+    while self.stage.load(Ordering::Acquire) < 1 {
       let now = std::time::Instant::now();
       if now >= deadline {
         panic!("timed out waiting for waiter registration during race hook");
       }
-      let timeout = deadline - now;
-      let (guard, _) = self.cv.wait_timeout(stage, timeout).unwrap();
-      stage = guard;
+      threading::safepoint_poll();
+      std::thread::yield_now();
     }
   }
 
   fn notify_resolved(&self) {
-    let mut stage = self.stage.lock().unwrap();
-    *stage = 2;
-    self.cv.notify_all();
+    self.stage.store(2, Ordering::Release);
   }
 }
 
