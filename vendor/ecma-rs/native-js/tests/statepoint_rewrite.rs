@@ -582,6 +582,71 @@ fn void_call_emits_no_gc_result() {
 }
 
 #[test]
+fn invoke_scalar_return_uses_gc_result() {
+  // Exception edges matter in real runtimes (e.g. when compiling with unwind
+  // tables or using language-level exceptions). Ensure `invoke` is rewritten and
+  // its return value is recovered via `gc.result`.
+  //
+  // Note: this test intentionally has *no* live GC pointers across the invoke to
+  // avoid exercising the (currently LLVM-buggy) exceptional-edge relocation
+  // behavior for legacy landingpad-based EH.
+  let before = r#"
+  declare i64 @bar()
+
+  define i32 @dummy_personality(...) { ret i32 0 }
+
+  define i64 @test() gc "coreclr" personality ptr @dummy_personality {
+  entry:
+    %x = invoke i64 @bar()
+            to label %cont unwind label %lpad
+
+  cont:
+    ret i64 %x
+
+  lpad:
+    %lp = landingpad { ptr, i32 } cleanup
+    resume { ptr, i32 } %lp
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("invoke token") && l.contains("@llvm.experimental.gc.statepoint"))
+    .unwrap_or_else(|| panic!("missing invoke gc.statepoint call in function:\n{func}"));
+  let statepoint_token = assigned_ssa(statepoint_line)
+    .unwrap_or_else(|| panic!("unexpected statepoint line (not an assignment): {statepoint_line}"));
+
+  assert!(
+    !func.contains("invoke i64 @bar"),
+    "expected @bar invoke to be rewritten (no direct `invoke i64 @bar`):\n{func}"
+  );
+
+  let gc_result_line = func
+    .lines()
+    .find(|l| l.contains("@llvm.experimental.gc.result.i64"))
+    .unwrap_or_else(|| panic!("missing gc.result.i64 in function:\n{func}"));
+  assert!(
+    gc_result_line.contains(&format!("token {statepoint_token}")),
+    "expected gc.result.i64 to reference statepoint token {statepoint_token}, got:\n{gc_result_line}\n\n{func}"
+  );
+  let result_ssa = assigned_ssa(gc_result_line)
+    .unwrap_or_else(|| panic!("unexpected gc.result line: {gc_result_line}"));
+
+  assert!(
+    func.contains(&format!("ret i64 {result_ssa}")),
+    "expected function to return gc.result value ({result_ssa}):\n{func}"
+  );
+
+  assert!(
+    !func.contains("@llvm.experimental.gc.relocate"),
+    "expected no gc.relocate calls when no GC pointers are live:\n{func}"
+  );
+}
+
+#[test]
 fn gc_pointer_select_is_relocated_across_safepoint() {
   // JS runtimes frequently have control-flow-dependent pointer selection (e.g.
   // polymorphic inline caches). Ensure a `select`-produced GC pointer is tracked
