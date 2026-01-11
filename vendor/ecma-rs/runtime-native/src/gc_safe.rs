@@ -36,6 +36,44 @@ pub struct GcSafeGuard {
   _not_send: PhantomData<std::rc::Rc<()>>,
 }
 
+impl GcSafeGuard {
+  /// Exit a GC-safe region without blocking, even if a stop-the-world request is active.
+  ///
+  /// This is an internal escape hatch used by GC-aware lock acquisition paths to avoid a deadlock
+  /// where:
+  /// 1) a thread acquires a contended mutex while inside a GC-safe region, then
+  /// 2) a stop-the-world request begins between the "is STW active?" check and dropping the guard,
+  /// 3) dropping the guard would block while still holding the mutex, preventing the GC coordinator
+  ///    from acquiring the mutex to enumerate roots.
+  ///
+  /// Callers must ensure they do not execute mutator/GC-unsafe code while a stop-the-world request
+  /// is active after calling this. Typical usage is:
+  /// - clear `NativeSafe` via `exit_no_wait`,
+  /// - re-check the global epoch,
+  /// - and if STW is active, release any held locks and enter the safepoint slow path.
+  pub(crate) fn exit_no_wait(mut self) {
+    let Some(thread) = self.thread.take() else {
+      // No-op guard (unregistered thread).
+      core::mem::forget(self);
+      return;
+    };
+
+    let depth = thread.native_safe_depth.load(Ordering::Relaxed);
+    debug_assert!(depth > 0, "GcSafeGuard underflow");
+
+    if depth > 1 {
+      thread.native_safe_depth.store(depth - 1, Ordering::Relaxed);
+      core::mem::forget(self);
+      return;
+    }
+
+    // Outermost guard: clear NativeSafe without waiting for an in-progress stop-the-world.
+    thread.native_safe_depth.store(0, Ordering::Release);
+    safepoint::notify_state_change();
+    core::mem::forget(self);
+  }
+}
+
 impl Drop for GcSafeGuard {
   fn drop(&mut self) {
     let Some(thread) = &self.thread else {
@@ -75,6 +113,11 @@ impl Drop for GcSafeGuard {
 ///
 /// If the current thread is not registered with the runtime thread registry, this
 /// is a no-op guard.
+// Do not inline: entering a GC-safe region publishes a `SafepointContext` via
+// `arch::capture_safepoint_context`, whose assembly helper walks the frame-pointer chain and
+// expects this function to have its own distinct frame. If this were inlined into the caller, the
+// captured `fp` would skip too far up the stack (missing the caller's frame), which would make
+// stackmap-based root scanning unsound.
 #[inline(never)]
 pub fn enter_gc_safe_region() -> GcSafeGuard {
   let Some(thread) = registry::current_thread_state() else {

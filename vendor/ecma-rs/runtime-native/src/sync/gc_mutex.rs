@@ -74,13 +74,31 @@ impl<T> GcAwareMutex<T> {
 
       // If a stop-the-world is active, do not resume mutator execution while
       // holding the lock: release and retry after the world is resumed.
-      if threading::safepoint::current_epoch() & 1 == 1 {
+      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
         drop(guard);
         drop(gc_safe);
+        // `GcSafeGuard` is a no-op for unregistered threads; always block until the world is resumed
+        // to avoid a busy-spin loop.
+        threading::safepoint::wait_while_stop_the_world();
         continue;
       }
 
-      drop(gc_safe);
+      // Exit the GC-safe region *without blocking* while still holding the mutex guard.
+      //
+      // `GcSafeGuard::drop` waits for any in-progress stop-the-world request to resume before
+      // clearing the NativeSafe flag. If STW begins between the epoch check above and `drop(gc_safe)`,
+      // dropping would block while holding the mutex, potentially deadlocking the GC coordinator if it
+      // needs this lock for root enumeration.
+      gc_safe.exit_no_wait();
+
+      // If a stop-the-world request started concurrently, do not proceed while holding the lock.
+      // Release and enter the safepoint, then retry.
+      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
+        drop(guard);
+        threading::safepoint_poll();
+        continue;
+      }
+
       return guard;
     }
   }

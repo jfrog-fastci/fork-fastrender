@@ -45,13 +45,20 @@ impl<T> GcAwareRwLock<T> {
 
       // If a stop-the-world is active, do not resume mutator execution while
       // holding the lock: release and retry after the world is resumed.
-      if threading::safepoint::current_epoch() & 1 == 1 {
+      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
         drop(guard);
         drop(gc_safe);
+        threading::safepoint::wait_while_stop_the_world();
         continue;
       }
 
-      drop(gc_safe);
+      gc_safe.exit_no_wait();
+      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
+        drop(guard);
+        threading::safepoint_poll();
+        continue;
+      }
+
       return guard;
     }
   }
@@ -71,13 +78,20 @@ impl<T> GcAwareRwLock<T> {
 
       // If a stop-the-world is active, do not resume mutator execution while
       // holding the lock: release and retry after the world is resumed.
-      if threading::safepoint::current_epoch() & 1 == 1 {
+      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
         drop(guard);
         drop(gc_safe);
+        threading::safepoint::wait_while_stop_the_world();
         continue;
       }
 
-      drop(gc_safe);
+      gc_safe.exit_no_wait();
+      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
+        drop(guard);
+        threading::safepoint_poll();
+        continue;
+      }
+
       return guard;
     }
   }

@@ -300,6 +300,9 @@ pub(crate) fn enter_safepoint_at_current_callsite(stop_epoch: u64) {
 }
 
 pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
+  // Mark this thread as the coordinator so GC-aware locks can be acquired while the stop-the-world
+  // epoch is active (required for root enumeration).
+  let _coordinator = threading::safepoint::enter_stop_the_world_coordinator();
   struct ResumeOnDrop;
   impl Drop for ResumeOnDrop {
     fn drop(&mut self) {

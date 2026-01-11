@@ -540,6 +540,9 @@ mod tests {
       let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
         .expect("stop-the-world should not already be active");
       assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
+      // Mark this thread as the STW coordinator so GC-aware locks can be acquired while the stop
+      // epoch is active (root enumeration needs to lock the registry).
+      let _coordinator = crate::threading::safepoint::enter_stop_the_world_coordinator();
       struct ResumeOnDrop;
       impl Drop for ResumeOnDrop {
         fn drop(&mut self) {

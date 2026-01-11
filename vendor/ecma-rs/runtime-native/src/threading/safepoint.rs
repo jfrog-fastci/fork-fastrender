@@ -43,6 +43,38 @@ pub enum StopReason {
 thread_local! {
   static IN_STOP_THE_WORLD: Cell<bool> = const { Cell::new(false) };
 }
+
+/// Returns whether the current thread is acting as the stop-the-world coordinator.
+///
+/// This is used by GC-aware synchronization primitives: the coordinator is allowed to acquire
+/// locks while a stop-the-world epoch is active (it must do so to enumerate roots), while mutator
+/// threads must not resume execution during that epoch.
+pub(crate) fn in_stop_the_world() -> bool {
+  IN_STOP_THE_WORLD.with(|flag| flag.get())
+}
+
+/// RAII guard that marks the current thread as the stop-the-world coordinator.
+///
+/// This is a lightweight internal hook used by coordinator-side helpers (e.g. `safepoint::with_world_stopped`)
+/// so GC-aware locks can distinguish coordinator code from mutator code.
+pub(crate) struct StopTheWorldCoordinatorGuard {
+  prev: bool,
+}
+
+impl Drop for StopTheWorldCoordinatorGuard {
+  fn drop(&mut self) {
+    IN_STOP_THE_WORLD.with(|flag| flag.set(self.prev));
+  }
+}
+
+pub(crate) fn enter_stop_the_world_coordinator() -> StopTheWorldCoordinatorGuard {
+  let prev = IN_STOP_THE_WORLD.with(|flag| {
+    let prev = flag.get();
+    flag.set(true);
+    prev
+  });
+  StopTheWorldCoordinatorGuard { prev }
+}
 struct SafepointCoordinator {
   /// How many threads are currently blocked inside [`rt_gc_safepoint`]'s slow path.
   threads_waiting: AtomicUsize,

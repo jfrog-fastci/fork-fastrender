@@ -1659,7 +1659,7 @@ mod tests {
       state: state_ptr,
       awaited: awaited_ptr,
     });
-
+ 
     let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
     // `rt_async_spawn` takes a stable `CoroutineId` handle (not a raw pointer) so the runtime can
     // store it across async boundaries.
@@ -1722,7 +1722,7 @@ mod tests {
       state: state_ptr,
       awaited: awaited_ptr,
     });
-
+ 
     let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
     let coro_id = CoroutineId(rt_handle_alloc(coro_ptr.cast()));
     let result = unsafe { rt_async_spawn(coro_id) };
@@ -1771,7 +1771,7 @@ mod tests {
       state: state_ptr,
       awaited: awaited_ptr,
     });
-
+ 
     let coro_ptr: CoroutineRef = Box::into_raw(coro) as CoroutineRef;
     let coro_id = CoroutineId(rt_handle_alloc(coro_ptr.cast()));
     let result = unsafe { rt_async_spawn(coro_id) };
