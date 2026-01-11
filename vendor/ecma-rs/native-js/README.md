@@ -161,7 +161,8 @@ The API is intentionally small and currently consists of:
 - `link`: linking helpers for producing executables that preserve LLVM stack maps:
   - `link::link_object_buffers_to_elf_executable(...)`
   - `link::LinkOpts` (defaults to non-PIE on Linux to avoid stackmap relocation issues)
-  - exported symbols: `link::FASTR_STACKMAPS_START_SYM` / `link::FASTR_STACKMAPS_END_SYM`
+  - exported symbols: `link::LLVM_STACKMAPS_START_SYM` / `link::LLVM_STACKMAPS_STOP_SYM`
+    (the injected linker script also defines aliases like `__fastr_stackmaps_start/end`)
 - `validate::validate_strict_subset(...)`: validator for the **strict compilation
   subset** currently supported by the native backend (syntax + type restrictions;
   used by the `native-js` binary in `native-js-cli`).
@@ -173,8 +174,8 @@ The API is intentionally small and currently consists of:
 - `strict::entrypoint(...)`: locate the exported `main()` entrypoint in a
   typechecked program (used by the early HIR-based backend).
 - `compile_typescript_to_llvm_ir(&str, CompileOptions) -> Result<String, NativeJsError>`:
-  compile a single TypeScript module to textual LLVM IR (very small subset; used
-  by `native-js-cli`).
+  compile a single TypeScript module string to textual LLVM IR (very small subset;
+  used by in-tree tests/examples and `compiler::compile_typescript_to_artifact`).
 - `compile_project_to_llvm_ir(&Program, &dyn Host, FileId, CompileOptions, entry_export)`:
   compile a small multi-file ES module project (subset) to textual LLVM IR
   using `typecheck-ts` for module resolution + export maps (used by
