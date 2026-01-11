@@ -54,3 +54,33 @@ fn capture_safepoint_context_points_at_live_caller_frame() {
 
   threading::unregister_current_thread();
 }
+
+#[test]
+fn parked_thread_publishes_safepoint_context_points_at_live_caller_frame() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  #[inline(never)]
+  fn f() {
+    threading::set_parked(true);
+
+    let ctx = threading::registry::current_thread_state()
+      .unwrap()
+      .safepoint_context()
+      .expect("set_parked(true) should publish a SafepointContext");
+
+    // `arch::capture_safepoint_context` is invoked inside `set_parked(true)`, so the
+    // published context must refer to this function's frame, not to the runtime helper.
+    assert_eq!(
+      ctx.fp,
+      current_frame_pointer(),
+      "SafepointContext.fp should refer to the caller frame that remains live while parked",
+    );
+
+    threading::set_parked(false);
+  }
+
+  f();
+
+  threading::unregister_current_thread();
+}
