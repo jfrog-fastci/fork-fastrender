@@ -1,6 +1,6 @@
 use runtime_native::io::AsyncFd;
 use runtime_native::test_util::TestRuntimeGuard;
-use runtime_native::{async_rt, rt_async_poll};
+use runtime_native::{async_rt, rt_async_poll_legacy as rt_async_poll};
 use std::future::Future;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
