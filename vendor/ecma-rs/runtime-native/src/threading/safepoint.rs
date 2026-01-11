@@ -897,7 +897,7 @@ pub fn for_each_reloc_pair_world_stopped_with_stackmaps(
 pub fn for_each_root_slot_world_stopped(
   stop_epoch: u64,
   f: impl FnMut(*mut *mut u8),
-) -> Result<(), crate::WalkError> {
+) -> Result<(), crate::scan::ScanError> {
   for_each_root_slot_world_stopped_with_stackmaps(stop_epoch, stackmaps_for_self(), f)
 }
 
@@ -911,7 +911,7 @@ pub fn for_each_root_slot_world_stopped_with_stackmaps(
   stop_epoch: u64,
   stackmaps: Option<&crate::StackMaps>,
   mut f: impl FnMut(*mut *mut u8),
-) -> Result<(), crate::WalkError> {
+) -> Result<(), crate::scan::ScanError> {
   assert_eq!(
     stop_epoch & 1,
     1,
@@ -933,7 +933,7 @@ pub fn for_each_root_slot_world_stopped_with_stackmaps(
   };
 
   let coordinator_id = registry::current_thread_id();
-  registry::try_for_each_thread(|thread| -> Result<(), crate::WalkError> {
+  registry::try_for_each_thread(|thread| -> Result<(), crate::scan::ScanError> {
     if thread.is_detached() {
       return Ok(());
     }
@@ -949,28 +949,13 @@ pub fn for_each_root_slot_world_stopped_with_stackmaps(
       return Ok(());
     }
 
-    let ctx = if is_coordinator {
-      let Some(ctx) = thread.safepoint_context() else {
-        return Ok(());
-      };
-      ctx
-    } else {
-      thread
-        .safepoint_context()
-        .expect("thread eligible for stack root enumeration must have a published safepoint context")
-    };
-
-    let stack_bounds = thread
-      .stack_bounds()
-      .and_then(|b| crate::stackwalk::StackBounds::new(b.lo as u64, b.hi as u64).ok());
-
-    // SAFETY: The caller guarantees the world is stopped and the thread's stack
-    // is stable to read.
-    unsafe {
-      crate::stackwalk_fp::walk_gc_roots_from_safepoint_context(&ctx, stack_bounds, stackmaps, |slot_addr| {
-        f(slot_addr as *mut *mut u8);
-      })?;
+    // The coordinator thread is not stopped inside `rt_gc_safepoint` (it is executing the GC),
+    // so it may not have published a safepoint context. Skip it in that case.
+    if is_coordinator && thread.safepoint_context().is_none() {
+      return Ok(());
     }
+
+    crate::scan::scan_thread_roots(thread.as_ref(), stackmaps, &mut f)?;
     Ok(())
   })?;
 

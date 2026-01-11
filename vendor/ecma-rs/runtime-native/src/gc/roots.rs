@@ -91,6 +91,44 @@ impl SimpleRememberedSet {
     self.objs.contains(&obj)
   }
 
+  /// Sync this set's membership for `obj` with its header `REMEMBERED` bit.
+  ///
+  /// This is a test/debug helper used by the exported write barrier model tests:
+  /// the ABI `rt_write_barrier` currently only sets the per-object header bit, so
+  /// tests maintain a process-global remembered-set mirror by consulting the bit.
+  #[doc(hidden)]
+  pub fn sync_from_header_bit(&mut self, obj: *mut u8) -> bool {
+    if obj.is_null() {
+      return false;
+    }
+
+    // SAFETY: Callers must pass a pointer to the start of a valid GC-managed
+    // object header.
+    let header = unsafe { &*(obj as *const super::ObjHeader) };
+    let remembered = header.is_remembered();
+    if remembered {
+      if !self.objs.contains(&obj) {
+        self.objs.push(obj);
+      }
+      return true;
+    }
+
+    if let Some(idx) = self.objs.iter().position(|&x| x == obj) {
+      self.objs.swap_remove(idx);
+    }
+    false
+  }
+
+  /// Clear all stored pointers without dereferencing them.
+  ///
+  /// This is intended for tests that allocate synthetic objects outside the GC
+  /// heap and then free them; we must be able to drop the process-global
+  /// remembered set without touching possibly-freed memory.
+  #[doc(hidden)]
+  pub fn clear_pointers_only(&mut self) {
+    self.objs.clear();
+  }
+
   fn add(&mut self, obj: *mut u8) {
     debug_assert!(!obj.is_null());
     // Set the per-object REMEMBERED bit idempotently and only enqueue into the

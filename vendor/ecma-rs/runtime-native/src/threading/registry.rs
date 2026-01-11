@@ -52,14 +52,19 @@ impl ThreadKind {
   }
 }
 
-/// Optional stack bounds metadata for precise stack scanning.
+/// Stack bounds metadata for precise stack scanning.
+///
+/// Stacks on supported platforms are assumed to grow **downward** (toward lower
+/// addresses). The `lo`/`hi` bounds therefore represent the full mapped stack
+/// range `[lo, hi)` where:
+/// - `lo` is the lowest mapped address
+/// - `hi = lo + size` is the first address past the end of the mapping
+///
+/// Older frames have **higher** frame-pointer values.
 ///
 /// This is populated on platforms where we can query thread stack bounds:
 /// - Linux/Android via `pthread_getattr_np` + `pthread_attr_getstack`
 /// - macOS via `pthread_get_stackaddr_np` + `pthread_get_stacksize_np`
-///
-/// It is used by future precise GC stack scanning and by tests that validate safepoint context
-/// capture.
 #[derive(Clone, Copy, Debug)]
 pub struct StackBounds {
   pub lo: usize,
@@ -99,7 +104,16 @@ pub struct ThreadState {
   /// Captured `(fp, pc)` cursor for stack walking the mutator at a safepoint callsite.
   safepoint_cursor: Mutex<Option<FrameCursor>>,
 
-  stack_bounds: Mutex<Option<StackBounds>>,
+  /// Lowest mapped address of this thread's stack (`[stack_lo, stack_hi)`).
+  ///
+  /// See [`StackBounds`] for invariants and semantics. A value of `0` means
+  /// "unknown / unsupported on this platform".
+  stack_lo: usize,
+  /// One-past-the-end address of this thread's stack mapping.
+  ///
+  /// See [`StackBounds`] for invariants and semantics. A value of `0` means
+  /// "unknown / unsupported on this platform".
+  stack_hi: usize,
 
   /// Per-thread handle stack for temporary roots created by runtime-native Rust
   /// code (not covered by LLVM stackmaps).
@@ -139,7 +153,16 @@ impl ThreadState {
   }
 
   pub fn stack_bounds(&self) -> Option<StackBounds> {
-    *self.stack_bounds.lock().unwrap()
+    if self.stack_lo == 0 || self.stack_hi == 0 {
+      return None;
+    }
+    if self.stack_lo >= self.stack_hi {
+      return None;
+    }
+    Some(StackBounds {
+      lo: self.stack_lo,
+      hi: self.stack_hi,
+    })
   }
 
   pub fn safepoint_context(&self) -> Option<SafepointContext> {
@@ -247,6 +270,11 @@ impl ThreadRegistry {
     };
 
     let id = ThreadId(self.next_id.fetch_add(1, Ordering::Relaxed));
+    let stack_bounds = current_stack_bounds();
+    let (stack_lo, stack_hi) = stack_bounds
+      .map(|b| (b.lo, b.hi))
+      .unwrap_or((0, 0));
+
     let state = Arc::new(ThreadState {
       id,
       kind: AtomicU8::new(kind as u8),
@@ -257,7 +285,8 @@ impl ThreadRegistry {
       safepoint_epoch_observed: AtomicU64::new(initial_observed),
       safepoint_context: Mutex::new(None),
       safepoint_cursor: Mutex::new(None),
-      stack_bounds: Mutex::new(current_stack_bounds()),
+      stack_lo,
+      stack_hi,
       handle_stack: Mutex::new(HandleStack::default()),
     });
 

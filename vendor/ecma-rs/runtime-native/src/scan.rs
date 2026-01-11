@@ -42,6 +42,84 @@ pub enum ScanError {
 
   #[error("unsupported relocation location (expected Indirect spill slot), got {loc:?}")]
   UnsupportedLocation { loc: Location },
+
+  // -----------------------------------------------------------------------------
+  // Thread stack scanning (stop-the-world GC root enumeration)
+  // -----------------------------------------------------------------------------
+
+  #[error("missing published safepoint context for thread_id={thread_id} (os_tid={os_tid})")]
+  MissingSafepointContext { thread_id: u64, os_tid: u64 },
+
+  #[error("missing stack bounds for thread_id={thread_id} (os_tid={os_tid})")]
+  MissingStackBounds { thread_id: u64, os_tid: u64 },
+
+  #[error(
+    "invalid stack bounds for thread_id={thread_id} (os_tid={os_tid}): lo=0x{lo:x} hi=0x{hi:x}"
+  )]
+  InvalidStackBounds {
+    thread_id: u64,
+    os_tid: u64,
+    lo: usize,
+    hi: usize,
+  },
+
+  #[error(
+    "failed to scan stack roots for thread_id={thread_id} (os_tid={os_tid}) at fp=0x{fp:x} ip=0x{ip:x}"
+  )]
+  StackWalkFailed {
+    thread_id: u64,
+    os_tid: u64,
+    fp: usize,
+    ip: usize,
+    #[source]
+    source: crate::WalkError,
+  },
+}
+
+/// Scan stack roots for a stopped thread.
+///
+/// This is intended for stop-the-world GC root enumeration: the caller must ensure the thread is
+/// parked at a safepoint and its stack is stable for the duration of the scan.
+pub fn scan_thread_roots(
+  thread: &crate::threading::ThreadState,
+  stackmaps: &StackMaps,
+  visit: &mut dyn FnMut(*mut *mut u8),
+) -> Result<(), ScanError> {
+  let thread_id = thread.id().get();
+  let os_tid = thread.os_thread_id();
+
+  let ctx = thread
+    .safepoint_context()
+    .ok_or(ScanError::MissingSafepointContext { thread_id, os_tid })?;
+
+  let bounds = thread
+    .stack_bounds()
+    .ok_or(ScanError::MissingStackBounds { thread_id, os_tid })?;
+
+  let bounds = crate::stackwalk::StackBounds::new(bounds.lo as u64, bounds.hi as u64).map_err(|_| {
+    ScanError::InvalidStackBounds {
+      thread_id,
+      os_tid,
+      lo: bounds.lo,
+      hi: bounds.hi,
+    }
+  })?;
+
+  // Safety: caller guarantees the thread is stopped and its stack is not concurrently modified.
+  unsafe {
+    crate::stackwalk_fp::walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), stackmaps, |slot_addr| {
+      visit(slot_addr as *mut *mut u8);
+    })
+    .map_err(|source| ScanError::StackWalkFailed {
+      thread_id,
+      os_tid,
+      fp: ctx.fp,
+      ip: ctx.ip,
+      source,
+    })?;
+  }
+
+  Ok(())
 }
 
 /// A visitor for GC root slots discovered while scanning native frames.

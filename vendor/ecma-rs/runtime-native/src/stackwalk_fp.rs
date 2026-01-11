@@ -61,6 +61,8 @@ compile_error!("runtime-native stack walking currently supports only x86_64 and 
 pub enum WalkError {
   #[error("start frame pointer is null")]
   NullStartFp,
+  #[error("missing stack bounds for frame-pointer stack walk")]
+  MissingStackBounds,
   #[error("frame pointer chain exceeded max depth ({max_depth})")]
   MaxDepth { max_depth: usize },
   #[error("frame pointer {fp:#x} is not aligned to {alignment} bytes")]
@@ -150,9 +152,22 @@ pub enum WalkError {
   MissingStackMap { return_addr: u64 },
 }
 
-const MAX_FRAMES: usize = 100_000;
+const MAX_FRAMES_CAP: usize = 1_000_000;
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
 const MAX_CONSERVATIVE_SCAN_WORDS: usize = 4096;
+
+#[inline]
+fn max_frames_for_bounds(bounds: StackBounds) -> usize {
+  // On supported targets, the smallest possible "frame record" we will read is
+  // two words (saved FP + return address / LR).
+  let min_frame_bytes = (arch::RA_OFFSET + arch::WORD) as usize;
+  debug_assert!(min_frame_bytes > 0);
+  let stack_bytes = bounds.hi.saturating_sub(bounds.lo) as usize;
+  let by_stack = stack_bytes / min_frame_bytes;
+  // Clamp so corrupted FP chains can't loop forever even if stack bounds are
+  // huge (e.g. custom thread stacks).
+  by_stack.clamp(1, MAX_FRAMES_CAP)
+}
 
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
 fn heap_range_for_conservative_roots() -> HeapRange {
@@ -191,16 +206,11 @@ fn is_probably_young_object_start(candidate: *const u8) -> bool {
 fn conservative_scan_frame_words(
   start_addr: u64,
   end_addr: u64,
-  bounds: Option<StackBounds>,
+  bounds: StackBounds,
   visit: &mut impl FnMut(*mut u8),
 ) {
-  let mut start = start_addr;
-  let mut end = end_addr;
-
-  if let Some(bounds) = bounds {
-    start = start.max(bounds.lo);
-    end = end.min(bounds.hi);
-  }
+  let mut start = start_addr.max(bounds.lo);
+  let mut end = end_addr.min(bounds.hi);
 
   if end <= start {
     return;
@@ -342,13 +352,13 @@ pub unsafe fn walk_gc_roots_from_fp(
   if start_fp == 0 {
     return Err(WalkError::NullStartFp);
   }
+  let bounds = bounds.ok_or(WalkError::MissingStackBounds)?;
 
   let mut cur_fp = start_fp;
-  for depth in 0..MAX_FRAMES {
+  let max_frames = max_frames_for_bounds(bounds);
+  for depth in 0..max_frames {
     check_fp_alignment(cur_fp)?;
-    if let Some(bounds) = bounds {
-      check_fp_bounds(cur_fp, bounds)?;
-    }
+    check_fp_bounds(cur_fp, bounds)?;
 
     // Frame layout:
     // [FP + 0] = previous FP
@@ -365,9 +375,7 @@ pub unsafe fn walk_gc_roots_from_fp(
       return Err(WalkError::NonMonotonicFp { cur_fp, caller_fp });
     }
 
-    if let Some(bounds) = bounds {
-      check_fp_bounds(caller_fp, bounds)?;
-    }
+    check_fp_bounds(caller_fp, bounds)?;
 
     if caller_ra == 0 {
       return Err(WalkError::ReturnAddressIsNull { fp: cur_fp });
@@ -407,13 +415,13 @@ pub unsafe fn walk_gc_roots_from_fp(
 
     cur_fp = caller_fp;
 
-    if depth + 1 == MAX_FRAMES {
+    if depth + 1 == max_frames {
       break;
     }
   }
 
   Err(WalkError::MaxDepth {
-    max_depth: MAX_FRAMES,
+    max_depth: max_frames,
   })
 }
 
@@ -461,11 +469,10 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   if caller_fp == 0 {
     return Err(WalkError::NullStartFp);
   }
+  let bounds = bounds.ok_or(WalkError::MissingStackBounds)?;
 
   check_fp_alignment(caller_fp)?;
-  if let Some(bounds) = bounds {
-    check_fp_bounds(caller_fp, bounds)?;
-  }
+  check_fp_bounds(caller_fp, bounds)?;
 
   let caller_ra = ctx.ip as u64;
   if caller_ra == 0 {
@@ -498,7 +505,7 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
         if scan_start == 0 {
           return Err(WalkError::MissingStackMap { return_addr: caller_ra });
         }
-        let scan_end = bounds.map(|b| b.hi).unwrap_or(caller_fp);
+        let scan_end = bounds.hi;
         conservative_scan_frame_words(scan_start, scan_end, bounds, &mut visit);
       }
 
@@ -512,7 +519,7 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
   // Continue walking older frames. Starting from the managed frame pointer means the delegated
   // walker will enumerate roots in the *caller* frame, i.e. it won't double-enumerate the top
   // managed frame we just handled above.
-  walk_gc_roots_from_fp(caller_fp, bounds, stackmaps, visit)
+  walk_gc_roots_from_fp(caller_fp, Some(bounds), stackmaps, visit)
 }
 
 /// Walk the frame-pointer chain and enumerate GC relocation pairs (`(base, derived)` slots).
@@ -556,12 +563,12 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
     return Err(WalkError::NullStartFp);
   }
 
+  let bounds = bounds.ok_or(WalkError::MissingStackBounds)?;
   let mut cur_fp = start_fp;
-  for depth in 0..MAX_FRAMES {
+  let max_frames = max_frames_for_bounds(bounds);
+  for depth in 0..max_frames {
     check_fp_alignment(cur_fp)?;
-    if let Some(bounds) = bounds {
-      check_fp_bounds(cur_fp, bounds)?;
-    }
+    check_fp_bounds(cur_fp, bounds)?;
 
     // Frame layout:
     // [FP + 0] = previous FP
@@ -578,9 +585,7 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
       return Err(WalkError::NonMonotonicFp { cur_fp, caller_fp });
     }
 
-    if let Some(bounds) = bounds {
-      check_fp_bounds(caller_fp, bounds)?;
-    }
+    check_fp_bounds(caller_fp, bounds)?;
 
     if caller_ra == 0 {
       return Err(WalkError::ReturnAddressIsNull { fp: cur_fp });
@@ -604,13 +609,13 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
 
     cur_fp = caller_fp;
 
-    if depth + 1 == MAX_FRAMES {
+    if depth + 1 == max_frames {
       break;
     }
   }
 
   Err(WalkError::MaxDepth {
-    max_depth: MAX_FRAMES,
+    max_depth: max_frames,
   })
 }
 
@@ -628,10 +633,9 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
     return Err(WalkError::NullStartFp);
   }
 
+  let bounds = bounds.ok_or(WalkError::MissingStackBounds)?;
   check_fp_alignment(caller_fp)?;
-  if let Some(bounds) = bounds {
-    check_fp_bounds(caller_fp, bounds)?;
-  }
+  check_fp_bounds(caller_fp, bounds)?;
 
   let caller_ra = ctx.ip as u64;
   if caller_ra == 0 {
@@ -653,7 +657,7 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
     }
   }
 
-  walk_gc_root_pairs_from_fp(caller_fp, bounds, stackmaps, visit_frame_reloc_pairs)
+  walk_gc_root_pairs_from_fp(caller_fp, Some(bounds), stackmaps, visit_frame_reloc_pairs)
 }
 
 /// Walk GC relocation pairs for a thread parked in a stop-the-world safepoint.
@@ -818,7 +822,7 @@ fn enumerate_roots_for_frame(
   caller_fp: u64,
   caller_ra: u64,
   callsite: CallSite<'_>,
-  bounds: Option<StackBounds>,
+  bounds: StackBounds,
   caller_sp_override: Option<u64>,
   visit: &mut impl FnMut(*mut u8),
 ) -> Result<(), WalkError> {
@@ -854,14 +858,12 @@ fn enumerate_roots_for_frame(
   };
 
   if needs_sp {
-    if let Some(bounds) = bounds {
-      if caller_sp < bounds.lo || caller_sp > bounds.hi {
-        return Err(WalkError::StackPointerOutOfBounds {
-          caller_sp,
-          lo: bounds.lo,
-          hi: bounds.hi,
-        });
-      }
+    if caller_sp < bounds.lo || caller_sp > bounds.hi {
+      return Err(WalkError::StackPointerOutOfBounds {
+        caller_sp,
+        lo: bounds.lo,
+        hi: bounds.hi,
+      });
     }
   }
 
@@ -950,7 +952,7 @@ fn enumerate_root_pairs_for_frame(
   caller_fp: u64,
   caller_ra: u64,
   callsite: CallSite<'_>,
-  bounds: Option<StackBounds>,
+  bounds: StackBounds,
   caller_sp_override: Option<u64>,
 ) -> Result<Vec<(*mut usize, *mut usize)>, WalkError> {
   if !crate::statepoints::looks_like_statepoint_record(callsite.record) {
@@ -978,14 +980,12 @@ fn enumerate_root_pairs_for_frame(
   };
 
   if needs_sp {
-    if let Some(bounds) = bounds {
-      if caller_sp < bounds.lo || caller_sp > bounds.hi {
-        return Err(WalkError::StackPointerOutOfBounds {
-          caller_sp,
-          lo: bounds.lo,
-          hi: bounds.hi,
-        });
-      }
+    if caller_sp < bounds.lo || caller_sp > bounds.hi {
+      return Err(WalkError::StackPointerOutOfBounds {
+        caller_sp,
+        lo: bounds.lo,
+        hi: bounds.hi,
+      });
     }
   }
 
@@ -1076,7 +1076,7 @@ fn add_signed_u64_i64(base: u64, offset: i64) -> Option<u64> {
 }
 
 #[inline]
-fn validate_root_slot(slot_addr: u64, bounds: Option<StackBounds>, return_addr: u64) -> Result<(), WalkError> {
+fn validate_root_slot(slot_addr: u64, bounds: StackBounds, return_addr: u64) -> Result<(), WalkError> {
   if slot_addr % arch::WORD != 0 {
     return Err(WalkError::MisalignedRootSlot {
       return_addr,
@@ -1085,15 +1085,13 @@ fn validate_root_slot(slot_addr: u64, bounds: Option<StackBounds>, return_addr: 
     });
   }
 
-  if let Some(bounds) = bounds {
-    if !bounds.contains_range(slot_addr, arch::WORD) {
-      return Err(WalkError::RootSlotOutOfBounds {
-        return_addr,
-        slot_addr,
-        lo: bounds.lo,
-        hi: bounds.hi,
-      });
-    }
+  if !bounds.contains_range(slot_addr, arch::WORD) {
+    return Err(WalkError::RootSlotOutOfBounds {
+      return_addr,
+      slot_addr,
+      lo: bounds.lo,
+      hi: bounds.hi,
+    });
   }
 
   Ok(())

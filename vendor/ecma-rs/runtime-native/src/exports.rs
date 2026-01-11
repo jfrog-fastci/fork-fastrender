@@ -881,6 +881,7 @@ pub extern "C" fn rt_gc_collect() {
   // later, we avoid depending on the sysroot's FP behavior while still keeping the
   // entire body under `catch_unwind` to prevent unwinding across the C ABI.
   let entry_fp = crate::stackwalk::current_frame_pointer();
+  let fallback_ctx = crate::arch::capture_safepoint_context();
 
   let res = catch_unwind(AssertUnwindSafe(|| {
     // If a stop-the-world is already active, join it as a mutator safepoint at
@@ -916,23 +917,24 @@ pub extern "C" fn rt_gc_collect() {
       // by a *runtime helper* frame. Calling it indirectly (e.g. via
       // `Option::unwrap_or_else`) introduces an extra frame and changes which FP/IP
       // are captured.
-      let ctx = if let Some(cursor) = crate::stackmap::try_stackmaps()
+      let ctx = match crate::stackmap::try_stackmaps()
         .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor(entry_fp, stackmaps))
       {
-        let sp_callsite = cursor.sp.unwrap_or(0);
-        #[cfg(target_arch = "x86_64")]
-        let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
-        #[cfg(not(target_arch = "x86_64"))]
-        let sp_entry = sp_callsite;
+        Some(cursor) => {
+          let sp_callsite = cursor.sp.unwrap_or(0);
+          #[cfg(target_arch = "x86_64")]
+          let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
+          #[cfg(not(target_arch = "x86_64"))]
+          let sp_entry = sp_callsite;
 
-        crate::arch::SafepointContext {
-          sp_entry: sp_entry as usize,
-          sp: sp_callsite as usize,
-          fp: cursor.fp as usize,
-          ip: cursor.pc as usize,
+          crate::arch::SafepointContext {
+            sp_entry: sp_entry as usize,
+            sp: sp_callsite as usize,
+            fp: cursor.fp as usize,
+            ip: cursor.pc as usize,
+          }
         }
-      } else {
-        crate::arch::capture_safepoint_context()
+        None => fallback_ctx,
       };
       registry::set_current_thread_safepoint_context(ctx);
       registry::set_current_thread_safepoint_epoch_observed(stop_epoch);

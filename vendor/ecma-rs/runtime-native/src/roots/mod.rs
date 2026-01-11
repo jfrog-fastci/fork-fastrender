@@ -113,7 +113,7 @@ pub fn unregister_global_root_slot(slot: *mut usize) {
 pub fn enumerate_root_slots_world_stopped(
   stop_epoch: u64,
   visit_root_slot: &mut dyn FnMut(*mut usize),
-) -> Result<(), crate::WalkError> {
+) -> Result<(), crate::scan::ScanError> {
   crate::threading::safepoint::for_each_root_slot_world_stopped(stop_epoch, |slot| {
     visit_root_slot(slot as *mut usize);
   })
@@ -123,7 +123,7 @@ pub fn enumerate_root_slots_world_stopped(
 ///
 /// The GC typically calls [`enumerate_root_slots_world_stopped`] once it already holds a
 /// stop-the-world pause; this helper is primarily intended for tests/debug tooling.
-pub fn enumerate_root_slots(mut visit_root_slot: impl FnMut(*mut usize)) -> Result<(), crate::WalkError> {
+pub fn enumerate_root_slots(mut visit_root_slot: impl FnMut(*mut usize)) -> Result<(), crate::scan::ScanError> {
   crate::threading::safepoint::with_world_stopped(|stop_epoch| {
     enumerate_root_slots_world_stopped(stop_epoch, &mut visit_root_slot)
   })

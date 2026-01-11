@@ -55,7 +55,12 @@ pub unsafe fn set_current_thread_ptr(thread: *mut Thread) {
 pub struct Thread {
   pub id: u32,
   pub os_tid: u64,
+  /// Lowest mapped address of this thread's stack (`[stack_lo, stack_hi)`).
+  ///
+  /// Stacks on supported platforms grow **downward** (toward lower addresses),
+  /// so older frames have higher addresses.
   pub stack_lo: usize,
+  /// One-past-the-end address of this thread's stack mapping.
   pub stack_hi: usize,
 
   pub state: AtomicU8,
@@ -143,6 +148,9 @@ pub(crate) fn current_stack_bounds() -> (usize, usize) {
 
   // Fallback: estimate bounds around the current stack pointer. This is only
   // used when stack introspection fails.
+  //
+  // NOTE: Stacks grow downward. The returned bounds are still a half-open range
+  // `[lo, hi)` where `lo` is the lowest address.
   let mut dummy = 0u8;
   let sp = std::ptr::addr_of_mut!(dummy) as usize;
   const GUESS: usize = 8 * 1024 * 1024;
