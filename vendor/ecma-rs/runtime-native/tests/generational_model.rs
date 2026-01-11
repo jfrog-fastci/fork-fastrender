@@ -641,6 +641,9 @@ fn op_strategy() -> impl Strategy<Value = Vec<Op>> {
 proptest! {
   #![proptest_config(ProptestConfig {
     cases: 64,
+    // Disable failure persistence: the test binary is run from the workspace root (not the crate
+    // root), which makes `FileFailurePersistence::SourceParallel` unable to locate `lib.rs`/`main.rs`.
+    failure_persistence: None,
     .. ProptestConfig::default()
   })]
 

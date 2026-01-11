@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::async_abi::{
   Coroutine, CoroutineRef, CoroutineStepTag, CORO_FLAG_DESTROYED, CORO_FLAG_RUNTIME_OWNS_FRAME,
 };
+use crate::gc::HandleId;
 
 // -----------------------------------------------------------------------------
 // Microtask checkpoint helpers
@@ -139,14 +140,14 @@ struct AsyncCoroState {
   /// Coroutines that have yielded `Await` and are stored across turns.
   ///
   /// Note: this is *not* a "ready queue"; it's used for cancellation/teardown.
-  queued: VecDeque<usize>,
+  queued: VecDeque<HandleId>,
 
-  /// Set of coroutine frame addresses owned by the runtime and not yet destroyed.
+  /// Set of coroutine handle ids owned by the runtime and not yet destroyed.
   ///
   /// This guards against double-destroy and allows resume/cancel paths to avoid
-  /// dereferencing freed frames: if a coroutine address is absent from this set,
-  /// it must be treated as dead.
-  live_owned: HashSet<usize>,
+  /// dereferencing freed frames: if a coroutine id is absent from this set, it must be treated as
+  /// dead.
+  live_owned: HashSet<HandleId>,
 }
 
 static CORO_STATE: Lazy<Mutex<AsyncCoroState>> = Lazy::new(|| Mutex::new(AsyncCoroState {
@@ -171,8 +172,17 @@ pub(crate) unsafe fn coro_is_runtime_owned(coro: CoroutineRef) -> bool {
 }
 
 #[inline]
-pub(crate) fn coro_is_live_owned(coro: CoroutineRef) -> bool {
-  CORO_STATE.lock().live_owned.contains(&(coro as usize))
+pub(crate) fn coro_is_live_owned(id: HandleId) -> bool {
+  CORO_STATE.lock().live_owned.contains(&id)
+}
+
+#[inline]
+pub(crate) fn coro_ptr_if_live(id: HandleId) -> Option<CoroutineRef> {
+  let state = CORO_STATE.lock();
+  state.live_owned.contains(&id).then_some(())?;
+  crate::roots::global_persistent_handle_table()
+    .get(id)
+    .map(|p| validate_coro_ptr(p.cast()))
 }
 
 unsafe fn coro_destroy_now(coro: CoroutineRef) {
@@ -190,26 +200,25 @@ unsafe fn coro_destroy_now(coro: CoroutineRef) {
   ((*vtable).destroy)(coro);
 }
 
-pub(crate) unsafe fn coro_destroy_once(coro: CoroutineRef) {
+pub(crate) unsafe fn coro_destroy_once(id: HandleId) {
+  // Remove from the live-set first. This ensures:
+  // - double-destroys are suppressed, and
+  // - other queued resume/cancel paths can check liveness without dereferencing a freed frame.
+  let removed = CORO_STATE.lock().live_owned.remove(&id);
+  if !removed {
+    return;
+  }
+
+  let Some(coro) = crate::roots::global_persistent_handle_table().get(id).map(|p| p.cast()) else {
+    return;
+  };
   let coro = validate_coro_ptr(coro);
   if coro.is_null() {
     return;
   }
 
-  if !coro_is_runtime_owned(coro) {
-    // Stack/caller-owned frame: the runtime must never destroy it.
-    return;
-  }
-
-  // Remove from the live-set first. This ensures:
-  // - double-destroys are suppressed,
-  // - and other queued resume/cancel paths can check liveness without dereferencing `coro`.
-  let removed = CORO_STATE.lock().live_owned.remove(&(coro as usize));
-  if !removed {
-    return;
-  }
-
   coro_destroy_now(coro);
+  let _ = crate::roots::global_persistent_handle_table().free(id);
 }
 
 /// Register a coroutine frame with the runtime's ownership tracker.
@@ -221,21 +230,24 @@ pub(crate) unsafe fn coro_destroy_once(coro: CoroutineRef) {
 ///
 /// # Safety
 /// `coro` must point to a valid [`Coroutine`] header.
-pub(crate) unsafe fn track_coro_if_runtime_owned(coro: CoroutineRef) {
+pub(crate) unsafe fn track_coro_if_runtime_owned(coro: CoroutineRef) -> Option<HandleId> {
   let coro = validate_coro_ptr(coro);
   if coro.is_null() {
-    return;
+    return None;
   }
   if coro_is_runtime_owned(coro) {
-    CORO_STATE.lock().live_owned.insert(coro as usize);
+    let id = crate::roots::global_persistent_handle_table().alloc(coro.cast());
+    CORO_STATE.lock().live_owned.insert(id);
+    return Some(id);
   }
+  None
 }
 
-fn enqueue_awaiting(coro: CoroutineRef) {
-  CORO_STATE.lock().queued.push_back(coro as usize);
+fn enqueue_awaiting(id: HandleId) {
+  CORO_STATE.lock().queued.push_back(id);
 }
 
-unsafe fn run_coroutine(coro: CoroutineRef) {
+unsafe fn run_coroutine(coro: CoroutineRef, id: Option<HandleId>) {
   let coro = validate_coro_ptr(coro);
   if coro.is_null() {
     return;
@@ -249,19 +261,23 @@ unsafe fn run_coroutine(coro: CoroutineRef) {
   let step = ((*vtable).resume)(coro);
   match step.tag {
     CoroutineStepTag::Complete => {
-      coro_destroy_once(coro);
+      if let Some(id) = id {
+        coro_destroy_once(id);
+      }
     }
     CoroutineStepTag::Await => {
       // A coroutine that yields must be stored across turns. Stack-owned frames cannot be
       // referenced after the spawning call returns.
-      if cfg!(debug_assertions) && !coro_is_runtime_owned(coro) {
+      if cfg!(debug_assertions) && id.is_none() {
         eprintln!(
           "runtime-native async ABI violation: coroutine yielded `Await` but \
 CORO_FLAG_RUNTIME_OWNS_FRAME was not set (stack-owned coroutine frames must not suspend)"
         );
         std::process::abort();
       }
-      enqueue_awaiting(coro);
+      if let Some(id) = id {
+        enqueue_awaiting(id);
+      }
     }
   }
 }
@@ -279,11 +295,8 @@ pub unsafe fn rt_async_spawn(coro: CoroutineRef) {
     return;
   }
 
-  if coro_is_runtime_owned(coro) {
-    CORO_STATE.lock().live_owned.insert(coro as usize);
-  }
-
-  run_coroutine(coro);
+  let id = track_coro_if_runtime_owned(coro);
+  run_coroutine(coro, id);
 }
 
 /// Resume a coroutine previously spawned into the runtime.
@@ -301,11 +314,28 @@ pub unsafe fn rt_async_resume(coro: CoroutineRef) {
 
   // Only runtime-owned coroutines can be resumed asynchronously; stack-owned coroutines must not
   // yield and therefore never need to be resumed.
-  if coro_is_runtime_owned(coro) && !coro_is_live_owned(coro) {
-    return;
+  let id = coro_is_runtime_owned(coro).then(|| {
+    CORO_STATE
+      .lock()
+      .live_owned
+      .iter()
+      .find_map(|&id| {
+        let Some(ptr) = crate::roots::global_persistent_handle_table().get(id) else {
+          return None;
+        };
+        (ptr.cast::<Coroutine>() == coro).then_some(id)
+      })
+  });
+  let id = id.flatten();
+
+  // Robust against stale scheduling: if the runtime no longer owns the coroutine, this is a no-op.
+  if let Some(id) = id {
+    if !coro_is_live_owned(id) {
+      return;
+    }
   }
 
-  run_coroutine(coro);
+  run_coroutine(coro, id);
 }
 
 /// Cancel (destroy) all runtime-owned coroutine frames that are currently queued/owned by this
@@ -314,21 +344,20 @@ pub unsafe fn rt_async_resume(coro: CoroutineRef) {
 /// This is intended for teardown paths; it is exposed as a C ABI entrypoint via
 /// [`crate::rt_async_cancel_all`].
 pub fn cancel_all() {
-  let coros: Vec<CoroutineRef> = {
+  let ids: Vec<HandleId> = {
     let mut state = CORO_STATE.lock();
     state.queued.clear();
-    state
-      .live_owned
-      .drain()
-      .map(|addr| addr as CoroutineRef)
-      .collect()
+    state.live_owned.drain().collect()
   };
 
-  for coro in coros {
+  for id in ids {
     // Safety: `live_owned` only contains runtime-owned coroutines that have not been destroyed yet.
     unsafe {
-      coro_destroy_now(coro);
+      if let Some(coro) = crate::roots::global_persistent_handle_table().get(id).map(|p| p.cast()) {
+        coro_destroy_now(validate_coro_ptr(coro));
+      }
     }
+    let _ = crate::roots::global_persistent_handle_table().free(id);
   }
 }
 

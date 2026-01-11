@@ -13,6 +13,7 @@
 use core::ptr::null_mut;
 
 use crate::async_abi::PromiseRef;
+use crate::async_rt::gc;
 use crate::async_rt::{global as async_global, Task};
 
 /// VTable for a promise reaction node.
@@ -37,7 +38,9 @@ pub struct PromiseReactionNode {
 #[repr(C)]
 struct PromiseReactionJob {
   node: *mut PromiseReactionNode,
-  promise: PromiseRef,
+  /// Rooted promise pointer so the job remains valid even if the promise object relocates under a
+  /// moving GC.
+  promise: gc::Root,
 }
 
 extern "C" fn run_promise_reaction_job(data: *mut u8) {
@@ -51,7 +54,8 @@ extern "C" fn run_promise_reaction_job(data: *mut u8) {
   if vtable.is_null() {
     std::process::abort();
   }
-  ((unsafe { &*vtable }).run)(node, job.promise);
+  let promise = job.promise.ptr() as PromiseRef;
+  ((unsafe { &*vtable }).run)(node, promise);
 }
 
 extern "C" fn drop_promise_reaction_job(data: *mut u8) {
@@ -77,6 +81,16 @@ pub(crate) fn enqueue_reaction_job(promise: PromiseRef, node: *mut PromiseReacti
   if node.is_null() {
     return;
   }
+  if promise.is_null() {
+    // Treat null as "never settles": discard the node so it doesn't leak.
+    let vtable = unsafe { (*node).vtable };
+    if vtable.is_null() {
+      std::process::abort();
+    }
+    ((unsafe { &*vtable }).drop)(node);
+    return;
+  }
+  let promise = unsafe { gc::Root::new_unchecked(promise.cast::<u8>()) };
   let job = Box::new(PromiseReactionJob { node, promise });
   async_global().enqueue_microtask(Task::new_with_drop(
     run_promise_reaction_job,
