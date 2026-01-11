@@ -548,6 +548,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     html: "amazon.com/index.html",
     shots: DEFAULT_SHOTS,
   },
+  PageFixture {
+    name: "twitch.tv",
+    html: "twitch.tv/index.html",
+    shots: DEFAULT_SHOTS,
+  },
 ];
 
 fn fixtures_dir() -> PathBuf {
