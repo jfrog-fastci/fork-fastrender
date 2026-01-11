@@ -73,6 +73,38 @@ pub fn validate_native_strict_body(
     }
   }
 
+  fn expr_is_object_literal_with_proto_key(
+    body: &Body,
+    expr_id: hir_js::ExprId,
+    prototype_name: hir_js::NameId,
+    proto_name: hir_js::NameId,
+  ) -> bool {
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return false;
+    };
+    let ExprKind::Object(obj) = &expr.kind else {
+      return false;
+    };
+    for prop in &obj.properties {
+      let key = match prop {
+        hir_js::ObjectProperty::KeyValue { key, .. } => key,
+        hir_js::ObjectProperty::Getter { key, .. } => key,
+        hir_js::ObjectProperty::Setter { key, .. } => key,
+        hir_js::ObjectProperty::Spread(_) => continue,
+      };
+      if object_key_is_ident(key, prototype_name)
+        || object_key_is_ident(key, proto_name)
+        || object_key_is_string(key, "prototype")
+        || object_key_is_string(key, "__proto__")
+        || object_key_is_literal_string(body, key, "prototype")
+        || object_key_is_literal_string(body, key, "__proto__")
+      {
+        return true;
+      }
+    }
+    false
+  }
+
   fn expr_is_ident_or_global_this_member(
     body: &Body,
     expr_id: hir_js::ExprId,
@@ -405,6 +437,26 @@ pub fn validate_native_strict_body(
                     || expr_is_const_string(body, key_arg, "__proto__")
                   {
                     is_proto_mutation = true;
+                  }
+                }
+              }
+
+              // Also cover `Object.defineProperties` / `Object.assign` writing `"prototype"` /
+              // `"__proto__"` to an object.
+              if !is_proto_mutation && obj_is_object && is_define_properties {
+                if let Some(props_arg) = call.args.get(1).map(|arg| arg.expr) {
+                  if expr_is_object_literal_with_proto_key(body, props_arg, prototype_name, proto_name)
+                  {
+                    is_proto_mutation = true;
+                  }
+                }
+              }
+              if !is_proto_mutation && obj_is_object && is_assign {
+                for source_arg in call.args.iter().skip(1).map(|arg| arg.expr) {
+                  if expr_is_object_literal_with_proto_key(body, source_arg, prototype_name, proto_name)
+                  {
+                    is_proto_mutation = true;
+                    break;
                   }
                 }
               }
