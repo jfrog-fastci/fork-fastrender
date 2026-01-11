@@ -1800,7 +1800,7 @@ mod tests {
       host: &mut Self,
       value: Value,
     ) -> Result<String, VmError> {
-      let s = rt.to_string(host, value)?;
+      let s = WebIdlBindingsRuntime::to_string(rt, host, value)?;
       rt.js_string_to_rust_string(s)
     }
 
