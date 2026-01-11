@@ -540,7 +540,8 @@ The validator emits hard errors with stable `NJS####` codes:
 - `NJS0005`: `new Function()`
 - `NJS0006`: `with` statements
 - `NJS0007`: computed property access with non-literal keys
-  - only literal string/number keys are allowed (`obj["x"]`, `arr[0]`)
+  - object property keys must be literal strings/numbers (`obj["x"]`, `obj[0]`)
+  - array/tuple indexing also permits non-literal numeric keys (`arr[i]`)
 - `NJS0008`: use of the `arguments` identifier/object
 
 This list is expected to expand over time as the native backend’s supported

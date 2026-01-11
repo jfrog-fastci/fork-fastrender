@@ -15,7 +15,7 @@
 //! - `NJS0004`: `eval()`
 //! - `NJS0005`: `Function()` / `new Function()`
 //! - `NJS0006`: `with` statements
-//! - `NJS0007`: computed property access with non-literal keys
+//! - `NJS0007`: computed property access with non-literal keys (except array/tuple indexing)
 //! - `NJS0008`: use of the `arguments` identifier/object
 //! - `NJS0108`: entry file must export a `main` function
 //! - `NJS0109`: exported `main` must be defined in the entry file (no re-exports)
@@ -27,7 +27,7 @@ use hir_js::{
   BinaryOp, BodyKind, ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind, TypeExprKind,
 };
 use std::collections::{HashMap, HashSet};
-use typecheck_ts::{BodyId, DefId, FileId, Program, TypeId};
+use typecheck_ts::{BodyCheckResult, BodyId, DefId, FileId, Program, TypeId, TypeKindSummary};
 use types_ts_interned as tti;
 
 const CODE_ANY: &str = "NJS0001";
@@ -62,8 +62,17 @@ pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic> {
 
     // `Program::bodies_in_file` is deterministic and includes nested bodies.
     for body in program.bodies_in_file(file) {
-      check_any_in_body(program, file, body, &lowered, &mut any_checker, &mut diagnostics);
-      check_hir_body(file, body, &lowered, &mut diagnostics);
+      let result = program.check_body(body);
+      check_any_in_body(
+        program,
+        file,
+        body,
+        &result,
+        &lowered,
+        &mut any_checker,
+        &mut diagnostics,
+      );
+      check_hir_body(program, file, body, &result, &lowered, &mut diagnostics);
     }
 
     check_any_in_exported_defs(program, file, &lowered, &mut any_checker, &mut diagnostics);
@@ -215,12 +224,11 @@ fn check_any_in_body(
   program: &Program,
   file: FileId,
   body: BodyId,
+  result: &BodyCheckResult,
   lowered: &hir_js::LowerResult,
   any_checker: &mut AnyChecker<'_>,
   out: &mut Vec<Diagnostic>,
 ) {
-  let result = program.check_body(body);
-
   for (idx, ty) in result.expr_types().iter().copied().enumerate() {
     if !any_checker.contains_any(ty) {
       continue;
@@ -261,8 +269,10 @@ fn check_any_in_body(
 }
 
 fn check_hir_body(
+  program: &Program,
   file: FileId,
   body: BodyId,
+  result: &BodyCheckResult,
   lowered: &hir_js::LowerResult,
   out: &mut Vec<Diagnostic>,
 ) {
@@ -319,7 +329,28 @@ fn check_hir_body(
             Some(ExprKind::Literal(Literal::String(_)) | ExprKind::Literal(Literal::Number(_)))
           );
 
-          if !is_literal {
+          // Allow `arr[i]` / `tuple[i]` when the receiver is array-like and the key expression is
+          // typed as a number. This is a common and safe pattern even in strict native-js mode;
+          // rejecting it would make basic loops and indexing impractical.
+          let is_array_index = !is_literal
+            && matches!(
+              result
+                .expr_types()
+                .get(member.object.0 as usize)
+                .copied()
+                .map(|ty| program.type_kind(ty)),
+              Some(TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. })
+            )
+            && matches!(
+              result
+                .expr_types()
+                .get(key_expr.0 as usize)
+                .copied()
+                .map(|ty| program.type_kind(ty)),
+              Some(TypeKindSummary::Number | TypeKindSummary::NumberLiteral(_))
+            );
+
+          if !is_literal && !is_array_index {
             let span = span_of_expr(body_data, file, key_expr).unwrap_or(Span::new(file, expr.span));
             out.push(
               Diagnostic::error(

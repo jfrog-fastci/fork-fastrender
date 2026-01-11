@@ -378,6 +378,23 @@ fn allows_computed_member_access_with_literal_key() {
 }
 
 #[test]
+fn allows_array_index_with_number_key() {
+  let diags = validate(
+    r#"
+      const arr: number[] = [1, 2, 3];
+      let i = 1;
+      const x = arr[i];
+      void x;
+    "#,
+    FileKind::Ts,
+  );
+  assert!(
+    diags.is_empty(),
+    "expected no strict diagnostics, got: {diags:#?}"
+  );
+}
+
+#[test]
 fn rejects_arguments_identifier() {
   let diags = validate(
     r#"
