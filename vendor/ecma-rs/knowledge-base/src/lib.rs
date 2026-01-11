@@ -1875,10 +1875,30 @@ console.log:
   #[test]
   fn source_paths_are_recorded() {
     let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
-    let src = kb.source_of("fetch").expect("fetch has a source path");
+    let web_src = kb
+      .source_for_target(
+        "fetch",
+        &TargetEnv::Web {
+          platform: WebPlatform::Generic,
+        },
+      )
+      .expect("fetch has a web source path");
     assert!(
-      src.ends_with("web/fetch.yaml"),
-      "unexpected fetch source path: {src}"
+      web_src.ends_with("web/fetch.yaml"),
+      "unexpected web fetch source path: {web_src}"
+    );
+
+    let node_src = kb
+      .source_for_target(
+        "fetch",
+        &TargetEnv::Node {
+          version: Version::parse("20.0.0").unwrap(),
+        },
+      )
+      .expect("fetch has a node source path");
+    assert!(
+      node_src.ends_with("node/web_fetch.yaml"),
+      "unexpected node fetch source path: {node_src}"
     );
   }
 
@@ -2333,6 +2353,31 @@ properties:
       )
       .expect("fetch should resolve for web targets");
     assert_eq!(fetch.name, "fetch");
+  }
+
+  #[test]
+  fn api_for_target_selects_node_web_compat_entries_by_version() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+
+    let node_20 = TargetEnv::Node {
+      version: Version::parse("20.0.0").unwrap(),
+    };
+    let fetch = kb
+      .api_for_target("fetch", &node_20)
+      .expect("fetch should resolve for Node targets >= 18");
+    assert_eq!(fetch.name, "fetch");
+    assert_eq!(
+      kb.source_for_target("fetch", &node_20),
+      Some("node/web_fetch.yaml")
+    );
+
+    let node_16 = TargetEnv::Node {
+      version: Version::parse("16.0.0").unwrap(),
+    };
+    assert!(
+      kb.api_for_target("fetch", &node_16).is_none(),
+      "fetch should not resolve for Node < 18"
+    );
   }
 
   #[test]
