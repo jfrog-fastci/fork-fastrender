@@ -66,20 +66,6 @@ fn expr_fingerprint(lowered: &LowerResult, body: BodyId, expr: ExprId) -> Option
   }
 }
 
-fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
-  loop {
-    let Some(node) = body.exprs.get(expr.0 as usize) else {
-      return expr;
-    };
-    match &node.kind {
-      ExprKind::TypeAssertion { expr: inner, .. }
-      | ExprKind::NonNull { expr: inner }
-      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
-      _ => return expr,
-    }
-  }
-}
-
 fn parse_simple_method_call_untyped(
   lowered: &LowerResult,
   body: BodyId,
@@ -271,6 +257,20 @@ fn walk_stmt(body: &hir_js::Body, stmt_id: StmtId, mut f: impl FnMut(StmtId, &St
   }
 
   walk(body, stmt_id, &mut f)
+}
+
+fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
+  }
 }
 
 fn sort_patterns_by_span(body: &hir_js::Body, patterns: &mut Vec<RecognizedPattern>) {
@@ -719,7 +719,7 @@ fn promise_all_fetch_match_untyped(
     return None;
   }
 
-  let arg_expr_id = arg0.expr;
+  let arg_expr_id = strip_transparent_wrappers(body_ref, arg0.expr);
   let arg_expr = body_ref.exprs.get(arg_expr_id.0 as usize)?;
   match &arg_expr.kind {
     ExprKind::Array(array) => {
@@ -727,7 +727,8 @@ fn promise_all_fetch_match_untyped(
       for element in &array.elements {
         match element {
           ArrayElement::Expr(expr_id) => {
-            if resolve_api_call_untyped(lowered, body, *expr_id) == Some(ApiId::Fetch) {
+            let expr_id = strip_transparent_wrappers(body_ref, *expr_id);
+            if resolve_api_call_untyped(lowered, body, expr_id) == Some(ApiId::Fetch) {
               fetch_call_count += 1;
             }
           }
@@ -763,68 +764,107 @@ fn promise_all_fetch_match_untyped(
       if cb_arg.spread {
         return None;
       }
-      let cb_expr = body_ref.exprs.get(cb_arg.expr.0 as usize)?;
-      let ExprKind::FunctionExpr { body: cb_body, .. } = &cb_expr.kind else {
-        return None;
-      };
-      let cb_body_id = *cb_body;
-      let cb_body = lowered.body(cb_body_id)?;
-      let func = cb_body.function.as_ref()?;
-      let ret_expr = match &func.body {
-        hir_js::FunctionBody::Expr(expr) => Some(*expr),
-        hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
-          let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
-          let StmtKind::Return(Some(expr)) = &stmt.kind else {
-            return None;
-          };
-          Some(*expr)
+      let cb_expr_id = strip_transparent_wrappers(body_ref, cb_arg.expr);
+      let cb_expr = body_ref.exprs.get(cb_expr_id.0 as usize)?;
+
+      match &cb_expr.kind {
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => Some(PromiseAllFetchMatch {
+          urls_expr: strip_transparent_wrappers(body_ref, member.object),
+          map_call: Some(arg_expr_id),
+          fetch_call_count: 1,
+        }),
+        ExprKind::FunctionExpr { body: cb_body, .. } => {
+          let cb_body_id = *cb_body;
+          let cb_body = lowered.body(cb_body_id)?;
+          let func = cb_body.function.as_ref()?;
+          let ret_expr = match &func.body {
+            hir_js::FunctionBody::Expr(expr) => Some(*expr),
+            hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
+              let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
+              let StmtKind::Return(Some(expr)) = &stmt.kind else {
+                return None;
+              };
+              Some(*expr)
+            }
+            _ => None,
+          }?;
+
+          let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
+          let fetch_call_count =
+            if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+              1
+            } else if let ExprKind::Await { expr } = &cb_body.exprs.get(ret_expr.0 as usize)?.kind {
+              let expr = strip_transparent_wrappers(cb_body, *expr);
+              if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
+                1
+              } else {
+                return None;
+              }
+            } else {
+              return None;
+            };
+
+          Some(PromiseAllFetchMatch {
+            urls_expr: strip_transparent_wrappers(body_ref, member.object),
+            map_call: Some(arg_expr_id),
+            fetch_call_count,
+          })
         }
         _ => None,
-      }?;
-
-      let fetch_call_count =
-        if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
-          1
-        } else {
-          return None;
-        };
-
-      Some(PromiseAllFetchMatch {
-        urls_expr: member.object,
-        map_call: Some(arg_expr_id),
-        fetch_call_count,
-      })
+      }
     }
     #[cfg(feature = "hir-semantic-ops")]
     ExprKind::ArrayMap { array, callback } => {
-      let cb_expr = body_ref.exprs.get(callback.0 as usize)?;
-      let ExprKind::FunctionExpr { body: cb_body, .. } = &cb_expr.kind else {
-        return None;
-      };
-      let cb_body_id = *cb_body;
-      let cb_body = lowered.body(cb_body_id)?;
-      let func = cb_body.function.as_ref()?;
-      let ret_expr = match &func.body {
-        hir_js::FunctionBody::Expr(expr) => Some(*expr),
-        hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
-          let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
-          let StmtKind::Return(Some(expr)) = &stmt.kind else {
-            return None;
-          };
-          Some(*expr)
+      let urls_expr = strip_transparent_wrappers(body_ref, *array);
+
+      let cb_expr_id = strip_transparent_wrappers(body_ref, *callback);
+      let cb_expr = body_ref.exprs.get(cb_expr_id.0 as usize)?;
+
+      match &cb_expr.kind {
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => Some(PromiseAllFetchMatch {
+          urls_expr,
+          map_call: Some(arg_expr_id),
+          fetch_call_count: 1,
+        }),
+        ExprKind::FunctionExpr { body: cb_body, .. } => {
+          let cb_body_id = *cb_body;
+          let cb_body = lowered.body(cb_body_id)?;
+          let func = cb_body.function.as_ref()?;
+          let ret_expr = match &func.body {
+            hir_js::FunctionBody::Expr(expr) => Some(*expr),
+            hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
+              let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
+              let StmtKind::Return(Some(expr)) = &stmt.kind else {
+                return None;
+              };
+              Some(*expr)
+            }
+            _ => None,
+          }?;
+
+          let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
+          let fetch_call_count =
+            if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+              1
+            } else if let ExprKind::Await { expr } = &cb_body.exprs.get(ret_expr.0 as usize)?.kind {
+              let expr = strip_transparent_wrappers(cb_body, *expr);
+              if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
+                1
+              } else {
+                return None;
+              }
+            } else {
+              return None;
+            };
+
+          Some(PromiseAllFetchMatch {
+            urls_expr,
+            map_call: Some(arg_expr_id),
+            fetch_call_count,
+          })
         }
         _ => None,
-      }?;
-
-      if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) != Some(ApiId::Fetch) {
-        return None;
       }
-
-      Some(PromiseAllFetchMatch {
-        urls_expr: *array,
-        map_call: Some(arg_expr_id),
-        fetch_call_count: 1,
-      })
     }
     _ => None,
   }
@@ -1361,7 +1401,7 @@ fn promise_all_fetch_match_typed(
     return None;
   }
 
-  let arg_expr_id = arg0.expr;
+  let arg_expr_id = strip_transparent_wrappers(body_ref, arg0.expr);
   let arg_expr = body_ref.exprs.get(arg_expr_id.0 as usize)?;
   match &arg_expr.kind {
     ExprKind::Array(array) => {
@@ -1369,7 +1409,8 @@ fn promise_all_fetch_match_typed(
       for element in &array.elements {
         match element {
           ArrayElement::Expr(expr_id) => {
-            if resolve_api_call_untyped(lowered, body, *expr_id) == Some(ApiId::Fetch) {
+            let expr_id = strip_transparent_wrappers(body_ref, *expr_id);
+            if resolve_api_call_untyped(lowered, body, expr_id) == Some(ApiId::Fetch) {
               fetch_call_count += 1;
             }
           }
@@ -1403,34 +1444,55 @@ fn promise_all_fetch_match_typed(
       if cb_arg.spread {
         return None;
       }
-      let cb_expr = body_ref.exprs.get(cb_arg.expr.0 as usize)?;
-      let ExprKind::FunctionExpr { body: cb_body, .. } = &cb_expr.kind else {
-        return None;
-      };
-      let cb_body_id = *cb_body;
-      let cb_body = lowered.body(cb_body_id)?;
-      let func = cb_body.function.as_ref()?;
-      let ret_expr = match &func.body {
-        hir_js::FunctionBody::Expr(expr) => Some(*expr),
-        hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
-          let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
-          let StmtKind::Return(Some(expr)) = &stmt.kind else {
-            return None;
-          };
-          Some(*expr)
+      let cb_expr_id = strip_transparent_wrappers(body_ref, cb_arg.expr);
+      let cb_expr = body_ref.exprs.get(cb_expr_id.0 as usize)?;
+
+      match &cb_expr.kind {
+        ExprKind::Ident(name) if lowered.names.resolve(*name) == Some("fetch") => Some(PromiseAllFetchMatch {
+          urls_expr: strip_transparent_wrappers(body_ref, member.object),
+          map_call: Some(arg_expr_id),
+          fetch_call_count: 1,
+        }),
+        ExprKind::FunctionExpr { body: cb_body, .. } => {
+          let cb_body_id = *cb_body;
+          let cb_body = lowered.body(cb_body_id)?;
+          let func = cb_body.function.as_ref()?;
+          let ret_expr = match &func.body {
+            hir_js::FunctionBody::Expr(expr) => Some(*expr),
+            hir_js::FunctionBody::Block(stmts) if stmts.len() == 1 => {
+              let stmt = cb_body.stmts.get(stmts[0].0 as usize)?;
+              let StmtKind::Return(Some(expr)) = &stmt.kind else {
+                return None;
+              };
+              Some(*expr)
+            }
+            _ => None,
+          }?;
+
+          let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
+          if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+            return Some(PromiseAllFetchMatch {
+              urls_expr: strip_transparent_wrappers(body_ref, member.object),
+              map_call: Some(arg_expr_id),
+              fetch_call_count: 1,
+            });
+          }
+
+          if let ExprKind::Await { expr } = &cb_body.exprs.get(ret_expr.0 as usize)?.kind {
+            let expr = strip_transparent_wrappers(cb_body, *expr);
+            if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
+              return Some(PromiseAllFetchMatch {
+                urls_expr: strip_transparent_wrappers(body_ref, member.object),
+                map_call: Some(arg_expr_id),
+                fetch_call_count: 1,
+              });
+            }
+          }
+
+          None
         }
         _ => None,
-      }?;
-
-      if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) != Some(ApiId::Fetch) {
-        return None;
       }
-
-      Some(PromiseAllFetchMatch {
-        urls_expr: member.object,
-        map_call: Some(arg_expr_id),
-        fetch_call_count: 1,
-      })
     }
     _ => None,
   }

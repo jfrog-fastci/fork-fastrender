@@ -26,6 +26,38 @@ fn promise_all_fetch_urls_map_fetch_is_recognized() {
 }
 
 #[test]
+fn promise_all_fetch_urls_map_fetch_ident_is_recognized() {
+  let patterns = recognize("Promise.all(urls.map(fetch));");
+
+  assert!(patterns.iter().any(|pat| {
+    matches!(
+      pat,
+      RecognizedPattern::PromiseAllFetch {
+        map_call: Some(_),
+        fetch_call_count: 1,
+        ..
+      }
+    )
+  }));
+}
+
+#[test]
+fn promise_all_fetch_urls_map_async_await_fetch_is_recognized() {
+  let patterns = recognize("Promise.all(urls.map(async url => await fetch(url)));");
+
+  assert!(patterns.iter().any(|pat| {
+    matches!(
+      pat,
+      RecognizedPattern::PromiseAllFetch {
+        map_call: Some(_),
+        fetch_call_count: 1,
+        ..
+      }
+    )
+  }));
+}
+
+#[test]
 fn promise_all_fetch_array_literal_is_recognized() {
   let patterns = recognize("Promise.all([fetch(a), fetch(b)]);");
 
