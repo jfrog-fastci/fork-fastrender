@@ -199,7 +199,8 @@ The intended place to define new native-js diagnostics is
 compiler that lowers a single TypeScript module to textual LLVM IR.
 
 It exists to make it easy to debug the LLVM plumbing and basic lowering logic,
-and is the backend used by `native-js-cli`.
+and is the backend used by `native-js-cli` (see
+[`native-js-cli/README.md`](../native-js-cli/README.md)).
 
 The input is always parsed as a **TypeScript module**:
 

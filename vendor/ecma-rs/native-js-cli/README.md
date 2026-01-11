@@ -115,6 +115,9 @@ can test the non-builtin path.
 This CLI exercises the **minimal** IR emitter in `native-js` (it is not the
 future typechecked/HIR-based backend yet). Supported today:
 
+> Note: this list mirrors the `native-js` documentation for
+> `compile_typescript_to_llvm_ir` (see [`native-js/README.md`](../native-js/README.md)).
+
 - Top-level statements:
   - empty statements (`;`)
   - expression statements (`expr;`)
