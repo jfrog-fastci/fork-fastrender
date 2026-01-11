@@ -130,6 +130,14 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       }
 
       if let Some(prev) = alias_map.insert(alias.to_string(), api.name.clone()) {
+        // Allow duplicate alias spellings when they resolve to the same canonical API name.
+        //
+        // This happens in practice for Node APIs where the knowledge-base explicitly lists
+        // aliases like `fs.readFile` alongside `node:fs.readFile`, while `effect-js` also
+        // synthesizes the `node:`-stripped spelling as an implicit alias.
+        if prev == api.name {
+          continue;
+        }
         errors.push(ValidationError::DuplicateApiName {
           name: alias.to_string(),
           first: prev,
