@@ -561,6 +561,32 @@ fn rt_io_register_handle_rejects_blocking_fd_and_frees_handle() {
 }
 
 #[test]
+fn rt_io_register_handle_rejects_empty_interests_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let handle = rt_handle_alloc(obj);
+
+  let id = rt_io_register_handle(rfd.as_raw_fd(), 0, noop_cb, handle);
+  assert_eq!(id, 0, "expected rt_io_register_handle to fail for empty interests");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_INVALID_INTERESTS,
+    "expected invalid-interest registration to be diagnosable"
+  );
+  assert!(
+    rt_handle_load(handle).is_null(),
+    "rt_io_register_handle must free the consumed handle on registration failure"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
 fn rt_io_register_handle_with_drop_calls_drop_on_registration_failure_and_frees_handle() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::External);
@@ -598,6 +624,83 @@ fn rt_io_register_handle_with_drop_calls_drop_on_registration_failure_and_frees_
 
   let pending = poll_once_with_immediate_timer();
   assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_handle_with_drop_rejects_empty_interests_drops_data_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *const AtomicUsize = &*dropped;
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&HANDLE_DROP_COUNTER_DESC);
+  unsafe {
+    (*(obj as *mut HandleDropCounterObj)).drop_counter = dropped_ptr;
+  }
+  let handle = rt_handle_alloc(obj);
+
+  let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), 0, noop_cb, handle, inc_handle_drop_count);
+  assert_eq!(
+    id, 0,
+    "expected rt_io_register_handle_with_drop to fail for empty interests"
+  );
+  assert_eq!(
+    dropped.load(Ordering::SeqCst),
+    1,
+    "drop_data should have been invoked on invalid-interest registration"
+  );
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_INVALID_INTERESTS,
+    "expected invalid-interest registration to be diagnosable"
+  );
+  assert!(
+    rt_handle_load(handle).is_null(),
+    "rt_io_register_handle_with_drop must free the consumed handle on registration failure"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_handle_rejects_duplicate_fd_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let handle = rt_handle_alloc(obj);
+
+  let id2 = rt_io_register_handle(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle);
+  assert_eq!(id2, 0, "expected duplicate fd registration to fail");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_ALREADY_REGISTERED,
+    "expected duplicate registration to be diagnosable"
+  );
+  assert!(
+    rt_handle_load(handle).is_null(),
+    "rt_io_register_handle must free the consumed handle on duplicate registration"
+  );
+
+  rt_io_unregister(id1);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should succeed for the original watcher id"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
 }
 
 #[test]
