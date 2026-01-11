@@ -136,6 +136,10 @@ fn c_can_link_and_run_against_runtime_native_cdylib() {
 #include "runtime_native.h"
 #include <stdint.h>
 
+// `place-safepoints` emits calls to a symbol named `gc.safepoint_poll`.
+// This is not a valid C identifier, so bind it via an asm label.
+extern void gc_safepoint_poll(void) __asm__("gc.safepoint_poll");
+
 int main(void) {
   // Use External kind; this test only validates dynamic linking works.
   rt_thread_init(3);
@@ -144,6 +148,9 @@ int main(void) {
   // been easy to accidentally omit from `cdylib` exports). Call it with an even epoch so it returns
   // immediately, but still exercises the symbol resolution + call path.
   rt_gc_safepoint_slow((uint64_t)0);
+  // Exercise `gc.safepoint_poll` resolution too. With no active stop-the-world request it should
+  // return immediately.
+  gc_safepoint_poll();
   rt_thread_deinit();
   return 0;
 }
