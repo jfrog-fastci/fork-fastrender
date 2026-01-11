@@ -3556,6 +3556,51 @@ mod tests {
   }
 
   #[test]
+  fn dynamic_external_script_sri_oversized_integrity_attribute_blocks_execution() -> Result<()> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+
+    let script_source = "this.__ran = true;";
+    let script_url = "https://example.invalid/app.js";
+
+    let mut resource = FetchedResource::new(
+      script_source.as_bytes().to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    resource.status = Some(200);
+
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    fetcher.insert(script_url, resource);
+
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher)?;
+
+    let integrity = "a".repeat(crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES + 1);
+    host.exec_script(&format!(
+      "(() => {{\n\
+        this.__ran = false;\n\
+        const s = document.createElement('script');\n\
+        s.src = '{script_url}';\n\
+        s.setAttribute('integrity', '{integrity}');\n\
+        document.head.appendChild(s);\n\
+      }})()"
+    ))?;
+
+    let err = host
+      .run_until_idle(RunLimits::unbounded())
+      .expect_err("expected oversized integrity attribute to block dynamic script execution");
+    let Error::Other(msg) = err else {
+      panic!("expected Error::Other, got {err:?}");
+    };
+    assert!(
+      msg.contains("integrity attribute exceeded max length"),
+      "expected oversized integrity error message, got {msg:?}"
+    );
+    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(false)));
+    Ok(())
+  }
+
+  #[test]
   fn dynamic_external_script_sri_cross_origin_without_crossorigin_blocks_execution() -> Result<()> {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();

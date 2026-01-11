@@ -9890,6 +9890,13 @@ fn prepare_dynamic_script_element(
     return Ok(());
   }
 
+  // `integrity` attribute clamping: if present but too large, the metadata is invalid and the
+  // script must not execute. Treat inline scripts like other "early-out" cases (e.g. empty inline
+  // text): keep them eligible for later mutation.
+  if spec.integrity_attr_present && spec.integrity.is_none() && !spec.src_attr_present {
+    return Ok(());
+  }
+
   // Inline classic dynamic scripts execute synchronously during insertion steps (observable by JS,
   // including `document.currentScript`).
   if spec.script_type == ScriptType::Classic && !spec.src_attr_present {
@@ -9960,8 +9967,10 @@ fn prepare_dynamic_script_element(
       return Ok(());
     }
 
-    // Invalid integrity metadata: do not execute, and keep the script eligible for later mutations.
-    if integrity_attr_present && integrity.is_none() {
+    // `integrity` attribute clamping: if present but too large, treat it as invalid metadata.
+    // Inline scripts should remain eligible for later mutations; external scripts are scheduled so
+    // the task can surface an SRI error (consistent with other SRI failures).
+    if integrity_attr_present && integrity.is_none() && !src_attr_present {
       return Ok(());
     }
 
