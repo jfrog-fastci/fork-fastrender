@@ -313,10 +313,10 @@ pub fn resolve_call(
 
   match body.exprs.get(callee.0 as usize).map(|e| &e.kind) {
     Some(ExprKind::Ident(name)) => {
-      let name = lower.names.resolve(*name)?;
+      let name_str = lower.names.resolve(*name)?;
 
       // Rule A: static global function identifier.
-      if let Some(api) = db.get(name) {
+      if let Some(api) = db.get(name_str) {
         return Some(ResolvedCall {
           call: call_expr,
           api: api.name.clone(),
@@ -332,7 +332,7 @@ pub fn resolve_call(
         let Some(typed) = types.and_then(|types| types.as_typed_program()) else {
           return None;
         };
-        let api = resolve_imported_ident_call(db, typed, body_id, callee, name)?;
+        let api = resolve_imported_ident_call(db, typed, lower, *name, body_id, callee, name_str)?;
         return Some(ResolvedCall {
           call: call_expr,
           api_id: ApiId::from_kb_name(&api),
@@ -493,67 +493,106 @@ fn lookup_api(db: &ApiDatabase, module: &str, path: &[String]) -> Option<String>
 }
 
 #[cfg(feature = "typed")]
+fn import_specifier_for_def(
+  types: &crate::typed::TypedProgram,
+  def: typecheck_ts::DefId,
+  import: &typecheck_ts::ImportData,
+) -> Option<String> {
+  // Task 234: prefer the original import specifier recorded on the import
+  // definition. This is stable even when the import resolves to a host-specific
+  // `FileKey` (paths, synthetic IDs, etc).
+  if let Some(specifier) = types
+    .program()
+    .import_specifier(def)
+    .filter(|s| !s.is_empty())
+  {
+    return Some(specifier);
+  }
+
+  // Older snapshots may miss `ImportData.specifier`; fall back to the specifier
+  // stored on unresolved imports.
+  match &import.target {
+    typecheck_ts::ImportTarget::Unresolved { specifier } => {
+      (!specifier.is_empty()).then_some(specifier.clone())
+    }
+    typecheck_ts::ImportTarget::File(file_id) => {
+      // Last resort: avoid leaking filesystem paths into KB keys.
+      //
+      // Only accept file keys that already match a known KB naming convention.
+      types
+        .file_key(*file_id)
+        .map(|key| key.as_str().to_string())
+        .filter(|key| key.starts_with("node:"))
+    }
+  }
+}
+
+#[cfg(feature = "typed")]
 fn resolve_imported_ident_call(
   db: &ApiDatabase,
   types: &crate::typed::TypedProgram,
+  lower: &LowerResult,
+  name: hir_js::NameId,
   body_id: BodyId,
   callee: ExprId,
   ident: &str,
 ) -> Option<String> {
-  let mut symbol_info = None;
-  if let Some(symbol) = types.symbol_at_expr(body_id, callee) {
-    symbol_info = types.program().symbol_info(symbol);
-  }
+  let body_file = types.file_for_body(body_id)?;
+  let _ = (lower, name);
+
+  let symbol_info = types
+    .symbol_at_expr(body_id, callee)
+    .and_then(|symbol| types.program().symbol_info(symbol));
 
   if let Some(info) = symbol_info {
     let def = info.def?;
 
     if let Some(typecheck_ts::DefKind::Import(import)) = types.def_kind(def) {
-      return lookup_api(
-        db,
-        import.specifier.as_str(),
-        std::slice::from_ref(&import.original),
-      );
+      let module = import_specifier_for_def(types, def, &import)?;
+      return lookup_api(db, &module, std::slice::from_ref(&import.original));
     }
 
-    // `symbol_at` may resolve directly to the imported definition (rather than the
-    // local import binding). When that happens, map the resolved file back to the
-    // original import specifier recorded on the local import binding.
-    let body_file = types.file_for_body(body_id)?;
+    // `symbol_at` may resolve directly to the imported definition (rather than
+    // the local import binding). When that happens, map the resolved file back
+    // to the original import specifier recorded on the local import binding.
     let def_file = info
       .file
       .or_else(|| types.program().span_of_def(def).map(|span| span.file))?;
-    if def_file == body_file {
-      return None;
-    }
-    let export_name = info.name.or_else(|| types.program().def_name(def))?;
+    if def_file != body_file {
+      let export_name = info.name.or_else(|| types.program().def_name(def))?;
 
-    // Scan local import bindings to recover the original specifier string.
-    if let Some(specifier) = types
-      .program()
-      .definitions_in_file(body_file)
-      .into_iter()
-      .find_map(|candidate| match types.def_kind(candidate) {
-        Some(typecheck_ts::DefKind::Import(import))
-          if matches!(import.target, typecheck_ts::ImportTarget::File(file) if file == def_file)
-            && import.original == export_name =>
-        {
-          Some(import.specifier)
-        }
-        _ => None,
-      })
-    {
-      return lookup_api(db, specifier.as_str(), std::slice::from_ref(&export_name));
-    }
+      // Scan local import bindings to recover the original specifier string.
+      if let Some((import_def, import)) = types
+        .program()
+        .definitions_in_file(body_file)
+        .into_iter()
+        .find_map(|candidate| match types.def_kind(candidate) {
+          Some(typecheck_ts::DefKind::Import(import))
+            if matches!(import.target, typecheck_ts::ImportTarget::File(file) if file == def_file)
+              && import.original == export_name =>
+          {
+            Some((candidate, import))
+          }
+          _ => None,
+        })
+      {
+        let module = import_specifier_for_def(types, import_def, &import)?;
+        return lookup_api(db, &module, std::slice::from_ref(&export_name));
+      }
 
-    let module_key = types.file_key(def_file)?;
-    return lookup_api(db, module_key.as_str(), std::slice::from_ref(&export_name));
+      // Last resort: only accept file keys that already match known KB naming
+      // conventions (avoid leaking host paths).
+      let module_key = types
+        .file_key(def_file)
+        .map(|key| key.as_str().to_string())
+        .filter(|key| key.starts_with("node:"))?;
+      return lookup_api(db, &module_key, std::slice::from_ref(&export_name));
+    }
   }
 
   // As a last resort (e.g. when module resolution failed and the typechecker did
   // not associate the identifier use with a symbol), fall back to matching the
   // local import binding by name in the current file.
-  let body_file = types.file_for_body(body_id)?;
   let mut matches = types
     .program()
     .definitions_in_file(body_file)
@@ -564,18 +603,16 @@ fn resolve_imported_ident_call(
         .def_name(candidate)
         .as_deref()
         .is_some_and(|name| name == ident)
-        .then_some(import),
+        .then_some((candidate, import)),
       _ => None,
     });
-  let import = matches.next()?;
+  let (import_def, import) = matches.next()?;
   if matches.next().is_some() {
     return None;
   }
-  lookup_api(
-    db,
-    import.specifier.as_str(),
-    std::slice::from_ref(&import.original),
-  )
+
+  let module = import_specifier_for_def(types, import_def, &import)?;
+  lookup_api(db, &module, std::slice::from_ref(&import.original))
 }
 
 #[cfg(feature = "typed")]
@@ -629,13 +666,14 @@ fn resolve_imported_member_call(
   let Some(typecheck_ts::DefKind::Import(import)) = types.def_kind(def) else {
     return None;
   };
+  let module = import_specifier_for_def(types, def, &import)?;
 
   // Namespace/default imports refer to the module value directly.
   if import.original != "*" && import.original != "default" {
     member_path.insert(0, import.original);
   }
 
-  lookup_api(db, import.specifier.as_str(), &member_path)
+  lookup_api(db, &module, &member_path)
 }
 
 fn static_object_key_name<'a>(lower: &'a LowerResult, key: &'a ObjectKey) -> Option<&'a str> {

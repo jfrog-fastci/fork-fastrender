@@ -178,6 +178,142 @@ fn collect_import_bindings(lower: &LowerResult) -> RequireBindings {
   bindings
 }
 
+#[cfg(feature = "typed")]
+fn import_specifier_for_def(program: &typecheck_ts::Program, def: typecheck_ts::DefId) -> Option<String> {
+  // Task 234: prefer the original import specifier captured on the import def.
+  // This remains stable even when the resolved file's FileKey is a path or other
+  // host-specific identifier (e.g. "node_fs.ts").
+  let direct = program.import_specifier(def).filter(|s| !s.is_empty());
+  if direct.is_some() {
+    return direct;
+  }
+
+  // Older snapshots may miss `ImportData.specifier`; fall back to the unresolved
+  // target's specifier when available.
+  match program.def_kind(def) {
+    Some(typecheck_ts::DefKind::Import(import)) => match import.target {
+      typecheck_ts::ImportTarget::Unresolved { specifier } if !specifier.is_empty() => Some(specifier),
+      typecheck_ts::ImportTarget::File(file) => {
+        // Last-resort: avoid leaking filesystem paths into KB keys.
+        //
+        // Only accept file keys that already match a known KB naming convention.
+        program
+          .file_key(file)
+          .map(|key| key.as_str().to_string())
+          .filter(|key| key.starts_with("node:"))
+      }
+      _ => None,
+    },
+    _ => None,
+  }
+}
+
+#[cfg(feature = "typed")]
+fn collect_import_bindings_typed(program: &typecheck_ts::Program, lower: &LowerResult) -> RequireBindings {
+  let mut bindings = RequireBindings::default();
+
+  for import in lower.hir.imports.iter() {
+    match &import.kind {
+      ImportKind::Es(es) => {
+        let fallback_module = es.specifier.value.as_str();
+
+        if let Some(default) = &es.default {
+          let (module, path) = default
+            .local_def
+            .and_then(|def| match program.def_kind(def) {
+              Some(typecheck_ts::DefKind::Import(import)) => {
+                let module = import_specifier_for_def(program, def).unwrap_or_else(|| fallback_module.to_string());
+                let path = if import.original == "*" {
+                  Vec::new()
+                } else {
+                  vec![import.original]
+                };
+                Some((module, path))
+              }
+              _ => None,
+            })
+            .unwrap_or_else(|| (fallback_module.to_string(), vec!["default".to_string()]));
+
+          bindings.insert(default.local, 0, BindingTarget { module, path });
+        }
+
+        if let Some(ns) = &es.namespace {
+          let (module, path) = ns
+            .local_def
+            .and_then(|def| match program.def_kind(def) {
+              Some(typecheck_ts::DefKind::Import(import)) => {
+                let module = import_specifier_for_def(program, def).unwrap_or_else(|| fallback_module.to_string());
+                let path = if import.original == "*" {
+                  Vec::new()
+                } else {
+                  vec![import.original]
+                };
+                Some((module, path))
+              }
+              _ => None,
+            })
+            .unwrap_or_else(|| (fallback_module.to_string(), Vec::new()));
+
+          bindings.insert(ns.local, 0, BindingTarget { module, path });
+        }
+
+        for named in es.named.iter() {
+          let resolved = named
+            .local_def
+            .and_then(|def| match program.def_kind(def) {
+              Some(typecheck_ts::DefKind::Import(import)) => {
+                let module = import_specifier_for_def(program, def).unwrap_or_else(|| fallback_module.to_string());
+                let path = if import.original == "*" {
+                  Vec::new()
+                } else {
+                  vec![import.original]
+                };
+                Some((module, path))
+              }
+              _ => None,
+            })
+            .or_else(|| {
+              let imported = lower.names.resolve(named.imported)?;
+              Some((fallback_module.to_string(), vec![imported.to_string()]))
+            });
+          let Some((module, path)) = resolved else {
+            continue;
+          };
+
+          bindings.insert(named.local, 0, BindingTarget { module, path });
+        }
+      }
+      ImportKind::ImportEquals(eq) => {
+        let hir_js::ImportEqualsTarget::Module(spec) = &eq.target else {
+          continue;
+        };
+        let fallback_module = spec.value.as_str();
+
+        let (module, path) = eq
+          .local
+          .local_def
+          .and_then(|def| match program.def_kind(def) {
+            Some(typecheck_ts::DefKind::Import(import)) => {
+              let module = import_specifier_for_def(program, def).unwrap_or_else(|| fallback_module.to_string());
+              let path = if import.original == "*" {
+                Vec::new()
+              } else {
+                vec![import.original]
+              };
+              Some((module, path))
+            }
+            _ => None,
+          })
+          .unwrap_or_else(|| (fallback_module.to_string(), Vec::new()));
+
+        bindings.insert(eq.local.local, 0, BindingTarget { module, path });
+      }
+    }
+  }
+
+  bindings
+}
+
 /// Collect CommonJS `require()` bindings for a single body.
 ///
 /// This is intentionally conservative and only models a subset of patterns:
@@ -373,6 +509,9 @@ pub fn resolve_api_call<'a>(
   let ExprKind::Call(call) = &body.exprs[call_expr.0 as usize].kind else {
     return None;
   };
+  if call.optional || call.is_new {
+    return None;
+  }
 
   let use_start = body.exprs[call.callee.0 as usize].span.start;
   let local_decls = collect_lexical_names(body);
@@ -389,6 +528,75 @@ pub fn resolve_api_call<'a>(
     bindings
   };
   let import_bindings = collect_import_bindings(lower);
+
+  let (base, member_path) = flatten_member_chain(lower, body, call.callee)?;
+
+  match &body.exprs[base.0 as usize].kind {
+    ExprKind::Ident(name) => {
+      // Shadow outer bindings when this body declares the identifier (including parameters).
+      //
+      // `let`/`const` bindings are in TDZ before their declaration is evaluated, so even uses
+      // *before* the declaration should not resolve to an outer `require()` binding.
+      if local_decls.contains(name) {
+        if let Some(target) = local_bindings.resolve(*name, use_start) {
+          let mut path = target.path.clone();
+          path.extend(member_path);
+          return lookup_api(db, &target.module, &path);
+        }
+        return None;
+      }
+
+      if let Some(target) = require_bindings
+        .resolve(*name, use_start)
+        .or_else(|| import_bindings.resolve(*name, use_start))
+      {
+        let mut path = target.path.clone();
+        path.extend(member_path);
+        return lookup_api(db, &target.module, &path);
+      }
+      None
+    }
+    ExprKind::Call(_) => {
+      let Some(module) = extract_require_module(lower, body, base) else {
+        return None;
+      };
+      lookup_api(db, &module, &member_path)
+    }
+    _ => None,
+  }
+}
+
+#[cfg(feature = "typed")]
+pub fn resolve_api_call_typed<'a>(
+  db: &'a ApiDatabase,
+  program: &typecheck_ts::Program,
+  lower: &LowerResult,
+  body_id: BodyId,
+  call_expr: ExprId,
+) -> Option<&'a str> {
+  let body = lower.body(body_id)?;
+  let ExprKind::Call(call) = &body.exprs[call_expr.0 as usize].kind else {
+    return None;
+  };
+  if call.optional || call.is_new {
+    return None;
+  }
+
+  let use_start = body.exprs[call.callee.0 as usize].span.start;
+  let local_decls = collect_lexical_names(body);
+  let local_bindings = collect_require_bindings(lower, body_id);
+  let require_bindings = if body_id == lower.hir.root_body {
+    local_bindings.clone()
+  } else {
+    // Top-level CommonJS `require()` bindings are visible to nested function bodies; the call
+    // executes after module initialization, so treat the root body bindings as hoisted for the
+    // purpose of best-effort resolution.
+    let mut bindings = collect_require_bindings(lower, lower.hir.root_body);
+    bindings.hoist_all(0);
+    bindings.extend(local_bindings.clone());
+    bindings
+  };
+  let import_bindings = collect_import_bindings_typed(program, lower);
 
   let (base, member_path) = flatten_member_chain(lower, body, call.callee)?;
 

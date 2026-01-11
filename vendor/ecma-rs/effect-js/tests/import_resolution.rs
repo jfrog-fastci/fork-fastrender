@@ -1,7 +1,7 @@
 #![cfg(feature = "typed")]
 
-use effect_js::{resolve_call, ApiDatabase};
 use effect_js::typed::TypedProgram;
+use effect_js::{resolve_call, ApiDatabase};
 use hir_js::{ExprId, ExprKind};
 use std::sync::Arc;
 use typecheck_ts::{DefKind, FileKey, ImportTarget, MemoryHost, Program};
@@ -18,8 +18,8 @@ fn resolve_single_call(source: &str, link_fs: bool) -> (Arc<Program>, typecheck_
   host.insert(
     fs_key.clone(),
     r#"
-      export function readFile(path: string): Promise<string> {
-        return Promise.resolve("");
+      export function readFile(path: string): void {
+        void path;
       }
     "#,
   );
@@ -47,8 +47,8 @@ fn resolve_single_call(source: &str, link_fs: bool) -> (Arc<Program>, typecheck_
     .find_map(|(idx, expr)| matches!(expr.kind, ExprKind::Call(_)).then_some(ExprId(idx as u32)))
     .expect("expected a call expression in the input");
 
-  let db = ApiDatabase::from_embedded().expect("embedded knowledge base loads");
-  assert!(db.get("node:fs.readFile").is_some(), "missing node:fs.readFile");
+  let db = ApiDatabase::load_default().expect("load bundled knowledge base");
+  db.validate().expect("validate bundled knowledge base");
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
   let api = resolve_call(lower, root_body, body, call_expr, &db, Some(&types))
@@ -87,16 +87,17 @@ fn resolves_import_call_when_module_unresolved() {
     .expect("import def");
 
   match program.def_kind(import_def) {
-    Some(DefKind::Import(import)) => assert!(matches!(import.target, ImportTarget::Unresolved { .. })),
+    Some(DefKind::Import(import)) => {
+      assert!(matches!(import.target, ImportTarget::Unresolved { .. }))
+    }
     other => panic!("expected import def kind, got {other:?}"),
   }
 }
 
 #[test]
 fn resolves_namespace_import_call_when_module_unresolved() {
-  let (_program, _file, api) = resolve_single_call(
-    r#"import * as fs from "node:fs"; fs.readFile("x");"#,
-    false,
-  );
+  let (_program, _file, api) =
+    resolve_single_call(r#"import * as fs from "node:fs"; fs.readFile("x");"#, false);
   assert_eq!(api, "node:fs.readFile");
 }
+

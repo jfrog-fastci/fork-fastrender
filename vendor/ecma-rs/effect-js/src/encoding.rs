@@ -346,7 +346,6 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
 
   fn encoding_via_entry(&self, entry: &Api, input: StringEncoding) -> Option<StringEncoding> {
     let output = entry.properties.get("encoding.output")?.as_str()?;
-
     if let Some(preserves) = entry
       .properties
       .get("encoding.preserves_input_if")
