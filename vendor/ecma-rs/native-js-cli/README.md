@@ -25,6 +25,10 @@ This is primarily useful for:
 > bash scripts/cargo_llvm.sh run -p native-js-cli -- <args...>
 > ```
 
+`native-js-cli` shells out to `clang` to compile the generated `.ll` into a
+temporary executable. Using `cargo_llvm.sh` is the easiest way to ensure the
+LLVM 18 `clang` is on `PATH`.
+
 ### Run a TypeScript file
 
 Create a small program:

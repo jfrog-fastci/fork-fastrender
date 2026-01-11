@@ -102,25 +102,28 @@ The API is intentionally small and currently consists of:
 - `CompileOptions`: codegen configuration
 - `OptLevel`: optimization level (`O0`/`O1`/`O2`/`O3`/`Os`/`Oz`)
 - `EmitKind`: artifact kind (`LlvmIr`, `Object`, `Assembly`)
-- `NativeJsError`: error type (includes `Unimplemented` and `Llvm(String)`)
+- `NativeJsError`: error type (includes parse errors, codegen errors, and
+  `Unimplemented` for the not-yet-implemented typechecked backend)
 
 Example (API shape):
 
 ```rust
 use native_js::{CompileOptions, Compiler, EmitKind, OptLevel};
 
-let compiler = Compiler::new(CompileOptions {
-  opt_level: OptLevel::O2,
-  emit: EmitKind::Object,
-  target: None,
-  debug: false,
-});
+let mut opts = CompileOptions::default();
+opts.opt_level = OptLevel::O2;
+opts.emit = EmitKind::Object;
+opts.debug = false;
 
+let compiler = Compiler::new(opts);
 // Note: currently returns NativeJsError::Unimplemented.
 compiler.compile()?;
 ```
 
-> Note: `native_js::emit` and `native_js::codegen` exist, but are currently stubs.
+> Note: the long-term typechecked/HIR backend is not implemented yet.
+> `native_js::codegen` currently contains the minimal `parse-js`-driven emitter
+> used by `compile_typescript_to_llvm_ir`. `native_js::emit` is a placeholder
+> module for future artifact emission helpers.
 
 Example (generating LLVM IR via `CodeGen`):
 
@@ -263,13 +266,21 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib llvm_ir_sanity
 
 Once real codegen exists, the fastest debug loop is usually:
 
-1. Emit textual IR (`.ll`) from the compiler.
+1. Emit textual IR (`.ll`) from the compiler (or from the current minimal
+   emitter).
    - In-process, you can always use `inkwell` (or `native_js::CodeGen`) directly:
 
      ```rust
      // Given an inkwell::module::Module
      let ir = module.print_to_string().to_string();
      std::fs::write("out.ll", ir)?;
+     ```
+   - Or use the current CLI to dump IR:
+
+     ```bash
+     bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
+       --emit-llvm out.ll \
+       path/to/main.ts
      ```
 2. Run LLVM’s verifier:
 
