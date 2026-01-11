@@ -92,6 +92,7 @@ required_symbols=(
   rt_string_intern
   rt_string_pin_interned
   rt_parallel_spawn
+  rt_parallel_spawn_rooted
   rt_parallel_join
   rt_parallel_for
   rt_spawn_blocking
@@ -121,11 +122,19 @@ required_symbols=(
   rt_coro_await_legacy
   rt_coro_await_value_legacy
   rt_queue_microtask
+  rt_queue_microtask_with_drop
+  rt_queue_microtask_rooted
+  rt_drain_microtasks
   rt_set_timeout
+  rt_set_timeout_rooted
+  rt_set_timeout_with_drop
   rt_set_interval
+  rt_set_interval_rooted
+  rt_set_interval_with_drop
   rt_clear_timer
   rt_io_register
   rt_io_register_with_drop
+  rt_io_register_rooted
   rt_io_update
   rt_io_unregister
 )

@@ -492,12 +492,12 @@ extern "C" {
   // Microtasks + timers (queueMicrotask / setTimeout / setInterval).
   pub fn rt_async_sleep(delay_ms: u64) -> PromiseRef;
   pub fn rt_queue_microtask(task: Microtask);
-  pub fn rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: GcPtr);
   pub fn rt_queue_microtask_with_drop(
     cb: extern "C" fn(*mut u8),
     data: *mut u8,
     drop_data: extern "C" fn(*mut u8),
   );
+  pub fn rt_queue_microtask_rooted(cb: extern "C" fn(*mut u8), data: GcPtr);
   pub fn rt_drain_microtasks() -> bool;
   pub fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId;
   pub fn rt_set_timeout_rooted(cb: extern "C" fn(*mut u8), data: GcPtr, delay_ms: u64) -> TimerId;
@@ -532,18 +532,18 @@ extern "C" {
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
   ) -> IoWatcherId;
-  pub fn rt_io_register_rooted(
-    fd: i32,
-    interests: u32,
-    cb: extern "C" fn(u32, *mut u8),
-    data: GcPtr,
-  ) -> IoWatcherId;
   pub fn rt_io_register_with_drop(
-    fd: i32,
+    fd: RtFd,
     interests: u32,
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
     drop_data: extern "C" fn(*mut u8),
+  ) -> IoWatcherId;
+  pub fn rt_io_register_rooted(
+    fd: RtFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: GcPtr,
   ) -> IoWatcherId;
   pub fn rt_io_update(id: IoWatcherId, interests: u32);
   pub fn rt_io_unregister(id: IoWatcherId);
@@ -833,8 +833,8 @@ mod tests {
       "rt_async_block_on(",
       "rt_async_sleep(",
       "rt_queue_microtask(",
-      "rt_queue_microtask_rooted(",
       "rt_queue_microtask_with_drop(",
+      "rt_queue_microtask_rooted(",
       "rt_drain_microtasks(",
       "rt_set_timeout(",
       "rt_set_timeout_rooted(",
@@ -844,8 +844,8 @@ mod tests {
       "rt_set_interval_with_drop(",
       "rt_clear_timer(",
       "rt_io_register(",
-      "rt_io_register_rooted(",
       "rt_io_register_with_drop(",
+      "rt_io_register_rooted(",
       "rt_io_update(",
       "rt_io_unregister(",
       "rt_async_set_limits(",
