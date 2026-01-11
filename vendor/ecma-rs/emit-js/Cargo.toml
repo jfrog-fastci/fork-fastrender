@@ -10,15 +10,16 @@ repository.workspace = true
 diagnostics = { workspace = true }
 hir-js = { workspace = true }
 parse-js = { workspace = true, features = ["diagnostics"] }
+ts-erase = { workspace = true, optional = true }
 
 [dev-dependencies]
 derive-visitor = { workspace = true }
 parse-js = { workspace = true, features = ["diagnostics", "serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ts-erase = { workspace = true }
 
 [features]
-default = []
+default = ["ts_erase"]
+ts_erase = ["dep:ts-erase"]
 # Enable emission support for `hir-js` semantic operation nodes (Array.map/filter/reduce, Promise.all, etc).
 semantic-ops = ["hir-js/semantic-ops"]

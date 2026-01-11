@@ -137,6 +137,31 @@ pub fn emit_top_level_diagnostic(
   }
 }
 
+/// Erase TypeScript-only syntax from a parsed TS top-level AST and emit valid
+/// strict ECMAScript JavaScript.
+///
+/// This is intended as a lightweight TS→JS "type erasure" pipeline for runtime
+/// oracle tests (no Node/`tsc`). It uses `ts-erase` in strict-native mode and
+/// then emits the resulting AST as JavaScript.
+///
+/// The AST is mutated in place.
+#[cfg(feature = "ts_erase")]
+pub fn emit_ecma_from_ts_top_level(
+  file: FileId,
+  source_type: parse_js::SourceType,
+  top_level: &mut Node<TopLevel>,
+  options: EmitOptions,
+) -> Result<String, Vec<Diagnostic>> {
+  if let Err(diags) = ts_erase::erase_types_strict_native(file, source_type, top_level) {
+    return Err(diags);
+  }
+
+  match emit_top_level_diagnostic(file, top_level, options) {
+    Ok(out) => Ok(out),
+    Err(diag) => Err(vec![diag]),
+  }
+}
+
 fn diagnostic_from_emit_error(file: FileId, err: EmitError) -> Diagnostic {
   let (mut range, mut notes) = err
     .loc
