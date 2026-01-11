@@ -1,5 +1,5 @@
 use super::{HirSourceToInst, LabeledTarget, VarType, DUMMY_LABEL};
-use crate::il::inst::{Arg, BinOp, Const, Inst};
+use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp};
 use crate::symbol::semantics::SymbolId;
 use crate::unsupported_syntax_range;
 use crate::util::counter::Counter;
@@ -837,21 +837,30 @@ impl<'p> HirSourceToInst<'p> {
         }
       }
       StmtKind::Return(value) => {
-        if let Some(value) = value {
-          let _ = self.compile_expr(*value)?;
+        if self.body.kind != BodyKind::Function {
+          return Err(unsupported_syntax_range(
+            file,
+            stmt.span,
+            "return statement outside function",
+          ));
         }
-        let target = self.return_label.ok_or_else(|| {
-          unsupported_syntax_range(file, stmt.span, "return statement outside function")
-        })?;
-        self.out.push(Inst::goto(target));
+        let value = match value {
+          Some(expr) => self.compile_expr(*expr)?,
+          None => Arg::Const(Const::Undefined),
+        };
+        self.out.push(Inst::ret(value));
         Ok(())
       }
       StmtKind::Throw(value) => {
-        let _ = self.compile_expr(*value)?;
-        let target = self.return_label.ok_or_else(|| {
-          unsupported_syntax_range(file, stmt.span, "throw statement outside function")
-        })?;
-        self.out.push(Inst::goto(target));
+        if self.body.kind != BodyKind::Function {
+          return Err(unsupported_syntax_range(
+            file,
+            stmt.span,
+            "throw statement outside function",
+          ));
+        }
+        let value = self.compile_expr(*value)?;
+        self.out.push(Inst::throw(value));
         Ok(())
       }
       StmtKind::Expr(expr) => {
@@ -905,15 +914,18 @@ pub fn translate_body(
   body_id: BodyId,
 ) -> OptimizeResult<(Vec<Inst>, Counter, Counter)> {
   let mut compiler = HirSourceToInst::new(program, body_id);
-  if compiler.body.kind == BodyKind::Function {
-    compiler.return_label = Some(compiler.c_label.bump());
-  }
   compiler.hoist_var_decls();
   for stmt in root_statements(compiler.body) {
     compiler.compile_stmt(stmt)?;
   }
-  if let Some(label) = compiler.return_label {
-    compiler.out.push(Inst::label(label));
+
+  if compiler.body.kind == BodyKind::Function
+    && !compiler
+      .out
+      .last()
+      .is_some_and(|inst| matches!(inst.t, InstTyp::Return | InstTyp::Throw))
+  {
+    compiler.out.push(Inst::ret(Arg::Const(Const::Undefined)));
   }
   Ok((compiler.out, compiler.c_label, compiler.c_temp))
 }

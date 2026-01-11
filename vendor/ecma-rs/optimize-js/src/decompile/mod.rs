@@ -16,7 +16,8 @@ use parse_js::ast::expr::{BinaryExpr, Expr, IdExpr, UnaryExpr};
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::decl::{PatDecl, VarDecl, VarDeclMode, VarDeclarator};
 use parse_js::ast::stmt::{
-  BlockStmt, BreakStmt, ContinueStmt, ExprStmt, IfStmt, LabelStmt, Stmt, WhileStmt,
+  BlockStmt, BreakStmt, ContinueStmt, ExprStmt, IfStmt, LabelStmt, ReturnStmt, Stmt, ThrowStmt,
+  WhileStmt,
 };
 use parse_js::ast::stx::TopLevel;
 use parse_js::loc::Loc;
@@ -551,6 +552,18 @@ impl<'a> FunctionDecompiler<'a> {
         self.ensure_supported_args(inst.args.iter())?;
         Ok(il::lower_unknown_store_inst(self, self, inst))
       }
+      InstTyp::Return => {
+        self.ensure_supported_args(inst.args.iter())?;
+        let value = self.lower_arg(inst.as_return())?;
+        Ok(Some(node(Stmt::Return(node(ReturnStmt {
+          value: Some(value),
+        })))))
+      }
+      InstTyp::Throw => {
+        self.ensure_supported_args(inst.args.iter())?;
+        let value = self.lower_arg(inst.as_throw())?;
+        Ok(Some(node(Stmt::Throw(node(ThrowStmt { value })))))
+      }
       InstTyp::Phi => Err(il::DecompileError::Unsupported(
         "phi instructions are not supported in decompiler output".into(),
       )),
@@ -676,6 +689,8 @@ impl FnEmitter for FunctionDecompiler<'_> {
 mod tests {
   use super::*;
   use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
+  use crate::il::inst::{Arg, Const, Inst};
+  use parse_js::num::JsNumber;
 
   fn empty_program_function() -> ProgramFunction {
     ProgramFunction {
@@ -761,6 +776,48 @@ mod tests {
       inner_body.iter().any(|stmt| matches!(stmt.stx.as_ref(), Stmt::Break(brk) if brk.stx.label.as_deref() == Some("loop"))),
       "expected break to outer loop"
     );
+  }
+
+  #[test]
+  fn lower_return_undefined_emits_return_void_0() {
+    let mut bblocks = CfgBBlocks::default();
+    bblocks.add(0, vec![Inst::ret(Arg::Const(Const::Undefined))]);
+    let func = ProgramFunction {
+      debug: None,
+      body: Cfg {
+        graph: CfgGraph::default(),
+        bblocks,
+        entry: 0,
+      },
+      stats: Default::default(),
+    };
+
+    let labeled = HashSet::new();
+    let bindings = ForeignBindings::default();
+    let options = DecompileOptions::default();
+    let mut decompiler =
+      FunctionDecompiler::new(&func, &bindings, &options, TempDeclScope::Function, labeled);
+
+    let inst = Inst::ret(Arg::Const(Const::Undefined));
+    let stmt = decompiler
+      .lower_inst(&inst)
+      .expect("lower inst")
+      .expect("return should produce stmt");
+
+    let Stmt::Return(ret) = stmt.stx.as_ref() else {
+      panic!("expected return stmt, got {:?}", stmt.stx);
+    };
+    let Some(value) = ret.stx.value.as_ref() else {
+      panic!("expected return value");
+    };
+    let Expr::Unary(unary) = value.stx.as_ref() else {
+      panic!("expected unary expr, got {:?}", value.stx);
+    };
+    assert_eq!(unary.stx.operator, OperatorName::Void);
+    let Expr::LitNum(num) = unary.stx.argument.stx.as_ref() else {
+      panic!("expected numeric argument to void, got {:?}", unary.stx.argument.stx);
+    };
+    assert_eq!(num.stx.value, JsNumber(0.0));
   }
 }
 

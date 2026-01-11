@@ -343,6 +343,8 @@ pub enum InstTyp {
   VarAssign,  // tgts[0] = args[0]
   PropAssign, // args[0][args[1]] = args[2]
   CondGoto,   // goto labels[0] if args[0] else labels[1]
+  Return,     // return args[0]
+  Throw,      // throw args[0]
   Call,       // tgts.at(0)? = args[0](this=args[1], ...args[2..])
   // A foreign variable is one in an ancestor scope, all the way up to and including the global scope.
   // We don't simply add another Target variant (e.g. Target::Foreign) as it makes analyses and optimisations more tedious. Consider that standard SSA doesn't really have a concept of nonlocal memory locations. In LLVM such vars are covered using ordinary memory location read/write instructions.
@@ -546,6 +548,22 @@ impl Inst {
     }
   }
 
+  pub fn ret(value: Arg) -> Self {
+    Self {
+      t: InstTyp::Return,
+      args: vec![value],
+      ..Default::default()
+    }
+  }
+
+  pub fn throw(value: Arg) -> Self {
+    Self {
+      t: InstTyp::Throw,
+      args: vec![value],
+      ..Default::default()
+    }
+  }
+
   pub fn call(
     tgt: impl Into<Option<u32>>,
     callee: Arg,
@@ -643,6 +661,16 @@ impl Inst {
   pub fn as_cond_goto(&self) -> (&Arg, u32, u32) {
     assert_eq!(self.t, InstTyp::CondGoto);
     (&self.args[0], self.labels[0], self.labels[1])
+  }
+
+  pub fn as_return(&self) -> &Arg {
+    assert_eq!(self.t, InstTyp::Return);
+    &self.args[0]
+  }
+
+  pub fn as_throw(&self) -> &Arg {
+    assert_eq!(self.t, InstTyp::Throw);
+    &self.args[0]
   }
 
   pub fn as_call(&self) -> (Option<u32>, &Arg, &Arg, &[Arg], &[usize]) {

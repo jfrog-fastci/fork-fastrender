@@ -42,7 +42,6 @@ pub struct HirSourceToInst<'p> {
   pub break_stack: Vec<u32>,
   pub continue_stack: Vec<u32>,
   pub label_stack: Vec<LabeledTarget>,
-  pub return_label: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,7 +66,6 @@ impl<'p> HirSourceToInst<'p> {
       break_stack: Vec::new(),
       continue_stack: Vec::new(),
       label_stack: Vec::new(),
-      return_label: None,
     }
   }
 

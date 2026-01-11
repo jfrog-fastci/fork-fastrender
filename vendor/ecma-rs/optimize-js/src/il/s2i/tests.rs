@@ -1,8 +1,10 @@
 use super::super::inst::InstTyp;
+use crate::il::inst::{Arg, Const};
 use crate::compile_source;
 use crate::Program;
 use crate::ProgramFunction;
 use crate::TopLevelMode;
+use parse_js::num::JsNumber;
 
 fn compile(source: &str) -> Program {
   compile_source(source, TopLevelMode::Module, false).expect("compile input")
@@ -228,4 +230,27 @@ fn spread_call_indices_include_callee_and_this() {
       "spread indices must be in bounds of args (len={args_len})"
     );
   }
+}
+
+#[test]
+fn return_statement_emits_return_inst_with_value() {
+  let program = compile("(() => { return 1; })();");
+
+  let mut found = false;
+  for func in &program.functions {
+    for (_, block) in func.body.bblocks.all() {
+      for inst in block {
+        if inst.t == InstTyp::Return
+          && inst.as_return() == &Arg::Const(Const::Num(JsNumber(1.0)))
+        {
+          found = true;
+        }
+      }
+    }
+  }
+
+  assert!(
+    found,
+    "expected to find Return(Const::Num(1)) in nested function IL"
+  );
 }

@@ -66,6 +66,10 @@ impl<K: Clone + Default + Hash + Eq> Graph<K> {
     }
   }
 
+  pub fn ensure_node(&mut self, node: &K) {
+    self.nodes.entry(node.clone()).or_default();
+  }
+
   pub fn contains(&self, node: &K) -> bool {
     self.nodes.contains_key(node)
   }

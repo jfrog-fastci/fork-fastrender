@@ -18,7 +18,7 @@ use parse_js::ast::expr::{
 };
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::decl::{PatDecl, VarDecl, VarDeclMode, VarDeclarator};
-use parse_js::ast::stmt::{ExprStmt, Stmt};
+use parse_js::ast::stmt::{ExprStmt, ReturnStmt, Stmt, ThrowStmt};
 use parse_js::ast::stx::TopLevel;
 use parse_js::loc::Loc;
 use parse_js::num::JsNumber;
@@ -913,6 +913,18 @@ fn expr_stmt(expr: FlatExpr) -> Node<Stmt> {
   })))
 }
 
+fn return_stmt(expr: FlatExpr) -> Node<Stmt> {
+  node(Stmt::Return(node(ReturnStmt {
+    value: Some(to_ast_expr(&expr)),
+  })))
+}
+
+fn throw_stmt(expr: FlatExpr) -> Node<Stmt> {
+  node(Stmt::Throw(node(ThrowStmt {
+    value: to_ast_expr(&expr),
+  })))
+}
+
 fn assignment_stmt(lhs: FlatExpr, rhs: FlatExpr) -> Node<Stmt> {
   node(Stmt::Expr(node(ExprStmt {
     expr: node(Expr::Binary(node(BinaryExpr {
@@ -1117,6 +1129,12 @@ pub fn decompile_function(func: &ProgramFunction) -> DecompileResult<Vec<Node<St
             expr_from_arg(value, &env),
           ));
         }
+        InstTyp::Return => {
+          stmts.push(return_stmt(expr_from_arg(inst.as_return(), &env)));
+        }
+        InstTyp::Throw => {
+          stmts.push(throw_stmt(expr_from_arg(inst.as_throw(), &env)));
+        }
         InstTyp::_Dummy => {}
         InstTyp::CondGoto | InstTyp::Phi | InstTyp::_Goto | InstTyp::_Label => {
           return Err(DecompileError::Unsupported(
@@ -1204,6 +1222,12 @@ pub enum LoweredInst {
     prop: LoweredArg,
     value: LoweredArg,
   },
+  Return {
+    value: LoweredArg,
+  },
+  Throw {
+    value: LoweredArg,
+  },
   Un {
     tgt: u32,
     op: UnOp,
@@ -1275,6 +1299,12 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       this_: lowered_arg(&inst.args[1]),
       args: inst.args[2..].iter().map(lowered_arg).collect(),
       spreads: inst.spreads.clone(),
+    },
+    InstTyp::Return => LoweredInst::Return {
+      value: lowered_arg(&inst.args[0]),
+    },
+    InstTyp::Throw => LoweredInst::Throw {
+      value: lowered_arg(&inst.args[0]),
     },
     InstTyp::ForeignLoad => LoweredInst::IdentLoad {
       tgt: inst.tgts[0],

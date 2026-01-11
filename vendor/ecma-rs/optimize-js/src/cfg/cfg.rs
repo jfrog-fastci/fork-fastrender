@@ -231,6 +231,9 @@ impl Cfg {
     bblock_order: Vec<u32>,
   ) -> Self {
     let mut graph = Graph::new();
+    for label in &bblock_order {
+      graph.ensure_node(label);
+    }
     for i in 0..bblocks.len() {
       let parent = bblock_order[i];
       if let Some(Inst {
@@ -257,6 +260,11 @@ impl Cfg {
           };
           graph.connect(&parent, label);
         }
+      } else if bblocks[&parent]
+        .last()
+        .is_some_and(|inst| matches!(inst.t, InstTyp::Return | InstTyp::Throw))
+      {
+        // Return and Throw have no outgoing edges.
       } else if i == bblocks.len() - 1 {
         // Last bblock, don't connect to anything.
       } else {
@@ -300,7 +308,12 @@ impl Cfg {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::cfg::bblock::convert_insts_to_bblocks;
   use crate::il::inst::Arg;
+  use crate::il::inst::Const;
+  use crate::il::inst::InstTyp;
+  use crate::util::counter::Counter;
+  use parse_js::num::JsNumber;
 
   fn make_cfg(graph: CfgGraph, bblocks: CfgBBlocks) -> Cfg {
     Cfg {
@@ -402,5 +415,36 @@ mod tests {
 
     let cfg = make_cfg(graph, bblocks);
     assert_eq!(cfg.reverse_postorder(), vec![0, 2, 1]);
+  }
+
+  #[test]
+  fn from_bblocks_does_not_fallthrough_after_return() {
+    let insts = vec![
+      Inst::var_assign(0, Arg::Const(Const::Num(JsNumber(1.0)))),
+      Inst::ret(Arg::Var(0)),
+      Inst::var_assign(1, Arg::Const(Const::Num(JsNumber(2.0)))),
+    ];
+    let mut c_label = Counter::new(1);
+    let (bblocks, bblock_order) = convert_insts_to_bblocks(insts, &mut c_label);
+    let mut cfg = Cfg::from_bblocks(bblocks, bblock_order);
+
+    assert!(
+      cfg
+        .bblocks
+        .get(0)
+        .iter()
+        .any(|inst| inst.t == InstTyp::Return),
+      "expected entry block to contain Return instruction"
+    );
+    assert!(
+      cfg.graph.children_sorted(0).is_empty(),
+      "Return block should have no outgoing edges"
+    );
+
+    let removed = cfg.find_and_pop_unreachable();
+    assert!(
+      removed.contains(&1),
+      "expected block after Return to be unreachable and prunable, removed={removed:?}"
+    );
   }
 }
