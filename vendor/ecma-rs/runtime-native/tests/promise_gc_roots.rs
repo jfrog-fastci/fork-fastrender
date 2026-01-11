@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use runtime_native::abi::PromiseRef;
 use runtime_native::abi::ValueRef;
-use runtime_native::abi::{ThenableRef, ThenableVTable};
+use runtime_native::abi::{PromiseResolveInput, ThenableRef, ThenableVTable};
 use runtime_native::test_util::TestRuntimeGuard;
 
 fn drain_async_runtime() {
@@ -60,6 +60,20 @@ unsafe extern "C" fn thenable_call_then_record_ptr(
 
 static THENABLE_RECORD_PTR_VTABLE: ThenableVTable = ThenableVTable {
   call_then: thenable_call_then_record_ptr,
+};
+
+unsafe extern "C" fn thenable_call_then_resolve_value(
+  _thenable: *mut u8,
+  on_fulfilled: runtime_native::abi::ThenableResolveCallback,
+  _on_rejected: runtime_native::abi::ThenableRejectCallback,
+  data: *mut u8,
+) -> ValueRef {
+  on_fulfilled(data, PromiseResolveInput::value(0x1234usize as ValueRef));
+  core::ptr::null_mut()
+}
+
+static THENABLE_RESOLVE_VALUE_VTABLE: ThenableVTable = ThenableVTable {
+  call_then: thenable_call_then_resolve_value,
 };
 
 #[test]
@@ -176,7 +190,7 @@ fn promise_thenable_job_passes_relocated_thenable_ptr() {
   };
 
   runtime_native::rt_promise_resolve_thenable_legacy(promise, thenable_ref);
-  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 1);
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 2);
 
   // Simulate a moving GC updating the thenable pointer in-place.
   assert_eq!(
@@ -200,6 +214,80 @@ fn promise_thenable_job_passes_relocated_thenable_ptr() {
     drop(Box::from_raw(old_thenable));
     drop(Box::from_raw(new_thenable));
   }
+}
+
+#[test]
+fn promise_thenable_job_uses_relocated_promise_ptr() {
+  let _rt = TestRuntimeGuard::new();
+
+  runtime_native::gc::roots::debug_clear_global_roots_for_tests();
+  drain_async_runtime();
+
+  let dst_old = runtime_native::rt_promise_new_legacy();
+  let dst_new = runtime_native::rt_promise_new_legacy();
+
+  let thenable_ref = ThenableRef {
+    vtable: &THENABLE_RESOLVE_VALUE_VTABLE,
+    ptr: core::ptr::null_mut(),
+  };
+
+  runtime_native::rt_promise_resolve_thenable_legacy(dst_old, thenable_ref);
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 1);
+
+  assert_eq!(
+    replace_global_root_ptr(dst_old.0.cast::<u8>(), dst_new.0.cast::<u8>()),
+    1
+  );
+
+  drain_async_runtime();
+
+  let (state_old, _) = runtime_native::rt_debug_promise_outcome(dst_old);
+  assert_eq!(state_old, 0, "old promise should remain pending");
+
+  let (state_new, value_new) = runtime_native::rt_debug_promise_outcome(dst_new);
+  assert_eq!(state_new, 1, "relocated promise should be fulfilled");
+  assert_eq!(value_new as usize, 0x1234usize);
+
+  runtime_native::rt_promise_drop_legacy(dst_old);
+  runtime_native::rt_promise_drop_legacy(dst_new);
+
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 0);
+}
+
+#[test]
+fn promise_adopt_continuation_uses_relocated_dst_ptr() {
+  let _rt = TestRuntimeGuard::new();
+
+  runtime_native::gc::roots::debug_clear_global_roots_for_tests();
+  drain_async_runtime();
+
+  let src = runtime_native::rt_promise_new_legacy();
+  let dst_old = runtime_native::rt_promise_new_legacy();
+  let dst_new = runtime_native::rt_promise_new_legacy();
+
+  runtime_native::rt_promise_resolve_promise_legacy(dst_old, src);
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 2);
+
+  assert_eq!(
+    replace_global_root_ptr(dst_old.0.cast::<u8>(), dst_new.0.cast::<u8>()),
+    1
+  );
+
+  runtime_native::rt_promise_resolve_legacy(src, core::ptr::null_mut());
+  drain_async_runtime();
+
+  let (state_old, _) = runtime_native::rt_debug_promise_outcome(dst_old);
+  assert_eq!(state_old, 0, "old destination should remain pending");
+
+  let (state_new, value_new) = runtime_native::rt_debug_promise_outcome(dst_new);
+  assert_eq!(state_new, 1, "relocated destination should be fulfilled");
+  assert_eq!(value_new, core::ptr::null_mut());
+
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 0);
+
+  runtime_native::rt_promise_drop_legacy(src);
+  runtime_native::rt_promise_drop_legacy(dst_old);
+  runtime_native::rt_promise_drop_legacy(dst_new);
 }
 
 #[test]

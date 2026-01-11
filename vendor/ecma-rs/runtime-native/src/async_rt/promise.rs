@@ -677,23 +677,25 @@ pub(crate) fn promise_resolve_promise(dst: PromiseRef, src: PromiseRef) {
   }
 
   struct AdoptContinuation {
-    dst: PromiseRef,
-    src: PromiseRef,
+    dst_root: async_gc::Root,
+    src_root: async_gc::Root,
   }
 
   extern "C" fn adopt_on_settle(data: *mut u8) {
     // Safety: allocated by `promise_resolve_promise` and freed by the callback reaction drop hook.
     let cont = unsafe { &*(data as *const AdoptContinuation) };
-    match promise_outcome(cont.src) {
-      PromiseOutcome::Fulfilled(v) => promise_resolve(cont.dst, v),
-      PromiseOutcome::Rejected(e) => promise_reject(cont.dst, e),
+    let dst = PromiseRef(cont.dst_root.ptr().cast());
+    let src = PromiseRef(cont.src_root.ptr().cast());
+    match promise_outcome(src) {
+      PromiseOutcome::Fulfilled(v) => promise_resolve(dst, v),
+      PromiseOutcome::Rejected(e) => promise_reject(dst, e),
       PromiseOutcome::Pending => {
         // Shouldn't happen (callback only runs after settlement) but be robust: resubscribe.
         let cont = Box::new(AdoptContinuation {
-          dst: cont.dst,
-          src: cont.src,
+          dst_root: cont.dst_root.clone(),
+          src_root: cont.src_root.clone(),
         });
-        promise_then_with_drop(cont.src, adopt_on_settle, Box::into_raw(cont) as *mut u8, drop_adopt_continuation);
+        promise_then_with_drop(src, adopt_on_settle, Box::into_raw(cont) as *mut u8, drop_adopt_continuation);
       }
     }
   }
@@ -705,7 +707,10 @@ pub(crate) fn promise_resolve_promise(dst: PromiseRef, src: PromiseRef) {
     }
   }
 
-  let cont = Box::new(AdoptContinuation { dst, src });
+  let cont = Box::new(AdoptContinuation {
+    dst_root: unsafe { async_gc::Root::new_unchecked(dst.0.cast::<u8>()) },
+    src_root: unsafe { async_gc::Root::new_unchecked(src.0.cast::<u8>()) },
+  });
   promise_then_with_drop(src, adopt_on_settle, Box::into_raw(cont) as *mut u8, drop_adopt_continuation);
 }
 
@@ -725,7 +730,7 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
 
   #[repr(C)]
   struct ThenableJob {
-    dst: PromiseRef,
+    dst_root: async_gc::Root,
     thenable: ThenableRef,
     /// Optional root for the thenable pointer so it stays alive and relocatable while the
     /// `PromiseResolveThenableJob` microtask is queued.
@@ -770,20 +775,21 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
   extern "C" fn run_thenable_job(data: *mut u8) {
     // Safety: allocated by `promise_resolve_thenable` and freed by the task drop hook.
     let job = unsafe { &*(data as *const ThenableJob) };
+    let dst = PromiseRef(job.dst_root.ptr().cast());
 
     // If the destination promise was already settled by another path, do not invoke the thenable at
     // all.
-    if !promise_is_pending(job.dst) {
+    if !promise_is_pending(dst) {
       return;
     }
 
     if job.thenable.vtable.is_null() {
-      promise_reject(job.dst, self_resolution_error());
+      promise_reject(dst, self_resolution_error());
       return;
     }
 
     let resolver = Box::new(ThenableResolver {
-      dst: job.dst,
+      dst,
       called: AtomicBool::new(false),
     });
     let resolver_ptr = Box::into_raw(resolver) as *mut u8;
@@ -809,11 +815,8 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
     // Safety: `thenable.ptr` must be a valid pointer to a GC-managed object base pointer if it is
     // intended to be relocatable.
     .then(|| unsafe { async_gc::Root::new_unchecked(thenable.ptr) });
-  let job = Box::new(ThenableJob {
-    dst,
-    thenable,
-    thenable_root,
-  });
+  let dst_root = unsafe { async_gc::Root::new_unchecked(dst.0.cast::<u8>()) };
+  let job = Box::new(ThenableJob { dst_root, thenable, thenable_root });
 
   extern "C" fn drop_thenable_job(data: *mut u8) {
     // Safety: allocated by `Box::into_raw` above.
