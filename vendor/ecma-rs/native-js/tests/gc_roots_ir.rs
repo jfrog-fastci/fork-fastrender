@@ -41,8 +41,8 @@ fn gc_root_slots_writeback_relocates() {
   let ir = demo_gc_root_slots_ir();
 
   // `native-js` uses the same default patchpoint ID as LLVM's `rewrite-statepoints-for-gc` pass
-  // (0xABCDEF00 / 2882400000) so `runtime-native` can cheaply identify statepoint records in debug
-  // verification mode.
+  // (0xABCDEF00 / 2882400000). The runtime must still detect statepoints by stackmap layout, since
+  // LLVM allows overriding `"statepoint-id"` per callsite.
   assert!(
     ir.contains("@llvm.experimental.gc.statepoint.p0(i64 2882400000, i32 0"),
     "expected default statepoint patchpoint ID in IR:\n{ir}"
