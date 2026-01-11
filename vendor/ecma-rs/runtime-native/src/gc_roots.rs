@@ -188,6 +188,14 @@ impl<'a> StackRootEnumerator<'a> {
   /// Walk the stack from the given callee frame pointer and invoke `f` for each
   /// base/derived relocation slot pair.
   ///
+  /// This is a convenience helper when stack bounds are not available.
+  pub fn visit_reloc_pairs_unbounded(&self, top_callee_fp: usize, f: impl FnMut(RelocPair)) {
+    self.visit_reloc_pairs(top_callee_fp, None, f)
+  }
+
+  /// Walk the stack from the given callee frame pointer and invoke `f` for each
+  /// base/derived relocation slot pair.
+  ///
   /// `top_callee_fp` is typically the frame pointer of the runtime safepoint function.
   ///
   /// Notes/assumptions:
