@@ -1,5 +1,6 @@
 use super::{Result, WebFetchError, WebFetchLimitKind, WebFetchLimits};
 use http::header::HeaderName;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadersGuard {
@@ -782,6 +783,32 @@ fn is_safelisted_range_header_value(value: &str) -> bool {
   }
 
   true
+}
+
+pub(super) fn cors_unsafe_request_header_names(headers: &Headers) -> Vec<String> {
+  let mut unsafe_names: Vec<String> = Vec::new();
+  let mut potentially_unsafe_names: Vec<String> = Vec::new();
+  let mut safelist_value_size: usize = 0;
+
+  for header in &headers.header_list {
+    let name = header.name.as_str().to_string();
+    if !is_cors_safelisted_request_header(&header.name, &header.value) {
+      unsafe_names.push(name);
+    } else {
+      potentially_unsafe_names.push(name);
+      safelist_value_size = safelist_value_size.saturating_add(header.value.as_bytes().len());
+    }
+  }
+
+  if safelist_value_size > 1024 {
+    unsafe_names.extend(potentially_unsafe_names);
+  }
+
+  let mut set = BTreeSet::new();
+  for name in unsafe_names {
+    set.insert(name.to_ascii_lowercase());
+  }
+  set.into_iter().collect()
 }
 
 #[cfg(test)]
