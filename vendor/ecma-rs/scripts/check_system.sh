@@ -6,6 +6,7 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/check_system.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -93,6 +94,40 @@ if check_cmd_optional lld-18 "lld-18"; then
   :
 elif check_cmd_optional lld "lld"; then
   :
+fi
+
+if check_cmd_optional llc-18 "llvm-18"; then
+  :
+elif check_cmd_optional llc "llvm"; then
+  :
+fi
+
+if check_cmd_optional llvm-readobj-18 "llvm-18"; then
+  :
+elif check_cmd_optional llvm-readobj "llvm"; then
+  :
+fi
+
+if check_cmd_optional llvm-objdump-18 "llvm-18"; then
+  :
+elif check_cmd_optional llvm-objdump "llvm"; then
+  :
+fi
+
+echo ""
+echo "--- LLVM Statepoint StackMap ABI (recommended) ---"
+if (command -v llc-18 >/dev/null 2>&1 || command -v llc >/dev/null 2>&1) &&
+  (command -v llvm-readobj-18 >/dev/null 2>&1 || command -v llvm-readobj >/dev/null 2>&1) &&
+  (command -v llvm-objdump-18 >/dev/null 2>&1 || command -v llvm-objdump >/dev/null 2>&1); then
+  if bash "${SCRIPT_DIR}/test_stackmap_abi.sh"; then
+    echo -e "${GREEN}✓${NC} stackmap ABI test passed"
+  else
+    echo -e "${RED}✗${NC} stackmap ABI test failed (run: bash ${SCRIPT_DIR}/test_stackmap_abi.sh)"
+    ((errors++))
+  fi
+else
+  echo -e "${YELLOW}?${NC} stackmap ABI test skipped (missing llc/llvm-readobj/llvm-objdump)"
+  ((warnings++))
 fi
 
 echo ""
