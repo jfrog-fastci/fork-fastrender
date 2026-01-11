@@ -387,6 +387,9 @@ bash scripts/run_limited.sh --as 64G -- \
 Structured fuzzers live under `fuzz/` and target crash-prone areas in CSS parsing, selector matching, and custom property resolution.
 
 - Install tooling once: `bash scripts/cargo_agent.sh install cargo-fuzz`
+- Note: libFuzzer builds default to AddressSanitizer, which reserves a very large virtual address
+  space for shadow memory. When running fuzzers through `scripts/cargo_agent.sh`, set
+  `FASTR_CARGO_LIMIT_AS=unlimited` (or a very large value like `32T`) so the fuzzer can start.
 - Quick local run with a short time budget: `bash scripts/cargo_agent.sh fuzz run css_parser -- -runs=1000`
 - Selector matching and variable/calc parsing are covered by the `selectors` and `vars_and_calc` targets.
 - Seed corpora with real-world CSS live in `tests/fuzz_corpus/`; pass them as extra corpus paths (e.g. `bash scripts/cargo_agent.sh fuzz run selectors fuzz/corpus/selectors tests/fuzz_corpus`).
