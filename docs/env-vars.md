@@ -222,6 +222,7 @@ High eviction counts typically imply cache pressure (raise `FASTR_TEXT_FALLBACK_
 - `FASTR_ANCESTOR_BLOOM=0` – disable the cascade's ancestor bloom filter fast-reject for descendant selectors.
 - `FASTR_SVG_FILTER_CACHE_ITEMS=<N>` – SVG filter cache capacity (default 256).
 - `FASTR_SVG_FILTER_CACHE_BYTES=<N>` – approximate SVG filter cache size limit in bytes (default 4 MiB).
+- `FASTR_SVG_FILTER_RESOLVER_CACHE_ITEMS=<N>` – per-render SVG filter resolver memoization capacity (default 256). `0` disables caching.
 - `FASTR_IFRAME_RENDER_CACHE_ITEMS=<N>` – iframe render cache capacity in entries (default 128). `0` disables caching.
 - `FASTR_IFRAME_RENDER_CACHE_BYTES=<bytes>` – iframe render cache size limit in bytes (default 128 MiB). `0` disables caching.
 - `FASTR_DECODED_IMAGE_CACHE_ITEMS=<N>` – decoded image cache capacity (display-list builder; default 256). `0` disables caching.

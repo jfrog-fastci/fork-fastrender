@@ -32,6 +32,8 @@ const DEFAULT_FILTER_CACHE_ITEMS: usize = 256;
 const DEFAULT_FILTER_CACHE_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const ENV_FILTER_CACHE_ITEMS: &str = "FASTR_SVG_FILTER_CACHE_ITEMS";
 pub(crate) const ENV_FILTER_CACHE_BYTES: &str = "FASTR_SVG_FILTER_CACHE_BYTES";
+const DEFAULT_FILTER_RESOLVER_CACHE_ITEMS: usize = 256;
+pub(crate) const ENV_FILTER_RESOLVER_CACHE_ITEMS: &str = "FASTR_SVG_FILTER_RESOLVER_CACHE_ITEMS";
 
 type FilterHasher = BuildHasherDefault<FxHasher>;
 type RenderResult<T> = std::result::Result<T, RenderError>;
@@ -2146,7 +2148,8 @@ pub struct SvgFilterResolver<'a> {
   svg_defs: Option<Arc<HashMap<String, String>>>,
   fragment_roots: Vec<&'a FragmentNode>,
   image_cache: Option<&'a ImageCache>,
-  cache: HashMap<String, Arc<SvgFilter>>,
+  cache_max_items: usize,
+  cache: Option<LruCache<String, Arc<SvgFilter>, FilterHasher>>,
 }
 
 impl<'a> SvgFilterResolver<'a> {
@@ -2156,11 +2159,15 @@ impl<'a> SvgFilterResolver<'a> {
     fragment_roots: Vec<&'a FragmentNode>,
     image_cache: Option<&'a ImageCache>,
   ) -> Self {
+    let cache_max_items =
+      env_usize(ENV_FILTER_RESOLVER_CACHE_ITEMS).unwrap_or(DEFAULT_FILTER_RESOLVER_CACHE_ITEMS);
     Self {
       svg_defs,
       fragment_roots,
       image_cache,
-      cache: HashMap::new(),
+      cache_max_items,
+      cache: std::num::NonZeroUsize::new(cache_max_items)
+        .map(|cap| LruCache::with_hasher(cap, FilterHasher::default())),
     }
   }
 
@@ -2168,13 +2175,25 @@ impl<'a> SvgFilterResolver<'a> {
   pub fn resolve(&mut self, url: &str) -> Option<Arc<SvgFilter>> {
     let normalized = normalize_filter_url(url)?;
 
-    if let Some(existing) = self.cache.get(&normalized) {
-      return Some(existing.clone());
+    if self.cache_max_items == 0 {
+      return self.resolve_uncached(&normalized);
+    }
+
+    if let Some(existing) = self
+      .cache
+      .as_mut()
+      .and_then(|cache| cache.get(&normalized).cloned())
+    {
+      return Some(existing);
     }
 
     let resolved = self.resolve_uncached(&normalized);
     if let Some(filter) = resolved.as_ref() {
-      self.cache.insert(normalized, filter.clone());
+      self
+        .cache
+        .as_mut()
+        .expect("cache should be initialized when cache_max_items > 0")
+        .put(normalized, filter.clone());
     }
     resolved
   }
@@ -2211,6 +2230,11 @@ impl<'a> SvgFilterResolver<'a> {
     } else {
       load_svg_filter(trimmed, cache)
     }
+  }
+
+  #[cfg(test)]
+  fn cache_len(&self) -> usize {
+    self.cache.as_ref().map(|cache| cache.len()).unwrap_or(0)
   }
 }
 
@@ -2311,7 +2335,9 @@ fn parse_number(value: Option<&str>) -> f32 {
 fn parse_number_list(value: Option<&str>) -> Vec<f32> {
   value
     .unwrap_or("")
-    .split(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ',')
+    .split(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ','
+    })
     .filter_map(|v| {
       let trimmed = trim_ascii_whitespace(v);
       if trimmed.is_empty() {
@@ -3854,11 +3880,19 @@ fn fill_pixmap_wrap(dst: &mut Pixmap, src: &Pixmap, pad_x: u32, pad_y: u32) -> R
 
   let start_src_x = {
     let offset = (pad_x as usize) % src_w;
-    if offset == 0 { 0 } else { src_w - offset }
+    if offset == 0 {
+      0
+    } else {
+      src_w - offset
+    }
   };
   let start_src_y = {
     let offset = (pad_y as usize) % src_h;
-    if offset == 0 { 0 } else { src_h - offset }
+    if offset == 0 {
+      0
+    } else {
+      src_h - offset
+    }
   };
 
   for y in 0..dst_h {
@@ -3930,12 +3964,7 @@ fn apply_gaussian_blur_with_edge_mode(
           EdgeMode::Wrap => fill_pixmap_wrap(&mut padded, pixmap, pad_x, pad_y)?,
           EdgeMode::Duplicate => {
             debug_assert!(false, "EdgeMode::Duplicate handled by outer match");
-            copy_pixmap_region_with_offset(
-              &mut padded,
-              pixmap,
-              -(pad_x as i32),
-              -(pad_y as i32),
-            )?;
+            copy_pixmap_region_with_offset(&mut padded, pixmap, -(pad_x as i32), -(pad_y as i32))?;
           }
         }
 
@@ -6534,7 +6563,10 @@ mod tests {
     let nbsp = "\u{00A0}";
 
     assert!(matches!(
-      SvgCoordinateUnits::parse(Some("userSpaceOnUse"), SvgCoordinateUnits::ObjectBoundingBox),
+      SvgCoordinateUnits::parse(
+        Some("userSpaceOnUse"),
+        SvgCoordinateUnits::ObjectBoundingBox
+      ),
       SvgCoordinateUnits::UserSpaceOnUse
     ));
     assert!(matches!(
@@ -6813,6 +6845,69 @@ mod tests {
       resolver.resolve("url(#recolor) extra").is_none(),
       "expected resolver to reject url(...) wrappers with trailing tokens"
     );
+  }
+
+  #[test]
+  fn svg_filter_resolver_cache_is_bounded() {
+    let cap = 2usize;
+    let image_cache = ImageCache::new();
+
+    let mut raw = HashMap::new();
+    raw.insert(ENV_FILTER_RESOLVER_CACHE_ITEMS.to_string(), cap.to_string());
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(raw));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut svg_defs = HashMap::new();
+      for idx in 0..(cap + 3) {
+        svg_defs.insert(
+          format!("f{idx}"),
+          format!(r#"<filter id="f{idx}"><feFlood flood-color="red" flood-opacity="1"/></filter>"#),
+        );
+      }
+      let mut resolver =
+        SvgFilterResolver::new(Some(Arc::new(svg_defs)), Vec::new(), Some(&image_cache));
+
+      for idx in 0..(cap + 3) {
+        assert!(
+          resolver.resolve(&format!("#f{idx}")).is_some(),
+          "expected filter reference #f{idx} to resolve"
+        );
+        assert!(
+          resolver.cache_len() <= cap,
+          "expected resolver cache to stay within cap={cap}, got {}",
+          resolver.cache_len()
+        );
+      }
+    });
+  }
+
+  #[test]
+  fn svg_filter_resolver_cache_can_be_disabled() {
+    let image_cache = ImageCache::new();
+
+    let mut raw = HashMap::new();
+    raw.insert(ENV_FILTER_RESOLVER_CACHE_ITEMS.to_string(), "0".to_string());
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(raw));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut svg_defs = HashMap::new();
+      for idx in 0..5 {
+        svg_defs.insert(
+          format!("f{idx}"),
+          format!(r#"<filter id="f{idx}"><feFlood flood-color="red" flood-opacity="1"/></filter>"#),
+        );
+      }
+      let mut resolver =
+        SvgFilterResolver::new(Some(Arc::new(svg_defs)), Vec::new(), Some(&image_cache));
+
+      for idx in 0..5 {
+        assert!(
+          resolver.resolve(&format!("#f{idx}")).is_some(),
+          "expected filter reference #f{idx} to resolve"
+        );
+        assert_eq!(resolver.cache_len(), 0, "expected caching to be disabled");
+      }
+    });
   }
 
   #[test]
