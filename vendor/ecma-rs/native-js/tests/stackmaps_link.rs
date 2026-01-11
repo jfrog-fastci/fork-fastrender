@@ -6,9 +6,9 @@ use anyhow::{anyhow, Context as _, Result};
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, RelocMode};
 use inkwell::OptimizationLevel;
-use object::{Object as _, ObjectSection as _};
+use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
-use native_js::link::LinkOpts;
+use native_js::link::{LinkOpts, LLVM_STACKMAPS_START_SYM, LLVM_STACKMAPS_STOP_SYM};
 use native_js::{emit, llvm::gc};
 
 const STACKMAP_SECTION_CANDIDATES: [&str; 2] = [".data.rel.ro.llvm_stackmaps", ".llvm_stackmaps"];
@@ -70,10 +70,40 @@ fn elf64_le_has_wx_load_segment(bytes: &[u8]) -> Result<bool> {
   Ok(false)
 }
 
+fn find_symbol_addr<'data>(file: &object::File<'data>, name: &str) -> Option<u64> {
+  for sym in file.symbols() {
+    if sym.name().ok() == Some(name) {
+      return Some(sym.address());
+    }
+  }
+  for sym in file.dynamic_symbols() {
+    if sym.name().ok() == Some(name) {
+      return Some(sym.address());
+    }
+  }
+  None
+}
+
+fn assert_exported_stackmaps_range_non_empty(bytes: &[u8]) -> Result<()> {
+  let file = object::File::parse(bytes).context("parse object/elf")?;
+  let start = find_symbol_addr(&file, LLVM_STACKMAPS_START_SYM)
+    .ok_or_else(|| anyhow!("missing {LLVM_STACKMAPS_START_SYM} symbol"))?;
+  let end = find_symbol_addr(&file, LLVM_STACKMAPS_STOP_SYM)
+    .ok_or_else(|| anyhow!("missing {LLVM_STACKMAPS_STOP_SYM} symbol"))?;
+
+  if end <= start {
+    return Err(anyhow!(
+      "expected {LLVM_STACKMAPS_STOP_SYM} > {LLVM_STACKMAPS_START_SYM} (start={start:#x}, end={end:#x})"
+    ));
+  }
+  Ok(())
+}
+
 /// End-to-end test: generate an object file that contains `.llvm_stackmaps`,
 /// link it into an executable, and ensure the final binary keeps the stackmaps
-/// section (relocated to `.data.rel.ro.llvm_stackmaps`) without keeping a
-/// relocation section for it.
+/// data and exports the `__start_llvm_stackmaps`/`__stop_llvm_stackmaps` boundary
+/// symbols (even when the stackmaps payload is merged into a broader RELRO
+/// section under lld).
 ///
 /// This is a regression test for PIE linking: when building a PIE, `.llvm_stackmaps`
 /// can require runtime relocations which often triggers `DT_TEXTREL` warnings.
@@ -111,6 +141,7 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
   assert_eq!(elf_type, 2, "expected non-PIE ET_EXEC (e_type={elf_type})");
 
   assert_any_section_present_non_empty(&exe_bytes, &STACKMAP_SECTION_CANDIDATES)?;
+  assert_exported_stackmaps_range_non_empty(&exe_bytes)?;
   for name in STACKMAP_RELOC_SECTION_CANDIDATES {
     assert_section_absent(&exe_bytes, name)?;
   }
@@ -170,7 +201,7 @@ fn link_pie_without_textrel_keeps_llvm_stackmaps() -> Result<()> {
   let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
   assert_eq!(elf_type, 3, "expected PIE ET_DYN (e_type={elf_type})");
 
-  assert_any_section_present_non_empty(&exe_bytes, &STACKMAP_SECTION_CANDIDATES)?;
+  assert_exported_stackmaps_range_non_empty(&exe_bytes)?;
   for name in STACKMAP_RELOC_SECTION_CANDIDATES {
     assert_section_absent(&exe_bytes, name)?;
   }
