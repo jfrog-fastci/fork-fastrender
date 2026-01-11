@@ -401,6 +401,27 @@ fn reexports_create_runtime_module_dependencies() {
 }
 
 #[test]
+fn export_all_namespace_reexport_creates_runtime_module_dependencies() {
+  let dir = tempdir().unwrap();
+  let dep = dir.path().join("dep.ts");
+  let entry = dir.path().join("entry.ts");
+
+  fs::write(&dep, "console.log(\"dep\");\n").unwrap();
+  fs::write(
+    &entry,
+    "export * as ns from './dep';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg(entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\nmain\n"));
+}
+
+#[test]
 fn supports_importing_from_reexport_modules() {
   let dir = tempdir().unwrap();
   let dep = dir.path().join("dep.ts");
