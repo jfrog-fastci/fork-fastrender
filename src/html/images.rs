@@ -184,16 +184,16 @@ where
       continue;
     }
     if density >= target {
-      // When multiple candidates resolve to the same effective density, Chrome keeps the first
-      // entry (stable behavior). This matters for real-world pages where later candidates might be
-      // missing or invalid placeholders.
+      // Select the smallest density that still meets/exceeds the target. When multiple candidates
+      // resolve to the same density, keep the first (Chrome is stable here). This matters for
+      // real-world pages where later candidates might be missing/invalid placeholders.
       let replace = best_ge.as_ref().map(|(_, d)| density < *d).unwrap_or(true);
       if replace {
         best_ge = Some((candidate, density));
       }
     } else {
-      // Likewise, keep the first entry when multiple candidates share the same density below the
-      // target DPR.
+      // Otherwise, use the largest density below target; keep the first candidate when densities
+      // tie.
       let replace = best_lt.as_ref().map(|(_, d)| density > *d).unwrap_or(true);
       if replace {
         best_lt = Some((candidate, density));

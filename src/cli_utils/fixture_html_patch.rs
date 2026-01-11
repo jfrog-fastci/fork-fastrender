@@ -226,10 +226,13 @@ pub fn patch_html_bytes(
   };
 
   if disable_js {
-    // Many fixtures include `decoding="async"` on `<img>` elements. In headless screenshot mode,
-    // Chrome can capture before those async decodes have finished, producing blank thumbnails in
-    // the baseline PNGs. Force synchronous decode so screenshots are more representative.
+    // Many fixtures include `decoding=async` (quoted or unquoted) on `<img>` elements. In headless
+    // screenshot mode, Chrome can capture before those async decodes have finished, producing
+    // blank thumbnails in the baseline PNGs. Force synchronous decode so screenshots are more
+    // representative.
     out = replace_all_bytes(&out, br#"decoding="async""#, br#"decoding="sync""#);
+    out = replace_all_bytes(&out, br#"decoding='async'"#, br#"decoding='sync'"#);
+    out = replace_all_bytes_with_ascii_boundaries(&out, b"decoding=async", b"decoding=sync");
 
     // Chrome's native lazy-loading (`loading="lazy"`) can defer image fetch/decoding and, for
     // animated images, delay animation start. In headless screenshot mode this can make baselines
@@ -732,8 +735,7 @@ mod tests {
 
   #[test]
   fn patch_html_forces_sync_img_decoding_when_js_disabled() {
-    let input =
-      b"<!doctype html><html><head></head><body><img decoding=\"async\" src=\"x\"></body></html>";
+    let input = b"<!doctype html><html><head></head><body><img decoding=\"async\" src=\"x\"><img decoding='async' src=\"y\"><img decoding=async src=\"z\"></body></html>";
     let output = patch_html_bytes(input, None, true, false, true);
     let output_str = String::from_utf8_lossy(&output);
     assert!(
@@ -741,7 +743,17 @@ mod tests {
       "patched HTML should force decoding=sync when JS is disabled; got: {output_str}"
     );
     assert!(
-      !output_str.contains("decoding=\"async\""),
+      output_str.contains("decoding='sync'"),
+      "patched HTML should force decoding=sync for single-quoted attributes when JS is disabled; got: {output_str}"
+    );
+    assert!(
+      output_str.contains("decoding=sync"),
+      "patched HTML should force decoding=sync for unquoted attributes when JS is disabled; got: {output_str}"
+    );
+    assert!(
+      !output_str.contains("decoding=\"async\"")
+        && !output_str.contains("decoding='async'")
+        && !output_str.contains("decoding=async"),
       "patched HTML should rewrite decoding=async when JS is disabled; got: {output_str}"
     );
   }
