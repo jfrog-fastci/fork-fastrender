@@ -1,0 +1,79 @@
+# Web Storage (localStorage / sessionStorage).
+
+- name: Storage.prototype.getItem
+  kind: function
+  aliases:
+    - Storage.prototype.getItem
+    - localStorage.getItem
+    - sessionStorage.getItem
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+
+- name: Storage.prototype.setItem
+  kind: function
+  aliases:
+    - Storage.prototype.setItem
+    - localStorage.setItem
+    - sessionStorage.setItem
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: Impure
+
+- name: Storage.prototype.removeItem
+  kind: function
+  aliases:
+    - Storage.prototype.removeItem
+    - localStorage.removeItem
+    - sessionStorage.removeItem
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: Storage.prototype.clear
+  kind: function
+  aliases:
+    - Storage.prototype.clear
+    - localStorage.clear
+    - sessionStorage.clear
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: Storage.prototype.key
+  kind: function
+  aliases:
+    - Storage.prototype.key
+    - localStorage.key
+    - sessionStorage.key
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+
+- name: Storage.prototype.length
+  kind: getter
+  aliases:
+    - Storage.prototype.length
+    - localStorage.length
+    - sessionStorage.length
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Maybe
+  purity: ReadOnly
