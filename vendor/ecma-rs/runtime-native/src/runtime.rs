@@ -50,7 +50,11 @@ impl Runtime {
   /// Attach the current OS thread to this runtime and return an RAII guard.
   pub fn attach_current_thread(&self) -> Result<ThreadGuard<'_>, AttachError> {
     let thread = self.attach_current_thread_raw()?;
-    Ok(ThreadGuard { runtime: self, thread })
+    Ok(ThreadGuard {
+      runtime: self,
+      thread,
+      _not_send: std::marker::PhantomData,
+    })
   }
 
   /// Low-level attach used by the C ABI: attaches and returns the raw pointer.
@@ -171,6 +175,9 @@ impl Default for Runtime {
 pub struct ThreadGuard<'a> {
   runtime: &'a Runtime,
   thread: *mut Thread,
+  // Not `Send`/`Sync`: this guard owns thread-local attachment state and must be
+  // dropped on the thread that created it.
+  _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl ThreadGuard<'_> {
