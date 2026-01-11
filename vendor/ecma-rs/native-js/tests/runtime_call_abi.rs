@@ -32,6 +32,16 @@ fn runtime_call_registry_has_gc_safety_metadata() {
     wb.gc_ptr_args > 0,
     "expected rt_write_barrier to take GC pointer args, got {wb:?}"
   );
+
+  let ka = RuntimeFn::KeepAliveGcRef.spec();
+  assert!(
+    !ka.may_gc,
+    "expected rt_keep_alive_gc_ref to be may_gc=false, got {ka:?}"
+  );
+  assert!(
+    ka.gc_ptr_args > 0,
+    "expected rt_keep_alive_gc_ref to take GC pointer args, got {ka:?}"
+  );
 }
 
 #[test]

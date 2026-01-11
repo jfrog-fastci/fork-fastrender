@@ -490,6 +490,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       RuntimeFn::GcSafepoint => self.rt_gc_safepoint_gc(),
       RuntimeFn::GcCollect => self.rt_gc_collect_gc(),
       RuntimeFn::WriteBarrier => self.rt_write_barrier_gc(),
+      RuntimeFn::KeepAliveGcRef => self.rt_keep_alive_gc_ref_gc(),
     }
   }
 

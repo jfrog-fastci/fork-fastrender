@@ -20,6 +20,9 @@ pub enum RuntimeFn {
   GcCollect,
   /// Generational write barrier (must not allocate / GC).
   WriteBarrier,
+  /// Prevent the compiler from considering a GC reference dead while a raw pointer derived from it
+  /// is still in use.
+  KeepAliveGcRef,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +107,12 @@ impl RuntimeFn {
         name: "rt_write_barrier",
         may_gc: false,
         gc_ptr_args: 2,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::KeepAliveGcRef => RuntimeFnSpec {
+        name: "rt_keep_alive_gc_ref",
+        may_gc: false,
+        gc_ptr_args: 1,
         arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
       },
     }

@@ -181,6 +181,32 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
     "rt_gc_collect_gc must not use addrspacecasts:\n{collect}"
   );
 
+  assert!(
+    ir.contains("define internal void @rt_keep_alive_gc_ref_gc"),
+    "missing rt_keep_alive_gc_ref_gc wrapper:\n{ir}"
+  );
+  let keep_alive_line = ir
+    .lines()
+    .find(|l| l.contains("define internal void @rt_keep_alive_gc_ref_gc"))
+    .expect("rt_keep_alive_gc_ref_gc line");
+  assert!(
+    !keep_alive_line.contains("gc \"coreclr\""),
+    "rt_keep_alive_gc_ref_gc must not be GC-managed (ABI wrappers are outside GC pointer discipline lint):\n{keep_alive_line}\n\nIR:\n{ir}"
+  );
+  let keep_alive = function_block(&ir, "@rt_keep_alive_gc_ref_gc");
+  assert!(
+    keep_alive.contains("store ptr @rt_keep_alive_gc_ref"),
+    "expected rt_keep_alive_gc_ref_gc to indirect-call @rt_keep_alive_gc_ref:\n{keep_alive}"
+  );
+  assert!(
+    keep_alive.contains("call void %") && keep_alive.contains("ptr addrspace(1)"),
+    "expected rt_keep_alive_gc_ref_gc to call via function pointer with GC pointer arg:\n{keep_alive}"
+  );
+  assert!(
+    !keep_alive.contains("addrspacecast"),
+    "rt_keep_alive_gc_ref_gc must not addrspacecast GC pointers out of addrspace(1):\n{keep_alive}"
+  );
+
   // Parallel scheduler entrypoints are raw ABI (no GC pointer wrapper needed).
   assert!(
     ir.contains("declare i64 @rt_parallel_spawn"),
