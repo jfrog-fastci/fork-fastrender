@@ -11,7 +11,29 @@ mod linux {
     const IORING_CQE_F_BUFFER: u32 = 1 << 0;
     const IORING_CQE_F_MORE: u32 = 1 << 1;
     const IORING_CQE_BUFFER_SHIFT: u32 = 16;
- 
+  
+    // `libc`'s `iovec`/`msghdr` contain raw pointers, so they are not `Send` by default.
+    //
+    // We only use these allocations as stable kernel metadata and never dereference the pointers
+    // while the multishot request is in-flight, so moving the owning boxes across threads is safe.
+    struct SendIov(Box<[libc::iovec; 1]>);
+    unsafe impl Send for SendIov {}
+  
+    impl SendIov {
+        fn as_mut_ptr(&mut self) -> *mut libc::iovec {
+            self.0.as_mut_ptr()
+        }
+    }
+  
+    struct SendMsgHdr(Box<libc::msghdr>);
+    unsafe impl Send for SendMsgHdr {}
+  
+    impl SendMsgHdr {
+        fn as_ptr(&self) -> *const libc::msghdr {
+            self.0.as_ref() as *const _
+        }
+    }
+  
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct IoUringRecvMsgOut {
@@ -163,8 +185,8 @@ mod linux {
         _keepalive: Arc<()>,
         // `RecvMsg` stores a `msghdr *` in the SQE; the pointed-to memory must remain valid for the
         // lifetime of the multishot request.
-        msghdr: Box<libc::msghdr>,
-        _iov: Box<[libc::iovec; 1]>,
+        msghdr: SendMsgHdr,
+        _iov: SendIov,
     }
  
     impl MultiShotRecvMsgState {
@@ -175,13 +197,13 @@ mod linux {
                     "provided buffer is too small for io_uring_recvmsg_out header",
                 ));
             }
- 
-            let mut iov = Box::new([libc::iovec {
+  
+            let mut iov = SendIov(Box::new([libc::iovec {
                 iov_base: std::ptr::null_mut(),
                 iov_len: pool.buf_size(),
-            }]);
- 
-            let msghdr = Box::new(libc::msghdr {
+            }]));
+  
+            let msghdr = SendMsgHdr(Box::new(libc::msghdr {
                 msg_name: std::ptr::null_mut(),
                 msg_namelen: 0,
                 msg_iov: iov.as_mut_ptr(),
@@ -189,8 +211,8 @@ mod linux {
                 msg_control: std::ptr::null_mut(),
                 msg_controllen: 0,
                 msg_flags: 0,
-            });
- 
+            }));
+  
             Ok(Self {
                 pool,
                 _keepalive: keepalive,
@@ -198,9 +220,9 @@ mod linux {
                 _iov: iov,
             })
         }
- 
+  
         pub(crate) fn msghdr_ptr(&self) -> *mut libc::msghdr {
-            (&*self.msghdr) as *const libc::msghdr as *mut libc::msghdr
+            self.msghdr.as_ptr() as *mut libc::msghdr
         }
  
         pub(crate) fn handle_cqe(&self, res: i32, flags: u32) -> MultiShotRecvMsgEvent {

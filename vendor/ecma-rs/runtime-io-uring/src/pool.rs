@@ -57,13 +57,6 @@ mod linux {
     }
 
     impl ProvidedBufPool {
-        // `ProvidedBufPool` is currently `!Send` (it closes over a `WeakDriver` to a legacy driver
-        // which is itself `!Send` due to `io_uring`'s kernel-shared mappings). We still use `Arc`
-        // because we need cheap cloning + weak references without pulling in `Rc`/`RefCell` for a
-        // mostly-synchronous helper type.
-        //
-        // Clippy flags `Arc<Inner>` here since `Inner` is not `Send + Sync`; this is intentional.
-        #[allow(clippy::arc_with_non_send_sync)]
         pub fn new(driver: &Driver, buf_group: u16, buf_size: usize, nbufs: u16) -> io::Result<Self> {
             if nbufs == 0 {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "nbufs must be > 0"));

@@ -573,12 +573,6 @@ mod linux {
             io::Error::other("io_uring submission queue is full")
         }
 
-        // The legacy driver is currently `!Send` because `io_uring::IoUring` is not `Send + Sync`
-        // (it owns kernel-shared mappings). We still use `Arc` so the driver can be cloned and
-        // weak-referenced (to avoid cycles with `ProvidedBufPool`), even on a single thread.
-        //
-        // Clippy flags this as suspicious; keep the explicit allow local to the constructor.
-        #[allow(clippy::arc_with_non_send_sync)]
         pub fn new(entries: u32) -> io::Result<Self> {
             Ok(Self {
                 inner: Arc::new(Mutex::new(Inner {
