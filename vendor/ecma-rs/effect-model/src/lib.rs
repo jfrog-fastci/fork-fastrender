@@ -353,7 +353,7 @@ impl EffectTemplate {
               "EffectTemplate::apply arg index {idx} out of range (len={})",
               arg_effects.len()
             );
-            effects |= EffectSet::UNKNOWN;
+            effects |= EffectSet::UNKNOWN | EffectSet::MAY_THROW;
           }
         }
         effects
