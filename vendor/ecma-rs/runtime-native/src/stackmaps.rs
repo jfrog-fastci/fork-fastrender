@@ -258,8 +258,13 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
     while off < bytes.len() && bytes[off] == 0 {
       off += 1;
     }
-    if off >= bytes.len() || bytes.len() - off < STACKMAP_HEADER_SIZE {
+    if off >= bytes.len() {
       break;
+    }
+    if bytes.len() - off < STACKMAP_HEADER_SIZE {
+      // We already skipped any 0x00 padding. StackMap v3 headers are 16 bytes, so any remaining
+      // non-zero bytes cannot start a valid blob.
+      return Err(StackMapError::TrailingNonZeroBytes { offset: off });
     }
 
     let (map, len) = StackMap::parse_with_len(&bytes[off..])?;
