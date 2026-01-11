@@ -1,5 +1,6 @@
-use parking_lot::Mutex;
 use std::marker::PhantomData;
+
+use crate::sync::GcAwareMutex;
 
 /// A process-global registry of GC root *slots* that are not discovered via
 /// LLVM stackmaps (globals, persistent handles, etc).
@@ -11,7 +12,7 @@ use std::marker::PhantomData;
 /// Callers must ensure that any registered `slot: *mut *mut u8` remains valid
 /// and writable until it is unregistered.
 pub struct RootRegistry {
-  inner: Mutex<Inner>,
+  inner: GcAwareMutex<Inner>,
 }
 
 #[derive(Default)]
@@ -31,6 +32,16 @@ enum Entry {
   Pinned(Box<*mut u8>),
 }
 
+impl Entry {
+  #[inline]
+  fn slot_ptr(&mut self) -> *mut *mut u8 {
+    match self {
+      Entry::Borrowed(ptr) => *ptr,
+      Entry::Pinned(b) => b.as_mut() as *mut *mut u8,
+    }
+  }
+}
+
 // SAFETY: The registry stores raw pointers as opaque values. All mutation and
 // enumeration are synchronized via the `Mutex`, and the GC only reads/updates
 // the pointed-to slots while the world is stopped.
@@ -39,7 +50,7 @@ unsafe impl Send for Inner {}
 impl RootRegistry {
   pub fn new() -> Self {
     Self {
-      inner: Mutex::new(Inner::default()),
+      inner: GcAwareMutex::new(Inner::default()),
     }
   }
 
@@ -101,16 +112,10 @@ impl RootRegistry {
   /// registry contract: the registered slot pointer must remain valid until it is unregistered.
   pub fn get(&self, handle: u32) -> Option<*mut u8> {
     let mut inner = self.inner.lock();
-    let (index, generation) = decode_handle(handle)?;
-    let slot = inner.slots.get_mut(index as usize)?;
-    if slot.generation != generation {
-      return None;
-    }
-    let entry = slot.entry.as_ref()?;
-    Some(match entry {
-      Entry::Borrowed(ptr) => unsafe { **ptr },
-      Entry::Pinned(b) => *b.as_ref(),
-    })
+    let slot_ptr = inner.get_slot_ptr(handle)?;
+    // Safety: the registry only returns pointers for live entries, and the caller guarantees that
+    // borrowed slots remain valid until unregistered.
+    Some(unsafe { slot_ptr.read() })
   }
 
   /// Updates the pointer value stored in a registered root handle.
@@ -122,25 +127,12 @@ impl RootRegistry {
   /// registry contract: the registered slot pointer must remain valid until it is unregistered.
   pub fn set(&self, handle: u32, ptr: *mut u8) -> bool {
     let mut inner = self.inner.lock();
-    let Some((index, generation)) = decode_handle(handle) else {
+    let Some(slot_ptr) = inner.get_slot_ptr(handle) else {
       return false;
     };
-    let Some(slot) = inner.slots.get_mut(index as usize) else {
-      return false;
-    };
-    if slot.generation != generation {
-      return false;
-    }
-    let Some(entry) = slot.entry.as_mut() else {
-      return false;
-    };
-    match entry {
-      Entry::Borrowed(slot_ptr) => unsafe {
-        **slot_ptr = ptr;
-      },
-      Entry::Pinned(b) => {
-        *b.as_mut() = ptr;
-      }
+    // Safety: see [`RootRegistry::get`].
+    unsafe {
+      slot_ptr.write(ptr);
     }
     true
   }
@@ -152,11 +144,7 @@ impl RootRegistry {
       let Some(entry) = slot.entry.as_mut() else {
         continue;
       };
-      let slot_ptr: *mut *mut u8 = match entry {
-        Entry::Borrowed(ptr) => *ptr,
-        Entry::Pinned(b) => b.as_mut() as *mut *mut u8,
-      };
-      f(slot_ptr);
+      f(entry.slot_ptr());
     }
   }
 
@@ -237,6 +225,16 @@ impl Inner {
       self.free_list.push(idx as u32);
     }
   }
+
+  fn get_slot_ptr(&mut self, handle: u32) -> Option<*mut *mut u8> {
+    let (index, generation) = decode_handle(handle)?;
+    let slot = self.slots.get_mut(index as usize)?;
+    if slot.generation != generation {
+      return None;
+    }
+    let entry = slot.entry.as_mut()?;
+    Some(entry.slot_ptr())
+  }
 }
 
 /// Process-global root registry used by the runtime and the C ABI helpers.
@@ -291,5 +289,132 @@ impl Drop for RootScope {
     if let Some(thread) = crate::threading::registry::current_thread_state() {
       thread.handle_stack_truncate(self.base_len);
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::sync::atomic::{AtomicBool, Ordering};
+  use std::sync::{Arc, Barrier};
+
+  #[test]
+  fn handle_api_alloc_load_store_free() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    let p1 = 0x1234usize as *mut u8;
+    let h = crate::exports::rt_handle_alloc(p1);
+    assert_eq!(crate::exports::rt_handle_load(h), p1);
+
+    let p2 = 0x5678usize as *mut u8;
+    crate::exports::rt_handle_store(h, p2);
+    assert_eq!(crate::exports::rt_handle_load(h), p2);
+
+    crate::exports::rt_handle_free(h);
+    assert_eq!(crate::exports::rt_handle_load(h), std::ptr::null_mut());
+
+    // Storing through a freed handle is a no-op.
+    crate::exports::rt_handle_store(h, p1);
+    assert_eq!(crate::exports::rt_handle_load(h), std::ptr::null_mut());
+
+    // Out-of-range `u64` values must be treated as invalid.
+    let invalid = (u32::MAX as u64) + 1;
+    assert_eq!(crate::exports::rt_handle_load(invalid), std::ptr::null_mut());
+    crate::exports::rt_handle_store(invalid, p1);
+    crate::exports::rt_handle_free(invalid);
+  }
+
+  #[test]
+  fn handle_api_stale_handle_is_rejected() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    let p1 = 0x1111usize as *mut u8;
+    let h1 = crate::exports::rt_handle_alloc(p1);
+    assert_eq!(crate::exports::rt_handle_load(h1), p1);
+    crate::exports::rt_handle_free(h1);
+
+    // Allocate again; the same slot should be reused with an incremented generation.
+    let p2 = 0x2222usize as *mut u8;
+    let h2 = crate::exports::rt_handle_alloc(p2);
+    assert_eq!(crate::exports::rt_handle_load(h2), p2);
+    assert_eq!(crate::exports::rt_handle_load(h1), std::ptr::null_mut());
+    assert_ne!(h1, h2, "generation should change when a slot is reused");
+
+    crate::exports::rt_handle_free(h2);
+  }
+
+  #[test]
+  fn handle_api_multithreaded_stw_stress_no_deadlock() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    // Use multiple registered mutator threads so stop-the-world coordination is exercised.
+    const N_THREADS: usize = 4;
+    let stop = Arc::new(AtomicBool::new(false));
+    let start = Arc::new(Barrier::new(N_THREADS + 1));
+
+    let mut workers = Vec::new();
+    for t in 0..N_THREADS {
+      let stop = stop.clone();
+      let start = start.clone();
+      workers.push(std::thread::spawn(move || {
+        crate::threading::register_current_thread(crate::threading::ThreadKind::Worker);
+        start.wait();
+
+        let mut i = 0usize;
+        while !stop.load(Ordering::Relaxed) {
+          let base = 0x1000usize + (t * 0x100) + (i & 0xff);
+          let p1 = base as *mut u8;
+          let p2 = (base ^ 0x55aa) as *mut u8;
+
+          let h = crate::exports::rt_handle_alloc(p1);
+          let _ = crate::exports::rt_handle_load(h);
+          crate::exports::rt_handle_store(h, p2);
+          let _ = crate::exports::rt_handle_load(h);
+          crate::exports::rt_handle_free(h);
+
+          // Cooperate with stop-the-world requests.
+          crate::threading::safepoint_poll();
+
+          i = i.wrapping_add(1);
+        }
+
+        crate::threading::unregister_current_thread();
+      }));
+    }
+
+    start.wait();
+
+    // Stop-the-world while worker threads are actively contending on the handle table lock.
+    let stw_res = std::panic::catch_unwind(|| {
+      for _ in 0..25 {
+        crate::safepoint::with_world_stopped(|| {});
+      }
+    });
+
+    stop.store(true, Ordering::Relaxed);
+    for w in workers {
+      w.join().unwrap();
+    }
+
+    if let Err(panic) = stw_res {
+      std::panic::resume_unwind(panic);
+    }
+  }
+
+  #[test]
+  fn root_registry_get_set_roundtrip_for_borrowed_slot() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    let registry = RootRegistry::new();
+    let mut slot = 0xdeadusize as *mut u8;
+    let handle = registry.register_root_slot(&mut slot as *mut *mut u8);
+    assert_eq!(registry.get(handle), Some(0xdeadusize as *mut u8));
+
+    assert!(registry.set(handle, 0xbeefusize as *mut u8));
+    assert_eq!(registry.get(handle), Some(0xbeefusize as *mut u8));
+
+    registry.unregister(handle);
+    assert_eq!(registry.get(handle), None);
+    assert!(!registry.set(handle, std::ptr::null_mut()));
   }
 }

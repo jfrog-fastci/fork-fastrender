@@ -43,7 +43,10 @@ impl BlockingPool {
     let default_threads = std::thread::available_parallelism()
       .map(|n| n.get())
       .unwrap_or(1)
-      .min(32);
+      // Keep the default small: the blocking pool is intended for I/O-style tasks and is lazily
+      // initialized. Spawning dozens of threads on first use adds noticeable latency and can cause
+      // tests/embedders to miss "wake promptly" invariants (e.g. `c_link_smoke`).
+      .min(4);
 
     // Prefer the namespaced env var (matches `ECMA_RS_RUNTIME_NATIVE_THREADS` used by the
     // parallel scheduler) but keep `RT_BLOCKING_THREADS` as a backwards-compatible alias.

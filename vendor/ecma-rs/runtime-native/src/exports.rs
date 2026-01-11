@@ -927,6 +927,55 @@ pub extern "C" fn rt_gc_unpin(handle: u32) {
   crate::roots::global_root_registry().unregister(handle);
 }
 
+// -----------------------------------------------------------------------------
+// Persistent handle IDs (stable u64)
+// -----------------------------------------------------------------------------
+//
+// These are stable integer IDs intended for crossing async / OS / thread boundaries (epoll/kqueue
+// userdata, cross-thread wakeups, ...). They are backed by `roots::RootRegistry` entries so the GC
+// can update the underlying slot when objects move.
+
+/// Allocate a new persistent handle rooting `ptr`.
+#[no_mangle]
+pub extern "C" fn rt_handle_alloc(ptr: *mut u8) -> u64 {
+  crate::roots::global_root_registry().pin(ptr) as u64
+}
+
+/// Free a persistent handle created by [`rt_handle_alloc`].
+///
+/// Invalid handles are ignored.
+#[no_mangle]
+pub extern "C" fn rt_handle_free(handle: u64) {
+  let Ok(handle) = u32::try_from(handle) else {
+    return;
+  };
+  crate::roots::global_root_registry().unregister(handle);
+}
+
+/// Resolve a persistent handle back to the (possibly relocated) pointer stored in its slot.
+///
+/// Returns null if the handle is invalid or has been freed.
+#[no_mangle]
+pub extern "C" fn rt_handle_load(handle: u64) -> *mut u8 {
+  let Ok(handle) = u32::try_from(handle) else {
+    return std::ptr::null_mut();
+  };
+  crate::roots::global_root_registry()
+    .get(handle)
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Update the pointer stored in a persistent handle slot.
+///
+/// Invalid handles are ignored.
+#[no_mangle]
+pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
+  let Ok(handle) = u32::try_from(handle) else {
+    return;
+  };
+  let _ = crate::roots::global_root_registry().set(handle, ptr);
+}
+
 #[cfg(feature = "gc_stats")]
 #[no_mangle]
 pub unsafe extern "C" fn rt_gc_stats_snapshot(out: *mut crate::abi::RtGcStatsSnapshot) {

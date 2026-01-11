@@ -255,6 +255,18 @@ In practice, a usable ABI usually also needs:
 * `rt_handle_load(id: HandleId) -> GcPtr<T>`
 * `rt_handle_store(id: HandleId, obj: GcPtr<T>)`
 
+### Current implementation note
+
+`runtime-native` implements `rt_handle_*` using the process-global [`RootRegistry`](../runtime-native/src/roots/registry.rs):
+
+* `rt_handle_alloc` allocates a rooted slot (equivalent to `rt_gc_pin`) and returns a `u64` handle ID.
+* `rt_handle_load`/`rt_handle_store` load/store through that slot (GC updates the slot during
+  relocation).
+* `rt_handle_free` unregisters the slot.
+
+Handle values are returned as `u64` for easy storage in OS userdata fields, but are currently encoded
+using the registry’s existing 32-bit `{ index, generation }` scheme widened to `u64`.
+
 ### Async park/wake API
 
 These APIs are the boundary where *stable* identifiers cross into the OS or other threads.

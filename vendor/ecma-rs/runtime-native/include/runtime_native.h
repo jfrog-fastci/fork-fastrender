@@ -49,6 +49,8 @@ typedef struct RtShapeDescriptor {
 typedef uint32_t InternedId;
 typedef uint64_t TaskId;
 typedef uint64_t TimerId;
+// Stable persistent handle id (safe to store in OS event loop userdata like epoll_event.data.u64).
+typedef uint64_t HandleId;
 
 // runtime-native does not yet implement a full JS value representation/GC.
 // For now, values are passed as opaque pointers.
@@ -340,6 +342,16 @@ void rt_gc_unregister_root_slot(uint32_t handle);
 // as a root. The returned handle must later be passed to `rt_gc_unpin`.
 uint32_t rt_gc_pin(GcPtr ptr);
 void rt_gc_unpin(uint32_t handle);
+
+// -----------------------------------------------------------------------------
+// Persistent handles (stable u64 ids)
+// -----------------------------------------------------------------------------
+// Persistent handles keep a GC-managed object alive and allow retrieving its (possibly relocated)
+// pointer later. Intended for crossing async/OS/thread boundaries where raw pointers are unsafe.
+HandleId rt_handle_alloc(GcPtr ptr);
+void rt_handle_free(HandleId handle);
+GcPtr rt_handle_load(HandleId handle);
+void rt_handle_store(HandleId handle, GcPtr ptr);
 
 // Update the active nursery (young generation) address range used by the write barrier.
 // Must be called by the GC at initialization and after each nursery flip/resize.
