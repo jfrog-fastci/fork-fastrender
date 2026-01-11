@@ -107,7 +107,7 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
       }
     }
     InstTyp::Throw => {
-      effects.may_throw = true;
+      effects.summary.throws = ThrowBehavior::Always;
     }
     InstTyp::CondGoto | InstTyp::Un | InstTyp::VarAssign | InstTyp::Phi | InstTyp::_Label => {}
     // These should not exist after CFG construction but are treated as no-ops for analysis.
@@ -325,6 +325,17 @@ mod tests {
     let eff = inst_local_effect(&call);
     assert!(eff.unknown);
     assert_eq!(eff.summary.throws, ThrowBehavior::Maybe);
+  }
+
+  #[test]
+  fn throw_is_always_throwing() {
+    let inst = Inst::throw(Arg::Const(Const::Undefined));
+    let eff = inst_local_effect(&inst);
+    assert_eq!(eff.summary.throws, ThrowBehavior::Always);
+    assert!(eff.reads.is_empty());
+    assert!(eff.writes.is_empty());
+    assert!(!eff.summary.flags.contains(EffectFlags::ALLOCATES));
+    assert!(!eff.unknown);
   }
 
   #[test]
