@@ -1,13 +1,15 @@
-use crate::resolve::BindingId;
 use crate::strict::Entrypoint;
-use crate::Resolver;
 use diagnostics::{Diagnostic, Span, TextRange};
-use hir_js::{AssignOp, BinaryOp, ExprId, ExprKind, Literal, StmtId, StmtKind, UnaryOp};
+use hir_js::{
+  AssignOp, BinaryOp, ExprId, ExprKind, ForInit, Literal, NameId, PatId, PatKind, StmtId, StmtKind,
+  UnaryOp, UpdateOp, VarDecl, VarDeclKind,
+};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::IntType;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
+use inkwell::IntPredicate;
 use std::collections::HashMap;
 use typecheck_ts::{FileId, Program};
 
@@ -46,14 +48,20 @@ pub fn codegen<'ctx>(
   })?;
 
   let module = context.create_module(&options.module_name);
-  let builder = context.create_builder();
   let i32_ty = context.i32_type();
 
   let ts_main = declare_ts_main(context, &module, i32_ty);
-  build_ts_main(context, &builder, i32_ty, ts_main, hir_body, entry_file, program)?;
+  build_ts_main(
+    context,
+    i32_ty,
+    ts_main,
+    hir_body,
+    lowered.names.as_ref(),
+    entry_file,
+  )?;
 
   let c_main = declare_c_main(context, &module, i32_ty);
-  build_c_main(context, &builder, c_main, ts_main, i32_ty);
+  build_c_main(context, c_main, ts_main, i32_ty);
 
   Ok(module)
 }
@@ -87,21 +95,32 @@ fn declare_c_main<'ctx>(
 
 fn build_ts_main<'ctx>(
   context: &'ctx Context,
-  builder: &Builder<'ctx>,
   i32_ty: IntType<'ctx>,
   func: FunctionValue<'ctx>,
   hir_body: &hir_js::Body,
+  names: &hir_js::NameInterner,
   entry_file: FileId,
-  program: &Program,
 ) -> Result<(), Vec<Diagnostic>> {
-  let bb = context.append_basic_block(func, "entry");
-  builder.position_at_end(bb);
+  let builder = context.create_builder();
+  let alloca_builder = context.create_builder();
 
-  let resolver = Resolver::new(program);
-  let file_resolver = resolver.for_file(entry_file);
-  let mut locals: HashMap<BindingId, PointerValue<'ctx>> = HashMap::new();
+  let entry_bb = context.append_basic_block(func, "entry");
+  builder.position_at_end(entry_bb);
 
-  let Some(function) = hir_body.function.as_ref() else {
+  let mut cg = HirCodegen {
+    context,
+    builder,
+    alloca_builder,
+    func,
+    i32_ty,
+    bool_ty: context.bool_type(),
+    body: hir_body,
+    names,
+    entry_file,
+    locals: LocalEnv::new(),
+  };
+
+  let Some(function_meta) = &hir_body.function else {
     return Err(vec![Diagnostic::error(
       "NJS0102",
       "missing function metadata for `main` body",
@@ -109,134 +128,42 @@ fn build_ts_main<'ctx>(
     )]);
   };
 
-  let value = match &function.body {
+  match function_meta.body {
     hir_js::FunctionBody::Expr(expr) => {
-      codegen_expr(builder, i32_ty, hir_body, entry_file, *expr, &file_resolver, &mut locals)?
+      let value = cg.codegen_expr(expr)?;
+      cg.builder
+        .build_return(Some(&value))
+        .expect("failed to build return");
     }
-    hir_js::FunctionBody::Block(stmts) => {
-      let mut returned = None;
-      for stmt in stmts {
-        if let Some(ret) = codegen_stmt(
-          builder,
-          i32_ty,
-          hir_body,
-          entry_file,
-          *stmt,
-          &file_resolver,
-          &mut locals,
-        )? {
-          returned = Some(ret);
+    hir_js::FunctionBody::Block(ref stmts) => {
+      let mut fallthrough = true;
+      for &stmt_id in stmts {
+        fallthrough = cg.codegen_stmt(stmt_id)?;
+        if !fallthrough {
           break;
         }
       }
-      returned.ok_or_else(|| {
-        vec![Diagnostic::error(
-          "NJS0102",
-          "`main` must return a value",
+
+      if fallthrough {
+        return Err(vec![Diagnostic::error(
+          "NJS0115",
+          "not all control-flow paths in `main` return a value",
           Span::new(entry_file, hir_body.span),
-        )]
-      })?
-    }
-  };
-
-  builder.build_return(Some(&value)).expect("failed to build return");
-  Ok(())
-}
-
-fn codegen_stmt<'ctx>(
-  builder: &Builder<'ctx>,
-  i32_ty: IntType<'ctx>,
-  body: &hir_js::Body,
-  entry_file: FileId,
-  stmt_id: StmtId,
-  file_resolver: &crate::resolve::FileResolver<'_, '_>,
-  locals: &mut HashMap<BindingId, PointerValue<'ctx>>,
-) -> Result<Option<IntValue<'ctx>>, Vec<Diagnostic>> {
-  let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
-    return Err(vec![Diagnostic::error(
-      "NJS0120",
-      "statement id out of bounds",
-      Span::new(entry_file, body.span),
-    )]);
-  };
-
-  let span = Span::new(entry_file, stmt.span);
-  match &stmt.kind {
-    StmtKind::Expr(expr) => {
-      let _ = codegen_expr(builder, i32_ty, body, entry_file, *expr, file_resolver, locals)?;
-      Ok(None)
-    }
-    StmtKind::Return(Some(expr)) => {
-      let value = codegen_expr(builder, i32_ty, body, entry_file, *expr, file_resolver, locals)?;
-      Ok(Some(value))
-    }
-    StmtKind::Return(None) => Err(vec![Diagnostic::error(
-      "NJS0121",
-      "return without value is not supported",
-      span,
-    )]),
-    StmtKind::Block(stmts) => {
-      for stmt in stmts {
-        if let Some(ret) =
-          codegen_stmt(builder, i32_ty, body, entry_file, *stmt, file_resolver, locals)?
-        {
-          return Ok(Some(ret));
-        }
+        )]);
       }
-      Ok(None)
     }
-    StmtKind::Var(var) => {
-      for decl in &var.declarators {
-        let binding = file_resolver.resolve_pat_ident(body, decl.pat).ok_or_else(|| {
-          let pat_span = body
-            .pats
-            .get(decl.pat.0 as usize)
-            .map(|pat| pat.span)
-            .unwrap_or(stmt.span);
-          vec![Diagnostic::error(
-            "NJS0122",
-            "unsupported variable binding pattern",
-            Span::new(entry_file, pat_span),
-          )]
-        })?;
-
-        let slot = locals.get(&binding).copied().unwrap_or_else(|| {
-          let slot = builder
-            .build_alloca(i32_ty, "local")
-            .expect("failed to build alloca");
-          locals.insert(binding, slot);
-          slot
-        });
-
-        let init = decl.init.ok_or_else(|| {
-          vec![Diagnostic::error(
-            "NJS0123",
-            "variable declarations must have initializers in this codegen subset",
-            span,
-          )]
-        })?;
-        let value = codegen_expr(builder, i32_ty, body, entry_file, init, file_resolver, locals)?;
-        builder
-          .build_store(slot, value)
-          .expect("failed to build store");
-      }
-      Ok(None)
-    }
-    other => Err(vec![Diagnostic::error(
-      "NJS0124",
-      format!("unsupported statement in `main`: {other:?}"),
-      span,
-    )]),
   }
+
+  Ok(())
 }
 
 fn build_c_main<'ctx>(
   context: &'ctx Context,
-  builder: &Builder<'ctx>,
   c_main: FunctionValue<'ctx>,
   ts_main: FunctionValue<'ctx>,
   i32_ty: IntType<'ctx>,
 ) {
+  let builder = context.create_builder();
   let bb = context.append_basic_block(c_main, "entry");
   builder.position_at_end(bb);
 
@@ -253,172 +180,731 @@ fn build_c_main<'ctx>(
     .expect("failed to build return");
 }
 
-fn codegen_expr<'ctx>(
-  builder: &Builder<'ctx>,
-  i32_ty: IntType<'ctx>,
-  body: &hir_js::Body,
-  entry_file: FileId,
-  expr: ExprId,
-  file_resolver: &crate::resolve::FileResolver<'_, '_>,
-  locals: &mut HashMap<BindingId, PointerValue<'ctx>>,
-) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
-  let expr_data = body.exprs.get(expr.0 as usize).ok_or_else(|| {
-    vec![Diagnostic::error(
-      "NJS0103",
-      "expression id out of bounds",
-      Span::new(entry_file, body.span),
-    )]
-  })?;
-  let span = Span::new(entry_file, expr_data.span);
+struct LocalEnv<'ctx> {
+  scopes: Vec<HashMap<NameId, PointerValue<'ctx>>>,
+}
 
-  match &expr_data.kind {
-    ExprKind::TypeAssertion { expr, .. } => {
-      codegen_expr(builder, i32_ty, body, entry_file, *expr, file_resolver, locals)
+impl<'ctx> LocalEnv<'ctx> {
+  fn new() -> Self {
+    Self {
+      scopes: vec![HashMap::new()],
     }
-    ExprKind::NonNull { expr } => {
-      codegen_expr(builder, i32_ty, body, entry_file, *expr, file_resolver, locals)
+  }
+
+  fn push_scope(&mut self) {
+    self.scopes.push(HashMap::new());
+  }
+
+  fn pop_scope(&mut self) {
+    self.scopes.pop();
+    if self.scopes.is_empty() {
+      // Internal invariant: the function always has a root scope.
+      self.scopes.push(HashMap::new());
     }
-    ExprKind::Satisfies { expr, .. } => {
-      codegen_expr(builder, i32_ty, body, entry_file, *expr, file_resolver, locals)
+  }
+
+  fn insert(&mut self, name: NameId, ptr: PointerValue<'ctx>) {
+    if let Some(scope) = self.scopes.last_mut() {
+      scope.insert(name, ptr);
     }
-    ExprKind::Ident(_) => {
-      let binding = file_resolver.resolve_expr_ident(body, expr).ok_or_else(|| {
-        vec![Diagnostic::error("NJS0130", "failed to resolve identifier", span)]
-      })?;
-      let slot = locals.get(&binding).copied().ok_or_else(|| {
-        vec![Diagnostic::error("NJS0131", "use of unbound local", span)]
-      })?;
-      let loaded = builder
-        .build_load(i32_ty, slot, "load")
-        .expect("failed to build load")
-        .into_int_value();
-      Ok(loaded)
-    }
-    ExprKind::Literal(Literal::Number(raw)) => parse_i32_const(i32_ty, raw).ok_or_else(|| {
-      vec![Diagnostic::error(
-        "NJS0104",
-        format!("unsupported numeric literal `{raw}` (expected 32-bit integer)"),
-        span,
-      )]
-    }),
-    ExprKind::Unary { op, expr } => {
-      let inner =
-        codegen_expr(builder, i32_ty, body, entry_file, *expr, file_resolver, locals)?;
-      match op {
-        UnaryOp::Plus => Ok(inner),
-        UnaryOp::Minus => Ok(
-          builder
-            .build_int_neg(inner, "neg")
-            .expect("failed to build negation"),
-        ),
-        _ => Err(vec![Diagnostic::error(
-          "NJS0105",
-          format!("unsupported unary operator `{op:?}`"),
-          span,
-        )]),
+  }
+
+  fn lookup(&self, name: NameId) -> Option<PointerValue<'ctx>> {
+    for scope in self.scopes.iter().rev() {
+      if let Some(ptr) = scope.get(&name).copied() {
+        return Some(ptr);
       }
     }
-    ExprKind::Binary { op, left, right } => {
-      let lhs =
-        codegen_expr(builder, i32_ty, body, entry_file, *left, file_resolver, locals)?;
-      let rhs =
-        codegen_expr(builder, i32_ty, body, entry_file, *right, file_resolver, locals)?;
-      let v = match op {
-        BinaryOp::Add => builder
-          .build_int_add(lhs, rhs, "add")
-          .expect("failed to build add"),
-        BinaryOp::Subtract => builder
-          .build_int_sub(lhs, rhs, "sub")
-          .expect("failed to build sub"),
-        BinaryOp::Multiply => builder
-          .build_int_mul(lhs, rhs, "mul")
-          .expect("failed to build mul"),
-        BinaryOp::Divide => builder
-          .build_int_signed_div(lhs, rhs, "div")
-          .expect("failed to build div"),
-        BinaryOp::Remainder => builder
-          .build_int_signed_rem(lhs, rhs, "rem")
-          .expect("failed to build rem"),
-        BinaryOp::BitAnd => builder
-          .build_and(lhs, rhs, "and")
-          .expect("failed to build and"),
-        BinaryOp::BitOr => builder
-          .build_or(lhs, rhs, "or")
-          .expect("failed to build or"),
-        BinaryOp::BitXor => builder
-          .build_xor(lhs, rhs, "xor")
-          .expect("failed to build xor"),
-        BinaryOp::ShiftLeft => builder
-          .build_left_shift(lhs, rhs, "shl")
-          .expect("failed to build shl"),
-        BinaryOp::ShiftRight => builder
-          .build_right_shift(lhs, rhs, true, "shr")
-          .expect("failed to build shr"),
-        _ => {
+    None
+  }
+}
+
+struct HirCodegen<'ctx, 'a> {
+  context: &'ctx Context,
+  builder: Builder<'ctx>,
+  alloca_builder: Builder<'ctx>,
+  func: FunctionValue<'ctx>,
+  i32_ty: IntType<'ctx>,
+  bool_ty: IntType<'ctx>,
+  body: &'a hir_js::Body,
+  names: &'a hir_js::NameInterner,
+  entry_file: FileId,
+  locals: LocalEnv<'ctx>,
+}
+
+impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
+  fn span_of_stmt(&self, stmt: StmtId) -> Span {
+    let range = self
+      .body
+      .stmts
+      .get(stmt.0 as usize)
+      .map(|s| s.span)
+      .unwrap_or(self.body.span);
+    Span::new(self.entry_file, range)
+  }
+
+  fn stmt(&self, stmt: StmtId) -> Result<&hir_js::Stmt, Vec<Diagnostic>> {
+    self.body.stmts.get(stmt.0 as usize).ok_or_else(|| {
+      vec![Diagnostic::error(
+        "NJS0112",
+        "statement id out of bounds",
+        Span::new(self.entry_file, self.body.span),
+      )]
+    })
+  }
+
+  fn expr(&self, expr: ExprId) -> Result<&hir_js::Expr, Vec<Diagnostic>> {
+    self.body.exprs.get(expr.0 as usize).ok_or_else(|| {
+      vec![Diagnostic::error(
+        "NJS0103",
+        "expression id out of bounds",
+        Span::new(self.entry_file, self.body.span),
+      )]
+    })
+  }
+
+  fn pat(&self, pat: PatId) -> Result<&hir_js::Pat, Vec<Diagnostic>> {
+    self.body.pats.get(pat.0 as usize).ok_or_else(|| {
+      vec![Diagnostic::error(
+        "NJS0117",
+        "pattern id out of bounds",
+        Span::new(self.entry_file, self.body.span),
+      )]
+    })
+  }
+
+  fn codegen_stmt(&mut self, stmt_id: StmtId) -> Result<bool, Vec<Diagnostic>> {
+    let (kind, span) = {
+      let stmt = self.stmt(stmt_id)?;
+      (stmt.kind.clone(), Span::new(self.entry_file, stmt.span))
+    };
+
+    match kind {
+      StmtKind::Empty | StmtKind::Debugger => Ok(true),
+      StmtKind::Expr(expr) => {
+        let _ = self.codegen_expr(expr)?;
+        Ok(true)
+      }
+      StmtKind::Return(Some(expr)) => {
+        let value = self.codegen_expr(expr)?;
+        self
+          .builder
+          .build_return(Some(&value))
+          .expect("failed to build return");
+        Ok(false)
+      }
+      StmtKind::Return(None) => Err(vec![Diagnostic::error(
+        "NJS0116",
+        "`return` without a value is not supported in `main` yet",
+        span,
+      )]),
+      StmtKind::Block(stmts) => {
+        self.locals.push_scope();
+        let mut fallthrough = true;
+        for stmt_id in stmts {
+          fallthrough = self.codegen_stmt(stmt_id)?;
+          if !fallthrough {
+            break;
+          }
+        }
+        self.locals.pop_scope();
+        Ok(fallthrough)
+      }
+      StmtKind::If {
+        test,
+        consequent,
+        alternate,
+      } => self.codegen_if(test, consequent, alternate),
+      StmtKind::While { test, body } => self.codegen_while(test, body),
+      StmtKind::DoWhile { test, body } => self.codegen_do_while(test, body),
+      StmtKind::For {
+        init,
+        test,
+        update,
+        body,
+      } => self.codegen_for(init.as_ref(), test, update, body),
+      StmtKind::Var(decl) => {
+        self.codegen_var_decl(&decl, span)?;
+        Ok(true)
+      }
+      StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Labeled { .. } => Err(vec![
+        Diagnostic::error("NJS0113", "break/continue/labels are not supported yet", span),
+      ]),
+      StmtKind::Switch { .. } => Err(vec![Diagnostic::error(
+        "NJS0113",
+        "`switch` statements are not supported yet",
+        span,
+      )]),
+      StmtKind::Try { .. } => Err(vec![Diagnostic::error(
+        "NJS0113",
+        "`try` statements are not supported yet",
+        span,
+      )]),
+      StmtKind::Throw(_) => Err(vec![Diagnostic::error(
+        "NJS0113",
+        "`throw` statements are not supported yet",
+        span,
+      )]),
+      StmtKind::ForIn { .. } => Err(vec![Diagnostic::error(
+        "NJS0113",
+        "`for-in` / `for-of` loops are not supported yet",
+        span,
+      )]),
+      StmtKind::With { .. } => Err(vec![Diagnostic::error(
+        "NJS0113",
+        "`with` statements are not supported yet",
+        span,
+      )]),
+      other => Err(vec![Diagnostic::error(
+        "NJS0113",
+        format!("unsupported statement in `main`: {other:?}"),
+        span,
+      )]),
+    }
+  }
+
+  fn ensure_entry_alloca(&mut self, name: NameId) -> PointerValue<'ctx> {
+    let entry_bb = self
+      .func
+      .get_first_basic_block()
+      .expect("ts_main must have an entry block");
+    if let Some(first) = entry_bb.get_first_instruction() {
+      self.alloca_builder.position_before(&first);
+    } else {
+      self.alloca_builder.position_at_end(entry_bb);
+    }
+
+    let debug_name = self.names.resolve(name).unwrap_or("local");
+    self
+      .alloca_builder
+      .build_alloca(self.i32_ty, debug_name)
+      .expect("failed to build alloca")
+  }
+
+  fn bool_to_i32(&self, v: IntValue<'ctx>) -> IntValue<'ctx> {
+    self
+      .builder
+      .build_int_z_extend(v, self.i32_ty, "bool")
+      .expect("failed to zext bool")
+  }
+
+  fn is_truthy_i1(&self, v: IntValue<'ctx>) -> IntValue<'ctx> {
+    self
+      .builder
+      .build_int_compare(IntPredicate::NE, v, self.i32_ty.const_zero(), "truthy")
+      .expect("failed to build truthy compare")
+  }
+
+  fn codegen_if(
+    &mut self,
+    test: ExprId,
+    consequent: StmtId,
+    alternate: Option<StmtId>,
+  ) -> Result<bool, Vec<Diagnostic>> {
+    let cond_val = self.codegen_expr(test)?;
+    let cond_i1 = self.is_truthy_i1(cond_val);
+
+    let then_bb = self.context.append_basic_block(self.func, "if.then");
+
+    // If there is no alternate, the false branch falls through directly.
+    if alternate.is_none() {
+      let cont_bb = self.context.append_basic_block(self.func, "if.end");
+      self
+        .builder
+        .build_conditional_branch(cond_i1, then_bb, cont_bb)
+        .expect("failed to build conditional branch");
+
+      self.builder.position_at_end(then_bb);
+      let then_fallthrough = self.codegen_stmt(consequent)?;
+      if then_fallthrough {
+        self
+          .builder
+          .build_unconditional_branch(cont_bb)
+          .expect("failed to build branch");
+      }
+
+      self.builder.position_at_end(cont_bb);
+      return Ok(true);
+    }
+
+    let else_bb = self.context.append_basic_block(self.func, "if.else");
+    self
+      .builder
+      .build_conditional_branch(cond_i1, then_bb, else_bb)
+      .expect("failed to build conditional branch");
+
+    self.builder.position_at_end(then_bb);
+    let then_fallthrough = self.codegen_stmt(consequent)?;
+
+    let mut cont_bb = None;
+    if then_fallthrough {
+      let bb = self.context.append_basic_block(self.func, "if.end");
+      self
+        .builder
+        .build_unconditional_branch(bb)
+        .expect("failed to build branch");
+      cont_bb = Some(bb);
+    }
+
+    self.builder.position_at_end(else_bb);
+    let else_fallthrough = self.codegen_stmt(alternate.expect("checked above"))?;
+    if else_fallthrough {
+      let bb = cont_bb.unwrap_or_else(|| self.context.append_basic_block(self.func, "if.end"));
+      self
+        .builder
+        .build_unconditional_branch(bb)
+        .expect("failed to build branch");
+      cont_bb = Some(bb);
+    }
+
+    if let Some(cont) = cont_bb {
+      self.builder.position_at_end(cont);
+      Ok(true)
+    } else {
+      Ok(false)
+    }
+  }
+
+  fn codegen_while(&mut self, test: ExprId, body: StmtId) -> Result<bool, Vec<Diagnostic>> {
+    let cond_bb = self.context.append_basic_block(self.func, "while.cond");
+    let body_bb = self.context.append_basic_block(self.func, "while.body");
+    let end_bb = self.context.append_basic_block(self.func, "while.end");
+
+    self
+      .builder
+      .build_unconditional_branch(cond_bb)
+      .expect("failed to build branch");
+
+    self.builder.position_at_end(cond_bb);
+    let cond_val = self.codegen_expr(test)?;
+    let cond_i1 = self.is_truthy_i1(cond_val);
+    self
+      .builder
+      .build_conditional_branch(cond_i1, body_bb, end_bb)
+      .expect("failed to build conditional branch");
+
+    self.builder.position_at_end(body_bb);
+    let body_fallthrough = self.codegen_stmt(body)?;
+    if body_fallthrough {
+      self
+        .builder
+        .build_unconditional_branch(cond_bb)
+        .expect("failed to build branch");
+    }
+
+    self.builder.position_at_end(end_bb);
+    Ok(true)
+  }
+
+  fn codegen_do_while(&mut self, test: ExprId, body: StmtId) -> Result<bool, Vec<Diagnostic>> {
+    let body_bb = self.context.append_basic_block(self.func, "do.body");
+    self
+      .builder
+      .build_unconditional_branch(body_bb)
+      .expect("failed to build branch");
+
+    self.builder.position_at_end(body_bb);
+    let body_fallthrough = self.codegen_stmt(body)?;
+    if !body_fallthrough {
+      return Ok(false);
+    }
+
+    let cond_bb = self.context.append_basic_block(self.func, "do.cond");
+    let end_bb = self.context.append_basic_block(self.func, "do.end");
+    self
+      .builder
+      .build_unconditional_branch(cond_bb)
+      .expect("failed to build branch");
+
+    self.builder.position_at_end(cond_bb);
+    let cond_val = self.codegen_expr(test)?;
+    let cond_i1 = self.is_truthy_i1(cond_val);
+    self
+      .builder
+      .build_conditional_branch(cond_i1, body_bb, end_bb)
+      .expect("failed to build conditional branch");
+
+    self.builder.position_at_end(end_bb);
+    Ok(true)
+  }
+
+  fn codegen_for(
+    &mut self,
+    init: Option<&ForInit>,
+    test: Option<ExprId>,
+    update: Option<ExprId>,
+    body: StmtId,
+  ) -> Result<bool, Vec<Diagnostic>> {
+    // `for (let i = 0; ... )` introduces a scope for the loop.
+    self.locals.push_scope();
+
+    if let Some(init) = init {
+      match init {
+        ForInit::Expr(expr) => {
+          let _ = self.codegen_expr(*expr)?;
+        }
+        ForInit::Var(decl) => {
+          let span = self.span_of_stmt(body);
+          self.codegen_var_decl(decl, span)?;
+        }
+      }
+    }
+
+    let cond_bb = self.context.append_basic_block(self.func, "for.cond");
+    let body_bb = self.context.append_basic_block(self.func, "for.body");
+    let update_bb = self.context.append_basic_block(self.func, "for.update");
+    let end_bb = self.context.append_basic_block(self.func, "for.end");
+
+    self
+      .builder
+      .build_unconditional_branch(cond_bb)
+      .expect("failed to build branch");
+
+    self.builder.position_at_end(cond_bb);
+    let cond_i1 = if let Some(test) = test {
+      let v = self.codegen_expr(test)?;
+      self.is_truthy_i1(v)
+    } else {
+      self.bool_ty.const_int(1, false)
+    };
+    self
+      .builder
+      .build_conditional_branch(cond_i1, body_bb, end_bb)
+      .expect("failed to build conditional branch");
+
+    self.builder.position_at_end(body_bb);
+    let body_fallthrough = self.codegen_stmt(body)?;
+    if body_fallthrough {
+      self
+        .builder
+        .build_unconditional_branch(update_bb)
+        .expect("failed to build branch");
+    }
+
+    self.builder.position_at_end(update_bb);
+    if let Some(update) = update {
+      let _ = self.codegen_expr(update)?;
+    }
+    self
+      .builder
+      .build_unconditional_branch(cond_bb)
+      .expect("failed to build branch");
+
+    self.builder.position_at_end(end_bb);
+    self.locals.pop_scope();
+    Ok(true)
+  }
+
+  fn codegen_var_decl(&mut self, decl: &VarDecl, span: Span) -> Result<(), Vec<Diagnostic>> {
+    match decl.kind {
+      VarDeclKind::Var | VarDeclKind::Let | VarDeclKind::Const => {}
+      _ => {
+        return Err(vec![Diagnostic::error(
+          "NJS0113",
+          "unsupported variable declaration kind in native-js codegen",
+          span,
+        )]);
+      }
+    }
+
+    for declarator in decl.declarators.iter() {
+      let (name, pat_span) = {
+        let pat = self.pat(declarator.pat)?;
+        let name = match &pat.kind {
+          PatKind::Ident(name) => *name,
+          _ => {
+            return Err(vec![Diagnostic::error(
+              "NJS0117",
+              "unsupported pattern in variable declaration (expected identifier)",
+              Span::new(self.entry_file, pat.span),
+            )]);
+          }
+        };
+        (name, pat.span)
+      };
+
+      let Some(init) = declarator.init else {
+        return Err(vec![Diagnostic::error(
+          "NJS0118",
+          "variable declarations must have an initializer in native-js codegen",
+          Span::new(self.entry_file, pat_span),
+        )]);
+      };
+
+      let value = self.codegen_expr(init)?;
+      let ptr = self.ensure_entry_alloca(name);
+      self
+        .builder
+        .build_store(ptr, value)
+        .expect("failed to build store");
+      self.locals.insert(name, ptr);
+    }
+    Ok(())
+  }
+
+  fn codegen_expr(&mut self, expr: ExprId) -> Result<IntValue<'ctx>, Vec<Diagnostic>> {
+    let (kind, span) = {
+      let expr_data = self.expr(expr)?;
+      (
+        expr_data.kind.clone(),
+        Span::new(self.entry_file, expr_data.span),
+      )
+    };
+
+    match kind {
+      ExprKind::TypeAssertion { expr, .. }
+      | ExprKind::NonNull { expr }
+      | ExprKind::Satisfies { expr, .. } => self.codegen_expr(expr),
+      ExprKind::Literal(Literal::Number(raw)) => parse_i32_const(self.i32_ty, &raw).ok_or_else(|| {
+        vec![Diagnostic::error(
+          "NJS0104",
+          format!("unsupported numeric literal `{raw}` (expected 32-bit integer)"),
+          span,
+        )]
+      }),
+      ExprKind::Literal(Literal::Boolean(b)) => Ok(self.i32_ty.const_int(u64::from(b), false)),
+      ExprKind::Unary { op, expr } => {
+        let inner = self.codegen_expr(expr)?;
+        match op {
+          UnaryOp::Plus => Ok(inner),
+          UnaryOp::Minus => Ok(
+            self
+              .builder
+              .build_int_neg(inner, "neg")
+              .expect("failed to build negation"),
+          ),
+          UnaryOp::Not => {
+            let is_false = self
+              .builder
+              .build_int_compare(IntPredicate::EQ, inner, self.i32_ty.const_zero(), "not")
+              .expect("failed to build compare");
+            Ok(self.bool_to_i32(is_false))
+          }
+          UnaryOp::BitNot => Ok(self
+            .builder
+            .build_not(inner, "bitnot")
+            .expect("failed to build bitnot")),
+          _ => Err(vec![Diagnostic::error(
+            "NJS0105",
+            format!("unsupported unary operator `{op:?}`"),
+            span,
+          )]),
+        }
+      }
+      ExprKind::Binary { op, left, right } => {
+        let lhs = self.codegen_expr(left)?;
+        let rhs = self.codegen_expr(right)?;
+        let v = match op {
+          BinaryOp::Add => self
+            .builder
+            .build_int_add(lhs, rhs, "add")
+            .expect("failed to build add"),
+          BinaryOp::Subtract => self
+            .builder
+            .build_int_sub(lhs, rhs, "sub")
+            .expect("failed to build sub"),
+          BinaryOp::Multiply => self
+            .builder
+            .build_int_mul(lhs, rhs, "mul")
+            .expect("failed to build mul"),
+          BinaryOp::Divide => self
+            .builder
+            .build_int_signed_div(lhs, rhs, "div")
+            .expect("failed to build div"),
+          BinaryOp::Remainder => self
+            .builder
+            .build_int_signed_rem(lhs, rhs, "rem")
+            .expect("failed to build rem"),
+          BinaryOp::BitAnd => self.builder.build_and(lhs, rhs, "and").expect("failed to build and"),
+          BinaryOp::BitOr => self.builder.build_or(lhs, rhs, "or").expect("failed to build or"),
+          BinaryOp::BitXor => self.builder.build_xor(lhs, rhs, "xor").expect("failed to build xor"),
+          BinaryOp::ShiftLeft => self
+            .builder
+            .build_left_shift(lhs, rhs, "shl")
+            .expect("failed to build shl"),
+          BinaryOp::ShiftRight => self
+            .builder
+            .build_right_shift(lhs, rhs, true, "shr")
+            .expect("failed to build shr"),
+          BinaryOp::LessThan
+          | BinaryOp::LessEqual
+          | BinaryOp::GreaterThan
+          | BinaryOp::GreaterEqual
+          | BinaryOp::Equality
+          | BinaryOp::Inequality
+          | BinaryOp::StrictEquality
+          | BinaryOp::StrictInequality => {
+            let pred = match op {
+              BinaryOp::LessThan => IntPredicate::SLT,
+              BinaryOp::LessEqual => IntPredicate::SLE,
+              BinaryOp::GreaterThan => IntPredicate::SGT,
+              BinaryOp::GreaterEqual => IntPredicate::SGE,
+              BinaryOp::Equality | BinaryOp::StrictEquality => IntPredicate::EQ,
+              BinaryOp::Inequality | BinaryOp::StrictInequality => IntPredicate::NE,
+              _ => unreachable!(),
+            };
+            let cmp = self
+              .builder
+              .build_int_compare(pred, lhs, rhs, "cmp")
+              .expect("failed to build compare");
+            self.bool_to_i32(cmp)
+          }
+          _ => {
+            return Err(vec![Diagnostic::error(
+              "NJS0106",
+              format!("unsupported binary operator `{op:?}`"),
+              span,
+            )]);
+          }
+        };
+        Ok(v)
+      }
+      ExprKind::Ident(name) => {
+        let Some(ptr) = self.locals.lookup(name) else {
+          let label = self.names.resolve(name).unwrap_or("<unknown>");
           return Err(vec![Diagnostic::error(
-            "NJS0106",
-            format!("unsupported binary operator `{op:?}`"),
+            "NJS0114",
+            format!("unknown identifier `{label}` in native-js codegen"),
             span,
           )]);
-        }
-      };
-      Ok(v)
-    }
-    ExprKind::Assignment { op, target, value } => {
-      let value =
-        codegen_expr(builder, i32_ty, body, entry_file, *value, file_resolver, locals)?;
-      let binding = file_resolver.resolve_pat_ident(body, *target).ok_or_else(|| {
-        let pat_span = body
-          .pats
-          .get(target.0 as usize)
-          .map(|pat| pat.span)
-          .unwrap_or(expr_data.span);
-        vec![Diagnostic::error(
-          "NJS0132",
-          "unsupported assignment target",
-          Span::new(entry_file, pat_span),
-        )]
-      })?;
-      let slot = locals.get(&binding).copied().ok_or_else(|| {
-        vec![Diagnostic::error(
-          "NJS0133",
-          "assignment to unbound local",
-          span,
-        )]
-      })?;
-
-      match op {
-        AssignOp::Assign => {
-          builder
-            .build_store(slot, value)
-            .expect("failed to build store");
-          Ok(value)
-        }
-        AssignOp::AddAssign => {
-          let old = builder
-            .build_load(i32_ty, slot, "old")
+        };
+        Ok(
+          self
+            .builder
+            .build_load(self.i32_ty, ptr, "load")
             .expect("failed to build load")
-            .into_int_value();
-          let out = builder
-            .build_int_add(old, value, "add_assign")
-            .expect("failed to build add");
-          builder
-            .build_store(slot, out)
-            .expect("failed to build store");
-          Ok(out)
-        }
-        other => Err(vec![Diagnostic::error(
-          "NJS0134",
-          format!("unsupported assignment operator `{other:?}`"),
-          span,
-        )]),
+            .into_int_value(),
+        )
       }
+      ExprKind::Assignment { op, target, value } => {
+        let (name, pat_span) = {
+          let pat = self.pat(target)?;
+          let name = match &pat.kind {
+            PatKind::Ident(name) => *name,
+            _ => {
+              return Err(vec![Diagnostic::error(
+                "NJS0117",
+                "unsupported assignment target (expected identifier)",
+                Span::new(self.entry_file, pat.span),
+              )]);
+            }
+          };
+          (name, pat.span)
+        };
+
+        let Some(ptr) = self.locals.lookup(name) else {
+          let label = self.names.resolve(name).unwrap_or("<unknown>");
+          return Err(vec![Diagnostic::error(
+            "NJS0114",
+            format!("unknown identifier `{label}` in assignment"),
+            Span::new(self.entry_file, pat_span),
+          )]);
+        };
+
+        let rhs = self.codegen_expr(value)?;
+        let out = match op {
+          AssignOp::Assign => rhs,
+          AssignOp::AddAssign
+          | AssignOp::SubAssign
+          | AssignOp::MulAssign
+          | AssignOp::DivAssign
+          | AssignOp::RemAssign => {
+            let cur = self
+              .builder
+              .build_load(self.i32_ty, ptr, "load")
+              .expect("failed to build load")
+              .into_int_value();
+            match op {
+              AssignOp::AddAssign => self
+                .builder
+                .build_int_add(cur, rhs, "addassign")
+                .expect("failed to build add"),
+              AssignOp::SubAssign => self
+                .builder
+                .build_int_sub(cur, rhs, "subassign")
+                .expect("failed to build sub"),
+              AssignOp::MulAssign => self
+                .builder
+                .build_int_mul(cur, rhs, "mulassign")
+                .expect("failed to build mul"),
+              AssignOp::DivAssign => self
+                .builder
+                .build_int_signed_div(cur, rhs, "divassign")
+                .expect("failed to build div"),
+              AssignOp::RemAssign => self
+                .builder
+                .build_int_signed_rem(cur, rhs, "remassign")
+                .expect("failed to build rem"),
+              _ => unreachable!(),
+            }
+          }
+          _ => {
+            return Err(vec![Diagnostic::error(
+              "NJS0107",
+              format!("unsupported assignment operator `{op:?}`"),
+              span,
+            )]);
+          }
+        };
+
+        self
+          .builder
+          .build_store(ptr, out)
+          .expect("failed to build store");
+        Ok(out)
+      }
+      ExprKind::Update { op, expr, prefix } => {
+        let (name, target_span) = {
+          let inner = self.expr(expr)?;
+          let name = match &inner.kind {
+            ExprKind::Ident(name) => *name,
+            _ => {
+              return Err(vec![Diagnostic::error(
+                "NJS0107",
+                "unsupported update target (expected identifier)",
+                Span::new(self.entry_file, inner.span),
+              )]);
+            }
+          };
+          (name, inner.span)
+        };
+        let Some(ptr) = self.locals.lookup(name) else {
+          let label = self.names.resolve(name).unwrap_or("<unknown>");
+          return Err(vec![Diagnostic::error(
+            "NJS0114",
+            format!("unknown identifier `{label}` in update"),
+            Span::new(self.entry_file, target_span),
+          )]);
+        };
+
+        let old = self
+          .builder
+          .build_load(self.i32_ty, ptr, "load")
+          .expect("failed to build load")
+          .into_int_value();
+        let one = self.i32_ty.const_int(1, false);
+        let new = match op {
+          UpdateOp::Increment => self
+            .builder
+            .build_int_add(old, one, "inc")
+            .expect("failed to build inc"),
+          UpdateOp::Decrement => self
+            .builder
+            .build_int_sub(old, one, "dec")
+            .expect("failed to build dec"),
+        };
+        self
+          .builder
+          .build_store(ptr, new)
+          .expect("failed to build store");
+        Ok(if prefix { new } else { old })
+      }
+      _ => Err(vec![Diagnostic::error(
+        "NJS0107",
+        "unsupported expression in `main`",
+        span,
+      )]),
     }
-    _ => Err(vec![Diagnostic::error(
-      "NJS0107",
-      "unsupported expression in `main`",
-      span,
-    )]),
   }
 }
 
@@ -478,9 +964,6 @@ pub enum CodegenError {
   TypeError(String),
 }
 
-pub fn emit_llvm_module(
-  ast: &Node<TopLevel>,
-  opts: CompileOptions,
-) -> Result<String, CodegenError> {
+pub fn emit_llvm_module(ast: &Node<TopLevel>, opts: CompileOptions) -> Result<String, CodegenError> {
   llvm::emit_llvm_module(ast, opts)
 }
