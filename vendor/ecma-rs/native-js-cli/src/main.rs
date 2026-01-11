@@ -30,7 +30,8 @@ struct Cli {
 
   /// Exported function in the entry module to call after module initialization.
   ///
-  /// If omitted, only top-level module initializers are executed.
+  /// If omitted and the entry module exports `main()`, it is invoked automatically. Otherwise,
+  /// only top-level module initializers are executed.
   #[arg(long, value_name = "NAME", global = true)]
   entry_fn: Option<String>,
 
@@ -357,4 +358,3 @@ fn run_exe(exe_path: &Path, args: &[String]) -> i32 {
 
   status.code().unwrap_or(1)
 }
-

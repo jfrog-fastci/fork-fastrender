@@ -107,9 +107,12 @@ export function main() { console.log(add(1, 2)); }
 TS
 
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
-  --entry-fn main \
   /tmp/main.ts
 ```
+
+By default, if the entry module exports `main()`, it will be invoked after all module initializers
+run. Pass `--entry-fn <NAME>` to call a different exported function (or to call a function when the
+export name isn’t `main`).
 
 ## Options
 

@@ -424,6 +424,24 @@ pub fn compile_project_to_llvm_ir(
     asts.insert(file, parsed);
   }
 
+  // If the caller didn't specify an entry export, try to auto-call an exported `main()` if it
+  // exists and is a supported local function with no parameters.
+  //
+  // This keeps `native-js-cli` ergonomics close to "run my project" while staying conservative:
+  // we only auto-call when the export resolves to a local function declaration with a body.
+  let entry_export = entry_export.or_else(|| {
+    let export_map = program.exports_of(entry_file);
+    let Some(entry) = export_map.get("main") else {
+      return None;
+    };
+    let def = entry.def?;
+    let local = program.def_name(def)?;
+    let (params, _ret) = local_fn_sigs
+      .get(&entry_file)
+      .and_then(|m| m.get(&local))?;
+    params.is_empty().then_some("main")
+  });
+
   // Compute which exports must be materialized for runtime imports + the configured entrypoint.
   let mut used_exports: BTreeMap<FileId, BTreeSet<String>> = BTreeMap::new();
   if let Some(entry_export) = entry_export {

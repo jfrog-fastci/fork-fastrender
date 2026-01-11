@@ -27,8 +27,6 @@ fn compiles_and_runs_two_file_project() {
 
   native_js_cli()
     .timeout(Duration::from_secs(30))
-    .arg("--entry-fn")
-    .arg("main")
     .arg(main)
     .assert()
     .success()
