@@ -49,12 +49,14 @@ struct ThenableRecordPtr {
 
 unsafe extern "C" fn thenable_call_then_record_ptr(
   thenable: *mut u8,
-  _on_fulfilled: runtime_native::abi::ThenableResolveCallback,
+  on_fulfilled: runtime_native::abi::ThenableResolveCallback,
   _on_rejected: runtime_native::abi::ThenableRejectCallback,
-  _data: *mut u8,
+  data: *mut u8,
 ) -> ValueRef {
   let t = &*(thenable as *const ThenableRecordPtr);
   t.observed.store(thenable as usize, Ordering::Release);
+  // Settle the destination promise so the resolver root is released.
+  on_fulfilled(data, PromiseResolveInput::value(core::ptr::null_mut()));
   core::ptr::null_mut()
 }
 
@@ -74,6 +76,28 @@ unsafe extern "C" fn thenable_call_then_resolve_value(
 
 static THENABLE_RESOLVE_VALUE_VTABLE: ThenableVTable = ThenableVTable {
   call_then: thenable_call_then_resolve_value,
+};
+
+#[repr(C)]
+struct ThenableStoreCallbacks {
+  resolve_cb: AtomicUsize,
+  data: AtomicUsize,
+}
+
+unsafe extern "C" fn thenable_call_then_store_callbacks(
+  thenable: *mut u8,
+  on_fulfilled: runtime_native::abi::ThenableResolveCallback,
+  _on_rejected: runtime_native::abi::ThenableRejectCallback,
+  data: *mut u8,
+) -> ValueRef {
+  let t = &*(thenable as *const ThenableStoreCallbacks);
+  t.resolve_cb.store(on_fulfilled as usize, Ordering::Release);
+  t.data.store(data as usize, Ordering::Release);
+  core::ptr::null_mut()
+}
+
+static THENABLE_STORE_CALLBACKS_VTABLE: ThenableVTable = ThenableVTable {
+  call_then: thenable_call_then_store_callbacks,
 };
 
 #[test]
@@ -213,6 +237,61 @@ fn promise_thenable_job_passes_relocated_thenable_ptr() {
   unsafe {
     drop(Box::from_raw(old_thenable));
     drop(Box::from_raw(new_thenable));
+  }
+}
+
+#[test]
+fn promise_thenable_resolver_uses_relocated_promise_ptr_after_job_runs() {
+  let _rt = TestRuntimeGuard::new();
+
+  runtime_native::gc::roots::debug_clear_global_roots_for_tests();
+  drain_async_runtime();
+
+  let dst_old = runtime_native::rt_promise_new_legacy();
+  let dst_new = runtime_native::rt_promise_new_legacy();
+
+  let thenable = Box::into_raw(Box::new(ThenableStoreCallbacks {
+    resolve_cb: AtomicUsize::new(0),
+    data: AtomicUsize::new(0),
+  }));
+  let thenable_ref = ThenableRef {
+    vtable: &THENABLE_STORE_CALLBACKS_VTABLE,
+    ptr: thenable.cast(),
+  };
+
+  runtime_native::rt_promise_resolve_thenable_legacy(dst_old, thenable_ref);
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 2);
+
+  // Run the thenable job; it should install a resolver root and then return without settling.
+  drain_async_runtime();
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 1);
+
+  assert_eq!(
+    replace_global_root_ptr(dst_old.0.cast::<u8>(), dst_new.0.cast::<u8>()),
+    1
+  );
+
+  let resolve_cb = unsafe { &*thenable }.resolve_cb.load(Ordering::Acquire);
+  let data = unsafe { &*thenable }.data.load(Ordering::Acquire);
+  assert_ne!(resolve_cb, 0);
+
+  let resolve_cb: runtime_native::abi::ThenableResolveCallback = unsafe { core::mem::transmute(resolve_cb) };
+  resolve_cb(data as *mut u8, PromiseResolveInput::value(core::ptr::null_mut()));
+
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 0);
+
+  let (state_old, _) = runtime_native::rt_debug_promise_outcome(dst_old);
+  assert_eq!(state_old, 0, "old promise should remain pending");
+
+  let (state_new, value_new) = runtime_native::rt_debug_promise_outcome(dst_new);
+  assert_eq!(state_new, 1, "relocated promise should be fulfilled");
+  assert_eq!(value_new, core::ptr::null_mut());
+
+  runtime_native::rt_promise_drop_legacy(dst_old);
+  runtime_native::rt_promise_drop_legacy(dst_new);
+
+  unsafe {
+    drop(Box::from_raw(thenable));
   }
 }
 

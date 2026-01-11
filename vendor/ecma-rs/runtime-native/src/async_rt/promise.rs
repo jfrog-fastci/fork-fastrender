@@ -885,7 +885,7 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
   }
 
   struct ThenableResolver {
-    dst: PromiseRef,
+    dst_handle: AtomicU64,
     called: AtomicBool,
   }
 
@@ -901,7 +901,17 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
       return;
     }
 
-    promise_resolve_into(resolver.dst, value);
+    let handle_raw = resolver.dst_handle.swap(ROOT_HANDLE_NONE, Ordering::AcqRel);
+    if let Some(id) = decode_root_handle(handle_raw) {
+      let dst = PromiseRef(
+        crate::roots::global_persistent_handle_table()
+          .get(id)
+          .unwrap_or(core::ptr::null_mut())
+          .cast(),
+      );
+      promise_resolve_into(dst, value);
+      let _ = crate::roots::global_persistent_handle_table().free(id);
+    }
   }
 
   extern "C" fn thenable_reject(data: *mut u8, reason: ValueRef) {
@@ -916,7 +926,17 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
       return;
     }
 
-    promise_reject(resolver.dst, reason);
+    let handle_raw = resolver.dst_handle.swap(ROOT_HANDLE_NONE, Ordering::AcqRel);
+    if let Some(id) = decode_root_handle(handle_raw) {
+      let dst = PromiseRef(
+        crate::roots::global_persistent_handle_table()
+          .get(id)
+          .unwrap_or(core::ptr::null_mut())
+          .cast(),
+      );
+      promise_reject(dst, reason);
+      let _ = crate::roots::global_persistent_handle_table().free(id);
+    }
   }
 
   extern "C" fn run_thenable_job(data: *mut u8) {
@@ -935,8 +955,9 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
       return;
     }
 
+    let dst_handle = crate::roots::global_persistent_handle_table().alloc(dst.0.cast());
     let resolver = Box::new(ThenableResolver {
-      dst,
+      dst_handle: AtomicU64::new(encode_root_handle(Some(dst_handle))),
       called: AtomicBool::new(false),
     });
     let resolver_ptr = Box::into_raw(resolver) as *mut u8;
