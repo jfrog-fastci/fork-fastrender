@@ -42,8 +42,10 @@
 pub mod codegen;
 pub mod codes;
 pub mod emit;
+pub mod gc;
 pub mod link;
 pub mod llvm;
+pub mod poc;
 pub mod runtime_abi;
 pub mod poc_stackmaps;
 pub mod strict;
