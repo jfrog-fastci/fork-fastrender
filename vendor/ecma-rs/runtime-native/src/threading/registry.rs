@@ -146,11 +146,15 @@ impl ThreadState {
   }
 
   pub(crate) fn for_each_handle_slot(&self, mut f: impl FnMut(*mut *mut u8)) {
-    // Snapshot to avoid holding the mutex while the callback potentially mutates
-    // slots (the GC may update them in-place during evacuation).
-    let slots = self.handle_stack.lock().unwrap().0.clone();
-    for slot in slots {
+    // GC must not allocate, so avoid cloning the Vec. Copy out one slot pointer at a time under
+    // the mutex, then invoke the callback after releasing the lock.
+    let mut idx = 0usize;
+    loop {
+      let Some(slot) = self.handle_stack.lock().unwrap().0.get(idx).copied() else {
+        break;
+      };
       f(slot);
+      idx += 1;
     }
   }
 }

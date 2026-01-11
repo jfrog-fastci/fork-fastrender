@@ -152,11 +152,15 @@ pub fn register_weak_cleanup(f: fn(&mut GcHeap)) {
 }
 
 pub(crate) fn run_weak_cleanups(heap: &mut GcHeap) {
-  // Copy out the current list so we don't execute arbitrary callbacks while
-  // holding the global lock.
-  let cleanups = WEAK_CLEANUPS.lock().clone();
-  for cleanup in cleanups {
+  // GC must not allocate, so avoid cloning the Vec. Instead, copy out one function pointer at a
+  // time under the mutex, then invoke it after releasing the lock.
+  let mut idx = 0usize;
+  loop {
+    let Some(cleanup) = WEAK_CLEANUPS.lock().get(idx).copied() else {
+      break;
+    };
     cleanup(heap);
+    idx += 1;
   }
 }
  

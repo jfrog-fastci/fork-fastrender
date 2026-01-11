@@ -59,58 +59,78 @@ impl GcHeap {
       marker.heap.root_handles = root_handles;
     }
 
-    let mut candidate_blocks = vec![false; self.immix.block_count()];
-    let mut candidate_count = 0usize;
     let cfg = self.major_compaction;
     if cfg.enabled && cfg.max_live_ratio_percent <= 100 {
-      for block_id in 0..self.immix.block_count() {
-        let Some(metrics) = self.immix.block_metrics(block_id) else {
-          continue;
+      // Major compaction is optional and disabled by default. Avoid allocating the candidate bitmap
+      // unless we actually find candidate blocks.
+      let candidate_blocks_opt = {
+        let immix = &self.immix;
+
+        let is_candidate_block = |block_id: usize| -> bool {
+          let Some(metrics) = immix.block_metrics(block_id) else {
+            return false;
+          };
+
+          let live_lines = IMMIX_LINES_PER_BLOCK - metrics.free_lines;
+          if live_lines == 0 {
+            return false;
+          }
+          if live_lines < cfg.min_live_lines {
+            return false;
+          }
+
+          live_lines * 100 < cfg.max_live_ratio_percent as usize * IMMIX_LINES_PER_BLOCK
         };
 
-        let live_lines = IMMIX_LINES_PER_BLOCK - metrics.free_lines;
-        if live_lines == 0 {
-          continue;
+        let mut candidate_count = 0usize;
+        for block_id in 0..immix.block_count() {
+          if is_candidate_block(block_id) {
+            candidate_count += 1;
+          }
         }
-        if live_lines < cfg.min_live_lines {
-          continue;
+
+        if candidate_count == 0 {
+          None
+        } else {
+          let mut candidate_blocks = vec![false; immix.block_count()];
+          for block_id in 0..candidate_blocks.len() {
+            if is_candidate_block(block_id) {
+              candidate_blocks[block_id] = true;
+            }
+          }
+          Some(candidate_blocks)
+        }
+      };
+
+      if let Some(candidate_blocks) = candidate_blocks_opt {
+        {
+          let mut compactor = Compactor {
+            heap: self,
+            candidate_blocks: &candidate_blocks,
+            worklist: VecDeque::new(),
+            visited: AHashSet::new(),
+            bump: BumpCursor::new(),
+          };
+
+          roots.for_each_root_slot(&mut |slot| {
+            compactor.visit_slot(slot);
+          });
+
+          let mut root_handles = mem::take(&mut compactor.heap.root_handles);
+          root_handles.for_each_root_slot(&mut |slot| {
+            compactor.visit_slot(slot);
+          });
+          compactor.heap.root_handles = root_handles;
+
+          while let Some(obj) = compactor.worklist.pop_front() {
+            compactor.visit_obj(obj);
+          }
         }
 
-        if live_lines * 100 < cfg.max_live_ratio_percent as usize * IMMIX_LINES_PER_BLOCK {
-          candidate_blocks[block_id] = true;
-          candidate_count += 1;
-        }
-      }
-    }
-
-    if candidate_count > 0 {
-      {
-        let mut compactor = Compactor {
-          heap: self,
-          candidate_blocks: &candidate_blocks,
-          worklist: VecDeque::new(),
-          visited: AHashSet::new(),
-          bump: BumpCursor::new(),
-        };
-
-        roots.for_each_root_slot(&mut |slot| {
-          compactor.visit_slot(slot);
-        });
-
-        let mut root_handles = mem::take(&mut compactor.heap.root_handles);
-        root_handles.for_each_root_slot(&mut |slot| {
-          compactor.visit_slot(slot);
-        });
-        compactor.heap.root_handles = root_handles;
-
-        while let Some(obj) = compactor.worklist.pop_front() {
-          compactor.visit_obj(obj);
-        }
-      }
-
-      for (block_id, is_candidate) in candidate_blocks.iter().enumerate() {
-        if *is_candidate {
-          self.immix.clear_block_line_map(block_id);
+        for (block_id, is_candidate) in candidate_blocks.iter().enumerate() {
+          if *is_candidate {
+            self.immix.clear_block_line_map(block_id);
+          }
         }
       }
     }
