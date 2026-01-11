@@ -91,3 +91,49 @@ fn strict_undefined_check_clears_maybe_undef_in_else_path() {
     "expected receiver to still include non-nullish values after `x === undefined` check, got {mask:?}"
   );
 }
+
+#[test]
+fn loose_not_nullish_check_refines_then_path_to_non_nullish() {
+  let src = r#"
+    let x = foo;
+    if (x != null) {
+      x.toString();
+    } else {
+      bar();
+    }
+  "#;
+
+  let program = compile_source(src, TopLevelMode::Module, false);
+  let cfg = &program.top_level.body;
+  let analysis = calculate_nullability(cfg);
+
+  let (label, inst_idx, obj_var) = find_to_string_getprop(cfg);
+  let mask = analysis.mask_of_var_before_inst(cfg, label, inst_idx, obj_var);
+  assert!(
+    mask.is_non_nullish(),
+    "expected receiver to be refined to non-nullish before x.toString(), got {mask:?}"
+  );
+}
+
+#[test]
+fn not_of_loose_nullish_check_is_handled() {
+  let src = r#"
+    let x = foo;
+    if (!(x == null)) {
+      x.toString();
+    } else {
+      bar();
+    }
+  "#;
+
+  let program = compile_source(src, TopLevelMode::Module, false);
+  let cfg = &program.top_level.body;
+  let analysis = calculate_nullability(cfg);
+
+  let (label, inst_idx, obj_var) = find_to_string_getprop(cfg);
+  let mask = analysis.mask_of_var_before_inst(cfg, label, inst_idx, obj_var);
+  assert!(
+    mask.is_non_nullish(),
+    "expected receiver to be refined to non-nullish before x.toString(), got {mask:?}"
+  );
+}
