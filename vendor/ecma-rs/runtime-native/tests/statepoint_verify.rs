@@ -67,7 +67,7 @@ fn verifier_rejects_register_locations() {
   assert_eq!(loc.offset, 0);
 
   let msg = err.to_string();
-  assert!(msg.contains("callsite"));
+  assert!(msg.contains("return address"));
   assert!(msg.contains("patchpoint_id=0xabcdef00"));
   assert!(msg.contains("location[3]"));
   assert!(msg.contains("kind=Register"));
