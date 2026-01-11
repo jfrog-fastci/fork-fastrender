@@ -1,9 +1,12 @@
-use hir_js::{Body, BodyId, ExprId, ExprKind, FunctionBody, LowerResult, StmtId, StmtKind};
+use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult};
 use knowledge_base::ApiDatabase;
 
 use crate::api::ApiId;
 use crate::resolve::resolve_call;
 use crate::types::{TypeId, TypeProvider};
+
+#[cfg(feature = "typed")]
+use hir_js::{FunctionBody, StmtId, StmtKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArrayOp {
@@ -116,6 +119,7 @@ pub fn recognize_pattern_tables(
   }
 }
 
+#[cfg(feature = "typed")]
 fn walk_stmt(body: &Body, stmt_id: StmtId, mut f: impl FnMut(&StmtKind)) {
   fn walk(body: &Body, stmt_id: StmtId, f: &mut impl FnMut(&StmtKind)) {
     let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
