@@ -1,6 +1,6 @@
 use hir_js::{
-  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectProperty, PatId, PatKind,
-  StmtId, StmtKind, UnaryOp, VarDeclKind,
+  ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectProperty, PatId, PatKind, StmtId,
+  StmtKind, UnaryOp, VarDeclKind,
 };
 
 #[cfg(feature = "typed")]
@@ -8,6 +8,112 @@ use hir_js::BinaryOp;
 
 use crate::api::ApiId;
 use crate::resolve::{resolve_api_call_best_effort_untyped, resolve_api_call_untyped};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExprFingerprint {
+  Ident(hir_js::NameId),
+  This,
+  Member(Box<ExprFingerprint>, MemberKey),
+  LiteralNull,
+  LiteralUndefined,
+  LiteralBoolean(bool),
+  LiteralNumber(String),
+  LiteralString(String),
+  LiteralBigInt(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MemberKey {
+  Ident(hir_js::NameId),
+  String(String),
+  Number(String),
+}
+
+fn expr_fingerprint(lowered: &LowerResult, body: BodyId, expr: ExprId) -> Option<ExprFingerprint> {
+  let body_ref = lowered.body(body)?;
+  let expr = body_ref.exprs.get(expr.0 as usize)?;
+  match &expr.kind {
+    ExprKind::TypeAssertion { expr, .. }
+    | ExprKind::NonNull { expr }
+    | ExprKind::Satisfies { expr, .. } => expr_fingerprint(lowered, body, *expr),
+    ExprKind::Ident(name) => Some(ExprFingerprint::Ident(*name)),
+    ExprKind::This => Some(ExprFingerprint::This),
+    ExprKind::Member(member) => {
+      if member.optional {
+        return None;
+      }
+      let obj = expr_fingerprint(lowered, body, member.object)?;
+      let key = match &member.property {
+        hir_js::ObjectKey::Ident(id) => MemberKey::Ident(*id),
+        hir_js::ObjectKey::String(s) => MemberKey::String(s.clone()),
+        hir_js::ObjectKey::Number(n) => MemberKey::Number(n.clone()),
+        hir_js::ObjectKey::Computed(_) => return None,
+      };
+      Some(ExprFingerprint::Member(Box::new(obj), key))
+    }
+    ExprKind::Literal(lit) => Some(match lit {
+      hir_js::Literal::Null => ExprFingerprint::LiteralNull,
+      hir_js::Literal::Undefined => ExprFingerprint::LiteralUndefined,
+      hir_js::Literal::Boolean(b) => ExprFingerprint::LiteralBoolean(*b),
+      hir_js::Literal::Number(n) => ExprFingerprint::LiteralNumber(n.clone()),
+      hir_js::Literal::String(s) => ExprFingerprint::LiteralString(s.lossy.clone()),
+      hir_js::Literal::BigInt(n) => ExprFingerprint::LiteralBigInt(n.clone()),
+      hir_js::Literal::Regex(_) => return None,
+    }),
+    _ => None,
+  }
+}
+
+fn strip_transparent_wrappers(body: &hir_js::Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
+  }
+}
+
+fn parse_simple_method_call_untyped(
+  lowered: &LowerResult,
+  body: BodyId,
+  expr: ExprId,
+) -> Option<(ExprId, hir_js::NameId, ExprId)> {
+  let body_ref = lowered.body(body)?;
+  let expr = strip_transparent_wrappers(body_ref, expr);
+  let expr = body_ref.exprs.get(expr.0 as usize)?;
+  let ExprKind::Call(call) = &expr.kind else {
+    return None;
+  };
+  if call.optional || call.is_new {
+    return None;
+  }
+  if call.args.len() != 1 {
+    return None;
+  }
+  let arg0 = call.args.first()?;
+  if arg0.spread {
+    return None;
+  }
+
+  let callee = strip_transparent_wrappers(body_ref, call.callee);
+  let callee = body_ref.exprs.get(callee.0 as usize)?;
+  let ExprKind::Member(member) = &callee.kind else {
+    return None;
+  };
+  if member.optional {
+    return None;
+  }
+  let hir_js::ObjectKey::Ident(prop) = &member.property else {
+    return None;
+  };
+
+  Some((member.object, *prop, arg0.expr))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardKind {
@@ -508,6 +614,57 @@ pub fn recognize_patterns_best_effort_untyped(
           spread_count,
         });
       }
+    }
+
+    // Best-effort MapGetOrDefault: `m.has(k) ? m.get(k) : default`.
+    if let ExprKind::Conditional {
+      test,
+      consequent,
+      alternate,
+    } = &expr.kind
+    {
+      let Some((has_map, has_prop, has_key)) = parse_simple_method_call_untyped(lowered, body, *test)
+      else {
+        continue;
+      };
+      if lowered.names.resolve(has_prop) != Some("has") {
+        continue;
+      }
+
+      let Some((get_map, get_prop, get_key)) =
+        parse_simple_method_call_untyped(lowered, body, *consequent)
+      else {
+        continue;
+      };
+      if lowered.names.resolve(get_prop) != Some("get") {
+        continue;
+      }
+
+      let Some(has_map_fp) = expr_fingerprint(lowered, body, has_map) else {
+        continue;
+      };
+      let Some(get_map_fp) = expr_fingerprint(lowered, body, get_map) else {
+        continue;
+      };
+      if has_map_fp != get_map_fp {
+        continue;
+      }
+
+      let Some(has_key_fp) = expr_fingerprint(lowered, body, has_key) else {
+        continue;
+      };
+      let Some(get_key_fp) = expr_fingerprint(lowered, body, get_key) else {
+        continue;
+      };
+      if has_key_fp != get_key_fp {
+        continue;
+      }
+
+      patterns.push(RecognizedPattern::MapGetOrDefault {
+        map: has_map,
+        key: has_key,
+        default: *alternate,
+      });
     }
   }
 
