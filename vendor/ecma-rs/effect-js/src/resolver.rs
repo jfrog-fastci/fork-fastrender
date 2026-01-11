@@ -617,7 +617,7 @@ pub fn resolve_api_call_typed<'a>(
   if call.optional || call.is_new {
     return None;
   }
-
+ 
   let use_start = body.exprs[call.callee.0 as usize].span.start;
   let local_decls = collect_lexical_names(lower, body);
   let local_bindings = collect_require_bindings(lower, body_id);
