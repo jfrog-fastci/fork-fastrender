@@ -2826,6 +2826,26 @@ mod tests {
   }
 
   #[test]
+  fn font_source_format_recognizes_variable_font_hints() {
+    assert!(matches!(
+      FontSourceFormat::from_hint("woff2-variations"),
+      FontSourceFormat::Woff2
+    ));
+    assert!(matches!(
+      FontSourceFormat::from_hint("woff2 supports variations"),
+      FontSourceFormat::Woff2
+    ));
+    assert!(matches!(
+      FontSourceFormat::from_hint("woff-variations"),
+      FontSourceFormat::Woff
+    ));
+    assert!(matches!(
+      FontSourceFormat::from_hint("woff supports variations"),
+      FontSourceFormat::Woff
+    ));
+  }
+
+  #[test]
   fn non_ascii_whitespace_css_parse_error_snippet_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
     let css = format!("div {{ color: red; }}{nbsp}\nspan {{}}");
@@ -4312,7 +4332,9 @@ impl FontSourceFormat {
       .as_str()
     {
       "woff2" => FontSourceFormat::Woff2,
+      "woff2-variations" | "woff2 supports variations" => FontSourceFormat::Woff2,
       "woff" => FontSourceFormat::Woff,
+      "woff-variations" | "woff supports variations" => FontSourceFormat::Woff,
       "opentype" | "otf" => FontSourceFormat::Opentype,
       "truetype" | "ttf" | "truetype-aat" => FontSourceFormat::Truetype,
       "collection" | "ttc" => FontSourceFormat::Collection,

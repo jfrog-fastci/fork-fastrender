@@ -1,6 +1,7 @@
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::dom::{enumerate_dom_ids, DomNode};
-use fastrender::interaction::{InteractionState, TextEditPaintState};
+use fastrender::interaction::state::TextEditPaintState;
+use fastrender::interaction::InteractionState;
 use fastrender::{BrowserDocument, FastRender, FastRenderConfig, RenderOptions};
 use std::collections::HashMap;
 use tiny_skia::Pixmap;
@@ -101,4 +102,3 @@ fn display_list_form_control_rtl_caret_maps_logical_start_to_visual_right() {
     "expected RTL caret at char_idx=0 to paint to the right of caret at end (start_x={caret_x_start}, end_x={caret_x_end})"
   );
 }
-

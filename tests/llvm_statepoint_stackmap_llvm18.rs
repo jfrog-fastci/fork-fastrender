@@ -148,19 +148,19 @@ fn llvm18_statepoint_fixture_emits_verified_stackmaps() {
   let obj = tmp.path().join("statepoint_min.o");
 
   // 1) Assemble with verification enabled (default for llvm-as).
-  run_success(Command::new("llvm-as-18").arg(&fixture).arg("-o").arg(&bc));
+  let mut cmd = Command::new("llvm-as-18");
+  cmd.arg(&fixture).arg("-o").arg(&bc);
+  run_success(cmd);
 
   // 2) Compile to an object with stackmaps.
-  run_success(
-    Command::new("llc-18")
-      .arg("-filetype=obj")
-      .arg(&bc)
-      .arg("-o")
-      .arg(&obj),
-  );
+  let mut cmd = Command::new("llc-18");
+  cmd.arg("-filetype=obj").arg(&bc).arg("-o").arg(&obj);
+  run_success(cmd);
 
   // 3) Assert `.llvm_stackmaps` exists and has at least one record.
-  let stackmap = run_success(Command::new("llvm-readobj-18").arg("--stackmap").arg(&obj));
+  let mut cmd = Command::new("llvm-readobj-18");
+  cmd.arg("--stackmap").arg(&obj);
+  let stackmap = run_success(cmd);
   let version = parse_decimal_after_prefix(&stackmap, "LLVM StackMap Version: ")
     .expect("could not parse LLVM StackMap Version");
   assert_eq!(version, 3, "unexpected stackmap version:\n{stackmap}");
@@ -183,12 +183,9 @@ fn llvm18_statepoint_fixture_emits_verified_stackmaps() {
   // LLVM's stackmap record uses the address of the instruction *after* the call.
   // We compute it by disassembling and taking the address of the instruction
   // immediately following the first `call*` in `@test`.
-  let disasm = run_success(
-    Command::new("llvm-objdump-18")
-      .arg("-d")
-      .arg("--no-show-raw-insn")
-      .arg(&obj),
-  );
+  let mut cmd = Command::new("llvm-objdump-18");
+  cmd.arg("-d").arg("--no-show-raw-insn").arg(&obj);
+  let disasm = run_success(cmd);
 
   let expected_inst_offset =
     parse_call_return_offset_from_objdump(&disasm, "test").expect("failed to parse disassembly");
