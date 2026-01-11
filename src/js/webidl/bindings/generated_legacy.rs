@@ -994,25 +994,26 @@ pub mod window {
     R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
     Host: WebHostBindings<R>,
   {
-    // WebIDL: `undefined alert(optional DOMString message = "")`.
-    //
-    // The legacy bindings model `optional` arguments as separate host overloads to match the
-    // existing `vm-js` binding dispatch expectations (see `generated_bindings_dispatch_window_alert_overloads`).
-    if args.is_empty() {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result = host.call_operation(rt, None, "Window", "alert", 0, converted_args)?;
-      return binding_value_to_js::<Host, R>(rt, result);
+    let argcount = std::cmp::min(args.len(), 1);
+    match argcount {
+      0 => {
+        {
+          let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+          let result = host.call_operation(rt, None, "Window", "alert", 0, converted_args)?;
+          binding_value_to_js::<Host, R>(rt, result)
+        }
+      },
+      1 => {
+        {
+          let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
+          let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
+          converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+          let result = host.call_operation(rt, None, "Window", "alert", 1, converted_args)?;
+          binding_value_to_js::<Host, R>(rt, result)
+        }
+      },
+      _ => Err(rt.throw_type_error(&format!("No matching overload for Window.alert with {} arguments.\nCandidates:\n  - Window.alert()\n  - Window.alert(DOMString)", args.len()))),
     }
-
-    let v0 = args[0];
-    let converted = if rt.is_undefined(v0) {
-      BindingValue::String("".to_string())
-    } else {
-      let s = rt.to_string(host, v0)?;
-      BindingValue::String(rt.js_string_to_rust_string(s)?)
-    };
-    let result = host.call_operation(rt, None, "Window", "alert", 1, vec![converted])?;
-    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
