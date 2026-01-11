@@ -1,0 +1,29 @@
+- name: node:perf_hooks.performance.now
+  kind: function
+  aliases:
+    - perf_hooks.performance.now
+  since: "v8.5.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | NONDETERMINISTIC
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:perf_hooks.performance.timeOrigin
+  kind: getter
+  aliases:
+    - perf_hooks.performance.timeOrigin
+  since: "v8.5.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
