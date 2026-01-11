@@ -12,6 +12,7 @@ pub mod find_conds;
 pub mod find_loops;
 pub mod interference;
 pub mod alias;
+pub mod consume;
 pub mod liveness;
 pub mod loop_info;
 pub mod nullability;

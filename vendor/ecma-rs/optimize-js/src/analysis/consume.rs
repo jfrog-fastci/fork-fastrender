@@ -1,0 +1,290 @@
+use crate::analysis::liveness::calculate_live_outs;
+use crate::analysis::ownership::OwnershipResult;
+use crate::cfg::cfg::Cfg;
+use crate::il::inst::{Arg, ArgUseMode, InstTyp, OwnershipState};
+use ahash::{HashMap, HashSet};
+ 
+fn ownership_of_var(ownership: &OwnershipResult, var: u32) -> OwnershipState {
+  ownership
+    .get(&var)
+    .copied()
+    .unwrap_or(OwnershipState::Unknown)
+}
+ 
+fn should_consume_var(var: u32, live_out: &HashSet<u32>, ownership: &OwnershipResult) -> bool {
+  ownership_of_var(ownership, var) == OwnershipState::Owned && !live_out.contains(&var)
+}
+ 
+pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
+  let live_outs = calculate_live_outs(cfg, &HashMap::default(), &HashSet::default());
+ 
+  let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
+  labels.sort_unstable();
+ 
+  for label in labels {
+    let insts_len = cfg.bblocks.get(label).len();
+    for inst_idx in 0..insts_len {
+      let live_out = live_outs
+        .get(&(label, inst_idx))
+        .cloned()
+        .unwrap_or_default();
+ 
+      let inst = &mut cfg.bblocks.get_mut(label)[inst_idx];
+      inst.meta.arg_use_modes.clear();
+ 
+      if inst.args.is_empty() {
+        continue;
+      }
+ 
+      let mut modes = vec![ArgUseMode::Borrow; inst.args.len()];
+      let mut any_consume = false;
+ 
+      match inst.t {
+        InstTyp::Return | InstTyp::Throw => {
+          if let Some(Arg::Var(var)) = inst.args.get(0) {
+            if ownership_of_var(ownership, *var) == OwnershipState::Owned {
+              modes[0] = ArgUseMode::Consume;
+              any_consume = true;
+            }
+          }
+        }
+        InstTyp::ForeignStore | InstTyp::UnknownStore => {
+          if let Some(Arg::Var(var)) = inst.args.get(0) {
+            if should_consume_var(*var, &live_out, ownership) {
+              modes[0] = ArgUseMode::Consume;
+              any_consume = true;
+            }
+          }
+        }
+        InstTyp::PropAssign => {
+          if let Some(Arg::Var(var)) = inst.args.get(2) {
+            if should_consume_var(*var, &live_out, ownership) {
+              modes[2] = ArgUseMode::Consume;
+              any_consume = true;
+            }
+          }
+        }
+        InstTyp::Call => {
+          for (idx, arg) in inst.args.iter().enumerate() {
+            let Arg::Var(var) = arg else {
+              continue;
+            };
+            if should_consume_var(*var, &live_out, ownership) {
+              modes[idx] = ArgUseMode::Consume;
+              any_consume = true;
+            }
+          }
+        }
+        // Copy/rename instructions do not consume.
+        InstTyp::VarAssign | InstTyp::Phi => {}
+        // Conservative default: do not consume args for other ops yet.
+        _ => {}
+      };
+ 
+      if any_consume {
+        debug_assert!(
+          modes.iter().any(|m| matches!(m, ArgUseMode::Consume)),
+          "any_consume implies at least one Consume in modes"
+        );
+        inst.meta.arg_use_modes = modes;
+      }
+    }
+  }
+}
+ 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::analysis::ownership;
+  use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
+  use crate::il::inst::{Arg, Const, Inst};
+ 
+  fn cfg_with_blocks(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
+    let labels: Vec<u32> = blocks.iter().map(|(label, _)| *label).collect();
+    let mut graph = CfgGraph::default();
+    for &(from, to) in edges {
+      graph.connect(from, to);
+    }
+    for &label in &labels {
+      if !graph.contains(label) {
+        graph.connect(label, label);
+        graph.disconnect(label, label);
+      }
+    }
+    let mut bblocks = CfgBBlocks::default();
+    for (label, insts) in blocks.iter() {
+      bblocks.add(*label, insts.clone());
+    }
+    Cfg {
+      graph,
+      bblocks,
+      entry: 0,
+    }
+  }
+ 
+  fn mode_at(inst: &crate::il::inst::Inst, idx: usize) -> ArgUseMode {
+    inst
+      .meta
+      .arg_use_modes
+      .get(idx)
+      .copied()
+      .unwrap_or(ArgUseMode::Borrow)
+  }
+ 
+  #[test]
+  fn call_last_use_consumes_arg() {
+    let mut cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::call(
+            1,
+            Arg::Builtin("__optimize_js_array".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![Arg::Var(0)],
+            vec![],
+          ),
+          Inst::ret(Arg::Const(Const::Undefined)),
+        ],
+      )],
+      &[],
+    );
+ 
+    let ownership = ownership::analyze_cfg_ownership(&cfg);
+    annotate_cfg_consumption(&mut cfg, &ownership);
+ 
+    let call = &cfg.bblocks.get(0)[1];
+    assert_eq!(mode_at(call, 2), ArgUseMode::Consume);
+  }
+ 
+  #[test]
+  fn earlier_use_is_borrow_if_value_is_used_again() {
+    let mut cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::call(
+            1,
+            Arg::Builtin("__optimize_js_array".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![Arg::Var(0)],
+            vec![],
+          ),
+          Inst::call(
+            2,
+            Arg::Builtin("__optimize_js_array".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![Arg::Var(0)],
+            vec![],
+          ),
+          Inst::ret(Arg::Const(Const::Undefined)),
+        ],
+      )],
+      &[],
+    );
+ 
+    let ownership = ownership::analyze_cfg_ownership(&cfg);
+    annotate_cfg_consumption(&mut cfg, &ownership);
+ 
+    let call1 = &cfg.bblocks.get(0)[1];
+    let call2 = &cfg.bblocks.get(0)[2];
+    assert_eq!(mode_at(call1, 2), ArgUseMode::Borrow);
+    assert_eq!(mode_at(call2, 2), ArgUseMode::Consume);
+  }
+ 
+  #[test]
+  fn consumes_in_disjoint_terminal_branches() {
+    let mut cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![
+            Inst::call(
+              0,
+              Arg::Builtin("__optimize_js_object".to_string()),
+              Arg::Const(Const::Undefined),
+              vec![],
+              vec![],
+            ),
+            Inst::cond_goto(Arg::Var(99), 1, 2),
+          ],
+        ),
+        (
+          1,
+          vec![
+            Inst::call(
+              1,
+              Arg::Builtin("__optimize_js_array".to_string()),
+              Arg::Const(Const::Undefined),
+              vec![Arg::Var(0)],
+              vec![],
+            ),
+            Inst::ret(Arg::Const(Const::Undefined)),
+          ],
+        ),
+        (
+          2,
+          vec![
+            Inst::call(
+              2,
+              Arg::Builtin("__optimize_js_array".to_string()),
+              Arg::Const(Const::Undefined),
+              vec![Arg::Var(0)],
+              vec![],
+            ),
+            Inst::ret(Arg::Const(Const::Undefined)),
+          ],
+        ),
+      ],
+      &[(0, 1), (0, 2)],
+    );
+ 
+    let ownership = ownership::analyze_cfg_ownership(&cfg);
+    annotate_cfg_consumption(&mut cfg, &ownership);
+ 
+    let call_t = &cfg.bblocks.get(1)[0];
+    let call_f = &cfg.bblocks.get(2)[0];
+    assert_eq!(mode_at(call_t, 2), ArgUseMode::Consume);
+    assert_eq!(mode_at(call_f, 2), ArgUseMode::Consume);
+  }
+ 
+  #[test]
+  fn return_consumes_owned_value() {
+    let mut cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::ret(Arg::Var(0)),
+        ],
+      )],
+      &[],
+    );
+ 
+    let ownership = ownership::analyze_cfg_ownership(&cfg);
+    annotate_cfg_consumption(&mut cfg, &ownership);
+ 
+    let ret = &cfg.bblocks.get(0)[1];
+    assert_eq!(mode_at(ret, 0), ArgUseMode::Consume);
+  }
+}

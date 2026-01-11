@@ -106,6 +106,24 @@ pub enum OwnershipState {
   Unknown,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ArgUseMode {
+  Borrow,
+  Consume,
+}
+
+impl Default for ArgUseMode {
+  fn default() -> Self {
+    Self::Borrow
+  }
+}
+
+fn is_default_arg_use_modes(modes: &[ArgUseMode]) -> bool {
+  modes.is_empty() || modes.iter().all(|m| matches!(m, ArgUseMode::Borrow))
+}
+
 impl Default for OwnershipState {
   fn default() -> Self {
     Self::Unknown
@@ -193,6 +211,11 @@ pub struct InstMeta {
   pub ownership: OwnershipState,
   #[cfg_attr(
     feature = "serde",
+    serde(default, skip_serializing_if = "is_default_arg_use_modes")
+  )]
+  pub arg_use_modes: Vec<ArgUseMode>,
+  #[cfg_attr(
+    feature = "serde",
     serde(default, skip_serializing_if = "Option::is_none")
   )]
   pub result_escape: Option<crate::analysis::escape::EscapeState>,
@@ -225,6 +248,7 @@ impl InstMeta {
       && self.type_summary.is_none()
       && !self.excludes_nullish
       && self.ownership.is_default()
+      && is_default_arg_use_modes(&self.arg_use_modes)
       && self.result_escape.is_none()
       && crate::analysis::purity::is_default_purity(&self.callee_purity)
       && self.nullability_narrowing.is_none()
@@ -245,6 +269,7 @@ impl Default for InstMeta {
       type_summary: None,
       excludes_nullish: false,
       ownership: OwnershipState::default(),
+      arg_use_modes: Vec::new(),
       result_escape: None,
       callee_purity: Purity::Impure,
       nullability_narrowing: None,

@@ -12,7 +12,10 @@ use crate::{FnId, Program};
 use ahash::HashMap;
 use ahash::HashMapExt;
 
-use super::{alias, effect, encoding, escape, interproc_escape, nullability, ownership, purity, range};
+use super::{
+  alias, consume, effect, encoding, escape, interproc_escape, nullability, ownership, purity,
+  range,
+};
 
 /// Per-function analysis bundle.
 ///
@@ -67,7 +70,7 @@ pub struct ProgramAnalyses {
 
   pub alias: HashMap<FunctionKey, alias::AliasResult>,
   pub escape: HashMap<FunctionKey, escape::EscapeResult>,
-  pub ownership: HashMap<FunctionKey, ownership::OwnershipResults>,
+  pub ownership: HashMap<FunctionKey, ownership::OwnershipResult>,
 
   pub range: HashMap<FunctionKey, range::RangeResult>,
   pub nullability: HashMap<FunctionKey, nullability::NullabilityResult>,
@@ -415,6 +418,7 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
       ownership::analyze_cfg_ownership_with_escapes_and_params(cfg, params, escapes)
     };
     ownership::annotate_cfg_ownership(cfg_for_key_mut(program, key), &ownership_result);
+    consume::annotate_cfg_consumption(cfg_for_key_mut(program, key), &ownership_result);
     analyses.ownership.insert(key, ownership_result);
   }
 
