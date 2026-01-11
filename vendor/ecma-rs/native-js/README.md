@@ -97,8 +97,8 @@ bash scripts/cargo_llvm.sh test -p native-js --lib
 
 ### Runnable example (in-memory source → native executable)
 
-This crate ships a small runnable example that compiles an in-memory TypeScript snippet to LLVM IR,
-invokes `clang` to produce a temporary native executable, runs it, and prints stdout:
+This crate ships a small runnable example that compiles an in-memory TypeScript snippet to a native
+executable (LLVM IR → object via LLVM TargetMachine, then system link), runs it, and prints stdout:
 
 ```bash
 # From repo root:
@@ -164,6 +164,8 @@ The API is intentionally small and currently consists of:
 - `NativeJsError`: shared error type for the native pipeline (parse errors,
   codegen errors, typecheck diagnostics, missing toolchain/IO errors, and
   unimplemented/unsupported features)
+- `compiler::compile_typescript_to_artifact(...)`: convenience helper that turns the textual LLVM IR
+  emitted by `compile_typescript_to_llvm_ir` into an on-disk artifact (including a Linux executable)
 
 Example (API shape):
 

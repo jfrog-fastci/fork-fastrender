@@ -1,6 +1,9 @@
 use native_js::compiler::compile_typescript_to_artifact;
 use native_js::{CompileOptions, EmitKind};
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 #[test]
 #[cfg(target_os = "linux")]
@@ -18,11 +21,34 @@ fn aot_smoke() {
 
   compile_typescript_to_artifact(source, opts, Some(exe_path.clone())).unwrap();
 
-  let output = Command::new("timeout")
-    .args(["5", exe_path.to_str().unwrap()])
-    .output()
+  let mut child = Command::new(&exe_path)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
     .unwrap();
 
-  assert!(output.status.success(), "status={:?} stderr={}", output.status, String::from_utf8_lossy(&output.stderr));
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "native-js aot ok\n");
+  let Some(status) = child.wait_timeout(Duration::from_secs(5)).unwrap() else {
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("compiled executable timed out");
+  };
+
+  let mut stdout = String::new();
+  child
+    .stdout
+    .take()
+    .unwrap()
+    .read_to_string(&mut stdout)
+    .unwrap();
+  let mut stderr = String::new();
+  child
+    .stderr
+    .take()
+    .unwrap()
+    .read_to_string(&mut stderr)
+    .unwrap();
+
+  assert!(status.success(), "status={status:?} stderr={stderr}");
+  assert_eq!(stdout, "native-js aot ok\n");
 }
