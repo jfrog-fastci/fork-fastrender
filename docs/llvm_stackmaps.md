@@ -120,9 +120,9 @@ For stackmaps created from `gc.statepoint` (including `rewrite-statepoints-for-g
 
 | Location index | Meaning | Observed encoding |
 |---:|---|---|
-| `#1` | **Calling convention ID** of the original call | `Constant` / `ConstantIndex` |
-| `#2` | **Statepoint flags** (the `i32 flags` operand to `gc.statepoint`) | `Constant` / `ConstantIndex` |
-| `#3` | **Number of deopt operands** | `Constant` / `ConstantIndex` |
+| `#1` | **Calling convention ID** of the original call | `Constant <cc-id>` |
+| `#2` | **Statepoint flags** (the `i32 flags` operand to `gc.statepoint`) | `Constant <flags>` |
+| `#3` | **Number of deopt operands** | `Constant <n>` |
 | next `n` | The deopt operands themselves (`"deopt"(... )`) | one `Location` per operand |
 | remaining | GC roots (`"gc-live"`) | encoded as base/derived pairs |
 
