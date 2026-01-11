@@ -3987,10 +3987,12 @@ pub fn rt_parallel_for(
 // Async
 // NOTE: GC is moving/compacting (Immix + opportunistic copying).
 // The async runtime must store something stable in OS/userdata (epoll/kqueue) and
-// cross-thread wakers across awaits, so it cannot retain raw `*mut Coroutine`.
+// cross-thread wakers across awaits, so it must not retain raw `*mut Coroutine`
+// pointers across turns.
 // Use a stable generational handle id (u64) that indexes a pinned handle table
 // cell, and the GC updates the cell's pointer when the coroutine relocates.
-pub fn rt_async_spawn(coro: CoroutineId /* = HandleId(u64) */) -> PromiseRef;
+pub fn rt_async_spawn(coro: *mut Coroutine) -> PromiseRef;
+// Non-blocking microtask drain; returns true if it executed any ready work.
 pub fn rt_async_poll() -> bool;
 ```
 
