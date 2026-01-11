@@ -360,26 +360,48 @@ pub fn validate_native_strict_body(
   }
 
   let mut any_cache = HashMap::new();
-  for (idx, ty) in result.expr_types.iter().enumerate() {
+  // Native-strict `any` diagnostics should point at the *introduction* site of
+  // an `any` type (binding site / explicit `as any` / etc), rather than every
+  // use-site. In particular, `const x: any = ...; void x;` should emit a single
+  // diagnostic on the binding, not one on each identifier reference.
+  //
+  // Track `any`-typed identifier bindings (patterns) so we can suppress
+  // redundant diagnostics on `ExprKind::Ident` uses of those bindings.
+  let mut any_bindings = HashSet::new();
+  for (idx, ty) in result.pat_types.iter().enumerate() {
     let span = result
-      .expr_spans
+      .pat_spans
       .get(idx)
       .copied()
-      .or_else(|| body.exprs.get(idx).map(|expr| expr.span))
       .unwrap_or(TextRange::new(0, 0));
     let mut visiting = HashSet::new();
-    if type_contains_any(store, relate, *ty, &mut any_cache, &mut visiting) {
+    let has_any = type_contains_any(store, relate, *ty, &mut any_cache, &mut visiting);
+    if has_any {
+      if let Some(pat) = body.pats.get(idx) {
+        if let PatKind::Ident(name) = &pat.kind {
+          any_bindings.insert(*name);
+        }
+      }
       diagnostics.push(codes::NATIVE_STRICT_ANY.error(
         "`any` is forbidden when `native_strict` is enabled",
         Span::new(file, span),
       ));
     }
   }
-  for (idx, ty) in result.pat_types.iter().enumerate() {
+  for (idx, ty) in result.expr_types.iter().enumerate() {
+    if let Some(expr) = body.exprs.get(idx) {
+      if let ExprKind::Ident(name) = &expr.kind {
+        if any_bindings.contains(name) {
+          continue;
+        }
+      }
+    }
+
     let span = result
-      .pat_spans
+      .expr_spans
       .get(idx)
       .copied()
+      .or_else(|| body.exprs.get(idx).map(|expr| expr.span))
       .unwrap_or(TextRange::new(0, 0));
     let mut visiting = HashSet::new();
     if type_contains_any(store, relate, *ty, &mut any_cache, &mut visiting) {
