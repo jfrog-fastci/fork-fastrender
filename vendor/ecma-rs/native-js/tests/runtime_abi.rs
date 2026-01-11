@@ -101,6 +101,50 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
     "rt_write_barrier_gc must not addrspacecast GC pointers out of addrspace(1):\n{wb}"
   );
 
+  assert!(
+    ir.contains("define internal void @rt_gc_safepoint_gc"),
+    "missing rt_gc_safepoint_gc wrapper:\n{ir}"
+  );
+  let safepoint_line = ir
+    .lines()
+    .find(|l| l.contains("define internal void @rt_gc_safepoint_gc"))
+    .expect("rt_gc_safepoint_gc line");
+  assert!(
+    !safepoint_line.contains("gc \"coreclr\""),
+    "rt_gc_safepoint_gc must not be GC-managed (ABI wrappers are outside GC pointer discipline lint):\n{safepoint_line}\n\nIR:\n{ir}"
+  );
+  let safepoint = function_block(&ir, "@rt_gc_safepoint_gc");
+  assert!(
+    safepoint.contains("@rt_gc_safepoint"),
+    "expected rt_gc_safepoint_gc to call @rt_gc_safepoint:\n{safepoint}"
+  );
+  assert!(
+    !safepoint.contains("addrspacecast"),
+    "rt_gc_safepoint_gc must not use addrspacecasts:\n{safepoint}"
+  );
+
+  assert!(
+    ir.contains("define internal void @rt_gc_collect_gc"),
+    "missing rt_gc_collect_gc wrapper:\n{ir}"
+  );
+  let collect_line = ir
+    .lines()
+    .find(|l| l.contains("define internal void @rt_gc_collect_gc"))
+    .expect("rt_gc_collect_gc line");
+  assert!(
+    !collect_line.contains("gc \"coreclr\""),
+    "rt_gc_collect_gc must not be GC-managed (ABI wrappers are outside GC pointer discipline lint):\n{collect_line}\n\nIR:\n{ir}"
+  );
+  let collect = function_block(&ir, "@rt_gc_collect_gc");
+  assert!(
+    collect.contains("@rt_gc_collect"),
+    "expected rt_gc_collect_gc to call @rt_gc_collect:\n{collect}"
+  );
+  assert!(
+    !collect.contains("addrspacecast"),
+    "rt_gc_collect_gc must not use addrspacecasts:\n{collect}"
+  );
+
   // Parallel scheduler entrypoints are raw ABI (no GC pointer wrapper needed).
   assert!(
     ir.contains("declare i64 @rt_parallel_spawn"),

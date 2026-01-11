@@ -5,7 +5,12 @@ use native_js::runtime_abi::{emit_runtime_call, ArgRootingPolicy, RuntimeCallErr
 #[test]
 fn runtime_call_registry_has_gc_safety_metadata() {
   // MayGC functions with no GC pointer args.
-  for f in [RuntimeFn::Alloc, RuntimeFn::GcSafepoint, RuntimeFn::GcCollect] {
+  for f in [
+    RuntimeFn::Alloc,
+    RuntimeFn::AllocPinned,
+    RuntimeFn::GcSafepoint,
+    RuntimeFn::GcCollect,
+  ] {
     let spec = f.spec();
     assert!(
       spec.may_gc,
@@ -69,4 +74,3 @@ fn rejects_may_gc_runtime_fn_with_gc_pointer_args() {
     other => panic!("expected MayGcWithGcPointerArgs error, got {other:?}"),
   }
 }
-
