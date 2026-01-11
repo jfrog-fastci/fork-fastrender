@@ -269,6 +269,7 @@ impl NullabilityResult {
     match arg {
       Arg::Var(v) => state.mask_of_var(*v),
       Arg::Const(c) => const_mask(c),
+      Arg::Builtin(name) if name == "undefined" => NullabilityMask::UNDEF,
       Arg::Builtin(_) | Arg::Fn(_) => NullabilityMask::OTHER,
     }
   }
@@ -297,6 +298,7 @@ impl NullabilityResult {
       Arg::Const(Const::Undefined) => NullishFlags::MAYBE_UNDEF,
       Arg::Const(_) => NullishFlags::NON_NULLISH,
       Arg::Fn(_) => NullishFlags::NON_NULLISH,
+      Arg::Builtin(name) if name == "undefined" => NullishFlags::MAYBE_UNDEF,
       Arg::Builtin(_) => NullishFlags::UNKNOWN,
     }
   }
@@ -318,6 +320,7 @@ impl NullabilityAnalysis {
     match arg {
       Arg::Var(v) => state.mask_of_var(*v),
       Arg::Const(c) => const_mask(c),
+      Arg::Builtin(name) if name == "undefined" => NullabilityMask::UNDEF,
       Arg::Builtin(_) | Arg::Fn(_) => NullabilityMask::OTHER,
     }
   }
@@ -714,6 +717,31 @@ mod tests {
       result.mask_of_var_at_entry(2, 0),
       NullabilityMask::NULL | NullabilityMask::OTHER
     );
+  }
+
+  #[test]
+  fn builtin_undefined_value_is_tracked() {
+    // %0 = undefined; %1 = (%0 === undefined); if %1 goto 1 else 2
+    let cfg = build_cfg(
+      &[(0, 1), (0, 2)],
+      &[
+        (
+          0,
+          vec![
+            Inst::var_assign(0, Arg::Builtin("undefined".to_string())),
+            Inst::bin(1, Arg::Var(0), BinOp::StrictEq, Arg::Const(Const::Undefined)),
+            Inst::cond_goto(Arg::Var(1), 1, 2),
+          ],
+        ),
+        (1, vec![]),
+        (2, vec![]),
+      ],
+    );
+
+    let result = calculate_nullability(&cfg);
+    assert!(result.entry_state(1).is_reachable());
+    assert_eq!(result.mask_of_var_at_entry(1, 0), NullabilityMask::UNDEF);
+    assert!(!result.entry_state(2).is_reachable());
   }
 
   #[test]

@@ -2,7 +2,7 @@
 mod common;
 
 use common::compile_source;
-use optimize_js::analysis::nullability::{calculate_nullability, NullabilityMask, NullabilityResult};
+use optimize_js::analysis::nullability::{calculate_nullability, NullabilityMask};
 use optimize_js::cfg::cfg::Cfg;
 use optimize_js::il::inst::{Arg, BinOp, Const, InstTyp};
 use optimize_js::TopLevelMode;
@@ -38,34 +38,6 @@ fn find_to_string_getprop(cfg: &Cfg) -> (u32, usize, u32) {
   matches[0]
 }
 
-fn mask_before_inst(
-  analysis: &NullabilityResult,
-  cfg: &Cfg,
-  label: u32,
-  inst_idx: usize,
-  var: u32,
-) -> NullabilityMask {
-  // The nullability API currently exposes block entry states, not per-instruction
-  // states. For this test we require that the receiver variable isn't reassigned
-  // between the block entry and the GetProp instruction, so the entry state is
-  // the state immediately before the instruction.
-  let block = cfg.bblocks.get(label);
-  assert!(
-    block
-      .iter()
-      .take(inst_idx)
-      .all(|inst| !inst.tgts.iter().any(|tgt| *tgt == var)),
-    "receiver var %{var} is assigned before the GetProp instruction; test needs per-instruction state support"
-  );
-
-  assert!(
-    analysis.entry_state(label).is_reachable(),
-    "expected GetProp block {label} to be reachable"
-  );
-
-  analysis.mask_of_var_at_entry(label, var)
-}
-
 #[test]
 fn loose_nullish_check_refines_else_path_to_non_nullish() {
   let src = r#"
@@ -82,7 +54,7 @@ fn loose_nullish_check_refines_else_path_to_non_nullish() {
   let analysis = calculate_nullability(cfg);
 
   let (label, inst_idx, obj_var) = find_to_string_getprop(cfg);
-  let mask = mask_before_inst(&analysis, cfg, label, inst_idx, obj_var);
+  let mask = analysis.mask_of_var_before_inst(cfg, label, inst_idx, obj_var);
   assert!(
     mask.is_non_nullish(),
     "expected receiver to be refined to non-nullish before x.toString(), got {mask:?}"
@@ -105,7 +77,7 @@ fn strict_undefined_check_clears_maybe_undef_in_else_path() {
   let analysis = calculate_nullability(cfg);
 
   let (label, inst_idx, obj_var) = find_to_string_getprop(cfg);
-  let mask = mask_before_inst(&analysis, cfg, label, inst_idx, obj_var);
+  let mask = analysis.mask_of_var_before_inst(cfg, label, inst_idx, obj_var);
   assert!(
     !mask.may_be_undefined(),
     "expected receiver to be refined to not-undefined before x.toString(), got {mask:?}"
