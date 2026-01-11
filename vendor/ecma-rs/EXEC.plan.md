@@ -3992,7 +3992,8 @@ pub fn rt_parallel_for(
 // Use a stable generational handle id (u64) that indexes a pinned handle table
 // cell, and the GC updates the cell's pointer when the coroutine relocates.
 pub fn rt_async_spawn(coro: CoroutineId /* = u64 */) -> PromiseRef;
-// Non-blocking microtask drain; returns true if it executed any ready work.
+// Drive the async runtime for one event-loop turn.
+// Returns true iff there is still pending work after the turn; false when fully idle.
 pub fn rt_async_poll() -> bool;
 ```
 

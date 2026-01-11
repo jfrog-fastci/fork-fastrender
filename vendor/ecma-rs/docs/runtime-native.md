@@ -397,8 +397,9 @@ more complete scheduler/async surface may add:
 - Cooperative yielding (e.g. `rt_parallel_yield()`).
 - Promise/continuation primitives (e.g. `rt_promise_then`, `rt_promise_resolve`,
   etc.) if the compiler lowers async/await in terms of explicit promise ops.
-- A blocking/timeout-aware async poll API (as a **new symbol**, not by changing
-  the `rt_async_poll() -> bool` signature).
+- A microtask-only non-blocking checkpoint API (as a **new symbol**, e.g.
+  `rt_drain_microtasks`) rather than changing `rt_async_poll() -> bool`, which
+  drives a full event-loop turn and may block waiting for timers/I/O.
 
 ---
 
@@ -958,11 +959,12 @@ The compiler is responsible for:
   pointers in shape maps.
 
 ### 7.2 Event loop tick model: `rt_async_poll`
-The native async ABI uses `rt_async_poll` as a **microtask checkpoint**:
+The native async ABI uses `rt_async_poll` to drive the JS-shaped event loop for
+one turn:
 
 ```c
-// Drain the microtask queue (non-blocking).
-// Returns true if at least one microtask was executed.
+// Drive the event loop for one turn.
+// Returns true iff there is still pending work after the turn; false when fully idle.
 bool rt_async_poll(void);
 ```
 
@@ -971,6 +973,7 @@ Integration with scheduler:
   periodically or the runtime has a dedicated IO thread).
 - When the scheduler becomes idle (no runnable tasks), a worker calls
   `rt_async_wait()` to block until external events enqueue work.
+- For a microtask-only non-blocking checkpoint, use `rt_drain_microtasks()`.
 
 ### 7.3 Promises and continuations
 Promises are the minimal cross-cutting primitive:
