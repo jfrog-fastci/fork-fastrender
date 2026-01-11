@@ -216,10 +216,25 @@ pub fn calculate_live_ins(
   inlines: &HashMap<(u32, usize), (u32, usize)>,
   inlined_vars: &HashSet<u32>,
 ) -> HashMap<(u32, usize), HashSet<u32>> {
+  calculate_live_in_outs(cfg, inlines, inlined_vars).live_ins
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveInOut {
+  pub live_ins: HashMap<(u32, usize), HashSet<u32>>,
+  pub live_outs: HashMap<(u32, usize), HashSet<u32>>,
+}
+
+pub fn calculate_live_in_outs(
+  cfg: &Cfg,
+  inlines: &HashMap<(u32, usize), (u32, usize)>,
+  inlined_vars: &HashSet<u32>,
+) -> LiveInOut {
   let mut analysis = LivenessAnalysis::new(cfg, inlines, inlined_vars);
   let result = analysis.analyze(cfg, AnalysisBoundary::VirtualExit);
 
   let mut live_ins = HashMap::default();
+  let mut live_outs = HashMap::default();
   for label in cfg.graph.labels_sorted() {
     let mut state = result
       .blocks
@@ -230,11 +245,15 @@ pub fn calculate_live_ins(
       if analysis.inlined_insts.contains(&(label, inst_idx)) {
         continue;
       }
+      // In a backward liveness analysis, the current state before applying the transfer for an
+      // instruction is the set of variables live *after* that instruction.
+      live_outs.insert((label, inst_idx), analysis.bitset_to_vars(&state));
       analysis.apply_to_instruction(label, inst_idx, inst, &mut state);
       live_ins.insert((label, inst_idx), analysis.bitset_to_vars(&state));
     }
   }
-  live_ins
+
+  LiveInOut { live_ins, live_outs }
 }
 
 #[cfg(test)]

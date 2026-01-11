@@ -60,6 +60,10 @@ impl EscapeState {
 /// allocation-defining temps, plus any temps that may alias an escaping allocation.
 pub type EscapeResult = BTreeMap<u32, EscapeState>;
 
+/// Allocation-only escape analysis results.
+///
+/// This exposes the escape state for each allocation-defining temp, without including intermediate
+/// temps that may alias those allocations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EscapeResults {
   alloc_states: BTreeMap<u32, EscapeState>,
@@ -522,6 +526,8 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
     for inst in block.iter() {
       match inst.t {
         InstTyp::Return | InstTyp::Throw => {
+          // Returned/thrown values escape the current function but can still be treated as
+          // ownership-transfer sites rather than forcing them to be globally shared.
           let Some(arg) = inst.args.get(0) else {
             continue;
           };

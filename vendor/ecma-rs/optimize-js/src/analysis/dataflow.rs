@@ -150,6 +150,19 @@ fn run_dataflow<A: DataFlowAnalysis>(
   let boundary_state = analysis.boundary_state(&resolved_boundary, cfg);
   let mut worklist = VecDeque::from([boundary_label]);
   let mut queued = HashSet::from_iter([boundary_label]);
+  // Seed propagation from the boundary at least once.
+  //
+  // Our worklist algorithm only enqueues successors when a node's entry/exit
+  // state changes. When the boundary state's value equals `bottom()` and the
+  // boundary block has no transfer effect (e.g. an empty virtual exit for a
+  // backward analysis), the boundary node's state may not "change" relative to
+  // its initial `bottom()` initialization. In that case we still need to visit
+  // boundary-reachable blocks, because their transfer functions may produce
+  // non-bottom states even when their inputs are bottom.
+  //
+  // This flag ensures boundary successors are visited at least once while still
+  // avoiding redundant enqueues on later boundary re-processing.
+  let mut boundary_successors_seeded = false;
   while let Some(label) = worklist.pop_front() {
     queued.remove(&label);
     let incoming = if label == boundary_label {
@@ -179,12 +192,19 @@ fn run_dataflow<A: DataFlowAnalysis>(
     };
 
     let block_state = blocks.get_mut(&label).unwrap();
-    if block_state.entry != entry || block_state.exit != exit {
+    let changed = block_state.entry != entry || block_state.exit != exit;
+    if changed {
       *block_state = BlockState { entry, exit };
+    }
+
+    if changed || (label == boundary_label && !boundary_successors_seeded) {
       for succ in flow_graph.successors(label) {
         if queued.insert(succ) {
           worklist.push_back(succ);
         }
+      }
+      if label == boundary_label {
+        boundary_successors_seeded = true;
       }
     }
   }

@@ -67,7 +67,7 @@ pub struct ProgramAnalyses {
 
   pub alias: HashMap<FunctionKey, alias::AliasResult>,
   pub escape: HashMap<FunctionKey, escape::EscapeResult>,
-  pub ownership: HashMap<FunctionKey, ownership::OwnershipResult>,
+  pub ownership: HashMap<FunctionKey, ownership::OwnershipResults>,
 
   pub range: HashMap<FunctionKey, range::RangeResult>,
   pub nullability: HashMap<FunctionKey, nullability::NullabilityResult>,
