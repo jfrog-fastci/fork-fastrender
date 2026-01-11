@@ -214,7 +214,7 @@ source_filename = "statepoint"
 
 declare void @callee(ptr addrspace(1))
 
-define void @foo(ptr addrspace(1) %obj) gc "statepoint-example" {
+ define void @foo(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %derived = getelementptr i8, ptr addrspace(1) %obj, i64 16
   call void @callee(ptr addrspace(1) %derived) ["gc-live"(ptr addrspace(1) %derived)]

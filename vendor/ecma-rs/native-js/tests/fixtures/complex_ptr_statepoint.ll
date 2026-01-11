@@ -19,7 +19,7 @@ declare void @leaf2(ptr addrspace(1))
 
 declare void @leaf6(ptr addrspace(1), ptr addrspace(1), ptr addrspace(1), ptr addrspace(1), ptr addrspace(1), ptr addrspace(1))
 
-define void @inner(ptr addrspace(1) %a, ptr addrspace(1) %b, ptr addrspace(1) %c, ptr addrspace(1) %d, ptr addrspace(1) %e, ptr addrspace(1) %f) gc "statepoint-example" {
+define void @inner(ptr addrspace(1) %a, ptr addrspace(1) %b, ptr addrspace(1) %c, ptr addrspace(1) %d, ptr addrspace(1) %e, ptr addrspace(1) %f) gc "coreclr" {
 entry:
   %statepoint_token = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 2882400000, i32 0, ptr elementtype(void (ptr addrspace(1), ptr addrspace(1))) @leaf, i32 2, i32 0, ptr addrspace(1) %a, ptr addrspace(1) %b, i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %f, ptr addrspace(1) %e, ptr addrspace(1) %d, ptr addrspace(1) %c, ptr addrspace(1) %a, ptr addrspace(1) %b) ]
   %f.relocated = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token %statepoint_token, i32 0, i32 0) ; (%f, %f)
@@ -52,7 +52,7 @@ entry:
   ret void
 }
 
-define void @outer(ptr addrspace(1) %x, ptr addrspace(1) %y, ptr addrspace(1) %z, ptr addrspace(1) %w, ptr addrspace(1) %u, ptr addrspace(1) %v) gc "statepoint-example" {
+define void @outer(ptr addrspace(1) %x, ptr addrspace(1) %y, ptr addrspace(1) %z, ptr addrspace(1) %w, ptr addrspace(1) %u, ptr addrspace(1) %v) gc "coreclr" {
 entry:
   %statepoint_token = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 2882400000, i32 0, ptr elementtype(void (ptr addrspace(1), ptr addrspace(1), ptr addrspace(1), ptr addrspace(1), ptr addrspace(1), ptr addrspace(1))) @inner, i32 6, i32 0, ptr addrspace(1) %x, ptr addrspace(1) %y, ptr addrspace(1) %z, ptr addrspace(1) %w, ptr addrspace(1) %u, ptr addrspace(1) %v, i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %v, ptr addrspace(1) %u, ptr addrspace(1) %w, ptr addrspace(1) %z, ptr addrspace(1) %x, ptr addrspace(1) %y) ]
   %v.relocated = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token %statepoint_token, i32 0, i32 0) ; (%v, %v)
@@ -93,4 +93,3 @@ declare token @llvm.experimental.gc.statepoint.p0(i64 immarg, i32 immarg, ptr, i
 declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32 immarg, i32 immarg) #0
 
 attributes #0 = { nocallback nofree nosync nounwind willreturn memory(none) }
-

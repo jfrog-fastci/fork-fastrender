@@ -3,18 +3,43 @@ use crate::gc::statepoint::StatepointEmitter;
 use crate::runtime_fn::GcEffect;
 use llvm_sys::analysis::{LLVMVerifyModule, LLVMVerifierFailureAction};
 use llvm_sys::core::{
-  LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildGEP2, LLVMBuildRetVoid, LLVMConstInt,
-  LLVMConstNull, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext,
-  LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMFunctionType, LLVMGetNamedFunction,
-  LLVMGetParam, LLVMInt8TypeInContext, LLVMInt64TypeInContext, LLVMPointerType,
-  LLVMModuleCreateWithNameInContext, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore,
-  LLVMPrintModuleToString, LLVMSetGC, LLVMVoidTypeInContext,
+  LLVMAddAttributeAtIndex, LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildGEP2,
+  LLVMBuildRetVoid, LLVMConstInt, LLVMConstNull, LLVMContextCreate, LLVMContextDispose,
+  LLVMCreateBuilderInContext, LLVMCreateStringAttribute, LLVMDisposeBuilder, LLVMDisposeMessage,
+  LLVMDisposeModule, LLVMFunctionType, LLVMGetNamedFunction, LLVMGetParam, LLVMInt8TypeInContext,
+  LLVMInt64TypeInContext, LLVMModuleCreateWithNameInContext, LLVMPositionBuilderAtEnd,
+  LLVMPositionBuilderBefore, LLVMPrintModuleToString, LLVMPointerType, LLVMSetGC,
+  LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use std::ffi::{CStr, CString};
 use std::ptr;
 
 use crate::llvm::gc::GC_STRATEGY;
+
+unsafe fn set_stack_walking_attrs(ctx: llvm_sys::prelude::LLVMContextRef, func: LLVMValueRef) {
+  let frame_pointer_key = CString::new("frame-pointer").unwrap();
+  let frame_pointer_val = CString::new("all").unwrap();
+  let frame_pointer_attr = LLVMCreateStringAttribute(
+    ctx,
+    frame_pointer_key.as_ptr(),
+    frame_pointer_key.as_bytes().len() as u32,
+    frame_pointer_val.as_ptr(),
+    frame_pointer_val.as_bytes().len() as u32,
+  );
+  LLVMAddAttributeAtIndex(func, llvm_sys::LLVMAttributeFunctionIndex, frame_pointer_attr);
+
+  let disable_tail_key = CString::new("disable-tail-calls").unwrap();
+  let disable_tail_val = CString::new("true").unwrap();
+  let disable_tail_attr = LLVMCreateStringAttribute(
+    ctx,
+    disable_tail_key.as_ptr(),
+    disable_tail_key.as_bytes().len() as u32,
+    disable_tail_val.as_ptr(),
+    disable_tail_val.as_bytes().len() as u32,
+  );
+  LLVMAddAttributeAtIndex(func, llvm_sys::LLVMAttributeFunctionIndex, disable_tail_attr);
+}
 
 /// Build a tiny function that:
 ///   - allocates two rooted GC slots in the entry block,
@@ -39,6 +64,7 @@ pub fn demo_gc_root_slots_ir() -> String {
     let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
     let gc_name = CString::new(GC_STRATEGY).unwrap();
     LLVMSetGC(test_fn, gc_name.as_ptr());
+    set_stack_walking_attrs(ctx, test_fn);
 
     let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
     LLVMPositionBuilderAtEnd(builder, entry);
@@ -95,6 +121,7 @@ pub fn demo_gc_root_alloca_dominance_ir() -> String {
     let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
     let gc_name = CString::new(GC_STRATEGY).unwrap();
     LLVMSetGC(test_fn, gc_name.as_ptr());
+    set_stack_walking_attrs(ctx, test_fn);
 
     let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
     LLVMPositionBuilderAtEnd(builder, entry);
@@ -157,6 +184,7 @@ pub fn demo_compiled_call_nogc_void_ir() -> String {
     let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
     let gc_name = CString::new(GC_STRATEGY).unwrap();
     LLVMSetGC(test_fn, gc_name.as_ptr());
+    set_stack_walking_attrs(ctx, test_fn);
 
     let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
     LLVMPositionBuilderAtEnd(builder, entry);
@@ -203,6 +231,7 @@ pub fn demo_gc_root_slots_indirect_call_ir() -> String {
     let test_fn = llvm_get_or_add_fn(module, "test_indirect", test_fn_ty);
     let gc_name = CString::new(GC_STRATEGY).unwrap();
     LLVMSetGC(test_fn, gc_name.as_ptr());
+    set_stack_walking_attrs(ctx, test_fn);
 
     let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
     LLVMPositionBuilderAtEnd(builder, entry);
@@ -267,6 +296,7 @@ unsafe fn demo_gc_root_derived_ptrs_ir(num_derived: u64) -> String {
   let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
   let gc_name = CString::new(GC_STRATEGY).unwrap();
   LLVMSetGC(test_fn, gc_name.as_ptr());
+  set_stack_walking_attrs(ctx, test_fn);
 
   let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
   LLVMPositionBuilderAtEnd(builder, entry);
