@@ -1,4 +1,4 @@
-#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#![cfg(target_os = "linux")]
 
 use std::fs;
 use std::process::Command;

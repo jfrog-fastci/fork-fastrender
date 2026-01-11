@@ -1,4 +1,4 @@
-#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#![cfg(target_os = "linux")]
 
 use anyhow::{bail, Context, Result};
 use runtime_native::stackmaps::{Location, StackMaps};

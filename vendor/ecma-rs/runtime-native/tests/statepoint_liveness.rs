@@ -1,4 +1,4 @@
-#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#![cfg(target_os = "linux")]
 
 use object::{Object, ObjectSection};
 use runtime_native::stackmaps::{StackMap, StackMaps};
