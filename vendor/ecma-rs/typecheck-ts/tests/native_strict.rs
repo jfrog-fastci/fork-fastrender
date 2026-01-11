@@ -817,6 +817,41 @@ fn native_strict_bans_global_object_set_prototype_of() {
 }
 
 #[test]
+fn native_strict_bans_set_prototype_of_call() {
+  let source =
+    "const value: object = {};\nObject.setPrototypeOf.call(Object, value, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Object.setPrototypeOf.call(Object, value, {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_set_prototype_of_via_reflect_apply() {
+  let source = "const value: object = {};\nReflect.apply(Object.setPrototypeOf, Object, [value, {}]);";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Reflect.apply(Object.setPrototypeOf, Object, [value, {}])";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_allows_array_indexing_with_number_key() {
   let source = "const xs: number[] = [1, 2]; const i = 0; void xs[i];";
   let (diagnostics, _) = check(source, true);

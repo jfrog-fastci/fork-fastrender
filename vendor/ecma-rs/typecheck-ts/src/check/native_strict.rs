@@ -475,6 +475,39 @@ pub fn validate_native_strict_body(
                   Span::new(file, callee_span),
                 ));
               }
+
+              let is_call_or_apply =
+                (object_key_is_ident(&member.property, call_name)
+                  || object_key_is_string(&member.property, "call")
+                  || object_key_is_literal_string(body, &member.property, "call"))
+                  || (object_key_is_ident(&member.property, apply_name)
+                    || object_key_is_string(&member.property, "apply")
+                    || object_key_is_literal_string(body, &member.property, "apply"));
+              if is_call_or_apply
+                && (expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  object_name,
+                  "Object",
+                  set_prototype_of_name,
+                  "setPrototypeOf",
+                ) || expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  reflect_name,
+                  "Reflect",
+                  set_prototype_of_name,
+                  "setPrototypeOf",
+                ))
+              {
+                let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                  "prototype mutation is forbidden when `native_strict` is enabled",
+                  Span::new(file, span),
+                ));
+              }
             }
 
             // `Reflect.apply(eval, ...)` / `Reflect.apply(Function, ...)` etc.
@@ -541,6 +574,30 @@ pub fn validate_native_strict_body(
                     diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
                       "`Proxy` is forbidden when `native_strict` is enabled",
                       Span::new(file, target_span),
+                    ));
+                  }
+
+                  if expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    object_name,
+                    "Object",
+                    set_prototype_of_name,
+                    "setPrototypeOf",
+                  ) || expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    reflect_name,
+                    "Reflect",
+                    set_prototype_of_name,
+                    "setPrototypeOf",
+                  ) {
+                    let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                    diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                      "prototype mutation is forbidden when `native_strict` is enabled",
+                      Span::new(file, span),
                     ));
                   }
                 }
