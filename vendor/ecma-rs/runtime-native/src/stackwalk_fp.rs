@@ -164,6 +164,14 @@ fn is_probably_young_object_start(candidate: *const u8) -> bool {
     return false;
   }
 
+  // Ensure we never dereference an ObjHeader that straddles the young-space end.
+  let end = YOUNG_SPACE.end.load(Ordering::Acquire) as usize;
+  let hdr_size = core::mem::size_of::<ObjHeader>();
+  let last_valid = end.saturating_sub(hdr_size);
+  if (candidate as usize) > last_valid {
+    return false;
+  }
+
   // Safety: `candidate` is within the active young-space range, which is a
   // mapped RW region. Reading a header-sized prefix is safe; validation is
   // performed via the type-descriptor registry.
@@ -175,17 +183,35 @@ fn is_probably_young_object_start(candidate: *const u8) -> bool {
 fn conservative_scan_frame_words(
   start_addr: u64,
   end_addr: u64,
+  bounds: Option<StackBounds>,
   visit: &mut impl FnMut(*mut u8),
 ) {
-  let start = start_addr as usize;
-  let end = end_addr as usize;
+  let mut start = start_addr;
+  let mut end = end_addr;
+
+  if let Some(bounds) = bounds {
+    start = start.max(bounds.lo);
+    end = end.min(bounds.hi);
+  }
+
+  if end <= start {
+    return;
+  }
+
+  // Align to machine-word boundaries.
+  let align = core::mem::align_of::<usize>() as u64;
+  debug_assert!(align.is_power_of_two());
+  let align_mask = align - 1;
+  start = start.saturating_add(align_mask) & !align_mask;
+  end &= !align_mask;
+
   if end <= start {
     return;
   }
 
   let max_bytes = MAX_CONSERVATIVE_SCAN_WORDS * core::mem::size_of::<usize>();
-  let bounded_end = start.saturating_add(max_bytes).min(end);
-  let range = (start as *const usize)..(bounded_end as *const usize);
+  let bounded_end = (start as usize).saturating_add(max_bytes).min(end as usize);
+  let range = (start as usize as *const usize)..(bounded_end as *const usize);
   let heap = heap_range_for_conservative_roots();
   conservative_scan_words(range, heap, |slot| visit(slot as *mut u8));
 }
@@ -282,7 +308,7 @@ pub unsafe fn walk_gc_roots_from_fp(
       None => {
         #[cfg(any(debug_assertions, feature = "conservative_roots"))]
         {
-          conservative_scan_frame_words(cur_fp, caller_fp, &mut visit);
+          conservative_scan_frame_words(cur_fp, caller_fp, bounds, &mut visit);
         }
 
         #[cfg(not(any(debug_assertions, feature = "conservative_roots")))]
@@ -399,7 +425,7 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
         if scan_start == 0 {
           return Err(WalkError::MissingStackMap { return_addr: caller_ra });
         }
-        conservative_scan_frame_words(scan_start, caller_fp, &mut visit);
+        conservative_scan_frame_words(scan_start, caller_fp, bounds, &mut visit);
       }
 
       #[cfg(not(any(debug_assertions, feature = "conservative_roots")))]
