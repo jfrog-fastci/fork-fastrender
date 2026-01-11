@@ -260,6 +260,13 @@ impl HeapRange {
 mod tests {
   use super::*;
 
+  struct UnregisterThreadOnDrop;
+  impl Drop for UnregisterThreadOnDrop {
+    fn drop(&mut self) {
+      crate::threading::unregister_current_thread();
+    }
+  }
+
   #[test]
   fn root_registry_can_be_cleared_for_tests() {
     // Smoke test for `clear_for_tests` wiring (used by `test_util::reset_runtime_state`).
@@ -288,5 +295,49 @@ mod tests {
     // changed to accept a raw `*mut u8` instead of a handle.
     type Sig = unsafe extern "C" fn(GcHandle) -> GcPtr;
     let _f: Sig = crate::rt_gc_safepoint_relocate_h;
+  }
+
+  #[test]
+  fn root_get_observes_slot_updates() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+    crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
+    let _unreg = UnregisterThreadOnDrop;
+
+    let thread = crate::threading::registry::current_thread_state().unwrap();
+    assert_eq!(thread.handle_stack_len(), 0);
+
+    let p1 = 0x1234usize as *mut u8;
+    let p2 = 0x5678usize as *mut u8;
+
+    let root = Root::<u8>::new(p1);
+    assert_eq!(thread.handle_stack_len(), 1);
+    assert_eq!(root.get() as usize, p1 as usize);
+
+    // Simulate a moving GC updating the root slot in place.
+    unsafe {
+      root.handle().write(p2);
+    }
+    assert_eq!(root.get() as usize, p2 as usize);
+  }
+
+  #[test]
+  fn roots_drop_in_lifo_order() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+    crate::threading::register_current_thread(crate::threading::ThreadKind::Main);
+    let _unreg = UnregisterThreadOnDrop;
+
+    let thread = crate::threading::registry::current_thread_state().unwrap();
+    assert_eq!(thread.handle_stack_len(), 0);
+
+    {
+      let _r1 = Root::<u8>::new(0x1111usize as *mut u8);
+      assert_eq!(thread.handle_stack_len(), 1);
+      {
+        let _r2 = Root::<u8>::new(0x2222usize as *mut u8);
+        assert_eq!(thread.handle_stack_len(), 2);
+      }
+      assert_eq!(thread.handle_stack_len(), 1);
+    }
+    assert_eq!(thread.handle_stack_len(), 0);
   }
 }
