@@ -90,6 +90,13 @@ you want to stop after compilation, compile the emitted IR yourself:
 clang -x ir /tmp/out.ll -o /tmp/out
 ```
 
+`native-js-cli` does not currently have a flag to keep the intermediate object
+file, but you can produce one from the emitted IR:
+
+```bash
+clang -x ir -c /tmp/out.ll -o /tmp/out.o
+```
+
 ### `--no-builtins`
 
 Disable recognition of small builtin APIs. By default, the IR emitter recognizes
