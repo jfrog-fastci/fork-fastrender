@@ -164,7 +164,13 @@ pub fn patch_html_bytes(
   const HIDE_SCROLLBARS_STYLE: &str = "<style>* { scrollbar-width: none !important; }</style>\n";
   const FORCE_LIGHT_META: &str = "<meta name=\"color-scheme\" content=\"light\">\n";
   const FORCE_LIGHT_STYLE: &str =
-    "<style>html, body { background: white !important; color-scheme: light !important; forced-color-adjust: none !important; }</style>\n";
+    // Important: set `position`/`z-index` on `body` so it forms a stacking context.
+    //
+    // Many real-world pages use `position:absolute; z-index:-1` for "background" images. If `body`
+    // does not establish a stacking context, those negative z-index stacking contexts can escape up
+    // to the root stacking context and end up painting *behind* the forced `body` background,
+    // effectively disappearing in baseline screenshots.
+    "<style>html, body { background: white !important; color-scheme: light !important; forced-color-adjust: none !important; } body { position: relative !important; z-index: 0 !important; }</style>\n";
 
   let mut inserts = Vec::new();
   if let Some(base_url) = base_url {
@@ -668,6 +674,11 @@ mod tests {
     assert!(
       output_str.contains("background: white !important"),
       "patched HTML should force a white background"
+    );
+    assert!(
+      output_str.contains("position: relative !important")
+        && output_str.contains("z-index: 0 !important"),
+      "patched HTML should ensure body establishes a stacking context (prevents negative z-index content from disappearing)"
     );
     assert!(
       output_str.contains("Content-Security-Policy"),
