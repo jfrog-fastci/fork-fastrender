@@ -72,6 +72,18 @@ fn dlopen_registers_multiple_stackmap_modules() {
 
     assert!(lookup(pc1).is_some(), "mod1 callsite should be registered");
     assert!(lookup(pc2).is_some(), "mod2 callsite should be registered");
+
+    // Clean up so this test doesn't leak global registry state into other tests.
+    let start1 = dlsym(h1, "__llvm_stackmaps_start") as *const u8;
+    let start2 = dlsym(h2, "__llvm_stackmaps_start") as *const u8;
+    assert!(
+      runtime_native::rt_stackmaps_unregister(start1),
+      "unregister mod1 should succeed"
+    );
+    assert!(
+      runtime_native::rt_stackmaps_unregister(start2),
+      "unregister mod2 should succeed"
+    );
   }
 }
 
