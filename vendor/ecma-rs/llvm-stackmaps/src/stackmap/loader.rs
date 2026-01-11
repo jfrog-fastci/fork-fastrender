@@ -7,9 +7,10 @@ use core::{ptr, slice};
 ///   - `__start_llvm_stackmaps`
 ///   - `__stop_llvm_stackmaps`
 ///   The repo provides a ready-to-use script fragment at
-///   `vendor/ecma-rs/runtime-native/link/stackmaps.ld` (preferred) or
-///   `vendor/ecma-rs/runtime-native/stackmaps.ld` (compatibility shim). It also
-///   defines:
+///   `vendor/ecma-rs/runtime-native/link/stackmaps.ld` (lld-oriented) or
+///   `vendor/ecma-rs/runtime-native/link/stackmaps_gnuld.ld` (GNU ld-oriented). The
+///   legacy path `vendor/ecma-rs/runtime-native/stackmaps.ld` is kept as a
+///   compatibility shim. The fragment also defines:
 ///   - `__stackmaps_start` / `__stackmaps_end` (generic aliases)
 ///   - `__fastr_stackmaps_*` (project-specific aliases)
 ///   - `__llvm_stackmaps_*` (legacy aliases)
