@@ -1,0 +1,59 @@
+# Web messaging / channels.
+
+- name: MessageChannel
+  kind: constructor
+  aliases:
+    - MessageChannel
+    - window.MessageChannel
+    - globalThis.MessageChannel
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+
+- name: MessagePort.prototype.postMessage
+  kind: function
+  aliases:
+    - MessagePort.prototype.postMessage
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: MessagePort.prototype.close
+  kind: function
+  aliases:
+    - MessagePort.prototype.close
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+
+- name: BroadcastChannel
+  kind: constructor
+  aliases:
+    - BroadcastChannel
+    - window.BroadcastChannel
+    - globalThis.BroadcastChannel
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+
+- name: BroadcastChannel.prototype.postMessage
+  kind: function
+  aliases:
+    - BroadcastChannel.prototype.postMessage
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+
+- name: BroadcastChannel.prototype.close
+  kind: function
+  aliases:
+    - BroadcastChannel.prototype.close
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
