@@ -173,6 +173,26 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness
 bash scripts/cargo_agent.sh test -p native-oracle-harness
 ```
 
+To run just the fixture comparison test (useful when iterating on TS→JS erasure):
+
+```bash
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness --test fixtures
+
+# Or, if you're already in vendor/ecma-rs/:
+bash scripts/cargo_agent.sh test -p native-oracle-harness --test fixtures
+```
+
+There is also a small binary (`native-oracle-harness/src/main.rs`) that runs the same `// EXPECT:` / `*.out` TS fixture comparisons:
+
+```bash
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_agent.sh run -p native-oracle-harness
+
+# Or, if you're already in vendor/ecma-rs/:
+bash scripts/cargo_agent.sh run -p native-oracle-harness
+```
+
 Expected output is standard test output.
 Today the harness runs:
 
