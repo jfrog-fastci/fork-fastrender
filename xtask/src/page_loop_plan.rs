@@ -158,6 +158,10 @@ pub fn build_inspect_frag_command(
     let default_wait_ms = if args.patch_html_for_chrome_baseline { "0" } else { "500" };
     cmd.env("FASTR_WEB_FONT_WAIT_MS", default_wait_ms);
   }
+  if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_TEXT_HINTING").is_none() {
+    // Match `render_fixtures` defaults when diffing against Chrome baselines.
+    cmd.env("FASTR_TEXT_HINTING", "1");
+  }
   if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_TEXT_SUBPIXEL_AA").is_none() {
     // Keep inspect overlays aligned with `render_fixtures` fixture-chrome mode defaults.
     cmd.env("FASTR_TEXT_SUBPIXEL_AA", "1");

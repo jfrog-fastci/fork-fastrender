@@ -390,15 +390,16 @@ fn fixture_runtime_toggles_from_env_map(
     .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
     .or_insert_with(|| default_web_font_wait_ms.to_string());
 
-  // Prefer leaving hinting disabled in fixture-chrome mode.
+  // When diffing against Chrome baselines we want text to look as Chrome-like as possible.
   //
-  // Headless Chrome's font rendering varies by platform/fontconfig, and our current hinting
-  // implementation (via `skrifa`) can shift glyph shapes/positions enough to increase pixel diffs.
-  // Keep it opt-in so `xtask page-loop --chrome` comparisons stay closer to the Chrome baseline by
-  // default. (Callers can still override with `FASTR_TEXT_HINTING=1`.)
+  // Chrome/Skia typically rasterizes with hinting enabled (via FreeType/fontconfig). Leaving
+  // hinting disabled can produce large glyph shape differences on text-heavy pages.
+  //
+  // Keep this opt-out: callers can force-disable hinting by setting `FASTR_TEXT_HINTING=0`.
+  let default_hinting = if patch_html_for_chrome_baseline { "1" } else { "0" };
   raw
     .entry("FASTR_TEXT_HINTING".to_string())
-    .or_insert_with(|| "0".to_string());
+    .or_insert_with(|| default_hinting.to_string());
   // Chrome typically uses LCD/subpixel anti-aliasing for text. FastRender's default tiny-skia
   // glyph rasterization is grayscale AA, so enable a subpixel mode for fixture-vs-Chrome diffs.
   raw
@@ -2070,6 +2071,20 @@ mod tests {
     raw.insert("FASTR_WEB_FONT_WAIT_MS".to_string(), "123".to_string());
     let toggles = fixture_runtime_toggles_from_env_map(raw, true);
     assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("123"));
+  }
+
+  #[test]
+  fn fixture_runtime_toggles_defaults_text_hinting_based_on_patch_mode() {
+    let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), false);
+    assert_eq!(toggles.get("FASTR_TEXT_HINTING"), Some("0"));
+
+    let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), true);
+    assert_eq!(toggles.get("FASTR_TEXT_HINTING"), Some("1"));
+
+    let mut raw = HashMap::new();
+    raw.insert("FASTR_TEXT_HINTING".to_string(), "0".to_string());
+    let toggles = fixture_runtime_toggles_from_env_map(raw, true);
+    assert_eq!(toggles.get("FASTR_TEXT_HINTING"), Some("0"));
   }
 
   #[test]
