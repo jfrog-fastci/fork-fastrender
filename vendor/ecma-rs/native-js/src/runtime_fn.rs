@@ -32,7 +32,7 @@ pub enum RuntimeFn {
   /// Keep a GC object alive until after the last use of a derived raw pointer.
   ///
   /// This prevents the compiler from considering a GC reference dead while a raw pointer derived
-  /// from it is still in use.
+  /// from it is still in use (e.g. an `ArrayBuffer` backing store pointer).
   ///
   /// The native runtime uses this to ensure owner objects remain live when compiled code forms
   /// derived/interior pointers that are used after a safepoint (Task 385).

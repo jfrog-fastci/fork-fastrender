@@ -76,10 +76,22 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     ir.contains("define internal void @rt_keep_alive_gc_ref_gc"),
     "missing rt_keep_alive_gc_ref_gc wrapper:\n{ir}"
   );
+  let keep_alive_line = ir
+    .lines()
+    .find(|l| l.contains("define internal void @rt_keep_alive_gc_ref_gc"))
+    .expect("rt_keep_alive_gc_ref_gc line");
+  assert!(
+    !keep_alive_line.contains("gc \"coreclr\""),
+    "rt_keep_alive_gc_ref_gc must not be GC-managed (ABI wrappers are outside GC pointer discipline lint):\n{keep_alive_line}\n\nIR:\n{ir}"
+  );
   let keep_alive = function_block(&ir, "@rt_keep_alive_gc_ref_gc");
   assert!(
     keep_alive.contains("store ptr @rt_keep_alive_gc_ref"),
     "expected rt_keep_alive_gc_ref_gc to indirect-call @rt_keep_alive_gc_ref:\n{keep_alive}"
+  );
+  assert!(
+    keep_alive.contains("notail call void %") && keep_alive.contains("ptr addrspace(1)"),
+    "expected rt_keep_alive_gc_ref_gc to emit a notail indirect call (prevent TCO):\n{keep_alive}"
   );
   assert!(
     !keep_alive.contains("addrspacecast"),
@@ -194,4 +206,3 @@ fn emitted_object_contains_llvm_stackmaps_section() {
     "object missing .llvm_stackmaps section name; IR was:\n{ir}"
   );
 }
-
