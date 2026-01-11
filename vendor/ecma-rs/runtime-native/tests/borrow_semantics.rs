@@ -16,6 +16,10 @@ fn in_flight_borrow_blocks_slice_access() {
   let borrow = buf.try_borrow_io_write().unwrap();
   assert!(buf.is_io_borrowed());
   assert_eq!(
+    buf.data_ptr().unwrap_err(),
+    ArrayBufferError::Borrow(BorrowError::Borrowed)
+  );
+  assert_eq!(
     buf.try_with_slice(|_| ()).unwrap_err(),
     ArrayBufferError::Borrow(BorrowError::Borrowed)
   );
