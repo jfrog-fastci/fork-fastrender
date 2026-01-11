@@ -37,7 +37,6 @@ repo-wide policy and registry):
 - `MINIFYTS####`: `ts-erase` TypeScript erasure/lowering
 - `MINIFY####`: minify tooling (e.g. benchmarks)
 - `EMIT####`: `emit-js` emitter
-- `EMITTS####`: `emit-js` TypeScript→JavaScript erasure
 - `EFF####`: `effect-js` effect inference
 - `NJS####`: `native-js` native compilation / codegen pipeline (LLVM)
 - `RTN####`: `runtime-native` native runtime
