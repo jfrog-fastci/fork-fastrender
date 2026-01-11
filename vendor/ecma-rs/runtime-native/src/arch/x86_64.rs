@@ -47,5 +47,44 @@ rt_gc_safepoint_slow:
   add rsp, 40
   ret
 
+  // LLVM `place-safepoints` polls this symbol. It must capture the *managed*
+  // caller's context at the poll callsite (the statepoint call), not the
+  // runtime-internal callsite to `rt_gc_safepoint_slow`.
+  //
+  // Signature: `void gc.safepoint_poll(void)`.
+  .globl gc.safepoint_poll
+gc.safepoint_poll:
+  // epoch = RT_GC_EPOCH (Acquire)
+  // Use GOT-relative addressing so this assembly is PIC-friendly (runtime-native
+  // is built as a `cdylib` for some tests/tools).
+  mov rax, qword ptr [rip + RT_GC_EPOCH@GOTPCREL]
+  mov rax, qword ptr [rax]
+  test rax, 1
+  jz .Lgc_safepoint_poll_ret
+
+  // Capture caller SP/FP/RA at poll entry.
+  mov rcx, rsp                // sp_entry
+  mov rdx, qword ptr [rsp]    // ip (return address to caller)
+  lea r8, [rcx + 8]           // sp (post-call; stackmap SP)
+
+  // Reserve space for SafepointContext (32 bytes) and align stack to 16 bytes
+  // before calling into Rust.
+  sub rsp, 40
+
+  mov qword ptr [rsp + 0], rcx
+  mov qword ptr [rsp + 8], r8
+  mov qword ptr [rsp + 16], rbp
+  mov qword ptr [rsp + 24], rdx
+
+  // Call the Rust slow-path implementation directly so the published context
+  // corresponds to the managed poll callsite.
+  mov rdi, rax
+  lea rsi, [rsp]
+  call rt_gc_safepoint_slow_impl
+
+  add rsp, 40
+.Lgc_safepoint_poll_ret:
+  ret
+
   "#
 );

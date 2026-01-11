@@ -312,18 +312,19 @@ pub extern "C" fn rt_gc_poll() -> bool {
   (crate::threading::safepoint::RT_GC_EPOCH.load(Ordering::Acquire) & 1) != 0
 }
 
-/// LLVM `place-safepoints` poll function.
-///
-/// LLVM's `place-safepoints` pass inserts calls to a symbol named
-/// `gc.safepoint_poll` in functions that use a statepoint-based GC strategy.
-/// Those calls are later rewritten into statepoints by `rewrite-statepoints-for-gc`.
-///
-/// We export this symbol from the runtime so codegen can use `place-safepoints`
-/// without needing to synthesize its own poll function body in every module.
-#[export_name = "gc.safepoint_poll"]
-pub extern "C" fn rt_gc_safepoint_poll() {
-  rt_gc_safepoint();
-}
+// LLVM `place-safepoints` poll function.
+//
+// LLVM's `place-safepoints` pass inserts calls to a symbol named
+// `gc.safepoint_poll` in functions that use a statepoint-based GC strategy.
+// Those calls are later rewritten into statepoints by `rewrite-statepoints-for-gc`.
+//
+// The runtime must provide the symbol so codegen can use `place-safepoints`
+// without needing to synthesize its own poll function body in every module.
+//
+// NOTE: The actual `gc.safepoint_poll` symbol is implemented in per-architecture
+// assembly (`arch/x86_64.rs`, `arch/aarch64.rs`). It must capture the *managed*
+// caller's frame pointer and return address at the poll callsite so the GC can
+// locate the correct stackmap record for root enumeration.
 
 /// Update the active young-space address range used by the write barrier.
 ///

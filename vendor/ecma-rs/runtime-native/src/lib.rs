@@ -373,9 +373,10 @@ mod tests {
       fn gc_safepoint_poll();
     }
 
-    // `gc.safepoint_poll` calls into `rt_gc_safepoint`, which expects the current
-    // thread to be registered with `rt_thread_init` (and asserts in debug builds
-    // if it isn't). Ensure this test thread is registered without clobbering an
+    // `gc.safepoint_poll` is the symbol LLVM's `place-safepoints` inserts into
+    // GC-managed functions. It cooperates with the runtime's stop-the-world
+    // protocol and may publish safepoint metadata into the per-thread registry on
+    // the slow path. Ensure this test thread is registered without clobbering an
     // existing registration that may be shared across tests.
     let was_registered = crate::threading::registry::current_thread_id().is_some();
     if !was_registered {
