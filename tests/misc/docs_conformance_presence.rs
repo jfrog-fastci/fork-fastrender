@@ -112,7 +112,7 @@ fn conformance_doc_links_to_real_code_and_tests() {
     "tests/html_script_processing.rs",
     "tests/bin/fetch_and_render_js_test.rs",
     "tests/js_window_realm.rs",
-    "tests/js_dom_bindings_smoke.rs",
+    "tests/misc/vm_js_dom_bindings.rs",
     "tests/js_fetch_tests.rs",
   ];
 
