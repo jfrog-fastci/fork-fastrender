@@ -30,6 +30,23 @@
       throws: Maybe
   purity: Impure
 
+- name: URL.canParse
+  aliases:
+    - URL.canParse
+  since: "baseline"
+  effects: Pure
+  purity: Pure
+
+- name: URL.parse
+  aliases:
+    - URL.parse
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
 - name: URL.prototype.toString
   aliases:
     - URL.prototype.toString
@@ -58,6 +75,18 @@
 - name: URL.prototype.pathname
   aliases:
     - URL.prototype.pathname
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: URL.prototype.origin
+  aliases:
+    - URL.prototype.origin
   since: "baseline"
   effects:
     Custom:
