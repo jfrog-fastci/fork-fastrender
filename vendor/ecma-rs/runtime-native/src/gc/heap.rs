@@ -257,7 +257,7 @@ impl GcHeap {
   }
 
   pub fn alloc_young(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
-    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(desc);
 
     let obj = self
@@ -287,7 +287,7 @@ impl GcHeap {
   /// `elem_size` uses the same encoding as the public `rt_alloc_array` ABI: the high bit is
   /// reserved for `RT_ARRAY_ELEM_PTR_FLAG` (see [`crate::array::decode_rt_array_elem_size`]).
   pub fn alloc_array_young(&mut self, len: usize, elem_size: usize) -> *mut u8 {
-    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(&array::RT_ARRAY_TYPE_DESC);
 
     let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
@@ -322,7 +322,7 @@ impl GcHeap {
   }
 
   pub fn alloc_old(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
-    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(desc);
 
     let obj = self.alloc_old_raw(desc.size, OBJ_ALIGN);
@@ -344,7 +344,7 @@ impl GcHeap {
   /// Pinned objects have a stable address across minor GC, major GC, and (future) compaction.
   /// They are still traced and reclaimed when unreachable.
   pub fn alloc_pinned(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
-    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    #[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
     super::verify::register_type_descriptor(desc);
 
     let obj = self.los.alloc(desc.size, OBJ_ALIGN);

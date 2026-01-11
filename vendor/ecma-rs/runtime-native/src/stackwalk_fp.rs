@@ -1,6 +1,13 @@
 use crate::stackmaps::{CallSite, Location, StackMaps};
 use crate::stackwalk::StackBounds;
 
+#[cfg(feature = "conservative_roots")]
+use crate::roots::{conservative_scan_words, HeapRange};
+#[cfg(feature = "conservative_roots")]
+use crate::gc::YOUNG_SPACE;
+#[cfg(feature = "conservative_roots")]
+use std::sync::atomic::Ordering;
+
 #[cfg(target_arch = "x86_64")]
 mod arch {
   pub const WORD: u64 = 8;
@@ -120,9 +127,57 @@ pub enum WalkError {
     base_val: u64,
     delta: i64,
   },
+  #[error("missing stackmap entry for return address {return_addr:#x}")]
+  MissingStackMap { return_addr: u64 },
 }
 
 const MAX_FRAMES: usize = 100_000;
+#[cfg(feature = "conservative_roots")]
+const MAX_CONSERVATIVE_SCAN_WORDS: usize = 4096;
+
+#[cfg(feature = "conservative_roots")]
+fn heap_range_for_conservative_roots() -> HeapRange {
+  let start = YOUNG_SPACE.start.load(Ordering::Acquire) as *const u8;
+  let end = YOUNG_SPACE.end.load(Ordering::Acquire) as *const u8;
+  HeapRange::with_object_start_check(start, end, is_probably_young_object_start)
+}
+
+#[cfg(feature = "conservative_roots")]
+fn is_probably_young_object_start(candidate: *const u8) -> bool {
+  use crate::gc::ObjHeader;
+
+  // Conservative scanning is a fallback: be strict about only reporting slots
+  // that *look like* real object headers so a moving GC doesn't corrupt memory
+  // by evacuating a false-positive "pointer" into the nursery.
+  if (candidate as usize) % core::mem::align_of::<ObjHeader>() != 0 {
+    return false;
+  }
+
+  // Safety: `candidate` is within the active young-space range, which is a
+  // mapped RW region. Reading a header-sized prefix is safe; validation is
+  // performed via the type-descriptor registry.
+  let header = unsafe { &*(candidate as *const ObjHeader) };
+  crate::gc::is_known_type_descriptor(header.type_desc)
+}
+
+#[cfg(feature = "conservative_roots")]
+fn conservative_scan_frame_words(
+  start_addr: u64,
+  end_addr: u64,
+  visit: &mut impl FnMut(*mut u8),
+) {
+  let start = start_addr as usize;
+  let end = end_addr as usize;
+  if end <= start {
+    return;
+  }
+
+  let max_bytes = MAX_CONSERVATIVE_SCAN_WORDS * core::mem::size_of::<usize>();
+  let bounded_end = start.saturating_add(max_bytes).min(end);
+  let range = (start as *const usize)..(bounded_end as *const usize);
+  let heap = heap_range_for_conservative_roots();
+  conservative_scan_words(range, heap, |slot| visit(slot as *mut u8));
+}
 
 /// Walk the frame-pointer chain and enumerate GC root slots using LLVM stackmaps.
 ///
@@ -206,8 +261,21 @@ pub unsafe fn walk_gc_roots_from_fp(
       });
     }
 
-    if let Some(callsite) = stackmaps.lookup(caller_ra) {
-      enumerate_roots_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+    match stackmaps.lookup(caller_ra) {
+      Some(callsite) => {
+        enumerate_roots_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+      }
+      None => {
+        #[cfg(feature = "conservative_roots")]
+        {
+          conservative_scan_frame_words(cur_fp, caller_fp, &mut visit);
+        }
+
+        #[cfg(not(feature = "conservative_roots"))]
+        {
+          return Err(WalkError::MissingStackMap { return_addr: caller_ra });
+        }
+      }
     }
 
     cur_fp = caller_fp;
@@ -277,8 +345,21 @@ pub unsafe fn walk_gc_roots_from_safepoint_context(
       return_addr: caller_ra,
     });
   }
-  if let Some(callsite) = stackmaps.lookup(caller_ra) {
-    enumerate_roots_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+  match stackmaps.lookup(caller_ra) {
+    Some(callsite) => {
+      enumerate_roots_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+    }
+    None => {
+      #[cfg(feature = "conservative_roots")]
+      {
+        conservative_scan_frame_words(ctx.sp_before_call as u64, caller_fp, &mut visit);
+      }
+
+      #[cfg(not(feature = "conservative_roots"))]
+      {
+        return Err(WalkError::MissingStackMap { return_addr: caller_ra });
+      }
+    }
   }
 
   // Continue walking older frames. Starting from the managed frame pointer means the delegated

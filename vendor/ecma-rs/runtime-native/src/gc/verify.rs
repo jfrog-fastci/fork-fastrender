@@ -20,6 +20,13 @@ pub(crate) fn register_type_descriptor(desc: &'static TypeDescriptor) {
     .insert(desc as *const TypeDescriptor as usize);
 }
 
+pub(crate) fn is_known_type_descriptor(desc: *const TypeDescriptor) -> bool {
+  if desc.is_null() {
+    return false;
+  }
+  KNOWN_TYPE_DESCRIPTORS.lock().contains(&(desc as usize))
+}
+
 impl GcHeap {
   /// Expensive verifier intended for tests and fuzzing.
   ///

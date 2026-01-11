@@ -35,6 +35,10 @@ rt-trace = []
 # Intended for tests to exercise the portable fallback even on macOS.
 force_pipe_wake = []
 
+# Enables conservative stack scanning fallback when stackmap coverage is incomplete.
+# Intended for bring-up/debug/emergency use only; it may keep garbage alive via false positives.
+conservative_roots = []
+
 # Test-only feature:
 # - Enables Loom model-checking tests (`tests/loom_*.rs`)
 # - Swaps the small Loom-specific test harness' atomics/Arc/Mutex to loom types

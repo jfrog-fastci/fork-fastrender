@@ -285,8 +285,22 @@ pub(crate) unsafe fn obj_size(mut obj: *mut u8) -> usize {
   unsafe { header.type_desc() }.size
 }
 
-#[cfg(any(debug_assertions, feature = "gc_debug"))]
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
 mod verify;
+
+/// Query the type-descriptor registry used by debug/verification tooling.
+///
+/// When the `conservative_roots` feature is enabled, conservative stack scanning
+/// uses this to filter candidate pointers down to likely object headers.
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+pub(crate) fn is_known_type_descriptor(desc: *const TypeDescriptor) -> bool {
+  verify::is_known_type_descriptor(desc)
+}
+
+#[cfg(not(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots")))]
+pub(crate) fn is_known_type_descriptor(_desc: *const TypeDescriptor) -> bool {
+  false
+}
 
 #[cfg(test)]
 mod tests;
