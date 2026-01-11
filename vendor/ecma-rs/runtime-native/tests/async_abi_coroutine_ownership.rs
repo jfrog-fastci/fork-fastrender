@@ -87,6 +87,7 @@ fn heap_owned_coroutine_is_destroyed_exactly_once_on_completion() {
   }
 
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // Cancellation after completion should not double-destroy.
   runtime_native::rt_async_cancel_all();
@@ -109,13 +110,14 @@ fn stack_owned_coroutine_is_not_destroyed_and_must_complete_synchronously() {
     await_promise: core::ptr::null_mut(),
   };
 
+  let coro_ptr = &mut coro.header as *mut Coroutine;
+  let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
   unsafe {
-    let coro_ptr = &mut coro.header as *mut Coroutine;
-    let handle = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
     let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
   }
 
   assert_eq!(destroyed.load(Ordering::SeqCst), 0);
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // Cancelling the runtime must not attempt to destroy stack-owned frames.
   runtime_native::rt_async_cancel_all();
@@ -147,6 +149,7 @@ fn cancel_all_destroys_deferred_heap_owned_coroutines_once() {
 
   runtime_native::rt_async_cancel_all();
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // Drain microtasks to ensure stale scheduled resumes are harmless.
   let _ = runtime_native::rt_drain_microtasks();
@@ -189,6 +192,7 @@ fn cancel_all_prevents_stale_resume_after_awaited_promise_settles() {
 
   runtime_native::rt_async_cancel_all();
   assert_eq!(destroyed.load(Ordering::SeqCst), 1);
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // Fulfill the awaited promise: this will schedule a reaction job that would normally resume the
   // coroutine. It must be a no-op (and not crash) after cancellation.

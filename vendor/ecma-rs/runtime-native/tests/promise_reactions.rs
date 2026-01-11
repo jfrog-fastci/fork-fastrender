@@ -352,6 +352,7 @@ fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
 
   assert!(completed.load(Ordering::SeqCst));
   assert!(then_ran.load(Ordering::SeqCst));
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   let state = unsafe { &*(result_promise.0 as *const PromiseHeader) }
     .state

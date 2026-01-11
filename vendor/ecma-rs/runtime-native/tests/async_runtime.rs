@@ -8,7 +8,7 @@ use runtime_native::async_abi::{
   RT_ASYNC_ABI_VERSION, CORO_FLAG_RUNTIME_OWNS_FRAME,
 };
 use runtime_native::test_util::TestRuntimeGuard;
-use runtime_native::{PromiseRef as PromiseHandle, RtShapeId};
+use runtime_native::{CoroutineId, PromiseRef as PromiseHandle, RtShapeId};
 
 #[repr(C)]
 struct TestPromise {
@@ -119,7 +119,7 @@ fn async_spawn_then_wake_and_complete() {
   }));
 
   let handle = runtime_native::rt_handle_alloc(coro.cast::<u8>());
-  let result_promise = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle)) };
+  let result_promise = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };
   let result_hdr = promise_header_ptr(result_promise);
   assert_eq!(promise_state(result_hdr), PromiseHeader::PENDING);
 
@@ -135,6 +135,7 @@ fn async_spawn_then_wake_and_complete() {
   assert!(runtime_native::rt_async_poll());
   assert_eq!(promise_state(result_hdr), PromiseHeader::FULFILLED);
   assert_eq!(unsafe { (*result_hdr.cast::<TestPromise>()).value }, 42);
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // Clean up allocations owned by this test.
   unsafe {
@@ -169,10 +170,10 @@ fn multi_waiter_wakes_all() {
   let c1 = mk_coro(1);
   let c2 = mk_coro(2);
 
-  let h1 = runtime_native::rt_handle_alloc(c1.cast::<u8>());
-  let h2 = runtime_native::rt_handle_alloc(c2.cast::<u8>());
-  let p1 = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(h1)) };
-  let p2 = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(h2)) };
+  let handle1 = runtime_native::rt_handle_alloc(c1.cast::<u8>());
+  let handle2 = runtime_native::rt_handle_alloc(c2.cast::<u8>());
+  let p1 = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle1)) };
+  let p2 = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle2)) };
   let p1_hdr = promise_header_ptr(p1);
   let p2_hdr = promise_header_ptr(p2);
 
@@ -190,6 +191,8 @@ fn multi_waiter_wakes_all() {
 
   assert_eq!(promise_state(p2_hdr), PromiseHeader::FULFILLED);
   assert_eq!(unsafe { (*p2_hdr.cast::<TestPromise>()).value }, 2);
+  assert!(runtime_native::rt_handle_load(handle1).is_null());
+  assert!(runtime_native::rt_handle_load(handle2).is_null());
 
   unsafe {
     drop(Box::from_raw(awaited));
@@ -224,10 +227,11 @@ fn fast_path_already_fulfilled_promise_completes_in_spawn() {
   }));
 
   let handle = runtime_native::rt_handle_alloc(coro.cast::<u8>());
-  let result_promise = unsafe { runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle)) };
+  let result_promise = unsafe { runtime_native::rt_async_spawn(CoroutineId(handle)) };
   let result_hdr = promise_header_ptr(result_promise);
   assert_eq!(promise_state(result_hdr), PromiseHeader::FULFILLED);
   assert_eq!(unsafe { (*result_hdr.cast::<TestPromise>()).value }, 7);
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // `await` on an already-settled promise should not require an external poll in the default
   // non-strict mode.

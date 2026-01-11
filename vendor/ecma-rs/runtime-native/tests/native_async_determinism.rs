@@ -98,14 +98,13 @@ fn native_async_promise_waiters_resume_in_fifo_order() {
   });
 
   // Await registration order is defined by program order: coro1 then coro2.
+  let coro1_ref = Box::into_raw(coro1) as CoroutineRef;
+  let coro2_ref = Box::into_raw(coro2) as CoroutineRef;
+  let handle1 = runtime_native::rt_handle_alloc(coro1_ref.cast::<u8>());
+  let handle2 = runtime_native::rt_handle_alloc(coro2_ref.cast::<u8>());
   unsafe {
-    let coro1_ptr = Box::into_raw(coro1) as CoroutineRef;
-    let h1 = runtime_native::rt_handle_alloc(coro1_ptr.cast::<u8>());
-    let _p1 = runtime_native::rt_async_spawn(runtime_native::CoroutineId(h1));
-
-    let coro2_ptr = Box::into_raw(coro2) as CoroutineRef;
-    let h2 = runtime_native::rt_handle_alloc(coro2_ptr.cast::<u8>());
-    let _p2 = runtime_native::rt_async_spawn(runtime_native::CoroutineId(h2));
+    let _p1 = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle1));
+    let _p2 = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle2));
   }
 
   unsafe {
@@ -115,6 +114,8 @@ fn native_async_promise_waiters_resume_in_fifo_order() {
   while runtime_native::rt_async_poll() {}
 
   assert_eq!(&*log.lock().unwrap(), &[1, 2]);
+  assert!(runtime_native::rt_handle_load(handle1).is_null());
+  assert!(runtime_native::rt_handle_load(handle2).is_null());
 
   unsafe {
     drop(Box::from_raw(awaited_ptr));
@@ -190,10 +191,10 @@ fn native_async_strict_await_yields_on_already_settled_promise() {
     awaited: awaited_ptr,
   });
 
+  let coro_ref = Box::into_raw(coro) as CoroutineRef;
+  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
   unsafe {
-    let coro_ptr = Box::into_raw(coro) as CoroutineRef;
-    let h = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(h));
+    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
   }
 
   assert!(
@@ -203,6 +204,7 @@ fn native_async_strict_await_yields_on_already_settled_promise() {
 
   runtime_native::rt_async_poll();
   assert!(completed);
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // Restore default for any other tests that don't use `TestRuntimeGuard`.
   runtime_native::rt_async_set_strict_await_yields(false);
@@ -241,16 +243,17 @@ fn native_async_non_strict_await_resumes_synchronously_on_already_settled_promis
     awaited: awaited_ptr,
   });
 
+  let coro_ref = Box::into_raw(coro) as CoroutineRef;
+  let handle = runtime_native::rt_handle_alloc(coro_ref.cast::<u8>());
   unsafe {
-    let coro_ptr = Box::into_raw(coro) as CoroutineRef;
-    let h = runtime_native::rt_handle_alloc(coro_ptr.cast::<u8>());
-    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(h));
+    let _promise = runtime_native::rt_async_spawn(runtime_native::CoroutineId(handle));
   }
 
   assert!(
     completed,
     "non-strict await should resume synchronously inside rt_async_spawn"
   );
+  assert!(runtime_native::rt_handle_load(handle).is_null());
   assert!(!runtime_native::rt_async_poll());
 
   unsafe {

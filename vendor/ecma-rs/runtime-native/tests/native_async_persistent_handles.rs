@@ -129,6 +129,7 @@ fn deferred_spawn_reloads_coroutine_ptr_from_persistent_handle() {
 
   assert_eq!(c1.load(Ordering::SeqCst), 0, "original coroutine should not have run after relocation");
   assert_eq!(c2.load(Ordering::SeqCst), 1, "relocated coroutine should have run exactly once");
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // The runtime destroys the relocated coroutine frame (`coro2`). Free the original allocation
   // manually to avoid leaking the test heap.
@@ -265,6 +266,7 @@ fn await_reaction_reloads_coroutine_ptr_from_persistent_handle() {
 
   while runtime_native::rt_async_poll() {}
   assert!(completed);
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 
   // The runtime destroys the relocated coroutine frame (`coro2`). Free the original allocation
   // manually to avoid leaking the test heap.
