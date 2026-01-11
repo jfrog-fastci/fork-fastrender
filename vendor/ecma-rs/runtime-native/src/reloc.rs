@@ -128,19 +128,19 @@ pub fn relocate_derived_pair(
 
   // SAFETY: callers must provide valid, writable slots.
   unsafe {
-    let base = *base_slot;
-    let derived = *derived_slot;
+    let base = base_slot.read_unaligned();
+    let derived = derived_slot.read_unaligned();
 
     if base == 0 {
-      *base_slot = 0;
-      *derived_slot = 0;
+      base_slot.write_unaligned(0);
+      derived_slot.write_unaligned(0);
       return;
     }
 
     let delta = (derived as isize) - (base as isize);
     let new_base = relocate_base(base);
 
-    *base_slot = new_base;
-    *derived_slot = (new_base as isize + delta) as usize;
+    base_slot.write_unaligned(new_base);
+    derived_slot.write_unaligned((new_base as isize + delta) as usize);
   }
 }
