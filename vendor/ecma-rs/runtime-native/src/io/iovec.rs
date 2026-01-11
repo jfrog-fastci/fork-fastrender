@@ -183,6 +183,7 @@ impl PinnedIoVec {
 /// Alias used by some APIs to emphasize that this is a list of `iovec` entries.
 pub type IoVecList = PinnedIoVec;
 
+#[cfg(unix)]
 /// A pinned, stable-address `msghdr` that owns its `iovec[]` descriptor list.
 ///
 /// This is safe to pass to `sendmsg`/`recvmsg` and io_uring `SendMsg`/`RecvMsg` because all
@@ -199,6 +200,7 @@ pub struct PinnedMsgHdr {
   control: Option<Vec<u8>>,
 }
 
+#[cfg(unix)]
 impl PinnedMsgHdr {
   pub fn new(iovecs: PinnedIoVec) -> Self {
     Self::new_inner(iovecs, None, None)
