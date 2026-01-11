@@ -147,6 +147,23 @@ ptr elementtype(<fn-ty>) @callee
 
 Without `elementtype(<fn-ty>)` on the callee operand, `rewrite-statepoints-for-gc` cannot reliably recover the call signature.
 
+#### Indirect calls through function pointers
+
+For indirect calls (callee is a `ptr`-typed function pointer), the same rule applies: the callee operand must be annotated with the *intended* function type:
+
+```llvm
+; %fp is a `ptr` holding a function pointer.
+%tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
+    i64 2882400000, i32 0,
+    ptr elementtype(void (i64)) %fp,
+    i32 1, i32 0,
+    i64 123,
+    i32 0, i32 0)
+  ["gc-live"(ptr addrspace(1) %root)]
+```
+
+This is especially important with opaque pointers because `%fp` does not otherwise carry a signature.
+
 ### Extra immediates after call args (mandatory)
 
 After the normal call arguments, the statepoint argument list must include **two additional constant immediates**:
