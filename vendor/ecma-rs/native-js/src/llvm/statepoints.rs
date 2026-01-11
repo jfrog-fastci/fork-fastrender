@@ -43,11 +43,14 @@ use llvm_sys::core::{
   LLVMBuildCallWithOperandBundles, LLVMCreateEnumAttribute, LLVMCreateOperandBundle,
   LLVMCreateTypeAttribute, LLVMDisposeOperandBundle, LLVMFunctionType,
   LLVMGetEnumAttributeKindForName, LLVMGetModuleContext, LLVMGetNamedFunction,
-  LLVMTokenTypeInContext,
+  LLVMGetPointerAddressSpace, LLVMGetTypeKind, LLVMTokenTypeInContext, LLVMTypeOf,
 };
 use llvm_sys::prelude::{LLVMTypeRef, LLVMValueRef};
+use std::collections::HashSet;
 use std::ffi::CString;
 use std::os::raw::c_uint;
+
+use crate::llvm::gc::GC_ADDR_SPACE;
 
 /// Arguments that control how the `gc.statepoint` intrinsic is emitted.
 #[derive(Debug, Clone, Copy)]
@@ -231,6 +234,27 @@ pub fn build_statepoint_call_indirect<'ctx>(
 
   let mut bundles = Vec::new();
   let mut live_values: Vec<LLVMValueRef> = gc_live.iter().map(|v| v.as_value_ref()).collect();
+  let mut live_set: HashSet<LLVMValueRef> = live_values.iter().copied().collect();
+
+  // LLVM does not implicitly treat GC pointer call arguments as roots for stack map emission. Any
+  // `ptr addrspace(1)` passed as a call argument must also be listed in `"gc-live"`.
+  //
+  // Deterministic ordering:
+  //   1) caller-provided `gc_live` values (in order),
+  //   2) then unique GC pointer call args (in call-arg order).
+  for arg in call_args {
+    let v = arg.as_value_ref();
+    unsafe {
+      let ty = LLVMTypeOf(v);
+      if LLVMGetTypeKind(ty) == llvm_sys::LLVMTypeKind::LLVMPointerTypeKind
+        && LLVMGetPointerAddressSpace(ty) == GC_ADDR_SPACE
+      {
+        if live_set.insert(v) {
+          live_values.push(v);
+        }
+      }
+    }
+  }
   let gc_live_name = CString::new(GC_LIVE_BUNDLE).expect("gc-live contains NUL");
   let live_ptr = if live_values.is_empty() {
     std::ptr::null_mut()
