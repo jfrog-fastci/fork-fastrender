@@ -11,7 +11,7 @@ contracts below.
 Every OS thread that may execute managed code must register itself with the runtime:
 
 ```c
-uint64_t rt_thread_register(uint32_t kind);
+uint64_t rt_thread_register(RtThreadKind kind);
 void rt_thread_unregister(void);
 ```
 
