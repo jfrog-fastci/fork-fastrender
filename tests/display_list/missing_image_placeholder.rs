@@ -94,6 +94,15 @@ fn display_list_img_empty_bytes_renders_ua_placeholder() {
   let mut renderer = FastRender::with_config(config).expect("create renderer");
   let pixmap = renderer.render_html(&html, 24, 24).expect("render");
 
+  // Chrome paints a thin border around broken images.
+  let border_px = pixmap.pixel(0, 0).expect("border pixel in bounds");
+  assert_eq!(
+    (border_px.red(), border_px.green(), border_px.blue(), border_px.alpha()),
+    (192, 192, 192, 255),
+    "expected broken-image border to be light gray, got {:?}",
+    (border_px.red(), border_px.green(), border_px.blue(), border_px.alpha())
+  );
+
   // Chrome's broken-image placeholder keeps the image box transparent (so author-provided
   // backgrounds show through) but draws a small icon in the top-left.
   let icon_px = pixmap.pixel(4, 4).expect("icon pixel in bounds");
@@ -138,6 +147,13 @@ fn display_list_img_alt_text_wraps_within_replaced_box() {
 
   // If the alt text is wrapped into multiple lines, we should see red glyph pixels both near the
   // top of the replaced box and further down.
+  let border_px = pixmap.pixel(0, 0).expect("border pixel in bounds");
+  assert_eq!(
+    (border_px.red(), border_px.green(), border_px.blue(), border_px.alpha()),
+    (192, 192, 192, 255),
+    "expected broken-image border to be light gray"
+  );
+
   let top_red = count_red(&pixmap, 0, 0, 60, 20);
   let bottom_red = count_red(&pixmap, 0, 30, 60, 60);
   assert!(top_red > 0, "expected red alt text pixels near top (got {top_red})");

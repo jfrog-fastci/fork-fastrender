@@ -11046,7 +11046,7 @@ impl DisplayListBuilder {
       }));
     }
 
-    self.emit_inside_border_rect(icon_rect, Rgba::rgb(163, 163, 163));
+    self.emit_inside_border_rect(icon_rect, Rgba::rgb(192, 192, 192));
   }
 
   fn measure_text_advance_width(&mut self, text: &str, style: &ComputedStyle) -> Option<f32> {
@@ -11162,9 +11162,11 @@ impl DisplayListBuilder {
     }
     match replaced_type {
       // Chrome renders a broken-image icon inside a small 1px-bordered square and leaves the
-      // image box itself transparent. Drawing a full-frame placeholder border creates large
-      // mismatches on real pages (including dark themes) and does not match Chrome's behavior.
+      // image box itself transparent (so author-provided backgrounds show through). Chrome also
+      // draws a thin border around the broken image box.
       ReplacedType::Image { .. } => {
+        self.emit_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192));
+
         // Draw a small icon in the top-left when there is enough room. Keep it from dominating
         // tiny boxes (e.g. 20×20) so author-provided backgrounds remain visible.
         let icon_inset = 2.0;
@@ -13250,6 +13252,8 @@ impl DisplayListBuilder {
         ..
       }
     ) {
+      self.emit_inside_border_rect(content_rect, Rgba::rgb(192, 192, 192));
+
       let icon_inset = 2.0;
       let icon_gap = 2.0;
       let icon_size = Self::missing_image_icon_size(content_rect);
