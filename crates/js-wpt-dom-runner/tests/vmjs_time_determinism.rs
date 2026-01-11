@@ -2,7 +2,8 @@
 
 use js_wpt_dom_runner::{discover_tests, BackendSelection, RunOutcome, Runner, RunnerConfig, WptFs};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::sync::mpsc;
+use std::time::Duration;
 
 fn corpus_root() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -37,38 +38,47 @@ fn vmjs_backend_uses_deterministic_virtual_time() {
   let runner = Runner::new(
     fs,
     RunnerConfig {
-      // Virtual timeout must be long enough to allow the test's 1000ms timer to fire.
-      default_timeout: Duration::from_secs(2),
-      long_timeout: Duration::from_secs(2),
+      // Virtual timeout must be long enough to allow the test's long (30s) timer to fire.
+      default_timeout: Duration::from_secs(40),
+      long_timeout: Duration::from_secs(40),
       backend: BackendSelection::VmJs,
       ..RunnerConfig::default()
     },
   );
 
-  // Measure a short baseline test first so we can compare wall-clock overhead. This avoids flakiness
-  // from absolute timing thresholds on busy CI machines while still catching accidental real-time
-  // sleeps for the long (1000ms) timer.
-  let baseline_start = Instant::now();
+  // Run a short baseline test first to warm up one-time initialization paths (DOM bootstrap,
+  // intrinsics, etc) so the wall-clock guard below is less sensitive to cold-start variance.
   let baseline_result = runner.run_test(baseline_test).expect("run baseline test");
-  let baseline_elapsed = baseline_start.elapsed();
   assert_eq!(
     baseline_result.outcome,
     RunOutcome::Pass,
     "{baseline_id} should pass under vm-js backend"
   );
 
-  let start = Instant::now();
-  let result = runner.run_test(test).expect("run test");
-  let elapsed = start.elapsed();
+  // Ensure the long virtual timer doesn't translate into a long wall-clock delay. We enforce this
+  // by running the test in a separate thread with a wall-clock timeout (rather than comparing
+  // absolute runtimes, which can be noisy on busy CI machines).
+  //
+  // If the vm-js backend regresses to real-time sleeps for timers, this test will exceed the
+  // timeout and fail quickly (without waiting for the full 30s timer delay).
+  const WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(10);
+  let (tx, rx) = mpsc::channel();
+  let runner_thread = runner.clone();
+  let test_thread = test.clone();
+  let handle = std::thread::spawn(move || {
+    let result = runner_thread.run_test(&test_thread);
+    let _ = tx.send(result);
+  });
 
-  let extra = elapsed.saturating_sub(baseline_elapsed);
-  assert!(
-    // The determinism test schedules a 1000ms timer after an initial 10ms timer. With virtual time
-    // fast-forward, the additional wall time relative to the baseline should be small. If the
-    // backend regresses to real-time sleeps, this delta will approach the timer delay (~1s).
-    extra < Duration::from_millis(800),
-    "expected long virtual timers to avoid real-time waiting (baseline={baseline_elapsed:?}, determinism={elapsed:?}, extra={extra:?})"
-  );
+  let result = match rx.recv_timeout(WALL_CLOCK_TIMEOUT) {
+    Ok(r) => r,
+    Err(_err) => panic!(
+      "expected vm-js backend to fast-forward long virtual timers without real-time waiting (wall_clock_timeout={WALL_CLOCK_TIMEOUT:?})"
+    ),
+  };
+  handle.join().expect("runner thread should not panic");
+
+  let result = result.expect("run test");
   assert_eq!(
     result.outcome,
     RunOutcome::Pass,

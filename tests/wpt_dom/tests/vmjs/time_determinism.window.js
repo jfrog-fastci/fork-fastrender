@@ -5,7 +5,7 @@
 // `Date.now()` and `performance.now()` should both start at 0 and advance with the virtual clock
 // when timers fire (without wall-clock sleeps).
 //
-// Note: we schedule a long timer (1000ms) after the initial 10ms timer to ensure the backend uses
+// Note: we schedule a long timer (30s) after the initial 10ms timer to ensure the backend uses
 // `idle_wait` fast-forward semantics rather than waiting in real time.
 
 // Keep state in globals so timer callbacks do not capture locals. This file must run under the
@@ -93,8 +93,11 @@ function time_determinism_fail(err) {
   t.done();
 }
 
-function on_time_determinism_timeout_1010() {
-  assert_virtual_clock(1010, "virtual clock should read 1010 in 1000ms timer callback");
+function on_time_determinism_timeout_30010() {
+  assert_virtual_clock(
+    30010,
+    "virtual clock should read 30010 in 30000ms timer callback"
+  );
 }
 
 function on_time_determinism_timeout_10() {
@@ -108,7 +111,7 @@ function on_time_determinism_timeout_10() {
     return;
   }
 
-  setTimeout(t.step_func_done(on_time_determinism_timeout_1010), 1000);
+  setTimeout(t.step_func_done(on_time_determinism_timeout_30010), 30000);
 }
 
 function run_time_determinism_test(t) {

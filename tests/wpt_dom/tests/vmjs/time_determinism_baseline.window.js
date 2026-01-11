@@ -6,8 +6,8 @@
 // This test is intentionally short: it runs a single 10ms timer and asserts that `Date.now()` and
 // `performance.now()` start at 0 and advance deterministically to 10 when the timer fires.
 //
-// The Rust integration test compares the wall-clock runtime of this test against
-// `vmjs/time_determinism.window.js` to ensure long virtual timers do not introduce real-time waits.
+// The Rust integration test runs this first to warm up the vm-js backend before executing
+// `vmjs/time_determinism.window.js` under a wall-clock timeout.
 
 function assert_virtual_clock(expected, context) {
   var now_date = Date.now();
