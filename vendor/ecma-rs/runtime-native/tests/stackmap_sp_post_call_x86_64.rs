@@ -2,7 +2,9 @@
 
 use runtime_native::arch::SafepointContext;
 use runtime_native::stackwalk::StackBounds;
-use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
+use runtime_native::stackwalk_fp::{
+  walk_gc_root_pairs_from_safepoint_context, walk_gc_roots_from_safepoint_context,
+};
 use runtime_native::StackMaps;
 
 /// Regression test: LLVM stackmap `Indirect [RSP + off]` locations are based on the
@@ -69,6 +71,64 @@ fn sp_relative_stackmap_locations_use_post_call_rsp() {
   visited.sort_unstable();
   visited.dedup();
   assert_eq!(visited, vec![slot_addr]);
+}
+
+#[test]
+fn sp_relative_stackmap_locations_use_post_call_rsp_for_pair_walker() {
+  // Stackmap with one callsite record and one spilled root at [RSP + ROOT_OFF].
+  const ROOT_OFF: i32 = 16;
+  let stackmaps =
+    StackMaps::parse(&build_stackmaps_one_sp_root(ROOT_OFF)).expect("parse stackmaps");
+  let (callsite_ra, _callsite) = stackmaps.iter().next().expect("one callsite");
+
+  // Fake stack memory.
+  let mut stack = vec![0u8; 256];
+  let base = stack.as_mut_ptr() as usize;
+
+  // Simulate entering a safepoint callee:
+  //   rsp_entry -> [return address]
+  let sp_entry = align_up(base + 64, 8);
+  unsafe {
+    write_u64(sp_entry, callsite_ra);
+  }
+
+  // Stackmap semantics: base SP is *post-call* (return address popped).
+  let sp_post_call = sp_entry + 8;
+
+  // Root slot is relative to that post-call SP.
+  let slot_addr = sp_post_call + (ROOT_OFF as usize);
+  let obj = Box::into_raw(Box::new(0u8)) as u64;
+  unsafe {
+    write_u64(slot_addr, obj);
+  }
+
+  // Minimal terminal frame record so `walk_gc_root_pairs_from_fp` returns immediately
+  // after processing the top frame.
+  let fp = align_up(base + 160, 8);
+  unsafe {
+    write_u64(fp + 0, 0);
+    write_u64(fp + 8, 0);
+  }
+
+  let ctx = SafepointContext {
+    sp_entry,
+    sp: sp_post_call,
+    fp,
+    ip: callsite_ra as usize,
+  };
+
+  let mut visited: Vec<(usize, usize)> = Vec::new();
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  unsafe {
+    walk_gc_root_pairs_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |pair| {
+      visited.push((pair.base_slot as usize, pair.derived_slot as usize));
+    })
+    .expect("walk");
+  }
+
+  visited.sort_unstable();
+  visited.dedup();
+  assert_eq!(visited, vec![(slot_addr, slot_addr)]);
 }
 
 fn build_stackmaps_one_sp_root(offset: i32) -> Vec<u8> {
