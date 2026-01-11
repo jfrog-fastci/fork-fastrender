@@ -242,7 +242,7 @@ extern "C" fn blocking_resolve_value(_data: *mut u8, promise: PromiseRef) {
 
 extern "C" fn blocking_reject_value(_data: *mut u8, promise: PromiseRef) {
   std::thread::sleep(Duration::from_millis(20));
-  runtime_native::rt_promise_reject(promise, 0xDEAD_BEEFusize as ValueRef);
+  runtime_native::rt_promise_reject_legacy(promise, 0xDEAD_BEEFusize as ValueRef);
 }
 
 #[repr(C)]
@@ -325,14 +325,14 @@ extern "C" fn spawn_blocking_reject_resume(coro: *mut RtCoroutineHeader) -> RtCo
     match (*coro).header.state {
       0 => {
         (*coro).awaited = runtime_native::rt_spawn_blocking(blocking_reject_value, core::ptr::null_mut());
-        runtime_native::rt_coro_await(&mut (*coro).header, (*coro).awaited, 1);
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
         RtCoroStatus::Pending
       }
       1 => {
         assert_eq!((*coro).header.await_is_error, 1);
         assert_eq!((*coro).header.await_error as usize, 0xDEAD_BEEF);
         *(*coro).completed = true;
-        runtime_native::rt_promise_resolve((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut::<core::ffi::c_void>());
         RtCoroStatus::Done
       }
       other => panic!("unexpected coroutine state: {other}"),
@@ -358,12 +358,12 @@ fn coroutine_can_await_spawn_blocking_rejection() {
     awaited: PromiseRef::null(),
   });
 
-  runtime_native::rt_async_spawn(&mut coro.header);
+  runtime_native::rt_async_spawn_legacy(&mut coro.header);
   assert!(!completed);
 
   let start = Instant::now();
   while !completed {
-    runtime_native::rt_async_poll();
+    runtime_native::rt_async_poll_legacy();
     assert!(
       start.elapsed() < Duration::from_secs(2),
       "timeout waiting for spawn_blocking rejection to resume coroutine"
