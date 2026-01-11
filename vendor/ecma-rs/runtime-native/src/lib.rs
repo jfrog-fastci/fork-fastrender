@@ -32,6 +32,7 @@ pub mod abi;
 pub mod arch;
 pub mod gc_safe;
 pub mod async_rt;
+pub mod reactor;
 pub mod timer_wheel;
 pub mod gc;
 pub mod immix;
