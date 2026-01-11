@@ -545,6 +545,31 @@ We provide a reference PIE link wrapper:
 
 - `scripts/native_js_link_linux.sh`
 
+### GNU ld (system linker) behavior in PIE mode
+
+On Ubuntu, invoking `clang` without `-fuse-ld=lld` typically uses GNU ld and defaults to PIE.
+If you link objects that contain a read-only `.llvm_stackmaps` section into a PIE, GNU ld will
+generally **succeed** but emit warnings and mark the binary with `DT_TEXTREL`:
+
+```
+relocation against `...` in read-only section `.llvm_stackmaps'
+creating DT_TEXTREL in a PIE
+```
+
+This happens because the stackmap table contains absolute `FunctionAddress` entries which become
+runtime relocations under PIE; if `.llvm_stackmaps` is mapped read-only (e.g. alongside `.rodata`),
+the dynamic loader would need to temporarily write to that segment to apply relocations.
+
+To confirm, inspect the linked binary:
+
+- `readelf -d <exe> | grep -E 'TEXTREL|FLAGS'` (presence of `TEXTREL` / `DF_TEXTREL`)
+- `readelf -r <exe>` (look for `R_X86_64_RELATIVE` relocations whose **offsets fall inside**
+  the `.llvm_stackmaps` address range)
+
+If you need PIE **without** `DT_TEXTREL`, apply Option C (rewrite `.llvm_stackmaps` to be writable)
+before linking. The dynamic relocations will still be present (and must be, for correct stackmap
+addresses at runtime), but they will apply to a writable segment instead of requiring text relocs.
+
 ## Example link commands
 
 ### Default (non-PIE): debug (no section GC)
