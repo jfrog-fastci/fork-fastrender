@@ -239,6 +239,11 @@ impl RootHandles {
     }
   }
 
+  #[inline]
+  pub fn live_count(&self) -> usize {
+    self.slots.iter().filter(|slot| !slot.is_free()).count()
+  }
+
   pub fn root_add(&mut self, value: *mut u8) -> RootHandle {
     let index = if let Some(index) = self.free_list.pop() {
       index as usize
@@ -328,4 +333,37 @@ impl RootSet for GlobalRootSet {
     crate::roots::global_root_registry().for_each_root_slot(|slot| f(slot));
     crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| f(slot));
   }
+}
+
+// -----------------------------------------------------------------------------
+// Test-only hooks for process-global persistent handles
+// -----------------------------------------------------------------------------
+
+/// Test-only API: clear all global persistent roots stored in the process-wide persistent handle
+/// table.
+///
+/// This invalidates any outstanding [`crate::gc::HandleId`] values and should only be used in tests
+/// that fully control all root users.
+#[doc(hidden)]
+pub fn debug_clear_global_roots_for_tests() {
+  crate::roots::global_persistent_handle_table().clear_for_tests();
+}
+
+/// Test-only API: return the number of live persistent handles in the global table.
+#[doc(hidden)]
+pub fn debug_global_root_count() -> usize {
+  let mut count = 0usize;
+  crate::roots::global_persistent_handle_table().for_each_root_slot(|_| {
+    count += 1;
+  });
+  count
+}
+
+/// Test-only API: mutate global persistent-handle slots in-place.
+///
+/// This is used by tests to simulate a moving GC by updating the stored pointer value without
+/// changing the [`crate::gc::HandleId`] itself.
+#[doc(hidden)]
+pub fn debug_for_each_global_root_slot_mut(mut f: impl FnMut(*mut *mut u8)) {
+  crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| f(slot));
 }

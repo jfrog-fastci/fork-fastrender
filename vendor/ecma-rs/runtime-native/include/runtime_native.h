@@ -713,6 +713,7 @@ void rt_promise_resolve_thenable_legacy(LegacyPromiseRef p, ThenableRef thenable
 void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);
 void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);
 void rt_promise_then_with_drop_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));
+void rt_promise_drop_legacy(LegacyPromiseRef p);
 
 typedef enum RtCoroStatus {
   RT_CORO_DONE = 0,

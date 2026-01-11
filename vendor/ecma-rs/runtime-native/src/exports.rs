@@ -9,6 +9,7 @@ use crate::abi::ThenableRef;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
 use crate::async_runtime::PromiseLayout;
+use crate::alloc;
 use crate::array;
 use crate::array::RtArrayHeader;
 use crate::async_runtime;
@@ -27,6 +28,7 @@ use crate::sync::gc_mutex::GcAwareMutex;
 use crate::threading;
 use crate::threading::registry;
 use crate::trap;
+use crate::rt_alloc as rt_alloc_mod;
 use crate::Runtime;
 use crate::Thread;
 use once_cell::sync::Lazy;
@@ -2294,7 +2296,7 @@ pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
 /// For non-payload promises, this may return null.
 #[no_mangle]
 pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
-  ensure_event_loop_thread_registered();
+  ensure_current_thread_registered();
   async_rt::promise::promise_payload_ptr(p)
 }
 
@@ -2324,6 +2326,24 @@ pub extern "C" fn rt_promise_resolve_into_legacy(p: PromiseRef, value: PromiseRe
 pub extern "C" fn rt_promise_resolve_promise_legacy(p: PromiseRef, other: PromiseRef) {
   ensure_event_loop_thread_registered();
   async_rt::promise::promise_resolve_promise(p, other)
+}
+
+#[no_mangle]
+pub extern "C" fn rt_promise_drop_legacy(p: PromiseRef) {
+  ensure_current_thread_registered();
+  async_rt::promise::promise_drop(p);
+}
+
+/// Test/debug helper: query a promise's current outcome without requiring access
+/// to `async_rt::promise` internals.
+#[doc(hidden)]
+pub fn rt_debug_promise_outcome(p: PromiseRef) -> (u8, ValueRef) {
+  ensure_event_loop_thread_registered();
+  match async_rt::promise::promise_outcome(p) {
+    async_rt::promise::PromiseOutcome::Pending => (0, core::ptr::null_mut()),
+    async_rt::promise::PromiseOutcome::Fulfilled(v) => (1, v),
+    async_rt::promise::PromiseOutcome::Rejected(e) => (2, e),
+  }
 }
 
 #[no_mangle]

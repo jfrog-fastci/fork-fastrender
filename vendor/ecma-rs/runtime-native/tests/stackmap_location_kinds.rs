@@ -54,8 +54,8 @@ fn parses_direct_location() {
   };
 
   let regs = MapRegs([(dwarf_reg, 0x1000)].into_iter().collect());
-  let slot = eval_location(loc, &regs).unwrap();
+  let value = eval_location(loc, &regs).unwrap();
 
   let expected = (0x1000i128 + offset as i128) as u64;
-  assert_eq!(slot, RootSlot::Const { value: expected });
+  assert_eq!(value, RootSlot::Const { value: expected });
 }

@@ -1,9 +1,10 @@
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::PromiseHeader;
 use crate::async_runtime::PromiseLayout;
+use crate::gc::HandleId;
 use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
 use crate::threading;
 
@@ -25,6 +26,26 @@ const STATE_REJECTING: u8 = 4;
 /// `rt_promise_fulfill` / `rt_promise_reject`.
 const FLAG_HAS_PAYLOAD: u8 = 1 << 1;
 
+/// Raw sentinel value stored in `value_root`/`error_root` to represent `None`.
+///
+/// `HandleId` is a packed `{ index: u32, generation: u32 }`. The underlying handle table starts
+/// generations at 1 so `HandleId(0)` can be used as a stable sentinel.
+const ROOT_HANDLE_NONE: u64 = 0;
+
+#[inline]
+fn encode_root_handle(h: Option<HandleId>) -> u64 {
+  h.map(|h| h.to_u64()).unwrap_or(ROOT_HANDLE_NONE)
+}
+
+#[inline]
+fn decode_root_handle(raw: u64) -> Option<HandleId> {
+  if raw == ROOT_HANDLE_NONE {
+    None
+  } else {
+    Some(HandleId::from_u64(raw))
+  }
+}
+
 #[repr(C)]
 pub struct RtPromise {
   /// ABI-stable header prefix.
@@ -33,6 +54,10 @@ pub struct RtPromise {
   value: AtomicUsize,
   /// Rejection reason (valid when `header.state == REJECTED`).
   error: AtomicUsize,
+  /// Fulfillment value root handle (valid when `header.state == FULFILLED`).
+  value_root: AtomicU64,
+  /// Rejection reason root handle (valid when `header.state == REJECTED`).
+  error_root: AtomicU64,
 }
 
 impl RtPromise {
@@ -45,6 +70,21 @@ impl RtPromise {
       },
       value: AtomicUsize::new(0),
       error: AtomicUsize::new(0),
+      value_root: AtomicU64::new(ROOT_HANDLE_NONE),
+      error_root: AtomicU64::new(ROOT_HANDLE_NONE),
+    }
+  }
+}
+
+impl Drop for RtPromise {
+  fn drop(&mut self) {
+    let value_raw = self.value_root.swap(ROOT_HANDLE_NONE, Ordering::AcqRel);
+    if let Some(h) = decode_root_handle(value_raw) {
+      let _ = crate::roots::global_persistent_handle_table().free(h);
+    }
+    let error_raw = self.error_root.swap(ROOT_HANDLE_NONE, Ordering::AcqRel);
+    if let Some(h) = decode_root_handle(error_raw) {
+      let _ = crate::roots::global_persistent_handle_table().free(h);
     }
   }
 }
@@ -85,8 +125,28 @@ pub(crate) fn promise_outcome(p: PromiseRef) -> PromiseOutcome {
 
   let state = unsafe { &*ptr }.header.state.load(Ordering::Acquire);
   match state {
-    PromiseHeader::FULFILLED => PromiseOutcome::Fulfilled(unsafe { &*ptr }.value.load(Ordering::Acquire) as ValueRef),
-    PromiseHeader::REJECTED => PromiseOutcome::Rejected(unsafe { &*ptr }.error.load(Ordering::Acquire) as ValueRef),
+    PromiseHeader::FULFILLED => {
+      let h = unsafe { &*ptr }.value_root.load(Ordering::Acquire);
+      if let Some(h) = decode_root_handle(h) {
+        let value = crate::roots::global_persistent_handle_table()
+          .get(h)
+          .unwrap_or(core::ptr::null_mut());
+        PromiseOutcome::Fulfilled(value.cast())
+      } else {
+        PromiseOutcome::Fulfilled(unsafe { &*ptr }.value.load(Ordering::Acquire) as ValueRef)
+      }
+    }
+    PromiseHeader::REJECTED => {
+      let h = unsafe { &*ptr }.error_root.load(Ordering::Acquire);
+      if let Some(h) = decode_root_handle(h) {
+        let err = crate::roots::global_persistent_handle_table()
+          .get(h)
+          .unwrap_or(core::ptr::null_mut());
+        PromiseOutcome::Rejected(err.cast())
+      } else {
+        PromiseOutcome::Rejected(unsafe { &*ptr }.error.load(Ordering::Acquire) as ValueRef)
+      }
+    }
     // Includes `PENDING` + internal settling states.
     _ => PromiseOutcome::Pending,
   }
@@ -335,9 +395,23 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
     return;
   }
 
+  // Defensive: remove any previously installed persistent roots before storing the new value.
+  let value_raw = unsafe { &(*ptr).value_root }.swap(ROOT_HANDLE_NONE, Ordering::AcqRel);
+  if let Some(h) = decode_root_handle(value_raw) {
+    let _ = crate::roots::global_persistent_handle_table().free(h);
+  }
+  let error_raw = unsafe { &(*ptr).error_root }.swap(ROOT_HANDLE_NONE, Ordering::AcqRel);
+  if let Some(h) = decode_root_handle(error_raw) {
+    let _ = crate::roots::global_persistent_handle_table().free(h);
+  }
+
+  let root = (!value.is_null()).then(|| crate::roots::global_persistent_handle_table().alloc(value.cast()));
+
   // Publish the result before flipping to the externally-visible fulfilled state.
   unsafe { &(*ptr).value }.store(value as usize, Ordering::Relaxed);
   unsafe { &(*ptr).error }.store(0, Ordering::Relaxed);
+  unsafe { &(*ptr).value_root }.store(encode_root_handle(root), Ordering::Relaxed);
+  unsafe { &(*ptr).error_root }.store(ROOT_HANDLE_NONE, Ordering::Relaxed);
   state.store(PromiseHeader::FULFILLED, Ordering::Release);
 
   drain_reactions(ptr);
@@ -374,8 +448,22 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
     return;
   }
 
+  // Defensive: remove any previously installed persistent roots before storing the new error.
+  let value_raw = unsafe { &(*ptr).value_root }.swap(ROOT_HANDLE_NONE, Ordering::AcqRel);
+  if let Some(h) = decode_root_handle(value_raw) {
+    let _ = crate::roots::global_persistent_handle_table().free(h);
+  }
+  let error_raw = unsafe { &(*ptr).error_root }.swap(ROOT_HANDLE_NONE, Ordering::AcqRel);
+  if let Some(h) = decode_root_handle(error_raw) {
+    let _ = crate::roots::global_persistent_handle_table().free(h);
+  }
+
+  let root = (!err.is_null()).then(|| crate::roots::global_persistent_handle_table().alloc(err.cast()));
+
   unsafe { &(*ptr).error }.store(err as usize, Ordering::Relaxed);
   unsafe { &(*ptr).value }.store(0, Ordering::Relaxed);
+  unsafe { &(*ptr).error_root }.store(encode_root_handle(root), Ordering::Relaxed);
+  unsafe { &(*ptr).value_root }.store(ROOT_HANDLE_NONE, Ordering::Relaxed);
   state.store(PromiseHeader::REJECTED, Ordering::Release);
 
   // If no one attached a handler yet, schedule unhandled-rejection tracking.
@@ -669,4 +757,21 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
     Box::into_raw(job) as *mut u8,
     drop_thenable_job,
   ));
+}
+
+/// Drop a legacy runtime-native promise.
+///
+/// Promises are currently leaked in production builds; this exists so tests and
+/// embedders can deterministically release promises and any persistent GC roots
+/// they keep alive.
+pub(crate) fn promise_drop(p: PromiseRef) {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
+    return;
+  }
+
+  // SAFETY: `PromiseRef` values are created from `Box::into_raw` in `promise_new`.
+  unsafe {
+    drop(Box::from_raw(ptr));
+  }
 }
