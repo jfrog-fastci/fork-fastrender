@@ -448,15 +448,19 @@ pub fn reset_clock_for_tests() {
 // Queueing helpers used by the promise/coroutine lowering.
 // -----------------------------------------------------------------------------
 
-#[allow(dead_code)]
+#[inline]
 pub(crate) fn queue_microtask(func: TaskFn, data: *mut u8) {
   global().enqueue_microtask(Task::new(func, data));
 }
 
-#[allow(dead_code)]
+#[inline]
 pub(crate) fn queue_macrotask(func: TaskFn, data: *mut u8) {
   global().enqueue_macrotask(Task::new(func, data));
 }
+
+// -----------------------------------------------------------------------------
+// Event-loop driving helpers.
+// -----------------------------------------------------------------------------
 /// Drive the async runtime for one event-loop turn.
 ///
 /// Returns `true` if there is still pending work after the turn.
@@ -562,11 +566,11 @@ pub(crate) fn strict_await_yields() -> bool {
 }
 
 pub fn enqueue_microtask(callback: TaskFn, data: *mut u8) {
-  global().enqueue_microtask(Task::new(callback, data));
+  queue_microtask(callback, data);
 }
 
 pub fn enqueue_macrotask(callback: TaskFn, data: *mut u8) {
-  global().enqueue_macrotask(Task::new(callback, data));
+  queue_macrotask(callback, data);
 }
 
 pub fn schedule_timer(deadline: Instant, callback: TaskFn, data: *mut u8) -> TimerId {
