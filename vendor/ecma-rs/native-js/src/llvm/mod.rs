@@ -17,3 +17,5 @@
 
 pub mod gc;
 pub mod passes;
+pub mod statepoint_directives;
+

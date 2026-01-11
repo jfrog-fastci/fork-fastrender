@@ -6,6 +6,11 @@ description = "Native (LLVM-backed) code generation for a strict TypeScript subs
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# Optional helper to assign sequential/deterministic `"statepoint-id"` callsite attributes.
+statepoint-directives = []
+
 [dependencies]
 anyhow = { workspace = true }
 diagnostics = { workspace = true }
@@ -21,3 +26,4 @@ types-ts-interned = { workspace = true }
 [dev-dependencies]
 object = { workspace = true }
 tempfile = { workspace = true }
+
