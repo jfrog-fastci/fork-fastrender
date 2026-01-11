@@ -2,7 +2,6 @@ use super::backing_store::{
   global_backing_store_allocator, BackingStore, BackingStoreAllocError, BackingStoreAllocator,
   BackingStorePinError, BorrowError, BorrowGuardRead, BorrowGuardWrite, PinnedBackingStore,
 };
-use core::ptr::NonNull;
 use crate::gc::{GcHeap, ObjHeader, RememberedSet, RootSet, TypeDescriptor, OBJ_HEADER_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -442,25 +441,6 @@ impl PinnedArrayBuffer {
   #[inline]
   pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
     core::slice::from_raw_parts_mut(self.ptr, self.len)
-  }
-}
-
-// SAFETY: `PinnedArrayBuffer` owns a `PinnedBackingStore`, which keeps the underlying backing store
-// allocation alive and prevents detach/resize for the lifetime of the guard. The returned pointer is
-// therefore stable and valid for `len` bytes until the guard is dropped.
-unsafe impl runtime_io_uring::IoBuf for PinnedArrayBuffer {
-  fn stable_ptr(&self) -> NonNull<u8> {
-    NonNull::new(self.ptr).expect("PinnedArrayBuffer pointer must not be null")
-  }
-
-  fn len(&self) -> usize {
-    self.len
-  }
-}
-
-unsafe impl runtime_io_uring::IoBufMut for PinnedArrayBuffer {
-  fn stable_mut_ptr(&mut self) -> NonNull<u8> {
-    NonNull::new(self.ptr).expect("PinnedArrayBuffer pointer must not be null")
   }
 }
 

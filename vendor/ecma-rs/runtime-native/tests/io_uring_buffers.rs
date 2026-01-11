@@ -12,11 +12,51 @@ mod linux {
   use std::os::fd::AsRawFd;
   use std::os::fd::RawFd;
   use std::os::unix::net::UnixStream;
+  use std::ptr::NonNull;
   use std::thread;
   use std::time::Duration;
 
+  use runtime_io_uring::IoBuf;
+  use runtime_io_uring::IoBufMut;
   use runtime_io_uring::IoUringDriver;
-  use runtime_native::buffer::{ArrayBuffer, BackingStoreAllocator, GlobalBackingStoreAllocator, Uint8Array};
+  use runtime_native::buffer::{
+    ArrayBuffer, ArrayBufferError, BackingStoreAllocator, BorrowError, GlobalBackingStoreAllocator,
+    TypedArrayError, Uint8Array,
+  };
+
+  #[derive(Debug)]
+  struct IoBorrowedPinnedUint8Array {
+    buf: runtime_native::buffer::PinnedUint8Array,
+    #[allow(dead_code)]
+    borrow: runtime_native::buffer::BorrowGuardWrite,
+  }
+
+  impl IoBorrowedPinnedUint8Array {
+    fn from_uint8_array(view: &Uint8Array) -> Self {
+      let store = view
+        .backing_store_handle()
+        .expect("Uint8Array should have a backing store");
+      let borrow = store.try_borrow_io_write().expect("buffer should not already be borrowed");
+      let buf = view.pin().expect("pin Uint8Array backing store");
+      Self { buf, borrow }
+    }
+  }
+
+  unsafe impl IoBuf for IoBorrowedPinnedUint8Array {
+    fn stable_ptr(&self) -> NonNull<u8> {
+      NonNull::new(self.buf.as_ptr()).expect("PinnedUint8Array pointer must not be null")
+    }
+
+    fn len(&self) -> usize {
+      self.buf.len()
+    }
+  }
+
+  unsafe impl IoBufMut for IoBorrowedPinnedUint8Array {
+    fn stable_mut_ptr(&mut self) -> NonNull<u8> {
+      NonNull::new(self.buf.as_ptr()).expect("PinnedUint8Array pointer must not be null")
+    }
+  }
 
   struct Fd(RawFd);
 
@@ -58,13 +98,22 @@ mod linux {
     let alloc = GlobalBackingStoreAllocator::default();
     let mut buf = ArrayBuffer::new_zeroed_in(&alloc, 5).expect("alloc ArrayBuffer backing store");
     let view = Uint8Array::view(&buf, 0, 5).expect("create Uint8Array view");
-    let pinned = view.pin().expect("pin Uint8Array backing store");
+    let pinned = IoBorrowedPinnedUint8Array::from_uint8_array(&view);
+
+    assert_eq!(
+      view.get(0).unwrap_err(),
+      TypedArrayError::Buffer(ArrayBufferError::Borrow(BorrowError::Borrowed)),
+      "safe reads should be blocked while the buffer is borrowed for I/O"
+    );
 
     write_end.write_all(b"hello")?;
 
     let read_op = driver.submit_read(read_end.as_raw_fd(), pinned, 0)?;
     let read_c = read_op.wait(&mut driver)?;
     assert_eq!(read_c.result, 5);
+
+    // Release the I/O borrow guard before reading through the original view.
+    drop(read_c.resource);
 
     // Bytes were written into the backing store in-place: read through the original view.
     assert_eq!(view.get(0).unwrap(), Some(b'h'));
@@ -75,7 +124,6 @@ mod linux {
 
     // Clean up explicitly so other tests that look at allocator counters aren't affected by this
     // backing store.
-    drop(read_c);
     drop(view);
     buf.finalize_in(&alloc);
     drop(buf);
@@ -95,7 +143,7 @@ mod linux {
     let alloc = GlobalBackingStoreAllocator::default();
     let buf = ArrayBuffer::new_zeroed_in(&alloc, 4).expect("alloc ArrayBuffer backing store");
     let view = Uint8Array::view(&buf, 0, 4).expect("create Uint8Array view");
-    let pinned = view.pin().expect("pin Uint8Array backing store");
+    let pinned = IoBorrowedPinnedUint8Array::from_uint8_array(&view);
 
     assert_eq!(alloc.external_bytes(), 4);
 
@@ -139,7 +187,7 @@ mod linux {
     let alloc = GlobalBackingStoreAllocator::default();
     let buf = ArrayBuffer::new_zeroed_in(&alloc, 1).expect("alloc ArrayBuffer backing store");
     let view = Uint8Array::view(&buf, 0, 1).expect("create Uint8Array view");
-    let pinned = view.pin().expect("pin Uint8Array backing store");
+    let pinned = IoBorrowedPinnedUint8Array::from_uint8_array(&view);
 
     drop(view);
     drop(buf);
@@ -205,4 +253,3 @@ mod linux {
     Ok(())
   }
 }
-

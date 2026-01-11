@@ -83,7 +83,6 @@ stackmap-context = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 runtime-native-abi = { workspace = true }
-runtime-io-uring = { workspace = true }
 loom = { version = "0.7", optional = true }
 static_assertions = { workspace = true }
 
@@ -105,6 +104,7 @@ tempfile = { workspace = true }
 backtrace = "0.3"
 object = { workspace = true, features = ["write_core"] }
 loom = "0.7"
+runtime-io-uring = { workspace = true }
 
 [[bin]]
 name = "stackmap-dump"

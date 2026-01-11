@@ -365,25 +365,6 @@ mod gc_trace_tests {
   }
 }
 
-// SAFETY: `PinnedUint8Array` owns a `PinnedArrayBuffer`, which pins the underlying backing store
-// allocation for the lifetime of the guard. The returned pointer is therefore stable and valid for
-// `len` bytes until the guard is dropped.
-unsafe impl runtime_io_uring::IoBuf for PinnedUint8Array {
-  fn stable_ptr(&self) -> NonNull<u8> {
-    NonNull::new(self.as_ptr()).expect("PinnedUint8Array pointer must not be null")
-  }
-
-  fn len(&self) -> usize {
-    self.len
-  }
-}
-
-unsafe impl runtime_io_uring::IoBufMut for PinnedUint8Array {
-  fn stable_mut_ptr(&mut self) -> NonNull<u8> {
-    NonNull::new(self.as_ptr()).expect("PinnedUint8Array pointer must not be null")
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
