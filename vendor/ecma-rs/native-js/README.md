@@ -108,6 +108,21 @@ compiler.compile()?;
 
 > Note: `native_js::emit` and `native_js::codegen` exist, but are currently stubs.
 
+Example (generating LLVM IR via `CodeGen`):
+
+```rust
+use inkwell::context::Context;
+use native_js::CodeGen;
+
+let context = Context::create();
+let cg = CodeGen::new(&context, "example");
+
+cg.define_trivial_function("trivial");
+
+// Prints IR that includes the stack-walking-related function attributes.
+println!("{}", cg.module_ir());
+```
+
 ## GC stack walking (current invariant)
 
 The native runtime is expected to perform **precise GC** using LLVM statepoints.
