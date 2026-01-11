@@ -505,6 +505,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   method: &str,
   redirect: super::web_fetch::RequestRedirect,
   user_headers: &[(String, String)],
+  system_headers: &[(String, String)],
   body: Option<&[u8]>,
   client_origin: Option<&super::DocumentOrigin>,
   referrer_url: Option<&str>,
@@ -601,8 +602,11 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           headers.push(("Cookie".to_string(), value));
         }
       }
+      super::merge_system_request_headers(&current, &mut headers, system_headers)?;
       if !redirect_suppressed_headers.is_empty() {
-        headers.retain(|(name, _)| !redirect_suppressed_headers.contains(&name.to_ascii_lowercase()));
+        headers.retain(|(name, _)| {
+          !redirect_suppressed_headers.contains(&name.to_ascii_lowercase())
+        });
       }
 
       let network_timer = super::start_network_fetch_diagnostics();
@@ -927,6 +931,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
               original_method,
               redirect,
               user_headers,
+              system_headers,
               original_body,
               client_origin,
               referrer_url,
@@ -970,7 +975,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       let is_retryable_status = super::retryable_http_status(status_code);
       let mut allows_empty_body =
         super::http_response_allows_empty_body(kind, status_code, &response.headers);
-      if current_method.eq_ignore_ascii_case("HEAD") {
+      if current_method.eq_ignore_ascii_case("HEAD") || current_method.eq_ignore_ascii_case("OPTIONS") {
         allows_empty_body = true;
       }
 

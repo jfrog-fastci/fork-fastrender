@@ -3187,6 +3187,104 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_sent_for_put_with_custom_header() {
+    if skip_if_curl_backend_missing("cors_preflight_sent_for_put_with_custom_header") {
+      return;
+    }
+    let Some(listener) = try_bind_localhost("cors_preflight_sent_for_put_with_custom_header") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      // Preflight request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push((headers, body));
+      let response = concat!(
+        "HTTP/1.1 204 No Content\r\n",
+        "Access-Control-Allow-Origin: http://client.example\r\n",
+        "Access-Control-Allow-Methods: PUT\r\n",
+        "Access-Control-Allow-Headers: x-test\r\n",
+        "Content-Length: 0\r\n",
+        "Connection: close\r\n",
+        "\r\n",
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push((headers, body));
+      let body_bytes = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_bytes.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body_bytes).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/preflight");
+    let mut request = Request::new("PUT", &url);
+    request.headers.append("X-Test", "hello").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 2, "expected two requests, got {captured:?}");
+
+    let preflight_headers = captured[0].0.to_ascii_lowercase();
+    let preflight_body = &captured[0].1;
+    assert!(
+      preflight_headers.starts_with("options /preflight"),
+      "unexpected preflight request:\n{preflight_headers}"
+    );
+    assert!(
+      preflight_headers.contains("origin: http://client.example"),
+      "missing Origin header:\n{preflight_headers}"
+    );
+    assert!(
+      preflight_headers.contains("access-control-request-method: put"),
+      "missing Access-Control-Request-Method header:\n{preflight_headers}"
+    );
+    assert!(
+      preflight_headers.contains("access-control-request-headers: x-test"),
+      "missing Access-Control-Request-Headers header:\n{preflight_headers}"
+    );
+    assert!(preflight_body.is_empty(), "expected empty preflight body");
+
+    let actual_headers = captured[1].0.to_ascii_lowercase();
+    assert!(
+      actual_headers.starts_with("put /preflight"),
+      "unexpected actual request:\n{actual_headers}"
+    );
+    assert!(
+      actual_headers.contains("x-test: hello"),
+      "missing user header on actual request:\n{actual_headers}"
+    );
+    assert_eq!(&captured[1].1, b"payload");
+  }
+
+  #[test]
   fn cors_preflight_rejects_redirect_and_does_not_send_actual_request() {
     if skip_if_curl_backend_missing("cors_preflight_rejects_redirect_and_does_not_send_actual_request") {
       return;
@@ -3393,6 +3491,102 @@ mod tests {
       !preflight.contains("access-control-request-headers:"),
       "unexpected Access-Control-Request-Headers in preflight request:\n{preflight}"
     );
+  }
+
+  #[test]
+  fn cors_preflight_triggered_by_unsafelisted_content_type() {
+    if skip_if_curl_backend_missing("cors_preflight_triggered_by_unsafelisted_content_type") {
+      return;
+    }
+    let Some(listener) = try_bind_localhost("cors_preflight_triggered_by_unsafelisted_content_type")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      // Preflight request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push((headers, body));
+      let response = concat!(
+        "HTTP/1.1 204 No Content\r\n",
+        "Access-Control-Allow-Origin: http://client.example\r\n",
+        "Access-Control-Allow-Methods: POST\r\n",
+        "Access-Control-Allow-Headers: content-type\r\n",
+        "Content-Length: 0\r\n",
+        "Connection: close\r\n",
+        "\r\n",
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push((headers, body));
+      let body_bytes = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_bytes.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body_bytes).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/preflight");
+    let mut request = Request::new("POST", &url);
+    request
+      .headers
+      .append("Content-Type", "application/json")
+      .unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 2, "expected two requests, got {captured:?}");
+
+    let preflight_headers = captured[0].0.to_ascii_lowercase();
+    assert!(
+      preflight_headers.starts_with("options /preflight"),
+      "unexpected preflight request:\n{preflight_headers}"
+    );
+    assert!(
+      preflight_headers.contains("access-control-request-method: post"),
+      "missing Access-Control-Request-Method header:\n{preflight_headers}"
+    );
+    assert!(
+      preflight_headers.contains("access-control-request-headers: content-type"),
+      "missing Access-Control-Request-Headers header:\n{preflight_headers}"
+    );
+
+    let actual_headers = captured[1].0.to_ascii_lowercase();
+    assert!(
+      actual_headers.starts_with("post /preflight"),
+      "unexpected actual request:\n{actual_headers}"
+    );
+    assert!(
+      actual_headers.contains("content-type: application/json"),
+      "missing Content-Type header on actual request:\n{actual_headers}"
+    );
+    assert_eq!(&captured[1].1, b"payload");
   }
 
   #[test]

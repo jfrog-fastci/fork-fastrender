@@ -457,6 +457,33 @@ fn merge_user_request_headers(
   Ok(())
 }
 
+fn merge_system_request_headers(
+  url: &str,
+  headers: &mut Vec<(String, String)>,
+  system_headers: &[(String, String)],
+) -> Result<()> {
+  if system_headers.is_empty() {
+    return Ok(());
+  }
+
+  let mut removed_defaults: HashSet<String> = HashSet::new();
+  for (name, value) in system_headers {
+    if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+      return Err(Error::Resource(ResourceError::new(
+        url,
+        format!("invalid request header name: {name:?}"),
+      )));
+    }
+
+    let key = name.to_ascii_lowercase();
+    if removed_defaults.insert(key) {
+      headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+    }
+    headers.push((name.clone(), sanitize_request_header_value(value)));
+  }
+  Ok(())
+}
+
 fn validate_http_method(url: &str, method: &str) -> Result<()> {
   let Ok(parsed) = http::Method::from_bytes(method.as_bytes()) else {
     return Err(Error::Resource(ResourceError::new(
@@ -1429,21 +1456,11 @@ impl<'a> HttpRequest<'a> {
   }
 }
 
-fn fetch_http_request_header_forbidden(method: &str, name: &str, value: &str) -> bool {
+fn fetch_http_request_header_forbidden(_method: &str, name: &str, value: &str) -> bool {
   // Mirrors Fetch's "forbidden request header" checks (see `web_fetch::Headers` guard rules).
   // We keep this local to the resource layer so `HttpFetcher` can safely accept user header pairs
   // without allowing `Cookie`, `Host`, etc. to be spoofed.
   let name = name.trim().to_ascii_lowercase();
-  // Internal CORS preflight requests need to set `Access-Control-Request-*` headers. These are
-  // forbidden for normal user requests, but are allowed for preflight `OPTIONS` requests.
-  if method.eq_ignore_ascii_case("OPTIONS")
-    && matches!(
-      name.as_str(),
-      "access-control-request-headers" | "access-control-request-method"
-    )
-  {
-    return false;
-  }
   match name.as_str() {
     "accept-charset"
     | "accept-encoding"
@@ -4158,101 +4175,6 @@ fn is_cors_safelisted_method(method: &str) -> bool {
     || method.eq_ignore_ascii_case("POST")
 }
 
-fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
-  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header
-  if value.as_bytes().len() > 128 {
-    return false;
-  }
-
-  match name {
-    "accept" => !value.as_bytes().iter().copied().any(is_cors_unsafe_request_header_byte),
-    "accept-language" | "content-language" => value
-      .as_bytes()
-      .iter()
-      .copied()
-      .all(is_cors_safelisted_language_byte),
-    "content-type" => {
-      if value
-        .as_bytes()
-        .iter()
-        .copied()
-        .any(is_cors_unsafe_request_header_byte)
-      {
-        return false;
-      }
-
-      let essence = trim_http_whitespace(value.split(';').next().unwrap_or("")).to_ascii_lowercase();
-
-      matches!(
-        essence.as_str(),
-        "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
-      )
-    }
-    "range" => is_safelisted_range_header_value(value),
-    _ => false,
-  }
-}
-
-fn is_cors_unsafe_request_header_byte(byte: u8) -> bool {
-  // https://fetch.spec.whatwg.org/#cors-unsafe-request-header-byte
-  if byte < 0x20 && byte != 0x09 {
-    return true;
-  }
-  matches!(
-    byte,
-    0x22 | 0x28 | 0x29 | 0x3A | 0x3C | 0x3E | 0x3F | 0x40 | 0x5B | 0x5C | 0x5D | 0x7B | 0x7D
-      | 0x7F
-  )
-}
-
-fn is_cors_safelisted_language_byte(byte: u8) -> bool {
-  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header (language byte)
-  matches!(
-    byte,
-    b'0'..=b'9'
-      | b'A'..=b'Z'
-      | b'a'..=b'z'
-      | b' '
-      | b'*'
-      | b','
-      | b'-'
-      | b'.'
-      | b';'
-      | b'='
-  )
-}
-
-fn is_safelisted_range_header_value(value: &str) -> bool {
-  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header (range case)
-  let trimmed = trim_http_whitespace(value);
-  let Some(rest) = trimmed
-    .strip_prefix("bytes=")
-    .or_else(|| trimmed.strip_prefix("Bytes="))
-    .or_else(|| trimmed.strip_prefix("BYTES="))
-  else {
-    return false;
-  };
-
-  // Only allow `bytes=<start>-<end>` or `bytes=<start>-`.
-  let Some((start, end)) = rest.split_once('-') else {
-    return false;
-  };
-
-  if start.is_empty() {
-    return false;
-  }
-
-  if !start.chars().all(|c| c.is_ascii_digit()) {
-    return false;
-  }
-
-  if !end.is_empty() && !end.chars().all(|c| c.is_ascii_digit()) {
-    return false;
-  }
-
-  true
-}
-
 fn cors_unsafe_request_header_names(headers: &[(String, String)]) -> Vec<String> {
   // https://fetch.spec.whatwg.org/#cors-unsafe-request-header-names
   // Combine duplicate header names before checking safelist semantics. This matches how the Fetch
@@ -4282,6 +4204,7 @@ fn cors_unsafe_request_header_names(headers: &[(String, String)]) -> Vec<String>
     }
   }
 
+  // Fetch Standard: treat all safelisted headers as unsafe when their total size is too large.
   if safelist_value_size > 1024 {
     for name in potentially_unsafe {
       unsafe_names.insert(name);
@@ -5040,6 +4963,7 @@ impl HttpFetcher {
     method: &str,
     redirect: web_fetch::RequestRedirect,
     user_headers: &[(String, String)],
+    system_headers: &[(String, String)],
     body: Option<&[u8]>,
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
@@ -5056,6 +4980,7 @@ impl HttpFetcher {
         method,
         redirect,
         user_headers,
+        system_headers,
         body,
         client_origin,
         referrer_url,
@@ -5066,7 +4991,6 @@ impl HttpFetcher {
       )
     })
   }
-
   fn fetch_http_request_with_context_inner(
     &self,
     kind: FetchContextKind,
@@ -5075,6 +4999,7 @@ impl HttpFetcher {
     method: &str,
     redirect: web_fetch::RequestRedirect,
     user_headers: &[(String, String)],
+    system_headers: &[(String, String)],
     body: Option<&[u8]>,
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
@@ -5086,28 +5011,10 @@ impl HttpFetcher {
     let mut effective_url = Cow::Borrowed(url);
     let mut attempted_www_fallback = false;
     let mut www_fallback_error: Option<Error> = None;
-    let mut preflight_completed_for: Option<String> = None;
 
     loop {
       render_control::check_active(render_stage_hint_for_context(kind, effective_url.as_ref()))
         .map_err(Error::Render)?;
-
-      if preflight_completed_for.as_deref() != Some(effective_url.as_ref()) {
-        self.perform_cors_preflight_if_needed(
-          kind,
-          destination,
-          effective_url.as_ref(),
-          method,
-          user_headers,
-          client_origin,
-          referrer_url,
-          referrer_policy,
-          credentials_mode,
-          deadline,
-          started,
-        )?;
-        preflight_completed_for = Some(effective_url.to_string());
-      }
 
       let result = match http_backend_mode() {
         HttpBackendMode::Curl => curl_backend::fetch_http_with_accept_inner(
@@ -5120,6 +5027,7 @@ impl HttpFetcher {
           method,
           redirect,
           user_headers,
+          system_headers,
           body,
           client_origin,
           referrer_url,
@@ -5148,6 +5056,7 @@ impl HttpFetcher {
               method,
               redirect,
               user_headers,
+              system_headers,
               body,
               client_origin,
               referrer_url,
@@ -5167,6 +5076,7 @@ impl HttpFetcher {
               method,
               redirect,
               user_headers,
+              system_headers,
               body,
               client_origin,
               referrer_url,
@@ -5187,6 +5097,7 @@ impl HttpFetcher {
           method,
           redirect,
           user_headers,
+          system_headers,
           body,
           client_origin,
           referrer_url,
@@ -5231,6 +5142,7 @@ impl HttpFetcher {
               method,
               redirect,
               user_headers,
+              system_headers,
               body,
               client_origin,
               referrer_url,
@@ -5250,6 +5162,7 @@ impl HttpFetcher {
               method,
               redirect,
               user_headers,
+              system_headers,
               body,
               client_origin,
               referrer_url,
@@ -5275,6 +5188,7 @@ impl HttpFetcher {
                   method,
                   redirect,
                   user_headers,
+                  system_headers,
                   body,
                   client_origin,
                   referrer_url,
@@ -5551,102 +5465,62 @@ impl HttpFetcher {
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
-    // Determine a request timeout consistent with the main fetch path (best-effort; preflight
-    // responses should be small).
-    let timeout_budget = self.timeout_budget(deadline);
-    let per_request_timeout = self.deadline_aware_timeout(kind, deadline.as_ref(), url)?;
-    let mut effective_timeout = per_request_timeout.unwrap_or(self.policy.request_timeout);
-    if let Some(budget) = timeout_budget {
-      match budget.checked_sub(started.elapsed()) {
-        Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
-          let budget_timeout = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
-          effective_timeout = effective_timeout.min(budget_timeout);
-        }
-        _ => {
-          return Err(Error::Resource(
-            ResourceError::new(
-              url.to_string(),
-              "overall HTTP timeout budget exceeded before CORS preflight request".to_string(),
-            )
-            .with_final_url(url.to_string()),
-          ));
-        }
-      }
-    }
-
-    let mut headers = build_http_header_pairs(
-      url,
-      &self.user_agent,
-      &self.accept_language,
-      SUPPORTED_ACCEPT_ENCODING,
-      None,
-      destination,
-      client_origin,
-      referrer_url,
-      referrer_policy,
-    );
+    let mut system_headers: Vec<(String, String)> = Vec::new();
     // Fetch's CORS-preflight fetch always uses `Accept: */*`, even when the destination would
     // normally produce a more specific Accept value (e.g. stylesheets).
-    headers.retain(|(name, _)| !name.eq_ignore_ascii_case("accept"));
-    headers.push(("Accept".to_string(), "*/*".to_string()));
-    headers.push((
+    system_headers.push(("Accept".to_string(), "*/*".to_string()));
+    system_headers.push((
       "Access-Control-Request-Method".to_string(),
       method.to_string(),
     ));
     if !unsafe_header_names.is_empty() {
-      headers.push((
+      system_headers.push((
         "Access-Control-Request-Headers".to_string(),
         unsafe_header_names.join(", "),
       ));
     }
 
-    let mut request = self.reqwest_client.request(reqwest::Method::OPTIONS, url);
-    for (name, value) in &headers {
-      request = request.header(name, value);
-    }
-    if !effective_timeout.is_zero() {
-      request = request.timeout(effective_timeout);
-    }
+    let preflight_result = self.fetch_http_request_with_context_inner(
+      kind,
+      destination,
+      url,
+      "OPTIONS",
+      web_fetch::RequestRedirect::Error,
+      &[],
+      &system_headers,
+      None,
+      client_origin,
+      referrer_url,
+      referrer_policy,
+      FetchCredentialsMode::Omit,
+      deadline,
+      started,
+    );
 
-    let response = request.send().map_err(|err| {
-      Error::Resource(
+    let preflight_response = match preflight_result {
+      Ok(response) => response,
+      Err(mut err) => {
+        if let Error::Resource(ref mut resource) = err {
+          resource.message = format!("CORS preflight request failed: {}", resource.message);
+        }
+        return Err(err);
+      }
+    };
+
+    let status = preflight_response.status.unwrap_or(0);
+    if !(200..300).contains(&status) {
+      return Err(Error::Resource(
         ResourceError::new(
           url.to_string(),
-          format!("CORS preflight request failed: {err}"),
+          format!("CORS preflight request failed: HTTP status {status}"),
         )
-        .with_final_url(url.to_string())
-        .with_source(err),
-      )
-    })?;
-
-    let status = response.status().as_u16();
-    if !(200..300).contains(&status) {
-      let message = if (300..400).contains(&status) {
-        format!("CORS preflight request failed: redirect encountered (status {status})")
-      } else {
-        format!("CORS preflight request failed: HTTP status {status}")
-      };
-      return Err(Error::Resource(
-        ResourceError::new(url.to_string(), message)
         .with_status(status)
-        .with_final_url(url.to_string()),
+        .with_final_url(response_final_url(&preflight_response, url)),
       ));
     }
 
-    let headers = response.headers();
-    let (access_control_allow_origin, access_control_allow_credentials) =
-      parse_cors_response_headers(headers);
-    let response_headers = collect_response_headers(headers);
-    let mut preflight_resource = FetchedResource::new(Vec::new(), None);
-    preflight_resource.status = Some(status);
-    preflight_resource.final_url = Some(url.to_string());
-    preflight_resource.access_control_allow_origin = access_control_allow_origin;
-    preflight_resource.access_control_allow_credentials = access_control_allow_credentials;
-    preflight_resource.response_headers = Some(response_headers);
-
-    Ok(preflight_resource)
+    Ok(preflight_response)
   }
-
   fn fetch_http_with_context_inner<'a>(
     &self,
     kind: FetchContextKind,
@@ -5680,6 +5554,7 @@ impl HttpFetcher {
           "GET",
           web_fetch::RequestRedirect::Follow,
           &[],
+          &[],
           None,
           client_origin,
           referrer_url,
@@ -5696,6 +5571,7 @@ impl HttpFetcher {
           validators,
           "GET",
           web_fetch::RequestRedirect::Follow,
+          &[],
           &[],
           None,
           client_origin,
@@ -5714,6 +5590,7 @@ impl HttpFetcher {
           validators,
           "GET",
           web_fetch::RequestRedirect::Follow,
+          &[],
           &[],
           None,
           client_origin,
@@ -5750,6 +5627,7 @@ impl HttpFetcher {
               "GET",
               web_fetch::RequestRedirect::Follow,
               &[],
+              &[],
               None,
               client_origin,
               referrer_url,
@@ -5768,6 +5646,7 @@ impl HttpFetcher {
               validators,
               "GET",
               web_fetch::RequestRedirect::Follow,
+              &[],
               &[],
               None,
               client_origin,
@@ -5793,6 +5672,7 @@ impl HttpFetcher {
                   validators,
                   "GET",
                   web_fetch::RequestRedirect::Follow,
+                  &[],
                   &[],
                   None,
                   client_origin,
@@ -7005,6 +6885,7 @@ impl HttpFetcher {
     method: &str,
     redirect: web_fetch::RequestRedirect,
     user_headers: &[(String, String)],
+    system_headers: &[(String, String)],
     body: Option<&[u8]>,
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
@@ -7109,8 +6990,11 @@ impl HttpFetcher {
             headers.push(("Cookie".to_string(), value));
           }
         }
+        merge_system_request_headers(&current, &mut headers, system_headers)?;
         if !redirect_suppressed_headers.is_empty() {
-          headers.retain(|(name, _)| !redirect_suppressed_headers.contains(&name.to_ascii_lowercase()));
+          headers.retain(|(name, _)| {
+            !redirect_suppressed_headers.contains(&name.to_ascii_lowercase())
+          });
         }
 
         let mut network_timer = start_network_fetch_diagnostics();
@@ -7440,7 +7324,7 @@ impl HttpFetcher {
         let response_headers = collect_response_headers(response.headers());
         let mut allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
-        if current_method.eq_ignore_ascii_case("HEAD") {
+        if current_method.eq_ignore_ascii_case("HEAD") || current_method.eq_ignore_ascii_case("OPTIONS") {
           allows_empty_body = true;
         }
         let substitute_captcha_image =
@@ -7486,6 +7370,7 @@ impl HttpFetcher {
                     original_method,
                     redirect,
                     user_headers,
+                    system_headers,
                     original_body,
                     client_origin,
                     referrer_url,
@@ -7815,6 +7700,7 @@ impl HttpFetcher {
     method: &str,
     redirect: web_fetch::RequestRedirect,
     user_headers: &[(String, String)],
+    system_headers: &[(String, String)],
     body: Option<&[u8]>,
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
@@ -7904,8 +7790,11 @@ impl HttpFetcher {
             headers.push(("Cookie".to_string(), value));
           }
         }
+        merge_system_request_headers(&current, &mut headers, system_headers)?;
         if !redirect_suppressed_headers.is_empty() {
-          headers.retain(|(name, _)| !redirect_suppressed_headers.contains(&name.to_ascii_lowercase()));
+          headers.retain(|(name, _)| {
+            !redirect_suppressed_headers.contains(&name.to_ascii_lowercase())
+          });
         }
 
         let reqwest_method =
@@ -8173,7 +8062,7 @@ impl HttpFetcher {
         let response_headers = collect_response_headers(response.headers());
         let mut allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
-        if current_method.eq_ignore_ascii_case("HEAD") {
+        if current_method.eq_ignore_ascii_case("HEAD") || current_method.eq_ignore_ascii_case("OPTIONS") {
           allows_empty_body = true;
         }
         let substitute_empty_image_body =
@@ -8254,6 +8143,7 @@ impl HttpFetcher {
                     original_method,
                     redirect,
                     user_headers,
+                    system_headers,
                     original_body,
                     client_origin,
                     referrer_url,
@@ -8867,23 +8757,45 @@ impl ResourceFetcher for HttpFetcher {
           return self.fetch_with_request(req.fetch);
         }
 
-        let mut res = self.fetch_http_request_with_context(
-          kind,
-          req.fetch.destination,
-          url,
-          req.method,
-          req.redirect,
-          req.headers,
-          req.body,
-          req.fetch.client_origin,
-          req.fetch.referrer_url,
-          req.fetch.referrer_policy,
-          req.fetch.credentials_mode,
-        )?;
-        if method_is_head {
-          res.bytes.clear();
-        }
-        Ok(res)
+        let deadline = render_control::root_deadline();
+        let started = Instant::now();
+        render_control::with_deadline(deadline.as_ref(), || {
+          self.perform_cors_preflight_if_needed(
+            kind,
+            req.fetch.destination,
+            url,
+            req.method,
+            req.headers,
+            req.fetch.client_origin,
+            req.fetch.referrer_url,
+            req.fetch.referrer_policy,
+            req.fetch.credentials_mode,
+            &deadline,
+            started,
+          )?;
+
+          let mut res = self.fetch_http_request_with_context_inner(
+            kind,
+            req.fetch.destination,
+            url,
+            req.method,
+            req.redirect,
+            req.headers,
+            &[],
+            req.body,
+            req.fetch.client_origin,
+            req.fetch.referrer_url,
+            req.fetch.referrer_policy,
+            req.fetch.credentials_mode,
+            &deadline,
+            started,
+          )?;
+
+          if method_is_head {
+            res.bytes.clear();
+          }
+          Ok(res)
+        })
       }
       // For non-HTTP(S) schemes we only support the legacy GET/HEAD, no-headers/no-body behaviour.
       ResourceScheme::Data | ResourceScheme::File | ResourceScheme::Relative => {
@@ -12886,6 +12798,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -12950,6 +12863,7 @@ mod tests {
         None,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
@@ -14001,6 +13915,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -14055,6 +13970,7 @@ mod tests {
         None,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
@@ -14121,6 +14037,7 @@ mod tests {
         None,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
@@ -14233,6 +14150,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -14282,6 +14200,7 @@ mod tests {
         None,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
@@ -14340,6 +14259,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -14395,6 +14315,7 @@ mod tests {
           None,
           "GET",
           web_fetch::RequestRedirect::Follow,
+          &[],
           &[],
           None,
           None,
@@ -14479,6 +14400,7 @@ mod tests {
           None,
           "GET",
           web_fetch::RequestRedirect::Follow,
+          &[],
           &[],
           None,
           None,
@@ -14583,6 +14505,7 @@ mod tests {
           "GET",
           web_fetch::RequestRedirect::Follow,
           &[],
+          &[],
           None,
           None,
           None,
@@ -14668,6 +14591,7 @@ mod tests {
           None,
           "GET",
           web_fetch::RequestRedirect::Follow,
+          &[],
           &[],
           None,
           None,
@@ -14773,6 +14697,7 @@ mod tests {
           "GET",
           web_fetch::RequestRedirect::Follow,
           &[],
+          &[],
           None,
           None,
           None,
@@ -14852,6 +14777,7 @@ mod tests {
           None,
           "GET",
           web_fetch::RequestRedirect::Follow,
+          &[],
           &[],
           None,
           None,
@@ -14994,6 +14920,7 @@ mod tests {
           "GET",
           web_fetch::RequestRedirect::Follow,
           &[],
+          &[],
           None,
           None,
           None,
@@ -15078,6 +15005,7 @@ mod tests {
           None,
           "GET",
           web_fetch::RequestRedirect::Follow,
+          &[],
           &[],
           None,
           None,
@@ -15197,6 +15125,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -15288,6 +15217,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -15339,6 +15269,7 @@ mod tests {
         None,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
@@ -15394,6 +15325,7 @@ mod tests {
         None,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
@@ -15455,6 +15387,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -15485,6 +15418,7 @@ mod tests {
         None,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
@@ -15547,6 +15481,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -15603,6 +15538,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -15652,6 +15588,7 @@ mod tests {
         None,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
@@ -18223,6 +18160,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -18245,6 +18183,7 @@ mod tests {
         validators,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
@@ -18322,6 +18261,7 @@ mod tests {
         "GET",
         web_fetch::RequestRedirect::Follow,
         &[],
+        &[],
         None,
         None,
         None,
@@ -18349,6 +18289,7 @@ mod tests {
         validators,
         "GET",
         web_fetch::RequestRedirect::Follow,
+        &[],
         &[],
         None,
         None,
