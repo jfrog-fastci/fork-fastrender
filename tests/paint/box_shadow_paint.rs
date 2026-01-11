@@ -172,6 +172,33 @@ fn box_shadow_inset_blur_only_produces_inner_shadow() {
 }
 
 #[test]
+fn box_shadow_inset_negative_spread_does_not_round_square_corners() {
+  // Negative spread expands the inner-shadow perimeter. For square-cornered boxes this must not
+  // introduce rounded inner corners (which would leave a visible wedge of shadow in the corner).
+  let html = r#"
+    <style>
+      body { margin: 0; background: rgb(255, 255, 255); }
+      #target {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 40px;
+        height: 40px;
+        background: rgb(255, 255, 255);
+        box-shadow: inset 4px 4px 0 -4px rgb(255, 0, 0);
+      }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let pixmap = render(html, 96, 96);
+
+  // Pixel in the top-left corner of the box should remain untouched.
+  assert_eq!(rgba_at(&pixmap, 20, 20), (255, 255, 255, 255));
+  assert_eq!(rgba_at(&pixmap, 21, 21), (255, 255, 255, 255));
+}
+
+#[test]
 fn box_shadow_outset_respects_border_radius() {
   let html = r#"
     <style>

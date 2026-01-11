@@ -1763,7 +1763,22 @@ fn render_inset_shadow(
     let cutout_dest_y = y + shadow.offset_y + spread;
     let cutout_x = cutout_dest_x - min_x;
     let cutout_y = cutout_dest_y - min_y;
-    let cutout_radii = radii.shrink(spread).clamped(cutout_w, cutout_h);
+    let cutout_radii = if spread >= 0.0 {
+      // Positive spread on an inner shadow contracts its perimeter shape.
+      (*radii).shrink(spread).clamped(cutout_w, cutout_h)
+    } else {
+      // Negative spread expands the perimeter outward. Apply the CSS Backgrounds border-radius
+      // outset adjustment algorithm so that expanding a square corner does not incorrectly produce
+      // a rounded corner.
+      let outset = -spread;
+      BorderRadii {
+        top_left: outset_adjusted_border_radius(width, height, radii.top_left, outset),
+        top_right: outset_adjusted_border_radius(width, height, radii.top_right, outset),
+        bottom_right: outset_adjusted_border_radius(width, height, radii.bottom_right, outset),
+        bottom_left: outset_adjusted_border_radius(width, height, radii.bottom_left, outset),
+      }
+      .clamped(cutout_w, cutout_h)
+    };
 
     // Clear the inner cutout so only a ring (outer minus inner) remains before blur.
     if cutout_radii.is_zero() {

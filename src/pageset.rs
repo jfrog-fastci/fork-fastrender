@@ -200,7 +200,18 @@ fn canonicalize_pageset_url(value: &str) -> Option<String> {
     return None;
   }
   let scheme = parsed.scheme().to_ascii_lowercase();
-  let host = parsed.host_str()?.to_ascii_lowercase();
+  let host_raw = parsed.host_str()?;
+  let host_lower = host_raw.to_ascii_lowercase();
+  // Match the pageset stem normalization: drop a leading `www.` and treat trailing dots as
+  // punctuation so inputs like `https://example.com./path` and `https://www.example.com/path`
+  // canonicalize to the same URL.
+  let host_no_www = host_lower
+    .strip_prefix("www.")
+    .unwrap_or(host_lower.as_str());
+  let host = host_no_www.trim_end_matches('.');
+  if host.is_empty() {
+    return None;
+  }
   let mut out = format!("{scheme}://{host}");
   if let Some(port) = parsed.port() {
     let default_port = match scheme.as_str() {
@@ -437,6 +448,14 @@ mod tests {
     assert_eq!(
       canonicalize_pageset_url("http://example.com:80/path").as_deref(),
       Some("http://example.com/path")
+    );
+  }
+
+  #[test]
+  fn canonicalize_pageset_url_strips_www_and_trailing_dot() {
+    assert_eq!(
+      canonicalize_pageset_url("HTTPS://WWW.Example.com./path#frag").as_deref(),
+      Some("https://example.com/path")
     );
   }
 
