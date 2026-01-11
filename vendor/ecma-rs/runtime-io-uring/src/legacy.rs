@@ -42,6 +42,26 @@ mod linux {
     const IORING_CQE_BUFFER_SHIFT: u32 = 16;
     const IORING_RECV_MULTISHOT: u32 = 1 << 0;
 
+    fn ring_submit(ring: &mut IoUring) -> io::Result<()> {
+        loop {
+            match ring.submit() {
+                Ok(_) => return Ok(()),
+                Err(err) if err.raw_os_error() == Some(libc::EINTR) => continue,
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    fn ring_submit_and_wait(ring: &mut IoUring, want: usize) -> io::Result<()> {
+        loop {
+            match ring.submit_and_wait(want) {
+                Ok(_) => return Ok(()),
+                Err(err) if err.raw_os_error() == Some(libc::EINTR) => continue,
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     fn cstring_from_path(path: &Path) -> io::Result<CString> {
         use std::os::unix::ffi::OsStrExt;
 
@@ -664,11 +684,12 @@ mod linux {
                 inner.internal_keepalive_pools.push(keepalive_pool);
             }
 
-            inner
-                .ring
-                .as_mut()
-                .expect("io_uring used after drop (ring already taken)")
-                .submit()?;
+            ring_submit(
+                inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)"),
+            )?;
             Ok(())
         }
 
@@ -700,11 +721,12 @@ mod linux {
                 inner.internal_in_flight = inner.internal_in_flight.saturating_add(1);
             }
 
-            inner
-                .ring
-                .as_mut()
-                .expect("io_uring used after drop (ring already taken)")
-                .submit()?;
+            ring_submit(
+                inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)"),
+            )?;
             Ok(())
         }
 
@@ -737,11 +759,12 @@ mod linux {
                     sq.push(&entry).unwrap();
                 }
             }
-            inner
-                .ring
-                .as_mut()
-                .expect("io_uring used after drop (ring already taken)")
-                .submit()?;
+            ring_submit(
+                inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)"),
+            )?;
 
             Ok(op_id)
         }
@@ -817,12 +840,12 @@ mod linux {
                 }
             }
 
-            if let Err(e) = inner
-                .ring
-                .as_mut()
-                .expect("io_uring used after drop (ring already taken)")
-                .submit()
-            {
+            if let Err(e) = ring_submit(
+                inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)"),
+            ) {
                 inner.multishots.remove(&id);
                 return Err(e);
             }
@@ -917,11 +940,12 @@ mod linux {
                     sq.push(&timeout_entry).unwrap();
                 }
             }
-            inner
-                .ring
-                .as_mut()
-                .expect("io_uring used after drop (ring already taken)")
-                .submit()?;
+            ring_submit(
+                inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)"),
+            )?;
 
             Ok(OpWithTimeout { op_id, timeout_id })
         }
@@ -964,11 +988,12 @@ mod linux {
                     sq.push(&entry).unwrap();
                 }
             }
-            inner
-                .ring
-                .as_mut()
-                .expect("io_uring used after drop (ring already taken)")
-                .submit()?;
+            ring_submit(
+                inner
+                    .ring
+                    .as_mut()
+                    .expect("io_uring used after drop (ring already taken)"),
+            )?;
 
             Ok(cancel_id)
         }
@@ -985,11 +1010,13 @@ mod linux {
                     return Ok(c);
                 }
 
-                inner
-                    .ring
-                    .as_mut()
-                    .expect("io_uring used after drop (ring already taken)")
-                    .submit_and_wait(1)?;
+                ring_submit_and_wait(
+                    inner
+                        .ring
+                        .as_mut()
+                        .expect("io_uring used after drop (ring already taken)"),
+                    1,
+                )?;
 
                 let cq = inner
                     .ring
