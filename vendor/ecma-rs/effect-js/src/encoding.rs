@@ -251,14 +251,18 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
 
   fn encoding_via_kb(&self, api: &str, input: StringEncoding) -> Option<StringEncoding> {
     let entry = self.kb.get(api)?;
-    let output = entry.properties.get("encoding.output")?;
+    let output = entry.properties.get("encoding.output")?.as_str()?;
 
-    if let Some(preserves) = entry.properties.get("encoding.preserves_input_if") {
+    if let Some(preserves) = entry
+      .properties
+      .get("encoding.preserves_input_if")
+      .and_then(|v| v.as_str())
+    {
       let required = parse_encoding(preserves)?;
       return (input == required).then_some(input);
     }
 
-    match output.as_str() {
+    match output {
       "ascii" => Some(StringEncoding::Ascii),
       "latin1" => Some(StringEncoding::Latin1),
       "utf8" => Some(StringEncoding::Utf8),

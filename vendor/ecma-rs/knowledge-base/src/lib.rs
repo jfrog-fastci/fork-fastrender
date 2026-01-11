@@ -3,6 +3,7 @@ use std::fmt;
 
 use effect_model::{EffectFlags, EffectSummary, EffectTemplate, PurityTemplate, ThrowBehavior};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiSemantics {
@@ -38,7 +39,7 @@ pub struct ApiSemantics {
   ///
   /// Values are strings to keep the schema stable and easy to author.
   #[serde(default)]
-  pub properties: BTreeMap<String, String>,
+  pub properties: BTreeMap<String, JsonValue>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -215,7 +216,7 @@ struct ApiRaw {
   parallelizable: Option<bool>,
 
   #[serde(default)]
-  properties: BTreeMap<String, String>,
+  properties: BTreeMap<String, JsonValue>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -243,6 +244,9 @@ struct ApiBodyRaw {
 
   #[serde(default)]
   parallelizable: Option<bool>,
+
+  #[serde(default)]
+  properties: BTreeMap<String, JsonValue>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -326,7 +330,7 @@ fn normalize_api_from_body(name: String, raw: ApiBodyRaw) -> ApiSemantics {
     idempotent: raw.idempotent,
     deterministic: raw.deterministic,
     parallelizable: raw.parallelizable,
-    properties: BTreeMap::new(),
+    properties: raw.properties,
   }
 }
 
