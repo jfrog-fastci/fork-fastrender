@@ -117,6 +117,9 @@ pub fn load_and_parse_stackmaps(file_bytes: &[u8]) -> Result<Vec<StackMapBlob>, 
 /// When linking multiple objects, the linker concatenates their `.llvm_stackmaps` sections, so
 /// the output section is commonly a sequence of independent stackmap blobs.
 pub fn parse_stackmap_blobs(section_bytes: &[u8]) -> Result<Vec<StackMapBlob>, StackMapParseError> {
+  const STACKMAP_V3_HEADER_SIZE: usize = 16;
+  const STACKMAP_VERSION: u8 = 3;
+
   let mut offset = 0usize;
   let mut blobs = Vec::new();
 
@@ -125,17 +128,46 @@ pub fn parse_stackmap_blobs(section_bytes: &[u8]) -> Result<Vec<StackMapBlob>, S
     while offset < section_bytes.len() && section_bytes[offset] == 0 {
       offset += 1;
     }
-    if offset >= section_bytes.len() {
+    if offset >= section_bytes.len() || section_bytes.len() - offset < STACKMAP_V3_HEADER_SIZE {
       break;
+    }
+
+    if section_bytes[offset] != STACKMAP_VERSION {
+      // Some toolchains have been observed to leave short non-zero padding bytes between
+      // concatenated `.llvm_stackmaps` input sections. Try to recover by scanning forward for the
+      // next plausible v3 header (version=3, reserved bytes=0).
+      const MAX_PADDING_SCAN: usize = 256;
+      let scan_end = (offset + MAX_PADDING_SCAN)
+        .min(section_bytes.len().saturating_sub(STACKMAP_V3_HEADER_SIZE));
+ 
+      let mut found: Option<usize> = None;
+      for i in offset + 1..=scan_end {
+        if section_bytes[i] == STACKMAP_VERSION
+          && section_bytes[i + 1] == 0
+          && section_bytes[i + 2] == 0
+          && section_bytes[i + 3] == 0
+        {
+          found = Some(i);
+          break;
+        }
+      }
+ 
+      if let Some(i) = found {
+        offset = i;
+        continue;
+      }
+ 
+      return Err(StackMapParseError::TrailingNonZero(offset));
     }
 
     let (blob, consumed) = parse_stackmap_blob(&section_bytes[offset..])?;
     blobs.push(blob);
-    offset += consumed;
-  }
-
-  if offset < section_bytes.len() && section_bytes[offset..].iter().any(|&b| b != 0) {
-    return Err(StackMapParseError::TrailingNonZero(offset));
+    if consumed == 0 {
+      return Err(StackMapParseError::UnexpectedEof(offset));
+    }
+    offset = offset
+      .checked_add(consumed)
+      .ok_or(StackMapParseError::UnexpectedEof(offset))?;
   }
 
   Ok(blobs)
@@ -931,6 +963,30 @@ mod tests {
     assert_eq!(ids, vec![1, 2]);
   }
 
+  #[test]
+  fn ignores_short_trailing_non_zero_bytes() {
+    let mut bytes = Vec::new();
+    bytes.extend(build_blob(1, 1, 0));
+    // Some toolchains can leave short (<16B) non-zero padding at the end of the section; ignore it.
+    bytes.extend([0xAAu8; 8]);
+ 
+    let blobs = parse_stackmap_blobs(&bytes).expect("parse stackmap blobs");
+    assert_eq!(blobs.len(), 1);
+    assert_eq!(blobs[0].record_ids, vec![1]);
+  }
+ 
+  #[test]
+  fn skips_short_non_zero_padding_between_blobs() {
+    let mut bytes = Vec::new();
+    bytes.extend(build_blob(1, 1, 0));
+    bytes.extend([0xAAu8; 8]);
+    bytes.extend(build_blob(2, 1, 0));
+ 
+    let blobs = parse_stackmap_blobs(&bytes).expect("parse stackmap blobs");
+    let ids: Vec<u64> = blobs.iter().flat_map(|b| b.record_ids.iter().copied()).collect();
+    assert_eq!(ids, vec![1, 2]);
+  }
+ 
   #[test]
   fn rejects_overlarge_num_records_without_allocating() {
     // Header claims an absurd number of records but provides no record table. This should error
