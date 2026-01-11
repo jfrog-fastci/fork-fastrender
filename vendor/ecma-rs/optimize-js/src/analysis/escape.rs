@@ -657,6 +657,52 @@ mod tests {
   }
 
   #[test]
+  fn allocation_returned_escapes() {
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::ret(Arg::Var(0)),
+        ],
+      )],
+      &[],
+    );
+
+    let escape = analyze_cfg_escapes(&cfg);
+    assert_eq!(escape_of(&escape, 0), EscapeState::ReturnEscape);
+  }
+
+  #[test]
+  fn allocation_thrown_escapes() {
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::throw(Arg::Var(0)),
+        ],
+      )],
+      &[],
+    );
+
+    let escape = analyze_cfg_escapes(&cfg);
+    assert_eq!(escape_of(&escape, 0), EscapeState::ReturnEscape);
+  }
+
+  #[test]
   fn stored_value_escapes_with_container() {
     let cfg = cfg_with_blocks(
       &[(
