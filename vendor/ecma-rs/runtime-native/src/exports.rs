@@ -579,19 +579,18 @@ pub fn remembered_set_contains(obj: *mut u8) -> bool {
 
 /// Debug/test helper: rebuild remembered-set tracking after a simulated minor GC.
 ///
-/// Model-based generational GC tests (`runtime-native/tests/generational_model.rs`) simulate a
-/// semispace nursery where young objects can survive multiple minor collections. The exported write
-/// barrier sets the per-object `REMEMBERED` header bit and records newly-remembered objects in a
-/// small process-global list ([`REMEMBERED_SET`]).
+/// The exported write barrier sets the per-object `REMEMBERED` header bit and records newly
+/// remembered objects in a fixed-capacity process-global list ([`REMEMBERED_SET`]). Since the
+/// milestone runtime cannot enumerate heap objects, tests that allocate/free synthetic objects can
+/// leave stale pointers in that list.
 ///
-/// This helper performs a **sticky rebuild** by:
-/// - clearing the process-global remembered-set tracking list, and
-/// - rebuilding it from `objs`, retaining only objects for which `object_has_young_refs` returns
-///   `true`.
+/// This helper performs a **sticky rebuild** from `objs` (candidate old-generation objects):
+/// - clears the process-global list
+/// - for each object:
+///   - if `object_has_young_refs(obj)` is `true`: set its `REMEMBERED` bit and add it to the list
+///   - otherwise: clear its `REMEMBERED` bit
 ///
-/// `objs` supplies the set of candidate old-generation objects to consider during the rebuild; the
-/// runtime cannot yet enumerate all heap objects from the exported ABI. Objects not retained will
-/// have their per-object `REMEMBERED` bit cleared.
+/// `objs` is supplied by tests because the milestone runtime cannot yet enumerate all heap objects.
 #[doc(hidden)]
 pub fn remembered_set_scan_and_rebuild_for_tests(
   objs: &[*mut u8],
