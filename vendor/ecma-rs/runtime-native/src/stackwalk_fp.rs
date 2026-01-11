@@ -387,11 +387,15 @@ pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce
 /// For correctness we must interpret the `SP` used by the stackmap record, not the callee-entry
 /// stack pointer.
 ///
-/// - For frames with a stackmap entry, we reconstruct the caller's stackmap-semantics `SP` from the
-///   caller's frame pointer (`FP`) and the stackmap function record's `stack_size` (see
-///   `caller_sp_from_stack_size` for the x86_64/AArch64-specific details).
-/// - When no stackmap record exists (debug-only conservative scanning), we fall back to deriving the
-///   callsite `SP` from the callee frame pointer: `caller_sp = callee_fp + 16`.
+/// - For frames walked via the frame-pointer chain, we derive the caller's stackmap-semantics `SP`
+///   directly from the **callee frame pointer**:
+///   `caller_sp_callsite = callee_fp + 16`.
+///
+///   This is required because the stackmap function record's fixed `stack_size` does **not** account
+///   for per-callsite SP adjustments (e.g. outgoing stack arguments), so it cannot reliably
+///   reconstruct the callsite SP for arbitrary frames.
+/// - The `stack_size`-based reconstruction (`caller_sp_from_stack_size`) is kept only as a fallback
+///   for cases where we don't have a callsite SP override (e.g. some synthetic tests).
 ///
 /// For patchable statepoints (`gc.statepoint` with `patch_bytes > 0`), LLVM 18
 /// records the return address as the byte *after the reserved patchable region*.
