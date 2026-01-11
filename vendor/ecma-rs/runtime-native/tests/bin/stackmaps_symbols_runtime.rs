@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
 use runtime_native::stackmaps::StackMaps;
 use runtime_native::stackmaps_loader::load_llvm_stackmaps_via_symbols;
