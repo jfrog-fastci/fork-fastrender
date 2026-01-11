@@ -551,7 +551,11 @@ pub fn erase_types_with_config(
   let all_identifier_strings = collect_all_identifier_strings(top_level);
   let top_level_value_bindings = collect_top_level_value_bindings(&top_level.stx.body);
   let top_level_module_exports = if matches!(source_type, SourceType::Module) {
-    collect_top_level_module_exports(&top_level.stx.body, &erased_const_enum_bindings)
+    collect_top_level_module_exports(
+      &top_level.stx.body,
+      &erased_const_enum_bindings,
+      &top_level_value_bindings,
+    )
   } else {
     HashSet::new()
   };
@@ -938,6 +942,11 @@ fn strip_stmt(ctx: &mut StripContext, stmt: Node<Stmt>, is_top_level: bool) -> V
 fn collect_top_level_value_bindings(stmts: &[Node<Stmt>]) -> HashSet<String> {
   let mut names = HashSet::new();
   for stmt in stmts {
+    if stmt.assoc.get::<TsDeclareVarStmt>().is_some() {
+      // TypeScript `declare` variable declarations are ambient/type-only and do not introduce
+      // runtime value bindings.
+      continue;
+    }
     match stmt.stx.as_ref() {
       Stmt::FunctionDecl(func) => {
         if func.stx.function.stx.body.is_some() {
@@ -991,6 +1000,17 @@ fn collect_top_level_value_bindings(stmts: &[Node<Stmt>]) -> HashSet<String> {
           names.insert(decl.stx.name.clone());
         }
       }
+      Stmt::EnumDecl(decl) if !decl.stx.declare && !decl.stx.const_ => {
+        names.insert(decl.stx.name.clone());
+      }
+      Stmt::NamespaceDecl(decl) if !decl.stx.declare => {
+        names.insert(decl.stx.name.clone());
+      }
+      Stmt::ModuleDecl(decl) if !decl.stx.declare => {
+        if let ModuleName::Identifier(name) = &decl.stx.name {
+          names.insert(name.clone());
+        }
+      }
       _ => {}
     }
   }
@@ -1000,9 +1020,14 @@ fn collect_top_level_value_bindings(stmts: &[Node<Stmt>]) -> HashSet<String> {
 fn collect_top_level_module_exports(
   stmts: &[Node<Stmt>],
   erased_const_enum_bindings: &HashSet<String>,
+  top_level_value_bindings: &HashSet<String>,
 ) -> HashSet<String> {
   let mut names = HashSet::new();
   for stmt in stmts {
+    if stmt.assoc.get::<TsDeclareVarStmt>().is_some() {
+      // `declare` variable declarations are erased and do not contribute runtime exports.
+      continue;
+    }
     match stmt.stx.as_ref() {
       Stmt::VarDecl(decl) if decl.stx.export => {
         for declarator in &decl.stx.declarators {
@@ -1031,6 +1056,11 @@ fn collect_top_level_module_exports(
             if !entry.stx.type_only {
               if export_stmt.stx.from.is_none() {
                 if let ModuleExportImportName::Ident(local) = &entry.stx.exportable {
+                  if !top_level_value_bindings.contains(local) {
+                    // Exporting type-only symbols (interfaces, type aliases, type-only imports, etc.)
+                    // does not emit a runtime JS export.
+                    continue;
+                  }
                   if erased_const_enum_bindings.contains(local) {
                     continue;
                   }
@@ -1363,7 +1393,13 @@ fn strip_export_list(
         let ModuleExportImportName::Ident(local) = &name.stx.exportable else {
           return true;
         };
-        !ctx.erased_const_enum_bindings.contains(local)
+        if ctx.erased_const_enum_bindings.contains(local) {
+          return false;
+        }
+        // Exporting a type-only binding (e.g. interface/type alias/type-only import) does not emit
+        // any runtime JS export, even if the syntax used `export { Foo }` without an explicit
+        // `type` modifier.
+        ctx.current_value_bindings().contains(local)
       });
       for name in names.iter_mut() {
         name.stx.type_only = false;

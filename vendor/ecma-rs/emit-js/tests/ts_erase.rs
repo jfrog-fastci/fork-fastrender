@@ -29,15 +29,17 @@ fn assert_parses_as_ecma(src: &str) {
 #[test]
 fn erases_ts_wrappers_and_drops_type_only_stmts() {
   let source = r#"
-interface Foo { x: string }
- type Bar = number;
- import type { Foo as Foo2 } from "foo";
- import { type Foo as Foo3, baz } from "foo";
- import { type Foo } from "type-only-import";
- export type { Bar };
- export { type Foo3, baz };
- export { type Foo } from "type-only-export";
- export { type Foo };
+ interface Foo { x: string }
+  type Bar = number;
+  import type { Foo as Foo2 } from "foo";
+  export { Foo2 };
+  import { type Foo as Foo3, baz } from "foo";
+  import { type Foo } from "type-only-import";
+  export { Foo, Bar };
+  export type { Bar };
+  export { type Foo3, baz };
+  export { type Foo } from "type-only-export";
+  export { type Foo };
  import {} from "side-effect-import";
  export {} from "side-effect-export";
 
@@ -80,6 +82,10 @@ class Fields {
   assert!(!out.contains("interface"), "output should erase interfaces: {out}");
   // `type` can appear as part of other tokens; check the original alias name.
   assert!(!out.contains("Bar"), "output should erase type aliases: {out}");
+  assert!(
+    !out.contains("Foo2"),
+    "output should erase exports of type-only imports: {out}"
+  );
   assert!(
     !out.contains("import type"),
     "output should erase `import type` statements: {out}"

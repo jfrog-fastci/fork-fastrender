@@ -83,8 +83,22 @@ fn erases_ts_expression_wrappers() {
 fn erases_type_only_imports_and_exports() {
   let src = r#"
     import type { Foo } from "mod";
+    export { Foo };
     export type { Foo } from "mod";
     export type { Foo };
+    export const x = 1;
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert_eq!(output, "export const x=1;");
+}
+
+#[test]
+fn erases_export_lists_of_type_only_bindings() {
+  let src = r#"
+    interface Foo { x: number }
+    type Bar = number;
+    export { Foo, Bar };
     export const x = 1;
   "#;
 
