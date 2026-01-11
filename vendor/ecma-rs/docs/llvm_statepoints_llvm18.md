@@ -7,7 +7,7 @@ This document captures the **LLVM 18.1.x verifier-accepted** IR form for
 
 The repository includes a minimal working fixture:
 
-* `fixtures/llvm_stackmap_abi/statepoint.ll`
+* `fixtures/llvm_stackmap_abi/statepoint.ll` (also used by `scripts/test_stackmap_abi.sh`)
 
 That fixture:
 
@@ -104,7 +104,8 @@ The exact overload suffixes matter:
 * `gc.result.pN` / `gc.relocate.pN` — `pN` is the **GC pointer address space**
   (`N = 1` for `addrspace(1)`)
 
-Canonical declarations (matching the fixture):
+Canonical declarations (the fixture only needs `gc.statepoint` + `gc.relocate`;
+`gc.result` is required when the callee returns a GC pointer):
 
 ```llvm
 declare token @llvm.experimental.gc.statepoint.p0(
