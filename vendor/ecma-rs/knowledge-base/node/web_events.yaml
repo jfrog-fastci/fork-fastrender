@@ -1,0 +1,34 @@
+# Web-standard EventTarget methods that are available in Node.js.
+#
+# These entries are duplicated from `web/events.yaml` so that `TargetEnv::Node` lookups can resolve
+# them without matching DOM-specific event APIs.
+
+- name: EventTarget.prototype.addEventListener
+  kind: function
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: EventTarget.prototype.removeEventListener
+  kind: function
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
+
+- name: EventTarget.prototype.dispatchEvent
+  kind: function
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
