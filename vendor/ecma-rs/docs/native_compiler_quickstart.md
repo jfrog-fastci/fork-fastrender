@@ -108,7 +108,7 @@ See [`EXEC.plan.md`](../EXEC.plan.md) → “Our TypeScript Dialect” for the c
 If you’re in `vendor/ecma-rs/`:
 
 ```bash
-bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --native-strict path/to/file.ts
 ```
 
 ### Recommended wrapper (agent-safe)
@@ -118,11 +118,11 @@ Use the repo’s concurrency/RAM-limiting wrapper for the vendored ecma-rs works
 ```bash
 # From the repo root (recommended):
 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
+  typecheck --native-strict typecheck-ts-cli/fixtures/basic.ts
 
 # Or, if you're already in vendor/ecma-rs/:
 bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
-  typecheck --strict-native typecheck-ts-cli/fixtures/basic.ts
+  typecheck --native-strict typecheck-ts-cli/fixtures/basic.ts
 ```
 
 Expected behavior:
@@ -300,7 +300,7 @@ Today the harness includes:
 - a fixtures test (`native-oracle-harness/tests/fixtures.rs`) that runs `*.ts`/`*.tsx` fixtures with `// EXPECT:` (or `*.out`) and compares the observed output.
 - promise/microtask tests (under `native-oracle-harness/tests/`) that run `*.js` fixtures directly.
 
-It does **not** currently run the TypeScript checker in strict-native mode; run `typecheck-ts-cli --strict-native` (alias: `--native-strict`)
+It does **not** currently run the TypeScript checker in strict-native mode; run `typecheck-ts-cli --native-strict` (alias: `--strict-native`)
 as a separate step when you want strict-native enforcement.
 
 Native execution + result comparison is expected to be layered in as the native pipeline matures.
