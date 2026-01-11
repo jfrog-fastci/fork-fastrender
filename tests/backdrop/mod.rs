@@ -9,6 +9,7 @@ mod backdrop_filter_clip_and_radius;
 mod backdrop_filter_determinism_regression;
 mod backdrop_filter_filter_interaction_test;
 mod backdrop_filter_mask_image_test;
+mod backdrop_filter_clipped_negative_origin;
 mod backdrop_filter_off_canvas_negative_origin;
 mod backdrop_filter_parallel_test;
 mod backdrop_filter_through_blend_isolation;
