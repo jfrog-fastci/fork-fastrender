@@ -99,7 +99,7 @@ proptest = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
 backtrace = "0.3"
-object = { workspace = true }
+object = { workspace = true, features = ["write_core"] }
 loom = "0.7"
 
 [[bin]]
