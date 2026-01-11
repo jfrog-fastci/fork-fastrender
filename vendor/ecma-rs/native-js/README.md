@@ -264,6 +264,11 @@ The helper surface lives under `native_js::llvm`:
   - `rewrite_statepoints_for_gc(&Module, &TargetMachine)` (runs via `llvm-sys`
     `LLVMRunPasses`, plus `verify<safepoint-ir>` in debug builds)
 
+`rewrite-statepoints-for-gc` only rewrites call sites that occur inside
+**GC-managed functions** (i.e. functions annotated with `gc "<strategy>"`), so
+make sure to apply `gc "coreclr"` (via `CodeGen` or `set_default_gc_strategy`)
+on any function that should participate in statepoint lowering.
+
 See `native-js/tests/statepoint_stackmap.rs` for a minimal end-to-end example
 that asserts statepoint/relocate rewriting and that the emitted object contains a
 `.llvm_stackmaps` section.
