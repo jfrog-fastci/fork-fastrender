@@ -1076,24 +1076,91 @@ fn classify_array_call(
   }
 }
 
+#[cfg(all(feature = "typed", feature = "hir-semantic-ops"))]
+fn convert_hir_array_chain_ops(
+  ops: &[hir_js::ArrayChainOp],
+) -> Option<(Vec<ArrayChainOp>, Option<ArrayTerminal>)> {
+  let mut out_ops = Vec::new();
+  let mut terminal = None;
+  for (idx, op) in ops.iter().enumerate() {
+    match op {
+      hir_js::ArrayChainOp::Map(callback) => {
+        if terminal.is_some() {
+          return None;
+        }
+        out_ops.push(ArrayChainOp::Map { callback: *callback });
+      }
+      hir_js::ArrayChainOp::Filter(callback) => {
+        if terminal.is_some() {
+          return None;
+        }
+        out_ops.push(ArrayChainOp::Filter { callback: *callback });
+      }
+      hir_js::ArrayChainOp::Reduce(callback, init) => {
+        if idx != ops.len().saturating_sub(1) {
+          return None;
+        }
+        terminal = Some(ArrayTerminal::Reduce {
+          callback: *callback,
+          init: *init,
+        });
+      }
+      hir_js::ArrayChainOp::Find(callback) => {
+        if idx != ops.len().saturating_sub(1) {
+          return None;
+        }
+        terminal = Some(ArrayTerminal::Find { callback: *callback });
+      }
+      hir_js::ArrayChainOp::Every(callback) => {
+        if idx != ops.len().saturating_sub(1) {
+          return None;
+        }
+        terminal = Some(ArrayTerminal::Every { callback: *callback });
+      }
+      hir_js::ArrayChainOp::Some(callback) => {
+        if idx != ops.len().saturating_sub(1) {
+          return None;
+        }
+        terminal = Some(ArrayTerminal::Some { callback: *callback });
+      }
+    }
+  }
+  Some((out_ops, terminal))
+}
+
 #[cfg(feature = "typed")]
 fn parse_array_chain(
   lowered: &LowerResult,
   body_id: BodyId,
   body: &hir_js::Body,
   types: &impl crate::types::TypeProvider,
-  call_expr: ExprId,
+  expr_id: ExprId,
 ) -> Option<RecognizedPattern> {
+  #[cfg(feature = "hir-semantic-ops")]
+  {
+    let expr = body.exprs.get(expr_id.0 as usize)?;
+    if let ExprKind::ArrayChain { array, ops } = &expr.kind {
+      let base = *array;
+      if !types.expr_is_array(body_id, base) {
+        return None;
+      }
+      let (ops, terminal) = convert_hir_array_chain_ops(ops)?;
+      let ok_len = if terminal.is_some() { ops.len() >= 1 } else { ops.len() >= 2 };
+      return ok_len.then_some(RecognizedPattern::ArrayChain { base, ops, terminal });
+    }
+  }
+
   let mut ops_rev = Vec::new();
   let mut terminal = None;
 
-  let (mut recv, node) = classify_array_call(lowered, body, call_expr)?;
+  let (mut recv, node) = classify_array_call(lowered, body, expr_id)?;
   match node {
     ArrayCallNode::Op(op) => ops_rev.push(op),
     ArrayCallNode::Terminal(term) => terminal = Some(term),
   }
 
   loop {
+    recv = strip_transparent_wrappers(body, recv);
     let recv_expr = body.exprs.get(recv.0 as usize)?;
     match &recv_expr.kind {
       ExprKind::Call(_) => {
@@ -1104,6 +1171,36 @@ fn parse_array_chain(
           ArrayCallNode::Terminal(_) => return None,
         }
         recv = next_recv;
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayMap { array, callback } => {
+        ops_rev.push(ArrayChainOp::Map { callback: *callback });
+        recv = *array;
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayFilter { array, callback } => {
+        ops_rev.push(ArrayChainOp::Filter { callback: *callback });
+        recv = *array;
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        let (prefix_ops, prefix_terminal) = convert_hir_array_chain_ops(ops)?;
+        // Terminal methods must be the final call in the chain.
+        if prefix_terminal.is_some() {
+          return None;
+        }
+        for op in prefix_ops.into_iter().rev() {
+          ops_rev.push(op);
+        }
+        recv = *array;
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayReduce { .. }
+      | ExprKind::ArrayFind { .. }
+      | ExprKind::ArrayEvery { .. }
+      | ExprKind::ArraySome { .. } => {
+        // Terminal methods must be the final call in the chain.
+        return None;
       }
       _ => {
         let base = recv;
@@ -1266,17 +1363,51 @@ pub fn recognize_patterns_typed(
   //
   // These are intentionally conservative: if typing is missing or the chain
   // includes unknown/any/union receivers, we do not emit the pattern.
-  let mut non_outermost_array_calls = std::collections::HashSet::<ExprId>::new();
+  let mut non_outermost_array_exprs = std::collections::HashSet::<ExprId>::new();
   for (idx, _expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
     let Some((recv, _node)) = classify_array_call(lowered, body_ref, expr_id) else {
       continue;
     };
-    if matches!(
-      body_ref.exprs.get(recv.0 as usize).map(|e| &e.kind),
-      Some(ExprKind::Call(_))
-    ) {
-      non_outermost_array_calls.insert(recv);
+    let recv_kind = body_ref.exprs.get(recv.0 as usize).map(|e| &e.kind);
+    let mark = matches!(recv_kind, Some(ExprKind::Call(_)))
+      || {
+        #[cfg(feature = "hir-semantic-ops")]
+        {
+          matches!(recv_kind, Some(ExprKind::ArrayChain { .. }))
+        }
+        #[cfg(not(feature = "hir-semantic-ops"))]
+        {
+          false
+        }
+      };
+    if mark {
+      non_outermost_array_exprs.insert(recv);
+    }
+  }
+
+  #[cfg(feature = "hir-semantic-ops")]
+  {
+    // `hir-js` may lower chained array operations into nested `ExprKind::ArrayChain` nodes. The
+    // outer chain node does not retain the intermediate receiver expression, so use spans to
+    // suppress inner chains and keep `ArrayChain` recognition outermost-only.
+    let mut max_end_by_start = std::collections::BTreeMap::<u32, u32>::new();
+    for expr in &body_ref.exprs {
+      if matches!(expr.kind, ExprKind::ArrayChain { .. }) {
+        max_end_by_start
+          .entry(expr.span.start)
+          .and_modify(|end| *end = (*end).max(expr.span.end))
+          .or_insert(expr.span.end);
+      }
+    }
+    for (idx, expr) in body_ref.exprs.iter().enumerate() {
+      if matches!(expr.kind, ExprKind::ArrayChain { .. }) {
+        if let Some(max_end) = max_end_by_start.get(&expr.span.start) {
+          if expr.span.end < *max_end {
+            non_outermost_array_exprs.insert(ExprId(idx as u32));
+          }
+        }
+      }
     }
   }
 
@@ -1284,9 +1415,20 @@ pub fn recognize_patterns_typed(
     let expr_id = ExprId(idx as u32);
 
     // ArrayChain: recognize only at the outermost chain call.
-    if matches!(expr.kind, ExprKind::Call(_)) && !non_outermost_array_calls.contains(&expr_id) {
-      if let Some(pat) = parse_array_chain(lowered, body, body_ref, types, expr_id) {
-        patterns.push(pat);
+    if !non_outermost_array_exprs.contains(&expr_id) {
+      match &expr.kind {
+        ExprKind::Call(_) => {
+          if let Some(pat) = parse_array_chain(lowered, body, body_ref, types, expr_id) {
+            patterns.push(pat);
+          }
+        }
+        #[cfg(feature = "hir-semantic-ops")]
+        ExprKind::ArrayChain { .. } => {
+          if let Some(pat) = parse_array_chain(lowered, body, body_ref, types, expr_id) {
+            patterns.push(pat);
+          }
+        }
+        _ => {}
       }
     }
 

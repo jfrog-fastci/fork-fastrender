@@ -522,7 +522,9 @@ fn visit_expr(
           | ArrayChainOp::Filter(callback)
           | ArrayChainOp::Find(callback)
           | ArrayChainOp::Every(callback)
-          | ArrayChainOp::Some(callback) => visit_expr(lowered, names, body_id, body, *callback, out),
+          | ArrayChainOp::Some(callback) => {
+            visit_expr(lowered, names, body_id, body, *callback, out);
+          }
           ArrayChainOp::Reduce(callback, init) => {
             visit_expr(lowered, names, body_id, body, *callback, out);
             if let Some(init) = init {
