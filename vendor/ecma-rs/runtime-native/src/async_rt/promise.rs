@@ -116,7 +116,9 @@ pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
   promise
     .header
     .flags
-    .store(FLAG_HAS_PAYLOAD, Ordering::Relaxed);
+    // Publish the payload pointer before setting the "has payload" flag so that a thread reading
+    // `flags` with `Acquire` will also observe the `value` store.
+    .store(FLAG_HAS_PAYLOAD, Ordering::Release);
   PromiseRef(Box::into_raw(promise) as *mut core::ffi::c_void)
 }
 
