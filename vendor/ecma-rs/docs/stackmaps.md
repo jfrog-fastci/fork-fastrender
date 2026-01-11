@@ -117,4 +117,4 @@ structure:
 3. Then **2 locations per `gc.relocate` call**: `(base, derived)`
 
 `runtime-native::statepoints::StatepointRecord` enforces this layout (`LLVM18_STATEPOINT_HEADER_CONSTANTS = 3`),
-and provides `gc_pairs()` for iterating the `(base, derived)` pairs.
+and provides `gc_pairs() -> &[GcLocationPair]` for iterating the base/derived relocation pairs.
