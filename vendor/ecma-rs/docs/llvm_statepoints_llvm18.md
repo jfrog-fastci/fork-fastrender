@@ -238,6 +238,10 @@ Key observations (x86_64):
 * A `Record ID` matches the statepoint `<id>` immediate.
 * `locations[1]` (location `#2` in `llvm-readobj --stackmap` output) is the
   `gc.statepoint` `flags` immarg.
+* `locations[2]` (location `#3`) is `deopt_count` (`NumDeoptArgs`), the number of
+  `"deopt"(...)` operand bundle values encoded into the stackmap record. When
+  non-zero, the next `deopt_count` locations are the deopt operand locations
+  (not GC roots); the GC `(base, derived)` relocation pairs come after them.
 * `instruction offset` is the **return address** relative to the function start.
   If `patch_bytes = 0`, this is the offset of the instruction *after* the call.
   If `patch_bytes > 0`, LLVM reserves a patchable region and `instruction offset`
