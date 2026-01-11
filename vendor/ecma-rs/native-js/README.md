@@ -1,10 +1,10 @@
 # native-js
 
-`native-js` is the LLVM-backed code generation crate for `ecma-rs`.
+`native-js` is the LLVM-backed code generation crate for `ecma-rs` that compiles a **strict subset
+of TypeScript** to native code via LLVM.
 
-It is intended to compile a **strict subset of TypeScript** into **LLVM IR**
-(and, eventually, object files / binaries) as part of the native
-TypeScript→LLVM pipeline.
+The crate can emit **LLVM IR** and (on Linux) can produce **object files** / a **native executable**
+by shelling out to `clang`/`lld` for linking.
 
 This crate is still early. The high-level AOT entrypoints are not wired up yet
 (`native_js::compile` returns `NativeJsError::UnsupportedFeature` and
@@ -119,6 +119,7 @@ See `native-js-cli` for the CLI front-ends:
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- path/to/file.ts
 
 # Typechecked AOT pipeline (expects entry file to export `main()`):
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- check path/to/entry.ts
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run path/to/entry.ts
 ```
 
