@@ -9154,6 +9154,68 @@ mod custom_property_global_keyword_tests {
 }
 
 #[cfg(test)]
+mod var_resolution_invalid_at_computed_value_time_tests {
+  use super::*;
+  use crate::css::parser::parse_declarations;
+
+  #[test]
+  fn var_invalid_behaves_like_unset_for_non_inherited_properties() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+
+    // Simulate a UA default (e.g. <mark> sets a yellow background in UA styles).
+    // The author declaration below is syntactically valid (contains `var()`) but resolves to an
+    // invalid color at computed-value time, which should compute to `unset` and therefore reset the
+    // background-color to its initial value (transparent), overriding the previous declaration.
+    let decls = parse_declarations(
+      "background-color: rgb(255, 255, 0); --bg: notacolor; background-color: var(--bg);",
+    );
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut styles,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        false,
+      );
+    }
+
+    assert_eq!(styles.background_color, Rgba::TRANSPARENT);
+  }
+
+  #[test]
+  fn var_invalid_behaves_like_unset_for_inherited_properties() {
+    let mut parent = ComputedStyle::default();
+    parent.color = Rgba::RED;
+    let mut styles = ComputedStyle::default();
+
+    // The invalid var() declaration should compute to `unset` and therefore inherit from the
+    // parent, overriding the earlier explicit blue color.
+    let decls =
+      parse_declarations("color: rgb(0, 0, 255); --c: notacolor; color: var(--c);");
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut styles,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        false,
+      );
+    }
+
+    assert_eq!(styles.color, Rgba::RED);
+  }
+}
+
+#[cfg(test)]
 mod system_color_resolution_tests {
   use super::*;
   use crate::css::parser::parse_declarations;
@@ -9596,8 +9658,13 @@ fn apply_declaration_with_base_internal_with_order(
         }
         Some(value.into_owned())
       }
-      // Unresolved or invalid at computed-value time -> declaration is ignored per spec.
-      _ => return,
+      // Per CSS Variables, when `var()` substitution fails (missing custom property, recursion
+      // limits, or invalid token stream for the target property), the declaration is *invalid at
+      // computed-value time* and the property's computed value becomes `unset` (inherit for
+      // inherited properties, otherwise the initial value). Importantly, this still overrides any
+      // lower-origin declarations (e.g. UA styles) because the winning declaration exists in the
+      // cascade; it simply computes to `unset`.
+      _ => Some(PropertyValue::Keyword("unset".to_string())),
     }
   } else {
     None

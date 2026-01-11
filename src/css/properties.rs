@@ -1764,21 +1764,34 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
     return None;
   }
 
-  // Try to parse as color first for color properties (exclude shorthand background so we can parse layers)
+  // Strict `<color>` properties.
+  //
+  // For these longhands, any non-`<color>` value is invalid at parse time (CSS error handling drops
+  // the declaration). Importantly, after `var()` substitution, the resulting token stream must be
+  // validated against the target property's grammar so that "invalid at computed-value time"
+  // declarations compute to `unset` (rather than silently doing nothing and preserving a previous
+  // declaration).
   if matches!(
     property,
     "color"
       | "-webkit-text-fill-color"
       | "-webkit-text-stroke-color"
       | "background-color"
-      | "border-color"
       | "border-top-color"
       | "border-right-color"
       | "border-bottom-color"
       | "border-left-color"
-      | "fill"
-      | "stroke"
   ) {
+    let color = Color::parse(value_str).ok()?;
+    return match color {
+      Color::CurrentColor => Some(PropertyValue::Keyword("currentColor".to_string())),
+      _ => Some(PropertyValue::Color(color)),
+    };
+  }
+
+  // SVG presentation attributes accept a superset of `<color>` (e.g. `none` / `url(...)`), so only
+  // opportunistically parse plain colors here.
+  if matches!(property, "fill" | "stroke") {
     if let Ok(color) = Color::parse(value_str) {
       return match color {
         Color::CurrentColor => Some(PropertyValue::Keyword("currentColor".to_string())),

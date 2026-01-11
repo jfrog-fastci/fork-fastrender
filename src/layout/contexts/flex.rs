@@ -1746,30 +1746,37 @@ impl FormattingContext for FlexFormattingContext {
                     }
                     let toggles = measure_toggles.as_ref();
                     // Treat zero/near-zero definite sizes as absent to avoid pathological
-                    // measurement probes when Taffy propagates a 0px available size. This
-                    // aligns with constraints_from_taffy, which promotes tiny definites to
-                    // Indefinite/MaxContent.
-                    if let Some(w) = known_dimensions.width {
-                        if w <= 1.0 && matches!(avail.width, AvailableSpace::Definite(v) if v <= 1.0) {
-                            known_dimensions.width = None;
-                            avail.width = AvailableSpace::MaxContent;
+                    // measurement probes when Taffy propagates a 0px available size.
+                    //
+                    // Only apply this heuristic when we don't have access to the element's style
+                    // (so we can't distinguish "probe" sizes from authored `0px`/`1px` sizes).
+                    if node_context.is_none() {
+                      if let Some(w) = known_dimensions.width {
+                        if w <= 1.0
+                          && matches!(avail.width, AvailableSpace::Definite(v) if v <= 1.0)
+                        {
+                          known_dimensions.width = None;
+                          avail.width = AvailableSpace::MaxContent;
                         }
-                    }
-                    if let AvailableSpace::Definite(w) = avail.width {
+                      }
+                      if let AvailableSpace::Definite(w) = avail.width {
                         if w <= 1.0 {
-                            avail.width = AvailableSpace::MaxContent;
+                          avail.width = AvailableSpace::MaxContent;
                         }
-                    }
-                    if let Some(h) = known_dimensions.height {
-                        if h <= 1.0 && matches!(avail.height, AvailableSpace::Definite(v) if v <= 1.0) {
-                            known_dimensions.height = None;
-                            avail.height = AvailableSpace::MaxContent;
+                      }
+                      if let Some(h) = known_dimensions.height {
+                        if h <= 1.0
+                          && matches!(avail.height, AvailableSpace::Definite(v) if v <= 1.0)
+                        {
+                          known_dimensions.height = None;
+                          avail.height = AvailableSpace::MaxContent;
                         }
-                    }
-                    if let AvailableSpace::Definite(h) = avail.height {
+                      }
+                      if let AvailableSpace::Definite(h) = avail.height {
                         if h <= 1.0 {
-                            avail.height = AvailableSpace::MaxContent;
+                          avail.height = AvailableSpace::MaxContent;
                         }
+                      }
                     }
 
                     flex_profile::record_measure_lookup();
@@ -1777,6 +1784,40 @@ impl FormattingContext for FlexFormattingContext {
                     let mut force_full_measure = false;
                     if let Some(node_ptr) = node_context.as_ref().map(|p| **p) {
                         let box_node = unsafe { &*node_ptr };
+                        // Treat tiny definite probes (0px/1px) from Taffy as "unknown" only when
+                        // the corresponding physical size is `auto`. This preserves authored
+                        // `height:0`/`width:0` (common for hidden pseudo-elements and layout hacks)
+                        // so we don't override them with measured content sizes.
+                        if physical_width_is_auto(box_node.style.as_ref()) {
+                          if let Some(w) = known_dimensions.width {
+                            if w <= 1.0
+                              && matches!(avail.width, AvailableSpace::Definite(v) if v <= 1.0)
+                            {
+                              known_dimensions.width = None;
+                              avail.width = AvailableSpace::MaxContent;
+                            }
+                          }
+                          if let AvailableSpace::Definite(w) = avail.width {
+                            if w <= 1.0 {
+                              avail.width = AvailableSpace::MaxContent;
+                            }
+                          }
+                        }
+                        if physical_height_is_auto(box_node.style.as_ref()) {
+                          if let Some(h) = known_dimensions.height {
+                            if h <= 1.0
+                              && matches!(avail.height, AvailableSpace::Definite(v) if v <= 1.0)
+                            {
+                              known_dimensions.height = None;
+                              avail.height = AvailableSpace::MaxContent;
+                            }
+                          }
+                          if let AvailableSpace::Definite(h) = avail.height {
+                            if h <= 1.0 {
+                              avail.height = AvailableSpace::MaxContent;
+                            }
+                          }
+                        }
                         force_full_measure = !log_measure_ids.is_empty()
                           && log_measure_ids.contains(&box_node.id);
                         if known_dimensions.width == Some(0.0)
@@ -2251,7 +2292,8 @@ impl FormattingContext for FlexFormattingContext {
                           }
                        }
   
-                    let constraints = this.constraints_from_taffy(known_dimensions, avail, None);
+                    let constraints =
+                      this.constraints_from_taffy(known_dimensions, avail, None, Some(box_node.style.as_ref()));
                     let skip_contents =
                       this.flex_item_should_skip_contents(box_node, auto_unskipped_for_pass);
                     if skip_contents {
@@ -2587,7 +2629,8 @@ impl FormattingContext for FlexFormattingContext {
                         );
                       }
                     }
-                    let mut constraints = this.constraints_from_taffy(known_dimensions, avail, None);
+                    let mut constraints =
+                      this.constraints_from_taffy(known_dimensions, avail, None, Some(measure_style));
                     // When Taffy asks for a flex item's size without a known inline size, it can
                     // pass the container's definite available width. For items that establish a
                     // *flex/grid formatting context* and have `width:auto`, feeding that definite
@@ -4504,6 +4547,114 @@ impl FormattingContext for FlexFormattingContext {
     //
     // Detect that overflow case and shift in-flow children so overflow is biased toward the
     // physical start edge (i.e. the stack is packed against the writing-mode start edge).
+    //
+    // Auto-height flex containers should grow to include in-flow children, but must respect
+    // min/max-height constraints. In particular, `max-height` intentionally allows in-flow children
+    // to overflow and be clipped by `overflow`, so we must not "grow to fit" past the computed
+    // `max-height`.
+    if physical_height_is_auto(&box_node.style) && constraints.used_border_box_height.is_none() {
+      let cb_width = fragment.bounds.width().max(0.0);
+      let mut max_child_bottom = 0.0f32;
+      let mut deadline_counter = 0usize;
+      for child in fragment.children.iter() {
+        check_layout_deadline(&mut deadline_counter)?;
+        if let Some(style) = child.style.as_deref() {
+          if style.running_position.is_some()
+            || matches!(style.position, Position::Absolute | Position::Fixed)
+          {
+            continue;
+          }
+        }
+        // When computing the "required" block size for an auto-height flex container, prefer the
+        // flex item's *margin edge* instead of its border edge. Flex items can intentionally use
+        // negative block-axis margins to overlap subsequent content (accordion/collapsible
+        // patterns), and the container's auto height must not be forcibly grown to include the
+        // overflow created by those negative margins.
+        let mut bottom = child.bounds.max_y();
+        if let Some(style) = child.style.as_deref() {
+          let margin_bottom = style
+            .margin_bottom
+            .map(|len| self.resolve_length_for_width(len, cb_width, style))
+            .unwrap_or(0.0);
+          if margin_bottom.is_finite() {
+            bottom += margin_bottom;
+          }
+        }
+        if bottom.is_finite() {
+          max_child_bottom = max_child_bottom.max(bottom);
+        }
+      }
+      if max_child_bottom.is_finite() {
+        let containing_block_height = constraints.height().filter(|h| h.is_finite()).map(|h| h.max(0.0));
+        // Padding percentages resolve against the physical width, even for vertical edges.
+        let padding_top =
+          self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
+        let padding_bottom =
+          self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
+        let border_top = self.resolve_length_for_width(
+          box_node.style.used_border_top_width(),
+          cb_width,
+          &box_node.style,
+        );
+        let border_bottom = self.resolve_length_for_width(
+          box_node.style.used_border_bottom_width(),
+          cb_width,
+          &box_node.style,
+        );
+        let required = (max_child_bottom + padding_bottom + border_bottom).max(0.0);
+
+        let vertical_edges = (padding_top + padding_bottom + border_top + border_bottom).max(0.0);
+        let resolve_block_size_len = |len: Length| -> Option<f32> {
+          resolve_length_with_percentage_metrics(
+            len,
+            containing_block_height,
+            self.viewport_size,
+            box_node.style.font_size,
+            box_node.style.root_font_size,
+            Some(&box_node.style),
+            Some(&self.font_context),
+          )
+          .filter(|v| v.is_finite())
+          .map(|v| v.max(0.0))
+        };
+
+        let mut min_height = box_node
+          .style
+          .min_height
+          .as_ref()
+          .and_then(|l| resolve_block_size_len(*l))
+          .unwrap_or(0.0);
+        let mut max_height = box_node
+          .style
+          .max_height
+          .as_ref()
+          .and_then(|l| resolve_block_size_len(*l))
+          .unwrap_or(f32::INFINITY);
+
+        // Convert content-box min/max heights into border-box units so we can clamp the fragment's
+        // border-box size.
+        if box_node.style.box_sizing == BoxSizing::ContentBox {
+          min_height = (min_height + vertical_edges).max(0.0);
+          if max_height.is_finite() {
+            max_height = (max_height + vertical_edges).max(0.0);
+          }
+        }
+        if max_height.is_finite() && max_height < min_height {
+          max_height = min_height;
+        }
+
+        let required = crate::layout::utils::clamp_with_order(required, min_height, max_height);
+        if required > fragment.bounds.height() + 0.01 {
+          fragment.bounds.size.height = required;
+        }
+      }
+    }
+    // Post-pass for cross-axis mirroring.
+    //
+    // We run Taffy with `FlexWrap::Wrap` for both `wrap` and `wrap-reverse` because Taffy's
+    // `WrapReverse` support is still incomplete for multi-line + `align-content`. Mirror the
+    // in-flow flex item positions along the cross axis whenever the effective cross axis points in
+    // the negative physical direction so line order and cross-axis alignment match CSS.
     if matches!(box_node.style.display, Display::Flex | Display::InlineFlex)
       && matches!(
         box_node.style.flex_wrap,
@@ -8541,10 +8692,15 @@ impl FlexFormattingContext {
                 .then(|| self.resolve_length_for_width(*len, self.viewport_size.width, style))
             })
           }?;
-          if px <= 0.0 {
+          if !px.is_finite() {
             return None;
           }
-          let mut value = px;
+          // Flexbox's automatic minimum size uses the smaller of the content size suggestion and
+          // the specified size suggestion (CSS Flexbox §4.5). Preserve explicit `0px` sizes here:
+          // treating them as "no specified size" incorrectly forces the auto-min-size to the
+          // content size, breaking common patterns like StackOverflow's hidden pseudo-element width
+          // probes (`height:0` / `width:0`).
+          let mut value = px.max(0.0);
           if style.box_sizing == BoxSizing::ContentBox {
             value += self.horizontal_edges_px(style)?;
           }
@@ -8874,10 +9030,12 @@ impl FlexFormattingContext {
               .then(|| self.resolve_length_for_width(*len, self.viewport_size.height, style))
           })
         }?;
-        if px <= 0.0 {
+        if !px.is_finite() {
           return None;
         }
-        let mut value = px;
+        // See horizontal-axis case above: keep explicit `0px` sizes as a valid specified size
+        // suggestion so `min-height:auto` can resolve to 0 instead of the content height.
+        let mut value = px.max(0.0);
         if style.box_sizing == BoxSizing::ContentBox {
           value += self.vertical_edges_px(style)?;
         }
@@ -12190,18 +12348,30 @@ impl FlexFormattingContext {
     mut known: taffy::geometry::Size<Option<f32>>,
     available: taffy::geometry::Size<AvailableSpace>,
     inline_percentage_base: Option<f32>,
+    style: Option<&ComputedStyle>,
   ) -> LayoutConstraints {
     // Taffy uses tiny definite probes (0px/1px) to represent "unknown" constraints during
     // intrinsic sizing. Treat these as indefinite so flex measurements can't be accidentally
     // forced to 0px and then cached/reused.
-    if let Some(w) = known.width {
-      if w <= 1.0 && matches!(available.width, AvailableSpace::Definite(v) if v <= 1.0) {
-        known.width = None;
+    //
+    // However, `0px`/`1px` are valid authored sizes (common for hiding pseudo-elements and other
+    // layout tricks). Only treat these tiny sizes as probes when the corresponding physical size
+    // is `auto`. This avoids incorrectly overriding authored `height:0` with measured content
+    // height (e.g. StackOverflow's `.s-btn--text:before { height:0 }` inside `inline-flex`).
+    let allow_tiny_width = style.map_or(true, physical_width_is_auto);
+    let allow_tiny_height = style.map_or(true, physical_height_is_auto);
+    if allow_tiny_width {
+      if let Some(w) = known.width {
+        if w <= 1.0 && matches!(available.width, AvailableSpace::Definite(v) if v <= 1.0) {
+          known.width = None;
+        }
       }
     }
-    if let Some(h) = known.height {
-      if h <= 1.0 && matches!(available.height, AvailableSpace::Definite(v) if v <= 1.0) {
-        known.height = None;
+    if allow_tiny_height {
+      if let Some(h) = known.height {
+        if h <= 1.0 && matches!(available.height, AvailableSpace::Definite(v) if v <= 1.0) {
+          known.height = None;
+        }
       }
     }
 
@@ -12211,7 +12381,7 @@ impl FlexFormattingContext {
     let width = match (known_width, available.width) {
       (Some(w), _) => CrateAvailableSpace::Definite(w),
       (_, AvailableSpace::Definite(w)) => {
-        if w <= 1.0 {
+        if w <= 1.0 && allow_tiny_width {
           CrateAvailableSpace::Indefinite
         } else {
           CrateAvailableSpace::Definite(sanitize_definite(w))
@@ -12223,7 +12393,7 @@ impl FlexFormattingContext {
     let height = match (known_height, available.height) {
       (Some(h), _) => CrateAvailableSpace::Definite(h),
       (_, AvailableSpace::Definite(h)) => {
-        if h <= 1.0 {
+        if h <= 1.0 && allow_tiny_height {
           CrateAvailableSpace::Indefinite
         } else {
           CrateAvailableSpace::Definite(sanitize_definite(h))
@@ -13655,6 +13825,44 @@ mod tests {
   }
 
   #[test]
+  fn flex_auto_height_does_not_grow_to_fit_negative_margin_overflow() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.overflow_x = Overflow::Hidden;
+    container_style.overflow_y = Overflow::Hidden;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.height = Some(Length::px(50.0));
+    child_style.height_keyword = None;
+    child_style.margin_bottom = Some(Length::px(-50.0));
+
+    let mut child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+    child.id = 10;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![child],
+    );
+
+    let constraints = LayoutConstraints::new(
+      CrateAvailableSpace::Definite(200.0),
+      CrateAvailableSpace::Indefinite,
+    );
+    let fragment = fc.layout(&container, &constraints).expect("layout");
+
+    assert!(
+      fragment.bounds.height() <= 1.0,
+      "expected negative bottom margin to collapse auto-height flex container; got height {:.1}",
+      fragment.bounds.height()
+    );
+  }
+
+  #[test]
   fn content_visibility_hidden_flex_item_skips_measure_layout() {
     reset_flex_measure_layout_calls();
 
@@ -13853,6 +14061,7 @@ mod tests {
   #[test]
   fn flex_constraints_from_taffy_treats_tiny_known_sizes_as_indefinite() {
     let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    let style = ComputedStyle::default();
 
     let constraints = fc.constraints_from_taffy(
       taffy::geometry::Size {
@@ -13864,6 +14073,7 @@ mod tests {
         height: AvailableSpace::Definite(0.0),
       },
       None,
+      Some(&style),
     );
 
     assert_eq!(constraints.available_width, CrateAvailableSpace::Indefinite);
@@ -13872,6 +14082,35 @@ mod tests {
       CrateAvailableSpace::Indefinite
     );
     assert!(constraints.inline_percentage_base.is_none());
+  }
+
+  #[test]
+  fn flex_constraints_from_taffy_preserves_explicit_zero_sizes() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    let mut style = ComputedStyle::default();
+    style.width = Some(Length::px(0.0));
+    style.width_keyword = None;
+    style.height = Some(Length::px(0.0));
+    style.height_keyword = None;
+
+    let constraints = fc.constraints_from_taffy(
+      taffy::geometry::Size {
+        width: Some(0.0),
+        height: Some(0.0),
+      },
+      taffy::geometry::Size {
+        width: AvailableSpace::Definite(0.0),
+        height: AvailableSpace::Definite(0.0),
+      },
+      None,
+      Some(&style),
+    );
+
+    assert_eq!(constraints.available_width, CrateAvailableSpace::Definite(0.0));
+    assert_eq!(constraints.available_height, CrateAvailableSpace::Definite(0.0));
+    assert_eq!(constraints.used_border_box_width, Some(0.0));
+    assert_eq!(constraints.used_border_box_height, Some(0.0));
+    assert_eq!(constraints.inline_percentage_base, Some(0.0));
   }
 
   #[test]
@@ -16663,8 +16902,8 @@ mod tests {
       "snapped available space should match for probes sharing a cache key"
     );
 
-    let constraints_a = fc.constraints_from_taffy(snapped_known_a, snapped_avail_a, None);
-    let constraints_b = fc.constraints_from_taffy(snapped_known_b, snapped_avail_b, None);
+    let constraints_a = fc.constraints_from_taffy(snapped_known_a, snapped_avail_a, None, None);
+    let constraints_b = fc.constraints_from_taffy(snapped_known_b, snapped_avail_b, None, None);
     assert_eq!(
       constraints_a, constraints_b,
       "layout constraints should be identical once inputs are snapped"
@@ -16708,8 +16947,8 @@ mod tests {
     assert_eq!(snapped_known_a, snapped_known_b);
     assert_eq!(snapped_avail_a, snapped_avail_b);
 
-    let constraints_a = fc.constraints_from_taffy(snapped_known_a, snapped_avail_a, None);
-    let constraints_b = fc.constraints_from_taffy(snapped_known_b, snapped_avail_b, None);
+    let constraints_a = fc.constraints_from_taffy(snapped_known_a, snapped_avail_a, None, None);
+    let constraints_b = fc.constraints_from_taffy(snapped_known_b, snapped_avail_b, None, None);
     assert_eq!(constraints_a, constraints_b);
   }
 

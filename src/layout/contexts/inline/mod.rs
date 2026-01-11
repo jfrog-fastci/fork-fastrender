@@ -12355,11 +12355,9 @@ impl InlineFormattingContext {
         continue;
       }
 
-      if let InlineItem::Text(text) = item {
-        if let Some(truncated) = self.truncate_text_item_to_width(&text, remaining) {
-          items.push(InlineItem::Text(truncated));
-          break;
-        }
+      if let Some(kept) = self.truncate_inline_item_to_width(item, remaining) {
+        items.push(kept);
+        break;
       }
     }
   }
@@ -12379,12 +12377,68 @@ impl InlineFormattingContext {
         continue;
       }
 
-      if let InlineItem::Text(text) = item {
-        if let Some(kept) = self.truncate_text_item_from_start(&text, remaining) {
-          items.insert(idx, InlineItem::Text(kept));
-          break;
-        }
+      if let Some(kept) = self.truncate_inline_item_from_start(item, remaining) {
+        items.insert(idx, kept);
+        break;
       }
+    }
+  }
+
+  fn truncate_inline_item_to_width(&self, item: InlineItem, max_width: f32) -> Option<InlineItem> {
+    const WIDTH_EPS: f32 = 0.01;
+    if max_width <= WIDTH_EPS {
+      return None;
+    }
+
+    match item {
+      InlineItem::Text(text) => self
+        .truncate_text_item_to_width(&text, max_width)
+        .map(InlineItem::Text),
+      InlineItem::InlineBox(mut inline_box) => {
+        let edge_width = inline_box.start_edge + inline_box.end_edge;
+        if edge_width > max_width + WIDTH_EPS {
+          return None;
+        }
+        let available_for_children = (max_width - edge_width).max(0.0);
+        self.trim_line_end(&mut inline_box.children, available_for_children);
+        inline_box.metrics = compute_inline_box_metrics(
+          &inline_box.children,
+          inline_box.content_offset_y,
+          inline_box.bottom_inset,
+          inline_box.strut_metrics,
+        );
+        Some(InlineItem::InlineBox(inline_box))
+      }
+      _ => None,
+    }
+  }
+
+  fn truncate_inline_item_from_start(&self, item: InlineItem, max_width: f32) -> Option<InlineItem> {
+    const WIDTH_EPS: f32 = 0.01;
+    if max_width <= WIDTH_EPS {
+      return None;
+    }
+
+    match item {
+      InlineItem::Text(text) => self
+        .truncate_text_item_from_start(&text, max_width)
+        .map(InlineItem::Text),
+      InlineItem::InlineBox(mut inline_box) => {
+        let edge_width = inline_box.start_edge + inline_box.end_edge;
+        if edge_width > max_width + WIDTH_EPS {
+          return None;
+        }
+        let available_for_children = (max_width - edge_width).max(0.0);
+        self.trim_line_start(&mut inline_box.children, available_for_children);
+        inline_box.metrics = compute_inline_box_metrics(
+          &inline_box.children,
+          inline_box.content_offset_y,
+          inline_box.bottom_inset,
+          inline_box.strut_metrics,
+        );
+        Some(InlineItem::InlineBox(inline_box))
+      }
+      _ => None,
     }
   }
 
@@ -22265,6 +22319,94 @@ mod tests {
   }
 
   #[test]
+  fn trailing_collapsible_space_is_dropped_before_out_of_flow_anchors() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(style);
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.position = Position::Absolute;
+    abs_style.width = Some(Length::px(1.0));
+    abs_style.height = Some(Length::px(1.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
+    let abs = BoxNode::new_inline(Arc::new(abs_style), vec![]);
+
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(text_style, "Hello ".to_string()), abs],
+    );
+    let ifc = InlineFormattingContext::new();
+    let items = ifc
+      .collect_inline_items(&root, 800.0, Some(800.0))
+      .expect("collect items");
+
+    assert!(
+      items
+        .iter()
+        .any(|item| matches!(item, InlineItem::StaticPositionAnchor(_))),
+      "expected out-of-flow child to produce a static position anchor"
+    );
+
+    assert!(
+      items.iter().all(|item| match item {
+        InlineItem::Text(t) => t.text != " ",
+        _ => true,
+      }),
+      "trailing collapsible whitespace should not emit a space item before out-of-flow anchors"
+    );
+  }
+
+  #[test]
+  fn whitespace_only_text_node_is_dropped_before_out_of_flow_anchors() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(style);
+
+    let inline_style = Arc::new(ComputedStyle::default());
+    let inline = BoxNode::new_inline(
+      inline_style.clone(),
+      vec![BoxNode::new_text(text_style.clone(), "Hello".to_string())],
+    );
+
+    let whitespace_node = BoxNode::new_text(text_style.clone(), "\n    ".to_string());
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.position = Position::Absolute;
+    abs_style.width = Some(Length::px(1.0));
+    abs_style.height = Some(Length::px(1.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
+    let abs = BoxNode::new_inline(Arc::new(abs_style), vec![]);
+
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![inline, whitespace_node, abs],
+    );
+    let ifc = InlineFormattingContext::new();
+    let items = ifc
+      .collect_inline_items(&root, 800.0, Some(800.0))
+      .expect("collect items");
+
+    assert!(
+      items
+        .iter()
+        .any(|item| matches!(item, InlineItem::StaticPositionAnchor(_))),
+      "expected out-of-flow child to produce a static position anchor"
+    );
+
+    assert!(
+      items.iter().all(|item| match item {
+        InlineItem::Text(t) => t.text != " ",
+        _ => true,
+      }),
+      "whitespace-only text nodes should not emit a collapsed space item before out-of-flow anchors"
+    );
+  }
+
+  #[test]
   fn pre_line_trailing_space_is_collapsible() {
     let mut style = ComputedStyle::default();
     style.white_space = WhiteSpace::PreLine;
@@ -22915,6 +23057,74 @@ mod tests {
     assert!(
       texts.iter().any(|t| t.contains('…')),
       "expected ellipsis fragment when truncating due to line-clamp"
+    );
+  }
+
+  #[test]
+  fn line_clamp_ellipsis_truncates_inside_anonymous_inline_boxes() {
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Block;
+    container_style.display_is_webkit_box = true;
+    container_style.webkit_box_orient = WebkitBoxOrient::Vertical;
+    container_style.line_clamp = Some(2);
+    container_style.line_clamp_source = LineClampSource::Webkit;
+    container_style.overflow_x = Overflow::Hidden;
+    container_style.overflow_y = Overflow::Hidden;
+
+    let mut inline_style = ComputedStyle::default();
+    inline_style.display = Display::Inline;
+
+    // Mirror the anonymous inline wrapper structure produced by the box tree builder: a block
+    // container holds an anonymous inline box that holds the text. Clamping must still keep text
+    // on the last visible line instead of dropping the inline box entirely.
+    let text = "clamping should keep content on the last line even when wrapped in anonymous inline boxes "
+      .repeat(6);
+    let root = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_anonymous_inline(
+        Arc::new(inline_style),
+        vec![BoxNode::new_text(default_style(), text)],
+      )],
+    );
+
+    let constraints = LayoutConstraints::definite_width(160.0);
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+
+    assert_eq!(
+      fragment
+        .children
+        .iter()
+        .filter(|child| matches!(child.content, FragmentContent::Line { .. }))
+        .count(),
+      2,
+      "expected clamping to produce two line boxes"
+    );
+
+    let mut lines = Vec::new();
+    fn collect_lines<'a>(node: &'a FragmentNode, out: &mut Vec<&'a FragmentNode>) {
+      if matches!(node.content, FragmentContent::Line { .. }) {
+        out.push(node);
+      }
+      for child in node.children.iter() {
+        collect_lines(child, out);
+      }
+    }
+    collect_lines(&fragment, &mut lines);
+    assert!(lines.len() >= 2, "expected at least two line fragments");
+
+    let mut last_texts = Vec::new();
+    collect_text_fragments(lines.last().unwrap(), &mut last_texts);
+    assert!(
+      last_texts.iter().any(|t| t.contains('…')),
+      "expected an ellipsis marker on the clamped edge"
+    );
+    assert!(
+      last_texts
+        .iter()
+        .any(|t| !t.trim().is_empty() && t.trim() != "…"),
+      "expected last line to retain some non-ellipsis text content"
     );
   }
 

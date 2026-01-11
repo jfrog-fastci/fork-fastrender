@@ -6813,6 +6813,62 @@ mod tests {
     });
   }
 
+  #[test]
+  fn bookkeeping_anchors_do_not_create_empty_wrapped_lines() {
+    // Regresses: a collapsible trailing space that doesn't fit can be wrapped onto its own line,
+    // then trimmed away, leaving only bookkeeping static-position anchors. Such anchor-only lines
+    // must not contribute line box height (they otherwise inflate the element's height).
+    let mut builder = make_builder(50.0);
+    builder
+      .add_item(InlineItem::Text(make_text_item("Hello", 50.0)))
+      .unwrap();
+    builder
+      .add_item(InlineItem::Text(make_text_item(" ", 5.0)))
+      .unwrap();
+    builder
+      .add_item(InlineItem::StaticPositionAnchor(StaticPositionAnchor::new(
+        1,
+        Direction::Ltr,
+        UnicodeBidi::Normal,
+      )))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    // Any line that contains only bookkeeping items (static-position anchors / floats) must not
+    // advance the block cursor.
+    for line in &lines {
+      let bookkeeping_only = !line.items.is_empty()
+        && line.items.iter().all(|p| {
+          matches!(
+            p.item,
+            InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
+          )
+        });
+      if bookkeeping_only {
+        assert_eq!(line.height, 0.0, "unexpected bookkeeping-only line: {line:#?}");
+      }
+    }
+    assert_eq!(
+      lines.iter().filter(|line| line.height > 0.0).count(),
+      1,
+      "expected exactly one non-zero-height line: {lines:#?}"
+    );
+    assert_eq!(
+      lines
+        .iter()
+        .flat_map(|line| line.items.iter())
+        .filter(|p| matches!(p.item, InlineItem::StaticPositionAnchor(_)))
+        .count(),
+      1
+    );
+    let flattened: String = lines
+      .iter()
+      .flat_map(|line| line.items.iter())
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    assert_eq!(flattened, format!("Hello\u{FFFC}"));
+  }
+
   fn pipeline_dir_from_style(dir: Direction) -> crate::text::pipeline::Direction {
     match dir {
       Direction::Ltr => crate::text::pipeline::Direction::LeftToRight,

@@ -1054,30 +1054,30 @@ fn collect_flex_lines<'a>(
           // Find index of the first item in the next line
           // (or the last item if all remaining items are in the current line)
           let mut line_length = 0.0;
-          let index = flex_items
-            .iter()
-            .enumerate()
-            .find(|&(idx, child)| {
-              // Gaps only occur between items (not before the first one or after the last one)
-              // So first item in the line does not contribute a gap to the line length
-               let gap_contribution = if idx == 0 { 0.0 } else { main_axis_gap };
-               line_length += child.hypothetical_outer_size.main(constants.dir) + gap_contribution;
-               // Taffy rounds final layouts to integer pixels by default (`TaffyConfig::use_rounding`).
-               // Flex line-breaking, however, happens on the unrounded sizes. This can cause a line to
-               // wrap even though the post-rounding layout would fit without overflow (e.g. text
-               // widths with small subpixel advances).
-               //
-               // Compare the rounded cumulative line length against the rounded available space so
-               // line-breaking decisions remain consistent with the final pixel-snapped layout.
-               let exceeds = if line_length.is_finite() && main_axis_available_space.is_finite() {
-                 round(line_length) > round(main_axis_available_space)
-               } else {
-                 line_length > main_axis_available_space
-               };
-               exceeds && idx != 0
-             })
-             .map(|(idx, _)| idx)
-             .unwrap_or(flex_items.len());
+            let index = flex_items
+              .iter()
+              .enumerate()
+              .find(|&(idx, child)| {
+                // Gaps only occur between items (not before the first one or after the last one)
+                // So first item in the line does not contribute a gap to the line length
+                let gap_contribution = if idx == 0 { 0.0 } else { main_axis_gap };
+                line_length += child.hypothetical_outer_size.main(constants.dir) + gap_contribution;
+                // Taffy rounds final layouts to integer pixels by default (`TaffyConfig::use_rounding`).
+                // Flex line-breaking, however, happens on the unrounded sizes. This can cause a line to
+                // wrap even though the post-rounding layout would fit without overflow (e.g. text
+                // widths with small subpixel advances).
+                //
+                // Compare the rounded cumulative line length against the rounded available space so
+                // line-breaking decisions remain consistent with the final pixel-snapped layout.
+                let exceeds = if line_length.is_finite() && main_axis_available_space.is_finite() {
+                  round(line_length) > round(main_axis_available_space)
+                } else {
+                  line_length > main_axis_available_space
+                };
+                exceeds && idx != 0
+              })
+              .map(|(idx, _)| idx)
+              .unwrap_or(flex_items.len());
 
           let (items, rest) = flex_items.split_at_mut(index);
           lines.push(FlexLine {

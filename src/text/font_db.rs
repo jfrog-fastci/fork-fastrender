@@ -1844,6 +1844,10 @@ impl FontDatabase {
     const SERIF: &[&str] = &["STIX Two Math", "FastRender Serif", "Noto Serif"];
     const MONO: &[&str] = &["Noto Sans Mono"];
 
+    if family.eq_ignore_ascii_case("liberation sans") {
+      return Some(SANS);
+    }
+
     if family.eq_ignore_ascii_case("helvetica")
       || family.eq_ignore_ascii_case("helveticaneue")
       || family.eq_ignore_ascii_case("helvetica neue")
@@ -3209,6 +3213,12 @@ mod tests {
     let id = db
       .query("Arial", FontWeight::NORMAL, FontStyle::Normal)
       .expect("expected Arial to alias to a bundled sans-serif");
+    let font = db.load_font(id).expect("expected aliased font to load");
+    assert_eq!(font.family, "Roboto Flex");
+
+    let id = db
+      .query("Liberation Sans", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("expected Liberation Sans to alias to a bundled sans-serif");
     let font = db.load_font(id).expect("expected aliased font to load");
     assert_eq!(font.family, "Roboto Flex");
 
