@@ -79,6 +79,43 @@ define void @f(...) gc "coreclr" { ... }
 
 ---
 
+## Safepoint poll insertion (cooperative GC progress)
+
+LLVM statepoint rewriting (`rewrite-statepoints-for-gc`) only rewrites *existing* calls; it does **not**
+create new safepoints. For a stop-the-world moving GC, relying only on call sites is insufficient: a
+tight loop with no calls can prevent a mutator thread from reaching a safepoint indefinitely.
+
+`native-js` therefore requires **explicit safepoint polls** in long-running call-free paths. The current
+implementation achieves this by running LLVM's `place-safepoints` pass **before**
+`rewrite-statepoints-for-gc`:
+
+```text
+function(place-safepoints),rewrite-statepoints-for-gc
+```
+
+This inserts calls to:
+
+```llvm
+declare void @gc.safepoint_poll()
+```
+
+at:
+
+- function entry, and
+- loop backedges (including counted loops; `native-js` enables `--spp-all-backedges`).
+
+Those poll calls are then rewritten into `llvm.experimental.gc.statepoint.*` intrinsics, so LLVM emits
+stackmap records at the poll PCs and `gc.relocate` for any live `ptr addrspace(1)` values across the poll.
+
+### Runtime contract for `gc.safepoint_poll`
+
+The runtime must provide a symbol named `gc.safepoint_poll` compatible with `void ()`. In this repo,
+`runtime-native` exports `gc.safepoint_poll` and implements it by calling `rt_gc_safepoint()` (fast path:
+check a global epoch flag and return; slow path: publish the thread's safepoint context and park until
+GC completes).
+
+---
+
 ## Required IR pattern: `gc.statepoint` (LLVM 18)
 
 ### Canonical intrinsic declaration

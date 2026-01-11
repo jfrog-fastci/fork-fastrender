@@ -23,6 +23,10 @@ the `gc.safepoint_poll` declaration itself.
   ```bash
   opt-18 -S -passes='function(place-safepoints),rewrite-statepoints-for-gc' ...
   ```
+- **Counted loops:** by default, `place-safepoints` may insert only an entry poll
+  for some loops with a compile-time known trip count. Use `--spp-all-backedges`
+  to force backedge poll insertion even for counted loops. `native-js` enables
+  this flag via `native_js::llvm::init_native_target`.
 - **Performance note:** the default `place-safepoints` scheme inserts poll
   *calls* which become statepoints (stack map emission) after
   `rewrite-statepoints-for-gc`. If we want the “~1 instruction when GC inactive”

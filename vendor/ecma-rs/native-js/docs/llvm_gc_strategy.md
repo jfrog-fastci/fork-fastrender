@@ -67,6 +67,10 @@ declare void @gc.safepoint_poll()
 `function(place-safepoints),rewrite-statepoints-for-gc` (see
 `vendor/ecma-rs/docs/llvm_place_safepoints_llvm18.md` for repro details).
 
+By default, `place-safepoints` may insert only an entry poll for some *counted* loops (compile-time
+trip counts). `native-js` configures LLVM with `--spp-all-backedges` (via
+`native_js::llvm::init_native_target`) so counted loops also get backedge polls.
+
 For lower overhead than a poll call at every backedge, `native-js` also supports emitting explicit
 fast-poll IR (load+branch / leaf poll) and only calling into the runtime on the slow path; see
 `native-js/src/codegen/safepoint.rs`.
