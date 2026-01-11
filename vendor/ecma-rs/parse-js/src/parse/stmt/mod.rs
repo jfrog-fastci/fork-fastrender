@@ -462,7 +462,14 @@ impl<'a> Parser<'a> {
   }
 
   pub fn debugger_stmt(&mut self) -> SyntaxResult<Node<DebuggerStmt>> {
-    self.with_loc(|p| p.require(TT::KeywordDebugger).map(|_| DebuggerStmt {}))
+    self.with_loc(|p| {
+      p.require(TT::KeywordDebugger)?;
+      // `debugger` statements may include an explicit semicolon terminator, but
+      // also participate in ASI rules. Consume the semicolon when present so
+      // `debugger;` does not produce a trailing empty statement node.
+      let _ = p.consume_if(TT::Semicolon);
+      Ok(DebuggerStmt {})
+    })
   }
 
   // WARNING: Do not reuse this functions for other statements, as this will output a statement node, not an expression, which can lead to double semicolons that cause invalid code when outputting.

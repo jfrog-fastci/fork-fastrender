@@ -729,6 +729,21 @@ pub struct Expr {
   pub kind: ExprKind,
 }
 
+#[cfg(feature = "semantic-ops")]
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArrayChainOp {
+  Map(ExprId),
+  Filter(ExprId),
+  Reduce(ExprId, Option<ExprId>),
+  Find(ExprId),
+  Every(ExprId),
+  Some(ExprId),
+}
+
+#[cfg(feature = "semantic-ops")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ApiId(pub u32);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
   Missing,
@@ -805,6 +820,60 @@ pub enum ExprKind {
   },
   ImportMeta,
   NewTarget,
+  #[cfg(feature = "semantic-ops")]
+  ArrayMap {
+    array: ExprId,
+    callback: ExprId,
+  },
+  #[cfg(feature = "semantic-ops")]
+  ArrayFilter {
+    array: ExprId,
+    callback: ExprId,
+  },
+  #[cfg(feature = "semantic-ops")]
+  ArrayReduce {
+    array: ExprId,
+    callback: ExprId,
+    init: Option<ExprId>,
+  },
+  #[cfg(feature = "semantic-ops")]
+  ArrayFind {
+    array: ExprId,
+    callback: ExprId,
+  },
+  #[cfg(feature = "semantic-ops")]
+  ArrayEvery {
+    array: ExprId,
+    callback: ExprId,
+  },
+  #[cfg(feature = "semantic-ops")]
+  ArraySome {
+    array: ExprId,
+    callback: ExprId,
+  },
+  #[cfg(feature = "semantic-ops")]
+  ArrayChain {
+    array: ExprId,
+    ops: Vec<ArrayChainOp>,
+  },
+  #[cfg(feature = "semantic-ops")]
+  PromiseAll {
+    promises: Vec<ExprId>,
+  },
+  #[cfg(feature = "semantic-ops")]
+  PromiseRace {
+    promises: Vec<ExprId>,
+  },
+  #[cfg(feature = "semantic-ops")]
+  AwaitExpr {
+    value: ExprId,
+    known_resolved: bool,
+  },
+  #[cfg(feature = "semantic-ops")]
+  KnownApiCall {
+    api: ApiId,
+    args: Vec<ExprId>,
+  },
   Jsx(JsxElement),
 }
 

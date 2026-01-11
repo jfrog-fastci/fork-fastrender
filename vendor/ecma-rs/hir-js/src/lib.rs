@@ -33,6 +33,10 @@ pub mod span_map;
 use diagnostics::FileId;
 pub use hir::ArrayElement;
 pub use hir::ArrayLiteral;
+#[cfg(feature = "semantic-ops")]
+pub use hir::ArrayChainOp;
+#[cfg(feature = "semantic-ops")]
+pub use hir::ApiId;
 pub use hir::ArrayPat;
 pub use hir::ArrayPatElement;
 pub use hir::AssignOp;

@@ -18,4 +18,5 @@ proptest = { workspace = true }
 [features]
 default = []
 fuzzing = []
+semantic-ops = []
 serde = ["dep:serde"]
