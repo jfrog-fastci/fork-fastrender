@@ -44,7 +44,7 @@ fn take_sequence<'a>(
         if out.len() >= rt.limits().max_sequence_length {
           return Err(rt.throw_range_error("sequence exceeds maximum length"));
         }
-        let s = rt.to_string(next)?;
+        let s = rt.to_string(host, next)?;
         out.push(rt.js_string_to_rust_string(s)?);
       }
       Ok(out)

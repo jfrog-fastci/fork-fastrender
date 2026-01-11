@@ -115,7 +115,7 @@ pub mod window {
       rt.js_undefined()
     };
     let converted = {
-      let s = rt.to_string(v0)?;
+      let s = rt.to_string(host, v0)?;
       BindingValue::String(rt.js_string_to_rust_string(s)?)
     };
     host.set_attribute(rt, Some(this), "Foo", "href", converted)?;

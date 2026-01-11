@@ -153,7 +153,7 @@ where
     }
     rt.with_stack_roots(&[v0], |rt| {
       let iterator_key = rt.symbol_iterator()?;
-      let Some(method) = rt.get_method(v0, iterator_key)? else {
+      let Some(method) = rt.get_method(host, v0, iterator_key)? else {
         return Err(rt.throw_type_error("sequence: object is not iterable"));
       };
       let mut iterator_record = rt.get_iterator_from_method(host, v0, method)?;
@@ -164,7 +164,7 @@ where
             return Err(rt.throw_range_error("sequence exceeds maximum length"));
           }
           let converted =
-            rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(next)?)))?;
+            rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(host, next)?)))?;
           values.push(converted);
         }
         Ok(BindingValue::Sequence(values))
@@ -196,7 +196,7 @@ where
     }
     rt.with_stack_roots(&[v0], |rt| {
       let iterator_key = rt.symbol_iterator()?;
-      let Some(method) = rt.get_method(v0, iterator_key)? else {
+      let Some(method) = rt.get_method(host, v0, iterator_key)? else {
         return Err(rt.throw_type_error("FrozenArray: object is not iterable"));
       };
       let mut iterator_record = rt.get_iterator_from_method(host, v0, method)?;
@@ -207,7 +207,7 @@ where
             return Err(rt.throw_range_error("FrozenArray exceeds maximum length"));
           }
           let converted =
-            rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(next)?)))?;
+            rt.with_stack_roots(&[next], |rt| Ok(BindingValue::Number(rt.to_number(host, next)?)))?;
           values.push(converted);
         }
         Ok(BindingValue::FrozenArray(values))

@@ -109,8 +109,8 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   fn to_object(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
 
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error>;
-  fn to_number(&mut self, value: Self::JsValue) -> Result<f64, Self::Error>;
-  fn to_string(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
+  fn to_number(&mut self, host: &mut Host, value: Self::JsValue) -> Result<f64, Self::Error>;
+  fn to_string(&mut self, host: &mut Host, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
 
   fn throw_type_error(&mut self, message: &str) -> Self::Error;
   fn throw_range_error(&mut self, message: &str) -> Self::Error;
@@ -124,7 +124,12 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   /// Return the property key for `%Symbol.asyncIterator%` in the active realm.
   fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
 
-  fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error>;
+  fn get(
+    &mut self,
+    host: &mut Host,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error>;
 
   /// Returns the receiver's own property keys (both String and Symbol keys).
   fn own_property_keys(&mut self, obj: Self::JsValue) -> Result<Vec<Self::PropertyKey>, Self::Error>;
@@ -159,6 +164,7 @@ pub trait WebIdlBindingsRuntime<Host>: Sized {
   /// ECMAScript abstract operation `GetMethod ( V, P )`.
   fn get_method(
     &mut self,
+    host: &mut Host,
     obj: Self::JsValue,
     key: Self::PropertyKey,
   ) -> Result<Option<Self::JsValue>, Self::Error>;
@@ -439,6 +445,7 @@ impl<Host> VmJsWebIdlBindingsState<Host> {
 pub struct VmJsWebIdlBindingsCx<'a, Host> {
   state: &'a VmJsWebIdlBindingsState<Host>,
   cx: webidl_vm_js::VmJsWebIdlCx<'a>,
+  vm_host_hooks: Option<&'a mut dyn VmHostHooks>,
   cached_next_key: Option<PropertyKey>,
   cached_done_key: Option<PropertyKey>,
   cached_value_key: Option<PropertyKey>,
@@ -462,6 +469,7 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
     Self {
       state,
       cx,
+      vm_host_hooks: None,
       cached_next_key: None,
       cached_done_key: None,
       cached_value_key: None,
@@ -477,6 +485,7 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
     Self {
       state,
       cx,
+      vm_host_hooks: None,
       cached_next_key: None,
       cached_done_key: None,
       cached_value_key: None,
@@ -486,48 +495,14 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
   pub fn from_native_call(
     vm: &'a mut Vm,
     scope: &'a mut Scope<'_>,
-    host: &'a mut dyn VmHost,
     hooks: &'a mut dyn VmHostHooks,
     state: &'a VmJsWebIdlBindingsState<Host>,
   ) -> Self {
-    let cx = webidl_vm_js::VmJsWebIdlCx::from_native_call(
-      vm,
-      scope,
-      host,
-      hooks,
-      state.limits,
-      state.hooks.as_ref(),
-    );
+    let cx = webidl_vm_js::VmJsWebIdlCx::new_in_scope(vm, scope, state.limits, state.hooks.as_ref());
     Self {
       state,
       cx,
-      cached_next_key: None,
-      cached_done_key: None,
-      cached_value_key: None,
-    }
-  }
-
-  unsafe fn from_native_call_unchecked(
-    vm: &'a mut Vm,
-    scope: &'a mut Scope<'_>,
-    host: &mut Host,
-    hooks: &mut dyn VmHostHooks,
-    state: &'a VmJsWebIdlBindingsState<Host>,
-  ) -> Self
-  where
-    Host: 'static,
-  {
-    let cx = webidl_vm_js::VmJsWebIdlCx::from_native_call_unchecked(
-      vm,
-      scope,
-      host,
-      hooks,
-      state.limits,
-      state.hooks.as_ref(),
-    );
-    Self {
-      state,
-      cx,
+      vm_host_hooks: Some(hooks),
       cached_next_key: None,
       cached_done_key: None,
       cached_value_key: None,
@@ -643,22 +618,16 @@ fn dispatch_native_call<Host: 'static>(
     ));
   }
 
-  // `VmJsWebIdlCx::from_native_call` needs access to the active embedder `VmHost` and `VmHostHooks`
-  // so WebIDL conversions can call back into JS without falling back to dummy-host execution.
+  // WebIDL conversions like `ToNumber` can call back into JS (e.g. `valueOf()`), so nested calls
+  // must observe the real embedder host context + hooks.
   //
-  // We also need to pass the host context to the host function body as `&mut Host`.
-  //
-  // `vm-js` native handlers give us `&mut dyn VmHost`; we downcast it to `&mut Host`. Building a
-  // WebIDL conversion context also needs to be able to call back into JS using the same host
-  // context + hooks. Use the `*_unchecked` constructor so we can store raw pointers without
-  // borrowing `host`/`hooks` for the entire lifetime of `rt` (the host function callback needs
-  // `&mut Host`).
+  // Soundness: we downcast `host` to `&mut Host` and pass it to the host function body. The
+  // `VmJsWebIdlBindingsCx` does **not** store a `&mut dyn VmHost`; instead JS-calling runtime
+  // methods (`to_number`, `to_string`, `get`, `get_method`) take `&mut Host` explicitly and reborrow
+  // it for the duration of the nested JS call. This avoids having two aliasing `&mut` references to
+  // the same host object live at once.
   let host = host_from_vm_host::<Host>(host)?;
-  // SAFETY: The WebIDL conversion context stores raw pointers to `host`/`hooks`. Nested JS calls
-  // made by conversions (e.g. `ToPrimitive`/`ToNumber`) reborrow `host` and `hooks` via those
-  // pointers, and the host function body is suspended while that JS runs (no concurrent mutable
-  // access).
-  let mut rt = unsafe { VmJsWebIdlBindingsCx::from_native_call_unchecked(vm, scope, host, hooks, state) };
+  let mut rt = VmJsWebIdlBindingsCx::from_native_call(vm, scope, hooks, state);
 
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
@@ -721,11 +690,16 @@ fn dispatch_native_construct<Host: 'static>(
   let obj = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(obj))?;
 
-  // See `dispatch_native_call` for why we use the `*_unchecked` constructor here.
+  // WebIDL conversions like `ToNumber` can call back into JS (e.g. `valueOf()`), so nested calls
+  // must observe the real embedder host context + hooks.
+  //
+  // Soundness: we downcast `host` to `&mut Host` and pass it to the host function body. The
+  // `VmJsWebIdlBindingsCx` does **not** store a `&mut dyn VmHost`; instead JS-calling runtime
+  // methods (`to_number`, `to_string`, `get`, `get_method`) take `&mut Host` explicitly and reborrow
+  // it for the duration of the nested JS call. This avoids having two aliasing `&mut` references to
+  // the same host object live at once.
   let host = host_from_vm_host::<Host>(host)?;
-  // SAFETY: see `dispatch_native_call`.
-  let mut rt =
-    unsafe { VmJsWebIdlBindingsCx::from_native_call_unchecked(vm, scope, host, hooks, state) };
+  let mut rt = VmJsWebIdlBindingsCx::from_native_call(vm, scope, hooks, state);
 
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
@@ -891,12 +865,23 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     self.cx.to_boolean(value)
   }
 
-  fn to_number(&mut self, value: Self::JsValue) -> Result<f64, Self::Error> {
+  fn to_number(&mut self, host: &mut Host, value: Self::JsValue) -> Result<f64, Self::Error> {
+    if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      return self.cx.scope.to_number(&mut *self.cx.vm, host, hooks, value);
+    }
+    // No host hooks are available; fall back to dummy-host conversions.
     use webidl::JsRuntime as _;
     self.cx.to_number(value)
   }
 
-  fn to_string(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
+  fn to_string(&mut self, host: &mut Host, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
+    if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      let s = self.cx.scope.to_string(&mut *self.cx.vm, host, hooks, value)?;
+      let value = Value::String(s);
+      self.cx.scope.push_root(value)?;
+      return Ok(value);
+    }
+    // No host hooks are available; fall back to dummy-host conversions.
     use webidl::JsRuntime as _;
     let s = self.cx.to_string(value)?;
     Ok(Value::String(s))
@@ -993,22 +978,36 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
     Ok(PropertyKey::from_symbol(intr.well_known_symbols().async_iterator))
   }
 
-  fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
+  fn get(
+    &mut self,
+    host: &mut Host,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error> {
     let Value::Object(obj) = obj else {
       return Err(self.throw_type_error("get: expected object receiver"));
     };
-    // Root the receiver + key while running `[[Get]]`.
-    match key {
-      PropertyKey::String(s) => {
-        self.cx.scope.push_root(Value::String(s))?;
-      }
-      PropertyKey::Symbol(s) => {
-        self.cx.scope.push_root(Value::Symbol(s))?;
-      }
-    }
-    self.cx.scope.push_root(Value::Object(obj))?;
+    // Root the receiver + key while running `[[Get]]`: rooting can allocate/GC, so treat both as
+    // live simultaneously.
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    self.cx.scope.push_roots(&[Value::Object(obj), key_root])?;
 
-    let value = self.cx.vm.get(&mut self.cx.scope, obj, key)?;
+    let value = if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      self.cx.scope.ordinary_get_with_host_and_hooks(
+        &mut *self.cx.vm,
+        host,
+        hooks,
+        obj,
+        key,
+        Value::Object(obj),
+      )?
+    } else {
+      // Fallback to `Vm::get` when host hooks are unavailable.
+      self.cx.vm.get(&mut self.cx.scope, obj, key)?
+    };
     self.cx.scope.push_root(value)?;
     Ok(value)
   }
@@ -1068,10 +1067,11 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
 
   fn get_method(
     &mut self,
+    host: &mut Host,
     obj: Self::JsValue,
     key: Self::PropertyKey,
   ) -> Result<Option<Self::JsValue>, Self::Error> {
-    let func = self.get(obj, key)?;
+    let func = self.get(host, obj, key)?;
     if matches!(func, Value::Undefined | Value::Null) {
       return Ok(None);
     }
@@ -1096,8 +1096,8 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       if let Ok(intr) = rt.intrinsics() {
         if rt.cx.scope.heap().object_prototype(obj)? == Some(intr.array_prototype()) {
           let length_key = rt.property_key("length")?;
-          let len_value = rt.get(iterable, length_key)?;
-          let len = rt.to_number(len_value)?;
+          let len_value = rt.get(host, iterable, length_key)?;
+          let len = rt.to_number(host, len_value)?;
           if !len.is_finite() || len < 0.0 {
             return Err(rt.throw_type_error(
               "GetIterator: array length is not a non-negative finite number",
@@ -1118,7 +1118,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       }
 
       let iterator_key = rt.symbol_iterator()?;
-      let Some(method) = rt.get_method(iterable, iterator_key)? else {
+      let Some(method) = rt.get_method(host, iterable, iterator_key)? else {
         return Err(rt.throw_type_error("GetIterator: value is not iterable"));
       };
       rt.get_iterator_from_method(host, iterable, method)
@@ -1138,7 +1138,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
 
     self.with_stack_roots(&[iterator], |rt| {
       let next_key = rt.property_key("next")?;
-      let next = rt.get(iterator, next_key)?;
+      let next = rt.get(host, iterator, next_key)?;
       if !rt.cx.scope.heap().is_callable(next)? {
         return Err(rt.throw_type_error("Iterator.next is not callable"));
       }
@@ -1175,7 +1175,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
         self.with_stack_roots(&[*array], |rt| {
           let key_s = rt.cx.scope.alloc_string(&idx.to_string())?;
           let key = PropertyKey::from_string(key_s);
-          let value = rt.get(*array, key)?;
+          let value = rt.get(host, *array, key)?;
           Ok(Some(value))
         })
       }
@@ -1192,7 +1192,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
 
         self.with_stack_roots(&[result], |rt| {
           let done_key = rt.property_key("done")?;
-          let done = rt.get(result, done_key)?;
+          let done = rt.get(host, result, done_key)?;
           let done = rt.to_boolean(done)?;
           if done {
             iterator_record.done = true;
@@ -1200,7 +1200,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
           }
 
           let value_key = rt.property_key("value")?;
-          let value = rt.get(result, value_key)?;
+          let value = rt.get(host, result, value_key)?;
           Ok(Some(value))
         })
       }
@@ -1625,11 +1625,11 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::to_boolean(self, value)
   }
 
-  fn to_number(&mut self, value: Self::JsValue) -> Result<f64, Self::Error> {
+  fn to_number(&mut self, _host: &mut Host, value: Self::JsValue) -> Result<f64, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::to_number(self, value)
   }
 
-  fn to_string(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
+  fn to_string(&mut self, _host: &mut Host, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::to_string(self, value)
   }
 
@@ -1737,7 +1737,12 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_async_iterator(self)
   }
 
-  fn get(&mut self, obj: Self::JsValue, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error> {
+  fn get(
+    &mut self,
+    _host: &mut Host,
+    obj: Self::JsValue,
+    key: Self::PropertyKey,
+  ) -> Result<Self::JsValue, Self::Error> {
     <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get(self, obj, key)
   }
 
@@ -1773,6 +1778,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
 
   fn get_method(
     &mut self,
+    _host: &mut Host,
     obj: Self::JsValue,
     key: Self::PropertyKey,
   ) -> Result<Option<Self::JsValue>, Self::Error> {
@@ -1969,14 +1975,14 @@ mod tests {
 
   fn add<'a>(
     rt: &mut VmJsWebIdlBindingsCx<'a, TestHost>,
-    _host: &mut TestHost,
+    host: &mut TestHost,
     _this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
     let a = args.get(0).copied().unwrap_or(Value::Undefined);
     let b = args.get(1).copied().unwrap_or(Value::Undefined);
-    let a = rt.to_number(a)?;
-    let b = rt.to_number(b)?;
+    let a = rt.to_number(host, a)?;
+    let b = rt.to_number(host, b)?;
     Ok(rt.js_number(a + b))
   }
 

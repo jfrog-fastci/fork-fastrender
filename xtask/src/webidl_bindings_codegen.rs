@@ -2588,7 +2588,7 @@ fn write_dictionary_converter(
 
     out.push_str("  {\n");
     out.push_str(&format!(
-      "    let js_member_value = if is_missing {{\n      rt.js_undefined()\n    }} else {{\n      let key = rt.property_key({name_lit})?;\n      rt.get(value, key)?\n    }};\n",
+      "    let js_member_value = if is_missing {{\n      rt.js_undefined()\n    }} else {{\n      let key = rt.property_key({name_lit})?;\n      rt.get(host, value, key)?\n    }};\n",
       name_lit = rust_string_literal(&member_name)
     ));
 
@@ -2776,42 +2776,42 @@ fn emit_conversion_expr_ir_inner(
       };
       match n {
         IrNumericType::Byte => Ok(format!(
-          "BindingValue::Number(conversions::to_byte(rt, {value_ident}, {int_attrs})? as f64)",
+          "BindingValue::Number(conversions::to_byte(rt, host, {value_ident}, {int_attrs})? as f64)",
           value_ident = value_ident,
           int_attrs = int_attrs.clone(),
         )),
         IrNumericType::Octet => Ok(format!(
-          "BindingValue::Number(conversions::to_octet(rt, {value_ident}, {int_attrs})? as f64)",
+          "BindingValue::Number(conversions::to_octet(rt, host, {value_ident}, {int_attrs})? as f64)",
           value_ident = value_ident,
           int_attrs = int_attrs.clone(),
         )),
         IrNumericType::Short => Ok(format!(
-          "BindingValue::Number(conversions::to_short(rt, {value_ident}, {int_attrs})? as f64)",
+          "BindingValue::Number(conversions::to_short(rt, host, {value_ident}, {int_attrs})? as f64)",
           value_ident = value_ident,
           int_attrs = int_attrs.clone(),
         )),
         IrNumericType::UnsignedShort => Ok(format!(
-          "BindingValue::Number(conversions::to_unsigned_short(rt, {value_ident}, {int_attrs})? as f64)",
+          "BindingValue::Number(conversions::to_unsigned_short(rt, host, {value_ident}, {int_attrs})? as f64)",
           value_ident = value_ident,
           int_attrs = int_attrs.clone(),
         )),
         IrNumericType::Long => Ok(format!(
-          "BindingValue::Number(conversions::to_long(rt, {value_ident}, {int_attrs})? as f64)",
+          "BindingValue::Number(conversions::to_long(rt, host, {value_ident}, {int_attrs})? as f64)",
           value_ident = value_ident,
           int_attrs = int_attrs.clone(),
         )),
         IrNumericType::UnsignedLong => Ok(format!(
-          "BindingValue::Number(conversions::to_unsigned_long(rt, {value_ident}, {int_attrs})? as f64)",
+          "BindingValue::Number(conversions::to_unsigned_long(rt, host, {value_ident}, {int_attrs})? as f64)",
           value_ident = value_ident,
           int_attrs = int_attrs.clone(),
         )),
         IrNumericType::LongLong => Ok(format!(
-          "BindingValue::Number(conversions::to_long_long(rt, {value_ident}, {int_attrs})? as f64)",
+          "BindingValue::Number(conversions::to_long_long(rt, host, {value_ident}, {int_attrs})? as f64)",
           value_ident = value_ident,
           int_attrs = int_attrs.clone(),
         )),
         IrNumericType::UnsignedLongLong => Ok(format!(
-          "BindingValue::Number(conversions::to_unsigned_long_long(rt, {value_ident}, {int_attrs})? as f64)",
+          "BindingValue::Number(conversions::to_unsigned_long_long(rt, host, {value_ident}, {int_attrs})? as f64)",
           value_ident = value_ident,
           int_attrs = int_attrs,
         )),
@@ -2820,7 +2820,7 @@ fn emit_conversion_expr_ir_inner(
             bail!("[Clamp]/[EnforceRange] annotations only apply to integer numeric types");
           }
           Ok(format!(
-            "BindingValue::Number(conversions::to_float(rt, {value_ident})? as f64)",
+            "BindingValue::Number(conversions::to_float(rt, host, {value_ident})? as f64)",
             value_ident = value_ident
           ))
         }
@@ -2829,7 +2829,7 @@ fn emit_conversion_expr_ir_inner(
             bail!("[Clamp]/[EnforceRange] annotations only apply to integer numeric types");
           }
           Ok(format!(
-            "BindingValue::Number(conversions::to_unrestricted_float(rt, {value_ident})? as f64)",
+            "BindingValue::Number(conversions::to_unrestricted_float(rt, host, {value_ident})? as f64)",
             value_ident = value_ident
           ))
         }
@@ -2838,7 +2838,7 @@ fn emit_conversion_expr_ir_inner(
             bail!("[Clamp]/[EnforceRange] annotations only apply to integer numeric types");
           }
           Ok(format!(
-            "BindingValue::Number(conversions::to_double(rt, {value_ident})?)",
+            "BindingValue::Number(conversions::to_double(rt, host, {value_ident})?)",
             value_ident = value_ident
           ))
         }
@@ -2847,7 +2847,7 @@ fn emit_conversion_expr_ir_inner(
             bail!("[Clamp]/[EnforceRange] annotations only apply to integer numeric types");
           }
           Ok(format!(
-            "BindingValue::Number(conversions::to_unrestricted_double(rt, {value_ident})?)",
+            "BindingValue::Number(conversions::to_unrestricted_double(rt, host, {value_ident})?)",
             value_ident = value_ident
           ))
         }
@@ -2864,7 +2864,7 @@ fn emit_conversion_expr_ir_inner(
         bail!("[Clamp]/[EnforceRange] annotations cannot apply to string types");
       }
       let base = format!(
-        "{{ let s = rt.to_string({value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}",
+        "{{ let s = rt.to_string(host, {value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}",
         value_ident = value_ident
       );
       if state.legacy_null_to_empty_string {
@@ -2903,7 +2903,7 @@ fn emit_conversion_expr_ir_inner(
             .collect::<Vec<_>>()
             .join(", ");
           Ok(format!(
-            "BindingValue::String(conversions::to_enum::<Host, R>(rt, {value_ident}, {enum_name}, &[{allowed_lit}])?)",
+            "BindingValue::String(conversions::to_enum::<Host, R>(rt, host, {value_ident}, {enum_name}, &[{allowed_lit}])?)",
             value_ident = value_ident,
             enum_name = rust_string_literal(&named.name),
             allowed_lit = allowed_lit,
@@ -3231,7 +3231,7 @@ fn emit_union_conversion_expr_ir(
   out.push_str(" else if rt.is_object(v) {\n");
   if let Some(seq_expr) = &seq_expr {
     out.push_str(
-      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(v, iterator_key)?.is_some() || rt.is_array(v)?\n    };\n",
+      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(host, v, iterator_key)?.is_some() || rt.is_array(v)?\n    };\n",
     );
     out.push_str("    if has_iter {\n      ");
     out.push_str(seq_expr);
@@ -3336,7 +3336,7 @@ fn emit_iterable_list_conversion_expr_ir(
   }}
   rt.with_stack_roots(&[{value_ident}], |rt| {{
     let iterator_key = rt.symbol_iterator()?;
-    let Some(method) = rt.get_method({value_ident}, iterator_key)? else {{
+    let Some(method) = rt.get_method(host, {value_ident}, iterator_key)? else {{
       return Err(rt.throw_type_error("{kind_label}: object is not iterable"));
     }};
     let mut iterator_record = rt.get_iterator_from_method(host, {value_ident}, method)?;
@@ -4204,7 +4204,7 @@ fn write_operation_wrapper(
 
     // 6. Async sequence fast-path (iterable object with @@asyncIterator or @@iterator).
     if let Some(oidx) = async_sequence_candidate {
-      let cond = "rt.is_object(v) && {\n        let async_iter = rt.symbol_async_iterator()?;\n        let iter = rt.symbol_iterator()?;\n        let mut m = rt.get_method(v, async_iter)?;\n        if m.is_none() {\n          m = rt.get_method(v, iter)?;\n        }\n        m.is_some()\n      }"
+      let cond = "rt.is_object(v) && {\n        let async_iter = rt.symbol_async_iterator()?;\n        let iter = rt.symbol_iterator()?;\n        let mut m = rt.get_method(host, v, async_iter)?;\n        if m.is_none() {\n          m = rt.get_method(host, v, iter)?;\n        }\n        m.is_some()\n      }"
         .replace('\t', "  ");
       if if_chain.is_empty() {
         if_chain.push_str(&format!("      if {cond} {{\n"));
@@ -4217,7 +4217,7 @@ fn write_operation_wrapper(
 
     // 7. Sequence fast-path (iterable object with @@iterator).
     if let Some(oidx) = sequence_candidate {
-      let cond = "rt.is_object(v) && {\n        let iter = rt.symbol_iterator()?;\n        rt.get_method(v, iter)?.is_some()\n      }"
+      let cond = "rt.is_object(v) && {\n        let iter = rt.symbol_iterator()?;\n        rt.get_method(host, v, iter)?.is_some()\n      }"
         .replace('\t', "  ");
       if if_chain.is_empty() {
         if_chain.push_str(&format!("      if {cond} {{\n"));
@@ -4611,51 +4611,51 @@ fn emit_conversion_expr(
         // Avoid nested mutable borrows of `rt` by splitting `ToString` + `js_string_to_rust_string`
         // into two distinct steps.
         format!(
-          "{{ let s = rt.to_string({value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}"
+          "{{ let s = rt.to_string(host, {value_ident})?; BindingValue::String(rt.js_string_to_rust_string(s)?) }}"
         )
       }
       BuiltinType::Object => format!("BindingValue::Object({value_ident})"),
       BuiltinType::Byte => format!(
-        "BindingValue::Number(conversions::to_byte(rt, {value_ident}, {})? as f64)",
+        "BindingValue::Number(conversions::to_byte(rt, host, {value_ident}, {})? as f64)",
         emit_integer_conversion_attrs(ext_attrs)
       ),
       BuiltinType::Octet => format!(
-        "BindingValue::Number(conversions::to_octet(rt, {value_ident}, {})? as f64)",
+        "BindingValue::Number(conversions::to_octet(rt, host, {value_ident}, {})? as f64)",
         emit_integer_conversion_attrs(ext_attrs)
       ),
       BuiltinType::Short => format!(
-        "BindingValue::Number(conversions::to_short(rt, {value_ident}, {})? as f64)",
+        "BindingValue::Number(conversions::to_short(rt, host, {value_ident}, {})? as f64)",
         emit_integer_conversion_attrs(ext_attrs)
       ),
       BuiltinType::UnsignedShort => format!(
-        "BindingValue::Number(conversions::to_unsigned_short(rt, {value_ident}, {})? as f64)",
+        "BindingValue::Number(conversions::to_unsigned_short(rt, host, {value_ident}, {})? as f64)",
         emit_integer_conversion_attrs(ext_attrs)
       ),
       BuiltinType::Long => format!(
-        "BindingValue::Number(conversions::to_long(rt, {value_ident}, {})? as f64)",
+        "BindingValue::Number(conversions::to_long(rt, host, {value_ident}, {})? as f64)",
         emit_integer_conversion_attrs(ext_attrs)
       ),
       BuiltinType::UnsignedLong => format!(
-        "BindingValue::Number(conversions::to_unsigned_long(rt, {value_ident}, {})? as f64)",
+        "BindingValue::Number(conversions::to_unsigned_long(rt, host, {value_ident}, {})? as f64)",
         emit_integer_conversion_attrs(ext_attrs)
       ),
       BuiltinType::LongLong => format!(
-        "BindingValue::Number(conversions::to_long_long(rt, {value_ident}, {})? as f64)",
+        "BindingValue::Number(conversions::to_long_long(rt, host, {value_ident}, {})? as f64)",
         emit_integer_conversion_attrs(ext_attrs)
       ),
       BuiltinType::UnsignedLongLong => format!(
-        "BindingValue::Number(conversions::to_unsigned_long_long(rt, {value_ident}, {})? as f64)",
+        "BindingValue::Number(conversions::to_unsigned_long_long(rt, host, {value_ident}, {})? as f64)",
         emit_integer_conversion_attrs(ext_attrs)
       ),
       BuiltinType::Float => {
-        format!("BindingValue::Number(conversions::to_float(rt, {value_ident})? as f64)")
+        format!("BindingValue::Number(conversions::to_float(rt, host, {value_ident})? as f64)")
       }
       BuiltinType::UnrestrictedFloat => format!(
-        "BindingValue::Number(conversions::to_unrestricted_float(rt, {value_ident})? as f64)"
+        "BindingValue::Number(conversions::to_unrestricted_float(rt, host, {value_ident})? as f64)"
       ),
-      BuiltinType::Double => format!("BindingValue::Number(conversions::to_double(rt, {value_ident})?)"),
+      BuiltinType::Double => format!("BindingValue::Number(conversions::to_double(rt, host, {value_ident})?)"),
       BuiltinType::UnrestrictedDouble => {
-        format!("BindingValue::Number(conversions::to_unrestricted_double(rt, {value_ident})?)")
+        format!("BindingValue::Number(conversions::to_unrestricted_double(rt, host, {value_ident})?)")
       }
     },
     IdlType::Named(name) => {
@@ -4869,7 +4869,7 @@ fn emit_union_conversion_expr(
   out.push_str(" else if rt.is_object(v) {\n");
   if let Some(seq_expr) = &seq_expr {
     out.push_str(
-      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(v, iterator_key)?.is_some() || rt.is_array(v)?\n    };\n",
+      "    let has_iter = {\n      let iterator_key = rt.symbol_iterator()?;\n      rt.get_method(host, v, iterator_key)?.is_some() || rt.is_array(v)?\n    };\n",
     );
     out.push_str("    if has_iter {\n      ");
     out.push_str(seq_expr);
@@ -5285,7 +5285,7 @@ fn write_constructor_wrapper(
     }
 
     if let Some(oidx) = async_sequence_candidate {
-      let cond = "rt.is_object(v) && {\n        let async_iter = rt.symbol_async_iterator()?;\n        let iter = rt.symbol_iterator()?;\n        let mut m = rt.get_method(v, async_iter)?;\n        if m.is_none() {\n          m = rt.get_method(v, iter)?;\n        }\n        m.is_some()\n      }"
+      let cond = "rt.is_object(v) && {\n        let async_iter = rt.symbol_async_iterator()?;\n        let iter = rt.symbol_iterator()?;\n        let mut m = rt.get_method(host, v, async_iter)?;\n        if m.is_none() {\n          m = rt.get_method(host, v, iter)?;\n        }\n        m.is_some()\n      }"
         .replace('\t', "  ");
       if if_chain.is_empty() {
         if_chain.push_str(&format!("      if {cond} {{\n"));
@@ -5297,7 +5297,7 @@ fn write_constructor_wrapper(
     }
 
     if let Some(oidx) = sequence_candidate {
-      let cond = "rt.is_object(v) && {\n        let iter = rt.symbol_iterator()?;\n        rt.get_method(v, iter)?.is_some()\n      }"
+      let cond = "rt.is_object(v) && {\n        let iter = rt.symbol_iterator()?;\n        rt.get_method(host, v, iter)?.is_some()\n      }"
         .replace('\t', "  ");
       if if_chain.is_empty() {
         if_chain.push_str(&format!("      if {cond} {{\n"));
@@ -5653,12 +5653,10 @@ fn emit_args_len_check(args_ident: &str, required: usize, max: Option<usize>) ->
   match max {
     Some(max) => {
       if required == max {
-        if required == 0 {
-          // Avoid generating `len() >= 0` (always true) in the common range-check form.
-          format!("{args_ident}.len() == 0")
-        } else {
-          format!("{args_ident}.len() >= {required} && {args_ident}.len() <= {max}")
-        }
+        // Prefer `len() == N` when the overload has a fixed arity.
+        // This avoids `len() >= 0`-style always-true comparisons and keeps generated code easier to
+        // read.
+        format!("{args_ident}.len() == {required}")
       } else if required == 0 {
         // `len() >= 0` is always true for `usize` and triggers `unused_comparisons`.
         format!("{args_ident}.len() <= {max}")

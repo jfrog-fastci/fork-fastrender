@@ -80,7 +80,7 @@ pub mod window {
         rt.js_undefined()
       } else {
         let key = rt.property_key("capture")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
@@ -110,7 +110,7 @@ pub mod window {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let result = host.call_operation(rt, Some(this), "Foo", "baz", 0, converted_args)?;
             binding_value_to_js::<Host, R>(rt, result)
           }
@@ -118,7 +118,7 @@ pub mod window {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push(BindingValue::Number(conversions::to_long(rt, v0, conversions::IntegerConversionAttrs::default())? as f64));
+            converted_args.push(BindingValue::Number(conversions::to_long(rt, host, v0, conversions::IntegerConversionAttrs::default())? as f64));
             let result = host.call_operation(rt, Some(this), "Foo", "baz", 1, converted_args)?;
             binding_value_to_js::<Host, R>(rt, result)
           }
@@ -126,7 +126,7 @@ pub mod window {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let result = host.call_operation(rt, Some(this), "Foo", "baz", 0, converted_args)?;
             binding_value_to_js::<Host, R>(rt, result)
           }
@@ -154,7 +154,7 @@ pub mod window {
         {
           let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
           let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-          converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+          converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
           let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
           converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
           let v = v1;
@@ -181,7 +181,7 @@ pub mod window {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
             converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
             let v = v1;
@@ -205,7 +205,7 @@ pub mod window {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
             converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
             let v = v1;
@@ -229,20 +229,20 @@ pub mod window {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v1)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v1)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let result = host.call_operation(rt, Some(this), "Foo", "doThing", 2, converted_args)?;
             binding_value_to_js::<Host, R>(rt, result)
           }
         } else if rt.is_object(v) && {
           let iter = rt.symbol_iterator()?;
-          rt.get_method(v, iter)?.is_some()
+          rt.get_method(host, v, iter)?.is_some()
         } {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
             converted_args.push({
             if !rt.is_object(v1) {
@@ -256,7 +256,7 @@ pub mod window {
                   if values.len() >= rt.limits().max_sequence_length {
                     return Err(rt.throw_range_error("sequence exceeds maximum length"));
                   }
-                  let converted = rt.with_stack_roots(&[next], |rt| Ok({ let s = rt.to_string(next)?; BindingValue::String(rt.js_string_to_rust_string(s)?) }))?;
+                  let converted = rt.with_stack_roots(&[next], |rt| Ok({ let s = rt.to_string(host, next)?; BindingValue::String(rt.js_string_to_rust_string(s)?) }))?;
                   values.push(converted);
                 }
                 Ok(BindingValue::Sequence(values))
@@ -270,7 +270,7 @@ pub mod window {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
             converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
             let v = v1;
@@ -294,7 +294,7 @@ pub mod window {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
             converted_args.push(if rt.is_undefined(v1) { js_to_dict_foo_options::<Host, R>(rt, host, v1)? } else { {
             let v = v1;
@@ -318,9 +318,9 @@ pub mod window {
           {
             let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
             let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let v1 = if args.len() > 1 { args[1] } else { rt.js_undefined() };
-            converted_args.push({ let s = rt.to_string(v1)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+            converted_args.push({ let s = rt.to_string(host, v1)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
             let result = host.call_operation(rt, Some(this), "Foo", "doThing", 2, converted_args)?;
             binding_value_to_js::<Host, R>(rt, result)
           }
@@ -390,6 +390,7 @@ pub mod window {
                 let converted = rt.with_stack_roots(&[next], |rt| {
                   Ok(BindingValue::Number(conversions::to_long(
                     rt,
+                    host,
                     next,
                     conversions::IntegerConversionAttrs {
                       clamp: false,
@@ -445,6 +446,7 @@ pub mod window {
                 let converted = rt.with_stack_roots(&[next], |rt| {
                   Ok(BindingValue::Number(conversions::to_long(
                     rt,
+                    host,
                     next,
                     conversions::IntegerConversionAttrs {
                       clamp: true,

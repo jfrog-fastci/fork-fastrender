@@ -27,9 +27,9 @@ impl ConstructorHost {
   ) -> Result<Value, VmError> {
     let global = rt.global_object()?;
     let ctor_key = rt.property_key(name)?;
-    let ctor = rt.get(global, ctor_key)?;
+    let ctor = rt.get(self, global, ctor_key)?;
     let proto_key = rt.property_key("prototype")?;
-    rt.get(ctor, proto_key)
+    rt.get(self, ctor, proto_key)
   }
 }
 

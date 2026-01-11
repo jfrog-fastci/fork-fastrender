@@ -80,7 +80,7 @@ pub mod window {
         rt.js_undefined()
       } else {
         let key = rt.property_key("capture")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
@@ -94,7 +94,7 @@ pub mod window {
         rt.js_undefined()
       } else {
         let key = rt.property_key("once")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
@@ -108,7 +108,7 @@ pub mod window {
         rt.js_undefined()
       } else {
         let key = rt.property_key("passive")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
@@ -121,7 +121,7 @@ pub mod window {
         rt.js_undefined()
       } else {
         let key = rt.property_key("signal")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Object(js_member_value);
@@ -151,7 +151,7 @@ pub mod window {
         rt.js_undefined()
       } else {
         let key = rt.property_key("capture")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
@@ -182,7 +182,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -280,7 +280,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -390,7 +390,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -402,7 +402,7 @@ pub mod window {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -430,7 +430,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -442,7 +442,7 @@ pub mod window {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -489,7 +489,7 @@ pub mod window {
       rt.js_undefined()
     };
     let converted = {
-      let s = rt.to_string(v0)?;
+      let s = rt.to_string(host, v0)?;
       BindingValue::String(rt.js_string_to_rust_string(s)?)
     };
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
@@ -533,7 +533,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -545,7 +545,7 @@ pub mod window {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -573,7 +573,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -582,7 +582,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v1)?;
+        let s = rt.to_string(host, v1)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let result = host.call_operation(
@@ -616,7 +616,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -628,7 +628,7 @@ pub mod window {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -729,7 +729,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let result =
@@ -757,7 +757,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let result = host.call_operation(
@@ -791,7 +791,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -803,7 +803,7 @@ pub mod window {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -851,7 +851,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -860,7 +860,7 @@ pub mod window {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v1)?;
+        let s = rt.to_string(host, v1)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let result =
@@ -940,7 +940,7 @@ pub mod window {
           } else if rt.is_object(v) {
             let has_iter = {
               let iterator_key = rt.symbol_iterator()?;
-              rt.get_method(v, iterator_key)?.is_some() || rt.is_array(v)?
+              rt.get_method(host, v, iterator_key)?.is_some() || rt.is_array(v)?
             };
             if has_iter {
               {
@@ -978,7 +978,7 @@ pub mod window {
                                     }
                                     let converted = rt.with_stack_roots(&[next], |rt| {
                                       Ok({
-                                        let s = rt.to_string(next)?;
+                                        let s = rt.to_string(host, next)?;
                                         BindingValue::String(rt.js_string_to_rust_string(s)?)
                                       })
                                     })?;
@@ -1000,19 +1000,19 @@ pub mod window {
             } else {
               conversions::to_record(rt, host, v, |rt, host, v| {
                 Ok({
-                  let s = rt.to_string(v)?;
+                  let s = rt.to_string(host, v)?;
                   BindingValue::String(rt.js_string_to_rust_string(s)?)
                 })
               })?
             }
           } else if rt.is_string(v) || rt.is_string_object(v) {
             {
-              let s = rt.to_string(v)?;
+              let s = rt.to_string(host, v)?;
               BindingValue::String(rt.js_string_to_rust_string(s)?)
             }
           } else {
             {
-              let s = rt.to_string(v)?;
+              let s = rt.to_string(host, v)?;
               BindingValue::String(rt.js_string_to_rust_string(s)?)
             }
           }
@@ -1054,7 +1054,7 @@ pub mod window {
         {
           let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
           let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-          converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
+          converted_args.push({ let s = rt.to_string(host, v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
           let result = host.call_operation(rt, None, "Window", "alert", 1, converted_args)?;
           binding_value_to_js::<Host, R>(rt, result)
         }
@@ -1086,6 +1086,7 @@ pub mod window {
       } else {
         BindingValue::Number(conversions::to_long(
           rt,
+          host,
           v0,
           conversions::IntegerConversionAttrs::default(),
         )? as f64)
@@ -1118,6 +1119,7 @@ pub mod window {
       } else {
         BindingValue::Number(conversions::to_long(
           rt,
+          host,
           v0,
           conversions::IntegerConversionAttrs::default(),
         )? as f64)
@@ -1177,12 +1179,12 @@ pub mod window {
           return Err(rt.throw_type_error("Value is not a valid union type"));
         } else if rt.is_string(v) || rt.is_string_object(v) {
           {
-            let s = rt.to_string(v)?;
+            let s = rt.to_string(host, v)?;
             BindingValue::String(rt.js_string_to_rust_string(s)?)
           }
         } else {
           {
-            let s = rt.to_string(v)?;
+            let s = rt.to_string(host, v)?;
             BindingValue::String(rt.js_string_to_rust_string(s)?)
           }
         }
@@ -1197,6 +1199,7 @@ pub mod window {
       } else {
         BindingValue::Number(conversions::to_long(
           rt,
+          host,
           v1,
           conversions::IntegerConversionAttrs::default(),
         )? as f64)
@@ -1237,12 +1240,12 @@ pub mod window {
           return Err(rt.throw_type_error("Value is not a valid union type"));
         } else if rt.is_string(v) || rt.is_string_object(v) {
           {
-            let s = rt.to_string(v)?;
+            let s = rt.to_string(host, v)?;
             BindingValue::String(rt.js_string_to_rust_string(s)?)
           }
         } else {
           {
-            let s = rt.to_string(v)?;
+            let s = rt.to_string(host, v)?;
             BindingValue::String(rt.js_string_to_rust_string(s)?)
           }
         }
@@ -1257,6 +1260,7 @@ pub mod window {
       } else {
         BindingValue::Number(conversions::to_long(
           rt,
+          host,
           v1,
           conversions::IntegerConversionAttrs::default(),
         )? as f64)
@@ -1540,7 +1544,7 @@ pub mod worker {
         rt.js_undefined()
       } else {
         let key = rt.property_key("capture")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
@@ -1554,7 +1558,7 @@ pub mod worker {
         rt.js_undefined()
       } else {
         let key = rt.property_key("once")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
@@ -1568,7 +1572,7 @@ pub mod worker {
         rt.js_undefined()
       } else {
         let key = rt.property_key("passive")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
@@ -1581,7 +1585,7 @@ pub mod worker {
         rt.js_undefined()
       } else {
         let key = rt.property_key("signal")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Object(js_member_value);
@@ -1611,7 +1615,7 @@ pub mod worker {
         rt.js_undefined()
       } else {
         let key = rt.property_key("capture")?;
-        rt.get(value, key)?
+        rt.get(host, value, key)?
       };
       if !rt.is_undefined(js_member_value) {
         let converted = BindingValue::Bool(rt.to_boolean(js_member_value)?);
@@ -1642,7 +1646,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -1740,7 +1744,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -1850,7 +1854,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -1862,7 +1866,7 @@ pub mod worker {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -1890,7 +1894,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -1902,7 +1906,7 @@ pub mod worker {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -1949,7 +1953,7 @@ pub mod worker {
       rt.js_undefined()
     };
     let converted = {
-      let s = rt.to_string(v0)?;
+      let s = rt.to_string(host, v0)?;
       BindingValue::String(rt.js_string_to_rust_string(s)?)
     };
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
@@ -1993,7 +1997,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -2005,7 +2009,7 @@ pub mod worker {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -2033,7 +2037,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -2042,7 +2046,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v1)?;
+        let s = rt.to_string(host, v1)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let result = host.call_operation(
@@ -2076,7 +2080,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -2088,7 +2092,7 @@ pub mod worker {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -2189,7 +2193,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let result =
@@ -2217,7 +2221,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let result = host.call_operation(
@@ -2251,7 +2255,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -2263,7 +2267,7 @@ pub mod worker {
         BindingValue::Undefined
       } else {
         {
-          let s = rt.to_string(v1)?;
+          let s = rt.to_string(host, v1)?;
           BindingValue::String(rt.js_string_to_rust_string(s)?)
         }
       });
@@ -2311,7 +2315,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v0)?;
+        let s = rt.to_string(host, v0)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let v1 = if args.len() > 1 {
@@ -2320,7 +2324,7 @@ pub mod worker {
         rt.js_undefined()
       };
       converted_args.push({
-        let s = rt.to_string(v1)?;
+        let s = rt.to_string(host, v1)?;
         BindingValue::String(rt.js_string_to_rust_string(s)?)
       });
       let result =
@@ -2400,7 +2404,7 @@ pub mod worker {
           } else if rt.is_object(v) {
             let has_iter = {
               let iterator_key = rt.symbol_iterator()?;
-              rt.get_method(v, iterator_key)?.is_some() || rt.is_array(v)?
+              rt.get_method(host, v, iterator_key)?.is_some() || rt.is_array(v)?
             };
             if has_iter {
               {
@@ -2438,7 +2442,7 @@ pub mod worker {
                                     }
                                     let converted = rt.with_stack_roots(&[next], |rt| {
                                       Ok({
-                                        let s = rt.to_string(next)?;
+                                        let s = rt.to_string(host, next)?;
                                         BindingValue::String(rt.js_string_to_rust_string(s)?)
                                       })
                                     })?;
@@ -2460,19 +2464,19 @@ pub mod worker {
             } else {
               conversions::to_record(rt, host, v, |rt, host, v| {
                 Ok({
-                  let s = rt.to_string(v)?;
+                  let s = rt.to_string(host, v)?;
                   BindingValue::String(rt.js_string_to_rust_string(s)?)
                 })
               })?
             }
           } else if rt.is_string(v) || rt.is_string_object(v) {
             {
-              let s = rt.to_string(v)?;
+              let s = rt.to_string(host, v)?;
               BindingValue::String(rt.js_string_to_rust_string(s)?)
             }
           } else {
             {
-              let s = rt.to_string(v)?;
+              let s = rt.to_string(host, v)?;
               BindingValue::String(rt.js_string_to_rust_string(s)?)
             }
           }

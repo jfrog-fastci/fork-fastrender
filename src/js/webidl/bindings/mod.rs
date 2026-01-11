@@ -971,9 +971,10 @@ mod tests {
   impl AttributeAndConstHost {
     fn value_to_rust_string<'a>(
       rt: &mut VmJsWebIdlBindingsCx<'a, Self>,
+      host: &mut Self,
       value: Value,
     ) -> Result<String, VmError> {
-      let s = rt.to_string(value)?;
+      let s = rt.to_string(host, value)?;
       rt.js_string_to_rust_string(s)
     }
 
@@ -1091,7 +1092,7 @@ mod tests {
             BindingValue::Object(v) => {
               // Fallback: treat as string (legacy behaviour); union conversions should avoid this
               // branch by converting object inputs to sequence/record when appropriate.
-              let init = Self::value_to_rust_string(rt, v)?;
+              let init = Self::value_to_rust_string(rt, self, v)?;
               if init.is_empty() {
                 UrlSearchParams::new(&self.limits)
               } else {
@@ -1110,12 +1111,12 @@ mod tests {
           Ok(BindingValue::Undefined)
         }
         ("URLSearchParams", "get") => {
-          let params = self.require_params(rt, receiver)?;
           let name = match args.get(0) {
             Some(BindingValue::String(s)) => s.clone(),
-            Some(BindingValue::Object(v)) => Self::value_to_rust_string(rt, *v)?,
+            Some(BindingValue::Object(v)) => Self::value_to_rust_string(rt, self, *v)?,
             _ => String::new(),
           };
+          let params = self.require_params(rt, receiver)?;
           match params
             .get(&name)
             .map_err(|_| rt.throw_type_error("URLSearchParams.get failed"))?
@@ -1131,7 +1132,7 @@ mod tests {
 
           let href = match args.get(0) {
             Some(BindingValue::String(s)) => s.clone(),
-            Some(BindingValue::Object(v)) => Self::value_to_rust_string(rt, *v)?,
+            Some(BindingValue::Object(v)) => Self::value_to_rust_string(rt, self, *v)?,
             _ => String::new(),
           };
           self.urls.insert(WeakGcObject::from(obj_handle), href);
@@ -1195,7 +1196,7 @@ mod tests {
           };
           let href = match value {
             BindingValue::String(s) => s,
-            BindingValue::Object(v) => Self::value_to_rust_string(rt, v)?,
+            BindingValue::Object(v) => Self::value_to_rust_string(rt, self, v)?,
             _ => String::new(),
           };
           self.last_set_href = Some(href.clone());
