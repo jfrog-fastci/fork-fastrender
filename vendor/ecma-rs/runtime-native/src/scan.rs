@@ -4,6 +4,10 @@
 //! - looks up the [`crate::stackmaps::CallSite`] for a stopped thread's current PC, and
 //! - enumerates the `(base, derived)` relocation pairs corresponding to LLVM `gc.relocate` uses.
 //!
+//! Moving GCs must not treat the derived pointer as an independent root. Instead, relocate the
+//! base pointer and recompute the derived pointer relative to it (see
+//! [`crate::reloc::relocate_derived_pair`]).
+//!
 //! The key observation (LLVM 18, empirically) is that GC pointers are typically described as
 //! `Indirect [DWARF_REG + offset]` locations, where the base DWARF register is the caller-frame SP
 //! at the statepoint return address. This means the address of the spill slot is simply
@@ -41,6 +45,46 @@ pub enum ScanError {
     #[source]
     source: StatepointError,
   },
+}
+
+/// A visitor for GC root slots discovered while scanning native frames.
+pub trait RootVisitor {
+  /// Visit a plain GC root slot.
+  ///
+  /// `slot` points to a word containing either `0` (null) or a pointer to the start of a
+  /// GC-managed object.
+  fn visit_root(&mut self, slot: *mut usize);
+
+  /// Visit an LLVM `gc.relocate` (base, derived) pair.
+  ///
+  /// `base_slot` contains the base object pointer and must be treated as the GC root.
+  /// `derived_slot` is an interior pointer derived from that base.
+  ///
+  /// # Important
+  ///
+  /// Moving GCs must process this pair using [`crate::reloc::relocate_derived_pair`] (or equivalent
+  /// logic) and must not treat the derived slot as an independent root.
+  fn visit_derived_pair(&mut self, base_slot: *mut usize, derived_slot: *mut usize);
+}
+
+/// Like [`scan_reloc_pairs`], but dispatches to a [`RootVisitor`].
+///
+/// This treats relocation pairs that alias the same spill slot (`base_slot == derived_slot`) as a
+/// plain root (only one slot to update). All other pairs are reported via
+/// [`RootVisitor::visit_derived_pair`], including cases where `base == derived` but the two values
+/// are stored in distinct slots (LLVM may emit duplicates).
+pub fn scan_roots(
+  thread_ctx: &ThreadContext,
+  stackmaps: &StackMaps,
+  visitor: &mut impl RootVisitor,
+) -> Result<(), ScanError> {
+  scan_reloc_pairs(thread_ctx, stackmaps, |base_slot, derived_slot| {
+    if base_slot == derived_slot {
+      visitor.visit_root(base_slot);
+    } else {
+      visitor.visit_derived_pair(base_slot, derived_slot);
+    }
+  })
 }
 
 /// Enumerate `(base_slot, derived_slot)` relocation pairs at the current callsite.
