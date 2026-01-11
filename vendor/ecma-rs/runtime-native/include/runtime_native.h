@@ -325,6 +325,19 @@ void rt_gc_stats_snapshot(RtGcStatsSnapshot* out);
 void rt_gc_stats_reset(void);
 #endif
 
+// Expensive GC verification helpers (heap integrity checks, debug shape-table queries).
+//
+// These entrypoints are only available when `runtime-native` was built with the
+// Cargo feature `gc_debug`. Define `RUNTIME_NATIVE_GC_DEBUG` to expose them in C.
+#ifdef RUNTIME_NATIVE_GC_DEBUG
+// Return the number of shapes registered via `rt_register_shape_table`.
+size_t rt_debug_shape_count(void);
+// Return a pointer to the registered descriptor for `id`, or NULL if invalid/out-of-bounds.
+const RtShapeDescriptor* rt_debug_shape_descriptor(RtShapeId id);
+// Run expensive heap validation checks (panics on failure).
+void rt_debug_validate_heap(void);
+#endif
+
 // -----------------------------------------------------------------------------
 // Weak references (weak handles)
 // -----------------------------------------------------------------------------
