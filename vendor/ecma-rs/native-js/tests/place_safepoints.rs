@@ -214,6 +214,10 @@ fn place_safepoints_polls_are_rewritten_into_statepoints() {
     ir.contains("@RT_GC_EPOCH") && ir.contains("load atomic") && ir.contains("acquire"),
     "expected polls to be lowered into an inline RT_GC_EPOCH atomic load:\n{ir}"
   );
+  assert!(
+    ir.contains("load atomic i64, ptr @RT_GC_EPOCH acquire, align 8"),
+    "expected RT_GC_EPOCH load to be an aligned atomic acquire load:\n{ir}"
+  );
 
   // Emit an object file and validate the resulting stackmaps contain GC root slots for `%obj` at
   // every inserted poll.

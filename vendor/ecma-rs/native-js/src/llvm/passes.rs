@@ -14,8 +14,8 @@ use llvm_sys::core::{
   LLVMGetSuccessor, LLVMGetTypeKind, LLVMGetValueName2, LLVMGlobalGetValueType, LLVMInsertIntoBuilder,
   LLVMInstructionEraseFromParent, LLVMInstructionRemoveFromParent, LLVMInt64TypeInContext, LLVMIsAConstantExpr,
   LLVMIsAFunction, LLVMIsAInstruction, LLVMIsABitCastInst, LLVMIsFunctionVarArg, LLVMPositionBuilderAtEnd,
-  LLVMPositionBuilderBefore, LLVMPrintValueToString, LLVMReplaceAllUsesWith, LLVMSetInitializer, LLVMSetLinkage,
-  LLVMSetOrdering, LLVMSetTailCallKind, LLVMTypeOf, LLVMVoidTypeInContext,
+  LLVMPositionBuilderBefore, LLVMPrintValueToString, LLVMReplaceAllUsesWith, LLVMSetAlignment, LLVMSetInitializer,
+  LLVMSetLinkage, LLVMSetOrdering, LLVMSetTailCallKind, LLVMTypeOf, LLVMVoidTypeInContext,
 };
 use llvm_sys::error::{LLVMDisposeErrorMessage, LLVMGetErrorMessage};
 use llvm_sys::prelude::{LLVMBasicBlockRef, LLVMValueRef};
@@ -445,6 +445,8 @@ unsafe fn rewrite_one_safepoint_poll_call(
   LLVMPositionBuilderAtEnd(builder, check_bb);
   let epoch = LLVMBuildLoad2(builder, i64_ty, rt_gc_epoch, c_str!("gc.epoch"));
   LLVMSetOrdering(epoch, LLVMAtomicOrdering::LLVMAtomicOrderingAcquire);
+  // Ensure the atomic load is sufficiently aligned even if the module is missing a datalayout.
+  LLVMSetAlignment(epoch, 8);
 
   let one = LLVMConstInt(i64_ty, 1, 0);
   let lowbit = LLVMBuildAnd(builder, epoch, one, c_str!("gc.epoch.lowbit"));
