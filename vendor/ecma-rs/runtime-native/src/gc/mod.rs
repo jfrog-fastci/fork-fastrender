@@ -2,6 +2,7 @@ use std::mem;
 use std::slice;
 
 use crate::array;
+use crate::trap;
 
 mod young;
 pub mod heap;
@@ -23,6 +24,19 @@ pub use weak::WeakHandles;
 pub use young::YoungSpace;
 
 pub(crate) use young::YOUNG_SPACE;
+
+/// Align `value` up to the next multiple of `align` (power-of-two).
+///
+/// This is shared by a few fixed-size object layout helpers (e.g. the string
+/// interner) that need a stable, aligned `TypeDescriptor::size`.
+#[inline]
+pub(crate) fn align_up(value: usize, align: usize) -> usize {
+  debug_assert!(align.is_power_of_two());
+  value
+    .checked_add(align - 1)
+    .map(|v| v & !(align - 1))
+    .unwrap_or_else(|| trap::rt_trap_invalid_arg("align_up overflow"))
+}
 
 /// Object header that prefixes every GC-managed allocation.
 ///

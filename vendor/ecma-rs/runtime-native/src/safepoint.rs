@@ -18,7 +18,7 @@ pub fn visit_reloc_pairs(
   // Safety: stackmap-driven root enumeration inherently walks raw pointers into
   // thread stacks.
   unsafe {
-    crate::walk_gc_roots_from_fp(top_callee_fp, stackmaps, |slot_addr| {
+    crate::walk_gc_roots_from_fp(top_callee_fp, None, stackmaps, |slot_addr| {
       let slot = slot_addr as *mut *mut u8;
       // Read the current pointer value in the slot so GC can relocate it.
       let value = slot.read();
