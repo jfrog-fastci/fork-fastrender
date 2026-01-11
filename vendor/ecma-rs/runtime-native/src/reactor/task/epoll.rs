@@ -4,7 +4,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{Interest, PollOutcome};
 
@@ -278,14 +278,29 @@ impl Reactor {
   }
 
   pub fn poll(&self, timeout: Option<Duration>) -> io::Result<PollOutcome> {
-    let timeout_ms: libc::c_int = match timeout {
-      None => -1,
-      Some(dur) => duration_to_epoll_timeout_ms(dur),
-    };
-
     let mut events = vec![unsafe { std::mem::zeroed::<libc::epoll_event>() }; MAX_EPOLL_EVENTS];
 
+    let start = timeout.map(|_| Instant::now());
     let n_events = loop {
+      let timeout_ms: libc::c_int = match (timeout, start) {
+        (None, _) => -1,
+        (Some(total), Some(start)) => {
+          let remaining = total.saturating_sub(start.elapsed());
+          if remaining.is_zero() {
+            0
+          } else {
+            // Round up to avoid spuriously timing out before the requested duration.
+            let mut ms = remaining.as_millis();
+            if ms == 0 {
+              ms = 1;
+            }
+            (ms.min(libc::c_int::MAX as u128)) as libc::c_int
+          }
+        }
+        // `start` is always `Some` when `timeout` is `Some`.
+        (Some(_), None) => unreachable!(),
+      };
+
       // SAFETY: `events` is a valid, writable buffer for `events.len()` epoll_event entries.
       let res = unsafe {
         libc::epoll_wait(
@@ -297,7 +312,23 @@ impl Reactor {
       };
 
       if res >= 0 {
-        break res as usize;
+        let n = res as usize;
+        if n != 0 {
+          break n;
+        }
+
+        // Timed out. If this was a clamped per-wait chunk, keep waiting until the full timeout
+        // has elapsed.
+        match (timeout, start) {
+          (None, _) => unreachable!("epoll_wait returned 0 with infinite timeout"),
+          (Some(total), Some(start)) => {
+            if start.elapsed() >= total {
+              break 0;
+            }
+          }
+          (Some(_), None) => unreachable!(),
+        }
+        continue;
       }
 
       let err = io::Error::last_os_error();
@@ -363,18 +394,6 @@ impl Reactor {
     }
 
     Ok(outcome)
-  }
-}
-
-fn duration_to_epoll_timeout_ms(dur: Duration) -> libc::c_int {
-  if dur.is_zero() {
-    return 0;
-  }
-  let ms = dur.as_millis();
-  if ms > libc::c_int::MAX as u128 {
-    libc::c_int::MAX
-  } else {
-    ms as libc::c_int
   }
 }
 
