@@ -268,6 +268,29 @@ fn url_origin_reflects_serialized_origin() {
 }
 
 #[test]
+fn url_origin_for_opaque_and_blob_schemes() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  let url = new_url(&mut rt, global, "file:///tmp/x", None);
+  let origin = get(&mut rt, url, "origin");
+  assert_eq!(as_rust_string(&rt, origin), "null");
+
+  let url = new_url(&mut rt, global, "data:text/plain,hello", None);
+  let origin = get(&mut rt, url, "origin");
+  assert_eq!(as_rust_string(&rt, origin), "null");
+
+  let url = new_url(&mut rt, global, "blob:https://example.com/uuid", None);
+  let origin = get(&mut rt, url, "origin");
+  assert_eq!(as_rust_string(&rt, origin), "https://example.com");
+
+  let url = new_url(&mut rt, global, "blob:file:///tmp/x", None);
+  let origin = get(&mut rt, url, "origin");
+  assert_eq!(as_rust_string(&rt, origin), "null");
+}
+
+#[test]
 fn searchparams_cached_object_survives_gc() {
   let mut rt = VmJsRuntime::new();
   let global = rt.alloc_object_value().unwrap();
