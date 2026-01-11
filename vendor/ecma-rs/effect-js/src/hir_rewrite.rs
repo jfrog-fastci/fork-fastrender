@@ -135,13 +135,42 @@ fn resolve_call_api_id(
 
   // 2) Statically-known global/member path (e.g. `JSON.parse`, `Math.sqrt`, `fetch`).
   if let Some(path) = static_callee_path(lower, body, call.callee) {
+    // Only rewrite *canonical* KB names to avoid resolving untyped aliases like `fs.readFile`.
+    //
+    // One exception: common global prefixes (`globalThis.`, `window.`, `self.`, `global.`) are
+    // treated as syntactic sugar for the canonical global path (e.g. `window.fetch` → `fetch`).
     if db.canonical_name(&path) == Some(path.as_str()) {
       if let Some(id) = db.id_of(&path) {
         return Some(hir_api_id_from_kb(id));
       }
+    } else if let Some(stripped) = strip_global_prefixes(&path) {
+      if db.canonical_name(stripped) == Some(stripped) {
+        if let Some(id) = db.id_of(stripped) {
+          return Some(hir_api_id_from_kb(id));
+        }
+      }
     }
   }
   None
+}
+
+fn strip_global_prefixes<'a>(mut path: &'a str) -> Option<&'a str> {
+  let mut changed = false;
+  loop {
+    let mut did_strip = false;
+    for prefix in ["globalThis.", "window.", "self.", "global."] {
+      if let Some(rest) = path.strip_prefix(prefix) {
+        path = rest;
+        did_strip = true;
+        changed = true;
+        break;
+      }
+    }
+    if !did_strip {
+      break;
+    }
+  }
+  changed.then_some(path)
 }
 
 fn static_callee_path(lower: &hir_js::LowerResult, body: &Body, expr_id: ExprId) -> Option<String> {

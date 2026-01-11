@@ -70,6 +70,8 @@ fn rewrites_known_api_calls() {
     const x = 9;
     JSON.parse(s);
     Math.sqrt(x);
+    window.fetch(s);
+    globalThis.fetch(s);
   "#;
 
   let lowered = hir_js::lower_from_source_with_kind(FileKind::Ts, src).unwrap();
@@ -78,6 +80,8 @@ fn rewrites_known_api_calls() {
 
   let (json_call, json_args) = find_call(body, &lowered, "JSON.parse");
   let (sqrt_call, sqrt_args) = find_call(body, &lowered, "Math.sqrt");
+  let (window_fetch_call, window_fetch_args) = find_call(body, &lowered, "window.fetch");
+  let (global_fetch_call, global_fetch_args) = find_call(body, &lowered, "globalThis.fetch");
 
   let db = ApiDatabase::from_embedded().unwrap();
   let rewritten = annotate_known_api_calls(&lowered, &db, None);
@@ -85,6 +89,7 @@ fn rewrites_known_api_calls() {
 
   let expected_json = hir_api_id_from_kb_id(db.id_of("JSON.parse").unwrap());
   let expected_sqrt = hir_api_id_from_kb_id(db.id_of("Math.sqrt").unwrap());
+  let expected_fetch = hir_api_id_from_kb_id(db.id_of("fetch").unwrap());
 
   match &rewritten_body.exprs[json_call.0 as usize].kind {
     ExprKind::KnownApiCall { api, args } => {
@@ -100,6 +105,26 @@ fn rewrites_known_api_calls() {
       assert_eq!(args, &sqrt_args);
     }
     other => panic!("expected KnownApiCall at {sqrt_call:?}, got {other:?}"),
+  }
+
+  match &rewritten_body.exprs[window_fetch_call.0 as usize].kind {
+    ExprKind::KnownApiCall { api, args } => {
+      assert_eq!(*api, expected_fetch);
+      assert_eq!(args, &window_fetch_args);
+    }
+    other => panic!(
+      "expected KnownApiCall at {window_fetch_call:?}, got {other:?}"
+    ),
+  }
+
+  match &rewritten_body.exprs[global_fetch_call.0 as usize].kind {
+    ExprKind::KnownApiCall { api, args } => {
+      assert_eq!(*api, expected_fetch);
+      assert_eq!(args, &global_fetch_args);
+    }
+    other => panic!(
+      "expected KnownApiCall at {global_fetch_call:?}, got {other:?}"
+    ),
   }
 }
 
@@ -121,6 +146,30 @@ fn does_not_rewrite_require_member_calls() {
       "expected call to preserve callee evaluation (require(...) base); got KnownApiCall at {call_expr:?}"
     ),
     ExprKind::Call(_) => {}
+    other => panic!("expected Call at {call_expr:?}, got {other:?}"),
+  }
+}
+
+#[test]
+fn does_not_rewrite_untyped_module_alias_member_calls() {
+  let src = "fs.readFile('x', () => {});";
+  let lowered = hir_js::lower_from_source_with_kind(FileKind::Ts, src).unwrap();
+  let body_id = lowered.hir.root_body;
+  let body = lowered.body(body_id).unwrap();
+  let span = range_of(src, "fs.readFile('x', () => {})");
+  let (call_expr, _) = find_expr_by_span(body, span);
+
+  let db = ApiDatabase::from_embedded().unwrap();
+  assert_eq!(db.canonical_name("fs.readFile"), Some("node:fs.readFile"));
+
+  let rewritten = annotate_known_api_calls(&lowered, &db, None);
+  let rewritten_body = rewritten.body(body_id).unwrap();
+
+  match &rewritten_body.exprs[call_expr.0 as usize].kind {
+    ExprKind::Call(_) => {}
+    ExprKind::KnownApiCall { .. } => panic!(
+      "expected untyped module alias call to remain a Call; got KnownApiCall at {call_expr:?}"
+    ),
     other => panic!("expected Call at {call_expr:?}, got {other:?}"),
   }
 }
