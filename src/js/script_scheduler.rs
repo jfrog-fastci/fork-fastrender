@@ -264,13 +264,14 @@ where
       })?;
       return Ok(());
     };
-    // Module scripts are fetched in CORS mode and default to `same-origin` credentials. The
-    // `crossorigin` attribute only affects the credentials mode.
-    let destination = FetchDestination::ScriptCors;
-    let credentials_mode = spec
-      .crossorigin
-      .map(|cors_mode| cors_mode.credentials_mode())
-      .unwrap_or(FetchCredentialsMode::SameOrigin);
+    // Classic scripts are fetched in `no-cors` mode by default. When the HTML "CORS settings
+    // attribute" (`crossorigin`) is present, scripts are fetched in `cors` mode and the credentials
+    // mode follows the attribute value.
+    let (destination, credentials_mode) = if let Some(cors_mode) = spec.crossorigin {
+      (FetchDestination::ScriptCors, cors_mode.credentials_mode())
+    } else {
+      (FetchDestination::Script, FetchCredentialsMode::Include)
+    };
 
     // Async takes priority over defer. For classic scripts, HTML treats `async` as true when either
     // the `async` attribute is present or the per-element "force async" flag is set.
@@ -410,11 +411,13 @@ where
       })?;
       return Ok(());
     };
-    let (destination, credentials_mode) = if let Some(cors_mode) = spec.crossorigin {
-      (FetchDestination::ScriptCors, cors_mode.credentials_mode())
-    } else {
-      (FetchDestination::Script, FetchCredentialsMode::Include)
-    };
+    // Module scripts are fetched in `cors` mode and default to `same-origin` credentials. The
+    // `crossorigin` attribute only affects the credentials mode.
+    let destination = FetchDestination::ScriptCors;
+    let credentials_mode = spec
+      .crossorigin
+      .map(|cors_mode| cors_mode.credentials_mode())
+      .unwrap_or(FetchCredentialsMode::SameOrigin);
 
     // External module scripts start fetching as early as possible. Unlike classic scripts, dynamic
     // module scripts are not async-by-default: the absence of `async` means they execute in order.
@@ -1689,6 +1692,145 @@ mod tests {
       node_id: None,
       script_type: ScriptType::Classic,
     }
+  }
+
+  #[derive(Default)]
+  struct FetchSemanticsHost {
+    blocking: Vec<(String, FetchDestination, FetchCredentialsMode)>,
+    started: Vec<(String, FetchDestination, FetchCredentialsMode)>,
+    next_handle: usize,
+  }
+
+  impl ScriptLoader for FetchSemanticsHost {
+    type Handle = usize;
+
+    fn load_blocking(
+      &mut self,
+      url: &str,
+      destination: FetchDestination,
+      credentials_mode: FetchCredentialsMode,
+    ) -> Result<String> {
+      self
+        .blocking
+        .push((url.to_string(), destination, credentials_mode));
+      Ok(String::new())
+    }
+
+    fn start_load(
+      &mut self,
+      url: &str,
+      destination: FetchDestination,
+      credentials_mode: FetchCredentialsMode,
+    ) -> Result<Self::Handle> {
+      self
+        .started
+        .push((url.to_string(), destination, credentials_mode));
+      let handle = self.next_handle;
+      self.next_handle = self.next_handle.wrapping_add(1);
+      Ok(handle)
+    }
+
+    fn poll_complete(&mut self) -> Result<Option<(Self::Handle, String)>> {
+      Ok(None)
+    }
+  }
+
+  impl ScriptExecutor for FetchSemanticsHost {
+    fn execute_classic_script(
+      &mut self,
+      _script_text: &str,
+      _spec: &ScriptElementSpec,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      Ok(())
+    }
+
+    fn execute_module_script(
+      &mut self,
+      _script_text: &str,
+      _spec: &ScriptElementSpec,
+      _event_loop: &mut EventLoop<Self>,
+    ) -> Result<()> {
+      Ok(())
+    }
+  }
+
+  impl ScriptEventDispatcher for FetchSemanticsHost {
+    fn dispatch_script_event(
+      &mut self,
+      _event: ScriptElementEvent,
+      _spec: &ScriptElementSpec,
+    ) -> Result<()> {
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn classic_scripts_fetch_no_cors_and_include_credentials_by_default() -> Result<()> {
+    let mut host = FetchSemanticsHost::default();
+    let mut event_loop = EventLoop::<FetchSemanticsHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<FetchSemanticsHost>::new();
+
+    // Parser-inserted, no async/defer -> blocking external script uses load_blocking.
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script("https://example.com/a.js", false, false),
+    )?;
+
+    assert_eq!(
+      host.blocking,
+      vec![(
+        "https://example.com/a.js".to_string(),
+        FetchDestination::Script,
+        FetchCredentialsMode::Include,
+      )]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn classic_crossorigin_scripts_fetch_cors_and_map_credentials_mode() -> Result<()> {
+    let mut host = FetchSemanticsHost::default();
+    let mut event_loop = EventLoop::<FetchSemanticsHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<FetchSemanticsHost>::new();
+
+    let mut spec = external_script("https://example.com/a.js", false, false);
+    spec.crossorigin = Some(crate::resource::CorsMode::Anonymous);
+    scheduler.handle_script(&mut host, &mut event_loop, spec)?;
+
+    assert_eq!(
+      host.blocking,
+      vec![(
+        "https://example.com/a.js".to_string(),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::SameOrigin,
+      )]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_scripts_fetch_cors_and_same_origin_credentials_by_default() -> Result<()> {
+    let mut host = FetchSemanticsHost::default();
+    let mut event_loop = EventLoop::<FetchSemanticsHost>::new();
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut scheduler = ClassicScriptScheduler::<FetchSemanticsHost>::with_options(options);
+
+    let mut spec = external_script("https://example.com/a.js", false, false);
+    spec.script_type = ScriptType::Module;
+    scheduler.handle_script(&mut host, &mut event_loop, spec)?;
+
+    assert_eq!(
+      host.started,
+      vec![(
+        "https://example.com/a.js".to_string(),
+        FetchDestination::ScriptCors,
+        FetchCredentialsMode::SameOrigin,
+      )]
+    );
+    Ok(())
   }
 
   #[test]
