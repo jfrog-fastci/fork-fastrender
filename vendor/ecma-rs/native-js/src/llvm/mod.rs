@@ -22,6 +22,7 @@ use llvm_sys::prelude::LLVMModuleRef;
 pub mod gc;
 pub mod gc_lint;
 pub mod passes;
+pub mod statepoints;
 pub mod statepoint_directives;
 
 pub use gc_lint::{lint_gc_pointer_discipline, LintError, LintRule, LintViolation};

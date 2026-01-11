@@ -1,7 +1,8 @@
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
-use native_js::llvm::{gc, passes};
+use native_js::llvm::{gc, passes, statepoints};
+use tempfile::tempdir;
 
 #[test]
 fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
@@ -117,4 +118,93 @@ fn llvm18_statepoint_rewrite_indirect_call_has_elementtype() {
     rewritten.contains("call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1"),
     "expected gc.relocate for %obj in rewritten IR, got:\n{rewritten}"
   );
+}
+
+#[test]
+fn llvm18_manual_statepoint_indirect_call_has_elementtype() {
+  // Our manual statepoint builder must attach `elementtype(<fn-ty>)` to the callee argument even
+  // when the callee is a runtime function pointer (`ptr %fp`).
+  Target::initialize_native(&InitializationConfig::default()).expect("failed to initialize native LLVM target");
+
+  let context = Context::create();
+  let module = context.create_module("manual_statepoints_indirect_call");
+  let builder = context.create_builder();
+
+  let void_ty = context.void_type();
+  let fp_ty = context.ptr_type(inkwell::AddressSpace::default());
+  let gc_ptr = gc::gc_ptr_type(&context);
+
+  let foo_ty = void_ty.fn_type(&[fp_ty.into(), gc_ptr.into()], false);
+  let foo = module.add_function("foo", foo_ty, None);
+  gc::set_default_gc_strategy(&foo).expect("GC strategy contains NUL byte");
+
+  let fp = foo
+    .get_nth_param(0)
+    .expect("missing %fp")
+    .into_pointer_value();
+  fp.set_name("fp");
+
+  let root = foo
+    .get_nth_param(1)
+    .expect("missing %root")
+    .into_pointer_value();
+  root.set_name("root");
+
+  let entry = context.append_basic_block(foo, "entry");
+  builder.position_at_end(entry);
+
+  let callee_sig = void_ty.fn_type(&[], false);
+  statepoints::build_statepoint_call_indirect(
+    &context,
+    &module,
+    &builder,
+    statepoints::StatepointConfig::default(),
+    fp,
+    callee_sig,
+    &[],
+    &[root],
+    "sp",
+  );
+  builder.build_return(None).expect("build return");
+
+  let triple = TargetMachine::get_default_triple();
+  let target = Target::from_triple(&triple).expect("host target");
+  let tm = target
+    .create_target_machine(
+      &triple,
+      "generic",
+      "",
+      OptimizationLevel::None,
+      RelocMode::Default,
+      CodeModel::Default,
+    )
+    .expect("create target machine");
+  module.set_triple(&triple);
+  module.set_data_layout(&tm.get_target_data().get_data_layout());
+
+  if let Err(err) = module.verify() {
+    panic!(
+      "module verification failed for manual statepoint: {err}\n\nIR:\n{}",
+      module.print_to_string()
+    );
+  }
+
+  let ir = module.print_to_string().to_string();
+  assert!(
+    ir.contains("llvm.experimental.gc.statepoint.p0"),
+    "expected gc.statepoint intrinsic in IR, got:\n{ir}"
+  );
+  assert!(
+    ir.contains("ptr elementtype(void ()) %fp"),
+    "expected statepoint callee operand to be `ptr elementtype(void ()) %fp`, got:\n{ir}"
+  );
+  assert!(
+    ir.contains("\"gc-live\"(ptr addrspace(1) %root)"),
+    "expected `\"gc-live\"(ptr addrspace(1) %root)` operand bundle, got:\n{ir}"
+  );
+
+  let tmp = tempdir().expect("failed to create tempdir");
+  let obj = tmp.path().join("manual_statepoints_indirect_call.o");
+  tm.write_to_file(&module, FileType::Object, &obj)
+    .expect("failed to emit object file");
 }
