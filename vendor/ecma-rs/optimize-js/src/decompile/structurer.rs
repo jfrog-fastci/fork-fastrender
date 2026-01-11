@@ -628,7 +628,7 @@ fn loop_guard(cfg: &Cfg, info: &LoopInfo) -> Option<GuardInfo> {
 }
 
 fn build_state_machine(cfg: &Cfg) -> ControlTree {
-  let mut labels: Vec<_> = cfg.graph.labels().collect();
+  let mut labels: Vec<_> = cfg.bblocks.all().map(|(label, _)| label).collect();
   labels.sort_unstable();
   let mut blocks = Vec::new();
   for label in labels {
