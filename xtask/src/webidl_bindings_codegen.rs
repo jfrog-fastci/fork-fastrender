@@ -1540,7 +1540,7 @@ fn generate_bindings_module_for_target_unformatted(
 
   out.push_str("use std::collections::BTreeMap;\n");
   out.push_str("use std::sync::OnceLock;\n\n");
-  out.push_str("use super::{BindingValue, WebHostBindings};\n");
+  out.push_str("use super::{binding_value_to_js, BindingValue, WebHostBindings};\n");
   out.push_str("use crate::js::webidl::DataPropertyAttributes;\n");
   out.push_str(
     "use webidl_js_runtime::{convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg, OverloadSig, WebIdlJsRuntime};\n",
@@ -1574,52 +1574,6 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_js_number<Host, R>(rt: &R, value: f64) -> RtJsValue<Host, R>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.js_number(value)\n}\n\n");
   out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_symbol_iterator<Host, R>(\n  rt: &mut R,\n) -> Result<RtPropertyKey<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.symbol_iterator()\n}\n\n");
   out.push_str("#[inline]\n#[allow(dead_code)]\nfn rt_symbol_async_iterator<Host, R>(\n  rt: &mut R,\n) -> Result<RtPropertyKey<Host, R>, RtError<Host, R>>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{\n  rt.symbol_async_iterator()\n}\n\n");
-
-  out.push_str("fn binding_value_to_js<Host, R>(\n");
-  out.push_str("  rt: &mut R,\n");
-  out.push_str("  value: BindingValue<RtJsValue<Host, R>>,\n");
-  out.push_str(") -> Result<RtJsValue<Host, R>, RtError<Host, R>>\n");
-  out.push_str("where\n");
-  out.push_str("  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n");
-  out.push_str("{\n");
-  out.push_str("  match value {\n");
-  out.push_str("    BindingValue::Undefined => Ok(rt.js_undefined()),\n");
-  out.push_str("    BindingValue::Null => Ok(rt.js_null()),\n");
-  out.push_str("    BindingValue::Bool(b) => Ok(rt.js_bool(b)),\n");
-  out.push_str("    BindingValue::Number(n) => Ok(rt.js_number(n)),\n");
-  out.push_str("    BindingValue::String(s) => rt.js_string(&s),\n");
-  out.push_str("    BindingValue::Object(v) => Ok(v),\n");
-  out.push_str(
-    "    BindingValue::Callback(_) => Err(rt.throw_type_error(\"cannot return callback handles to JavaScript\")),\n",
-  );
-  out.push_str("    BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {\n");
-  out.push_str("      let obj = rt.create_array(values.len())?;\n");
-  out.push_str("      for (idx, item) in values.into_iter().enumerate() {\n");
-  out.push_str("        let key = idx.to_string();\n");
-  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
-  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
-  out.push_str("      }\n");
-  out.push_str("      Ok(obj)\n");
-  out.push_str("    }\n");
-  out.push_str("    BindingValue::Dictionary(map) => {\n");
-  out.push_str("      let obj = rt.create_object()?;\n");
-  out.push_str("      for (key, item) in map {\n");
-  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
-  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
-  out.push_str("      }\n");
-  out.push_str("      Ok(obj)\n");
-  out.push_str("    }\n");
-  out.push_str("    BindingValue::Record(entries) => {\n");
-  out.push_str("      let obj = rt.create_object()?;\n");
-  out.push_str("      for (key, item) in entries {\n");
-  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
-  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
-  out.push_str("      }\n");
-  out.push_str("      Ok(obj)\n");
-  out.push_str("    }\n");
-  out.push_str("    BindingValue::Union { value, .. } => binding_value_to_js::<Host, R>(rt, *value),\n");
-  out.push_str("  }\n");
-  out.push_str("}\n\n");
 
   // Shared WebIDL type context (enums, dictionaries, typedefs) used by conversions.
   out.push_str("fn type_context() -> &'static TypeContext {\n");
