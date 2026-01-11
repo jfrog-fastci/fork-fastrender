@@ -175,6 +175,9 @@ int main() {
       "-pie",
       // Ensure PT_GNU_RELRO exists so we can assert stackmap coverage explicitly.
       "-Wl,-z,relro",
+      // Regression guard: section GC drops unreferenced stackmaps unless the
+      // linker script explicitly `KEEP()`s the section.
+      "-Wl,--gc-sections",
       ld_arg.as_str(),
       main_o.to_str().unwrap(),
       foo_o.to_str().unwrap(),
