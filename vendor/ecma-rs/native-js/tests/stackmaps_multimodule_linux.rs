@@ -19,6 +19,27 @@ fn init_llvm() {
   native_js::llvm::init_native_target().expect("failed to initialize native LLVM target");
 }
 
+fn cmd_works(cmd: &str) -> bool {
+  Command::new(cmd)
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
+}
+
+fn clang_available() -> bool {
+  cmd_works("clang-18") || cmd_works("clang")
+}
+
+fn clang_18_available() -> bool {
+  cmd_works("clang-18")
+}
+
+fn lld_available() -> bool {
+  cmd_works("ld.lld-18") || cmd_works("ld.lld")
+}
+
 fn host_target_machine() -> TargetMachine {
   init_llvm();
 
@@ -375,6 +396,15 @@ fn parse_stackmap_blobs(bytes: &[u8]) -> Vec<StackMapBlob> {
 
 #[test]
 fn object_link_concatenates_multiple_stackmap_blobs() {
+  if !clang_available() {
+    eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
+    return;
+  }
+  if !lld_available() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
+    return;
+  }
+
   let tm = host_target_machine();
   let ctx = Context::create();
   let (module_a, module_b) = build_two_modules(&ctx, &tm);
@@ -444,6 +474,15 @@ fn object_link_concatenates_multiple_stackmap_blobs() {
 
 #[test]
 fn lto_link_merges_stackmap_blobs_into_one_table() {
+  if !clang_18_available() {
+    eprintln!("skipping: clang-18 not found in PATH (required for LTO via clang -flto)");
+    return;
+  }
+  if !lld_available() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
+    return;
+  }
+
   let tm = host_target_machine();
   let ctx = Context::create();
   let (module_a, module_b) = build_two_modules(&ctx, &tm);
@@ -592,6 +631,15 @@ fn align_up(v: usize, align: usize) -> usize {
 
 #[test]
 fn object_link_concatenates_multiple_stackmap_blobs_from_clang_ir() {
+  if !clang_available() {
+    eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
+    return;
+  }
+  if !lld_available() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
+    return;
+  }
+
   // Link two independent object files containing real StackMap v3 tables produced by LLVM, and
   // assert the final output contains multiple concatenated blobs (with possible alignment padding).
   let module_a = r#"
