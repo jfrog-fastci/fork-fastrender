@@ -1,5 +1,6 @@
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
+use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -27,6 +28,7 @@ fn resolve_symbol_name(ip: usize) -> Option<String> {
 
 #[test]
 fn captures_mutator_ip_and_stack_pointer() {
+  let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
 
   let (tx_id, rx_id) = mpsc::channel();

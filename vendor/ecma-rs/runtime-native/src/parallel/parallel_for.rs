@@ -20,6 +20,11 @@ fn min_grain() -> usize {
 }
 
 fn call_body(body: ParForBody, i: usize, data: *mut u8) {
+  // `parallel_for` owns the iteration loop in the runtime. Poll the GC safepoint
+  // here so stop-the-world requests don't have to wait for the user callback to
+  // hit a compiler-inserted safepoint.
+  threading::safepoint_poll();
+
   let res = catch_unwind(AssertUnwindSafe(|| body(i, data)));
   if res.is_err() {
     // Never unwind across our `extern "C"` boundary.
@@ -85,4 +90,3 @@ pub(crate) fn parallel_for(rt: &ParallelRuntime, start: usize, end: usize, body:
 
   rt.join(tasks.as_ptr(), tasks.len());
 }
-

@@ -1,6 +1,7 @@
 use runtime_native::sync::GcAwareMutex;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
+use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -10,6 +11,7 @@ use std::time::Duration;
 
 #[test]
 fn stop_the_world_completes_while_thread_waits_on_gc_aware_mutex() {
+  let _rt = TestRuntimeGuard::new();
   const ITERS: usize = 50;
 
   // Register the test harness thread as the runtime "main" thread.

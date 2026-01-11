@@ -110,6 +110,11 @@ impl ParallelRuntime {
 
     for task in &tasks {
       while !task.done.load(Ordering::Acquire) {
+        // Join can block waiting for other tasks. Poll the GC safepoint here so
+        // an STW request doesn't have to wait for the join loop to make
+        // progress.
+        threading::safepoint_poll();
+
         if let Some(other) = self.scheduler.try_pop() {
           // Before running mutator code, poll the GC safepoint (matches the
           // worker thread loop behavior).
