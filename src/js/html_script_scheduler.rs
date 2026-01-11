@@ -186,6 +186,10 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
     Self::default()
   }
 
+  pub fn modules_supported(&self) -> bool {
+    self.modules_supported
+  }
+
   pub fn with_modules_supported(modules_supported: bool) -> Self {
     Self {
       modules_supported,

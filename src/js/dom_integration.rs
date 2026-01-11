@@ -458,6 +458,7 @@ pub fn prepare_dynamic_script_on_insertion_html<Host>(
 where
   Host: DomHost + HtmlScriptPipelineHost,
 {
+  let modules_supported = scheduler.modules_supported();
   let spec = host.mutate_dom(|dom| {
     if !is_html_script_element(dom, inserted_node) {
       return (None, false);
@@ -498,10 +499,12 @@ where
 
     // Only mark the element as started for script types that participate in HTML script processing.
     // Unknown types are ignored and should remain eligible if later mutated into a runnable script.
-    if matches!(
-      spec.script_type,
-      ScriptType::Classic | ScriptType::Module | ScriptType::ImportMap
-    ) {
+    let should_mark_started = match spec.script_type {
+      ScriptType::Classic => true,
+      ScriptType::Module | ScriptType::ImportMap => modules_supported,
+      ScriptType::Unknown => false,
+    };
+    if should_mark_started {
       let _ = dom.set_script_already_started(inserted_node, true);
     }
 
@@ -516,10 +519,12 @@ where
   // fetch. (Inline scripts with invalid integrity are handled above and leave the element eligible
   // for later mutation.)
   if spec.integrity_attr_present && spec.integrity.is_none() {
-    if matches!(
-      spec.script_type,
-      ScriptType::Classic | ScriptType::Module | ScriptType::ImportMap
-    ) {
+    let should_dispatch_error = match spec.script_type {
+      ScriptType::Classic => true,
+      ScriptType::Module | ScriptType::ImportMap => modules_supported,
+      ScriptType::Unknown => false,
+    };
+    if should_dispatch_error {
       event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
         host.dispatch_script_element_event(inserted_node, "error")
       })?;
@@ -1374,6 +1379,50 @@ mod tests {
     assert!(
       host.dom.node(script).script_already_started,
       "expected external scripts with invalid integrity to be marked already started"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_module_script_is_not_started_when_modules_unsupported_in_html_scheduler_path() -> Result<()> {
+    let mut dom = Document::new(QuirksMode::NoQuirks);
+    let script = dom.create_element("script", "");
+    dom.append_child(dom.root(), script).expect("append_child");
+    dom
+      .set_attribute(script, "type", "module")
+      .expect("set_attribute should succeed");
+    let text = dom.create_text("RUN");
+    dom.append_child(script, text).expect("append_child");
+
+    let mut host = HtmlTestHost::new(dom);
+    let mut scheduler =
+      crate::js::HtmlScriptScheduler::<crate::dom2::NodeId>::with_modules_supported(false);
+    let mut event_loop = EventLoop::<HtmlTestHost>::new();
+
+    prepare_dynamic_script_on_insertion_html(
+      &mut host,
+      &mut scheduler,
+      &mut event_loop,
+      script,
+      None,
+    )?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      host.started_classic_fetches.is_empty(),
+      "expected unsupported module scripts not to start classic fetches"
+    );
+    assert!(
+      host.executed.is_empty(),
+      "expected unsupported module scripts not to execute"
+    );
+    assert!(
+      host.element_events.is_empty(),
+      "expected unsupported module scripts not to dispatch element events"
+    );
+    assert!(
+      !host.dom.node(script).script_already_started,
+      "expected unsupported module scripts not to be marked already started"
     );
     Ok(())
   }
