@@ -2,13 +2,6 @@ use anyhow::{anyhow, Result};
 
 use knowledge_base::{Api, KnowledgeBase};
 
-/// Per-callsite metadata used by heuristics in `effect-js`.
-///
-/// This is derived from inline callback analysis in [`crate::callback`]. It is
-/// re-exported here to keep older call sites that used `effect_js::db::CallSiteInfo`
-/// compiling while the API stabilizes.
-pub type CallSiteInfo = crate::callback::CallSiteInfo;
-
 #[derive(Debug, Clone)]
 pub struct EffectDb {
   kb: KnowledgeBase,
@@ -22,6 +15,7 @@ pub struct EffectDb {
 pub struct CallSiteInfo {
   pub callback_is_pure: Option<bool>,
   pub callback_uses_index: Option<bool>,
+  pub callback_uses_array: Option<bool>,
   pub callback_is_associative: Option<bool>,
 }
 
