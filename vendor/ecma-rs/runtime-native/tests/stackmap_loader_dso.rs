@@ -127,6 +127,9 @@ fn link_shared(clang: &str, out_dir: &Path, objs: &[PathBuf], linker_script: &Pa
   let so_path = out_dir.join("libstackmaps.so");
   let mut cmd = Command::new(clang);
   cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so_path);
+  // Regression guard: section GC can drop unreferenced `.llvm_stackmaps` unless
+  // the linker script explicitly `KEEP()`s it.
+  cmd.arg("-Wl,--gc-sections");
   // Force stackmaps into a dedicated output section (`.data.rel.ro.llvm_stackmaps`) with stable
   // boundaries. This mirrors the native-js link pipeline and avoids the default linker script
   // folding `.data.rel.ro.*` into `.data.rel.ro` (which would hide stackmaps behind a generic
