@@ -45,10 +45,12 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
     InstTyp::Bin => {
       if inst.bin_op == BinOp::GetProp {
         effects.reads.insert(EffectLocation::Heap);
+        effects.may_throw = true;
       }
     }
     InstTyp::PropAssign => {
       effects.writes.insert(EffectLocation::Heap);
+      effects.may_throw = true;
     }
     InstTyp::ForeignLoad => {
       effects
@@ -64,11 +66,13 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
       effects
         .reads
         .insert(EffectLocation::Unknown(inst.unknown.clone()));
+      effects.may_throw = true;
     }
     InstTyp::UnknownStore => {
       effects
         .writes
         .insert(EffectLocation::Unknown(inst.unknown.clone()));
+      effects.may_throw = true;
     }
     InstTyp::Call => {
       let (_, callee, _, _, _) = inst.as_call();
@@ -87,17 +91,21 @@ pub fn inst_local_effect(inst: &Inst) -> EffectSet {
           "__optimize_js_delete" => {
             effects.writes.insert(EffectLocation::Heap);
             effects.unknown = true;
+            effects.may_throw = true;
           }
           "__optimize_js_new" | "__optimize_js_await" | "import" => {
             effects.unknown = true;
+            effects.may_throw = true;
           }
           _ if is_pure_consteval_builtin_call(path) => {}
           _ => {
             effects.unknown = true;
+            effects.may_throw = true;
           }
         },
         _ => {
           effects.unknown = true;
+          effects.may_throw = true;
         }
       }
     }
@@ -120,6 +128,7 @@ fn inst_total_effect(inst: &Inst, fn_summaries: &FnEffectMap) -> EffectSet {
         // An `Arg::Fn` with no corresponding summary should be impossible, but if it happens we
         // must stay conservative.
         effects.unknown = true;
+        effects.may_throw = true;
       }
     }
   }
@@ -295,6 +304,10 @@ mod tests {
         !eff.unknown,
         "{builtin} should not be marked unknown but got {eff:?}"
       );
+      assert!(
+        !eff.may_throw,
+        "{builtin} should not be marked may_throw but got {eff:?}"
+      );
       assert!(eff.reads.is_empty());
       assert!(eff.writes.is_empty());
     }
@@ -311,6 +324,20 @@ mod tests {
     );
     let eff = inst_local_effect(&call);
     assert!(eff.unknown);
+    assert!(eff.may_throw);
+  }
+
+  #[test]
+  fn getprop_reads_heap_and_may_throw() {
+    let inst = Inst::bin(
+      0,
+      Arg::Var(0),
+      BinOp::GetProp,
+      Arg::Const(Const::Str("prop".to_string())),
+    );
+    let eff = inst_local_effect(&inst);
+    assert!(eff.reads.contains(&EffectLocation::Heap));
+    assert!(eff.may_throw);
   }
 
   #[test]
@@ -354,5 +381,37 @@ mod tests {
     assert!(call_effects
       .writes
       .contains(&EffectLocation::Foreign(sym)));
+  }
+
+  #[test]
+  fn interprocedural_propagation_includes_may_throw() {
+    // Fn0 reads an unknown global, which can throw (e.g. ReferenceError in global mode).
+    let callee = func(cfg_single_block(vec![Inst::unknown_load(
+      0,
+      "missingGlobal".to_string(),
+    )]));
+
+    // Fn1 calls Fn0 directly.
+    let call_inst = Inst::call(
+      None::<u32>,
+      Arg::Fn(0),
+      Arg::Const(Const::Undefined),
+      Vec::new(),
+      Vec::new(),
+    );
+    let mut program = Program {
+      functions: vec![callee, func(cfg_single_block(vec![call_inst]))],
+      top_level: func(cfg_single_block(Vec::new())),
+      top_level_mode: TopLevelMode::Module,
+      symbols: None,
+    };
+
+    let summaries = compute_program_effects(&program);
+    assert!(summaries.functions[0].may_throw);
+    assert!(summaries.functions[1].may_throw);
+
+    annotate_cfg_effects(&mut program.functions[1].body, &summaries);
+    let call_effects = &program.functions[1].body.bblocks.get(0)[0].meta.effects;
+    assert!(call_effects.may_throw);
   }
 }
