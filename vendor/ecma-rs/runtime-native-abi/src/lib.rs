@@ -202,6 +202,21 @@ pub type ValueRef = *mut c_void;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HandleId(pub u64);
 
+/// A single microtask callback scheduled onto the async runtime's microtask queue.
+///
+/// This is the low-level primitive used to implement Web-standard `queueMicrotask(cb)` without
+/// allocating a promise/coroutine frame.
+///
+/// ## Safety / contracts
+/// - `func` must be non-null.
+/// - `data` must remain valid until `func(data)` runs.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Microtask {
+  pub func: extern "C" fn(*mut u8),
+  pub data: *mut u8,
+}
+
 /// Opaque runtime record used by the `rt_thread_attach` / `rt_thread_detach` APIs.
 #[repr(C)]
 pub struct Runtime {
@@ -458,12 +473,13 @@ extern "C" {
 
   // Microtasks + timers (queueMicrotask / setTimeout / setInterval).
   pub fn rt_async_sleep(delay_ms: u64) -> PromiseRef;
-  pub fn rt_queue_microtask(cb: extern "C" fn(*mut u8), data: *mut u8);
+  pub fn rt_queue_microtask(task: Microtask);
   pub fn rt_queue_microtask_with_drop(
     cb: extern "C" fn(*mut u8),
     data: *mut u8,
     drop_data: extern "C" fn(*mut u8),
   );
+  pub fn rt_drain_microtasks() -> bool;
   pub fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId;
   pub fn rt_set_timeout_with_drop(
     cb: extern "C" fn(*mut u8),
@@ -577,6 +593,11 @@ mod tests {
     assert!(size_of::<HandleId>() == 8);
     assert!(align_of::<HandleId>() == 8);
 
+    assert!(size_of::<Microtask>() == 16);
+    assert!(align_of::<Microtask>() == 8);
+    assert!(core::mem::offset_of!(Microtask, func) == 0);
+    assert!(core::mem::offset_of!(Microtask, data) == 8);
+
     assert!(size_of::<PromiseRef>() == 8);
     assert!(align_of::<PromiseRef>() == 8);
 
@@ -661,6 +682,7 @@ mod tests {
       "InternedId",
       "TaskId",
       "TimerId",
+      "Microtask",
       "IoWatcherId",
       "RtFd",
       "HandleId",
@@ -774,6 +796,7 @@ mod tests {
       "rt_async_sleep(",
       "rt_queue_microtask(",
       "rt_queue_microtask_with_drop(",
+      "rt_drain_microtasks(",
       "rt_set_timeout(",
       "rt_set_timeout_with_drop(",
       "rt_set_interval(",
