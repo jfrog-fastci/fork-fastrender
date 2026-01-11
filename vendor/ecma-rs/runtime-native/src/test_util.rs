@@ -28,6 +28,7 @@ pub fn reset_runtime_state() {
   async_rt::promise::clear_unhandled_rejections_for_tests();
   crate::exports::clear_web_timers_for_tests();
   crate::roots::global_root_registry().clear_for_tests();
+  crate::roots::global_persistent_handle_table().clear_for_tests();
   time::debug_clear_state_for_tests();
   crate::async_runtime::reset_for_tests();
   crate::clear_write_barrier_state_for_tests();

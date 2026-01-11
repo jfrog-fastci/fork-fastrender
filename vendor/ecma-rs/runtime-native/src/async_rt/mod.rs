@@ -52,9 +52,6 @@ pub struct Task {
   data: *mut u8,
   drop: Option<TaskDropFn>,
   /// Optional GC root(s) that must stay alive until the task is executed.
-  ///
-  /// This is a placeholder integration point; the GC itself is not implemented
-  /// in this module yet.
   #[allow(dead_code)]
   gc_root: Option<gc::Root>,
 }

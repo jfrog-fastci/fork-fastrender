@@ -77,7 +77,8 @@ impl fmt::Debug for HandleId {
 #[derive(Clone, Copy)]
 struct Slot<T> {
   generation: u32,
-  ptr: Option<NonNull<T>>,
+  // Null pointer indicates a free slot.
+  ptr: *mut T,
 }
 
 /// A generational handle table that can act as a *persistent root set*.
@@ -95,6 +96,12 @@ pub struct HandleTable<T> {
   slots: Vec<Slot<T>>,
   free_list: Vec<u32>,
 }
+
+// SAFETY: `HandleTable` stores raw pointers as opaque values. It has no interior mutability of its
+// own; concurrent access must be synchronized externally (e.g. by the GC's stop-the-world pause or
+// a mutex). This mirrors the safety rationale used by other pointer tables in this crate (e.g.
+// `WeakHandles`).
+unsafe impl<T> Send for HandleTable<T> {}
 
 impl<T> Default for HandleTable<T> {
   fn default() -> Self {
@@ -127,8 +134,8 @@ impl<T> HandleTable<T> {
   pub fn alloc(&mut self, ptr: NonNull<T>) -> HandleId {
     if let Some(index) = self.free_list.pop() {
       let slot = &mut self.slots[index as usize];
-      debug_assert!(slot.ptr.is_none(), "free_list points at a live slot");
-      slot.ptr = Some(ptr);
+      debug_assert!(slot.ptr.is_null(), "free_list points at a live slot");
+      slot.ptr = ptr.as_ptr();
       HandleId::from_parts(index, slot.generation)
     } else {
       let index: u32 = self
@@ -138,7 +145,7 @@ impl<T> HandleTable<T> {
         .expect("HandleTable index overflow (more than u32::MAX slots)");
       self.slots.push(Slot {
         generation: 0,
-        ptr: Some(ptr),
+        ptr: ptr.as_ptr(),
       });
       HandleId::from_parts(index, 0)
     }
@@ -149,7 +156,7 @@ impl<T> HandleTable<T> {
   pub fn get(&self, id: HandleId) -> Option<NonNull<T>> {
     let slot = self.slots.get(id.index() as usize)?;
     (slot.generation == id.generation()).then_some(())?;
-    slot.ptr
+    NonNull::new(slot.ptr)
   }
 
   /// Updates the pointer stored for `id`.
@@ -164,10 +171,10 @@ impl<T> HandleTable<T> {
     if slot.generation != id.generation() {
       return false;
     }
-    let Some(ptr) = slot.ptr.as_mut() else {
+    if slot.ptr.is_null() {
       return false;
     };
-    *ptr = new_ptr;
+    slot.ptr = new_ptr.as_ptr();
     true
   }
 
@@ -181,9 +188,10 @@ impl<T> HandleTable<T> {
     if slot.generation != id.generation() {
       return false;
     }
-    if slot.ptr.take().is_none() {
+    if slot.ptr.is_null() {
       return false;
     }
+    slot.ptr = core::ptr::null_mut();
 
     slot.generation = slot.generation.wrapping_add(1);
     self.free_list.push(id.index());
@@ -193,10 +201,13 @@ impl<T> HandleTable<T> {
   /// Iterates over all live entries, yielding a mutable reference to each pointer slot.
   ///
   /// This is intended for bulk relocation updates by a moving GC during an STW pause.
-  pub fn iter_live_mut(&mut self) -> impl Iterator<Item = (HandleId, &mut NonNull<T>)> {
+  pub fn iter_live_mut(&mut self) -> impl Iterator<Item = (HandleId, &mut *mut T)> {
     self.slots.iter_mut().enumerate().filter_map(|(index, slot)| {
       let generation = slot.generation;
-      let ptr = slot.ptr.as_mut()?;
+      if slot.ptr.is_null() {
+        return None;
+      }
+      let ptr = &mut slot.ptr;
       let index: u32 = index
         .try_into()
         .expect("HandleTable index overflow (more than u32::MAX slots)");
@@ -271,4 +282,3 @@ impl<T> Drop for PersistentHandle<'_, T> {
     self.table.free(self.id);
   }
 }
-

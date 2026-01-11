@@ -377,7 +377,8 @@ fn stackmaps_for_self() -> Option<&'static crate::StackMaps> {
 /// Root sources (in order):
 /// 1) Per-thread root scopes (runtime-native handle stack).
 /// 2) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`.
-/// 3) Stack roots described by LLVM statepoint stackmaps for each stopped mutator thread.
+/// 3) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`).
+/// 4) Stack roots described by LLVM statepoint stackmaps for each stopped mutator thread.
 ///
 /// # Panics
 /// Panics if `stop_epoch` is not an odd (stop-the-world) epoch.
@@ -397,7 +398,10 @@ pub fn for_each_root_slot_world_stopped(
   // 2) Global roots.
   crate::roots::global_root_registry().for_each_root_slot(|slot| f(slot));
 
-  // 3) Stack roots from stackmaps.
+  // 3) Persistent handle-table roots.
+  crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| f(slot));
+
+  // 4) Stack roots from stackmaps.
   let Some(stackmaps) = stackmaps_for_self() else {
     return Ok(());
   };

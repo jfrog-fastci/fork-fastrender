@@ -45,8 +45,10 @@ pub unsafe fn store_handle(h: GcHandle, ptr: GcPtr) {
 }
 
 pub mod registry;
+pub mod persistent_handle_table;
 
 pub use registry::{global_root_registry, RootRegistry, RootScope};
+pub use persistent_handle_table::{global_persistent_handle_table, PersistentHandleTable};
 
 pub mod conservative;
 pub use conservative::conservative_scan_words;
