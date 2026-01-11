@@ -363,6 +363,10 @@ entry:
       "-O0",
       "-filetype=obj",
       "-frame-pointer=all",
+      // runtime-native requires statepoint GC roots to be spilled to addressable stack slots
+      // (no stackmap `Register` locations).
+      "--fixup-allow-gcptr-in-csr=false",
+      "--fixup-max-csr-statepoints=0",
       "-relocation-model=pic",
     ])
     .arg(rewritten_ll)
