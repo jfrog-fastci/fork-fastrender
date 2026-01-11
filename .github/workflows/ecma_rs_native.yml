@@ -59,7 +59,23 @@ jobs:
             exit 0
           fi
           sudo apt-get update
-          sudo apt-get install -y "${pkgs[@]}"
+          if sudo apt-get install -y "${pkgs[@]}"; then
+            exit 0
+          fi
+
+          # Fallback: some Ubuntu images don't ship `llvm-18` in the default apt repos.
+          if printf '%s\n' "${pkgs[@]}" | grep -qx 'llvm-18'; then
+            echo "llvm-18 install failed; adding apt.llvm.org repo and retrying..." >&2
+            sudo apt-get install -y wget lsb-release ca-certificates
+            wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+            codename="$(lsb_release -cs)"
+            echo "deb http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-18 main" | \
+              sudo tee /etc/apt/sources.list.d/llvm-18.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y "${pkgs[@]}"
+          else
+            exit 1
+          fi
 
       - name: Init ecma-rs checkout (vendored/submodule compatibility)
         run: bash scripts/ci_init_ecma_rs_submodule.sh
