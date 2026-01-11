@@ -17,12 +17,28 @@
   "notes": "Visually good. Reconfirmed via fixture page-loop: remaining ~13% pixel diffs vs Chrome are overwhelmingly text rasterization/hinting (tiny-skia outline fill; no FreeType hinting/subpixel AA) plus minor per-pixel rounding noise from image decode/blur/gradient; no non-text primitive issues found.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 170888,
-    "diff_percent": 13.2512,
+    "diff_pixels": 71350,
+    "diff_percent": 7.4323,
     "perceptual": 0.028,
+    "first_mismatch": {
+      "x": 119,
+      "y": 12,
+      "baseline_rgba": [
+        134,
+        134,
+        134,
+        255
+      ],
+      "rendered_rgba": [
+        216,
+        216,
+        216,
+        255
+      ]
+    },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "6cada5d7e34b6fda3aa7797dce385be8023851cf"
+    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
   },
   "hotspot": "paint",
   "failure_stage": null,

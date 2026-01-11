@@ -17,12 +17,28 @@
   "notes": "Major structure now matches Chrome after fixes to flex used-border-box sizing, avoiding replaced-form-control sizing for icon <button> elements (with element children), and hiding scrollbars in the Chrome-baseline fixture patch (match Chro…",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 47633,
-    "diff_percent": 4.9618,
-    "perceptual": 0.0294,
+    "diff_pixels": 17986,
+    "diff_percent": 1.8735,
+    "perceptual": 0.0048,
+    "first_mismatch": {
+      "x": 561,
+      "y": 9,
+      "baseline_rgba": [
+        245,
+        245,
+        227,
+        255
+      ],
+      "rendered_rgba": [
+        245,
+        245,
+        245,
+        255
+      ]
+    },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "d8dc1b187308d9d652e2861d17ef75a7d259ae9e"
+    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
   },
   "hotspot": "cascade",
   "failure_stage": null,

@@ -24,7 +24,7 @@
     "perceptual": 0.0,
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "ad8e5a4de65b80a7d8a4285eaf72c9eb5ad01d85"
+    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
   },
   "hotspot": "paint",
   "failure_stage": null,
