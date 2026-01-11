@@ -16,6 +16,11 @@ See also (repo-local, complementary):
 - `docs/llvm_statepoint_directives.md` — overriding statepoint ID / patch bytes when using `rewrite-statepoints-for-gc`
 - `runtime-native/stackmaps.ld` — linker script fragment that retains `.llvm_stackmaps` and defines start/end symbols
 
+The ABI assumptions documented here are guarded by fast regression scripts:
+
+- `vendor/ecma-rs/scripts/test_stackmap_abi.sh` (return PC + SP base)
+- `vendor/ecma-rs/scripts/test_statepoint_flags_patchbytes.sh` (flags range + patch_bytes lowering)
+
 ---
 
 ## Pointer + address-space conventions
