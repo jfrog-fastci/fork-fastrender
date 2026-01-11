@@ -1780,7 +1780,7 @@ pub fn validate_native_strict_body(
                   // `Reflect.apply(Function.prototype.call, target, [thisArg, ...args])` and
                   // `Reflect.apply(Function.prototype.apply, target, [thisArg, argsArray])` can be
                   // used to indirectly invoke a function.
-                  let target_is_function_prototype_call = expr_is_function_prototype_member(
+                  let target_is_call_invoker = expr_is_function_prototype_member(
                     body,
                     target_arg,
                     global_this_name,
@@ -1788,8 +1788,16 @@ pub fn validate_native_strict_body(
                     prototype_name,
                     call_name,
                     "call",
+                  ) || expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    function_name,
+                    "Function",
+                    call_name,
+                    "call",
                   );
-                  let target_is_function_prototype_apply = expr_is_function_prototype_member(
+                  let target_is_apply_invoker = expr_is_function_prototype_member(
                     body,
                     target_arg,
                     global_this_name,
@@ -1797,8 +1805,16 @@ pub fn validate_native_strict_body(
                     prototype_name,
                     apply_name,
                     "apply",
+                  ) || expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    function_name,
+                    "Function",
+                    apply_name,
+                    "apply",
                   );
-                  if target_is_function_prototype_call || target_is_function_prototype_apply {
+                  if target_is_call_invoker || target_is_apply_invoker {
                     if let Some(called_target) =
                       call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
                     {
@@ -1922,14 +1938,14 @@ pub fn validate_native_strict_body(
                         if let Some(args_list_expr) =
                           call.args.get(2).filter(|arg| !arg.spread).map(|arg| arg.expr)
                         {
-                          let args_for_target = if target_is_function_prototype_call {
+                          let args_for_target = if target_is_call_invoker {
                             array_literal_exprs(body, args_list_expr).map(|mut args_list| {
                               if !args_list.is_empty() {
                                 args_list.remove(0);
                               }
                               args_list
                             })
-                          } else if target_is_function_prototype_apply {
+                          } else if target_is_apply_invoker {
                             array_literal_exprs(body, args_list_expr)
                               .and_then(|args_list| args_list.get(1).copied())
                               .and_then(|inner| array_literal_exprs(body, inner))
