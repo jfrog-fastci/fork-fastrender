@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::fs;
 use std::process::Command as StdCommand;
 use std::process::ExitStatus;
+use std::process::Stdio;
 use std::time::Duration;
 use tempfile::TempDir;
 use wait_timeout::ChildExt;
@@ -591,7 +592,11 @@ fn checked_pipeline_build_with_emit_llvm_writes_executable_and_ir_file() {
     "expected IR to use native-js GC strategy"
   );
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  // This program prints to stdout; silence it so test output stays clean even
+  // when the harness captures and replays child stdout/stderr.
+  let mut cmd = StdCommand::new(&out);
+  cmd.stdout(Stdio::null()).stderr(Stdio::null());
+  let status = run_with_timeout(&mut cmd, Duration::from_secs(5)).unwrap();
   assert_eq!(status.code(), Some(7));
 }
 
