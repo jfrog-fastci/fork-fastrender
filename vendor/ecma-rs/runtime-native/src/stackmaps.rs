@@ -505,9 +505,7 @@ impl<'a> CallSite<'a> {
           _ => return Err(StackMapError::UnsupportedGcLocation { loc: base.clone() }),
         };
 
-        if !out.contains(&rbp_off) {
-          out.push(rbp_off);
-        }
+        out.push(rbp_off);
       }
     } else {
       for loc in &self.record.locations {
@@ -530,9 +528,7 @@ impl<'a> CallSite<'a> {
               other => return Err(StackMapError::UnsupportedGcBaseRegister { dwarf_reg: other }),
             };
 
-            if !out.contains(&rbp_off) {
-              out.push(rbp_off);
-            }
+            out.push(rbp_off);
           }
 
           // Ignore constants (used by statepoint headers and patchpoints).
@@ -543,6 +539,9 @@ impl<'a> CallSite<'a> {
         }
       }
     }
+
+    out.sort_unstable();
+    out.dedup();
     Ok(out)
   }
 
