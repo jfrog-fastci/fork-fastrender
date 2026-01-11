@@ -141,6 +141,40 @@ fn errors_on_unsupported_import_syntax() {
 }
 
 #[test]
+fn resolves_node_modules_package_exports() {
+  let dir = tempdir().unwrap();
+
+  let pkg_dir = dir.path().join("node_modules").join("pkg");
+  fs::create_dir_all(pkg_dir.join("src")).unwrap();
+  fs::write(
+    pkg_dir.join("package.json"),
+    r#"{ "name": "pkg", "exports": { ".": { "types": "./src/index.ts" } } }"#,
+  )
+  .unwrap();
+  fs::write(
+    pkg_dir.join("src").join("index.ts"),
+    "export function add(a:number,b:number){return a+b}\n",
+  )
+  .unwrap();
+
+  let main = dir.path().join("main.ts");
+  fs::write(
+    &main,
+    "import {add} from 'pkg';\nexport function main(){console.log(add(10,32));}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("42\n"));
+}
+
+#[test]
 fn errors_on_cycles_deterministically() {
   let dir = tempdir().unwrap();
   let a = dir.path().join("a.ts");
