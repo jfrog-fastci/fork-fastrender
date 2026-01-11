@@ -10,7 +10,21 @@ use hir_js::DefId;
 use hir_js::Expr;
 use hir_js::ExprId;
 use hir_js::ExprKind;
+use hir_js::FileKind;
 use hir_js::SpanMap;
+use hir_js::StmtKind;
+use hir_js::lower_from_source_with_kind;
+
+fn first_stmt_expr(lowered: &hir_js::LowerResult) -> (BodyId, ExprId) {
+  let root = lowered.root_body();
+  let root_body = lowered.body(root).expect("root body");
+  let first_stmt = *root_body.root_stmts.first().expect("root stmt");
+  let stmt = &root_body.stmts[first_stmt.0 as usize];
+  match stmt.kind {
+    StmtKind::Expr(expr) => (root, expr),
+    _ => panic!("expected expression statement"),
+  }
+}
 
 #[test]
 fn can_construct_semantic_ops_expr_kinds() {
@@ -191,4 +205,41 @@ fn span_map_smoke_for_semantic_ops_exprs() {
 fn api_id_is_stable() {
   // Keep this in sync with `knowledge-base`'s `ApiId` stability contract.
   assert_eq!(ApiId::from_name("JSON.parse").raw(), 0xfb13ab6e4fa1910a);
+}
+
+#[test]
+fn semantic_ops_lowering_supports_computed_property_keys() {
+  let lowered = lower_from_source_with_kind(FileKind::Js, "arr[\"map\"](x => x + 1);").unwrap();
+  let (body, expr) = first_stmt_expr(&lowered);
+  let body_ref = lowered.body(body).expect("body");
+  assert!(
+    matches!(&body_ref.exprs[expr.0 as usize].kind, ExprKind::ArrayMap { .. }),
+    "expected computed-member array map call to lower as a semantic op"
+  );
+
+  let lowered = lower_from_source_with_kind(FileKind::Js, "Promise[\"all\"]([a, b]);").unwrap();
+  let (body, expr) = first_stmt_expr(&lowered);
+  let body_ref = lowered.body(body).expect("body");
+  assert!(
+    matches!(
+      &body_ref.exprs[expr.0 as usize].kind,
+      ExprKind::PromiseAll { promises } if promises.len() == 2
+    ),
+    "expected computed-member Promise.all call to lower as a semantic op"
+  );
+
+  let lowered = lower_from_source_with_kind(
+    FileKind::Js,
+    "arr[\"map\"](x => x + 1)[\"filter\"](x => x > 0);",
+  )
+  .unwrap();
+  let (body, expr) = first_stmt_expr(&lowered);
+  let body_ref = lowered.body(body).expect("body");
+  assert!(
+    matches!(
+      &body_ref.exprs[expr.0 as usize].kind,
+      ExprKind::ArrayChain { ops, .. } if matches!(ops.as_slice(), [ArrayChainOp::Map(_), ArrayChainOp::Filter(_)])
+    ),
+    "expected computed-member array chain to lower as a semantic op"
+  );
 }

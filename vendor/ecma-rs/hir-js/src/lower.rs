@@ -2305,6 +2305,22 @@ fn lower_call_expr(
 
   #[cfg(feature = "semantic-ops")]
   {
+    fn semantic_ops_member_property_name<'a>(
+      builder: &'a BodyBuilder<'_>,
+      key: &'a ObjectKey,
+    ) -> Option<&'a str> {
+      match key {
+        ObjectKey::Ident(name) => builder.names.resolve(*name),
+        ObjectKey::String(value) => Some(value.as_str()),
+        ObjectKey::Computed(expr_id) => match &builder.exprs[expr_id.0 as usize].kind {
+          ExprKind::Literal(Literal::String(value)) => Some(value.lossy.as_str()),
+          ExprKind::Template(tpl) if tpl.spans.is_empty() => Some(tpl.head.as_str()),
+          _ => None,
+        },
+        ObjectKey::Number(_) => None,
+      }
+    }
+
     fn array_chain_extendable(
       builder: &BodyBuilder<'_>,
       expr: ExprId,
@@ -2328,9 +2344,8 @@ fn lower_call_expr(
         // literal without holes/spreads.
         if let ExprKind::Member(member) = &builder.exprs[callee.0 as usize].kind {
           if !member.optional {
-            if let ObjectKey::Ident(prop) = member.property {
-              let prop = builder.names.resolve(prop);
-              if let Some(prop) = prop.filter(|p| *p == "all" || *p == "race") {
+            if let Some(prop) = semantic_ops_member_property_name(builder, &member.property) {
+              if prop == "all" || prop == "race" {
                 if let ExprKind::Ident(obj) = &builder.exprs[member.object.0 as usize].kind {
                   if builder.names.resolve(*obj) == Some("Promise")
                     && args.len() == 1
@@ -2368,71 +2383,69 @@ fn lower_call_expr(
       // chaining is intentionally excluded to avoid changing short-circuit behaviour.
       if let ExprKind::Member(member) = &builder.exprs[callee.0 as usize].kind {
         if !member.optional {
-          if let ObjectKey::Ident(prop) = member.property {
-            if let Some(prop) = builder.names.resolve(prop) {
-              let args_ok = args.iter().all(|arg| !arg.spread);
-              if args_ok {
-                let receiver = member.object;
-                let chain_prefix = array_chain_extendable(builder, receiver);
-                match prop {
-                  "map" | "filter" | "find" | "every" | "some" if args.len() == 1 => {
-                    let callback = args[0].expr;
-                    let new_op = match prop {
-                      "map" => ArrayChainOp::Map(callback),
-                      "filter" => ArrayChainOp::Filter(callback),
-                      "find" => ArrayChainOp::Find(callback),
-                      "every" => ArrayChainOp::Every(callback),
-                      "some" => ArrayChainOp::Some(callback),
-                      _ => unreachable!(),
-                    };
+          if let Some(prop) = semantic_ops_member_property_name(builder, &member.property) {
+            let args_ok = args.iter().all(|arg| !arg.spread);
+            if args_ok {
+              let receiver = member.object;
+              let chain_prefix = array_chain_extendable(builder, receiver);
+              match prop {
+                "map" | "filter" | "find" | "every" | "some" if args.len() == 1 => {
+                  let callback = args[0].expr;
+                  let new_op = match prop {
+                    "map" => ArrayChainOp::Map(callback),
+                    "filter" => ArrayChainOp::Filter(callback),
+                    "find" => ArrayChainOp::Find(callback),
+                    "every" => ArrayChainOp::Every(callback),
+                    "some" => ArrayChainOp::Some(callback),
+                    _ => unreachable!(),
+                  };
 
-                    if let Some((array, mut ops)) = chain_prefix {
-                      ops.push(new_op);
-                      return ExprKind::ArrayChain { array, ops };
-                    }
-
-                    return match prop {
-                      "map" => ExprKind::ArrayMap {
-                        array: receiver,
-                        callback,
-                      },
-                      "filter" => ExprKind::ArrayFilter {
-                        array: receiver,
-                        callback,
-                      },
-                      "find" => ExprKind::ArrayFind {
-                        array: receiver,
-                        callback,
-                      },
-                      "every" => ExprKind::ArrayEvery {
-                        array: receiver,
-                        callback,
-                      },
-                      "some" => ExprKind::ArraySome {
-                        array: receiver,
-                        callback,
-                      },
-                      _ => unreachable!(),
-                    };
+                  if let Some((array, mut ops)) = chain_prefix {
+                    ops.push(new_op);
+                    return ExprKind::ArrayChain { array, ops };
                   }
-                  "reduce" if args.len() == 1 || args.len() == 2 => {
-                    let callback = args[0].expr;
-                    let init = args.get(1).map(|arg| arg.expr);
-                    let new_op = ArrayChainOp::Reduce(callback, init);
 
-                    if let Some((array, mut ops)) = chain_prefix {
-                      ops.push(new_op);
-                      return ExprKind::ArrayChain { array, ops };
-                    }
-
-                    return ExprKind::ArrayReduce {
+                  return match prop {
+                    "map" => ExprKind::ArrayMap {
                       array: receiver,
                       callback,
-                      init,
-                    };
-                  }
-                  _ => {}
+                    },
+                    "filter" => ExprKind::ArrayFilter {
+                      array: receiver,
+                      callback,
+                    },
+                    "find" => ExprKind::ArrayFind {
+                      array: receiver,
+                      callback,
+                    },
+                    "every" => ExprKind::ArrayEvery {
+                      array: receiver,
+                      callback,
+                    },
+                    "some" => ExprKind::ArraySome {
+                      array: receiver,
+                      callback,
+                    },
+                    _ => unreachable!(),
+                  };
                 }
+                "reduce" if args.len() == 1 || args.len() == 2 => {
+                  let callback = args[0].expr;
+                  let init = args.get(1).map(|arg| arg.expr);
+                  let new_op = ArrayChainOp::Reduce(callback, init);
+
+                  if let Some((array, mut ops)) = chain_prefix {
+                    ops.push(new_op);
+                    return ExprKind::ArrayChain { array, ops };
+                  }
+
+                  return ExprKind::ArrayReduce {
+                    array: receiver,
+                    callback,
+                    init,
+                  };
+                }
+                _ => {}
               }
             }
           }
