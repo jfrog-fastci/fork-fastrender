@@ -18515,10 +18515,11 @@ pub(crate) fn resolve_line_height_length(style: &mut ComputedStyle, viewport: Si
         style.line_height = LineHeight::Normal;
       }
     }
-    // CSS2.1: percentages compute to lengths for inheritance; descendants inherit the computed
-    // length, not the percentage.
-    // https://www.w3.org/TR/CSS2/syndata.html#percentage-units
     LineHeight::Percentage(pct) => {
+      // CSS2.1 §10.8: percentage line-heights compute to an absolute length (based on the
+      // element's font-size) and *inherit as a length*.
+      //
+      // This ensures children don't rescale the parent's percentage against their own font-size.
       let px = style.font_size * (pct / 100.0);
       if px.is_finite() && px >= 0.0 {
         style.line_height = LineHeight::Length(Length::px(px));
@@ -21280,10 +21281,8 @@ mod tests {
 
   #[test]
   fn line_height_percentage_computes_to_length_for_inheritance() {
-    // CSS2.1: percentages compute to lengths, and descendants inherit the computed length (not the
-    // percentage).
-    // https://www.w3.org/TR/CSS2/syndata.html#percentage-units
     use crate::style::types::LineHeight;
+    use crate::style::values::LengthUnit;
 
     let dom = DomNode {
       node_type: DomNodeType::Element {
@@ -21311,23 +21310,27 @@ mod tests {
 
     let styled = apply_styles(&dom, &stylesheet);
 
-    let line_height_px = match &styled.styles.line_height {
-      LineHeight::Length(len) => len.value,
+    // CSS2.1 §10.8: percentage line-height computes to an absolute length based on the element's
+    // font-size, and that computed length is inherited by descendants.
+    let line_height = match &styled.styles.line_height {
+      LineHeight::Length(len) => *len,
       other => panic!("expected computed p line-height to be a length, got {other:?}"),
     };
+    assert_eq!(line_height.unit, LengthUnit::Px);
     assert!(
-      (line_height_px - 12.0).abs() < 0.01,
-      "expected 12px, got {line_height_px:?}"
+      (line_height.value - 12.0).abs() < 0.01,
+      "expected 12px, got {line_height:?}"
     );
 
     let child = styled.children.first().expect("span child");
-    let child_lh_px = match &child.styles.line_height {
-      LineHeight::Length(len) => len.value,
+    let child_lh = match &child.styles.line_height {
+      LineHeight::Length(len) => *len,
       other => panic!("expected computed span line-height to be a length, got {other:?}"),
     };
+    assert_eq!(child_lh.unit, LengthUnit::Px);
     assert!(
-      (child_lh_px - 12.0).abs() < 0.01,
-      "expected inherited 12px, got {child_lh_px:?}"
+      (child_lh.value - 12.0).abs() < 0.01,
+      "expected inherited 12px, got {child_lh:?}"
     );
   }
 
