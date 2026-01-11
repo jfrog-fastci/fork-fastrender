@@ -9,6 +9,7 @@ use crate::abi::TimerId;
 use crate::abi::ThenableRef;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
+use crate::alloc;
 use crate::async_runtime::PromiseLayout;
 use crate::array;
 use crate::array::RtArrayHeader;
