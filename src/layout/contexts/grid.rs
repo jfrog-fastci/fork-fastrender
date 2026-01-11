@@ -3608,11 +3608,13 @@ impl GridFormattingContext {
       style.grid_column_raw.as_deref(),
       style.grid_column_start,
       style.grid_column_end,
+      containing_grid,
     );
     let css_grid_row = self.convert_grid_placement(
       style.grid_row_raw.as_deref(),
       style.grid_row_start,
       style.grid_row_end,
+      containing_grid,
     );
     if inline_is_horizontal_item {
       taffy_style.grid_column = css_grid_column;
@@ -4645,23 +4647,70 @@ impl GridFormattingContext {
     raw: Option<&str>,
     start: i32,
     end: i32,
+    containing_grid: Option<&ComputedStyle>,
   ) -> Line<TaffyGridPlacement<String>> {
-    if let Some(raw_str) = raw {
-      return parse_grid_line_placement_raw(raw_str);
-    }
+    // Resolve a <custom-ident> grid-line against any named grid areas in the containing grid.
+    //
+    // CSS Grid allows area names (from `grid-template-areas`) to be referenced directly in
+    // placement properties (e.g. `grid-row-start: main`). These are conceptually aliases for the
+    // synthesized `<name>-start` / `<name>-end` line names. Area names take precedence over
+    // explicitly named lines of the same spelling.
+    //
+    // Spec: https://www.w3.org/TR/css-grid-1/#grid-placement-slot
+    let map_named_area = |placement: TaffyGridPlacement<String>, is_start: bool| {
+      let Some(grid) = containing_grid else {
+        return placement;
+      };
+      if grid.grid_template_areas.is_empty() {
+        return placement;
+      }
 
-    Line {
-      start: if start == 0 {
-        TaffyGridPlacement::Auto
-      } else {
-        TaffyGridPlacement::Line((start as i16).into())
-      },
-      end: if end == 0 {
-        TaffyGridPlacement::Auto
-      } else {
-        TaffyGridPlacement::Line((end as i16).into())
-      },
-    }
+      match placement {
+        TaffyGridPlacement::NamedLine(name, idx) if idx == 1 => {
+          let mut has_area = false;
+          for row in &grid.grid_template_areas {
+            for cell in row {
+              if cell.as_ref().is_some_and(|cell_name| cell_name == &name) {
+                has_area = true;
+                break;
+              }
+            }
+            if has_area {
+              break;
+            }
+          }
+
+          if has_area {
+            let suffix = if is_start { "start" } else { "end" };
+            TaffyGridPlacement::NamedLine(format!("{name}-{suffix}"), 1)
+          } else {
+            TaffyGridPlacement::NamedLine(name, idx)
+          }
+        }
+        other => other,
+      }
+    };
+
+    let mut placement = if let Some(raw_str) = raw {
+      parse_grid_line_placement_raw(raw_str)
+    } else {
+      Line {
+        start: if start == 0 {
+          TaffyGridPlacement::Auto
+        } else {
+          TaffyGridPlacement::Line((start as i16).into())
+        },
+        end: if end == 0 {
+          TaffyGridPlacement::Auto
+        } else {
+          TaffyGridPlacement::Line((end as i16).into())
+        },
+      }
+    };
+
+    placement.start = map_named_area(placement.start, true);
+    placement.end = map_named_area(placement.end, false);
+    placement
   }
 
   /// Converts AlignContent to Taffy AlignContent

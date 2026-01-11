@@ -477,6 +477,34 @@ fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
     .filter(|part| !part.is_empty())
 }
 
+/// Extracts the `start`/`end` components from the stored grid placement representation.
+///
+/// Grid item placement is stored either as an explicit `"<start> / <end>"` string in
+/// `{grid_column,grid_row}_raw` (used for spans and named lines), or as numeric `*_start`/`*_end`
+/// line indices (used by some tests and legacy code paths). This helper normalizes both forms into
+/// `(start, end)` strings so longhand declarations can override the appropriate side without
+/// dropping the other.
+fn split_grid_axis_start_end(raw: Option<&str>, start: i32, end: i32) -> (String, String) {
+  if let Some(raw) = raw {
+    let mut parts = raw.splitn(2, '/');
+    let start = parts.next().unwrap_or("auto");
+    let end = parts.next().unwrap_or("auto");
+    let start = trim_ascii_whitespace(start);
+    let end = trim_ascii_whitespace(end);
+    let start = if start.is_empty() { "auto" } else { start };
+    let end = if end.is_empty() { "auto" } else { end };
+    return (start.to_string(), end.to_string());
+  }
+
+  let start = if start == 0 {
+    "auto".to_string()
+  } else {
+    start.to_string()
+  };
+  let end = if end == 0 { "auto".to_string() } else { end.to_string() };
+  (start, end)
+}
+
 fn parse_position_try_order_value(raw: &str) -> Option<PositionTryOrder> {
   let trimmed = trim_ascii_whitespace(raw);
   if trimmed.is_empty() {
@@ -12589,19 +12617,53 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "grid-column" => {
+      // Spec: https://www.w3.org/TR/css-grid-1/#placement-shorthands
+      //
+      // `grid-column` is a shorthand for `grid-column-start`/`grid-column-end`.
+      // When the slash is omitted:
+      // - if the first value is a <custom-ident>, the end value is also set to that ident
+      // - otherwise, the end value is `auto`.
+      //
+      // Store the normalized raw value (Taffy parses it later).
+      let is_custom_ident = |value: &str| {
+        let trimmed = trim_ascii_whitespace(value);
+        if trimmed.is_empty() {
+          return false;
+        }
+        if trimmed.eq_ignore_ascii_case("auto") || trimmed.eq_ignore_ascii_case("span") {
+          return false;
+        }
+        if trimmed.contains('/') {
+          return false;
+        }
+        if trimmed
+          .chars()
+          .any(|ch| matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+        {
+          return false;
+        }
+        // <custom-ident> cannot be an <integer>.
+        trimmed.parse::<i32>().is_err()
+      };
+
       match resolved_value {
         PropertyValue::Keyword(kw) => {
-          // Store raw value for later resolution (after grid-template-columns is set).
-          //
-          // Note: `grid-column: 1` is parsed as a numeric value by `parse_simple_value`, and
-          // values produced by `var()`/`calc()` can also resolve to a bare number (e.g. `2`).
-          // Preserve those too so grid items can be placed on numeric grid lines and later
-          // declarations can override earlier shorthands (avoiding overlapping grid items).
-          styles.grid_column_raw = Some(kw.clone());
+          let normalized = if kw.contains('/') {
+            kw.clone()
+          } else if is_custom_ident(kw) {
+            format!("{kw} / {kw}")
+          } else {
+            kw.clone()
+          };
+          styles.grid_column_raw = Some(normalized);
+          styles.grid_column_start = 0;
+          styles.grid_column_end = 0;
         }
         PropertyValue::Number(n) => {
           if n.is_finite() && *n == n.round() && *n != 0.0 {
             styles.grid_column_raw = Some((*n as i32).to_string());
+            styles.grid_column_start = 0;
+            styles.grid_column_end = 0;
           }
         }
         _ => {}
@@ -12669,15 +12731,50 @@ fn apply_declaration_with_base_internal_with_order(
       styles.grid_column_raw = Some(format!("{current_start} / span {span}"));
     }
     "grid-row" => {
+      // Spec: https://www.w3.org/TR/css-grid-1/#placement-shorthands
+      //
+      // `grid-row` is a shorthand for `grid-row-start`/`grid-row-end`.
+      // When the slash is omitted:
+      // - if the first value is a <custom-ident>, the end value is also set to that ident
+      // - otherwise, the end value is `auto`.
+      let is_custom_ident = |value: &str| {
+        let trimmed = trim_ascii_whitespace(value);
+        if trimmed.is_empty() {
+          return false;
+        }
+        if trimmed.eq_ignore_ascii_case("auto") || trimmed.eq_ignore_ascii_case("span") {
+          return false;
+        }
+        if trimmed.contains('/') {
+          return false;
+        }
+        if trimmed
+          .chars()
+          .any(|ch| matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+        {
+          return false;
+        }
+        trimmed.parse::<i32>().is_err()
+      };
+
       match resolved_value {
         PropertyValue::Keyword(kw) => {
-          // Store raw value for later resolution (after grid-template-rows is set)
-          styles.grid_row_raw = Some(kw.clone());
+          let normalized = if kw.contains('/') {
+            kw.clone()
+          } else if is_custom_ident(kw) {
+            format!("{kw} / {kw}")
+          } else {
+            kw.clone()
+          };
+          styles.grid_row_raw = Some(normalized);
+          styles.grid_row_start = 0;
+          styles.grid_row_end = 0;
         }
         PropertyValue::Number(n) => {
-          // Handle numeric values like "2".
           if n.is_finite() && *n == n.round() && *n != 0.0 {
             styles.grid_row_raw = Some((*n as i32).to_string());
+            styles.grid_row_start = 0;
+            styles.grid_row_end = 0;
           }
         }
         _ => {}
@@ -12737,90 +12834,228 @@ fn apply_declaration_with_base_internal_with_order(
       styles.grid_row_raw = Some(format!("{current_start} / span {span}"));
     }
     "grid-column-start" => {
-      if let PropertyValue::Keyword(kw) = resolved_value {
-        // For explicit start/end, we can parse immediately if numeric
-        if let Ok(n) = kw.parse::<i32>() {
-          styles.grid_column_start = n;
-        } else {
-          // Store in grid_column_raw for deferred resolution
-          let current_end = styles
-            .grid_column_raw
-            .as_ref()
-            .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
-            .unwrap_or("auto");
-          styles.grid_column_raw = Some(format!("{} / {}", kw, current_end));
+      // `grid-column-start` accepts <<grid-line>>. Support both Keyword and Number values since the
+      // CSS parser eagerly parses bare numbers into `PropertyValue::Number`.
+      let value = match resolved_value {
+        PropertyValue::Keyword(kw) => {
+          let trimmed = trim_ascii_whitespace(kw);
+          if trimmed.is_empty() {
+            return;
+          }
+          if let Ok(n) = trimmed.parse::<i32>() {
+            if n == 0 {
+              return;
+            }
+            n.to_string()
+          } else {
+            kw.clone()
+          }
         }
-      }
+        PropertyValue::Number(n) => {
+          if !n.is_finite() || *n != n.round() || *n == 0.0 {
+            return;
+          }
+          (*n as i32).to_string()
+        }
+        _ => return,
+      };
+
+      let (_current_start, current_end) = split_grid_axis_start_end(
+        styles.grid_column_raw.as_deref(),
+        styles.grid_column_start,
+        styles.grid_column_end,
+      );
+      let start = value;
+      let end = current_end;
+      styles.grid_column_raw = Some(format!("{start} / {end}"));
+      styles.grid_column_start = 0;
+      styles.grid_column_end = 0;
     }
     "grid-column-end" => {
-      if let PropertyValue::Keyword(kw) = resolved_value {
-        if let Ok(n) = kw.parse::<i32>() {
-          styles.grid_column_end = n;
-        } else {
-          let current_start = styles
-            .grid_column_raw
-            .as_ref()
-            .map(|raw| raw.split_once('/').map(|(s, _)| s).unwrap_or(raw))
-            .map(|s| trim_ascii_whitespace(s))
-            .unwrap_or("auto");
-          styles.grid_column_raw = Some(format!("{current_start} / {kw}"));
+      let value = match resolved_value {
+        PropertyValue::Keyword(kw) => {
+          let trimmed = trim_ascii_whitespace(kw);
+          if trimmed.is_empty() {
+            return;
+          }
+          if let Ok(n) = trimmed.parse::<i32>() {
+            if n == 0 {
+              return;
+            }
+            n.to_string()
+          } else {
+            kw.clone()
+          }
         }
-      }
+        PropertyValue::Number(n) => {
+          if !n.is_finite() || *n != n.round() || *n == 0.0 {
+            return;
+          }
+          (*n as i32).to_string()
+        }
+        _ => return,
+      };
+
+      let (current_start, _current_end) = split_grid_axis_start_end(
+        styles.grid_column_raw.as_deref(),
+        styles.grid_column_start,
+        styles.grid_column_end,
+      );
+      let start = current_start;
+      let end = value;
+      styles.grid_column_raw = Some(format!("{start} / {end}"));
+      styles.grid_column_start = 0;
+      styles.grid_column_end = 0;
     }
     "grid-row-start" => {
-      if let PropertyValue::Keyword(kw) = resolved_value {
-        if let Ok(n) = kw.parse::<i32>() {
-          styles.grid_row_start = n;
-        } else {
-          let current_end = styles
-            .grid_row_raw
-            .as_ref()
-            .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
-            .unwrap_or("auto");
-          styles.grid_row_raw = Some(format!("{} / {}", kw, current_end));
+      let value = match resolved_value {
+        PropertyValue::Keyword(kw) => {
+          let trimmed = trim_ascii_whitespace(kw);
+          if trimmed.is_empty() {
+            return;
+          }
+          if let Ok(n) = trimmed.parse::<i32>() {
+            if n == 0 {
+              return;
+            }
+            n.to_string()
+          } else {
+            kw.clone()
+          }
         }
-      }
+        PropertyValue::Number(n) => {
+          if !n.is_finite() || *n != n.round() || *n == 0.0 {
+            return;
+          }
+          (*n as i32).to_string()
+        }
+        _ => return,
+      };
+
+      let (_current_start, current_end) = split_grid_axis_start_end(
+        styles.grid_row_raw.as_deref(),
+        styles.grid_row_start,
+        styles.grid_row_end,
+      );
+      let start = value;
+      let end = current_end;
+      styles.grid_row_raw = Some(format!("{start} / {end}"));
+      styles.grid_row_start = 0;
+      styles.grid_row_end = 0;
     }
     "grid-row-end" => {
-      if let PropertyValue::Keyword(kw) = resolved_value {
-        if let Ok(n) = kw.parse::<i32>() {
-          styles.grid_row_end = n;
-        } else {
-          let current_start = styles
-            .grid_row_raw
-            .as_ref()
-            .map(|raw| raw.split_once('/').map(|(s, _)| s).unwrap_or(raw))
-            .map(|s| trim_ascii_whitespace(s))
-            .unwrap_or("auto");
-          styles.grid_row_raw = Some(format!("{current_start} / {kw}"));
+      let value = match resolved_value {
+        PropertyValue::Keyword(kw) => {
+          let trimmed = trim_ascii_whitespace(kw);
+          if trimmed.is_empty() {
+            return;
+          }
+          if let Ok(n) = trimmed.parse::<i32>() {
+            if n == 0 {
+              return;
+            }
+            n.to_string()
+          } else {
+            kw.clone()
+          }
         }
-      }
+        PropertyValue::Number(n) => {
+          if !n.is_finite() || *n != n.round() || *n == 0.0 {
+            return;
+          }
+          (*n as i32).to_string()
+        }
+        _ => return,
+      };
+
+      let (current_start, _current_end) = split_grid_axis_start_end(
+        styles.grid_row_raw.as_deref(),
+        styles.grid_row_start,
+        styles.grid_row_end,
+      );
+      let start = current_start;
+      let end = value;
+      styles.grid_row_raw = Some(format!("{start} / {end}"));
+      styles.grid_row_start = 0;
+      styles.grid_row_end = 0;
     }
     "grid-area" => {
-      if let PropertyValue::Keyword(kw) | PropertyValue::String(kw) = resolved_value {
-        let parts: Vec<&str> = kw
-          .split('/')
-          .map(trim_ascii_whitespace)
-          .filter(|s| !s.is_empty())
-          .collect();
-        if parts.is_empty() {
-          return;
+      // Spec: https://www.w3.org/TR/css-grid-1/#placement-shorthands
+      //
+      // `grid-area` is a shorthand for `grid-row-start` / `grid-column-start` / `grid-row-end` /
+      // `grid-column-end`, with special defaulting rules when values are omitted.
+      let raw = match resolved_value {
+        PropertyValue::Keyword(kw) | PropertyValue::String(kw) => kw.clone(),
+        PropertyValue::Number(n) => {
+          if !n.is_finite() || *n != n.round() || *n == 0.0 {
+            return;
+          }
+          (*n as i32).to_string()
         }
-        let mut row_start = parts.first().copied().unwrap_or("auto").to_string();
-        let mut col_start = parts.get(1).copied().unwrap_or("auto").to_string();
-        let mut row_end = parts.get(2).copied().unwrap_or("auto").to_string();
-        let col_end = if parts.len() == 1 {
-          // Single area name: map to area start/end
-          row_start = format!("{}-start", parts[0]);
-          row_end = format!("{}-end", parts[0]);
-          col_start = row_start.clone();
-          row_end.clone()
-        } else {
-          parts.get(3).copied().unwrap_or("auto").to_string()
-        };
-        styles.grid_row_raw = Some(format!("{} / {}", row_start, row_end));
-        styles.grid_column_raw = Some(format!("{} / {}", col_start, col_end));
+        _ => return,
+      };
+
+      let raw = trim_ascii_whitespace(&raw);
+      if raw.is_empty() {
+        return;
       }
+
+      let parts: Vec<&str> = raw.split('/').map(trim_ascii_whitespace).collect();
+      if parts.is_empty() || parts.len() > 4 {
+        return;
+      }
+      if parts.iter().any(|part| part.is_empty()) {
+        return;
+      }
+
+      let is_custom_ident = |value: &str| {
+        let trimmed = trim_ascii_whitespace(value);
+        if trimmed.is_empty() {
+          return false;
+        }
+        if trimmed.eq_ignore_ascii_case("auto") || trimmed.eq_ignore_ascii_case("span") {
+          return false;
+        }
+        if trimmed.contains('/') {
+          return false;
+        }
+        if trimmed
+          .chars()
+          .any(|ch| matches!(ch, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+        {
+          return false;
+        }
+        trimmed.parse::<i32>().is_err()
+      };
+
+      // Values as defined in the spec (row-start / col-start / row-end / col-end).
+      let row_start = parts[0];
+      let mut col_start = parts.get(1).copied();
+      let mut row_end = parts.get(2).copied();
+      let mut col_end = parts.get(3).copied();
+
+      if col_start.is_none() {
+        if is_custom_ident(row_start) {
+          // When `grid-column-start` is omitted and `grid-row-start` is a <custom-ident>, all four
+          // longhands are set to that value.
+          col_start = Some(row_start);
+          row_end = Some(row_start);
+          col_end = Some(row_start);
+        } else {
+          col_start = Some("auto");
+        }
+      }
+
+      let col_start = col_start.unwrap_or("auto");
+      let row_end = row_end.unwrap_or_else(|| if is_custom_ident(row_start) { row_start } else { "auto" });
+      let col_end = col_end.unwrap_or_else(|| if is_custom_ident(col_start) { col_start } else { "auto" });
+
+      styles.grid_row_raw = Some(format!("{row_start} / {row_end}"));
+      styles.grid_column_raw = Some(format!("{col_start} / {col_end}"));
+      styles.grid_row_start = 0;
+      styles.grid_row_end = 0;
+      styles.grid_column_start = 0;
+      styles.grid_column_end = 0;
     }
 
     // Typography
