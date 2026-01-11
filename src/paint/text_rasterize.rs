@@ -1326,7 +1326,11 @@ impl TextRasterizer {
           continue;
         }
 
-        let base_sub = local_x * 3;
+        // `tiny-skia` treats pixel centers as integer coordinates. When we upscale X by 3 to model
+        // LCD subpixels, the three subpixel centers for a device pixel at integer `x` are located
+        // at `3*x-1`, `3*x`, and `3*x+1` in subpixel coordinates (rather than `3*x`, `3*x+1`,
+        // `3*x+2`). Offset by one subpixel so the green coverage is centered on the device pixel.
+        let base_sub = local_x * SUBPIXEL_AA_SCALE_X as i32 - 1;
         let mut cov_r = subpixel_aa_lcd_filtered_alpha(row, base_sub, width_sub_i32);
         let mut cov_g = subpixel_aa_lcd_filtered_alpha(row, base_sub + 1, width_sub_i32);
         let mut cov_b = subpixel_aa_lcd_filtered_alpha(row, base_sub + 2, width_sub_i32);
@@ -3586,7 +3590,6 @@ mod tests {
     });
   }
 
-  #[test]
   fn subpixel_lcd_filter_clamps_above_255() {
     // FreeType's default LCD kernel sums to 272, so a fully-covered run of subpixels yields a value
     // > 255 after the fixed-point divide-by-256. Ensure we clamp instead of wrapping a u8.
@@ -3606,5 +3609,56 @@ mod tests {
     let mut row = vec![0u8; width_sub_i32 as usize * 4];
     row[3 * 4 + 3] = 255;
     assert_eq!(subpixel_aa_lcd_filtered_alpha(&row, 3, width_sub_i32), 112);
+  }
+
+  #[test]
+  fn subpixel_text_rasterization_uses_centered_subpixel_sampling() {
+    // Regression test for LCD/subpixel AA alignment.
+    //
+    // When converting the 3×-upsampled alpha mask back into device pixels, each device pixel's
+    // three samples must be centered on the device pixel center (`3*x-1`, `3*x`, `3*x+1` in the
+    // upsampled grid). Sampling `3*x`, `3*x+1`, `3*x+2` shifts the effective coverage by 1/3 px and
+    // produces asymmetric fringes on simple axis-aligned edges.
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_TEXT_SUBPIXEL_AA".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_runtime_toggles(toggles, || {
+      let mut rasterizer = TextRasterizer::new();
+      assert!(rasterizer.subpixel_aa_enabled);
+
+      let mut pixmap = Pixmap::new(16, 4).unwrap();
+      pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+
+      // A wide white rectangle whose vertical edges pass through the centers of device pixels at
+      // x=4 and x=12. Subpixel AA should therefore produce a monotonic channel ramp across each
+      // edge: R<G<B on the left edge (coverage increasing to the right), and R>G>B on the right
+      // edge.
+      let rect = tiny_skia::Rect::from_xywh(4.0, -10.0, 8.0, 24.0).unwrap();
+      let path = tiny_skia::PathBuilder::from_rect(rect);
+      rasterizer
+        .fill_path_subpixel_aa(&mut pixmap, &path, Transform::identity(), 1.0, Rgba::WHITE, None)
+        .unwrap();
+
+      let sample = |x: usize, y: usize| -> (u8, u8, u8) {
+        let idx = (y * pixmap.width() as usize + x) * 4;
+        (pixmap.data()[idx], pixmap.data()[idx + 1], pixmap.data()[idx + 2])
+      };
+
+      // Sanity: interior pixel should be fully covered.
+      assert_eq!(sample(8, 1), (255, 255, 255));
+
+      let (r_l, g_l, b_l) = sample(4, 1);
+      assert!(
+        r_l < g_l && g_l < b_l,
+        "expected left edge to ramp R<G<B, got ({r_l},{g_l},{b_l})"
+      );
+
+      let (r_r, g_r, b_r) = sample(12, 1);
+      assert!(
+        r_r > g_r && g_r > b_r,
+        "expected right edge to ramp R>G>B, got ({r_r},{g_r},{b_r})"
+      );
+    });
   }
 }
