@@ -816,6 +816,9 @@ mod tests {
     // Fill the padding with non-zero bytes to validate the parser skips it.
     align_to_8_with(&mut bytes, 0xAB);
 
+    // Live-out header: u16 Padding; u16 NumLiveOuts.
+    // Keep the padding field non-zero to validate the parser ignores its content.
+    push_u16(&mut bytes, 0xABAB);
     // Include an even number of liveouts so the record-end padding path is exercised.
     push_u16(&mut bytes, 0); // padding
     push_u16(&mut bytes, 2); // num_liveouts

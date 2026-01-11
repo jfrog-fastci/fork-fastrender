@@ -731,13 +731,16 @@ mod tests {
     push_location_indirect(&mut out, 8, 7, derived_off);
 
     // StackMap v3 aligns the live-out header (u16 Padding + u16 NumLiveOuts) to an 8-byte boundary
-    // after the locations array.
+    // after the locations array. This parser requires the padding bytes be zero.
     while out.len() % 8 != 0 {
       push_u8(&mut out, 0);
     }
+
+    // Live-out header: u16 Padding; u16 NumLiveOuts.
     push_u16(&mut out, 0); // Padding
     push_u16(&mut out, 0); // NumLiveOuts = 0
-    // Records are 8-byte aligned after the live-out array too.
+
+    // Records are 8-byte aligned after the live-out array too (even when empty).
     while out.len() % 8 != 0 {
       push_u8(&mut out, 0);
     }
