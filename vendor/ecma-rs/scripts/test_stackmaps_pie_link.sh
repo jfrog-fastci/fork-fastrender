@@ -124,6 +124,81 @@ if readelf -l "${out}" | grep "RWE" >/dev/null; then
   exit 1
 fi
 
+# Ensure stackmaps are not placed into a standalone RW PT_LOAD segment: locate the output section
+# that contains `__start_llvm_stackmaps` and ensure its PT_LOAD segment also contains `.dynamic`.
+segments="$(readelf -W -l "${out}")"
+start_hex="$(readelf -W -s "${out}" | awk '$8=="__start_llvm_stackmaps" { print $2; exit }')"
+if [[ -z "${start_hex}" ]]; then
+  echo "error: missing __start_llvm_stackmaps in PIE output" >&2
+  readelf -W -s "${out}" >&2 || true
+  exit 1
+fi
+start_dec=$((16#${start_hex}))
+
+stackmaps_section=""
+while read -r name addr_hex size_hex; do
+  addr_dec=$((16#${addr_hex}))
+  size_dec=$((16#${size_hex}))
+  if (( size_dec == 0 )); then
+    continue
+  fi
+  end_dec=$((addr_dec + size_dec))
+  if (( addr_dec <= start_dec && start_dec < end_dec )); then
+    stackmaps_section="${name}"
+    break
+  fi
+done < <(
+  readelf -W -S "${out}" | awk '
+    $1 == "[" { print $3, $5, $7; next }
+    $1 ~ /^[[][0-9]+[]]$/ { print $2, $4, $6; next }
+  '
+)
+
+if [[ -z "${stackmaps_section}" ]]; then
+  echo "error: failed to find a section containing __start_llvm_stackmaps (0x${start_hex})" >&2
+  readelf -W -S "${out}" >&2 || true
+  exit 1
+fi
+
+stackmaps_seg_sections="$(
+  printf '%s\n' "${segments}" | awk -v target="${stackmaps_section}" '
+    $0 ~ /Section to Segment mapping:/ { in_map=1; next }
+    !in_map { next }
+    $1 == "Segment" { next }
+    $1 ~ /^[0-9]+$/ {
+      if (seg != "") {
+        if (found) { print acc; exit }
+      }
+      seg = $1
+      acc = ""
+      found = 0
+      for (i = 2; i <= NF; i++) {
+        acc = acc $i " "
+        if ($i == target) found = 1
+      }
+      next
+    }
+    {
+      if (seg == "") next
+      for (i = 1; i <= NF; i++) {
+        acc = acc $i " "
+        if ($i == target) found = 1
+      }
+    }
+    END { if (found) print acc }'
+)"
+if [[ -z "${stackmaps_seg_sections}" ]]; then
+  echo "error: failed to locate stackmaps section (${stackmaps_section}) in readelf segment mapping" >&2
+  echo "${segments}" >&2
+  exit 1
+fi
+if [[ " ${stackmaps_seg_sections} " != *" .dynamic "* ]]; then
+  echo "error: expected stackmaps section (${stackmaps_section}) PT_LOAD segment to also contain .dynamic" >&2
+  echo "  segment sections: ${stackmaps_seg_sections}" >&2
+  echo "${segments}" >&2
+  exit 1
+fi
+
 output="$("${out}")"
 echo "${output}"
 echo "${output}" | grep 'stackmaps: version=3' >/dev/null || {
