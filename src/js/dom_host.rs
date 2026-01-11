@@ -68,23 +68,20 @@ pub fn dom_host_vmjs(host: &mut dyn VmHost) -> Option<&mut dyn DomHostVmJs> {
 
   let any = host.as_any_mut();
   let ty = any.type_id();
-  let ptr = any as *mut dyn std::any::Any;
-
-  // SAFETY: we only cast the erased `Any` pointer back to a concrete type after checking its
-  // runtime `TypeId`.
-  unsafe {
-    if ty == TypeId::of::<crate::js::host_document::DocumentHostState>() {
-      let host = &mut *(ptr as *mut crate::js::host_document::DocumentHostState);
-      return Some(host as &mut dyn DomHostVmJs);
-    }
-
-    if ty == TypeId::of::<crate::api::BrowserDocumentDom2>() {
-      let host = &mut *(ptr as *mut crate::api::BrowserDocumentDom2);
-      return Some(host as &mut dyn DomHostVmJs);
-    }
+  if ty == TypeId::of::<crate::js::host_document::DocumentHostState>() {
+    // `ty` check guarantees the downcast succeeds.
+    let host = any
+      .downcast_mut::<crate::js::host_document::DocumentHostState>()
+      .expect("checked type id");
+    Some(host as &mut dyn DomHostVmJs)
+  } else if ty == TypeId::of::<crate::api::BrowserDocumentDom2>() {
+    let host = any
+      .downcast_mut::<crate::api::BrowserDocumentDom2>()
+      .expect("checked type id");
+    Some(host as &mut dyn DomHostVmJs)
+  } else {
+    None
   }
-
-  None
 }
 
 impl<T> DomHostVmJs for T
