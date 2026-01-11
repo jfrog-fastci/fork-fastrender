@@ -187,10 +187,15 @@ pub unsafe extern "C" fn rt_async_spawn(_coro: CoroutineRef) -> PromiseRef {
 
 /// Drive the async scheduler/executor.
 ///
-/// Returns `true` if any work was performed.
+/// Returns `true` if there is still pending work after this turn (queued
+/// microtasks/macrotasks, timers, or I/O watchers).
+///
+/// Returns `false` when the runtime is fully idle.
 #[no_mangle]
-pub unsafe extern "C" fn rt_async_poll() -> bool {
-  crate::ffi::abort_on_panic(|| todo!("rt_async_poll is not implemented yet"))
+pub extern "C" fn rt_async_poll() -> bool {
+  // Reuse the existing JS-shaped event loop for now so timers and I/O driven by
+  // `async_rt` make progress from Rust tests and generated code.
+  crate::ffi::abort_on_panic(|| crate::exports::rt_async_poll_legacy())
 }
 
 /// Initialize a newly allocated promise header to the pending state.
@@ -593,7 +598,7 @@ mod tests {
     let _promise_fulfill: unsafe extern "C" fn(PromiseRef) = rt_promise_fulfill;
     let _promise_reject: unsafe extern "C" fn(PromiseRef) = rt_promise_reject;
     let _async_spawn: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn;
-    let _async_poll: unsafe extern "C" fn() -> bool = rt_async_poll;
+    let _async_poll: extern "C" fn() -> bool = rt_async_poll;
     let _promise_new_legacy: extern "C" fn() -> abi::PromiseRef = rt_promise_new_legacy;
     let _promise_resolve_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve_legacy;
     let _promise_reject_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
