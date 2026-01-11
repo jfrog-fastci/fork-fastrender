@@ -460,16 +460,20 @@ pub fn validate_native_strict_body(
             }
 
             if let ExprKind::Member(member) = &callee.kind {
-              let is_call_like =
-                (object_key_is_ident(&member.property, call_name)
+              let prop_is_call =
+                object_key_is_ident(&member.property, call_name)
                   || object_key_is_string(&member.property, "call")
-                  || object_key_is_literal_string(body, &member.property, "call"))
-                  || (object_key_is_ident(&member.property, apply_name)
-                    || object_key_is_string(&member.property, "apply")
-                    || object_key_is_literal_string(body, &member.property, "apply"))
-                  || (object_key_is_ident(&member.property, bind_name)
-                    || object_key_is_string(&member.property, "bind")
-                    || object_key_is_literal_string(body, &member.property, "bind"));
+                  || object_key_is_literal_string(body, &member.property, "call");
+              let prop_is_apply =
+                object_key_is_ident(&member.property, apply_name)
+                  || object_key_is_string(&member.property, "apply")
+                  || object_key_is_literal_string(body, &member.property, "apply");
+              let prop_is_bind =
+                object_key_is_ident(&member.property, bind_name)
+                  || object_key_is_string(&member.property, "bind")
+                  || object_key_is_literal_string(body, &member.property, "bind");
+              let is_call_like = prop_is_call || prop_is_apply || prop_is_bind;
+              let is_call_or_apply = prop_is_call || prop_is_apply;
               if is_call_like
                 && expr_is_ident_or_global_this_member(
                   body,
@@ -515,19 +519,7 @@ pub fn validate_native_strict_body(
                 ));
               }
 
-              let prop_is_call = object_key_is_ident(&member.property, call_name)
-                || object_key_is_string(&member.property, "call")
-                || object_key_is_literal_string(body, &member.property, "call");
-              let prop_is_apply = object_key_is_ident(&member.property, apply_name)
-                || object_key_is_string(&member.property, "apply")
-                || object_key_is_literal_string(body, &member.property, "apply");
-              let prop_is_bind = object_key_is_ident(&member.property, bind_name)
-                || object_key_is_string(&member.property, "bind")
-                || object_key_is_literal_string(body, &member.property, "bind");
-
-              let is_call_or_apply = prop_is_call || prop_is_apply;
-              let is_call_apply_or_bind = is_call_or_apply || prop_is_bind;
-              if is_call_apply_or_bind
+              if is_call_like
                 && (expr_is_builtin_member(
                   body,
                   member.object,
@@ -553,13 +545,6 @@ pub fn validate_native_strict_body(
                 ));
               }
 
-              let is_call_or_apply =
-                (object_key_is_ident(&member.property, call_name)
-                  || object_key_is_string(&member.property, "call")
-                  || object_key_is_literal_string(body, &member.property, "call"))
-                  || (object_key_is_ident(&member.property, apply_name)
-                    || object_key_is_string(&member.property, "apply")
-                    || object_key_is_literal_string(body, &member.property, "apply"));
               if is_call_or_apply {
                 let obj_is_object_define_property = expr_is_builtin_member(
                   body,
