@@ -1149,6 +1149,52 @@ pub extern "C" fn rt_parallel_spawn_rooted(task: extern "C" fn(*mut u8), data: *
 }
 
 #[no_mangle]
+pub extern "C" fn rt_parallel_spawn_promise_legacy(
+  task: extern "C" fn(*mut u8, PromiseRef),
+  data: *mut u8,
+) -> PromiseRef {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_current_thread_registered();
+    // Ensure the async runtime is initialized so promise settlement can wake a blocked `epoll_wait`.
+    let _ = async_rt::global();
+
+    let promise = async_rt::promise::promise_new();
+    if !promise.is_null() {
+      let header = promise.0.cast::<PromiseHeader>();
+      if header.is_null() {
+        std::process::abort();
+      }
+      unsafe {
+        (*header).flags.fetch_or(crate::async_abi::PROMISE_FLAG_EXTERNAL_PENDING, Ordering::Release);
+      }
+      async_rt::external_pending_inc();
+    }
+
+    #[repr(C)]
+    struct WorkItem {
+      task: extern "C" fn(*mut u8, PromiseRef),
+      data: *mut u8,
+      promise: PromiseRef,
+    }
+
+    // Raw pointers are not `Send` by default; in the runtime ABI the caller is responsible for
+    // ensuring `data` is valid to access from a parallel worker thread.
+    unsafe impl Send for WorkItem {}
+
+    extern "C" fn run_work_item(data: *mut u8) {
+      // Safety: allocated by `Box::into_raw` below.
+      let work = unsafe { Box::from_raw(data as *mut WorkItem) };
+      (work.task)(work.data, work.promise);
+    }
+
+    let work = Box::new(WorkItem { task, data, promise });
+    crate::rt_parallel().spawn_detached(run_work_item, Box::into_raw(work) as *mut u8);
+    promise
+  })
+}
+
+#[no_mangle]
 pub extern "C" fn rt_parallel_join(tasks: *const TaskId, count: usize) {
   let res = catch_unwind(AssertUnwindSafe(|| {
     let _ = crate::rt_ensure_init();

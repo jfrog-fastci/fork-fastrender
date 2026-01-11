@@ -2,7 +2,7 @@ use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
-use crate::async_abi::PromiseHeader;
+use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING};
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
 use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
@@ -283,6 +283,20 @@ fn drain_reactions(ptr: *mut RtPromise) {
   enqueue_reaction_jobs(promise, head);
 }
 
+#[inline]
+fn maybe_clear_external_pending(promise: *mut PromiseHeader) {
+  if promise.is_null() {
+    return;
+  }
+  if (promise as usize) % core::mem::align_of::<PromiseHeader>() != 0 {
+    std::process::abort();
+  }
+  let prev = unsafe { &(*promise).flags }.fetch_and(!PROMISE_FLAG_EXTERNAL_PENDING, Ordering::AcqRel);
+  if (prev & PROMISE_FLAG_EXTERNAL_PENDING) != 0 {
+    crate::async_rt::external_pending_dec();
+  }
+}
+
 pub(crate) fn promise_is_handled(p: PromiseRef) -> bool {
   if p.is_null() {
     // Null is a "never settles" sentinel and is not eligible for rejection tracking.
@@ -413,6 +427,7 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
     )
     .is_err()
   {
+    maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
     if let Some(hook) = hook {
       hook.notify_resolved();
     }
@@ -439,6 +454,7 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
   state.store(PromiseHeader::FULFILLED, Ordering::Release);
 
   drain_reactions(ptr);
+  maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
 
   if let Some(hook) = hook {
     hook.notify_resolved();
@@ -466,6 +482,7 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
     )
     .is_err()
   {
+    maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
     if let Some(hook) = hook {
       hook.notify_resolved();
     }
@@ -496,6 +513,7 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
   }
 
   drain_reactions(ptr);
+  maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
 
   if let Some(hook) = hook {
     hook.notify_resolved();

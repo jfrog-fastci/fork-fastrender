@@ -98,6 +98,14 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "`runtime_native.h` is missing the Microtask ABI type"
   );
 
+  // Parallel → Promise bridge.
+  for sym in ["rt_parallel_spawn_promise_legacy("] {
+    assert!(
+      HEADER.contains(sym),
+      "`runtime_native.h` is missing expected ABI symbol: {sym}"
+    );
+  }
+
   // Stats APIs are feature-gated on the Rust side; the C header uses a macro
   // guard to avoid exposing unavailable symbols by default.
   assert!(
@@ -149,6 +157,12 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _backing_store_external_bytes: extern "C" fn() -> usize =
     runtime_native::rt_backing_store_external_bytes;
   let _keep_alive: unsafe extern "C" fn(*mut u8) = rt_keep_alive_gc_ref;
+
+  // Parallel → Promise bridge.
+  let _parallel_spawn_promise: extern "C" fn(
+    extern "C" fn(*mut u8, runtime_native::abi::PromiseRef),
+    *mut u8,
+  ) -> runtime_native::abi::PromiseRef = runtime_native::rt_parallel_spawn_promise_legacy;
 
   // Global root registration.
   let _register_root_slot: extern "C" fn(*mut *mut u8) -> u32 =
@@ -230,6 +244,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _write_barrier_range,
     _backing_store_external_bytes,
     _keep_alive,
+    _parallel_spawn_promise,
     _register_root_slot,
     _unregister_root_slot,
     _pin,

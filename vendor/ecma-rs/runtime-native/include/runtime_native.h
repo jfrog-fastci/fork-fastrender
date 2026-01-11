@@ -575,6 +575,12 @@ TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);
 // - The runtime registers a strong GC root for `data` until the task completes.
 // - The returned `TaskId` must still be joined exactly once.
 TaskId rt_parallel_spawn_rooted(void (*task)(uint8_t*), uint8_t* data);
+// Spawn `task(data, promise)` on the runtime's parallel worker pool and return a legacy promise
+// settled by the task.
+//
+// The task is responsible for resolving/rejecting the promise via `rt_promise_resolve_legacy` /
+// `rt_promise_reject_legacy`.
+LegacyPromiseRef rt_parallel_spawn_promise_legacy(void (*task)(uint8_t* data, LegacyPromiseRef promise), uint8_t* data);
 void rt_parallel_join(const TaskId* tasks, size_t count);
 // Parallel-for convenience API.
 //

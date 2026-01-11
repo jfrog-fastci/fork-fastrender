@@ -510,3 +510,64 @@ fn parallel_spawn_promise_promise_all_like() {
     drop(Box::from_raw(all_state_ptr));
   }
 }
+
+#[test]
+fn parallel_spawn_promise_legacy_runs_task_on_worker_and_continuation_on_event_loop_thread() {
+  let _rt = TestRuntimeGuard::new();
+
+  #[repr(C)]
+  struct Data {
+    main_thread: std::thread::ThreadId,
+    ran_on_other_thread: AtomicBool,
+    continuation_on_main_thread: AtomicBool,
+    settled: AtomicBool,
+  }
+
+  extern "C" fn task(data: *mut u8, promise: PromiseRef) {
+    let data = unsafe { &*(data as *const Data) };
+    data
+      .ran_on_other_thread
+      .store(std::thread::current().id() != data.main_thread, Ordering::Release);
+    runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
+  }
+
+  extern "C" fn on_settle(data: *mut u8) {
+    let data = unsafe { &*(data as *const Data) };
+    data
+      .continuation_on_main_thread
+      .store(std::thread::current().id() == data.main_thread, Ordering::Release);
+    data.settled.store(true, Ordering::Release);
+  }
+
+  let data = Box::new(Data {
+    main_thread: std::thread::current().id(),
+    ran_on_other_thread: AtomicBool::new(false),
+    continuation_on_main_thread: AtomicBool::new(false),
+    settled: AtomicBool::new(false),
+  });
+  let data_ptr = Box::into_raw(data);
+
+  let promise = runtime_native::rt_parallel_spawn_promise_legacy(task, data_ptr.cast::<u8>());
+  runtime_native::rt_promise_then_legacy(promise, on_settle, data_ptr.cast::<u8>());
+
+  let start = Instant::now();
+  while !unsafe { &*data_ptr }.settled.load(Ordering::Acquire) {
+    runtime_native::rt_async_poll_legacy();
+    assert!(
+      start.elapsed() < Duration::from_secs(2),
+      "timeout waiting for legacy parallel promise to settle"
+    );
+  }
+
+  let ran_on_other_thread = unsafe { &*data_ptr }.ran_on_other_thread.load(Ordering::Acquire);
+  let continuation_on_main_thread = unsafe { &*data_ptr }
+    .continuation_on_main_thread
+    .load(Ordering::Acquire);
+
+  unsafe {
+    drop(Box::from_raw(data_ptr));
+  }
+
+  assert!(ran_on_other_thread);
+  assert!(continuation_on_main_thread);
+}
