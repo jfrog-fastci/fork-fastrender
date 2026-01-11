@@ -1,0 +1,43 @@
+use super::util::create_stacking_context_bounds_renderer;
+
+#[test]
+fn single_edge_bottom_border_snaps_like_chrome() {
+  // Chrome/Skia paints a `border-bottom: 1px solid` that starts on a fractional device pixel
+  // lower than a naïve 1px fill-rect. This prevents 1px "stripe swaps" on text-heavy pages where
+  // block positions accumulate fractional line-heights.
+  //
+  // Repro: place a bottom-only 1px border at a fractional y coordinate so the border's top edge
+  // falls between two device pixels.
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: #ff6600; }
+      #line {
+        position: absolute;
+        left: 0;
+        top: 0.35px;
+        width: 20px;
+        height: 0;
+        border-bottom: 1px solid #fff;
+      }
+    </style>
+    <div id="line"></div>
+  "#;
+
+  let mut renderer = create_stacking_context_bounds_renderer();
+  let pixmap = renderer.render_html(html, 30, 10).expect("render");
+
+  let above = pixmap.pixel(5, 0).expect("above pixel");
+  assert_eq!(
+    (above.red(), above.green(), above.blue(), above.alpha()),
+    (255, 102, 0, 255),
+    "expected pixel above border to remain background"
+  );
+
+  let border = pixmap.pixel(5, 1).expect("border pixel");
+  assert_eq!(
+    (border.red(), border.green(), border.blue(), border.alpha()),
+    (255, 255, 255, 255),
+    "expected bottom border to paint the lower device pixel row"
+  );
+}
+
