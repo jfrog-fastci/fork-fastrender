@@ -1,5 +1,5 @@
 use crate::CompileOptions;
-use parse_js::ast::expr::Expr;
+use parse_js::ast::expr::{CallArg, Expr};
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stx::TopLevel;
@@ -157,6 +157,68 @@ impl Codegen {
     }
   }
 
+  fn emit_print_value_inline(&mut self, value: Value) -> Result<(), CodegenError> {
+    match value.ty {
+      Ty::Number => {
+        let fmt = self.emit_string_ptr(b"%g");
+        self.emit(format!(
+          "  call i32 (ptr, ...) @printf(ptr {fmt}, double {})",
+          value.ir
+        ));
+        Ok(())
+      }
+      Ty::Bool => {
+        let true_ptr = self.emit_string_ptr(b"true");
+        let false_ptr = self.emit_string_ptr(b"false");
+        let sel = self.tmp();
+        self.emit(format!(
+          "  {sel} = select i1 {}, ptr {true_ptr}, ptr {false_ptr}",
+          value.ir
+        ));
+        let fmt = self.emit_string_ptr(b"%s");
+        self.emit(format!(
+          "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {sel})"
+        ));
+        Ok(())
+      }
+      Ty::String => {
+        let fmt = self.emit_string_ptr(b"%s");
+        self.emit(format!(
+          "  call i32 (ptr, ...) @printf(ptr {fmt}, ptr {})",
+          value.ir
+        ));
+        Ok(())
+      }
+      Ty::Void => Err(CodegenError::TypeError(
+        "cannot print a void expression".to_string(),
+      )),
+    }
+  }
+
+  fn emit_print_log_call(&mut self, args: &[Node<CallArg>]) -> Result<(), CodegenError> {
+    if args.is_empty() {
+      let empty = self.emit_string_ptr(b"");
+      self.emit(format!("  call i32 @puts(ptr {empty})"));
+      return Ok(());
+    }
+
+    for (idx, arg) in args.iter().enumerate() {
+      if arg.stx.spread {
+        return Err(CodegenError::UnsupportedExpr);
+      }
+      let v = self.compile_expr(&arg.stx.value)?;
+      self.emit_print_value_inline(v)?;
+      if idx + 1 != args.len() {
+        let space = self.emit_string_ptr(b" ");
+        self.emit(format!("  call i32 (ptr, ...) @printf(ptr {space})"));
+      }
+    }
+
+    let empty = self.emit_string_ptr(b"");
+    self.emit(format!("  call i32 @puts(ptr {empty})"));
+    Ok(())
+  }
+
   fn compile_stmt(&mut self, stmt: &Node<Stmt>) -> Result<(), CodegenError> {
     match stmt.stx.as_ref() {
       Stmt::Empty(_) => Ok(()),
@@ -243,9 +305,8 @@ impl Codegen {
           }
 
            match builtin {
-            BuiltinCall::Print { arg } => {
-              let v = self.compile_expr(arg)?;
-              self.emit_print_value(v)?;
+            BuiltinCall::Print { args } => {
+              self.emit_print_log_call(args)?;
               // Make stdout useful for debugging even when the program later traps (e.g. SIGSEGV).
               self.emit("  call i32 @fflush(ptr null)".to_string());
               Ok(Value::void())

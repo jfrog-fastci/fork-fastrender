@@ -3,7 +3,7 @@ use parse_js::ast::node::Node;
 
 #[derive(Clone, Copy, Debug)]
 pub enum BuiltinCall<'a> {
-  Print { arg: &'a Node<Expr> },
+  Print { args: &'a [Node<CallArg>] },
   Assert {
     cond: &'a Node<Expr>,
     msg: Option<&'a Node<Expr>>,
@@ -36,11 +36,13 @@ pub fn recognize_builtin(call: &Node<CallExpr>) -> Option<BuiltinCall<'_>> {
 
   // `print(x)`
   if is_ident(callee, "print") {
-    if call.stx.arguments.len() != 1 {
-      return None;
+    // Reject spread arguments for the builtin path (we don't model varargs semantics).
+    for arg in &call.stx.arguments {
+      arg_value(arg)?;
     }
-    let arg = arg_value(&call.stx.arguments[0])?;
-    return Some(BuiltinCall::Print { arg });
+    return Some(BuiltinCall::Print {
+      args: &call.stx.arguments,
+    });
   }
 
   // `assert(cond, msg?)`
@@ -83,11 +85,12 @@ pub fn recognize_builtin(call: &Node<CallExpr>) -> Option<BuiltinCall<'_>> {
       return None;
     }
 
-    if call.stx.arguments.len() != 1 {
-      return None;
+    for arg in &call.stx.arguments {
+      arg_value(arg)?;
     }
-    let arg = arg_value(&call.stx.arguments[0])?;
-    return Some(BuiltinCall::Print { arg });
+    return Some(BuiltinCall::Print {
+      args: &call.stx.arguments,
+    });
   }
 
   None

@@ -23,6 +23,21 @@ fn console_log_prints_number_expression() {
 }
 
 #[test]
+fn console_log_supports_multiple_args() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "console.log(1, true, \"x\");\n").unwrap();
+
+  let assert = native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success();
+
+  assert.stdout(predicate::eq("1 true x\n"));
+}
+
+#[test]
 fn print_alias_prints_booleans() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");
