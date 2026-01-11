@@ -185,7 +185,9 @@ fn parse_stackmap_blob(data: &[u8]) -> Result<(StackMapBlob, usize), StackMapPar
       c.read_i32()?; // offset / constant
     }
 
-    c.read_u16()?; // padding (align live-outs)
+    // StackMap v3 aligns the live-out header to 8 bytes after the locations array.
+    c.align_to(8)?;
+    c.read_u16()?; // padding
     let num_live_outs = c.read_u16()?;
     for _ in 0..num_live_outs {
       c.read_u16()?; // dwarf reg num
@@ -193,11 +195,8 @@ fn parse_stackmap_blob(data: &[u8]) -> Result<(StackMapBlob, usize), StackMapPar
       c.read_u8()?; // size
     }
 
-    // Trailing padding: LLVM writes a u32, then pads to 8-byte alignment (usually another u32).
-    c.read_u32()?;
-    if c.offset() % 8 != 0 {
-      c.read_u32()?;
-    }
+    // Records are 8-byte aligned after the live-out array.
+    c.align_to(8)?;
   }
 
   Ok((
@@ -303,6 +302,16 @@ impl<'a> Cursor<'a> {
   fn read_i32(&mut self) -> Result<i32, StackMapParseError> {
     let bytes = self.take::<4>()?;
     Ok(i32::from_le_bytes(bytes))
+  }
+
+  fn align_to(&mut self, align: usize) -> Result<(), StackMapParseError> {
+    debug_assert!(align.is_power_of_two());
+    let new_offset = (self.offset + (align - 1)) & !(align - 1);
+    if new_offset > self.data.len() {
+      return Err(StackMapParseError::UnexpectedEof(self.offset));
+    }
+    self.offset = new_offset;
+    Ok(())
   }
 
   fn take<const N: usize>(&mut self) -> Result<[u8; N], StackMapParseError> {
@@ -674,4 +683,116 @@ fn range_in_readable_load_segment(
   }
 
   false
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{parse_stackmap_blobs, StackMapBlob};
+
+  fn push_u8(buf: &mut Vec<u8>, v: u8) {
+    buf.push(v);
+  }
+  fn push_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_i32(buf: &mut Vec<u8>, v: i32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+  }
+
+  fn align_to_8(buf: &mut Vec<u8>) {
+    while buf.len() % 8 != 0 {
+      buf.push(0);
+    }
+  }
+
+  fn build_blob(record_id: u64, num_locations: u16, num_live_outs: u16) -> Vec<u8> {
+    let mut b = Vec::new();
+
+    // Header.
+    push_u8(&mut b, 3);
+    push_u8(&mut b, 0);
+    push_u16(&mut b, 0);
+    push_u32(&mut b, 1); // num_functions
+    push_u32(&mut b, 0); // num_constants
+    push_u32(&mut b, 1); // num_records
+
+    // Function record.
+    push_u64(&mut b, 0);
+    push_u64(&mut b, 0);
+    push_u64(&mut b, 1);
+
+    // Record.
+    push_u64(&mut b, record_id);
+    push_u32(&mut b, 0);
+    push_u16(&mut b, 0);
+    push_u16(&mut b, num_locations);
+
+    // Locations (12 bytes each). Kind=Register (1) with dummy fields.
+    for i in 0..num_locations {
+      let _ = i;
+      push_u8(&mut b, 1);
+      push_u8(&mut b, 0);
+      push_u16(&mut b, 8);
+      push_u16(&mut b, 0);
+      push_u16(&mut b, 0);
+      push_i32(&mut b, 0);
+    }
+
+    // Align to 8 before live-out header.
+    align_to_8(&mut b);
+    push_u16(&mut b, 0);
+    push_u16(&mut b, num_live_outs);
+
+    // LiveOut entries (4 bytes each).
+    for _ in 0..num_live_outs {
+      push_u16(&mut b, 0);
+      push_u8(&mut b, 0);
+      push_u8(&mut b, 8);
+    }
+
+    // Align record end to 8 (for next record / blob end).
+    align_to_8(&mut b);
+    b
+  }
+
+  #[test]
+  fn parses_blob_with_live_outs_and_no_trailing_padding() {
+    // Regression test: the loader must handle records where the live-out array leaves the
+    // record already 8-byte aligned (so there is no trailing padding). This occurs when the
+    // number of live-outs is odd and the locations array is already 8-byte aligned.
+    //
+    // Old parser logic always consumed at least one u32 of "trailing padding", which could
+    // incorrectly read into the next blob or hit EOF.
+    let blob = build_blob(0xAABBCCDD, 2, 1);
+    let blobs = parse_stackmap_blobs(&blob).expect("parse stackmap blob");
+    assert_eq!(blobs.len(), 1);
+    assert_eq!(
+      blobs[0],
+      StackMapBlob {
+        version: 3,
+        num_functions: 1,
+        num_constants: 0,
+        num_records: 1,
+        record_ids: vec![0xAABBCCDD],
+      }
+    );
+  }
+
+  #[test]
+  fn parses_concatenated_blobs() {
+    let mut bytes = Vec::new();
+    bytes.extend(build_blob(1, 1, 0));
+    bytes.extend([0u8; 8]);
+    bytes.extend(build_blob(2, 2, 1));
+
+    let blobs = parse_stackmap_blobs(&bytes).expect("parse concatenated blobs");
+    let ids: Vec<u64> = blobs.iter().flat_map(|b| b.record_ids.iter().copied()).collect();
+    assert_eq!(ids, vec![1, 2]);
+  }
 }
