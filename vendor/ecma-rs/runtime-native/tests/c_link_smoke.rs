@@ -92,18 +92,18 @@ static void set_int(uint8_t* data) {
   *flag = 1;
 }
 
-static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
-  (void)data;
-  rt_promise_resolve_legacy(promise, (ValueRef)0);
-}
+ static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
+   (void)data;
+   rt_promise_resolve_legacy(promise, (ValueRef)0);
+ }
 
-static void par_for_body(size_t i, uint8_t* data) {
-  uint32_t* out = (uint32_t*)data;
-  out[i] = (uint32_t)(i * 3u + 1u);
-}
+ static void par_for_body(size_t i, uint8_t* data) {
+   uint32_t* out = (uint32_t*)data;
+   out[i] = (uint32_t)(i * 3u + 1u);
+ }
 
-int main(void) {
-  rt_thread_init(0);
+ int main(void) {
+   rt_thread_init(0);
 
   static const RtShapeDescriptor kShapes[1] = {
     {

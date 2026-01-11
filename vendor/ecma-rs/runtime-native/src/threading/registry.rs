@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -29,12 +30,25 @@ impl ThreadId {
 }
 
 /// Class of thread from the runtime's perspective.
+#[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThreadKind {
-  Main,
-  Worker,
-  Io,
-  External,
+  Main = 0,
+  Worker = 1,
+  Io = 2,
+  External = 3,
+}
+
+impl ThreadKind {
+  fn from_u8(value: u8) -> Self {
+    match value {
+      0 => Self::Main,
+      1 => Self::Worker,
+      2 => Self::Io,
+      3 => Self::External,
+      _ => Self::External,
+    }
+  }
 }
 
 /// Optional stack bounds metadata for precise stack scanning.
@@ -52,7 +66,7 @@ pub struct StackBounds {
 #[derive(Debug)]
 pub struct ThreadState {
   id: ThreadId,
-  kind: ThreadKind,
+  kind: AtomicU8,
 
   /// OS thread id (best-effort; used for debugging and diagnostics).
   os_thread_id: u64,
@@ -96,7 +110,7 @@ impl ThreadState {
   }
 
   pub fn kind(&self) -> ThreadKind {
-    self.kind
+    ThreadKind::from_u8(self.kind.load(Ordering::Acquire))
   }
 
   pub fn os_thread_id(&self) -> u64 {
@@ -167,6 +181,13 @@ impl ThreadRegistry {
   fn register_current_thread(&self, kind: ThreadKind) -> Arc<ThreadState> {
     // Idempotent: allow callers to "ensure registered" without double-registering.
     if let Some(existing) = current_thread_state() {
+      // Allow callers to upgrade an "unknown/external" thread into a more
+      // specific kind (e.g. main thread first observed via a parallel call, then
+      // later via `rt_async_poll`).
+      if existing.kind() == ThreadKind::External && kind != ThreadKind::External {
+        existing.kind.store(kind as u8, Ordering::Release);
+        safepoint::notify_state_change();
+      }
       return existing;
     }
 
@@ -182,7 +203,7 @@ impl ThreadRegistry {
     let id = ThreadId(self.next_id.fetch_add(1, Ordering::Relaxed));
     let state = Arc::new(ThreadState {
       id,
-      kind,
+      kind: AtomicU8::new(kind as u8),
       os_thread_id: current_os_thread_id(),
       native_safe_depth: AtomicUsize::new(0),
       parked: AtomicBool::new(false),
@@ -224,7 +245,7 @@ impl ThreadRegistry {
     let mut out = ThreadCounts::default();
     out.total = threads.len();
     for t in threads.values() {
-      match t.kind {
+      match t.kind() {
         ThreadKind::Main => out.main += 1,
         ThreadKind::Worker => out.worker += 1,
         ThreadKind::Io => out.io += 1,

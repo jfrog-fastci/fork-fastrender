@@ -1,7 +1,7 @@
 #![cfg(target_arch = "x86_64")]
 
-use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 use runtime_native::stackwalk::StackBounds;
+use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 
 #[test]
 fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
