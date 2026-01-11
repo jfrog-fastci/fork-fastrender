@@ -1744,15 +1744,17 @@ fn render_inset_shadow(
   let outer_w = width.max(0.0);
   let outer_h = height.max(0.0);
 
-  let _ = fill_rounded_rect(
-    &mut tmp,
-    outer_x,
-    outer_y,
-    outer_w,
-    outer_h,
-    radii,
-    shadow.color,
-  );
+  // Inner shadows are defined "as if everything outside the padding edge were opaque".
+  //
+  // This matters for blur-only inner shadows: if we only draw inside the padding box and then
+  // blur, the convolution kernel would sample transparent pixels outside the box, causing the
+  // shadow to incorrectly fade out at the padding edge (or vanish entirely for `inset 0 0 <blur>`).
+  //
+  // Instead, fill the entire temporary surface with the shadow color, punch out the offset+spread
+  // cutout region, blur, then clip back to the padding box shape.
+  let tmp_w = tmp.width() as f32;
+  let tmp_h = tmp.height() as f32;
+  let _ = fill_rect(&mut tmp, 0.0, 0.0, tmp_w, tmp_h, shadow.color);
 
   let cutout_w = (width - 2.0 * spread).max(0.0);
   let cutout_h = (height - 2.0 * spread).max(0.0);

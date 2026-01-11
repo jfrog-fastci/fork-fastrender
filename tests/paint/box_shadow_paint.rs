@@ -138,6 +138,40 @@ fn box_shadow_inset_respects_border_radius_and_stays_inside() {
 }
 
 #[test]
+fn box_shadow_inset_blur_only_produces_inner_shadow() {
+  let html = r#"
+    <style>
+      body { margin: 0; background: rgb(255, 255, 255); }
+      #target {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 40px;
+        height: 40px;
+        background: rgb(255, 255, 255);
+        box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.8);
+      }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let pixmap = render(html, 96, 96);
+
+  // Outside the element should remain untouched.
+  assert_eq!(rgba_at(&pixmap, 19, 40), (255, 255, 255, 255));
+
+  // Inner shadow should darken pixels along the padding edge.
+  let (er, eg, eb, ea) = rgba_at(&pixmap, 20, 40);
+  assert_eq!(ea, 255);
+  assert!(er < 255 && eg < 255 && eb < 255, "expected edge pixel to be darkened");
+
+  // Center should be less affected than the edge.
+  let (cr, cg, cb, ca) = rgba_at(&pixmap, 40, 40);
+  assert_eq!(ca, 255);
+  assert!(cr > er && cg > eg && cb > eb, "expected shadow to fade toward center");
+}
+
+#[test]
 fn box_shadow_outset_respects_border_radius() {
   let html = r#"
     <style>
