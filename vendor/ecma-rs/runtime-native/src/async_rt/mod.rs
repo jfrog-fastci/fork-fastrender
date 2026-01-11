@@ -8,6 +8,8 @@
 //! ordering. Other threads may enqueue work; a platform-specific waker (e.g. `eventfd` on Linux,
 //! `EVFILT_USER` on kqueue platforms) is used to wake a blocked reactor wait syscall.
 //!
+//! The C ABI entrypoint that drives this event loop is `rt_async_poll_legacy`.
+//!
 //! ## Concurrency
 //! The runtime is process-global (a singleton). Public entrypoints that drive or inspect the event
 //! loop are therefore **thread-safe but not concurrent**: they may be called from multiple threads,

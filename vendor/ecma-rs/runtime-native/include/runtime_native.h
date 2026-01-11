@@ -663,12 +663,15 @@ void rt_async_cancel_all(void);
 
 // Drive the native async scheduler (microtasks).
 //
-// This is a **non-blocking** poll: it only drains currently queued microtasks (including promise
-// reaction jobs that resume native async-ABI coroutines).
+// This is a **non-blocking** poll: it drains currently queued microtasks (promise reaction jobs,
+// `queueMicrotask`, deferred coroutine spawns, etc) but does not wait for timers or I/O readiness.
 //
 // Returns:
-// - true  if at least one microtask was executed
-// - false if there was no runnable work
+// - true  if it executed at least one microtask
+// - false if there was no runnable microtask work
+//
+// To drive timers and I/O watchers, use `rt_async_poll_legacy` (JS-shaped event loop) or block in
+// `rt_async_wait`.
 bool rt_async_poll(void);
 
 // Block until at least one async task becomes ready.
