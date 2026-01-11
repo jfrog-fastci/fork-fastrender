@@ -47,8 +47,9 @@ fn lld_flag() -> Option<&'static str> {
 fn compile_obj(out_dir: &Path) -> PathBuf {
   // Intentionally avoid emitting any `.rodata` or `.data` so the linker script
   // fragment can't rely on them existing. lld errors if an `INSERT` anchor
-  // output section does not exist, so our stackmaps linker fragment must anchor
-  // on a section that is always present (we use `.text`).
+  // output section does not exist; the lld-oriented stackmaps linker fragment
+  // anchors at `.dynamic`, so this test links a shared object (which always has
+  // `.dynamic`) rather than a minimal static binary.
   let asm = r#"
  .text
  .globl _start
@@ -125,13 +126,13 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let script = Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("link")
     .join("stackmaps.ld");
- 
-  // Link a minimal binary (no stdlib/CRT) using our linker script fragment.
+
+  // Link a minimal shared object (no stdlib/CRT) using our linker script
+  // fragment.
   let status = Command::new(find_clang())
     .arg("-nostdlib")
     .arg(lld_flag)
-    .arg("-no-pie")
-    .arg("-Wl,-e,_start")
+    .arg("-shared")
     // Ensure `.llvm_stackmaps` is still retained under dead-section elimination.
     // The linker script fragment uses `KEEP(*(.llvm_stackmaps ...))` to prevent
     // GC from discarding the section even if it's otherwise unreferenced.
