@@ -8651,9 +8651,9 @@ impl FastRender {
               guard.record_error(ResourceKind::Document, url, &e);
               guard.document_error = Some(e.to_string());
             }
-            // Timeouts/cancellation are not fetch failures; surface them as render errors so callers
-            // can distinguish them from network/IO problems.
-            if matches!(&e, Error::Render(RenderError::Timeout { .. })) {
+            // Render-control errors (timeout/memory budgets/etc.) are not fetch failures; surface
+            // them as render errors so callers can distinguish them from network/IO problems.
+            if matches!(&e, Error::Render(_)) {
               return Err(e);
             }
             if options.allow_partial {
@@ -8734,9 +8734,9 @@ impl FastRender {
               guard.record_error(ResourceKind::Document, url, &e);
               guard.document_error = Some(e.to_string());
             }
-            // Timeouts/cancellation are not fetch failures; surface them as render errors so callers
-            // can distinguish them from network/IO problems.
-            if matches!(&e, Error::Render(RenderError::Timeout { .. })) {
+            // Render-control errors (timeout/memory budgets/etc.) are not fetch failures; surface
+            // them as render errors so callers can distinguish them from network/IO problems.
+            if matches!(&e, Error::Render(_)) {
               return Err(e);
             }
             if options.allow_partial {
@@ -8876,9 +8876,9 @@ impl FastRender {
                     guard.stats = Some(stats);
                   }
                 }
-                // Timeouts/cancellation are not fetch failures; surface them as render errors so
-                // callers can distinguish them from network/IO problems.
-                if matches!(&e, Error::Render(RenderError::Timeout { .. })) {
+                // Render-control errors (timeout/memory budgets/etc.) are not fetch failures; surface
+                // them as render errors so callers can distinguish them from network/IO problems.
+                if matches!(&e, Error::Render(_)) {
                   return Err(e);
                 }
                 if options.allow_partial {
@@ -22407,6 +22407,19 @@ mod tests {
     }
   }
 
+  #[derive(Clone, Default)]
+  struct RenderMemoryBudgetFetcher;
+
+  impl ResourceFetcher for RenderMemoryBudgetFetcher {
+    fn fetch(&self, _url: &str) -> crate::error::Result<FetchedResource> {
+      Err(Error::Render(RenderError::StageMemoryBudgetExceeded {
+        stage: RenderStage::DomParse,
+        rss_bytes: 2,
+        budget_bytes: 1,
+      }))
+    }
+  }
+
   #[test]
   fn collect_document_stylesheets_propagate_render_errors_from_fetcher() {
     let config = FastRenderConfig::default()
@@ -22479,6 +22492,69 @@ mod tests {
       }
       other => panic!("expected RenderError::Timeout, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn document_fetch_propagates_non_timeout_render_errors_from_fetcher() {
+    let config = FastRenderConfig::default()
+      .with_runtime_toggles(RuntimeToggles::default())
+      .with_font_sources(FontConfig::bundled_only())
+      .with_paint_parallelism(PaintParallelism::disabled())
+      .with_layout_parallelism(LayoutParallelism::disabled())
+      .with_base_url("https://example.com/page.html");
+    let mut renderer =
+      FastRender::with_config_and_fetcher(config, Some(Arc::new(RenderMemoryBudgetFetcher)))
+        .expect("renderer");
+
+    let options = RenderOptions::new().allow_partial(true);
+
+    let err = match renderer.prepare_url("https://example.com/", options.clone()) {
+      Ok(_) => panic!("expected render error from document fetch"),
+      Err(err) => err,
+    };
+    assert!(
+      matches!(
+        err,
+        Error::Render(RenderError::StageMemoryBudgetExceeded {
+          stage: RenderStage::DomParse,
+          rss_bytes: 2,
+          budget_bytes: 1
+        })
+      ),
+      "expected stage memory budget error, got {err:?}"
+    );
+
+    let err = match renderer.prepare_http_request("https://example.com/", "GET", &[], None, options.clone()) {
+      Ok(_) => panic!("expected render error from document fetch"),
+      Err(err) => err,
+    };
+    assert!(
+      matches!(
+        err,
+        Error::Render(RenderError::StageMemoryBudgetExceeded {
+          stage: RenderStage::DomParse,
+          rss_bytes: 2,
+          budget_bytes: 1
+        })
+      ),
+      "expected stage memory budget error, got {err:?}"
+    );
+
+    let err = match renderer.render_url_with_options("https://example.com/", options) {
+      Ok(_) => panic!("expected render error from document fetch"),
+      Err(err) => err,
+    };
+    assert!(
+      matches!(
+        err,
+        Error::Render(RenderError::StageMemoryBudgetExceeded {
+          stage: RenderStage::DomParse,
+          rss_bytes: 2,
+          budget_bytes: 1
+        })
+      ),
+      "expected stage memory budget error, got {err:?}"
+    );
   }
 
   #[test]
