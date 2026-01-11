@@ -1,9 +1,11 @@
 #![deny(missing_debug_implementations)]
 
 mod api;
+pub mod callback;
 pub mod encoding;
 mod recognize;
 mod resolve;
+mod template_eval;
 
 pub mod kb;
 pub mod resolver;
@@ -16,6 +18,7 @@ pub mod typed;
 use effect_model::{EffectFlags, EffectSummary, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
 
 pub use api::ApiId;
+pub use callback::{analyze_inline_callback, callsite_info_for_args, CallSiteInfo, CallbackInfo};
 pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
 #[cfg(feature = "typed")]
 pub use encoding::analyze_string_encodings_typed;
