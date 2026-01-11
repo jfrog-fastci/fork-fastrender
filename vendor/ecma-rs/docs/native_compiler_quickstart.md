@@ -143,7 +143,7 @@ The “native compiler” work needs a correctness backstop. We use a **VM oracl
 
 - Compile/erase TypeScript to JavaScript,
 - Run the JS under our deterministic interpreter, [`vm-js`](../vm-js/),
-- Compare its result against the native pipeline output.
+- (Eventually) compare oracle behavior against the native pipeline output.
 
 ### Raw cargo command (inside the ecma-rs workspace)
 
@@ -267,3 +267,16 @@ To add a new fixture:
 3. Run the harness tests (see section 3).
 
 For exact discovery/execution rules, see `native-oracle-harness/src/lib.rs` (the crate has a self-test that discovers and runs these fixtures).
+
+---
+
+## Appendix: interpreting strict-native diagnostics
+
+Strict-native checks can come from multiple layers:
+
+- `TN####` codes: emitted by `typecheck-ts` when `--strict-native` is enabled.
+  - Today this is small (currently `TN0001` for explicit `any`), and is expected to grow.
+- `NJS####` codes: emitted by `native-js`’s strict validator (`native_js::strict::validate`).
+  - These are intended to be conservative and are used by the typechecked `native-js` AOT CLI.
+
+See [`docs/diagnostic-codes.md`](./diagnostic-codes.md) for the repo-wide prefix registry.
