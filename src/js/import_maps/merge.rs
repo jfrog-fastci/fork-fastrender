@@ -184,6 +184,10 @@ pub fn merge_existing_and_new_import_maps_with_limits(
   limits.validate_import_map(&state.import_map)?;
   limits.validate_import_map(new_import_map)?;
 
+  // `resolved_module_set` can grow large during module loading; keep its base-url index sorted only
+  // when we need to perform scope-prefix queries (during merge).
+  state.resolved_module_set.ensure_base_url_index_sorted();
+
   // Merge into a clone so we can fail without partially mutating `state`.
   let mut merged = state.import_map.clone();
   merge_existing_and_new_import_maps_impl(&mut merged, &state.resolved_module_set, new_import_map);

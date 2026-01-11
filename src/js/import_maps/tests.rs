@@ -279,6 +279,48 @@ fn scope_filtering_does_not_apply_when_base_url_does_not_match_scope_prefix() {
 }
 
 #[test]
+fn scope_filtering_handles_unsorted_resolved_module_set_base_url_index() {
+  // `ResolvedModuleSetIndex` is normally populated incrementally as modules are resolved. Ensure
+  // scope-prefix filtering still works when the base URLs are inserted in non-sorted order.
+  let mut state = ImportMapState::default();
+  state.resolved_module_set.push_record(SpecifierResolutionRecord {
+    serialized_base_url: Some("https://example.com/b/main.js".to_string()),
+    specifier: "unrelated".to_string(),
+    as_url_kind: SpecifierAsUrlKind::NotUrl,
+  });
+  state.resolved_module_set.push_record(SpecifierResolutionRecord {
+    serialized_base_url: Some("https://example.com/a/main.js".to_string()),
+    specifier: "bar".to_string(),
+    as_url_kind: SpecifierAsUrlKind::NotUrl,
+  });
+
+  let new_scoped = parse_map(
+    r#"{
+      "scopes": {
+        "/a/": {
+          "bar": "https://cdn.example/bar.js",
+          "keep": "https://cdn.example/keep.js"
+        }
+      }
+    }"#,
+    "https://example.com/index.html",
+  );
+
+  merge_existing_and_new_import_maps(&mut state, &new_scoped).unwrap();
+
+  let scope = state
+    .import_map
+    .scopes
+    .get("https://example.com/a/")
+    .expect("scope inserted");
+  assert!(
+    !scope.contains_key("bar"),
+    "expected exact-match rule to be removed due to resolved module set"
+  );
+  assert!(scope.contains_key("keep"));
+}
+
+#[test]
 fn non_special_url_like_specifiers_do_not_trigger_scope_prefix_filtering() {
   let base_url = Url::parse("https://example.com/app/main.js").unwrap();
   let mut state = ImportMapState::default();

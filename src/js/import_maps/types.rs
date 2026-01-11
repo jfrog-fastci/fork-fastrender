@@ -87,17 +87,31 @@ impl SpecifierPrefixTrie {
 /// The HTML Standard's import map merging algorithm needs to efficiently determine which new map
 /// entries would impact already-resolved modules. The spec explicitly notes that implementations
 /// should avoid naive nested scans over the resolved module set.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ResolvedModuleSetIndex {
   records: Vec<SpecifierResolutionRecord>,
-  /// `(serialized_base_url, record_idx)` entries sorted lexicographically by base URL.
+  /// Record indices for entries that have a `serialized_base_url`.
+  ///
+  /// This is kept sorted lexicographically by base URL **on demand**.
   ///
   /// This supports quickly finding records matching a scope prefix:
   /// - exact match, OR
   /// - if the scope prefix ends with `/`, prefix match.
-  base_url_index: Vec<(String, usize)>,
+  base_url_index: Vec<usize>,
+  base_url_index_sorted: bool,
   /// Fast "does any resolved specifier prefix this key?" check for top-level import filtering.
   specifier_prefix_trie: SpecifierPrefixTrie,
+}
+
+impl Default for ResolvedModuleSetIndex {
+  fn default() -> Self {
+    Self {
+      records: Vec::new(),
+      base_url_index: Vec::new(),
+      base_url_index_sorted: true,
+      specifier_prefix_trie: SpecifierPrefixTrie::default(),
+    }
+  }
 }
 
 impl Deref for ResolvedModuleSetIndex {
@@ -114,55 +128,90 @@ impl ResolvedModuleSetIndex {
   }
 
   pub fn from_records(records: Vec<SpecifierResolutionRecord>) -> Self {
-    let mut base_url_index = Vec::new();
+    let mut base_url_index: Vec<usize> = Vec::new();
     let mut specifier_prefix_trie = SpecifierPrefixTrie::default();
 
     for (idx, record) in records.iter().enumerate() {
-      if let Some(base_url) = record.serialized_base_url.as_ref() {
-        base_url_index.push((base_url.clone(), idx));
+      if record.serialized_base_url.is_some() {
+        base_url_index.push(idx);
       }
       specifier_prefix_trie.insert(record.specifier.as_str());
     }
 
-    base_url_index.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    {
+      let records = records.as_slice();
+      base_url_index.sort_unstable_by(|a, b| {
+        records[*a]
+          .serialized_base_url
+          .as_deref()
+          .unwrap()
+          .cmp(records[*b].serialized_base_url.as_deref().unwrap())
+      });
+    }
 
     Self {
       records,
       base_url_index,
+      base_url_index_sorted: true,
       specifier_prefix_trie,
     }
   }
 
   pub fn push_record(&mut self, record: SpecifierResolutionRecord) {
     let idx = self.records.len();
-    if let Some(base_url) = record.serialized_base_url.as_ref() {
-      let pos = self
-        .base_url_index
-        .partition_point(|(existing, _)| existing.as_str() < base_url.as_str());
-      self.base_url_index.insert(pos, (base_url.clone(), idx));
+    if record.serialized_base_url.is_some() {
+      self.base_url_index.push(idx);
+      self.base_url_index_sorted = false;
     }
     self.specifier_prefix_trie.insert(record.specifier.as_str());
     self.records.push(record);
+  }
+
+  pub(crate) fn ensure_base_url_index_sorted(&mut self) {
+    if self.base_url_index_sorted {
+      return;
+    }
+    let records = self.records.as_slice();
+    self.base_url_index.sort_unstable_by(|a, b| {
+      records[*a]
+        .serialized_base_url
+        .as_deref()
+        .unwrap()
+        .cmp(records[*b].serialized_base_url.as_deref().unwrap())
+    });
+    self.base_url_index_sorted = true;
   }
 
   pub(crate) fn iter_records_matching_scope_prefix<'a>(
     &'a self,
     scope_prefix: &'a str,
   ) -> impl Iterator<Item = &'a SpecifierResolutionRecord> + 'a {
+    debug_assert!(
+      self.base_url_index_sorted,
+      "base_url_index must be sorted before calling iter_records_matching_scope_prefix; call ensure_base_url_index_sorted()"
+    );
     let scope_prefix_ends_with_slash = scope_prefix.ends_with('/');
-    let start = self
-      .base_url_index
-      .partition_point(|(base_url, _)| base_url.as_str() < scope_prefix);
+    let start = self.base_url_index.partition_point(|idx| {
+      self.records[*idx]
+        .serialized_base_url
+        .as_deref()
+        .unwrap()
+        < scope_prefix
+    });
     self.base_url_index[start..]
       .iter()
-      .take_while(move |(base_url, _)| {
+      .take_while(move |idx| {
+        let base_url = self.records[**idx]
+          .serialized_base_url
+          .as_deref()
+          .unwrap();
         if scope_prefix_ends_with_slash {
           base_url.starts_with(scope_prefix)
         } else {
           base_url == scope_prefix
         }
       })
-      .map(move |(_base_url, idx)| &self.records[*idx])
+      .map(move |idx| &self.records[*idx])
   }
 
   pub(crate) fn new_import_key_impacts_resolved_module(&self, specifier: &str) -> bool {
