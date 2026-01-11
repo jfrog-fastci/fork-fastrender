@@ -6,9 +6,11 @@ use crate::async_abi::{
   PROMISE_FLAG_EXTERNAL_PENDING,
 };
 use crate::async_rt::Task;
-use crate::gc::HandleId;
 use crate::ffi::abort_on_panic;
-use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
+use crate::CoroutineId;
+use crate::promise_reactions::{
+  enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable,
+};
 use crate::PromiseRef as AbiPromiseRef;
 
 /// Internal promise state used while a promise is being settled.
@@ -34,6 +36,25 @@ fn validate_coro_ptr(coro: CoroutineRef) -> CoroutineRef {
     std::process::abort();
   }
   coro
+}
+
+// -----------------------------------------------------------------------------
+// Coroutine handle resolution
+// -----------------------------------------------------------------------------
+//
+// `CoroutineId` is an ABI-stable `u64` handle to a coroutine frame. The native async runtime must
+// not store raw `Coroutine*` pointers across any async boundary (microtask queues, promise reaction
+// lists, OS event-loop userdata, cross-thread wakeups, ...): a moving/compacting GC may relocate the
+// coroutine frame, making previously captured pointers stale.
+//
+// Coroutines are resolved via the persistent handle ABI (`rt_handle_load` / `rt_handle_free`). The
+// handle table is GC-aware: the GC updates the underlying slot when the coroutine frame moves.
+
+#[inline]
+fn coro_load(id: CoroutineId) -> Option<CoroutineRef> {
+  let ptr = crate::rt_handle_load(id.0);
+  let coro = validate_coro_ptr(ptr.cast::<Coroutine>());
+  (!coro.is_null()).then_some(coro)
 }
 
 #[inline]
@@ -241,7 +262,7 @@ pub(crate) unsafe fn promise_reject(p: AbiPromiseRef) {
 #[repr(C)]
 struct CoroutineReaction {
   node: PromiseReactionNode,
-  coro: HandleId,
+  coro: CoroutineId,
 }
 
 extern "C" fn coroutine_reaction_run(node: *mut PromiseReactionNode, _promise: *mut PromiseHeader) {
@@ -250,7 +271,7 @@ extern "C" fn coroutine_reaction_run(node: *mut PromiseReactionNode, _promise: *
     return;
   }
   let coro = unsafe { (*node).coro };
-  run_coroutine_owned(coro);
+  run_coroutine(coro);
 }
 
 extern "C" fn coroutine_reaction_drop(node: *mut PromiseReactionNode) {
@@ -267,7 +288,7 @@ static COROUTINE_REACTION_VTABLE: PromiseReactionVTable = PromiseReactionVTable 
   drop: coroutine_reaction_drop,
 };
 
-fn alloc_coroutine_reaction(coro: HandleId) -> *mut PromiseReactionNode {
+fn alloc_coroutine_reaction(coro: CoroutineId) -> *mut PromiseReactionNode {
   let node = Box::new(CoroutineReaction {
     node: PromiseReactionNode {
       next: null_mut(),
@@ -278,7 +299,7 @@ fn alloc_coroutine_reaction(coro: HandleId) -> *mut PromiseReactionNode {
   Box::into_raw(node) as *mut PromiseReactionNode
 }
 
-fn coro_await(coro: HandleId, awaited: *mut PromiseHeader) {
+fn coro_await(coro: CoroutineId, awaited: *mut PromiseHeader) {
   let awaited = validate_promise_ptr(awaited);
   if awaited.is_null() {
     return;
@@ -290,37 +311,17 @@ fn coro_await(coro: HandleId, awaited: *mut PromiseHeader) {
   promise_register_reaction(awaited, node);
 }
 
-#[repr(C)]
-struct ResumeCoroJob {
-  coro: HandleId,
-}
-
-extern "C" fn coro_resume_task(data: *mut u8) {
-  if data.is_null() {
-    return;
-  }
-  // Safety: `data` is owned by the task drop hook.
-  let job = unsafe { &mut *(data as *mut ResumeCoroJob) };
-  run_coroutine_owned(job.coro);
-}
-
-extern "C" fn coro_resume_task_drop(data: *mut u8) {
-  if data.is_null() {
-    return;
-  }
-  // Safety: `data` was allocated by `Box::into_raw(ResumeCoroJob)` when scheduling the task.
-  unsafe {
-    drop(Box::from_raw(data as *mut ResumeCoroJob));
-  }
-}
-
-fn run_coroutine_unowned(coro: CoroutineRef) {
-  let coro = validate_coro_ptr(coro);
-  if coro.is_null() {
-    return;
-  }
-
+fn run_coroutine(coro_id: CoroutineId) {
   loop {
+    let Some(coro) = coro_load(coro_id) else {
+      // Invalid/stale handle: treat as a no-op resume (must not UB).
+      if cfg!(debug_assertions) && coro_id.0 != 0 {
+        // Don't panic/unwind across FFI; print a debug hint so handle misuse is visible.
+        eprintln!("native async: attempted to resume invalid CoroutineId({})", coro_id.0);
+      }
+      return;
+    };
+
     // Safety: `coro` is valid and properly aligned; vtable/resume pointers are provided by generated
     // code and must be valid for the coroutine's lifetime.
     let vtable_ptr = unsafe { (*coro).vtable };
@@ -329,54 +330,31 @@ fn run_coroutine_unowned(coro: CoroutineRef) {
     }
     let vtable = unsafe { &*vtable_ptr };
 
+    // Capture flags before calling into generated code. The resume function may safepoint and the
+    // coroutine frame may move, so we must not dereference `coro` afterwards.
+    let flags = unsafe { (*coro).flags };
+
     let step = unsafe { (vtable.resume)(coro) };
     match step.tag {
-      CoroutineStepTag::Complete => return,
-      CoroutineStepTag::Await => {
-        // Stack-owned coroutines must not suspend across turns; they cannot safely be stored and
-        // resumed later by the runtime.
-        if cfg!(debug_assertions) {
-          eprintln!(
-            "runtime-native async ABI violation: stack-owned coroutine yielded `Await` \
-(CORO_FLAG_RUNTIME_OWNS_FRAME must be set to allow suspension)"
-          );
-        }
-        std::process::abort();
-      }
-    }
-  }
-}
-
-fn run_coroutine_owned(coro: HandleId) {
-  // Runtime-owned coroutines may have stale resumes queued after cancellation/completion.
-  if !crate::async_runtime::coro_is_live_owned(coro) {
-    return;
-  }
-
-  loop {
-    let Some(coro_ptr) = crate::async_runtime::coro_ptr_if_live(coro) else {
-      return;
-    };
-    let coro_ptr = validate_coro_ptr(coro_ptr);
-    if coro_ptr.is_null() {
-      return;
-    }
-
-    // Safety: `coro_ptr` is valid and properly aligned; vtable/resume pointers are provided by
-    // generated code and must be valid for the coroutine's lifetime.
-    let vtable_ptr = unsafe { (*coro_ptr).vtable };
-    if vtable_ptr.is_null() {
-      std::process::abort();
-    }
-    let vtable = unsafe { &*vtable_ptr };
-
-    let step = unsafe { (vtable.resume)(coro_ptr) };
-    match step.tag {
-      CoroutineStepTag::Complete => unsafe {
-        crate::async_runtime::coro_destroy_once(coro);
+      CoroutineStepTag::Complete => {
+        // The runtime owns the coroutine handle after spawn. On completion we:
+        // - destroy the coroutine frame if runtime-owned, and
+        // - free the stable handle.
+        crate::async_runtime::coro_destroy_once(coro_id);
         return;
-      },
+      }
       CoroutineStepTag::Await => {
+        // A coroutine that yields must be stored across turns (await reaction + later resume).
+        // Stack-owned frames cannot outlive the spawning call and would otherwise cause
+        // use-after-return UB.
+        if cfg!(debug_assertions) && (flags & CORO_FLAG_RUNTIME_OWNS_FRAME) == 0 {
+          eprintln!(
+            "runtime-native async ABI violation: coroutine yielded `Await` but \
+CORO_FLAG_RUNTIME_OWNS_FRAME was not set (stack-owned coroutine frames must not suspend)"
+          );
+          std::process::abort();
+        }
+
         let awaited = validate_promise_ptr(step.await_promise);
         if awaited.is_null() {
           return;
@@ -396,116 +374,110 @@ fn run_coroutine_owned(coro: HandleId) {
           }
         }
 
-        coro_await(coro, awaited);
+        coro_await(coro_id, awaited);
         return;
       }
     }
   }
 }
 
-pub(crate) fn async_spawn(coro: CoroutineRef) -> AbiPromiseRef {
-  abort_on_panic(|| {
-    let coro = validate_coro_ptr(coro);
-    if coro.is_null() {
-      return AbiPromiseRef::null();
-    }
+extern "C" fn coro_resume_task(data: *mut u8) {
+  if data.is_null() {
+    return;
+  }
+  // Safety: `data` is a `Box<CoroutineId>` owned by the task.
+  let coro = unsafe { *(data as *const CoroutineId) };
+  run_coroutine(coro);
+}
 
+extern "C" fn coro_resume_task_drop(data: *mut u8) {
+  if data.is_null() {
+    return;
+  }
+  // Safety: `data` was allocated by `Box::into_raw(Box::new(CoroutineId(..)))`.
+  unsafe {
+    drop(Box::from_raw(data as *mut CoroutineId));
+  }
+}
+
+pub(crate) fn async_spawn(coro: CoroutineId) -> AbiPromiseRef {
+  abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
-    let coro_id = unsafe { crate::async_runtime::track_coro_if_runtime_owned(coro) };
+    crate::async_runtime::track_coro_if_runtime_owned(coro);
+
+    let Some(coro_ptr) = coro_load(coro) else {
+      return AbiPromiseRef::null();
+    };
+    unsafe {
+      crate::validate_async_abi_coro_vtable(coro_ptr);
+    }
 
     let promise = unsafe {
-      if let Some(id) = coro_id {
-        // Snapshot vtable + current promise pointer before any allocation that might trigger GC.
-        let promise_ptr = (*coro).promise;
-        let vtable_ptr = (*coro).vtable;
-        if vtable_ptr.is_null() {
-          std::process::abort();
-        }
-        let vtable = &*vtable_ptr;
-
-        if promise_ptr.is_null() {
-          let promise = alloc_promise_for_vtable(vtable);
-          let coro_ptr =
-            crate::async_runtime::coro_ptr_if_live(id).unwrap_or_else(|| std::process::abort());
-          (*coro_ptr).promise = promise_header_ptr(promise);
-          promise
-        } else {
-          promise_handle_from_header(promise_ptr)
-        }
-      } else if (*coro).promise.is_null() {
-        let vtable_ptr = (*coro).vtable;
+      if (*coro_ptr).promise.is_null() {
+        let vtable_ptr = (*coro_ptr).vtable;
         if vtable_ptr.is_null() {
           std::process::abort();
         }
         let vtable = &*vtable_ptr;
         let promise = alloc_promise_for_vtable(vtable);
-        (*coro).promise = promise_header_ptr(promise);
+        if let Some(coro_ptr) = coro_load(coro) {
+          (*coro_ptr).promise = promise_header_ptr(promise);
+        }
         promise
       } else {
-        promise_handle_from_header((*coro).promise)
+        promise_handle_from_header((*coro_ptr).promise)
       }
     };
 
-    if let Some(id) = coro_id {
-      run_coroutine_owned(id);
-    } else {
-      run_coroutine_unowned(coro);
-    }
+    run_coroutine(coro);
     promise
   })
 }
 
-pub(crate) fn async_spawn_deferred(coro: CoroutineRef) -> AbiPromiseRef {
+pub(crate) fn async_spawn_deferred(coro: CoroutineId) -> AbiPromiseRef {
   abort_on_panic(|| {
-    let coro = validate_coro_ptr(coro);
-    if coro.is_null() {
-      return AbiPromiseRef::null();
-    }
-
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
 
-    if cfg!(debug_assertions) && unsafe { (*coro).flags & CORO_FLAG_RUNTIME_OWNS_FRAME } == 0 {
+    let Some(coro_ptr) = coro_load(coro) else {
+      return AbiPromiseRef::null();
+    };
+    unsafe {
+      crate::validate_async_abi_coro_vtable(coro_ptr);
+    }
+
+    if cfg!(debug_assertions) && unsafe { (*coro_ptr).flags & CORO_FLAG_RUNTIME_OWNS_FRAME } == 0 {
       eprintln!(
         "runtime-native async ABI violation: rt_async_spawn_deferred was called with a \
 stack-owned coroutine frame (CORO_FLAG_RUNTIME_OWNS_FRAME must be set)"
       );
       std::process::abort();
     }
-    let Some(coro_id) = (unsafe { crate::async_runtime::track_coro_if_runtime_owned(coro) }) else {
-      // Deferred spawn must not schedule stack-owned coroutine frames.
-      std::process::abort();
-    };
+    crate::async_runtime::track_coro_if_runtime_owned(coro);
 
     let promise = unsafe {
-      // Snapshot vtable + current promise pointer before any allocation that might trigger GC.
-      let promise_ptr = (*coro).promise;
-      let vtable_ptr = (*coro).vtable;
-      if vtable_ptr.is_null() {
-        std::process::abort();
-      }
-      let vtable = &*vtable_ptr;
-
-      if promise_ptr.is_null() {
+      if (*coro_ptr).promise.is_null() {
+        let vtable_ptr = (*coro_ptr).vtable;
+        if vtable_ptr.is_null() {
+          std::process::abort();
+        }
+        let vtable = &*vtable_ptr;
         let promise = alloc_promise_for_vtable(vtable);
-        let coro_ptr =
-          crate::async_runtime::coro_ptr_if_live(coro_id).unwrap_or_else(|| std::process::abort());
-        (*coro_ptr).promise = promise_header_ptr(promise);
+        if let Some(coro_ptr) = coro_load(coro) {
+          (*coro_ptr).promise = promise_header_ptr(promise);
+        }
         promise
       } else {
-        promise_handle_from_header(promise_ptr)
+        promise_handle_from_header((*coro_ptr).promise)
       }
     };
 
     // Schedule the first resume as a microtask instead of running synchronously.
-    //
-    // We store the coroutine by its stable handle id so a moving GC can relocate the coroutine
-    // frame and update the persistent-handle slot while the work is queued.
-    let job = Box::new(ResumeCoroJob { coro: coro_id });
+    let data = Box::into_raw(Box::new(coro)) as *mut u8;
     crate::async_rt::global().enqueue_microtask(Task::new_with_drop(
       coro_resume_task,
-      Box::into_raw(job) as *mut u8,
+      data,
       coro_resume_task_drop,
     ));
 

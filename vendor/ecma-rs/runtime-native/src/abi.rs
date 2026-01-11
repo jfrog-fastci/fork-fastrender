@@ -1,7 +1,8 @@
 use core::ffi::c_void;
 
 pub use runtime_native_abi::{
-  Coroutine, InternedId, Microtask, PromiseRef, RtParallelForBodyFn, RtShapeDescriptor, RtShapeId,
+  Coroutine, CoroutineId, InternedId, Microtask, PromiseRef, RtParallelForBodyFn, RtShapeDescriptor,
+  RtShapeId,
   RtTaskFn, StringRef, TaskId,
 };
 

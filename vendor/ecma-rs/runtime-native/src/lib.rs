@@ -125,6 +125,7 @@ mod trap;
 // `runtime-native-abi` are re-exported under distinct names to avoid collisions.
 pub use runtime_native_abi::{
   Coroutine as AbiCoroutine,
+  CoroutineId,
   InternedId,
   PromiseRef,
   PromiseRef as AbiPromiseRef,
@@ -348,10 +349,11 @@ unsafe fn validate_async_abi_coro_vtable(coro: CoroutineRef) {
 /// metadata in [`CoroutineVTable`]) and store it into `coro.promise` before resuming.
 ///
 /// # Safety
-/// `coro` must point to a valid coroutine frame whose prefix matches [`Coroutine`].
+/// `coro` must be a valid coroutine handle (see [`CoroutineId`]) that resolves to a coroutine frame
+/// whose prefix matches [`Coroutine`]. The runtime consumes the handle and will free it when the
+/// coroutine completes.
 #[no_mangle]
-pub unsafe extern "C" fn rt_async_spawn(coro: CoroutineRef) -> PromiseRef {
-  validate_async_abi_coro_vtable(coro);
+pub unsafe extern "C" fn rt_async_spawn(coro: CoroutineId) -> PromiseRef {
   crate::ffi::abort_on_panic(|| crate::native_async::async_spawn(coro))
 }
 
@@ -361,10 +363,11 @@ pub unsafe extern "C" fn rt_async_spawn(coro: CoroutineRef) -> PromiseRef {
 /// This is required for Web-style microtask semantics (e.g. `queueMicrotask`).
 ///
 /// # Safety
-/// `coro` must point to a valid coroutine frame whose prefix matches [`Coroutine`].
+/// `coro` must be a valid coroutine handle (see [`CoroutineId`]) that resolves to a coroutine frame
+/// whose prefix matches [`Coroutine`]. The runtime consumes the handle and will free it when the
+/// coroutine completes.
 #[no_mangle]
-pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseRef {
-  validate_async_abi_coro_vtable(coro);
+pub unsafe extern "C" fn rt_async_spawn_deferred(coro: CoroutineId) -> PromiseRef {
   crate::ffi::abort_on_panic(|| crate::native_async::async_spawn_deferred(coro))
 }
 
@@ -789,8 +792,9 @@ mod tests {
       "bool rt_promise_try_reject(PromiseRef p);",
       "void rt_promise_mark_handled(PromiseRef p);",
       "uint8_t* rt_promise_payload_ptr(PromiseRef p);",
-      "PromiseRef rt_async_spawn(CoroutineRef coro);",
-      "PromiseRef rt_async_spawn_deferred(CoroutineRef coro);",
+      "typedef uint64_t CoroutineId;",
+      "PromiseRef rt_async_spawn(CoroutineId coro);",
+      "PromiseRef rt_async_spawn_deferred(CoroutineId coro);",
       "void rt_async_cancel_all(void);",
       "bool rt_async_poll(void);",
       "void rt_async_wait(void);",
@@ -891,8 +895,8 @@ mod tests {
     let _promise_try_reject: unsafe extern "C" fn(PromiseRef) -> bool = rt_promise_try_reject;
     let _promise_mark_handled: unsafe extern "C" fn(PromiseRef) = rt_promise_mark_handled;
     let _promise_payload_ptr: extern "C" fn(PromiseRef) -> *mut u8 = rt_promise_payload_ptr;
-    let _async_spawn: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn;
-    let _async_spawn_deferred: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn_deferred;
+    let _async_spawn: unsafe extern "C" fn(CoroutineId) -> PromiseRef = rt_async_spawn;
+    let _async_spawn_deferred: unsafe extern "C" fn(CoroutineId) -> PromiseRef = rt_async_spawn_deferred;
     let _async_cancel_all: extern "C" fn() = rt_async_cancel_all;
     let _async_poll: extern "C" fn() -> bool = rt_async_poll;
     let _async_wait: extern "C" fn() = rt_async_wait;
@@ -995,6 +999,7 @@ mod tests {
       _promise_mark_handled,
       _promise_payload_ptr,
       _async_spawn,
+      _async_spawn_deferred,
       _async_cancel_all,
       _async_poll,
       _async_wait,

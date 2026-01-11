@@ -597,6 +597,12 @@ uint8_t* rt_promise_payload_ptr(PromiseRef p);
 typedef struct Coroutine Coroutine;
 typedef struct CoroutineVTable CoroutineVTable;
 typedef Coroutine* CoroutineRef;
+// Stable handle to a coroutine frame.
+//
+// Coroutines may be relocated by a moving/compacting GC, and coroutine IDs may be stored in host
+// queues / OS event-loop userdata across async boundaries. As a result, the native async ABI uses a
+// `CoroutineId` handle instead of a raw `Coroutine*` pointer.
+typedef uint64_t CoroutineId;
 
 typedef enum CoroutineStepTag {
   RT_CORO_STEP_AWAIT = 0,
@@ -654,10 +660,16 @@ enum {
   CORO_FLAG_RUNTIME_OWNS_FRAME = 1u << 0,
 };
 
-PromiseRef rt_async_spawn(CoroutineRef coro);
+// Spawn an async coroutine and return its result promise.
+//
+// Contract:
+// - `coro` is a stable handle to a coroutine frame whose prefix matches `struct Coroutine`.
+// - The runtime *consumes* the handle: it keeps it alive while the coroutine is pending, and frees
+//   the handle when the coroutine completes (or is cancelled).
+PromiseRef rt_async_spawn(CoroutineId coro);
 // Like rt_async_spawn, but enqueues the coroutine's first resume as a microtask instead of running
 // synchronously. This is required for strict microtask semantics (e.g. queueMicrotask).
-PromiseRef rt_async_spawn_deferred(CoroutineRef coro);
+PromiseRef rt_async_spawn_deferred(CoroutineId coro);
 // Cancel all queued runtime-owned coroutine frames.
 void rt_async_cancel_all(void);
 

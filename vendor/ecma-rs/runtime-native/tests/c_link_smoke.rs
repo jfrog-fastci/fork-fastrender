@@ -160,7 +160,7 @@ int main(void) {
   (void)pinned;
 
   // Smoke test: resolve a promise from a blocking worker and run its continuation on the
-  // event loop thread.
+  // event loop thread, waking the poll loop promptly (before the timer fires).
   //
   // Note: the blocking pool spins up worker threads on first use; give it enough slack so the
   // test isn't flaky under contention.

@@ -344,8 +344,8 @@ Contract:
 - `rt_promise_reject(p: PromiseRef)`
 - `rt_promise_try_reject(p: PromiseRef) -> bool`
 - `rt_promise_mark_handled(p: PromiseRef)`
-- `rt_async_spawn(coro: CoroutineRef) -> PromiseRef`
-- `rt_async_spawn_deferred(coro: CoroutineRef) -> PromiseRef`
+- `rt_async_spawn(coro: CoroutineId) -> PromiseRef`
+- `rt_async_spawn_deferred(coro: CoroutineId) -> PromiseRef`
 - `rt_async_cancel_all()`
 - `rt_async_poll() -> bool`
 - `rt_async_set_strict_await_yields(strict: bool)`
@@ -394,8 +394,9 @@ Contract:
 
 - `rt_spawn_blocking(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef`
 
-`PromiseRef`, `LegacyPromiseRef`, `ValueRef`, `CoroutineRef`, `RtCoroutineHeader`, `TimerId`, and
-`IoWatcherId` are ABI-level opaque types; their layout is defined in `include/runtime_native.h`.
+`PromiseRef`, `LegacyPromiseRef`, `ValueRef`, `CoroutineId`, `CoroutineRef`, `RtCoroutineHeader`,
+`TimerId`, and `IoWatcherId` are ABI-level opaque types; their layout is defined in
+`include/runtime_native.h`.
 
 ## Awaiting parallel work via payload promises
 
@@ -602,30 +603,49 @@ currently queued/owned by the runtime. It must not double-destroy frames even if
 #### `rt_async_spawn`
 
 ```c
-PromiseRef rt_async_spawn(CoroutineRef coro);
+PromiseRef rt_async_spawn(CoroutineId coro);
 ```
 
-- Allocates/initializes the coroutine's result promise and writes it to `coro->promise`.
+- Allocates/initializes the coroutine’s result promise and writes it to the coroutine frame’s
+  `promise` field.
 - **Immediately resumes** the coroutine during the call (until it completes or reaches its first
   `await`).
+ - The runtime **consumes** the coroutine handle and frees it when the coroutine completes.
 
 #### `rt_async_spawn_deferred` (microtask-style)
 
 ```c
-PromiseRef rt_async_spawn_deferred(CoroutineRef coro);
+PromiseRef rt_async_spawn_deferred(CoroutineId coro);
 ```
 
-- Allocates/initializes the coroutine's result promise and writes it to `coro->promise` (same as
-  `rt_async_spawn`).
-- Enqueues the coroutine's *first resume* as a **microtask**.
+- Allocates/initializes the coroutine’s result promise and writes it to the coroutine frame’s
+  `promise` field (same as `rt_async_spawn`).
+- Enqueues the coroutine’s *first resume* as a **microtask**.
 - **Does not resume the coroutine synchronously**. The first resume happens later when the host runs
   a microtask checkpoint (`rt_drain_microtasks`, `rt_async_run_until_idle`, or `rt_async_poll`).
+ - The runtime **consumes** the coroutine handle and frees it when the coroutine completes.
 
 This API exists for Web-standard semantics that require guaranteed asynchronous execution, including:
 
 - `queueMicrotask`
 - Promise job scheduling (ECMA-262 `HostEnqueuePromiseJob`, HTML microtask queue)
 - Strict `await` semantics where reaching the first `await` must be asynchronous
+
+### Why `CoroutineId` (handle) instead of `CoroutineRef` (pointer)?
+
+Coroutines are long-lived and may be:
+- captured in promise reactions (to resume later),
+- stored in host work queues,
+- stored in OS event-loop userdata, and
+- moved between threads.
+
+Under a moving/compacting GC, coroutine frames may relocate. Raw pointers (`CoroutineRef`) cannot be
+stored safely across these async boundaries because the Rust runtime itself is not compiled with LLVM
+statepoints/stackmaps and therefore cannot have its raw pointers auto-relocated during GC.
+
+Instead the ABI uses a stable `CoroutineId` (`u64`) handle. The runtime resolves the ID to the
+current coroutine pointer each time it needs to resume, and treats invalid/stale IDs as a no-op
+resume (never UB).
 
 ## Legacy coroutine execution model
 

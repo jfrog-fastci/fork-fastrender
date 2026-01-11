@@ -223,6 +223,17 @@ pub struct Microtask {
   pub data: *mut u8,
 }
 
+/// Stable handle to a coroutine frame managed by the runtime.
+///
+/// This is an ABI-stable `u64` identifier intended to remain valid across:
+/// - moving/compacting GC (coroutine frames may relocate), and
+/// - async/OS/thread boundaries (host work queues must not store raw pointers).
+///
+/// Note: coroutine IDs are currently backed by the same persistent handle table as [`HandleId`].
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CoroutineId(pub u64);
+
 /// Opaque runtime record used by the `rt_thread_attach` / `rt_thread_detach` APIs.
 #[repr(C)]
 pub struct Runtime {
@@ -469,8 +480,8 @@ extern "C" {
   pub fn rt_promise_try_reject(p: PromiseRef) -> bool;
   pub fn rt_promise_mark_handled(p: PromiseRef);
   pub fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8;
-  pub fn rt_async_spawn(coro: *mut Coroutine) -> PromiseRef;
-  pub fn rt_async_spawn_deferred(coro: *mut Coroutine) -> PromiseRef;
+  pub fn rt_async_spawn(coro: CoroutineId) -> PromiseRef;
+  pub fn rt_async_spawn_deferred(coro: CoroutineId) -> PromiseRef;
   pub fn rt_async_cancel_all();
   pub fn rt_async_poll() -> bool;
   pub fn rt_async_wait();
@@ -612,6 +623,8 @@ mod tests {
 
     assert!(size_of::<HandleId>() == 8);
     assert!(align_of::<HandleId>() == 8);
+    assert!(size_of::<CoroutineId>() == 8);
+    assert!(align_of::<CoroutineId>() == 8);
 
     assert!(size_of::<Microtask>() == 16);
     assert!(align_of::<Microtask>() == 8);
@@ -709,6 +722,7 @@ mod tests {
       "IoWatcherId",
       "RtFd",
       "HandleId",
+      "CoroutineId",
       "PromiseRef",
       "LegacyPromiseRef",
       "PromiseLayout",
