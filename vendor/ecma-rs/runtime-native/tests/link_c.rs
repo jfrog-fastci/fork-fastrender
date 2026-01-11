@@ -14,6 +14,26 @@ fn has_command(cmd: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
+fn find_clang() -> Option<&'static str> {
+  for cand in ["clang-18", "clang"] {
+    if has_command(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
+fn find_lld_fuse_arg() -> Option<&'static str> {
+  // `clang -fuse-ld=lld{,-18}` expects the `ld.lld{,-18}` driver to be available.
+  if has_command("ld.lld-18") {
+    Some("lld-18")
+  } else if has_command("ld.lld") {
+    Some("lld")
+  } else {
+    None
+  }
+}
+
 fn find_staticlib(target_dir: &Path, profile: &str) -> PathBuf {
   let direct = target_dir.join(profile).join("libruntime_native.a");
   let deps_dir = target_dir.join(profile).join("deps");
@@ -79,16 +99,15 @@ fn link_c_against_runtime_native_staticlib() {
     return;
   }
 
-  if !has_command("clang-18") {
-    eprintln!("skipping: clang-18 not found in PATH");
+  let Some(clang) = find_clang() else {
+    eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
     return;
-  }
+  };
 
-  // `clang-18 -fuse-ld=lld-18` expects `ld.lld-18` to be available.
-  if !has_command("ld.lld-18") {
-    eprintln!("skipping: ld.lld-18 not found in PATH");
+  let Some(lld_fuse) = find_lld_fuse_arg() else {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
     return;
-  }
+  };
 
   let _rt = TestRuntimeGuard::new();
 
@@ -141,15 +160,15 @@ fn link_c_against_runtime_native_staticlib() {
   let c_src = manifest_dir.join("tests/link_c/main.c");
 
   run_checked({
-    let mut cmd = Command::new("clang-18");
+    let mut cmd = Command::new(clang);
     cmd.arg("-c").arg(&c_src).arg("-o").arg(&obj);
     cmd
   });
 
   run_checked({
-    let mut cmd = Command::new("clang-18");
+    let mut cmd = Command::new(clang);
     cmd
-      .arg("-fuse-ld=lld-18")
+      .arg(format!("-fuse-ld={lld_fuse}"))
       .arg(format!("-Wl,-T,{}", stackmaps_ld.display()))
       .arg(&obj)
       .arg(&staticlib)
