@@ -149,6 +149,52 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     "unexpected rt_gc_safepoint_relocate_h_gc wrapper function in IR:\n{ir}"
   );
 
+  // NoGC runtime entrypoints should be marked as GC leaf functions so that LLVM does not rewrite
+  // calls to them into statepoints.
+  assert!(
+    has_gc_leaf_attr(fns.rt_gc_poll),
+    "expected rt_gc_poll to be marked gc-leaf-function"
+  );
+  assert!(
+    has_gc_leaf_attr(fns.rt_write_barrier),
+    "expected rt_write_barrier to be marked gc-leaf-function"
+  );
+  assert!(
+    has_gc_leaf_attr(fns.rt_write_barrier_range),
+    "expected rt_write_barrier_range to be marked gc-leaf-function"
+  );
+  assert!(
+    has_gc_leaf_attr(fns.rt_keep_alive_gc_ref),
+    "expected rt_keep_alive_gc_ref to be marked gc-leaf-function"
+  );
+
+  // MayGC runtime entrypoints must remain eligible for statepoint rewriting, so they must not be
+  // marked as GC leaf functions.
+  assert!(
+    !has_gc_leaf_attr(fns.rt_alloc),
+    "rt_alloc must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_alloc_pinned),
+    "rt_alloc_pinned must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_gc_safepoint),
+    "rt_gc_safepoint must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_gc_safepoint_slow),
+    "rt_gc_safepoint_slow must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_gc_safepoint_relocate_h),
+    "rt_gc_safepoint_relocate_h must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_gc_collect),
+    "rt_gc_collect must not be marked gc-leaf-function"
+  );
+
   // NoGC calls with GC pointer parameters use leaf wrappers (`*_gc`).
   assert!(
     ir.contains("define internal void @rt_write_barrier_gc"),
