@@ -810,6 +810,48 @@ mod tests {
   }
 
   #[test]
+  fn window_host_state_exec_script_in_event_loop_sets_webidl_bindings_host_slot() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    // WindowRealm installs handcrafted URL bindings by default (`src/js/vmjs/window_url.rs`), which
+    // do not use the WebIDL host slot. Install the generated WebIDL vm-js bindings to ensure the
+    // executed script hits `webidl_vm_js::host_from_hooks()`.
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+
+    let assert_webidl_host_slot_present = |err: Error| {
+      let msg = err.to_string();
+      assert!(
+        !msg.contains(webidl_vm_js::WEBIDL_BINDINGS_HOST_NOT_AVAILABLE),
+        "expected WebIDL host slot to be installed (got: {msg})"
+      );
+      assert!(
+        msg.contains("WindowHost does not implement WebIDL binding dispatch"),
+        "expected URLSearchParams constructor to reach WindowHost's WebIDL dispatch (got: {msg})"
+      );
+    };
+
+    let err = host_state
+      .exec_script_in_event_loop(event_loop, "new URLSearchParams();")
+      .expect_err("expected URLSearchParams constructor to call into host dispatch");
+    assert_webidl_host_slot_present(err);
+
+    let err = host_state
+      .exec_script_with_name_in_event_loop(event_loop, "<test>", "new URLSearchParams();")
+      .expect_err("expected URLSearchParams constructor to call into host dispatch");
+    assert_webidl_host_slot_present(err);
+
+    Ok(())
+  }
+
+  #[test]
   fn window_host_state_registers_import_maps_and_respects_resolved_module_set() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHostState::new(dom, "https://example.invalid/base/page.html")?;
