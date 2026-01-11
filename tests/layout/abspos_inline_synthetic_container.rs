@@ -90,6 +90,9 @@ fn abspos_descendant_inside_inline_wrapper_uses_positioned_ancestor_containing_b
   let mut img_style = ComputedStyle::default();
   img_style.position = Position::Absolute;
   img_style.width = Some(Length::percent(100.0));
+  // Use an explicit percent height so this regression focuses on containing block selection,
+  // rather than replaced-element `height:auto` ratio behavior.
+  img_style.height = Some(Length::percent(100.0));
   img_style.top = InsetValue::Length(Length::px(0.0));
   img_style.right = InsetValue::Length(Length::px(0.0));
   img_style.bottom = InsetValue::Length(Length::px(0.0));
@@ -136,12 +139,11 @@ fn abspos_descendant_inside_inline_wrapper_uses_positioned_ancestor_containing_b
     "expected abspos child to fill positioned ancestor width (got {})",
     img_fragment.bounds.width()
   );
-  // Absolutely positioned *replaced* elements with `height:auto` do not fill the containing block
-  // when both `top` and `bottom` are specified; instead they shrink-to-fit their intrinsic size
-  // (CSS 2.1 §10.6.5). Still, the sizing must use the *positioned ancestor* containing block, not
-  // the synthetic inline container created for the inline wrapper.
+  // With an explicit percentage height, the abspos child should size against the positioned
+  // ancestor's containing block height. If it incorrectly uses the synthetic inline container
+  // created for the inline wrapper (typically line-height tall), this assertion will fail.
   assert!(
-    (img_fragment.bounds.height() - 80.0).abs() < 0.1,
+    (img_fragment.bounds.height() - 100.0).abs() < 0.1,
     "expected abspos child height to use positioned ancestor containing block (got {})",
     img_fragment.bounds.height()
   );

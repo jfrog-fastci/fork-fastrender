@@ -3178,13 +3178,6 @@ impl BlockFormattingContext {
           result.position.x - content_offset.x,
           result.position.y - content_offset.y,
         );
-        if cb == parent_padding_cb {
-          let origin = positioning_cb.origin();
-          border_origin_physical = Point::new(
-            border_origin_physical.x + origin.x,
-            border_origin_physical.y + origin.y,
-          );
-        }
         let (mut border_origin, mut border_size) = if needs_physical_conversion {
           let border_rect = Rect::new(border_origin_physical, border_size_physical);
           let logical_rect = physical_rect_to_logical(
@@ -11003,13 +10996,6 @@ impl FormattingContext for BlockFormattingContext {
           result.position.x - content_offset.x,
           result.position.y - content_offset.y,
         );
-        if cb == parent_padding_cb {
-          let origin = positioning_cb.origin();
-          border_origin_physical = Point::new(
-            border_origin_physical.x + origin.x,
-            border_origin_physical.y + origin.y,
-          );
-        }
         let (mut border_origin, mut border_size) = if needs_physical_conversion {
           let border_rect = Rect::new(border_origin_physical, border_size_physical);
           let logical_rect = physical_rect_to_logical(
