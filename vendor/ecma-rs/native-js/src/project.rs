@@ -11,8 +11,8 @@ use typecheck_ts::{DefId, DefKind, FileId, FileKey, Host, ImportTarget, Program,
 
 #[derive(Debug, Default, Clone)]
 struct ModuleInfo {
-  /// Runtime dependencies (value imports + side-effect imports).
-  deps: BTreeSet<FileId>,
+  /// Runtime dependencies (value imports + side-effect imports), in source order.
+  deps: Vec<FileId>,
   /// Import bindings in this file (`import { foo as bar } from "..."`).
   import_bindings: Vec<ImportBinding>,
 }
@@ -134,6 +134,7 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
   })?;
 
   let mut info = ModuleInfo::default();
+  let mut module_requests: Vec<(u32, FileId)> = Vec::new();
 
   for import in &lowered.hir.imports {
     let ImportKind::Es(es) = &import.kind else {
@@ -151,8 +152,7 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
         from: from_key.to_string(),
         specifier: es.specifier.value.clone(),
       })?;
-
-    info.deps.insert(resolved_id);
+    module_requests.push((import.span.start, resolved_id));
 
     // Only `import { foo } from "..."` is supported for now.
     if es.default.is_some() || es.namespace.is_some() {
@@ -282,7 +282,7 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
             from: from_key.to_string(),
             specifier: source.value.clone(),
           })?;
-        info.deps.insert(resolved_id);
+        module_requests.push((export.span.start, resolved_id));
       }
       hir_js::ExportKind::ExportAll(all) => {
         if all.is_type_only {
@@ -294,9 +294,17 @@ fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, Na
             from: from_key.to_string(),
             specifier: all.source.value.clone(),
           })?;
-        info.deps.insert(resolved_id);
+        module_requests.push((export.span.start, resolved_id));
       }
       _ => {}
+    }
+  }
+
+  module_requests.sort_by_key(|(start, _)| *start);
+  let mut seen = BTreeSet::<FileId>::new();
+  for (_, dep) in module_requests {
+    if seen.insert(dep) {
+      info.deps.push(dep);
     }
   }
 
@@ -331,127 +339,73 @@ fn runtime_reachable(entry: FileId, modules: &BTreeMap<FileId, ModuleInfo>) -> B
 
 fn topo_sort_runtime(
   program: &Program,
+  entry: FileId,
   nodes: &BTreeSet<FileId>,
   modules: &BTreeMap<FileId, ModuleInfo>,
 ) -> Result<Vec<FileId>, NativeJsError> {
-  let mut outgoing: BTreeMap<FileId, Vec<FileId>> = BTreeMap::new();
-  let mut indegree: BTreeMap<FileId, usize> = BTreeMap::new();
-
-  for file in nodes {
-    indegree.insert(*file, 0);
-  }
-
-  // Edge orientation: dep -> user, so deps come first in topo order.
-  for file in nodes {
-    let Some(info) = modules.get(file) else {
-      continue;
-    };
-    for dep in &info.deps {
-      if !nodes.contains(dep) {
-        continue;
-      }
-      outgoing.entry(*dep).or_default().push(*file);
-      *indegree.entry(*file).or_default() += 1;
-    }
-  }
-
-  for users in outgoing.values_mut() {
-    users.sort_by_key(|id| id.0);
-    users.dedup();
-  }
-
-  let mut ready: BTreeSet<FileId> = indegree
-    .iter()
-    .filter_map(|(file, deg)| (*deg == 0).then_some(*file))
-    .collect();
-
-  let mut order = Vec::with_capacity(nodes.len());
-  while let Some(file) = ready.pop_first() {
-    order.push(file);
-    if let Some(users) = outgoing.get(&file) {
-      for user in users {
-        let deg = indegree
-          .get_mut(user)
-          .expect("node present in indegree map");
-        *deg = deg.saturating_sub(1);
-        if *deg == 0 {
-          ready.insert(*user);
-        }
-      }
-    }
-  }
-
-  if order.len() != nodes.len() {
-    let cycle = find_cycle(nodes, modules).unwrap_or_default();
-    let mut formatted: Vec<String> = cycle.iter().map(|f| file_label(program, *f)).collect();
-    if formatted.is_empty() {
-      formatted.push("<unknown cycle>".into());
-    }
-    return Err(NativeJsError::ModuleCycle {
-      cycle: formatted.join(" -> "),
-    });
-  }
-
-  Ok(order)
-}
-
-fn find_cycle(nodes: &BTreeSet<FileId>, modules: &BTreeMap<FileId, ModuleInfo>) -> Option<Vec<FileId>> {
-  #[derive(Clone, Copy, PartialEq, Eq)]
-  enum Mark {
-    Temp,
-    Perm,
-  }
+  // ECMAScript module evaluation order is a DFS: evaluate dependencies in source order,
+  // then evaluate the module itself. This preserves sibling `import` ordering.
+  let mut stack: Vec<FileId> = Vec::new();
+  let mut visiting: BTreeSet<FileId> = BTreeSet::new();
+  let mut visited: BTreeSet<FileId> = BTreeSet::new();
+  let mut out: Vec<FileId> = Vec::with_capacity(nodes.len());
 
   fn dfs(
+    program: &Program,
     node: FileId,
-    stack: &mut Vec<FileId>,
-    marks: &mut BTreeMap<FileId, Mark>,
     nodes: &BTreeSet<FileId>,
     modules: &BTreeMap<FileId, ModuleInfo>,
-  ) -> Option<Vec<FileId>> {
-    marks.insert(node, Mark::Temp);
+    stack: &mut Vec<FileId>,
+    visiting: &mut BTreeSet<FileId>,
+    visited: &mut BTreeSet<FileId>,
+    out: &mut Vec<FileId>,
+  ) -> Result<(), NativeJsError> {
+    if visited.contains(&node) {
+      return Ok(());
+    }
+    if visiting.contains(&node) {
+      let idx = stack.iter().position(|f| *f == node).unwrap_or(0);
+      let mut cycle = stack[idx..].to_vec();
+      cycle.push(node);
+      let mut formatted: Vec<String> = cycle.iter().map(|f| file_label(program, *f)).collect();
+      if formatted.is_empty() {
+        formatted.push("<unknown cycle>".into());
+      }
+      return Err(NativeJsError::ModuleCycle {
+        cycle: formatted.join(" -> "),
+      });
+    }
+
+    visiting.insert(node);
     stack.push(node);
 
-    let mut deps: Vec<FileId> = modules
-      .get(&node)
-      .map(|m| m.deps.iter().copied().filter(|d| nodes.contains(d)).collect())
-      .unwrap_or_default();
-    deps.sort_by_key(|id| id.0);
-    deps.dedup();
-
-    for dep in deps {
-      match marks.get(&dep) {
-        Some(Mark::Temp) => {
-          let idx = stack.iter().position(|f| *f == dep).unwrap_or(0);
-          let mut cycle = stack[idx..].to_vec();
-          cycle.push(dep);
-          return Some(cycle);
-        }
-        Some(Mark::Perm) => continue,
-        None => {
-          if let Some(cycle) = dfs(dep, stack, marks, nodes, modules) {
-            return Some(cycle);
-          }
+    if let Some(info) = modules.get(&node) {
+      for dep in &info.deps {
+        if nodes.contains(dep) {
+          dfs(program, *dep, nodes, modules, stack, visiting, visited, out)?;
         }
       }
     }
 
     stack.pop();
-    marks.insert(node, Mark::Perm);
-    None
+    visiting.remove(&node);
+    visited.insert(node);
+    out.push(node);
+    Ok(())
   }
 
-  let mut marks: BTreeMap<FileId, Mark> = BTreeMap::new();
-  let mut stack = Vec::new();
-  for node in nodes.iter().copied() {
-    if marks.contains_key(&node) {
-      continue;
-    }
-    if let Some(cycle) = dfs(node, &mut stack, &mut marks, nodes, modules) {
-      return Some(cycle);
-    }
-  }
-  None
+  dfs(
+    program,
+    entry,
+    nodes,
+    modules,
+    &mut stack,
+    &mut visiting,
+    &mut visited,
+    &mut out,
+  )?;
+
+  Ok(out)
 }
 
 fn sanitize_llvm_component(name: &str) -> String {
@@ -494,7 +448,7 @@ pub fn compile_project_to_llvm_ir(
   }
 
   let runtime_files = runtime_reachable(entry_file, &modules);
-  let init_order = topo_sort_runtime(program, &runtime_files, &modules)?;
+  let init_order = topo_sort_runtime(program, entry_file, &runtime_files, &modules)?;
 
   // Parse all reachable files (even those that are only type-reachable) so we can compile their
   // local function definitions and initializer bodies deterministically.

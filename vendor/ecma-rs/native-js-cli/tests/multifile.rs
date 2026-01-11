@@ -89,6 +89,33 @@ fn runs_module_initializers_in_dependency_order() {
 }
 
 #[test]
+fn runs_module_initializers_in_import_order() {
+  let dir = tempdir().unwrap();
+  let dep = dir.path().join("dep.ts");
+  let b = dir.path().join("b.ts");
+  let c = dir.path().join("c.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&dep, "console.log(\"dep\");\n").unwrap();
+  fs::write(&b, "import './dep';\nconsole.log(\"b\");\n").unwrap();
+  fs::write(&c, "import './dep';\nconsole.log(\"c\");\n").unwrap();
+  fs::write(
+    &main,
+    "import './b';\nimport './c';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\nb\nc\nmain\n"));
+}
+
+#[test]
 fn supports_non_number_function_signatures_across_modules() {
   let dir = tempdir().unwrap();
   let util = dir.path().join("util.ts");
