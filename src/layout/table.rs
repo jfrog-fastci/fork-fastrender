@@ -7222,7 +7222,8 @@ impl FormattingContext for TableFormattingContext {
           self.viewport_size,
           Some(padding_rect.size.width),
           block_base,
-        );
+        )
+        .with_writing_mode_and_direction(table_root_style.writing_mode, table_root_style.direction);
         let establishes_abs_cb = table_root_style.establishes_abs_containing_block();
         let establishes_fixed_cb = table_root_style.establishes_fixed_containing_block();
         let cb_for_absolute = if establishes_abs_cb {
@@ -7542,7 +7543,8 @@ impl FormattingContext for TableFormattingContext {
         self.viewport_size,
         Some(padding_rect.size.width),
         block_base,
-      );
+      )
+      .with_writing_mode_and_direction(table_root_style.writing_mode, table_root_style.direction);
       cell_bfc_owned = Some(BlockFormattingContext::with_factory(
         self.factory.detached().with_fixed_cb(fixed_cb),
       ));
@@ -9165,7 +9167,8 @@ impl FormattingContext for TableFormattingContext {
         self.viewport_size,
         Some(padding_rect.size.width),
         block_base,
-      );
+      )
+      .with_writing_mode_and_direction(table_root_style.writing_mode, table_root_style.direction);
       let establishes_abs_cb = table_root_style.establishes_abs_containing_block();
       let establishes_fixed_cb = table_root_style.establishes_fixed_containing_block();
       let cb_for_absolute = if establishes_abs_cb {

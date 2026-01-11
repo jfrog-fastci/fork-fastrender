@@ -1419,6 +1419,7 @@ fn anchor_positioning_supports_logical_sides() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Block;
   container_style.position = Position::Relative;
+  container_style.direction = Direction::Rtl;
   container_style.width = Some(Length::px(200.0));
   container_style.height = Some(Length::px(200.0));
   container_style.width_keyword = None;
@@ -1434,7 +1435,6 @@ fn anchor_positioning_supports_logical_sides() {
 
   let mut anchor_style = ComputedStyle::default();
   anchor_style.display = Display::Block;
-  anchor_style.direction = Direction::Rtl;
   anchor_style.width = Some(Length::px(50.0));
   anchor_style.height = Some(Length::px(20.0));
   anchor_style.width_keyword = None;
@@ -1477,7 +1477,7 @@ fn anchor_positioning_supports_logical_sides() {
 
   assert!(
     (overlay_fragment.bounds.x() - anchor_fragment.bounds.max_x()).abs() < 0.1,
-    "inline-start should respect the anchor's direction (RTL maps start to right) (got x={}, expected {})",
+    "inline-start should respect the containing block direction (RTL maps start to right) (got x={}, expected {})",
     overlay_fragment.bounds.x(),
     anchor_fragment.bounds.max_x(),
   );
@@ -1579,6 +1579,215 @@ fn anchor_positioning_inline_sides_respect_rtl_when_inline_axis_is_vertical() {
       );
     }
   }
+}
+
+#[test]
+fn anchor_positioning_start_end_resolve_against_containing_block_axis() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.writing_mode = WritingMode::VerticalRl;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let start_overlay_id = 2usize;
+  let end_overlay_id = 3usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(50.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut start_overlay_style = ComputedStyle::default();
+  start_overlay_style.display = Display::Block;
+  start_overlay_style.position = Position::Absolute;
+  start_overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  start_overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Start,
+    fallback: None,
+  });
+  start_overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Start,
+    fallback: None,
+  });
+  start_overlay_style.width = Some(Length::px(10.0));
+  start_overlay_style.height = Some(Length::px(10.0));
+  start_overlay_style.width_keyword = None;
+  start_overlay_style.height_keyword = None;
+  let mut start_overlay =
+    BoxNode::new_block(Arc::new(start_overlay_style), FormattingContextType::Block, vec![]);
+  start_overlay.id = start_overlay_id;
+
+  let mut end_overlay_style = ComputedStyle::default();
+  end_overlay_style.display = Display::Block;
+  end_overlay_style.position = Position::Absolute;
+  end_overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  end_overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::End,
+    fallback: None,
+  });
+  end_overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::End,
+    fallback: None,
+  });
+  end_overlay_style.width = Some(Length::px(10.0));
+  end_overlay_style.height = Some(Length::px(10.0));
+  end_overlay_style.width_keyword = None;
+  end_overlay_style.height_keyword = None;
+  let mut end_overlay =
+    BoxNode::new_block(Arc::new(end_overlay_style), FormattingContextType::Block, vec![]);
+  end_overlay.id = end_overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, start_overlay, end_overlay],
+  );
+  container.id = 300;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let start_fragment =
+    find_fragment_by_box_id(&fragment, start_overlay_id).expect("start overlay fragment");
+  let end_fragment =
+    find_fragment_by_box_id(&fragment, end_overlay_id).expect("end overlay fragment");
+
+  // Under vertical-rl, the horizontal axis corresponds to the *block* axis (block-start is on the
+  // right), while the vertical axis corresponds to the inline axis (inline-start is top for LTR).
+  assert!(
+    (start_fragment.bounds.x() - anchor_fragment.bounds.max_x()).abs() < 0.1,
+    "anchor(start) in the left inset should resolve to the block-start edge under vertical writing modes (got x={}, expected {})",
+    start_fragment.bounds.x(),
+    anchor_fragment.bounds.max_x(),
+  );
+  assert!(
+    (start_fragment.bounds.y() - anchor_fragment.bounds.y()).abs() < 0.1,
+    "anchor(start) in the top inset should resolve to the inline-start edge under vertical writing modes (got y={}, expected {})",
+    start_fragment.bounds.y(),
+    anchor_fragment.bounds.y(),
+  );
+
+  assert!(
+    (end_fragment.bounds.x() - anchor_fragment.bounds.x()).abs() < 0.1,
+    "anchor(end) in the left inset should resolve to the block-end edge under vertical writing modes (got x={}, expected {})",
+    end_fragment.bounds.x(),
+    anchor_fragment.bounds.x(),
+  );
+  assert!(
+    (end_fragment.bounds.y() - anchor_fragment.bounds.max_y()).abs() < 0.1,
+    "anchor(end) in the top inset should resolve to the inline-end edge under vertical writing modes (got y={}, expected {})",
+    end_fragment.bounds.y(),
+    anchor_fragment.bounds.max_y(),
+  );
+}
+
+#[test]
+fn anchor_positioning_self_start_end_resolve_against_positioned_writing_mode() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let start_overlay_id = 2usize;
+  let self_start_overlay_id = 3usize;
+  let self_end_overlay_id = 4usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(50.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  // Both overlays use a vertical writing mode so `self-start` produces a different physical edge
+  // than `start`, which always resolves against the containing block's writing mode.
+  let overlay_base = |side: AnchorSide| {
+    let mut overlay_style = ComputedStyle::default();
+    overlay_style.display = Display::Block;
+    overlay_style.position = Position::Absolute;
+    overlay_style.writing_mode = WritingMode::VerticalRl;
+    overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+    overlay_style.left = InsetValue::Anchor(AnchorFunction {
+      name: None,
+      side,
+      fallback: None,
+    });
+    overlay_style.top = InsetValue::Length(Length::px(0.0));
+    overlay_style.width = Some(Length::px(10.0));
+    overlay_style.height = Some(Length::px(10.0));
+    overlay_style.width_keyword = None;
+    overlay_style.height_keyword = None;
+    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![])
+  };
+
+  let mut start_overlay = overlay_base(AnchorSide::Start);
+  start_overlay.id = start_overlay_id;
+  let mut self_start_overlay = overlay_base(AnchorSide::SelfStart);
+  self_start_overlay.id = self_start_overlay_id;
+  let mut self_end_overlay = overlay_base(AnchorSide::SelfEnd);
+  self_end_overlay.id = self_end_overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, start_overlay, self_start_overlay, self_end_overlay],
+  );
+  container.id = 301;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let start_fragment =
+    find_fragment_by_box_id(&fragment, start_overlay_id).expect("start overlay fragment");
+  let self_start_fragment =
+    find_fragment_by_box_id(&fragment, self_start_overlay_id).expect("self-start overlay fragment");
+  let self_end_fragment =
+    find_fragment_by_box_id(&fragment, self_end_overlay_id).expect("self-end overlay fragment");
+
+  assert!(
+    (start_fragment.bounds.x() - anchor_fragment.bounds.x()).abs() < 0.1,
+    "anchor(start) should resolve against the containing block writing mode (got x={}, expected {})",
+    start_fragment.bounds.x(),
+    anchor_fragment.bounds.x(),
+  );
+  assert!(
+    (self_start_fragment.bounds.x() - anchor_fragment.bounds.max_x()).abs() < 0.1,
+    "anchor(self-start) should resolve against the positioned element writing mode (got x={}, expected {})",
+    self_start_fragment.bounds.x(),
+    anchor_fragment.bounds.max_x(),
+  );
+  assert!(
+    (self_end_fragment.bounds.x() - anchor_fragment.bounds.x()).abs() < 0.1,
+    "anchor(self-end) should resolve against the positioned element writing mode (got x={}, expected {})",
+    self_end_fragment.bounds.x(),
+    anchor_fragment.bounds.x(),
+  );
 }
 
 #[test]
@@ -1703,7 +1912,72 @@ fn anchor_positioning_anchor_size_sets_absolute_box_dimensions() {
 }
 
 #[test]
-fn anchor_positioning_anchor_size_inline_block_respects_anchor_writing_mode() {
+fn anchor_positioning_anchor_size_inline_block_respects_containing_block_writing_mode() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.writing_mode = WritingMode::VerticalRl;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(40.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.top = InsetValue::Length(Length::px(0.0));
+  overlay_style.left = InsetValue::Length(Length::px(0.0));
+  overlay_style.width_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::Inline,
+    fallback: None,
+  });
+  overlay_style.height_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::Block,
+    fallback: None,
+  });
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  container.id = 112;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+  assert!(
+    (overlay_fragment.bounds.width() - 20.0).abs() < 0.1,
+    "inline should map to the anchor's physical height under vertical writing modes (got w={})",
+    overlay_fragment.bounds.width()
+  );
+  assert!(
+    (overlay_fragment.bounds.height() - 40.0).abs() < 0.1,
+    "block should map to the anchor's physical width under vertical writing modes (got h={})",
+    overlay_fragment.bounds.height()
+  );
+}
+
+#[test]
+fn anchor_positioning_anchor_size_self_axes_respect_positioned_writing_mode() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Block;
   container_style.position = Position::Relative;
@@ -1722,7 +1996,71 @@ fn anchor_positioning_anchor_size_inline_block_respects_anchor_writing_mode() {
   anchor_style.height = Some(Length::px(20.0));
   anchor_style.width_keyword = None;
   anchor_style.height_keyword = None;
-  anchor_style.writing_mode = WritingMode::VerticalRl;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.writing_mode = WritingMode::VerticalRl;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.top = InsetValue::Length(Length::px(0.0));
+  overlay_style.left = InsetValue::Length(Length::px(0.0));
+  overlay_style.width_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::SelfInline,
+    fallback: None,
+  });
+  overlay_style.height_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::SelfBlock,
+    fallback: None,
+  });
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  container.id = 113;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+  assert!(
+    (overlay_fragment.bounds.width() - 20.0).abs() < 0.1,
+    "self-inline should map to the anchor's physical height under vertical writing modes (got w={})",
+    overlay_fragment.bounds.width()
+  );
+  assert!(
+    (overlay_fragment.bounds.height() - 40.0).abs() < 0.1,
+    "self-block should map to the anchor's physical width under vertical writing modes (got h={})",
+    overlay_fragment.bounds.height()
+  );
+}
+
+#[test]
+fn anchor_positioning_anchor_size_axis_omission_defaults_to_property_axis() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(33.0));
+  anchor_style.height = Some(Length::px(44.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
   anchor_style.anchor_names = vec!["--a".to_string()];
   let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
   anchor.id = anchor_id;
@@ -1735,12 +2073,12 @@ fn anchor_positioning_anchor_size_inline_block_respects_anchor_writing_mode() {
   overlay_style.left = InsetValue::Length(Length::px(0.0));
   overlay_style.width_anchor_size = Some(AnchorSizeFunction {
     name: None,
-    axis: AnchorSizeAxis::InlineSize,
+    axis: AnchorSizeAxis::Omitted,
     fallback: None,
   });
   overlay_style.height_anchor_size = Some(AnchorSizeFunction {
     name: None,
-    axis: AnchorSizeAxis::BlockSize,
+    axis: AnchorSizeAxis::Omitted,
     fallback: None,
   });
   let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
@@ -1748,7 +2086,7 @@ fn anchor_positioning_anchor_size_inline_block_respects_anchor_writing_mode() {
 
   let mut container =
     BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
-  container.id = 112;
+  container.id = 114;
 
   let fc = BlockFormattingContext::new();
   let constraints = LayoutConstraints::definite(200.0, 200.0);
@@ -1756,13 +2094,13 @@ fn anchor_positioning_anchor_size_inline_block_respects_anchor_writing_mode() {
 
   let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
   assert!(
-    (overlay_fragment.bounds.width() - 20.0).abs() < 0.1,
-    "inline-size should map to the anchor's physical height under vertical writing modes (got w={})",
+    (overlay_fragment.bounds.width() - 33.0).abs() < 0.1,
+    "anchor-size() should default to the width axis for the width property (got w={})",
     overlay_fragment.bounds.width()
   );
   assert!(
-    (overlay_fragment.bounds.height() - 40.0).abs() < 0.1,
-    "block-size should map to the anchor's physical width under vertical writing modes (got h={})",
+    (overlay_fragment.bounds.height() - 44.0).abs() < 0.1,
+    "anchor-size() should default to the height axis for the height property (got h={})",
     overlay_fragment.bounds.height()
   );
 }

@@ -16826,6 +16826,10 @@ fn parse_anchor_side(token: &str) -> Option<AnchorSide> {
     t if t.eq_ignore_ascii_case("right") => Some(AnchorSide::Right),
     t if t.eq_ignore_ascii_case("bottom") => Some(AnchorSide::Bottom),
     t if t.eq_ignore_ascii_case("left") => Some(AnchorSide::Left),
+    t if t.eq_ignore_ascii_case("start") => Some(AnchorSide::Start),
+    t if t.eq_ignore_ascii_case("end") => Some(AnchorSide::End),
+    t if t.eq_ignore_ascii_case("self-start") => Some(AnchorSide::SelfStart),
+    t if t.eq_ignore_ascii_case("self-end") => Some(AnchorSide::SelfEnd),
     t if t.eq_ignore_ascii_case("inline-start") => Some(AnchorSide::InlineStart),
     t if t.eq_ignore_ascii_case("inline-end") => Some(AnchorSide::InlineEnd),
     t if t.eq_ignore_ascii_case("block-start") => Some(AnchorSide::BlockStart),
@@ -16926,8 +16930,13 @@ fn parse_anchor_size_axis(token: &str) -> Option<AnchorSizeAxis> {
   match token {
     t if t.eq_ignore_ascii_case("width") => Some(AnchorSizeAxis::Width),
     t if t.eq_ignore_ascii_case("height") => Some(AnchorSizeAxis::Height),
-    t if t.eq_ignore_ascii_case("inline-size") => Some(AnchorSizeAxis::InlineSize),
-    t if t.eq_ignore_ascii_case("block-size") => Some(AnchorSizeAxis::BlockSize),
+    t if t.eq_ignore_ascii_case("inline") => Some(AnchorSizeAxis::Inline),
+    t if t.eq_ignore_ascii_case("block") => Some(AnchorSizeAxis::Block),
+    t if t.eq_ignore_ascii_case("self-inline") => Some(AnchorSizeAxis::SelfInline),
+    t if t.eq_ignore_ascii_case("self-block") => Some(AnchorSizeAxis::SelfBlock),
+    // Legacy aliases (non-spec) kept for compatibility.
+    t if t.eq_ignore_ascii_case("inline-size") => Some(AnchorSizeAxis::Inline),
+    t if t.eq_ignore_ascii_case("block-size") => Some(AnchorSizeAxis::Block),
     _ => None,
   }
 }
@@ -16978,23 +16987,25 @@ fn parse_anchor_size_function_str(input: &str) -> Option<AnchorSizeFunction> {
   };
 
   let tokens: Vec<&str> = split_ascii_whitespace(args_part).collect();
-  if tokens.is_empty() || tokens.len() > 2 {
+  if tokens.len() > 2 {
     return None;
   }
 
-  let (name, axis) = match tokens.len() {
-    1 => (None, parse_anchor_size_axis(tokens[0])?),
-    2 => {
-      let axis0 = parse_anchor_size_axis(tokens[0]);
-      let axis1 = parse_anchor_size_axis(tokens[1]);
-      match (axis0, axis1) {
-        (Some(axis), None) if tokens[1].starts_with("--") => (Some(tokens[1].to_string()), axis),
-        (None, Some(axis)) if tokens[0].starts_with("--") => (Some(tokens[0].to_string()), axis),
-        _ => return None,
+  let mut name: Option<String> = None;
+  let mut axis: Option<AnchorSizeAxis> = None;
+  for token in tokens {
+    if token.starts_with("--") {
+      if name.replace(token.to_string()).is_some() {
+        return None;
       }
+      continue;
     }
-    _ => return None,
-  };
+    let parsed_axis = parse_anchor_size_axis(token)?;
+    if axis.replace(parsed_axis).is_some() {
+      return None;
+    }
+  }
+  let axis = axis.unwrap_or(AnchorSizeAxis::Omitted);
 
   Some(AnchorSizeFunction { name, axis, fallback })
 }
@@ -17310,6 +17321,7 @@ fn parse_align_keyword(kw: &str) -> Option<AlignItems> {
     "flex-start" => Some(AlignItems::FlexStart),
     "flex-end" => Some(AlignItems::FlexEnd),
     "center" => Some(AlignItems::Center),
+    "anchor-center" => Some(AlignItems::AnchorCenter),
     "baseline" => Some(AlignItems::Baseline),
     "stretch" => Some(AlignItems::Stretch),
     "normal" => Some(AlignItems::Stretch),

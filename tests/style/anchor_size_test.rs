@@ -56,7 +56,7 @@ fn anchor_size_parses_axis_optional_name_and_fallback() {
     .height_anchor_size
     .as_ref()
     .expect("height anchor-size");
-  assert_eq!(height.axis, AnchorSizeAxis::BlockSize);
+  assert_eq!(height.axis, AnchorSizeAxis::Block);
   assert_eq!(height.name.as_deref(), Some("--a"));
   assert_eq!(height.fallback, Some(Length::px(10.0)));
 
@@ -65,13 +65,74 @@ fn anchor_size_parses_axis_optional_name_and_fallback() {
     .min_width_anchor_size
     .as_ref()
     .expect("min-width anchor-size");
-  assert_eq!(min_width.axis, AnchorSizeAxis::BlockSize);
+  assert_eq!(min_width.axis, AnchorSizeAxis::Block);
   assert_eq!(min_width.name.as_deref(), Some("--a"));
   assert_eq!(
     min_width.fallback,
     Some(Length::px(0.0)),
     "min-width fallback should clamp negative lengths to 0"
   );
+}
+
+#[test]
+fn anchor_size_parses_spec_axes_and_axis_omission() {
+  let html = r#"
+    <style>
+      #target {
+        width: anchor-size();
+        height: anchor-size(--a);
+        min-width: anchor-size(self-inline);
+        min-height: anchor-size(--a self-block);
+        max-width: anchor-size(inline);
+        max-height: anchor-size(block);
+      }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+
+  let width = target.styles.width_anchor_size.as_ref().expect("width anchor-size");
+  assert_eq!(width.axis, AnchorSizeAxis::Omitted);
+  assert!(width.name.is_none());
+
+  let height = target
+    .styles
+    .height_anchor_size
+    .as_ref()
+    .expect("height anchor-size");
+  assert_eq!(height.axis, AnchorSizeAxis::Omitted);
+  assert_eq!(height.name.as_deref(), Some("--a"));
+
+  let min_width = target
+    .styles
+    .min_width_anchor_size
+    .as_ref()
+    .expect("min-width anchor-size");
+  assert_eq!(min_width.axis, AnchorSizeAxis::SelfInline);
+
+  let min_height = target
+    .styles
+    .min_height_anchor_size
+    .as_ref()
+    .expect("min-height anchor-size");
+  assert_eq!(min_height.axis, AnchorSizeAxis::SelfBlock);
+  assert_eq!(min_height.name.as_deref(), Some("--a"));
+
+  let max_width = target
+    .styles
+    .max_width_anchor_size
+    .as_ref()
+    .expect("max-width anchor-size");
+  assert_eq!(max_width.axis, AnchorSizeAxis::Inline);
+
+  let max_height = target
+    .styles
+    .max_height_anchor_size
+    .as_ref()
+    .expect("max-height anchor-size");
+  assert_eq!(max_height.axis, AnchorSizeAxis::Block);
 }
 
 #[test]
@@ -97,4 +158,3 @@ fn anchor_size_rejects_invalid_axis_and_does_not_override_previous_value() {
   assert_eq!(target.styles.height, Some(Length::px(40.0)));
   assert!(target.styles.height_anchor_size.is_none());
 }
-

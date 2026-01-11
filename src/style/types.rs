@@ -2575,6 +2575,11 @@ pub enum AlignItems {
   FlexStart,
   FlexEnd,
   Center,
+  /// CSS Anchor Positioning `anchor-center` alignment value.
+  ///
+  /// Per spec, behaves like `center` unless the element is being aligned against a default anchor
+  /// (e.g. an absolutely positioned box with `position-area`).
+  AnchorCenter,
   Baseline,
   Stretch,
 }
@@ -3901,6 +3906,14 @@ pub enum AnchorSide {
   Right,
   Bottom,
   Left,
+  /// `start` resolves to the start side of the relevant axis using the containing block writing-mode.
+  Start,
+  /// `end` resolves to the end side of the relevant axis using the containing block writing-mode.
+  End,
+  /// `self-start` resolves to the start side of the relevant axis using the positioned element writing-mode.
+  SelfStart,
+  /// `self-end` resolves to the end side of the relevant axis using the positioned element writing-mode.
+  SelfEnd,
   /// Logical inline-start side of the anchor element.
   InlineStart,
   /// Logical inline-end side of the anchor element.
@@ -3936,10 +3949,19 @@ pub struct AnchorFunction {
 /// anchor element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnchorSizeAxis {
+  /// Axis keyword omitted (`anchor-size()` / `anchor-size(--foo)`); resolves to the axis of the
+  /// property the function is used in (e.g. `width` -> `width`, `height` -> `height`).
+  Omitted,
   Width,
   Height,
-  InlineSize,
-  BlockSize,
+  /// Logical inline axis of the *containing block*.
+  Inline,
+  /// Logical block axis of the *containing block*.
+  Block,
+  /// Logical inline axis of the positioned element ("self").
+  SelfInline,
+  /// Logical block axis of the positioned element ("self").
+  SelfBlock,
 }
 
 /// Parsed `anchor-size()` function as used in sizing properties (width/height/min/max).

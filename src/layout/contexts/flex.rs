@@ -1372,6 +1372,7 @@ impl FormattingContext for FlexFormattingContext {
         Some(padding_rect.size.width),
         constraints.height().map(|_| padding_rect.size.height),
       )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction)
     } else {
       self.nearest_fixed_cb
     };
@@ -4761,7 +4762,8 @@ impl FormattingContext for FlexFormattingContext {
         self.viewport_size,
         Some(padding_rect.size.width),
         block_base,
-      );
+      )
+      .with_writing_mode_and_direction(box_node.style.writing_mode, box_node.style.direction);
       let root_box_id = ensure_box_id(box_node);
       let mut anchor_index =
         crate::layout::anchor_positioning::AnchorIndex::from_fragments_with_root_scope(
@@ -9714,7 +9716,8 @@ impl FlexFormattingContext {
         // the containing block, even when its own height is `auto` (CSS 2.1 §10.5). Use the
         // computed padding box height as the percentage base.
         Some(padding_rect.size.height),
-      );
+      )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction);
       if establishes_abs_cb && padding_cb != factory.nearest_positioned_cb() {
         factory = factory.with_positioned_cb(padding_cb);
       }
@@ -9794,7 +9797,7 @@ impl FlexFormattingContext {
         }
 
         let offset = match align {
-          AlignItems::Center => resolved_cross_size / 2.0,
+          AlignItems::Center | AlignItems::AnchorCenter => resolved_cross_size / 2.0,
           AlignItems::End | AlignItems::SelfEnd | AlignItems::FlexEnd => resolved_cross_size,
           AlignItems::Start | AlignItems::SelfStart | AlignItems::FlexStart => 0.0,
           AlignItems::Baseline | AlignItems::Stretch => 0.0,
@@ -11011,7 +11014,8 @@ impl FlexFormattingContext {
                 self.viewport_size,
                 Some(padding_rect.size.width),
                 Some(padding_rect.size.height),
-              );
+              )
+              .with_writing_mode_and_direction(style.writing_mode, style.direction);
 
               let abs = AbsoluteLayout::with_font_context(self.font_context.clone());
               let font_context = self.font_context.clone();
@@ -12784,7 +12788,7 @@ impl FlexFormattingContext {
           taffy::style::AlignItems::FlexStart
         }
       }
-      AlignItems::Center => taffy::style::AlignItems::Center,
+      AlignItems::Center | AlignItems::AnchorCenter => taffy::style::AlignItems::Center,
       AlignItems::Baseline => taffy::style::AlignItems::Baseline,
       AlignItems::Stretch => taffy::style::AlignItems::Stretch,
     })

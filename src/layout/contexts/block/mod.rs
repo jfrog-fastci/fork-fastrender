@@ -387,12 +387,7 @@ fn translate_containing_block(cb: ContainingBlock, delta: Point) -> ContainingBl
   if delta == Point::ZERO {
     return cb;
   }
-  ContainingBlock::with_viewport_and_bases(
-    cb.rect.translate(delta),
-    cb.viewport_size(),
-    cb.inline_percentage_base(),
-    cb.block_percentage_base(),
-  )
+  cb.translate(delta)
 }
 
 /// Block Formatting Context implementation
@@ -1991,6 +1986,7 @@ impl BlockFormattingContext {
         Some(padding_size.width),
         cb_block_base,
       )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction)
     } else {
       inherited_positioned_cb
     };
@@ -2001,6 +1997,7 @@ impl BlockFormattingContext {
         Some(padding_size.width),
         cb_block_base,
       )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction)
     } else {
       inherited_fixed_cb
     };
@@ -2798,14 +2795,15 @@ impl BlockFormattingContext {
           self.viewport_size,
           Some(padding_rect_physical.size.width),
           Some(padding_rect_physical.size.height),
-        ));
+        ).with_writing_mode_and_direction(style.writing_mode, style.direction));
       }
       let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
         padding_rect,
         self.viewport_size,
         Some(padding_size.width),
         Some(padding_size.height),
-      );
+      )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction);
       let base_factory = self.factory.clone();
       let viewport_cb = ContainingBlock::viewport(self.viewport_size);
       let abs_factory = if parent_padding_cb == base_factory.nearest_positioned_cb() {
@@ -4236,7 +4234,8 @@ impl BlockFormattingContext {
         self.viewport_size,
         Some(padding_rect.size.width),
         Some(padding_rect.size.height),
-      );
+      )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction);
 
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
@@ -5154,7 +5153,8 @@ impl BlockFormattingContext {
       self.viewport_size,
       physical_width_base,
       physical_height_base,
-    );
+    )
+    .with_writing_mode_and_direction(parent.style.writing_mode, parent.style.direction);
     // Check for border/padding that prevents margin collapse with first child
     let (parent_block_start, _) = block_axis_sides(&parent.style);
     let root_font_metrics = self.factory.root_font_metrics();
@@ -5229,6 +5229,7 @@ impl BlockFormattingContext {
         nearest_positioned_cb.inline_percentage_base(),
         nearest_positioned_cb.block_percentage_base(),
       )
+      .with_writing_mode_and_direction(nearest_positioned_cb.writing_mode, nearest_positioned_cb.direction)
     } else {
       *nearest_positioned_cb
     };
@@ -5242,6 +5243,7 @@ impl BlockFormattingContext {
         nearest_fixed_cb.inline_percentage_base(),
         nearest_fixed_cb.block_percentage_base(),
       )
+      .with_writing_mode_and_direction(nearest_fixed_cb.writing_mode, nearest_fixed_cb.direction)
     } else {
       *nearest_fixed_cb
     };
@@ -9534,6 +9536,7 @@ impl FormattingContext for BlockFormattingContext {
         Some(padding_size.width),
         cb_block_base,
       )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction)
     } else {
       self.nearest_positioned_cb
     };
@@ -9544,6 +9547,7 @@ impl FormattingContext for BlockFormattingContext {
         Some(padding_size.width),
         cb_block_base,
       )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction)
     } else {
       self.nearest_fixed_cb
     };
@@ -10260,14 +10264,15 @@ impl FormattingContext for BlockFormattingContext {
           self.viewport_size,
           Some(padding_rect_physical.size.width),
           Some(padding_rect_physical.size.height),
-        ));
+        ).with_writing_mode_and_direction(style.writing_mode, style.direction));
       }
       let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
         padding_rect,
         self.viewport_size,
         Some(padding_size.width),
         Some(padding_size.height),
-      );
+      )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction);
       let base_factory = self.factory.clone();
       let viewport_cb = ContainingBlock::viewport(self.viewport_size);
       let abs_factory = if parent_padding_cb == base_factory.nearest_positioned_cb() {
@@ -10804,7 +10809,8 @@ impl FormattingContext for BlockFormattingContext {
         self.viewport_size,
         inline_base,
         block_base,
-      );
+      )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction);
       let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
         style,
         &containing_block,

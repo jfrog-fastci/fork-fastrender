@@ -49,6 +49,7 @@ use crate::layout::utils::resolve_offset_for_positioned;
 use crate::style::computed::PositionedStyle;
 use crate::style::position::Position;
 use crate::style::types::Direction;
+use crate::style::types::WritingMode;
 use crate::style::{block_axis_is_horizontal, block_axis_positive, inline_axis_positive};
 use crate::text::font_loader::FontContext;
 use crate::tree::fragment_tree::FragmentNode;
@@ -75,6 +76,10 @@ pub struct ContainingBlock {
   viewport_size: Size,
   inline_percentage_base: Option<f32>,
   block_percentage_base: Option<f32>,
+  /// Writing mode of the element that established this containing block.
+  pub writing_mode: WritingMode,
+  /// Text direction of the element that established this containing block.
+  pub direction: Direction,
 }
 
 impl ContainingBlock {
@@ -114,6 +119,8 @@ impl ContainingBlock {
       viewport_size,
       inline_percentage_base: inline_base,
       block_percentage_base: block_base,
+      writing_mode: WritingMode::HorizontalTb,
+      direction: Direction::Ltr,
     }
   }
 
@@ -170,6 +177,16 @@ impl ContainingBlock {
   /// Percentage base for block-axis offsets (None when block-size is auto).
   pub fn block_percentage_base(&self) -> Option<f32> {
     self.block_percentage_base
+  }
+
+  /// Returns a copy of this containing block with the supplied writing mode and direction.
+  #[inline]
+  pub fn with_writing_mode_and_direction(self, writing_mode: WritingMode, direction: Direction) -> Self {
+    Self {
+      writing_mode,
+      direction,
+      ..self
+    }
   }
 
   /// Translates this containing block by the given offset.

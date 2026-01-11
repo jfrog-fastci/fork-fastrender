@@ -2874,9 +2874,36 @@ pub(crate) fn resolve_positioned_style_with_anchors(
     };
 
     let side = match side {
+      crate::style::types::AnchorSide::Start
+      | crate::style::types::AnchorSide::End
+      | crate::style::types::AnchorSide::SelfStart
+      | crate::style::types::AnchorSide::SelfEnd => {
+        let axis_horizontal = matches!(edge, InsetEdge::Left | InsetEdge::Right);
+        let (wm, dir) = match side {
+          crate::style::types::AnchorSide::Start | crate::style::types::AnchorSide::End => {
+            (containing_block.writing_mode, containing_block.direction)
+          }
+          _ => (style.writing_mode, style.direction),
+        };
+        let axis_is_inline = crate::style::inline_axis_is_horizontal(wm) == axis_horizontal;
+        let positive = if axis_is_inline {
+          crate::style::inline_axis_positive(wm, dir)
+        } else {
+          crate::style::block_axis_positive(wm)
+        };
+        let (start, end) = axis_sides(axis_horizontal, positive);
+        if matches!(
+          side,
+          crate::style::types::AnchorSide::Start | crate::style::types::AnchorSide::SelfStart
+        ) {
+          start
+        } else {
+          end
+        }
+      }
       crate::style::types::AnchorSide::InlineStart | crate::style::types::AnchorSide::InlineEnd => {
-        let horizontal = crate::style::inline_axis_is_horizontal(anchor.writing_mode);
-        let positive = crate::style::inline_axis_positive(anchor.writing_mode, anchor.direction);
+        let horizontal = crate::style::inline_axis_is_horizontal(containing_block.writing_mode);
+        let positive = crate::style::inline_axis_positive(containing_block.writing_mode, containing_block.direction);
         let (start, end) = axis_sides(horizontal, positive);
         if matches!(side, crate::style::types::AnchorSide::InlineStart) {
           start
@@ -2885,8 +2912,8 @@ pub(crate) fn resolve_positioned_style_with_anchors(
         }
       }
       crate::style::types::AnchorSide::BlockStart | crate::style::types::AnchorSide::BlockEnd => {
-        let horizontal = crate::style::block_axis_is_horizontal(anchor.writing_mode);
-        let positive = crate::style::block_axis_positive(anchor.writing_mode);
+        let horizontal = crate::style::block_axis_is_horizontal(containing_block.writing_mode);
+        let positive = crate::style::block_axis_positive(containing_block.writing_mode);
         let (start, end) = axis_sides(horizontal, positive);
         if matches!(side, crate::style::types::AnchorSide::BlockStart) {
           start
@@ -2961,7 +2988,9 @@ pub(crate) fn resolve_positioned_style_with_anchors(
     };
 
   let resolve_anchor_size =
-    |func: &crate::style::types::AnchorSizeFunction| -> Option<f32> {
+    |func: &crate::style::types::AnchorSizeFunction,
+     default_axis: crate::style::types::AnchorSizeAxis|
+     -> Option<f32> {
       let anchors = anchors?;
       let anchor = if let Some(anchor_name) = func.name.as_deref() {
         anchors.get_anchor_for_query(anchor_name, anchor_query.query_parent_box_id)?
@@ -2977,29 +3006,82 @@ pub(crate) fn resolve_positioned_style_with_anchors(
         }
       };
       let rect = anchor.rect;
-      let value = match func.axis {
+      let axis = match func.axis {
+        crate::style::types::AnchorSizeAxis::Omitted => default_axis,
+        other => other,
+      };
+      let value = match axis {
         crate::style::types::AnchorSizeAxis::Width => rect.width(),
         crate::style::types::AnchorSizeAxis::Height => rect.height(),
-        crate::style::types::AnchorSizeAxis::InlineSize => {
-          if crate::style::inline_axis_is_horizontal(anchor.writing_mode) {
+        crate::style::types::AnchorSizeAxis::Inline => {
+          if crate::style::inline_axis_is_horizontal(containing_block.writing_mode) {
             rect.width()
           } else {
             rect.height()
           }
         }
-        crate::style::types::AnchorSizeAxis::BlockSize => {
-          if crate::style::block_axis_is_horizontal(anchor.writing_mode) {
+        crate::style::types::AnchorSizeAxis::Block => {
+          if crate::style::block_axis_is_horizontal(containing_block.writing_mode) {
             rect.width()
           } else {
             rect.height()
           }
         }
+        crate::style::types::AnchorSizeAxis::SelfInline => {
+          if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+            rect.width()
+          } else {
+            rect.height()
+          }
+        }
+        crate::style::types::AnchorSizeAxis::SelfBlock => {
+          if crate::style::block_axis_is_horizontal(style.writing_mode) {
+            rect.width()
+          } else {
+            rect.height()
+          }
+        }
+        // `Omitted` should have been normalized to the provided default axis above, but handle it
+        // defensively in case a caller ever passes `default_axis = Omitted`.
+        crate::style::types::AnchorSizeAxis::Omitted => match default_axis {
+          crate::style::types::AnchorSizeAxis::Width => rect.width(),
+          crate::style::types::AnchorSizeAxis::Height => rect.height(),
+          crate::style::types::AnchorSizeAxis::Inline => {
+            if crate::style::inline_axis_is_horizontal(containing_block.writing_mode) {
+              rect.width()
+            } else {
+              rect.height()
+            }
+          }
+          crate::style::types::AnchorSizeAxis::Block => {
+            if crate::style::block_axis_is_horizontal(containing_block.writing_mode) {
+              rect.width()
+            } else {
+              rect.height()
+            }
+          }
+          crate::style::types::AnchorSizeAxis::SelfInline => {
+            if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+              rect.width()
+            } else {
+              rect.height()
+            }
+          }
+          crate::style::types::AnchorSizeAxis::SelfBlock => {
+            if crate::style::block_axis_is_horizontal(style.writing_mode) {
+              rect.width()
+            } else {
+              rect.height()
+            }
+          }
+          crate::style::types::AnchorSizeAxis::Omitted => rect.width(),
+        },
       };
       value.is_finite().then_some(value)
     };
 
   if let Some(func) = style.width_anchor_size.as_ref() {
-    resolved.width = resolve_anchor_size(func)
+    resolved.width = resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Width)
       .map(|px| LengthOrAuto::Length(Length::px(px)))
       .unwrap_or_else(|| fallback_or_auto_size(func));
     resolved.width_keyword = None;
@@ -3009,7 +3091,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   }
 
   if let Some(func) = style.height_anchor_size.as_ref() {
-    resolved.height = resolve_anchor_size(func)
+    resolved.height = resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Height)
       .map(|px| LengthOrAuto::Length(Length::px(px)))
       .unwrap_or_else(|| fallback_or_auto_size(func));
     resolved.height_keyword = None;
@@ -3081,7 +3163,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
     resolve_len(&style.used_border_bottom_width(), inline_base).unwrap_or(0.0);
 
   let min_width_px = if let Some(func) = style.min_width_anchor_size.as_ref() {
-    resolve_anchor_size(func)
+    resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Width)
       .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, inline_base)))
       .unwrap_or(0.0)
   } else {
@@ -3099,7 +3181,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   };
 
   let max_width_px = if let Some(func) = style.max_width_anchor_size.as_ref() {
-    resolve_anchor_size(func)
+    resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Width)
       .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, inline_base)))
       .unwrap_or(f32::INFINITY)
   } else {
@@ -3117,7 +3199,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   };
 
   let min_height_px = if let Some(func) = style.min_height_anchor_size.as_ref() {
-    resolve_anchor_size(func)
+    resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Height)
       .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, block_base)))
       .unwrap_or(0.0)
   } else {
@@ -3135,7 +3217,7 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   };
 
   let max_height_px = if let Some(func) = style.max_height_anchor_size.as_ref() {
-    resolve_anchor_size(func)
+    resolve_anchor_size(func, crate::style::types::AnchorSizeAxis::Height)
       .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, block_base)))
       .unwrap_or(f32::INFINITY)
   } else {
@@ -3331,11 +3413,19 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       crate::style::LogicalAxis::Inline => match side {
         AnchorSide::InlineStart => AnchorSide::InlineEnd,
         AnchorSide::InlineEnd => AnchorSide::InlineStart,
+        AnchorSide::Start => AnchorSide::End,
+        AnchorSide::End => AnchorSide::Start,
+        AnchorSide::SelfStart => AnchorSide::SelfEnd,
+        AnchorSide::SelfEnd => AnchorSide::SelfStart,
         other => other,
       },
       crate::style::LogicalAxis::Block => match side {
         AnchorSide::BlockStart => AnchorSide::BlockEnd,
         AnchorSide::BlockEnd => AnchorSide::BlockStart,
+        AnchorSide::Start => AnchorSide::End,
+        AnchorSide::End => AnchorSide::Start,
+        AnchorSide::SelfStart => AnchorSide::SelfEnd,
+        AnchorSide::SelfEnd => AnchorSide::SelfStart,
         other => other,
       },
     };
@@ -3558,10 +3648,13 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     fn flip_anchor_size_axis(axis: crate::style::types::AnchorSizeAxis) -> crate::style::types::AnchorSizeAxis {
       use crate::style::types::AnchorSizeAxis::*;
       match axis {
+        Omitted => Omitted,
         Width => Height,
         Height => Width,
-        InlineSize => BlockSize,
-        BlockSize => InlineSize,
+        Inline => Block,
+        Block => Inline,
+        SelfInline => SelfBlock,
+        SelfBlock => SelfInline,
       }
     }
 
@@ -3631,6 +3724,8 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     tracks: crate::style::types::PositionAreaTracks,
     inline_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
     block_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+    inline_anchor_center: bool,
+    block_anchor_center: bool,
   }
 
   fn positioned_inset<'a>(style: &'a PositionedStyle, side: crate::style::PhysicalSide) -> &'a LengthOrAuto {
@@ -3776,7 +3871,11 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       containing_block.viewport_size(),
       containing_block.inline_percentage_base().map(|_| area_rect.size.width),
       containing_block.block_percentage_base().map(|_| area_rect.size.height),
-    );
+    )
+    .with_writing_mode_and_direction(containing_block.writing_mode, containing_block.direction);
+
+    let block_align = style.align_self.unwrap_or(style.align_items);
+    let inline_align = style.justify_self.unwrap_or(style.justify_items);
 
     Some(PositionAreaContext {
       containing_block: derived,
@@ -3785,6 +3884,8 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       tracks,
       inline_sides,
       block_sides,
+      inline_anchor_center: matches!(inline_align, crate::style::types::AlignItems::AnchorCenter),
+      block_anchor_center: matches!(block_align, crate::style::types::AlignItems::AnchorCenter),
     })
   }
 
@@ -3890,7 +3991,11 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
         context.area_rect,
         context.anchor_rect,
         context.inline_sides,
-        default_alignment(context.tracks.inline),
+        if context.inline_anchor_center {
+          Alignment::AnchorCenter
+        } else {
+          default_alignment(context.tracks.inline)
+        },
       );
     }
     if block_insets_auto {
@@ -3900,7 +4005,11 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
         context.area_rect,
         context.anchor_rect,
         context.block_sides,
-        default_alignment(context.tracks.block),
+        if context.block_anchor_center {
+          Alignment::AnchorCenter
+        } else {
+          default_alignment(context.tracks.block)
+        },
       );
     }
 

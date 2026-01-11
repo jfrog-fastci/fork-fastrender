@@ -7453,7 +7453,8 @@ impl InlineFormattingContext {
             self.viewport_size,
             Some(cb_physical_width),
             Some(cb_physical_height),
-          );
+          )
+          .with_writing_mode_and_direction(style.writing_mode, style.direction);
 
           map
             .entry(box_item.box_id)
@@ -7485,7 +7486,8 @@ impl InlineFormattingContext {
                     union.size.height
                   },
                 ),
-              );
+              )
+              .with_writing_mode_and_direction(existing.writing_mode, existing.direction);
             })
             .or_insert(new_cb);
         };
@@ -7707,7 +7709,8 @@ impl InlineFormattingContext {
                 self.viewport_size,
                 Some(cb_physical_width),
                 Some(cb_physical_height),
-              );
+              )
+              .with_writing_mode_and_direction(style.writing_mode, style.direction);
               map
                 .entry(id)
                 .and_modify(|existing| {
@@ -7738,7 +7741,8 @@ impl InlineFormattingContext {
                         union.size.height
                       },
                     ),
-                  );
+                  )
+                  .with_writing_mode_and_direction(existing.writing_mode, existing.direction);
                 })
                 .or_insert(new_cb);
             }
@@ -13727,7 +13731,8 @@ impl InlineFormattingContext {
         self.viewport_size,
         Some(cb_physical_width),
         cb_block_base,
-      );
+      )
+      .with_writing_mode_and_direction(style.writing_mode, style.direction);
       // The inline formatting context is often invoked on synthetic wrapper boxes created during
       // block layout (e.g. the anonymous inline container used to lay out a run of inline-level
       // children). These wrappers may inherit `position`/`transform` from the real block box, but
@@ -13769,7 +13774,8 @@ impl InlineFormattingContext {
           self.viewport_size,
           abs_cb.inline_percentage_base(),
           Some(resolved_height),
-        );
+        )
+        .with_writing_mode_and_direction(abs_cb.writing_mode, abs_cb.direction);
       }
       if !root_establishes_fixed_cb && default_fixed_cb.block_percentage_base().is_none() {
         let content_height = if bounds.height().is_finite() {
@@ -13786,7 +13792,8 @@ impl InlineFormattingContext {
           self.viewport_size,
           default_fixed_cb.inline_percentage_base(),
           Some(resolved_height),
-        );
+        )
+        .with_writing_mode_and_direction(default_fixed_cb.writing_mode, default_fixed_cb.direction);
       }
       let default_static_position = static_position;
 
@@ -13937,7 +13944,8 @@ impl InlineFormattingContext {
             viewport_size,
             child_cb.inline_percentage_base(),
             child_cb.block_percentage_base(),
-          );
+          )
+          .with_writing_mode_and_direction(child_cb.writing_mode, child_cb.direction);
           let anchors = Some(
             anchor_index_physical
               .as_ref()

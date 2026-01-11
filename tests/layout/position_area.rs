@@ -7,7 +7,7 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::position_try::PositionTryRegistry;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
-use fastrender::style::types::{PositionAnchor, PositionArea, WritingMode};
+use fastrender::style::types::{AlignItems, PositionAnchor, PositionArea, WritingMode};
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
@@ -86,6 +86,106 @@ fn position_area_block_start_places_above_anchor_and_centers_inline() {
     "span-all should anchor-center on the inline axis (overlay cx={}, anchor cx={})",
     overlay_center_x,
     anchor_center_x
+  );
+}
+
+#[test]
+fn position_area_anchor_center_overrides_track_alignment() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let default_overlay_id = 2usize;
+  let centered_overlay_id = 3usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(50.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.margin_left = Some(Length::px(80.0));
+  anchor_style.margin_top = Some(Length::px(100.0));
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let overlay_style = |anchor_center: bool| {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.position = Position::Absolute;
+    style.position_anchor = PositionAnchor::Name("--a".to_string());
+    style.position_area =
+      PositionArea::parse("block-start inline-start").expect("parse position-area");
+    if anchor_center {
+      style.align_self = Some(AlignItems::AnchorCenter);
+      style.justify_self = Some(AlignItems::AnchorCenter);
+    }
+    style.width = Some(Length::px(10.0));
+    style.height = Some(Length::px(10.0));
+    style.width_keyword = None;
+    style.height_keyword = None;
+    style
+  };
+
+  let mut default_overlay =
+    BoxNode::new_block(Arc::new(overlay_style(false)), FormattingContextType::Block, vec![]);
+  default_overlay.id = default_overlay_id;
+  let mut centered_overlay =
+    BoxNode::new_block(Arc::new(overlay_style(true)), FormattingContextType::Block, vec![]);
+  centered_overlay.id = centered_overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, default_overlay, centered_overlay],
+  );
+  container.id = 204;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let default_fragment =
+    find_fragment_by_box_id(&fragment, default_overlay_id).expect("default overlay fragment");
+  let centered_fragment =
+    find_fragment_by_box_id(&fragment, centered_overlay_id).expect("centered overlay fragment");
+
+  assert!(
+    (default_fragment.bounds.max_x() - anchor_fragment.bounds.x()).abs() < 0.1,
+    "inline-start track should align the overlay next to the anchor (default max_x={}, anchor x={})",
+    default_fragment.bounds.max_x(),
+    anchor_fragment.bounds.x()
+  );
+  assert!(
+    (default_fragment.bounds.max_y() - anchor_fragment.bounds.y()).abs() < 0.1,
+    "block-start track should align the overlay above the anchor (default max_y={}, anchor y={})",
+    default_fragment.bounds.max_y(),
+    anchor_fragment.bounds.y()
+  );
+
+  let anchor_center_x = anchor_fragment.bounds.x() + anchor_fragment.bounds.width() / 2.0;
+  let anchor_center_y = anchor_fragment.bounds.y() + anchor_fragment.bounds.height() / 2.0;
+  let centered_x = centered_fragment.bounds.x() + centered_fragment.bounds.width() / 2.0;
+  let centered_y = centered_fragment.bounds.y() + centered_fragment.bounds.height() / 2.0;
+  assert!(
+    (centered_x - anchor_center_x).abs() < 0.1,
+    "justify-self: anchor-center should center over the anchor box (overlay cx={}, anchor cx={})",
+    centered_x,
+    anchor_center_x
+  );
+  assert!(
+    (centered_y - anchor_center_y).abs() < 0.1,
+    "align-self: anchor-center should center over the anchor box (overlay cy={}, anchor cy={})",
+    centered_y,
+    anchor_center_y
   );
 }
 
