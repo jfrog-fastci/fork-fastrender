@@ -121,6 +121,9 @@ jobs:
       # native-js builds and tests are LLVM-heavy and can spawn lots of threads.
       # Keep this job bounded on GitHub-hosted runners.
       RUST_TEST_THREADS: 2
+      # `native-js` integration tests link against `runtime-native`, whose build
+      # script requires frame pointers for FP-based stack walking.
+      RUSTFLAGS: -C force-frame-pointers=yes
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
