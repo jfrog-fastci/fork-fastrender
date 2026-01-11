@@ -17,6 +17,11 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   //
   // And a slot at -0x10(%rbp) is described as [RSP + 0] in the stackmap because:
   //   rsp_at_callsite = rbp + 8 - stack_size = rbp - 0x10
+  //
+  // `walk_gc_roots_from_fp` derives the caller's callsite SP from the *callee* frame pointer:
+  //   caller_sp_callsite = callee_fp + 16
+  //
+  // so we must lay out our synthetic "runtime" (callee) frame pointer accordingly.
   let bytes = build_stackmaps_with_rsp_slots();
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
   let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
