@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "diagnostics": [
+    {
+      "engine": "rust",
+      "code": "TC4000",
+      "file": "/proxy.ts",
+      "start": 33,
+      "end": 40,
+      "severity": "error",
+      "message": "`any` is forbidden when `native_strict` is enabled"
+    },
+    {
+      "engine": "rust",
+      "code": "TC4000",
+      "file": "/proxy.ts",
+      "start": 83,
+      "end": 88,
+      "severity": "error",
+      "message": "`any` is forbidden when `native_strict` is enabled"
+    },
+    {
+      "engine": "rust",
+      "code": "TC4008",
+      "file": "/proxy.ts",
+      "start": 83,
+      "end": 88,
+      "severity": "error",
+      "message": "`Proxy` is forbidden when `native_strict` is enabled"
+    },
+    {
+      "engine": "rust",
+      "code": "TC4000",
+      "file": "/proxy.ts",
+      "start": 97,
+      "end": 104,
+      "severity": "error",
+      "message": "`any` is forbidden when `native_strict` is enabled"
+    }
+  ]
+}

@@ -14,6 +14,7 @@ mod resolve;
 pub mod runner;
 mod serde_helpers;
 pub mod snapshot_verify;
+pub mod strict_native;
 pub mod triage;
 pub mod tsc;
 mod tsc_codes;

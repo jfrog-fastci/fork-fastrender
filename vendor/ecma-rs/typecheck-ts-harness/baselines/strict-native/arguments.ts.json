@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "diagnostics": [
+    {
+      "engine": "rust",
+      "code": "TC0005",
+      "file": "/arguments.ts",
+      "start": 29,
+      "end": 38,
+      "severity": "error",
+      "message": "unknown identifier `arguments`"
+    },
+    {
+      "engine": "rust",
+      "code": "TC4004",
+      "file": "/arguments.ts",
+      "start": 29,
+      "end": 38,
+      "severity": "error",
+      "message": "`arguments` is forbidden when `native_strict` is enabled"
+    }
+  ]
+}

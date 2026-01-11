@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "diagnostics": [
+    {
+      "engine": "rust",
+      "code": "TC4007",
+      "file": "/computed_member_read.ts",
+      "start": 84,
+      "end": 87,
+      "severity": "error",
+      "message": "computed property access requires a constant key when `native_strict` is enabled"
+    }
+  ]
+}

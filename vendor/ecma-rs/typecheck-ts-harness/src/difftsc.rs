@@ -2690,13 +2690,15 @@ span mismatches:
     let files = vec![VirtualFile {
       name: "a.ts".to_string(),
       content: r#"export function f() { return 1; }
-export const v = 1;
-export interface Foo { x: number }
-    "#
+ export const v = 1;
+ export interface Foo { x: number }
+     "#
       .into(),
     }];
     let file_set = HarnessFileSet::new(&files);
-    let host = HarnessHost::new(file_set.clone(), CompilerOptions::default());
+    let mut compiler_options = CompilerOptions::default();
+    compiler_options.no_default_lib = true;
+    let host = HarnessHost::new(file_set.clone(), compiler_options);
     let program = Program::new(host, file_set.root_keys());
     let _ = program.check();
 

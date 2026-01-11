@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "diagnostics": [
+    {
+      "engine": "rust",
+      "code": "TC4003",
+      "file": "/with.ts",
+      "start": 22,
+      "end": 26,
+      "severity": "error",
+      "message": "`with` is forbidden when `native_strict` is enabled"
+    }
+  ]
+}

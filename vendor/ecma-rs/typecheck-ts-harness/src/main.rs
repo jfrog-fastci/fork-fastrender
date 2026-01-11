@@ -29,6 +29,7 @@ use typecheck_ts_harness::ConformanceOptions;
 use typecheck_ts_harness::FailOn;
 use typecheck_ts_harness::Shard;
 use typecheck_ts_harness::ShardStrategy;
+use typecheck_ts_harness::strict_native::StrictNativeArgs;
 use typecheck_ts_harness::VerifySnapshotsOptions;
 use walkdir as _;
 
@@ -56,6 +57,9 @@ struct Cli {
 enum Commands {
   /// Run differential tests against tsc diagnostics
   Difftsc(DifftscArgs),
+
+  /// Run strict-native regression fixtures against stored baselines
+  StrictNative(StrictNativeArgs),
 
   /// Run TypeScript conformance tests using the Rust checker
   Conformance {
@@ -219,6 +223,13 @@ fn main() -> ExitCode {
   match cli.command {
     Commands::Difftsc(args) => match difftsc::run(args) {
       Ok(CommandStatus::Success) | Ok(CommandStatus::Skipped) => ExitCode::SUCCESS,
+      Err(err) => {
+        eprintln!("{err:?}");
+        ExitCode::from(1)
+      }
+    },
+    Commands::StrictNative(args) => match typecheck_ts_harness::strict_native::run(args) {
+      Ok(()) => ExitCode::SUCCESS,
       Err(err) => {
         eprintln!("{err:?}");
         ExitCode::from(1)
