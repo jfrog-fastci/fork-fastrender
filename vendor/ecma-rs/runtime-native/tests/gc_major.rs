@@ -28,6 +28,7 @@ struct NullRememberedSet;
 impl RememberedSet for NullRememberedSet {
   fn for_each_remembered_obj(&mut self, _f: &mut dyn FnMut(*mut u8)) {}
   fn clear(&mut self) {}
+  fn on_promoted_object(&mut self, _obj: *mut u8, _has_young_refs: bool) {}
 }
 
 #[test]
@@ -56,4 +57,3 @@ fn major_gc_reclaims_dead_immix_lines_and_sweeps_large_objects() {
   assert_eq!(reused, dead);
   assert_eq!(root_live, live);
 }
-

@@ -183,6 +183,17 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh bench -p runtime-native --bench card_
 
 ---
 
+## Promotion
+
+The write barrier does **not** observe **young→young** stores. If a nursery object is later promoted to old while it still contains pointers to young objects, those existing references become **old→young** edges *without any write barrier firing*.
+
+Promotion must therefore explicitly register promoted objects that still have young references:
+
+* call `RememberedSet::on_promoted_object(obj, has_young_refs)` after scanning the promoted object.
+* for card-table objects, promotion scan must also mark any cards that contain young references (in addition to adding the object to the remembered set).
+
+---
+
 ## Compiler write-barrier elimination rules
 
 Native codegen must conservatively emit `rt_write_barrier` for any store that **might** create an old→young pointer.

@@ -11,6 +11,7 @@ pub use heap::GcHeap;
 pub use roots::RememberedSet;
 pub use roots::RootSet;
 pub use roots::RootStack;
+pub use roots::SimpleRememberedSet;
 
 /// Object header that prefixes every GC-managed allocation.
 ///
@@ -29,6 +30,7 @@ pub const OBJ_HEADER_SIZE: usize = mem::size_of::<ObjHeader>();
 const META_FORWARDED: usize = 1;
 const META_MARK_SHIFT: usize = 1;
 const META_MARK_MASK: usize = 1 << META_MARK_SHIFT;
+const META_REMEMBERED: usize = 1 << 2;
 
 impl ObjHeader {
   #[inline]
@@ -55,6 +57,20 @@ impl ObjHeader {
   }
 
   #[inline]
+  pub fn is_remembered(&self) -> bool {
+    (self.meta & META_REMEMBERED) != 0
+  }
+
+  #[inline]
+  pub(crate) fn set_remembered(&mut self, remembered: bool) {
+    if remembered {
+      self.meta |= META_REMEMBERED;
+    } else {
+      self.meta &= !META_REMEMBERED;
+    }
+  }
+
+  #[inline]
   pub(crate) fn mark_epoch(&self) -> u8 {
     ((self.meta & META_MARK_MASK) >> META_MARK_SHIFT) as u8
   }
@@ -68,10 +84,12 @@ impl ObjHeader {
   #[inline]
   pub(crate) fn set_mark_epoch(&mut self, epoch: u8) {
     debug_assert!(epoch <= 1);
-    // Preserve the forwarding bit. (Forwarded objects are only expected in the
-    // nursery during minor GC, but keeping the masking logic here makes the
-    // semantics explicit.)
-    self.meta = (self.meta & META_FORWARDED) | ((epoch as usize) << META_MARK_SHIFT);
+    if self.is_forwarded() {
+      // Forwarding pointers are only expected in the nursery during minor GC.
+      // They are not part of major-GC marking state.
+      return;
+    }
+    self.meta = (self.meta & !META_MARK_MASK) | ((epoch as usize) << META_MARK_SHIFT);
   }
 }
 

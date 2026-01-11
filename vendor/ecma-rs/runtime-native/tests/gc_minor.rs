@@ -22,6 +22,7 @@ struct NullRememberedSet;
 impl RememberedSet for NullRememberedSet {
   fn for_each_remembered_obj(&mut self, _f: &mut dyn FnMut(*mut u8)) {}
   fn clear(&mut self) {}
+  fn on_promoted_object(&mut self, _obj: *mut u8, _has_young_refs: bool) {}
 }
 
 #[test]
@@ -75,6 +76,8 @@ impl RememberedSet for VecRememberedSet {
     self.cleared = true;
     self.objs.clear();
   }
+
+  fn on_promoted_object(&mut self, _obj: *mut u8, _has_young_refs: bool) {}
 }
 
 #[test]
@@ -101,4 +104,3 @@ fn minor_gc_traces_remembered_old_objects() {
   assert!(remembered.cleared);
   assert!(remembered.objs.is_empty());
 }
-
