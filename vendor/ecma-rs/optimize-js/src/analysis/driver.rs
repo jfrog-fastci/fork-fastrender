@@ -376,6 +376,13 @@ mod tests {
         .is_some_and(|r| r.entry_state(top_cfg.entry).is_reachable()),
       "expected nullability analysis results for top-level entry block"
     );
+    assert!(
+      analyses
+        .encoding
+        .get(&FunctionKey::TopLevel)
+        .is_some_and(|r| r.block_entry(top_cfg.entry).is_some()),
+      "expected encoding analysis results for top-level entry block"
+    );
   }
 
   fn cfg_with_blocks(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
