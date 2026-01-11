@@ -1111,6 +1111,123 @@ fn rt_async_cancel_all_runs_handle_watcher_drop_hook_and_frees_handle() {
 }
 
 #[test]
+fn rt_async_cancel_all_clears_unrooted_io_watchers() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let id = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_ne!(id, 0, "expected rt_io_register to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  rt_async_cancel_all();
+
+  // The watcher id should now be invalid.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after rt_async_cancel_all"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after cancellation");
+}
+
+#[test]
+fn rt_async_cancel_all_runs_drop_hook_for_rt_io_register_with_drop() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *mut AtomicUsize = Box::into_raw(dropped);
+
+  let id = rt_io_register_with_drop(
+    rfd.as_raw_fd(),
+    RT_IO_READABLE,
+    noop_cb,
+    dropped_ptr.cast::<u8>(),
+    inc_drop_count,
+  );
+  assert_ne!(id, 0, "expected rt_io_register_with_drop to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    0,
+    "drop_data must not run before cancellation"
+  );
+
+  rt_async_cancel_all();
+
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    1,
+    "rt_async_cancel_all must run drop_data for I/O watchers"
+  );
+
+  // The watcher id should now be invalid and must not re-run the drop hook.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after rt_async_cancel_all"
+  );
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    1,
+    "drop_data must not be invoked twice"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after cancellation");
+
+  unsafe {
+    drop(Box::from_raw(dropped_ptr));
+  }
+}
+
+#[test]
+fn rt_async_cancel_all_releases_rooted_io_watchers() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
+  assert_ne!(id, 0, "expected rt_io_register_rooted to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  rt_async_cancel_all();
+
+  // The watcher id should now be invalid.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after rt_async_cancel_all"
+  );
+
+  // Once canceled, the rooted context must be released and the object should become collectable.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "GC object stayed alive after rt_async_cancel_all cleared rooted I/O watchers (root leak?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after cancellation");
+}
+
+#[test]
 fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
   let _rt = TestRuntimeGuard::new();
 
