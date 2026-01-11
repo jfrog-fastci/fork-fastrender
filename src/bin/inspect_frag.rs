@@ -1,7 +1,9 @@
 use fastrender::cli_utils as common;
 
 use clap::Parser;
-use common::args::{parse_viewport, CompatArgs, DiskCacheArgs, MediaPreferenceArgs, MediaTypeArg};
+use common::args::{
+  parse_viewport, AnimationTimeArgs, CompatArgs, DiskCacheArgs, MediaPreferenceArgs, MediaTypeArg,
+};
 use common::media_prefs::MediaPreferences;
 use common::render_pipeline::CLI_RENDER_STACK_SIZE;
 use fastrender::api::FastRender;
@@ -180,6 +182,9 @@ struct Args {
   /// Device pixel ratio for media queries/srcset.
   #[arg(long, default_value = "1.0")]
   dpr: f32,
+
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
 
   /// Additional deterministic font directories to load (can be repeated).
   #[arg(long, value_name = "DIR")]
@@ -1210,11 +1215,14 @@ fn inspect_pipeline(
     );
   }
 
-  let options = RenderOptions::new()
+  let mut options = RenderOptions::new()
     .with_viewport(args.viewport.0, args.viewport.1)
     .with_device_pixel_ratio(args.dpr)
     .with_media_type(args.media.as_media_type())
     .with_scroll(args.scroll_x, args.scroll_y);
+  if let Some(time_ms) = args.animation_time.animation_time_ms() {
+    options = options.with_animation_time(time_ms);
+  }
 
   let report = renderer.render_html_with_stylesheets_report(
     &doc.html,

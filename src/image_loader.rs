@@ -38,6 +38,7 @@ use avif_parse::AvifData;
 use exif;
 use flate2::read::{GzDecoder, ZlibDecoder};
 use image::imageops;
+use image::AnimationDecoder;
 use image::DynamicImage;
 use image::GenericImageView;
 use image::ImageDecoder;
@@ -3971,6 +3972,10 @@ pub struct ImageCache {
   fetcher: Arc<dyn ResourceFetcher>,
   /// Decode limits.
   config: ImageCacheConfig,
+  /// Sampling timestamp (ms since load) for animated image formats (e.g. GIF).
+  ///
+  /// This is used to select a specific animation frame for deterministic fixture renders.
+  animation_time_ms: Option<f32>,
   /// Optional diagnostics sink for recording fetch failures.
   diagnostics: Option<Arc<Mutex<RenderDiagnostics>>>,
   /// Optional resource context (policy + diagnostics).
@@ -4155,6 +4160,7 @@ impl ImageCache {
       base_url,
       fetcher,
       config,
+      animation_time_ms: None,
       diagnostics: None,
       resource_context: None,
     }
@@ -4193,6 +4199,18 @@ impl ImageCache {
   /// Returns a reference to the current fetcher
   pub fn fetcher(&self) -> &Arc<dyn ResourceFetcher> {
     &self.fetcher
+  }
+
+  /// Sets the animation timestamp used for sampling animated image formats (e.g. GIF).
+  ///
+  /// Values are interpreted as milliseconds since load; negative and non-finite values are clamped
+  /// to 0.
+  pub fn set_animation_time_ms(&mut self, time_ms: Option<f32>) {
+    self.animation_time_ms = time_ms.map(|ms| if ms.is_finite() { ms.max(0.0) } else { 0.0 });
+  }
+
+  pub fn animation_time_ms(&self) -> Option<f32> {
+    self.animation_time_ms
   }
 
   pub(crate) fn instance_id(&self) -> u64 {
@@ -4304,6 +4322,29 @@ impl ImageCache {
         .unwrap_or_else(|| "<unknown>".to_string());
       key.push_str("@@doc_origin=");
       key.push_str(&document_origin);
+    }
+
+    if let Some(time_ms) = self.animation_time_ms {
+      fn url_looks_like_gif(url: &str) -> bool {
+        let trimmed = trim_ascii_whitespace(url);
+        let lower = trimmed.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("data:") {
+          return rest.starts_with("image/gif");
+        }
+        if let Ok(parsed) = Url::parse(trimmed) {
+          return parsed.path().to_ascii_lowercase().ends_with(".gif");
+        }
+        let without_query = trimmed
+          .split(|ch| ch == '?' || ch == '#')
+          .next()
+          .unwrap_or(trimmed);
+        without_query.to_ascii_lowercase().ends_with(".gif")
+      }
+
+      if url_looks_like_gif(resolved_url) {
+        key.push_str("@@animation_time_ms=");
+        key.push_str(&format!("{:08x}", f32_to_canonical_bits(time_ms)));
+      }
     }
 
     key
@@ -7049,6 +7090,256 @@ impl ImageCache {
     Some(false)
   }
 
+  fn decode_gif_at_time(&self, bytes: &[u8], url: &str, time_ms: f32) -> Result<(DynamicImage, bool)> {
+    #[derive(Debug, Default)]
+    struct GifTiming {
+      delays_cs: Vec<u16>,
+      loop_count: Option<u16>,
+    }
+
+    fn parse_gif_timing(bytes: &[u8]) -> Option<GifTiming> {
+      if bytes.len() < 13 {
+        return None;
+      }
+      let header = bytes.get(0..6)?;
+      if header != b"GIF87a" && header != b"GIF89a" {
+        return None;
+      }
+
+      // Logical Screen Descriptor starts at byte 6.
+      let packed = *bytes.get(10)?;
+      let mut offset = 13usize;
+
+      // Skip global color table if present.
+      if packed & 0x80 != 0 {
+        let table_bits = (packed & 0x07) as usize;
+        let entries = 1usize.checked_shl((table_bits + 1) as u32)?;
+        let table_bytes = 3usize.checked_mul(entries)?;
+        offset = offset.checked_add(table_bytes)?;
+        if offset > bytes.len() {
+          return None;
+        }
+      }
+
+      let mut out = GifTiming::default();
+      let mut pending_delay: Option<u16> = None;
+
+      while offset < bytes.len() {
+        match *bytes.get(offset)? {
+          0x3B => break, // trailer
+          0x21 => {
+            // Extension introducer.
+            let label = *bytes.get(offset + 1)?;
+            offset = offset.checked_add(2)?;
+            match label {
+              0xF9 => {
+                // Graphics Control Extension.
+                let block_size = *bytes.get(offset)? as usize;
+                offset = offset.checked_add(1)?;
+                let end = offset.checked_add(block_size)?;
+                if end > bytes.len() {
+                  return None;
+                }
+                if block_size >= 4 {
+                  let delay_bytes: [u8; 2] = bytes.get(offset + 1..offset + 3)?.try_into().ok()?;
+                  pending_delay = Some(u16::from_le_bytes(delay_bytes));
+                }
+                offset = end;
+                if *bytes.get(offset)? != 0x00 {
+                  return None;
+                }
+                offset = offset.checked_add(1)?;
+              }
+              0xFF => {
+                // Application Extension. Track Netscape loop count when present.
+                let block_size = *bytes.get(offset)? as usize;
+                offset = offset.checked_add(1)?;
+                let end = offset.checked_add(block_size)?;
+                if end > bytes.len() {
+                  return None;
+                }
+                let ident = bytes.get(offset..end)?;
+                offset = end;
+
+                loop {
+                  let size = *bytes.get(offset)? as usize;
+                  offset = offset.checked_add(1)?;
+                  if size == 0 {
+                    break;
+                  }
+                  let payload_end = offset.checked_add(size)?;
+                  if payload_end > bytes.len() {
+                    return None;
+                  }
+                  if out.loop_count.is_none()
+                    && (ident == b"NETSCAPE2.0" || ident == b"ANIMEXTS1.0")
+                    && size >= 3
+                    && bytes.get(offset) == Some(&0x01)
+                  {
+                    let loop_bytes: [u8; 2] =
+                      bytes.get(offset + 1..offset + 3)?.try_into().ok()?;
+                    out.loop_count = Some(u16::from_le_bytes(loop_bytes));
+                  }
+                  offset = payload_end;
+                }
+              }
+              _ => {
+                // Skip data sub-blocks.
+                loop {
+                  let size = *bytes.get(offset)? as usize;
+                  offset = offset.checked_add(1)?;
+                  if size == 0 {
+                    break;
+                  }
+                  offset = offset.checked_add(size)?;
+                  if offset > bytes.len() {
+                    return None;
+                  }
+                }
+              }
+            }
+          }
+          0x2C => {
+            // Image descriptor.
+            let desc_end = offset.checked_add(10)?;
+            if desc_end > bytes.len() {
+              return None;
+            }
+            let packed = *bytes.get(offset + 9)?;
+            offset = desc_end;
+            if packed & 0x80 != 0 {
+              let table_bits = (packed & 0x07) as usize;
+              let entries = 1usize.checked_shl((table_bits + 1) as u32)?;
+              let table_bytes = 3usize.checked_mul(entries)?;
+              offset = offset.checked_add(table_bytes)?;
+              if offset > bytes.len() {
+                return None;
+              }
+            }
+
+            // LZW minimum code size.
+            offset = offset.checked_add(1)?;
+            if offset > bytes.len() {
+              return None;
+            }
+
+            // Image data sub-blocks.
+            loop {
+              let size = *bytes.get(offset)? as usize;
+              offset = offset.checked_add(1)?;
+              if size == 0 {
+                break;
+              }
+              offset = offset.checked_add(size)?;
+              if offset > bytes.len() {
+                return None;
+              }
+            }
+
+            out.delays_cs.push(pending_delay.take().unwrap_or(0));
+          }
+          _ => return None,
+        }
+      }
+
+      if out.delays_cs.is_empty() {
+        None
+      } else {
+        Some(out)
+      }
+    }
+
+    let timing = parse_gif_timing(bytes).ok_or_else(|| {
+      Error::Image(ImageError::DecodeFailed {
+        url: url.to_string(),
+        reason: "Unable to parse GIF animation metadata".to_string(),
+      })
+    })?;
+
+    let delays_ms: Vec<u64> = timing
+      .delays_cs
+      .iter()
+      .map(|delay_cs| u64::from((*delay_cs).max(1)) * 10)
+      .collect();
+    let total_ms: u64 = delays_ms.iter().sum();
+    let mut t_ms = if time_ms.is_finite() { time_ms.max(0.0) as f64 } else { 0.0 };
+
+    let selected_frame = if delays_ms.len() == 1 || total_ms == 0 {
+      0usize
+    } else {
+      let total_ms_f64 = total_ms as f64;
+      match timing.loop_count {
+        Some(0) => {
+          // 0 = loop forever (Netscape extension semantics).
+          t_ms = t_ms % total_ms_f64;
+        }
+        Some(count) => {
+          // A positive loop count indicates how many times the animation should play in total.
+          let play_ms = total_ms_f64 * (count as f64);
+          if t_ms >= play_ms {
+            t_ms = total_ms_f64 - f64::EPSILON;
+          } else {
+            t_ms = t_ms % total_ms_f64;
+          }
+        }
+        None => {
+          // No loop extension → play once.
+          if t_ms >= total_ms_f64 {
+            t_ms = total_ms_f64 - f64::EPSILON;
+          }
+        }
+      }
+
+      let mut remaining = t_ms;
+      let mut idx = delays_ms.len().saturating_sub(1);
+      for (i, delay) in delays_ms.iter().enumerate() {
+        let delay = *delay as f64;
+        if remaining < delay {
+          idx = i;
+          break;
+        }
+        remaining -= delay;
+      }
+      idx
+    };
+
+    let decode_frame = || -> std::result::Result<DynamicImage, image::ImageError> {
+      let decoder = image::codecs::gif::GifDecoder::new(DeadlineCursor::new(bytes))?;
+      let mut last_frame: Option<image::Frame> = None;
+      for (idx, frame) in decoder.into_frames().enumerate() {
+        let frame = frame?;
+        if idx == selected_frame {
+          return Ok(DynamicImage::ImageRgba8(frame.into_buffer()));
+        }
+        last_frame = Some(frame);
+      }
+      if let Some(frame) = last_frame {
+        return Ok(DynamicImage::ImageRgba8(frame.into_buffer()));
+      }
+      Err(image::ImageError::Decoding(
+        image::error::DecodingError::new(image::error::ImageFormatHint::Exact(ImageFormat::Gif), "GIF contained no frames"),
+      ))
+    };
+
+    let img = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode_frame)) {
+      Ok(Ok(img)) => img,
+      Ok(Err(err)) => return Err(self.decode_error(url, err)),
+      Err(panic) => {
+        return Err(Error::Image(ImageError::DecodeFailed {
+          url: url.to_string(),
+          reason: format!(
+            "image decode (gif frames) panicked: {}",
+            panic_payload_to_reason(&*panic)
+          ),
+        }));
+      }
+    };
+
+    let has_alpha =
+      Self::source_has_alpha(bytes, ImageFormat::Gif).unwrap_or_else(|| img.color().has_alpha());
+    Ok((img, has_alpha))
+  }
+
   fn webp_has_alpha(bytes: &[u8]) -> Option<bool> {
     // Parse the RIFF container for alpha signalling:
     // - VP8X feature flags (`ALPHA` bit)
@@ -7126,6 +7417,22 @@ impl ImageCache {
     format: ImageFormat,
     url: &str,
   ) -> Result<(DynamicImage, bool)> {
+    if format == ImageFormat::Gif {
+      if let Some(time_ms) = self.animation_time_ms {
+        match self.decode_gif_at_time(bytes, url, time_ms) {
+          Ok(result) => return Ok(result),
+          Err(err) => {
+            if matches!(err, Error::Render(_)) {
+              // Render deadlines must abort immediately.
+              return Err(err);
+            }
+            // Fall back to the first frame decode below. This keeps GIF decode behavior robust when
+            // timing metadata parsing fails, while still allowing time-based selection when
+            // supported.
+          }
+        };
+      }
+    }
     if format == ImageFormat::Jpeg {
       // The `image` crate's JPEG backend (zune-jpeg) can produce pixel values that differ
       // substantially from Chrome/libjpeg, which shows up as large fixture diffs even when the
@@ -8609,6 +8916,7 @@ impl Clone for ImageCache {
       base_url: self.base_url.clone(),
       fetcher: Arc::clone(&self.fetcher),
       config: self.config,
+      animation_time_ms: self.animation_time_ms,
       diagnostics: self.diagnostics.clone(),
       resource_context: self.resource_context.clone(),
     }
@@ -8625,9 +8933,13 @@ mod tests {
   use crate::render_control::RenderDeadline;
   use crate::style::types::OrientationTransform;
   use base64::Engine;
+  use image::codecs::gif::GifEncoder;
   use image::codecs::png::PngEncoder;
   use image::ColorType;
+  use image::Delay;
+  use image::Frame;
   use image::ImageEncoder;
+  use image::Rgba as ImageRgba;
   use image::RgbaImage;
   use std::path::PathBuf;
   use std::time::Duration;
@@ -8907,6 +9219,69 @@ mod tests {
     // taken verbatim (rounded to device pixels during decode).
     assert_eq!(meta.width, 864);
     assert_eq!(meta.height, 700);
+  }
+
+  #[test]
+  fn gif_animation_time_selects_frame_with_looping() {
+    fn insert_netscape_loop_extension(bytes: &mut Vec<u8>, loop_count: u16) {
+      // Insert the extension immediately after the global color table.
+      if bytes.len() < 13 {
+        return;
+      }
+      let packed = bytes[10];
+      let mut offset = 13usize;
+      if packed & 0x80 != 0 {
+        let table_bits = (packed & 0x07) as usize;
+        let entries = 1usize << (table_bits + 1);
+        offset = offset.saturating_add(3usize.saturating_mul(entries));
+      }
+      if offset > bytes.len() {
+        return;
+      }
+
+      let extension = [
+        0x21, 0xFF, 0x0B, b'N', b'E', b'T', b'S', b'C', b'A', b'P', b'E', b'2', b'.', b'0', 0x03,
+        0x01, (loop_count & 0xFF) as u8, (loop_count >> 8) as u8, 0x00,
+      ];
+      bytes.splice(offset..offset, extension);
+    }
+
+    let mut bytes = Vec::new();
+    {
+      let red = RgbaImage::from_pixel(1, 1, ImageRgba([255, 0, 0, 255]));
+      let blue = RgbaImage::from_pixel(1, 1, ImageRgba([0, 0, 255, 255]));
+      let delay = Delay::from_numer_denom_ms(100, 1);
+
+      let mut encoder = GifEncoder::new(&mut bytes);
+      encoder
+        .encode_frame(Frame::from_parts(red, 0, 0, delay))
+        .expect("encode gif frame 0");
+      encoder
+        .encode_frame(Frame::from_parts(blue, 0, 0, delay))
+        .expect("encode gif frame 1");
+    }
+    insert_netscape_loop_extension(&mut bytes, 0);
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let url = format!("data:image/gif;base64,{encoded}");
+
+    let mut cache = ImageCache::new();
+
+    cache.set_animation_time_ms(Some(0.0));
+    let img0 = cache.load(&url).expect("gif frame at t=0 should decode");
+    assert_eq!(img0.image.to_rgba8().get_pixel(0, 0).0, [255, 0, 0, 255]);
+
+    cache.set_animation_time_ms(Some(150.0));
+    let img1 = cache
+      .load(&url)
+      .expect("gif frame at t=150 should decode");
+    assert_eq!(img1.image.to_rgba8().get_pixel(0, 0).0, [0, 0, 255, 255]);
+
+    cache.set_animation_time_ms(Some(250.0));
+    let img2 = cache
+      .load(&url)
+      .expect("gif frame at t=250 should decode");
+    assert_eq!(img2.image.to_rgba8().get_pixel(0, 0).0, [255, 0, 0, 255]);
   }
 
   fn svg_policy_cache_same_origin_only(doc_url: &str) -> ImageCache {

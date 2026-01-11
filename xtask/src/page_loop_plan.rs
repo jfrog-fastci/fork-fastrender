@@ -17,6 +17,8 @@ use std::process::Command;
 
 use crate::cmd;
 
+const CHROME_BASELINE_ANIMATION_TIME_MS: &str = "4950";
+
 fn resolve_cargo_target_dir(repo_root: &Path, cargo_target_dir: Option<&Path>) -> PathBuf {
   match cargo_target_dir {
     Some(path) if path.as_os_str().is_empty() => repo_root.join("target"),
@@ -104,7 +106,13 @@ pub fn build_render_fixtures_command(
     // be redirected via `@font-face` aliases. Enable system font discovery on the FastRender side so
     // chrome diffs aren't dominated by generic font metric mismatches.
     cmd.arg("--system-fonts");
-  }
+     // Chrome baselines are captured with `--virtual-time-budget=5000ms`, which advances animated
+     // images (e.g. GIFs) even though CSS animations/transitions are disabled by the baseline patch.
+     // Sample at the timestamp that matches Chrome's screenshot output.
+     cmd
+       .arg("--animation-time-ms")
+       .arg(CHROME_BASELINE_ANIMATION_TIME_MS);
+   }
   if write_snapshot {
     cmd.arg("--write-snapshot");
   }
@@ -153,11 +161,14 @@ pub fn build_inspect_frag_command(
   // URLs that should have been bundled into the fixture directory.
   cmd.arg("--deny-network");
   if args.patch_html_for_chrome_baseline {
-    cmd.arg("--patch-html-for-chrome-baseline");
-    // Keep inspect output aligned with the `render_fixtures` step when diffing against Chrome:
-    // generic font families in fixtures resolve via the host's system font database in Chrome.
-    cmd.arg("--system-fonts");
-  }
+     cmd.arg("--patch-html-for-chrome-baseline");
+     // Keep inspect output aligned with the `render_fixtures` step when diffing against Chrome:
+     // generic font families in fixtures resolve via the host's system font database in Chrome.
+     cmd.arg("--system-fonts");
+     cmd
+       .arg("--animation-time-ms")
+       .arg(CHROME_BASELINE_ANIMATION_TIME_MS);
+   }
   if let Some(overlay) = args.overlay_png.as_ref() {
     cmd.arg("--render-overlay").arg(overlay);
   }

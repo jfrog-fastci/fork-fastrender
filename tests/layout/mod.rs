@@ -7,6 +7,7 @@ mod abspos_inline_synthetic_container;
 mod abspos_inline_wrapper_vertical_writing_mode;
 mod abspos_percent_bases;
 mod abspos_percent_top_auto_height_inline_trailing_space;
+mod abspos_replaced_auto_height_between_insets;
 mod abspos_replaced_percent_width_auto_height_intrinsic_ratio;
 mod abspos_replaced_intrinsic_ratio_max_width;
 mod abspos_static_position;

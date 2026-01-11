@@ -5411,6 +5411,8 @@ fn paint_fragment_tree_with_state(
   }
 
   let animation_time = sanitize_animation_time_ms(animation_time);
+  let mut paint_image_cache = image_cache.clone();
+  paint_image_cache.set_animation_time_ms(animation_time);
   if let Some(time_ms) = animation_time {
     animation::apply_transitions(&mut fragment_tree, time_ms, scrollport_viewport);
   }
@@ -5446,7 +5448,7 @@ fn paint_fragment_tree_with_state(
     target_height,
     background,
     font_context.clone(),
-    image_cache.clone(),
+    paint_image_cache,
     device_pixel_ratio,
     offset,
     paint_parallelism,
@@ -11104,6 +11106,15 @@ impl FastRender {
     layout_parallelism: LayoutParallelism,
     mut stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
+    // Keep animated image (e.g. GIF) frame sampling aligned with the requested animation time, so
+    // renders captured at a specific timestamp (fixtures, chrome baselines, etc.) see the same
+    // image frame throughout layout/paint.
+    self.image_cache.set_animation_time_ms(options.animation_time);
+    self
+      .layout_engine
+      .image_cache_mut()
+      .set_animation_time_ms(options.animation_time);
+
     let base_width = width;
     let base_height = height;
 

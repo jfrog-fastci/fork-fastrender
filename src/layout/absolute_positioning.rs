@@ -300,6 +300,7 @@ impl AbsoluteLayout {
         cb_height,
         block_base,
         viewport,
+        input.is_replaced,
         input.preferred_min_block_size,
         input.preferred_block_size,
         input.intrinsic_size.height,
@@ -840,6 +841,7 @@ impl AbsoluteLayout {
     cb_height: f32,
     block_base: Option<f32>,
     viewport: Size,
+    is_replaced: bool,
     preferred_min_block_size: Option<f32>,
     preferred_block_size: Option<f32>,
     intrinsic_height: f32,
@@ -1070,10 +1072,16 @@ impl AbsoluteLayout {
         (y, h, false)
       }
 
-      // top and bottom specified, height is auto (fill available space per CSS 2.1)
+      // top and bottom specified, height is auto:
+      // - non-replaced boxes fill the available space (CSS 2.1 §10.6.4)
+      // - replaced boxes shrink-to-fit (CSS 2.1 §10.6.5)
       (Some(t), None, Some(b)) => {
         let available = cb_height - t - b - margin_top - margin_bottom - total_vertical_spacing;
-        let height = available.max(0.0);
+        let height = if is_replaced {
+          shrink(available)
+        } else {
+          available.max(0.0)
+        };
         let y = t + margin_top + border_top + padding_top;
         (y, height, false)
       }
@@ -1120,25 +1128,31 @@ impl AbsoluteLayout {
     }
 
     if !overconstrained {
-      if let (Some(top_offset), Some(bottom_offset), Some(_)) = (top, bottom, specified_height) {
-        let available_for_margins = cb_height
-          - top_offset
-          - bottom_offset
-          - border_top
-          - padding_top
-          - height
-          - padding_bottom
-          - border_bottom;
+      // CSS 2.1 §10.6.4 only allows auto margins to participate in the constraint equation when
+      // `height` is not `auto`. For replaced elements (§10.6.5), `height:auto` resolves to a
+      // definite intrinsic height, so we can still solve for auto margins when both insets are set.
+      let can_resolve_margins = specified_height.is_some() || is_replaced;
+      if can_resolve_margins {
+        if let (Some(top_offset), Some(bottom_offset)) = (top, bottom) {
+          let available_for_margins = cb_height
+            - top_offset
+            - bottom_offset
+            - border_top
+            - padding_top
+            - height
+            - padding_bottom
+            - border_bottom;
 
-        if margin_top_auto && margin_bottom_auto {
-          margin_top = available_for_margins / 2.0;
-          margin_bottom = available_for_margins - margin_top;
-          y = top_offset + margin_top + border_top + padding_top;
-        } else if margin_top_auto {
-          margin_top = available_for_margins - margin_bottom;
-          y = top_offset + margin_top + border_top + padding_top;
-        } else if margin_bottom_auto {
-          margin_bottom = available_for_margins - margin_top;
+          if margin_top_auto && margin_bottom_auto {
+            margin_top = available_for_margins / 2.0;
+            margin_bottom = available_for_margins - margin_top;
+            y = top_offset + margin_top + border_top + padding_top;
+          } else if margin_top_auto {
+            margin_top = available_for_margins - margin_bottom;
+            y = top_offset + margin_top + border_top + padding_top;
+          } else if margin_bottom_auto {
+            margin_bottom = available_for_margins - margin_top;
+          }
         }
       }
     }
