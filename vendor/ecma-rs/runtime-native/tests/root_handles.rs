@@ -1,5 +1,6 @@
 use std::mem;
 
+use runtime_native::gc::heap::MajorCompactionConfig;
 use runtime_native::gc::heap::IMMIX_MAX_OBJECT_SIZE;
 use runtime_native::gc::ObjHeader;
 use runtime_native::gc::RememberedSet;
@@ -72,6 +73,32 @@ fn root_handle_keeps_object_alive_across_major_gc() {
   heap.root_remove(h);
   heap.collect_major(&mut roots, &mut remembered);
   assert_eq!(heap.los_object_count(), 0);
+}
+
+#[test]
+fn root_handle_updates_during_major_compaction() {
+  let mut heap = GcHeap::new();
+  *heap.major_compaction_config_mut() = MajorCompactionConfig {
+    enabled: true,
+    ..MajorCompactionConfig::default()
+  };
+
+  let obj = heap.alloc_old(&BLOB_DESC);
+  unsafe {
+    (*(obj as *mut Blob)).value = 0xDEAD_BEEF;
+  }
+
+  let h = heap.root_add(obj);
+
+  let mut roots = RootStack::new();
+  heap.collect_major(&mut roots, &mut NullRememberedSet::default());
+
+  let updated = heap.root_get(h).expect("handle should remain live");
+  assert_ne!(updated, obj, "expected compaction to move the object and update the handle");
+  assert!(heap.is_in_immix(updated));
+  unsafe {
+    assert_eq!((updated as *const Blob).as_ref().unwrap().value, 0xDEAD_BEEF);
+  }
 }
 
 #[test]
