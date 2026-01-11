@@ -1,5 +1,6 @@
 use crate::analysis::dataflow_edge::{ForwardEdgeDataFlowAnalysis, ForwardEdgeDataFlowResult};
 use crate::analysis::facts::{replay_forward_after_inst, replay_forward_before_inst, Edge, InstLoc};
+use crate::analysis::value_types::ValueTypeSummaries;
 use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
 use std::fmt;
@@ -239,6 +240,7 @@ impl NullabilityResult {
     let entry = self.entry_state(label).clone();
     let mut analysis = NullabilityAnalysis {
       var_count: entry.masks.len(),
+      types: ValueTypeSummaries::new(cfg),
     };
     replay_forward_before_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
       analysis.apply_to_instruction(label, inst_idx, inst, state);
@@ -250,6 +252,7 @@ impl NullabilityResult {
     let entry = self.entry_state(label).clone();
     let mut analysis = NullabilityAnalysis {
       var_count: entry.masks.len(),
+      types: ValueTypeSummaries::new(cfg),
     };
     replay_forward_after_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
       analysis.apply_to_instruction(label, inst_idx, inst, state);
@@ -306,13 +309,15 @@ impl NullabilityResult {
 
 pub fn calculate_nullability(cfg: &Cfg) -> NullabilityResult {
   let var_count = cfg_var_count(cfg);
-  let mut analysis = NullabilityAnalysis { var_count };
+  let types = ValueTypeSummaries::new(cfg);
+  let mut analysis = NullabilityAnalysis { var_count, types };
   let result = analysis.analyze(cfg, cfg.entry);
   NullabilityResult { result }
 }
 
 struct NullabilityAnalysis {
   var_count: usize,
+  types: ValueTypeSummaries,
 }
 
 impl NullabilityAnalysis {
@@ -328,6 +333,18 @@ impl NullabilityAnalysis {
   fn set_var(&self, state: &mut State, var: u32, mask: NullabilityMask) {
     if let Some(slot) = state.masks.get_mut(var as usize) {
       *slot = mask;
+    }
+  }
+
+  fn refine_for_known_non_nullish(&self, var: u32, mask: NullabilityMask) -> NullabilityMask {
+    if self
+      .types
+      .var(var)
+      .is_some_and(|ty| ty.excludes_nullish())
+    {
+      NullabilityMask::OTHER
+    } else {
+      mask
     }
   }
 
@@ -391,7 +408,7 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
     match inst.t {
       InstTyp::VarAssign => {
         let (tgt, arg) = inst.as_var_assign();
-        let mask = self.arg_mask(arg, state);
+        let mask = self.refine_for_known_non_nullish(tgt, self.arg_mask(arg, state));
         self.set_var(state, tgt, mask);
       }
       InstTyp::Bin => {
@@ -401,7 +418,7 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
           BinOp::_Dummy => NullabilityMask::TOP,
           _ => NullabilityMask::OTHER,
         };
-        self.set_var(state, tgt, mask);
+        self.set_var(state, tgt, self.refine_for_known_non_nullish(tgt, mask));
       }
       InstTyp::Un => {
         let (tgt, op, _arg) = inst.as_un();
@@ -410,22 +427,30 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
           UnOp::_Dummy => NullabilityMask::TOP,
           _ => NullabilityMask::OTHER,
         };
-        self.set_var(state, tgt, mask);
+        self.set_var(state, tgt, self.refine_for_known_non_nullish(tgt, mask));
       }
       InstTyp::Call => {
         let (tgt, callee, _this, _args, _spreads) = inst.as_call();
         if let Some(tgt) = tgt {
-          let mask = self.call_result_mask(callee);
+          let mask = self.refine_for_known_non_nullish(tgt, self.call_result_mask(callee));
           self.set_var(state, tgt, mask);
         }
       }
       InstTyp::ForeignLoad => {
         let (tgt, _foreign) = inst.as_foreign_load();
-        self.set_var(state, tgt, NullabilityMask::TOP);
+        self.set_var(
+          state,
+          tgt,
+          self.refine_for_known_non_nullish(tgt, NullabilityMask::TOP),
+        );
       }
       InstTyp::UnknownLoad => {
         let (tgt, _unknown) = inst.as_unknown_load();
-        self.set_var(state, tgt, NullabilityMask::TOP);
+        self.set_var(
+          state,
+          tgt,
+          self.refine_for_known_non_nullish(tgt, NullabilityMask::TOP),
+        );
       }
       InstTyp::Phi => {
         let Some(&tgt) = inst.tgts.get(0) else {
@@ -443,7 +468,7 @@ impl ForwardEdgeDataFlowAnalysis for NullabilityAnalysis {
           // This should be unreachable in well-formed SSA; stay conservative.
           mask = NullabilityMask::TOP;
         }
-        self.set_var(state, tgt, mask);
+        self.set_var(state, tgt, self.refine_for_known_non_nullish(tgt, mask));
       }
       _ => {}
     }

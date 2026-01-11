@@ -1,6 +1,7 @@
 use crate::analysis::dataflow_edge::{ForwardEdgeDataFlowAnalysis, ForwardEdgeDataFlowResult};
 use crate::analysis::facts::{replay_forward_after_inst, replay_forward_before_inst, Edge, InstLoc};
 use crate::analysis::loop_info::LoopInfo;
+use crate::analysis::value_types::ValueTypeSummaries;
 use crate::cfg::cfg::Cfg;
 use crate::dom::Dom;
 use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, UnOp};
@@ -420,12 +421,14 @@ pub fn analyze_ranges(cfg: &Cfg) -> RangeResult {
 
   let entry_vars = cfg_entry_vars(cfg);
   let phi_nodes = cfg_phi_nodes(cfg);
+  let types = ValueTypeSummaries::new(cfg);
 
   let mut analysis = RangeAnalysis {
     var_count,
     entry_vars,
     backedges,
     phi_nodes,
+    types,
   };
   let result = analysis.analyze(cfg, cfg.entry);
   RangeResult { result }
@@ -436,6 +439,7 @@ struct RangeAnalysis {
   entry_vars: Vec<u32>,
   backedges: HashSet<(u32, u32)>,
   phi_nodes: HashMap<u32, Vec<PhiNode>>,
+  types: ValueTypeSummaries,
 }
 
 impl RangeAnalysis {
@@ -445,6 +449,7 @@ impl RangeAnalysis {
       entry_vars: Vec::new(),
       backedges: HashSet::default(),
       phi_nodes: HashMap::default(),
+      types: ValueTypeSummaries::default(),
     }
   }
 
@@ -503,6 +508,73 @@ impl RangeAnalysis {
     };
     let c = Self::maybe_i64_const(c)?;
     Some((x, op, c))
+  }
+
+  /// Attempt to chase through simple linear integer expressions so edge
+  /// refinement can constrain the underlying source variable.
+  ///
+  /// We only chase `+/-` when the intermediate value is known to be a number in
+  /// typed builds (via [`ValueTypeSummaries`]). In untyped builds `types` is
+  /// empty so this is a no-op.
+  fn chase_linear_int_expr(&self, block: &[Inst], mut var: u32) -> (u32, i64) {
+    let mut offset: i64 = 0;
+    for _ in 0..8 {
+      let Some(def) = block
+        .iter()
+        .rev()
+        .find(|inst| inst.tgts.first() == Some(&var))
+      else {
+        break;
+      };
+
+      match def.t {
+        InstTyp::VarAssign => {
+          let (_tgt, arg) = def.as_var_assign();
+          let Some(inner) = arg.maybe_var() else {
+            break;
+          };
+          var = inner;
+        }
+        InstTyp::Bin => {
+          let (_tgt, left, op, right) = def.as_bin();
+          // Only treat this as numeric arithmetic when the result is definitely
+          // a number (typed builds).
+          if !self
+            .types
+            .var(var)
+            .is_some_and(|ty| ty.is_definitely_number())
+          {
+            break;
+          }
+
+          match op {
+            BinOp::Add => match (left, right) {
+              (Arg::Var(inner), Arg::Const(c)) | (Arg::Const(c), Arg::Var(inner)) => {
+                let Some(k) = Self::maybe_i64_const(c) else {
+                  break;
+                };
+                offset = offset.saturating_add(k);
+                var = *inner;
+              }
+              _ => break,
+            },
+            BinOp::Sub => match (left, right) {
+              (Arg::Var(inner), Arg::Const(c)) => {
+                let Some(k) = Self::maybe_i64_const(c) else {
+                  break;
+                };
+                offset = offset.saturating_sub(k);
+                var = *inner;
+              }
+              _ => break,
+            },
+            _ => break,
+          }
+        }
+        _ => break,
+      }
+    }
+    (var, offset)
   }
 
   fn int32_range() -> IntRange {
@@ -899,6 +971,10 @@ impl ForwardEdgeDataFlowAnalysis for RangeAnalysis {
     let Some((x, op, c)) = resolved else {
       return next;
     };
+    let (x, c) = {
+      let (base, offset) = self.chase_linear_int_expr(pred_block, x);
+      (base, c.saturating_sub(offset))
+    };
 
     let is_true_edge = if succ == then_label {
       true
@@ -1185,4 +1261,3 @@ mod tests {
     assert_eq!(r1, r2);
   }
 }
-

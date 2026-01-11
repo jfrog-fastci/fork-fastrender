@@ -37,7 +37,7 @@ fn phi_simplify_preserves_result_metadata() {
   phi.insert_phi(0, Arg::Const(Const::Bool(true)));
   phi.meta.type_id = some_type_id();
   phi.meta.hir_expr = Some(ExprId(7));
-  phi.meta.type_summary = Some(ValueTypeSummary::Number);
+  phi.meta.type_summary = Some(ValueTypeSummary::NUMBER);
   phi.meta.excludes_nullish = true;
   phi.meta.result_type = non_default_type_info();
   phi.meta.ownership = OwnershipState::Owned;
@@ -62,7 +62,7 @@ fn phi_simplify_preserves_result_metadata() {
   let meta = &insts[0].meta;
   assert_eq!(meta.type_id, some_type_id());
   assert_eq!(meta.hir_expr, Some(ExprId(7)));
-  assert_eq!(meta.type_summary, Some(ValueTypeSummary::Number));
+  assert_eq!(meta.type_summary, Some(ValueTypeSummary::NUMBER));
   assert!(meta.excludes_nullish);
   assert_eq!(meta.result_type, non_default_type_info());
   assert_eq!(meta.ownership, OwnershipState::Owned);
@@ -81,7 +81,7 @@ fn ssa_deconstruct_propagates_phi_metadata_to_edge_copies() {
   phi.insert_phi(1, Arg::Const(Const::Bool(false)));
   phi.meta.type_id = some_type_id();
   phi.meta.hir_expr = Some(ExprId(42));
-  phi.meta.type_summary = Some(ValueTypeSummary::Boolean);
+  phi.meta.type_summary = Some(ValueTypeSummary::BOOLEAN);
   phi.meta.excludes_nullish = true;
   phi.meta.result_type = non_default_type_info();
   phi.meta.ownership = OwnershipState::Owned;
@@ -109,7 +109,7 @@ fn ssa_deconstruct_propagates_phi_metadata_to_edge_copies() {
     let meta = &insts[0].meta;
     assert_eq!(meta.type_id, some_type_id());
     assert_eq!(meta.hir_expr, Some(ExprId(42)));
-    assert_eq!(meta.type_summary, Some(ValueTypeSummary::Boolean));
+    assert_eq!(meta.type_summary, Some(ValueTypeSummary::BOOLEAN));
     assert!(meta.excludes_nullish);
     assert_eq!(meta.result_type, non_default_type_info());
     assert_eq!(meta.ownership, OwnershipState::Owned);
@@ -136,7 +136,7 @@ fn trivial_dce_clears_call_result_metadata_when_tgt_is_removed() {
 
   call.meta.type_id = some_type_id();
   call.meta.hir_expr = Some(ExprId(99));
-  call.meta.type_summary = Some(ValueTypeSummary::Object);
+  call.meta.type_summary = Some(ValueTypeSummary::OBJECT);
   call.meta.excludes_nullish = true;
   call.meta.result_type = non_default_type_info();
   call.meta.ownership = OwnershipState::Owned;

@@ -1,11 +1,33 @@
 use crate::cfg::cfg::Cfg;
-use crate::il::inst::Inst;
-use crate::il::inst::InstTyp;
+use crate::il::inst::{Arg, Inst, InstTyp, ValueTypeSummary};
 use crate::util::counter::Counter;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::iter::zip;
 
 pub fn deconstruct_ssa(cfg: &mut Cfg, c_label: &mut Counter) {
+  let mut var_types = HashMap::<u32, ValueTypeSummary>::new();
+  for (_, bblock) in cfg.bblocks.all() {
+    for inst in bblock.iter() {
+      if inst.value_type.is_unknown() {
+        continue;
+      }
+      for &tgt in inst.tgts.iter() {
+        var_types
+          .entry(tgt)
+          .and_modify(|existing| *existing |= inst.value_type)
+          .or_insert(inst.value_type);
+      }
+    }
+  }
+
+  let arg_value_type = |arg: &Arg, map: &HashMap<u32, ValueTypeSummary>| match arg {
+    Arg::Const(c) => ValueTypeSummary::from_const(c),
+    Arg::Var(v) => map.get(v).copied().unwrap_or(ValueTypeSummary::UNKNOWN),
+    Arg::Fn(_) => ValueTypeSummary::FUNCTION,
+    Arg::Builtin(_) => ValueTypeSummary::UNKNOWN,
+  };
+
   struct NewBblock {
     label: u32,
     parent: u32,
@@ -28,6 +50,7 @@ pub fn deconstruct_ssa(cfg: &mut Cfg, c_label: &mut Counter) {
       } = bblock.remove(0);
       let tgt = tgts[0];
       for (parent, value) in zip(labels, args) {
+        let value_type = arg_value_type(&value, &var_types);
         new_bblocks_by_parent
           .entry(parent)
           .or_insert_with(|| NewBblock {
@@ -40,6 +63,7 @@ pub fn deconstruct_ssa(cfg: &mut Cfg, c_label: &mut Counter) {
           .push({
             let mut inst = Inst::var_assign(tgt, value);
             inst.meta.copy_result_var_metadata_from(&meta);
+            inst.value_type = value_type;
             inst
           });
       }

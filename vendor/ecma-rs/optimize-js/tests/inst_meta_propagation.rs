@@ -123,7 +123,7 @@ fn typed_type_id_survives_ssa_phi_lowering() {
           if inst.tgts.iter().any(|&tgt| tgt == returned)
             && inst.meta.type_id.is_some()
             && inst.meta.hir_expr.is_some()
-            && inst.meta.type_summary == Some(ValueTypeSummary::Number)
+            && inst.meta.type_summary == Some(ValueTypeSummary::NUMBER)
             && inst.meta.excludes_nullish
           {
             return true;

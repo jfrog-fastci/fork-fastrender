@@ -1087,11 +1087,13 @@ impl<'p> HirSourceToInst<'p> {
     chain: impl Into<Option<Chain>>,
   ) -> OptimizeResult<Arg> {
     let expr = &self.body.exprs[expr_id.0 as usize];
+    let value_type = self
+      .program
+      .types
+      .expr_value_type_summary(self.body_id, expr_id);
     let span = Loc(expr.span.start as usize, expr.span.end as usize);
-    match &expr.kind {
-      ExprKind::Binary { op, left, right } => {
-        self.compile_binary_expr(expr_id, span, *op, *left, *right)
-      }
+    let res = match &expr.kind {
+      ExprKind::Binary { op, left, right } => self.compile_binary_expr(expr_id, span, *op, *left, *right),
       ExprKind::Call(call) => self.compile_call_expr(expr_id, span, call, chain),
       ExprKind::Member(member) => Ok(self.compile_member_expr(expr_id, member, chain)?.res),
       ExprKind::Conditional {
@@ -1531,7 +1533,30 @@ impl<'p> HirSourceToInst<'p> {
         span,
         format!("unsupported expression {other:?}"),
       )),
+    }?;
+
+    if !value_type.is_unknown() {
+      if let Arg::Var(var) = res {
+        // A temporary can be defined multiple times within the lowered IL, most
+        // notably for optional chaining roots where we assign `undefined` on the
+        // nullish edge after emitting the "real" producer instruction.
+        //
+        // Annotate every definition we've seen so far so that optimizations that
+        // eliminate copy/phi nodes still have access to the type summary on the
+        // original value-producing instruction (e.g. the `Call` itself).
+        for def in self.out.iter_mut().rev() {
+          if def.tgts.first() != Some(&var) {
+            continue;
+          }
+          if def.value_type.is_unknown() {
+            def.value_type = value_type;
+          }
+        }
+        return Ok(Arg::Var(var));
+      }
     }
+
+    Ok(res)
   }
 
   pub fn compile_expr(&mut self, expr_id: ExprId) -> OptimizeResult<Arg> {

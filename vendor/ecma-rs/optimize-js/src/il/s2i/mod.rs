@@ -143,16 +143,18 @@ impl<'p> HirSourceToInst<'p> {
   }
 
   pub fn push_value_inst(&mut self, expr: ExprId, mut inst: Inst) {
+    let summary = self
+      .program
+      .types
+      .expr_value_type_summary(self.body_id, expr);
     inst.meta.type_id = self.expr_type_id(expr);
+    inst.value_type |= summary;
     #[cfg(feature = "typed")]
     {
       inst.meta.hir_expr = Some(expr);
-      inst.meta.type_summary = Some(
-        self
-          .program
-          .types
-          .expr_value_type_summary(self.body_id, expr),
-      );
+      if !summary.is_unknown() {
+        inst.meta.type_summary = Some(summary);
+      }
       inst.meta.excludes_nullish = self.expr_excludes_nullish(expr);
     }
     self.out.push(inst);
@@ -161,16 +163,18 @@ impl<'p> HirSourceToInst<'p> {
   pub fn temp_var_arg_for_expr(&mut self, expr: ExprId, f: impl FnOnce(u32) -> Inst) -> Arg {
     let tgt = self.c_temp.bump();
     let mut inst = f(tgt);
+    let summary = self
+      .program
+      .types
+      .expr_value_type_summary(self.body_id, expr);
     inst.meta.type_id = self.expr_type_id(expr);
+    inst.value_type |= summary;
     #[cfg(feature = "typed")]
     {
       inst.meta.hir_expr = Some(expr);
-      inst.meta.type_summary = Some(
-        self
-          .program
-          .types
-          .expr_value_type_summary(self.body_id, expr),
-      );
+      if !summary.is_unknown() {
+        inst.meta.type_summary = Some(summary);
+      }
       inst.meta.excludes_nullish = self.expr_excludes_nullish(expr);
     }
     self.out.push(inst);

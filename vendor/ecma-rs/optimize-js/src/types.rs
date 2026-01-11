@@ -1,5 +1,6 @@
 use hir_js::{BodyId, ExprId};
 use std::fmt;
+use std::fmt::Formatter;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Truthiness {
@@ -7,24 +8,128 @@ pub enum Truthiness {
   AlwaysFalsy,
 }
 
-/// Lightweight summary of the runtime value kind for an expression.
+/// Best-effort runtime value-type summary used by downstream analyses.
 ///
-/// This intentionally avoids exposing `typecheck-ts` types in the optimizer's
-/// public surface area; it is derived from TypeScript types when the `typed`
-/// feature is enabled, and falls back to [`ValueTypeSummary::Unknown`]
-/// otherwise.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// This is intentionally a *lightweight* abstraction that `optimize-js` can
+/// preserve in the IR even when the full TypeScript type checker is not
+/// available at analysis time. In untyped builds values default to `Unknown`.
+///
+/// The representation is a bitmask so we can cheaply represent union types.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub enum ValueTypeSummary {
-  Unknown,
-  Boolean,
-  Number,
-  String,
-  BigInt,
-  Object,
-  Function,
-  Null,
-  Undefined,
+pub struct ValueTypeSummary(pub(crate) u16);
+
+impl ValueTypeSummary {
+  pub const UNKNOWN: Self = Self(0);
+
+  pub const NULL: Self = Self(1 << 0);
+  pub const UNDEFINED: Self = Self(1 << 1);
+  pub const BOOLEAN: Self = Self(1 << 2);
+  pub const NUMBER: Self = Self(1 << 3);
+  pub const STRING: Self = Self(1 << 4);
+  pub const BIGINT: Self = Self(1 << 5);
+  pub const SYMBOL: Self = Self(1 << 6);
+  pub const FUNCTION: Self = Self(1 << 7);
+  pub const OBJECT: Self = Self(1 << 8);
+
+  pub const NULLISH: Self = Self(Self::NULL.0 | Self::UNDEFINED.0);
+
+  pub fn is_unknown(self) -> bool {
+    self == Self::UNKNOWN
+  }
+
+  pub fn contains(self, other: Self) -> bool {
+    (self.0 & other.0) == other.0
+  }
+
+  pub fn excludes_nullish(self) -> bool {
+    !self.is_unknown() && !self.contains(Self::NULLISH)
+  }
+
+  pub fn is_definitely_string(self) -> bool {
+    self == Self::STRING
+  }
+
+  pub fn is_definitely_number(self) -> bool {
+    self == Self::NUMBER
+  }
+
+  pub fn is_definitely_bigint(self) -> bool {
+    self == Self::BIGINT
+  }
+}
+
+impl fmt::Debug for ValueTypeSummary {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    if self.is_unknown() {
+      return write!(f, "Unknown");
+    }
+    let mut first = true;
+    let mut write_flag = |name: &str| {
+      if !first {
+        let _ = write!(f, "|");
+      }
+      first = false;
+      write!(f, "{name}")
+    };
+
+    if self.contains(Self::NULL) {
+      write_flag("Null")?;
+    }
+    if self.contains(Self::UNDEFINED) {
+      write_flag("Undefined")?;
+    }
+    if self.contains(Self::BOOLEAN) {
+      write_flag("Boolean")?;
+    }
+    if self.contains(Self::NUMBER) {
+      write_flag("Number")?;
+    }
+    if self.contains(Self::STRING) {
+      write_flag("String")?;
+    }
+    if self.contains(Self::BIGINT) {
+      write_flag("BigInt")?;
+    }
+    if self.contains(Self::SYMBOL) {
+      write_flag("Symbol")?;
+    }
+    if self.contains(Self::FUNCTION) {
+      write_flag("Function")?;
+    }
+    if self.contains(Self::OBJECT) {
+      write_flag("Object")?;
+    }
+    Ok(())
+  }
+}
+
+impl std::ops::BitOr for ValueTypeSummary {
+  type Output = Self;
+
+  fn bitor(self, rhs: Self) -> Self::Output {
+    Self(self.0 | rhs.0)
+  }
+}
+
+impl std::ops::BitOrAssign for ValueTypeSummary {
+  fn bitor_assign(&mut self, rhs: Self) {
+    self.0 |= rhs.0;
+  }
+}
+
+impl std::ops::BitAnd for ValueTypeSummary {
+  type Output = Self;
+
+  fn bitand(self, rhs: Self) -> Self::Output {
+    Self(self.0 & rhs.0)
+  }
+}
+
+impl std::ops::BitAndAssign for ValueTypeSummary {
+  fn bitand_assign(&mut self, rhs: Self) {
+    self.0 &= rhs.0;
+  }
 }
 
 /// Optional TypeScript type information for the optimizer.
@@ -167,22 +272,25 @@ impl TypeContext {
     }
   }
 
-  /// Returns a conservative summary of the runtime value kind for `expr`.
+  /// Best-effort runtime type summary for the expression, when available.
+  ///
+  /// When `typed` is disabled or the type information cannot be mapped into a
+  /// stable runtime category, returns [`ValueTypeSummary::UNKNOWN`].
   pub fn expr_value_type_summary(&self, body: BodyId, expr: ExprId) -> ValueTypeSummary {
     #[cfg(feature = "typed")]
     {
       let Some(program) = self.program.as_ref() else {
-        return ValueTypeSummary::Unknown;
+        return ValueTypeSummary::UNKNOWN;
       };
       let Some(ty) = self.expr_type(body, expr) else {
-        return ValueTypeSummary::Unknown;
+        return ValueTypeSummary::UNKNOWN;
       };
-      type_value_type_summary(program, ty, 0)
+      type_value_summary(program, ty, 0)
     }
     #[cfg(not(feature = "typed"))]
     {
       let _ = (body, expr);
-      ValueTypeSummary::Unknown
+      ValueTypeSummary::UNKNOWN
     }
   }
 }
@@ -524,69 +632,69 @@ fn type_is_boolean(program: &typecheck_ts::Program, ty: typecheck_ts::TypeId, de
 }
 
 #[cfg(feature = "typed")]
-fn type_value_type_summary(
+fn type_value_summary(
   program: &typecheck_ts::Program,
   ty: typecheck_ts::TypeId,
   depth: u8,
 ) -> ValueTypeSummary {
   if depth >= 8 {
-    return ValueTypeSummary::Unknown;
+    return ValueTypeSummary::UNKNOWN;
   }
 
   use types_ts_interned::IntrinsicKind;
   use types_ts_interned::TypeKind as K;
 
   match program.interned_type_kind(ty) {
-    K::Boolean | K::BooleanLiteral(_) => ValueTypeSummary::Boolean,
-    K::Number | K::NumberLiteral(_) => ValueTypeSummary::Number,
-    K::String | K::StringLiteral(_) | K::TemplateLiteral(_) => ValueTypeSummary::String,
-    K::BigInt | K::BigIntLiteral(_) => ValueTypeSummary::BigInt,
-    K::Null => ValueTypeSummary::Null,
-    K::Undefined | K::Void => ValueTypeSummary::Undefined,
-    K::Callable { .. } => ValueTypeSummary::Function,
-    K::Tuple(_) | K::Array { .. } | K::Object(_) | K::EmptyObject => ValueTypeSummary::Object,
-    // `never` has no runtime values; treat it as unknown so it doesn't
-    // incorrectly "win" when summarizing unions or intersections.
-    K::Never => ValueTypeSummary::Unknown,
-    K::Ref { def, .. } => type_value_type_summary(
-      program,
-      program.declared_type_of_def_interned(def),
-      depth + 1,
-    ),
+    K::Any | K::Unknown | K::This | K::Infer { .. } | K::TypeParam(_) | K::Predicate { .. } => {
+      ValueTypeSummary::UNKNOWN
+    }
+    K::Never => ValueTypeSummary::UNKNOWN,
+    K::Null => ValueTypeSummary::NULL,
+    K::Undefined | K::Void => ValueTypeSummary::UNDEFINED,
+    K::Boolean | K::BooleanLiteral(_) => ValueTypeSummary::BOOLEAN,
+    K::Number | K::NumberLiteral(_) => ValueTypeSummary::NUMBER,
+    K::String | K::StringLiteral(_) | K::TemplateLiteral(_) => ValueTypeSummary::STRING,
+    K::BigInt | K::BigIntLiteral(_) => ValueTypeSummary::BIGINT,
+    K::Symbol | K::UniqueSymbol => ValueTypeSummary::SYMBOL,
+    K::Callable { .. } => ValueTypeSummary::FUNCTION,
+    K::Tuple(_) | K::Array { .. } | K::Object(_) | K::EmptyObject => ValueTypeSummary::OBJECT,
     K::Union(members) => {
-      let mut acc: Option<ValueTypeSummary> = None;
+      let mut acc = ValueTypeSummary::UNKNOWN;
       for member in members {
         if matches!(program.interned_type_kind(member), K::Never) {
           continue;
         }
-        let member_summary = type_value_type_summary(program, member, depth + 1);
-        match acc {
-          None => acc = Some(member_summary),
-          Some(existing) if existing == member_summary => {}
-          _ => return ValueTypeSummary::Unknown,
+        let member_summary = type_value_summary(program, member, depth + 1);
+        if member_summary.is_unknown() {
+          return ValueTypeSummary::UNKNOWN;
         }
+        acc |= member_summary;
       }
-      acc.unwrap_or(ValueTypeSummary::Unknown)
+      acc
     }
     K::Intersection(members) => {
       let mut acc: Option<ValueTypeSummary> = None;
       for member in members {
-        if matches!(program.interned_type_kind(member), K::Never) {
+        let member_summary = type_value_summary(program, member, depth + 1);
+        if member_summary.is_unknown() {
           continue;
         }
-        let member_summary = type_value_type_summary(program, member, depth + 1);
-        match acc {
-          None => acc = Some(member_summary),
-          Some(existing) if existing == member_summary => {}
-          _ => return ValueTypeSummary::Unknown,
-        }
+        acc = Some(match acc {
+          None => member_summary,
+          Some(existing) => existing & member_summary,
+        });
       }
-      acc.unwrap_or(ValueTypeSummary::Unknown)
+      acc.unwrap_or(ValueTypeSummary::UNKNOWN)
     }
+    K::Ref { def, .. } => type_value_summary(
+      program,
+      program.declared_type_of_def_interned(def),
+      depth + 1,
+    ),
     K::Intrinsic { kind, ty } => match kind {
-      IntrinsicKind::NoInfer => type_value_type_summary(program, ty, depth + 1),
-      _ => ValueTypeSummary::Unknown,
+      IntrinsicKind::NoInfer => type_value_summary(program, ty, depth + 1),
+      _ => ValueTypeSummary::UNKNOWN,
     },
-    _ => ValueTypeSummary::Unknown,
+    _ => ValueTypeSummary::UNKNOWN,
   }
 }

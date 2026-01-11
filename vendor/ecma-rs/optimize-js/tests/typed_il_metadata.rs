@@ -56,10 +56,10 @@ fn typed_il_records_value_type_metadata() {
           inst.args.get(0),
           Some(Arg::Const(Const::Num(JsNumber(123.0))))
         )
-    })
+  })
     .expect("expected VarAssign for numeric literal 123");
   let num_meta = &num_inst.meta;
-  assert_eq!(num_meta.type_summary, Some(ValueTypeSummary::Number));
+  assert_eq!(num_meta.type_summary, Some(ValueTypeSummary::NUMBER));
   assert!(num_meta.excludes_nullish);
   assert!(num_meta.hir_expr.is_some());
 
@@ -72,22 +72,25 @@ fn typed_il_records_value_type_metadata() {
           inst.args.get(0),
           Some(Arg::Const(Const::Str(value))) if value == "hello"
         )
-    })
+  })
     .expect("expected VarAssign for string literal \"hello\"");
   let str_meta = &str_inst.meta;
-  assert_eq!(str_meta.type_summary, Some(ValueTypeSummary::String));
+  assert_eq!(str_meta.type_summary, Some(ValueTypeSummary::STRING));
   assert!(str_meta.excludes_nullish);
   assert!(str_meta.hir_expr.is_some());
 
-  // The conditional expression `Math.random() ? "a" : null` has type `string | null`,
-  // so we record an unknown runtime kind and that it does *not* exclude nullish.
+  // The conditional expression `Math.random() ? "a" : null` has type `string | null`, so
+  // we record a union type summary and that it does *not* exclude nullish.
   let union_inst = insts
     .iter()
     .copied()
     .find(|inst| inst.t == InstTyp::VarAssign && matches!(inst.args.get(0), Some(Arg::Const(Const::Null))))
     .expect("expected VarAssign for union branch assigning null");
   let union_meta = &union_inst.meta;
-  assert_eq!(union_meta.type_summary, Some(ValueTypeSummary::Unknown));
+  assert_eq!(
+    union_meta.type_summary,
+    Some(ValueTypeSummary::STRING | ValueTypeSummary::NULL)
+  );
   assert!(!union_meta.excludes_nullish);
   assert!(union_meta.hir_expr.is_some());
 }
@@ -107,10 +110,10 @@ fn dvn_var_assign_rewrite_preserves_value_type_metadata() {
           inst.args.get(0),
           Some(Arg::Const(Const::Num(JsNumber(3.0))))
         )
-    })
+  })
     .expect("expected DVN to const-fold 1 + 2 into VarAssign 3");
   let meta = &folded.meta;
-  assert_eq!(meta.type_summary, Some(ValueTypeSummary::Number));
+  assert_eq!(meta.type_summary, Some(ValueTypeSummary::NUMBER));
   assert!(meta.excludes_nullish);
   assert!(meta.hir_expr.is_some());
 }

@@ -9,6 +9,7 @@ pub use crate::il::meta::{
   ArgUseMode, EffectLocation, EffectSet, InPlaceHint, InstMeta, Nullability, NullabilityNarrowing,
   OwnershipState, Purity, StringEncoding, TypeInfo,
 };
+pub use crate::types::ValueTypeSummary;
 
 // PartialOrd and Ord are for some arbitrary canonical order, even if semantics of ordering is opaque.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -31,6 +32,19 @@ impl Debug for Const {
       Self::Num(v) => write!(f, "{v}"),
       Self::Str(v) => write!(f, "'{v}'"),
       Self::Undefined => write!(f, "undefined"),
+    }
+  }
+}
+
+impl ValueTypeSummary {
+  pub fn from_const(c: &Const) -> Self {
+    match c {
+      Const::BigInt(_) => Self::BIGINT,
+      Const::Bool(_) => Self::BOOLEAN,
+      Const::Null => Self::NULL,
+      Const::Num(_) => Self::NUMBER,
+      Const::Str(_) => Self::STRING,
+      Const::Undefined => Self::UNDEFINED,
     }
   }
 }
@@ -220,6 +234,8 @@ pub struct Inst {
   pub spreads: Vec<usize>, // Indices into `args` that are spread, for Call. Cannot have values less than 2 as the first two args are `callee` and `this`.
   pub labels: Vec<u32>,
   #[cfg_attr(feature = "serde", serde(skip))]
+  pub value_type: ValueTypeSummary,
+  #[cfg_attr(feature = "serde", serde(skip))]
   pub meta: crate::il::meta::InstMeta,
   // Garbage values if not applicable.
   #[cfg_attr(
@@ -310,6 +326,7 @@ impl Default for Inst {
       args: Default::default(),
       spreads: Default::default(),
       labels: Default::default(),
+      value_type: ValueTypeSummary::UNKNOWN,
       meta: Default::default(),
       bin_op: BinOp::_Dummy,
       un_op: UnOp::_Dummy,

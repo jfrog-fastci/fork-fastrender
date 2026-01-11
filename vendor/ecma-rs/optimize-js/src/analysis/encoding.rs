@@ -3,8 +3,9 @@ use crate::analysis::dataflow::{
   ResolvedAnalysisBoundary,
 };
 use crate::analysis::facts::{replay_forward_after_inst, replay_forward_before_inst, Edge, InstLoc};
+use crate::analysis::value_types::ValueTypeSummaries;
 use crate::cfg::cfg::Cfg;
-use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, StringEncoding, UnOp};
+use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, StringEncoding, UnOp, ValueTypeSummary};
 use ahash::HashMap;
 use std::cmp;
 
@@ -78,6 +79,7 @@ impl EncodingResult {
       .unwrap_or_else(|| vec![StringEncoding::Unknown; self.temp_count]);
     let mut analysis = EncodingAnalysis {
       temp_count: self.temp_count,
+      types: ValueTypeSummaries::new(cfg),
     };
     replay_forward_before_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
       analysis.apply_to_instruction(label, inst_idx, inst, state);
@@ -92,6 +94,7 @@ impl EncodingResult {
       .unwrap_or_else(|| vec![StringEncoding::Unknown; self.temp_count]);
     let mut analysis = EncodingAnalysis {
       temp_count: self.temp_count,
+      types: ValueTypeSummaries::new(cfg),
     };
     replay_forward_after_inst(cfg, label, &entry, inst_idx, |label, inst_idx, inst, state| {
       analysis.apply_to_instruction(label, inst_idx, inst, state);
@@ -109,6 +112,7 @@ impl EncodingResult {
   pub fn fact_for_arg(&self, state: &EncodingState, arg: &Arg) -> StringEncoding {
     let analysis = EncodingAnalysis {
       temp_count: self.temp_count,
+      types: ValueTypeSummaries::default(),
     };
     analysis.encoding_of_arg(state, arg)
   }
@@ -116,12 +120,14 @@ impl EncodingResult {
 
 struct EncodingAnalysis {
   temp_count: usize,
+  types: ValueTypeSummaries,
 }
 
 impl EncodingAnalysis {
   fn new(cfg: &Cfg) -> Self {
     Self {
       temp_count: count_temps(cfg),
+      types: ValueTypeSummaries::new(cfg),
     }
   }
 
@@ -168,6 +174,63 @@ impl EncodingAnalysis {
     }
   }
 
+  fn is_string_concat(&self, state: &[StringEncoding], tgt: u32, left: &Arg, right: &Arg) -> bool {
+    // Existing heuristic: known string encodings imply the value is a string.
+    let known_string_operand =
+      self.is_definitely_string(state, left) || self.is_definitely_string(state, right);
+
+    known_string_operand
+      || self
+        .types
+        .var(tgt)
+        .is_some_and(|ty| ty.is_definitely_string())
+      || self
+        .types
+        .arg(left)
+        .is_some_and(|ty| ty.is_definitely_string())
+      || self
+        .types
+        .arg(right)
+        .is_some_and(|ty| ty.is_definitely_string())
+  }
+
+  fn encoding_for_concat_operand(&self, state: &[StringEncoding], arg: &Arg) -> StringEncoding {
+    match arg {
+      Arg::Const(Const::Str(s)) => Self::encoding_for_str(s),
+      // When either side of `+` is a string, the other side is stringified via
+      // `ToPrimitive`/`ToString`. For these primitive kinds, the result is
+      // guaranteed to be ASCII.
+      Arg::Const(
+        Const::BigInt(_) | Const::Bool(_) | Const::Null | Const::Num(_) | Const::Undefined,
+      ) => StringEncoding::Ascii,
+      Arg::Var(var) => {
+        let enc = self.get(state, *var);
+        let Some(ty) = self.types.var(*var) else {
+          return enc;
+        };
+
+        if ty.is_definitely_string() {
+          return enc;
+        }
+
+        // If the type is definitely within the set of primitives with ASCII
+        // `ToString` results, treat it as ASCII even when we don't have a
+        // literal-derived encoding fact.
+        if !ty.is_unknown()
+          && !ty.contains(ValueTypeSummary::STRING)
+          && !ty.contains(ValueTypeSummary::SYMBOL)
+          && !ty.contains(ValueTypeSummary::OBJECT)
+          && !ty.contains(ValueTypeSummary::FUNCTION)
+        {
+          return StringEncoding::Ascii;
+        }
+
+        enc
+      }
+      Arg::Fn(_) | Arg::Builtin(_) => StringEncoding::Unknown,
+    }
+  }
+
   fn transfer_var_assign(&self, state: &mut [StringEncoding], tgt: u32, arg: &Arg) {
     let enc = match arg {
       Arg::Const(Const::Str(s)) => Self::encoding_for_str(s),
@@ -200,16 +263,20 @@ impl EncodingAnalysis {
 
   fn transfer_bin_add(&self, state: &mut [StringEncoding], tgt: u32, left: &Arg, right: &Arg) {
     // Treat as string concatenation only when at least one operand is definitely
-    // a string.
-    let is_concat =
-      self.is_definitely_string(state, left) || self.is_definitely_string(state, right);
+    // a string, or when type information proves the result/operands are strings.
+    let is_concat = self.is_string_concat(state, tgt, left, right);
     if !is_concat {
       self.set(state, tgt, StringEncoding::Unknown);
       return;
     }
 
-    let left_enc = self.encoding_of_arg(state, left);
-    let right_enc = self.encoding_of_arg(state, right);
+    let left_enc = self.encoding_for_concat_operand(state, left);
+    let right_enc = self.encoding_for_concat_operand(state, right);
+    let normalize = |enc| match enc {
+      StringEncoding::Latin1 => StringEncoding::Utf8,
+      other => other,
+    };
+    let (left_enc, right_enc) = (normalize(left_enc), normalize(right_enc));
 
     let enc = match (left_enc, right_enc) {
       (StringEncoding::Ascii, StringEncoding::Ascii) => StringEncoding::Ascii,
@@ -355,12 +422,13 @@ pub fn annotate_cfg_encoding(cfg: &mut Cfg, result: &EncodingResult) {
   let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
   labels.sort_unstable();
 
+  let mut analysis = EncodingAnalysis {
+    temp_count: result.temp_count,
+    types: ValueTypeSummaries::new(cfg),
+  };
   for label in labels {
     let Some(block_state) = result.blocks.get(&label) else {
       continue;
-    };
-    let mut analysis = EncodingAnalysis {
-      temp_count: result.temp_count,
     };
     let mut state = block_state.entry.clone();
 
