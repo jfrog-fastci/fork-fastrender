@@ -120,3 +120,42 @@ fn allows_may_gc_runtime_fn_with_gc_pointer_args_if_runtime_roots() {
   )
   .expect("call should be allowed when runtime_roots_args=true");
 }
+
+#[test]
+fn allows_may_gc_runtime_fn_with_handle_args() {
+  let context = Context::create();
+  let module = context.create_module("runtime_call_abi_test_handle");
+  let builder = context.create_builder();
+
+  // Create a dummy caller so the builder has an insertion point.
+  let caller = module.add_function("caller", context.void_type().fn_type(&[], false), None);
+  let entry = context.append_basic_block(caller, "entry");
+  builder.position_at_end(entry);
+
+  // Mock runtime function signature: `void (ptr)`. This models the "handle ABI" pattern where the
+  // runtime accepts a pointer-to-slot handle (`GcHandle = *mut *mut u8`) rather than a raw GC
+  // pointer. Even if the function may GC, this is safe because the runtime can reload from the
+  // caller-owned slot after a safepoint.
+  let handle_ptr = context.ptr_type(inkwell::AddressSpace::default());
+  let callee = module.add_function(
+    "rt_may_gc_with_handle",
+    context.void_type().fn_type(&[handle_ptr.into()], false),
+    None,
+  );
+
+  let spec = RuntimeFnSpec {
+    name: "rt_may_gc_with_handle",
+    may_gc: true,
+    gc_ptr_args: 0,
+    arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+  };
+
+  emit_runtime_call(
+    &builder,
+    callee,
+    spec,
+    &[handle_ptr.const_null().into()],
+    "call_ok",
+  )
+  .expect("handle arguments must be allowed for may-GC runtime calls");
+}
