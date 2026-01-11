@@ -714,6 +714,9 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
   struct ThenableJob {
     dst: PromiseRef,
     thenable: ThenableRef,
+    /// Optional root for the thenable pointer so it stays alive and relocatable while the
+    /// `PromiseResolveThenableJob` microtask is queued.
+    thenable_root: Option<async_gc::Root>,
   }
 
   struct ThenableResolver {
@@ -774,8 +777,14 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
 
     let call_then = unsafe { (*job.thenable.vtable).call_then };
 
+    let thenable_ptr = job
+      .thenable_root
+      .as_ref()
+      .map(|r| r.ptr())
+      .unwrap_or(job.thenable.ptr);
+
     let thrown = catch_unwind(AssertUnwindSafe(|| unsafe {
-      (call_then)(job.thenable.ptr, thenable_resolve, thenable_reject, resolver_ptr)
+      (call_then)(thenable_ptr, thenable_resolve, thenable_reject, resolver_ptr)
     }))
     .unwrap_or_else(|_| thenable_panic_error());
 
@@ -784,7 +793,15 @@ pub(crate) fn promise_resolve_thenable(dst: PromiseRef, thenable: ThenableRef) {
     }
   }
 
-  let job = Box::new(ThenableJob { dst, thenable });
+  let thenable_root = (!thenable.ptr.is_null())
+    // Safety: `thenable.ptr` must be a valid pointer to a GC-managed object base pointer if it is
+    // intended to be relocatable.
+    .then(|| unsafe { async_gc::Root::new_unchecked(thenable.ptr) });
+  let job = Box::new(ThenableJob {
+    dst,
+    thenable,
+    thenable_root,
+  });
 
   extern "C" fn drop_thenable_job(data: *mut u8) {
     // Safety: allocated by `Box::into_raw` above.

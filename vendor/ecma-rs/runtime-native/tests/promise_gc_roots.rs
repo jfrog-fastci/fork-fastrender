@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use runtime_native::abi::PromiseRef;
 use runtime_native::abi::ValueRef;
+use runtime_native::abi::{ThenableRef, ThenableVTable};
 use runtime_native::test_util::TestRuntimeGuard;
 
 fn drain_async_runtime() {
@@ -40,6 +41,26 @@ extern "C" fn on_settle_store_self_ptr(data: *mut u8) {
   let ctx = unsafe { &*(data as *const RootedThenData) };
   ctx.observed.store(data as usize, Ordering::Release);
 }
+
+#[repr(C)]
+struct ThenableRecordPtr {
+  observed: AtomicUsize,
+}
+
+unsafe extern "C" fn thenable_call_then_record_ptr(
+  thenable: *mut u8,
+  _on_fulfilled: runtime_native::abi::ThenableResolveCallback,
+  _on_rejected: runtime_native::abi::ThenableRejectCallback,
+  _data: *mut u8,
+) -> ValueRef {
+  let t = &*(thenable as *const ThenableRecordPtr);
+  t.observed.store(thenable as usize, Ordering::Release);
+  core::ptr::null_mut()
+}
+
+static THENABLE_RECORD_PTR_VTABLE: ThenableVTable = ThenableVTable {
+  call_then: thenable_call_then_record_ptr,
+};
 
 #[test]
 fn promise_outcome_is_relocatable_via_global_root_handle() {
@@ -130,6 +151,54 @@ fn promise_then_rooted_passes_relocated_data_ptr() {
   unsafe {
     drop(Box::from_raw(old_data));
     drop(Box::from_raw(new_data));
+  }
+}
+
+#[test]
+fn promise_thenable_job_passes_relocated_thenable_ptr() {
+  let _rt = TestRuntimeGuard::new();
+
+  runtime_native::gc::roots::debug_clear_global_roots_for_tests();
+  drain_async_runtime();
+
+  let promise = runtime_native::rt_promise_new_legacy();
+
+  let old_thenable = Box::into_raw(Box::new(ThenableRecordPtr {
+    observed: AtomicUsize::new(0),
+  }));
+  let new_thenable = Box::into_raw(Box::new(ThenableRecordPtr {
+    observed: AtomicUsize::new(0),
+  }));
+
+  let thenable_ref = ThenableRef {
+    vtable: &THENABLE_RECORD_PTR_VTABLE,
+    ptr: old_thenable.cast(),
+  };
+
+  runtime_native::rt_promise_resolve_thenable_legacy(promise, thenable_ref);
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 1);
+
+  // Simulate a moving GC updating the thenable pointer in-place.
+  assert_eq!(
+    replace_global_root_ptr(old_thenable.cast(), new_thenable.cast()),
+    1
+  );
+
+  drain_async_runtime();
+  assert_eq!(
+    unsafe { &*new_thenable }.observed.load(Ordering::Acquire) as *mut u8,
+    new_thenable.cast()
+  );
+  assert_eq!(unsafe { &*old_thenable }.observed.load(Ordering::Acquire), 0);
+
+  // The thenable job root should be freed after the microtask runs.
+  assert_eq!(runtime_native::gc::roots::debug_global_root_count(), 0);
+
+  runtime_native::rt_promise_drop_legacy(promise);
+
+  unsafe {
+    drop(Box::from_raw(old_thenable));
+    drop(Box::from_raw(new_thenable));
   }
 }
 
