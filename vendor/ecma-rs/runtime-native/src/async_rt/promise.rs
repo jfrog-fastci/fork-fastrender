@@ -2,7 +2,7 @@ use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
-use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING};
+use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
 use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
@@ -22,7 +22,8 @@ const STATE_REJECTING: u8 = 4;
 /// Currently this is used by `rt_parallel_spawn_promise` promises: the worker writes its result into
 /// the payload returned by `rt_promise_payload_ptr` and then settles the promise via
 /// `rt_promise_fulfill` / `rt_promise_reject`.
-const FLAG_HAS_PAYLOAD: u8 = 1 << 1;
+///
+/// This flag is stored in [`PromiseHeader::flags`] (see [`PROMISE_FLAG_HAS_PAYLOAD`]).
 
 /// Raw sentinel value stored in `value_root`/`error_root` to represent `None`.
 ///
@@ -174,7 +175,7 @@ pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
     .flags
     // Publish the payload pointer before setting the "has payload" flag so that a thread reading
     // `flags` with `Acquire` will also observe the `value` store.
-    .store(FLAG_HAS_PAYLOAD, Ordering::Release);
+    .store(PROMISE_FLAG_HAS_PAYLOAD, Ordering::Release);
   PromiseRef(Box::into_raw(promise) as *mut runtime_native_abi::PromiseHeader)
 }
 
@@ -192,13 +193,94 @@ pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
   }
 
   let flags = unsafe { &(*header).flags }.load(Ordering::Acquire);
-  if flags & FLAG_HAS_PAYLOAD == 0 {
+  if flags & PROMISE_FLAG_HAS_PAYLOAD == 0 {
     return core::ptr::null_mut();
   }
-  // Safety: `FLAG_HAS_PAYLOAD` is only set by `promise_new_with_payload`, which allocates an
-  // `RtPromise` (header prefix + out-of-line payload pointer stored in `value`).
+  // Safety: `PROMISE_FLAG_HAS_PAYLOAD` is only set by `promise_new_with_payload`, which allocates
+  // an `RtPromise` (header prefix + out-of-line payload pointer stored in `value`).
   let ptr = promise_ptr(p);
   unsafe { &(*ptr).value }.load(Ordering::Acquire) as *mut u8
+}
+
+/// Attempt to fulfill a payload promise created by `rt_parallel_spawn_promise`.
+///
+/// Unlike [`promise_resolve`], this does **not** overwrite the promise's `value` field: for payload
+/// promises `value` stores the out-of-line payload pointer returned by `rt_promise_payload_ptr`.
+pub(crate) fn promise_try_fulfill_payload(p: PromiseRef) -> bool {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
+    return false;
+  }
+
+  let state = unsafe { &(*ptr).header.state };
+  if state
+    .compare_exchange(
+      PromiseHeader::PENDING,
+      STATE_FULFILLING,
+      Ordering::AcqRel,
+      Ordering::Acquire,
+    )
+    .is_err()
+  {
+    // Best-effort: if this was an external-pending payload promise, ensure the count is not left
+    // stuck in the presence of duplicate settles.
+    maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+    return false;
+  }
+
+  // Preserve `value` (payload pointer). Clear any stale rejection reason.
+  unsafe { &(*ptr).error }.store(0, Ordering::Relaxed);
+  state.store(PromiseHeader::FULFILLED, Ordering::Release);
+
+  drain_reactions(ptr);
+  maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+  true
+}
+
+pub(crate) fn promise_fulfill_payload(p: PromiseRef) {
+  let _ = promise_try_fulfill_payload(p);
+}
+
+/// Attempt to reject a payload promise created by `rt_parallel_spawn_promise`.
+///
+/// The promise's payload buffer is still accessible via `rt_promise_payload_ptr`. For legacy
+/// awaiters, we report the payload pointer as the rejection reason (`await_error`).
+pub(crate) fn promise_try_reject_payload(p: PromiseRef) -> bool {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
+    return false;
+  }
+
+  let state = unsafe { &(*ptr).header.state };
+  if state
+    .compare_exchange(
+      PromiseHeader::PENDING,
+      STATE_REJECTING,
+      Ordering::AcqRel,
+      Ordering::Acquire,
+    )
+    .is_err()
+  {
+    maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+    return false;
+  }
+
+  let payload = unsafe { &(*ptr).value }.load(Ordering::Acquire);
+  unsafe { &(*ptr).error }.store(payload, Ordering::Relaxed);
+  state.store(PromiseHeader::REJECTED, Ordering::Release);
+
+  // If no one attached a handler yet, schedule unhandled-rejection tracking.
+  if !promise_is_handled(p) {
+    crate::unhandled_rejection::on_reject(p);
+  }
+
+  drain_reactions(ptr);
+  maybe_clear_external_pending(ptr.cast::<PromiseHeader>());
+  true
+}
+
+pub(crate) fn promise_reject_payload(p: PromiseRef) {
+  let _ = promise_try_reject_payload(p);
 }
 
 #[repr(C)]

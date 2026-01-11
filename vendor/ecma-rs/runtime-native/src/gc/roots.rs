@@ -67,6 +67,12 @@ impl SimpleRememberedSet {
     Self::default()
   }
 
+  pub fn with_capacity(capacity: usize) -> Self {
+    Self {
+      objs: Vec::with_capacity(capacity),
+    }
+  }
+
   /// Test-only helper: drop all remembered-set entries without touching the objects.
   ///
   /// Integration tests often allocate ad-hoc "fake" objects (plain `Box<T>` or raw `alloc_zeroed`)
@@ -86,6 +92,23 @@ impl SimpleRememberedSet {
   /// `REMEMBERED` header bit is used to deduplicate.
   pub fn remember(&mut self, obj: *mut u8) {
     self.add(obj);
+  }
+
+  /// Like [`SimpleRememberedSet::remember`], but aborts instead of growing the backing storage.
+  ///
+  /// This is intended for use by `rt_write_barrier`, which is classified as `NoGC` and must not
+  /// allocate. Callers must ensure enough capacity is reserved up-front.
+  pub fn remember_no_grow(&mut self, obj: *mut u8) {
+    debug_assert!(!obj.is_null());
+    // SAFETY: `obj` must point to the start of a valid GC-managed object.
+    let header = unsafe { &*(obj as *const super::ObjHeader) };
+    if !header.set_remembered_idempotent() {
+      return;
+    }
+    if self.objs.len() == self.objs.capacity() {
+      std::process::abort();
+    }
+    self.objs.push(obj);
   }
 
   pub fn contains(&self, obj: *mut u8) -> bool {
@@ -163,16 +186,20 @@ impl SimpleRememberedSet {
   }
 
   pub fn scan_and_rebuild(&mut self, mut object_has_young_refs: impl FnMut(*mut u8) -> bool) {
-    let mut new = Vec::with_capacity(self.objs.len());
-    for &obj in &self.objs {
+    // Compact in-place to preserve reserved capacity: the write barrier is `NoGC` and must be able
+    // to push new remembered objects without triggering `Vec` growth.
+    let mut out = 0usize;
+    for i in 0..self.objs.len() {
+      let obj = self.objs[i];
       if object_has_young_refs(obj) {
-        new.push(obj);
+        self.objs[out] = obj;
+        out += 1;
       } else {
         // SAFETY: `obj` must point to the start of a valid GC-managed object.
         unsafe { (&*(obj as *const super::ObjHeader)).clear_remembered_idempotent() };
       }
     }
-    self.objs = new;
+    self.objs.truncate(out);
   }
 }
 

@@ -137,7 +137,6 @@ fn drain_reactions(promise: *mut PromiseHeader) {
 
   crate::promise_reactions::enqueue_reaction_jobs(promise, head);
 }
-
 fn register_block_on_waker(p: PromiseRef) {
   if p.is_null() {
     // Null promises are treated as "never settles": nothing can wake.

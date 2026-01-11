@@ -107,6 +107,12 @@ impl PromiseHeader {
   }
 }
 
+/// Runtime-internal flag bit in [`PromiseHeader::flags`] indicating this promise has an associated
+/// out-of-line payload buffer (created by `rt_parallel_spawn_promise`).
+///
+/// The payload pointer can be retrieved via `rt_promise_payload_ptr`.
+pub(crate) const PROMISE_FLAG_HAS_PAYLOAD: u8 = 1 << 1;
+
 /// Runtime-internal flag bit in [`PromiseHeader::flags`] indicating the promise is tied to a piece
 /// of pending "external" work (e.g. a task spawned by `rt_parallel_spawn_promise`).
 ///
