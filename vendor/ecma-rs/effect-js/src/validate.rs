@@ -251,6 +251,7 @@ mod tests {
       EffectTemplate::Io => EffectSet::IO | EffectSet::MAY_THROW,
       EffectTemplate::Custom(base) => *base,
       EffectTemplate::DependsOnArgs { base, .. } => *base,
+      // Unknown means "unknown effects"; treat it as potentially-throwing for validation.
       EffectTemplate::Unknown => EffectSet::UNKNOWN | EffectSet::MAY_THROW,
     }
   }
@@ -345,11 +346,11 @@ mod tests {
       "Array.prototype.map",
       EffectTemplate::DependsOnArgs {
         base: EffectSet::ALLOCATES,
-        args: Vec::new(),
+        args: vec![],
       },
       PurityTemplate::DependsOnArgs {
         base: Purity::Allocating,
-        args: Vec::new(),
+        args: vec![],
       },
       &[],
     )]);

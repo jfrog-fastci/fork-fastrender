@@ -1,4 +1,6 @@
 - name: String.prototype.slice
+  semantics: Slice
+  signature: "(start, end?) => string"
   effects:
     template: pure
     may_throw: true
@@ -11,6 +13,8 @@
     encoding.output: same_as_input
 
 - name: String.prototype.concat
+  semantics: Concat
+  signature: "(...parts: string[]) => string"
   effects:
     template: pure
     may_throw: true
@@ -24,6 +28,8 @@
     encoding.output: unknown
 
 - name: String.prototype.toLowerCase
+  semantics: ToLowerCase
+  signature: "() => string"
   effects:
     template: pure
     may_throw: true
@@ -50,6 +56,8 @@
     encoding.output: same_as_input
 
 - name: String.prototype.split
+  semantics: Split
+  signature: "(separator) => string[]"
   effects:
     template: pure
     may_throw: true

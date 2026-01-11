@@ -14,6 +14,10 @@ use semver::Version;
 use serde::{de::Error as _, Deserialize, Serialize};
 pub use serde_json::Value as JsonValue;
 
+mod generated {
+  include!(concat!(env!("OUT_DIR"), "/knowledge_base_generated.rs"));
+}
+
 mod ids;
 pub use ids::ApiId;
 
@@ -329,23 +333,32 @@ impl ApiDatabase {
   }
 
   pub fn load_default() -> Result<Self, KnowledgeBaseError> {
+    Self::load_from_sources(generated::KB_FILES)
+  }
+
+  /// Load a knowledge base from explicit sources.
+  ///
+  /// Each entry is `(relative_path, file_contents)`. The `relative_path` is only
+  /// used for diagnostics and format detection.
+  pub fn load_from_sources(files: &[(&str, &str)]) -> Result<Self, KnowledgeBaseError> {
     let mut apis = BTreeMap::<String, Vec<ApiEntry>>::new();
     let mut sources = BTreeMap::<String, String>::new();
 
-    for file in bundled_kb::BUNDLED_KB_FILES {
-      let parsed = parse_bundled_file(file)?;
-      let env = env_for_path(file.path);
+    for (path, contents) in files {
+      let parsed = parse_source_file(path, contents)?;
+      let env = env_for_path(path);
+      let path_string = (*path).to_string();
       for api in parsed {
         // Duplicates are allowed as long as they have non-overlapping version ranges; keep the
         // first source path for stable diagnostics (individual entries retain their own sources).
         sources
           .entry(api.name.clone())
-          .or_insert_with(|| file.path.to_string());
+          .or_insert_with(|| path_string.clone());
         apis.entry(api.name.clone()).or_default().push(ApiEntry {
           api,
           env,
           platform: WebPlatform::Generic,
-          source: Some(file.path.to_string()),
+          source: Some(path_string.clone()),
         });
       }
     }
@@ -383,10 +396,7 @@ impl ApiDatabase {
         path: file.abs_path.display().to_string(),
         source: err,
       })?;
-      let parsed = match file.format {
-        BundledKbFormat::Yaml => parse_yaml_str(&file.rel_path, &contents),
-        BundledKbFormat::Toml => parse_toml_str(&file.rel_path, &contents),
-      }?;
+      let parsed = parse_source_file(&file.rel_path, &contents)?;
       let env = env_for_path(&file.rel_path);
       for api in parsed {
         // Duplicates are allowed as long as they have non-overlapping version ranges; keep the
@@ -627,30 +637,18 @@ fn validate_versioned_duplicates(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BundledKbFormat {
+pub enum SourceFormat {
   Yaml,
   Toml,
 }
 
-impl fmt::Display for BundledKbFormat {
+impl fmt::Display for SourceFormat {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       Self::Yaml => f.write_str("YAML"),
       Self::Toml => f.write_str("TOML"),
     }
   }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct BundledKbFile {
-  path: &'static str,
-  format: BundledKbFormat,
-  contents: &'static str,
-}
-
-mod bundled_kb {
-  use super::{BundledKbFile, BundledKbFormat};
-  include!(concat!(env!("OUT_DIR"), "/bundled_kb.rs"));
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -665,7 +663,7 @@ pub enum KnowledgeBaseError {
   #[error("failed to parse knowledge base file `{path}` as {format}: {source}")]
   Parse {
     path: String,
-    format: BundledKbFormat,
+    format: SourceFormat,
     #[source]
     source: Box<dyn std::error::Error + 'static>,
   },
@@ -1156,30 +1154,33 @@ fn normalize_ident(raw: &str) -> String {
     .replace(' ', "_")
 }
 
-fn parse_bundled_file(file: &BundledKbFile) -> Result<Vec<ApiSemantics>, KnowledgeBaseError> {
-  match file.format {
-    BundledKbFormat::Yaml => parse_yaml_str(file.path, file.contents),
-    BundledKbFormat::Toml => parse_toml_str(file.path, file.contents),
+fn parse_source_file(path: &str, contents: &str) -> Result<Vec<ApiSemantics>, KnowledgeBaseError> {
+  let ext = Path::new(path)
+    .extension()
+    .and_then(|s| s.to_str())
+    .unwrap_or("")
+    .to_ascii_lowercase();
+
+  match ext.as_str() {
+    "toml" => parse_toml_str(path, contents),
+    // Default to YAML, even for unknown/missing extensions.
+    _ => parse_yaml_str(path, contents),
   }
 }
 
 fn parse_yaml_str(path: &str, contents: &str) -> Result<Vec<ApiSemantics>, KnowledgeBaseError> {
-  let value: serde_yaml::Value = serde_yaml::from_str(contents).map_err(|err| {
-    KnowledgeBaseError::Parse {
-      path: path.to_string(),
-      format: BundledKbFormat::Yaml,
-      source: Box::new(err),
-    }
+  let value: serde_yaml::Value = serde_yaml::from_str(contents).map_err(|err| KnowledgeBaseError::Parse {
+    path: path.to_string(),
+    format: SourceFormat::Yaml,
+    source: Box::new(err),
   })?;
 
   match value {
     serde_yaml::Value::Sequence(_) => {
-      let apis: Vec<ApiRaw> = serde_yaml::from_value(value).map_err(|err| {
-        KnowledgeBaseError::Parse {
-          path: path.to_string(),
-          format: BundledKbFormat::Yaml,
-          source: Box::new(err),
-        }
+      let apis: Vec<ApiRaw> = serde_yaml::from_value(value).map_err(|err| KnowledgeBaseError::Parse {
+        path: path.to_string(),
+        format: SourceFormat::Yaml,
+        source: Box::new(err),
       })?;
       Ok(apis.into_iter().map(normalize_api).collect())
     }
@@ -1189,12 +1190,10 @@ fn parse_yaml_str(path: &str, contents: &str) -> Result<Vec<ApiSemantics>, Knowl
 
       if is_schema_module {
         let module: ModuleRaw =
-          serde_yaml::from_value(serde_yaml::Value::Mapping(map)).map_err(|err| {
-            KnowledgeBaseError::Parse {
-              path: path.to_string(),
-              format: BundledKbFormat::Yaml,
-              source: Box::new(err),
-            }
+          serde_yaml::from_value(serde_yaml::Value::Mapping(map)).map_err(|err| KnowledgeBaseError::Parse {
+            path: path.to_string(),
+            format: SourceFormat::Yaml,
+            source: Box::new(err),
           })?;
         if module.schema != 1 {
           return Err(KnowledgeBaseError::UnsupportedSchema {
@@ -1205,12 +1204,10 @@ fn parse_yaml_str(path: &str, contents: &str) -> Result<Vec<ApiSemantics>, Knowl
         Ok(module.apis.into_iter().map(normalize_api).collect())
       } else {
         let apis: BTreeMap<String, ApiBodyRaw> =
-          serde_yaml::from_value(serde_yaml::Value::Mapping(map)).map_err(|err| {
-            KnowledgeBaseError::Parse {
-              path: path.to_string(),
-              format: BundledKbFormat::Yaml,
-              source: Box::new(err),
-            }
+          serde_yaml::from_value(serde_yaml::Value::Mapping(map)).map_err(|err| KnowledgeBaseError::Parse {
+            path: path.to_string(),
+            format: SourceFormat::Yaml,
+            source: Box::new(err),
           })?;
         Ok(
           apis
@@ -1227,7 +1224,7 @@ fn parse_yaml_str(path: &str, contents: &str) -> Result<Vec<ApiSemantics>, Knowl
 fn parse_toml_str(path: &str, contents: &str) -> Result<Vec<ApiSemantics>, KnowledgeBaseError> {
   let module: ModuleRaw = toml::from_str(contents).map_err(|err| KnowledgeBaseError::Parse {
     path: path.to_string(),
-    format: BundledKbFormat::Toml,
+    format: SourceFormat::Toml,
     source: Box::new(err),
   })?;
   if module.schema != 1 {
@@ -1357,7 +1354,6 @@ fn build_alias_map(
 struct DiskKbFile {
   rel_path: String,
   abs_path: PathBuf,
-  format: BundledKbFormat,
 }
 
 fn collect_kb_files(dir: &Path, root: &Path, out: &mut Vec<DiskKbFile>) -> Result<(), KnowledgeBaseError> {
@@ -1386,11 +1382,10 @@ fn collect_kb_files(dir: &Path, root: &Path, out: &mut Vec<DiskKbFile>) -> Resul
       continue;
     };
     let ext = ext.to_ascii_lowercase();
-    let format = match ext.as_str() {
-      "yaml" | "yml" => BundledKbFormat::Yaml,
-      "toml" => BundledKbFormat::Toml,
+    match ext.as_str() {
+      "yaml" | "yml" | "toml" => {}
       _ => continue,
-    };
+    }
 
     let rel_path = path
       .strip_prefix(root)
@@ -1401,7 +1396,6 @@ fn collect_kb_files(dir: &Path, root: &Path, out: &mut Vec<DiskKbFile>) -> Resul
     out.push(DiskKbFile {
       rel_path,
       abs_path: path,
-      format,
     });
   }
   Ok(())
@@ -1793,11 +1787,10 @@ purity:
 
   #[test]
   fn bundled_kb_has_no_legacy_depends_on_callback_templates() {
-    for file in bundled_kb::BUNDLED_KB_FILES {
+    for (path, contents) in super::generated::KB_FILES {
       assert!(
-        !file.contents.contains("DependsOnCallback"),
-        "legacy template `DependsOnCallback` found in bundled knowledge base file `{}`",
-        file.path
+        !contents.contains("DependsOnCallback"),
+        "legacy template `DependsOnCallback` found in bundled knowledge base file `{path}`"
       );
     }
   }

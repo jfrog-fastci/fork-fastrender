@@ -1,9 +1,10 @@
 - name: fetch
   kind: function
   aliases:
-    - fetch
     - window.fetch
     - globalThis.fetch
+  semantics: Fetch
+  signature: "(input, init?) => Promise<Response>"
   since: "baseline"
   effects:
     base: [io, network, async, may_throw]
@@ -18,3 +19,13 @@
   parallelizable: true
   idempotent: false
   deterministic: false
+
+- name: Response.prototype.json
+  semantics: ResponseJson
+  signature: "() => Promise<any>"
+  effects:
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure
+  async: true

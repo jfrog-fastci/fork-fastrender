@@ -1,4 +1,6 @@
 - name: Math.sqrt
+  semantics: Sqrt
+  signature: "(x: number) => number"
   async: false
   idempotent: true
   deterministic: true
@@ -13,6 +15,8 @@
   purity: Pure
 
 - name: Math.floor
+  semantics: Floor
+  signature: "(x: number) => number"
   async: false
   idempotent: true
   deterministic: true
@@ -27,6 +31,8 @@
   purity: Pure
 
 - name: Math.abs
+  semantics: Abs
+  signature: "(x: number) => number"
   async: false
   idempotent: true
   deterministic: true
@@ -41,6 +47,8 @@
   purity: Pure
 
 - name: Math.min
+  semantics: Min
+  signature: "(...values: number[]) => number"
   async: false
   idempotent: true
   deterministic: true
@@ -55,6 +63,8 @@
   purity: Pure
 
 - name: Math.max
+  semantics: Max
+  signature: "(...values: number[]) => number"
   async: false
   idempotent: true
   deterministic: true

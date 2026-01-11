@@ -5,6 +5,7 @@ mod api_use;
 pub mod callback;
 pub mod encoding;
 pub mod eval;
+pub mod pattern;
 mod recognize;
 mod resolve;
 mod template_eval;

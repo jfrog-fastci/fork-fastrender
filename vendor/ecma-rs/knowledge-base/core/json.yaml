@@ -5,6 +5,7 @@ symbols:
   - name: JSON.parse
     aliases: []
     semantics: JsonParse
+    signature: "(text) => any"
     since: "baseline"
     purity:
       template: allocating
@@ -19,11 +20,13 @@ symbols:
   - name: JSON.stringify
     aliases: []
     semantics: JsonStringify
+    signature: "(value) => string"
     since: "baseline"
     purity:
       template: pure
     effects:
       template: pure
+      # Can throw on circular structures / BigInt, etc.
       may_throw: true
       allocates: true
       io: false

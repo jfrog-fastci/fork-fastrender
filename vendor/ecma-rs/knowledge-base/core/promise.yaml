@@ -5,6 +5,7 @@ symbols:
   - name: Promise.all
     aliases: []
     semantics: PromiseAll
+    signature: "(iterable) => Promise"
     since: "baseline"
     purity:
       template: allocating
@@ -19,6 +20,7 @@ symbols:
   - name: Promise.race
     aliases: []
     semantics: PromiseRace
+    signature: "(iterable) => Promise"
     since: "baseline"
     purity:
       template: pure
@@ -33,6 +35,7 @@ symbols:
   - name: Promise.resolve
     aliases: []
     semantics: PromiseResolve
+    signature: "(value) => Promise"
     since: "baseline"
     purity:
       template: pure
@@ -47,6 +50,7 @@ symbols:
   - name: Promise.reject
     aliases: []
     semantics: PromiseReject
+    signature: "(reason) => Promise"
     since: "baseline"
     purity:
       template: pure
@@ -61,6 +65,7 @@ symbols:
   - name: Promise.prototype.then
     aliases: []
     semantics: PromiseThen
+    signature: "(onfulfilled, onrejected?) => Promise"
     since: "baseline"
     purity:
       depends_on_args:

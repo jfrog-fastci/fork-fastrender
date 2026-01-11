@@ -2,17 +2,43 @@
 
 Semantic knowledge base for `ecma-rs` analysis passes, expressed as YAML/TOML.
 
-The default (bundled) knowledge base is built from files under `core/`, `node/`, `web/`, and
-`ecosystem/`. Files are bundled into the crate at build time (`build.rs`), and loaded with
-`ApiDatabase::load_default()` / `KnowledgeBase::load_default()`.
+This crate provides:
 
-For development tooling that wants to load directly from the repository checkout (without relying on
-the embedded bundle), use `ApiDatabase::load_from_dir(root)` where `root` is the `knowledge-base/`
-crate directory.
+- A small schema for describing API semantics (effects, purity, metadata).
+- A loader (`ApiDatabase::load_default` / `KnowledgeBase::load_default`) that bundles the on-disk
+  database at build time (`build.rs`).
+- A validator (`ApiDatabase::validate`) to keep the database coherent.
 
-## Naming conventions
+For development tooling that wants to load directly from the repository checkout (without relying
+on the embedded bundle), use `ApiDatabase::load_from_dir(root)` where `root` is the
+`knowledge-base/` crate directory.
 
-Canonical names should be stable and globally unique.
+## Bundled file layout
+
+The default (bundled) knowledge base is built from files under:
+
+- `core/`
+- `node/`
+- `web/`
+- `ecosystem/`
+
+Supported formats:
+
+- YAML (`.yaml`, `.yml`)
+- TOML (`.toml`)
+
+The loader selects a parser based on the file extension.
+
+## Canonical API naming
+
+API names are strings. They should be stable and canonical, because downstream analysis treats them
+as identifiers.
+
+General guidelines:
+
+- Use dot-separated paths.
+- Prototype methods use `.prototype.` (`String.prototype.split`, not `String.split`).
+- Prefer the most common spelling and add alternative spellings under `aliases`.
 
 ### Core JS
 
@@ -56,48 +82,61 @@ Namespace with the package name:
 - `lodash.map`
 - `rxjs.Observable`
 
-## Entry schema (YAML)
+## Schema versioning & stability
 
-Each YAML file under `core/`, `node/`, `web/`, and `ecosystem/` is typically a list of API entries.
-Newer files may use the schema-v1 wrapper (`schema_version: 1`, `symbols: [...]`).
+Schema v1 is intended to be forward-compatible:
 
-The loader normalizes entries to `effect-model`'s `EffectTemplate` / `PurityTemplate`, and also
-stores a non-template summary `effect_summary` (`EffectSet`) so downstream analyses can preserve
-base flags even when a template is callback-dependent.
+- Unknown fields are ignored by the parser.
+- `properties` is an open-ended map for experimental or niche metadata.
 
-Common fields:
+On disk, schema v1 entries may appear in a few equivalent shapes (the loader accepts all of them):
 
-- `name`: stable API name (see naming conventions above)
-- `aliases`: list of alternate spellings
-- `kind`: `function|constructor|getter|property_get|setter|value`
-- `semantics`: short semantics identifier (e.g. `Map`, `Filter`, `Reduce`)
-- `signature`: optional signature hint
-- `since` / `until`: version / availability metadata
-- `effects`: either an `EffectTemplate` enum value (`Pure`, `Io`, `Unknown`, ...), or a detail map:
-  - `template`: `pure|io|depends_on_callback|unknown`
-  - `allocates`, `io`, `network`, `nondeterministic`: booleans
-  - `may_throw`: boolean (legacy)
-- `throws`: `never|maybe|always|unknown` (overrides `effects.may_throw` when both are present)
-- `purity`: either a `PurityTemplate` value (`Pure`, `ReadOnly`, `Allocating`, `Impure`, ...), or
-  `{ template: ... }`
-- metadata flags: `async`, `idempotent`, `deterministic`, `parallelizable`
-- `properties`: arbitrary structured metadata (`serde_json::Value`)
+- A YAML list of API entries (`- name: ...`), implicitly schema v1.
+- A single YAML document with `schema = 1` and `apis = [...]` (or the aliases
+  `schema_version`/`symbols`).
+- A shorthand YAML mapping of `ApiName: { ... }` entries, implicitly schema v1.
 
-## Bundled file formats
+## Entry schema (v1)
 
-The default (bundled) knowledge base is built from files under:
+Each API entry supports (at minimum):
 
-- `core/`
-- `node/`
-- `web/`
-- `ecosystem/`
+- `name`: canonical API name.
+- `aliases`: optional list of alternate spellings.
+- `kind`: `function|constructor|getter|setter|value` (defaults to `function`).
+- `effects`: effect-model `EffectTemplate` (or a structured object, see below).
+- `effect_summary`: optional effect-model `EffectSet` overriding the computed summary.
+- `purity`: effect-model `PurityTemplate` (or a structured object, see below).
+- `semantics`: optional short tag like `Map`, `Fetch`, `JsonParse`.
+- `signature`: optional documentation-only signature hint.
+- `since` / `until`: optional versioning placeholders.
+- `properties`: `map<string, any>` (stored as `serde_json::Value`).
 
-Supported formats:
+### Effects & purity forms
 
-- YAML (`.yaml`, `.yml`)
-- TOML (`.toml`)
+The loader accepts two representations:
 
-The loader selects a parser based on the file extension.
+1. **Direct `effect-model` templates**, e.g.
+
+   - `effects: Pure`
+   - `effects: Io`
+   - `effects: { custom: { flags: IO | NETWORK, throws: Maybe } }`
+   - `effects: { depends_on_args: { base: ALLOCATES, args: [0] } }`
+
+2. **Structured objects** (normalized by the loader), e.g.
+
+```yaml
+effects:
+  template: depends_on_callback
+  allocates: true
+  io: false
+  network: false
+  nondeterministic: false
+  may_throw: true
+purity:
+  template: depends_on_callback
+```
+
+`template: depends_on_callback` is treated as “depends on argument 0” for now.
 
 ## Property reads (`kind: property_get`)
 
@@ -128,16 +167,15 @@ purity = "Pure"
 schema_version: 1
 symbols:
   - name: Array.prototype.map
-    aliases: []
-    purity:
-      template: depends_on_callback
+    kind: function
     effects:
-      template: depends_on_callback
-      may_throw: true
-      allocates: true
-      io: false
-      network: false
-      nondeterministic: false
+      depends_on_args:
+        base: ALLOCATES
+        args: [0]
+    purity:
+      depends_on_args:
+        base: Allocating
+        args: [0]
 ```
 
 ## Legacy YAML layouts
@@ -180,7 +218,7 @@ values.
 Standardized keys:
 
 - `encoding.output`: `ascii|latin1|utf8|unknown|same_as_input`
-- `encoding.preserves_input_if`: `ascii|latin1|utf8`
+- `encoding.preserves_input_if`: `ascii|latin1|utf8` (optional)
 - `encoding.length_preserving_if`: `ascii|latin1|utf8` (optional)
 
 Interpretation:
@@ -189,8 +227,7 @@ Interpretation:
 - `encoding.preserves_input_if`: the encoding is only considered preserved when the input encoding
   matches; otherwise the result is treated as `unknown`.
 
-In YAML, `properties` is typically a map of string keys; encoding keys use a dotted namespace like
-`encoding.output`:
+Example:
 
 ```yaml
 - name: String.prototype.toLowerCase
@@ -227,13 +264,16 @@ and parallelization decisions.
 - `properties.parallel.forbid_uses_index: bool`
 - `properties.parallel.forbid_uses_array: bool`
 - `properties.reduce.associative_if_callback_associative: bool` (optional; placeholder)
+## Contributing
 
-## Adding a module
-
-1. Pick a directory (`core/`, `node/`, `web/`, `ecosystem/`).
-2. Add a `*.yaml` or `*.toml` file.
-3. Run:
+- Pick a directory (`core/`, `node/`, `web/`, `ecosystem/`).
+- Add a `*.yaml` or `*.toml` file.
+- Run:
 
 ```bash
 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p knowledge-base --lib
 ```
+
+- Prefer conservative semantics (when in doubt, mark `unknown` / `may_throw: true`).
+- Keep entries small and focused: one API per entry.
+- Prefer adding new information under `properties` before changing the Rust schema.
