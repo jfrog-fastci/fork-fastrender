@@ -89,6 +89,9 @@ impl ParallelRuntime {
   pub(crate) fn spawn_detached(&self, task: extern "C" fn(*mut u8), data: *mut u8) {
     // Ensure the caller thread participates in GC safepoints.
     threading::register_current_thread(ThreadKind::External);
+    // Mirror the `spawn`/`join` entrypoints: if a stop-the-world is active, do
+    // not enqueue additional work until we've observed the request.
+    threading::safepoint_poll();
 
     let task_state = Arc::new(TaskState::new(task, data));
     self.scheduler.enqueue(task_state);
