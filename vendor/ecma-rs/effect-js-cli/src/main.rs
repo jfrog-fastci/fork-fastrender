@@ -8,12 +8,19 @@ use hir_js::{ExprId, ExprKind, FileKind, ObjectKey};
 use knowledge_base::{ApiKind, KnowledgeBase};
 use parse_js::{parse_with_options, ParseOptions};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 
 #[derive(Parser, Debug)]
 #[command(author, version)]
 struct Cli {
+  /// Load the knowledge base from an on-disk `knowledge-base/` directory instead of the embedded
+  /// bundle.
+  ///
+  /// This is useful when iterating on YAML/TOML files without recompiling the crate.
+  #[arg(long, global = true, value_name = "DIR")]
+  kb_dir: Option<PathBuf>,
+
   #[command(subcommand)]
   command: Command,
 }
@@ -52,16 +59,17 @@ enum KbCommand {
 }
 
 fn main() {
-  let cli = Cli::parse();
+  let Cli { kb_dir, command } = Cli::parse();
+  let kb_dir = kb_dir.as_deref();
 
-  match cli.command {
-    Command::Kb { command } => run_kb(command),
-    Command::Analyze { file, ts, tsx } => run_analyze(file, ts, tsx),
+  match command {
+    Command::Kb { command } => run_kb(kb_dir, command),
+    Command::Analyze { file, ts, tsx } => run_analyze(kb_dir, file, ts, tsx),
   }
 }
 
-fn run_kb(command: KbCommand) {
-  let kb = load_kb_or_exit();
+fn run_kb(kb_dir: Option<&Path>, command: KbCommand) {
+  let kb = load_kb_or_exit(kb_dir);
   match command {
     KbCommand::List => {
       for (name, _) in kb.iter() {
@@ -133,7 +141,7 @@ fn run_kb(command: KbCommand) {
   }
 }
 
-fn run_analyze(file: PathBuf, ts: bool, tsx: bool) {
+fn run_analyze(kb_dir: Option<&Path>, file: PathBuf, ts: bool, tsx: bool) {
   let source = fs::read_to_string(&file).unwrap_or_else(|err| {
     eprintln!("failed to read {}: {err}", file.display());
     std::process::exit(2);
@@ -166,7 +174,7 @@ fn run_analyze(file: PathBuf, ts: bool, tsx: bool) {
   };
 
   let lowered = hir_js::lower_file(FileId(0), file_kind, &parsed);
-  let kb = load_kb_or_exit();
+  let kb = load_kb_or_exit(kb_dir);
 
   let kb_calls = resolve_calls_kb(&kb, &lowered);
   println!("== API resolution (knowledge-base) ==");
@@ -232,11 +240,22 @@ fn run_analyze(file: PathBuf, ts: bool, tsx: bool) {
   }
 }
 
-fn load_kb_or_exit() -> KnowledgeBase {
-  KnowledgeBase::load_default().unwrap_or_else(|err| {
-    eprintln!("failed to load default knowledge base: {err}");
+fn load_kb_or_exit(kb_dir: Option<&Path>) -> KnowledgeBase {
+  let kb = match kb_dir {
+    Some(dir) => KnowledgeBase::load_from_dir(dir).unwrap_or_else(|err| {
+      eprintln!("failed to load knowledge base from {}: {err}", dir.display());
+      exit(1);
+    }),
+    None => KnowledgeBase::load_default().unwrap_or_else(|err| {
+      eprintln!("failed to load default knowledge base: {err}");
+      exit(1);
+    }),
+  };
+  kb.validate().unwrap_or_else(|err| {
+    eprintln!("invalid knowledge base: {err}");
     exit(1);
-  })
+  });
+  kb
 }
 
 #[derive(Debug, Clone)]
