@@ -110,6 +110,25 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js --example compile_and
 bash scripts/cargo_llvm.sh run -p native-js --example compile_and_run
 ```
 
+### Library (in-memory source)
+
+If you want to embed the pipeline from Rust code, you can compile a TypeScript string into an
+on-disk native executable via `compiler::compile_typescript_to_artifact`:
+
+```rust
+use native_js::compiler::compile_typescript_to_artifact;
+use native_js::{CompileOptions, EmitKind};
+use std::process::Command;
+
+let mut opts = CompileOptions::default();
+opts.emit = EmitKind::Executable;
+
+let out = compile_typescript_to_artifact(r#"console.log(1 + 2);"#, opts, None)?;
+let output = Command::new(&out.path).output()?;
+print!("{}", String::from_utf8_lossy(&output.stdout));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ### CLI (file input)
 
 See `native-js-cli` for the CLI front-ends:
