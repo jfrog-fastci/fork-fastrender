@@ -94,6 +94,10 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let status = Command::new(find_clang())
     .arg("-nostdlib")
     .arg("-fuse-ld=lld")
+    // Ensure `.llvm_stackmaps` is still retained under dead-section elimination.
+    // The linker script fragment uses `KEEP(*(.llvm_stackmaps ...))` to prevent
+    // GC from discarding the section even if it's otherwise unreferenced.
+    .arg("-Wl,--gc-sections")
     .arg(format!("-Wl,-T,{}", script.display()))
     .arg("-o")
     .arg(&exe)
