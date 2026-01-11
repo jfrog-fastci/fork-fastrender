@@ -403,9 +403,14 @@ When linking a final ELF binary, apply it (example):
 cc ... -Wl,-T,runtime-native/stackmaps.ld ...
 ```
 
-When linking from Rust, you must pass the script to the **final link step**
-(e.g. via `RUSTFLAGS` or your build system). Cargo does not automatically
-propagate linker-script args from dependencies.
+Verify the linked output still contains the stackmaps section (or its relocated variant):
+
+```bash
+llvm-readobj --sections <bin> | rg llvm_stackmaps
+```
+
+When linking from Rust, you must pass the script to the **final link step** (e.g. via `RUSTFLAGS`
+or your build system). Cargo does not automatically propagate linker-script args from dependencies.
 
 #### Option B: GNU ld `__start_*/__stop_*` section symbols (not available on lld)
 
