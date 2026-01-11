@@ -409,6 +409,79 @@ fn node_is_html_element(node: &DomNode) -> bool {
   )
 }
 
+fn is_reserved_custom_element_name(name: &str) -> bool {
+  matches!(
+    name,
+    "annotation-xml"
+      | "color-profile"
+      | "font-face"
+      | "font-face-src"
+      | "font-face-uri"
+      | "font-face-format"
+      | "font-face-name"
+      | "missing-glyph"
+  )
+}
+
+#[inline]
+fn is_potential_custom_element_name_char(ch: char) -> bool {
+  // HTML's `PCENChar` production:
+  // https://html.spec.whatwg.org/multipage/custom-elements.html#prod-pcenchar
+  matches!(
+    ch,
+    '-'
+      | '.'
+      | '0'..='9'
+      | '_'
+      | 'a'..='z'
+      | '\u{00B7}'
+      | '\u{00C0}'..='\u{00D6}'
+      | '\u{00D8}'..='\u{00F6}'
+      | '\u{00F8}'..='\u{037D}'
+      | '\u{037F}'..='\u{1FFF}'
+      | '\u{200C}'..='\u{200D}'
+      | '\u{203F}'..='\u{2040}'
+      | '\u{2070}'..='\u{218F}'
+      | '\u{2C00}'..='\u{2FEF}'
+      | '\u{3001}'..='\u{D7FF}'
+      | '\u{F900}'..='\u{FDCF}'
+      | '\u{FDF0}'..='\u{FFFD}'
+      | '\u{10000}'..='\u{EFFFF}'
+  )
+}
+
+/// Returns true if `name` is a [valid custom element name] per HTML.
+///
+/// This helper is shared by spec-correct `:defined` matching and (future) declarative shadow DOM
+/// host validation.
+///
+/// [valid custom element name]: https://html.spec.whatwg.org/multipage/custom-elements.html#valid-custom-element-name
+pub(crate) fn is_valid_custom_element_name(name: &str) -> bool {
+  if is_reserved_custom_element_name(name) {
+    return false;
+  }
+
+  let mut chars = name.chars();
+  let Some(first) = chars.next() else {
+    return false;
+  };
+  if !matches!(first, 'a'..='z') {
+    return false;
+  }
+
+  let mut has_hyphen = false;
+  for ch in chars {
+    if ch == '-' {
+      has_hyphen = true;
+    }
+    if !is_potential_custom_element_name_char(ch) {
+      return false;
+    }
+  }
+
+  has_hyphen
+}
+
 const SELECTOR_BLOOM_ASCII_LOWERCASE_STACK_BUF: usize = 64;
 
 #[inline]
@@ -7462,12 +7535,15 @@ impl<'a> Element for ElementRef<'a> {
         if _context.extra_data.treat_custom_elements_as_defined {
           true
         } else {
-          // Spec-correct behavior: elements with a valid custom-element name (minimum: contains a
-          // hyphen) are undefined unless upgraded by the custom elements registry, which FastRender
-          // does not run.
+          // Spec-correct behavior: elements with a valid custom element name are undefined unless
+          // upgraded by the custom elements registry, which FastRender does not run.
           //
-          // Non-custom element names (no hyphen) remain `:defined`.
-          !(self.is_html_element() && self.node.tag_name().is_some_and(|tag| tag.contains('-')))
+          // Elements without a valid custom element name remain `:defined`.
+          !(self.is_html_element()
+            && self
+              .node
+              .tag_name()
+              .is_some_and(|tag| is_valid_custom_element_name(tag)))
         }
       }
       PseudoClass::FirstChild => self.element_index(_context) == Some(0),
@@ -11857,6 +11933,32 @@ mod tests {
     assert!(selector_matches_with_custom_elements_defined(
       &node_ref, &selector, false
     ));
+  }
+
+  #[test]
+  fn defined_pseudo_class_uses_valid_custom_element_name_rules() {
+    let selector = parse_selector(":defined");
+
+    let x_foo = element("x-foo", vec![]);
+    let x_foo_ref = ElementRef::with_ancestors(&x_foo, &[]);
+    assert!(
+      !selector_matches_with_custom_elements_defined(&x_foo_ref, &selector, false),
+      "valid custom element names should be treated as undefined when the custom element registry is not run"
+    );
+
+    let reserved = element("annotation-xml", vec![]);
+    let reserved_ref = ElementRef::with_ancestors(&reserved, &[]);
+    assert!(
+      selector_matches_with_custom_elements_defined(&reserved_ref, &selector, false),
+      "reserved hyphenated names like annotation-xml are not valid custom element names"
+    );
+
+    let invalid_start = element("1-foo", vec![]);
+    let invalid_start_ref = ElementRef::with_ancestors(&invalid_start, &[]);
+    assert!(
+      selector_matches_with_custom_elements_defined(&invalid_start_ref, &selector, false),
+      "hyphenated names that do not start with an ASCII lowercase letter are not valid custom element names"
+    );
   }
 
   #[test]
