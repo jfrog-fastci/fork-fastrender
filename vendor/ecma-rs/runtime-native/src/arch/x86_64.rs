@@ -3,7 +3,9 @@ use core::arch::global_asm;
 // Assembly is written in Intel syntax for readability.
 //
 // `rt_capture_safepoint_context(out)`:
-//   Captures callee-entry RSP/RBP and the return address at [RSP] into `out`.
+//   Captures a stable caller frame for `arch::capture_safepoint_context`:
+//   walks the frame-pointer chain to skip the Rust wrapper + runtime helper and
+//   records the outer caller's FP + return address.
 //
 // `rt_gc_safepoint_slow(epoch)`:
 //   Assembly shim used by the safepoint slow path to capture the caller context
@@ -16,13 +18,22 @@ global_asm!(
 rt_capture_safepoint_context:
   // out: rdi
   mov rax, rsp                // sp_entry
-  mov rcx, qword ptr [rsp]    // return address (ip)
   lea rdx, [rax + 8]          // sp (post-call; stackmap SP)
+
+  // Walk frame pointers to capture the *outer* caller frame:
+  // - RBP is the Rust wrapper's frame pointer.
+  // - [RBP + 0] is the runtime helper's frame pointer.
+  // - [runtime_fp + 0] is the outer caller's frame pointer.
+  // - [runtime_fp + 8] is the return address into the outer caller after calling
+  //   the runtime helper.
+  mov rcx, qword ptr [rbp]    // runtime_fp
+  mov r8, qword ptr [rcx]     // outer_fp
+  mov r9, qword ptr [rcx + 8] // outer_ip
 
   mov qword ptr [rdi + 0], rax
   mov qword ptr [rdi + 8], rdx
-  mov qword ptr [rdi + 16], rbp
-  mov qword ptr [rdi + 24], rcx
+  mov qword ptr [rdi + 16], r8
+  mov qword ptr [rdi + 24], r9
   ret
   .globl rt_gc_safepoint_slow
 rt_gc_safepoint_slow:

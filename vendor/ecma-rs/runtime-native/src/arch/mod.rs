@@ -43,11 +43,30 @@ extern "C" {
   fn rt_capture_safepoint_context(out: *mut SafepointContext);
 }
 
-/// Capture a [`SafepointContext`] for the current call frame.
+/// Capture a [`SafepointContext`] describing the *callsite* that entered a runtime
+/// helper just before the current thread will block / remain quiescent.
 ///
-/// This is implemented in per-architecture assembly to ensure the captured
-/// stack pointer and return address correspond to the callee's entry state (i.e.
-/// before any Rust prologue can adjust the stack/frame pointers).
+/// # Captured frame contract
+/// The returned context's `fp` and `ip` are **not** for this Rust function nor for
+/// the internal assembly helper. Instead, they are captured from the *outer*
+/// caller frame so the published context stays live even after the runtime helper
+/// returns.
+///
+/// Concretely, when called from a runtime helper like:
+/// ```text
+/// outer() -> runtime_helper() -> arch::capture_safepoint_context()
+/// ```
+/// we capture:
+/// - `ctx.fp`: the frame pointer for `outer()`
+/// - `ctx.ip`: the return address in `outer()` after the call to `runtime_helper()`
+///
+/// This ensures `SafepointContext` always refers to a **stable** frame that remains
+/// on the stack while the thread is stopped / NativeSafe.
+///
+/// `sp_entry`/`sp` are best-effort and may not correspond to the exact
+/// callsite stack pointer when this function is not invoked as a leaf; current
+/// stackmap-based scanning relies on `fp`/`ip`.
+#[inline(never)]
 pub fn capture_safepoint_context() -> SafepointContext {
   let mut out = MaybeUninit::<SafepointContext>::uninit();
   // Safety: `rt_capture_safepoint_context` initializes the struct by writing
