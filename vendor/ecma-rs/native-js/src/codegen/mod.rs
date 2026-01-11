@@ -1799,12 +1799,9 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 }
 
 fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<FileId> {
-  // Keep module dependencies in the same order as the source-level `import`
-  // statements. This matches JS module evaluation semantics and provides
-  // deterministic initialization order for sibling imports.
   let from = lowered.hir.file;
-  let mut deps = Vec::new();
-  let mut seen = HashSet::<FileId>::new();
+  let mut module_requests: Vec<(u32, String)> = Vec::new();
+
   for import in &lowered.hir.imports {
     let ImportKind::Es(es) = &import.kind else {
       continue;
@@ -1824,13 +1821,50 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
     if !has_value_bindings && !is_side_effect_import {
       continue;
     }
-    let Some(dep) = program.resolve_module(from, es.specifier.value.as_str()) else {
+    module_requests.push((import.span.start, es.specifier.value.clone()));
+  }
+
+  // Re-exports like `export { x } from "./dep"` or `export * from "./dep"` also
+  // create module dependencies that must be initialized at runtime.
+  for export in &lowered.hir.exports {
+    match &export.kind {
+      hir_js::ExportKind::Named(named) => {
+        let Some(source) = named.source.as_ref() else {
+          continue;
+        };
+        if named.is_type_only {
+          continue;
+        }
+        let has_value_specifiers = named.specifiers.iter().any(|s| !s.is_type_only);
+        let is_side_effect_export = named.specifiers.is_empty();
+        if !has_value_specifiers && !is_side_effect_export {
+          continue;
+        }
+        module_requests.push((export.span.start, source.value.clone()));
+      }
+      hir_js::ExportKind::ExportAll(all) => {
+        if all.is_type_only {
+          continue;
+        }
+        module_requests.push((export.span.start, all.source.value.clone()));
+      }
+      _ => {}
+    }
+  }
+
+  module_requests.sort_by_key(|(start, _)| *start);
+
+  let mut deps = Vec::new();
+  let mut seen = HashSet::<FileId>::new();
+  for (_, specifier) in module_requests {
+    let Some(dep) = program.resolve_module(from, specifier.as_str()) else {
       continue;
     };
     if seen.insert(dep) {
       deps.push(dep);
     }
   }
+
   deps
 }
 

@@ -790,3 +790,73 @@ export function main(): number { return 0; }
     .success()
     .stdout(predicate::eq(""));
 }
+
+#[test]
+fn reexported_module_init_runs() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(
+    &dep,
+    r#"export let x: number = 40;
+x += 2;
+"#,
+  )
+  .unwrap();
+
+  let reexport = tmp.path().join("reexport.ts");
+  fs::write(&reexport, r#"export { x } from "./dep";"#).unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"import { x } from "./reexport";
+export function main(): number { return x; }
+"#,
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(42));
+}
+
+#[test]
+fn type_only_reexport_does_not_execute_module() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(
+    &dep,
+    r#"export type T = number;
+print(42);
+"#,
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"export { type T } from "./dep";
+export function main(): number { return 0; }
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq(""));
+}
