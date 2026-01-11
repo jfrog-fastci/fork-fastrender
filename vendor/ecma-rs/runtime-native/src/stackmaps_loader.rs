@@ -35,9 +35,10 @@ static STACKMAPS_SECTION: OnceLock<&'static [u8]> = OnceLock::new();
 pub fn stackmaps_section() -> &'static [u8] {
   *STACKMAPS_SECTION.get_or_init(|| {
     if let Some(bytes) = load_llvm_stackmaps_via_symbols() {
-      if !bytes.is_empty() {
-        return bytes;
-      }
+      // Even if the section is empty (no stackmaps in this binary), treat the
+      // linker-defined range as authoritative and avoid falling back to the
+      // `/proc/self/exe` loader (which would do I/O just to discover the same).
+      return bytes;
     }
 
     #[cfg(target_os = "macos")]
@@ -80,9 +81,6 @@ pub fn load_llvm_stackmaps_via_symbols() -> Option<&'static [u8]> {
     }
 
     let len = end - start;
-    if len == 0 {
-      return None;
-    }
 
     // StackMap v3 payload contains 64-bit fields and is 8-byte aligned.
     if start % 8 != 0 {
