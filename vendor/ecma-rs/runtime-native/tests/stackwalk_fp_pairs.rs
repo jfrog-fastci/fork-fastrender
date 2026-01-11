@@ -1,7 +1,9 @@
 #![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
 use runtime_native::arch;
-use runtime_native::stackmaps::{StackMaps, StackSize};
+use runtime_native::stackmaps::StackMaps;
+#[cfg(target_arch = "x86_64")]
+use runtime_native::stackmaps::StackSize;
 use runtime_native::stackwalk::StackBounds;
 use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 
@@ -314,14 +316,17 @@ fn root_pairs_from_safepoint_context_use_ctx_sp() {
   assert_eq!(seen, vec![(base_slot_addr as usize, derived_slot_addr as usize)]);
 }
 
+#[cfg(target_arch = "x86_64")]
 fn align_up(v: usize, align: usize) -> usize {
   (v + (align - 1)) & !(align - 1)
 }
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn write_u64(addr: usize, val: u64) {
   (addr as *mut u64).write_unaligned(val);
 }
 
+#[cfg(target_arch = "x86_64")]
 fn add_signed_u64(base: u64, offset: i32) -> Option<u64> {
   if offset >= 0 {
     base.checked_add(offset as u64)
