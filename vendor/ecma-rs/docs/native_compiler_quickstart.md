@@ -103,12 +103,12 @@ See [`EXEC.plan.md`](../EXEC.plan.md) → “Our TypeScript Dialect” for the c
 
 ## 2) Typecheck in strict-native mode
 
-### Raw cargo command (inside the ecma-rs workspace)
+### Inside the ecma-rs workspace
 
 If you’re in `vendor/ecma-rs/`:
 
 ```bash
-cargo run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
 ```
 
 ### Recommended wrapper (agent-safe)
@@ -169,10 +169,10 @@ The “native compiler” work needs a correctness backstop. We use a **VM oracl
 - Run the JS under our deterministic interpreter, [`vm-js`](../vm-js/),
 - (Eventually) compare oracle behavior against the native pipeline output.
 
-### Raw cargo command (inside the ecma-rs workspace)
+### Inside the ecma-rs workspace
 
 ```bash
-cargo test -p native-oracle-harness
+bash scripts/cargo_agent.sh test -p native-oracle-harness
 ```
 
 ### Recommended (agent-safe wrapper)

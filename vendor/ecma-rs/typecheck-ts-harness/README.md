@@ -214,13 +214,13 @@ diagnostics are intentionally custom), so it does not require Node.js.
 
 ```
 # Run the bundled strict-native fixtures against stored baselines
-cargo run -p typecheck-ts-harness --release -- strict-native
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- strict-native
 
 # Update baselines from the current checker output
-cargo run -p typecheck-ts-harness --release -- strict-native --update-baselines
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- strict-native --update-baselines
 
 # Filter / shard for CI
-cargo run -p typecheck-ts-harness --release -- strict-native \
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- strict-native \
   --filter "**/proxy.ts" \
   --shard 0/4 \
   --timeout-secs 20 \
