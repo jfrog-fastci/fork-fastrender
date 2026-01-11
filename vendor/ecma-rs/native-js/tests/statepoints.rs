@@ -1,19 +1,13 @@
-use std::ffi::CString;
-
 use inkwell::context::Context;
-use inkwell::values::AsValueRef;
 use inkwell::AddressSpace;
-use llvm_sys::core::LLVMSetGC;
 
 use native_js::gc::statepoints::{LiveGcPtr, StatepointCallee, StatepointIntrinsics};
+use native_js::llvm::gc as llvm_gc;
 
-fn set_statepoint_example_gc<'ctx>(func: inkwell::values::FunctionValue<'ctx>) {
+fn set_native_js_gc<'ctx>(func: inkwell::values::FunctionValue<'ctx>) {
   // Required for LLVM's verifier: statepoint intrinsics may only appear in functions which have a
   // GC strategy set.
-  let gc_name = CString::new("statepoint-example").unwrap();
-  unsafe {
-    LLVMSetGC(func.as_value_ref(), gc_name.as_ptr());
-  }
+  llvm_gc::set_default_gc_strategy(&func).expect("GC strategy contains NUL byte");
 }
 
 #[test]
@@ -30,7 +24,7 @@ fn emits_statepoint_result_and_relocates() {
 
   let caller_ty = i32_ty.fn_type(&[i32_ty.into(), gc_ptr_ty.into(), gc_ptr_ty.into()], false);
   let caller = module.add_function("caller", caller_ty, None);
-  set_statepoint_example_gc(caller);
+  set_native_js_gc(caller);
 
   let entry = context.append_basic_block(caller, "entry");
   builder.position_at_end(entry);
@@ -87,7 +81,7 @@ fn emits_statepoint_without_gc_result_for_void() {
 
   let caller_ty = context.void_type().fn_type(&[gc_ptr_ty.into()], false);
   let caller = module.add_function("caller_void", caller_ty, None);
-  set_statepoint_example_gc(caller);
+  set_native_js_gc(caller);
 
   let entry = context.append_basic_block(caller, "entry");
   builder.position_at_end(entry);

@@ -1,6 +1,8 @@
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 use llvm_sys::core::*;
 use native_js::gc::statepoint::StatepointEmitter;
+use native_js::llvm::gc::GC_STRATEGY;
+use std::ffi::CString;
 
 #[test]
 fn statepoint_void_call_emits_no_gc_result_and_relocates_ptrs() {
@@ -10,7 +12,7 @@ fn statepoint_void_call_emits_no_gc_result_and_relocates_ptrs() {
     let builder = LLVMCreateBuilderInContext(ctx);
 
     let void_ty = LLVMVoidTypeInContext(ctx);
-    // LLVM statepoint-based GC lowering expects GC pointers to live in a non-zero address space.
+    // LLVM's statepoint verifier treats GC pointers as living in a non-zero address space.
     let gc_ptr_ty = LLVMPointerType(void_ty, 1);
 
     // Runtime entrypoint we want to safepoint: `void @rt_gc_safepoint()`.
@@ -21,7 +23,8 @@ fn statepoint_void_call_emits_no_gc_result_and_relocates_ptrs() {
     // `define void @test(ptr addrspace(1) %a, ptr addrspace(1) %b)`.
     let test_fn_ty = LLVMFunctionType(void_ty, [gc_ptr_ty, gc_ptr_ty].as_ptr().cast_mut(), 2, 0);
     let test_fn = LLVMAddFunction(module, c"test".as_ptr(), test_fn_ty);
-    LLVMSetGC(test_fn, c"coreclr".as_ptr());
+    let gc_name = CString::new(GC_STRATEGY).unwrap();
+    LLVMSetGC(test_fn, gc_name.as_ptr());
 
     let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, c"entry".as_ptr());
     LLVMPositionBuilderAtEnd(builder, entry);

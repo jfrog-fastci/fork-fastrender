@@ -12,6 +12,8 @@ use llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use std::ffi::{CStr, CString};
 use std::ptr;
 
+use crate::llvm::gc::GC_STRATEGY;
+
 /// Build a tiny function that:
 ///   - allocates two rooted GC slots in the entry block,
 ///   - emits a safepointed call, and
@@ -30,10 +32,11 @@ pub fn demo_gc_root_slots_ir() -> String {
     let callee_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
     let callee = llvm_get_or_add_fn(module, "callee", callee_fn_ty);
 
-    // Define `void @test() gc "coreclr"`.
+    // Define `void @test() gc "coreclr"` (see `native-js/docs/llvm_gc_strategy.md`).
     let test_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
     let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
-    LLVMSetGC(test_fn, b"coreclr\0".as_ptr().cast());
+    let gc_name = CString::new(GC_STRATEGY).unwrap();
+    LLVMSetGC(test_fn, gc_name.as_ptr());
 
     let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
     LLVMPositionBuilderAtEnd(builder, entry);
@@ -90,11 +93,12 @@ unsafe fn demo_gc_root_derived_ptrs_ir(num_derived: u64) -> String {
   let callee_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
   let callee = llvm_get_or_add_fn(module, "callee", callee_fn_ty);
 
-  // Define `void @test(ptr addrspace(1) %base) gc "statepoint-example"`.
+  // Define `void @test(ptr addrspace(1) %base) gc "coreclr"`.
   let gc_ptr_ty = llvm_sys::core::LLVMPointerType(void_ty, 1);
   let test_fn_ty = LLVMFunctionType(void_ty, [gc_ptr_ty].as_ptr().cast_mut(), 1, 0);
   let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
-  LLVMSetGC(test_fn, b"statepoint-example\0".as_ptr().cast());
+  let gc_name = CString::new(GC_STRATEGY).unwrap();
+  LLVMSetGC(test_fn, gc_name.as_ptr());
 
   let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
   LLVMPositionBuilderAtEnd(builder, entry);
