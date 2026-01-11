@@ -156,6 +156,16 @@ done
 set -- "${argv[@]}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Some agent/CI environments copy the repository without preserving executable bits. This is fine
+# for most helper scripts (we invoke them via `bash ...`), but `libaom-sys` (AVIF decoding) executes
+# the CMake wrapper directly via the `CMAKE` env var from `.cargo/config.toml`.
+#
+# Ensure the wrapper is runnable so AVIF-enabled builds don't fail with:
+#   "failed to execute command: Permission denied (os error 13)"
+if [[ -f "${repo_root}/tools/cmake_wrapper.sh" ]]; then
+  chmod +x "${repo_root}/tools/cmake_wrapper.sh" 2>/dev/null || true
+fi
 # Directory to run `cargo` in.
 #
 # By default, we execute cargo from the monorepo root so it picks up:
