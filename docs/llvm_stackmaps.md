@@ -81,8 +81,8 @@ struct StkMapRecord {
   Location Locations[NumLocations];
 
   // Then padding to an 8-byte boundary, then:
-  uint16_t NumLiveOuts;
   uint16_t Reserved2;           // = 0
+  uint16_t NumLiveOuts;
   LiveOut LiveOuts[NumLiveOuts];
 
   // Then padding to an 8-byte boundary.
@@ -99,6 +99,18 @@ struct Location {
   uint16_t DwarfRegNum;          // when relevant
   uint16_t Reserved1;            // = 0
   int32_t  OffsetOrSmallConst;   // sign-extended to pointer size when needed
+};
+```
+
+### Live-out encoding (4 bytes each)
+
+Live-outs are primarily used by patchpoints. Each entry is:
+
+```c
+struct LiveOut {
+  uint16_t DwarfRegNum;
+  uint8_t  Reserved;   // = 0
+  uint8_t  Size;       // bytes
 };
 ```
 
@@ -394,3 +406,28 @@ Even if current `rewrite-statepoints-for-gc` output tends to spill most non-cons
 - `ConstantIndex` (5)
 
 Additionally, statepoint consumers must understand the **meta prefix** and deopt count described above; otherwise the GC root list will be mis-parsed.
+
+## Patchpoint live-outs (non-statepoint)
+
+Statepoints typically show `0 live-outs`, but patchpoints can populate the
+`LiveOuts[]` list.
+
+IR: `investigation/llvm_stackmaps/patchpoint_liveouts.ll`
+
+`llvm-readobj-18 --stackmap` (excerpt):
+
+```text
+Record ID: 55, instruction offset: 4
+  1 locations:
+    #1: Register R#5, size: 8
+  2 live-outs: [ R#0 (8-bytes) R#7 (8-bytes) ]
+```
+
+Bytes (tail of record showing live-outs):
+
+```text
+... 01 00 08 00  05 00 00 00  00 00 00 00   ; Location #1 (Register rdi)
+00 00 00 00                                   ; padding to 8-byte boundary
+00 00 02 00                                   ; Reserved2=0, NumLiveOuts=2
+00 00 00 08  07 00 00 08                      ; LiveOut[0]=rax, LiveOut[1]=rsp
+```
