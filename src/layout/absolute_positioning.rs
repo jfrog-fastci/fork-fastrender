@@ -1072,9 +1072,12 @@ impl AbsoluteLayout {
         (y, h, false)
       }
 
-      // top and bottom specified, height is auto:
-      // - non-replaced boxes fill the available space (CSS 2.1 §10.6.4)
-      // - replaced boxes shrink-to-fit (CSS 2.1 §10.6.5)
+      // top and bottom specified, height is auto.
+      //
+      // CSS 2.1 distinguishes between replaced and non-replaced abspos boxes:
+      // - §10.6.4 (non-replaced): auto height fills the available space.
+      // - §10.6.5 (replaced): auto height uses shrink-to-fit/intrinsic sizing, with any remaining
+      //   space distributed via auto margins.
       (Some(t), None, Some(b)) => {
         let available = cb_height - t - b - margin_top - margin_bottom - total_vertical_spacing;
         let height = if is_replaced {
@@ -2231,6 +2234,63 @@ impl AbsoluteLayout {
     assert!(
       (result.position.y - 10.0).abs() < 0.001,
       "top inset should remain at 10 when margins are zero"
+    );
+  }
+
+  #[test]
+  fn test_layout_absolute_replaced_height_auto_shrinks_between_insets() {
+    let layout = AbsoluteLayout::new();
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.top = LengthOrAuto::px(0.0);
+    style.bottom = LengthOrAuto::px(0.0);
+    style.height = LengthOrAuto::Auto;
+
+    // Replaced elements keep an intrinsic height instead of stretching to satisfy top+bottom.
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(80.0, 50.0), Point::ZERO);
+    input.is_replaced = true;
+
+    let cb = create_containing_block(300.0, 200.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert!(
+      (result.size.height - 50.0).abs() < 0.001,
+      "replaced auto height with both insets should shrink-to-fit intrinsic height"
+    );
+    assert!(
+      (result.position.y - 0.0).abs() < 0.001,
+      "top inset should remain at 0 when margins are fixed"
+    );
+  }
+
+  #[test]
+  fn test_layout_absolute_replaced_height_auto_resolves_auto_margins_with_fixed_insets() {
+    let layout = AbsoluteLayout::new();
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.top = LengthOrAuto::px(0.0);
+    style.bottom = LengthOrAuto::px(0.0);
+    style.height = LengthOrAuto::Auto;
+    style.margin_top_auto = true;
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(80.0, 50.0), Point::ZERO);
+    input.is_replaced = true;
+
+    let cb = create_containing_block(300.0, 200.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+
+    // With only margin-top auto, the remaining space is assigned to margin-top, pushing the
+    // box down so its bottom edge satisfies the specified bottom inset.
+    assert!(
+      (result.size.height - 50.0).abs() < 0.001,
+      "expected intrinsic height"
+    );
+    assert!(
+      (result.margins.top - 150.0).abs() < 0.001,
+      "expected auto margin-top to consume remaining space"
+    );
+    assert!(
+      (result.position.y - 150.0).abs() < 0.001,
+      "expected box to be bottom-aligned after resolving auto margin-top"
     );
   }
 

@@ -447,3 +447,71 @@ fn grid_area_span_with_center_justify_content_respects_gaps() {
   assert_approx(placed.bounds.x(), 22.5, "justify-content center offset");
   assert_approx(placed.bounds.width(), 55.0, "centered span width");
 }
+
+#[test]
+fn grid_area_four_value_span_span_is_auto_placement_with_span() {
+  // Webflow emits `grid-area: span N / span M / span N / span M` to express auto-placement with an
+  // explicit span. Per CSS Grid conflict handling, the end spans are ignored so the item behaves
+  // like `grid-row: span N` / `grid-column: span M`.
+  let base = ComputedStyle::default();
+
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(30.0));
+  grid_style.height = Some(Length::px(20.0));
+  apply_declaration(
+    &mut grid_style,
+    &decl("grid-template-columns", "10px 10px 10px"),
+    &base,
+    16.0,
+    16.0,
+  );
+  apply_declaration(
+    &mut grid_style,
+    &decl("grid-template-rows", "10px 10px"),
+    &base,
+    16.0,
+    16.0,
+  );
+
+  let mut fixed_style = ComputedStyle::default();
+  fixed_style.display = Display::Block;
+  apply_declaration(
+    &mut fixed_style,
+    &decl("grid-area", "1 / 1 / 2 / 2"),
+    &base,
+    16.0,
+    16.0,
+  );
+
+  let mut span_style = ComputedStyle::default();
+  span_style.display = Display::Block;
+  apply_declaration(
+    &mut span_style,
+    &decl("grid-area", "span 1 / span 2 / span 1 / span 2"),
+    &base,
+    16.0,
+    16.0,
+  );
+
+  let fixed_item = BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
+  let span_item = BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![fixed_item, span_item],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(30.0, 20.0))
+    .expect("grid layout succeeds");
+
+  assert_eq!(fragment.children.len(), 2);
+  let placed_span = &fragment.children[1];
+
+  assert_approx(placed_span.bounds.x(), 10.0, "auto placed span x");
+  assert_approx(placed_span.bounds.y(), 0.0, "auto placed span y");
+  assert_approx(placed_span.bounds.width(), 20.0, "span 2 columns width");
+  assert_approx(placed_span.bounds.height(), 10.0, "span 1 row height");
+}
