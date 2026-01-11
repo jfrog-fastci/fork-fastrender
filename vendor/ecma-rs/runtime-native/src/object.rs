@@ -147,6 +147,10 @@ mod tests {
 
       let h = base.cast::<Header>();
       let obj = obj_from_header(h);
+      // The runtime ABI uses **base-pointer** object references: the GC-visible
+      // object pointer is the address of the header itself (not the payload
+      // after the header).
+      assert_eq!(obj, h.cast::<u8>());
       assert_eq!(header_from_obj(obj), h);
       assert_eq!(obj_from_header(header_from_obj(obj)), obj);
 
