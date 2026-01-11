@@ -401,6 +401,14 @@ pub extern "C" fn rt_thread_set_parked(parked: bool) {
 pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
   slot: crate::roots::GcHandle,
 ) -> crate::roots::GcPtr {
+  // Capture the frame pointer of this runtime entrypoint *before* entering
+  // `abort_on_panic` (which uses `catch_unwind` in `panic=unwind` builds).
+  //
+  // The sysroot's `catch_unwind` implementation may not maintain a valid frame
+  // pointer chain, so safepoint slow paths may not be able to walk from the
+  // closure frame back out to the managed callsite. Providing this FP as an
+  // override keeps stackmap-based scanning robust.
+  let entry_fp = crate::stackwalk::current_frame_pointer();
   abort_on_panic(|| unsafe {
     if slot.is_null() {
       crate::trap::rt_trap_invalid_arg("rt_gc_safepoint_relocate_h: slot was null");
@@ -408,7 +416,9 @@ pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
     // Poll the stop-the-world barrier. Use the threading safepoint poll so the
     // fast path is a single epoch load and so the slow path can recover the
     // nearest managed callsite when this helper is invoked from runtime frames.
-    crate::threading::safepoint::rt_gc_safepoint();
+    crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+      crate::threading::safepoint::rt_gc_safepoint();
+    });
     crate::roots::load_handle(slot)
   })
 }
@@ -3053,6 +3063,9 @@ pub unsafe extern "C" fn rt_thread_attach(runtime: *mut Runtime) -> *mut Thread 
 /// `thread` must be a pointer previously returned by [`rt_thread_attach`].
 #[no_mangle]
 pub unsafe extern "C" fn rt_thread_detach(thread: *mut Thread) {
+  // Capture the entrypoint FP before entering `abort_on_panic` for the same
+  // reason as `rt_gc_safepoint_relocate_h`.
+  let entry_fp = crate::stackwalk::current_frame_pointer();
   abort_on_panic(|| unsafe {
     let Some(thread_ref) = thread.as_ref() else {
       return;
@@ -3070,7 +3083,9 @@ pub unsafe extern "C" fn rt_thread_detach(thread: *mut Thread) {
     // safepoint first so the coordinator can make progress.
     if crate::threading::safepoint::current_epoch() & 1 == 1 {
       if registry::current_thread_id().is_some() {
-        crate::threading::safepoint::rt_gc_safepoint();
+        crate::threading::safepoint::with_safepoint_fixup_start_fp(entry_fp, || {
+          crate::threading::safepoint::rt_gc_safepoint();
+        });
       } else {
         crate::threading::safepoint::wait_while_stop_the_world();
       }

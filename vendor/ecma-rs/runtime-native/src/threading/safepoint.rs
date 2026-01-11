@@ -54,6 +54,24 @@ thread_local! {
   /// also used directly by runtime code and tests. Those call sites need a way to identify the
   /// coordinator thread without relying on `IN_STOP_THE_WORLD`.
   static STW_COORDINATOR_EPOCH: Cell<u64> = const { Cell::new(0) };
+  /// Optional override for safepoint-context fixup.
+  ///
+  /// Some runtime entrypoints wrap their bodies in `std::panic::catch_unwind` to
+  /// avoid unwinding across the C ABI. The sysroot's `catch_unwind` implementation
+  /// is not guaranteed to maintain a valid frame-pointer chain (it may repurpose
+  /// the FP register for general computation).
+  ///
+  /// When a safepoint poll happens inside such a `catch_unwind` closure, the
+  /// captured `SafepointContext.fp` still points at the closure frame, but the
+  /// saved caller FP inside that frame record may be junk. In that situation, the
+  /// normal "walk outward until we find a stackmapped return address" heuristic
+  /// can fail.
+  ///
+  /// Runtime entrypoints that know a *stable* starting FP outside the `catch_unwind`
+  /// may temporarily set this override while executing a safepoint poll. If the
+  /// fixup logic fails to walk from the captured FP, it will fall back to this
+  /// override value.
+  static SAFEPOINT_FIXUP_START_FP: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Returns `true` if the current thread is the stop-the-world coordinator for `epoch`.
@@ -99,6 +117,23 @@ pub(crate) fn enter_stop_the_world_coordinator() -> StopTheWorldCoordinatorGuard
     prev
   });
   StopTheWorldCoordinatorGuard { prev }
+}
+
+pub(crate) fn with_safepoint_fixup_start_fp<R>(fp: u64, f: impl FnOnce() -> R) -> R {
+  SAFEPOINT_FIXUP_START_FP.with(|cell| {
+    let prev = cell.replace(fp);
+    struct Restore<'a> {
+      cell: &'a Cell<u64>,
+      prev: u64,
+    }
+    impl Drop for Restore<'_> {
+      fn drop(&mut self) {
+        self.cell.set(self.prev);
+      }
+    }
+    let _restore = Restore { cell, prev };
+    f()
+  })
 }
 struct SafepointCoordinator {
   /// How many threads are currently blocked inside [`rt_gc_safepoint`]'s slow path.
@@ -340,7 +375,20 @@ fn fixup_safepoint_context_to_nearest_managed(
     return ctx;
   }
 
-  let Some(cursor) = crate::stackwalk::find_nearest_managed_cursor(ctx.fp as u64, stackmaps) else {
+  let start_fp = ctx.fp as u64;
+  let mut cursor = crate::stackwalk::find_nearest_managed_cursor(start_fp, stackmaps);
+  if cursor.is_none() {
+    cursor = SAFEPOINT_FIXUP_START_FP.with(|cell| {
+      let override_fp = cell.get();
+      if override_fp != 0 && override_fp != start_fp {
+        crate::stackwalk::find_nearest_managed_cursor(override_fp, stackmaps)
+      } else {
+        None
+      }
+    });
+  }
+
+  let Some(cursor) = cursor else {
     return ctx;
   };
 
@@ -1281,6 +1329,66 @@ mod tests {
       ..Default::default()
     };
     let fixed = super::fixup_safepoint_context_to_nearest_managed(ctx, Some(&stackmaps));
+
+    assert_eq!(fixed.fp, managed_fp);
+    assert_eq!(fixed.ip as u64, managed_ra);
+    assert!(stackmaps.lookup(fixed.ip as u64).is_some());
+
+    let expected_sp_callsite = runtime_fp as u64 + 16;
+    #[cfg(target_arch = "x86_64")]
+    let expected_sp_entry = expected_sp_callsite - crate::arch::WORD_SIZE as u64;
+    #[cfg(not(target_arch = "x86_64"))]
+    let expected_sp_entry = expected_sp_callsite;
+
+    assert_eq!(fixed.sp as u64, expected_sp_callsite);
+    assert_eq!(fixed.sp_entry as u64, expected_sp_entry);
+  }
+
+  #[test]
+  fn fixup_safepoint_context_uses_override_start_fp_when_fp_chain_is_broken() {
+    let stackmaps = crate::StackMaps::parse(include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/tests/fixtures/bin/statepoint_x86_64.bin"
+    )))
+    .expect("parse stackmaps");
+    let (managed_ra, _) = stackmaps.iter().next().expect("fixture should contain at least one callsite");
+
+    let mut stack = [0u8; 512];
+    let base = stack.as_mut_ptr() as usize;
+
+    // Simulate a `catch_unwind` frame that does not maintain an FP chain by making the
+    // "captured" FP's saved caller pointer bogus. Provide a separate override FP
+    // that links to a stackmapped return address.
+    let bad_fp = align_up(base + 64, 16);
+    let runtime_fp = align_up(base + 160, 16);
+    let managed_fp = align_up(base + 320, 16);
+
+    assert!(runtime_fp > bad_fp);
+    assert!(managed_fp > runtime_fp);
+
+    unsafe {
+      // Broken frame record (fp_caller == 0).
+      write_u64(bad_fp + 0, 0);
+      write_u64(bad_fp + 8, 0x1111_2222_3333_4444);
+
+      // Outer runtime frame that links to a managed callsite.
+      write_u64(runtime_fp + 0, managed_fp as u64);
+      write_u64(runtime_fp + 8, managed_ra);
+
+      // Managed frame record: terminate the chain.
+      write_u64(managed_fp + 0, 0);
+      write_u64(managed_fp + 8, 0);
+    }
+
+    let ctx = SafepointContext {
+      fp: bad_fp,
+      ip: 0xdead_beef_dead_beefusize,
+      ..Default::default()
+    };
+
+    let fixed = super::with_safepoint_fixup_start_fp(runtime_fp as u64, || {
+      super::fixup_safepoint_context_to_nearest_managed(ctx, Some(&stackmaps))
+    });
 
     assert_eq!(fixed.fp, managed_fp);
     assert_eq!(fixed.ip as u64, managed_ra);
