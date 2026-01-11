@@ -117,6 +117,10 @@ The runtime must provide a symbol named `gc.safepoint_poll` compatible with `voi
   call into the safepoint slow path (`rt_gc_safepoint_slow_impl`) so the published context matches the
   stackmap record for the poll callsite.
 
+Note: LLVM stackmap `Indirect [SP + off]` locations use the **post-call** caller `SP` at the stackmap
+record PC. On x86_64, `call` pushes an 8-byte return address, so the poll stub must publish `SP` as
+`sp_entry + 8` (not the callee-entry `RSP`).
+
 ---
 
 ## Required IR pattern: `gc.statepoint` (LLVM 18)

@@ -10,11 +10,16 @@ Two details matter for the runtime:
    the safepoint call (i.e. the return address pushed by the call instruction).
 
 2. **Most stack locations are `Indirect [SP + off]`**  
-   When LLVM needs a GC ref to be in memory at a safepoint, stackmaps typically describe it as
-   an indirect address relative to `SP`.
+    When LLVM needs a GC ref to be in memory at a safepoint, stackmaps typically describe it as
+    an indirect address relative to `SP`.
 
-   Critically, this `SP` is the **caller frame's stack pointer at the return address**, not the
-   callee's current `SP`.
+    Critically, this `SP` is the **caller frame's stack pointer at the return address**, not the
+    callee's current `SP`.
+
+    **x86_64 note:** `call` pushes an 8-byte return address. If a thread is stopped *inside* the
+    safepoint callee, the callee-entry `RSP` points at that return address and is therefore **8 bytes
+    lower** than the stackmap `SP` base. `runtime-native` captures/publishes the **post-call** SP for
+    stackmap evaluation (`sp = sp_entry + 8`).
 
 ## Implication: a GC must unwind
 
