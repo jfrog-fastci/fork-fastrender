@@ -10,6 +10,12 @@ Scope:
 
 This is intentionally concrete: copy/paste the snippets and adjust names/types as needed.
 
+See also (repo-local, complementary):
+
+- `docs/llvm_statepoints_llvm18.md` — verifier-correct minimal fixture IR
+- `docs/llvm_statepoint_directives.md` — overriding statepoint ID / patch bytes when using `rewrite-statepoints-for-gc`
+- `runtime-native/stackmaps.ld` — linker script fragment that retains `.llvm_stackmaps` and defines start/end symbols
+
 ---
 
 ## Pointer + address-space conventions
@@ -149,6 +155,11 @@ i32 0, i32 0
 
 These are required even though we do not use transition/deopt arguments.
 
+LLVM 18 notes:
+
+- Both values must be **constant `i32`** (they are `immarg`).
+- Inline transition/deopt operands are deprecated; LLVM 18 rejects non-zero counts. If you ever need those features, use operand bundles (e.g. `"gc-transition"`, `"deopt"`) instead of inline operands.
+
 ### Live GC values: operand bundle `["gc-live"(...)]`
 
 All GC values live across the safepoint must be listed in the `"gc-live"` operand bundle attached to the statepoint call:
@@ -251,6 +262,7 @@ LLVM supports relocating derived (interior) pointers by rooting **both** the bas
 
 - `base_index` points at the **base object** in the `"gc-live"` list.
 - `derived_index` points at the value to be relocated (often the same as base).
+- Both indices must be **constant `i32` immediates** (`immarg`), and are 0-based.
 - For interior pointers, the GC uses the **base pointer** to identify the object and the `(derived - base)` offset to reconstruct the derived pointer after moving the object.
 
 #### When to root a derived pointer vs recompute it
