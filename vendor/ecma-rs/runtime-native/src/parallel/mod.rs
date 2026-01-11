@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -36,15 +36,14 @@ fn default_cost_model(work: WorkEstimate) -> bool {
   work.items >= parallel_for_impl::min_grain() && work.cost >= parallel_for_impl::min_grain() as u64
 }
 
-static COST_MODEL: AtomicPtr<()> = AtomicPtr::new(default_cost_model as *mut ());
+static COST_MODEL: RwLock<CostModelFn> = RwLock::new(default_cost_model);
 
 pub fn set_cost_model(f: CostModelFn) {
-  COST_MODEL.store(f as *mut (), Ordering::Release);
+  *COST_MODEL.write().unwrap() = f;
 }
 
 pub fn should_parallelize(work: WorkEstimate) -> bool {
-  let f = COST_MODEL.load(Ordering::Acquire);
-  let f: CostModelFn = unsafe { std::mem::transmute(f) };
+  let f = *COST_MODEL.read().unwrap();
   f(work)
 }
 
