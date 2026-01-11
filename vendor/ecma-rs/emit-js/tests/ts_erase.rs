@@ -51,6 +51,17 @@ f<T>(x);
 // TS `this` parameters are type-only and must be erased.
 function f(this: any, x: number) { return this; }
 class C { m(this: any, x: number) { return this; } }
+
+// TS parameter properties are runtime semantics that must be lowered.
+class ParamProps {
+  constructor(public x: number, readonly y: number) {}
+}
+class Base {}
+class Derived extends Base {
+  constructor(public x: number) {
+    super();
+  }
+}
 "#;
 
   let mut parsed = parse_ts(source);
@@ -92,6 +103,14 @@ class C { m(this: any, x: number) { return this; } }
   assert!(
     out.contains("side-effect-export"),
     "output should preserve side-effect exports (`export {{}} from ...`): {out}"
+  );
+  assert!(
+    out.contains("this[\"x\"]=x") || out.contains("this.x=x"),
+    "output should lower parameter properties into assignments: {out}"
+  );
+  assert!(
+    out.contains("super();this[\"x\"]=x") || out.contains("super();this.x=x"),
+    "output should insert derived ctor parameter property assignments after super(): {out}"
   );
 
   // Must erase TS-only expression wrappers.
