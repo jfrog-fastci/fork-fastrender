@@ -18304,6 +18304,144 @@ mod tests {
   }
 
   #[test]
+  fn http_fetcher_does_not_preflight_redirect_followups_when_post_redirect_switches_to_get() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping http_fetcher_does_not_preflight_redirect_followups_when_post_redirect_switches_to_get: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    let Some(listener) = try_bind_localhost(
+      "http_fetcher_does_not_preflight_redirect_followups_when_post_redirect_switches_to_get",
+    ) else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+
+    let handle = thread::spawn(move || {
+      listener.set_nonblocking(true).unwrap();
+      let mut received: Vec<(String, String)> = Vec::new();
+      let mut final_get_request: Option<String> = None;
+      let start = Instant::now();
+
+      while start.elapsed() < Duration::from_secs(2) && received.len() < 6 {
+        let (mut stream, _) = match listener.accept() {
+          Ok(res) => res,
+          Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+          }
+          Err(err) => panic!("accept: {err}"),
+        };
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let request = read_http_request(&mut stream)
+          .unwrap()
+          .expect("expected HTTP request");
+        let req_str = String::from_utf8_lossy(&request).to_string();
+        let request_line = req_str.lines().next().unwrap_or("").trim_end_matches('\r');
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().unwrap_or("").to_ascii_uppercase();
+        let target = parts.next().unwrap_or("").to_string();
+        let path = Url::parse(&target)
+          .ok()
+          .map(|url| url.path().to_string())
+          .unwrap_or(target);
+        received.push((method.clone(), path.clone()));
+
+        match (method.as_str(), path.as_str()) {
+          ("OPTIONS", "/start") => {
+            let headers = concat!(
+              "HTTP/1.1 204 No Content\r\n",
+              "Access-Control-Allow-Origin: https://client.example\r\n",
+              // Allow the non-safelisted Content-Type value used by the POST request.
+              "Access-Control-Allow-Headers: content-type\r\n",
+              "Access-Control-Max-Age: 600\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n",
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+          }
+          ("POST", "/start") => {
+            let headers = concat!(
+              "HTTP/1.1 303 See Other\r\n",
+              "Location: /final\r\n",
+              "Access-Control-Allow-Origin: https://client.example\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n",
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+          }
+          ("GET", "/final") => {
+            final_get_request = Some(req_str);
+            let body = b"ok";
+            let headers = format!(
+              "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: https://client.example\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+            break;
+          }
+          // The redirect follow-up switches POST->GET and suppresses Content-Type; since there are no
+          // other unsafe headers on the follow-up request, it must not be preflighted.
+          ("OPTIONS", "/final") => {
+            let headers = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(headers.as_bytes());
+            break;
+          }
+          _ => {
+            let headers = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(headers.as_bytes());
+            break;
+          }
+        }
+      }
+
+      (received, final_get_request.unwrap_or_default())
+    });
+
+    let client_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = format!("http://{addr}/start");
+    let user_headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+
+    let fetch = FetchRequest::new(&url, FetchDestination::Fetch).with_client_origin(&client_origin);
+    let request = HttpRequest {
+      fetch,
+      method: "POST",
+      redirect: web_fetch::RequestRedirect::Follow,
+      headers: &user_headers,
+      body: Some(b"{}"),
+    };
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let res = fetcher
+      .fetch_http_request(request)
+      .expect("fetch should follow redirect and succeed");
+    assert_eq!(res.bytes, b"ok");
+
+    let (received, final_get_request) = handle.join().unwrap();
+    assert_eq!(
+      received,
+      vec![
+        ("OPTIONS".to_string(), "/start".to_string()),
+        ("POST".to_string(), "/start".to_string()),
+        ("GET".to_string(), "/final".to_string()),
+      ],
+      "expected only the initial request to be preflighted",
+    );
+    let lower = final_get_request.to_ascii_lowercase();
+    assert!(
+      !lower.contains("content-type:"),
+      "expected Content-Type to be suppressed after POST redirect switched to GET, got:\n{final_get_request}"
+    );
+  }
+
+  #[test]
   fn http_fetcher_persists_cookies_across_requests_and_clones() {
     let Some(listener) =
       try_bind_localhost("http_fetcher_persists_cookies_across_requests_and_clones")
