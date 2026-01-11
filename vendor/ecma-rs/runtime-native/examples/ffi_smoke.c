@@ -157,6 +157,8 @@ int main(void) {
   // The runtime expects mutator threads to register before executing compiled
   // code or participating in GC safepoints.
   rt_thread_init(0);
+  // Ensure strict-await configuration entrypoint is present/callable.
+  rt_async_set_strict_await_yields(false);
   int rc = 0;
   pthread_t wake_thread;
   int wake_thread_started = 0;
@@ -229,6 +231,8 @@ int main(void) {
   if (check(p == async_coro.header.promise)) { rc = 27; goto done; }
   if (check(!rt_promise_try_fulfill(p))) { rc = 28; goto done; }
   if (check(rt_handle_load(coro_id) == NULL)) { rc = 29; goto done; }
+  // Blocking wait helper should return immediately for already-settled promises.
+  rt_async_block_on(p);
 
   // Deferred spawn: must schedule the first resume as a microtask.
   int deferred_ran = 0;
@@ -317,7 +321,7 @@ int main(void) {
   rt_queue_microtask_rooted(microtask_check_root, obj1);
   if (check(rooted_microtask_ran == 0)) { rc = 18; goto done; }
 
-  rt_drain_microtasks();
+  if (check(rt_async_run_until_idle())) { rc = 47; goto done; }
   if (check(microtask_ran == 1)) { rc = 13; goto done; }
   if (check(drop_ctx.ran == 1)) { rc = 16; goto done; }
   // The microtask drop hook should only run if the microtask is discarded without executing

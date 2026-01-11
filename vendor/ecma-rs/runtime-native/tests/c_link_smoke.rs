@@ -225,6 +225,8 @@ static const CoroutineVTable NATIVE_ASYNC_HEAP_VTABLE = {
 
 int main(void) {
   rt_thread_init(0);
+  // Ensure strict-await configuration entrypoint is present/callable.
+  rt_async_set_strict_await_yields(false);
 
   // Touch the RT_THREAD TLS symbol so this smoke test also verifies that the
   // runtime provides it for native codegen.
@@ -359,6 +361,8 @@ int main(void) {
     rt_thread_deinit();
     return 35;
   }
+  // Blocking wait helper should return immediately for already-settled promises.
+  rt_async_block_on(native_promise);
 
   // Deferred spawn: must schedule the first resume as a microtask.
   int deferred_ran = 0;
@@ -410,6 +414,7 @@ int main(void) {
     rt_thread_deinit();
     return 43;
   }
+  rt_async_block_on(deferred_promise);
 
   // Cancellation: a deferred runtime-owned coroutine that never runs must still be destroyed and
   // have its CoroutineId handle freed (and its scheduled resume microtask discarded).
