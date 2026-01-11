@@ -13,7 +13,6 @@ use crate::js::window_env::{
 use crate::js::{
   runtime, DocumentHostState, ScriptOrchestrator, ScriptType, TaskSource, WindowHostState,
 };
-use crate::js::vm_host_context::VmJsHostContext;
 use crate::js::host_document::ActiveEventGuard;
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::DomHostVmJs;
@@ -538,7 +537,7 @@ impl WindowRealm {
     hooks: &mut dyn VmHostHooks,
     source: Arc<SourceText>,
   ) -> Result<Value, VmError> {
-    let mut host_ctx = VmJsHostContext::default();
+    let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
     self.exec_script_source_with_host_and_hooks(&mut host_ctx, hooks, source)
   }
 
@@ -650,7 +649,7 @@ impl WindowRealm {
       // - expose DOM shim exotic hooks to the evaluator, and
       // - keep Promise jobs enqueued onto the VM-owned queue (restored on drop).
       let mut guard = MicrotaskQueueRestoreGuard::new(&mut rt.vm);
-      let mut host_ctx = VmJsHostContext::default();
+      let mut host_ctx = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
       let mut any = VmJsHostHooksPayload::default();
       any.set_vm_host(&mut host_ctx);
       let mut hooks = WindowRealmDomShimHooks {
@@ -1372,9 +1371,6 @@ fn push_active_event_for_host(
   if let Some(host) = any.downcast_mut::<DocumentHostState>() {
     return Some(host.push_active_event(event_id, event));
   }
-  if let Some(host) = any.downcast_mut::<VmJsHostContext>() {
-    return Some(host.push_active_event(event_id, event));
-  }
   if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
     return Some(host.push_active_event(event_id, event));
   }
@@ -1388,9 +1384,6 @@ fn with_active_event_for_host<R>(
 ) -> Option<R> {
   let any = host.as_any_mut();
   if let Some(host) = any.downcast_mut::<DocumentHostState>() {
-    return host.with_active_event(event_id, f);
-  }
-  if let Some(host) = any.downcast_mut::<VmJsHostContext>() {
     return host.with_active_event(event_id, f);
   }
   if let Some(host) = any.downcast_mut::<BrowserDocumentDom2>() {
@@ -11949,11 +11942,6 @@ fn document_current_script_get_native(
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       return document.current_script_handle().borrow().current_script;
     }
-    if let Some(ctx) = host.as_any_mut().downcast_mut::<crate::js::VmJsHostContext>() {
-      return ctx
-        .current_script_state()
-        .and_then(|state| state.borrow().current_script);
-    }
     None
   }
 
@@ -16464,7 +16452,7 @@ mod tests {
     };
     let document_listener_roots =
       super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
-    let mut vm_host = VmJsHostContext::default();
+    let mut vm_host = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
     let mut hooks = NoopHostHooks::default();
     let mut invoker = super::VmJsDomEventInvoker {
       vm: &mut *vm,
@@ -16536,7 +16524,7 @@ mod tests {
       other => panic!("expected Event object, got {other:?}"),
     };
     let listener_roots = super::get_or_create_event_listener_roots(&mut scope, document_obj)?;
-    let mut vm_host = VmJsHostContext::default();
+    let mut vm_host = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
     let mut hooks = NoopHostHooks::default();
     let mut invoker = super::VmJsDomEventInvoker {
       vm: &mut *vm,

@@ -45,7 +45,6 @@ pub mod clock;
 pub mod document_lifecycle;
 pub mod event_loop;
 pub mod host_document;
-pub mod vm_host_context;
 pub mod html_classic_scripts;
 pub mod html_scripting;
 pub mod html_script_processing;
@@ -158,7 +157,6 @@ pub use event_loop::{
 pub use options::{JsExecutionOptions, ParseBudget};
 pub use document_write::{DocumentWriteLimitError, DocumentWriteState, with_document_write_state};
 pub use host_document::{DocumentHostState, HostDocumentState};
-pub use vm_host_context::VmJsHostContext;
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
   ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,

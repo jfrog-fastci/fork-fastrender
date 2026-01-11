@@ -198,8 +198,7 @@ impl VmJsModuleLoader {
       // Borrow-split: the VM needs `&mut ModuleGraph`, while module loading uses the hooks' maps.
       // Module evaluation also needs both the embedder `VmHost` and the `WindowRealm`.
       // Pass the real embedder `VmHost` context into module evaluation (same as `WindowHost`'s
-      // classic-script path). This avoids the old `VmJsHostContext` shim and keeps downcasting
-      // reliable.
+      // classic-script path). This avoids dummy-host indirection and keeps downcasting reliable.
       let (vm_host, window_realm) = host.vm_host_and_window_realm();
       let budget = window_realm.vm_budget_now();
       let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();

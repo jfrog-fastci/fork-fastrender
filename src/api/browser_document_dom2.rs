@@ -48,7 +48,7 @@ pub struct BrowserDocumentDom2 {
   /// `BrowserTabHost` owns the authoritative current-script state, but `vm-js` native handlers see
   /// the embedder `VmHost` as the document (`BrowserDocumentDom2`). Storing the handle here allows
   /// `document.currentScript` to be resolved via downcast on the real `VmHost` without relying on
-  /// the legacy `VmJsHostContext` shim.
+  /// any per-call host shim.
   current_script: CurrentScriptStateHandle,
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
