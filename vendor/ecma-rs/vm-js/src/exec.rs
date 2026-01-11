@@ -5001,6 +5001,58 @@ impl<'a> Evaluator<'a> {
             key,
           )?))
         }
+        Expr::Member(member) if member.stx.optional_chaining => {
+          // `delete obj?.prop` short-circuits to `true` when the base is nullish.
+          let base = self.eval_expr(scope, &member.stx.left)?;
+          if is_nullish(base) {
+            return Ok(Value::Bool(true));
+          }
+
+          let mut del_scope = scope.reborrow();
+          del_scope.push_root(base)?;
+          let key_s = del_scope.alloc_string(&member.stx.right)?;
+          del_scope.push_root(Value::String(key_s))?;
+          let key = PropertyKey::from_string(key_s);
+
+          let object = self.to_object_operator(&mut del_scope, base)?;
+          del_scope.push_root(Value::Object(object))?;
+          Ok(Value::Bool(del_scope.ordinary_delete_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            object,
+            key,
+          )?))
+        }
+        Expr::ComputedMember(member) if member.stx.optional_chaining => {
+          // `delete obj?.[expr]` short-circuits to `true` when the base is nullish and does not
+          // evaluate the member expression.
+          let base = self.eval_expr(scope, &member.stx.object)?;
+          if is_nullish(base) {
+            return Ok(Value::Bool(true));
+          }
+
+          let mut del_scope = scope.reborrow();
+          del_scope.push_root(base)?;
+          let member_value = self.eval_expr(&mut del_scope, &member.stx.member)?;
+          del_scope.push_root(member_value)?;
+          let key = self.to_property_key_operator(&mut del_scope, member_value)?;
+          let key_root = match key {
+            PropertyKey::String(s) => Value::String(s),
+            PropertyKey::Symbol(s) => Value::Symbol(s),
+          };
+          del_scope.push_root(key_root)?;
+
+          let object = self.to_object_operator(&mut del_scope, base)?;
+          del_scope.push_root(Value::Object(object))?;
+          Ok(Value::Bool(del_scope.ordinary_delete_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            object,
+            key,
+          )?))
+        }
         Expr::Member(_) | Expr::ComputedMember(_) => {
           let reference = self.eval_reference(scope, &expr.argument)?;
           match reference {

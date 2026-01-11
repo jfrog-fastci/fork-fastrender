@@ -30,6 +30,22 @@ fn delete_removes_configurable_property() {
 }
 
 #[test]
+fn delete_optional_chain_short_circuits_on_nullish_base() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"var o = null; delete o?.x"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn delete_optional_chain_computed_member_does_not_evaluate_key_when_nullish() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"var side = 0; var o = null; delete o?.[side = 1]; side === 0"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn delete_identifier_strict_mode_throws() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#""use strict"; var x = 1; delete x;"#).unwrap_err();
