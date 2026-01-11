@@ -3181,6 +3181,64 @@ impl FormattingContext for FlexFormattingContext {
                           child.style.running_position.is_none() && child.style.position.is_in_flow()
                         });
                         if content_h <= eps && has_in_flow_children {
+                          if mode == IntrinsicSizingMode::MinContent {
+                            // Min-content intrinsic-width probes can legitimately produce a 0px
+                            // inline size when percentage-sized replaced descendants resolve their
+                            // percentage base to 0. In that case the corresponding intrinsic
+                            // block-size query also tends to return 0px, which would trigger the
+                            // full layout fallback below.
+                            //
+                            // Falling back to `FormattingContext::layout` during a min-content probe
+                            // is problematic: the nested layout path may decide to expand to the
+                            // viewport width, and Taffy can then treat that inflated width as the
+                            // flex item's automatic minimum size. This forces flex wrapping on
+                            // pages like cloudflare.com where a `flex: 1` item contains a
+                            // percentage-sized SVG/canvas.
+                            //
+                            // Instead, keep the min-content inline size result and compute a more
+                            // useful non-zero block-size hint using max-content sizing.
+                            let intrinsic_block_result = if let Some(style) = override_style.clone() {
+                              if measure_box.id != 0 {
+                                crate::layout::style_override::with_style_override(
+                                  measure_box.id,
+                                  style,
+                                  || {
+                                    fc.compute_intrinsic_block_size(
+                                      measure_box,
+                                      IntrinsicSizingMode::MaxContent,
+                                    )
+                                  },
+                                )
+                              } else {
+                                let mut cloned = measure_box.clone();
+                                cloned.style = style;
+                                fc.compute_intrinsic_block_size(&cloned, IntrinsicSizingMode::MaxContent)
+                              }
+                            } else {
+                              fc.compute_intrinsic_block_size(measure_box, IntrinsicSizingMode::MaxContent)
+                            };
+                            match intrinsic_block_result {
+                              Ok(border_box_block) => {
+                                content_h = (border_box_block - fit_inset_h).max(0.0);
+                              }
+                              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                              Err(_) => {}
+                            }
+
+                            if content_h.is_finite() {
+                              content_h = content_h.min(max_h_bound.max(0.0));
+                            } else {
+                              content_h = max_h_bound.max(0.0);
+                            }
+
+                            if content_h > eps {
+                              flex_profile::record_measure_time(measure_timer);
+                              return taffy::geometry::Size {
+                                width: content_w.max(0.0),
+                                height: content_h.max(0.0),
+                              };
+                            }
+                          }
                           // Fall back to the full layout path below so the measured height is based
                           // on the actual laid out subtree rather than an intrinsic block-size
                           // query that may be unable to account for nested layout (e.g. grid `fr`
@@ -3193,20 +3251,22 @@ impl FormattingContext for FlexFormattingContext {
                           };
                         }
                       } else {
-                      #[cfg(test)]
-                      if !log_measure_ids.is_empty() && log_measure_ids.contains(&measure_box.id) {
-                        // Mirror the debug-only max-content hint accounting used by the full
-                        // layout path so unit tests can detect when intrinsic sizing work is
-                        // performed specifically for flex-measure logging.
-                        record_flex_measure_inline_hint_call();
-                      }
-                      let intrinsic_result = if mode == IntrinsicSizingMode::MaxContent
-                        && matches!(fc_type, FormattingContextType::Flex)
-                      {
-                        if let Some(style) = override_style.clone() {
-                          if measure_box.id != 0 {
-                            crate::layout::style_override::with_style_override(
-                              measure_box.id,
+                        #[cfg(test)]
+                        if !log_measure_ids.is_empty()
+                          && log_measure_ids.contains(&measure_box.id)
+                        {
+                          // Mirror the debug-only max-content hint accounting used by the full
+                          // layout path so unit tests can detect when intrinsic sizing work is
+                          // performed specifically for flex-measure logging.
+                          record_flex_measure_inline_hint_call();
+                        }
+                        let intrinsic_result = if mode == IntrinsicSizingMode::MaxContent
+                          && matches!(fc_type, FormattingContextType::Flex)
+                        {
+                          if let Some(style) = override_style.clone() {
+                            if measure_box.id != 0 {
+                              crate::layout::style_override::with_style_override(
+                                measure_box.id,
                               style,
                               || {
                                 this.flex_container_inline_size_taffy_probe_hint(
@@ -3378,10 +3438,56 @@ impl FormattingContext for FlexFormattingContext {
                           }
 
                           let has_in_flow_children = measure_box.children.iter().any(|child| {
-                            child.style.running_position.is_none()
-                              && child.style.position.is_in_flow()
+                            child.style.running_position.is_none() && child.style.position.is_in_flow()
                           });
                           if content_h <= eps && has_in_flow_children {
+                            if mode == IntrinsicSizingMode::MinContent {
+                              // See the explanation in the fit-content branch above: avoid falling
+                              // back to a full layout during a min-content intrinsic width probe,
+                              // since that can inflate the returned inline size to the viewport and
+                              // force flex wrapping.
+                              let intrinsic_block_result = if let Some(style) = override_style.clone() {
+                                if measure_box.id != 0 {
+                                  crate::layout::style_override::with_style_override(
+                                    measure_box.id,
+                                    style,
+                                    || {
+                                      fc.compute_intrinsic_block_size(
+                                        measure_box,
+                                        IntrinsicSizingMode::MaxContent,
+                                      )
+                                    },
+                                  )
+                                } else {
+                                  let mut cloned = measure_box.clone();
+                                  cloned.style = style;
+                                  fc.compute_intrinsic_block_size(&cloned, IntrinsicSizingMode::MaxContent)
+                                }
+                              } else {
+                                fc.compute_intrinsic_block_size(measure_box, IntrinsicSizingMode::MaxContent)
+                              };
+                              match intrinsic_block_result {
+                                Ok(border_box_block) => {
+                                  content_h = (border_box_block - extra_h).max(0.0);
+                                }
+                                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                                Err(_) => {}
+                              }
+
+                              if content_h.is_finite() {
+                                content_h = content_h.min(max_h_bound.max(0.0));
+                              } else {
+                                content_h = max_h_bound.max(0.0);
+                              }
+
+                              if content_h > eps {
+                                flex_profile::record_measure_time(measure_timer);
+                                return taffy::geometry::Size {
+                                  width: content_w.max(0.0),
+                                  height: content_h.max(0.0),
+                                };
+                              }
+                            }
                             // Fall through to the full layout path below.
                           } else {
                             flex_profile::record_measure_time(measure_timer);
@@ -15879,6 +15985,82 @@ mod tests {
       (inner_fragment.bounds.height() - 10.0).abs() < 0.1,
       "expected inner flex container to lay out on one line (height ≈10px), got {:.2}",
       inner_fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn min_content_intrinsic_width_probe_does_not_inflate_flex_item_and_trigger_wrapping() {
+    // Regression test (cloudflare.com): during min-content intrinsic width probes, the flex measure
+    // fast path computed an intrinsic block size of 0px for percentage-sized replaced descendants.
+    // Because the measured box had in-flow children, we fell back to the full layout path, which
+    // can expand the measured inline size to the viewport width. Taffy then treated that expanded
+    // width as the flex item's automatic minimum size, forcing the item to wrap to the next line.
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Block;
+    text_style.width = Some(Length::percent(60.0));
+    text_style.width_keyword = None;
+    text_style.height = Some(Length::px(10.0));
+    text_style.height_keyword = None;
+    text_style.flex_shrink = 0.0;
+    text_style.flex_grow = 0.0;
+    let mut text = BoxNode::new_block(Arc::new(text_style), FormattingContextType::Block, vec![]);
+    text.id = 2;
+
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.display = Display::Block;
+    replaced_style.width = Some(Length::percent(100.0));
+    replaced_style.width_keyword = None;
+    replaced_style.max_width = Some(Length::percent(100.0));
+    replaced_style.max_width_keyword = None;
+    let mut replaced = BoxNode::new_replaced(
+      Arc::new(replaced_style),
+      ReplacedType::Canvas,
+      Some(Size::new(1920.0, 1920.0)),
+      Some(1.0),
+    );
+    replaced.id = 4;
+
+    let mut globe_style = ComputedStyle::default();
+    globe_style.display = Display::Block;
+    globe_style.flex_grow = 1.0;
+    globe_style.flex_shrink = 1.0;
+    globe_style.flex_basis = FlexBasis::Length(Length::percent(0.0));
+    let mut globe = BoxNode::new_block(
+      Arc::new(globe_style),
+      FormattingContextType::Block,
+      vec![replaced],
+    );
+    globe.id = 3;
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.flex_wrap = FlexWrap::Wrap;
+    container_style.align_items = AlignItems::FlexStart;
+    container_style.width = Some(Length::px(500.0));
+    container_style.width_keyword = None;
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![text, globe],
+    );
+    container.id = 1;
+
+    let fc = FlexFormattingContext::new();
+    let fragment = fc
+      .layout(&container, &LayoutConstraints::definite_width(500.0))
+      .expect("layout");
+    let globe_fragment = find_fragment_by_box_id(&fragment, 3).expect("globe fragment");
+
+    assert!(
+      globe_fragment.bounds.y().abs() < 0.1,
+      "expected globe item on the first flex line (y≈0), got y={}",
+      globe_fragment.bounds.y()
+    );
+    assert!(
+      globe_fragment.bounds.width() <= 500.0 + 0.5,
+      "expected globe item width to be constrained by container (≤500px), got {:.2}",
+      globe_fragment.bounds.width()
     );
   }
 
