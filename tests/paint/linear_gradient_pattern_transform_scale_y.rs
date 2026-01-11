@@ -113,3 +113,38 @@ fn linear_gradient_pattern_does_not_bleed_outside_dest_rect_at_fractional_edges(
     "expected background above the element to remain unchanged, got rgba=({r},{g},{b},{a})"
   );
 }
+
+#[test]
+fn linear_gradient_pattern_does_not_bleed_past_fractional_bottom_edge() {
+  // Regression for python.org: the active meta-navigation tab has an opaque linear-gradient
+  // background whose bottom edge lands on a fractional pixel. The gradient renderer must not
+  // expand the painted region to `ceil(height)` pixels and overwrite the 1px border immediately
+  // below the element.
+  let html = r#"
+    <style>
+      body { margin: 0; background: rgb(31, 59, 71); }
+      #target {
+        position: absolute;
+        left: 0;
+        top: 77.544534px;
+        width: 100px;
+        height: 42.4px;
+        background-color: rgb(31, 42, 50);
+        /* Default background-repeat is `repeat`, which exercises the Pattern display item path. */
+        background-image: linear-gradient(180deg, rgb(19, 25, 30) 10%, rgb(31, 42, 50) 90%);
+      }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let pixmap = render_display_list(html, 120, 160);
+
+  // Pixel y=120 is below the element's bottom edge (119.9445px), so it must remain the body
+  // background color.
+  let (r, g, b, a) = rgba_at(&pixmap, 0, 120);
+  assert_eq!(
+    (r, g, b, a),
+    (31, 59, 71, 255),
+    "expected background below the element to remain unchanged, got rgba=({r},{g},{b},{a})"
+  );
+}

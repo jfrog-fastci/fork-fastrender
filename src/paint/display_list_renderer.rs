@@ -5582,11 +5582,6 @@ impl DisplayListRenderer {
       Some(r) => r,
       None => return Ok(()),
     };
-    let width = visible_rect.width().ceil() as u32;
-    let height = visible_rect.height().ceil() as u32;
-    if width == 0 || height == 0 {
-      return Ok(());
-    }
 
     let Some(stops) = self.convert_stops_rgba(&item.stops) else {
       return Ok(());
@@ -5615,10 +5610,7 @@ impl DisplayListRenderer {
       .as_ref()
       .map(|_| Instant::now());
     let timer = self.diagnostics_enabled.then(Instant::now);
-    let dest_x = visible_rect.x().floor() as i32;
-    let dest_y = visible_rect.y().floor() as i32;
-    let dither_phase =
-      ((((dest_y.wrapping_add(1)) & 7) as u8) << 3) | ((dest_x & 7) as u8);
+    let canvas_transform = self.canvas.transform();
 
     // Fast path: paint directly into the destination surface when the gradient is axis-aligned and
     // uses a normal source-over blend. This matches Skia/Chrome's behavior more closely for
@@ -5627,7 +5619,6 @@ impl DisplayListRenderer {
     //
     // Keep this conservative: it intentionally opts out when fractional positioning/transform/clip
     // would require resampling or partial coverage at the edges.
-    let canvas_transform = self.canvas.transform();
     let translation_only = (canvas_transform.sx - 1.0).abs() <= 1e-6
       && (canvas_transform.sy - 1.0).abs() <= 1e-6
       && canvas_transform.kx.abs() <= 1e-6
@@ -5642,69 +5633,89 @@ impl DisplayListRenderer {
       && tx <= i32::MAX as f32
       && ty >= i32::MIN as f32
       && ty <= i32::MAX as f32;
-    if translation_only
-      && translation_integral
-      && self.canvas.clip_mask().is_none()
-      && self.canvas.blend_mode() == SkiaBlendMode::SourceOver
-    {
-      let x0 = (visible_rect.min_x() - 0.5).ceil();
-      let y0 = (visible_rect.min_y() - 0.5).ceil();
-      let x1 = (visible_rect.max_x() - 0.5).ceil();
-      let y1 = (visible_rect.max_y() - 0.5).ceil();
-      if x0.is_finite()
-        && y0.is_finite()
-        && x1.is_finite()
-        && y1.is_finite()
-        && x1 > x0
-        && y1 > y0
-      {
-        let x0_i64 = x0 as i64;
-        let y0_i64 = y0 as i64;
-        let x1_i64 = x1 as i64;
-        let y1_i64 = y1 as i64;
-        if let (Ok(x0_i32), Ok(y0_i32)) = (i32::try_from(x0_i64), i32::try_from(y0_i64)) {
-          let width_i64 = x1_i64 - x0_i64;
-          let height_i64 = y1_i64 - y0_i64;
-          if let (Ok(width_u32), Ok(height_u32)) = (u32::try_from(width_i64), u32::try_from(height_i64))
-          {
-            // Shift gradient geometry so fractional rect origins line up with integer pixel bounds.
-            let shift_x = visible_rect.x() - x0;
-            let shift_y = visible_rect.y() - y0;
-            let start = Point::new(start.x + shift_x, start.y + shift_y);
-            let end = Point::new(end.x + shift_x, end.y + shift_y);
-            let dest_x_dev = x0_i32.saturating_add(tx as i32);
-            let dest_y_dev = y0_i32.saturating_add(ty as i32);
-            let dither_phase = (((y0_i32 & 3) as u8) << 2) | ((x0_i32 & 3) as u8);
-            self
-              .canvas
-              .with_mirrored_pixmap_mut_result(|pixmap| -> Result<()> {
-                paint_linear_gradient_src_over(
-                  pixmap,
-                  dest_x_dev,
-                  dest_y_dev,
-                  width_u32,
-                  height_u32,
-                  start,
-                  end,
-                  spread,
-                  &stops,
-                  &self.gradient_cache,
-                  gradient_bucket(original_width.max(original_height)),
-                  dither_phase,
-                  None,
-                )
-                .map_err(Error::Render)?;
-                Ok(())
-              })?;
-            if let Some(start) = timer {
-              self.record_gradient_usage((width_u32 * height_u32) as u64, start);
-            }
-            self.record_background_paint(background_timer);
-            return Ok(());
-          }
+
+    // When the gradient rect lands on fractional device pixels, the generic pixmap + draw_pixmap
+    // path below must avoid expanding to the `floor/ceil` bounds of the rect. Otherwise it can
+    // overwrite adjacent 1px borders (e.g. python.org top-bar active tab covering the bar's bottom
+    // border). For source-over gradients under a translation-only integer transform, we can paint
+    // directly into the destination surface using the same pixel-center inclusion rule as
+    // axis-aligned opaque rect fills.
+    if translation_only && translation_integral && self.canvas.blend_mode() == SkiaBlendMode::SourceOver {
+      let tx_i32 = tx as i32;
+      let ty_i32 = ty as i32;
+      let clip_mask = self.canvas.clip_mask_rc();
+
+      // Pixel-center bounds in *device* space: a device pixel at coordinate `i` is covered if its
+      // center `i + 0.5` lies within the gradient rect.
+      let mut x0 = (visible_rect.min_x() + tx - 0.5).ceil();
+      let mut y0 = (visible_rect.min_y() + ty - 0.5).ceil();
+      let mut x1 = (visible_rect.max_x() + tx - 0.5).ceil();
+      let mut y1 = (visible_rect.max_y() + ty - 0.5).ceil();
+
+      x0 = x0.clamp(0.0, self.canvas.width() as f32);
+      y0 = y0.clamp(0.0, self.canvas.height() as f32);
+      x1 = x1.clamp(0.0, self.canvas.width() as f32);
+      y1 = y1.clamp(0.0, self.canvas.height() as f32);
+
+      let x0_i32 = x0 as i32;
+      let y0_i32 = y0 as i32;
+      let x1_i32 = x1 as i32;
+      let y1_i32 = y1 as i32;
+      if x0_i32 < x1_i32 && y0_i32 < y1_i32 {
+        let width = (x1_i32 - x0_i32) as u32;
+        let height = (y1_i32 - y0_i32) as u32;
+
+        let world_x0 = x0_i32.saturating_sub(tx_i32);
+        let world_y0 = y0_i32.saturating_sub(ty_i32);
+        let dither_phase =
+          ((((world_y0.wrapping_add(1)) & 7) as u8) << 3) | ((world_x0 & 7) as u8);
+
+        // Convert gradient start/end points into the local coordinate space of the painted pixel
+        // rect.
+        let start_abs_x = rect.x() + tx + self.ds_len(item.start.x);
+        let start_abs_y = rect.y() + ty + self.ds_len(item.start.y);
+        let end_abs_x = rect.x() + tx + self.ds_len(item.end.x);
+        let end_abs_y = rect.y() + ty + self.ds_len(item.end.y);
+        let start_rel = Point::new(start_abs_x - x0_i32 as f32, start_abs_y - y0_i32 as f32);
+        let end_rel = Point::new(end_abs_x - x0_i32 as f32, end_abs_y - y0_i32 as f32);
+
+        self
+          .canvas
+          .with_mirrored_pixmap_mut_result(|pixmap| -> Result<()> {
+            paint_linear_gradient_src_over(
+              pixmap,
+              x0_i32,
+              y0_i32,
+              width,
+              height,
+              start_rel,
+              end_rel,
+              spread,
+              &stops,
+              &self.gradient_cache,
+              gradient_bucket(original_width.max(original_height)),
+              dither_phase,
+              clip_mask.as_deref(),
+            )
+            .map_err(Error::Render)?;
+            Ok(())
+          })?;
+        if let Some(start) = timer {
+          self.record_gradient_usage((width * height) as u64, start);
         }
+        self.record_background_paint(background_timer);
+        return Ok(());
       }
     }
+
+    let width = visible_rect.width().ceil() as u32;
+    let height = visible_rect.height().ceil() as u32;
+    if width == 0 || height == 0 {
+      return Ok(());
+    }
+    let dest_x = visible_rect.x().floor() as i32;
+    let dest_y = visible_rect.y().floor() as i32;
+    let dither_phase = ((((dest_y.wrapping_add(1)) & 7) as u8) << 3) | ((dest_x & 7) as u8);
     let Some(pix) = rasterize_linear_gradient_cached(
       &self.gradient_pixmap_cache,
       width,
