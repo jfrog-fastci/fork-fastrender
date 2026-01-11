@@ -342,7 +342,7 @@ mod gc_trace_tests {
     let mut roots = RootStack::new();
     roots.push(&mut root as *mut *mut u8);
     let mut remembered = SimpleRememberedSet::new();
-    heap.collect_minor(&mut roots, &mut remembered);
+    heap.collect_minor(&mut roots, &mut remembered).unwrap();
 
     assert!(!heap.is_in_nursery(root));
 
