@@ -1272,37 +1272,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn window_alert<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    _this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    // Overload dispatch matches the vm-js bindings:
-    // - `alert()` uses overload 0
-    // - `alert(message)` uses overload 1 (extra args are ignored)
-    if args.is_empty() {
-      let converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-      let result = host.call_operation(rt, None, "Window", "alert", 0, converted_args)?;
-      return binding_value_to_js::<Host, R>(rt, result);
-    }
-
-    let v0 = args[0];
-    let converted = if rt.is_undefined(v0) {
-      BindingValue::String("".to_string())
-    } else {
-      let s = rt.to_string(v0)?;
-      BindingValue::String(rt.js_string_to_rust_string(s)?)
-    };
-    let result = host.call_operation(rt, None, "Window", "alert", 1, vec![converted])?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn illegal_constructor<Host, R>(
     rt: &mut R,
     _host: &mut Host,

@@ -2266,13 +2266,45 @@ impl Canvas {
     // `current_state.opacity == 1.0` exactly. In practice computed opacity values can be extremely
     // close to 1.0 while still rounding to an 8-bit alpha of 255; treating those as opaque improves
     // border/background fidelity without affecting true semi-transparent content.
+    //
+    // Use a non-AA rasterization path (pixel-center rule) when the current transform is a
+    // translation that's already near an integer device pixel. This avoids quantizing intentional
+    // subpixel translations (e.g. CSS transform animations) while still producing crisp UI edges
+    // for typical layout-derived fractional positions (e.g. `rem`/`pt`).
     if self.current_state.blend_mode == SkiaBlendMode::SourceOver {
       let alpha = (color.a * self.current_state.opacity).clamp(0.0, 1.0);
       let alpha_u8 = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
-      if alpha_u8 == 255 {
-        if let Some(snapped) = self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
-        {
-          if let Some(skia_rect) = self.to_skia_rect(snapped) {
+      if alpha_u8 == 255
+        && (transform.sx - 1.0).abs() <= 1e-6
+        && (transform.sy - 1.0).abs() <= 1e-6
+        && transform.kx.abs() <= 1e-6
+        && transform.ky.abs() <= 1e-6
+        && transform.tx.is_finite()
+        && transform.ty.is_finite()
+      {
+        let tx_round = transform.tx.round();
+        let ty_round = transform.ty.round();
+        if (transform.tx - tx_round).abs() <= 1e-3 && (transform.ty - ty_round).abs() <= 1e-3 {
+          // First try the seam-avoidance snap that rounds near-integer rect edges in device space.
+          if let Some(snapped) = self.snapped_device_rect_for_opaque_axis_aligned_fill(rect, transform)
+          {
+            if let Some(skia_rect) = self.to_skia_rect(snapped) {
+              let path = PathBuilder::from_rect(skia_rect);
+              let mut paint = self.current_state.create_paint(color);
+              paint.anti_alias = false;
+              self.pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                self.current_state.clip_mask.as_deref(),
+              );
+              return;
+            }
+          }
+
+          // Fall back to a non-AA fill at the original fractional geometry.
+          if let Some(skia_rect) = self.to_skia_rect(rect) {
             let path = PathBuilder::from_rect(skia_rect);
             let mut paint = self.current_state.create_paint(color);
             paint.anti_alias = false;
@@ -2280,7 +2312,7 @@ impl Canvas {
               &path,
               &paint,
               FillRule::Winding,
-              Transform::identity(),
+              transform,
               self.current_state.clip_mask.as_deref(),
             );
             return;
