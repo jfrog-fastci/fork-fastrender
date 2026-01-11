@@ -208,6 +208,55 @@ fn strict_native_mode_rejects_jsx() {
 }
 
 #[test]
+fn strict_native_mode_rejects_using_decls() {
+  let cases = [
+    ("using x = null;", "using declaration"),
+    ("await using x = null;", "await using declaration"),
+    ("for (using x of y) {}", "using for-of"),
+    ("for (await using x of y) {}", "await using for-of"),
+  ];
+
+  for (src, label) in cases {
+    let file = FileId(0);
+    let mut ast = parse_with_options(
+      src,
+      ParseOptions {
+        dialect: Dialect::Ts,
+        source_type: SourceType::Module,
+      },
+    )
+    .unwrap_or_else(|err| panic!("input should parse for {label}: {err}"));
+
+    let diagnostics = match erase_types_strict_native(file, SourceType::Module, &mut ast) {
+      Ok(()) => panic!("expected `using` to be rejected in strict-native mode for {label}"),
+      Err(diags) => diags,
+    };
+
+    assert!(
+      diagnostics.iter().any(|diag| diag.code.as_str() == "MINIFYTS0001"),
+      "expected MINIFYTS0001 diagnostic for {label}, got: {diagnostics:?}"
+    );
+
+    // Even though strict-native erasure returns an error, it should still rewrite the unsupported
+    // declaration into parseable strict ECMAScript so tooling can continue operating on the AST.
+    let output =
+      emit_top_level_diagnostic(file, &ast, EmitOptions::minified()).expect("emission should succeed");
+    assert!(
+      !output.contains("using"),
+      "expected strict-native output to erase `using` keyword: {output}"
+    );
+    parse_with_options(
+      &output,
+      ParseOptions {
+        dialect: Dialect::Ecma,
+        source_type: SourceType::Module,
+      },
+    )
+    .expect("`using` syntax should be erased from strict-native output");
+  }
+}
+
+#[test]
 fn strict_native_mode_erases_ambient_decls_and_this_params() {
   let src = r#"
     declare enum E { A }

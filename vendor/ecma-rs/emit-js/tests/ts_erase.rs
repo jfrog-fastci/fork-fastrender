@@ -154,6 +154,7 @@ class Fields {
 fn reports_unsupported_ts_runtime_constructs() {
   for (label, dialect, source) in [
     ("enum", Dialect::Ts, "enum E { A }"),
+    ("using", Dialect::Ts, "using x = null;"),
     ("decorators", Dialect::Ts, "@dec class C {}"),
     ("jsx", Dialect::Tsx, "const el = <div>{x}</div>;"),
   ] {

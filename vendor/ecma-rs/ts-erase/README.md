@@ -38,9 +38,10 @@ erase_types(FileId(0), SourceType::Module, &mut top_level)?;
 Strict-native mode only erases TS-only syntax and deterministically rejects TS
 runtime constructs (e.g. `enum`, `namespace`, `import =`, `export =`).
 
-It also rejects syntax that is not valid strict ECMAScript (e.g. decorators and
-JSX/TSX), since strict-native output is intended to be parsed/executed as
-`Dialect::Ecma`.
+It also rejects syntax that is not valid strict ECMAScript or is otherwise
+outside the oracle VM subset (e.g. decorators, JSX/TSX, and resource-management
+`using`/`await using` declarations), since strict-native output is intended to be
+parsed/executed as `Dialect::Ecma`.
 
 This is intended for oracle tooling where we want a stable TS→JS pipeline while
 still enforcing a strict TS subset.

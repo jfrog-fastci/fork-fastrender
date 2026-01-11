@@ -706,7 +706,33 @@ fn strip_stmt(ctx: &mut StripContext, stmt: Node<Stmt>, is_top_level: bool) -> V
           let owned = take_expr(expr);
           *expr = strip_expr(ctx, owned);
         }
-        ForTripleStmtInit::Decl(decl) => strip_var_decl(ctx, &mut decl.stx),
+        ForTripleStmtInit::Decl(decl) => {
+          let mut rewrote_using = false;
+          if ctx.mode == TsEraseMode::StrictNative
+            && matches!(decl.stx.mode, VarDeclMode::Using | VarDeclMode::AwaitUsing)
+          {
+            unsupported_ts(
+              ctx,
+              decl.loc,
+              "`using` declarations are not supported in strict native TypeScript erasure mode",
+            );
+            decl.stx.mode = VarDeclMode::Let;
+            rewrote_using = true;
+          }
+          strip_var_decl(ctx, &mut decl.stx);
+          // In TS recovery mode, `using` declarations may be missing initializers; make the
+          // rewritten `let` declaration parseable as strict ECMAScript even after we emit an error
+          // diagnostic.
+          if rewrote_using {
+            for declarator in decl.stx.declarators.iter_mut() {
+              if declarator.initializer.is_none()
+                && !matches!(declarator.pattern.stx.pat.stx.as_ref(), Pat::Id(_))
+              {
+                declarator.initializer = Some(void_0_expr(declarator.pattern.loc));
+              }
+            }
+          }
+        }
         ForTripleStmtInit::None => {}
       }
       if let Some(cond) = for_stmt.stx.cond.take() {
@@ -782,7 +808,30 @@ fn strip_stmt(ctx: &mut StripContext, stmt: Node<Stmt>, is_top_level: bool) -> V
       vec![new_node(loc, assoc, Stmt::Label(label_stmt))]
     }
     Stmt::VarDecl(mut decl) => {
+      let mut rewrote_using = false;
+      if ctx.mode == TsEraseMode::StrictNative
+        && matches!(decl.stx.mode, VarDeclMode::Using | VarDeclMode::AwaitUsing)
+      {
+        unsupported_ts(
+          ctx,
+          loc,
+          "`using` declarations are not supported in strict native TypeScript erasure mode",
+        );
+        decl.stx.mode = VarDeclMode::Let;
+        rewrote_using = true;
+      }
       strip_var_decl(ctx, &mut decl.stx);
+      // In TS recovery mode, `using` declarations may be missing initializers; make the rewritten
+      // `let` declaration parseable as strict ECMAScript even after we emit an error diagnostic.
+      if rewrote_using {
+        for declarator in decl.stx.declarators.iter_mut() {
+          if declarator.initializer.is_none()
+            && !matches!(declarator.pattern.stx.pat.stx.as_ref(), Pat::Id(_))
+          {
+            declarator.initializer = Some(void_0_expr(declarator.pattern.loc));
+          }
+        }
+      }
       vec![new_node(loc, assoc, Stmt::VarDecl(decl))]
     }
     Stmt::FunctionDecl(func_decl) => strip_func_decl(ctx, func_decl, loc, assoc)
@@ -4022,7 +4071,17 @@ fn strip_for_in_of_lhs(ctx: &mut StripContext, lhs: &mut ForInOfLhs) {
       let owned = take_pat(pat);
       *pat = strip_pat(ctx, owned);
     }
-    ForInOfLhs::Decl((_, pat)) => {
+    ForInOfLhs::Decl((mode, pat)) => {
+      if ctx.mode == TsEraseMode::StrictNative
+        && matches!(*mode, VarDeclMode::Using | VarDeclMode::AwaitUsing)
+      {
+        unsupported_ts(
+          ctx,
+          pat.loc,
+          "`using` declarations are not supported in strict native TypeScript erasure mode",
+        );
+        *mode = VarDeclMode::Let;
+      }
       let owned = take_pat(&mut pat.stx.pat);
       pat.stx.pat = strip_pat(ctx, owned);
     }
