@@ -1,11 +1,20 @@
 # native-js-cli
 
-`native-js-cli` is a small, developer-facing CLI for the `native-js` crate.
+`native-js-cli` is a small, developer-facing CLI package for the `native-js` crate.
 
-Today it is intentionally narrow in scope: it compiles a **single TypeScript
-file** to textual LLVM IR (via a small `parse-js`-driven IR emitter in
-`native-js`), invokes `clang` to produce a temporary executable, and then runs
-it.
+This crate currently ships two binaries:
+
+- `native-js-cli` (default): a minimal `parse-js`-driven LLVM IR emitter used for
+  builtin smoke tests and IR debugging.
+- `native-js`: an experimental **typechecked AOT** pipeline (`typecheck-ts` +
+  `native-js` strict validator + HIR → LLVM + object emission + `clang` link).
+
+## `native-js-cli` (minimal emitter)
+
+The `native-js-cli` binary is intentionally narrow in scope: it compiles a
+**single TypeScript file** to textual LLVM IR (via a small `parse-js`-driven IR
+emitter in `native-js`), invokes `clang` to produce a temporary executable, and
+then runs it.
 
 > Note: this path does **not** run the TypeScript checker; it parses the input
 > and lowers a small expression-only subset directly to LLVM IR.
@@ -13,7 +22,7 @@ it.
 > The input is parsed as a TypeScript **module** (`Dialect::Ts` +
 > `SourceType::Module`).
 
-This is primarily useful for:
+This binary is primarily useful for:
 
 - smoke-testing the native pipeline end-to-end (TS → LLVM IR → native executable)
 - iterating on the IR emitter and builtin lowering
@@ -171,13 +180,51 @@ Exit codes:
 
 ## `tsconfig.json` support
 
-`native-js-cli` currently takes a single input file and does not load
+The `native-js-cli` binary currently takes a single input file and does not load
 `tsconfig.json` or perform module resolution.
+
+For a typechecked pipeline with module resolution (including `baseUrl`/`paths`),
+use the `native-js` binary.
+
+## `native-js` (typechecked AOT pipeline)
+
+The `native-js` binary is an early proof-of-concept for a typechecked AOT path.
+It expects the entry file to export a `main()` function.
+
+### Usage
+
+Build a TypeScript file into a native executable:
+
+```bash
+# From the repo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  build path/to/entry.ts -o /tmp/out
+```
+
+Run immediately:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  run path/to/entry.ts
+```
+
+### Options (selected)
+
+- `--project/-p <tsconfig.json>`: load a TypeScript project and apply `baseUrl`/`paths`
+  for module resolution.
+- `--emit=llvm-ir|bc|obj|asm --emit-path <PATH>`: write an intermediate artifact.
+- `--opt=0|1|2|3`: set the LLVM target machine optimization level.
+
+### Notes
+
+- The HIR-based backend is still extremely small (enough for early smoke tests).
+  `native-js-cli` remains the better tool for builtin/lowering debugging.
 
 ## Tests
 
 `native-js-cli` has a small integration test suite that compiles and runs tiny
-programs exercising the builtin lowering.
+programs exercising both the builtin lowering (`native-js-cli`) and the
+typechecked AOT pipeline (`native-js`).
 
 ```bash
 # From the repo root:

@@ -98,9 +98,16 @@ The API is intentionally small and currently consists of:
 - `CodeGen`: a minimal façade around `inkwell` that applies LLVM function
   attributes required for deterministic stack walking (used by the planned
   precise GC integration).
+- `emit`: helpers for turning an `inkwell::module::Module` into build artifacts:
+  - `emit::emit_llvm_ir(&Module) -> String`
+  - `emit::emit_bitcode(&Module) -> Vec<u8>`
+  - `emit::emit_object(&Module, TargetConfig) -> Vec<u8>`
+  - `emit::emit_asm(&Module, TargetConfig) -> Vec<u8>`
 - `strict::validate(...)`: strict TypeScript-subset validator that rejects
   unsafe constructs (`any`, `eval`, type assertions, etc) even if the TypeScript
   typechecker accepts them.
+- `strict::entrypoint(...)`: locate the exported `main()` entrypoint in a
+  typechecked program (used by the early HIR-based backend).
 - `compile_typescript_to_llvm_ir(&str, CompileOptions) -> Result<String, NativeJsError>`:
   compile a single TypeScript module to textual LLVM IR (very small subset; used
   by `native-js-cli`).
@@ -129,9 +136,12 @@ compiler.compile()?;
 ```
 
 > Note: the long-term typechecked/HIR backend is not implemented yet.
-> `native_js::codegen` currently contains the minimal `parse-js`-driven emitter
-> used by `compile_typescript_to_llvm_ir`. `native_js::emit` is a placeholder
-> module for future artifact emission helpers.
+> `native_js::codegen` currently contains:
+> - the minimal `parse-js`-driven emitter used by `compile_typescript_to_llvm_ir`, and
+> - an early HIR-driven backend used by the `native-js` CLI binary.
+>
+> `native_js::emit` provides the artifact emission helpers used by the HIR-based
+> backend and CLI.
 
 Example (generating LLVM IR via `CodeGen`):
 
