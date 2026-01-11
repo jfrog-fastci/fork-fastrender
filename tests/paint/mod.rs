@@ -72,6 +72,7 @@ mod image_set_type_and_dpr_selection;
 mod image_downscale_sampling;
 mod image_src_rect_clips_to_dest_rect;
 mod image_upscale_sampling;
+mod image_src_rect_clipping;
 mod intrinsic_srcset;
 mod lazy_image_loading;
 mod srcset_decode_failure_no_fallback;
