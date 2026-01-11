@@ -40,15 +40,16 @@ pub struct PromiseHeader {
   /// [`PromiseHeader::REJECTED`].
   pub state: AtomicU8,
 
-  /// Waiter list head.
+  /// Promise reaction/waiter list head.
   ///
   /// Stored values:
-  /// - `0`: no waiters registered yet.
-  /// - [`PromiseHeader::WAITERS_CLOSED`]: promise is settled and no longer accepts waiters.
+  /// - `0`: no waiters/reactions registered yet.
+  /// - [`PromiseHeader::WAITERS_CLOSED`]: reserved sentinel for a closed list (not currently used by
+  ///   the runtime).
   /// - otherwise: a raw pointer to the head waiter node, cast to `usize`.
   ///
-  /// Waiters are stored as an intrusive singly-linked list. For coroutine waiters, the waiter node
-  /// is the coroutine frame itself, and [`Coroutine::next_waiter`] is used as the link field.
+  /// The runtime currently uses this field to register await/then callbacks as an intrusive
+  /// singly-linked list of promise reaction nodes (see `promise_reactions`).
   pub waiters: AtomicUsize,
 
   /// Reserved for runtime flags (e.g. unhandled rejection tracking).
@@ -63,8 +64,11 @@ impl PromiseHeader {
   /// Sentinel value stored in [`PromiseHeader::waiters`] once the promise has settled and will no
   /// longer accept waiter registrations.
   ///
-  /// This value must never alias a valid pointer. `1` is chosen because coroutine/waiter nodes are
-  /// at least pointer-aligned (and therefore cannot have an odd address).
+  /// Note: the current runtime does not yet use this sentinel; it is reserved for a future lock-free
+  /// protocol that closes the waiter list after settlement.
+  ///
+  /// This value must never alias a valid pointer. `1` is chosen because waiter nodes are at least
+  /// pointer-aligned (and therefore cannot have an odd address).
   pub const WAITERS_CLOSED: usize = 1;
 
   #[inline]
