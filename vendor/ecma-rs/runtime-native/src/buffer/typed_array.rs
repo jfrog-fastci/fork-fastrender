@@ -198,6 +198,11 @@ impl PinnedUint8Array {
   }
 
   #[inline]
+  pub(crate) fn backing_store(&self) -> &BackingStore {
+    self.pinned.backing_store()
+  }
+
+  #[inline]
   pub fn len(&self) -> usize {
     self.len
   }

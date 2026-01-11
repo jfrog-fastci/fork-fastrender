@@ -1,4 +1,7 @@
-use crate::buffer::{ArrayBuffer, ArrayBufferError, PinnedArrayBuffer, PinnedUint8Array, TypedArrayError, Uint8Array};
+use crate::buffer::{
+  ArrayBuffer, ArrayBufferError, BackingStore, PinnedArrayBuffer, PinnedUint8Array, TypedArrayError,
+  Uint8Array,
+};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +227,23 @@ impl PinnedIoVec {
     }
 
     Some(total)
+  }
+
+  pub(crate) fn unique_backing_stores(&self) -> Vec<BackingStore> {
+    let mut out: Vec<BackingStore> = Vec::new();
+    let mut seen: HashSet<usize> = HashSet::with_capacity(self.pins.len());
+
+    for pin in self.pins.iter() {
+      let store = match pin {
+        PinGuard::ArrayBuffer(p) => p.backing_store().clone(),
+        PinGuard::Uint8Array(p) => p.backing_store().clone(),
+      };
+      if seen.insert(store.id()) {
+        out.push(store);
+      }
+    }
+
+    out
   }
 }
 

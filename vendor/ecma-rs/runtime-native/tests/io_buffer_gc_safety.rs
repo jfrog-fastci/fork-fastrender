@@ -129,6 +129,11 @@ fn pin_count(_heap: &GcHeap, buffer_obj: *mut u8) -> u32 {
   buf.pin_count()
 }
 
+fn is_io_borrowed(_heap: &GcHeap, buffer_obj: *mut u8) -> bool {
+  let buf = unsafe { &*(buffer_obj.add(OBJ_HEADER_SIZE) as *const ArrayBuffer) };
+  buf.is_io_borrowed()
+}
+
 fn root_get(heap: &GcHeap, h: RootHandle) -> *mut u8 {
   heap.root_get(h).expect("root handle missing")
 }
@@ -171,6 +176,7 @@ fn read_survives_moving_gc_while_in_flight() {
 
   // Creating the op must pin the ArrayBuffer backing store guard immediately.
   assert!(pin_count(&heap.lock().unwrap(), buffer_obj) > 0);
+  assert!(is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
 
   // Trigger at least one moving GC cycle while the read is in flight (no data yet).
   {
@@ -196,6 +202,7 @@ fn read_survives_moving_gc_while_in_flight() {
 
   // Completion should unpin.
   assert_eq!(pin_count(&heap.lock().unwrap(), buffer_obj), 0);
+  assert!(!is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
 
   // Cleanup: remove test roots and free external backing store.
   {
@@ -228,6 +235,7 @@ fn cancel_before_submission_never_submits() {
   let res = driver.read_into_uint8_array(Arc::clone(&heap), rfd.as_raw_fd(), array_obj, promise_obj, Some(token));
   assert!(matches!(res, Err(IoError::Cancelled)));
   assert_eq!(pin_count(&heap.lock().unwrap(), buffer_obj), 0);
+  assert!(!is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
 
   // Free external backing store.
   finalize_array_buffer(&mut heap.lock().unwrap(), buffer_obj);
@@ -255,11 +263,13 @@ fn cancel_after_submission_cleans_up_pin() {
     .unwrap();
 
   assert!(pin_count(&heap.lock().unwrap(), buffer_obj) > 0);
+  assert!(is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
 
   token.cancel();
   let res = block_on(fut, Duration::from_secs(2));
   assert!(matches!(res, Err(IoError::Cancelled)));
   assert_eq!(pin_count(&heap.lock().unwrap(), buffer_obj), 0);
+  assert!(!is_io_borrowed(&heap.lock().unwrap(), buffer_obj));
 
   finalize_array_buffer(&mut heap.lock().unwrap(), buffer_obj);
 }

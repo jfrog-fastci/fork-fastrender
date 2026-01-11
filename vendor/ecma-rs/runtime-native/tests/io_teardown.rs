@@ -1,4 +1,4 @@
-use runtime_native::buffer::ArrayBufferError;
+use runtime_native::buffer::{ArrayBufferError, BorrowError};
 use runtime_native::io::{IoOpDebugHooks, IoRuntime, IoVecRange, PinnedIoVec};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::buffer::{ArrayBuffer, Uint8Array};
@@ -178,6 +178,11 @@ fn teardown_keeps_backing_store_pins_until_cancel_ack() {
   rt_promise_then(promise, set_bool, settled_ptr.cast::<u8>());
 
   assert_eq!(buffer.pin_count(), 1);
+  assert!(buffer.is_io_borrowed());
+  assert_eq!(
+    buffer.try_with_slice(|_| ()).unwrap_err(),
+    ArrayBufferError::Borrow(BorrowError::Borrowed)
+  );
   assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
   assert_eq!(io_rt.debug_counters().pinned_bytes_current, buffer.byte_len());
   assert_eq!(root_registry_len(), 1);
@@ -193,16 +198,21 @@ fn teardown_keeps_backing_store_pins_until_cancel_ack() {
 
   // Still pinned until the op record is dropped.
   assert_eq!(buffer.pin_count(), 1);
+  assert!(buffer.is_io_borrowed());
   assert_eq!(buffer.detach(), Err(ArrayBufferError::Pinned));
 
   debug.release_finish();
   wait_until(start + Duration::from_secs(2), || {
     let c = io_rt.debug_counters();
-    c.inflight_ops_current == 0 && root_registry_len() == 0 && buffer.pin_count() == 0
+    c.inflight_ops_current == 0
+      && root_registry_len() == 0
+      && buffer.pin_count() == 0
+      && !buffer.is_io_borrowed()
   });
 
   assert_eq!(buffer.pin_count(), 0);
   assert_eq!(root_registry_len(), 0);
+  buffer.try_with_slice(|_| ()).unwrap();
   assert!(!unsafe { &*settled_ptr }.load(Ordering::SeqCst));
 
   // Once unpinned, detach succeeds and frees the backing store.

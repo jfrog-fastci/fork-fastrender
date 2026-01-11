@@ -36,6 +36,19 @@ pub enum BackingStoreDetachError {
   NotAlive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorrowError {
+  /// Backing store is currently borrowed by an in-flight I/O operation.
+  Borrowed,
+  /// Shared read-borrow count overflowed.
+  ReadBorrowOverflow,
+  /// Mutable slice access was requested, but the backing store is shared/aliased.
+  NotUnique,
+}
+
+const WRITE_BORROWED: u32 = 1 << 31;
+const READ_BORROW_COUNT_MASK: u32 = WRITE_BORROWED - 1;
+
 #[derive(Debug)]
 struct BackingStoreInner {
   ptr: NonNull<u8>,
@@ -56,6 +69,11 @@ struct BackingStoreInner {
   pin_count: AtomicU32,
   /// Number of live `BackingStore` handles (including any in-flight pin guards).
   ref_count: AtomicUsize,
+
+  /// In-flight async I/O borrow state.
+  ///
+  /// See `docs/runtime-native/buffers-and-io.md` ("Exclusive-borrow semantics for in-flight async I/O").
+  borrow_state: AtomicU32,
 }
 
 // SAFETY: `BackingStoreInner` is immutable metadata for an external non-moving allocation plus
@@ -71,6 +89,11 @@ impl Drop for BackingStoreInner {
       self.pin_count.load(Ordering::Acquire),
       0,
       "backing store dropped while pinned"
+    );
+    debug_assert_eq!(
+      self.borrow_state.load(Ordering::Acquire),
+      0,
+      "backing store dropped while borrowed"
     );
 
     if self.alloc_len != 0 {
@@ -186,6 +209,84 @@ impl BackingStore {
   }
 
   #[inline]
+  pub fn is_io_borrowed(&self) -> bool {
+    self.inner_nn().is_some_and(|inner| unsafe { inner.as_ref() }.borrow_state.load(Ordering::Acquire) != 0)
+  }
+
+  pub fn try_with_slice<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Result<R, BorrowError> {
+    if self.is_io_borrowed() {
+      return Err(BorrowError::Borrowed);
+    }
+    // SAFETY: backing store pointer/len invariants are upheld by construction.
+    let slice =
+      unsafe { core::slice::from_raw_parts(self.as_ptr() as *const u8, self.byte_len()) };
+    Ok(f(slice))
+  }
+
+  pub fn try_with_slice_mut<R>(
+    &mut self,
+    f: impl FnOnce(&mut [u8]) -> R,
+  ) -> Result<R, BorrowError> {
+    if self.is_io_borrowed() {
+      return Err(BorrowError::Borrowed);
+    }
+    if let Some(inner) = self.inner_nn() {
+      // If there are other handles (including in-flight pin guards), we must not create a `&mut
+      // [u8]` slice: doing so would violate Rust aliasing rules.
+      if unsafe { inner.as_ref() }.ref_count.load(Ordering::Acquire) != 1 {
+        return Err(BorrowError::NotUnique);
+      }
+      // SAFETY: `ref_count == 1` means this is the only live handle; byte_len is valid by
+      // construction.
+      let inner = unsafe { inner.as_ref() };
+      let slice = unsafe { core::slice::from_raw_parts_mut(inner.ptr.as_ptr(), inner.byte_len) };
+      Ok(f(slice))
+    } else {
+      // Empty store: return an empty slice.
+      let slice = unsafe { core::slice::from_raw_parts_mut(NonNull::<u8>::dangling().as_ptr(), 0) };
+      Ok(f(slice))
+    }
+  }
+
+  pub fn try_borrow_io_read(&self) -> Result<BorrowGuardRead, BorrowError> {
+    let Some(inner) = self.inner_nn() else {
+      return Ok(BorrowGuardRead { store: self.clone() });
+    };
+    let borrow_state = unsafe { &inner.as_ref().borrow_state };
+    loop {
+      let cur = borrow_state.load(Ordering::Acquire);
+      if (cur & WRITE_BORROWED) != 0 {
+        return Err(BorrowError::Borrowed);
+      }
+      if (cur & READ_BORROW_COUNT_MASK) == READ_BORROW_COUNT_MASK {
+        return Err(BorrowError::ReadBorrowOverflow);
+      }
+      let next = cur + 1;
+      if borrow_state
+        .compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+      {
+        break;
+      }
+    }
+    Ok(BorrowGuardRead { store: self.clone() })
+  }
+
+  pub fn try_borrow_io_write(&self) -> Result<BorrowGuardWrite, BorrowError> {
+    let Some(inner) = self.inner_nn() else {
+      return Ok(BorrowGuardWrite { store: self.clone() });
+    };
+    let borrow_state = unsafe { &inner.as_ref().borrow_state };
+    if borrow_state
+      .compare_exchange(0, WRITE_BORROWED, Ordering::AcqRel, Ordering::Acquire)
+      .is_err()
+    {
+      return Err(BorrowError::Borrowed);
+    }
+    Ok(BorrowGuardWrite { store: self.clone() })
+  }
+
+  #[inline]
   pub fn pin_count(&self) -> u32 {
     self.inner_nn().map_or(0, |inner| unsafe {
       inner.as_ref().pin_count.load(Ordering::Acquire)
@@ -282,11 +383,53 @@ impl BackingStore {
       external_bytes,
       pin_count: AtomicU32::new(0),
       ref_count: AtomicUsize::new(1),
+      borrow_state: AtomicU32::new(0),
     });
 
     Ok(Self {
       inner: inner_ptr.as_ptr(),
     })
+  }
+}
+
+/// RAII guard representing an in-flight I/O operation that reads from the backing store.
+#[derive(Debug)]
+pub struct BorrowGuardRead {
+  store: BackingStore,
+}
+
+impl Drop for BorrowGuardRead {
+  fn drop(&mut self) {
+    let Some(inner) = self.store.inner_nn() else {
+      return;
+    };
+    let prev = unsafe { inner.as_ref() }
+      .borrow_state
+      .fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(
+      (prev & WRITE_BORROWED) == 0,
+      "read borrow dropped while write borrowed"
+    );
+    debug_assert!(
+      (prev & READ_BORROW_COUNT_MASK) != 0,
+      "read borrow count underflow"
+    );
+  }
+}
+
+/// RAII guard representing an in-flight I/O operation that writes into the backing store.
+#[derive(Debug)]
+pub struct BorrowGuardWrite {
+  store: BackingStore,
+}
+
+impl Drop for BorrowGuardWrite {
+  fn drop(&mut self) {
+    let Some(inner) = self.store.inner_nn() else {
+      return;
+    };
+    let prev = unsafe { inner.as_ref() }.borrow_state.swap(0, Ordering::AcqRel);
+    debug_assert_eq!(prev, WRITE_BORROWED, "invalid write borrow state");
   }
 }
 
@@ -309,6 +452,11 @@ impl PinnedBackingStore {
   #[inline]
   pub fn len(&self) -> usize {
     self.store.byte_len()
+  }
+
+  #[inline]
+  pub(crate) fn backing_store(&self) -> &BackingStore {
+    &self.store
   }
 
   #[inline]

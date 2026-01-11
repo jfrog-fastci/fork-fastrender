@@ -1,6 +1,6 @@
 use super::backing_store::{
   global_backing_store_allocator, BackingStore, BackingStoreAllocError, BackingStoreAllocator,
-  BackingStorePinError, PinnedBackingStore,
+  BackingStorePinError, BorrowError, BorrowGuardRead, BorrowGuardWrite, PinnedBackingStore,
 };
 use core::ptr::NonNull;
 use crate::gc::{GcHeap, ObjHeader, TypeDescriptor, OBJ_HEADER_SIZE};
@@ -8,6 +8,7 @@ use crate::gc::{GcHeap, ObjHeader, TypeDescriptor, OBJ_HEADER_SIZE};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArrayBufferError {
   Alloc(BackingStoreAllocError),
+  Borrow(BorrowError),
   /// Invalid slice range.
   Range,
   /// Buffer has been detached/finalized.
@@ -21,6 +22,12 @@ pub enum ArrayBufferError {
 impl From<BackingStoreAllocError> for ArrayBufferError {
   fn from(value: BackingStoreAllocError) -> Self {
     Self::Alloc(value)
+  }
+}
+
+impl From<BorrowError> for ArrayBufferError {
+  fn from(value: BorrowError) -> Self {
+    Self::Borrow(value)
   }
 }
 
@@ -116,6 +123,9 @@ impl ArrayBuffer {
     let Some(store) = self.backing_store.as_ref() else {
       return Err(ArrayBufferError::Detached);
     };
+    if store.is_io_borrowed() {
+      return Err(ArrayBufferError::Borrow(BorrowError::Borrowed));
+    }
     Ok(store.as_ptr())
   }
 
@@ -126,6 +136,45 @@ impl ArrayBuffer {
   #[inline]
   pub fn backing_store_handle(&self) -> Option<BackingStore> {
     self.backing_store.clone()
+  }
+
+  #[inline]
+  pub fn is_io_borrowed(&self) -> bool {
+    self
+      .backing_store
+      .as_ref()
+      .map_or(false, BackingStore::is_io_borrowed)
+  }
+
+  pub fn try_borrow_io_read(&self) -> Result<BorrowGuardRead, ArrayBufferError> {
+    let Some(store) = self.backing_store.as_ref() else {
+      return Err(ArrayBufferError::Detached);
+    };
+    Ok(store.try_borrow_io_read()?)
+  }
+
+  pub fn try_borrow_io_write(&self) -> Result<BorrowGuardWrite, ArrayBufferError> {
+    let Some(store) = self.backing_store.as_ref() else {
+      return Err(ArrayBufferError::Detached);
+    };
+    Ok(store.try_borrow_io_write()?)
+  }
+
+  pub fn try_with_slice<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Result<R, ArrayBufferError> {
+    let Some(store) = self.backing_store.as_ref() else {
+      return Err(ArrayBufferError::Detached);
+    };
+    Ok(store.try_with_slice(f)?)
+  }
+
+  pub fn try_with_slice_mut<R>(
+    &mut self,
+    f: impl FnOnce(&mut [u8]) -> R,
+  ) -> Result<R, ArrayBufferError> {
+    let Some(store) = self.backing_store.as_mut() else {
+      return Err(ArrayBufferError::Detached);
+    };
+    Ok(store.try_with_slice_mut(f)?)
   }
 
   /// Pin the backing store bytes and return a stable pointer/length pair.
@@ -173,6 +222,9 @@ impl ArrayBuffer {
   ) -> Result<Self, ArrayBufferError> {
     if self.is_detached() {
       return Err(ArrayBufferError::Detached);
+    }
+    if self.is_io_borrowed() {
+      return Err(ArrayBufferError::Borrow(BorrowError::Borrowed));
     }
     if start > end || end > self.byte_len {
       return Err(ArrayBufferError::Range);
@@ -304,6 +356,11 @@ impl PinnedArrayBuffer {
   #[inline]
   pub fn as_ptr(&self) -> *mut u8 {
     self.ptr
+  }
+
+  #[inline]
+  pub(crate) fn backing_store(&self) -> &BackingStore {
+    self._pinned.backing_store()
   }
 
   #[inline]

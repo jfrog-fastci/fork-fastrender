@@ -144,9 +144,9 @@ pub use async_abi::{
 pub use async_runtime::{rt_async_run_until_idle, rt_drain_microtasks, PromiseLayout};
 pub use buffer::{
   global_backing_store_allocator, ArrayBuffer, ArrayBufferError, BackingStore, BackingStoreAllocError,
-  BackingStoreAllocator, BackingStoreDetachError, BackingStorePinError, GlobalBackingStoreAllocator,
-  PinnedArrayBuffer, PinnedBackingStore, PinnedUint8Array, TypedArrayError, Uint8Array,
-  BACKING_STORE_MIN_ALIGN,
+  BackingStoreAllocator, BackingStoreDetachError, BackingStorePinError, BorrowError, BorrowGuardRead,
+  BorrowGuardWrite, GlobalBackingStoreAllocator, PinnedArrayBuffer, PinnedBackingStore, PinnedUint8Array,
+  TypedArrayError, Uint8Array, BACKING_STORE_MIN_ALIGN,
 };
 pub use gc::GcHeap;
 pub use gc::{HandleId, HandleTable, OwnedGcHandle, PersistentHandle};

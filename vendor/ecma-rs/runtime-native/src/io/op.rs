@@ -2,7 +2,7 @@ use super::iovec::PinnedIoVec;
 #[cfg(unix)]
 use super::iovec::PinnedMsgHdr;
 use super::limits::{IoLimitError, IoLimiter, IoPermit};
-use crate::buffer::{ArrayBuffer, BackingStore, PinnedBackingStore, Uint8Array};
+use crate::buffer::{ArrayBuffer, BackingStore, BorrowError, BorrowGuardRead, PinnedBackingStore, Uint8Array};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
@@ -37,6 +37,7 @@ pub struct IoOp {
   bufs: Vec<IoBuf>,
   // NOTE: keep this after `bufs` so backing stores outlive the pointer descriptors.
   _pinned: Vec<PinnedBackingStore>,
+  _borrows: Vec<BorrowGuardRead>,
   #[allow(dead_code)]
   pinned_iovecs: Option<PinnedIoVec>,
   #[cfg(unix)]
@@ -126,6 +127,25 @@ impl IoOp {
     // Apply backpressure (deterministic error) before producing kernel pointers.
     let permit = limiter.try_acquire(total_pinned_bytes)?;
 
+    // Acquire shared "kernel reads from buffer" borrows for each unique backing store.
+    let mut borrows: Vec<BorrowGuardRead> = Vec::with_capacity(seen_store_ids.len());
+    let mut borrow_order: Vec<BackingStore> = Vec::with_capacity(seen_store_ids.len());
+    let mut seen_for_borrow: HashSet<usize> = HashSet::with_capacity(seen_store_ids.len());
+    for (store, _) in bufs.iter() {
+      if seen_for_borrow.insert(store.id()) {
+        borrow_order.push(store.clone());
+      }
+    }
+    borrow_order.sort_by_key(|s| s.id());
+    for store in borrow_order {
+      let guard = store.try_borrow_io_read().map_err(|err| match err {
+        BorrowError::Borrowed => IoLimitError::BufferBorrowed,
+        BorrowError::ReadBorrowOverflow => IoLimitError::LimitExceeded("max read borrows"),
+        BorrowError::NotUnique => IoLimitError::BufferBorrowed,
+      })?;
+      borrows.push(guard);
+    }
+
     let mut io_bufs: Vec<IoBuf> = Vec::with_capacity(bufs.len());
     let mut pinned: Vec<PinnedBackingStore> = Vec::with_capacity(seen_store_ids.len());
     let mut pinned_index: HashMap<usize, usize> = HashMap::with_capacity(seen_store_ids.len());
@@ -154,6 +174,7 @@ impl IoOp {
     Ok(Self {
       bufs: io_bufs,
       _pinned: pinned,
+      _borrows: borrows,
       pinned_iovecs: None,
       #[cfg(unix)]
       pinned_msghdr: None,
@@ -186,10 +207,23 @@ impl IoOp {
       });
     }
 
+    let mut stores = pinned_iovecs.unique_backing_stores();
+    stores.sort_by_key(|s| s.id());
+    let mut borrows: Vec<BorrowGuardRead> = Vec::with_capacity(stores.len());
+    for store in stores {
+      let guard = store.try_borrow_io_read().map_err(|err| match err {
+        BorrowError::Borrowed => IoLimitError::BufferBorrowed,
+        BorrowError::ReadBorrowOverflow => IoLimitError::LimitExceeded("max read borrows"),
+        BorrowError::NotUnique => IoLimitError::BufferBorrowed,
+      })?;
+      borrows.push(guard);
+    }
+
     Ok(Self {
       bufs: io_bufs,
       // The backing stores are owned (and pinned) by the `PinnedIoVec` itself.
       _pinned: Vec::new(),
+      _borrows: borrows,
       pinned_iovecs: Some(pinned_iovecs),
       #[cfg(unix)]
       pinned_msghdr: None,

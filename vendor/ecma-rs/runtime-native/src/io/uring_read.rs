@@ -15,6 +15,7 @@ use io_uring::opcode;
 #[cfg(target_os = "linux")]
 use io_uring::types;
 
+use crate::buffer::BorrowGuardWrite;
 use crate::buffer::typed_array::{PinnedUint8Array, TypedArrayError, Uint8Array};
 use crate::gc::{GcHeap, RootHandle, OBJ_HEADER_SIZE};
 
@@ -26,6 +27,8 @@ pub enum IoError {
   Uring(i32),
   #[error("invalid I/O buffer: {0:?}")]
   InvalidBuffer(TypedArrayError),
+  #[error("I/O buffer is in use by another in-flight operation")]
+  BufferBorrowed,
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +89,7 @@ impl CancellationToken {
 pub struct IoOp {
   id: u64,
   buf: Mutex<Option<PinnedUint8Array>>,
+  borrow: Mutex<Option<BorrowGuardWrite>>,
   ptr: *mut u8,
   len: usize,
 
@@ -129,6 +133,7 @@ impl IoOp {
     buffer_obj: *mut u8,
     promise_obj: *mut u8,
     buf: PinnedUint8Array,
+    borrow: BorrowGuardWrite,
   ) -> Self {
     let (buffer_root, promise_root) = {
       let mut heap_lock = heap.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -141,6 +146,7 @@ impl IoOp {
     Self {
       id,
       buf: Mutex::new(Some(buf)),
+      borrow: Mutex::new(Some(borrow)),
       ptr,
       len,
       heap,
@@ -176,6 +182,11 @@ impl IoOp {
 
     self
       .buf
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .take();
+    self
+      .borrow
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .take();
@@ -356,9 +367,13 @@ impl UringDriver {
     // Safety: callers promise `array_obj` points to a `Uint8Array` object payload after ObjHeader.
     let view = unsafe { &*(array_obj.add(OBJ_HEADER_SIZE) as *const Uint8Array) };
     let pinned = view.pin().map_err(IoError::InvalidBuffer)?;
+    let borrow = pinned
+      .backing_store()
+      .try_borrow_io_write()
+      .map_err(|_| IoError::BufferBorrowed)?;
 
     let id = self.next_op_id();
-    let op = Arc::new(IoOp::new(id, heap, array_obj, promise_obj, pinned));
+    let op = Arc::new(IoOp::new(id, heap, array_obj, promise_obj, pinned, borrow));
 
     let _ = self.inner.cmd_tx.send(Command::SubmitRead { op: Arc::clone(&op), fd });
     self.signal();
@@ -468,4 +483,3 @@ fn run_driver(entries: u32, wake_fd: RawFd, cmd_rx: mpsc::Receiver<Command>) {
     }
   }
 }
-

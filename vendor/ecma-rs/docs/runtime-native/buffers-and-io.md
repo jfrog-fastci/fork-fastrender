@@ -53,7 +53,9 @@ contain a handle/pointer to the backing store, plus view metadata (offset/len).
 
 ### 2) Pin-count protocol for in-flight I/O
 
-Each `BackingStore` maintains a **pin count** (`pin_count: AtomicU32`).
+Each backing store maintains a **pin count** (`pin_count: AtomicU32`) in a stable control block
+(`BackingStoreInner`, reference-counted by `BackingStore` handles) that is shared across any GC moves
+of the `ArrayBuffer` header.
 
 An I/O operation that submits a buffer to the OS must:
 
@@ -76,6 +78,46 @@ points. Instead they store:
 
 Raw pointers derived from GC objects are only permitted inside a short-lived
 **pinned view** object that enforces the pin lifetime.
+
+### 4) Exclusive-borrow semantics for in-flight async I/O (data-race safety)
+
+Pointer stability + pinning is necessary but not sufficient: async I/O backends like `io_uring`
+allow the kernel to concurrently read/write user memory while JS code continues to execute.
+If runtime/native code performs plain non-atomic loads/stores on a backing store while the kernel
+is concurrently accessing it, Rust/LLVM may assume "no data races" and miscompile the program.
+
+`runtime-native` therefore adopts **Model A: exclusive-borrow semantics** for buffers passed to
+async I/O:
+
+- Submitting an I/O operation borrows the backing store until completion/cancel.
+- While borrowed, host-safe access to backing bytes is rejected.
+
+#### Deviation from Node/Web APIs
+
+Node.js and Web APIs generally allow continued reads/writes to a `Buffer`/`Uint8Array` while an
+async I/O operation is in flight. In `runtime-native`, this is *intentionally* disallowed (for the
+native TS subset) to preserve a sound aliasing model.
+
+APIs should therefore be shaped so the buffer is effectively moved into the I/O request and returned
+on `await` (or completion), making misuse hard/obvious:
+
+- `await fs.read(fd, buf)` returns `{ nread, buf }`
+- `await fs.write(fd, buf)` returns `{ nwritten, buf }`
+
+#### Implementation sketch
+
+`BackingStore` tracks an atomic `borrow_state`:
+
+- `READ_BORROW_COUNT`: shared borrows for ops where the kernel reads from the buffer.
+- `WRITE_BORROWED`: exclusive borrow for ops where the kernel writes into the buffer.
+
+I/O submission must acquire:
+
+1. a **pin guard** (pointer stability / detach/resize exclusion), and
+2. the appropriate **borrow guard** (`read` vs `write` direction).
+
+Host-side non-I/O access must go through `try_with_slice` / `try_with_slice_mut`, which fail while
+any I/O borrow is active.
 
 ## Invariants (turn these into asserts/tests)
 
@@ -134,6 +176,13 @@ platforms) the safe contract is:
 
 These types are `Send` so they can be moved into I/O worker threads or stored in in-flight op
 records until completion/cancellation.
+
+### Aliasing / borrow invariants (io_uring + compiler safety)
+
+- **Borrow blocks safe access:** while any I/O borrow is active, safe slice access APIs must
+  deterministically fail.
+- **Borrow released on all paths:** completion, cancellation, and drop paths must always release the
+  borrow state (RAII guards).
 
 ### GC integration invariants
 

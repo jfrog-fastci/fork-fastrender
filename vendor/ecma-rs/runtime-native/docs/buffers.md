@@ -72,6 +72,38 @@ In `runtime-native`, the backing store is an independently-owned, reference-coun
 - each pin guard holds its own strong `BackingStore` handle, keeping the allocation alive
 - the allocation is freed when the last handle is dropped (with `pin_count == 0` asserted at drop)
 
+### 5) Exclusive-borrow semantics for in-flight async I/O (data-race safety)
+
+Pinning is necessary for pointer stability, but not sufficient for memory safety.
+
+Async I/O backends (e.g. `io_uring`) allow the kernel to concurrently read/write user-space memory
+while JS continues executing. If runtime/native code performs plain non-atomic loads/stores on a
+buffer while the kernel is concurrently accessing it, Rust/LLVM may assume "no data races" and
+miscompile the program.
+
+`runtime-native` therefore adopts **Model A: exclusive-borrow semantics** for buffers passed to
+async I/O:
+
+- Submitting an async I/O operation borrows the backing store until completion/cancel (RAII guards).
+- While borrowed, safe access to backing bytes is rejected (e.g. `ArrayBuffer::data_ptr`,
+  `ArrayBuffer::try_with_slice`, `ArrayBuffer::try_with_slice_mut`).
+
+Borrow kinds:
+
+- **Read borrows**: shared (multiple concurrent ops allowed) for operations where the kernel
+  *reads from* the buffer (e.g. `write`).
+- **Write borrows**: exclusive for operations where the kernel *writes into* the buffer
+  (e.g. `read` / `recv`).
+
+#### Deviation from Node/Web APIs
+
+Node.js and Web APIs typically allow user code to keep reading/writing a buffer while an async I/O
+operation is in flight. `runtime-native` intentionally disallows this for the native TS subset to
+preserve a sound aliasing model.
+
+Host APIs should be shaped so buffers are effectively moved into I/O requests and returned on
+completion (e.g. `await fs.read(fd, buf)` returns `{ nread, buf }`).
+
 ## Notes
 
 This backing-store pin-count is distinct from GC pinning:
