@@ -222,9 +222,10 @@ println!(\"wrote {}\", artifact.path.display());
 
 > Note: the typechecked/HIR backend is still minimal, but it can now lower small
 > multi-file ES module programs: it codegens the entry file’s exported `main()`
-> plus transitive runtime `import` dependencies (running module initializers in
-> dependency order). Re-exports and many import/export forms are not supported
-> yet.
+> plus transitive runtime `import` dependencies reachable via import bindings
+> (running module initializers in dependency order). Pure side-effect-only
+> imports (`import "./mod"`) are not wired up yet. Re-exports and many
+> import/export forms are not supported yet.
 > `native_js::codegen` currently contains:
 > - the minimal `parse-js`-driven emitter used by `compile_typescript_to_llvm_ir`, and
 > - an early HIR-driven backend used by the `native-js` CLI binary.

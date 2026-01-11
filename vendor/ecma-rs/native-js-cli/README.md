@@ -429,8 +429,10 @@ smoke-test subset intended for early end-to-end testing. It is currently an
 `i32`-only backend (booleans are lowered to `0`/`1`).
 
 It emits a single LLVM module for the entry file and all transitively imported
-**runtime** ES modules (type-only imports are ignored). Module initializers run
-in dependency order before calling the entry file’s exported `main()`.
+**runtime** ES modules reachable via import bindings (type-only imports are
+ignored). Pure side-effect-only imports (`import "./mod"`) are not wired up yet.
+Module initializers run in dependency order before calling the entry file’s
+exported `main()`.
 
 - The entry file must export `main()`:
   - defined in the entry file (no re-exports)
