@@ -39,6 +39,34 @@ For the first milestone we use **frame-pointer walking** on Linux:
 
 This only works if **all code that can run on GC-managed threads keeps frame pointers**.
 
+### Stackmap SP reconstruction (AArch64-specific)
+
+LLVM stackmaps for `gc.statepoint` usually describe stack roots as:
+
+```
+Indirect [SP + off]
+```
+
+For AArch64 (LLVM 18, `llc -frame-pointer=all`) we empirically observe:
+
+- `DWARF_SP_REG = 31` (`SP`)
+- `DWARF_FP_REG = 29` (`X29`)
+- StackMap function `stack_size` is the **total** stack-pointer delta for the frame.
+- The fixed `{fp, lr}` save area is always **16 bytes**.
+
+This lets the runtime reconstruct the `SP` value used as the base for stackmap locations from
+`FP` + `stack_size`:
+
+```
+sp_at_safepoint = fp - (stack_size - 16)
+               = (fp + 16) - stack_size
+```
+
+The frame record layout remains:
+
+- next FP at `[fp + 0]`
+- return PC (saved LR) at `[fp + 8]`
+
 ### Enforcement
 
 - **Generated LLVM code** must be compiled with frame pointers:

@@ -154,8 +154,10 @@ fn idle_detection() {
   let elapsed = start.elapsed();
 
   assert!(!pending, "expected quiescent runtime");
+  // `rt_async_poll` should return immediately when there are no watchers/timers, but allow generous
+  // scheduling slack for heavily loaded CI/agent environments.
   assert!(
-    elapsed < Duration::from_millis(500),
+    elapsed < Duration::from_secs(1),
     "rt_async_poll should return quickly when idle (elapsed={elapsed:?})"
   );
 

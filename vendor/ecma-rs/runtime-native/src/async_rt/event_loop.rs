@@ -20,6 +20,23 @@ pub struct EventLoop {
   reactor: Reactor,
 }
 
+struct ParkedGuard;
+
+impl ParkedGuard {
+  #[inline]
+  fn new() -> Self {
+    threading::set_parked(true);
+    Self
+  }
+}
+
+impl Drop for ParkedGuard {
+  #[inline]
+  fn drop(&mut self) {
+    threading::set_parked(false);
+  }
+}
+
 impl EventLoop {
   pub fn new() -> std::io::Result<Self> {
     Ok(Self {
@@ -245,21 +262,14 @@ impl EventLoop {
       // While blocked in `epoll_wait`, the event loop is *parked* inside the runtime and should be
       // treated as quiescent by stop-the-world GC (no untracked GC pointers are expected on the
       // stack at this point).
-      struct UnparkOnDrop;
-      impl Drop for UnparkOnDrop {
-        fn drop(&mut self) {
-          threading::set_parked(false);
-        }
-      }
-      let unpark = if timeout_ms != 0 {
-        threading::set_parked(true);
-        Some(UnparkOnDrop)
+      let parked = if timeout_ms != 0 {
+        Some(ParkedGuard::new())
       } else {
         None
       };
       let ready = self.reactor.wait(timeout_ms).expect("epoll_wait failed");
       threading::safepoint_poll();
-      drop(unpark);
+      drop(parked);
       if !ready.is_empty() {
         self.macrotasks.lock().unwrap().extend(ready);
       }

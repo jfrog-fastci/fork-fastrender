@@ -12,7 +12,7 @@ The intent is that a new contributor can implement:
 2) **Stackmap discovery + decoding** for LLVM statepoints,
 without having to reverse-engineer assumptions from codegen.
 
-> Target platform for the initial implementation: **Linux x86_64, ELF**.
+> Target platform for the initial implementation: **Linux x86_64 and AArch64 (arm64), ELF**.
 > PIE is the eventual goal. On Linux, LLVM `.llvm_stackmaps` records contain
 > absolute code addresses, producing dynamic relocations under PIE.
 >

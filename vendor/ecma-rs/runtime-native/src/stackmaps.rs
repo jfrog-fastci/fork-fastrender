@@ -662,7 +662,8 @@ impl<'a> CallSite<'a> {
           .iter()
           .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
 
-    let sp_relative_to_fp_relative = |frame_record_size: u64, offset: i32| -> Result<i32, StackMapError> {
+    let sp_relative_to_fp_relative =
+      |frame_record_size: u64, offset: i32| -> Result<i32, StackMapError> {
       if self.stack_size < frame_record_size {
         return Err(StackMapError::StackSizeTooSmall {
           stack_size: self.stack_size,
@@ -706,7 +707,7 @@ impl<'a> CallSite<'a> {
           _ => return Err(StackMapError::UnsupportedGcLocation { loc: derived.clone() }),
         }
 
-        let rbp_off = match *base {
+        let fp_off = match *base {
           Location::Indirect {
             dwarf_reg, offset, ..
           } => location_fp_offset(dwarf_reg, offset)?,
@@ -715,7 +716,7 @@ impl<'a> CallSite<'a> {
           _ => return Err(StackMapError::UnsupportedGcLocation { loc: base.clone() }),
         };
 
-        out.push(rbp_off);
+        out.push(fp_off);
       }
     } else {
       for loc in &self.record.locations {
@@ -1026,7 +1027,6 @@ mod tests {
   use super::StackMap;
   use super::StackMapError;
   use super::StackMaps;
-  use super::X86_64_DWARF_REG_RBP;
   use super::X86_64_DWARF_REG_RSP;
 
   fn push_u8(buf: &mut Vec<u8>, v: u8) {
@@ -1084,7 +1084,7 @@ mod tests {
     push_u8(&mut bytes, 3); // kind = Indirect
     push_u8(&mut bytes, 0); // reserved
     push_u16(&mut bytes, 8); // size
-    push_u16(&mut bytes, X86_64_DWARF_REG_RSP); // dwarf_reg
+    push_u16(&mut bytes, crate::stackwalk::DWARF_SP_REG); // dwarf_reg
     push_u16(&mut bytes, 0); // reserved2
     push_i32(&mut bytes, 16); // offset
 
@@ -1100,8 +1100,11 @@ mod tests {
     let callsite = sm.lookup(0x1010).unwrap();
     assert_eq!(callsite.stack_size, 32);
 
-    // rbp_off = 8 - 32 + 16 = -8
-    assert_eq!(callsite.gc_root_rbp_offsets_strict().unwrap(), vec![-8]);
+    let fp_to_entry_sp = crate::stackwalk::FP_TO_ENTRY_SP_OFFSET as i32;
+    assert_eq!(
+      callsite.gc_root_rbp_offsets_strict().unwrap(),
+      vec![fp_to_entry_sp - 32 + 16]
+    );
   }
 
   #[test]
@@ -1274,7 +1277,7 @@ mod tests {
     push_u8(&mut bytes, 2);
     push_u8(&mut bytes, 0);
     push_u16(&mut bytes, 8);
-    push_u16(&mut bytes, X86_64_DWARF_REG_RSP);
+    push_u16(&mut bytes, crate::stackwalk::DWARF_SP_REG);
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, 32);
 
@@ -1282,7 +1285,7 @@ mod tests {
     push_u8(&mut bytes, 3);
     push_u8(&mut bytes, 0);
     push_u16(&mut bytes, 8);
-    push_u16(&mut bytes, X86_64_DWARF_REG_RBP);
+    push_u16(&mut bytes, crate::stackwalk::DWARF_FP_REG);
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, -16);
 

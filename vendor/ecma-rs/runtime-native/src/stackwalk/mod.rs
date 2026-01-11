@@ -30,6 +30,27 @@ use unsupported as arch;
 #[cfg(target_arch = "x86_64")]
 use x86_64 as arch;
 
+/// DWARF register number for the stack pointer used by LLVM StackMaps for this architecture.
+pub const DWARF_SP_REG: u16 = arch::DWARF_SP_REG;
+
+/// DWARF register number for the frame pointer used by LLVM StackMaps for this architecture.
+pub const DWARF_FP_REG: u16 = arch::DWARF_FP_REG;
+
+/// Offset from the frame pointer to the stack pointer at function entry.
+///
+/// This is used to reconstruct the SP value used as the base for SP-relative stackmap locations.
+pub const FP_TO_ENTRY_SP_OFFSET: u64 = arch::FP_TO_ENTRY_SP_OFFSET;
+
+/// Compute the stack pointer value used as the base for SP-relative stackmap locations inside a
+/// frame, given the frame pointer and LLVM stackmap `stack_size`.
+///
+/// Architectures differ in whether the return address is pushed onto the stack and in how the FP
+/// record is saved, so the exact reconstruction is per-arch.
+#[inline]
+pub fn compute_sp(fp: u64, stack_size: u64) -> Option<u64> {
+  arch::compute_sp(fp, stack_size)
+}
+
 /// Captured CPU context for a stopped thread.
 ///
 /// This is intentionally minimal: stack walking via frame pointers only needs the current stack
