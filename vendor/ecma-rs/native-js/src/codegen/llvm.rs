@@ -793,10 +793,17 @@ impl Codegen {
           OperatorName::StrictEquality => {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
-            if left.ty != right.ty {
+            if left.ty == Ty::Void || right.ty == Ty::Void {
               return Err(CodegenError::TypeError(
-                "`===` currently requires both sides to have the same type".to_string(),
+                "cannot compare a void expression".to_string(),
               ));
+            }
+            if left.ty != right.ty {
+              // JS semantics: different types are always strictly not equal.
+              return Ok(Value {
+                ty: Ty::Bool,
+                ir: "0".to_string(),
+              });
             }
             let out = self.tmp();
             match left.ty {
@@ -838,6 +845,11 @@ impl Codegen {
           OperatorName::StrictInequality => {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
+            if left.ty == Ty::Void || right.ty == Ty::Void {
+              return Err(CodegenError::TypeError(
+                "cannot compare a void expression".to_string(),
+              ));
+            }
             if left.ty != right.ty {
               // JS semantics: different types are always strictly not equal.
               return Ok(Value {
@@ -918,23 +930,61 @@ impl Codegen {
             })
           }
           OperatorName::LogicalAnd | OperatorName::LogicalOr => {
+            // Support short-circuit semantics for boolean-only `&&`/`||`.
+            //
+            // We implement this using a local alloca + stores instead of an SSA phi node so we
+            // don't need to track the current basic block label name.
             let left = self.compile_expr(&bin.stx.left)?;
-            let right = self.compile_expr(&bin.stx.right)?;
-            if left.ty != Ty::Bool || right.ty != Ty::Bool {
+            if left.ty != Ty::Bool {
               return Err(CodegenError::TypeError(
                 "logical operators currently only support booleans".to_string(),
               ));
             }
-            let out = self.tmp();
-            let op = match bin.stx.operator {
-              OperatorName::LogicalAnd => "and",
-              OperatorName::LogicalOr => "or",
+
+            let result_slot = self.emit_alloca(Ty::Bool)?;
+            let rhs = self.fresh_block("logic.rhs");
+            let short = self.fresh_block("logic.short");
+            let cont = self.fresh_block("logic.cont");
+
+            match bin.stx.operator {
+              OperatorName::LogicalAnd => {
+                // false && rhs  => false (skip rhs)
+                self.emit(format!(
+                  "  br i1 {}, label %{rhs}, label %{short}",
+                  left.ir
+                ));
+                self.emit(format!("{short}:"));
+                self.emit_store(Ty::Bool, "0", &result_slot)?;
+                self.emit(format!("  br label %{cont}"));
+              }
+              OperatorName::LogicalOr => {
+                // true || rhs => true (skip rhs)
+                self.emit(format!(
+                  "  br i1 {}, label %{short}, label %{rhs}",
+                  left.ir
+                ));
+                self.emit(format!("{short}:"));
+                self.emit_store(Ty::Bool, "1", &result_slot)?;
+                self.emit(format!("  br label %{cont}"));
+              }
               _ => unreachable!(),
-            };
-            self.emit(format!("  {out} = {op} i1 {}, {}", left.ir, right.ir));
+            }
+
+            self.emit(format!("{rhs}:"));
+            let right = self.compile_expr(&bin.stx.right)?;
+            if right.ty != Ty::Bool {
+              return Err(CodegenError::TypeError(
+                "logical operators currently only support booleans".to_string(),
+              ));
+            }
+            self.emit_store(Ty::Bool, right.ir.as_str(), &result_slot)?;
+            self.emit(format!("  br label %{cont}"));
+
+            self.emit(format!("{cont}:"));
+            let loaded = self.emit_load(Ty::Bool, &result_slot)?;
             Ok(Value {
               ty: Ty::Bool,
-              ir: out,
+              ir: loaded,
             })
           }
           other => Err(CodegenError::UnsupportedOperator(other)),

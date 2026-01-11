@@ -368,7 +368,7 @@ fields are reserved for the eventual LLVM-backed backend.
     - `!` (booleans only)
   - numeric `+` / `-` / `*` / `/` (numbers only)
   - numeric comparisons: `<` / `<=` / `>` / `>=` (numbers only)
-  - logical `&&` / `||` (booleans only; currently eager evaluation, not short-circuit)
+  - logical `&&` / `||` (booleans only; short-circuit evaluation)
   - assignment:
     - `x = expr` (identifier targets only; allows changing the binding type in the minimal emitter)
     - `x += expr` (number variables only)

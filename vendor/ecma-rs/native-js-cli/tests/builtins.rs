@@ -185,6 +185,42 @@ fn assert_supports_numeric_comparisons_and_logical_ops() {
 }
 
 #[test]
+fn logical_and_short_circuits_rhs() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(
+    &path,
+    "function bump(): boolean { console.log(\"bump\"); return true; }\nassert((false && bump()) === false);\nconsole.log(\"ok\");\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success()
+    .stdout(predicate::eq("ok\n"));
+}
+
+#[test]
+fn logical_or_short_circuits_rhs() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(
+    &path,
+    "function bump(): boolean { console.log(\"bump\"); return false; }\nassert((true || bump()) === true);\nconsole.log(\"ok\");\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success()
+    .stdout(predicate::eq("ok\n"));
+}
+
+#[test]
 fn assert_supports_strict_inequality_and_string_equality() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");
@@ -210,6 +246,20 @@ fn strict_inequality_between_null_and_undefined_is_true() {
     .assert()
     .success()
     .stdout(predicate::eq(""));
+}
+
+#[test]
+fn strict_equality_between_null_and_undefined_is_false() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "assert(null === undefined, \"nope\");\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .failure()
+    .stdout(predicate::str::contains("nope"));
 }
 
 #[test]
