@@ -414,8 +414,10 @@ impl Reactor {
         // Ensure we remove the OS registration before releasing the lock so callers cannot race a
         // deregister+register on the same fd and accidentally delete the new registration.
         //
-        // SAFETY: `fd` was previously registered and must remain open until `deregister`.
-        let _ = self.sys.deregister(unsafe { BorrowedFd::borrow_raw(w.fd) });
+        // Note: callers may close the fd before unregistering (tests rely on this). Avoid
+        // constructing a `BorrowedFd` for a potentially-invalid descriptor; OS-level deregistration
+        // is best-effort and failures are ignored.
+        let _ = self.sys.deregister_raw(w.fd);
       }
       watcher
     };
@@ -443,8 +445,8 @@ impl Reactor {
       // Remove OS registrations while still holding the lock so future register calls cannot race a
       // delete-after-add ordering on the same fd.
       for (_id, watcher) in &drained {
-        // SAFETY: `fd` was previously registered and must remain open until teardown.
-        let _ = self.sys.deregister(unsafe { BorrowedFd::borrow_raw(watcher.fd) });
+        // Duplicated from `deregister`: callers might have already closed the fd.
+        let _ = self.sys.deregister_raw(watcher.fd);
       }
       drained
     };

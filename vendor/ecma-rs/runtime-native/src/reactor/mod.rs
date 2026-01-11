@@ -1,7 +1,7 @@
 #![doc = include_str!("../../docs/reactor.md")]
 
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -326,6 +326,10 @@ impl Reactor {
 
   pub fn deregister(&self, fd: BorrowedFd<'_>) -> io::Result<()> {
     self.sys.deregister(fd.as_raw_fd())
+  }
+
+  pub(crate) fn deregister_raw(&self, fd: RawFd) -> io::Result<()> {
+    self.sys.deregister(fd)
   }
 
   /// Polls for events and appends them to `events` (clearing it first).
