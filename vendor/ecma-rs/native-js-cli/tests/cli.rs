@@ -1038,6 +1038,35 @@ fn checked_pipeline_run_supports_export_all_reexported_main() {
 }
 
 #[test]
+fn checked_pipeline_run_supports_reexported_main_through_reexport_chain() {
+  let tmp = TempDir::new().unwrap();
+
+  let impl_file = tmp.path().join("impl.ts");
+  fs::write(
+    &impl_file,
+    "print(1);\nexport function main(): number { print(4); return 7; }\n",
+  )
+  .unwrap();
+
+  let mid = tmp.path().join("mid.ts");
+  fs::write(&mid, "print(2);\nexport { main } from \"./impl\";\n").unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(&entry, "print(3);\nexport * from \"./mid\";\n").unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--pipeline")
+    .arg("checked")
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .failure()
+    .code(7)
+    .stdout(predicate::eq("1\n2\n3\n4\n"));
+}
+
+#[test]
 fn checked_pipeline_void_entrypoint_exits_zero_without_stdout() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
