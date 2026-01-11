@@ -47,7 +47,7 @@ pub use recognize::{
   GuardKind, RecognizedPattern,
 };
 pub use resolver::{collect_require_bindings, resolve_api_call, RequireBindings};
-pub use signals::{collect_signals, SemanticSignal, SignalTables};
+pub use signals::{collect_signals, detect_signals, SemanticSignal, SignalTables};
 
 #[cfg(feature = "typed")]
 pub use recognize::recognize_patterns_typed;
