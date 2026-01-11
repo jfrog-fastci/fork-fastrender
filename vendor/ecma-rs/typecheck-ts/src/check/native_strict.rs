@@ -64,6 +64,21 @@ pub fn validate_native_strict_body(
     }
   }
 
+  fn expr_unwrap_comma(body: &Body, mut expr_id: hir_js::ExprId) -> hir_js::ExprId {
+    loop {
+      let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+        return expr_id;
+      };
+      let ExprKind::Binary { op, right, .. } = &expr.kind else {
+        return expr_id;
+      };
+      if *op != hir_js::BinaryOp::Comma {
+        return expr_id;
+      }
+      expr_id = *right;
+    }
+  }
+
   fn expr_is_const_string(body: &Body, expr_id: hir_js::ExprId, value: &str) -> bool {
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
@@ -135,6 +150,7 @@ pub fn validate_native_strict_body(
     member_name: hir_js::NameId,
     member_str: &str,
   ) -> bool {
+    let expr_id = expr_unwrap_comma(body, expr_id);
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
     };
@@ -156,6 +172,7 @@ pub fn validate_native_strict_body(
     member_name: hir_js::NameId,
     member_str: &str,
   ) -> bool {
+    let expr_id = expr_unwrap_comma(body, expr_id);
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
     };
@@ -180,6 +197,7 @@ pub fn validate_native_strict_body(
     expr_id: hir_js::ExprId,
     global_this_name: hir_js::NameId,
   ) -> bool {
+    let expr_id = expr_unwrap_comma(body, expr_id);
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
     };
@@ -204,6 +222,7 @@ pub fn validate_native_strict_body(
     target_name: hir_js::NameId,
     target_str: &str,
   ) -> bool {
+    let expr_id = expr_unwrap_comma(body, expr_id);
     let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
       return false;
     };
@@ -434,11 +453,12 @@ pub fn validate_native_strict_body(
   for (idx, expr) in body.exprs.iter().enumerate() {
     match &expr.kind {
       ExprKind::Call(call) => {
-        let callee = body.exprs.get(call.callee.0 as usize);
+        let callee_id = expr_unwrap_comma(body, call.callee);
+        let callee = body.exprs.get(callee_id.0 as usize);
         if let Some(callee) = callee {
           let callee_span = result
             .expr_spans
-            .get(call.callee.0 as usize)
+            .get(callee_id.0 as usize)
             .copied()
             .unwrap_or(callee.span);
 
