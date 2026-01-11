@@ -1,7 +1,9 @@
 use std::mem;
 use std::ptr;
 
-use runtime_native::buffer::{ArrayBuffer, BackingStoreDetachError, Uint8Array};
+use runtime_native::buffer::{
+  ArrayBuffer, BackingStoreAllocator, BackingStoreDetachError, GlobalBackingStoreAllocator, Uint8Array,
+};
 use runtime_native::gc::ObjHeader;
 use runtime_native::gc::RememberedSet;
 use runtime_native::gc::RootStack;
@@ -158,6 +160,24 @@ fn detach_and_free_are_blocked_while_pinned() {
     buffer.backing_store_mut().try_free(),
     Err(BackingStoreDetachError::NotAlive)
   );
+}
+
+#[test]
+fn finalize_defers_free_until_last_unpin() {
+  let alloc = GlobalBackingStoreAllocator::new();
+  let mut buffer = ArrayBuffer::new_zeroed_in(&alloc, 8).unwrap();
+  assert_eq!(alloc.external_bytes(), 8);
+
+  let pinned = buffer.pin().unwrap();
+
+  // Finalization must not free while pinned; it should instead mark the backing store pending and
+  // detach the header.
+  buffer.finalize_in(&alloc);
+  assert!(buffer.is_detached());
+  assert_eq!(alloc.external_bytes(), 8);
+
+  drop(pinned);
+  assert_eq!(alloc.external_bytes(), 0);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use core::alloc::Layout;
 use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::alloc::{alloc, alloc_zeroed, dealloc};
 
 /// Minimum alignment guaranteed for all `ArrayBuffer` backing store allocations.
@@ -47,36 +47,39 @@ enum BackingStoreState {
   FreePending = 3,
 }
 
-impl BackingStoreState {
-  #[inline]
-  fn from_u8(value: u8) -> Self {
-    match value {
-      0 => Self::Alive,
-      1 => Self::Detaching,
-      2 => Self::Freeing,
-      3 => Self::FreePending,
-      _ => Self::FreePending,
-    }
+const STATE_BITS: usize = 2;
+const STATE_MASK: usize = (1 << STATE_BITS) - 1;
+const PIN_SHIFT: usize = STATE_BITS;
+
+#[inline]
+fn decode_state(word: usize) -> BackingStoreState {
+  match (word & STATE_MASK) as u8 {
+    0 => BackingStoreState::Alive,
+    1 => BackingStoreState::Detaching,
+    2 => BackingStoreState::Freeing,
+    _ => BackingStoreState::FreePending,
   }
+}
+
+#[inline]
+fn decode_pins(word: usize) -> usize {
+  word >> PIN_SHIFT
+}
+
+#[inline]
+fn encode_state_and_pins(state: BackingStoreState, pins: usize) -> usize {
+  (pins << PIN_SHIFT) | (state as usize)
 }
 
 #[derive(Debug)]
 struct BackingStoreCtl {
-  state: AtomicU8,
-  pin_count: AtomicUsize,
+  state_and_pins: AtomicUsize,
   alloc_ptr: *mut u8,
   alloc_len: usize,
   alloc_align: usize,
   // Points at the owning allocator's external-bytes counter so we can keep accounting correct even
   // when the actual free happens after `BackingStoreAllocator::free` returns (due to pinning).
   external_bytes: *const AtomicUsize,
-}
-
-impl BackingStoreCtl {
-  #[inline]
-  fn state(&self) -> BackingStoreState {
-    BackingStoreState::from_u8(self.state.load(Ordering::Acquire))
-  }
 }
 
 unsafe fn finalize_ctl(ctl: NonNull<BackingStoreCtl>) {
@@ -118,21 +121,22 @@ impl Drop for PinnedBackingStore {
     // - this drop observes it is the last pin and frees it, or
     // - a successful detach/free frees it (which can only happen when pin_count == 0).
     let ctl_ref = unsafe { self.ctl.as_ref() };
-    let prev = ctl_ref.pin_count.fetch_sub(1, Ordering::AcqRel);
-    debug_assert!(prev > 0, "pin_count underflow");
+    let prev = ctl_ref
+      .state_and_pins
+      .fetch_sub(1 << PIN_SHIFT, Ordering::AcqRel);
 
-    if prev == 1 {
+    let prev_pins = decode_pins(prev);
+    debug_assert!(prev_pins > 0, "pin_count underflow");
+
+    if prev_pins == 1 {
       // Last pin dropped.
-      if ctl_ref.state() == BackingStoreState::FreePending {
+      if decode_state(prev) == BackingStoreState::FreePending {
         // Claim the finalization so only one thread frees.
+        let expected = encode_state_and_pins(BackingStoreState::FreePending, 0);
+        let desired = encode_state_and_pins(BackingStoreState::Freeing, 0);
         if ctl_ref
-          .state
-          .compare_exchange(
-            BackingStoreState::FreePending as u8,
-            BackingStoreState::Freeing as u8,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-          )
+          .state_and_pins
+          .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
           .is_ok()
         {
           unsafe { finalize_ctl(self.ctl) };
@@ -203,7 +207,7 @@ impl BackingStore {
       return false;
     };
     // SAFETY: ctl is valid while the backing store is alive; freeing while pinned is delayed.
-    unsafe { ctl.as_ref() }.pin_count.load(Ordering::Acquire) > 0
+    decode_pins(unsafe { ctl.as_ref() }.state_and_pins.load(Ordering::Acquire)) > 0
   }
 
   pub fn pin(&self) -> Result<(PinnedBackingStore, (*mut u8, usize)), BackingStorePinError> {
@@ -222,18 +226,24 @@ impl BackingStore {
     // SAFETY: ctl points at the stable pin/state controller for this backing store.
     let ctl_ref = unsafe { ctl.as_ref() };
 
-    if ctl_ref.state() != BackingStoreState::Alive {
-      return Err(BackingStorePinError::NotAlive);
+    loop {
+      let word = ctl_ref.state_and_pins.load(Ordering::Acquire);
+      if decode_state(word) != BackingStoreState::Alive {
+        return Err(BackingStorePinError::NotAlive);
+      }
+      let new_word = word
+        .checked_add(1 << PIN_SHIFT)
+        .expect("backing store pin_count overflow");
+      if ctl_ref
+        .state_and_pins
+        .compare_exchange(word, new_word, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+      {
+        break;
+      }
     }
 
-    ctl_ref.pin_count.fetch_add(1, Ordering::AcqRel);
     let pinned = PinnedBackingStore { ctl };
-
-    // Re-check after increment to avoid racing with detach/free.
-    if ctl_ref.state() != BackingStoreState::Alive {
-      drop(pinned);
-      return Err(BackingStorePinError::NotAlive);
-    }
 
     let out_ptr = unsafe { self.as_ptr().add(range.start) };
     Ok((pinned, (out_ptr, range.end - range.start)))
@@ -285,8 +295,7 @@ impl BackingStore {
       core::ptr::null_mut()
     } else {
       Box::into_raw(Box::new(BackingStoreCtl {
-        state: AtomicU8::new(BackingStoreState::Alive as u8),
-        pin_count: AtomicUsize::new(0),
+        state_and_pins: AtomicUsize::new(encode_state_and_pins(BackingStoreState::Alive, 0)),
         alloc_ptr: ptr,
         alloc_len,
         alloc_align,
@@ -316,37 +325,43 @@ impl BackingStore {
     // SAFETY: ctl is valid while the store is alive.
     let ctl_ref = unsafe { ctl.as_ref() };
 
-    // Block new pins before checking pin_count.
-    if ctl_ref
-      .state
-      .compare_exchange(
-        BackingStoreState::Alive as u8,
-        in_progress as u8,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-      )
-      .is_err()
-    {
-      return Err(BackingStoreDetachError::NotAlive);
-    }
+    loop {
+      let word = ctl_ref.state_and_pins.load(Ordering::Acquire);
+      let state = decode_state(word);
+      let pins = decode_pins(word);
 
-    if ctl_ref.pin_count.load(Ordering::Acquire) != 0 {
-      if allow_pending_free && in_progress == BackingStoreState::Freeing {
-        ctl_ref
-          .state
-          .store(BackingStoreState::FreePending as u8, Ordering::Release);
-        // Detach the header's handle; the last pin drop will perform the actual free.
-        *self = BackingStore::empty();
-        return Ok(());
+      if state != BackingStoreState::Alive {
+        return Err(BackingStoreDetachError::NotAlive);
       }
 
-      ctl_ref
-        .state
-        .store(BackingStoreState::Alive as u8, Ordering::Release);
-      return Err(BackingStoreDetachError::Pinned);
+      if pins != 0 {
+        if allow_pending_free && in_progress == BackingStoreState::Freeing {
+          let new_word = encode_state_and_pins(BackingStoreState::FreePending, pins);
+          if ctl_ref
+            .state_and_pins
+            .compare_exchange(word, new_word, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+          {
+            // Detach the header's handle; the last pin drop will perform the actual free.
+            *self = BackingStore::empty();
+            return Ok(());
+          }
+          continue;
+        }
+        return Err(BackingStoreDetachError::Pinned);
+      }
+
+      // Unpinned: claim invalidate then free immediately.
+      let new_word = encode_state_and_pins(in_progress, 0);
+      if ctl_ref
+        .state_and_pins
+        .compare_exchange(word, new_word, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+      {
+        break;
+      }
     }
 
-    // Unpinned: free immediately.
     unsafe { finalize_ctl(ctl) };
     *self = BackingStore::empty();
     Ok(())
@@ -567,4 +582,3 @@ static GLOBAL_BACKING_STORE_ALLOCATOR: GlobalBackingStoreAllocator =
 pub fn global_backing_store_allocator() -> &'static GlobalBackingStoreAllocator {
   &GLOBAL_BACKING_STORE_ALLOCATOR
 }
-
