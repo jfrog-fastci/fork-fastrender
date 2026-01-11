@@ -2770,6 +2770,7 @@ mod tests {
   use cssparser::ToCss;
   use std::cell::RefCell;
   use std::collections::HashMap;
+  use std::time::Duration;
 
   const TAILWIND_V4_PROPERTIES_SUPPORTS: &str = "(((-webkit-hyphens:none)) and (not (margin-trim:inline))) or ((-moz-orient:inline) and (not (color:rgb(from red r g b))))";
 
@@ -3472,6 +3473,95 @@ mod tests {
     assert!(
       foo_layer.as_ref() < bar_layer.as_ref(),
       "expected failing @import layer(foo) to still declare foo before bar (foo={foo_layer:?} bar={bar_layer:?})"
+    );
+  }
+
+  #[test]
+  fn resolve_imports_propagates_render_error() {
+    struct TimeoutLoader;
+
+    impl CssImportLoader for TimeoutLoader {
+      fn load(&self, url: &str) -> crate::error::Result<String> {
+        let _ = url;
+        Err(Error::Render(RenderError::Timeout {
+          stage: RenderStage::Css,
+          elapsed: Duration::from_millis(1),
+        }))
+      }
+    }
+
+    let stylesheet = parse_stylesheet(r#"@import "a.css"; .after { color: red; }"#)
+      .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let err = stylesheet
+      .resolve_imports(
+        &TimeoutLoader,
+        Some("https://example.com/timeout/root.css"),
+        &media_ctx,
+      )
+      .expect_err("expected render error to propagate");
+
+    match err {
+      RenderError::Timeout {
+        stage: RenderStage::Css,
+        elapsed,
+      } => {
+        assert_eq!(elapsed, Duration::from_millis(1));
+      }
+      other => panic!("expected RenderError::Timeout, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn resolve_imports_ignores_non_render_import_errors() {
+    struct FailingLoader {
+      requests: RefCell<Vec<String>>,
+    }
+
+    impl FailingLoader {
+      fn requests(&self) -> Vec<String> {
+        self.requests.borrow().clone()
+      }
+    }
+
+    impl CssImportLoader for FailingLoader {
+      fn load(&self, url: &str) -> crate::error::Result<String> {
+        self.requests.borrow_mut().push(url.to_string());
+        Err(Error::Resource(crate::error::ResourceError::new(
+          url.to_string(),
+          "import failed",
+        )))
+      }
+    }
+
+    let loader = FailingLoader {
+      requests: RefCell::new(Vec::new()),
+    };
+    let stylesheet = parse_stylesheet(r#"@import "a.css"; .after { color: red; }"#)
+      .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let resolved = stylesheet
+      .resolve_imports(
+        &loader,
+        Some("https://example.com/non-render-error/root.css"),
+        &media_ctx,
+      )
+      .expect("non-render import error should be ignored");
+
+    assert_eq!(
+      loader.requests().as_slice(),
+      &["https://example.com/non-render-error/a.css".to_string()],
+      "expected the failing import to be fetched"
+    );
+    assert!(
+      rules_contain_selector(&resolved.rules, ".after"),
+      "expected following rules to remain after failed @import"
+    );
+    assert!(
+      !rules_contain_import(&resolved.rules),
+      "expected failed @import to be removed from the resolved stylesheet"
     );
   }
 
@@ -4816,6 +4906,10 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
                   Some(resolved_children)
                 }
               }
+            }
+            Err(Error::Render(err)) => {
+              state.stack.pop();
+              return Err(err);
             }
             Err(_) => {
               // Per spec, failed imports are ignored.
