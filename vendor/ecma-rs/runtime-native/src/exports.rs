@@ -8,6 +8,7 @@ use crate::abi::TimerId;
 use crate::abi::ThenableRef;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
+use crate::alloc;
 use crate::async_runtime::PromiseLayout;
 use crate::array;
 use crate::array::RtArrayHeader;
@@ -1654,6 +1655,10 @@ pub extern "C" fn rt_io_register(
 /// teardown (`async_rt::clear_state_for_tests`). This ensures callback state can be freed even when
 /// queued work is discarded.
 ///
+/// ## Nonblocking / edge-triggered contract
+///
+/// Like [`rt_io_register`], the provided `fd` **must already be set to `O_NONBLOCK`**.
+///
 /// On registration failure (return value `0`), `drop_data(data)` is still invoked and the runtime
 /// does not retain the pointer.
 #[no_mangle]
@@ -1719,6 +1724,11 @@ pub extern "C" fn rt_io_register_with_drop(
 /// Contract:
 /// - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
 /// - The runtime registers a strong GC root for `data` until `rt_io_unregister(id)` is called.
+///
+/// ## Nonblocking / edge-triggered contract
+///
+/// The provided `fd` **must already be set to `O_NONBLOCK`**. The runtime does not modify caller
+/// file descriptor flags.
 #[no_mangle]
 pub extern "C" fn rt_io_register_rooted(
   fd: i32,
