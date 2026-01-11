@@ -1,7 +1,6 @@
-use core::sync::atomic::{AtomicU32, Ordering};
-
 use super::backing_store::{
   global_backing_store_allocator, BackingStore, BackingStoreAllocError, BackingStoreAllocator,
+  BackingStorePinError, PinnedBackingStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,16 +33,6 @@ pub struct ArrayBuffer {
   backing_store: BackingStore,
 
   flags: u32,
-
-  /// Count of in-flight pins against this backing store.
-  ///
-  /// Any operation that would invalidate the backing store pointer or change its size
-  /// (detach/transfer/resize/finalize) must observe `pin_count == 0`.
-  ///
-  /// Note: in a moving-GC runtime, callers that hold a [`PinnedArrayBuffer`] across safepoints must
-  /// ensure the `ArrayBuffer` header itself remains address-stable (e.g. by allocating it in a
-  /// pinned/non-moving space or holding an updateable handle).
-  pin_count: AtomicU32,
 }
 
 impl ArrayBuffer {
@@ -60,7 +49,6 @@ impl ArrayBuffer {
       byte_len: len,
       backing_store: store,
       flags: 0,
-      pin_count: AtomicU32::new(0),
     })
   }
 
@@ -78,7 +66,6 @@ impl ArrayBuffer {
       byte_len,
       backing_store: store,
       flags: 0,
-      pin_count: AtomicU32::new(0),
     })
   }
 
@@ -96,7 +83,6 @@ impl ArrayBuffer {
       byte_len,
       backing_store: store,
       flags: 0,
-      pin_count: AtomicU32::new(0),
     })
   }
 
@@ -106,13 +92,18 @@ impl ArrayBuffer {
   }
 
   #[inline]
-  pub fn is_detached(&self) -> bool {
-    self.backing_store.is_empty()
+  pub fn backing_store(&self) -> &BackingStore {
+    &self.backing_store
   }
 
   #[inline]
-  pub fn pin_count(&self) -> u32 {
-    self.pin_count.load(Ordering::Acquire)
+  pub fn backing_store_mut(&mut self) -> &mut BackingStore {
+    &mut self.backing_store
+  }
+
+  #[inline]
+  pub fn is_detached(&self) -> bool {
+    self.backing_store.is_empty()
   }
 
   #[inline]
@@ -162,11 +153,12 @@ impl ArrayBuffer {
     if self.is_detached() {
       return Err(ArrayBufferError::Detached);
     }
-    let ptr = self.backing_store.as_ptr();
-    let len = self.byte_len;
-    self.pin_count.fetch_add(1, Ordering::AcqRel);
+    let (pinned, (ptr, len)) = self.backing_store.pin().map_err(|err| match err {
+      BackingStorePinError::NotAlive => ArrayBufferError::Detached,
+      BackingStorePinError::OutOfBounds => ArrayBufferError::Range,
+    })?;
     Ok(PinnedArrayBuffer {
-      pin_count: &self.pin_count as *const AtomicU32,
+      pinned,
       ptr,
       len,
     })
@@ -179,14 +171,25 @@ impl ArrayBuffer {
     self.detach_in(global_backing_store_allocator())
   }
 
-  pub fn detach_in<A: BackingStoreAllocator + ?Sized>(&mut self, alloc: &A) -> Result<(), ArrayBufferError> {
+  pub fn detach_in<A: BackingStoreAllocator + ?Sized>(
+    &mut self,
+    _alloc: &A,
+  ) -> Result<(), ArrayBufferError> {
     if self.is_detached() {
       return Ok(());
     }
-    if self.pin_count.load(Ordering::Acquire) != 0 {
+    if self.backing_store.is_pinned() {
       return Err(ArrayBufferError::Pinned);
     }
-    alloc.free(&mut self.backing_store);
+    // Detach is an eager free of the backing store. Unlike GC finalization, it must not proceed
+    // while pinned.
+    self
+      .backing_store
+      .try_detach()
+      .map_err(|err| match err {
+        super::backing_store::BackingStoreDetachError::Pinned => ArrayBufferError::Pinned,
+        super::backing_store::BackingStoreDetachError::NotAlive => ArrayBufferError::Detached,
+      })?;
     self.byte_len = 0;
     self.flags = 0;
     Ok(())
@@ -202,10 +205,9 @@ impl ArrayBuffer {
         byte_len: 0,
         backing_store: BackingStore::empty(),
         flags: 0,
-        pin_count: AtomicU32::new(0),
       });
     }
-    if self.pin_count.load(Ordering::Acquire) != 0 {
+    if self.backing_store.is_pinned() {
       return Err(ArrayBufferError::Pinned);
     }
 
@@ -219,7 +221,6 @@ impl ArrayBuffer {
       byte_len,
       backing_store,
       flags: 0,
-      pin_count: AtomicU32::new(0),
     })
   }
 
@@ -228,7 +229,7 @@ impl ArrayBuffer {
   /// Resizable buffers are not supported in MVP, but the method exists so callers cannot
   /// accidentally ignore the pin-count rule once resize is wired up.
   pub fn resize(&mut self, _new_len: usize) -> Result<(), ArrayBufferError> {
-    if self.pin_count.load(Ordering::Acquire) != 0 {
+    if self.backing_store.is_pinned() {
       return Err(ArrayBufferError::Pinned);
     }
     Err(ArrayBufferError::Unimplemented)
@@ -243,15 +244,9 @@ impl ArrayBuffer {
   }
 
   pub fn finalize_in<A: BackingStoreAllocator + ?Sized>(&mut self, alloc: &A) {
-    debug_assert_eq!(
-      self.pin_count.load(Ordering::Acquire),
-      0,
-      "attempted to finalize an ArrayBuffer with in-flight pins"
-    );
     alloc.free(&mut self.backing_store);
     self.byte_len = 0;
     self.flags = 0;
-    self.pin_count.store(0, Ordering::Release);
   }
 }
 
@@ -261,9 +256,7 @@ impl ArrayBuffer {
 /// buffer cannot be detached/transferred/resized while pinned.
 #[derive(Debug)]
 pub struct PinnedArrayBuffer {
-  // Raw pointer so this guard does not borrow `ArrayBuffer` and callers can attempt operations like
-  // `detach()` while pinned (which must deterministically fail).
-  pin_count: *const AtomicU32,
+  pinned: PinnedBackingStore,
   ptr: *mut u8,
   len: usize,
 }
@@ -298,14 +291,3 @@ impl PinnedArrayBuffer {
     core::slice::from_raw_parts_mut(self.ptr, self.len)
   }
 }
-
-impl Drop for PinnedArrayBuffer {
-  fn drop(&mut self) {
-    // SAFETY: The caller must ensure the `ArrayBuffer` header (and thus `pin_count`) remains valid
-    // for the duration of this guard.
-    let pin = unsafe { &*self.pin_count };
-    let prev = pin.fetch_sub(1, Ordering::AcqRel);
-    debug_assert!(prev > 0, "ArrayBuffer pin_count underflow");
-  }
-}
-

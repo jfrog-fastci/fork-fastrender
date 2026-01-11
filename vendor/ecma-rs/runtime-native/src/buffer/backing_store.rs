@@ -1,7 +1,7 @@
 use core::alloc::Layout;
 use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::alloc::{alloc, alloc_zeroed, dealloc};
 
 /// Minimum alignment guaranteed for all `ArrayBuffer` backing store allocations.
@@ -17,6 +17,129 @@ pub enum BackingStoreAllocError {
   InvalidLayout,
   /// The allocator returned a null pointer.
   OutOfMemory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackingStorePinError {
+  /// Backing store has been detached/finalized (or is in the middle of detaching/freeing).
+  NotAlive,
+  /// Requested pin range exceeded the visible `byte_len`.
+  OutOfBounds,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackingStoreDetachError {
+  /// Backing store is currently pinned (in-flight).
+  Pinned,
+  /// Backing store has already been detached/finalized (or is in the middle of detaching/freeing).
+  NotAlive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum BackingStoreState {
+  Alive = 0,
+  Detaching = 1,
+  Freeing = 2,
+  /// Backing store was requested to be freed, but was pinned at the time.
+  ///
+  /// The final deallocation happens when the last [`PinnedBackingStore`] guard is dropped.
+  FreePending = 3,
+}
+
+impl BackingStoreState {
+  #[inline]
+  fn from_u8(value: u8) -> Self {
+    match value {
+      0 => Self::Alive,
+      1 => Self::Detaching,
+      2 => Self::Freeing,
+      3 => Self::FreePending,
+      _ => Self::FreePending,
+    }
+  }
+}
+
+#[derive(Debug)]
+struct BackingStoreCtl {
+  state: AtomicU8,
+  pin_count: AtomicUsize,
+  alloc_ptr: *mut u8,
+  alloc_len: usize,
+  alloc_align: usize,
+  // Points at the owning allocator's external-bytes counter so we can keep accounting correct even
+  // when the actual free happens after `BackingStoreAllocator::free` returns (due to pinning).
+  external_bytes: *const AtomicUsize,
+}
+
+impl BackingStoreCtl {
+  #[inline]
+  fn state(&self) -> BackingStoreState {
+    BackingStoreState::from_u8(self.state.load(Ordering::Acquire))
+  }
+}
+
+unsafe fn finalize_ctl(ctl: NonNull<BackingStoreCtl>) {
+  let ctl_ref = ctl.as_ref();
+
+  if ctl_ref.alloc_len != 0 {
+    // We only ever allocate with (1) alignment 1 via Vec/Box or (2) alignment BACKING_STORE_MIN_ALIGN.
+    debug_assert!(ctl_ref.alloc_align == 1 || ctl_ref.alloc_align == BACKING_STORE_MIN_ALIGN);
+
+    let layout = Layout::from_size_align(ctl_ref.alloc_len, ctl_ref.alloc_align)
+      .expect("valid layout for backing store dealloc");
+    dealloc(ctl_ref.alloc_ptr, layout);
+  }
+
+  if !ctl_ref.external_bytes.is_null() && ctl_ref.alloc_len != 0 {
+    let prev = (*ctl_ref.external_bytes).fetch_sub(ctl_ref.alloc_len, Ordering::Relaxed);
+    debug_assert!(
+      prev >= ctl_ref.alloc_len,
+      "external_bytes underflow (prev={prev}, sub={})",
+      ctl_ref.alloc_len
+    );
+  }
+
+  drop(Box::from_raw(ctl.as_ptr()));
+}
+
+/// RAII guard representing an in-flight use of a backing store.
+///
+/// While this guard is alive, detaching/freeing the backing store is rejected and the final
+/// deallocation (if requested while pinned) is delayed until the guard drops.
+#[derive(Debug)]
+pub struct PinnedBackingStore {
+  ctl: NonNull<BackingStoreCtl>,
+}
+
+impl Drop for PinnedBackingStore {
+  fn drop(&mut self) {
+    // SAFETY: `ctl` remains valid until either:
+    // - this drop observes it is the last pin and frees it, or
+    // - a successful detach/free frees it (which can only happen when pin_count == 0).
+    let ctl_ref = unsafe { self.ctl.as_ref() };
+    let prev = ctl_ref.pin_count.fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(prev > 0, "pin_count underflow");
+
+    if prev == 1 {
+      // Last pin dropped.
+      if ctl_ref.state() == BackingStoreState::FreePending {
+        // Claim the finalization so only one thread frees.
+        if ctl_ref
+          .state
+          .compare_exchange(
+            BackingStoreState::FreePending as u8,
+            BackingStoreState::Freeing as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+          )
+          .is_ok()
+        {
+          unsafe { finalize_ctl(self.ctl) };
+        }
+      }
+    }
+  }
 }
 
 /// A stable, non-moving byte buffer used as the backing store for `ArrayBuffer`/`TypedArray`.
@@ -39,6 +162,7 @@ pub struct BackingStore {
   alloc_len: usize,
   /// Allocation alignment used for deallocation. For adopted `Vec<u8>` / `Box<[u8]>` this is 1.
   alloc_align: usize,
+  ctl: *mut BackingStoreCtl,
 }
 
 impl BackingStore {
@@ -49,6 +173,7 @@ impl BackingStore {
       byte_len: 0,
       alloc_len: 0,
       alloc_align: BACKING_STORE_MIN_ALIGN,
+      ctl: core::ptr::null_mut(),
     }
   }
 
@@ -73,6 +198,60 @@ impl BackingStore {
   }
 
   #[inline]
+  pub fn is_pinned(&self) -> bool {
+    let Some(ctl) = NonNull::new(self.ctl) else {
+      return false;
+    };
+    // SAFETY: ctl is valid while the backing store is alive; freeing while pinned is delayed.
+    unsafe { ctl.as_ref() }.pin_count.load(Ordering::Acquire) > 0
+  }
+
+  pub fn pin(&self) -> Result<(PinnedBackingStore, (*mut u8, usize)), BackingStorePinError> {
+    self.pin_range(0..self.byte_len)
+  }
+
+  pub fn pin_range(
+    &self,
+    range: core::ops::Range<usize>,
+  ) -> Result<(PinnedBackingStore, (*mut u8, usize)), BackingStorePinError> {
+    if range.start > range.end || range.end > self.byte_len {
+      return Err(BackingStorePinError::OutOfBounds);
+    }
+    let ctl = NonNull::new(self.ctl).ok_or(BackingStorePinError::NotAlive)?;
+
+    // SAFETY: ctl points at the stable pin/state controller for this backing store.
+    let ctl_ref = unsafe { ctl.as_ref() };
+
+    if ctl_ref.state() != BackingStoreState::Alive {
+      return Err(BackingStorePinError::NotAlive);
+    }
+
+    ctl_ref.pin_count.fetch_add(1, Ordering::AcqRel);
+    let pinned = PinnedBackingStore { ctl };
+
+    // Re-check after increment to avoid racing with detach/free.
+    if ctl_ref.state() != BackingStoreState::Alive {
+      drop(pinned);
+      return Err(BackingStorePinError::NotAlive);
+    }
+
+    let out_ptr = unsafe { self.as_ptr().add(range.start) };
+    Ok((pinned, (out_ptr, range.end - range.start)))
+  }
+
+  pub fn try_detach(&mut self) -> Result<(), BackingStoreDetachError> {
+    self.try_invalidate(BackingStoreState::Detaching, false)
+  }
+
+  pub fn try_free(&mut self) -> Result<(), BackingStoreDetachError> {
+    self.try_invalidate(BackingStoreState::Freeing, false)
+  }
+
+  pub(crate) fn free_or_mark_pending(&mut self) {
+    let _ = self.try_invalidate(BackingStoreState::Freeing, true);
+  }
+
+  #[inline]
   fn is_ptr_min_aligned(ptr: *const u8) -> bool {
     (ptr as usize) % BACKING_STORE_MIN_ALIGN == 0
   }
@@ -87,6 +266,7 @@ impl BackingStore {
     byte_len: usize,
     alloc_len: usize,
     alloc_align: usize,
+    external_bytes: *const AtomicUsize,
   ) -> Self {
     debug_assert!(
       alloc_len == 0 || ptr != core::ptr::null_mut(),
@@ -101,6 +281,19 @@ impl BackingStore {
       "BackingStore pointer must be at least {BACKING_STORE_MIN_ALIGN}-byte aligned"
     );
 
+    let ctl = if alloc_len == 0 {
+      core::ptr::null_mut()
+    } else {
+      Box::into_raw(Box::new(BackingStoreCtl {
+        state: AtomicU8::new(BackingStoreState::Alive as u8),
+        pin_count: AtomicUsize::new(0),
+        alloc_ptr: ptr,
+        alloc_len,
+        alloc_align,
+        external_bytes,
+      }))
+    };
+
     Self {
       ptr: NonNull::new_unchecked(if alloc_len == 0 {
         NonNull::dangling().as_ptr()
@@ -110,7 +303,53 @@ impl BackingStore {
       byte_len,
       alloc_len,
       alloc_align,
+      ctl,
     }
+  }
+
+  fn try_invalidate(
+    &mut self,
+    in_progress: BackingStoreState,
+    allow_pending_free: bool,
+  ) -> Result<(), BackingStoreDetachError> {
+    let ctl = NonNull::new(self.ctl).ok_or(BackingStoreDetachError::NotAlive)?;
+    // SAFETY: ctl is valid while the store is alive.
+    let ctl_ref = unsafe { ctl.as_ref() };
+
+    // Block new pins before checking pin_count.
+    if ctl_ref
+      .state
+      .compare_exchange(
+        BackingStoreState::Alive as u8,
+        in_progress as u8,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+      )
+      .is_err()
+    {
+      return Err(BackingStoreDetachError::NotAlive);
+    }
+
+    if ctl_ref.pin_count.load(Ordering::Acquire) != 0 {
+      if allow_pending_free && in_progress == BackingStoreState::Freeing {
+        ctl_ref
+          .state
+          .store(BackingStoreState::FreePending as u8, Ordering::Release);
+        // Detach the header's handle; the last pin drop will perform the actual free.
+        *self = BackingStore::empty();
+        return Ok(());
+      }
+
+      ctl_ref
+        .state
+        .store(BackingStoreState::Alive as u8, Ordering::Release);
+      return Err(BackingStoreDetachError::Pinned);
+    }
+
+    // Unpinned: free immediately.
+    unsafe { finalize_ctl(ctl) };
+    *self = BackingStore::empty();
+    Ok(())
   }
 }
 
@@ -201,7 +440,15 @@ impl GlobalBackingStoreAllocator {
     debug_assert!(BackingStore::is_ptr_min_aligned(ptr.as_ptr()));
     self.bump_external(len);
     // SAFETY: `ptr` is non-null, points to `len` bytes allocated with `layout.align() == BACKING_STORE_MIN_ALIGN`.
-    Ok(unsafe { BackingStore::from_raw_parts(ptr.as_ptr(), len, len, BACKING_STORE_MIN_ALIGN) })
+    Ok(unsafe {
+      BackingStore::from_raw_parts(
+        ptr.as_ptr(),
+        len,
+        len,
+        BACKING_STORE_MIN_ALIGN,
+        &self.external_bytes,
+      )
+    })
   }
 
   fn adopt_or_copy(
@@ -221,7 +468,9 @@ impl GlobalBackingStoreAllocator {
       self.bump_external(alloc_len);
       // SAFETY: caller guarantees `ptr` points to `alloc_len` bytes with alignment 1, and we've
       // checked the address meets our min alignment requirement.
-      return Ok(unsafe { BackingStore::from_raw_parts(ptr, byte_len, alloc_len, 1) });
+      return Ok(unsafe {
+        BackingStore::from_raw_parts(ptr, byte_len, alloc_len, 1, &self.external_bytes)
+      });
     }
 
     // Misaligned: allocate an aligned buffer and copy.
@@ -299,18 +548,7 @@ impl BackingStoreAllocator for GlobalBackingStoreAllocator {
   }
 
   fn free(&self, store: &mut BackingStore) {
-    if store.alloc_len == 0 {
-      return;
-    }
-
-    let ptr = store.ptr.as_ptr();
-    let alloc_len = store.alloc_len;
-    let alloc_align = store.alloc_align;
-
-    self.free_raw_allocation(ptr, alloc_len, alloc_align);
-    self.dec_external(alloc_len);
-
-    *store = BackingStore::empty();
+    store.free_or_mark_pending();
   }
 
   fn external_bytes(&self) -> usize {

@@ -124,6 +124,12 @@ pub use runtime_native_abi::{
 pub use exports::*;
 pub use async_abi::*;
 pub use async_runtime::{rt_async_run_until_idle, rt_drain_microtasks};
+pub use buffer::{
+  global_backing_store_allocator, ArrayBuffer, ArrayBufferError, BackingStore, BackingStoreAllocError,
+  BackingStoreAllocator, BackingStoreDetachError, BackingStorePinError, GlobalBackingStoreAllocator,
+  PinnedArrayBuffer, PinnedBackingStore, PinnedUint8Array, TypedArrayError, Uint8Array,
+  BACKING_STORE_MIN_ALIGN,
+};
 pub use gc::GcHeap;
 pub use gc::{HandleId, HandleTable, PersistentHandle};
 pub use gc::RememberedSet;
@@ -142,12 +148,6 @@ pub use rt_trace::rt_debug_snapshot_counters;
 pub use rt_trace::RtDebugCountersSnapshot;
 pub use stack_walk::{FrameView, StackWalker};
 pub use string::*;
-pub use buffer::array_buffer::ArrayBuffer;
-pub use buffer::backing_store::{
-  BackingStore, BackingStoreAllocError, BackingStoreAllocator, GlobalBackingStoreAllocator,
-  BACKING_STORE_MIN_ALIGN,
-};
-pub use buffer::typed_array::Uint8Array;
 pub use timer_wheel::{TimerKey, TimerWheel};
 pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section};
 pub use safepoint::{visit_reloc_pairs, with_world_stopped};

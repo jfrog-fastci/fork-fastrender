@@ -26,8 +26,8 @@ pub mod typed_array;
 
 pub use array_buffer::{ArrayBuffer, ArrayBufferError, PinnedArrayBuffer};
 pub use backing_store::{
-  BackingStore, BackingStoreAllocError, BackingStoreAllocator, GlobalBackingStoreAllocator,
+  global_backing_store_allocator, BackingStore, BackingStoreAllocError, BackingStoreAllocator,
+  BackingStoreDetachError, BackingStorePinError, GlobalBackingStoreAllocator, PinnedBackingStore,
   BACKING_STORE_MIN_ALIGN,
 };
 pub use typed_array::{PinnedUint8Array, TypedArrayError, Uint8Array};
-

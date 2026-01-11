@@ -1,6 +1,7 @@
 use std::mem;
 use std::ptr;
 
+use runtime_native::buffer::{ArrayBuffer, BackingStoreDetachError, Uint8Array};
 use runtime_native::gc::ObjHeader;
 use runtime_native::gc::RememberedSet;
 use runtime_native::gc::RootStack;
@@ -101,4 +102,84 @@ fn unreachable_pinned_objects_are_collectible() {
   let mut roots = RootStack::new();
   heap.collect_major(&mut roots, &mut NullRememberedSet::default());
   assert_eq!(heap.los_object_count(), 0);
+}
+
+#[test]
+fn pin_unpin_toggles_is_pinned() {
+  let buffer = ArrayBuffer::new_zeroed(8).unwrap();
+  let store = buffer.backing_store();
+
+  assert!(!store.is_pinned());
+
+  let pinned = buffer.pin().unwrap();
+  assert_eq!(pinned.len(), 8);
+  assert!(store.is_pinned());
+
+  drop(pinned);
+  assert!(!store.is_pinned());
+}
+
+#[test]
+fn pin_is_raii_on_panic() {
+  let buffer = ArrayBuffer::new_zeroed(4).unwrap();
+  let store = buffer.backing_store();
+
+  let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let _pinned = buffer.pin().unwrap();
+    assert!(store.is_pinned());
+    panic!("boom");
+  }));
+
+  assert!(result.is_err());
+  assert!(!store.is_pinned());
+}
+
+#[test]
+fn detach_and_free_are_blocked_while_pinned() {
+  let mut buffer = ArrayBuffer::new_zeroed(8).unwrap();
+
+  let pinned = buffer.pin().unwrap();
+  assert!(buffer.backing_store().is_pinned());
+
+  assert_eq!(
+    buffer.backing_store_mut().try_detach(),
+    Err(BackingStoreDetachError::Pinned)
+  );
+  assert_eq!(
+    buffer.backing_store_mut().try_free(),
+    Err(BackingStoreDetachError::Pinned)
+  );
+
+  drop(pinned);
+  assert!(!buffer.backing_store().is_pinned());
+
+  buffer.backing_store_mut().try_detach().unwrap();
+  assert_eq!(
+    buffer.backing_store_mut().try_free(),
+    Err(BackingStoreDetachError::NotAlive)
+  );
+}
+
+#[test]
+fn typed_array_pins_subrange() {
+  let buffer = ArrayBuffer::new_zeroed(8).unwrap();
+  let view = Uint8Array::view(&buffer, 2, 4).unwrap();
+
+  let pinned_buf = buffer.pin().unwrap();
+  let ptr_buf = pinned_buf.as_ptr();
+  let len_buf = pinned_buf.len();
+  assert_eq!(len_buf, 8);
+  assert!(buffer.backing_store().is_pinned());
+
+  let pinned_view = view.pin().unwrap();
+  let ptr_view = pinned_view.as_ptr();
+  let len_view = pinned_view.len();
+  assert_eq!(len_view, 4);
+  assert_eq!((ptr_view as usize) - (ptr_buf as usize), 2);
+  assert!(buffer.backing_store().is_pinned());
+
+  drop(pinned_view);
+  assert!(buffer.backing_store().is_pinned());
+  drop(pinned_buf);
+  assert!(!buffer.backing_store().is_pinned());
 }
