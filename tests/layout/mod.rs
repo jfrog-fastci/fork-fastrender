@@ -78,6 +78,7 @@ mod flex_align_content_gaps;
 mod flex_align_content_multiline;
 mod flex_align_items_flex_start_axis_polarity;
 mod flex_column_align_items_center_auto_width_wrap;
+mod reddit_flex_center_max_width;
 mod flex_alignment_order_test;
 mod legacy_webkit_box_flex;
 mod flex_auto_min_and_intrinsics;

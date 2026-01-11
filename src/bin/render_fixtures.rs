@@ -409,14 +409,17 @@ fn fixture_runtime_toggles_from_env_map(
     .or_insert_with(|| default_hinting.to_string());
   // Chrome typically uses LCD/subpixel anti-aliasing for text. FastRender's default tiny-skia
   // glyph rasterization is grayscale AA, so enable a subpixel mode for fixture-vs-Chrome diffs.
+  let default_subpixel_aa = if patch_html_for_chrome_baseline { "1" } else { "0" };
   raw
     .entry("FASTR_TEXT_SUBPIXEL_AA".to_string())
-    .or_insert_with(|| "1".to_string());
-  // Skia applies gamma correction when converting LCD mask coverage into device pixels; without
-  // it, subpixel AA tends to look too light compared to Chrome's headless output.
+    .or_insert_with(|| default_subpixel_aa.to_string());
+  // Skia's LCD text pipeline includes gamma correction when converting mask coverage into device
+  // pixels. Empirically, Chrome's headless screenshots already match FastRender's "raw coverage"
+  // output; applying additional gamma correction tends to over-darken glyph edges and increases
+  // Chrome diffs on real pages (e.g. reddit.com).
   raw
     .entry("FASTR_TEXT_SUBPIXEL_AA_GAMMA".to_string())
-    .or_insert_with(|| "1.4".to_string());
+    .or_insert_with(|| "1.0".to_string());
   // `xtask chrome-baseline-fixtures` renders fixtures via headless Chrome with `--hide-scrollbars`.
   // In this mode Chrome does *not* reserve classic scrollbar gutters, so pages paint to the right
   // edge (and `scrollbar-gutter: stable` has no effect).

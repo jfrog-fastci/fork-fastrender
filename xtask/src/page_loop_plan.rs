@@ -192,7 +192,7 @@ pub fn build_inspect_frag_command(
   if args.patch_html_for_chrome_baseline
     && std::env::var_os("FASTR_TEXT_SUBPIXEL_AA_GAMMA").is_none()
   {
-    cmd.env("FASTR_TEXT_SUBPIXEL_AA_GAMMA", "1.4");
+    cmd.env("FASTR_TEXT_SUBPIXEL_AA_GAMMA", "1.0");
   }
   if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_HIDE_SCROLLBARS").is_none() {
     // Match `render_fixtures --patch-html-for-chrome-baseline` / Chrome baseline harness behavior

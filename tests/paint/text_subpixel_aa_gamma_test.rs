@@ -57,3 +57,14 @@ fn text_subpixel_aa_gamma_darkens_edges() {
   );
 }
 
+#[test]
+fn text_subpixel_aa_gamma_one_is_identity() {
+  let baseline = render_text(None);
+  let gamma_one = render_text(Some(1.0));
+
+  assert_eq!(
+    baseline.data(),
+    gamma_one.data(),
+    "expected gamma=1.0 to disable LCD gamma correction"
+  );
+}
