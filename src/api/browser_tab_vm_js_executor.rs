@@ -32,6 +32,7 @@ use vm_js::{
   RealmId, Scope, SourceText, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks,
   VmJobContext,
 };
+use webidl_vm_js::WebIdlBindingsHost;
 
 use super::BrowserDocumentDom2;
 use super::{BrowserTabHost, BrowserTabJsExecutor, ConsoleMessageLevel, SharedRenderDiagnostics};
@@ -60,6 +61,7 @@ pub struct VmJsBrowserTabExecutor {
   /// store a stable pointer during navigation reset and reuse it when invoking JS event listeners
   /// from Rust (`BrowserTab::dispatch_click_event`, script load/error events, etc).
   vm_host: Option<NonNull<dyn VmHost>>,
+  webidl_bindings_host: Option<NonNull<dyn WebIdlBindingsHost>>,
 }
 
 impl VmJsBrowserTabExecutor {
@@ -78,6 +80,7 @@ impl VmJsBrowserTabExecutor {
       pending_navigation: None,
       diagnostics: None,
       vm_host: None,
+      webidl_bindings_host: None,
     }
   }
 
@@ -110,6 +113,10 @@ impl Drop for VmJsBrowserTabExecutor {
   }
 }
 impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
+  fn set_webidl_bindings_host(&mut self, host: &mut dyn WebIdlBindingsHost) {
+    self.webidl_bindings_host = Some(NonNull::from(host));
+  }
+
   fn event_listener_invoker(
     &self,
   ) -> Option<Box<dyn crate::web::events::EventListenerInvoker>> {
@@ -117,9 +124,11 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     // pointer remains valid for the lifetime of the host. All access occurs on the host thread.
     let realm_ptr = (&self.realm as *const Option<WindowRealm>) as *mut Option<WindowRealm>;
     let vm_host_ptr = (&self.vm_host as *const Option<NonNull<dyn VmHost>>) as *mut _;
+    let webidl_bindings_host_ptr =
+      (&self.webidl_bindings_host as *const Option<NonNull<dyn WebIdlBindingsHost>>) as *mut _;
     Some(Box::new(
       crate::js::window_realm::WindowRealmDomEventListenerInvoker::<BrowserTabHost>::new(
-        realm_ptr, vm_host_ptr,
+        realm_ptr, vm_host_ptr, webidl_bindings_host_ptr,
       ),
     ))
   }
@@ -234,6 +243,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
     let diagnostics = self.diagnostics.clone();
     let clock = event_loop.clock();
+    let webidl_bindings_host = self.webidl_bindings_host;
     let name: Arc<str> = if let Some(url) = spec.src.as_deref() {
       Arc::from(url)
     } else if let Some(node_id) = current_script {
@@ -260,8 +270,16 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       // Classic scripts can evaluate dynamic `import()` expressions, which require module loading
       // hooks and an attached `ModuleGraph`. Use the same hook implementation as module scripts so
       // `import()` resolves through import maps and fetches modules via the document fetcher.
+      let mut inner = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
+      if let Some(mut host_ptr) = webidl_bindings_host {
+        // SAFETY: `BrowserTabHost` stores a stable WebIDL bindings host for the lifetime of the
+        // executor.
+        unsafe {
+          inner.set_webidl_bindings_host(host_ptr.as_mut());
+        }
+      }
       let mut hooks = ModuleLoaderHooks {
-        inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
+        inner,
         fetcher,
         options,
         loaded_modules: 0,
@@ -515,6 +533,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let options = self.js_execution_options;
     let entry_bytes = script_text.as_bytes().len();
     let document_origin = self.document_origin.clone();
+    let webidl_bindings_host = self.webidl_bindings_host;
     let module_map = &mut self.module_map;
     let module_url_by_id = &mut self.module_url_by_id;
     let import_map_state = &mut self.import_map_state;
@@ -607,8 +626,16 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
       // Route Promise jobs (including module-loading promise reactions) through FastRender's
       // microtask queue.
+      let mut inner = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
+      if let Some(mut host_ptr) = webidl_bindings_host {
+        // SAFETY: `BrowserTabHost` stores a stable WebIDL bindings host for the lifetime of the
+        // executor.
+        unsafe {
+          inner.set_webidl_bindings_host(host_ptr.as_mut());
+        }
+      }
       let mut hooks = ModuleLoaderHooks {
-        inner: VmJsEventLoopHooks::<BrowserTabHost>::new(document),
+        inner,
         fetcher: document.fetcher(),
         options,
         loaded_modules,
@@ -739,6 +766,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     };
 
     let diagnostics = self.diagnostics.clone();
+    let webidl_bindings_host = self.webidl_bindings_host;
 
     let dispatch_expr = match target {
       EventTargetId::Document => "document.dispatchEvent(e);",
@@ -769,6 +797,13 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     update_time_bindings_clock(realm.heap(), clock).map_err(|err| Error::Other(err.to_string()))?;
     realm.reset_interrupt();
     let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
+    if let Some(mut host_ptr) = webidl_bindings_host {
+      // SAFETY: `BrowserTabHost` stores a stable WebIDL bindings host for the lifetime of the
+      // executor.
+      unsafe {
+        hooks.set_webidl_bindings_host(host_ptr.as_mut());
+      }
+    }
     let source_text = Arc::new(SourceText::new("<lifecycle>", Arc::from(source)));
     let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
     if let Some(err) = hooks.finish(realm.heap_mut()) {

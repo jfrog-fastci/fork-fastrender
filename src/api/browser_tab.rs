@@ -139,6 +139,12 @@ pub trait BrowserTabJsExecutor {
     Ok(())
   }
 
+  /// Provide the executor with the active WebIDL bindings host (if any).
+  ///
+  /// Some executors construct `VmJsEventLoopHooks` using only a `&mut dyn VmHost` context and
+  /// therefore cannot access `WindowRealmHost::webidl_bindings_host()` directly.
+  fn set_webidl_bindings_host(&mut self, _host: &mut dyn webidl_vm_js::WebIdlBindingsHost) {}
+
   /// Dispatch a document lifecycle event (e.g. `DOMContentLoaded`, `load`) into the JS environment.
   ///
   /// Hosts invoke this hook from their [`DocumentLifecycleHost`] implementation so that JS event
@@ -362,7 +368,7 @@ pub struct BrowserTabHost {
   document_write_state: DocumentWriteState,
   js_execution_depth: Rc<Cell<usize>>,
   lifecycle: DocumentLifecycle,
-  webidl_bindings_host: BrowserTabWebIdlBindingsHost,
+  webidl_bindings_host: Box<BrowserTabWebIdlBindingsHost>,
   last_dynamic_script_discovery_generation: u64,
   /// Whether we are currently running a streaming HTML parse (even if the parser state is
   /// temporarily moved out of `streaming_parse` by `parse_until_blocked`).
@@ -415,10 +421,12 @@ impl webidl_vm_js::WebIdlBindingsHost for BrowserTabWebIdlBindingsHost {
 impl BrowserTabHost {
   fn new(
     document: BrowserDocumentDom2,
-    executor: Box<dyn BrowserTabJsExecutor>,
+    mut executor: Box<dyn BrowserTabJsExecutor>,
     trace: TraceHandle,
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self> {
+    let mut webidl_bindings_host = Box::new(BrowserTabWebIdlBindingsHost::default());
+    executor.set_webidl_bindings_host(webidl_bindings_host.as_mut());
     let event_invoker = executor
       .event_listener_invoker()
       .unwrap_or_else(|| Box::new(NoopEventInvoker));
@@ -458,7 +466,7 @@ impl BrowserTabHost {
       document_write_state,
       js_execution_depth: Rc::new(Cell::new(0)),
       lifecycle: DocumentLifecycle::new(),
-      webidl_bindings_host: BrowserTabWebIdlBindingsHost::default(),
+      webidl_bindings_host,
       last_dynamic_script_discovery_generation: 0,
       streaming_parse_active: false,
       streaming_parse_in_progress: false,
@@ -497,18 +505,14 @@ impl BrowserTabHost {
 
   fn dispatch_dom_event(&mut self, target: EventTargetId, mut event: Event) -> Result<bool> {
     let dom: &crate::dom2::Document = self.document.dom();
-    let (event_invoker, webidl_bindings_host) =
-      (&mut self.event_invoker, &mut self.webidl_bindings_host);
-    crate::js::window_timers::with_webidl_bindings_host(webidl_bindings_host, || {
-      crate::web::events::dispatch_event(
-        target,
-        &mut event,
-        dom,
-        dom.events(),
-        event_invoker.as_mut(),
-      )
-      .map_err(|err| Error::Other(err.to_string()))
-    })
+    crate::web::events::dispatch_event(
+      target,
+      &mut event,
+      dom,
+      dom.events(),
+      self.event_invoker.as_mut(),
+    )
+    .map_err(|err| Error::Other(err.to_string()))
   }
 
   fn dispatch_script_event(&mut self, script_node_id: NodeId, type_: &str) -> Result<()> {
@@ -2174,34 +2178,31 @@ impl BrowserTabHost {
           pending_navigation,
           pending_navigation_deadline,
           document_write_state,
-          webidl_bindings_host,
           ..
         } = host;
-        let result = crate::js::with_document_write_state(document_write_state, || {
-          crate::js::window_timers::with_webidl_bindings_host(webidl_bindings_host, || match script_type {
-            ScriptType::Classic => executor.execute_classic_script(
-              self.source_text,
-              self.spec,
-              current_script,
-              document.as_mut(),
-              self.event_loop,
-            ),
-            ScriptType::Module => executor.execute_module_script(
-              self.source_text,
-              self.spec,
-              current_script,
-              document.as_mut(),
-              self.event_loop,
-            ),
-            ScriptType::ImportMap => executor.execute_import_map_script(
-              self.source_text,
-              self.spec,
-              current_script,
-              document.as_mut(),
-              self.event_loop,
-            ),
-            ScriptType::Unknown => Ok(()),
-          })
+        let result = crate::js::with_document_write_state(document_write_state, || match script_type {
+          ScriptType::Classic => executor.execute_classic_script(
+            self.source_text,
+            self.spec,
+            current_script,
+            document.as_mut(),
+            self.event_loop,
+          ),
+          ScriptType::Module => executor.execute_module_script(
+            self.source_text,
+            self.spec,
+            current_script,
+            document.as_mut(),
+            self.event_loop,
+          ),
+          ScriptType::ImportMap => executor.execute_import_map_script(
+            self.source_text,
+            self.spec,
+            current_script,
+            document.as_mut(),
+            self.event_loop,
+          ),
+          ScriptType::Unknown => Ok(()),
         });
         if let Some(req) = executor.take_navigation_request() {
           *pending_navigation = Some(req);
@@ -2821,11 +2822,8 @@ impl DocumentLifecycleHost for BrowserTabHost {
     let target = target.normalize();
     let result = match target {
       EventTargetId::Document | EventTargetId::Window => {
-        let (executor, document, webidl_bindings_host) =
-          (&mut self.executor, &mut self.document, &mut self.webidl_bindings_host);
-        crate::js::window_timers::with_webidl_bindings_host(webidl_bindings_host, || {
-          executor.dispatch_lifecycle_event(target, &event, document.as_mut())
-        })
+        let (executor, document) = (&mut self.executor, &mut self.document);
+        executor.dispatch_lifecycle_event(target, &event, document.as_mut())
       }
       // Fall back to Rust-side dispatch for non-document/window targets (e.g. `<script>` element
       // `load`/`error` events queued by the script scheduler).
@@ -2874,7 +2872,7 @@ impl crate::js::window_realm::WindowRealmHost for BrowserTabHost {
   }
 
   fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
-    Some(&mut self.webidl_bindings_host)
+    Some(self.webidl_bindings_host.as_mut())
   }
 }
 

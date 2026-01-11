@@ -14,7 +14,6 @@ use crate::js::vm_error_format;
 use crate::js::window_realm::{
   dataset_exotic_delete, dataset_exotic_get, dataset_exotic_set, WindowRealmHost,
 };
-use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -46,51 +45,6 @@ const TIMER_RECORD_ARG_PREFIX: &str = "__arg";
 
 // Native slot index on timer host functions that stores the owning global object.
 const TIMER_GLOBAL_SLOT: usize = 0;
-
-thread_local! {
-  /// A stack of `WebIdlBindingsHost` pointers to use when constructing `VmJsEventLoopHooks::new`.
-  ///
-  /// Most FastRender call paths can construct hooks via `VmJsEventLoopHooks::new_with_host(host)`,
-  /// which can query `WindowRealmHost::webidl_bindings_host()` directly.
-  ///
-  /// Some embeddings (notably `BrowserTabJsExecutor`) construct hooks using only a `&mut dyn VmHost`
-  /// (the document), so they cannot directly access the surrounding `WindowRealmHost`. Those paths
-  /// can install a bindings host pointer for the duration of a JS execution boundary using
-  /// [`with_webidl_bindings_host`]. `VmJsEventLoopHooks::new` will then populate the bindings slot
-  /// from this stack.
-  static WEBIDL_BINDINGS_HOST_STACK: RefCell<Vec<NonNull<dyn WebIdlBindingsHost>>> = RefCell::new(Vec::new());
-}
-
-struct WebIdlBindingsHostGuard {
-  expected: NonNull<dyn WebIdlBindingsHost>,
-}
-
-impl Drop for WebIdlBindingsHostGuard {
-  fn drop(&mut self) {
-    WEBIDL_BINDINGS_HOST_STACK.with(|stack| {
-      let popped = stack.borrow_mut().pop();
-      debug_assert_eq!(popped, Some(self.expected));
-    });
-  }
-}
-
-/// Run `f` with `host` installed as the current WebIDL bindings host for hook construction.
-///
-/// This is intended for script entrypoints that only have access to a `&mut dyn VmHost` context but
-/// still need `webidl_vm_js::host_from_hooks` to succeed.
-pub(crate) fn with_webidl_bindings_host<R>(
-  host: &mut dyn WebIdlBindingsHost,
-  f: impl FnOnce() -> R,
-) -> R {
-  let ptr = NonNull::from(host);
-  WEBIDL_BINDINGS_HOST_STACK.with(|stack| stack.borrow_mut().push(ptr));
-  let _guard = WebIdlBindingsHostGuard { expected: ptr };
-  f()
-}
-
-fn current_webidl_bindings_host_ptr() -> Option<NonNull<dyn WebIdlBindingsHost>> {
-  WEBIDL_BINDINGS_HOST_STACK.with(|stack| stack.borrow().last().copied())
-}
 #[cfg(test)]
 const SYMBOL_TO_NUMBER_ERROR: &str = "Cannot convert a Symbol value to a number";
 fn data_desc(value: Value) -> PropertyDescriptor {
@@ -396,13 +350,6 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
   pub fn new(host_ctx: &mut dyn VmHost) -> Self {
     let mut any = VmJsHostHooksPayload::default();
     any.set_vm_host(host_ctx);
-    if let Some(mut ptr) = current_webidl_bindings_host_ptr() {
-      // SAFETY: The embedding must ensure the installed host pointer remains valid for the duration
-      // of this JS execution boundary.
-      unsafe {
-        any.webidl_bindings_host_slot_mut().set(ptr.as_mut());
-      }
-    }
     Self {
       any,
       pending_discard: Vec::new(),
@@ -424,7 +371,7 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
     };
     // Populate the WebIDL bindings host slot if the embedding provides one.
     if let Some(bindings_host) = host.webidl_bindings_host() {
-      hooks.any.webidl_bindings_host_slot_mut().set(bindings_host);
+      hooks.set_webidl_bindings_host(bindings_host);
     }
     hooks
   }
@@ -2646,11 +2593,12 @@ mod tests {
   }
 
   #[test]
-  fn webidl_bindings_host_is_available_via_tls_for_hooks_new() -> crate::error::Result<()> {
+  fn webidl_bindings_host_is_available_via_explicit_slot_for_hooks_new() -> crate::error::Result<()> {
     // This mirrors `BrowserTabJsExecutor` entrypoints which only have access to a `&mut dyn VmHost`
     // (the document) and therefore construct hooks via `VmJsEventLoopHooks::new(host_ctx)`.
     //
-    // `with_webidl_bindings_host` must provide the WebIDL bindings host slot in that case.
+    // Without a surrounding `WindowRealmHost`, the WebIDL bindings host slot must be set
+    // explicitly.
     let mut host = Host::new();
 
     {
@@ -2685,8 +2633,8 @@ mod tests {
         window,
       } = &mut host;
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-      let mut hooks =
-        super::with_webidl_bindings_host(bindings_host, || VmJsEventLoopHooks::<Host>::new(host_ctx));
+      let mut hooks = VmJsEventLoopHooks::<Host>::new(host_ctx);
+      hooks.set_webidl_bindings_host(bindings_host);
 
       {
         let mut scope = heap.scope();

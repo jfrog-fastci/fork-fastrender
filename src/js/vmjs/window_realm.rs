@@ -6495,14 +6495,24 @@ pub(crate) struct WindowRealmDomEventListenerInvoker<Host: WindowRealmHost + 'st
   /// inside listeners (e.g. `fetch`, WebIDL ops, embedder test hooks) can access per-document host
   /// state.
   vm_host: *mut Option<NonNull<dyn VmHost>>,
+  /// Pointer to the owning executor's `Option<WebIdlBindingsHost>` slot.
+  ///
+  /// This is used by host-driven DOM event dispatch paths that only have access to a `VmHost`
+  /// context and therefore cannot populate the WebIDL slot via `WindowRealmHost`.
+  webidl_bindings_host: *mut Option<NonNull<dyn WebIdlBindingsHost>>,
   _marker: PhantomData<fn() -> Host>,
 }
 
 impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
-  pub(crate) fn new(realm: *mut Option<WindowRealm>, vm_host: *mut Option<NonNull<dyn VmHost>>) -> Self {
+  pub(crate) fn new(
+    realm: *mut Option<WindowRealm>,
+    vm_host: *mut Option<NonNull<dyn VmHost>>,
+    webidl_bindings_host: *mut Option<NonNull<dyn WebIdlBindingsHost>>,
+  ) -> Self {
     Self {
       realm,
       vm_host,
+      webidl_bindings_host,
       _marker: PhantomData,
     }
   }
@@ -6750,6 +6760,13 @@ impl<Host: WindowRealmHost + 'static> web_events::EventListenerInvoker for Windo
 
     // Route Promise jobs (and other hooks) through the host event loop microtask queue.
     let mut host_hooks = VmJsEventLoopHooks::<Host>::new(host_ctx);
+    if let Some(mut bindings_host_ptr) = unsafe { *self.webidl_bindings_host } {
+      // SAFETY: the embedding is responsible for keeping the WebIDL bindings host alive for the
+      // lifetime of the returned invoker.
+      unsafe {
+        host_hooks.set_webidl_bindings_host(bindings_host_ptr.as_mut());
+      }
+    }
     let call_result: Result<(), VmError> = (|| {
       let event_value = Value::Object(event_obj);
       if scope.heap().is_callable(callback)? {
@@ -15998,8 +16015,13 @@ mod tests {
     let mut vm_host_ctx = ();
     let mut vm_host_slot: Option<NonNull<dyn VmHost>> =
       Some(NonNull::from(&mut vm_host_ctx as &mut dyn VmHost));
+    let mut webidl_bindings_host_slot: Option<NonNull<dyn WebIdlBindingsHost>> = None;
     let mut invoker =
-      WindowRealmDomEventListenerInvoker::<DummyHost>::new(&mut realm_slot, &mut vm_host_slot);
+      WindowRealmDomEventListenerInvoker::<DummyHost>::new(
+        &mut realm_slot,
+        &mut vm_host_slot,
+        &mut webidl_bindings_host_slot,
+      );
 
     let mut event = web_events::Event::new(
       "x",
