@@ -14953,16 +14953,17 @@ impl DisplayListRenderer {
           if (transform.tx - tx_round).abs() <= NEAR_INTEGER_EPSILON_PX
             && (transform.ty - ty_round).abs() <= NEAR_INTEGER_EPSILON_PX
           {
+            // Match Chrome's behavior by snapping the *origin* and *size* independently.
+            //
+            // Rounding both edges independently can accidentally inflate a ~1.3px underline to 2
+            // device pixels when the underline top has a non-trivial fractional component.
             let x0 = rect.x() + tx_round;
             let y0 = rect.y() + ty_round;
-            let x1 = x0 + rect.width();
-            let y1 = y0 + rect.height();
-            let start_x = (x0.min(x1) - 0.5).ceil();
-            let end_x = (x0.max(x1) - 0.5).ceil();
-            let start_y = (y0.min(y1) - 0.5).ceil();
-            let end_y = (y0.max(y1) - 0.5).ceil();
-            if let Some(snapped) =
-              tiny_skia::Rect::from_xywh(start_x, start_y, end_x - start_x, end_y - start_y)
+            let snapped_x = x0.round();
+            let snapped_y = y0.round();
+            let snapped_w = rect.width().round().max(1.0);
+            let snapped_h = rect.height().round().max(1.0);
+            if let Some(snapped) = tiny_skia::Rect::from_xywh(snapped_x, snapped_y, snapped_w, snapped_h)
             {
               let path = PathBuilder::from_rect(snapped);
               pixmap.fill_path(
