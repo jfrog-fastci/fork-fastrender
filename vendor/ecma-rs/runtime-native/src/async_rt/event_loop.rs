@@ -4,6 +4,7 @@ use crate::async_rt::Interest;
 use crate::async_rt::Task;
 use crate::async_rt::TimerId;
 use crate::async_rt::WatcherId;
+use crate::sync::GcAwareMutex;
 use crate::threading;
 use std::collections::VecDeque;
 use std::io;
@@ -13,7 +14,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 pub struct EventLoop {
-  poll_lock: Mutex<()>,
+  poll_lock: GcAwareMutex<()>,
   microtasks: Mutex<VecDeque<Task>>,
   macrotasks: Mutex<VecDeque<Task>>,
   timers: Timers,
@@ -40,7 +41,7 @@ impl Drop for ParkedGuard {
 impl EventLoop {
   pub fn new() -> std::io::Result<Self> {
     Ok(Self {
-      poll_lock: Mutex::new(()),
+      poll_lock: GcAwareMutex::new(()),
       microtasks: Mutex::new(VecDeque::new()),
       macrotasks: Mutex::new(VecDeque::new()),
       timers: Timers::new(),
@@ -160,12 +161,12 @@ impl EventLoop {
   }
 
   pub(super) fn drain_microtasks_for_external(&self) -> bool {
-    let _guard = self.poll_lock.lock().unwrap();
+    let _guard = self.poll_lock.lock();
     self.drain_microtasks_inner()
   }
 
   pub(super) fn run_until_idle_nonblocking(&self) -> bool {
-    let _guard = self.poll_lock.lock().unwrap();
+    let _guard = self.poll_lock.lock();
 
     let mut did_work = false;
     loop {
@@ -226,7 +227,7 @@ impl EventLoop {
   }
 
   pub fn poll(&self) -> bool {
-    let _guard = self.poll_lock.lock().unwrap();
+    let _guard = self.poll_lock.lock();
 
     loop {
       threading::safepoint_poll();
@@ -281,7 +282,7 @@ impl EventLoop {
     self.timers.len()
   }
   pub(crate) fn reset_for_tests(&self) {
-    let _guard = self.poll_lock.lock().unwrap();
+    let _guard = self.poll_lock.lock();
 
     self.microtasks.lock().unwrap().clear();
     self.macrotasks.lock().unwrap().clear();
