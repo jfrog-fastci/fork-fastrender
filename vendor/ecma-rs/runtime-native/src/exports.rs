@@ -29,7 +29,6 @@ use crate::threading::registry;
 use crate::trap;
 use crate::Runtime;
 use crate::Thread;
-use crate::rt_alloc as rt_alloc_mod;
 use once_cell::sync::Lazy;
 use std::cell::Cell;
 use std::collections::HashMap;
