@@ -50,6 +50,7 @@ fn pie_stackmaps_are_in_gnu_relro_and_no_load_segment_is_rwx() {
     "llc-18",
     "llvm-objcopy-18",
     "llvm-readobj-18",
+    "ld.bfd",
     "gcc",
     "readelf",
     "bash",
@@ -60,20 +61,9 @@ fn pie_stackmaps_are_in_gnu_relro_and_no_load_segment_is_rwx() {
     }
   }
 
-  // This test uses `gcc` to drive the system linker. The correct stackmaps linker-script fragment
-  // depends on whether that linker is GNU ld or lld:
-  // - GNU ld: use `link/stackmaps_gnuld.ld` (inserting after `.text` can produce an RWX PT_LOAD).
-  // - lld: use `link/stackmaps.ld` (lld keeps `.data.rel.ro.*` out of the executable segment).
-  let linker_version_out = Command::new("gcc")
-    .args(["-Wl,--version"])
-    .output()
-    .unwrap_or_else(|e| panic!("failed to query linker version via gcc: {e}"));
-  let linker_version = format!(
-    "{}{}",
-    String::from_utf8_lossy(&linker_version_out.stdout),
-    String::from_utf8_lossy(&linker_version_out.stderr),
-  );
-  let gcc_uses_lld = linker_version.to_ascii_lowercase().contains("lld");
+  // Use GNU ld (bfd) for this test. lld is intentionally not used here: it rejects placing custom
+  // writable sections inside its RELRO block, and therefore cannot cover
+  // `.data.rel.ro.llvm_stackmaps` with `PT_GNU_RELRO`.
 
   let tmp = tempfile::tempdir().expect("tempdir");
   let dir = tmp.path();
@@ -125,9 +115,7 @@ entry:
     rename_script.exists(),
     "missing helper script at {rename_script:?}"
   );
-  let lld_script = manifest_dir.join("link/stackmaps.ld");
-  let gnuld_script = manifest_dir.join("link/stackmaps_gnuld.ld");
-  let linker_script = if gcc_uses_lld { lld_script } else { gnuld_script };
+  let linker_script = manifest_dir.join("link/stackmaps_gnuld.ld");
   assert!(
     linker_script.exists(),
     "missing linker script at {linker_script:?}"
@@ -168,6 +156,7 @@ int main() {
   run(
     "gcc",
     &[
+      "-fuse-ld=bfd",
       "-pie",
       // Ensure PT_GNU_RELRO exists so we can assert stackmap coverage explicitly.
       "-Wl,-z,relro",
