@@ -48,13 +48,19 @@ pub fn reset_runtime_state() {
 /// ```
 pub struct TestRuntimeGuard {
   _lock: parking_lot::MutexGuard<'static, ()>,
+  _gc_lock: parking_lot::MutexGuard<'static, ()>,
 }
 
 impl TestRuntimeGuard {
   pub fn new() -> Self {
     let lock = TEST_MUTEX.lock();
+    // Serialize with tests that mutate write barrier state (young range + remembered set).
+    let gc_lock = GC_TEST_MUTEX.lock();
     reset_runtime_state();
-    Self { _lock: lock }
+    Self {
+      _lock: lock,
+      _gc_lock: gc_lock,
+    }
   }
 }
 
@@ -112,7 +118,9 @@ impl Drop for TestGcGuard {
     YOUNG_SPACE
       .start
       .store(self.prev_young_start, Ordering::Release);
-    YOUNG_SPACE.end.store(self.prev_young_end, Ordering::Release);
+    YOUNG_SPACE
+      .end
+      .store(self.prev_young_end, Ordering::Release);
   }
 }
 

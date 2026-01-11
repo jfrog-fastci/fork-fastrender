@@ -788,12 +788,12 @@ pub unsafe extern "C" fn rt_write_barrier_range(
 #[cfg(test)]
 mod write_barrier_tests {
   use super::*;
+  use crate::test_util::TestGcGuard;
 
-  // These tests mutate global write-barrier state (`YOUNG_SPACE`), so they must
-  // not run concurrently under the default parallel Rust test runner.
-  static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
   fn with_test_lock<T>(f: impl FnOnce() -> T) -> T {
-    let _g = TEST_LOCK.lock();
+    // Serialize with integration tests that also mutate global write barrier
+    // state (young range + remembered set).
+    let _g = TestGcGuard::new();
     f()
   }
 
