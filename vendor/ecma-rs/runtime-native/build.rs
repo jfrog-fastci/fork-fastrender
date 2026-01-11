@@ -146,11 +146,27 @@ fn parse_force_frame_pointers_opt(opt: &str) -> Option<bool> {
   }
 
   let rest = &opt["force-frame-pointers".len()..];
-  if rest.is_empty() || rest == "=yes" {
+  if rest.is_empty() {
+    // rustc expects an explicit value, but treat `-Cforce-frame-pointers` as "enabled" for
+    // leniency (the build will still fail later if rustc rejects the flag).
     return Some(true);
   }
-  if rest == "=no" {
-    return Some(false);
+
+  let Some(value) = rest.strip_prefix('=') else {
+    return None;
+  };
+
+  // rustc accepts several synonymous boolean values:
+  // - true/yes/on
+  // - false/no/off
+  //
+  // It also supports `non-leaf` / `always` behind `-Zunstable-options`. We treat `always` as
+  // "enabled" and `non-leaf` as "disabled", since runtime-native requires a stable FP chain for
+  // *all* frames.
+  match value {
+    "true" | "yes" | "on" | "always" => return Some(true),
+    "false" | "no" | "off" | "non-leaf" => return Some(false),
+    _ => {}
   }
 
   None

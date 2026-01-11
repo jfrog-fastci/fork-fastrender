@@ -65,6 +65,15 @@ fi
 if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=no"* ]]; then
   need_fp=1
 fi
+if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=false"* ]]; then
+  need_fp=1
+fi
+if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=off"* ]]; then
+  need_fp=1
+fi
+if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=non-leaf"* ]]; then
+  need_fp=1
+fi
 if [[ "${need_fp}" -ne 0 ]]; then
   if [[ -z "${RUSTFLAGS:-}" ]]; then
     export RUSTFLAGS="-C force-frame-pointers=yes"
