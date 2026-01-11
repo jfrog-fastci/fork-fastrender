@@ -113,6 +113,12 @@ mod imp {
 
     use io_uring::{opcode, types, IoUring};
 
+    /// Low-level `io_uring` driver.
+    ///
+    /// # Drop safety
+    /// Dropping a driver while operations are still in-flight would normally drop the owned
+    /// buffers/pin guards before the kernel finishes. To preserve memory safety, this driver
+    /// intentionally leaks the ring and all in-flight op resources if dropped with pending ops.
     pub struct IoUringDriver {
         ring: Option<IoUring>,
         next_id: u64,
@@ -159,6 +165,26 @@ mod imp {
             Ok(())
         }
 
+        fn submit_sqes(&mut self) -> io::Result<()> {
+            loop {
+                match self.ring().submit() {
+                    Ok(_) => return Ok(()),
+                    Err(err) if err.raw_os_error() == Some(libc::EINTR) => continue,
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+
+        fn submit_and_wait(&mut self, want: usize) -> io::Result<()> {
+            loop {
+                match self.ring().submit_and_wait(want) {
+                    Ok(_) => return Ok(()),
+                    Err(err) if err.raw_os_error() == Some(libc::EINTR) => continue,
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+
         pub fn submit_read<B: IoBufMut>(
             &mut self,
             fd: RawFd,
@@ -188,7 +214,7 @@ mod imp {
             );
 
             // Flush SQEs into the kernel.
-            self.ring().submit()?;
+            self.submit_sqes()?;
 
             Ok(IoOp { id, shared })
         }
@@ -221,7 +247,7 @@ mod imp {
                 }),
             );
 
-            self.ring().submit()?;
+            self.submit_sqes()?;
 
             Ok(IoOp { id, shared })
         }
@@ -249,7 +275,7 @@ mod imp {
                 }),
             );
 
-            self.ring().submit()?;
+            self.submit_sqes()?;
 
             Ok(IoOp { id, shared })
         }
@@ -280,12 +306,13 @@ mod imp {
 
         /// Block until at least one CQE is available, then process all CQEs.
         pub fn wait_for_cqe(&mut self) -> io::Result<usize> {
-            let n = self.poll_completions()?;
-            if n != 0 {
-                return Ok(n);
+            loop {
+                let n = self.poll_completions()?;
+                if n != 0 {
+                    return Ok(n);
+                }
+                self.submit_and_wait(1)?;
             }
-            self.ring().submit_and_wait(1)?;
-            self.poll_completions()
         }
     }
 

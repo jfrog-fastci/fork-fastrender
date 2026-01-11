@@ -61,7 +61,7 @@ clap = { workspace = true, features = ["derive"] }
 crossbeam-deque = { workspace = true }
 crossbeam-utils = { workspace = true }
 libc = { workspace = true }
-io-uring = "0.7"
+io-uring = { workspace = true }
 object = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }

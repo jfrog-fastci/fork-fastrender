@@ -93,7 +93,17 @@ impl<R: GcRoot> GcIoBuf<R> {
     pub fn new(root: R) -> Self {
         let len = root.len();
         let pin = root.pin();
-        let ptr = NonNull::new(root.stable_ptr(&pin)).expect("GC stable_ptr must not be null");
+        let raw = root.stable_ptr(&pin);
+        let ptr = match NonNull::new(raw) {
+            Some(p) => p,
+            None => {
+                assert_eq!(
+                    len, 0,
+                    "GC stable_ptr returned null for a non-empty buffer"
+                );
+                NonNull::dangling()
+            }
+        };
         Self {
             root,
             _pin: pin,
