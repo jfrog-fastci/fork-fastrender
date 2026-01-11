@@ -41,6 +41,9 @@ pub(crate) fn is_3d_flattening_boundary(style: &ComputedStyle) -> bool {
   if style.mask_layers.iter().any(|layer| layer.image.is_some()) {
     return true;
   }
+  if style.mask_border.is_active() {
+    return true;
+  }
   if !matches!(style.mix_blend_mode, MixBlendMode::Normal) {
     return true;
   }

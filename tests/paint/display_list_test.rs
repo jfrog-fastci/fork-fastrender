@@ -23,6 +23,7 @@ use fastrender::style::types::BackgroundImage;
 use fastrender::style::types::BackgroundLayer;
 use fastrender::style::types::BackgroundRepeat;
 use fastrender::style::types::BorderCornerRadius;
+use fastrender::style::types::BorderImageSource;
 use fastrender::style::types::BorderStyle;
 use fastrender::style::types::ClipPath;
 use fastrender::style::types::Containment;
@@ -1931,6 +1932,27 @@ fn preserve_3d_flattens_with_grouping_effects() {
   mask_style.mask_layers[0].image = Some(BackgroundImage::Url("mask.png".into()));
   assert_eq!(
     stacking_context_transform_style(mask_style),
+    TransformStyle::Flat
+  );
+
+  let mut mask_border_style = ComputedStyle::default();
+  mask_border_style.mask_border.source = BorderImageSource::Image(Box::new(
+    BackgroundImage::LinearGradient {
+      angle: 90.0,
+      stops: vec![
+        ColorStop {
+          color: Color::Rgba(Rgba::RED),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
+        },
+        ColorStop {
+          color: Color::Rgba(Rgba::BLUE),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
+        },
+      ],
+    },
+  ));
+  assert_eq!(
+    stacking_context_transform_style(mask_border_style),
     TransformStyle::Flat
   );
 
