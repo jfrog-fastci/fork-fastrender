@@ -77,6 +77,11 @@ fn url_base_for_origin(origin: &DocumentOrigin) -> Option<Url> {
     return Url::parse("file:///").ok();
   }
   let host = origin.host()?;
+  let host = if host.contains(':') && !host.starts_with('[') {
+    format!("[{host}]")
+  } else {
+    host.to_string()
+  };
   let scheme = origin.scheme();
   let url = match (scheme, origin.port()) {
     ("http", Some(80)) | ("https", Some(443)) => format!("{scheme}://{host}/"),
@@ -942,6 +947,20 @@ mod tests {
       .expect("expected response");
     assert_eq!(response.url, "https://example.com/a%20b");
     assert!(!response.redirected);
+  }
+
+  #[test]
+  fn url_base_for_origin_brackets_ipv6_hosts() {
+    let origin = origin_from_url("https://[::1]/").expect("origin");
+    let base = url_base_for_origin(&origin).expect("base url");
+    assert_eq!(base.as_str(), "https://[::1]/");
+  }
+
+  #[test]
+  fn url_base_for_origin_brackets_ipv6_hosts_with_ports() {
+    let origin = origin_from_url("https://[::1]:444/").expect("origin");
+    let base = url_base_for_origin(&origin).expect("base url");
+    assert_eq!(base.as_str(), "https://[::1]:444/");
   }
 
   #[test]
