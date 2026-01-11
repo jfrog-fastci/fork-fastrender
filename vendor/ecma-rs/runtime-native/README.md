@@ -78,10 +78,10 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p runtime-native --release
 ```
 
 If you don't have LLVM 18 installed, you can still build by providing the required
-rustc flag directly:
+rustc flag directly (the `scripts/cargo_agent.sh` wrapper injects it automatically):
 
 ```bash
-RUSTFLAGS="-C force-frame-pointers=yes" bash scripts/cargo_agent.sh build --release -p runtime-native
+bash scripts/cargo_agent.sh build --release -p runtime-native
 ```
 
 Or via the helper script (prints include/lib paths for downstream build systems and

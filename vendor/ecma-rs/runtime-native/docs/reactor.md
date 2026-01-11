@@ -192,6 +192,7 @@ Linux CI primarily exercises the `epoll` backend. To validate the kqueue impleme
 macOS/BSD, run:
 
 ```bash
+# Conformance suite (portable; uses kqueue on macOS/BSD):
 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native --test reactor_conformance
 ```
 

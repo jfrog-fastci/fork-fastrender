@@ -8,7 +8,7 @@ target_dir="${CARGO_TARGET_DIR:-${ecma_rs_root}/target}"
 
 # The runtime-native crate requires frame pointers for FP-based stack walking / GC root enumeration.
 # (Enforced by `runtime-native/build.rs`.) Inject the flag here so the helper script works out of
-# the box even when the caller isn't using `scripts/cargo_llvm.sh`.
+# the box even when the caller isn't using `scripts/cargo_agent.sh` / `scripts/cargo_llvm.sh`.
 if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
   if [[ -z "${RUSTFLAGS:-}" ]]; then
     export RUSTFLAGS="-C force-frame-pointers=yes"
@@ -19,10 +19,10 @@ fi
 
 echo "Building runtime-native (release)..." >&2
 cd "${ecma_rs_root}"
-# Use the LLVM wrapper:
-# - raises the RLIMIT_AS cap (LLVM-heavy builds)
-# - forces frame pointers (required for stack walking / GC)
-bash scripts/cargo_llvm.sh build --release -p runtime-native
+# Use the standard cargo wrapper (slot + RLIMIT_AS caps). `scripts/cargo_agent.sh` also injects
+# `-C force-frame-pointers=yes` for runtime-native, so we don't need to require LLVM 18 tooling
+# just to build the Rust runtime library.
+bash scripts/cargo_agent.sh build --release -p runtime-native
 
 lib_path="${target_dir}/release/libruntime_native.a"
 if [[ ! -f "${lib_path}" ]]; then

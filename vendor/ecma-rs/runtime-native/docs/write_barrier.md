@@ -282,7 +282,7 @@ For smaller pointer buffers, scanning the whole object is usually cheaper than m
 To reproduce the benchmarks locally:
 
 ```bash
-bash vendor/ecma-rs/scripts/cargo_llvm.sh bench -p runtime-native --bench card_table
+bash vendor/ecma-rs/scripts/cargo_agent.sh bench -p runtime-native --bench card_table
 ```
 
 ---
