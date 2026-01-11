@@ -65,15 +65,23 @@ pub trait BrowserTabJsExecutor {
     ))
   }
 
+  /// Returns `true` if this executor supports module graph prefetch via [`Self::fetch_module_graph`].
+  ///
+  /// Module graph fetching is optional: `BrowserTabHost` uses it to start loading module dependency
+  /// graphs early, but will fall back to fetching only the entry module source when this returns
+  /// `false`.
+  fn supports_module_graph_fetch(&self) -> bool {
+    false
+  }
+
   /// Fetch/instantiate the module graph for a module `<script>` element without evaluating it.
   ///
   /// This is used by the HTML-like script scheduler so module scripts can start loading their
   /// dependency graphs as early as possible, while still deferring evaluation based on
   /// `async`/parser-inserted ordering rules.
   ///
-  /// Executors that support module scripts should override this; the default implementation returns
-  /// an error so non-module backends can ignore `type="module"` scripts when
-  /// `supports_module_scripts=false`.
+  /// Executors that support module graph prefetch should override this and return `true` from
+  /// [`Self::supports_module_graph_fetch`].
   fn fetch_module_graph(
     &mut self,
     _spec: &ScriptElementSpec,
@@ -2429,9 +2437,55 @@ impl BrowserTabHost {
       sources: Arc::clone(&self.external_script_sources),
     });
 
+    let supports_module_graph_fetch = self.executor.supports_module_graph_fetch();
+
     // HTML queues module graph fetching on the networking task source. This applies even for inline
     // module scripts.
     event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      if !supports_module_graph_fetch {
+        // `BrowserTabJsExecutor::fetch_module_graph` is optional. Executors that support module
+        // scripts but do not implement graph prefetch should still fetch the entry module so
+        // `<script type="module" src=...>` participates in the normal resource pipeline (e.g.
+        // request destination classification).
+        let source_text = if spec.src_attr_present {
+          let Some(url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
+            // Mirror the scheduler's invalid-src behavior (error event + no execution).
+            host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
+            host.mutate_dom(|dom| {
+              dom.node_mut(script_node_id).script_already_started = true;
+              ((), false)
+            });
+            let actions = host.scheduler.module_graph_failed(script_id)?;
+            host.finish_script_execution(script_id, event_loop)?;
+            host.apply_scheduler_actions(actions, event_loop)?;
+            return Ok(());
+          };
+          match host.fetch_script_source(script_id, url, FetchDestination::ScriptCors) {
+            Ok(source_text) => source_text,
+            Err(err) => {
+              host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
+              host.mutate_dom(|dom| {
+                dom.node_mut(script_node_id).script_already_started = true;
+                ((), false)
+              });
+              let actions = host.scheduler.module_graph_failed(script_id)?;
+              host.finish_script_execution(script_id, event_loop)?;
+              host.apply_scheduler_actions(actions, event_loop)?;
+              if matches!(err, Error::Render(_)) {
+                return Err(err);
+              }
+              return Ok(());
+            }
+          }
+        } else {
+          std::mem::take(&mut spec.inline_text)
+        };
+
+        let actions = host.scheduler.module_graph_ready(script_id, source_text)?;
+        host.apply_scheduler_actions(actions, event_loop)?;
+        return Ok(());
+      }
+
       let result = {
         let BrowserTabHost { executor, document, .. } = host;
         executor.fetch_module_graph(&spec, Arc::clone(&fetcher), document.as_mut(), event_loop)
@@ -2442,53 +2496,6 @@ impl BrowserTabHost {
           host.apply_scheduler_actions(actions, event_loop)?;
         }
         Err(err) => {
-          // `BrowserTabJsExecutor::fetch_module_graph` is optional. Executors that support module
-          // scripts but do not implement graph prefetch should still fetch the entry module so
-          // `<script type="module" src=...>` participates in the normal resource pipeline (e.g.
-          // request destination classification).
-          let prefetch_unsupported = matches!(
-            &err,
-            Error::Other(message) if message == MODULE_GRAPH_FETCH_UNSUPPORTED_MESSAGE
-          );
-          if prefetch_unsupported {
-            let source_text = if spec.src_attr_present {
-              let Some(url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
-                // Mirror the scheduler's invalid-src behavior (error event + no execution).
-                host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
-                host.mutate_dom(|dom| {
-                  dom.node_mut(script_node_id).script_already_started = true;
-                  ((), false)
-                });
-                let actions = host.scheduler.module_graph_failed(script_id)?;
-                host.finish_script_execution(script_id, event_loop)?;
-                host.apply_scheduler_actions(actions, event_loop)?;
-                return Ok(());
-              };
-              match host.fetch_script_source(script_id, url, FetchDestination::ScriptCors) {
-                Ok(source_text) => source_text,
-                Err(err) => {
-                  host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
-                  host.mutate_dom(|dom| {
-                    dom.node_mut(script_node_id).script_already_started = true;
-                    ((), false)
-                  });
-                  let actions = host.scheduler.module_graph_failed(script_id)?;
-                  host.finish_script_execution(script_id, event_loop)?;
-                  host.apply_scheduler_actions(actions, event_loop)?;
-                  if matches!(err, Error::Render(_)) {
-                    return Err(err);
-                  }
-                  return Ok(());
-                }
-              }
-            } else {
-              std::mem::take(&mut spec.inline_text)
-            };
-            let actions = host.scheduler.module_graph_ready(script_id, source_text)?;
-            host.apply_scheduler_actions(actions, event_loop)?;
-            return Ok(());
-          }
-
           // Module graph failures dispatch an `error` event and must not execute.
           host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
           host.mutate_dom(|dom| {

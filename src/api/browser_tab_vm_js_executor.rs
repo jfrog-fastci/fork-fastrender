@@ -287,6 +287,10 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     exec_result
   }
 
+  fn supports_module_graph_fetch(&self) -> bool {
+    true
+  }
+
   fn fetch_module_graph(
     &mut self,
     spec: &ScriptElementSpec,
