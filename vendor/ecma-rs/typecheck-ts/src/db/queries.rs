@@ -601,6 +601,7 @@ pub mod body_check {
     pub store: Arc<TypeStore>,
     pub target: ScriptTarget,
     pub no_implicit_any: bool,
+    pub native_strict: bool,
     pub use_define_for_class_fields: bool,
     pub interned_def_types: HashMap<DefId, InternedTypeId>,
     pub interned_type_params: HashMap<DefId, Vec<TypeParamId>>,
@@ -1230,6 +1231,25 @@ pub mod body_check {
             }
           }
         }
+      }
+
+      if ctx.native_strict {
+        let mut strict_hooks = relate_hooks();
+        strict_hooks.expander = Some(&expander);
+        let strict_relate = RelateCtx::with_hooks_and_cache(
+          Arc::clone(&ctx.store),
+          ctx.store.options(),
+          strict_hooks,
+          caches.relation.clone(),
+        );
+        let strict_diagnostics = crate::program::check::native_strict::validate_native_strict_body(
+          body,
+          &result,
+          ctx.store.as_ref(),
+          &strict_relate,
+          meta.file,
+        );
+        result.diagnostics.extend(strict_diagnostics);
       }
 
       let res = Arc::new(result);

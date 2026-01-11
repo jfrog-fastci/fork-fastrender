@@ -96,6 +96,12 @@ pub struct CompilerOptions {
   pub types: Vec<String>,
   pub strict_null_checks: bool,
   pub no_implicit_any: bool,
+  /// Enforce the AOT-friendly subset of TypeScript described in EXEC.plan.
+  ///
+  /// This is intentionally opt-in so existing conformance behavior remains
+  /// unchanged unless explicitly enabled.
+  #[cfg_attr(feature = "serde", serde(default))]
+  pub native_strict: bool,
   pub strict_function_types: bool,
   pub exact_optional_property_types: bool,
   pub no_unchecked_indexed_access: bool,
@@ -138,6 +144,7 @@ impl Default for CompilerOptions {
       types: Vec::new(),
       strict_null_checks: true,
       no_implicit_any: false,
+      native_strict: false,
       strict_function_types: true,
       exact_optional_property_types: false,
       no_unchecked_indexed_access: false,

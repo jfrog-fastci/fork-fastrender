@@ -127,6 +127,7 @@ impl ProgramState {
       store: Arc::clone(&store),
       target: self.compiler_options.target,
       no_implicit_any: self.compiler_options.no_implicit_any,
+      native_strict: self.compiler_options.native_strict,
       use_define_for_class_fields: self.compiler_options.use_define_for_class_fields,
       interned_def_types: self.interned_def_types.clone(),
       interned_type_params: self.interned_type_params.clone(),

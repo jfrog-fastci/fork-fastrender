@@ -11,6 +11,7 @@ pub mod hir_body;
 pub(crate) mod infer;
 pub(crate) mod instantiate;
 pub(super) mod modules;
+pub(crate) mod native_strict;
 pub(crate) mod overload;
 pub(crate) mod type_expr;
 pub mod widen;

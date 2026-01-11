@@ -770,6 +770,126 @@ pub const INVALID_VARIANCE_ANNOTATION: Code = Code::new(
   &[],
 );
 
+/// TC4000: `any` is forbidden when `native_strict` is enabled.
+///
+/// - Primary span: expression or binding pattern whose inferred type contains
+///   `any`.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_ANY: Code = Code::new(
+  "TC4000",
+  "any is forbidden in native-strict mode",
+  "expression or binding with an `any` type",
+  &["primary: expression or binding with an `any` type"],
+  &[],
+);
+
+/// TC4001: Direct `eval` calls are forbidden when `native_strict` is enabled.
+///
+/// - Primary span: the `eval` identifier used as the call callee.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_EVAL: Code = Code::new(
+  "TC4001",
+  "eval is forbidden in native-strict mode",
+  "`eval` identifier in a call expression",
+  &["primary: `eval` identifier"],
+  &[],
+);
+
+/// TC4002: `new Function(...)` is forbidden when `native_strict` is enabled.
+///
+/// - Primary span: the `Function` identifier used as the constructor callee.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_NEW_FUNCTION: Code = Code::new(
+  "TC4002",
+  "new Function is forbidden in native-strict mode",
+  "`Function` identifier in a `new` expression",
+  &["primary: `Function` identifier"],
+  &[],
+);
+
+/// TC4003: `with` statements are forbidden when `native_strict` is enabled.
+///
+/// - Primary span: the `with` keyword.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_WITH: Code = Code::new(
+  "TC4003",
+  "with is forbidden in native-strict mode",
+  "`with` keyword of a with-statement",
+  &["primary: `with` keyword"],
+  &[],
+);
+
+/// TC4004: `arguments` is forbidden when `native_strict` is enabled.
+///
+/// - Primary span: the `arguments` identifier.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_ARGUMENTS: Code = Code::new(
+  "TC4004",
+  "arguments is forbidden in native-strict mode",
+  "`arguments` identifier expression",
+  &["primary: `arguments` identifier"],
+  &[],
+);
+
+/// TC4005: Unsafe type assertions are forbidden when `native_strict` is enabled.
+///
+/// - Primary span: the type assertion expression (`expr as T` / `<T>expr`).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_UNSAFE_ASSERTION: Code = Code::new(
+  "TC4005",
+  "unsafe type assertion is forbidden in native-strict mode",
+  "type assertion expression",
+  &["primary: type assertion expression"],
+  &[],
+);
+
+/// TC4006: Non-null assertions on maybe-nullish values are forbidden when
+/// `native_strict` is enabled.
+///
+/// - Primary span: the non-null assertion expression (`expr!`).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_NONNULL_ASSERTION: Code = Code::new(
+  "TC4006",
+  "non-null assertion is forbidden in native-strict mode",
+  "non-null assertion expression",
+  &["primary: non-null assertion expression"],
+  &[],
+);
+
+/// TC4007: Computed property access requires a constant key when `native_strict`
+/// is enabled.
+///
+/// - Primary span: the computed key expression (`obj[key]` highlights `key`).
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_COMPUTED_PROPERTY_KEY: Code = Code::new(
+  "TC4007",
+  "computed property access requires a constant key in native-strict mode",
+  "computed property key expression",
+  &["primary: computed property key expression"],
+  &[],
+);
+
+/// TC4008: `new Proxy(...)` is forbidden when `native_strict` is enabled.
+///
+/// - Primary span: the `Proxy` identifier used as the constructor callee.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const NATIVE_STRICT_PROXY: Code = Code::new(
+  "TC4008",
+  "new Proxy is forbidden in native-strict mode",
+  "`Proxy` identifier in a `new` expression",
+  &["primary: `Proxy` identifier"],
+  &[],
+);
+
 /// HOST0001: Host environment failed to provide required input.
 ///
 /// - Primary span: zero-length placeholder when no source span is available.

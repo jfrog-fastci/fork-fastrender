@@ -1191,6 +1191,33 @@ impl ProgramState {
         }
       }
     }
+    if self.compiler_options.native_strict {
+      let expander = RefExpander::new(
+        Arc::clone(&store),
+        &self.interned_def_types,
+        &self.interned_type_params,
+        &self.interned_type_param_decls,
+        &self.interned_intrinsics,
+        &self.interned_class_instances,
+        caches.eval.clone(),
+      );
+      let mut base_relate_hooks = relate_hooks();
+      base_relate_hooks.expander = Some(&expander);
+      let relate = RelateCtx::with_hooks_and_cache(
+        Arc::clone(&store),
+        store.options(),
+        base_relate_hooks,
+        caches.relation.clone(),
+      );
+      let strict_diagnostics = check::native_strict::validate_native_strict_body(
+        body,
+        &result,
+        store.as_ref(),
+        &relate,
+        file,
+      );
+      result.diagnostics.extend(strict_diagnostics);
+    }
     let res = Arc::new(result);
     if matches!(self.compiler_options.cache.mode, CacheMode::PerBody) {
       let mut stats = caches.stats();

@@ -110,6 +110,10 @@ struct TypecheckArgs {
   #[arg(long, action = ArgAction::SetTrue)]
   strict_native: bool,
 
+  /// Enforce the AOT-friendly TypeScript subset described in EXEC.plan.
+  #[arg(long, action = ArgAction::SetTrue)]
+  native_strict: bool,
+
   /// Use Node/TS style module resolution.
   #[arg(long)]
   node_resolve: bool,
@@ -585,6 +589,9 @@ fn build_compiler_options(
   }
   if args.strict_native {
     options.strict_native = true;
+  }
+  if args.native_strict {
+    options.native_strict = true;
   }
 
   Ok(options)
