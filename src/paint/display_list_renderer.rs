@@ -1984,13 +1984,9 @@ where
     return Ok(());
   }
 
-  let filtered_height = if let Some(cached) = cached_filtered.as_ref() {
-    cached.height()
-  } else {
-    region.height()
-  };
   let filtered_width_i64 = filtered_width as i64;
-  let filtered_height_i64 = i64::from(filtered_height);
+  let filtered_height_u32 = filtered_height as u32;
+  let filtered_height_i64 = filtered_height as i64;
 
   // `bounds_in_src` can extend outside `src_size` (e.g. when a tile renderer translates the canvas
   // so some tiles see negative origins). `region` only stores the intersection that we could
@@ -2063,7 +2059,7 @@ where
   .clamp(0, filtered_height_i64) as u32;
 
   write_w = write_w.min((filtered_width_i64 as u32).saturating_sub(src_start_x));
-  write_h = write_h.min(filtered_height.saturating_sub(src_start_y));
+  write_h = write_h.min(filtered_height_u32.saturating_sub(src_start_y));
   if write_w == 0 || write_h == 0 {
     scratch.region = Some(region);
     if let Some(mask) = radii_mask {
