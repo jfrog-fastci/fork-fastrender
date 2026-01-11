@@ -2,6 +2,7 @@
 
 mod background_repeat_pattern_origin_offset;
 mod background_tiling;
+mod bidi_split_caret_affinity;
 mod clip_path_origin_offset;
 mod form_control_caret_color;
 mod form_control_content_box_clip;
