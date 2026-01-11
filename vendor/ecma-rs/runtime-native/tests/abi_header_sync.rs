@@ -1,3 +1,7 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
 #[test]
 fn runtime_native_c_header_contains_expected_abi_symbols() {
   const HEADER: &str = include_str!("../include/runtime_native.h");
@@ -243,4 +247,128 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _io_update,
     _io_unregister,
   );
+}
+
+fn workspace_root() -> PathBuf {
+  // runtime-native/ is a workspace member; workspace root is its parent.
+  Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("runtime-native should live at <workspace>/runtime-native")
+    .to_path_buf()
+}
+
+fn target_dir() -> PathBuf {
+  std::env::var_os("CARGO_TARGET_DIR")
+    .map(PathBuf::from)
+    .unwrap_or_else(|| workspace_root().join("target"))
+}
+
+fn find_staticlib(target_dir: &Path, profile: &str) -> PathBuf {
+  let direct = target_dir.join(profile).join("libruntime_native.a");
+  let mut newest: Option<(std::time::SystemTime, PathBuf)> = fs::metadata(&direct)
+    .and_then(|meta| meta.modified())
+    .ok()
+    .map(|mtime| (mtime, direct.clone()));
+
+  let deps_dir = target_dir.join(profile).join("deps");
+  if let Ok(entries) = fs::read_dir(&deps_dir) {
+    for entry in entries.flatten() {
+      let path = entry.path();
+      let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+        continue;
+      };
+      if !(file_name.starts_with("libruntime_native") && file_name.ends_with(".a")) {
+        continue;
+      }
+
+      let mtime = fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+      match newest {
+        Some((best, _)) if mtime <= best => {}
+        _ => newest = Some((mtime, path)),
+      }
+    }
+  }
+
+  if let Some((_, path)) = newest {
+    return path;
+  }
+
+  panic!(
+    "failed to find runtime-native staticlib at {} (checked {} and {})",
+    target_dir.display(),
+    direct.display(),
+    deps_dir.display()
+  );
+}
+
+#[test]
+fn runtime_native_c_header_declares_all_exported_rt_symbols() {
+  // This repo's CI target is Ubuntu x86_64. Use GNU nm to sanity check that
+  // every exported `rt_*` entrypoint in the staticlib is declared in the C
+  // header.
+  if !cfg!(target_os = "linux") {
+    eprintln!("skipping: header/export sync via `nm` is only checked on Linux");
+    return;
+  }
+
+  // `nm` is part of the standard toolchain on Ubuntu; still skip gracefully if absent.
+  if Command::new("nm")
+    .arg("--version")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .is_err()
+  {
+    eprintln!("skipping: `nm` not available");
+    return;
+  }
+
+  let header = include_str!("../include/runtime_native.h");
+  let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+  let staticlib = find_staticlib(&target_dir(), profile);
+
+  let out = Command::new("nm")
+    .arg("-g")
+    .arg("--defined-only")
+    .arg(&staticlib)
+    .output()
+    .expect("run nm");
+  assert!(
+    out.status.success(),
+    "nm failed for {}: status={:?} stderr={}",
+    staticlib.display(),
+    out.status,
+    String::from_utf8_lossy(&out.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  let mut missing: Vec<String> = Vec::new();
+  for line in stdout.lines() {
+    let line = line.trim();
+    if line.is_empty() || line.ends_with(':') {
+      continue;
+    }
+    let Some(name) = line.split_whitespace().last() else {
+      continue;
+    };
+    if !name.starts_with("rt_") {
+      continue;
+    }
+    let needle = format!("{name}(");
+    if !header.contains(&needle) {
+      missing.push(name.to_string());
+    }
+  }
+
+  if !missing.is_empty() {
+    missing.sort();
+    missing.dedup();
+    panic!(
+      "runtime_native.h is missing declarations for exported rt_* symbols from {}:\n{}",
+      staticlib.display(),
+      missing.join("\n")
+    );
+  }
 }
