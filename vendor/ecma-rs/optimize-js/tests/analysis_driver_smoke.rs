@@ -133,4 +133,15 @@ fn analyze_program_function_uses_analyzed_cfg() {
     StringEncoding::Utf8,
     "expected analyze_program_function to analyze the SSA cfg when present"
   );
+
+  #[cfg(feature = "typed")]
+  {
+    let types = optimize_js::types::TypeContext::default();
+    let analyses = optimize_js::analysis::analyze_program_function_typed(&func, &types);
+    assert_eq!(
+      analyses.encoding.encoding_at_exit(0, 0),
+      StringEncoding::Utf8,
+      "expected analyze_program_function_typed to analyze the SSA cfg when present"
+    );
+  }
 }
