@@ -1137,7 +1137,11 @@ mod tests {
     push_u64(&mut bytes, 1); // record_count
 
     // Record (statepoint-style).
-    push_u64(&mut bytes, 0xabcdef00); // patchpoint_id
+    //
+    // Note: LLVM's `rewrite-statepoints-for-gc` supports overriding the statepoint ID via callsite
+    // directives (`"statepoint-id"="..."`). The patchpoint ID in the stackmap record therefore
+    // must not be used as a statepoint-layout discriminator.
+    push_u64(&mut bytes, 42); // patchpoint_id
     push_u32(&mut bytes, 0x10); // instruction_offset
     push_u16(&mut bytes, 0); // reserved
     push_u16(&mut bytes, 5); // num_locations = 3 header + 1 (base,derived) pair

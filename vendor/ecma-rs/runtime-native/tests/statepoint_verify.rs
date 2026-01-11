@@ -78,6 +78,57 @@ fn verifier_rejects_register_locations() {
 }
 
 #[test]
+fn verifier_rejects_register_locations_with_custom_statepoint_id() {
+  // LLVM allows overriding the statepoint ID / StackMap patchpoint_id via the
+  // `"statepoint-id"` callsite directive. The verifier should still treat such
+  // records as statepoints and validate their location kinds.
+  let stackmap = StackMap {
+    version: 3,
+    functions: vec![StackSizeRecord {
+      address: 0x1000,
+      stack_size: 32,
+      record_count: 1,
+    }],
+    constants: vec![],
+    records: vec![StackMapRecord {
+      patchpoint_id: 42,
+      instruction_offset: 0,
+      locations: vec![
+        Location::Constant { size: 8, value: 0 }, // callconv
+        Location::Constant { size: 8, value: 0 }, // flags
+        Location::Constant { size: 8, value: 0 }, // deopt_count
+        // One GC pair; base is invalid (Register) and should be rejected.
+        Location::Register {
+          size: 8,
+          dwarf_reg: 7,
+          offset: 0,
+        },
+        Location::Indirect {
+          size: 8,
+          dwarf_reg: 7,
+          offset: 8,
+        },
+      ],
+      live_outs: vec![],
+    }],
+  };
+
+  let err = verify_statepoint_stackmap(
+    &stackmap,
+    VerifyStatepointOptions {
+      arch: DwarfArch::X86_64,
+      mode: VerifyMode::StatepointsOnly,
+    },
+  )
+  .unwrap_err();
+  assert_eq!(err.patchpoint_id, 42);
+  assert_eq!(err.location_index, Some(3));
+  let loc = err.location.expect("expected location details for VerifyError");
+  assert_eq!(loc.kind, "Register");
+  assert!(err.message.contains("GC root is held in a register"));
+}
+
+#[test]
 fn verifier_accepts_nonzero_flags_header() {
   let stackmap = StackMap {
     version: 3,
@@ -190,7 +241,9 @@ fn stackmaps_parse_runs_statepoint_verifier() {
   match err {
     runtime_native::stackmaps::StackMapError::StatepointVerify(v) => {
       assert_eq!(v.location_index, Some(3));
-      assert!(v.message.contains("expected Indirect"));
+      let loc = v.location.expect("expected location details for VerifyError");
+      assert_eq!(loc.kind, "Register");
+      assert!(v.message.contains("GC root is held in a register"));
     }
     other => panic!("expected StatepointVerify error, got {other:?}"),
   }

@@ -15,11 +15,10 @@ use crate::statepoints::{
 use std::error::Error;
 use std::fmt;
 
-/// Empirically observed in LLVM 18 output for `@llvm.experimental.gc.statepoint`.
+/// Default statepoint ID used by LLVM 18's `rewrite-statepoints-for-gc` pass.
 ///
-/// This is **not** a contract of LLVM itself; it's a convention for our codegen
-/// to mark statepoints so the runtime can cheaply identify which stackmap
-/// records should follow the statepoint layout.
+/// LLVM uses this constant ID when callsites are not annotated with the
+/// `"statepoint-id"` directive attribute.
 pub const LLVM_STATEPOINT_PATCHPOINT_ID: u64 = 0xABCDEF00;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,8 +299,12 @@ pub fn verify_statepoint_stackmap(
       })?;
       record_index += 1;
 
-      let is_statepoint = rec.patchpoint_id == LLVM_STATEPOINT_PATCHPOINT_ID;
-      if opts.mode == VerifyMode::StatepointsOnly && !is_statepoint {
+      let looks_like_statepoint =
+        rec.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+          && rec.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+            .iter()
+            .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+      if opts.mode == VerifyMode::StatepointsOnly && !looks_like_statepoint {
         continue;
       }
 
