@@ -81,6 +81,42 @@ trap 'rm -rf "${tmpdir}"' EXIT
 OBJ_A="${tmpdir}/a.o"
 OBJ_B="${tmpdir}/b.o"
 
+assert_llvm_as_accepts_flags() {
+  local flags="$1"
+  local ir="${tmpdir}/accept_flags_${flags}.ll"
+  local bc="${tmpdir}/accept_flags_${flags}.bc"
+  local err="${tmpdir}/accept_flags_${flags}.llvm-as.err"
+
+  cat >"${ir}" <<EOF
+target triple = "x86_64-pc-linux-gnu"
+
+declare void @callee()
+declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
+
+define void @test(ptr addrspace(1) %obj) gc "coreclr" {
+entry:
+  %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
+    i64 0, i32 0,
+    ptr elementtype(void ()) @callee,
+    i32 0, i32 ${flags},
+    i32 0, i32 0) [ "gc-live"(ptr addrspace(1) %obj) ]
+  ret void
+}
+EOF
+
+  if ! "${LLVM_AS}" "${ir}" -o "${bc}" 2>"${err}"; then
+    echo "=== llvm-as stderr for flags=${flags} ===" >&2
+    cat "${err}" >&2
+    die "expected llvm-as to accept gc.statepoint flags=${flags} on LLVM 18 (valid range is 0..3)"
+  fi
+}
+
+# Guard verifier behaviour for each currently-valid flag bit individually.
+if [[ -n "${LLVM_AS}" ]]; then
+  assert_llvm_as_accepts_flags 1
+  assert_llvm_as_accepts_flags 2
+fi
+
 run_llc() {
   local in="$1"
   local out="$2"
