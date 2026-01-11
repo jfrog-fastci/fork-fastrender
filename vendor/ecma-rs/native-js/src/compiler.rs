@@ -31,7 +31,6 @@ use tempfile::TempDir;
 use typecheck_ts::{BodyCheckResult, FileId, FileKey, Host, Program};
 
 const CODE_MISSING_HIR: &str = "NJS0201";
-const CODE_UNSUPPORTED_EMIT: &str = "NJS0202";
 
 /// Parse + typecheck a TypeScript program and then validate that it fits the
 /// strict native-js subset.
@@ -581,25 +580,18 @@ impl<'a> Compiler<'a> {
   fn build_llvm_module<'ctx>(
     &self,
     context: &'ctx Context,
-    _loaded: &LoadedProgram,
+    loaded: &LoadedProgram,
   ) -> Result<Module<'ctx>, NativeJsError> {
-    // Placeholder: build an empty module with a stub `main` function.
-    //
-    // Real lowering from HIR + type tables will be added in follow-up tasks.
-    let module = context.create_module("native-js");
-    let builder = context.create_builder();
-
-    let i32_ty = context.i32_type();
-    let fn_ty = i32_ty.fn_type(&[], false);
-    let func = module.add_function("main", fn_ty, None);
-
-    let entry = context.append_basic_block(func, "entry");
-    builder.position_at_end(entry);
-    builder
-      .build_return(Some(&i32_ty.const_int(0, false)))
-      .expect("build ret");
-
-    Ok(module)
+    crate::codegen::codegen(
+      context,
+      self.program,
+      self.entry,
+      loaded.entrypoint,
+      crate::codegen::CodegenOptions {
+        module_name: "native-js".to_string(),
+      },
+    )
+    .map_err(|diagnostics| NativeJsError::Rejected { diagnostics })
   }
 
   fn emit_artifact<'ctx>(&self, module: &Module<'ctx>) -> Result<Artifact, NativeJsError> {
@@ -646,14 +638,64 @@ impl<'a> Compiler<'a> {
           stdout_hint: Some(format!("wrote {}", path.display())),
         })
       }
-      EmitKind::Executable => Err(NativeJsError::Unsupported {
-        message: "EmitKind::Executable is not implemented yet for the typechecked pipeline".to_string(),
-        diagnostics: vec![Diagnostic::error(
-          CODE_UNSUPPORTED_EMIT,
-          "EmitKind::Executable is not implemented yet for the typechecked pipeline",
-          Span::new(self.entry, TextRange::new(0, 0)),
-        )],
-      }),
+      EmitKind::Executable => {
+        if !cfg!(target_os = "linux") {
+          return Err(NativeJsError::UnsupportedPlatform {
+            target_os: std::env::consts::OS.to_string(),
+          });
+        }
+
+        let exe_path = self.output_path("")?;
+        let _ = std::fs::remove_file(&exe_path);
+
+        let obj =
+          emit::emit_object_with_statepoints(module, target_config_from_opts(self.opts)).map_err(|e| {
+            NativeJsError::Llvm(e.to_string())
+          })?;
+
+        let mut tmp_obj: Option<TempDir> = None;
+        let keep_obj = self.opts.debug || self.opts.output.is_some();
+        let obj_path = if keep_obj {
+          path_with_suffix(&exe_path, ".o")
+        } else {
+          let dir = TempDir::new().map_err(NativeJsError::TempDirCreateFailed)?;
+          let obj_path = dir.path().join("out.o");
+          tmp_obj = Some(dir);
+          obj_path
+        };
+
+        write_file(&obj_path, &obj)?;
+
+        if self.opts.debug {
+          let ir_path = path_with_suffix(&exe_path, ".ll");
+          let ir = emit::emit_llvm_ir(module);
+          write_file(&ir_path, ir.as_bytes())?;
+        }
+
+        link::link_object_to_executable(&obj_path, &exe_path)?;
+        drop(tmp_obj);
+
+        #[cfg(unix)]
+        {
+          use std::os::unix::fs::PermissionsExt;
+          let meta = std::fs::metadata(&exe_path).map_err(|source| NativeJsError::Io {
+            path: exe_path.clone(),
+            source,
+          })?;
+          let mut perms = meta.permissions();
+          perms.set_mode(perms.mode() | 0o111);
+          std::fs::set_permissions(&exe_path, perms).map_err(|source| NativeJsError::Io {
+            path: exe_path.clone(),
+            source,
+          })?;
+        }
+
+        Ok(Artifact {
+          kind: self.opts.emit,
+          path: exe_path.clone(),
+          stdout_hint: Some(format!("wrote {}", exe_path.display())),
+        })
+      }
     }
   }
 

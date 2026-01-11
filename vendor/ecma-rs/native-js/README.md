@@ -7,8 +7,10 @@ The crate can emit **LLVM IR** and (on Linux) can produce **object files** / a *
 by shelling out to `clang`/`lld` for linking.
 
 This crate is still early. The typechecked pipeline is wired end-to-end
-(typecheck-ts → HIR/types → LLVM module → artifact), but the HIR→LLVM lowering is
-still under construction.
+(typecheck-ts → HIR/types → LLVM module → artifact) and can lower an exported
+`main()` entrypoint for a small strict subset (basic control flow +
+integer/boolean expressions). Most of the full HIR→LLVM lowering is still under
+construction.
 
 - minimal `parse-js`-driven **textual** LLVM IR emitters:
   - `compile_typescript_to_llvm_ir` (single module string)
@@ -210,7 +212,8 @@ let artifact = compile_program(&program, entry, &opts)?;
 println!(\"wrote {}\", artifact.path.display());
 ```
 
-> Note: the long-term typechecked/HIR backend is still under construction.
+> Note: the typechecked/HIR backend is still minimal and currently only lowers a
+> single exported `main()` entrypoint (no cross-module imports yet).
 > `native_js::codegen` currently contains:
 > - the minimal `parse-js`-driven emitter used by `compile_typescript_to_llvm_ir`, and
 > - an early HIR-driven backend used by the `native-js` CLI binary.
