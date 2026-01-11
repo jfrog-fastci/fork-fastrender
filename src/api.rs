@@ -202,6 +202,7 @@ use crate::tree::fragment_tree::{
   enable_fragment_instrumentation, reset_fragment_instrumentation_counters,
 };
 use fontdb::Database as FontDbDatabase;
+use lru::LruCache;
 use rayon::prelude::*;
 use rustc_hash::FxHasher as DefaultHasher;
 use serde::{Deserialize, Serialize};
@@ -213,7 +214,7 @@ use std::io;
 use std::mem;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock};
 use url::Url;
 
 use std::time::{Duration, Instant};
@@ -270,6 +271,9 @@ thread_local! {
   static REPLACED_INTRINSIC_PROFILE: RefCell<ReplacedIntrinsicProfileState> =
     RefCell::new(ReplacedIntrinsicProfileState::default());
 }
+
+static INTRINSIC_PROBE_THREAD_POOLS: LazyLock<Mutex<LruCache<usize, Arc<rayon::ThreadPool>>>> =
+  LazyLock::new(|| Mutex::new(LruCache::unbounded()));
 
 #[derive(Clone)]
 struct ImageIntrinsicProbeJob {
@@ -14080,21 +14084,49 @@ impl FastRender {
   }
 
   fn intrinsic_probe_pool(parallelism: usize) -> Arc<rayon::ThreadPool> {
-    static POOLS: OnceLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> = OnceLock::new();
-    let pools = POOLS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = pools
-      .lock()
-      .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(existing) = guard.get(&parallelism) {
-      return Arc::clone(existing);
+    #[cfg(test)]
+    let _test_lock = crate::thread_pool_cache::thread_pool_cache_test_lock();
+
+    let parallelism = crate::thread_pool_cache::clamp_thread_count(parallelism);
+    let cache_max = crate::thread_pool_cache::thread_pool_cache_max();
+
+    if cache_max > 0 {
+      {
+        let mut guard = INTRINSIC_PROBE_THREAD_POOLS
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = guard.get(&parallelism) {
+          return Arc::clone(existing);
+        }
+      }
     }
+
     let pool = rayon::ThreadPoolBuilder::new()
-      .num_threads(parallelism.max(1))
+      .num_threads(parallelism)
       .thread_name(|idx| format!("fastr-intrinsic-probe-{idx}"))
       .build()
       .expect("build intrinsic probe pool");
     let pool = Arc::new(pool);
-    guard.insert(parallelism, Arc::clone(&pool));
+
+    if cache_max == 0 {
+      return pool;
+    }
+
+    let mut evicted = Vec::new();
+    {
+      let mut guard = INTRINSIC_PROBE_THREAD_POOLS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      guard.put(parallelism, Arc::clone(&pool));
+      while guard.len() > cache_max {
+        if let Some((_key, value)) = guard.pop_lru() {
+          evicted.push(value);
+        } else {
+          break;
+        }
+      }
+    }
+    drop(evicted);
     pool
   }
 
@@ -30025,6 +30057,51 @@ mod tests {
       vec![FetchDestination::ImageCors],
       "expected image probe prefetch to issue CORS-mode probe for <img crossorigin>"
     );
+  }
+
+  fn clear_intrinsic_probe_pool_cache() {
+    let mut evicted = Vec::new();
+    {
+      let mut guard = INTRINSIC_PROBE_THREAD_POOLS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      while let Some((_key, value)) = guard.pop_lru() {
+        evicted.push(value);
+      }
+    }
+    drop(evicted);
+  }
+
+  fn intrinsic_probe_pool_cache_len() -> usize {
+    INTRINSIC_PROBE_THREAD_POOLS
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .len()
+  }
+
+  #[test]
+  fn intrinsic_probe_pool_cache_is_bounded() {
+    let _lock = crate::thread_pool_cache::thread_pool_cache_test_lock();
+    clear_intrinsic_probe_pool_cache();
+
+    let mut raw = HashMap::new();
+    raw.insert(
+      crate::thread_pool_cache::THREAD_POOL_CACHE_MAX_ENV.to_string(),
+      "2".to_string(),
+    );
+    let toggles = Arc::new(RuntimeToggles::from_map(raw));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      for parallelism in 2..10 {
+        let _pool = FastRender::intrinsic_probe_pool(parallelism);
+        assert!(
+          intrinsic_probe_pool_cache_len() <= 2,
+          "intrinsic probe pool cache should stay within configured bound"
+        );
+      }
+    });
+
+    clear_intrinsic_probe_pool_cache();
   }
 
   #[test]
