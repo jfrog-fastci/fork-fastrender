@@ -370,3 +370,52 @@ pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) ->
 
   Ok(())
 }
+
+/// Minimal system linker wrapper used by the early AOT pipeline.
+///
+/// This intentionally does *not* depend on the stackmap linker script fragment above; it is meant
+/// for small libc-only executables (e.g. `puts`-based smoke tests).
+pub fn link_object_to_executable(obj_path: &Path, exe_path: &Path) -> Result<(), crate::NativeJsError> {
+  if !cfg!(target_os = "linux") {
+    return Err(crate::NativeJsError::UnsupportedPlatform {
+      target_os: std::env::consts::OS.to_string(),
+    });
+  }
+
+  let clang = find_program(&["clang-18", "clang"]).ok_or(crate::NativeJsError::ToolNotFound(
+    "clang-18/clang",
+  ))?;
+
+  let have_lld = find_program(&["ld.lld", "ld.lld-18", "lld-18", "lld"]).is_some();
+
+  let mut cmd = Command::new(&clang);
+  cmd.arg("-O2").arg("-Wl,--gc-sections").arg("-no-pie");
+  if have_lld {
+    cmd.arg("-fuse-ld=lld");
+  }
+  cmd.arg(obj_path).arg("-o").arg(exe_path);
+
+  let cmd_dbg = format!("{cmd:?}");
+  let output = cmd.output().map_err(crate::NativeJsError::LinkerSpawnFailed)?;
+  if !output.status.success() {
+    return Err(crate::NativeJsError::LinkerFailed {
+      cmd: cmd_dbg,
+      stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    });
+  }
+
+  Ok(())
+}
+
+fn find_program(names: &[&str]) -> Option<PathBuf> {
+  let path = std::env::var_os("PATH")?;
+  for dir in std::env::split_paths(&path) {
+    for name in names {
+      let candidate = dir.join(name);
+      if candidate.is_file() {
+        return Some(candidate);
+      }
+    }
+  }
+  None
+}

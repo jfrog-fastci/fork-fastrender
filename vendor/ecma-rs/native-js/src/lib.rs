@@ -93,6 +93,8 @@ pub enum EmitKind {
   Object,
   /// Emit assembly (`.s`).
   Assembly,
+  /// Emit a runnable native executable (Linux only, for now).
+  Executable,
 }
 
 /// Options controlling native compilation.
@@ -158,9 +160,6 @@ pub enum NativeJsError {
   #[error("{0}")]
   LlvmNotAvailable(String),
 
-  #[error("linker failed: {0}")]
-  LinkerFailed(String),
-
   #[error("internal compiler error: {0}")]
   Internal(String),
 
@@ -169,6 +168,28 @@ pub enum NativeJsError {
 
   #[error(transparent)]
   Codegen(#[from] codegen::CodegenError),
+
+  #[error("native-js currently only supports linux for AOT executable emission (target_os={target_os})")]
+  UnsupportedPlatform { target_os: String },
+
+  #[error("failed to write output to {path}: {source}")]
+  Io {
+    path: std::path::PathBuf,
+    #[source]
+    source: std::io::Error,
+  },
+
+  #[error("failed to create temporary directory: {0}")]
+  TempDirCreateFailed(#[source] std::io::Error),
+
+  #[error("failed to spawn linker tool: {0}")]
+  LinkerSpawnFailed(#[source] std::io::Error),
+
+  #[error("linker failed: {cmd}\n{stderr}")]
+  LinkerFailed { cmd: String, stderr: String },
+
+  #[error("required tool not found in PATH: {0}")]
+  ToolNotFound(&'static str),
 
   #[error("native-js codegen is not implemented yet")]
   Unimplemented,
