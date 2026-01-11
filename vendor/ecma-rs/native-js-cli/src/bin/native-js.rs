@@ -56,7 +56,7 @@ struct Cli {
   /// Also run the legacy `native_js::strict::validate` checks.
   ///
   /// This is stricter than `validate_strict_subset` and may reject TypeScript-only,
-  /// runtime-inert wrappers like `satisfies` / `as` / `!`.
+  /// runtime-inert "escape hatches" like type assertions (`as`) and non-null assertions (`!`).
   #[arg(long, global = true)]
   extra_strict: bool,
 }
