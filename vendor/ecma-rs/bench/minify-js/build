@@ -7,7 +7,7 @@ pushd "$(dirname "$0")" >/dev/null
 # Prefer building via the repo's constrained cargo wrapper (slot throttling + RLIMIT_AS caps) when
 # available.
 #
-# Note: In the FastRender monorepo this wrapper is non-optional: raw `cargo build` runs are
+# Note: In the FastRender monorepo this wrapper is non-optional: raw `cargo` invocations are
 # forbidden because they can spawn uncontrolled parallelism and OOM the host.
 if [[ ! -f ../../scripts/cargo_agent.sh ]]; then
   echo "error: expected cargo wrapper at ../../scripts/cargo_agent.sh" >&2
