@@ -28,10 +28,7 @@ fn parses_register_location() {
   };
 
   let slot = eval_location(loc, &MapRegs(Default::default())).unwrap();
-  assert_eq!(
-    slot,
-    LocationValue::Slot(RootSlot::Reg { dwarf_reg })
-  );
+  assert_eq!(slot, LocationValue::Slot(RootSlot::Reg { dwarf_reg }));
 }
 
 #[test]
