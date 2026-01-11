@@ -166,6 +166,17 @@ LLVM’s `LocationKind` values (as printed by `llvm-readobj --stackmap`):
 | `4` | `Constant` | Value is `sign_extend_i32(OffsetOrSmallConst)`. | `OffsetOrSmallConst`, `Size` |
 | `5` | `ConstantIndex` | Value is `Constants[OffsetOrSmallConst]` (64-bit pool). | `OffsetOrSmallConst`, `Size` |
 
+`llvm-readobj` prints registers as `R#<n>`. The `<n>` is the **DWARF register
+number** for the target, not an LLVM-internal register enum. For x86_64,
+examples we observed include:
+
+| DWARF reg | Common name |
+|---:|---|
+| `0` | `rax` |
+| `3` | `rbx` |
+| `7` | `rsp` |
+| `17` | `xmm0` |
+
 Runtime consequences:
 
 - For **GC roots**:
