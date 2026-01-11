@@ -94,10 +94,14 @@ impl ParallelRuntime {
           .lock()
           .unwrap_or_else(|_| std::process::abort());
         while !task.done.load(Ordering::Acquire) {
+          // Avoid deadlocking stop-the-world GC: treat this thread as GC-safe while blocked on the
+          // task completion condition variable.
+          let gc_safe = threading::enter_gc_safe_region();
           guard = task
             .done_cv
             .wait(guard)
             .unwrap_or_else(|_| std::process::abort());
+          drop(gc_safe);
         }
       }
     }

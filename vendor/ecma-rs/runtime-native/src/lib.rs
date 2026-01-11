@@ -444,4 +444,9 @@ mod tests {
 
     drop(task_data);
   }
+
+  #[test]
+  fn parallel_join_empty_is_noop() {
+    rt_parallel_join(std::ptr::null(), 0);
+  }
 }

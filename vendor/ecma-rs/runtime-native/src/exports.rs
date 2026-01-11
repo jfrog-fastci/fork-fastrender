@@ -11,6 +11,7 @@ use crate::gc::ObjHeader;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::threading;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::Ordering;
 
 #[inline(always)]
@@ -242,14 +243,25 @@ pub extern "C" fn rt_weak_remove(handle: u64) {
 
 #[no_mangle]
 pub extern "C" fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
-  let rt = crate::rt_ensure_init();
-  rt.parallel.spawn(task, data)
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let rt = crate::rt_ensure_init();
+    rt.parallel.spawn(task, data)
+  }));
+  match res {
+    Ok(id) => id,
+    Err(_) => std::process::abort(),
+  }
 }
 
 #[no_mangle]
 pub extern "C" fn rt_parallel_join(tasks: *const TaskId, count: usize) {
-  let rt = crate::rt_ensure_init();
-  rt.parallel.join(tasks, count)
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let rt = crate::rt_ensure_init();
+    rt.parallel.join(tasks, count)
+  }));
+  if res.is_err() {
+    std::process::abort();
+  }
 }
 
 #[no_mangle]
@@ -259,8 +271,13 @@ pub extern "C" fn rt_parallel_for(
   body: extern "C" fn(usize, *mut u8),
   data: *mut u8,
 ) {
-  let rt = crate::rt_ensure_init();
-  rt.parallel.parallel_for(start, end, body, data)
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let rt = crate::rt_ensure_init();
+    rt.parallel.parallel_for(start, end, body, data)
+  }));
+  if res.is_err() {
+    std::process::abort();
+  }
 }
 
 #[no_mangle]

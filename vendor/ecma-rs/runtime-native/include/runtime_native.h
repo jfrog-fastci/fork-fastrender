@@ -139,6 +139,11 @@ InternedId rt_string_intern(const uint8_t* s, size_t len);
 // -----------------------------------------------------------------------------
 // Parallel
 // -----------------------------------------------------------------------------
+// Schedule `task(data)` onto the runtime's global worker pool.
+//
+// Contract:
+// - `data` must remain valid until the returned `TaskId` is passed to `rt_parallel_join`.
+// - The returned `TaskId` must be joined exactly once.
 TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);
 void rt_parallel_join(const TaskId* tasks, size_t count);
 void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);

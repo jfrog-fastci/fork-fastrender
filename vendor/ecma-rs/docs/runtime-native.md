@@ -194,6 +194,10 @@ pub fn rt_async_spawn(coro: *mut core::ffi::c_void) -> PromiseRef; // opaque for
 pub fn rt_async_poll() -> bool;
 ```
 
+`rt_parallel_spawn` contract:
+- `data` must remain valid until the returned `TaskId` is passed to `rt_parallel_join`.
+- Each `TaskId` must be joined exactly once.
+
 #### 3.1.3 GC classification for codegen (Milestone 1)
 
 Even if the Milestone 1 runtime stubs GC, `native-js` codegen must classify
