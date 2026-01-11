@@ -51,6 +51,7 @@ use crate::text::font_db::FontFaceShapingDescriptors;
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle;
 use crate::text::font_db::FontWeight;
+use crate::text::font_db::GenericFamily;
 use crate::text::font_db::LoadedFont;
 use crate::text::font_db::ScaledMetrics;
 use crate::text::font_fallback::FontId;
@@ -683,6 +684,30 @@ impl FontContext {
     ctx
   }
 
+  pub fn with_shared_resource_fetcher_and_bundled_face_ids(
+    db: Arc<FontDbDatabase>,
+    bundled_face_ids: Arc<HashSet<fontdb::ID>>,
+    fetcher: Arc<dyn ResourceFetcher>,
+    cache: FontCacheConfig,
+  ) -> Self {
+    let shared = Arc::new(RwLock::new(None));
+    let font_fetcher: Arc<dyn FontFetcher> = Arc::new(ResourceFontFetcher {
+      fetcher: Arc::clone(&fetcher),
+      resource_context: Arc::clone(&shared),
+    });
+    let mut ctx = Self::with_database_and_fetcher(
+      Arc::new(FontDatabase::with_shared_db_and_cache_and_bundled_face_ids(
+        db,
+        cache,
+        bundled_face_ids,
+      )),
+      font_fetcher,
+    );
+    ctx.resource_fetcher = Some(fetcher);
+    ctx.resource_context_shared = Some(shared);
+    ctx
+  }
+
   /// Creates a font context backed by a custom database and fetcher.
   pub fn with_database_and_fetcher(db: Arc<FontDatabase>, fetcher: Arc<dyn FontFetcher>) -> Self {
     Self {
@@ -1009,7 +1034,7 @@ impl FontContext {
     let stretches = crate::text::pipeline::stretch_preference_order(FontStretch::Normal);
     let slopes = crate::text::pipeline::slope_preference_order(requested_style);
     let weights = crate::text::pipeline::weight_preference_order(weight);
-    for family in families {
+    let mut resolve_named_family = |family: &str| -> Option<LoadedFont> {
       if let Some(font) = self.select_web_font(
         family,
         weight,
@@ -1021,9 +1046,8 @@ impl FontContext {
         return Some(font);
       }
       if self.is_web_family_declared(family) {
-        continue;
+        return None;
       }
-
       for stretch_choice in &stretches {
         for slope in slopes {
           for weight_choice in &weights {
@@ -1038,6 +1062,41 @@ impl FontContext {
             }
           }
         }
+      }
+      None
+    };
+
+    for family in families {
+      // Expand generic families into a deterministic fallback list so:
+      // - generic -> named fallbacks can use @font-face declarations (common in fixture harnesses),
+      // - resolution order matches the `GenericFamily` fallback list (closer to browsers).
+      //
+      // This mirrors `font_fallback::FontFamilyList::resolve_generic`, but integrates web fonts
+      // (which are stored separately from `FontDatabase`).
+      if let Some(generic) = GenericFamily::parse(family) {
+        let prefer_named = generic.prefers_named_fallbacks_first();
+        if prefer_named {
+          for name in generic.fallback_families() {
+            if let Some(font) = resolve_named_family(name) {
+              return Some(font);
+            }
+          }
+        }
+        if let Some(font) = resolve_named_family(family) {
+          return Some(font);
+        }
+        if !prefer_named {
+          for name in generic.fallback_families() {
+            if let Some(font) = resolve_named_family(name) {
+              return Some(font);
+            }
+          }
+        }
+        continue;
+      }
+
+      if let Some(font) = resolve_named_family(family) {
+        return Some(font);
       }
     }
     // If nothing matches the requested family list, fall back once to a UA default.
@@ -1097,16 +1156,15 @@ impl FontContext {
     } else {
       None
     };
-    for family in families {
+    let mut resolve_named_family = |family: &str| -> Option<LoadedFont> {
       if let Some(font) =
         self.select_web_font(family, weight, style, stretch, requested_angle, None)
       {
         return Some(font);
       }
       if self.is_web_family_declared(family) {
-        continue;
+        return None;
       }
-
       for stretch_choice in &stretches {
         for slope in slopes {
           for weight_choice in &weights {
@@ -1120,6 +1178,35 @@ impl FontContext {
             }
           }
         }
+      }
+      None
+    };
+
+    for family in families {
+      if let Some(generic) = GenericFamily::parse(family) {
+        let prefer_named = generic.prefers_named_fallbacks_first();
+        if prefer_named {
+          for name in generic.fallback_families() {
+            if let Some(font) = resolve_named_family(name) {
+              return Some(font);
+            }
+          }
+        }
+        if let Some(font) = resolve_named_family(family) {
+          return Some(font);
+        }
+        if !prefer_named {
+          for name in generic.fallback_families() {
+            if let Some(font) = resolve_named_family(name) {
+              return Some(font);
+            }
+          }
+        }
+        continue;
+      }
+
+      if let Some(font) = resolve_named_family(family) {
+        return Some(font);
       }
     }
     // If nothing matches the requested family list, fall back once to a UA default.
@@ -1155,17 +1242,43 @@ impl FontContext {
     } else {
       None
     };
-    if let Some(font) =
-      self.select_web_font(family, weight, style, FontStretch::Normal, angle, None)
-    {
-      return Some(font);
-    }
-    if self.is_web_family_declared(family) {
+    let resolve_named_family = |family: &str| -> Option<LoadedFont> {
+      if let Some(font) =
+        self.select_web_font(family, weight, style, FontStretch::Normal, angle, None)
+      {
+        return Some(font);
+      }
+      if self.is_web_family_declared(family) {
+        return None;
+      }
+      let font_weight = FontWeight::new(weight);
+      let id = self.db.query(family, font_weight, style)?;
+      self.db.load_font(id)
+    };
+
+    if let Some(generic) = GenericFamily::parse(family) {
+      let prefer_named = generic.prefers_named_fallbacks_first();
+      if prefer_named {
+        for name in generic.fallback_families() {
+          if let Some(font) = resolve_named_family(name) {
+            return Some(font);
+          }
+        }
+      }
+      if let Some(font) = resolve_named_family(family) {
+        return Some(font);
+      }
+      if !prefer_named {
+        for name in generic.fallback_families() {
+          if let Some(font) = resolve_named_family(name) {
+            return Some(font);
+          }
+        }
+      }
       return None;
     }
-    let font_weight = FontWeight::new(weight);
-    let id = self.db.query(family, font_weight, style)?;
-    self.db.load_font(id)
+
+    resolve_named_family(family)
   }
 
   /// Gets a sans-serif fallback font
@@ -6171,6 +6284,47 @@ mod tests {
     assert_eq!(
       font.family, expected_serif.family,
       "missing first family should fall back to later families before the UA default"
+    );
+  }
+
+  #[test]
+  fn generic_serif_prefers_named_fallback_web_fonts() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+
+    // Inject a deterministic serif family that matches Chrome's default generic serif (Times New Roman)
+    // so `font-family: serif` can resolve to it. This mirrors the fixture harness' font patching.
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let font_path = manifest_dir.join("tests/fixtures/fonts/STIXTwoMath-Regular.otf");
+    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    let stylesheet_url = url::Url::from_file_path(
+      font_path
+        .parent()
+        .expect("font path has parent")
+        .join("stylesheet.css"),
+    )
+    .expect("stylesheet path is absolute")
+    .to_string();
+
+    let face = FontFaceRule {
+      family: Some("Times New Roman".to_string()),
+      sources: vec![FontFaceSource::url("STIXTwoMath-Regular.otf")],
+      display: Some(FontDisplay::Block),
+      source_stylesheet_url: Some(stylesheet_url),
+      ..Default::default()
+    };
+
+    ctx
+      .load_web_fonts(&[face], None, None)
+      .expect("load web fonts");
+
+    let families = vec!["serif".to_string()];
+    let font = ctx
+      .get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal)
+      .expect("expected generic serif to resolve");
+
+    assert_eq!(
+      font.family, "Times New Roman",
+      "expected generic serif to prefer named fallback web fonts (Times New Roman) before the fontdb serif fallback"
     );
   }
 

@@ -4647,7 +4647,24 @@ fn build_family_entries(style: &ComputedStyle) -> Vec<crate::text::font_fallback
   };
   for family in style.font_family.iter() {
     if let Some(generic) = crate::text::font_db::GenericFamily::parse(family) {
+      // Expand generic families into a deterministic fallback list so they can match injected
+      // `@font-face` rules from the fixture harness (e.g. `serif` -> `Times New Roman`) before
+      // falling back to the `fontdb` generic mapping.
+      //
+      // This keeps text layout closer to browser behavior and avoids large vertical drift when the
+      // browser's default generic maps to a web font that our generic fontdb query cannot see.
+      let prefer_named = generic.prefers_named_fallbacks_first();
+      if prefer_named {
+        for name in generic.fallback_families() {
+          push_named(name, &mut entries, &mut seen_named);
+        }
+      }
       entries.push(FamilyEntry::Generic(generic));
+      if !prefer_named {
+        for name in generic.fallback_families() {
+          push_named(name, &mut entries, &mut seen_named);
+        }
+      }
     } else {
       push_named(family, &mut entries, &mut seen_named);
       for alias in crate::text::font_db::named_family_aliases(family) {
@@ -8991,6 +9008,41 @@ mod tests {
     assert_eq!(language_signature_for_script_fallback("zh-TW"), 3);
     assert_eq!(language_signature_for_script_fallback("\u{00A0}ja"), 0);
     assert_eq!(language_signature_for_script_fallback("ko\u{00A0}"), 0);
+  }
+
+  #[test]
+  fn generic_serif_prefers_named_fallback_web_fonts() {
+    // Fixture harnesses commonly inject a deterministic "Times New Roman" via `@font-face`, while
+    // page styles rely on the default `serif` generic. Ensure the shaping pipeline can resolve the
+    // generic to the injected web font (via `GenericFamily::fallback_families`) instead of
+    // immediately falling back to a local generic mapping.
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let font_path = manifest_dir.join("tests/fixtures/fonts/STIXTwoMath-Regular.otf");
+    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    let font_url = Url::from_file_path(font_path)
+      .expect("font path is absolute")
+      .to_string();
+    let face = FontFaceRule {
+      family: Some("Times New Roman".to_string()),
+      sources: vec![FontFaceSource::url(font_url)],
+      ..Default::default()
+    };
+
+    ctx
+      .load_web_fonts(&[face], None, None)
+      .expect("load web font");
+
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["serif".to_string()].into();
+    style.font_size = 12.0;
+
+    let runs = ShapingPipeline::new()
+      .shape("x", &style, &ctx)
+      .expect("shape");
+    assert!(!runs.is_empty());
+    assert_eq!(runs[0].font.family, "Times New Roman");
   }
 
   #[test]

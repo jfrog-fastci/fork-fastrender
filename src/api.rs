@@ -3942,14 +3942,14 @@ impl Drop for PooledRenderer<'_> {
   }
 }
 
-fn font_db_for_pool(font_config: &FontConfig) -> Arc<FontDbDatabase> {
+fn font_db_for_pool(font_config: &FontConfig) -> (Arc<FontDbDatabase>, Arc<HashSet<fontdb::ID>>) {
   // `FastRender::with_config` ultimately guarantees that at least the bundled fallback set
   // is available (even when `use_bundled_fonts` is false) so text shaping never runs with
   // an empty database. Mirror that behaviour for pooled renderers.
 
   // Pure bundled runs (the pageset default) can reuse the shared bundled database.
   if !font_config.use_system_fonts && font_config.font_dirs.is_empty() {
-    return FontDatabase::shared_bundled_db();
+    return (FontDatabase::shared_bundled_db(), Arc::new(HashSet::new()));
   }
 
   // System-only runs can reuse the shared system database, but must fall back to bundled
@@ -3960,13 +3960,14 @@ fn font_db_for_pool(font_config: &FontConfig) -> Arc<FontDbDatabase> {
   {
     let system = FontDatabase::shared_system_db();
     if system.is_empty() {
-      return FontDatabase::shared_bundled_db();
+      return (FontDatabase::shared_bundled_db(), Arc::new(HashSet::new()));
     }
-    return system;
+    return (system, Arc::new(HashSet::new()));
   }
 
   // Mixed configurations (system + bundled, custom font dirs) need a bespoke database per pool.
-  FontDatabase::with_config(font_config).shared_db()
+  let db = FontDatabase::with_config(font_config);
+  (db.shared_db(), db.bundled_face_ids())
 }
 
 #[cfg(test)]
@@ -4011,6 +4012,57 @@ mod pool_fontdb_tests {
     } else {
       assert!(Arc::ptr_eq(&pool.inner.shared.font_db, &system));
     }
+  }
+
+  #[test]
+  fn pooled_renderers_propagate_bundled_face_ids_for_mixed_fontdb() {
+    // `FastRenderPool` shares only fontdb metadata between renderers, but we still need to apply
+    // built-in metric overrides to the bundled fallback faces loaded into that metadata. Ensure
+    // the pooled renderer's `FontDatabase` can distinguish bundled faces from any other faces in
+    // the shared database.
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let font_config = FontConfig::bundled_only().add_font_dir(tmp.path());
+    let renderer = FastRenderConfig::default().with_font_sources(font_config);
+    let pool = FastRenderPool::with_config(
+      FastRenderPoolConfig::new()
+        .with_renderer_config(renderer)
+        .with_pool_size(1),
+    )
+    .expect("pool");
+
+    pool
+      .with_renderer(|renderer| {
+        let db = renderer.font_context().database();
+        let noto_id = db
+          .query(
+            "Noto Sans SC",
+            crate::text::font_db::FontWeight::NORMAL,
+            crate::text::font_db::FontStyle::Normal,
+          )
+          .expect("expected Noto Sans SC");
+        assert!(
+          pool.inner.shared.bundled_face_ids.contains(&noto_id),
+          "expected Noto Sans SC face to be tagged as bundled in the shared fontdb"
+        );
+
+        let noto = db.load_font(noto_id).expect("load Noto Sans SC");
+        assert_eq!(noto.face_metrics_overrides.ascent_override, Some(0.762));
+        assert_eq!(noto.face_metrics_overrides.descent_override, Some(0.238));
+        assert_eq!(noto.face_metrics_overrides.line_gap_override, Some(0.25));
+
+        let scaled = renderer
+          .font_context()
+          .get_scaled_metrics(&noto, 12.0)
+          .expect("scaled metrics");
+        assert!(
+          (scaled.line_height - 15.0).abs() < 1e-3,
+          "expected 15px line height at 12px, got {}",
+          scaled.line_height
+        );
+
+        Ok(())
+      })
+      .expect("with_renderer");
   }
 }
 
@@ -4203,13 +4255,15 @@ struct SharedRendererResources {
   font_cache: FontCacheConfig,
   fetcher: Arc<dyn ResourceFetcher>,
   font_db: Arc<FontDbDatabase>,
+  bundled_face_ids: Arc<HashSet<fontdb::ID>>,
   image_cache: ImageCache,
 }
 
 impl SharedRendererResources {
   fn build_renderer(&self) -> Result<FastRender> {
-    let font_context = FontContext::with_shared_resource_fetcher(
+    let font_context = FontContext::with_shared_resource_fetcher_and_bundled_face_ids(
       Arc::clone(&self.font_db),
+      Arc::clone(&self.bundled_face_ids),
       Arc::clone(&self.fetcher),
       self.font_cache,
     );
@@ -4236,7 +4290,7 @@ fn build_shared_renderer_resources(
   let pool_size = pool_size.max(1);
   let fetcher = resolve_fetcher(&renderer, fetcher);
   let shared_image_cache = build_image_cache(&renderer.base_url, Arc::clone(&fetcher), image_cache);
-  let font_db = font_db_for_pool(&renderer.font_config);
+  let (font_db, bundled_face_ids) = font_db_for_pool(&renderer.font_config);
 
   (
     Arc::new(SharedRendererResources {
@@ -4244,6 +4298,7 @@ fn build_shared_renderer_resources(
       font_cache,
       fetcher,
       font_db,
+      bundled_face_ids,
       image_cache: shared_image_cache,
     }),
     pool_size,

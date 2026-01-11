@@ -49,6 +49,7 @@ use lru::LruCache;
 use parking_lot::Mutex;
 use rustc_hash::FxHasher;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -395,6 +396,7 @@ fn shared_system_fontdb() -> Arc<FontDbDatabase> {
     let mut wrapper = FontDatabase {
       db: Arc::new(db),
       cache: RwLock::new(HashMap::new()),
+      bundled_face_ids: Arc::new(HashSet::new()),
       math_fonts: RwLock::new(None),
       emoji_fonts: RwLock::new(None),
       glyph_coverage: GlyphCoverageCache::new(GLYPH_COVERAGE_CACHE_SIZE),
@@ -1364,6 +1366,13 @@ pub struct FontDatabase {
   db: Arc<FontDbDatabase>,
   /// Cached font data (font ID -> binary data)
   cache: RwLock<HashMap<ID, Arc<Vec<u8>>>>,
+  /// Fontdb face IDs corresponding to the bundled fallback fonts loaded into this database.
+  ///
+  /// When the font database is created with both system fonts and bundled fonts, we still want to
+  /// apply built-in metric overrides to *only* the bundled fallback faces. Tracking IDs lets
+  /// `create_loaded_font_with_info` distinguish bundled faces from system faces even when both are
+  /// present in the same fontdb instance.
+  bundled_face_ids: Arc<HashSet<ID>>,
   /// Cached list of math-capable fonts (IDs with a MATH table)
   math_fonts: RwLock<Option<Vec<ID>>>,
   /// Cached list of emoji-capable fonts (IDs likely to contain emoji glyphs)
@@ -1408,6 +1417,7 @@ impl FontDatabase {
     let mut this = Self {
       db: Arc::new(FontDbDatabase::new()),
       cache: RwLock::new(HashMap::new()),
+      bundled_face_ids: Arc::new(HashSet::new()),
       math_fonts: RwLock::new(None),
       emoji_fonts: RwLock::new(None),
       glyph_coverage: GlyphCoverageCache::new(GLYPH_COVERAGE_CACHE_SIZE),
@@ -1478,6 +1488,24 @@ impl FontDatabase {
     Self {
       db,
       cache: RwLock::new(HashMap::new()),
+      bundled_face_ids: Arc::new(HashSet::new()),
+      math_fonts: RwLock::new(None),
+      emoji_fonts: RwLock::new(None),
+      glyph_coverage: GlyphCoverageCache::new(cache.glyph_coverage_cache_size),
+    }
+  }
+
+  /// Creates a new font database with shared font metadata, custom cache sizing, and a bundled-face
+  /// ID set aligned to the shared metadata.
+  pub(crate) fn with_shared_db_and_cache_and_bundled_face_ids(
+    db: Arc<FontDbDatabase>,
+    cache: FontCacheConfig,
+    bundled_face_ids: Arc<HashSet<ID>>,
+  ) -> Self {
+    Self {
+      db,
+      cache: RwLock::new(HashMap::new()),
+      bundled_face_ids,
       math_fonts: RwLock::new(None),
       emoji_fonts: RwLock::new(None),
       glyph_coverage: GlyphCoverageCache::new(cache.glyph_coverage_cache_size),
@@ -1489,9 +1517,17 @@ impl FontDatabase {
     Arc::clone(&self.db)
   }
 
+  pub(crate) fn bundled_face_ids(&self) -> Arc<HashSet<ID>> {
+    Arc::clone(&self.bundled_face_ids)
+  }
+
   /// Returns a new font database that reuses the same font metadata but has fresh caches.
   pub fn clone_with_shared_data(&self, cache: FontCacheConfig) -> Self {
-    Self::with_shared_db_and_cache(self.shared_db(), cache)
+    Self::with_shared_db_and_cache_and_bundled_face_ids(
+      self.shared_db(),
+      cache,
+      Arc::clone(&self.bundled_face_ids),
+    )
   }
 
   /// Loads fonts from a directory
@@ -1508,6 +1544,8 @@ impl FontDatabase {
   }
 
   fn load_bundled_fonts(&mut self) {
+    let before_ids: HashSet<ID> = self.db.faces().map(|face| face.id).collect();
+
     for font in BUNDLED_FONTS {
       if let Err(err) = self.load_font_data(font.data.to_vec()) {
         eprintln!("failed to load bundled font {}: {:?}", font.name, err);
@@ -1521,6 +1559,10 @@ impl FontDatabase {
         }
       }
     }
+
+    let after_ids: HashSet<ID> = self.db.faces().map(|face| face.id).collect();
+    Arc::make_mut(&mut self.bundled_face_ids)
+      .extend(after_ids.difference(&before_ids).copied());
   }
 
   /// Recomputes the default families used for fontdb generic queries based on the currently loaded fonts.
@@ -1872,7 +1914,8 @@ impl FontDatabase {
     // descriptors to align fallback font metrics. Apply small built-in overrides to bundled Latin
     // fallbacks so `line-height: normal` behaves closer to Chrome when fixtures omit webfonts.
     let mut face_metrics_overrides = FontFaceMetricsOverrides::default();
-    if Arc::ptr_eq(&self.db, &shared_bundled_fontdb()) {
+    let apply_bundled_overrides = self.is_shared_bundled_db() || self.bundled_face_ids.contains(&id);
+    if apply_bundled_overrides {
       match family.as_str() {
         "Roboto Flex" => {
           // Roboto Flex is our bundled Latin sans fallback, but its default line metrics are a bit
@@ -1891,6 +1934,22 @@ impl FontDatabase {
           face_metrics_overrides.ascent_override = Some(0.875);
           face_metrics_overrides.descent_override = Some(0.25);
           face_metrics_overrides.line_gap_override = Some(0.0);
+        }
+        "Noto Sans SC" | "Noto Sans TC" | "Noto Sans JP" | "Noto Sans KR" => {
+          // Noto Sans CJK fallbacks are used when rendering Han/Hiragana/Katakana/Hangul glyphs in
+          // offline fixtures. Their default (hhea) metrics are designed for Windows "win" values
+          // and are substantially taller than typical browser defaults, causing large vertical drift
+          // as many lines of text stack.
+          //
+          // Apply bundled-only metric overrides so `line-height: normal` matches the injected
+          // Times-like generic serif font used in the Chrome baseline harness (STIX Two Math):
+          // - ascent/descent ratios align baselines across Latin + CJK runs so mixed-script lines
+          //   (e.g. "TF…", "Joe…") do not expand,
+          // - 0.25em line gap yields a 1.25em default line height (15px at 12px), matching the
+          //   baseline spacing on weibo.cn and other text-heavy CJK fixtures.
+          face_metrics_overrides.ascent_override = Some(0.762);
+          face_metrics_overrides.descent_override = Some(0.238);
+          face_metrics_overrides.line_gap_override = Some(0.25);
         }
         "STIX Two Math" => {
           // STIX Two Math provides good Times-like glyph metrics for serif fallback, but ships with
@@ -2376,7 +2435,7 @@ fn select_css_line_metrics(face: &ttf_parser::Face<'_>, variations: &[(Tag, f32)
   let mut descent = face.descender();
   let mut line_gap = face.line_gap();
 
-  // OS/2 selection when USE_TYPO_METRICS is set.
+  // Prefer OS/2 typographic metrics when USE_TYPO_METRICS is set.
   if let Some(os2) = face.raw_face().table(Tag::from_bytes(b"OS/2")) {
     // fsSelection @ byte offset 62, sTypo* metrics start at byte offset 68.
     if let Some(fs_selection) = read_be_u16(os2, 62) {
@@ -3240,6 +3299,42 @@ mod tests {
     assert!(
       (scaled.line_height - 18.0).abs() < 1e-3,
       "expected 18px line height at 16px, got {}",
+      scaled.line_height
+    );
+  }
+
+  #[test]
+  fn bundled_metric_overrides_apply_in_non_shared_font_db() {
+    // `FontDatabase::shared_bundled()` is used when only bundled fonts are enabled. When system
+    // fonts and/or extra font dirs are enabled, `FontDatabase::with_config` builds a private
+    // fontdb instance and loads bundled fonts into it. Ensure we still apply the built-in
+    // line-metric overrides to those bundled faces in that configuration (important for
+    // `xtask page-loop`, which enables `--system-fonts` when patching fixtures for Chrome).
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let config = FontConfig::bundled_only().add_font_dir(tmp.path());
+    let db = FontDatabase::with_config(&config);
+
+    let roboto_id = db
+      .query("Roboto Flex", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("expected bundled Roboto Flex");
+    let roboto = db.load_font(roboto_id).expect("load Roboto Flex");
+    assert_eq!(roboto.face_metrics_overrides.ascent_override, Some(0.9053));
+
+    let noto_id = db
+      .query("Noto Sans SC", FontWeight::NORMAL, FontStyle::Normal)
+      .expect("expected bundled Noto Sans SC");
+    let noto = db.load_font(noto_id).expect("load Noto Sans SC");
+    assert_eq!(noto.face_metrics_overrides.ascent_override, Some(0.762));
+    assert_eq!(noto.face_metrics_overrides.descent_override, Some(0.238));
+    assert_eq!(noto.face_metrics_overrides.line_gap_override, Some(0.25));
+
+    let ctx = crate::text::font_loader::FontContext::empty();
+    let scaled = ctx
+      .get_scaled_metrics(&noto, 12.0)
+      .expect("scaled metrics");
+    assert!(
+      (scaled.line_height - 15.0).abs() < 1e-3,
+      "expected 15px line height at 12px, got {}",
       scaled.line_height
     );
   }
