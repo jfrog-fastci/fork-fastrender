@@ -109,6 +109,22 @@ mod tests {
   }
 
   #[test]
+  fn parallelizable_heuristic_array_map_arguments_length_callback() {
+    let db = EffectDb::load_default().unwrap();
+    let api = db.api("Array.prototype.map").unwrap();
+
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments.length; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let callsite = crate::callsite_info_for_args(&lowered, body, call_expr, db.kb());
+
+    assert!(parallelizable_at_callsite(api, &callsite));
+  }
+
+  #[test]
   fn parallelizable_heuristic_array_reduce_is_conservative_without_associativity() {
     let db = EffectDb::load_default().unwrap();
     let api = db.api("Array.prototype.reduce").unwrap();
