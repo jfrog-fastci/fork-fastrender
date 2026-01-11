@@ -460,7 +460,8 @@ impl ModelHeap {
       }
     }
 
-    runtime_native::remembered_set_scan_and_rebuild_for_tests(|obj| keep.contains(&(obj as usize)));
+    let objs: Vec<*mut u8> = self.old_objects.iter().map(|old| old.obj_ptr()).collect();
+    runtime_native::remembered_set_scan_and_rebuild_for_tests(&objs, |obj| keep.contains(&(obj as usize)));
   }
 
   fn assert_invariants(&self) {

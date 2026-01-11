@@ -406,6 +406,7 @@ pub fn remembered_set_contains(obj: *mut u8) -> bool {
 /// scanning and want to validate the sticky remembered-set rebuild logic.
 #[doc(hidden)]
 pub fn remembered_set_scan_and_rebuild_for_tests(
+  _objs: &[*mut u8],
   mut object_has_young_refs: impl FnMut(*mut u8) -> bool,
 ) {
   REMEMBERED_SET.lock().retain(|&obj| {
