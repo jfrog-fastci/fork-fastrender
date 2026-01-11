@@ -4,7 +4,10 @@
 //! statepoints (LLVM 18, empirically), the callsite record's locations are laid
 //! out as:
 //!
-//! - 3 leading non-root constants (ignore for GC root scanning)
+//! - 3 leading non-root constants:
+//!   - `locations[1]` (the second constant) corresponds to the IR `gc.statepoint`
+//!     `flags` immarg on LLVM 18.
+//!   - The runtime currently assumes `flags = 0` (see `statepoint_verify`).
 //! - followed by 2 entries per gc-live value: `(base, derived)` pairs
 //!
 //! The tests in `tests/statepoint_layout.rs` intentionally lock this down to

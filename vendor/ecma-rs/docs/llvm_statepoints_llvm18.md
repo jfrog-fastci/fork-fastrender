@@ -144,6 +144,8 @@ Notes:
 * `<flags>` (5th argument) is a bitmask. On LLVM 18.x, the IR verifier only accepts
   values in the range **0..3** (bits 0 and 1). This project currently uses
   `flags = 0`.
+  In emitted stackmaps on x86_64, this value appears as the second constant
+  location in each record (location `#2` in `llvm-readobj --stackmap` output).
 * `<num_patch_bytes>` (2nd argument) controls whether LLVM emits a real call or a
   patchable region at the statepoint site:
   * `patch_bytes = 0`: emits a normal `call` instruction.
@@ -199,6 +201,8 @@ Key observations (x86_64):
 
 * `LLVM StackMap Version: 3`
 * A `Record ID` matches the statepoint `<id>` immediate.
+* `locations[1]` (location `#2` in `llvm-readobj --stackmap` output) is the
+  `gc.statepoint` `flags` immarg.
 * `instruction offset` is the **return address** relative to the function start.
   If `patch_bytes = 0`, this is the offset of the instruction *after* the call.
   If `patch_bytes > 0`, LLVM reserves a patchable region and `instruction offset`

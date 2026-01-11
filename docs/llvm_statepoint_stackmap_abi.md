@@ -83,6 +83,10 @@ Any value with bit 2 set (e.g. `flags = 4`) is rejected as an unknown flag.
 
 Project default: use `flags = 0` unless a specific flag is required.
 
+On x86_64 LLVM 18, `llvm-readobj --stackmap` surfaces this value as the second
+constant location in each record (location `#2`), immediately after the leading
+`Constant 0` location `#1`.
+
 ## `gc.statepoint`: `patch_bytes > 0` reserves a patchable region (x86_64)
 
 `patch_bytes` is the 2nd argument to `gc.statepoint`.
