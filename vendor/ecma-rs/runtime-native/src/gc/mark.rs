@@ -108,10 +108,21 @@ impl GcHeap {
       };
 
       if let Some(candidate_blocks) = candidate_blocks_opt {
+        // Rebuild the Immix availability structure so evacuation can allocate
+        // into existing holes (opportunistic copying) instead of always growing
+        // the heap with new blocks.
+        //
+        // We will rebuild again after compaction since clearing candidate blocks
+        // and allocating new objects changes hole sizes.
+        self.immix.finalize_after_marking();
+
+        let mut pinned_in_candidates: Vec<Vec<*mut u8>> = vec![Vec::new(); candidate_blocks.len()];
+
         {
           let mut compactor = Compactor {
             heap: self,
             candidate_blocks: &candidate_blocks,
+            pinned_in_candidates: &mut pinned_in_candidates,
             worklist: VecDeque::new(),
             visited: AHashSet::new(),
             bump: BumpCursor::new(),
@@ -135,6 +146,15 @@ impl GcHeap {
         for (block_id, is_candidate) in candidate_blocks.iter().enumerate() {
           if *is_candidate {
             self.immix.clear_block_line_map(block_id);
+            // If we encountered pinned objects in a candidate block, we cannot
+            // evacuate them. Re-mark their lines so they remain live and the
+            // block is not treated as fully free.
+            for &pinned in &pinned_in_candidates[block_id] {
+              unsafe {
+                let size = super::obj_size(pinned);
+                self.immix.set_lines_for_live_object(pinned, size);
+              }
+            }
           }
         }
       }
@@ -212,30 +232,36 @@ impl Tracer for Marker<'_> {
 struct Compactor<'a> {
   heap: &'a mut GcHeap,
   candidate_blocks: &'a [bool],
+  pinned_in_candidates: &'a mut [Vec<*mut u8>],
   worklist: VecDeque<*mut u8>,
   visited: AHashSet<usize>,
   bump: BumpCursor,
 }
 
 impl Compactor<'_> {
-  fn enqueue_obj(&mut self, obj: *mut u8) {
+  fn enqueue_obj(&mut self, obj: *mut u8) -> bool {
     if obj.is_null() {
-      return;
+      return false;
     }
     if !self.visited.insert(obj as usize) {
-      return;
+      return false;
     }
     self.worklist.push_back(obj);
+    true
   }
 
-  fn is_candidate_obj(&self, obj: *mut u8) -> bool {
+  fn candidate_block_id(&self, obj: *mut u8) -> Option<usize> {
     if !self.heap.is_in_immix(obj) {
-      return false;
+      return None;
     }
     let Some(block_id) = self.heap.immix.block_id_for_ptr(obj) else {
-      return false;
+      return None;
     };
-    self.candidate_blocks.get(block_id).copied().unwrap_or(false)
+    if self.candidate_blocks.get(block_id).copied().unwrap_or(false) {
+      Some(block_id)
+    } else {
+      None
+    }
   }
 
   fn alloc_to_space(&mut self, size: usize, align: usize) -> *mut u8 {
@@ -254,7 +280,7 @@ impl Compactor<'_> {
   }
 
   fn evacuate(&mut self, obj: *mut u8) -> *mut u8 {
-    debug_assert!(self.is_candidate_obj(obj));
+    debug_assert!(self.candidate_block_id(obj).is_some());
 
     // SAFETY: `obj` is expected to be a valid heap object.
     unsafe {
@@ -301,17 +327,30 @@ impl Tracer for Compactor<'_> {
       }
     }
 
-    if self.is_candidate_obj(obj) {
-      let new_obj = self.evacuate(obj);
-      if new_obj != obj {
-        // SAFETY: `slot` is valid and writable.
-        unsafe {
-          *slot = new_obj;
+    let mut pinned_block_id: Option<usize> = None;
+    if let Some(block_id) = self.candidate_block_id(obj) {
+      // Pinned objects must remain in place; remember them so we can re-mark
+      // their lines after clearing the candidate block.
+      // SAFETY: `obj` is expected to be a valid heap object.
+      if unsafe { (&*(obj as *const ObjHeader)).is_pinned() } {
+        pinned_block_id = Some(block_id);
+      } else {
+        let new_obj = self.evacuate(obj);
+        if new_obj != obj {
+          // SAFETY: `slot` is valid and writable.
+          unsafe {
+            *slot = new_obj;
+          }
+          obj = new_obj;
         }
-        obj = new_obj;
       }
     }
 
-    self.enqueue_obj(obj);
+    let first_visit = self.enqueue_obj(obj);
+    if first_visit {
+      if let Some(block_id) = pinned_block_id {
+        self.pinned_in_candidates[block_id].push(obj);
+      }
+    }
   }
 }

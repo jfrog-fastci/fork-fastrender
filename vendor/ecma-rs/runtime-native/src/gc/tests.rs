@@ -1,7 +1,9 @@
 use super::heap::GcHeap;
+use super::heap::MajorCompactionConfig;
 use super::roots::RememberedSet;
 use super::roots::RootSet;
 use super::roots::SimpleRememberedSet;
+use super::ObjHeader;
 use super::TypeDescriptor;
 use super::OBJ_HEADER_SIZE;
 use crate::gc;
@@ -10,6 +12,7 @@ use crate::gc::RootStack;
 const OBJ_SIZE: usize = 64;
 
 static DESC_NO_PTR: TypeDescriptor = TypeDescriptor::new(OBJ_SIZE, &[]);
+static DESC_LINE: TypeDescriptor = TypeDescriptor::new(gc::heap::IMMIX_LINE_SIZE, &[]);
 
 #[test]
 fn align_up_basic() {
@@ -42,6 +45,106 @@ fn major_gc_reclaims_old_blocks_for_reuse() {
   assert_eq!(
     blocks_after, blocks_before,
     "allocator should reuse swept blocks instead of growing the heap"
+  );
+}
+
+#[test]
+fn major_compaction_reuses_holes_without_growing_the_heap() {
+  let mut heap = GcHeap::new();
+  *heap.major_compaction_config_mut() = MajorCompactionConfig {
+    enabled: true,
+    ..MajorCompactionConfig::default()
+  };
+  let mut remembered = EmptyRememberedSet;
+
+  const DEST_LIVE: usize = 200;
+  assert!(DEST_LIVE > 0 && DEST_LIVE < gc::heap::IMMIX_LINES_PER_BLOCK);
+
+  // Destination block: keep many objects live so it is *not* selected as a
+  // compaction candidate, but free the tail so it has a large contiguous hole.
+  let mut root_slots: Vec<Box<*mut u8>> = Vec::new();
+  for _ in 0..DEST_LIVE {
+    let obj = heap.alloc_old(&DESC_LINE);
+    root_slots.push(Box::new(obj));
+  }
+  for _ in 0..(gc::heap::IMMIX_LINES_PER_BLOCK - DEST_LIVE) {
+    heap.alloc_old(&DESC_LINE);
+  }
+
+  // Candidate block: one live object and the rest garbage.
+  let candidate = heap.alloc_old(&DESC_LINE);
+  let candidate_before = candidate;
+  root_slots.push(Box::new(candidate));
+  for _ in 0..(gc::heap::IMMIX_LINES_PER_BLOCK - 1) {
+    heap.alloc_old(&DESC_LINE);
+  }
+
+  let blocks_before = heap.immix_block_count();
+  assert_eq!(blocks_before, 2, "test setup should use exactly 2 Immix blocks");
+
+  let mut roots = VecRootSet::from_boxed_slots(&mut root_slots);
+  heap.collect_major(&mut roots, &mut remembered);
+
+  let blocks_after = heap.immix_block_count();
+  assert_eq!(
+    blocks_after, blocks_before,
+    "compaction should reuse existing holes instead of allocating new blocks"
+  );
+
+  let candidate_after = *root_slots.last().unwrap().as_ref();
+  assert_ne!(
+    candidate_after, candidate_before,
+    "expected the candidate object to be evacuated"
+  );
+}
+
+#[test]
+fn major_compaction_does_not_reclaim_blocks_with_pinned_immix_objects() {
+  let mut heap = GcHeap::new();
+  *heap.major_compaction_config_mut() = MajorCompactionConfig {
+    enabled: true,
+    ..MajorCompactionConfig::default()
+  };
+
+  let mut roots = RootStack::new();
+  let mut remembered = EmptyRememberedSet;
+
+  let mut pinned = heap.alloc_old(&DESC_LINE);
+  let pinned_before = pinned;
+  unsafe {
+    // Simulate an Immix object becoming pinned (future-proofing): pinned objects
+    // must remain in place even under compaction.
+    (&mut *(pinned as *mut ObjHeader)).set_pinned(true);
+    // Write a payload word so we can detect accidental reuse/overwrite.
+    *((pinned as *mut u8).add(OBJ_HEADER_SIZE) as *mut u64) = 0xC0FFEE;
+  }
+
+  roots.push(&mut pinned as *mut *mut u8);
+
+  // Fill the rest of the block with garbage so the pinned object's block is a
+  // sparse candidate.
+  for _ in 0..(gc::heap::IMMIX_LINES_PER_BLOCK - 1) {
+    heap.alloc_old(&DESC_LINE);
+  }
+
+  let block_id = heap
+    .immix
+    .block_id_for_ptr(pinned_before)
+    .expect("pinned object should be in Immix");
+
+  heap.collect_major(&mut roots, &mut remembered);
+
+  assert_eq!(pinned, pinned_before);
+  assert_eq!(
+    unsafe { *((pinned as *mut u8).add(OBJ_HEADER_SIZE) as *const u64) },
+    0xC0FFEE
+  );
+
+  let metrics = heap.immix.block_metrics(block_id).expect("block metrics");
+  let live_lines = gc::heap::IMMIX_LINES_PER_BLOCK - metrics.free_lines;
+  assert!(
+    live_lines > 0,
+    "pinned object's Immix block was treated as fully free under compaction"
   );
 }
 
