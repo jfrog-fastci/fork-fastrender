@@ -163,6 +163,10 @@ static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
 
   // Smoke test: resolve a promise from a blocking worker and run its continuation on the
   // event loop thread.
+  //
+  // Note: the blocking pool spins up worker threads on first use; give it enough slack so the
+  // test isn't flaky under contention while still ensuring `rt_async_poll_legacy` wakes promptly
+  // from `epoll_wait` once the promise is settled.
   int timer_fired = 0;
   // Use a generous timeout: the intent is to keep `rt_async_poll_legacy` blocked in
   // `epoll_wait` while the blocking worker resolves the promise (and wakes the
