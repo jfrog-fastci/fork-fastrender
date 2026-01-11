@@ -215,10 +215,14 @@ heap.
 
 - `buffer::ArrayBuffer` — movable header containing length + backing store handle.
 - `buffer::Uint8Array` — bounds-checked view with `as_ptr_range()` for synchronous access and
-  `pin()` for async I/O pinning (enforces detach/transfer/resize pin-count checks).
+  `pin()` for pointer stability (enforces detach/transfer/resize pin-count checks).
 - `buffer::BackingStoreAllocator` — allocator abstraction for stable, non-moving byte storage.
 
-Design notes and invariants are documented in `docs/buffers-and-io.md`.
+For async I/O, prefer the `io::` layer (`IoOp`, `IoRuntime`, io_uring helpers), which pins **and**
+borrows backing stores for the duration of the op (to preserve a sound aliasing model).
+
+Design notes and invariants are documented in `docs/buffers-and-io.md` and
+`../../docs/runtime-native/buffers-and-io.md`.
 
 ## Safepoint ABI
 

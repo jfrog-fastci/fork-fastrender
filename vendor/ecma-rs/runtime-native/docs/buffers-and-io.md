@@ -66,8 +66,10 @@ To obtain a `(ptr, len)` pair for kernel I/O:
 - Create a typed view (`Uint8Array::view`).
 - Use either:
   - `Uint8Array::as_ptr_range()` for **immediate** / synchronous I/O (not pinned), or
+  - `io::IoOp` / `io::IoRuntime` for async I/O (pins + borrows backing stores for the duration of the
+    op), or
   - `Uint8Array::pin()` / `Uint8Array::pin_range()` (or `ArrayBuffer::pin()` / `ArrayBuffer::pin_range()`)
-    for async I/O (pinned).
+    for **pointer stability only** (pin-count enforcement).
 
 `Uint8Array::as_ptr_range()` is *not* sufficient for async I/O: it does not pin
 the backing store, so the byte pointer can be invalidated by detach/transfer/resize
@@ -76,6 +78,11 @@ or GC finalization while an operation is in flight.
 Pinned guards (`PinnedUint8Array`, `PinnedArrayBuffer`) increment the backing
 store pin count, keeping the bytes alive and forcing detach/transfer/resize to
 fail deterministically with `*Error::Pinned` until the guard is dropped.
+
+Note: pinning alone does **not** prevent safe host reads/writes while an async I/O operation is in
+flight. `runtime-native`'s async I/O layer also borrows backing stores (`BorrowGuardRead` /
+`BorrowGuardWrite`) to enforce a sound aliasing model; see the canonical contract in
+`docs/runtime-native/buffers-and-io.md`.
 
 The byte pointer itself comes from the non-moving backing store, so it is stable
 for as long as the backing store remains alive and is not detached/transferred/resized;
