@@ -201,6 +201,16 @@ impl PinnedUint8Array {
     self.len
   }
 
+  #[inline]
+  pub(crate) fn backing_store_alloc_len(&self) -> usize {
+    self.pinned.backing_store_alloc_len()
+  }
+
+  #[inline]
+  pub(crate) fn backing_store_id(&self) -> usize {
+    self.pinned.backing_store_id()
+  }
+
   /// # Safety
   /// The returned slice is valid for as long as this guard is alive.
   #[inline]

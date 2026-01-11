@@ -309,6 +309,16 @@ impl PinnedBackingStore {
   pub fn len(&self) -> usize {
     self.store.byte_len()
   }
+
+  #[inline]
+  pub(crate) fn alloc_len(&self) -> usize {
+    self.store.alloc_len()
+  }
+
+  #[inline]
+  pub(crate) fn store_id(&self) -> usize {
+    self.store.id()
+  }
 }
 
 impl Drop for PinnedBackingStore {

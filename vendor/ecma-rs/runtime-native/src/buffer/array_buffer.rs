@@ -311,6 +311,16 @@ impl PinnedArrayBuffer {
   }
 
   #[inline]
+  pub(crate) fn backing_store_alloc_len(&self) -> usize {
+    self._pinned.alloc_len()
+  }
+
+  #[inline]
+  pub(crate) fn backing_store_id(&self) -> usize {
+    self._pinned.store_id()
+  }
+
+  #[inline]
   pub fn is_empty(&self) -> bool {
     self.len == 0
   }

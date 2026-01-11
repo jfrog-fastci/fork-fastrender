@@ -172,12 +172,9 @@ impl IoOp {
     limiter: &Arc<IoLimiter>,
     pinned_iovecs: PinnedIoVec,
   ) -> Result<Self, IoLimitError> {
-    let mut total_pinned_bytes: usize = 0;
-    for iov in pinned_iovecs.as_iovecs() {
-      total_pinned_bytes = total_pinned_bytes
-        .checked_add(iov.iov_len)
-        .ok_or(IoLimitError::LimitExceeded("max pinned bytes"))?;
-    }
+    let total_pinned_bytes = pinned_iovecs
+      .retained_alloc_len_deduped()
+      .ok_or(IoLimitError::LimitExceeded("max pinned bytes"))?;
 
     let permit = limiter.try_acquire(total_pinned_bytes)?;
 
@@ -193,6 +190,7 @@ impl IoOp {
       bufs: io_bufs,
       _pinned: Vec::new(),
       pinned_iovecs: Some(pinned_iovecs),
+      #[cfg(unix)]
       pinned_msghdr: None,
       _permit: permit,
     })

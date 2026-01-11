@@ -1,9 +1,9 @@
 use runtime_native::io::IoRuntime;
+use runtime_native::buffer::{ArrayBuffer, Uint8Array};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
 use std::os::fd::{FromRawFd, OwnedFd};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn pipe() -> (OwnedFd, OwnedFd) {
@@ -25,10 +25,11 @@ fn stop_the_world_completes_while_io_worker_blocked_in_poll() {
   let (rfd, wfd) = pipe();
 
   // Large enough to overflow the pipe buffer so the worker thread blocks in poll().
-  let backing: Arc<[u8]> = vec![0u8; 1024 * 1024].into();
+  let buf = ArrayBuffer::new_zeroed(1024 * 1024).unwrap();
+  let view = Uint8Array::view(&buf, 0, buf.byte_len()).unwrap();
 
   let _promise = io_rt
-    .write(wfd, backing.clone(), 0..backing.len())
+    .write(wfd, &view, 0..view.length())
     .expect("IoRuntime::write failed");
 
   // Ensure the op is in-flight (i.e. the worker thread should exist and be executing syscalls).
@@ -67,4 +68,3 @@ fn stop_the_world_completes_while_io_worker_blocked_in_poll() {
   drop(rfd);
   threading::unregister_current_thread();
 }
-

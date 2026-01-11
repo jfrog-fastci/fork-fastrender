@@ -1,4 +1,5 @@
 use crate::buffer::{ArrayBuffer, ArrayBufferError, PinnedArrayBuffer, PinnedUint8Array, TypedArrayError, Uint8Array};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoVecError {
@@ -173,6 +174,31 @@ impl PinnedIoVec {
 
   pub fn as_iovecs(&self) -> &[libc::iovec] {
     &self.iovecs
+  }
+
+  /// Returns the total number of backing-store allocation bytes retained by this pinned iovec list.
+  ///
+  /// Note that each segment pins its backing store for the lifetime of the op. Even if the segment
+  /// is a small range, it still retains the *entire* backing allocation against detach/free.
+  ///
+  /// Backing stores are deduplicated within the list, since multiple segments may refer to the same
+  /// underlying buffer.
+  pub(crate) fn retained_alloc_len_deduped(&self) -> Option<usize> {
+    let mut total: usize = 0;
+    let mut seen: HashSet<usize> = HashSet::with_capacity(self.pins.len());
+
+    for pin in self.pins.iter() {
+      let (id, alloc_len) = match pin {
+        PinGuard::ArrayBuffer(p) => (p.backing_store_id(), p.backing_store_alloc_len()),
+        PinGuard::Uint8Array(p) => (p.backing_store_id(), p.backing_store_alloc_len()),
+      };
+
+      if seen.insert(id) {
+        total = total.checked_add(alloc_len)?;
+      }
+    }
+
+    Some(total)
   }
 }
 
