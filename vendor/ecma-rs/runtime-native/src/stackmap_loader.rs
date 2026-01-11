@@ -20,10 +20,11 @@ const STACKMAP_SECTION_NAMES: [&str; 3] = [
 /// - `__fastr_stackmaps_*` / `__llvm_stackmaps_*` are used by `runtime-native/stackmaps.ld`
 /// - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` are a GNU ld / lld convention for a
 ///   linker-script exported `llvm_stackmaps` output section (Task 288).
-const STACKMAP_SYMBOL_RANGES: [(&str, &str); 3] = [
+const STACKMAP_SYMBOL_RANGES: [(&str, &str); 4] = [
+  ("__start_llvm_stackmaps", "__stop_llvm_stackmaps"),
+  ("__stackmaps_start", "__stackmaps_end"),
   ("__fastr_stackmaps_start", "__fastr_stackmaps_end"),
   ("__llvm_stackmaps_start", "__llvm_stackmaps_end"),
-  ("__start_llvm_stackmaps", "__stop_llvm_stackmaps"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
