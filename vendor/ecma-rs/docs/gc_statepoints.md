@@ -17,7 +17,7 @@ See also (repo-local, complementary):
 - `docs/llvm_statepoints_llvm18.md` — verifier-correct minimal fixture IR
 - `docs/llvm_statepoint_directives.md` — overriding statepoint ID / patch bytes when using `rewrite-statepoints-for-gc`
 - `docs/runtime-native.md` — broader runtime ABI notes (thread anchoring, stackmap parsing, linker script usage)
-- `runtime-native/stackmaps.ld` — linker script fragment that retains `.llvm_stackmaps` and defines start/end symbols
+- `runtime-native/link/stackmaps.ld` (preferred) / `runtime-native/stackmaps.ld` (compat) — linker script fragment that retains stackmaps and defines start/end symbols
 
 The ABI assumptions documented here are guarded by fast regression scripts:
 
@@ -383,11 +383,15 @@ After codegen, LLVM emits a `.llvm_stackmaps` section in the object file.
 
 On ELF, the runtime locates stackmaps by taking the in-memory byte range of the linked `.llvm_stackmaps` section.
 
-This repo supports two common ways to get that byte range:
+Important linker detail: because the section name starts with a dot (`.llvm_stackmaps`), GNU ld / lld do **not**
+automatically synthesize usable `__start_*` / `__stop_*` boundary symbols for it. This repo therefore relies on a
+small linker script fragment to both `KEEP` the section and define stable start/end symbols.
 
-#### Option A (repo default): `runtime-native/stackmaps.ld` (`__fastr_stackmaps_start` / `__fastr_stackmaps_end`)
+#### Linker script (repo default): `runtime-native/link/stackmaps.ld`
 
-`runtime-native` ships a linker script fragment, `runtime-native/stackmaps.ld`, which:
+(`runtime-native/stackmaps.ld` exists for backwards compatibility and has the same effect.)
+
+`runtime-native` ships a linker script fragment which:
 
 - `KEEP`s `.llvm_stackmaps` (even under `--gc-sections`)
 - defines:
@@ -395,12 +399,12 @@ This repo supports two common ways to get that byte range:
   - `__stackmaps_start` / `__stackmaps_end` (generic aliases)
   - `__llvm_stackmaps_start`
   - `__llvm_stackmaps_end`
-  - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (compatibility aliases)
+  - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (stable boundary symbols)
 
 When linking a final ELF binary, apply it (example):
 
 ```bash
-cc ... -Wl,-T,runtime-native/stackmaps.ld ...
+cc ... -Wl,-T,runtime-native/link/stackmaps.ld ...
 ```
 
 Verify the linked output still contains the stackmaps section (or its relocated variant):
@@ -409,22 +413,11 @@ Verify the linked output still contains the stackmaps section (or its relocated 
 llvm-readobj --sections <bin> | rg llvm_stackmaps
 ```
 
-When linking from Rust, you must pass the script to the **final link step** (e.g. via `RUSTFLAGS`
-or your build system). Cargo does not automatically propagate linker-script args from dependencies.
+When linking from Rust/Cargo:
 
-#### Option B: GNU ld `__start_*/__stop_*` section symbols (not available on lld)
-
-Some toolchains using **GNU ld** provide conventional section boundary symbols of the form:
-
-- `__start_<section>`
-- `__stop_<section>`
-
-For `.llvm_stackmaps`, the names include the dot:
-
-- `__start_.llvm_stackmaps`
-- `__stop_.llvm_stackmaps`
-
-lld and mold do **not** synthesize these symbols, so prefer Option A.
+- If you enable the `runtime-native` crate feature `llvm_stackmaps_linker` on Linux, its build script injects the
+  linker script automatically (and also enables link flags needed for stackmap relocations in PIE mode).
+- Otherwise, you must pass the linker script to the final link step yourself (e.g. via `RUSTFLAGS` or your build system).
 
 ---
 
@@ -576,7 +569,8 @@ When producing a PIE, native-js AOT output must:
    - defines `__fastr_stackmaps_start` / `__fastr_stackmaps_end` symbols
 
    The script lives at:
-   - `runtime-native/stackmaps.ld`
+   - `runtime-native/link/stackmaps.ld` (preferred)
+   - `runtime-native/stackmaps.ld` (compat; used by `scripts/native_js_link_linux.sh`)
 
 3. Use `--gc-sections` in release builds (safe because stackmaps are explicitly kept).
 
@@ -615,7 +609,7 @@ addresses at runtime), but they will apply to a writable segment instead of requ
 
 ```bash
 clang-18 -fuse-ld=lld -no-pie \
-  -Wl,--script=runtime-native/stackmaps.ld \
+  -Wl,--script=runtime-native/link/stackmaps.ld \
   -o app_debug \
   main.o codegen.o
 ```
@@ -625,7 +619,7 @@ clang-18 -fuse-ld=lld -no-pie \
 ```bash
 clang-18 -fuse-ld=lld -no-pie \
   -Wl,--gc-sections \
-  -Wl,--script=runtime-native/stackmaps.ld \
+  -Wl,--script=runtime-native/link/stackmaps.ld \
   -o app_release \
   main.o codegen.o
 ```
@@ -637,7 +631,7 @@ clang-18 -fuse-ld=lld -no-pie \
 llvm-objcopy-18 --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents codegen.o
 
 clang-18 -fuse-ld=lld -pie \
-  -Wl,--script=runtime-native/stackmaps.ld \
+  -Wl,--script=runtime-native/link/stackmaps.ld \
   -o app_debug \
   main.o codegen.o
 ```
@@ -649,7 +643,7 @@ llvm-objcopy-18 --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,all
 
 clang-18 -fuse-ld=lld -pie \
   -Wl,--gc-sections \
-  -Wl,--script=runtime-native/stackmaps.ld \
+  -Wl,--script=runtime-native/link/stackmaps.ld \
   -o app_release \
   main.o codegen.o
 ```
