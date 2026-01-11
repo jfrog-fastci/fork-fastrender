@@ -2294,6 +2294,43 @@ pub fn teardown_window_url_bindings_for_realm(realm_id: RealmId, heap: &mut Heap
   heap.remove_root(state.search_params_slot_root);
 }
 
+/// Serialize a `URLSearchParams` wrapper for use by other vm-js bindings (notably `fetch()` body
+/// conversion).
+///
+/// Returns `Ok(None)` when `obj` is not a `URLSearchParams` wrapper in the current realm.
+pub(crate) fn serialize_url_search_params_for_fetch(
+  vm: &Vm,
+  heap: &Heap,
+  obj: GcObject,
+) -> Result<Option<String>, VmError> {
+  let Some(realm_id) = vm.current_realm() else {
+    return Ok(None);
+  };
+
+  let mut registry = registry()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+  let Some(state) = registry.realms.get_mut(&realm_id) else {
+    return Ok(None);
+  };
+
+  // Opportunistically sweep dead wrappers when GC has run.
+  let gc_runs = heap.gc_runs();
+  if gc_runs != state.last_gc_runs {
+    state.last_gc_runs = gc_runs;
+    state.urls.retain(|k, _| k.upgrade(heap).is_some());
+    state.params.retain(|k, _| k.upgrade(heap).is_some());
+    state.params_iterators.retain(|k, _| k.upgrade(heap).is_some());
+  }
+
+  let params = match state.params.get(&WeakGcObject::from(obj)).cloned() {
+    Some(p) => p,
+    None => return Ok(None),
+  };
+
+  params.serialize().map(Some).map_err(map_url_error)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

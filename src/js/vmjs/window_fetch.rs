@@ -13,8 +13,11 @@
 use crate::js::event_loop::TaskSource;
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
+use crate::js::window_blob;
+use crate::js::window_form_data;
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData};
 use crate::js::window_timers::{vm_error_to_event_loop_error, VmJsEventLoopHooks};
+use crate::js::window_url;
 use crate::resource::web_fetch::{
   execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
   RequestCredentials, RequestMode, RequestRedirect, ResponseType, WebFetchExecutionContext, WebFetchError, WebFetchLimits,
@@ -92,6 +95,7 @@ struct EnvState {
   env: WindowFetchEnv,
   promise_executor_call: NativeFunctionId,
   next_id: u64,
+  multipart_boundary_counter: u64,
   owned_headers: HashMap<u64, CoreHeaders>,
   requests: HashMap<u64, CoreRequest>,
   responses: HashMap<u64, CoreResponse>,
@@ -109,6 +113,7 @@ impl EnvState {
       env,
       promise_executor_call,
       next_id: 1,
+      multipart_boundary_counter: 1,
       owned_headers: HashMap::new(),
       requests: HashMap::new(),
       responses: HashMap::new(),
@@ -256,7 +261,7 @@ const FETCH_URL_TOO_LONG_ERROR: &str = "fetch URL exceeds maximum length";
 const FETCH_METHOD_TOO_LONG_ERROR: &str = "fetch method exceeds maximum length";
 const FETCH_HEADER_NAME_TOO_LONG_ERROR: &str = "fetch header name exceeds maximum length";
 const FETCH_HEADER_VALUE_TOO_LONG_ERROR: &str = "fetch header value exceeds maximum length";
-const FETCH_BODY_TOO_LONG_ERROR: &str = "fetch body string exceeds maximum length";
+const FETCH_BODY_TOO_LONG_ERROR: &str = "fetch body exceeds maximum length";
 const FETCH_CREDENTIALS_TOO_LONG_ERROR: &str = "Request.credentials exceeds maximum length";
 const FETCH_MODE_TOO_LONG_ERROR: &str = "Request.mode exceeds maximum length";
 const FETCH_REDIRECT_TOO_LONG_ERROR: &str = "Request.redirect exceeds maximum length";
@@ -1490,6 +1495,75 @@ fn headers_ctor_construct(
   Ok(Value::Object(obj))
 }
 
+fn escape_multipart_quoted_string_value(value: &str) -> String {
+  // Avoid CRLF/header injection and keep quoting deterministic.
+  let mut out = String::with_capacity(value.len());
+  for ch in value.chars() {
+    match ch {
+      '"' => out.push_str("\\\""),
+      '\\' => out.push_str("\\\\"),
+      '\r' | '\n' => out.push(' '),
+      other if other.is_control() => out.push(' '),
+      other => out.push(other),
+    }
+  }
+  out
+}
+
+fn push_bytes_limited(out: &mut Vec<u8>, bytes: &[u8], max_len: usize) -> Result<(), VmError> {
+  let next_len = out.len().checked_add(bytes.len()).ok_or(VmError::OutOfMemory)?;
+  if next_len > max_len {
+    return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+  }
+  out.try_reserve_exact(bytes.len()).map_err(|_| VmError::OutOfMemory)?;
+  out.extend_from_slice(bytes);
+  Ok(())
+}
+
+fn encode_form_data_as_multipart(
+  entries: &[window_form_data::FormDataEntry],
+  boundary: &str,
+  max_len: usize,
+) -> Result<Vec<u8>, VmError> {
+  let mut out = Vec::<u8>::new();
+
+  for entry in entries {
+    push_bytes_limited(&mut out, b"--", max_len)?;
+    push_bytes_limited(&mut out, boundary.as_bytes(), max_len)?;
+    push_bytes_limited(&mut out, b"\r\n", max_len)?;
+
+    let escaped_name = escape_multipart_quoted_string_value(&entry.name);
+    match &entry.value {
+      window_form_data::FormDataValue::String(value) => {
+        let header = format!("Content-Disposition: form-data; name=\"{escaped_name}\"\r\n\r\n");
+        push_bytes_limited(&mut out, header.as_bytes(), max_len)?;
+        push_bytes_limited(&mut out, value.as_bytes(), max_len)?;
+        push_bytes_limited(&mut out, b"\r\n", max_len)?;
+      }
+      window_form_data::FormDataValue::Blob { data, filename } => {
+        let escaped_filename = escape_multipart_quoted_string_value(filename);
+        let header = format!(
+          "Content-Disposition: form-data; name=\"{escaped_name}\"; filename=\"{escaped_filename}\"\r\n"
+        );
+        push_bytes_limited(&mut out, header.as_bytes(), max_len)?;
+        if !data.r#type.is_empty() {
+          let content_type = format!("Content-Type: {}\r\n", data.r#type);
+          push_bytes_limited(&mut out, content_type.as_bytes(), max_len)?;
+        }
+        push_bytes_limited(&mut out, b"\r\n", max_len)?;
+        push_bytes_limited(&mut out, &data.bytes, max_len)?;
+        push_bytes_limited(&mut out, b"\r\n", max_len)?;
+      }
+    }
+  }
+
+  push_bytes_limited(&mut out, b"--", max_len)?;
+  push_bytes_limited(&mut out, boundary.as_bytes(), max_len)?;
+  push_bytes_limited(&mut out, b"--\r\n", max_len)?;
+
+  Ok(out)
+}
+
 fn apply_request_init(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1644,13 +1718,81 @@ fn apply_request_init(
   let body_key = alloc_key(scope, "body")?;
   let body_val = vm.get(scope, init_obj, body_key)?;
   if !matches!(body_val, Value::Undefined | Value::Null) {
-    let bytes = to_rust_string_limited(
-      scope.heap_mut(),
-      body_val,
-      request.headers.limits().max_request_body_bytes,
-      FETCH_BODY_TOO_LONG_ERROR,
-    )?
-    .into_bytes();
+    let max_body_bytes = request.headers.limits().max_request_body_bytes;
+    let mut inferred_content_type: Option<String> = None;
+
+    let bytes: Vec<u8> = match body_val {
+      Value::Object(obj) => {
+        if scope.heap().is_array_buffer_object(obj) {
+          let data = scope.heap().array_buffer_data(obj)?;
+          if data.len() > max_body_bytes {
+            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+          }
+          data.to_vec()
+        } else if scope.heap().is_uint8_array_object(obj) {
+          let data = scope.heap().uint8_array_data(obj)?;
+          if data.len() > max_body_bytes {
+            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+          }
+          data.to_vec()
+        } else if let Some(serialized) =
+          window_url::serialize_url_search_params_for_fetch(vm, scope.heap(), obj)?
+        {
+          if serialized.as_bytes().len() > max_body_bytes {
+            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+          }
+          inferred_content_type =
+            Some("application/x-www-form-urlencoded;charset=UTF-8".to_string());
+          serialized.into_bytes()
+        } else if let Some(blob) =
+          window_blob::clone_blob_data_for_fetch(vm, scope.heap(), body_val)?
+        {
+          if blob.bytes.len() > max_body_bytes {
+            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+          }
+          if !blob.r#type.is_empty() {
+            inferred_content_type = Some(blob.r#type.clone());
+          }
+          blob.bytes
+        } else if let Some(entries) =
+          window_form_data::clone_form_data_entries_for_fetch(vm, scope.heap(), body_val)?
+        {
+          let boundary_id = with_env_state_mut(env_id, |state| {
+            let id = state.multipart_boundary_counter;
+            state.multipart_boundary_counter = state.multipart_boundary_counter.saturating_add(1);
+            Ok(id)
+          })?;
+          let boundary = format!("----fastrenderformdata{boundary_id}");
+          let multipart =
+            encode_form_data_as_multipart(&entries, &boundary, max_body_bytes)?;
+          inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
+          multipart
+        } else {
+          let s = scope.to_string(vm, host, host_hooks, body_val)?;
+          js_string_to_rust_string_limited(scope.heap(), s, max_body_bytes, FETCH_BODY_TOO_LONG_ERROR)?
+            .into_bytes()
+        }
+      }
+      other => {
+        let s = scope.to_string(vm, host, host_hooks, other)?;
+        js_string_to_rust_string_limited(scope.heap(), s, max_body_bytes, FETCH_BODY_TOO_LONG_ERROR)?
+          .into_bytes()
+      }
+    };
+
+    if let Some(content_type) = inferred_content_type {
+      let has_content_type = request
+        .headers
+        .has("Content-Type")
+        .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+      if !has_content_type {
+        request
+          .headers
+          .set("Content-Type", &content_type)
+          .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+      }
+    }
+
     let body = Body::new_with_limits(bytes, request.headers.limits())
       .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
     request.body = Some(body);
@@ -6442,6 +6584,192 @@ mod tests {
         Some("text/plain".to_string()),
       ))
     }
+  }
+
+  #[derive(Debug, Clone)]
+  struct CapturedHttpRequest {
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+  }
+
+  #[derive(Default)]
+  struct CaptureHttpRequestFetcher {
+    last: std::sync::Mutex<Option<CapturedHttpRequest>>,
+  }
+
+  impl CaptureHttpRequestFetcher {
+    fn take(&self) -> Option<CapturedHttpRequest> {
+      self.last.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+  }
+
+  impl ResourceFetcher for CaptureHttpRequestFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Ok(FetchedResource::new(
+        format!("ok:{url}").into_bytes(),
+        Some("text/plain".to_string()),
+      ))
+    }
+
+    fn fetch_http_request(&self, req: crate::resource::HttpRequest<'_>) -> crate::error::Result<FetchedResource> {
+      let captured = CapturedHttpRequest {
+        method: req.method.to_string(),
+        url: req.fetch.url.to_string(),
+        headers: req.headers.to_vec(),
+        body: req.body.map(|b| b.to_vec()),
+      };
+      *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Some(captured);
+      Ok(FetchedResource::new(
+        format!("ok:{}", req.fetch.url).into_bytes(),
+        Some("text/plain".to_string()),
+      ))
+    }
+  }
+
+  fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+      .iter()
+      .find(|(k, _)| k.eq_ignore_ascii_case(name))
+      .map(|(_, v)| v.as_str())
+  }
+
+  #[test]
+  fn fetch_blob_body_sends_bytes_and_sets_content_type() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let env = WindowFetchEnv::for_document(fetcher.clone(), Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    with_event_loop(&mut event_loop, || {
+      host
+        .window
+        .exec_script(
+          "fetch('https://example.invalid/upload', { method: 'POST', body: new Blob(['hi'], { type: 'text/plain' }) });",
+        )
+        .unwrap();
+    });
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let captured = fetcher.take().expect("expected fetch_http_request call");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.url, "https://example.invalid/upload");
+    assert_eq!(captured.body.as_deref(), Some(b"hi".as_slice()));
+    assert_eq!(
+      header_value(&captured.headers, "content-type"),
+      Some("text/plain"),
+      "headers={:?}",
+      captured.headers
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_url_search_params_body_sets_content_type_and_serializes() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let env = WindowFetchEnv::for_document(fetcher.clone(), Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    with_event_loop(&mut event_loop, || {
+      host
+        .window
+        .exec_script(
+          "fetch('https://example.invalid/submit', { method: 'POST', body: new URLSearchParams('a=1&b=2') });",
+        )
+        .unwrap();
+    });
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let captured = fetcher.take().expect("expected fetch_http_request call");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.url, "https://example.invalid/submit");
+    assert_eq!(captured.body.as_deref(), Some(b"a=1&b=2".as_slice()));
+    assert_eq!(
+      header_value(&captured.headers, "content-type"),
+      Some("application/x-www-form-urlencoded;charset=UTF-8"),
+      "headers={:?}",
+      captured.headers
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_form_data_body_encodes_multipart_and_sets_boundary() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let env = WindowFetchEnv::for_document(fetcher.clone(), Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    with_event_loop(&mut event_loop, || {
+      host
+        .window
+        .exec_script(
+          r#"
+            const fd = new FormData();
+            fd.append('a', 'b');
+            fd.append('file', new Blob(['hi'], { type: 'text/plain' }), 'f.txt');
+            fetch('https://example.invalid/multipart', { method: 'POST', body: fd });
+          "#,
+        )
+        .unwrap();
+    });
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let captured = fetcher.take().expect("expected fetch_http_request call");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.url, "https://example.invalid/multipart");
+
+    let ct = header_value(&captured.headers, "content-type").expect("Content-Type should be set");
+    assert_eq!(ct, "multipart/form-data; boundary=----fastrenderformdata1");
+
+    let expected = concat!(
+      "------fastrenderformdata1\r\n",
+      "Content-Disposition: form-data; name=\"a\"\r\n",
+      "\r\n",
+      "b\r\n",
+      "------fastrenderformdata1\r\n",
+      "Content-Disposition: form-data; name=\"file\"; filename=\"f.txt\"\r\n",
+      "Content-Type: text/plain\r\n",
+      "\r\n",
+      "hi\r\n",
+      "------fastrenderformdata1--\r\n"
+    );
+    assert_eq!(
+      captured.body.as_deref(),
+      Some(expected.as_bytes()),
+      "body={:?}",
+      captured.body.as_deref()
+    );
+
+    Ok(())
   }
 
   #[test]

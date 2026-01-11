@@ -356,6 +356,8 @@ impl WindowRealm {
           unregister_match_media_env(id);
         }
         crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, heap);
+        crate::js::window_blob::teardown_window_blob_bindings_for_realm(realm_id);
+        crate::js::window_form_data::teardown_window_form_data_bindings_for_realm(realm_id);
         return Err(err);
       }
     };
@@ -470,6 +472,8 @@ impl WindowRealm {
       }
     }
     let realm_id = self.runtime.realm().id();
+    crate::js::window_blob::teardown_window_blob_bindings_for_realm(realm_id);
+    crate::js::window_form_data::teardown_window_form_data_bindings_for_realm(realm_id);
     crate::js::window_url::teardown_window_url_bindings_for_realm(realm_id, &mut self.runtime.heap);
   }
 
@@ -16246,6 +16250,8 @@ fn init_window_globals(
   crate::js::window_crypto::install_window_crypto_bindings(vm, realm, heap)?;
   crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
+  crate::js::window_blob::install_window_blob_bindings(vm, realm, heap)?;
+  crate::js::window_form_data::install_window_form_data_bindings(vm, realm, heap)?;
 
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),

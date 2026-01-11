@@ -92,6 +92,8 @@ pub mod window_abort;
 pub mod window_animation_frame;
 #[path = "vmjs/window_crypto.rs"]
 pub mod window_crypto;
+#[path = "vmjs/window_blob.rs"]
+pub mod window_blob;
 #[path = "vmjs/window_text_encoding.rs"]
 pub mod window_text_encoding;
 #[path = "vmjs/window_env.rs"]
@@ -104,6 +106,8 @@ pub mod window_realm;
 pub mod window_timers;
 #[path = "vmjs/window_url.rs"]
 pub mod window_url;
+#[path = "vmjs/window_form_data.rs"]
+pub mod window_form_data;
 
 // --- WebIDL runtime + bindings integration (`src/js/webidl/*`) ---
 
@@ -192,10 +196,12 @@ pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_resolve::{resolve_url, UrlResolveError};
 pub use url_bindings::{install_url_bindings, install_url_bindings_with_limits};
 pub use window_animation_frame::install_window_animation_frame_bindings;
+pub use window_blob::install_window_blob_bindings;
 pub use window_fetch::{
   install_window_fetch_bindings, install_window_fetch_bindings_with_guard, unregister_window_fetch_env,
   WindowFetchBindings, WindowFetchEnv,
 };
+pub use window_form_data::install_window_form_data_bindings;
 pub use window_timers::install_window_timers_bindings;
 pub use window_url::install_window_url_bindings;
 pub use window_realm::{
