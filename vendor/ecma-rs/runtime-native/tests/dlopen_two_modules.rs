@@ -91,6 +91,32 @@ fn dlopen_registers_multiple_stackmap_modules() {
 }
 
 #[test]
+fn dlopen_registers_stackmaps_with_start_stop_symbols() {
+  // Skip if dlopen is somehow not available.
+  if unsafe { libc::dlopen(std::ptr::null(), libc::RTLD_NOW) }.is_null() {
+    eprintln!("dlopen unavailable; skipping");
+    return;
+  }
+
+  let dir = TempDir::new().unwrap();
+  let lib = build_test_module_with_symbols(&dir, "mod_start_stop", "__start_llvm_stackmaps", "__stop_llvm_stackmaps")
+    .unwrap();
+
+  unsafe {
+    let h = dlopen(&lib);
+
+    let mod_registered = dlsym(h, "mod_start_stop_registered") as *const libc::c_int;
+    assert_eq!(
+      *mod_registered, 1,
+      "mod_start_stop constructor should register stackmaps"
+    );
+
+    let pc = stackmap_first_callsite_pc_with_symbols(h, "__start_llvm_stackmaps", "__stop_llvm_stackmaps") as usize;
+    assert!(lookup(pc).is_some(), "mod_start_stop callsite should be registered");
+  }
+}
+
+#[test]
 fn dlopen_then_scan_registers_stackmaps_without_constructors() {
   let _rt = TestRuntimeGuard::new();
 
@@ -128,15 +154,23 @@ fn dlopen_then_scan_registers_stackmaps_without_constructors() {
   }
 }
 
-unsafe fn stackmap_first_callsite_pc(handle: *mut libc::c_void) -> u64 {
-  let start = dlsym(handle, "__llvm_stackmaps_start") as *const u8;
-  let end = dlsym(handle, "__llvm_stackmaps_end") as *const u8;
+unsafe fn stackmap_first_callsite_pc_with_symbols(
+  handle: *mut libc::c_void,
+  start_sym: &str,
+  end_sym: &str,
+) -> u64 {
+  let start = dlsym(handle, start_sym) as *const u8;
+  let end = dlsym(handle, end_sym) as *const u8;
 
   let len = (end as usize).checked_sub(start as usize).expect("end < start");
   let bytes = std::slice::from_raw_parts(start, len);
 
   let maps = runtime_native::StackMaps::parse(bytes).expect("parse stackmaps blob");
   maps.callsites().first().expect("expected 1 callsite").pc
+}
+
+unsafe fn stackmap_first_callsite_pc(handle: *mut libc::c_void) -> u64 {
+  stackmap_first_callsite_pc_with_symbols(handle, "__llvm_stackmaps_start", "__llvm_stackmaps_end")
 }
 
 fn build_test_module(dir: &TempDir, name: &str) -> std::io::Result<std::path::PathBuf> {
@@ -189,6 +223,81 @@ fn build_test_module(dir: &TempDir, name: &str) -> std::io::Result<std::path::Pa
         ".long 0\n"          // Record padding to 8-byte alignment
         ".globl __llvm_stackmaps_end\n"
         "__llvm_stackmaps_end:\n"
+        ".previous\n"
+      );
+    "#
+  );
+
+  std::fs::write(&src_path, code)?;
+
+  let status = Command::new("cc")
+    .arg("-shared")
+    .arg("-fPIC")
+    .arg("-O0")
+    .arg("-o")
+    .arg(&out_path)
+    .arg(&src_path)
+    .status()?;
+
+  assert!(status.success(), "cc failed for {name}");
+  Ok(out_path)
+}
+
+fn build_test_module_with_symbols(
+  dir: &TempDir,
+  name: &str,
+  start_sym: &str,
+  end_sym: &str,
+) -> std::io::Result<std::path::PathBuf> {
+  let src_path = dir.path().join(format!("{name}.c"));
+  let out_path = dir.path().join(format!("lib{name}.so"));
+
+  let code = format!(
+    r#"
+      #include <stdbool.h>
+      #include <stdint.h>
+
+      // Provided by the host runtime-native.
+      bool rt_stackmaps_register(const uint8_t* start, const uint8_t* end);
+
+      extern uint8_t {start_sym};
+      extern uint8_t {end_sym};
+
+      int {name}_registered = 0;
+
+      void {name}_target(void) {{}}
+
+      __attribute__((constructor))
+      static void {name}_ctor(void) {{
+        {name}_registered = rt_stackmaps_register(&{start_sym}, &{end_sym}) ? 1 : 0;
+      }}
+
+      // Hand-crafted minimal LLVM stackmap blob with one function and one record.
+      __asm__(
+        ".section .llvm_stackmaps,\"aw\",@progbits\n"
+        ".globl {start_sym}\n"
+        "{start_sym}:\n"
+        // Header
+        ".byte 3\n"          // Version
+        ".byte 0\n"          // Reserved
+        ".short 0\n"         // Reserved
+        ".long 1\n"          // NumFunctions
+        ".long 0\n"          // NumConstants
+        ".long 1\n"          // NumRecords
+        // FunctionInfo[0]
+        ".quad {name}_target\n" // FunctionAddress (relocated)
+        ".quad 0\n"          // StackSize
+        ".quad 1\n"          // RecordCount
+        // Record[0]
+        ".quad 1\n"          // PatchPointID
+        ".long 0\n"          // InstructionOffset
+        ".short 0\n"         // Reserved
+        ".short 0\n"         // NumLocations
+        ".short 0\n"         // Padding
+        ".short 0\n"         // NumLiveOuts
+        ".long 0\n"          // Record padding to 8-byte alignment
+        ".globl {end_sym}\n"
+        "{end_sym}:\n"
         ".previous\n"
       );
     "#
