@@ -342,6 +342,11 @@ The `native-js-cli` binary uses `compile_project_to_llvm_ir`, which extends this
 emitter with a small multi-file ES module subset (see
 [`native-js-cli/README.md`](../native-js-cli/README.md)).
 
+Note: the current multi-file project emitter is intentionally conservative and
+still incomplete. In particular, it currently assumes user-defined functions have
+`number` parameters and a `number` return type for signature checking; type
+annotations are parsed but ignored for this purpose.
+
 The input is always parsed as a **TypeScript module**:
 
 - `parse-js` `Dialect::Ts`

@@ -116,6 +116,16 @@ export name isn’t `main`).
 
 ## Options
 
+### `--entry-fn <name>`
+
+After initializing the module graph (executing top-level statements in dependency
+order), call an **exported** function from the entry module.
+
+If omitted, only top-level module initializers are executed.
+
+The entry function must currently take **zero** parameters; its return value is
+ignored.
+
 ### `--emit-llvm <path>`
 
 Write the generated LLVM IR (`.ll`) to a file for debugging:
@@ -209,7 +219,7 @@ future typechecked/HIR-based backend yet). Supported today:
     - direct calls to user-defined functions by identifier:
       - exact arity (no varargs)
       - no optional chaining / spread arguments
-      - arguments are checked against the callee’s declared parameter types
+      - arguments are checked against the callee’s assumed signature (currently all `number`)
 
 - ES module subset (multi-file projects):
   - `export function foo(...) { ... }`
@@ -219,14 +229,17 @@ future typechecked/HIR-based backend yet). Supported today:
 Limitations:
 
 - Default exports, namespace imports, and re-exports are not supported.
+- User-defined functions are currently assumed to have `number` parameters and a
+  `number` return type for signature checking; type annotations are parsed but
+  ignored for this purpose.
 - `tsconfig.json` is not loaded (so `baseUrl`/`paths` are ignored); module resolution
   uses a Node-style resolver for the supported import forms.
 
 Type annotations in function declarations (current):
 
-- Supported: `number`, `boolean`, `string`, `void`, `null`, `undefined`
-- If omitted, parameters and return types default to `number`
-  (this is a convenience for the minimal emitter; it is not TypeScript semantics)
+- Type annotations are currently ignored by `native-js-cli` for user-defined
+  function signatures. All user-defined function parameters/returns are treated
+  as `number`.
 
 All other statements/expressions/operators currently fail compilation with a
 simple error (e.g. `unsupported statement`, `unsupported expression`, or

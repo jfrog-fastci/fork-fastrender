@@ -1,3 +1,40 @@
+//! Native code generation backends for `native-js`.
+//!
+//! This module currently contains:
+//! - `emit_llvm_module`: a minimal `parse-js`-driven LLVM IR emitter (used by
+//!   `compile_typescript_to_llvm_ir`; `native-js-cli` uses the related multi-file
+//!   `compile_project_to_llvm_ir` entrypoint).
+//! - [`codegen`]: an experimental HIR-driven backend used by the typechecked
+//!   `native-js` CLI (`native-js-cli --bin native-js`).
+//!
+//! ## Diagnostic codes
+//!
+//! The HIR backend emits stable `NJS01xx` codes for codegen failures:
+//!
+//! - `NJS0100`: failed to access lowered HIR for entry file
+//! - `NJS0101`: failed to access lowered HIR for `main` body
+//! - `NJS0102`: missing function metadata for `main` body
+//! - `NJS0103`: expression id out of bounds
+//! - `NJS0104`: numeric literal cannot be represented as a 32-bit integer
+//! - `NJS0105`: unsupported unary operator
+//! - `NJS0106`: unsupported binary operator
+//! - `NJS0107`: unsupported expression / assignment / update operator in `main`
+//! - `NJS0112`: statement id out of bounds
+//! - `NJS0113`: unsupported statement / variable declaration kind in `main`
+//! - `NJS0114`: unknown identifier in `main`
+//! - `NJS0115`: not all control-flow paths in `main` return a value
+//! - `NJS0116`: `return` without a value is only supported when `main` returns `void`/`undefined`
+//! - `NJS0117`: unsupported pattern (expected identifier) / pattern id out of bounds
+//! - `NJS0118`: variable declarations must have an initializer
+//! - `NJS0119`: unknown loop label for `break`
+//! - `NJS0120`: `break` is only supported inside loops
+//! - `NJS0121`: unknown loop label for `continue`
+//! - `NJS0122`: `continue` is only supported inside loops
+//! - `NJS0123`: failed to resolve call signature for exported `main`
+//! - `NJS0124`: only labeled loops are supported in native-js codegen
+//!
+//! Entrypoint-related errors are emitted by [`crate::strict::entrypoint`]
+//! (`NJS0108..NJS0111`).
 use crate::resolve::BindingId;
 use crate::strict::Entrypoint;
 use crate::Resolver;
