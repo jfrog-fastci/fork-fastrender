@@ -329,7 +329,7 @@ extern "C" fn callback_reaction_drop(node: *mut PromiseReactionNode) {
   unsafe {
     let node = Box::from_raw(node as *mut CallbackReaction);
     if let Some(drop_data) = node.drop_data {
-      drop_data(node.data);
+      crate::ffi::invoke_cb1(drop_data, node.data);
     }
   }
 }
@@ -513,7 +513,7 @@ pub(crate) fn promise_then_with_drop(
 ) {
   if p.is_null() {
     // Treat null as "never settles": immediately discard owned callback state.
-    drop_data(data);
+    crate::ffi::invoke_cb1(drop_data, data);
     return;
   }
   let node = alloc_callback_reaction(on_settle, data, Some(drop_data), None);

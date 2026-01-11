@@ -1653,7 +1653,7 @@ struct RootedIoWatcherData {
 
 extern "C" fn rooted_io_watcher_cb(events: u32, data: *mut u8) {
   let ctx = unsafe { &*(data as *const RootedIoWatcherData) };
-  (ctx.cb)(events, ctx.root.ptr());
+  crate::ffi::invoke_cb2_u32(ctx.cb, events, ctx.root.ptr());
 }
 
 extern "C" fn drop_rooted_io_watcher_data(data: *mut u8) {
@@ -1675,7 +1675,7 @@ extern "C" fn handle_io_watcher_cb(events: u32, data: *mut u8) {
   if ptr.is_null() {
     return;
   }
-  (ctx.cb)(events, ptr);
+  crate::ffi::invoke_cb2_u32(ctx.cb, events, ptr);
 }
 
 extern "C" fn drop_handle_io_watcher_data(data: *mut u8) {
@@ -1684,7 +1684,7 @@ extern "C" fn drop_handle_io_watcher_data(data: *mut u8) {
   let ptr = rt_handle_load(ctx.handle);
   if !ptr.is_null() {
     if let Some(drop_data) = ctx.drop_data {
-      drop_data(ptr);
+      crate::ffi::invoke_cb1(drop_data, ptr);
     }
   }
   rt_handle_free(ctx.handle);
@@ -1789,7 +1789,7 @@ pub extern "C" fn rt_io_register_with_drop(
         ),
       );
       ensure_current_thread_registered();
-      drop_data(data);
+      crate::ffi::invoke_cb1(drop_data, data);
       return 0;
     }
     let _ = crate::rt_ensure_init();
@@ -1808,7 +1808,7 @@ pub extern "C" fn rt_io_register_with_drop(
         };
         rt_io_set_last_error(code);
 
-        drop_data(data);
+        crate::ffi::invoke_cb1(drop_data, data);
         if is_nonblocking_contract_violation {
           maybe_log_rt_io_failure(
             "rt_io_register_with_drop",
@@ -2193,7 +2193,7 @@ pub(crate) fn clear_web_timers() {
   let mut timers = WEB_TIMERS.lock();
   for (_, st) in timers.drain() {
     if let Some(drop_data) = st.drop_data {
-      (drop_data)(st.data);
+      crate::ffi::invoke_cb1(drop_data, st.data);
     }
   }
 }
@@ -2279,7 +2279,7 @@ extern "C" fn web_timer_fire(data: *mut u8) {
 
   if kind == WebTimerKind::Timeout {
     if let Some(drop_data) = drop_data {
-      drop_data(data_ptr);
+      crate::ffi::invoke_cb1(drop_data, data_ptr);
     }
     return;
   }
@@ -2305,7 +2305,7 @@ extern "C" fn web_timer_fire(data: *mut u8) {
   };
 
   if let Some((drop_data, cb_data)) = drop_after {
-    drop_data(cb_data);
+    crate::ffi::invoke_cb1(drop_data, cb_data);
     return;
   }
 
@@ -2365,7 +2365,7 @@ extern "C" fn handle_microtask_run(data: *mut u8) {
   if ptr.is_null() {
     return;
   }
-  (task.cb)(ptr);
+  crate::ffi::invoke_cb1(task.cb, ptr);
 }
 
 extern "C" fn handle_microtask_drop(data: *mut u8) {
@@ -2374,7 +2374,7 @@ extern "C" fn handle_microtask_drop(data: *mut u8) {
   let ptr = rt_handle_load(task.handle);
   if !ptr.is_null() {
     if let Some(drop_data) = task.drop_data {
-      drop_data(ptr);
+      crate::ffi::invoke_cb1(drop_data, ptr);
     }
   }
   rt_handle_free(task.handle);
@@ -2433,7 +2433,7 @@ struct RootedWebTimerData {
 
 extern "C" fn rooted_web_timer_cb(data: *mut u8) {
   let ctx = unsafe { &*(data as *const RootedWebTimerData) };
-  (ctx.cb)(ctx.root.ptr());
+  crate::ffi::invoke_cb1(ctx.cb, ctx.root.ptr());
 }
 
 extern "C" fn drop_rooted_web_timer_data(data: *mut u8) {
@@ -2455,7 +2455,7 @@ extern "C" fn handle_web_timer_cb(data: *mut u8) {
   if ptr.is_null() {
     return;
   }
-  (ctx.cb)(ptr);
+  crate::ffi::invoke_cb1(ctx.cb, ptr);
 }
 
 extern "C" fn drop_handle_web_timer_data(data: *mut u8) {
@@ -2464,7 +2464,7 @@ extern "C" fn drop_handle_web_timer_data(data: *mut u8) {
   let ptr = rt_handle_load(ctx.handle);
   if !ptr.is_null() {
     if let Some(drop_data) = ctx.drop_data {
-      drop_data(ptr);
+      crate::ffi::invoke_cb1(drop_data, ptr);
     }
   }
   rt_handle_free(ctx.handle);
@@ -2868,7 +2868,7 @@ pub extern "C" fn rt_clear_timer(id: TimerId) {
     };
     let _ = async_rt::global().cancel_timer(st.internal_id);
     if let Some((drop_data, cb_data)) = should_drop {
-      drop_data(cb_data);
+      crate::ffi::invoke_cb1(drop_data, cb_data);
     }
   })
 }
