@@ -34,6 +34,11 @@ impl CfgGraph {
     self.0.nodes().cloned()
   }
 
+  /// Ensure `label` exists in the graph even if it has no edges.
+  pub fn ensure_label(&mut self, label: u32) {
+    self.0.ensure_node(&label);
+  }
+
   pub fn contains(&self, label: u32) -> bool {
     self.0.contains(&label)
   }

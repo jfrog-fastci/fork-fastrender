@@ -99,9 +99,7 @@ fn analyze_program_function_uses_analyzed_cfg() {
 
   fn cfg_with_string(s: &str) -> Cfg {
     let mut graph = CfgGraph::default();
-    // Ensure the node exists even though the CFG has no edges.
-    graph.connect(0, 0);
-    graph.disconnect(0, 0);
+    graph.ensure_label(0);
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(
       0,

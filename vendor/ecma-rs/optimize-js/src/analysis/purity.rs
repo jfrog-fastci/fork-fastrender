@@ -123,7 +123,7 @@ mod tests {
   fn cfg_with_single_call(callee: Arg) -> Cfg {
     let mut graph = CfgGraph::default();
     // Ensure label 0 exists in the CFG graph.
-    graph.connect(0, 0);
+    graph.ensure_label(0);
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(
       0,
@@ -144,7 +144,7 @@ mod tests {
 
   fn empty_program_function() -> ProgramFunction {
     let mut graph = CfgGraph::default();
-    graph.connect(0, 0);
+    graph.ensure_label(0);
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(0, Vec::new());
     ProgramFunction {

@@ -121,7 +121,7 @@ fn ssa_deconstruct_propagates_phi_metadata_to_edge_copies() {
 fn trivial_dce_clears_call_result_metadata_when_tgt_is_removed() {
   let mut graph = CfgGraph::default();
   // Ensure label 0 exists in the graph.
-  graph.connect(0, 0);
+  graph.ensure_label(0);
 
   let mut call = Inst::call(
     1,

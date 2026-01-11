@@ -61,7 +61,7 @@ mod tests {
   fn cfg_single_block(insts: Vec<Inst>) -> Cfg {
     let mut graph = CfgGraph::default();
     // Ensure the entry label exists.
-    graph.connect(0, 0);
+    graph.ensure_label(0);
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(0, insts);
     Cfg {
