@@ -541,6 +541,47 @@ fn gc_pointer_vararg_call_argument_is_in_gc_live_bundle() {
 }
 
 #[test]
+fn void_call_emits_no_gc_result() {
+  let before = r#"
+  declare void @bar()
+
+  define void @test() gc "coreclr" {
+  entry:
+    call void @bar()
+    ret void
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void ()) @bar"))
+    .unwrap_or_else(|| panic!("missing @bar statepoint call in function:\n{func}"));
+  assert!(
+    statepoint_line.contains("call token") && statepoint_line.contains("@llvm.experimental.gc.statepoint"),
+    "expected @bar call to be rewritten into a `call token` gc.statepoint call, got:\n{statepoint_line}\n\n{func}"
+  );
+  assert!(
+    !func.contains("call void @bar"),
+    "expected no direct call void @bar after rewrite:\n{func}"
+  );
+  assert!(
+    !func.contains("@llvm.experimental.gc.result"),
+    "void statepoint should not emit any gc.result intrinsic calls:\n{func}"
+  );
+  assert!(
+    !func.contains("@llvm.experimental.gc.relocate"),
+    "void call with no live GC pointers should not emit any gc.relocate calls:\n{func}"
+  );
+  assert!(
+    func.lines().any(|l| l.trim() == "ret void"),
+    "expected function to still return void:\n{func}"
+  );
+}
+
+#[test]
 fn gc_pointer_select_is_relocated_across_safepoint() {
   // JS runtimes frequently have control-flow-dependent pointer selection (e.g.
   // polymorphic inline caches). Ensure a `select`-produced GC pointer is tracked
