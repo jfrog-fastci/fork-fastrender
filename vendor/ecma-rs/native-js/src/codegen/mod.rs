@@ -1113,20 +1113,63 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     self.env.resolve(ident).is_none()
   }
 
-  fn emit_print_i32(&self, value: IntValue<'ctx>) {
+  fn ensure_print_i32_helper(&self) -> FunctionValue<'ctx> {
+    // `rewrite-statepoints-for-gc` does not rewrite vararg callsites (e.g. `printf`) into statepoints.
+    // However, for stackmap-based GC we need *all* TS-generated callsites to become statepoints so
+    // every frame has a stackmap record for its return address.
+    //
+    // Emit `print(<i32>)` by calling a tiny non-GC helper, then let the statepoint rewrite turn the
+    // TS-side call into a statepoint. The helper can call `printf` without participating in the
+    // statepoint scheme because it does not hold GC pointers.
+    const NAME: &str = "__nativejs_print_i32";
+    if let Some(existing) = self.cg.module.get_function(NAME) {
+      return existing;
+    }
+
+    let fn_ty = self
+      .cg
+      .context
+      .void_type()
+      .fn_type(&[self.cg.i32_ty.into()], false);
+    let func = self
+      .cg
+      .module
+      .add_function(NAME, fn_ty, Some(Linkage::Internal));
+
+    // We still need stable stack frames so the runtime can walk through the helper when scanning.
+    crate::stack_walking::apply_stack_walking_frame_attrs(self.cg.context, func);
+
+    let entry = self.cg.context.append_basic_block(func, "entry");
+    let builder = self.cg.context.create_builder();
+    builder.position_at_end(entry);
+
     let printf = declare_printf(self.cg.context, &self.cg.module);
-    let fmt = self
-      .builder
+    let fmt = builder
       .build_global_string_ptr("%d\n", "native_js_print_fmt")
       .expect("failed to create printf format string");
-    let call = self
-      .builder
+    let arg0 = func
+      .get_first_param()
+      .expect("print helper missing param")
+      .into_int_value();
+    let call = builder
       .build_call(
         printf,
-        &[fmt.as_pointer_value().into(), value.into()],
+        &[fmt.as_pointer_value().into(), arg0.into()],
         "native_js_print",
       )
       .expect("failed to build printf call");
+    crate::stack_walking::mark_call_notail(call);
+    builder.build_return(None).expect("failed to build return");
+
+    func
+  }
+
+  fn emit_print_i32(&self, value: IntValue<'ctx>) {
+    let print = self.ensure_print_i32_helper();
+    let call = self
+      .builder
+      .build_call(print, &[value.into()], "native_js_print")
+      .expect("failed to build print call");
     crate::stack_walking::mark_call_notail(call);
   }
 
