@@ -320,11 +320,33 @@ for ((i = 0; i < ${#argv[@]}; i++)); do
   esac
 done
 
-if [[ "${needs_frame_pointers}" -eq 1 && "${allow_omit_frame_pointers}" -eq 0 && "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
-  if [[ -z "${RUSTFLAGS:-}" ]]; then
-    export RUSTFLAGS="-C force-frame-pointers=yes"
-  else
-    export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+if [[ "${needs_frame_pointers}" -eq 1 && "${allow_omit_frame_pointers}" -eq 0 ]]; then
+  # rustc uses "last flag wins". If the user/CI environment sets
+  # `-C force-frame-pointers=no` (or similar) anywhere in `RUSTFLAGS`, we must
+  # append a final `=yes` so `runtime-native`'s FP-chain stack walking contract
+  # holds.
+  need_fp=0
+  if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+    need_fp=1
+  fi
+  if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=no"* ]]; then
+    need_fp=1
+  fi
+  if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=false"* ]]; then
+    need_fp=1
+  fi
+  if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=off"* ]]; then
+    need_fp=1
+  fi
+  if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=non-leaf"* ]]; then
+    need_fp=1
+  fi
+  if [[ "${need_fp}" -ne 0 ]]; then
+    if [[ -z "${RUSTFLAGS:-}" ]]; then
+      export RUSTFLAGS="-C force-frame-pointers=yes"
+    else
+      export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+    fi
   fi
 fi
 
@@ -620,11 +642,33 @@ run_cargo() {
     # provides an LLVM wrapper (`vendor/ecma-rs/scripts/cargo_llvm.sh`) that sets
     # this flag automatically, but when we invoke the workspace from the repo
     # root via `--manifest-path`, we need to inject it here.
-    if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
-      if [[ -z "${RUSTFLAGS:-}" ]]; then
-        export RUSTFLAGS="-C force-frame-pointers=yes"
-      else
-        export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+    #
+    # Respect the escape hatch: if the caller explicitly enables
+    # `runtime-native`'s `allow_omit_frame_pointers` feature, do not force-inject
+    # frame pointers here.
+    if [[ "${allow_omit_frame_pointers:-0}" -eq 0 ]]; then
+      local need_fp=0
+      if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+        need_fp=1
+      fi
+      if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=no"* ]]; then
+        need_fp=1
+      fi
+      if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=false"* ]]; then
+        need_fp=1
+      fi
+      if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=off"* ]]; then
+        need_fp=1
+      fi
+      if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=non-leaf"* ]]; then
+        need_fp=1
+      fi
+      if [[ "${need_fp}" -ne 0 ]]; then
+        if [[ -z "${RUSTFLAGS:-}" ]]; then
+          export RUSTFLAGS="-C force-frame-pointers=yes"
+        else
+          export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+        fi
       fi
     fi
   fi
