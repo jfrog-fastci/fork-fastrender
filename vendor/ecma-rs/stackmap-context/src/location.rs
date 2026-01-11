@@ -26,3 +26,48 @@ impl StackMapLocation {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::StackMapLocation;
+  use crate::{ThreadContext, DWARF_REG_SP};
+
+  #[test]
+  fn evaluate_register_and_indirect() {
+    let mut ctx = ThreadContext::default();
+    ctx.set_dwarf_reg_u64(DWARF_REG_SP, 0x1000).unwrap();
+
+    assert_eq!(
+      StackMapLocation::Register(DWARF_REG_SP).evaluate(&ctx),
+      Some(0x1000)
+    );
+
+    assert_eq!(
+      StackMapLocation::Indirect {
+        base_reg: DWARF_REG_SP,
+        offset: 0x20,
+      }
+      .evaluate(&ctx),
+      Some(0x1020)
+    );
+
+    assert_eq!(
+      StackMapLocation::Indirect {
+        base_reg: DWARF_REG_SP,
+        offset: -0x10,
+      }
+      .evaluate(&ctx),
+      Some(0x0ff0)
+    );
+
+    assert_eq!(StackMapLocation::Register(0xffff).evaluate(&ctx), None);
+    assert_eq!(
+      StackMapLocation::Indirect {
+        base_reg: 0xffff,
+        offset: 0,
+      }
+      .evaluate(&ctx),
+      None
+    );
+  }
+}
