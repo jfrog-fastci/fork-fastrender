@@ -610,6 +610,28 @@ mod tests {
   }
 
   #[test]
+  fn resolves_require_subpath_module() {
+    let calls = resolved_calls(
+      r#"
+        const fs = require('fs/promises');
+        fs.readFile('x');
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs/promises.readFile"]);
+  }
+
+  #[test]
+  fn resolves_import_subpath_module() {
+    let calls = resolved_calls(
+      r#"
+        import { readFile } from 'fs/promises';
+        readFile('x');
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs/promises.readFile"]);
+  }
+
+  #[test]
   fn resolves_root_require_bindings_inside_nested_bodies() {
     let calls = resolved_calls_all_bodies(
       r#"

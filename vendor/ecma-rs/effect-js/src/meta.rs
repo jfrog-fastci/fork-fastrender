@@ -1,6 +1,6 @@
 use knowledge_base::Api;
 
-use crate::CallSiteInfo;
+use crate::db::CallSiteInfo;
 
 pub fn is_async(api: &Api) -> bool {
   api.async_.unwrap_or(false)
