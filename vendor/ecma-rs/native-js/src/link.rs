@@ -288,7 +288,9 @@ pub fn link_elf_executable_with_options(
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
-      cmd.arg(format!("-fuse-ld={}", lld_fuse_arg()));
+      let lld = lld_fuse_arg()
+        .context("unable to locate lld (expected `ld.lld-18` or `ld.lld` in PATH)")?;
+      cmd.arg(format!("-fuse-ld={lld}"));
     }
   }
 
@@ -405,7 +407,9 @@ use object-file linking with `LinkOpts {{ pie: true, .. }}` (objcopy-patched), o
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
-      cmd.arg(format!("-fuse-ld={}", lld_fuse_arg()));
+      let lld = lld_fuse_arg()
+        .context("unable to locate lld (expected `ld.lld-18` or `ld.lld` in PATH)")?;
+      cmd.arg(format!("-fuse-ld={lld}"));
     }
   }
 
@@ -497,7 +501,9 @@ pub fn link_elf_executable_lto(
   match opts.linker {
     LinkerFlavor::System => {}
     LinkerFlavor::Lld => {
-      cmd.arg(format!("-fuse-ld={}", lld_fuse_arg()));
+      let lld = lld_fuse_arg()
+        .context("unable to locate lld (expected `ld.lld-18` or `ld.lld` in PATH)")?;
+      cmd.arg(format!("-fuse-ld={lld}"));
     }
   }
 
@@ -555,7 +561,7 @@ pub fn link_object_to_executable(
   // `clang -fuse-ld=lld{,-18}` selects the `ld.lld{,-18}` driver. Don't treat `lld`/`lld-18` as
   // sufficient here: those binaries may exist without the `ld.lld` symlink, and `clang` won't find
   // them under `-fuse-ld=...`.
-  let mut use_lld = find_program(&["ld.lld-18", "ld.lld"]).is_some();
+  let mut use_lld = lld_fuse_arg().is_some();
 
   // Always inject the stackmaps linker script fragment:
   // - defines `__fastr_stackmaps_start/end` (and `__llvm_*` aliases)
@@ -628,7 +634,9 @@ pub fn link_object_to_executable(
     .arg(format!("-Wl,-T,{}", script_path.display()))
     .arg("-no-pie");
   if use_lld {
-    cmd.arg(format!("-fuse-ld={}", lld_fuse_arg()));
+    let lld = lld_fuse_arg()
+      .ok_or(crate::NativeJsError::ToolNotFound("ld.lld-18/ld.lld"))?;
+    cmd.arg(format!("-fuse-ld={lld}"));
   }
   cmd
     .arg(patched_obj_path.as_deref().unwrap_or(obj_path))
@@ -670,10 +678,12 @@ fn find_program(names: &[&str]) -> Option<PathBuf> {
   None
 }
 
-fn lld_fuse_arg() -> &'static str {
+fn lld_fuse_arg() -> Option<&'static str> {
   if find_program(&["ld.lld-18"]).is_some() {
-    "lld-18"
+    Some("lld-18")
+  } else if find_program(&["ld.lld"]).is_some() {
+    Some("lld")
   } else {
-    "lld"
+    None
   }
 }
