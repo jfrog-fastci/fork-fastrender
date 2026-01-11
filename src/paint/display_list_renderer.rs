@@ -1896,6 +1896,48 @@ where
     };
     write_rect = intersection;
   }
+
+  // Clamp the write rectangle to the destination pixmap bounds *and* to the available filtered
+  // source region. `write_x/y` are computed via `floor()` which can shift the write origin when the
+  // bounds are partially outside the destination; without this clamp we can compute `src_start_*`
+  // offsets that push reads beyond the mask/filtered buffers.
+  let region_bounds_in_dest = Rect::from_xywh(
+    clamped_x as f32 - dest_origin_in_src.0 as f32,
+    clamped_y as f32 - dest_origin_in_src.1 as f32,
+    region_w as f32,
+    region_h as f32,
+  );
+  let Some(intersection) = write_rect.intersection(region_bounds_in_dest) else {
+    scratch.region = Some(region);
+    if let Some(mask) = radii_mask {
+      scratch.radii_mask = Some(mask);
+    }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
+    }
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
+    return Ok(());
+  };
+  write_rect = intersection;
+
+  let dest_bounds = Rect::from_xywh(0.0, 0.0, dest.width() as f32, dest.height() as f32);
+  let Some(intersection) = write_rect.intersection(dest_bounds) else {
+    scratch.region = Some(region);
+    if let Some(mask) = radii_mask {
+      scratch.radii_mask = Some(mask);
+    }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
+    }
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
+    return Ok(());
+  };
+  write_rect = intersection;
+
   if write_rect.width() <= 0.0 || write_rect.height() <= 0.0 {
     scratch.region = Some(region);
     if let Some(mask) = radii_mask {
@@ -1914,10 +1956,10 @@ where
   let dest_h = dest.height() as i32;
   let write_x = write_rect.min_x().floor().max(0.0) as u32;
   let write_y = write_rect.min_y().floor().max(0.0) as u32;
-  let write_w = (write_rect.width().ceil() as i32)
+  let mut write_w = (write_rect.width().ceil() as i32)
     .min(dest_w - write_x as i32)
     .max(0) as u32;
-  let write_h = (write_rect.height().ceil() as i32)
+  let mut write_h = (write_rect.height().ceil() as i32)
     .min(dest_h - write_y as i32)
     .max(0) as u32;
   if write_w == 0 || write_h == 0 {
@@ -1936,6 +1978,29 @@ where
 
   let src_start_x = (write_x as i32 + dest_origin_in_src.0 - clamped_x as i32).max(0) as u32;
   let src_start_y = (write_y as i32 + dest_origin_in_src.1 - clamped_y as i32).max(0) as u32;
+
+  let filtered_height = if let Some(cached) = cached_filtered.as_ref() {
+    cached.height() as usize
+  } else {
+    region.height() as usize
+  };
+  let max_write_w = (filtered_width as u32).saturating_sub(src_start_x);
+  let max_write_h = (filtered_height as u32).saturating_sub(src_start_y);
+  write_w = write_w.min(max_write_w);
+  write_h = write_h.min(max_write_h);
+  if write_w == 0 || write_h == 0 {
+    scratch.region = Some(region);
+    if let Some(mask) = radii_mask {
+      scratch.radii_mask = Some(mask);
+    }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
+    }
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
+    return Ok(());
+  }
 
   let dest_bytes_per_row = dest.width() as usize * 4;
   let clip_mask_data =
@@ -22204,6 +22269,77 @@ mod tests {
       pixel(&global_clip, 0, 0),
       pixel(&base, 0, 0),
       "expected pixels outside the clip bounds to remain unchanged"
+    );
+  }
+
+  #[test]
+  fn backdrop_filters_clamp_write_region_to_dest_bounds() {
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = BackdropFilterScratch::default();
+    });
+
+    let backdrop = {
+      let mut pixmap = new_pixmap(10, 10).unwrap();
+      for y in 0..pixmap.height() {
+        for x in 0..pixmap.width() {
+          let idx = ((y * pixmap.width() + x) * 4) as usize;
+          pixmap.data_mut()[idx] = 100;
+          pixmap.data_mut()[idx + 1] = 110;
+          pixmap.data_mut()[idx + 2] = 120;
+          pixmap.data_mut()[idx + 3] = 255;
+        }
+      }
+      pixmap
+    };
+
+    let mut dest = new_pixmap(10, 10).unwrap();
+    for y in 0..dest.height() {
+      for x in 0..dest.width() {
+        let idx = ((y * dest.width() + x) * 4) as usize;
+        dest.data_mut()[idx] = 10;
+        dest.data_mut()[idx + 1] = 20;
+        dest.data_mut()[idx + 2] = 30;
+        dest.data_mut()[idx + 3] = 255;
+      }
+    }
+
+    // Offset the destination one pixel down relative to the backdrop. This makes the local
+    // destination write bounds partially negative (and therefore clipped to y=0).
+    let dest_origin_in_backdrop = (0, 1);
+    let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let filters = vec![ResolvedFilter::Brightness(1.25)];
+
+    let before_inside = pixel(&dest, 5, 5);
+    let before_outside = pixel(&dest, 5, 9);
+
+    apply_backdrop_filters(
+      &mut dest,
+      &backdrop,
+      dest_origin_in_backdrop,
+      bounds,
+      bounds,
+      &filters,
+      BorderRadii::uniform(2.0),
+      1.0,
+      None,
+      None,
+      (0, 0),
+      bounds,
+      Transform::identity(),
+      None,
+      None,
+    )
+    .unwrap();
+
+    assert_ne!(
+      pixel(&dest, 5, 5),
+      before_inside,
+      "expected pixels inside the clipped write region to be updated"
+    );
+    assert_eq!(
+      pixel(&dest, 5, 9),
+      before_outside,
+      "expected pixels outside the clipped write region to remain unchanged"
     );
   }
 
