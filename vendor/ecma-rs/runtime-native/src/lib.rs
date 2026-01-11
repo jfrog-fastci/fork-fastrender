@@ -21,6 +21,7 @@ pub mod arch;
 pub mod gc;
 pub mod immix;
 pub mod nursery;
+pub mod stackmap;
 pub mod threading;
 pub mod async_rt;
 pub mod stackmaps;

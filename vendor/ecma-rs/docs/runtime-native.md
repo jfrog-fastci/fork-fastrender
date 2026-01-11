@@ -311,7 +311,14 @@ guarantee `max(16, shape_align)` alignment for every allocation.
    GC references (pointers) and is in a stable, documented order.
 
 The runtime assumes:
-- Every location listed for a statepoint is a GC root (pointer).
+- LLVM statepoint records do **not** list roots as a flat array. Locations are
+  encoded as:
+  - a 3-location constant prefix (`Constant(0)`), followed by
+  - `(base, derived)` pairs for each `"gc-live"` value.
+- **v1 limitation:** the runtime currently only supports the common case where
+  `base == derived` for all pairs (no derived / interior pointers live at the
+  safepoint). If LLVM emits `base != derived`, the runtime must reject the
+  stackmap record rather than tracing the derived address as a root.
 - No non-pointer values are encoded as `"gc-live"` locations.
 
 ### 5.2 Stackmaps in ELF: `.llvm_stackmaps`
