@@ -276,6 +276,36 @@ fn set_remembered_idempotent_does_not_corrupt_forwarded_header() {
   assert_eq!(header.forwarding_ptr(), before);
 }
 
+#[test]
+fn gc_ignores_non_heap_pointer_in_traced_slot() {
+  const PTR_OFFSETS: [u32; 1] = [OBJ_HEADER_SIZE as u32];
+  static DESC_ONE_PTR: TypeDescriptor =
+    TypeDescriptor::new(OBJ_HEADER_SIZE + core::mem::size_of::<*mut u8>(), &PTR_OFFSETS);
+
+  let mut heap = GcHeap::new();
+  let mut remembered = EmptyRememberedSet;
+
+  let obj = heap.alloc_old(&DESC_ONE_PTR);
+  let external_ptr = Box::into_raw(Box::new(0u8)) as *mut u8;
+  unsafe {
+    let field = (obj as *mut u8).add(OBJ_HEADER_SIZE) as *mut *mut u8;
+    *field = external_ptr;
+  }
+
+  let mut root = obj;
+  let mut roots = RootStack::new();
+  roots.push(&mut root as *mut *mut u8);
+
+  heap.collect_major(&mut roots, &mut remembered);
+
+  let stored = unsafe { *((root as *mut u8).add(OBJ_HEADER_SIZE) as *const *mut u8) };
+  assert_eq!(stored, external_ptr);
+
+  unsafe {
+    drop(Box::from_raw(external_ptr));
+  }
+}
+
 #[derive(Default)]
 struct VecRootSet {
   slots: Vec<*mut *mut u8>,

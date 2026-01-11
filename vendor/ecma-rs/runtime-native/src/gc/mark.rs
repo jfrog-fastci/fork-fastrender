@@ -189,6 +189,10 @@ impl Marker<'_> {
     // them defensively: if the nursery object was forwarded, follow the forwarding pointer;
     // otherwise treat it as a dead/stale pointer and ignore it.
     loop {
+      if !self.heap.is_valid_obj_ptr_for_tracing(obj, true) {
+        return;
+      }
+
       if self.heap.is_in_nursery(obj) {
         // SAFETY: `obj` is in the nursery, so it points into reserved nursery memory.
         unsafe {
@@ -198,11 +202,6 @@ impl Marker<'_> {
             continue;
           }
         }
-        return;
-      }
-
-      // Ignore pointers that do not belong to this heap.
-      if !self.heap.is_in_immix(obj) && !self.heap.is_in_los(obj) {
         return;
       }
 
@@ -336,6 +335,10 @@ impl Tracer for Compactor<'_> {
     // Major GC runs a minor GC first, so it should not see nursery pointers. Still, handle them
     // defensively by following forwarding pointers (or ignoring dead/stale nursery refs).
     loop {
+      if !self.heap.is_valid_obj_ptr_for_tracing(obj, true) {
+        return;
+      }
+
       if self.heap.is_in_nursery(obj) {
         // SAFETY: `obj` is in the nursery, so it points into reserved nursery memory.
         unsafe {
@@ -346,11 +349,6 @@ impl Tracer for Compactor<'_> {
             continue;
           }
         }
-        return;
-      }
-
-      // Ignore pointers that do not belong to this heap.
-      if !self.heap.is_in_immix(obj) && !self.heap.is_in_los(obj) {
         return;
       }
 

@@ -115,6 +115,10 @@ impl Tracer for Evacuator<'_> {
       return;
     }
 
+    if !self.heap.is_valid_obj_ptr_for_tracing(obj, true) {
+      return;
+    }
+
     if self.heap.is_in_nursery(obj) {
       let (new_obj, is_new) = self.evacuate(obj);
       // SAFETY: `slot` is valid and writable.

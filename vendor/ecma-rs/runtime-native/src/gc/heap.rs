@@ -478,6 +478,30 @@ impl GcHeap {
     self.los.contains(obj)
   }
 
+  #[inline]
+  pub(crate) fn is_valid_obj_ptr_for_tracing(&self, obj: *mut u8, allow_nursery: bool) -> bool {
+    if obj.is_null() {
+      return true;
+    }
+
+    let addr = obj as usize;
+    if addr & (OBJ_ALIGN - 1) != 0 {
+      return false;
+    }
+
+    if self.is_in_nursery(obj) {
+      if !allow_nursery {
+        return false;
+      }
+
+      let nursery_base = self.nursery.start() as usize;
+      let nursery_alloc_end = nursery_base.saturating_add(self.nursery.allocated_bytes());
+      return addr < nursery_alloc_end;
+    }
+
+    self.is_in_immix(obj) || self.is_in_los(obj)
+  }
+
   pub fn immix_block_count(&self) -> usize {
     self.immix.block_count()
   }
