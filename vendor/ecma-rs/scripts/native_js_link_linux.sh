@@ -125,18 +125,20 @@ for obj in "$@"; do
   cp "${obj}" "${patched}"
 
   # If present, relocate `.llvm_stackmaps` into `.data.rel.ro.llvm_stackmaps` (RELRO-friendly).
-  if readelf -W -S "${patched}" 2>/dev/null | grep -q '\.data\.rel\.ro\.llvm_stackmaps'; then
+  # Avoid `grep -q` under `set -o pipefail`: `readelf -S` output can be large
+  # for debug objects, and early pipe closure can trigger SIGPIPE in the producer.
+  if readelf -W -S "${patched}" 2>/dev/null | grep '\.data\.rel\.ro\.llvm_stackmaps' >/dev/null; then
     : # already rewritten
-  elif readelf -W -S "${patched}" 2>/dev/null | grep -q '\.llvm_stackmaps'; then
+  elif readelf -W -S "${patched}" 2>/dev/null | grep '\.llvm_stackmaps' >/dev/null; then
     "${objcopy}" --rename-section \
       .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents \
       "${patched}"
   fi
 
   # Same for `.llvm_faultmaps` if present (patchpoint metadata).
-  if readelf -W -S "${patched}" 2>/dev/null | grep -q '\.data\.rel\.ro\.llvm_faultmaps'; then
+  if readelf -W -S "${patched}" 2>/dev/null | grep '\.data\.rel\.ro\.llvm_faultmaps' >/dev/null; then
     : # already rewritten
-  elif readelf -W -S "${patched}" 2>/dev/null | grep -q '\.llvm_faultmaps'; then
+  elif readelf -W -S "${patched}" 2>/dev/null | grep '\.llvm_faultmaps' >/dev/null; then
     "${objcopy}" --rename-section \
       .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
       "${patched}"

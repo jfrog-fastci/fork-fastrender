@@ -39,9 +39,13 @@ for obj in "$@"; do
   fi
 
   # Skip if already renamed.
-  if llvm-readobj-18 --sections "${obj}" | grep -q -- ".data.rel.ro.llvm_stackmaps"; then
+  #
+  # Do NOT use `grep -q` under `set -o pipefail`: `llvm-readobj` can emit enough
+  # output that `grep -q` exits early and triggers EPIPE/SIGPIPE in `llvm-readobj`,
+  # making the pipeline return non-zero (flaky false negatives).
+  if llvm-readobj-18 --sections "${obj}" | grep -- ".data.rel.ro.llvm_stackmaps" >/dev/null; then
     : # already renamed
-  elif llvm-readobj-18 --sections "${obj}" | grep -q -- ".llvm_stackmaps"; then
+  elif llvm-readobj-18 --sections "${obj}" | grep -- ".llvm_stackmaps" >/dev/null; then
     # Important: set section flags to "data" (writable) so linkers that don't
     # automatically fold `.data.rel.ro.*` into `.data.rel.ro` still won't emit TEXTREL.
     llvm-objcopy-18 \
@@ -50,9 +54,9 @@ for obj in "$@"; do
   fi
 
   # Same policy for `.llvm_faultmaps` when present.
-  if llvm-readobj-18 --sections "${obj}" | grep -q -- ".data.rel.ro.llvm_faultmaps"; then
+  if llvm-readobj-18 --sections "${obj}" | grep -- ".data.rel.ro.llvm_faultmaps" >/dev/null; then
     : # already renamed
-  elif llvm-readobj-18 --sections "${obj}" | grep -q -- ".llvm_faultmaps"; then
+  elif llvm-readobj-18 --sections "${obj}" | grep -- ".llvm_faultmaps" >/dev/null; then
     llvm-objcopy-18 \
       --rename-section .llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents \
       "${obj}"
