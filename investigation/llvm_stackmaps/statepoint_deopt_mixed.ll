@@ -16,9 +16,8 @@ target triple = "x86_64-pc-linux-gnu"
 
 declare void @callee()
 
-define ptr addrspace(1) @foo(ptr addrspace(1) %obj, i64 %x, i32 %y, <2 x i64> %v) gc "statepoint-example" {
+define ptr addrspace(1) @foo(ptr addrspace(1) %obj, i64 %x, i32 %y, <2 x i64> %v) gc "coreclr" {
 entry:
   call void @callee() ["deopt"(i64 %x, i32 %y, <2 x i64> %v)]
   ret ptr addrspace(1) %obj
 }
-

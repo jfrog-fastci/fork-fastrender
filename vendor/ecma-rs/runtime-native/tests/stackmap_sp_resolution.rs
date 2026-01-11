@@ -59,13 +59,13 @@ fn capture_stdout(cmd: &mut Command) -> String {
 fn write_minimal_statepoint_input_ir(triple: &str) -> String {
   // Keep this IR tiny and stable:
   // - `rewrite-statepoints-for-gc` will turn the call into a gc.statepoint and emit stackmaps.
-  // - `ptr addrspace(1)` marks GC pointers for the statepoint example strategy.
+  // - `ptr addrspace(1)` marks GC pointers for statepoint-based strategies (e.g. coreclr).
   format!(
     r#"target triple = "{triple}"
 
 declare void @callee(ptr addrspace(1))
 
-define ptr addrspace(1) @foo(ptr addrspace(1) %p) gc "statepoint-example" {{
+define ptr addrspace(1) @foo(ptr addrspace(1) %p) gc "coreclr" {{
 entry:
   call void @callee(ptr addrspace(1) %p)
   ret ptr addrspace(1) %p

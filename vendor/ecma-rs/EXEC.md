@@ -462,7 +462,7 @@ Statepoints for GC: LLVM has `gc.statepoint` and `gc.relocate` intrinsics for pr
 
 > Note (LLVM 18 / opaque pointers): the verifier requirements are subtle
 > (mandatory trailing `i32 0, i32 0`, `elementtype(...)` on the callee operand,
-> GC pointers in `addrspace(1)` for `gc "statepoint-example"`, etc). See:
+> GC pointers in `addrspace(1)` for `gc "coreclr"`, etc). See:
 > - `vendor/ecma-rs/docs/llvm_statepoints_llvm18.md`
 > - `tests/fixtures/llvm/statepoint_min.ll`
 
