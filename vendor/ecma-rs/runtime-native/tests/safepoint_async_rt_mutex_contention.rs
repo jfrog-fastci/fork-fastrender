@@ -403,3 +403,45 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_promise_wakers_mutex() {
   handle.join().unwrap();
   threading::unregister_current_thread();
 }
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_blocked_on_stackmap_registry_rwlock() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  // Hold the registry's write lock so other threads will deterministically contend.
+  let hold = runtime_native::global_stackmap_registry().write();
+
+  let (tx_id, rx_id) = mpsc::channel();
+  let started = Arc::new(Barrier::new(2));
+
+  let started_worker = started.clone();
+  let handle = std::thread::spawn(move || {
+    let id = threading::register_current_thread(ThreadKind::Worker);
+    tx_id.send(id.get()).unwrap();
+
+    started_worker.wait();
+
+    // Contend on the global stackmap registry lock.
+    let _ = runtime_native::global_stackmap_registry().read();
+
+    threading::unregister_current_thread();
+  });
+
+  let worker_id = rx_id.recv().unwrap();
+  started.wait();
+
+  wait_until_thread_native_safe(worker_id, Duration::from_secs(2));
+
+  runtime_native::rt_gc_request_stop_the_world();
+  let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+  runtime_native::rt_gc_resume_world();
+  assert!(
+    stopped,
+    "world did not stop while worker thread was blocked on the stackmap registry rwlock"
+  );
+
+  drop(hold);
+  handle.join().unwrap();
+  threading::unregister_current_thread();
+}

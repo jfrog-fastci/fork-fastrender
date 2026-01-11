@@ -21,7 +21,7 @@
 
 #[cfg(all(target_os = "linux", target_pointer_width = "64", target_endian = "little"))]
 use anyhow::Context;
-use parking_lot::RwLock;
+use crate::sync::GcAwareRwLock;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use thiserror::Error;
@@ -1395,11 +1395,11 @@ impl StackMapRegistry {
   }
 }
 
-static GLOBAL_STACKMAP_REGISTRY: OnceLock<RwLock<StackMapRegistry>> = OnceLock::new();
+static GLOBAL_STACKMAP_REGISTRY: OnceLock<GcAwareRwLock<StackMapRegistry>> = OnceLock::new();
 
 /// Access the global merged stackmap registry.
-pub fn global_stackmap_registry() -> &'static RwLock<StackMapRegistry> {
-  GLOBAL_STACKMAP_REGISTRY.get_or_init(|| RwLock::new(StackMapRegistry::default()))
+pub fn global_stackmap_registry() -> &'static GcAwareRwLock<StackMapRegistry> {
+  GLOBAL_STACKMAP_REGISTRY.get_or_init(|| GcAwareRwLock::new(StackMapRegistry::default()))
 }
 
 /// Convenience helper: look up a callsite in the global registry by return address.
