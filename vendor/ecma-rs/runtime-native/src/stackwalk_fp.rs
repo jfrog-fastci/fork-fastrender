@@ -915,7 +915,9 @@ fn eval_root_location(
   loc: &Location,
 ) -> Result<u64, WalkError> {
   match *loc {
-    Location::Indirect { dwarf_reg, offset, .. } => {
+    Location::Indirect {
+      dwarf_reg, offset, ..
+    } => {
       let base = match dwarf_reg {
         arch::DWARF_SP => caller_sp,
         arch::DWARF_FP => caller_fp,

@@ -109,10 +109,10 @@ fn has_register_roots(stackmap: &StackMap) -> bool {
       continue;
     };
     for pair in sp.gc_pairs() {
-      if matches!(&pair.base, Location::Register { .. })
-        || matches!(&pair.derived, Location::Register { .. })
-      {
-        return true;
+      for loc in [&pair.base, &pair.derived] {
+        if matches!(loc, Location::Register { .. }) {
+          return true;
+        }
       }
     }
   }

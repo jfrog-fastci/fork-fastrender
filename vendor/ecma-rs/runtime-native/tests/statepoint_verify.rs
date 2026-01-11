@@ -78,7 +78,7 @@ fn verifier_rejects_register_locations() {
 }
 
 #[test]
-fn verifier_rejects_nonzero_flags_header() {
+fn verifier_accepts_nonzero_flags_header() {
   let stackmap = StackMap {
     version: 3,
     functions: vec![StackSizeRecord {
@@ -110,20 +110,18 @@ fn verifier_rejects_nonzero_flags_header() {
     }],
   };
 
-  let err = verify_statepoint_stackmap(
+  verify_statepoint_stackmap(
     &stackmap,
     VerifyStatepointOptions {
       arch: DwarfArch::X86_64,
       mode: VerifyMode::StatepointsOnly,
     },
   )
-  .unwrap_err();
-  assert_eq!(err.location_index, Some(1));
-  assert!(err.message.contains("flags=0"));
+  .unwrap();
 }
 
 #[test]
-fn verifier_rejects_deopt_operands() {
+fn verifier_accepts_deopt_operands() {
   let stackmap = StackMap {
     version: 3,
     functions: vec![StackSizeRecord {
@@ -138,7 +136,7 @@ fn verifier_rejects_deopt_operands() {
       locations: vec![
         Location::Constant { size: 8, value: 0 }, // callconv
         Location::Constant { size: 8, value: 0 }, // flags
-        Location::Constant { size: 8, value: 1 }, // deopt_count=1 (unsupported by verifier)
+        Location::Constant { size: 8, value: 1 }, // deopt_count=1
         // Deopt operand location.
         Location::Constant { size: 8, value: 123 },
         // One GC pair.
@@ -157,16 +155,14 @@ fn verifier_rejects_deopt_operands() {
     }],
   };
 
-  let err = verify_statepoint_stackmap(
+  verify_statepoint_stackmap(
     &stackmap,
     VerifyStatepointOptions {
       arch: DwarfArch::X86_64,
       mode: VerifyMode::StatepointsOnly,
     },
   )
-  .unwrap_err();
-  assert_eq!(err.location_index, Some(2));
-  assert!(err.message.contains("deopt"));
+  .unwrap();
 }
 
 #[test]

@@ -545,15 +545,17 @@ pub struct RelocPair {
 impl<'a> CallSite<'a> {
   /// Iterate over `(base, derived)` pairs used for GC relocation at this callsite.
   ///
-  /// Derivation rule (initial / LLVM 18 observed):
-  /// - Interpret the record as an LLVM `gc.statepoint` and only consider the trailing `gc-live`
-  ///   locations (skipping the 3-entry constant header and any deopt operand locations).
+  /// LLVM statepoints encode GC relocation pairs after a small prefix:
+  /// - 3 constant header locations (callconv, flags, deopt_count)
+  /// - `deopt_count` deopt operand locations (not GC roots)
+  /// - `(base, derived)` pairs for each GC-live pointer
+  ///
+  /// This helper decodes the statepoint header and then iterates only the trailing GC-live
+  /// locations. For other stackmap records, it yields an empty iterator.
   /// - Filter `record.locations` down to pointer-bearing entries:
   ///   - [`Location::Indirect`], [`Location::Register`], [`Location::Direct`]
-  /// - Exclude constants (`Constant`/`ConstIndex`), which are used for statepoint
-  ///   headers and patchpoint metadata.
-  /// - Assert the remaining count is even and chunk into `(base, derived)` pairs,
-  ///   preserving the original order.
+  /// - Exclude constants (`Constant`/`ConstIndex`) used for patchpoint metadata.
+  /// - Chunk into `(base, derived)` pairs, preserving the original order.
   pub fn reloc_pairs(&self) -> impl Iterator<Item = RelocPair> + '_ {
     // `gc.relocate` pairing is only meaningful for LLVM statepoints that follow our patchpoint-id
     // convention. For other stackmap records (e.g. plain patchpoints), return an empty iterator.
@@ -645,7 +647,7 @@ impl<'a> CallSite<'a> {
         .count();
       debug_assert!(
         ptr_count % 2 == 0,
-        "stackmap record has odd number of pointer-bearing locations (ptr_count={ptr_count}, record={:?})",
+        "stackmap record has odd number of gc-live pointer-bearing locations (ptr_count={ptr_count}, record={:?})",
         self.record
       );
     }

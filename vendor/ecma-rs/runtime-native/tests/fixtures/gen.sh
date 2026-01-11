@@ -117,6 +117,15 @@ llc-18 -O0 -filetype=obj \
 llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/statepoint_base_derived_aarch64.bin" \
   "${TMP}/statepoint_base_derived_aarch64.o"
 
+# statepoint_deopt (explicit gc.statepoint + "deopt" operand bundle)
+llc-18 -O0 -filetype=obj \
+  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
+  "${IR_DIR}/statepoint_deopt.ll" \
+  -o "${TMP}/statepoint_deopt_x86_64.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/statepoint_deopt_x86_64.bin" \
+  "${TMP}/statepoint_deopt_x86_64.o"
+
 # Additional fixtures (not in `bin/`):
 # - `stackmaps_v3.bin`: one function containing multiple stackmap records that exercise all location kinds.
 # - `patchpoint_liveouts.bin`: patchpoint stackmap with non-empty live-out list.

@@ -9,7 +9,9 @@
 //! at the statepoint return address. This means the address of the spill slot is simply
 //! `reg_value + offset`.
 
-use crate::stackmaps::{Location, RelocPair, StackMaps};
+use crate::stackmaps::{Location, StackMaps};
+use crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
+use crate::statepoints::{StatepointError, StatepointRecord};
 use stackmap_context::{ThreadContext, DWARF_REG_IP};
 
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +31,16 @@ pub enum ScanError {
 
   #[error("unsupported relocation location (expected Indirect spill slot), got {loc:?}")]
   UnsupportedLocation { loc: Location },
+
+  #[error(
+    "failed to decode statepoint stackmap record at callsite pc=0x{ip:x} (patchpoint_id=0x{patchpoint_id:x})"
+  )]
+  InvalidStatepoint {
+    ip: u64,
+    patchpoint_id: u64,
+    #[source]
+    source: StatepointError,
+  },
 }
 
 /// Enumerate `(base_slot, derived_slot)` relocation pairs at the current callsite.
@@ -58,9 +70,21 @@ pub fn scan_reloc_pairs(
     return Ok(());
   };
 
-  for RelocPair { base, derived } in callsite.reloc_pairs() {
-    let base_slot = slot_addr(thread_ctx, &base)?;
-    let derived_slot = slot_addr(thread_ctx, &derived)?;
+  // Only `gc.statepoint` records describe GC relocation pairs. Other stackmap records (patchpoints)
+  // should be ignored by the GC.
+  if callsite.record.patchpoint_id != LLVM_STATEPOINT_PATCHPOINT_ID {
+    return Ok(());
+  }
+
+  let statepoint = StatepointRecord::new(callsite.record).map_err(|source| ScanError::InvalidStatepoint {
+    ip,
+    patchpoint_id: callsite.record.patchpoint_id,
+    source,
+  })?;
+
+  for pair in statepoint.gc_pairs() {
+    let base_slot = slot_addr(thread_ctx, &pair.base)?;
+    let derived_slot = slot_addr(thread_ctx, &pair.derived)?;
     visit(base_slot, derived_slot);
   }
 
@@ -102,4 +126,3 @@ fn add_i32(base: u64, offset: i32) -> Option<u64> {
     base.checked_sub((-offset) as u64)
   }
 }
-

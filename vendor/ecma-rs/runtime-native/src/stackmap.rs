@@ -8,10 +8,14 @@
 //! ## Statepoint root enumeration
 //! LLVM statepoints encode GC roots in the StackMap record's `locations` as:
 //!
-//! - 3 leading constant "header" locations (not roots), followed by
-//! - `(base, derived)` pairs for each GC-live pointer at the safepoint.
+//! - 3 leading constant "header" locations (not roots):
+//!   - callconv
+//!   - flags
+//!   - deopt operand count
+//! - followed by `deopt_count` deopt operand locations (not roots)
+//! - followed by `(base, derived)` pairs for each GC-live pointer at the safepoint.
 //!
-//! The runtime must treat **all** post-header locations as base/derived pairs.
+//! The runtime must treat **only** the post-header-and-deopt tail as base/derived pairs.
 //! Note that the `"gc-live"(...)` operand bundle in IR is *not* necessarily the
 //! full root set: LLVM's `rewrite-statepoints-for-gc` pass expands it based on
 //! liveness.

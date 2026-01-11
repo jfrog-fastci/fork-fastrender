@@ -167,11 +167,11 @@ fn derived_pointers_are_relocated_from_base() {
       visited.insert(slot as usize);
 
       // Simulate a moving GC by "relocating" the base pointer in-place. The stack walker should
-      // then update the derived slot to preserve the original offset.
-      let slot_ptr = slot as *mut *mut u8;
-      let old = slot_ptr.read() as u64;
-      let new = old + 0x1000;
-      slot_ptr.write(new as *mut u8);
+       // then update the derived slot to preserve the original offset.
+       let slot_ptr = slot as *mut *mut u8;
+       let old = slot_ptr.read() as u64;
+       let new = old + 0x1000;
+       slot_ptr.write(new as *mut u8);
     })
     .expect("walk");
   }
@@ -646,9 +646,9 @@ fn build_stackmaps_with_shared_base_derived_offsets(derived_offsets: &[i32]) -> 
     out.push(0);
   }
 
-  // LiveOuts (none).
-  out.extend_from_slice(&0u16.to_le_bytes()); // num_live_outs
-  out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+  // Live-out header: (padding, num_live_outs). For tests we keep both 0.
+  out.extend_from_slice(&0u16.to_le_bytes());
+  out.extend_from_slice(&0u16.to_le_bytes());
 
   // Align to 8.
   while out.len() % 8 != 0 {

@@ -110,6 +110,25 @@ fn statepoint_aarch64_layout() {
 }
 
 #[test]
+fn statepoint_deopt_fixture_decodes_header_and_skips_deopt() {
+  let sm = StackMap::parse(include_bytes!("fixtures/bin/statepoint_deopt_x86_64.bin")).unwrap();
+  let rec = &sm.records[0];
+  let sp = StatepointRecord::new(rec).unwrap();
+
+  assert_eq!(sp.header().callconv, 8, "expected fastcc callconv=8 header");
+  assert_eq!(sp.header().flags, 1, "expected non-zero flags header");
+  assert_eq!(sp.header().deopt_count, 2);
+  assert_eq!(sp.deopt_locations().len(), 2);
+  assert_eq!(sp.gc_pairs_start(), LLVM18_STATEPOINT_HEADER_CONSTANTS + 2);
+  assert_eq!(sp.gc_pair_count(), 2);
+
+  // The first GC pair must start immediately after the header+deopt region.
+  let pair0 = &sp.gc_pairs()[0];
+  assert_eq!(&pair0.base, &rec.locations[sp.gc_pairs_start()]);
+  assert_eq!(&pair0.derived, &rec.locations[sp.gc_pairs_start() + 1]);
+}
+
+#[test]
 fn eval_direct_location_is_immediate_value() {
   let loc = Location::Direct {
     size: 8,

@@ -2,7 +2,7 @@
 
 use object::{Object, ObjectSection};
 use runtime_native::stackmaps::{StackMap, StackMaps};
-use runtime_native::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS;
+use runtime_native::statepoints::StatepointRecord;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -187,16 +187,14 @@ attributes #0 = { "statepoint-id"="2882400000" }
   let first = records[0];
   let second = records[1];
 
+  let first_sp = StatepointRecord::new(first).expect("decode first statepoint layout");
+  let second_sp = StatepointRecord::new(second).expect("decode second statepoint layout");
   assert_eq!(
-    first.locations.len(),
-    LLVM18_STATEPOINT_HEADER_CONSTANTS + 2 * 2,
+    first_sp.gc_pair_count(),
+    2,
     "first statepoint should record 2 live GC pointers (base/derived pairs) after liveness expansion"
   );
-  assert_eq!(
-    second.locations.len(),
-    LLVM18_STATEPOINT_HEADER_CONSTANTS + 2 * 1,
-    "second statepoint should record 1 live GC pointer"
-  );
+  assert_eq!(second_sp.gc_pair_count(), 1, "second statepoint should record 1 live GC pointer");
 
   assert_eq!(
     first.patchpoint_id, second.patchpoint_id,

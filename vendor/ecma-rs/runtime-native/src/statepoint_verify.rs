@@ -434,23 +434,13 @@ fn verify_statepoint_record(
     other => VerifyError::new_record(callsite, rec.patchpoint_id, other.to_string()),
   })?;
 
-  // Enforce our current runtime policy for statepoints:
-  // - callconv must be 0
-  // - flags must be a 2-bit mask (0..3) and must be 0 for now
-  // - deopt operands are currently not supported (deopt_count must be 0)
+  // Statepoint header sanity:
+  // - `flags` is defined by LLVM as a 2-bit mask (0..3).
+  //
+  // `callconv` and `deopt_count` are currently opaque to the runtime. They are
+  // still decoded/validated structurally by `StatepointRecord::new`, but we do
+  // not enforce specific values here.
   let header = sp.header();
-  if header.callconv != 0 {
-    return Err(VerifyError::new_location(
-      callsite,
-      rec.patchpoint_id,
-      0,
-      &rec.locations[0],
-      format!(
-        "expected gc.statepoint callconv=0 header (locations[0]), got {}",
-        header.callconv
-      ),
-    ));
-  }
   if header.flags > 3 {
     return Err(VerifyError::new_location(
       callsite,
@@ -460,30 +450,6 @@ fn verify_statepoint_record(
       format!(
         "expected gc.statepoint flags to be a 2-bit mask (0..3) (locations[1]), got {}",
         header.flags
-      ),
-    ));
-  }
-  if header.flags != 0 {
-    return Err(VerifyError::new_location(
-      callsite,
-      rec.patchpoint_id,
-      1,
-      &rec.locations[1],
-      format!(
-        "expected gc.statepoint flags=0 header (locations[1]), got {}",
-        header.flags
-      ),
-    ));
-  }
-  if header.deopt_count != 0 {
-    return Err(VerifyError::new_location(
-      callsite,
-      rec.patchpoint_id,
-      2,
-      &rec.locations[2],
-      format!(
-        "gc.statepoint deopt operands are not supported (locations[2] deopt_count={})",
-        header.deopt_count
       ),
     ));
   }

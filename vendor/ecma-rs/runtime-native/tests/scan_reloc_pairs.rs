@@ -2,9 +2,11 @@
 
 use runtime_native::scan::scan_reloc_pairs;
 use runtime_native::stackmaps::{Location, StackMaps};
+use runtime_native::statepoints::StatepointRecord;
 use stackmap_context::{ThreadContext, DWARF_REG_IP, DWARF_REG_SP};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/bin/statepoint_base_derived_x86_64.bin");
+const FIXTURE_DEOPT: &[u8] = include_bytes!("fixtures/bin/statepoint_deopt_x86_64.bin");
 
 fn add_signed(base: u64, offset: i32) -> u64 {
   if offset >= 0 {
@@ -123,3 +125,43 @@ fn scan_reloc_pairs_reports_base_and_derived_spill_slots() {
   assert!(saw_derived, "did not observe base!=derived relocation pair");
 }
 
+#[test]
+fn scan_reloc_pairs_skips_deopt_operands() {
+  let stackmaps = StackMaps::parse(FIXTURE_DEOPT).expect("parse stackmaps fixture");
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("fixture should contain callsites");
+
+  let sp = StatepointRecord::new(callsite.record).expect("decode statepoint layout");
+  assert_eq!(sp.header().callconv, 8);
+  assert_eq!(sp.header().flags, 1);
+  assert_eq!(sp.header().deopt_count, 2);
+  assert_eq!(sp.deopt_locations().len(), 2);
+
+  // Synthetic stack memory (word-aligned).
+  let mut stack: Vec<usize> = vec![0; 256];
+  let sp_base = stack.as_mut_ptr() as u64;
+
+  let deopt0 = &sp.deopt_locations()[0];
+  let deopt0_addr = slot_addr(sp_base, deopt0);
+
+  let mut ctx = ThreadContext::default();
+  ctx.set_dwarf_reg_u64(DWARF_REG_IP, callsite_ra).unwrap();
+  ctx.set_dwarf_reg_u64(DWARF_REG_SP, sp_base).unwrap();
+
+  let mut seen: Vec<(usize, usize)> = Vec::new();
+  scan_reloc_pairs(&ctx, &stackmaps, |base_slot, derived_slot| {
+    seen.push((base_slot as usize, derived_slot as usize));
+  })
+  .expect("scan");
+
+  assert_eq!(seen.len(), sp.gc_pair_count());
+  for (base_addr, derived_addr) in seen {
+    assert_ne!(
+      base_addr, deopt0_addr,
+      "deopt operand spill slot must not be reported as a relocation pair slot"
+    );
+    assert_ne!(
+      derived_addr, deopt0_addr,
+      "deopt operand spill slot must not be reported as a relocation pair slot"
+    );
+  }
+}
