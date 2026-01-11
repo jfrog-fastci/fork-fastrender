@@ -2774,6 +2774,9 @@ StackMap v3 invariant (LLVM 18, tested; required by our runtime):
   - Our initial precise GC stack walking is frame-pointer-only and cannot update register roots in
     arbitrary frames, so statepoint `gc-live` roots must be addressable stack slots:
     `Indirect [SP + off]`.
+  - Stackmap `Indirect [SP + off]` uses the *caller* SP at the stackmap record PC (return address),
+    not the safepoint callee-entry SP. On x86_64 `call` pushes an 8-byte return address, so the
+    safepoint stub must publish a **post-call** SP for stackmap evaluation (`sp = sp_entry + 8`).
   - We enforce this by:
     - codegen: `--fixup-allow-gcptr-in-csr=false` (preferred) / `--fixup-max-csr-statepoints=0` (fallback; see `native-js` emitter)
     - runtime: statepoint stackmap verifier (`runtime-native/src/statepoint_verify.rs`)

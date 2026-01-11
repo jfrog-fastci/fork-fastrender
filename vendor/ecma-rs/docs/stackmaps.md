@@ -12,6 +12,16 @@ Our initial native runtime stack-walking strategy is intentionally simple:
 
 That strategy is only correct if every GC root referenced by a stackmap is stored in a **memory location**.
 
+## Stackmap `SP` base is the *callsite* SP (not callee-entry SP)
+
+LLVM StackMap `Indirect [SP + off]` locations use the **caller frame's SP at the stackmap record PC**
+(the instruction *after* the call).
+
+On **x86_64**, `call` pushes an 8-byte return address, so if a thread is stopped inside the safepoint
+callee, the callee-entry `RSP` points at the return address and is **8 bytes lower** than the stackmap
+`SP` base. `runtime-native` therefore publishes a *post-call* SP for stackmap evaluation
+(`sp = sp_entry + 8`).
+
 ## `.llvm_stackmaps` can contain multiple StackMap v3 blobs
 
 LLVM emits a complete StackMap v3 table into each object file’s `.llvm_stackmaps` section.
