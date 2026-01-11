@@ -341,6 +341,7 @@ impl ArrayBuffer {
 /// buffer cannot be detached/transferred/resized while pinned.
 #[must_use = "PinnedArrayBuffer must be kept alive to keep the backing store pinned"]
 #[derive(Debug)]
+#[must_use]
 pub struct PinnedArrayBuffer {
   _pinned: PinnedBackingStore,
   ptr: *mut u8,
