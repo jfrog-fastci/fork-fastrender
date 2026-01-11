@@ -55,8 +55,10 @@ cd "${REPO_ROOT}"
 # knob as `scripts/cargo_agent.sh` (preferred):
 #   FASTR_CARGO_LIMIT_AS=128G bash scripts/cargo_llvm.sh build --release -p native-js
 #
+# Also respect the legacy `LIMIT_AS` knob (consumed by `scripts/cargo_agent.sh`).
+#
 # `LLVM_LIMIT_AS` is kept as a legacy alias for older automation.
-if [[ -z "${FASTR_CARGO_LIMIT_AS:-}" ]]; then
+if [[ -z "${FASTR_CARGO_LIMIT_AS:-}" && -z "${LIMIT_AS:-}" ]]; then
   export FASTR_CARGO_LIMIT_AS="${LLVM_LIMIT_AS:-96G}"
 fi
 
