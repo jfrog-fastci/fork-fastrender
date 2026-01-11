@@ -1,0 +1,74 @@
+- name: node:process.cwd
+  kind: function
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:process.chdir
+  kind: function
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:process.exit
+  kind: function
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: UNKNOWN | WRITES_GLOBAL
+      throws: Never
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:process.nextTick
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:process.uptime
+  kind: function
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:process.env
+  kind: getter
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false

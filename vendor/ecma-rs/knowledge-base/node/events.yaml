@@ -1,0 +1,72 @@
+- name: node:events.EventEmitter
+  kind: constructor
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:events.EventEmitter.prototype.on
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:events.EventEmitter.prototype.addListener
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:events.EventEmitter.prototype.off
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:events.EventEmitter.prototype.removeListener
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:events.EventEmitter.prototype.emit
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:events.once
+  kind: function
+  since: "v11.13.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false

@@ -1,6 +1,7 @@
 - name: node:timers.setTimeout
   kind: function
   aliases:
+    - setTimeout
     - timers.setTimeout
   since: "v0.1.0"
   effects:
@@ -22,6 +23,7 @@
 - name: node:timers.clearTimeout
   kind: function
   aliases:
+    - clearTimeout
     - timers.clearTimeout
   since: "v0.1.0"
   effects:
@@ -43,6 +45,7 @@
 - name: node:timers.setInterval
   kind: function
   aliases:
+    - setInterval
     - timers.setInterval
   since: "v0.1.0"
   effects:
@@ -64,6 +67,7 @@
 - name: node:timers.clearInterval
   kind: function
   aliases:
+    - clearInterval
     - timers.clearInterval
   since: "v0.1.0"
   effects:
@@ -85,6 +89,7 @@
 - name: node:timers.setImmediate
   kind: function
   aliases:
+    - setImmediate
     - timers.setImmediate
   since: "v0.9.1"
   effects:
@@ -106,6 +111,7 @@
 - name: node:timers.clearImmediate
   kind: function
   aliases:
+    - clearImmediate
     - timers.clearImmediate
   since: "v0.9.1"
   effects:

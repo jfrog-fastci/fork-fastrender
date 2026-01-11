@@ -1,0 +1,48 @@
+- name: node:util.promisify
+  kind: function
+  since: "v8.0.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:util.callbackify
+  kind: function
+  since: "v8.2.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:util.format
+  kind: function
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:util.inspect
+  kind: function
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
