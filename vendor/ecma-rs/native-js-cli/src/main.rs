@@ -504,6 +504,12 @@ fn compile_file_to_ir(cli: &Cli, input: &Path) -> String {
         // The project compiler namespaces user functions and supports exporting `main()` as an
         // entrypoint; fall back to it.
       }
+      Err(NativeJsError::Codegen(native_js::codegen::CodegenError::TypeError(msg)))
+        if msg.contains("call to unknown function") =>
+      {
+        // Likely calls an imported function; fall back to the project compiler which supports
+        // multi-file module linking.
+      }
       Err(err) => {
         eprintln!("{err}");
         exit(1);
