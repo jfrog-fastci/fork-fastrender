@@ -6,7 +6,7 @@
 # Aliases:
 # - Property-based import styles (e.g. `import _ from "lodash"`).
 
-lodash.map:
+- name: lodash.map
   aliases: [_.map]
   semantics: Map
   since: "v0.1.0"
@@ -25,7 +25,7 @@ lodash.map:
     output: new_array
     preserves_order: "true"
 
-lodash.filter:
+- name: lodash.filter
   aliases: [_.filter]
   semantics: Filter
   since: "v0.1.0"
@@ -44,7 +44,7 @@ lodash.filter:
     output: new_array
     preserves_order: "true"
 
-lodash.reduce:
+- name: lodash.reduce
   aliases: [_.reduce]
   semantics: Reduce
   since: "v0.1.0"
@@ -62,7 +62,7 @@ lodash.reduce:
     kind: collection_operator
     output: accumulated_value
 
-lodash.cloneDeep:
+- name: lodash.cloneDeep
   aliases: [_.cloneDeep]
   semantics: CloneDeep
   since: "v0.1.0"
@@ -81,7 +81,7 @@ lodash.cloneDeep:
     kind: cloning
     does_not_mutate_inputs: "true"
 
-lodash.merge:
+- name: lodash.merge
   aliases: [_.merge]
   semantics: Merge
   since: "v0.1.0"
@@ -101,7 +101,7 @@ lodash.merge:
     mutates_argument: "0"
     returns_argument: "0"
 
-lodash.debounce:
+- name: lodash.debounce
   aliases: [_.debounce]
   semantics: Debounce
   since: "v0.1.0"
@@ -120,7 +120,7 @@ lodash.debounce:
     timer_based: "true"
     returns: function
 
-lodash.throttle:
+- name: lodash.throttle
   aliases: [_.throttle]
   semantics: Throttle
   since: "v0.1.0"
@@ -139,7 +139,7 @@ lodash.throttle:
     timer_based: "true"
     returns: function
 
-lodash.memoize:
+- name: lodash.memoize
   aliases: [_.memoize]
   semantics: Memoize
   since: "v0.1.0"

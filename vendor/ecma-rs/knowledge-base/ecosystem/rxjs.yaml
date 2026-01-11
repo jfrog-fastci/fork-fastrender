@@ -4,7 +4,7 @@
 # - `rxjs.*` for creation functions / classes from the `rxjs` entrypoint.
 # - `rxjs.operators.*` for pipeable operators from `rxjs/operators`.
 
-rxjs.Observable:
+- name: rxjs.Observable
   aliases: []
   semantics: ObservableConstructor
   since: "v0.1.0"
@@ -23,7 +23,7 @@ rxjs.Observable:
     lazy: "true"
     subscribe_function_argument: "0"
 
-rxjs.of:
+- name: rxjs.of
   aliases: []
   semantics: ObservableOf
   since: "v0.1.0"
@@ -41,7 +41,7 @@ rxjs.of:
     kind: observable_creation
     lazy: "true"
 
-rxjs.from:
+- name: rxjs.from
   aliases: []
   semantics: ObservableFrom
   since: "v0.1.0"
@@ -60,7 +60,7 @@ rxjs.from:
     lazy: "true"
     nondeterministic_if: input_is_promise_or_async_iterable
 
-rxjs.merge:
+- name: rxjs.merge
   aliases: []
   semantics: ObservableMerge
   since: "v0.1.0"
@@ -79,7 +79,7 @@ rxjs.merge:
     lazy: "true"
     interleaves_sources: "true"
 
-rxjs.combineLatest:
+- name: rxjs.combineLatest
   aliases: []
   semantics: ObservableCombineLatest
   since: "v0.1.0"
@@ -98,7 +98,7 @@ rxjs.combineLatest:
     lazy: "true"
     depends_on_scheduling: "true"
 
-rxjs.operators.map:
+- name: rxjs.operators.map
   aliases: []
   semantics: Map
   since: "v0.1.0"
@@ -116,7 +116,7 @@ rxjs.operators.map:
     kind: operator
     operator_type: transformation
 
-rxjs.operators.filter:
+- name: rxjs.operators.filter
   aliases: []
   semantics: Filter
   since: "v0.1.0"
@@ -134,7 +134,7 @@ rxjs.operators.filter:
     kind: operator
     operator_type: filtration
 
-rxjs.operators.mergeMap:
+- name: rxjs.operators.mergeMap
   aliases: []
   semantics: MergeMap
   since: "v0.1.0"
@@ -153,7 +153,7 @@ rxjs.operators.mergeMap:
     operator_type: flattening
     concurrency: "true"
 
-rxjs.operators.switchMap:
+- name: rxjs.operators.switchMap
   aliases: []
   semantics: SwitchMap
   since: "v0.1.0"
@@ -172,7 +172,7 @@ rxjs.operators.switchMap:
     operator_type: flattening
     cancels_previous_inner: "true"
 
-rxjs.operators.tap:
+- name: rxjs.operators.tap
   aliases: []
   semantics: Tap
   since: "v0.1.0"
@@ -190,7 +190,7 @@ rxjs.operators.tap:
     kind: operator
     operator_type: side_effect
 
-rxjs.operators.catchError:
+- name: rxjs.operators.catchError
   aliases: []
   semantics: CatchError
   since: "v0.1.0"
@@ -208,7 +208,7 @@ rxjs.operators.catchError:
     kind: operator
     operator_type: error_handling
 
-rxjs.operators.take:
+- name: rxjs.operators.take
   aliases: []
   semantics: Take
   since: "v0.1.0"
@@ -226,7 +226,7 @@ rxjs.operators.take:
     kind: operator
     operator_type: limiting
 
-rxjs.operators.debounceTime:
+- name: rxjs.operators.debounceTime
   aliases: []
   semantics: DebounceTime
   since: "v0.1.0"
