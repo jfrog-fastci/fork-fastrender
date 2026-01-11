@@ -27,7 +27,7 @@ fn function_block(ir: &str, func_name: &str) -> String {
 fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
   let context = Context::create();
   let cg = native_js::CodeGen::new(&context, "runtime_abi_test");
-  cg.runtime_abi().declare_all();
+  let fns = cg.runtime_abi().declare_all();
 
   let ir = cg.module_ir();
 
@@ -38,6 +38,16 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     ir.contains("declare ptr @rt_alloc_pinned"),
     "missing rt_alloc_pinned:\n{ir}"
   );
+  // ABI regression guards: `rt_alloc` / `rt_alloc_pinned` take `RtShapeId` as a 32-bit integer.
+  let alloc_params = fns.rt_alloc.get_type().get_param_types();
+  assert_eq!(alloc_params.len(), 2);
+  assert_eq!(alloc_params[0].into_int_type().get_bit_width(), 64);
+  assert_eq!(alloc_params[1].into_int_type().get_bit_width(), 32);
+
+  let alloc_pinned_params = fns.rt_alloc_pinned.get_type().get_param_types();
+  assert_eq!(alloc_pinned_params.len(), 2);
+  assert_eq!(alloc_pinned_params[0].into_int_type().get_bit_width(), 64);
+  assert_eq!(alloc_pinned_params[1].into_int_type().get_bit_width(), 32);
 
   // These are MayGC runtime functions and must not have `_gc` wrapper functions.
   assert!(
