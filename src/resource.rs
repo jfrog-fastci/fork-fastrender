@@ -972,9 +972,12 @@ fn http_browser_origin_and_referer_for_origin(origin: &DocumentOrigin) -> Option
     return None;
   }
   let host = origin.host.as_deref()?;
-  let host = match host.parse::<std::net::IpAddr>() {
-    Ok(std::net::IpAddr::V6(_)) => format!("[{host}]"),
-    _ => host.to_string(),
+  // IPv6 origins must be serialized with brackets (including IPv6 zone identifiers, which are not
+  // parseable as `std::net::IpAddr`).
+  let host = if host.contains(':') && !host.starts_with('[') {
+    format!("[{host}]")
+  } else {
+    host.to_string()
   };
 
   let mut origin_str = format!("{}://{}", origin.scheme, host);
@@ -13305,6 +13308,28 @@ mod tests {
       .expect("expected origin+referer for font profile");
     assert_eq!(origin, "https://example.com:8443");
     assert_eq!(referer, "https://example.com:8443/");
+  }
+
+  #[test]
+  fn http_browser_origin_and_referer_wrap_ipv6_origin_hosts() {
+    let origin = origin_from_url("https://[::1]/").expect("origin");
+    let (origin_str, referer) =
+      http_browser_origin_and_referer_for_origin(&origin).expect("origin+referer");
+    assert_eq!(origin_str, "https://[::1]");
+    assert_eq!(referer, "https://[::1]/");
+  }
+
+  #[test]
+  fn http_browser_origin_and_referer_wraps_ipv6_zone_identifiers() {
+    let origin = DocumentOrigin::new(
+      "https".to_string(),
+      Some("fe80::1%25en0".to_string()),
+      None,
+    );
+    let (origin_str, referer) =
+      http_browser_origin_and_referer_for_origin(&origin).expect("origin+referer");
+    assert_eq!(origin_str, "https://[fe80::1%25en0]");
+    assert_eq!(referer, "https://[fe80::1%25en0]/");
   }
 
   #[test]
