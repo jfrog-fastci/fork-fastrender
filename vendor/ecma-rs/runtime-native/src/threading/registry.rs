@@ -475,6 +475,22 @@ pub(crate) fn set_current_thread_safepoint_cursor(cursor: FrameCursor) {
   *state.safepoint_cursor.lock().unwrap() = Some(cursor);
 }
 
+#[cfg(target_os = "macos")]
+extern "C" {
+  fn pthread_threadid_np(thread: libc::pthread_t, thread_id: *mut u64) -> libc::c_int;
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn fallback_thread_id_hash() -> u64 {
+  // `ThreadId` formatting is intentionally opaque, so we hash its Debug form.
+  use std::hash::Hash;
+  use std::hash::Hasher;
+  let tid = std::thread::current().id();
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  tid.hash(&mut hasher);
+  hasher.finish()
+}
+
 /// Best-effort OS thread id for debugging.
 fn current_os_thread_id() -> u64 {
   #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -482,16 +498,20 @@ fn current_os_thread_id() -> u64 {
     libc::syscall(libc::SYS_gettid) as u64
   }
 
-  #[cfg(not(any(target_os = "linux", target_os = "android")))]
+  #[cfg(target_os = "macos")]
+  unsafe {
+    let mut tid: u64 = 0;
+    let rc = pthread_threadid_np(libc::pthread_self(), &mut tid as *mut u64);
+    if rc == 0 {
+      return tid;
+    }
+    fallback_thread_id_hash()
+  }
+
+  #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
   {
     // Fallback: stable but not OS-level.
-    // `ThreadId` formatting is intentionally opaque, so we hash its Debug form.
-    use std::hash::Hash;
-    use std::hash::Hasher;
-    let tid = std::thread::current().id();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    tid.hash(&mut hasher);
-    hasher.finish()
+    fallback_thread_id_hash()
   }
 }
 

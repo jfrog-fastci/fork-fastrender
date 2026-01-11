@@ -259,12 +259,13 @@ fn wake_race_stress() {
   }
 
   let mut wakers = Vec::new();
+  // `*mut u8` is not `Send`, so route the pointer through `usize` for this cross-thread test.
+  let ran_ptr = ran as *const AtomicUsize as usize;
   for _ in 0..4 {
-    // `*mut u8` is not `Send`, so route the pointer through `usize` for this cross-thread test.
-    let ran_ptr = ran as *const AtomicUsize as usize;
     wakers.push(std::thread::spawn(move || {
+      let ran_ptr = ran_ptr as *mut u8;
       for _ in 0..200 {
-        async_rt::enqueue_microtask(inc_counter, ran_ptr as *mut u8);
+        async_rt::enqueue_microtask(inc_counter, ran_ptr);
       }
     }));
   }
