@@ -110,85 +110,92 @@
 - name: URL.prototype.origin
   aliases:
     - URL.prototype.origin
-  kind: getter
+  kind: property_get
   since: "baseline"
   effects:
     allocates: true
     may_throw: false
   purity: Pure
   properties:
+    returns: string
     encoding.output: ascii
 
 - name: URL.prototype.protocol
   aliases:
     - URL.prototype.protocol
-  kind: getter
+  kind: property_get
   since: "baseline"
   effects:
     allocates: true
     may_throw: false
   purity: Pure
   properties:
+    returns: string
     encoding.output: ascii
 
 - name: URL.prototype.host
   aliases:
     - URL.prototype.host
-  kind: getter
+  kind: property_get
   since: "baseline"
   effects:
     allocates: true
     may_throw: false
   purity: Pure
   properties:
+    returns: string
     encoding.output: ascii
 
 - name: URL.prototype.hostname
   aliases:
     - URL.prototype.hostname
-  kind: getter
+  kind: property_get
   since: "baseline"
   effects:
     allocates: true
     may_throw: false
   purity: Pure
   properties:
+    returns: string
     encoding.output: ascii
 
 - name: URL.prototype.port
   aliases:
     - URL.prototype.port
-  kind: getter
+  kind: property_get
   since: "baseline"
   effects:
     allocates: true
     may_throw: false
   purity: Pure
   properties:
+    returns: string
     encoding.output: ascii
 
 - name: URL.prototype.search
   aliases:
     - URL.prototype.search
-  kind: getter
+  kind: property_get
   since: "baseline"
   effects:
     allocates: true
     may_throw: false
   purity: Pure
   properties:
+    returns: string
     encoding.output: ascii
 
 - name: URL.prototype.hash
   aliases:
     - URL.prototype.hash
-  kind: getter
+  kind: property_get
   since: "baseline"
   effects:
     allocates: true
     may_throw: false
   purity: Pure
   properties:
+    returns: string
     encoding.output: ascii
 
 - name: URL.prototype.searchParams
