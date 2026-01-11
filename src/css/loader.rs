@@ -22,6 +22,24 @@ use std::collections::HashMap;
 use std::path::Path;
 use url::Url;
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(test)]
+thread_local! {
+  static ABSOLUTIZE_CSS_URLS_TOKENIZE_COUNT: AtomicUsize = const { AtomicUsize::new(0) };
+}
+
+#[cfg(test)]
+fn reset_absolutize_css_urls_tokenize_count() {
+  ABSOLUTIZE_CSS_URLS_TOKENIZE_COUNT.with(|counter| counter.store(0, Ordering::Relaxed));
+}
+
+#[cfg(test)]
+fn absolutize_css_urls_tokenize_count() -> usize {
+  ABSOLUTIZE_CSS_URLS_TOKENIZE_COUNT.with(|counter| counter.load(Ordering::Relaxed))
+}
+
 // HTML/CSS URL attributes strip leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but do not
 // treat all Unicode whitespace as ignorable. Use an explicit trim instead of `str::trim()` to
 // avoid incorrectly dropping characters like NBSP (U+00A0).
@@ -400,32 +418,6 @@ pub fn absolutize_css_urls_cow<'a>(
     }
   }
 
-  fn css_may_contain_url_tokens(css: &str) -> bool {
-    let bytes = css.as_bytes();
-    if bytes.len() < 4 {
-      return false;
-    }
-
-    let mut offset = 0usize;
-    while offset + 3 < bytes.len() {
-      let Some(pos) = memchr::memchr2(b'u', b'U', &bytes[offset..]) else {
-        return false;
-      };
-      let idx = offset + pos;
-      if idx + 3 >= bytes.len() {
-        return false;
-      }
-      if matches!(bytes[idx + 1], b'r' | b'R')
-        && matches!(bytes[idx + 2], b'l' | b'L')
-        && bytes[idx + 3] == b'('
-      {
-        return true;
-      }
-      offset = idx + 1;
-    }
-    false
-  }
-
   fn looks_like_absolute_url(url: &str) -> bool {
     let bytes = url.as_bytes();
     if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
@@ -464,6 +456,120 @@ pub fn absolutize_css_urls_cow<'a>(
       return false;
     }
     !looks_like_absolute_url(trimmed)
+  }
+
+  fn css_may_contain_resolvable_url_tokens(css: &str) -> bool {
+    let bytes = css.as_bytes();
+    if bytes.len() < 4 {
+      return false;
+    }
+
+    let mut in_string: Option<u8> = None;
+    let mut in_comment = false;
+    let mut i = 0usize;
+    while i + 3 < bytes.len() {
+      let byte = bytes[i];
+
+      if in_comment {
+        if byte == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+          in_comment = false;
+          i += 2;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+
+      if let Some(quote) = in_string {
+        if byte == b'\\' {
+          i = (i + 2).min(bytes.len());
+          continue;
+        }
+        if byte == quote {
+          in_string = None;
+        }
+        i += 1;
+        continue;
+      }
+
+      // Not inside a string/comment.
+      if byte == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+        in_comment = true;
+        i += 2;
+        continue;
+      }
+
+      if byte == b'"' || byte == b'\'' {
+        in_string = Some(byte);
+        i += 1;
+        continue;
+      }
+
+      if matches!(byte, b'u' | b'U')
+        && matches!(bytes[i + 1], b'r' | b'R')
+        && matches!(bytes[i + 2], b'l' | b'L')
+        && bytes[i + 3] == b'('
+      {
+        // Scan ahead for the start of the URL payload and decide whether it might need resolution.
+        let mut j = i + 4;
+        while j < bytes.len() && is_ascii_whitespace_html_css_byte(bytes[j]) {
+          j += 1;
+        }
+        if j >= bytes.len() {
+          return true;
+        }
+
+        // Empty url() calls do not produce resolvable URLs.
+        if bytes[j] == b')' {
+          i = i.saturating_add(4);
+          continue;
+        }
+
+        if matches!(bytes[j], b'"' | b'\'') {
+          j += 1;
+          while j < bytes.len() && is_ascii_whitespace_html_css_byte(bytes[j]) {
+            j += 1;
+          }
+          if j >= bytes.len() {
+            return true;
+          }
+        }
+
+        let mut end = j;
+        while end < bytes.len() && end.saturating_sub(j) < 64 {
+          let b = bytes[end];
+          if is_ascii_whitespace_html_css_byte(b) || matches!(b, b')' | b'"' | b'\'') {
+            break;
+          }
+          if b == b'\\' {
+            // Escapes inside url(...) need a real tokenizer.
+            return true;
+          }
+          if b == b'/' && end + 1 < bytes.len() && bytes[end + 1] == b'*' {
+            // Comments inside url(...) need a real tokenizer.
+            return true;
+          }
+          end += 1;
+        }
+
+        let prefix = trim_ascii_whitespace(&css[j..end]);
+        if prefix.is_empty() {
+          i = i.saturating_add(4);
+          continue;
+        }
+
+        if should_resolve_css_url(prefix) {
+          return true;
+        }
+
+        i = i.saturating_add(4);
+        continue;
+      }
+
+      i += 1;
+    }
+
+    false
   }
 
   fn parse_base_url_for_join(base_url: &str) -> Option<Url> {
@@ -698,11 +804,15 @@ pub fn absolutize_css_urls_cow<'a>(
   }
 
   check_active(RenderStage::Css)?;
-  if !css_may_contain_url_tokens(css) {
+  if !css_may_contain_resolvable_url_tokens(css) {
     return Ok(Cow::Borrowed(css));
   }
 
   let mut base_url = BaseUrlJoinCache::new(base_url);
+  #[cfg(test)]
+  ABSOLUTIZE_CSS_URLS_TOKENIZE_COUNT.with(|counter| {
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+  });
   let mut input = ParserInput::new(css);
   let mut parser = Parser::new(&mut input);
   let mut deadline_counter = 0usize;
@@ -3261,20 +3371,46 @@ mod tests {
 
   #[test]
   fn absolutizes_css_urls_cow_fast_path_skips_when_no_url_tokens() {
+    reset_absolutize_css_urls_tokenize_count();
     let css = "body { color: red; }";
     let out = absolutize_css_urls_cow(css, "https://example.com/styles/main.css").unwrap();
     assert!(matches!(out, Cow::Borrowed(_)));
     assert_eq!(out.as_ref(), css);
+    assert_eq!(
+      absolutize_css_urls_tokenize_count(),
+      0,
+      "expected no tokenizer pass for CSS without url() tokens"
+    );
+  }
+
+  #[test]
+  fn absolutizes_css_urls_cow_fast_path_skips_when_no_url_tokens_need_rewriting() {
+    reset_absolutize_css_urls_tokenize_count();
+    let css = r#"body { background: url("data:text/plain;base64,abc"); mask: url(); }"#;
+    let out = absolutize_css_urls_cow(css, "https://example.com/styles/main.css").unwrap();
+    assert!(matches!(out, Cow::Borrowed(_)));
+    assert_eq!(out.as_ref(), css);
+    assert_eq!(
+      absolutize_css_urls_tokenize_count(),
+      0,
+      "expected tokenizer to be skipped when all url() tokens are non-resolvable"
+    );
   }
 
   #[test]
   fn absolutizes_css_urls_cow_rewrites_relative_urls() {
+    reset_absolutize_css_urls_tokenize_count();
     let css = "body { background: url(\"images/bg.png\"); }";
     let out = absolutize_css_urls_cow(css, "https://example.com/styles/main.css").unwrap();
     assert!(matches!(out, Cow::Owned(_)));
     assert_eq!(
       out.as_ref(),
       "body { background: url(\"https://example.com/styles/images/bg.png\"); }"
+    );
+    assert_eq!(
+      absolutize_css_urls_tokenize_count(),
+      1,
+      "expected tokenizer to run when url() tokens need rewriting"
     );
   }
 
