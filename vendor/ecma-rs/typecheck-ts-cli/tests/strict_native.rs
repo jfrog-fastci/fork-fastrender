@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;
+use typecheck_ts::codes;
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -86,4 +87,53 @@ fn strict_native_reports_type_and_non_null_assertions() {
     stdout.contains("TN0003"),
     "expected TN0003 for non-null assertion, got {stdout}"
   );
+}
+
+#[test]
+fn strict_native_reports_forbidden_eval() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+declare function eval(code: string): unknown;
+eval("1+1");
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(codes::STRICT_NATIVE_FORBIDDEN_EVAL.as_str()));
+}
+
+#[test]
+fn strict_native_reports_non_constant_computed_key() {
+  let tmp = tempdir().expect("temp dir");
+  let entry = tmp.path().join("main.ts");
+  fs::write(
+    &entry,
+    r#"
+const dict: { [k: string]: number } = { x: 1 };
+let key: string = "x";
+dict[key];
+"#,
+  )
+  .expect("write main.ts");
+
+  typecheck_cli()
+    .timeout(CLI_TIMEOUT)
+    .args(["typecheck"])
+    .arg("--strict-native")
+    .arg(entry.as_os_str())
+    .assert()
+    .failure()
+    .stdout(contains(
+      codes::STRICT_NATIVE_COMPUTED_KEY_NOT_CONSTANT.as_str(),
+    ));
 }
