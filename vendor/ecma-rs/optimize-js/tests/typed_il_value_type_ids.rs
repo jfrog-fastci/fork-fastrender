@@ -3,6 +3,7 @@
 use optimize_js::il::inst::{BinOp, InstTyp};
 use optimize_js::{compile_source_with_typecheck, TopLevelMode};
 use std::sync::Arc;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 
 #[test]
 fn typed_lowering_attaches_type_ids_to_value_insts() {
@@ -15,7 +16,10 @@ fn typed_lowering_attaches_type_ids_to_value_insts() {
     outer();
   "#;
 
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = typecheck_ts::MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  });
   let file_key = typecheck_ts::FileKey::new("input.ts");
   host.insert(file_key.clone(), source);
   let type_program = Arc::new(typecheck_ts::Program::new(host, vec![file_key.clone()]));

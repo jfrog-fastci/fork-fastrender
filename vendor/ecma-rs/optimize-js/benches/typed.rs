@@ -16,6 +16,27 @@ use std::hint::black_box;
 use std::sync::Arc;
 #[cfg(feature = "typed")]
 use std::time::Duration;
+#[cfg(feature = "typed")]
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, FileKind, LibFile, LibName};
+
+#[cfg(feature = "typed")]
+const OPTIMIZE_JS_BENCH_BUILTINS_KEY: &str = "optimize-js:bench-builtins.d.ts";
+
+#[cfg(feature = "typed")]
+const OPTIMIZE_JS_BENCH_BUILTINS_D_TS: &str = r#"
+declare var console: {
+  log(
+    a0?: unknown,
+    a1?: unknown,
+    a2?: unknown,
+    a3?: unknown,
+    a4?: unknown,
+    a5?: unknown,
+    a6?: unknown,
+    a7?: unknown,
+  ): void;
+};
+"#;
 
 /// Small-but-nontrivial TypeScript source that triggers typed optimizations:
 /// - optional chaining (`console?.log`)
@@ -64,7 +85,16 @@ if (alwaysTrue()) {
 fn build_multifile_type_program(
   source: &str,
 ) -> (Arc<typecheck_ts::Program>, typecheck_ts::FileId) {
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = typecheck_ts::MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  });
+  host.add_lib(LibFile {
+    key: typecheck_ts::FileKey::new(OPTIMIZE_JS_BENCH_BUILTINS_KEY),
+    name: Arc::from("optimize-js bench builtins"),
+    kind: FileKind::Dts,
+    text: Arc::from(OPTIMIZE_JS_BENCH_BUILTINS_D_TS),
+  });
   let dummy = typecheck_ts::FileKey::new("file0.ts");
   let target = typecheck_ts::FileKey::new("file1.ts");
 

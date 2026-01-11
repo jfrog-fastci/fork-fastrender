@@ -958,6 +958,73 @@ pub fn compile_source_typed(
   compile_source_typed_cfg_options(source, mode, debug, CompileCfgOptions::default())
 }
 
+#[cfg(feature = "typed")]
+const OPTIMIZE_JS_TYPED_BUILTINS_KEY: &str = "optimize-js:typed-builtins.d.ts";
+
+#[cfg(feature = "typed")]
+const OPTIMIZE_JS_TYPED_BUILTINS_D_TS: &str = r#"
+// optimize-js builtins (minimal).
+//
+// We intentionally avoid loading TypeScript's default `dom` lib set for the
+// `optimize_js::compile_source_typed*` helpers because it is large and slows down
+// test/benchmark workloads. Most optimizer tests only need a typed `console.log`.
+
+declare var console: {
+  log(
+    a0?: unknown,
+    a1?: unknown,
+    a2?: unknown,
+    a3?: unknown,
+    a4?: unknown,
+    a5?: unknown,
+    a6?: unknown,
+    a7?: unknown,
+  ): void;
+};
+"#;
+
+#[cfg(feature = "typed")]
+fn source_declares_console(source: &str) -> bool {
+  // Conservative substring checks to avoid injecting a duplicate `console`
+  // declaration when a test or caller provides its own stubs (common when using
+  // `/// <reference no-default-lib="true" />`).
+  source.contains("declare var console")
+    || source.contains("declare const console")
+    || source.contains("declare let console")
+}
+
+#[cfg(feature = "typed")]
+fn typed_memory_host_for_source(source: &str) -> typecheck_ts::MemoryHost {
+  use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, FileKind, LibFile, LibName};
+
+  // Respect `/// <reference no-default-lib="true" />` on root files by leaving
+  // the compiler options' `libs` empty so `typecheck-ts` can disable bundled lib
+  // loading.
+  let no_default_lib = typecheck_ts::triple_slash::scan_triple_slash_directives(source).no_default_lib;
+  let mut host = if no_default_lib {
+    typecheck_ts::MemoryHost::new()
+  } else {
+    typecheck_ts::MemoryHost::with_options(TsCompilerOptions {
+      libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+      ..Default::default()
+    })
+  };
+
+  // Provide a tiny console definition for optimizer tests/benchmarks that
+  // reference `console.log(...)`. Keep it free of `T[]` / `Array<T>` to avoid
+  // depending on global `Array` types when `no-default-lib` is enabled.
+  if source.contains("console") && !source_declares_console(source) {
+    host.add_lib(LibFile {
+      key: typecheck_ts::FileKey::new(OPTIMIZE_JS_TYPED_BUILTINS_KEY),
+      name: Arc::from("optimize-js typed builtins"),
+      kind: FileKind::Dts,
+      text: Arc::from(OPTIMIZE_JS_TYPED_BUILTINS_D_TS),
+    });
+  }
+
+  host
+}
+
 /// Compile and type-check a single source string using the bundled
 /// `typecheck-ts` memory host with explicit CFG options.
 #[cfg(feature = "typed")]
@@ -967,7 +1034,7 @@ pub fn compile_source_typed_cfg_options(
   debug: bool,
   cfg_options: CompileCfgOptions,
 ) -> OptimizeResult<Program> {
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = typed_memory_host_for_source(source);
   let file = typecheck_ts::FileKey::new("input.ts");
   host.insert(file.clone(), source);
   let type_program = std::sync::Arc::new(typecheck_ts::Program::new(host, vec![file.clone()]));

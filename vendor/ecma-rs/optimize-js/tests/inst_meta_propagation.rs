@@ -6,6 +6,8 @@ use optimize_js::ssa::ssa_deconstruct::deconstruct_ssa;
 use optimize_js::types::ValueTypeSummary;
 use optimize_js::util::counter::Counter;
 use parse_js::num::JsNumber;
+#[cfg(feature = "typed")]
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 
 #[test]
 fn phi_simplify_copies_inst_meta_to_lowered_var_assign() {
@@ -81,7 +83,10 @@ fn typed_type_id_survives_ssa_phi_lowering() {
     void f;
   "#;
 
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = typecheck_ts::MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  });
   let input = typecheck_ts::FileKey::new("input.ts");
   host.insert(input.clone(), src);
   let tc_program = std::sync::Arc::new(typecheck_ts::Program::new(host, vec![input.clone()]));

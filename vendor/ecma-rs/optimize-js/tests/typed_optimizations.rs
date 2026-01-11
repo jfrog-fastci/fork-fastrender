@@ -8,6 +8,38 @@ use emit_js::EmitOptions;
 use optimize_js::decompile::program_to_js;
 use optimize_js::{DecompileOptions, TopLevelMode};
 use std::sync::Arc;
+use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, FileKind, LibFile, LibName};
+
+const OPTIMIZE_JS_TEST_BUILTINS_KEY: &str = "optimize-js:test-builtins.d.ts";
+
+const OPTIMIZE_JS_TEST_BUILTINS_D_TS: &str = r#"
+declare var console: {
+  log(
+    a0?: unknown,
+    a1?: unknown,
+    a2?: unknown,
+    a3?: unknown,
+    a4?: unknown,
+    a5?: unknown,
+    a6?: unknown,
+    a7?: unknown,
+  ): void;
+};
+"#;
+
+fn es2015_host() -> typecheck_ts::MemoryHost {
+  let mut host = typecheck_ts::MemoryHost::with_options(TsCompilerOptions {
+    libs: vec![LibName::parse("es2015").expect("LibName::parse(es2015)")],
+    ..Default::default()
+  });
+  host.add_lib(LibFile {
+    key: typecheck_ts::FileKey::new(OPTIMIZE_JS_TEST_BUILTINS_KEY),
+    name: Arc::from("optimize-js test builtins"),
+    kind: FileKind::Dts,
+    text: Arc::from(OPTIMIZE_JS_TEST_BUILTINS_D_TS),
+  });
+  host
+}
 
 fn normalize_registers(js: &str) -> String {
   fn is_ident_byte(b: u8) -> bool {
@@ -72,7 +104,7 @@ fn compile_file_with_typecheck_elides_optional_chaining() {
   let src = "let x = 1; console?.log(x);";
   let expected_src = "let x = 1; console.log(x);";
 
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = es2015_host();
   let input = typecheck_ts::FileKey::new("input.ts");
   host.insert(input.clone(), src);
   let tc_program = Arc::new(typecheck_ts::Program::new(host, vec![input.clone()]));
@@ -214,7 +246,7 @@ fn typed_if_condition_literal_false_elides_then_branch() {
   "#;
   let expected_src = "alwaysFalse();console.log(2);";
 
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = es2015_host();
   let input = typecheck_ts::FileKey::new("input.ts");
   let decls = typecheck_ts::FileKey::new("decls.d.ts");
   host.insert(input.clone(), src);
@@ -344,7 +376,7 @@ fn typed_mode_is_noop_when_type_info_is_unavailable() {
   let untyped_program = compile_source(src, TopLevelMode::Module, false);
   let untyped_out = emit(&untyped_program);
 
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = es2015_host();
   let file = typecheck_ts::FileKey::new("other.ts");
   host.insert(file.clone(), "export {}");
   let tc_program = Arc::new(typecheck_ts::Program::new(host, vec![file.clone()]));
@@ -368,7 +400,7 @@ fn typed_optimizations_work_with_nonzero_type_file_ids() {
   let src = "let x = 1; console?.log(x);";
   let expected_src = "let x = 1; console.log(x);";
 
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = es2015_host();
   let dummy = typecheck_ts::FileKey::new("file0.ts");
   let input = typecheck_ts::FileKey::new("file1.ts");
   host.insert(dummy.clone(), "export {}");
@@ -404,7 +436,7 @@ fn typed_info_is_disabled_when_source_text_mismatches_type_program_file() {
   let untyped_program = compile_source(src, TopLevelMode::Module, false);
   let untyped_out = emit(&untyped_program);
 
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = es2015_host();
   let file = typecheck_ts::FileKey::new("file0.ts");
   host.insert(file.clone(), type_src);
   let tc_program = Arc::new(typecheck_ts::Program::new(host, vec![file.clone()]));
@@ -587,7 +619,7 @@ fn typed_loose_equality_is_rejected_when_tags_disagree() {
 fn compile_file_with_typecheck_reports_non_zero_file_ids_in_diagnostics() {
   let src = r#"with (obj) { answer = 42; }"#;
 
-  let mut host = typecheck_ts::MemoryHost::new();
+  let mut host = es2015_host();
   let first = typecheck_ts::FileKey::new("a.ts");
   let input = typecheck_ts::FileKey::new("input.ts");
   host.insert(first.clone(), "export {}");
