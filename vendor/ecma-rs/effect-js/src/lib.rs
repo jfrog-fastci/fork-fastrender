@@ -15,6 +15,8 @@ use effect_model::{EffectFlags, EffectSummary, EffectTemplate, Purity, PurityTem
 
 pub use api::ApiId;
 pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
+#[cfg(feature = "typed")]
+pub use encoding::analyze_string_encodings_typed;
 pub use kb::load_default_api_database;
 pub use recognize::{recognize_patterns_untyped, RecognizedPattern};
 pub use resolver::{collect_require_bindings, resolve_api_call, RequireBindings};

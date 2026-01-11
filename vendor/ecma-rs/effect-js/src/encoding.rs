@@ -1,4 +1,4 @@
-use hir_js::{BinaryOp, ExprId, ExprKind, Literal, ObjectKey};
+use hir_js::{BinaryOp, BodyId, ExprId, ExprKind, Literal, ObjectKey};
 use knowledge_base::KnowledgeBase;
 use std::collections::HashMap;
 
@@ -20,13 +20,32 @@ pub fn analyze_string_encodings(
   result: &hir_js::LowerResult,
   kb: &KnowledgeBase,
 ) -> HashMap<hir_js::BodyId, EncodingResult> {
+  analyze_string_encodings_impl(result, kb, UntypedOracle)
+}
+
+#[cfg(feature = "typed")]
+pub fn analyze_string_encodings_typed(
+  result: &hir_js::LowerResult,
+  kb: &KnowledgeBase,
+  types: &impl crate::typed::TypeProvider,
+) -> HashMap<hir_js::BodyId, EncodingResult> {
+  analyze_string_encodings_impl(result, kb, TypedOracle { types })
+}
+
+fn analyze_string_encodings_impl<O: TypeOracle + Copy>(
+  result: &hir_js::LowerResult,
+  kb: &KnowledgeBase,
+  oracle: O,
+) -> HashMap<hir_js::BodyId, EncodingResult> {
   let mut out = HashMap::new();
   for (body_id, idx) in result.body_index.iter() {
     let body = &result.bodies[*idx];
     let mut analyzer = BodyAnalyzer {
+      body_id: *body_id,
       body,
       names: &result.names,
       kb,
+      oracle,
       cache: vec![None; body.exprs.len()],
     };
 
@@ -46,14 +65,59 @@ pub fn analyze_string_encodings(
   out
 }
 
-struct BodyAnalyzer<'a> {
+#[derive(Clone, Copy)]
+struct UntypedOracle;
+
+trait TypeOracle {
+  fn receiver_is_string(&self, body: BodyId, expr: ExprId) -> bool;
+  fn expr_is_string(&self, body: BodyId, expr: ExprId) -> bool;
+}
+
+impl TypeOracle for UntypedOracle {
+  fn receiver_is_string(&self, _body: BodyId, _expr: ExprId) -> bool {
+    false
+  }
+
+  fn expr_is_string(&self, _body: BodyId, _expr: ExprId) -> bool {
+    false
+  }
+}
+
+#[cfg(feature = "typed")]
+#[derive(Clone, Copy)]
+struct TypedOracle<'a> {
+  types: &'a dyn crate::typed::TypeProvider,
+}
+
+#[cfg(feature = "typed")]
+impl TypeOracle for TypedOracle<'_> {
+  fn receiver_is_string(&self, body: BodyId, expr: ExprId) -> bool {
+    type_is_string(self.types, body, expr)
+  }
+
+  fn expr_is_string(&self, body: BodyId, expr: ExprId) -> bool {
+    type_is_string(self.types, body, expr)
+  }
+}
+
+#[cfg(feature = "typed")]
+fn type_is_string(types: &dyn crate::typed::TypeProvider, body: BodyId, expr: ExprId) -> bool {
+  use types_ts_interned::TypeKind;
+  let store = types.store();
+  let ty = store.canon(types.type_of_expr(body, expr));
+  matches!(store.type_kind(ty), TypeKind::String | TypeKind::StringLiteral(_))
+}
+
+struct BodyAnalyzer<'a, O> {
+  body_id: BodyId,
   body: &'a hir_js::Body,
   names: &'a hir_js::NameInterner,
   kb: &'a KnowledgeBase,
+  oracle: O,
   cache: Vec<Option<StringEncoding>>,
 }
 
-impl BodyAnalyzer<'_> {
+impl<O: TypeOracle> BodyAnalyzer<'_, O> {
   fn encoding_of(&mut self, expr_id: ExprId) -> StringEncoding {
     let idx = expr_id.0 as usize;
     if let Some(Some(encoding)) = self.cache.get(idx).copied() {
@@ -86,7 +150,7 @@ impl BodyAnalyzer<'_> {
       ExprKind::Satisfies { expr, .. } => self.encoding_of(*expr),
 
       ExprKind::Binary { op, left, right } => match op {
-        BinaryOp::Add => self.encoding_of_add(*left, *right),
+        BinaryOp::Add => self.encoding_of_add(expr_id, *left, *right),
         _ => StringEncoding::Unknown,
       },
 
@@ -107,30 +171,18 @@ impl BodyAnalyzer<'_> {
     encoding
   }
 
-  fn encoding_of_add(&mut self, left: ExprId, right: ExprId) -> StringEncoding {
-    #[cfg(not(feature = "typed"))]
-    {
-      let _ = (left, right);
+  fn encoding_of_add(&mut self, expr: ExprId, left: ExprId, right: ExprId) -> StringEncoding {
+    if !self.oracle.expr_is_string(self.body_id, expr) {
       return StringEncoding::Unknown;
     }
 
-    #[cfg(feature = "typed")]
-    {
-      let left_enc = self.encoding_of(left);
-      let right_enc = self.encoding_of(right);
+    let left_enc = self.encoding_of(left);
+    let right_enc = self.encoding_of(right);
 
-      // Without a full type system we treat "proven string" as "we inferred an
-      // encoding for the operand". This is intentionally conservative.
-      let is_string = left_enc != StringEncoding::Unknown || right_enc != StringEncoding::Unknown;
-      if !is_string {
-        return StringEncoding::Unknown;
-      }
-
-      if left_enc == StringEncoding::Ascii && right_enc == StringEncoding::Ascii {
-        StringEncoding::Ascii
-      } else {
-        StringEncoding::Unknown
-      }
+    if left_enc == StringEncoding::Ascii && right_enc == StringEncoding::Ascii {
+      StringEncoding::Ascii
+    } else {
+      StringEncoding::Unknown
     }
   }
 
@@ -150,37 +202,27 @@ impl BodyAnalyzer<'_> {
       return StringEncoding::Unknown;
     };
 
-    #[cfg(not(feature = "typed"))]
-    {
-      let _ = prop_name;
+    if !self.oracle.receiver_is_string(self.body_id, member.object) {
       return StringEncoding::Unknown;
     }
 
-    #[cfg(feature = "typed")]
-    {
-      let recv_enc = self.encoding_of(member.object);
-      if recv_enc == StringEncoding::Unknown {
-        // Conservatively refuse to treat this as a string method call unless we
-        // can prove the receiver is a string.
-        return StringEncoding::Unknown;
-      }
+    let recv_enc = self.encoding_of(member.object);
 
-      let api_key = format!("String.prototype.{prop_name}");
-      if let Some(enc) = self.encoding_via_kb(&api_key, recv_enc) {
-        return enc;
-      }
+    let api_key = format!("String.prototype.{prop_name}");
+    if let Some(enc) = self.encoding_via_kb(&api_key, recv_enc) {
+      return enc;
+    }
 
-      match prop_name {
-        "slice" => recv_enc,
-        "toLowerCase" | "toUpperCase" => {
-          if recv_enc == StringEncoding::Ascii {
-            StringEncoding::Ascii
-          } else {
-            StringEncoding::Unknown
-          }
+    match prop_name {
+      "slice" => recv_enc,
+      "toLowerCase" | "toUpperCase" => {
+        if recv_enc == StringEncoding::Ascii {
+          StringEncoding::Ascii
+        } else {
+          StringEncoding::Unknown
         }
-        _ => StringEncoding::Unknown,
       }
+      _ => StringEncoding::Unknown,
     }
   }
 
@@ -275,6 +317,9 @@ mod tests {
   use super::{analyze_string_encodings, StringEncoding};
   use knowledge_base::KnowledgeBase;
 
+  #[cfg(feature = "typed")]
+  use super::analyze_string_encodings_typed;
+
   fn find_first_expr(
     body: &hir_js::Body,
     pred: impl Fn(&hir_js::ExprKind) -> bool,
@@ -339,16 +384,64 @@ mod tests {
   #[cfg(feature = "typed")]
   #[test]
   fn to_lowercase_preserves_ascii() {
-    let lower = hir_js::lower_from_source("\"ABC\".toLowerCase();").unwrap();
-    let root_body_id = lower.hir.root_body;
-    let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
+    use crate::typed::TypecheckProgram;
+    use typecheck_ts::{FileKey, MemoryHost, Program};
+
+    let key = FileKey::new("index.ts");
+    let mut host = MemoryHost::new();
+    host.insert(key.clone(), "\"ABC\".toLowerCase();");
+
+    let program = Program::new(host, vec![key.clone()]);
+    let diagnostics = program.check();
+    assert!(
+      diagnostics.is_empty(),
+      "typecheck diagnostics: {diagnostics:#?}"
+    );
+
+    let file = program.file_id(&key).expect("index.ts loaded");
+    let lowered = program.hir_lowered(file).expect("HIR lowered");
+    let root_body_id = lowered.root_body();
+    let root_body = lowered.body(root_body_id).expect("root body exists");
 
     let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
 
+    let types = TypecheckProgram::new(&program);
     let kb = KnowledgeBase::default();
-    let results = analyze_string_encodings(&lower, &kb);
+    let results = analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
     let root = results.get(&root_body_id).unwrap();
 
     assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Ascii);
+  }
+
+  #[cfg(feature = "typed")]
+  #[test]
+  fn to_lowercase_on_any_is_unknown() {
+    use crate::typed::TypecheckProgram;
+    use typecheck_ts::{FileKey, MemoryHost, Program};
+
+    let key = FileKey::new("index.ts");
+    let mut host = MemoryHost::new();
+    host.insert(key.clone(), "(\"ABC\" as any).toLowerCase();");
+
+    let program = Program::new(host, vec![key.clone()]);
+    let diagnostics = program.check();
+    assert!(
+      diagnostics.is_empty(),
+      "typecheck diagnostics: {diagnostics:#?}"
+    );
+
+    let file = program.file_id(&key).expect("index.ts loaded");
+    let lowered = program.hir_lowered(file).expect("HIR lowered");
+    let root_body_id = lowered.root_body();
+    let root_body = lowered.body(root_body_id).expect("root body exists");
+
+    let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
+
+    let types = TypecheckProgram::new(&program);
+    let kb = KnowledgeBase::default();
+    let results = analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
+    let root = results.get(&root_body_id).unwrap();
+
+    assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Unknown);
   }
 }
