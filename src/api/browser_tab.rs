@@ -4948,6 +4948,28 @@ mod tests {
     ) -> Result<()> {
       Ok(())
     }
+
+    fn fetch_module_graph(
+      &mut self,
+      spec: &ScriptElementSpec,
+      fetcher: Arc<dyn ResourceFetcher>,
+      _document: &mut BrowserDocumentDom2,
+      _event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      // Module scripts are fetched in CORS mode (ScriptCors destination). This test-only executor
+      // does not attempt to build a real module graph; it only triggers the fetch so callers can
+      // assert the request destination.
+      if !spec.src_attr_present {
+        return Ok(());
+      }
+      let Some(url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
+        return Err(Error::Other(
+          "module script src attribute was present but empty/invalid".to_string(),
+        ));
+      };
+      fetcher.fetch_with_request(crate::resource::FetchRequest::new(url, FetchDestination::ScriptCors))?;
+      Ok(())
+    }
   }
 
   struct WindowRealmExecutor {

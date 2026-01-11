@@ -152,6 +152,17 @@ where
       Ok(())
     }
     ScriptType::Module => {
+      // When module scripts are unsupported, HTML ignores them. However, the `src` attribute being
+      // present but empty/invalid is still an error and must queue an `error` event task (matching
+      // the classic script behavior and avoiding inline fallback execution).
+      if !supports_module_scripts {
+        if spec.src_attr_present && spec.src.is_none() {
+          event_loop.queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+            host.dispatch_script_event(ScriptElementEvent::Error, &spec)
+          })?;
+        }
+        return Ok(());
+      }
       // Module scripts must never execute synchronously inside the DOM mutation call stack; route
       // through the scheduler (which always queues module execution as tasks).
       scheduler.handle_script(host, event_loop, spec)?;
