@@ -27,7 +27,7 @@ impl StackMapLocation {
   }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_arch = "x86_64", target_arch = "aarch64")))]
 mod tests {
   use super::StackMapLocation;
   use crate::{ThreadContext, DWARF_REG_SP};
