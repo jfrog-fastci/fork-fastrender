@@ -50,6 +50,12 @@ struct Cli {
   #[arg(long, global = true)]
   debug: bool,
 
+  /// Produce a PIE executable (ET_DYN) on Linux.
+  ///
+  /// By default native-js links non-PIE so LLVM stackmap relocations are resolved at link time.
+  #[arg(long, global = true)]
+  pie: bool,
+
   /// Also run the legacy `native_js::strict::validate` checks.
   ///
   /// This is stricter than `validate_strict_subset` and may reject TypeScript-only,
@@ -184,6 +190,7 @@ fn cmd_build(
   opts.output = Some(output_exe.to_path_buf());
   opts.emit_ir = emit_ir.map(|p| p.to_path_buf());
   opts.debug = cli.debug;
+  opts.pie = cli.pie;
   opts.opt_level = match opt_level(cli.opt) {
     Ok(level) => level,
     Err(err) => return exit_internal(&program, cli.json, render, err),

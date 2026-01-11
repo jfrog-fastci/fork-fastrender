@@ -71,6 +71,93 @@ fn compile_emits_executable_and_runs() {
     artifact.path.display()
   );
 
+  let exe_bytes = std::fs::read(&artifact.path).unwrap();
+  // `CompilerOptions::default()` should be non-PIE on Linux (ET_EXEC).
+  let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
+  assert_eq!(elf_type, 2, "expected non-PIE ET_EXEC (e_type={elf_type})");
+
+  use std::process::{Command, Stdio};
+  use std::time::Duration;
+  use wait_timeout::ChildExt;
+
+  let mut child = Command::new(&artifact.path)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+
+  let Some(status) = child.wait_timeout(Duration::from_secs(5)).unwrap() else {
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("compiled executable timed out");
+  };
+
+  let mut stdout = String::new();
+  child
+    .stdout
+    .take()
+    .unwrap()
+    .read_to_string(&mut stdout)
+    .unwrap();
+  let mut stderr = String::new();
+  child
+    .stderr
+    .take()
+    .unwrap()
+    .read_to_string(&mut stderr)
+    .unwrap();
+
+  assert_eq!(
+    status.code(),
+    Some(3),
+    "unexpected exit status {status:?} stdout={stdout:?} stderr={stderr:?}"
+  );
+  assert_eq!(stdout, "");
+
+  let _ = std::fs::remove_file(&artifact.path);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn compile_emits_pie_executable_and_runs() {
+  if !command_works("clang-18") && !command_works("clang") {
+    eprintln!("skipping: clang not found in PATH");
+    return;
+  }
+  if !command_works("ld.lld-18") && !command_works("ld.lld") {
+    eprintln!("skipping: lld not found in PATH");
+    return;
+  }
+  if !command_works("llvm-objcopy-18") && !command_works("llvm-objcopy") {
+    eprintln!("skipping: llvm-objcopy not found in PATH");
+    return;
+  }
+
+  let mut host = es5_host();
+  let key = FileKey::new("main.ts");
+  host.insert(key.clone(), "export function main(): number { return 3; }");
+
+  let program = Program::new(host, vec![key.clone()]);
+  let entry = program.file_id(&key).unwrap();
+
+  let mut opts = CompilerOptions::default();
+  opts.emit = EmitKind::Executable;
+  opts.pie = true;
+
+  let artifact = compile_program(&program, entry, &opts).unwrap();
+  assert_eq!(artifact.kind, EmitKind::Executable);
+  assert!(
+    artifact.path.exists(),
+    "missing artifact {}",
+    artifact.path.display()
+  );
+
+  let exe_bytes = std::fs::read(&artifact.path).unwrap();
+  // PIE should be ET_DYN.
+  let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
+  assert_eq!(elf_type, 3, "expected PIE ET_DYN (e_type={elf_type})");
+
   use std::process::{Command, Stdio};
   use std::time::Duration;
   use wait_timeout::ChildExt;

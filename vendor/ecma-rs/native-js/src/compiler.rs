@@ -137,7 +137,32 @@ pub fn compile_llvm_ir_to_artifact(
             write_file(&ll_path, llvm_ir.as_bytes())?;
           }
 
-          link::link_object_to_executable(&obj_path, &out_path)?;
+          let _ = std::fs::remove_file(&out_path);
+          link::link_elf_executable_with_options(
+            &out_path,
+            &[obj_path.clone()],
+            link::LinkOpts {
+              pie: opts.pie,
+              debug: opts.debug,
+              ..Default::default()
+            },
+          )
+          .map_err(|err| NativeJsError::Internal(err.to_string()))?;
+
+          #[cfg(unix)]
+          {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&out_path).map_err(|source| NativeJsError::Io {
+              path: out_path.clone(),
+              source,
+            })?;
+            let mut perms = meta.permissions();
+            perms.set_mode(perms.mode() | 0o111);
+            std::fs::set_permissions(&out_path, perms).map_err(|source| NativeJsError::Io {
+              path: out_path.clone(),
+              source,
+            })?;
+          }
           drop(tmp);
         }
         EmitKind::LlvmIr => unreachable!("handled earlier"),
@@ -188,6 +213,12 @@ fn target_config_from_opts(opts: &CompileOptions) -> TargetConfig {
 
   if let Some(triple) = &opts.target {
     cfg.triple = inkwell::targets::TargetTriple::create(&triple.to_string());
+  }
+
+  // PIE requires position-independent code generation, otherwise lld will reject
+  // absolute relocations such as `R_X86_64_32`.
+  if opts.pie {
+    cfg.reloc_mode = inkwell::targets::RelocMode::PIC;
   }
 
   cfg
@@ -811,6 +842,7 @@ impl<'a> Compiler<'a> {
           &exe_path,
           &[obj_path.clone()],
           link::LinkOpts {
+            pie: self.opts.pie,
             debug: self.opts.debug,
             ..Default::default()
           },

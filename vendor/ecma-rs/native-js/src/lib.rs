@@ -122,6 +122,12 @@ pub struct CompilerOptions {
   pub target: Option<Triple>,
   /// Whether to emit debug info.
   pub debug: bool,
+  /// Whether to produce a PIE executable when [`CompilerOptions::emit`] is [`EmitKind::Executable`]
+  /// (Linux only).
+  ///
+  /// By default `native-js` links non-PIE on Linux for stackmaps compatibility (see `link` module
+  /// docs). When set, the linker will produce an `ET_DYN` PIE binary.
+  pub pie: bool,
   /// If true, recognize and lower small builtin APIs such as `console.log` and `assert`.
   pub builtins: bool,
   /// Explicit output path. When `None`, a temp file is created for the chosen [`EmitKind`].
@@ -141,6 +147,7 @@ impl Default for CompilerOptions {
       emit: EmitKind::Object,
       target: None,
       debug: false,
+      pie: false,
       builtins: true,
       output: None,
       emit_ir: None,

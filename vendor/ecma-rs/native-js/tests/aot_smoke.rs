@@ -81,6 +81,73 @@ fn aot_smoke() {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn aot_smoke_pie() {
+  if !clang_available() {
+    eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
+    return;
+  }
+  if !lld_available() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
+    return;
+  }
+  if !cmd_works("llvm-objcopy-18") && !cmd_works("llvm-objcopy") {
+    eprintln!("skipping: llvm-objcopy not found in PATH (needed for PIE stackmaps patching)");
+    return;
+  }
+
+  let dir = tempfile::tempdir().unwrap();
+  let exe_path = dir.path().join("aot_smoke_pie");
+
+  let source = r#"
+    console.log("native-js aot ok");
+  "#;
+
+  let mut opts = CompileOptions::default();
+  opts.emit = EmitKind::Executable;
+  opts.debug = false;
+  opts.pie = true;
+
+  compile_typescript_to_artifact(source, opts, Some(exe_path.clone())).unwrap();
+
+  let exe_bytes = std::fs::read(&exe_path).unwrap();
+  // PIE should be ET_DYN.
+  let elf_type = u16::from_le_bytes([exe_bytes[16], exe_bytes[17]]);
+  assert_eq!(elf_type, 3, "expected PIE ET_DYN (e_type={elf_type})");
+
+  let mut child = Command::new(&exe_path)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+
+  let Some(status) = child.wait_timeout(Duration::from_secs(5)).unwrap() else {
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("compiled executable timed out");
+  };
+
+  let mut stdout = String::new();
+  child
+    .stdout
+    .take()
+    .unwrap()
+    .read_to_string(&mut stdout)
+    .unwrap();
+  let mut stderr = String::new();
+  child
+    .stderr
+    .take()
+    .unwrap()
+    .read_to_string(&mut stderr)
+    .unwrap();
+
+  assert!(status.success(), "status={status:?} stderr={stderr}");
+  assert_eq!(stdout, "native-js aot ok\n");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn aot_smoke_debug_keeps_intermediates() {
   if !clang_available() {
     eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");

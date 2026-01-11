@@ -39,6 +39,12 @@ struct Cli {
   #[arg(long, global = true)]
   no_builtins: bool,
 
+  /// Produce a PIE executable (ET_DYN) on Linux.
+  ///
+  /// By default native-js links non-PIE so LLVM stackmap relocations are resolved at link time.
+  #[arg(long, global = true)]
+  pie: bool,
+
   /// Keep the generated LLVM IR for debugging.
   #[arg(long, value_name = "PATH", global = true)]
   emit_llvm: Option<PathBuf>,
@@ -143,6 +149,7 @@ fn main() {
         // disabling LLVM optimizations.
         opts.opt_level = OptLevel::O0;
         opts.emit = EmitKind::Executable;
+        opts.pie = cli.pie;
 
         if let Err(err) = compile_llvm_ir_to_artifact(&ir, opts, Some(output.clone())) {
           eprintln!("{err}");
@@ -166,6 +173,7 @@ fn main() {
         opts.builtins = !cli.no_builtins;
         opts.opt_level = OptLevel::O0;
         opts.emit = EmitKind::Executable;
+        opts.pie = cli.pie;
 
         let code = {
           let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
@@ -245,14 +253,15 @@ fn main() {
           let ir = compile_file_to_ir(&cli, input);
           write_ir_debug(&cli, &ir);
 
-          let mut opts = CompileOptions::default();
-          opts.builtins = !cli.no_builtins;
-          opts.opt_level = OptLevel::O0;
-          opts.emit = EmitKind::Executable;
+            let mut opts = CompileOptions::default();
+            opts.builtins = !cli.no_builtins;
+            opts.opt_level = OptLevel::O0;
+            opts.emit = EmitKind::Executable;
+            opts.pie = cli.pie;
 
-          let code = {
-            let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
-              Ok(out) => out,
+            let code = {
+              let out = match compile_llvm_ir_to_artifact(&ir, opts, None) {
+                Ok(out) => out,
               Err(err) => {
                 eprintln!("{err}");
                 exit(1);
@@ -581,6 +590,7 @@ fn compile_file_checked(
   opts.builtins = !cli.no_builtins;
   opts.emit = emit;
   opts.output = output;
+  opts.pie = cli.pie;
   // `native-js` supports emitting an extra `.ll` file regardless of the primary `EmitKind`. Use
   // that for the checked pipeline so `--emit-llvm` does not require compiling twice.
   if emit != EmitKind::LlvmIr {
