@@ -2727,6 +2727,7 @@ impl FontMetrics {
     // once at the end; ascent/descent are grid-fitted independently. As a result, rounding the
     // *sum* can be off by 1px compared to Chrome:
     // - Noto @ 16px: ascent=17.104px, descent=4.688px → Chrome lines at 22px (not 21px).
+    // - Roboto Flex @ 16px: raw height 18.750px → Chrome lines at 19px (not 18px).
     // - Roboto Flex @ 21px: raw height 24.609px → Chrome lines at 24px (not 25px).
     //
     // Approximate this by snapping ascent, descent, and line-gap individually to whole CSS pixels
@@ -3545,6 +3546,37 @@ mod tests {
       // Normal line height is usually >= font size
       assert!(normal_lh >= 14.0 && normal_lh < 32.0);
     }
+  }
+
+  fn roboto_flex_metrics() -> FontMetrics {
+    FontMetrics::from_data(include_bytes!("../../tests/fonts/RobotoFlex-VF.ttf"), 0).unwrap()
+  }
+
+  #[test]
+  fn roboto_flex_normal_line_height_snaps_like_chrome_at_16px() {
+    // The fixture HTML patch used by `xtask page-loop` aliases common "system" families like
+    // `Helvetica` to the repo's deterministic Roboto Flex variable font. Headless Chrome + FreeType
+    // snap the font's ascender/descender metrics to whole pixels, yielding a 19px `line-height:
+    // normal` at 16px.
+    //
+    // If we instead snap the *total* font height, text-heavy pages like `lite.cnn.com` drift
+    // vertically as many list items stack, and the captured viewport shows different content vs
+    // Chrome.
+    let lh = roboto_flex_metrics().scale(16.0).line_height;
+    assert!(
+      (lh - 19.0).abs() < 1e-3,
+      "expected 19px line height at 16px, got {lh}"
+    );
+  }
+
+  #[test]
+  fn roboto_flex_normal_line_height_snaps_like_chrome_at_21px() {
+    // Chrome's hinted metrics for Roboto Flex at 21px snap to a 24px `line-height: normal` (not 25px).
+    let lh = roboto_flex_metrics().scale(21.0).line_height;
+    assert!(
+      (lh - 24.0).abs() < 1e-3,
+      "expected 24px line height at 21px, got {lh}"
+    );
   }
 
   #[test]
