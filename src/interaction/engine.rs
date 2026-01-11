@@ -1262,6 +1262,23 @@ fn box_node_by_id(box_tree: &BoxTree, target_box_id: usize) -> Option<&BoxNode> 
   }
   None
 }
+
+fn style_for_styled_node_id(box_tree: &BoxTree, node_id: usize) -> Option<Arc<ComputedStyle>> {
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if node.styled_node_id == Some(node_id) {
+      return Some(node.style.clone());
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
 fn byte_offset_for_char_idx(text: &str, char_idx: usize) -> usize {
   if char_idx == 0 {
     return 0;
