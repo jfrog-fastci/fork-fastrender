@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 
 use crate::gc::{HandleId, HandleTable};
 
-/// Process-global persistent handle table for GC-managed object pointers.
+/// Process-global persistent handle table for relocatable pointers.
 ///
 /// This table is intended for host-owned queues (async tasks, I/O watchers, OS event loop userdata,
 /// etc.) that must keep GC-managed objects alive across suspension points without pinning the
@@ -15,9 +15,16 @@ use crate::gc::{HandleId, HandleTable};
 ///   relocation/compaction under a stop-the-world (STW) pause.
 ///
 /// # Pointer requirements
-/// Pointers stored in this table must be GC **object base pointers** (start of `ObjHeader`), not
-/// interior pointers into object payloads. The GC traces these as opaque object references and will
-/// interpret the pointed-to bytes as an `ObjHeader`.
+/// Pointers stored in this table are treated as **opaque addresses**.
+///
+/// - If a pointer refers to a GC-managed object, it must be the GC **object base pointer** (start of
+///   `ObjHeader`), not an interior pointer into the object payload.
+/// - Pointers that do *not* point into the GC heap are ignored by GC tracing (they remain valid as
+///   stable handles, but do not keep any GC object alive).
+///
+/// Interior pointers into GC-managed objects are forbidden: the GC traces roots by interpreting the
+/// pointed-to bytes as an `ObjHeader`, which would corrupt memory or crash if given a payload
+/// address.
 #[derive(Debug, Default)]
 pub struct PersistentHandleTable {
   inner: HandleTable<u8>,
