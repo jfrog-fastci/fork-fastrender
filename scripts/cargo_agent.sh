@@ -238,6 +238,20 @@ for ((i = 0; i < ${#argv[@]}; i++)); do
       needs_frame_pointers=1
       break
       ;;
+    --manifest-path)
+      # Allow direct invocation against the runtime-native crate manifest:
+      #   bash vendor/ecma-rs/scripts/cargo_agent.sh test --manifest-path vendor/ecma-rs/runtime-native/Cargo.toml
+      if [[ "${argv[$((i + 1))]:-}" == *"runtime-native/Cargo.toml" ]]; then
+        needs_frame_pointers=1
+        break
+      fi
+      ;;
+    --manifest-path=*)
+      if [[ "${argv[$i]#--manifest-path=}" == *"runtime-native/Cargo.toml" ]]; then
+        needs_frame_pointers=1
+        break
+      fi
+      ;;
   esac
 done
 if [[ "${needs_frame_pointers}" -eq 1 && "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
