@@ -1,6 +1,6 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use core::mem::MaybeUninit;
+use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use stackmap_context::{ThreadContext, DWARF_REG_IP, DWARF_REG_SP};
@@ -10,22 +10,32 @@ static RSP_ASM: AtomicU64 = AtomicU64::new(0);
 static RSP_CTX: AtomicU64 = AtomicU64::new(0);
 static RIP_CTX: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn handler(_sig: libc::c_int) {
+fn trigger_sigill() {
   unsafe {
-    let mut uc = MaybeUninit::<libc::ucontext_t>::uninit();
-    // `getcontext` is not async-signal-safe, but is sufficient for this test:
-    // we only need a `ucontext_t` that reflects the handler's own register state.
-    assert_eq!(libc::getcontext(uc.as_mut_ptr()), 0);
-    let uc = uc.assume_init();
+    let rsp: u64;
+    core::arch::asm!("mov {0}, rsp", out(reg) rsp);
+    RSP_ASM.store(rsp, Ordering::Relaxed);
 
-    let rsp_asm: u64;
-    core::arch::asm!("mov {0}, rsp", out(reg) rsp_asm);
+    // Synchronous trap so the signal ucontext reflects this frame's registers.
+    core::arch::asm!("ud2");
+  }
+}
 
-    let ctx = ThreadContext::from_ucontext(&uc);
-    let rsp_ctx = ctx.get_dwarf_reg_u64(DWARF_REG_SP).unwrap();
-    let rip_ctx = ctx.get_dwarf_reg_u64(DWARF_REG_IP).unwrap();
+unsafe extern "C" fn sigill_handler(
+  _sig: libc::c_int,
+  _info: *mut libc::siginfo_t,
+  uctx: *mut c_void,
+) {
+  unsafe {
+    let uc = uctx as *mut libc::ucontext_t;
+    let mut ctx = ThreadContext::from_ucontext(uc);
+    let rsp_ctx = ctx.get_dwarf_reg_u64(DWARF_REG_SP).unwrap_or(0);
+    let rip_ctx = ctx.get_dwarf_reg_u64(DWARF_REG_IP).unwrap_or(0);
 
-    RSP_ASM.store(rsp_asm, Ordering::Relaxed);
+    // Skip the `ud2` instruction (2 bytes) so execution can resume.
+    let _ = ctx.set_dwarf_reg_u64(DWARF_REG_IP, rip_ctx.wrapping_add(2));
+    ctx.write_to_ucontext(uc);
+
     RSP_CTX.store(rsp_ctx, Ordering::Relaxed);
     RIP_CTX.store(rip_ctx, Ordering::Relaxed);
     READY.store(true, Ordering::Release);
@@ -35,17 +45,17 @@ extern "C" fn handler(_sig: libc::c_int) {
 #[test]
 fn ucontext_extraction_matches_handler_registers() {
   unsafe {
-    // Install a basic one-arg handler via `sigaction`.
+    // Install SIGILL handler with SA_SIGINFO so we can read/write the ucontext.
     let mut sa: libc::sigaction = core::mem::zeroed();
-    sa.sa_flags = 0;
-    sa.sa_sigaction = handler as usize;
+    sa.sa_flags = libc::SA_SIGINFO;
+    sa.sa_sigaction = sigill_handler as usize;
     libc::sigemptyset(&mut sa.sa_mask);
     assert_eq!(
-      libc::sigaction(libc::SIGUSR1, &sa, core::ptr::null_mut()),
+      libc::sigaction(libc::SIGILL, &sa, core::ptr::null_mut()),
       0
     );
 
-    assert_eq!(libc::raise(libc::SIGUSR1), 0);
+    trigger_sigill();
 
     assert!(READY.load(Ordering::Acquire));
 
@@ -54,7 +64,7 @@ fn ucontext_extraction_matches_handler_registers() {
     assert_eq!(rsp_ctx, rsp_asm);
 
     let rip = RIP_CTX.load(Ordering::Relaxed);
-    let handler_addr = handler as usize as u64;
+    let handler_addr = trigger_sigill as usize as u64;
     assert!(
       (handler_addr..handler_addr + 4096).contains(&rip),
       "IP {rip:#x} not in handler range {handler_addr:#x}..{:#x}",
@@ -67,7 +77,7 @@ fn ucontext_extraction_matches_handler_registers() {
     sa_default.sa_sigaction = libc::SIG_DFL;
     libc::sigemptyset(&mut sa_default.sa_mask);
     assert_eq!(
-      libc::sigaction(libc::SIGUSR1, &sa_default, core::ptr::null_mut()),
+      libc::sigaction(libc::SIGILL, &sa_default, core::ptr::null_mut()),
       0
     );
   }
