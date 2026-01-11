@@ -283,7 +283,7 @@ fn run_analyze(
         );
       } else {
         println!(
-          "[{}..{}] {} => <unknown:{}>",
+          "[{}..{}] {} => <unknown:0x{:x}>",
           call.span.start,
           call.span.end,
           call.call_text,
