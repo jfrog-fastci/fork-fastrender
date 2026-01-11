@@ -1321,6 +1321,9 @@ pub extern "C" fn rt_async_wait() {
   abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
+    if async_runtime::has_error() {
+      return;
+    }
     async_rt::wait_for_work();
   })
 }
@@ -1347,6 +1350,10 @@ pub unsafe extern "C" fn rt_async_block_on(p: PromiseRef) {
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
 
+    if async_runtime::has_error() {
+      return;
+    }
+
     // Fast path: already settled.
     if !promise_is_pending(p) {
       return;
@@ -1360,6 +1367,10 @@ pub unsafe extern "C" fn rt_async_block_on(p: PromiseRef) {
       let _ = crate::async_runtime::rt_async_run_until_idle();
 
       if !promise_is_pending(p) {
+        return;
+      }
+
+      if async_runtime::has_error() {
         return;
       }
 

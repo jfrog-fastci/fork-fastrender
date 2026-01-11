@@ -250,3 +250,65 @@ fn block_on_wakes_on_native_promise_settlement_without_payload() {
     drop(Box::from_raw(p.0.cast::<PromiseHeader>()));
   }
 }
+
+#[test]
+fn block_on_returns_when_executor_is_in_error_state() {
+  let _rt = TestRuntimeGuard::new();
+
+  // Warm up the runtime so this test doesn't include one-time initialization in timing assertions.
+  unsafe {
+    let _ = runtime_native::rt_async_run_until_idle_abi();
+  }
+
+  // Put the async runtime into a known error state: restrict the ready queue to 1 entry, then
+  // attempt to enqueue a second microtask.
+  runtime_native::rt_async_set_limits(1, 1);
+  runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
+  runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
+
+  // `rt_async_run_until_idle` should observe the error and return without spinning/aborting.
+  unsafe {
+    assert!(!runtime_native::rt_async_run_until_idle_abi());
+  }
+
+  // Allocate a promise that is only a header. `rt_async_block_on` should return immediately when
+  // the executor has an error, rather than spinning or blocking forever.
+  let header = Box::new(PromiseHeader {
+    state: AtomicU8::new(PromiseHeader::PENDING),
+    reactions: AtomicUsize::new(0),
+    flags: AtomicU8::new(0),
+  });
+  let p = PromiseRef(Box::into_raw(header).cast());
+  unsafe {
+    runtime_native::rt_promise_init(p);
+  }
+
+  let start = Instant::now();
+  unsafe {
+    runtime_native::rt_async_block_on(p);
+  }
+  let elapsed = start.elapsed();
+  assert!(
+    elapsed < Duration::from_millis(100),
+    "block_on should return promptly when async runtime has an error (elapsed={elapsed:?})"
+  );
+
+  // Settle so any registered waiter nodes are drained (even though the runtime is in an error
+  // state).
+  unsafe {
+    runtime_native::rt_promise_fulfill(p);
+  }
+
+  let err = runtime_native::rt_async_take_last_error();
+  assert!(
+    !err.is_null(),
+    "expected async runtime error after overflowing ready queue"
+  );
+  unsafe {
+    runtime_native::rt_async_free_c_string(err);
+  }
+
+  unsafe {
+    drop(Box::from_raw(p.0.cast::<PromiseHeader>()));
+  }
+}

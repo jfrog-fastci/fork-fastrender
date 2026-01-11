@@ -92,10 +92,20 @@ pub fn rt_drain_microtasks() -> bool {
     return false;
   };
 
+  if has_error() {
+    crate::unhandled_rejection::microtask_checkpoint();
+    run_microtask_checkpoint_end_hook();
+    return false;
+  }
+
   let did_work = crate::async_rt::drain_microtasks_nonblocking();
   crate::unhandled_rejection::microtask_checkpoint();
   run_microtask_checkpoint_end_hook();
-  did_work
+  if has_error() {
+    false
+  } else {
+    did_work
+  }
 }
 
 pub fn rt_async_run_until_idle() -> bool {
@@ -103,10 +113,23 @@ pub fn rt_async_run_until_idle() -> bool {
     return false;
   };
 
+  // If the executor has entered an error state (runaway detection), it will no longer make forward
+  // progress. Avoid spinning here (and aborting via the internal runaway turn limit) and instead
+  // return so callers can retrieve the error via `rt_async_take_last_error`.
+  if has_error() {
+    crate::unhandled_rejection::microtask_checkpoint();
+    run_microtask_checkpoint_end_hook();
+    return false;
+  }
+
   let did_work = crate::async_rt::run_until_idle_nonblocking();
   crate::unhandled_rejection::microtask_checkpoint();
   run_microtask_checkpoint_end_hook();
-  did_work
+  if has_error() {
+    false
+  } else {
+    did_work
+  }
 }
 
 /// Layout of the payload storage associated with a promise returned by
