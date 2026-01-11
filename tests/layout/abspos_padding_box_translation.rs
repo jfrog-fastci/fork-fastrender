@@ -5,6 +5,7 @@ use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
 use fastrender::style::types::InsetValue;
+use fastrender::style::types::BorderStyle;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -61,6 +62,59 @@ fn abspos_child_origin_is_relative_to_padding_box_not_content_box() {
   );
   assert!(
     abs_fragment.bounds.y().abs() < 0.1,
+    "expected abspos child y to align with the padding edge (got y = {})",
+    abs_fragment.bounds.y()
+  );
+}
+
+#[test]
+fn abspos_child_origin_is_offset_by_border_width_once() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(150.0));
+  container_style.border_left_width = Length::px(4.0);
+  container_style.border_top_width = Length::px(4.0);
+  container_style.border_right_width = Length::px(4.0);
+  container_style.border_bottom_width = Length::px(4.0);
+  container_style.border_left_style = BorderStyle::Solid;
+  container_style.border_top_style = BorderStyle::Solid;
+  container_style.border_right_style = BorderStyle::Solid;
+  container_style.border_bottom_style = BorderStyle::Solid;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Block;
+  abs_style.position = Position::Absolute;
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Block,
+    vec![abs_child],
+  );
+
+  let constraints = LayoutConstraints::definite(500.0, 500.0);
+  let fc = BlockFormattingContext::new();
+  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+
+  let abs_fragment = fragment
+    .children
+    .iter()
+    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .expect("absolute positioned fragment present");
+
+  assert!(
+    (abs_fragment.bounds.x() - 4.0).abs() < 0.1,
+    "expected abspos child x to align with the padding edge (got x = {})",
+    abs_fragment.bounds.x()
+  );
+  assert!(
+    (abs_fragment.bounds.y() - 4.0).abs() < 0.1,
     "expected abspos child y to align with the padding edge (got y = {})",
     abs_fragment.bounds.y()
   );
