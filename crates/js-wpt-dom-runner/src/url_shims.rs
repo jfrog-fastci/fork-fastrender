@@ -133,9 +133,44 @@ const URL_SHIM: &str = r#"
   }
 
   function URLSearchParams(init) {
-    this._pairs = parsePairs(init);
+    this._pairs = [];
     this._url = null;
     this._updating = false;
+
+    if (init === undefined || init === null) return;
+
+    // WebIDL: `init` is (sequence<sequence<USVString>> or record<USVString, USVString> or
+    // USVString). Objects are treated as either a sequence (if iterable) or a record.
+    if (typeof init === "object" || typeof init === "function") {
+      var iteratorMethod = init[Symbol.iterator];
+      if (typeof iteratorMethod === "function") {
+        var iterator = iteratorMethod.call(init);
+        if (!iterator || typeof iterator.next !== "function") {
+          throw new TypeError("URLSearchParams init is not iterable");
+        }
+        while (true) {
+          var step = iterator.next();
+          if (step.done) break;
+          var pair = step.value;
+          if (!pair || typeof pair !== "object" || pair.length !== 2) {
+            throw new TypeError(
+              "URLSearchParams init sequence must contain [name, value] tuples"
+            );
+          }
+          this._pairs.push([String(pair[0]), String(pair[1])]);
+        }
+        return;
+      }
+
+      var keys = Object.keys(init);
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        this._pairs.push([String(key), String(init[key])]);
+      }
+      return;
+    }
+
+    this._pairs = parsePairs(init);
   }
 
   URLSearchParams.prototype._setUrl = function (url) {
@@ -198,6 +233,96 @@ const URL_SHIM: &str = r#"
     }
     this._notify();
   };
+
+  // https://url.spec.whatwg.org/#dom-urlsearchparams-delete
+  URLSearchParams.prototype.delete = function (name, value) {
+    var n = String(name);
+    if (arguments.length < 2) {
+      for (var i = 0; i < this._pairs.length; i++) {
+        if (this._pairs[i][0] !== n) continue;
+        this._pairs.splice(i, 1);
+        i -= 1;
+      }
+    } else {
+      var v = String(value);
+      for (var i = 0; i < this._pairs.length; i++) {
+        var pair = this._pairs[i];
+        if (pair[0] === n && pair[1] === v) {
+          this._pairs.splice(i, 1);
+          i -= 1;
+        }
+      }
+    }
+    this._notify();
+  };
+
+  // https://url.spec.whatwg.org/#dom-urlsearchparams-has
+  URLSearchParams.prototype.has = function (name, value) {
+    var n = String(name);
+    if (arguments.length < 2) {
+      for (var i = 0; i < this._pairs.length; i++) {
+        if (this._pairs[i][0] === n) return true;
+      }
+      return false;
+    }
+    var v = String(value);
+    for (var i = 0; i < this._pairs.length; i++) {
+      var pair = this._pairs[i];
+      if (pair[0] === n && pair[1] === v) return true;
+    }
+    return false;
+  };
+
+  function createIterator(params, kind) {
+    var index = 0;
+    var iterator = {};
+    iterator.next = function () {
+      if (index >= params._pairs.length) {
+        return { value: undefined, done: true };
+      }
+      var pair = params._pairs[index++];
+      if (kind === "keys") return { value: pair[0], done: false };
+      if (kind === "values") return { value: pair[1], done: false };
+      return { value: [pair[0], pair[1]], done: false };
+    };
+    iterator[Symbol.iterator] = function () {
+      return iterator;
+    };
+    return iterator;
+  }
+
+  URLSearchParams.prototype.entries = function () {
+    return createIterator(this, "entries");
+  };
+
+  URLSearchParams.prototype.keys = function () {
+    return createIterator(this, "keys");
+  };
+
+  URLSearchParams.prototype.values = function () {
+    return createIterator(this, "values");
+  };
+
+  URLSearchParams.prototype.forEach = function (callback, thisArg) {
+    if (typeof callback !== "function") {
+      throw new TypeError("URLSearchParams.forEach callback is not a function");
+    }
+    for (var i = 0; i < this._pairs.length; i++) {
+      var pair = this._pairs[i];
+      callback.call(thisArg, pair[1], pair[0], this);
+    }
+  };
+
+  Object.defineProperty(URLSearchParams.prototype, "size", {
+    configurable: true,
+    enumerable: true,
+    get: function () {
+      return this._pairs.length;
+    },
+  });
+
+  // https://url.spec.whatwg.org/#dom-urlsearchparams-symbol.iterator
+  URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries;
 
   URLSearchParams.prototype.sort = function () {
     var decorated = [];
