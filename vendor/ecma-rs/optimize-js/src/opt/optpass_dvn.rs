@@ -9,6 +9,7 @@ use crate::il::inst::Const;
 use crate::il::inst::Inst;
 use crate::il::inst::InstTyp;
 use crate::il::inst::UnOp;
+use crate::il::inst::ValueTypeSummary;
 use crate::opt::PassResult;
 use ahash::HashMap;
 use itertools::Itertools;
@@ -204,6 +205,16 @@ fn inner(result: &mut PassResult, state: &mut State, cfg: &mut Cfg, dom: &Dom, l
     // Stage 1: canonicalize args.
     for arg in new_inst.args.iter_mut() {
       *arg = state.canon_arg(arg);
+    }
+    // Keep trivially-known VarAssign types in sync when DVN constant-propagates the RHS.
+    if new_inst.t == InstTyp::VarAssign && new_inst.value_type.is_unknown() {
+      if let Some(arg) = new_inst.args.get(0) {
+        new_inst.value_type = match arg {
+          Arg::Const(c) => ValueTypeSummary::from_const(c),
+          Arg::Fn(_) => ValueTypeSummary::FUNCTION,
+          _ => ValueTypeSummary::UNKNOWN,
+        };
+      }
     }
 
     // Stage 2: consteval opportunities.

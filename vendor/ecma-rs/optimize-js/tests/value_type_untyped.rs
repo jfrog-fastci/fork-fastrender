@@ -84,3 +84,38 @@ fn untyped_dvn_consteval_preserves_value_type_for_folded_constant() {
   assert_eq!(folded.value_type, ValueTypeSummary::NUMBER);
 }
 
+#[test]
+fn untyped_dvn_constant_propagation_updates_value_type() {
+  let program = compile_source(
+    r#"
+      let a = 1;
+      let b = a;
+      console.log(b);
+    "#,
+    TopLevelMode::Module,
+    true,
+  );
+
+  let step = find_step(&program.top_level, "opt1_dvn");
+  let insts = collect_insts(step);
+
+  let assigns: Vec<_> = insts
+    .iter()
+    .copied()
+    .filter(|inst| {
+      inst.t == InstTyp::VarAssign
+        && matches!(inst.args.get(0), Some(Arg::Const(Const::Num(JsNumber(1.0)))))
+    })
+    .collect();
+
+  assert!(
+    assigns.len() >= 2,
+    "expected at least two VarAssign sites for the constant-propagated `1`, got {assigns:?}"
+  );
+  assert!(
+    assigns
+      .iter()
+      .all(|inst| inst.value_type == ValueTypeSummary::NUMBER),
+    "expected DVN to keep VarAssign.value_type consistent after constant propagation, got {assigns:?}"
+  );
+}
