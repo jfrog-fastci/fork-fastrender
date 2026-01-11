@@ -26,7 +26,7 @@ use std::collections::HashMap;
 
 use crate::stack_walk::{FrameView, StackWalker};
 use crate::stackmaps::{CallSite, Location, StackMaps};
-use crate::stackwalk::StackBounds;
+use crate::stackwalk::{compute_sp, StackBounds, DWARF_FP_REG, DWARF_SP_REG};
 use crate::statepoints::{eval_location, RegFile, RootSlot};
 use stackmap_context::ThreadContext;
 
@@ -338,14 +338,28 @@ fn visit_callsite_reloc_pairs(
   bounds: Option<StackBounds>,
   f: &mut dyn FnMut(RelocPair),
 ) -> bool {
+  // LLVM StackMaps `Indirect [SP + off]` locations are based on the caller function's `SP` at the
+  // safepoint. When walking frames via frame pointers we typically only have FP, so use the
+  // stackmap function record's `stack_size` to reconstruct that SP.
+  let Ok(caller_fp) = u64::try_from(frame.caller_fp) else {
+    return false;
+  };
+  let Some(caller_sp) = compute_sp(caller_fp, callsite.stack_size) else {
+    return false;
+  };
+
   // LLVM 18 statepoint lowering emits `gc-live` locations in (base, derived) order for each
   // `gc.relocate` use. `CallSite::reloc_pairs` skips the statepoint header + any deopt operands and
   // yields an empty iterator for non-statepoint stackmap records.
+  let regs = FrameRegs {
+    sp: caller_sp,
+    fp: caller_fp,
+  };
   for pair in callsite.reloc_pairs() {
-    let Some(base_slot) = location_to_root_slot(frame, &pair.base, bounds) else {
+    let Some(base_slot) = location_to_root_slot(&regs, &pair.base, bounds) else {
       return false;
     };
-    let Some(derived_slot) = location_to_root_slot(frame, &pair.derived, bounds) else {
+    let Some(derived_slot) = location_to_root_slot(&regs, &pair.derived, bounds) else {
       return false;
     };
     f(RelocPair { base_slot, derived_slot });
@@ -360,41 +374,23 @@ struct FrameRegs {
   fp: u64,
 }
 
-#[cfg(target_arch = "x86_64")]
-const DWARF_REG_SP: u16 = 7;
-#[cfg(target_arch = "x86_64")]
-const DWARF_REG_FP: u16 = 6;
-#[cfg(target_arch = "aarch64")]
-const DWARF_REG_SP: u16 = 31;
-#[cfg(target_arch = "aarch64")]
-const DWARF_REG_FP: u16 = 29;
-
 impl RegFile for FrameRegs {
   fn get(&self, dwarf_reg: u16) -> Option<u64> {
     match dwarf_reg {
-      DWARF_REG_SP => Some(self.sp),
-      DWARF_REG_FP => Some(self.fp),
+      DWARF_SP_REG => Some(self.sp),
+      DWARF_FP_REG => Some(self.fp),
       _ => None,
     }
   }
 }
 
-fn location_to_root_slot(
-  frame: &FrameView,
-  loc: &Location,
-  bounds: Option<StackBounds>,
-) -> Option<RootSlot> {
+fn location_to_root_slot(regs: &FrameRegs, loc: &Location, bounds: Option<StackBounds>) -> Option<RootSlot> {
   let ptr_size = std::mem::size_of::<usize>() as u16;
   if loc.size() != ptr_size {
     return None;
   }
 
-  let regs = FrameRegs {
-    sp: frame.caller_sp as u64,
-    fp: frame.caller_fp as u64,
-  };
-
-  let slot = eval_location(loc, &regs).ok()?;
+  let slot = eval_location(loc, regs).ok()?;
   match slot {
     RootSlot::Const { .. } => None,
     RootSlot::StackAddr(addr) => {

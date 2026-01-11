@@ -21,7 +21,7 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
   // Simulate a small stack region with two frames:
   // [callee_fp] -> saved caller fp
   // [callee_fp+8] -> return address
-  // caller_sp at callsite = callee_fp + 16
+  // caller_sp at safepoint is reconstructed from caller_fp and stack_size (not callee_fp + 16 CFA).
   let mut stack = vec![0usize; 64];
   let base = stack.as_mut_ptr() as usize;
 
@@ -38,8 +38,9 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
     (caller_fp as *mut usize).write(0);
     (caller_fp as *mut usize).add(1).write(0);
 
-    // Simulate two pointer slots in caller frame at offsets 0 and 8 from caller_sp.
-    let caller_sp = callee_fp + 16;
+    // Simulate two pointer slots in caller frame at offsets 0 and 8 from caller_sp_at_safepoint.
+    // With stack_size=24 and x86_64 frame_record_size=8, caller_sp_at_safepoint = caller_fp - 16.
+    let caller_sp = caller_fp - 16;
     let base_slot_addr = caller_sp as *mut usize;
     let derived_slot_addr = (caller_sp + 8) as *mut usize;
     base_slot_addr.write(0xAAA0);
@@ -128,7 +129,11 @@ fn stack_root_enumerator_stops_on_out_of_bounds_slot() {
   // Make the stackmap describe slots far outside the synthetic stack buffer.
   let stackmaps = StackMaps::parse(&minimal_stackmap_section_with_offsets(
     return_address as u32,
-    0x7fff, // base slot offset
+    // Keep one offset small so (after we bump `stack_size` below) the reconstructed caller_sp is far
+    // below the synthetic stack bounds and this base slot becomes out-of-bounds.
+    0, // base slot offset
+    // Use a large derived offset to force the helper to bump stack_size enough for the stackmap
+    // verifier (`offset <= stack_size`), without making *both* slots land back in-bounds.
     0x7fff, // derived slot offset
   ))
   .unwrap();

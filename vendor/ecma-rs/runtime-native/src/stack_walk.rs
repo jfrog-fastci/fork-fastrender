@@ -7,8 +7,16 @@ use crate::stackwalk::StackBounds;
 pub struct FrameView {
   /// The caller's frame pointer (saved at `[callee_fp + 0]`).
   pub caller_fp: usize,
-  /// The caller's stack pointer at the call site (computed as `callee_fp + 16` on x86_64 SysV).
-  pub caller_sp: usize,
+  /// The caller's DWARF call-frame address (CFA) at the call site.
+  ///
+  /// This is computed as `callee_fp + 16` on both x86_64 SysV and AArch64 when walking via frame
+  /// pointers.
+  ///
+  /// Note: LLVM StackMaps `Indirect [SP + off]` locations for statepoints are **not** based on this
+  /// CFA value; they are based on the caller function's `SP` at the safepoint (after prologue/local
+  /// allocation), which must be reconstructed from `caller_fp` and the stackmap function record's
+  /// `stack_size`.
+  pub caller_cfa: usize,
   /// The return address into the caller (saved at `[callee_fp + 8]`).
   pub return_address: usize,
 }
@@ -32,7 +40,7 @@ impl StackWalker {
   pub const DEFAULT_MAX_DEPTH: usize = 1024;
   const FP_RECORD_SIZE: u64 = 16;
   const FP_ALIGN: usize = 16;
-  const CALLER_SP_OFFSET: usize = 16;
+  const CALLER_CFA_OFFSET: usize = 16;
 
   /// # Safety
   /// `top_callee_fp` must be a valid frame pointer for the current thread.
@@ -106,9 +114,9 @@ impl StackWalker {
       return None;
     }
 
-    let caller_sp = callee_fp.checked_add(Self::CALLER_SP_OFFSET)?;
+    let caller_cfa = callee_fp.checked_add(Self::CALLER_CFA_OFFSET)?;
     if let Some(bounds) = self.bounds {
-      if caller_sp as u64 > bounds.hi {
+      if caller_cfa as u64 > bounds.hi {
         return None;
       }
     }
@@ -119,7 +127,7 @@ impl StackWalker {
 
     Some(FrameView {
       caller_fp,
-      caller_sp,
+      caller_cfa,
       return_address,
     })
   }
