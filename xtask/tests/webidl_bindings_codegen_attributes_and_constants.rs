@@ -110,3 +110,42 @@ fn generated_vmjs_webidl_bindings_include_attributes_and_constants() {
     "expected constant to be defined on the interface prototype object"
   );
 }
+
+#[test]
+fn generated_vmjs_webidl_bindings_uses_min_required_arg_count_for_overload_length() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+  let rustfmt_config = repo_root.join(".rustfmt.toml");
+
+  // Put the 1-arg overload first so codegen cannot rely on IDL ordering to compute `.length`.
+  let idl = r#"
+    [Exposed=Window]
+    interface Foo {
+      undefined bar(DOMString message);
+      undefined bar();
+    };
+  "#;
+
+  let config = WebIdlBindingsCodegenConfig {
+    mode: WebIdlBindingsGenerationMode::AllMembers,
+    allow_interfaces: ["Foo".to_string()].into_iter().collect(),
+    interface_allowlist: BTreeMap::new(),
+    prototype_chains: true,
+  };
+
+  let out = generate_bindings_module_from_idl_with_config(
+    idl,
+    &rustfmt_config,
+    ExposureTarget::Window,
+    config,
+    WebIdlBindingsBackend::Vmjs,
+  )
+  .unwrap();
+
+  let compact: String = out.chars().filter(|c| !c.is_whitespace()).collect();
+  assert!(
+    compact.contains("alloc_native_function(foo_bar,None,\"bar\",0)?;"),
+    "expected overload set to use min required argument count (0) for function length"
+  );
+}

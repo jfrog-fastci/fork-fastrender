@@ -1892,7 +1892,11 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
     if is_global_iface(&iface.name) {
       // Global functions live on the global object.
       for (op_name, overloads) in &iface.operations {
-        let length = required_arg_count(&overloads[0].arguments) as u32;
+        let length = overloads
+          .iter()
+          .map(|sig| required_arg_count(&sig.arguments))
+          .min()
+          .unwrap_or(0) as u32;
         out.push_str(&format!(
           "  let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n  rt.define_data_property_str(global, {name_lit}, Value::Object(func), global_var_attrs)?;\n",
           func = op_wrapper_fn_name(&iface.name, op_name),
@@ -1907,7 +1911,11 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
 
     // Prototype methods.
     for (op_name, overloads) in &iface.operations {
-      let length = required_arg_count(&overloads[0].arguments) as u32;
+      let length = overloads
+        .iter()
+        .map(|sig| required_arg_count(&sig.arguments))
+        .min()
+        .unwrap_or(0) as u32;
       out.push_str(&format!(
         "  let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n  rt.define_data_property_str({proto_var}, {name_lit}, Value::Object(func), DataPropertyAttributes::METHOD)?;\n",
         func = op_wrapper_fn_name(&iface.name, op_name),
@@ -1962,7 +1970,11 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
 
     // Static methods.
     for (op_name, overloads) in &iface.static_operations {
-      let length = required_arg_count(&overloads[0].arguments) as u32;
+      let length = overloads
+        .iter()
+        .map(|sig| required_arg_count(&sig.arguments))
+        .min()
+        .unwrap_or(0) as u32;
       out.push_str(&format!(
         "  let func = rt.alloc_native_function({func}, None, {name_lit}, {length})?;\n  rt.define_data_property_str(ctor_{snake}, {name_lit}, Value::Object(func), DataPropertyAttributes::METHOD)?;\n",
         func = op_wrapper_fn_name(&iface.name, op_name),
