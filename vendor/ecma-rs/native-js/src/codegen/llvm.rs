@@ -14,7 +14,7 @@ use super::builtins::{recognize_builtin, BuiltinCall};
 use super::CodegenError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Ty {
+pub(crate) enum Ty {
   Number,
   Bool,
   String,
@@ -47,7 +47,8 @@ fn f64_to_llvm_const(value: f64) -> String {
 pub(crate) struct UserFunctionSig {
   /// LLVM symbol name (including the leading `@`).
   pub llvm_name: String,
-  pub param_count: usize,
+  pub ret: Ty,
+  pub params: Vec<Ty>,
 }
 
 #[derive(Default)]
@@ -1488,8 +1489,8 @@ impl LlvmModuleBuilder {
       self.cg.function_sigs.insert(
         local.clone(),
         FunctionSig {
-          ret: Ty::Number,
-          params: vec![Ty::Number; sig.param_count],
+          ret: sig.ret,
+          params: sig.params.clone(),
         },
       );
       self
@@ -1557,7 +1558,9 @@ impl LlvmModuleBuilder {
       self.cg.emit(format!("  call void {init}()"));
     }
     if let Some(entry) = entry_call {
-      self.cg.emit(format!("  call double {}()", entry.llvm_name));
+      let ret = Codegen::llvm_type_of(entry.ret);
+      self.cg
+        .emit(format!("  call {ret} {}()", entry.llvm_name));
     }
     self.cg.emit("  ret i32 0");
     Ok(())

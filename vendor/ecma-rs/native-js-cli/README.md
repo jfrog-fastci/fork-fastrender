@@ -216,8 +216,8 @@ future typechecked/HIR-based backend yet). Supported today:
 Limitations:
 
 - Default exports, namespace imports, and re-exports are not supported.
-- Cross-module user functions are currently assumed to be `number -> number` for
-  signature checking in the minimal emitter.
+- `tsconfig.json` is not loaded (so `baseUrl`/`paths` are ignored); module resolution
+  uses a Node-style resolver for the supported import forms.
 
 Type annotations in function declarations (current):
 

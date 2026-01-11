@@ -1,8 +1,10 @@
-use crate::codegen::llvm::{LlvmModuleBuilder, UserFunctionSig};
+use crate::codegen::llvm::{LlvmModuleBuilder, Ty, UserFunctionSig};
+use crate::codegen::CodegenError;
 use crate::{CompileOptions, NativeJsError};
 use hir_js::ImportKind;
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::Stmt;
+use parse_js::ast::type_expr::TypeExpr;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use typecheck_ts::{DefId, DefKind, FileId, FileKey, Host, ImportTarget, Program, TextRange};
@@ -43,6 +45,27 @@ fn dialect_for_kind(kind: typecheck_ts::lib_support::FileKind) -> Dialect {
     K::Dts => Dialect::Dts,
     K::Js => Dialect::Js,
     K::Jsx => Dialect::Jsx,
+  }
+}
+
+fn ty_from_type_expr(expr: &Node<TypeExpr>) -> Result<Ty, NativeJsError> {
+  match expr.stx.as_ref() {
+    TypeExpr::Number(_) => Ok(Ty::Number),
+    TypeExpr::Boolean(_) => Ok(Ty::Bool),
+    TypeExpr::String(_) => Ok(Ty::String),
+    TypeExpr::Void(_) => Ok(Ty::Void),
+    TypeExpr::Null(_) => Ok(Ty::Null),
+    TypeExpr::Undefined(_) => Ok(Ty::Undefined),
+    other => Err(NativeJsError::Codegen(CodegenError::TypeError(format!(
+      "unsupported type annotation: {other:?}"
+    )))),
+  }
+}
+
+fn ty_from_opt_type_expr(expr: Option<&Node<TypeExpr>>) -> Result<Ty, NativeJsError> {
+  match expr {
+    Some(expr) => ty_from_type_expr(expr),
+    None => Ok(Ty::Number),
   }
 }
 
@@ -355,7 +378,7 @@ pub fn compile_project_to_llvm_ir(
   // Parse all reachable files (even those that are only type-reachable) so we can compile their
   // local function definitions and initializer bodies deterministically.
   let mut asts: BTreeMap<FileId, Node<parse_js::ast::stx::TopLevel>> = BTreeMap::new();
-  let mut local_fn_params: BTreeMap<FileId, BTreeMap<String, usize>> = BTreeMap::new();
+  let mut local_fn_sigs: BTreeMap<FileId, BTreeMap<String, (Vec<Ty>, Ty)>> = BTreeMap::new();
   for file in all_files.iter().copied() {
     let source = program.file_text(file).ok_or_else(|| NativeJsError::FileText {
       file: file_label(program, file),
@@ -372,7 +395,7 @@ pub fn compile_project_to_llvm_ir(
       },
     )?;
 
-    let mut fn_map = BTreeMap::new();
+    let mut fn_map: BTreeMap<String, (Vec<Ty>, Ty)> = BTreeMap::new();
     for stmt in &parsed.stx.body {
       if let Stmt::FunctionDecl(func) = stmt.stx.as_ref() {
         let Some(name) = func.stx.name.as_ref().map(|n| n.stx.name.clone()) else {
@@ -382,11 +405,22 @@ pub fn compile_project_to_llvm_ir(
         if func.stx.function.stx.body.is_none() {
           continue;
         }
-        fn_map.insert(name, func.stx.function.stx.parameters.len());
+
+        let mut params = Vec::new();
+        for param in &func.stx.function.stx.parameters {
+          if param.stx.rest || param.stx.optional {
+            return Err(NativeJsError::Codegen(CodegenError::TypeError(format!(
+              "function `{name}` has unsupported parameter syntax"
+            ))));
+          }
+          params.push(ty_from_opt_type_expr(param.stx.type_annotation.as_ref())?);
+        }
+        let ret = ty_from_opt_type_expr(func.stx.function.stx.return_type.as_ref())?;
+        fn_map.insert(name, (params, ret));
       }
     }
 
-    local_fn_params.insert(file, fn_map);
+    local_fn_sigs.insert(file, fn_map);
     asts.insert(file, parsed);
   }
 
@@ -439,13 +473,14 @@ pub fn compile_project_to_llvm_ir(
   let mut call_targets: BTreeMap<FileId, BTreeMap<String, UserFunctionSig>> = BTreeMap::new();
   for file in all_files.iter().copied() {
     let mut table: BTreeMap<String, UserFunctionSig> = BTreeMap::new();
-    if let Some(funcs) = local_fn_params.get(&file) {
-      for (name, params) in funcs {
+    if let Some(funcs) = local_fn_sigs.get(&file) {
+      for (name, (params, ret)) in funcs {
         table.insert(
           name.clone(),
           UserFunctionSig {
             llvm_name: llvm_fn_symbol(file, name),
-            param_count: *params,
+            ret: *ret,
+            params: params.clone(),
           },
         );
       }
@@ -460,10 +495,10 @@ pub fn compile_project_to_llvm_ir(
             file: file_label(program, binding.dep),
             export: binding.export_name.clone(),
           })?;
-        let params = local_fn_params
+        let (params, ret) = local_fn_sigs
           .get(&binding.dep)
           .and_then(|m| m.get(target_local))
-          .copied()
+          .cloned()
           .ok_or_else(|| NativeJsError::UnsupportedExport {
             file: file_label(program, binding.dep),
             export: binding.export_name.clone(),
@@ -472,7 +507,8 @@ pub fn compile_project_to_llvm_ir(
           binding.local_name.clone(),
           UserFunctionSig {
             llvm_name: llvm_fn_symbol(binding.dep, target_local),
-            param_count: params,
+            ret,
+            params,
           },
         );
       }
@@ -490,15 +526,15 @@ pub fn compile_project_to_llvm_ir(
         file: file_label(program, entry_file),
         export: entry_export.to_string(),
       })?;
-    let params = local_fn_params
+    let (params, ret) = local_fn_sigs
       .get(&entry_file)
       .and_then(|m| m.get(local))
-      .copied()
+      .cloned()
       .ok_or_else(|| NativeJsError::UnsupportedExport {
         file: file_label(program, entry_file),
         export: entry_export.to_string(),
       })?;
-    if params != 0 {
+    if !params.is_empty() {
       return Err(NativeJsError::UnsupportedExport {
         file: file_label(program, entry_file),
         export: entry_export.to_string(),
@@ -506,7 +542,8 @@ pub fn compile_project_to_llvm_ir(
     }
     Some(UserFunctionSig {
       llvm_name: llvm_fn_symbol(entry_file, local),
-      param_count: params,
+      ret,
+      params,
     })
   } else {
     None
