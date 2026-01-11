@@ -1,0 +1,147 @@
+- name: node:assert
+  kind: function
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:assert.ok
+  kind: function
+  aliases:
+    - assert.ok
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:assert.strictEqual
+  kind: function
+  aliases:
+    - assert.strictEqual
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:assert.deepStrictEqual
+  kind: function
+  aliases:
+    - assert.deepStrictEqual
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:assert.fail
+  kind: function
+  aliases:
+    - assert.fail
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:assert/strict
+  kind: function
+  aliases:
+    - assert/strict
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:assert/strict.ok
+  kind: function
+  aliases:
+    - assert/strict.ok
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:assert/strict.strictEqual
+  kind: function
+  aliases:
+    - assert/strict.strictEqual
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:assert/strict.deepStrictEqual
+  kind: function
+  aliases:
+    - assert/strict.deepStrictEqual
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:assert/strict.fail
+  kind: function
+  aliases:
+    - assert/strict.fail
+  since: "v0.1.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
