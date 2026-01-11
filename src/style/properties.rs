@@ -14522,10 +14522,11 @@ fn apply_declaration_with_base_internal_with_order(
 
       if let Some(mut sides) = sides {
         if sides.len() == 1 {
-          sides.push(sides[0].clone());
-        }
-
-        if sides.len() == 2 {
+          styles.text_overflow = TextOverflow {
+            inline_start: TextOverflowSide::Clip,
+            inline_end: sides.pop().unwrap(),
+          };
+        } else if sides.len() == 2 {
           styles.text_overflow = TextOverflow {
             inline_start: sides[0].clone(),
             inline_end: sides[1].clone(),
@@ -27648,7 +27649,7 @@ mod tests {
     );
     assert!(matches!(
       style.text_overflow.inline_start,
-      TextOverflowSide::Ellipsis
+      TextOverflowSide::Clip
     ));
     assert!(matches!(
       style.text_overflow.inline_end,
@@ -27700,7 +27701,7 @@ mod tests {
     );
     assert!(matches!(
         style.text_overflow.inline_start,
-        TextOverflowSide::String(ref s) if s == "--"
+        TextOverflowSide::Clip
     ));
     assert!(matches!(
         style.text_overflow.inline_end,
