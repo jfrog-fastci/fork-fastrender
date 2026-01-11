@@ -522,6 +522,8 @@ impl<'a> CallSite<'a> {
   /// Iterate over `(base, derived)` pairs used for GC relocation at this callsite.
   ///
   /// Derivation rule (initial / LLVM 18 observed):
+  /// - Interpret the record as an LLVM `gc.statepoint` and only consider the trailing `gc-live`
+  ///   locations (skipping the 3-entry constant header and any deopt operand locations).
   /// - Filter `record.locations` down to pointer-bearing entries:
   ///   - [`Location::Indirect`], [`Location::Register`], [`Location::Direct`]
   /// - Exclude constants (`Constant`/`ConstIndex`), which are used for statepoint
@@ -529,6 +531,16 @@ impl<'a> CallSite<'a> {
   /// - Assert the remaining count is even and chunk into `(base, derived)` pairs,
   ///   preserving the original order.
   pub fn reloc_pairs(&self) -> impl Iterator<Item = RelocPair> + '_ {
+    // `gc.relocate` pairing is only meaningful for LLVM statepoints. For other stackmap records,
+    // return an empty iterator.
+    let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
+      Ok(sp) => sp,
+      Err(_) => {
+        return RelocPairsIter::Empty;
+      }
+    };
+    let gc_locs = &self.record.locations[statepoint.gc_pairs_start()..];
+
     #[derive(Clone)]
     struct Iter<'a> {
       locs: &'a [Location],
@@ -569,11 +581,25 @@ impl<'a> CallSite<'a> {
       }
     }
 
+    enum RelocPairsIter<'a> {
+      Empty,
+      Pairs(Iter<'a>),
+    }
+
+    impl<'a> Iterator for RelocPairsIter<'a> {
+      type Item = RelocPair;
+
+      fn next(&mut self) -> Option<Self::Item> {
+        match self {
+          RelocPairsIter::Empty => None,
+          RelocPairsIter::Pairs(iter) => iter.next(),
+        }
+      }
+    }
+
     #[cfg(debug_assertions)]
     {
-      let ptr_count = self
-        .record
-        .locations
+      let ptr_count = gc_locs
         .iter()
         .filter(|loc| {
           matches!(
@@ -589,10 +615,7 @@ impl<'a> CallSite<'a> {
       );
     }
 
-    Iter {
-      locs: &self.record.locations,
-      i: 0,
-    }
+    RelocPairsIter::Pairs(Iter { locs: gc_locs, i: 0 })
   }
 
   /// Return a deduplicated list of GC root stack slots as offsets from the frame pointer (RBP/x29).
