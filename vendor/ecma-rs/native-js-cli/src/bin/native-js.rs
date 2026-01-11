@@ -370,7 +370,7 @@ fn load_program(cli: &Cli, entry: &Path) -> Result<(Program, FileId), String> {
     None => (Vec::new(), Vec::new()),
   };
   let mut extra_libs = extra_libs;
-  extra_libs.push(native_js::builtins::native_js_builtins_lib());
+  extra_libs.push(native_js::builtins::checked_builtins_lib());
   let resolve_options = ResolveOptions {
     node_modules: true,
     package_imports: true,

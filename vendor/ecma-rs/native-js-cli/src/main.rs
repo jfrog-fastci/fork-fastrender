@@ -16,17 +16,6 @@ use typecheck_ts::lib_support::{CompilerOptions, FileKind, LibFile, LibName, Scr
 use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
 use typecheck_ts::{FileId, FileKey, Host, HostError, Program};
 
-const BUILTINS_D_TS: &str = r#"
-type __NativeJsPrintable = string | number | boolean | null | undefined;
-
-declare const console: { log(...values: __NativeJsPrintable[]): void };
-
-declare function print(...values: __NativeJsPrintable[]): void;
-declare function assert(cond: __NativeJsPrintable, msg?: __NativeJsPrintable): void;
-declare function panic(msg?: __NativeJsPrintable): void;
-declare function trap(): void;
-"#;
-
 #[derive(Parser, Debug)]
 #[command(author, version)]
 struct Cli {
@@ -311,7 +300,11 @@ struct DiskState {
 }
 
 impl DiskHost {
-  fn new(entry: &Path, compiler_options: CompilerOptions) -> Result<(Self, FileKey), String> {
+  fn new(
+    entry: &Path,
+    compiler_options: CompilerOptions,
+    libs: Vec<LibFile>,
+  ) -> Result<(Self, FileKey), String> {
     let canonical = canonicalize_path(entry)
       .map_err(|err| format!("failed to read {}: {err}", entry.display()))?;
 
@@ -319,13 +312,6 @@ impl DiskHost {
       node_modules: true,
       package_imports: true,
     });
-
-    let libs = vec![LibFile {
-      key: FileKey::new("native-js://builtins.d.ts"),
-      name: Arc::from("native-js builtins"),
-      kind: FileKind::Dts,
-      text: Arc::from(BUILTINS_D_TS),
-    }];
 
     let state = Arc::new(Mutex::new(DiskState::default()));
     let host = DiskHost {
@@ -480,7 +466,12 @@ fn load_program(input: &Path, mode: LoadMode) -> Result<(DiskHost, Program, File
     }
   }
 
-  let (host, entry_key) = DiskHost::new(input, compiler_options)?;
+  let libs = match mode {
+    LoadMode::Project => vec![native_js::builtins::project_builtins_lib()],
+    LoadMode::Checked => vec![native_js::builtins::checked_builtins_lib()],
+  };
+
+  let (host, entry_key) = DiskHost::new(input, compiler_options, libs)?;
   let program = Program::new(host.clone(), vec![entry_key.clone()]);
   let entry_id: FileId = program
     .file_id(&entry_key)
