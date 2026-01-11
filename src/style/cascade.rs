@@ -13756,7 +13756,7 @@ fn append_presentational_hints<'a>(
   if let Some(presentational_rule) = list_type_presentational_hint(node, &layer_order, 1) {
     matching_rules.push(presentational_rule);
   }
-  if let Some(presentational_rule) = alignment_presentational_hint(node, &layer_order, 2) {
+  if let Some(presentational_rule) = alignment_presentational_hint(node, ancestors, &layer_order, 2) {
     matching_rules.push(presentational_rule);
   }
   if let Some(presentational_rule) = dimension_presentational_hint(node, &layer_order, 3) {
@@ -31949,6 +31949,30 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn center_element_centers_child_table_by_default() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "center".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "table".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      }],
+    };
+
+    let styled = apply_styles(&dom, &StyleSheet::new());
+    let table = styled.children.first().expect("table child");
+    assert!(table.styles.margin_left.is_none());
+    assert!(table.styles.margin_right.is_none());
+  }
+
+  #[test]
   fn table_cells_wrap_by_default() {
     let dom = DomNode {
       node_type: DomNodeType::Element {
@@ -36843,6 +36867,7 @@ fn map_ul_type(value: &str) -> Option<&'static str> {
 
 fn alignment_presentational_hint(
   node: &DomNode,
+  ancestors: &[&DomNode],
   layer_order: &Arc<[u32]>,
   order: usize,
 ) -> Option<MatchedRule<'static>> {
@@ -36851,9 +36876,18 @@ fn alignment_presentational_hint(
   let is_cell = tag.eq_ignore_ascii_case("td")
     || tag.eq_ignore_ascii_case("th")
     || tag.eq_ignore_ascii_case("tr");
-  let align = node
+  let mut align = node
     .get_attribute_ref("align")
     .or_else(|| is_center.then_some("center"));
+  if align.is_none() && tag.eq_ignore_ascii_case("table") {
+    if ancestors
+      .last()
+      .and_then(|parent| parent.tag_name())
+      .is_some_and(|parent_tag| parent_tag.eq_ignore_ascii_case("center"))
+    {
+      align = Some("center");
+    }
+  }
   let valign = is_cell.then(|| node.get_attribute_ref("valign")).flatten();
   if align.is_none() && valign.is_none() {
     return None;
