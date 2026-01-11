@@ -6,7 +6,10 @@ use hir_js::{ExprId, ExprKind};
 use std::sync::Arc;
 use typecheck_ts::{DefKind, FileKey, ImportTarget, MemoryHost, Program};
 
-fn resolve_single_call(source: &str, link_fs: bool) -> (Arc<Program>, typecheck_ts::FileId, String) {
+fn resolve_single_call_opt(
+  source: &str,
+  link_fs: bool,
+) -> (Arc<Program>, typecheck_ts::FileId, Option<String>) {
   let index_key = FileKey::new("index.ts");
 
   // Use a different `FileKey` than the import specifier to ensure `resolve_call`
@@ -51,11 +54,14 @@ fn resolve_single_call(source: &str, link_fs: bool) -> (Arc<Program>, typecheck_
   db.validate().expect("validate bundled knowledge base");
 
   let types = TypedProgram::from_program(Arc::clone(&program), file);
-  let api = resolve_call(lower, root_body, body, call_expr, &db, Some(&types))
-    .expect("call resolves")
-    .api;
+  let api = resolve_call(lower, root_body, body, call_expr, &db, Some(&types)).map(|call| call.api);
 
   (program, file, api)
+}
+
+fn resolve_single_call(source: &str, link_fs: bool) -> (Arc<Program>, typecheck_ts::FileId, String) {
+  let (program, file, api) = resolve_single_call_opt(source, link_fs);
+  (program, file, api.expect("call resolves"))
 }
 
 #[test]
@@ -101,3 +107,19 @@ fn resolves_namespace_import_call_when_module_unresolved() {
   assert_eq!(api, "node:fs.readFile");
 }
 
+#[test]
+fn does_not_resolve_shadowed_import_call() {
+  let (_program, _file, api) = resolve_single_call_opt(
+    r#"
+      import { readFile } from "node:fs";
+      {
+        const readFile = (path: string) => {
+          void path;
+        };
+        readFile("x");
+      }
+    "#,
+    true,
+  );
+  assert!(api.is_none(), "expected shadowed binding call to not resolve");
+}

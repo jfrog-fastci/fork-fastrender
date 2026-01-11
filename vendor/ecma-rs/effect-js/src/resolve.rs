@@ -678,6 +678,11 @@ fn resolve_imported_ident_call(
         .filter(|key| key.starts_with("node:"))?;
       return lookup_api(db, &module_key, std::slice::from_ref(&export_name));
     }
+
+    // If we have a resolved symbol in the *current file* and it's not an import,
+    // do not fall back to matching imports by identifier name; that would allow
+    // a shadowed import binding to incorrectly resolve to a KB API.
+    return None;
   }
 
   // As a last resort (e.g. when module resolution failed and the typechecker did
