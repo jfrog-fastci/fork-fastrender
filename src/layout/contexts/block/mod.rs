@@ -3061,6 +3061,9 @@ impl BlockFormattingContext {
         }
         child_fragment.bounds = Rect::new(border_origin, border_size);
         child_fragment.style = Some(original_style);
+        if content_origin.x != 0.0 || content_origin.y != 0.0 {
+          child_fragment.translate_root_in_place(content_origin);
+        }
         if trace_positioned.contains(&pos_child.id) {
           let (text_count, total) = count_text_fragments(&child_fragment);
           let mut snippets = Vec::new();
@@ -3068,10 +3071,10 @@ impl BlockFormattingContext {
           eprintln!(
                         "[block-positioned-placed] child_id={} pos=({:.1},{:.1}) size=({:.1},{:.1}) texts={}/{} first_texts={:?}",
                         pos_child.id,
-                        border_origin.x,
-                        border_origin.y,
-                        border_size.width,
-                        border_size.height,
+                        child_fragment.bounds.x(),
+                        child_fragment.bounds.y(),
+                        child_fragment.bounds.width(),
+                        child_fragment.bounds.height(),
                         text_count,
                         total,
                         snippets
