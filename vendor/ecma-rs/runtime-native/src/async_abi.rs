@@ -129,6 +129,9 @@ pub struct Coroutine {
   /// Result promise for this coroutine; written by `rt_async_spawn` before first resume.
   pub promise: PromiseRef,
 
+  /// Intrusive list pointer used by the runtime while the coroutine is suspended.
+  pub next_waiter: *mut Coroutine,
+
   /// Reserved for runtime flags (e.g. scheduled/running bits).
   pub flags: u32,
 }
@@ -146,6 +149,16 @@ pub type CoroutineRef = *mut Coroutine;
 
 const _: () = {
   assert!(core::mem::align_of::<PromiseHeader>() >= 8);
+
+  let ptr_size = core::mem::size_of::<usize>();
+  let ptr_align = core::mem::align_of::<usize>();
+
+  // C header layout (`include/runtime_native.h`):
+  //   vtable ptr, promise ptr, next_waiter ptr, flags u32
+  assert!(core::mem::align_of::<Coroutine>() == ptr_align);
+  let raw_size = (3 * ptr_size) + core::mem::size_of::<u32>();
+  let expected_size = (raw_size + (ptr_align - 1)) & !(ptr_align - 1);
+  assert!(core::mem::size_of::<Coroutine>() == expected_size);
 };
 
 #[allow(dead_code)]
