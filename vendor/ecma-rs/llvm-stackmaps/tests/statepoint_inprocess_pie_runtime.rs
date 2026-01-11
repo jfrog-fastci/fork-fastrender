@@ -256,6 +256,21 @@ fn main() {
         "expected PIE output (ET_DYN), got e_type={etype}"
     );
 
+    // Best-effort: ensure the binary does not require text relocations.
+    if has_cmd("readelf") {
+        let out = Command::new("readelf").args(["-d", exe_path.to_str().unwrap()]).output()?;
+        assert!(out.status.success(), "readelf -d failed");
+        let combined = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !combined.contains("TEXTREL"),
+            "unexpected DT_TEXTREL in PIE output:\n{combined}"
+        );
+    }
+
     let status = Command::new(&exe_path).status()?;
     assert!(status.success(), "stackmaps_statepoint_pie_rt failed");
     Ok(())
