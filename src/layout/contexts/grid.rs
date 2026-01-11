@@ -762,6 +762,7 @@ fn drop_definite_available_height_for_measure(
   fc_type: FormattingContextType,
   known_height: Option<f32>,
   available_height: taffy::style::AvailableSpace,
+  allow_stretch_block_size_override: bool,
 ) -> bool {
   if !matches!(available_height, taffy::style::AvailableSpace::Definite(_)) {
     return false;
@@ -770,17 +771,25 @@ fn drop_definite_available_height_for_measure(
     return true;
   }
 
-  // Taffy can probe grid items with arbitrary definite heights during track sizing. Treat those as
-  // indefinite for formatting contexts that resolve block sizes intrinsically, unless the box (or
-  // any in-flow descendant) has percentage heights that require a definite block-size basis.
-  if matches!(
+  // If the grid container is in content-sized block tracks, the definite heights Taffy probes with
+  // are not a valid percentage basis (CSS2.1 §10.5). Treat them as effectively indefinite even when
+  // descendants use percentage heights: those percentages must compute to `auto` to avoid cyclic
+  // track sizing.
+  let intrinsic_block_fc = matches!(
     fc_type,
     FormattingContextType::Block
       | FormattingContextType::Inline
       | FormattingContextType::Table
       | FormattingContextType::Flex
-  ) && !node_or_in_flow_children_depend_on_available_height(node)
-  {
+  );
+  if intrinsic_block_fc && !allow_stretch_block_size_override {
+    return true;
+  }
+
+  // Taffy can probe grid items with arbitrary definite heights during track sizing. Treat those as
+  // indefinite for formatting contexts that resolve block sizes intrinsically, unless the box (or
+  // any in-flow descendant) has percentage heights that require a definite block-size basis.
+  if intrinsic_block_fc && !node_or_in_flow_children_depend_on_available_height(node) {
     return true;
   }
 
@@ -5530,6 +5539,12 @@ impl GridFormattingContext {
         ))));
       }
     };
+    let root_style_override = style_override_for(box_node.id);
+    let root_style: &ComputedStyle = root_style_override
+      .as_deref()
+      .unwrap_or_else(|| box_node.style.as_ref());
+    let allow_stretch_block_size_override =
+      grid_container_allows_stretch_block_size_override(root_style, constraints);
     let fragment_block_axis = fragmentainer_axes_hint()
       .map(|axes| axes.block_axis())
       .unwrap_or(PhysicalAxis::Y);
@@ -5897,14 +5912,19 @@ impl GridFormattingContext {
             let used_border_box_height =
               Some(if force_height { bounds.height() } else { available_height });
 
-            let mut laid_out = FormattingContextFactory::with_viewport_scroll_override(
-              child_scroll,
-              || {
-                if supports_used_border_box {
-                  let child_constraints = child_constraints.with_used_border_box_size(
-                    used_border_box_width,
-                    used_border_box_height,
-                  );
+              let mut laid_out = FormattingContextFactory::with_viewport_scroll_override(
+                child_scroll,
+                || {
+                  if supports_used_border_box {
+                  let child_constraints = if allow_stretch_block_size_override {
+                    child_constraints
+                      .with_used_border_box_size(used_border_box_width, used_border_box_height)
+                  } else {
+                    child_constraints.with_used_border_box_size_for_layout_only(
+                      used_border_box_width,
+                      used_border_box_height,
+                    )
+                  };
                   if continuation_available.is_some() {
                     crate::layout::style_override::with_style_override(
                       child.id,
@@ -6059,10 +6079,15 @@ impl GridFormattingContext {
                 Some(if force_width { bounds.width() } else { available_width });
               let used_border_box_height =
                 Some(if force_height { bounds.height() } else { available_height });
-              let child_constraints = child_constraints.with_used_border_box_size(
-                used_border_box_width,
-                used_border_box_height,
-              );
+              let child_constraints = if allow_stretch_block_size_override {
+                child_constraints
+                  .with_used_border_box_size(used_border_box_width, used_border_box_height)
+              } else {
+                child_constraints.with_used_border_box_size_for_layout_only(
+                  used_border_box_width,
+                  used_border_box_height,
+                )
+              };
               if continuation_available.is_some() {
                 crate::layout::style_override::with_style_override(child.id, child.style.clone(), || {
                   fc.layout(child, &child_constraints)
@@ -6859,6 +6884,18 @@ impl GridFormattingContext {
       let axis_style =
         containing_grid_axis.unwrap_or_else(|| GridAxisStyle::from_style(box_node.style.as_ref()));
       let inline_is_horizontal = axis_style.inline_is_horizontal();
+      let allow_stretch_block_size_override = taffy
+        .get_node_context(root_id)
+        .copied()
+        .map(|ptr| unsafe { &*ptr })
+        .map(|root_box| {
+          let root_style_override = style_override_for(root_box.id);
+          let root_style: &ComputedStyle = root_style_override
+            .as_deref()
+            .unwrap_or_else(|| root_box.style.as_ref());
+          grid_container_allows_stretch_block_size_override(root_style, constraints)
+        })
+        .unwrap_or(true);
 
       // Grid items resolve percentage sizes against their *grid area* (not their own used size).
       // Taffy reports the used size/offset of the grid item itself (which includes self-alignment
@@ -6921,6 +6958,9 @@ impl GridFormattingContext {
           rect.width()
         }
       });
+      let block_percentage_base = allow_stretch_block_size_override
+        .then_some(block_percentage_base)
+        .flatten();
 
       let mut allow_measured_reuse = true;
       let height_is_full = inline_is_horizontal
@@ -7086,10 +7126,15 @@ impl GridFormattingContext {
         child_scroll,
         || {
           if supports_used_border_box {
-            let child_constraints = child_constraints.with_used_border_box_size(
-              used_border_box_width,
-              used_border_box_height,
-            );
+            let child_constraints = if allow_stretch_block_size_override {
+              child_constraints
+                .with_used_border_box_size(used_border_box_width, used_border_box_height)
+            } else {
+              child_constraints.with_used_border_box_size_for_layout_only(
+                used_border_box_width,
+                used_border_box_height,
+              )
+            };
             if continuation_available.is_some() {
               // Grid intrinsic sizing keywords are resolved against the initial fragmentainer size when
               // building the Taffy tree. When the grid container continues after a break, re-layout
@@ -9600,6 +9645,9 @@ impl GridFormattingContext {
       },
     };
 
+    let allow_stretch_block_size_override =
+      grid_container_allows_stretch_block_size_override(style, &intrinsic_constraints);
+
     record_taffy_invocation(TaffyAdapterKind::Grid);
     let taffy_perf_enabled = crate::layout::taffy_integration::taffy_perf_enabled();
     let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
@@ -9672,6 +9720,7 @@ impl GridFormattingContext {
             fc_type,
             known_dimensions.height,
             available_space.height,
+            allow_stretch_block_size_override,
           );
           let (key, known_dimensions, available_space) = MeasureKey::new_with_snapped_sizes(
             box_node,
@@ -10007,6 +10056,7 @@ impl GridFormattingContext {
       fc_type,
       known_dimensions.height,
       available_space.height,
+      allow_stretch_block_size_override,
     );
     // When the grid item's block-axis tracks are content-sized (`auto`, `min-content`, etc.), the
     // grid area block size is *not* definite for percentage resolution (CSS2.1 §10.5 / CSS Grid
@@ -15139,6 +15189,9 @@ impl FormattingContext for GridFormattingContext {
       },
     };
 
+    let allow_stretch_block_size_override =
+      grid_container_allows_stretch_block_size_override(style, &intrinsic_constraints);
+
     record_taffy_invocation(TaffyAdapterKind::Grid);
     let taffy_perf_enabled = crate::layout::taffy_integration::taffy_perf_enabled();
     let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
@@ -15200,6 +15253,7 @@ impl FormattingContext for GridFormattingContext {
             fc_type,
             known_dimensions.height,
             available_space.height,
+            allow_stretch_block_size_override,
           );
           let (key, known_dimensions, available_space) = MeasureKey::new_with_snapped_sizes(
             box_node,

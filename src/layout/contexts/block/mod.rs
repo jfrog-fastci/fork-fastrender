@@ -929,10 +929,14 @@ impl BlockFormattingContext {
       // When the parent formatting context already computed a final used border-box size for this
       // containing block (e.g. flex/grid items or absolute positioning relayout), use that as the
       // percentage basis after converting it to a content-box size.
-      let parent_used_border_box_block_size = if inline_is_horizontal {
-        constraints.used_border_box_height
+      let parent_used_border_box_block_size = if constraints.used_border_box_size_forces_block_percentage_base {
+        if inline_is_horizontal {
+          constraints.used_border_box_height
+        } else {
+          constraints.used_border_box_width
+        }
       } else {
-        constraints.used_border_box_width
+        None
       };
 
       // `aspect-ratio` can establish a definite used size even when the corresponding block-size
@@ -9995,6 +9999,11 @@ impl FormattingContext for BlockFormattingContext {
     }
     // Like the inline axis override above, honor a parent-resolved used border-box block size even
     // when the authored height is non-auto.
+    //
+    // Keep track of the pre-override height so we can decide whether the forced used size should
+    // establish a definite block percentage base for descendants (see `block_percentage_base`
+    // below).
+    let resolved_height_before_used_border_box = resolved_height;
     let used_border_box = if inline_is_horizontal {
       constraints.used_border_box_height
     } else {
@@ -10002,7 +10011,9 @@ impl FormattingContext for BlockFormattingContext {
     };
     if let Some(used_border_box) = used_border_box {
       resolved_height = Some((used_border_box - vertical_edges).max(0.0));
-      block_size_definite_for_percentages = true;
+      if constraints.used_border_box_size_forces_block_percentage_base {
+        block_size_definite_for_percentages = true;
+      }
     }
     let resolved_height_base = block_size_definite_for_percentages
       .then(|| resolved_height.filter(|h| h.is_finite()).map(|h| h.max(0.0)))
@@ -10011,7 +10022,17 @@ impl FormattingContext for BlockFormattingContext {
       .map(|h| AvailableSpace::Definite(h.max(0.0)))
       .unwrap_or(AvailableSpace::Indefinite);
 
-    let block_percentage_base = resolved_height_base;
+    let block_percentage_base = if constraints.used_border_box_size_forces_block_percentage_base {
+      resolved_height_base
+    } else {
+      block_size_definite_for_percentages
+        .then(|| {
+          resolved_height_before_used_border_box
+            .filter(|h| h.is_finite())
+            .map(|h| h.max(0.0))
+        })
+        .flatten()
+    };
     let child_constraints = if inline_is_horizontal {
       LayoutConstraints::new(
         AvailableSpace::Definite(computed_width.content_width),

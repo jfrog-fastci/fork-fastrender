@@ -275,6 +275,7 @@ mod grid_padding_calc_percent;
 mod grid_padding_inline_custom_property;
 mod grid_width_calc_percent;
 mod grid_percent_height_auto_track;
+mod grid_spanning_percent_height_auto_track;
 mod grid_item_percent_height_definite_fr_track;
 mod grid_percent_height_treated_as_auto_when_containing_block_height_indefinite;
 mod grid_percent_rows_indefinite_height;

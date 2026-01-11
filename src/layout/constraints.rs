@@ -259,6 +259,19 @@ pub struct LayoutConstraints {
   /// See `used_border_box_width`.
   pub used_border_box_height: Option<f32>,
 
+  /// Whether `used_border_box_{width,height}` should establish a definite block percentage base.
+  ///
+  /// Most layout algorithms that force a used border-box size (flex items, grid items in definite
+  /// tracks, absolutely positioned inset sizing) also establish a definite containing block for
+  /// percentage block sizes (CSS2.1 §10.5), so this defaults to `true`.
+  ///
+  /// Some situations intentionally force a used size but must **not** use it as a percentage basis,
+  /// e.g. grid items stretched in content-sized (auto/min-content/max-content) grid tracks: using
+  /// the stretched size for percentage heights would create circular sizing dependencies. In those
+  /// cases, callers should set this to `false` so percentage heights compute to `auto` while still
+  /// allowing layout to use the forced size for non-percentage sizing/positioning.
+  pub used_border_box_size_forces_block_percentage_base: bool,
+
   /// The containing block inline size used for resolving percentage-based lengths. This remains
   /// available even when `available_width` is intrinsic (min-/max-content) or indefinite so that
   /// percentage resolution can still use a definite parent width instead of falling back to the
@@ -302,6 +315,7 @@ impl LayoutConstraints {
       available_height,
       used_border_box_width: None,
       used_border_box_height: None,
+      used_border_box_size_forces_block_percentage_base: true,
       inline_percentage_base,
       block_percentage_base: None,
     }
@@ -323,6 +337,23 @@ impl LayoutConstraints {
   pub fn with_used_border_box_size(mut self, width: Option<f32>, height: Option<f32>) -> Self {
     self.used_border_box_width = width;
     self.used_border_box_height = height;
+    self.used_border_box_size_forces_block_percentage_base = true;
+    self
+  }
+
+  /// Overrides the box's used border-box size without using it as a block percentage basis.
+  ///
+  /// This is primarily used by layout algorithms that need to force a used size (e.g. grid
+  /// `align-self: stretch`) even when that used size is not a definite containing block for
+  /// percentage heights (content-sized grid tracks).
+  pub fn with_used_border_box_size_for_layout_only(
+    mut self,
+    width: Option<f32>,
+    height: Option<f32>,
+  ) -> Self {
+    self.used_border_box_width = width;
+    self.used_border_box_height = height;
+    self.used_border_box_size_forces_block_percentage_base = false;
     self
   }
 

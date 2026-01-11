@@ -1170,7 +1170,8 @@ impl FormattingContext for FlexFormattingContext {
     //
     // Taffy resolves percentage heights against the available space we pass to it, so translate
     // unresolvable percentage heights to `auto` on the root node.
-    if constraints.used_border_box_height.is_none()
+    if (constraints.used_border_box_height.is_none()
+      || !constraints.used_border_box_size_forces_block_percentage_base)
       && constraints.block_percentage_base.is_none()
       && style
         .height
@@ -1352,7 +1353,9 @@ impl FormattingContext for FlexFormattingContext {
     }
     let container_used_border_box_width =
       constraints.used_border_box_width.or_else(|| constraints.width());
-    let container_used_border_box_height = constraints.used_border_box_height.or_else(|| {
+    let container_used_border_box_height = (constraints.used_border_box_height
+      .filter(|_| constraints.used_border_box_size_forces_block_percentage_base))
+    .or_else(|| {
       let Some(specified) = style.height.as_ref() else {
         return None;
       };
@@ -7978,9 +7981,10 @@ impl FlexFormattingContext {
       .or_else(|| constraints.width())
       .filter(|w| w.is_finite());
 
-    let border_box_height = constraints
+    let border_box_height = (constraints
       .used_border_box_height
-      .filter(|h| h.is_finite())
+      .filter(|_| constraints.used_border_box_size_forces_block_percentage_base))
+    .filter(|h| h.is_finite())
       .or_else(|| {
         let specified = container_style.height.as_ref()?;
         let percentage_base = specified
