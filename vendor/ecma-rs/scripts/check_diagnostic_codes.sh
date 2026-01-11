@@ -99,7 +99,6 @@ RULES = [
     Rule("LOWER", r"^LOWER\d{4}$", allowed_crates={"hir-js"}),
     Rule("VMJS", r"^VMJS\d{4}$", allowed_crates={"vm-js"}),
     Rule("TC", r"^TC\d{4}$", allowed_crates={"typecheck-ts"}),
-    Rule("TN", r"^TN\d{4}$", allowed_crates={"typecheck-ts"}),
     Rule("EFF", r"^EFF\d{4}$", allowed_crates={"effect-js"}),
     Rule("NJS", r"^NJS\d{4}$", allowed_crates={"native-js", "native-js-cli"}),
     Rule("RTN", r"^RTN\d{4}$", allowed_crates={"runtime-native"}),
