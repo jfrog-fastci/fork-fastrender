@@ -601,8 +601,13 @@ fn taffy_available_space_for_grid_container(
         }
       }
       PhysicalAxis::X => {
+        let width_computes_to_auto = physical_width_is_auto(style)
+          || (style.position.is_in_flow()
+            && constraints.block_percentage_base.is_none()
+            && style.width_keyword.is_none()
+            && style.width.as_ref().is_some_and(Length::has_percentage));
         if constraints.used_border_box_width.is_none()
-          && physical_width_is_auto(style)
+          && width_computes_to_auto
           && matches!(available_space.width, taffy::style::AvailableSpace::Definite(_))
         {
           available_space.width = taffy::style::AvailableSpace::MaxContent;
@@ -4365,7 +4370,12 @@ impl GridFormattingContext {
         None
       }
     });
-    let cb_height = constraints.height().filter(|h| h.is_finite() && *h >= 0.0);
+    // Percentage block sizes resolve against a *definite* containing block size (CSS2.1 §10.5).
+    // `LayoutConstraints::block_percentage_base` captures that definiteness without accidentally
+    // using a viewport-derived available height.
+    let cb_height = constraints
+      .block_percentage_base
+      .filter(|h| h.is_finite() && *h >= 0.0);
 
     let resolve = |len: Length, base: Option<f32>| -> Option<f32> {
       self
@@ -4467,6 +4477,82 @@ impl GridFormattingContext {
         updated.max_size.height = resolve_dimension(len, cb_height);
         changed = true;
       }
+    }
+
+    if changed {
+      taffy
+        .set_style(root_id, updated)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+    }
+
+    Ok(())
+  }
+
+  /// Patch percentage block-size properties on the grid root.
+  ///
+  /// Taffy resolves percentage preferred sizes against the available space passed to the root.
+  /// For in-flow elements, CSS2.1 §10.5 requires percentage block sizes (e.g. `height: 100%` in
+  /// horizontal writing modes) to compute to `auto` unless the containing block has a definite
+  /// size. FastRender threads the containing block's *definite* block size separately via
+  /// `LayoutConstraints::block_percentage_base`, so use that here:
+  /// - When the base is absent, treat percentage block sizes as `auto`.
+  /// - When the base is present but the root's available space is intrinsic/indefinite, resolve the
+  ///   percentage into a concrete length so Taffy still sees a definite preferred size.
+  fn patch_root_percentage_block_size(
+    &self,
+    taffy: &mut TaffyTree<*const BoxNode>,
+    root_id: TaffyNodeId,
+    style: &ComputedStyle,
+    constraints: &LayoutConstraints,
+  ) -> Result<(), LayoutError> {
+    // Only apply to in-flow elements: absolutely/fixed-positioned boxes are allowed to resolve
+    // percentage heights against their containing block even when that height depends on content.
+    if !style.position.is_in_flow() {
+      return Ok(());
+    }
+
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let (block_len, used_block_border_box) = if inline_is_horizontal {
+      (style.height, constraints.used_border_box_height)
+    } else {
+      (style.width, constraints.used_border_box_width)
+    };
+    if used_block_border_box.is_some() {
+      return Ok(());
+    }
+    let Some(block_len) = block_len else {
+      return Ok(());
+    };
+    if !block_len.has_percentage() {
+      return Ok(());
+    }
+
+    let Ok(existing) = taffy.style(root_id) else {
+      return Ok(());
+    };
+
+    let base = constraints
+      .block_percentage_base
+      .filter(|b| b.is_finite() && *b >= 0.0);
+
+    let mut updated = existing.clone();
+    let mut changed = false;
+    let mut patch = |slot: &mut Dimension| {
+      *slot = match base.and_then(|base| {
+        self
+          .resolve_length_px_with_base(block_len, Some(base), style)
+          .filter(|v| v.is_finite())
+      }) {
+        Some(px) => Dimension::length(px.max(0.0)),
+        None => Dimension::auto(),
+      };
+      changed = true;
+    };
+
+    if inline_is_horizontal {
+      patch(&mut updated.size.height);
+    } else {
+      patch(&mut updated.size.width);
     }
 
     if changed {
@@ -9244,12 +9330,7 @@ impl GridFormattingContext {
       style,
       &intrinsic_constraints,
     )?;
-    self.patch_root_calc_percentage_sizing_and_edges(
-      &mut taffy,
-      root_id,
-      style,
-      &intrinsic_constraints,
-    )?;
+    self.patch_root_percentage_block_size(&mut taffy, root_id, style, &intrinsic_constraints)?;
     self.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, &intrinsic_constraints)?;
 
     // CSS2.1 §10.5: Percentage `height` values compute to `auto` when the containing block height
@@ -9616,8 +9697,8 @@ impl GridFormattingContext {
     measured_node_keys: &mut FxHashMap<TaffyNodeId, Vec<MeasureKey>>,
   ) -> taffy::tree::MeasureOutput {
     let box_node = unsafe { &*node_ptr };
-    let style_override = style_override_for(box_node.id);
-    let style: &ComputedStyle = style_override
+    let mut style_override = style_override_for(box_node.id);
+    let mut style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
 
@@ -9640,6 +9721,38 @@ impl GridFormattingContext {
       && taffy_style.align_self == Some(taffy::style::AlignItems::Stretch)
     {
       known_dimensions.height = None;
+    }
+
+    // Some real-world grid items (notably howtogeek.com's featured hero card) specify
+    // `height: fit-content`. Our general intrinsic keyword resolver computes the min/max intrinsic
+    // block sizes via `compute_intrinsic_block_size`, which varies the inline constraint between
+    // min/max-content widths. When the grid item's inline size is already definite (i.e. the grid
+    // area width is known), that variation can massively overestimate the height and then
+    // destabilize track sizing (and waste a lot of time re-laying out large subtrees).
+    //
+    // For `height: fit-content` *with a definite inline size*, treat it like `auto` during grid
+    // measurement so the item is laid out exactly once at that width and contributes its true
+    // content height.
+    let mut _fit_content_height_override: Option<StyleOverrideGuard> = None;
+    if box_node.id != 0
+      && known_dimensions.height.is_none()
+      && matches!(
+        available_space.width,
+        taffy::style::AvailableSpace::Definite(w) if w.is_finite() && w > 1.0
+      )
+      && crate::style::inline_axis_is_horizontal(style.writing_mode)
+      && style
+        .height_keyword
+        .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { limit: None }))
+    {
+      let mut cleared: ComputedStyle = style.clone();
+      cleared.height = None;
+      cleared.height_keyword = None;
+      _fit_content_height_override = Some(push_style_override(box_node.id, Arc::new(cleared)));
+      style_override = style_override_for(box_node.id);
+      style = style_override
+        .as_deref()
+        .unwrap_or_else(|| box_node.style.as_ref());
     }
 
     let skip_contents = match style.content_visibility {
@@ -10220,10 +10333,40 @@ impl GridFormattingContext {
       };
 
       let compute_fit_border_box = |axis: Axis,
-                                    limit: Option<Length>,
-                                    avail_dim: taffy::style::AvailableSpace|
+                                     limit: Option<Length>,
+                                     avail_dim: taffy::style::AvailableSpace|
        -> Result<f32, LayoutError> {
-        let (min_intrinsic, max_intrinsic) = intrinsic_range_for_physical_axis(axis)?;
+        // Intrinsic block sizes depend on the element's inline constraint. When the inline size is
+        // already definite (e.g. a grid item's resolved column width), the content-driven block
+        // size should be measured at that inline size rather than varying between min/max-content
+        // widths. Doing so avoids exaggerated `height: fit-content` resolutions on real pages
+        // (howtogeek.com hero grid).
+        let (min_intrinsic, max_intrinsic) = if matches!(axis, Axis::Vertical)
+          && crate::style::inline_axis_is_horizontal(style.writing_mode)
+          && matches!(
+            available_space.width,
+            taffy::style::AvailableSpace::Definite(w) if w.is_finite() && w > 1.0
+          )
+        {
+          let content_w = match available_space.width {
+            taffy::style::AvailableSpace::Definite(w) => w.max(0.0),
+            _ => 0.0,
+          };
+          let border_box_w = (content_w + fit_inset_w).max(0.0);
+          let mut probe_constraints = LayoutConstraints::new(
+            CrateAvailableSpace::Definite(border_box_w),
+            CrateAvailableSpace::Indefinite,
+          );
+          probe_constraints.used_border_box_width = Some(border_box_w);
+          probe_constraints.inline_percentage_base = Some(content_w);
+          let fragment = run_with_override(box_node, override_for_axis(axis), |node| {
+            fc.layout(node, &probe_constraints)
+          })?;
+          let h = fragment.bounds.height().max(0.0);
+          (h, h)
+        } else {
+          intrinsic_range_for_physical_axis(axis)?
+        };
         let min_intrinsic = min_intrinsic.max(0.0);
         let max_intrinsic = max_intrinsic.max(0.0);
         let axis_inset = match axis {
@@ -10494,6 +10637,162 @@ impl GridFormattingContext {
           }
         }
       }
+    }
+
+    // Taffy requests intrinsic min/max-content *height* contributions by setting
+    // `AvailableSpace::{MinContent,MaxContent}` on the physical height axis. It can still provide a
+    // definite width (the grid area's inline size) for those probes.
+    //
+    // When that happens, intrinsic block-size APIs are insufficient because they vary the inline
+    // constraint between min/max-content widths. Grid row sizing, however, needs the height at the
+    // *definite* inline size. The mismatch caused howtogeek.com's featured card grid to collapse to
+    // a tiny row height, clipping away most of the card's contents.
+    //
+    // Measure these probes by laying out the item with the known width and an indefinite height so
+    // percentage padding / aspect-ratio hacks resolve correctly.
+    let height_probe_needs_definite_width_layout = known_dimensions.height.is_none()
+      && matches!(
+        available_space.height,
+        taffy::style::AvailableSpace::MinContent | taffy::style::AvailableSpace::MaxContent
+      )
+      && matches!(
+        available_space.width,
+        taffy::style::AvailableSpace::Definite(w) if w.is_finite() && w > 1.0
+      );
+
+    if height_probe_needs_definite_width_layout {
+      // Apply the same shrink-to-fit width behaviour as the main layout path for
+      // `justify-self`/`justify-items` values other than `stretch`.
+      let mut probe_constraints = constraints;
+      probe_constraints.available_height = CrateAvailableSpace::Indefinite;
+      probe_constraints.used_border_box_height = None;
+
+      if known_dimensions.width.is_none()
+        && matches!(
+          available_space.width,
+          taffy::style::AvailableSpace::Definite(_)
+        )
+        && physical_width_is_auto(style)
+      {
+        if let taffy::style::AvailableSpace::Definite(area_width) = available_space.width {
+          let justify = taffy_style
+            .justify_self
+            .unwrap_or(taffy::style::AlignItems::Stretch);
+          if justify != taffy::style::AlignItems::Stretch {
+            match intrinsic_physical_width(IntrinsicSizingMode::MaxContent) {
+              Ok(intrinsic_width) => {
+                let mut used_width = intrinsic_width.max(0.0);
+                if should_adjust_for_calc_percentage_edges && area_width.is_finite() && area_width > 1.0
+                {
+                  let (
+                    padding_left,
+                    padding_right,
+                    _padding_top,
+                    _padding_bottom,
+                    border_left,
+                    border_right,
+                    _border_top,
+                    _border_bottom,
+                  ) = self.resolved_padding_border_for_measure(style, area_width);
+                  let base0_insets_w = {
+                    let (p_l, p_r, _p_t, _p_b, b_l, b_r, _b_t, _b_b) =
+                      self.resolved_padding_border_for_measure(style, 0.0);
+                    p_l + p_r + b_l + b_r
+                  };
+                  let insets_w = padding_left + padding_right + border_left + border_right;
+                  let delta = insets_w - base0_insets_w;
+                  if delta.is_finite() {
+                    used_width = (used_width + delta).max(0.0);
+                  }
+                }
+                used_width = used_width.min(area_width.max(0.0));
+                probe_constraints.used_border_box_width = Some(used_width);
+              }
+              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+              Err(_) => {}
+            }
+          }
+        }
+      }
+
+      record_measure_layout_call();
+      let mut fragment = match fc.layout(box_node, &probe_constraints) {
+        Ok(fragment) => fragment,
+        Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+        Err(_) => return taffy::tree::MeasureOutput::ZERO,
+      };
+
+      let percentage_base = match available_space.width {
+        taffy::style::AvailableSpace::Definite(w) => w,
+        _ => probe_constraints
+          .width()
+          .unwrap_or_else(|| fragment.bounds.width()),
+      };
+      fragment.content = FragmentContent::Block {
+        box_id: Some(box_node.id),
+      };
+      fragment.style = Some(box_node.style.clone());
+      let content_size = Self::content_box_size_for_taffy_style(
+        Size::new(fragment.bounds.width(), fragment.bounds.height()),
+        taffy_style,
+        percentage_base,
+      );
+      let size = taffy::geometry::Size {
+        width: content_size.width.max(0.0),
+        height: content_size.height.max(0.0),
+      };
+
+      let mut baseline_deadline_counter = 0usize;
+      let baseline_y = if wants_baseline_y {
+        match first_baseline_offset(&fragment, &mut baseline_deadline_counter) {
+          Ok(baseline) => baseline,
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => None,
+        }
+      } else {
+        None
+      };
+      let baseline_x = if wants_baseline_x {
+        match first_baseline_offset_x(
+          &fragment,
+          style.writing_mode,
+          &mut baseline_deadline_counter,
+        ) {
+          Ok(baseline) => baseline,
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => None,
+        }
+      } else {
+        None
+      };
+      let output = taffy::tree::MeasureOutput::from_size_and_baselines(
+        size,
+        taffy::geometry::Point {
+          x: baseline_x,
+          y: baseline_y,
+        },
+      );
+
+      grid_measure_size_cache_store(key, output);
+      if let Some(evicted) = push_measured_key(measured_node_keys.entry(node_id).or_default(), key) {
+        measured_fragments.remove(&evicted);
+      }
+      measured_fragments.insert(key, fragment);
+      measure_cache.insert(key, output);
+
+      // Min/max-content height probes share the same measurement once the inline size is fixed.
+      let mut alt_key = key;
+      alt_key.available_height = match key.available_height {
+        MeasureAvailKey::MinContent => MeasureAvailKey::MaxContent,
+        MeasureAvailKey::MaxContent => MeasureAvailKey::MinContent,
+        other => other,
+      };
+      if alt_key != key {
+        grid_measure_size_cache_store(alt_key, output);
+        measure_cache.insert(alt_key, output);
+      }
+
+      return output;
     }
 
     // Taffy requests intrinsic min-/max-content measurements by setting
@@ -12820,6 +13119,7 @@ impl FormattingContext for GridFormattingContext {
 
     ctx.patch_root_calc_percentage_sizing_and_edges(&mut taffy, root_id, style, constraints)?;
     ctx.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, constraints)?;
+    ctx.patch_root_percentage_block_size(&mut taffy, root_id, style, constraints)?;
 
     let mut available_space = taffy_available_space_for_grid_container(style, constraints);
     // When the grid container has a definite physical width/height from its own `width`/`height`
@@ -14316,14 +14616,40 @@ impl FormattingContext for GridFormattingContext {
     }
 
     let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
-    let intrinsic_inline_space = match mode {
-      IntrinsicSizingMode::MinContent => CrateAvailableSpace::MinContent,
-      IntrinsicSizingMode::MaxContent => CrateAvailableSpace::MaxContent,
+
+    // The intrinsic block-size algorithms are defined in terms of the box's intrinsic *inline*
+    // size. For example, a horizontal-tb box's max-content block-size is the height the box would
+    // take when laid out at its max-content inline size.
+    //
+    // Letting Taffy interpret `AvailableSpace::{MinContent,MaxContent}` directly can cause it to
+    // shrink-to-fit the root grid container's inline size (especially for `width:auto` grids),
+    // collapsing the min-/max-content block-size distinction. This shows up on real pages as
+    // `height: fit-content` resolving to an exaggerated max-content height, because both intrinsic
+    // probes report the same wrapped/narrow layout.
+    //
+    // Instead, compute the intrinsic inline size first and run a block-size probe with that inline
+    // size as a *definite* constraint.
+    let inline_border_box = match self.compute_intrinsic_inline_size(box_node, mode) {
+      Ok(v) if v.is_finite() => v.max(0.0),
+      Ok(_) => 0.0,
+      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+      Err(_) => 0.0,
     };
-    let intrinsic_constraints = if inline_is_horizontal {
-      LayoutConstraints::new(intrinsic_inline_space, CrateAvailableSpace::Indefinite)
+
+    let mut intrinsic_constraints = if inline_is_horizontal {
+      LayoutConstraints::new(
+        CrateAvailableSpace::Definite(inline_border_box),
+        CrateAvailableSpace::Indefinite,
+      )
     } else {
-      LayoutConstraints::new(CrateAvailableSpace::Indefinite, intrinsic_inline_space)
+      // In vertical writing modes the inline axis maps to the physical Y axis. Keep the existing
+      // physical-axis layout model by constraining `available_height`.
+      let mut constraints = LayoutConstraints::new(
+        CrateAvailableSpace::Indefinite,
+        CrateAvailableSpace::Definite(inline_border_box),
+      );
+      constraints.inline_percentage_base = Some(inline_border_box);
+      constraints
     };
 
     // Use a pooled Taffy tree to avoid repeated allocation churn during intrinsic sizing probes.
@@ -14385,6 +14711,35 @@ impl FormattingContext for GridFormattingContext {
       taffy
         .set_style(root_id, override_taffy_style)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+    }
+
+    // Ensure block-level grids with `width:auto` stretch to the definite inline size used for this
+    // intrinsic probe (mirrors the main `layout()` logic).
+    if inline_is_horizontal {
+      if let CrateAvailableSpace::Definite(outer_width) = intrinsic_constraints.available_width {
+        if outer_width.is_finite()
+          && physical_width_is_auto(style)
+          && box_node.is_block_level()
+          && crate::style::inline_axis_is_horizontal(style.writing_mode)
+        {
+          if let Ok(existing) = taffy.style(root_id) {
+            if existing.size.width.is_auto() {
+              let mut updated = existing.clone();
+              let base_width = intrinsic_constraints.inline_percentage_base.unwrap_or(outer_width);
+              let border_box_width = outer_width.max(0.0);
+              updated.size.width = Dimension::length(self.border_box_to_taffy_style_size(
+                border_box_width,
+                style,
+                Axis::Horizontal,
+                base_width,
+              ));
+              taffy
+                .set_style(root_id, updated)
+                .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+            }
+          }
+        }
+      }
     }
 
     self.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, &intrinsic_constraints)?;
@@ -19835,6 +20190,47 @@ mod tests {
         frag.bounds.width()
       );
     }
+  }
+
+  #[test]
+  fn grid_item_intrinsic_height_probe_respects_definite_cross_axis_size() {
+    // Regression test for grid track sizing when an item's block-size depends on its inline size
+    // (e.g. percentage padding/aspect-ratio boxes). Taffy requests min/max-content height
+    // contributions while still providing a definite width. Our grid measure callback must honor
+    // that width; otherwise percentage padding resolves against an indefinite base and the row can
+    // collapse, clipping the item's contents (howtogeek.com featured card grid).
+    let fc = GridFormattingContext::new();
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+    grid_style.grid_template_rows = vec![GridTrack::Auto];
+    let grid_style = Arc::new(grid_style);
+
+    let mut aspect_style = ComputedStyle::default();
+    // Percentage padding resolves against the containing block's width, so at 200px this yields a
+    // 200px-tall box.
+    aspect_style.padding_top = Length::percent(100.0);
+    let aspect_style = Arc::new(aspect_style);
+
+    let mut aspect_box = BoxNode::new_block(aspect_style, FormattingContextType::Block, vec![]);
+    aspect_box.id = 3;
+
+    let mut item = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![aspect_box]);
+    item.id = 2;
+
+    let mut grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+    grid.id = 1;
+
+    let constraints = LayoutConstraints::definite_width(200.0);
+    let fragment = fc.layout(&grid, &constraints).expect("grid layout");
+
+    let item_fragment = find_block_fragment(&fragment, 2);
+    assert!(
+      (item_fragment.bounds.height() - 200.0).abs() < 0.5,
+      "expected grid item height≈200px (got {:.2})",
+      item_fragment.bounds.height()
+    );
   }
 
   // Test 8: Grid with multiple rows

@@ -41,7 +41,6 @@ impl ClassicScriptFetcher for FakeFetcher {
     destination: FetchDestination,
     credentials_mode: FetchCredentialsMode,
   ) -> Result<()> {
-    let _ = credentials_mode;
     assert_eq!(
       destination,
       FetchDestination::Script,
