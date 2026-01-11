@@ -1,5 +1,5 @@
 use runtime_native::stackmaps::{Location, StackMap};
-use runtime_native::statepoints::{eval_location, RegFile, RootSlot};
+use runtime_native::statepoints::{eval_location, LocationValue, RegFile, RootSlot};
 
 struct MapRegs(std::collections::HashMap<u16, u64>);
 
@@ -28,7 +28,10 @@ fn parses_register_location() {
   };
 
   let slot = eval_location(loc, &MapRegs(Default::default())).unwrap();
-  assert_eq!(slot, RootSlot::Register { dwarf_reg });
+  assert_eq!(
+    slot,
+    LocationValue::Slot(RootSlot::Reg { dwarf_reg })
+  );
 }
 
 #[test]
@@ -57,5 +60,5 @@ fn parses_direct_location() {
   let slot = eval_location(loc, &regs).unwrap();
 
   let expected = (0x1000i128 + offset as i128) as u64;
-  assert_eq!(slot, RootSlot::Const { value: expected });
+  assert_eq!(slot, LocationValue::Const { value: expected });
 }
