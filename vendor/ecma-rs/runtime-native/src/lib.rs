@@ -1535,7 +1535,12 @@ int main(void) {
     )
     .unwrap();
 
-    let mut cmd = Command::new(std::env::var("CC").unwrap_or_else(|_| "cc".to_string()));
+    // Support common CC values that include arguments (e.g. "ccache clang-18").
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let mut cc_parts = cc.split_whitespace();
+    let program = cc_parts.next().unwrap_or("cc");
+    let mut cmd = Command::new(program);
+    cmd.args(cc_parts);
     cmd
       .arg("-std=c11")
       .arg("-Wall")
