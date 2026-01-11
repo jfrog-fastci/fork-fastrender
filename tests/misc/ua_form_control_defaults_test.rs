@@ -44,9 +44,9 @@ fn form_control_defaults_come_from_user_agent_stylesheet() {
 
   let input = find_by_id(&styled, "text").expect("text input node");
   assert_eq!(input.styles.padding_top, Length::px(4.0));
-  assert_eq!(input.styles.padding_right, Length::px(6.0));
+  assert_eq!(input.styles.padding_right, Length::px(12.5));
   assert_eq!(input.styles.padding_bottom, Length::px(4.0));
-  assert_eq!(input.styles.padding_left, Length::px(6.0));
+  assert_eq!(input.styles.padding_left, Length::px(12.5));
 
   assert_eq!(input.styles.border_top_width, Length::px(1.0));
   assert_eq!(input.styles.border_right_width, Length::px(1.0));
@@ -64,6 +64,10 @@ fn form_control_defaults_come_from_user_agent_stylesheet() {
   // Chromium's UA stylesheet treats `type=search` controls as border-box sized so width
   // constraints include padding/border (avoiding overflow for `width: 100%`).
   let search = find_by_id(&styled, "search").expect("search input node");
+  assert_eq!(search.styles.padding_top, Length::px(4.0));
+  assert_eq!(search.styles.padding_right, Length::px(12.5));
+  assert_eq!(search.styles.padding_bottom, Length::px(4.0));
+  assert_eq!(search.styles.padding_left, Length::px(12.5));
   assert_eq!(search.styles.box_sizing, BoxSizing::BorderBox);
   assert_eq!(search.styles.cursor, CursorKeyword::Text);
 
