@@ -1,6 +1,6 @@
 use crate::abi::PromiseRef;
 use crate::abi::RtCoroutineHeader;
-use crate::abi::ShapeId;
+use crate::abi::RtShapeId;
 use crate::abi::TaskId;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
@@ -25,7 +25,7 @@ fn ensure_event_loop_thread_registered() {
 }
 
 #[no_mangle]
-pub extern "C" fn rt_alloc(size: usize, _shape: ShapeId) -> *mut u8 {
+pub extern "C" fn rt_alloc(size: usize, _shape: RtShapeId) -> *mut u8 {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc(size);
   alloc::alloc_bytes(size, 16, "rt_alloc")
@@ -37,7 +37,7 @@ pub extern "C" fn rt_alloc(size: usize, _shape: ShapeId) -> *mut u8 {
 /// codegen/FFI can request a stable address today and so future GC-backed allocation can route
 /// pinned objects to a non-moving space.
 #[no_mangle]
-pub extern "C" fn rt_alloc_pinned(size: usize, _shape: ShapeId) -> *mut u8 {
+pub extern "C" fn rt_alloc_pinned(size: usize, _shape: RtShapeId) -> *mut u8 {
   alloc::alloc_bytes(size, 16, "rt_alloc_pinned")
 }
 

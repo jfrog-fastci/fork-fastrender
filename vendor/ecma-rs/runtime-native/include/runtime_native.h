@@ -27,10 +27,24 @@ extern "C" {
 // Core ABI types
 // -----------------------------------------------------------------------------
 
-#ifndef __SIZEOF_INT128__
-#error "runtime-native requires a compiler with __int128 support"
-#endif
-typedef unsigned __int128 ShapeId;
+// Shapes are registered into a global runtime table and referenced by a compact
+// runtime-local id.
+typedef uint32_t RtShapeId;
+
+// FFI-stable shape descriptor used for precise GC tracing.
+typedef struct RtShapeDescriptor {
+  // Total object size in bytes (including ObjHeader).
+  uint32_t size;
+  // Object alignment in bytes (power of two).
+  uint16_t align;
+  // Reserved flags (must be 0 for now).
+  uint16_t flags;
+  // Pointer slot byte offsets from the object base pointer (start of ObjHeader).
+  const uint32_t* ptr_offsets;
+  uint32_t ptr_offsets_len;
+  // Reserved for future expansion (must be 0).
+  uint32_t reserved;
+} RtShapeDescriptor;
 
 typedef uint32_t InternedId;
 typedef uint64_t TaskId;
@@ -84,11 +98,17 @@ void rt_thread_detach(Thread* thread);
 // Contract: returns the **object base pointer** (points to the start of the
 // runtime GC header / ObjHeader). `size` is the total allocation size in bytes
 // including the header and payload.
-uint8_t* rt_alloc(size_t size, ShapeId shape);
+uint8_t* rt_alloc(size_t size, RtShapeId shape);
 // Allocate a pinned (non-moving) object. Pinned objects are intended for FFI /
 // host embeddings that require stable addresses.
-uint8_t* rt_alloc_pinned(size_t size, ShapeId shape);
+uint8_t* rt_alloc_pinned(size_t size, RtShapeId shape);
 uint8_t* rt_alloc_array(size_t len, size_t elem_size);
+
+// Register the global shape table used by `RtShapeId`.
+//
+// This must be called exactly once at program initialization, before any
+// allocations that participate in GC tracing.
+void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);
 
 // -----------------------------------------------------------------------------
 // GC entrypoints (milestone runtime: mostly no-ops)

@@ -75,10 +75,17 @@ pub struct RtGcStatsSnapshot {
   pub thread_deinit_calls: u64,
 }
 
-/// Shape identifier used by the AOT compiler to refer to statically-known object layouts.
+/// Runtime shape identifier used by the AOT compiler to refer to statically-known object layouts.
 ///
-/// For now this is just a 128-bit value (passed through, unused by the milestone runtime).
-pub type ShapeId = u128;
+/// This is a compact runtime-local index into the shape table registered via
+/// `rt_register_shape_table`.
+///
+/// Note: the semantic `types_ts_interned::ShapeId (u128)` is **not** passed into the runtime
+/// directly; codegen owns the mapping from semantic IDs to this compact index space.
+pub use runtime_native_abi::RtShapeId;
+
+/// FFI-safe descriptor for a runtime shape.
+pub use runtime_native_abi::RtShapeDescriptor;
 
 // -----------------------------------------------------------------------------
 // Coroutine ABI (LLVM-generated async/await state machines)

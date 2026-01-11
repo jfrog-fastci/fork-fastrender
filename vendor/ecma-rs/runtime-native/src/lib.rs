@@ -218,9 +218,9 @@ mod tests {
       ptr1: *mut u8,
     }
 
-    const PTR_OFFSETS: [usize; 2] = [
-      crate::gc::OBJ_HEADER_SIZE + std::mem::offset_of!(DummyPayload, ptr0),
-      crate::gc::OBJ_HEADER_SIZE + std::mem::offset_of!(DummyPayload, ptr1),
+    const PTR_OFFSETS: [u32; 2] = [
+      (crate::gc::OBJ_HEADER_SIZE + std::mem::offset_of!(DummyPayload, ptr0)) as u32,
+      (crate::gc::OBJ_HEADER_SIZE + std::mem::offset_of!(DummyPayload, ptr1)) as u32,
     ];
 
     const TOTAL_SIZE: usize = crate::gc::OBJ_HEADER_SIZE + std::mem::size_of::<DummyPayload>();
@@ -253,8 +253,8 @@ mod tests {
     let ptr0_addr = (&mut obj.payload.ptr0 as *mut *mut u8) as usize;
     let ptr1_addr = (&mut obj.payload.ptr1 as *mut *mut u8) as usize;
     let base_addr = obj_base as usize;
-    assert_eq!(ptr0_addr - base_addr, PTR_OFFSETS[0]);
-    assert_eq!(ptr1_addr - base_addr, PTR_OFFSETS[1]);
+    assert_eq!((ptr0_addr - base_addr) as u32, PTR_OFFSETS[0]);
+    assert_eq!((ptr1_addr - base_addr) as u32, PTR_OFFSETS[1]);
 
     // And ensure `for_each_ptr_slot` visits the right addresses given the base pointer.
     let mut seen = Vec::<usize>::new();
@@ -277,9 +277,10 @@ mod tests {
       "void rt_thread_deinit(void);",
       "Thread* rt_thread_attach(Runtime* runtime);",
       "void rt_thread_detach(Thread* thread);",
-      "uint8_t* rt_alloc(size_t size, ShapeId shape);",
-      "uint8_t* rt_alloc_pinned(size_t size, ShapeId shape);",
+      "uint8_t* rt_alloc(size_t size, RtShapeId shape);",
+      "uint8_t* rt_alloc_pinned(size_t size, RtShapeId shape);",
       "uint8_t* rt_alloc_array(size_t len, size_t elem_size);",
+      "void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);",
       "void rt_gc_safepoint(void);",
       "void rt_write_barrier(uint8_t* obj, uint8_t* slot);",
       "void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);",
@@ -326,9 +327,11 @@ mod tests {
     let _thread_deinit: extern "C" fn() = rt_thread_deinit;
     let _thread_attach: unsafe extern "C" fn(*mut Runtime) -> *mut Thread = rt_thread_attach;
     let _thread_detach: unsafe extern "C" fn(*mut Thread) = rt_thread_detach;
-    let _alloc: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc;
-    let _alloc_pinned: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc_pinned;
+    let _alloc: extern "C" fn(usize, abi::RtShapeId) -> *mut u8 = rt_alloc;
+    let _alloc_pinned: extern "C" fn(usize, abi::RtShapeId) -> *mut u8 = rt_alloc_pinned;
     let _alloc_array: extern "C" fn(usize, usize) -> *mut u8 = rt_alloc_array;
+    let _register_shape_table: unsafe extern "C" fn(*const abi::RtShapeDescriptor, usize) =
+      crate::shape_table::rt_register_shape_table;
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
     let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
     let _write_barrier_range: unsafe extern "C" fn(*mut u8, *mut u8, usize) = rt_write_barrier_range;
@@ -369,6 +372,7 @@ mod tests {
       _alloc,
       _alloc_pinned,
       _alloc_array,
+      _register_shape_table,
       _safepoint,
       _write_barrier,
       _write_barrier_range,

@@ -37,6 +37,7 @@ libc = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
+runtime-native-abi = { workspace = true }
 
 [build-dependencies]
 object = { workspace = true }

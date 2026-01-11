@@ -134,13 +134,23 @@ Milestone 1, and must match the runtime-native API sketch in
 #### 3.1.1 Types (FFI-safe)
 
 ```rust
-/// Shape identifier used by the AOT compiler (`types-ts-interned::ShapeId`).
+/// Runtime shape identifier used by the AOT compiler for statically-known object layouts.
 ///
-/// Milestone 1 uses a raw `u128` passed through to the runtime (often unused by
-/// the POC allocator). A future milestone may compress this to a smaller ID in
-/// compiler-emitted module metadata, but that requires an explicit mapping
-/// design and is **not** the current contract.
-pub type ShapeId = u128;
+/// The semantic `types_ts_interned::ShapeId (u128)` is **not** passed into the runtime directly.
+/// Codegen owns the mapping from semantic IDs to a compact runtime-local [`RtShapeId`] index space.
+#[repr(transparent)]
+pub struct RtShapeId(pub u32);
+
+/// FFI-stable shape descriptor (registered at startup).
+#[repr(C)]
+pub struct RtShapeDescriptor {
+  pub size: u32,
+  pub align: u16,
+  pub flags: u16,
+  pub ptr_offsets: *const u32,
+  pub ptr_offsets_len: u32,
+  pub reserved: u32,
+}
 
 /// Stable identifier for an interned UTF-8 string.
 #[repr(transparent)]
@@ -173,7 +183,8 @@ The signatures below intentionally mirror the sketch in `EXEC.plan.md`:
 
 ```rust
 // Memory
-pub fn rt_alloc(size: usize, shape: ShapeId) -> *mut u8;
+pub fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize);
+pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
 pub fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8;
 
 // GC
@@ -242,9 +253,9 @@ To support precise tracing/moving GC, `native-js` will eventually need to
 register compiler-emitted shape tables (pointer maps, sizes, alignments, etc.)
 with the runtime. One possible direction is a module registration API like:
 - `rt_register_module(m: *const RtModule)`
-- `rt_shape_ptr_map(shape: ShapeId, out_len: *mut usize) -> *const u32`
-- `rt_shape_size(shape: ShapeId) -> usize`
-- `rt_shape_align(shape: ShapeId) -> usize`
+- `rt_shape_ptr_map(shape: RtShapeId, out_len: *mut usize) -> *const u32`
+- `rt_shape_size(shape: RtShapeId) -> usize`
+- `rt_shape_align(shape: RtShapeId) -> usize`
 
 #### Strings (planned extensions)
 - Debug-only lookup of interned strings (e.g. `InternedId -> StringRef`).
@@ -493,7 +504,7 @@ Each GC allocation conceptually starts with:
 ```c
 // Not part of the public ABI; compiled code must not depend on this.
 typedef struct RtGcHeader {
-  uint32_t shape_id;  // ShapeId
+  uint32_t shape_id;  // RtShapeId
   uint32_t flags;     // mark bits, forwarding state, etc.
   // Optional: size class / generation / etc.
 } RtGcHeader;
@@ -508,7 +519,7 @@ shape and enumerate pointer fields**.
 The runtime maintains a table:
 
 ```
-ShapeId -> { size, align, ptr_offsets[] }
+RtShapeId -> { size, align, ptr_offsets[] }
 ```
 
 Where:

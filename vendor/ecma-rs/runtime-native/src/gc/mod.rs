@@ -140,8 +140,8 @@ impl ObjHeader {
 pub struct TypeDescriptor {
   /// Total object size in bytes (including the [`ObjHeader`]).
   pub size: usize,
-  ptr_offsets: *const usize,
-  ptr_offsets_len: usize,
+  ptr_offsets: *const u32,
+  ptr_offsets_len: u32,
 }
 
 // `TypeDescriptor` is immutable runtime metadata. As long as the descriptor is
@@ -151,17 +151,32 @@ unsafe impl Send for TypeDescriptor {}
 unsafe impl Sync for TypeDescriptor {}
 
 impl TypeDescriptor {
-  pub const fn new(size: usize, ptr_offsets: &'static [usize]) -> Self {
+  pub const fn new(size: usize, ptr_offsets: &'static [u32]) -> Self {
     Self {
       size,
       ptr_offsets: ptr_offsets.as_ptr(),
-      ptr_offsets_len: ptr_offsets.len(),
+      ptr_offsets_len: ptr_offsets.len() as u32,
+    }
+  }
+
+  /// Construct a [`TypeDescriptor`] from raw pointer-offset metadata.
+  ///
+  /// # Safety
+  /// - If `ptr_offsets_len != 0`, `ptr_offsets` must be a valid pointer to an array of
+  ///   `ptr_offsets_len` `u32` elements.
+  /// - The pointed-to array must remain valid and immutable for as long as this descriptor is used
+  ///   (typically for the duration of the process).
+  pub unsafe fn from_raw_parts(size: usize, ptr_offsets: *const u32, ptr_offsets_len: u32) -> Self {
+    Self {
+      size,
+      ptr_offsets,
+      ptr_offsets_len,
     }
   }
 
   #[inline]
-  pub fn ptr_offsets(&self) -> &[usize] {
-    unsafe { slice::from_raw_parts(self.ptr_offsets, self.ptr_offsets_len) }
+  pub fn ptr_offsets(&self) -> &[u32] {
+    unsafe { slice::from_raw_parts(self.ptr_offsets, self.ptr_offsets_len as usize) }
   }
 }
 
@@ -201,6 +216,7 @@ pub(crate) unsafe fn for_each_ptr_slot(mut obj: *mut u8, mut f: impl FnMut(*mut 
   let desc = header.type_desc();
 
   for &offset in desc.ptr_offsets() {
+    let offset = offset as usize;
     debug_assert!(offset % mem::align_of::<*mut u8>() == 0);
     debug_assert!(offset + mem::size_of::<*mut u8>() <= desc.size);
     let slot = obj.add(offset) as *mut *mut u8;

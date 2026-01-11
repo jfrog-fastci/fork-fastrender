@@ -194,7 +194,8 @@ impl GcHeap {
 
     // SAFETY: the pointer is known-good (registered during allocation).
     let desc = unsafe { &*header.type_desc };
-    for &offset in desc.ptr_offsets() {
+    for &offset_u32 in desc.ptr_offsets() {
+      let offset = offset_u32 as usize;
       assert_eq!(
         offset % mem::align_of::<*mut u8>(),
         0,
