@@ -235,19 +235,29 @@ impl AssetCatalog {
     res: &FetchedResource,
   ) -> Result<()> {
     let source_url = info.final_url.clone().unwrap_or_else(|| url.to_string());
-    let ext = extension_from_resource(&info.path, res.content_type.as_deref());
+    let sniffed_font_ext = sniff_font_extension(&res.bytes);
+    let mut ext = extension_from_resource(&info.path, res.content_type.as_deref());
+    if let Some(font_ext) = sniffed_font_ext {
+      ext = font_ext.to_string();
+    }
+    // Some CDNs (notably `fonts.gstatic.com/l/font?...`) mislabel fonts as `text/html`. These
+    // resources are still valid WOFF2 binaries and must not be treated as HTML during fixture
+    // rewriting (otherwise they get corrupted by UTF-8 lossy decoding).
+    let content_type = sniffed_font_ext
+      .map(|ext| format!("font/{ext}"))
+      .or_else(|| res.content_type.clone());
     // HTML/CSS rewriting depends on the document's base URL, so byte-based deduplication can
     // incorrectly collapse multiple distinct source URLs into one rewritten output.
-    let base_sensitive = is_html_extension(&ext)
-      || ext == "css"
-      || res
-        .content_type
-        .as_deref()
-        .map(|ct| {
-          let lower = ct.to_ascii_lowercase();
-          lower.contains("html") || lower.contains("css")
-        })
-        .unwrap_or(false);
+    let base_sensitive = sniffed_font_ext.is_none()
+      && (is_html_extension(&ext)
+        || ext == "css"
+        || content_type
+          .as_deref()
+          .map(|ct| {
+            let lower = ct.to_ascii_lowercase();
+            lower.contains("html") || lower.contains("css")
+          })
+          .unwrap_or(false));
     let filename_hash = if base_sensitive {
       hash_bytes(source_url.as_bytes())
     } else {
@@ -267,7 +277,7 @@ impl AssetCatalog {
     let data = AssetData {
       filename: filename.clone(),
       bytes: res.bytes.clone(),
-      content_type: res.content_type.clone(),
+      content_type,
       source_url,
     };
 
@@ -1417,6 +1427,9 @@ fn is_html_extension(ext: &str) -> bool {
 }
 
 fn is_html_asset(asset: &AssetData) -> bool {
+  if sniff_font_extension(&asset.bytes).is_some() {
+    return false;
+  }
   let is_html = asset
     .content_type
     .as_deref()
@@ -1474,6 +1487,16 @@ fn is_html_asset(asset: &AssetData) -> bool {
   }
 
   true
+}
+
+fn sniff_font_extension(bytes: &[u8]) -> Option<&'static str> {
+  bytes
+    .get(..4)
+    .and_then(|prefix| match prefix {
+      b"wOF2" => Some("woff2"),
+      b"wOFF" => Some("woff"),
+      _ => None,
+    })
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {

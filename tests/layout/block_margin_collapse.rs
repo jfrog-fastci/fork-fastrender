@@ -972,6 +972,52 @@ fn sibling_positive_margins_collapse_to_max() {
 }
 
 #[test]
+fn negative_trailing_margins_can_shrink_parent_height_when_bottom_separated() {
+  // Layout engines must allow negative margins on an *empty last in-flow block* (e.g. a
+  // `::after { content:''; display:block; margin-top:-... }` cap-height trim) to pull the
+  // in-flow cursor upward, reducing the parent's used height and shifting following siblings.
+  //
+  // This is spec-correct with default `overflow: visible`: earlier in-flow content may overflow
+  // the parent's border box.
+  let inner = block_with_height_and_margins(10.0, 0.0, 0.0);
+  let trim = empty_block_with_margins(-5.0, 0.0);
+
+  let mut outer_style = block_style_with_height(None);
+  outer_style.padding_bottom = Length::px(1.0);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![inner, trim],
+  );
+
+  let next = block_with_height_and_margins(10.0, 0.0, 0.0);
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![outer, next],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let outer_fragment = &fragment.children[0];
+  let next_fragment = &fragment.children[1];
+  assert_approx(
+    outer_fragment.bounds.height(),
+    6.0,
+    "expected negative trailing margin to shrink the parent's border-box height (10 + -5 + padding-bottom 1)",
+  );
+  assert_approx(
+    next_fragment.bounds.y(),
+    outer_fragment.bounds.max_y(),
+    "expected next sibling to follow the shrunken parent border box",
+  );
+}
+
+#[test]
 fn sibling_margin_collapse_is_not_broken_by_external_float_base_rounding() {
   let spacer = block_with_height_and_margins(16_777_216.0, 0.0, 0.0);
   let a = block_with_height_and_margins(10.1, 0.0, 23.0);

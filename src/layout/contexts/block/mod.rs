@@ -3642,7 +3642,6 @@ impl BlockFormattingContext {
 
     let mut fragments = Vec::with_capacity(parallel_results.len());
     let mut content_height: f32 = 0.0;
-    let mut content_height_before_last_cursor: f32 = 0.0;
     let mut current_y = 0.0;
     let mut margin_ctx = margin_ctx;
     let child_margin_mode = if parent.id == 1 && self.factory.quirks_mode() == QuirksMode::Quirks {
@@ -3684,7 +3683,6 @@ impl BlockFormattingContext {
 
       let block_extent = fragment.bounds.height();
       let next_y = box_y + block_extent;
-      content_height_before_last_cursor = content_height;
       content_height = content_height.max(next_y);
       current_y = next_y;
 
@@ -3729,21 +3727,11 @@ impl BlockFormattingContext {
 
     let mut flow_height = current_y;
     if !allow_collapse_last || parent_has_bottom_separation {
-      // Trailing margins apply after the last in-flow cursor (CSS 2.1 §10.6.3). They must be
-      // applied relative to `current_y` (the last cursor position), not `content_height` (which can
-      // be extended by earlier overlapping siblings), otherwise we'd double-count.
-      //
-      // Negative trailing margins can legitimately reduce the auto-height when the final in-flow
-      // cursor is also the deepest content; in that case the last child's bottom margin edge sits
-      // above its border-box edge and the box overflows (overflow:visible by default).
-      let end_y = current_y + trailing_margin;
-      let base_height = if (content_height - current_y).abs() < 0.01 {
-        content_height_before_last_cursor
-      } else {
-        content_height
-      };
-      flow_height = base_height.max(end_y).max(0.0);
-      content_height = flow_height;
+      // Trailing margins apply after the last in-flow cursor (CSS 2.1 §10.6.3). The used height is
+      // based on the cursor position, not the maximum descendant extent, so negative trailing
+      // margins can shrink the auto-height and allow earlier content to overflow
+      // (`overflow: visible` default).
+      flow_height += trailing_margin;
     }
     if !flow_height.is_finite() {
       flow_height = 0.0;
@@ -6501,28 +6489,14 @@ impl BlockFormattingContext {
 
     let mut flow_height = current_y;
     if !allow_collapse_last || parent_has_bottom_separation {
-      // Trailing margins apply after the last in-flow cursor (CSS 2.1 §10.6.3). Apply them
-      // relative to `current_y` (the last cursor position), not `content_height` (which can be
-      // extended by earlier overlapping siblings), otherwise we'd double-count.
-      //
-      // Negative trailing margins can legitimately reduce the auto-height when the final in-flow
-      // cursor is also the deepest content; in that case the last child's bottom margin edge sits
-      // above its border-box edge and the box overflows (overflow:visible by default).
-      let end_y = current_y + trailing_margin;
-      let base_height = if (content_height - current_y).abs() < 0.01 {
-        content_height_before_last_cursor
-      } else {
-        content_height
-      };
-      flow_height = base_height.max(end_y).max(0.0);
-      content_height = flow_height;
+      flow_height += trailing_margin;
     }
     if !flow_height.is_finite() {
       flow_height = 0.0;
     }
     flow_height = flow_height.max(0.0);
 
-    // Float boxes extend the formatting context height for BFC roots.
+    // Float boxes extend the formatting context height for BFC roots (the "clearfix" behavior).
     let float_bottom = if owns_float_ctx {
       float_ctx
         .left_floats()

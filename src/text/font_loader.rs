@@ -1779,6 +1779,30 @@ impl FontContext {
     allow_remote: bool,
   ) -> FontLoadEvent {
     let display = face.display.unwrap_or(FontDisplay::Auto);
+    const OPTIONAL_SKIP_REASON: &str = "font-display: optional skipped url() sources (cold cache)";
+    // `font-display: optional` is intended to avoid FOIT/layout churn on a cold cache. Browsers
+    // (notably Chrome) generally only use optional faces when the font is already available (e.g.
+    // via `local()` or an in-memory cache) and otherwise render with fallback fonts.
+    //
+    // FastRender renders pages in a fresh, cache-less environment; attempting to load optional
+    // `url(...)` sources makes offline diffs diverge from Chrome baselines (especially for pages
+    // that deliberately mark their headline fonts `optional` to avoid layout shifts).
+    //
+    // Model the cold-cache behavior by only allowing optional faces to resolve from `local()`
+    // sources or inline `data:` URLs. Other `url()` sources are skipped.
+    if matches!(display, FontDisplay::Optional)
+      && !face.sources.iter().any(|src| match src {
+        FontFaceSource::Local(_) => true,
+        FontFaceSource::Url(url_src) => has_prefix_ignore_ascii_case(&url_src.url, "data:"),
+      })
+    {
+      return FontLoadEvent::skipped(
+        family,
+        None,
+        display,
+        OPTIONAL_SKIP_REASON,
+      );
+    }
     if render_control::check_active(RenderStage::Css).is_err() {
       return FontLoadEvent::skipped(family, None, display, "render cancelled");
     }
@@ -1802,6 +1826,17 @@ impl FontContext {
           }
         }
         FontFaceSource::Url(src) => {
+          if matches!(display, FontDisplay::Optional)
+            && !has_prefix_ignore_ascii_case(&src.url, "data:")
+          {
+            let face_base_url = face.source_stylesheet_url.as_deref().or(base_url);
+            let resolved = resolve_font_url(&src.url, face_base_url);
+            last_source = Some(resolved);
+            if last_error.is_none() {
+              last_error = Some(OPTIONAL_SKIP_REASON.to_string());
+            }
+            continue;
+          }
           if !allow_remote {
             last_error = Some("remote font loading disabled".to_string());
             continue;
@@ -1832,6 +1867,9 @@ impl FontContext {
       return FontLoadEvent::skipped(family, last_source, display, "render cancelled");
     }
     match last_error {
+      Some(reason) if matches!(display, FontDisplay::Optional) && reason == OPTIONAL_SKIP_REASON => {
+        FontLoadEvent::skipped(family, last_source, display, reason)
+      }
       Some(reason) => FontLoadEvent::failed(family, last_source, display, reason),
       None => FontLoadEvent::skipped(family, None, display, "no usable sources"),
     }
@@ -5572,13 +5610,13 @@ mod tests {
   }
 
   #[test]
-  fn font_display_optional_skips_slow_loads() {
+  fn font_display_optional_skips_url_sources_on_cold_cache() {
     let Some((data, fallback_family)) = system_font_for_char('A') else {
       return;
     };
     let fetcher = Arc::new(StubFetcher {
       data: data.clone(),
-      delay: Duration::from_millis(200),
+      delay: Duration::from_millis(0),
       fail: false,
     });
     let mut db = FontDatabase::empty();
@@ -5593,9 +5631,18 @@ mod tests {
       display: Some(FontDisplay::Optional),
       ..Default::default()
     };
-    ctx
-      .load_web_fonts(&[face], None, None)
+    let report = ctx
+      .load_web_fonts_with_options(&[face], None, None, WebFontLoadOptions::default())
       .expect("schedule optional load");
+    assert!(
+      report.events.iter().any(|event| {
+        event.family == "OptFace"
+          && event.display == FontDisplay::Optional
+          && matches!(event.status, FontLoadStatus::Skipped { .. })
+      }),
+      "expected optional face to be skipped on cold cache (events={:?})",
+      report.events
+    );
 
     assert!(
       ctx.wait_for_pending_web_fonts(Duration::from_secs(1)),
