@@ -4,5 +4,9 @@ use knowledge_base::ApiDatabase;
 ///
 /// This uses the bundled KB files from the `knowledge-base` crate (YAML + TOML).
 pub fn load_default_api_database() -> ApiDatabase {
-  ApiDatabase::load_default().unwrap_or_else(|err| panic!("failed to load bundled knowledge base: {err}"))
+  let kb = ApiDatabase::load_default()
+    .unwrap_or_else(|err| panic!("failed to load built-in knowledge base: {err}"));
+  kb.validate()
+    .unwrap_or_else(|err| panic!("invalid built-in knowledge base: {err}"));
+  kb
 }

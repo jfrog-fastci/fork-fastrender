@@ -4,6 +4,7 @@ mod api;
 mod api_use;
 pub mod callback;
 pub mod encoding;
+pub mod eval;
 mod recognize;
 mod resolve;
 mod template_eval;
@@ -26,6 +27,7 @@ pub use api_use::{resolve_api_use, ApiUseKind, ResolvedApiUse};
 pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
 #[cfg(feature = "typed")]
 pub use encoding::analyze_string_encodings_typed;
+pub use eval::{eval_api_call, CallSemantics, CallSiteInfo as EvalCallSiteInfo};
 pub use kb::load_default_api_database;
 pub use db::{CallSiteInfo, EffectDb};
 pub use recognize::{
