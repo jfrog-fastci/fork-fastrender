@@ -529,8 +529,16 @@ SECTIONS {
 } INSERT AFTER .text;
 ```
 
-When linking from Rust/Cargo, enabling the `runtime-native` crate feature
-`llvm_stackmaps_linker` on Linux injects this linker script automatically.
+When linking from Rust/Cargo:
+
+- The `runtime-native` crate feature `llvm_stackmaps_linker` causes
+  `runtime-native/build.rs` to pass this linker script when linking artifacts
+  produced by the `runtime-native` package itself (tests / cdylib on Linux).
+- For downstream Rust binaries that depend on `runtime-native` as an `rlib`,
+  Cargo does **not** automatically propagate linker-script args from
+  dependencies. You must pass `-Wl,-T,runtime-native/link/stackmaps.ld` at the
+  final link step (or use the `native_js::link` / `scripts/native_link.sh`
+  helpers, which always inject it).
 
 Because these are normal ELF symbols, the dynamic loader applies any necessary
 relocations (PIE or non-PIE). The runtime can therefore read stackmap bytes

@@ -475,9 +475,11 @@ llvm-readobj --sections <bin> | rg llvm_stackmaps
 
 When linking from Rust/Cargo:
 
-- If you enable the `runtime-native` crate feature `llvm_stackmaps_linker` on Linux, its build script injects the
-  linker script automatically (and also enables link flags needed for stackmap relocations in PIE mode).
-- Otherwise, you must pass the linker script to the final link step yourself (e.g. via `RUSTFLAGS` or your build system).
+- `runtime-native` can provide weak fallback range symbols, but for `--gc-sections` builds you still want the final link
+  step to apply `runtime-native/link/stackmaps.ld` so the section is `KEEP`ed and fast symbol-based discovery works.
+- Cargo does **not** automatically propagate linker-script args from dependencies, so Rust binaries must pass the linker
+  script at the final link step (e.g. via `RUSTFLAGS` or your build system), or use the `native_js::link` /
+  `scripts/native_link.sh` helpers which always inject it.
 
 ---
 
