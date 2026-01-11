@@ -243,6 +243,9 @@ mod imp {
 
             let ptr = buf.stable_mut_ptr().as_ptr();
             let len = buf.len();
+            let stability = crate::debug_stability::record(id, |rec| {
+                rec.ptr(crate::debug_stability::PtrKind::IoBufData { index: 0 }, ptr as *const u8);
+            });
             let entry = opcode::Read::new(types::Fd(fd), ptr, len as _)
                 .offset(offset as _)
                 .build()
@@ -253,6 +256,12 @@ mod imp {
             self.in_flight().insert(
                 id.0,
                 Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IoBufData { index: 0 },
+                            buf.stable_mut_ptr().as_ptr() as *const u8,
+                        );
+                    });
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, buf);
                     }
@@ -277,6 +286,9 @@ mod imp {
 
             let ptr = buf.stable_ptr().as_ptr() as *const u8;
             let len = buf.len();
+            let stability = crate::debug_stability::record(id, |rec| {
+                rec.ptr(crate::debug_stability::PtrKind::IoBufData { index: 0 }, ptr as *const u8);
+            });
             let entry = opcode::Write::new(types::Fd(fd), ptr, len as _)
                 .offset(offset as _)
                 .build()
@@ -287,6 +299,12 @@ mod imp {
             self.in_flight().insert(
                 id.0,
                 Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IoBufData { index: 0 },
+                            buf.stable_ptr().as_ptr() as *const u8,
+                        );
+                    });
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, buf);
                     }
@@ -314,6 +332,19 @@ mod imp {
                 .try_into()
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many iovecs"))?;
 
+            let stability = crate::debug_stability::record(id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IovecArray,
+                    iovecs.as_ptr().cast::<u8>(),
+                );
+                for (i, b) in bufs.iter_mut().enumerate() {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::IoBufData { index: i },
+                        b.stable_mut_ptr().as_ptr() as *const u8,
+                    );
+                }
+            });
+
             let off = offset.unwrap_or(u64::MAX);
             let entry = opcode::Readv::new(types::Fd(fd), iovecs.as_ptr(), iovecs_len)
                 .offset(off as _)
@@ -325,7 +356,18 @@ mod imp {
             self.in_flight().insert(
                 id.0,
                 Box::new(move |result| {
-                    let _iovecs = iovecs;
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IovecArray,
+                            iovecs.as_ptr().cast::<u8>(),
+                        );
+                        for (i, b) in bufs.iter_mut().enumerate() {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::IoBufData { index: i },
+                                b.stable_mut_ptr().as_ptr() as *const u8,
+                            );
+                        }
+                    });
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, bufs);
                     }
@@ -353,6 +395,19 @@ mod imp {
                 .try_into()
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many iovecs"))?;
 
+            let stability = crate::debug_stability::record(id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IovecArray,
+                    iovecs.as_ptr().cast::<u8>(),
+                );
+                for (i, b) in bufs.iter().enumerate() {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::IoBufData { index: i },
+                        b.stable_ptr().as_ptr() as *const u8,
+                    );
+                }
+            });
+
             let off = offset.unwrap_or(u64::MAX);
             let entry = opcode::Writev::new(types::Fd(fd), iovecs.as_ptr(), iovecs_len)
                 .offset(off as _)
@@ -364,7 +419,18 @@ mod imp {
             self.in_flight().insert(
                 id.0,
                 Box::new(move |result| {
-                    let _iovecs = iovecs;
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IovecArray,
+                            iovecs.as_ptr().cast::<u8>(),
+                        );
+                        for (i, b) in bufs.iter().enumerate() {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::IoBufData { index: i },
+                                b.stable_ptr().as_ptr() as *const u8,
+                            );
+                        }
+                    });
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, bufs);
                     }
@@ -415,6 +481,35 @@ mod imp {
                 hdr.as_mut().msg_controllen = control.len();
             }
 
+            let stability = crate::debug_stability::record(id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::MsgHdr,
+                    hdr.as_ptr().cast::<u8>(),
+                );
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IovecArray,
+                    iovecs.as_ptr().cast::<u8>(),
+                );
+                if let Some(ref name) = name {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::SockAddr,
+                        (name.as_ref() as *const libc::sockaddr_storage).cast::<u8>(),
+                    );
+                }
+                if let Some(ref control) = control {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::MsgControl,
+                        control.as_ptr(),
+                    );
+                }
+                for (i, b) in bufs.iter().enumerate() {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::IoBufData { index: i },
+                        b.stable_ptr().as_ptr() as *const u8,
+                    );
+                }
+            });
+
             let entry = opcode::SendMsg::new(types::Fd(fd), hdr.as_ptr())
                 .flags(msg.flags as _)
                 .build()
@@ -425,6 +520,34 @@ mod imp {
             self.in_flight().insert(
                 id.0,
                 Box::new(move |result| {
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::MsgHdr,
+                            hdr.as_ptr().cast::<u8>(),
+                        );
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IovecArray,
+                            iovecs.as_ptr().cast::<u8>(),
+                        );
+                        if let Some(ref name) = name {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::SockAddr,
+                                (name.as_ref() as *const libc::sockaddr_storage).cast::<u8>(),
+                            );
+                        }
+                        if let Some(ref control) = control {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::MsgControl,
+                                control.as_ptr(),
+                            );
+                        }
+                        for (i, b) in bufs.iter().enumerate() {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::IoBufData { index: i },
+                                b.stable_ptr().as_ptr() as *const u8,
+                            );
+                        }
+                    });
                     let _keep = (iovecs, hdr, name, control);
                     if let Some(shared) = weak.upgrade() {
                         shared.complete(result, bufs);
@@ -481,6 +604,35 @@ mod imp {
                 hdr.as_mut().msg_controllen = control.len();
             }
 
+            let stability = crate::debug_stability::record(id, |rec| {
+                rec.ptr(
+                    crate::debug_stability::PtrKind::MsgHdr,
+                    hdr.as_ptr().cast::<u8>(),
+                );
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IovecArray,
+                    iovecs.as_ptr().cast::<u8>(),
+                );
+                if let Some(ref name) = name {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::SockAddr,
+                        (name.as_ref() as *const libc::sockaddr_storage).cast::<u8>(),
+                    );
+                }
+                if let Some(ref control) = control {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::MsgControl,
+                        control.as_ptr(),
+                    );
+                }
+                for (i, b) in bufs.iter_mut().enumerate() {
+                    rec.ptr(
+                        crate::debug_stability::PtrKind::IoBufData { index: i },
+                        b.stable_mut_ptr().as_ptr() as *const u8,
+                    );
+                }
+            });
+
             let entry = opcode::RecvMsg::new(types::Fd(fd), hdr.as_mut_ptr())
                 .flags(msg.flags as _)
                 .build()
@@ -491,7 +643,34 @@ mod imp {
             self.in_flight().insert(
                 id.0,
                 Box::new(move |result| {
-                    let _iovecs = iovecs;
+                    crate::debug_stability::assert_stable(&stability, |rec| {
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::MsgHdr,
+                            hdr.as_ptr().cast::<u8>(),
+                        );
+                        rec.ptr(
+                            crate::debug_stability::PtrKind::IovecArray,
+                            iovecs.as_ptr().cast::<u8>(),
+                        );
+                        if let Some(ref name) = name {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::SockAddr,
+                                (name.as_ref() as *const libc::sockaddr_storage).cast::<u8>(),
+                            );
+                        }
+                        if let Some(ref control) = control {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::MsgControl,
+                                control.as_ptr(),
+                            );
+                        }
+                        for (i, b) in bufs.iter_mut().enumerate() {
+                            rec.ptr(
+                                crate::debug_stability::PtrKind::IoBufData { index: i },
+                                b.stable_mut_ptr().as_ptr() as *const u8,
+                            );
+                        }
+                    });
                     let hdr_ref = hdr.as_ref();
                     let msg_flags = if result < 0 { 0 } else { hdr_ref.msg_flags };
 

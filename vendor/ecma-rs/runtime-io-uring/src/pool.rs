@@ -120,6 +120,10 @@ mod linux {
             self.inner.nbufs
         }
 
+        pub(crate) fn storage_base_ptr(&self) -> *const u8 {
+            self.inner.storage.as_ptr()
+        }
+
         pub fn stats(&self) -> PoolStats {
             PoolStats {
                 nbufs: self.inner.nbufs as usize,

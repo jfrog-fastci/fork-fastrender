@@ -13,6 +13,7 @@ mod linux {
 
     use io_uring::{opcode, squeue, types, IoUring};
 
+    use crate::debug_stability;
     use crate::driver::OpId;
     use crate::op_connect_accept::{AcceptAddr, ConnectAddr};
     use crate::pool::{LeasedBuf, ProvidedBufPool};
@@ -307,6 +308,36 @@ mod linux {
                     .build(),
             }
         }
+
+        fn record_stability_pointers(&self, rec: &mut debug_stability::Recorder) {
+            match self {
+                PreparedOp::Read { buf, .. } => {
+                    rec.ptr(
+                        debug_stability::PtrKind::IoBufData { index: 0 },
+                        buf.as_ptr(),
+                    );
+                }
+                PreparedOp::RecvWithBufSelect { pool, .. }
+                | PreparedOp::ReadWithBufSelect { pool, .. } => {
+                    rec.ptr(
+                        debug_stability::PtrKind::ProvidedBufPoolBase {
+                            group_id: pool.buf_group(),
+                        },
+                        pool.storage_base_ptr(),
+                    );
+                }
+                PreparedOp::OpenAt { path, .. } => {
+                    rec.ptr(debug_stability::PtrKind::Path, path.as_ptr() as *const u8);
+                }
+                PreparedOp::Statx { path, out, .. } => {
+                    rec.ptr(debug_stability::PtrKind::Path, path.as_ptr() as *const u8);
+                    rec.ptr(
+                        debug_stability::PtrKind::OutParam,
+                        out.as_ptr() as *const u8,
+                    );
+                }
+            }
+        }
     }
 
     #[derive(Debug)]
@@ -318,8 +349,15 @@ mod linux {
     }
 
     enum OpState {
-        Target { op: PreparedOp },
-        Timeout { target: OpId, _ts: Box<types::Timespec> },
+        Target {
+            op: PreparedOp,
+            stability: debug_stability::OpStability,
+        },
+        Timeout {
+            target: OpId,
+            _ts: Box<types::Timespec>,
+            stability: debug_stability::OpStability,
+        },
         Cancel { target: OpId },
     }
 
@@ -410,7 +448,6 @@ mod linux {
                 .lock()
                 .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
             let inner = &mut *inner_guard;
-
             {
                 let mut sq = inner.ring.submission();
                 let available = sq.capacity() - sq.len();
@@ -435,6 +472,7 @@ mod linux {
             let inner = &mut *inner_guard;
             let op_id = Self::alloc_id(inner);
 
+            let stability = debug_stability::record(op_id, |rec| op.record_stability_pointers(rec));
             let entry = op.build_sqe().user_data(op_id.as_u64());
             {
                 let ring = &mut inner.ring;
@@ -446,7 +484,7 @@ mod linux {
                     return Err(Self::submission_queue_full());
                 }
 
-                ops.insert(op_id, OpState::Target { op });
+                ops.insert(op_id, OpState::Target { op, stability });
 
                 unsafe {
                     sq.push(&entry).unwrap();
@@ -509,6 +547,7 @@ mod linux {
             let op_id = Self::alloc_id(inner);
             let timeout_id = Self::alloc_id(inner);
 
+            let op_stability = debug_stability::record(op_id, |rec| op.record_stability_pointers(rec));
             let entry = op
                 .build_sqe()
                 .flags(squeue::Flags::IO_LINK)
@@ -517,9 +556,13 @@ mod linux {
             // `IORING_OP_LINK_TIMEOUT` stores a pointer to the passed `Timespec` in the SQE; keep
             // that memory alive until the timeout CQE completes.
             let ts = Box::new(duration_to_timespec(timeout));
+            let ts_ptr: *const types::Timespec = &*ts;
             let timeout_entry = opcode::LinkTimeout::new(&*ts)
                 .build()
                 .user_data(timeout_id.as_u64());
+            let timeout_stability = debug_stability::record(timeout_id, |rec| {
+                rec.ptr(debug_stability::PtrKind::Timespec, ts_ptr as *const u8);
+            });
 
             {
                 let ring = &mut inner.ring;
@@ -531,8 +574,21 @@ mod linux {
                     return Err(Self::submission_queue_full());
                 }
 
-                ops.insert(op_id, OpState::Target { op });
-                ops.insert(timeout_id, OpState::Timeout { target: op_id, _ts: ts });
+                ops.insert(
+                    op_id,
+                    OpState::Target {
+                        op,
+                        stability: op_stability,
+                    },
+                );
+                ops.insert(
+                    timeout_id,
+                    OpState::Timeout {
+                        target: op_id,
+                        _ts: ts,
+                        stability: timeout_stability,
+                    },
+                );
 
                 unsafe {
                     sq.push(&entry).unwrap();
@@ -610,32 +666,53 @@ mod linux {
                     };
 
                     match state {
-                        OpState::Target { mut op } => match &mut op {
-                            PreparedOp::RecvWithBufSelect { pool, .. }
-                            | PreparedOp::ReadWithBufSelect { pool, .. } => {
-                                if res < 0 {
-                                    inner.ready.push_back(Completion::Op { id, res, op });
-                                    continue;
-                                }
+                        OpState::Target { mut op, stability } => {
+                            debug_stability::assert_stable(&stability, |rec| {
+                                op.record_stability_pointers(rec);
+                            });
+                            match &mut op {
+                                PreparedOp::RecvWithBufSelect { pool, .. }
+                                | PreparedOp::ReadWithBufSelect { pool, .. } => {
+                                    if res < 0 {
+                                        inner.ready.push_back(Completion::Op { id, res, op });
+                                        continue;
+                                    }
 
-                                if flags & IORING_CQE_F_BUFFER == 0 {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::Other,
-                                        "missing buffer id in CQE for buf-select op",
-                                    ));
+                                    if flags & IORING_CQE_F_BUFFER == 0 {
+                                        return Err(io::Error::new(
+                                            io::ErrorKind::Other,
+                                            "missing buffer id in CQE for buf-select op",
+                                        ));
+                                    }
+                                    let buf_id = (flags >> IORING_CQE_BUFFER_SHIFT) as u16;
+                                    let lease = pool.lease(buf_id, res as usize)?;
+                                    inner
+                                        .ready
+                                        .push_back(Completion::ProvidedBuf { id, buf: lease });
                                 }
-                                let buf_id = (flags >> IORING_CQE_BUFFER_SHIFT) as u16;
-                                let lease = pool.lease(buf_id, res as usize)?;
-                                inner.ready.push_back(Completion::ProvidedBuf { id, buf: lease });
+                                _ => inner.ready.push_back(Completion::Op { id, res, op }),
                             }
-                            _ => inner.ready.push_back(Completion::Op { id, res, op }),
                         },
-                        OpState::Timeout { target, .. } => {
-                            inner.ready.push_back(Completion::Timeout { id, target, res })
-                        }
+                        OpState::Timeout {
+                            target,
+                            _ts,
+                            stability,
+                        } => {
+                            debug_stability::assert_stable(&stability, |rec| {
+                                rec.ptr(
+                                    debug_stability::PtrKind::Timespec,
+                                    (&*_ts as *const types::Timespec) as *const u8,
+                                );
+                            });
+                            inner
+                                .ready
+                                .push_back(Completion::Timeout { id, target, res });
+                        },
                         OpState::Cancel { target } => {
-                            inner.ready.push_back(Completion::Cancel { id, target, res })
-                        }
+                            inner
+                                .ready
+                                .push_back(Completion::Cancel { id, target, res });
+                        },
                     }
                 }
             }

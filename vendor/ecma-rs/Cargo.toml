@@ -87,8 +87,8 @@ typecheck-ts = { path = "typecheck-ts", version = "0.1.0" }
 types-ts-interned = { path = "types-ts-interned", version = "0.1.0" }
 native-oracle-harness = { path = "native-oracle-harness", version = "0.1.0" }
 vm-js = { path = "vm-js", version = "0.1.0" }
-runtime-js = { path = "runtime-js", version = "0.1.0" }
 runtime-io-uring = { path = "runtime-io-uring", version = "0.1.0" }
+runtime-js = { path = "runtime-js", version = "0.1.0" }
 runtime-native-abi = { path = "runtime-native-abi", version = "0.1.0" }
 runtime-native = { path = "runtime-native", version = "0.1.0" }
 webidl = { path = "webidl", version = "0.1.0" }

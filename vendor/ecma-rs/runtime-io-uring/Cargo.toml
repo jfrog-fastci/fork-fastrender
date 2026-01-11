@@ -6,6 +6,12 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Debug-only pointer-stability instrumentation intended to catch missing pinning/roots when
+# integrating with a moving GC. When disabled, all instrumentation should compile away to
+# near-zero overhead.
+debug_stability = []
+
 [dependencies]
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { workspace = true }

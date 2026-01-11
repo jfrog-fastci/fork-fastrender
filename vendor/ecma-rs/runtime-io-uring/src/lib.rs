@@ -8,6 +8,13 @@
 //! - A provided-buffer pool (`ProvidedBufPool`) for pointer-free `recv`/`read` submissions via
 //!   `IORING_OP_PROVIDE_BUFFERS` + `IOSQE_BUFFER_SELECT` (useful to avoid passing pointers into
 //!   movable/GC-managed memory).
+//!
+//! Optional feature flags:
+//! - `debug_stability`: records kernel pointer graphs at submission time and asserts they are
+//!   unchanged when processing CQEs. This is intended as a development-time safety net for moving
+//!   GC integrations (missing pinning/roots).
+ 
+mod debug_stability;
 
 pub mod buf;
 pub mod driver;

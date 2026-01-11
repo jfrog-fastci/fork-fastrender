@@ -27,6 +27,10 @@ struct Obj {
 struct Inner {
     next_id: u64,
     objs: HashMap<u64, Obj>,
+    // Keep old allocations alive so tests can safely trigger "missing pin" bugs without the kernel
+    // writing into freed memory. This models a copying collector that retains from-space until it
+    // is safe to reclaim.
+    from_space: Vec<Vec<u8>>,
 }
 
 /// A mock moving GC.
@@ -103,6 +107,7 @@ impl MockGc {
     /// - pinned objects do not relocate
     pub fn collect(&self) {
         let mut inner = self.inner.lock().expect("poisoned mutex");
+        let mut from_space = Vec::new();
         let ids: Vec<u64> = inner.objs.keys().copied().collect();
         for id in ids {
             let Some(obj) = inner.objs.get_mut(&id) else {
@@ -121,9 +126,10 @@ impl MockGc {
                 let mut new = vec![0u8; old.len()];
                 new.copy_from_slice(&old);
                 obj.data = new;
-                drop(old);
+                from_space.push(old);
             }
         }
+        inner.from_space.extend(from_space);
     }
 }
 
@@ -202,4 +208,3 @@ impl Drop for MockGcPinGuard {
 }
 
 impl GcPinGuard for MockGcPinGuard {}
-
