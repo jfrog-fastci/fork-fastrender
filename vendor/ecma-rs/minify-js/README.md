@@ -64,7 +64,7 @@ When working inside this repository, there is also a small in-memory example
 that avoids filesystem I/O:
 
 ```bash
-cargo run -p minify-js --example minify_js_basic
+bash scripts/cargo_agent.sh run -p minify-js --example minify_js_basic
 ```
 
 ### Rust

@@ -54,5 +54,5 @@ This annotator is intended to run before invoking `rewrite-statepoints-for-gc`, 
 Enable it with:
 
 ```bash
-cargo test -p native-js --features statepoint-directives
+bash scripts/cargo_llvm.sh test -p native-js --features statepoint-directives
 ```

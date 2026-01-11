@@ -11,16 +11,16 @@
 
 ```sh
 # Parse a file (dialect inferred from extension)
-cargo run -p parse-js-cli -- path/to/file.tsx
+bash scripts/cargo_agent.sh run -p parse-js-cli -- path/to/file.tsx
 
 # Parse stdin (defaults to TypeScript + module)
-echo 'const x: number = 1' | cargo run -p parse-js-cli
+echo 'const x: number = 1' | bash scripts/cargo_agent.sh run -p parse-js-cli
 
 # Force parsing as a script (rejects top-level import/export)
-cargo run -p parse-js-cli -- --source-type script path/to/file.js
+bash scripts/cargo_agent.sh run -p parse-js-cli -- --source-type script path/to/file.js
 
 # Force parsing as JSX
-cargo run -p parse-js-cli -- --dialect jsx path/to/file.js
+bash scripts/cargo_agent.sh run -p parse-js-cli -- --dialect jsx path/to/file.js
 ```
 
 ### Dialect inference
@@ -67,4 +67,3 @@ On failure:
   "diagnostics": [ /* diagnostics::Diagnostic */ ]
 }
 ```
-

@@ -10,8 +10,8 @@ This directory contains LLVM-produced fixtures used by integration tests in
 two GC pointers.
 
 `statepoint_fixture.o` is the corresponding x86_64 Linux object file produced by
-LLVM 18. It is checked in so `cargo test` does **not** need to invoke LLVM tools
-and stays deterministic.
+LLVM 18. It is checked in so the test suite does **not** need to invoke LLVM
+tools and stays deterministic.
 
 ### Regenerating (LLVM 18)
 

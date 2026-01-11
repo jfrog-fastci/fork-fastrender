@@ -23,7 +23,7 @@ Module vs. script mode is inferred from filenames containing `.module.` (e.g.
 ## Running locally
 
 ```bash
-cargo run -p test262 --release -- \
+bash scripts/cargo_agent.sh run -p test262 --release -- \
   --data-dir test262/data \
   --manifest test262/manifest.toml \
   --report-path reports/test262-parser.json \

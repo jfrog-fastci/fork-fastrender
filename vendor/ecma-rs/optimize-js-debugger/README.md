@@ -16,7 +16,7 @@ npm install
 From the repository root:
 
 ```bash
-cargo run -p optimize-js-debugger
+bash scripts/cargo_agent.sh run -p optimize-js-debugger
 ```
 
 This starts an HTTP server on `http://localhost:3001` (serves `POST /compile`).
@@ -48,7 +48,7 @@ The Rust binary can also emit a JSON snapshot of the optimizer output instead of
 starting the HTTP server:
 
 ```bash
-cargo run -p optimize-js-debugger -- \
+bash scripts/cargo_agent.sh run -p optimize-js-debugger -- \
   --snapshot \
   --input optimize-js-debugger/tests/fixtures/debug_input.js \
   --mode module \
@@ -61,4 +61,3 @@ Flags:
 - `--input <path>`: read JS source from a file (default: stdin)
 - `--output <path>`: write JSON to a file (default: stdout)
 - `--mode <global|module>`: top-level mode (default: `module`)
-

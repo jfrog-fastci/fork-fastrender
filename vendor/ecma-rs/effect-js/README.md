@@ -106,5 +106,5 @@ let patterns = recognize_patterns_typed(&lowered, lowered.root_body(), &types);
 
 ```bash
 # From the `vendor/ecma-rs/` workspace root:
-cargo run -p effect-js --example recognize --features typed
+bash scripts/cargo_agent.sh run -p effect-js --example recognize --features typed
 ```

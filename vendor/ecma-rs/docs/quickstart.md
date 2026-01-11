@@ -9,10 +9,10 @@ If you're working on the **native compiler** track described in [`EXEC.plan.md`]
 
 ## Workspace defaults (baseline vs full workspace)
 
-This workspace uses Cargo's `default-members` so a plain `cargo test` stays lightweight:
+This workspace uses Cargo's `default-members` so a plain `bash scripts/cargo_agent.sh test` stays lightweight:
 
-- `cargo test` / `cargo check` runs the **default members** (core crates that do not require LLVM or external corpora).
-- `cargo test --workspace` runs **everything** in the workspace (includes optional harnesses + the LLVM-backed native compiler crates).
+- `bash scripts/cargo_agent.sh test` / `bash scripts/cargo_agent.sh check` runs the **default members** (core crates that do not require LLVM or external corpora).
+- `bash scripts/cargo_agent.sh test --workspace` runs **everything** in the workspace (includes optional harnesses + the LLVM-backed native compiler crates).
 
 For LLVM-backed crates (e.g. `native-js`, `runtime-native`), use [`scripts/cargo_llvm.sh`](../scripts/cargo_llvm.sh) and ensure LLVM 18 is installed (`scripts/check_system.sh`).
 
@@ -21,8 +21,8 @@ For LLVM-backed crates (e.g. `native-js`, `runtime-native`), use [`scripts/cargo
 In the FastRender mono-repo, `ecma-rs` lives under `vendor/ecma-rs/` and is **not** part of the
 top-level Cargo workspace.
 
-If you're running commands from the FastRender repo root, prefer the nested wrapper so `cargo`
-runs against the correct workspace *and* picks up the pinned toolchain:
+If you're running commands from the FastRender repo root, prefer the nested wrapper so commands
+run against the correct workspace *and* pick up the pinned toolchain:
 
 ```bash
 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p parse-js
@@ -68,7 +68,7 @@ just ci
 ```
 
 This runs the main `lint`/`check`/`test` suite and regenerates [`docs/deps.md`](./deps.md).
-CI runs the underlying `cargo` commands with `--locked` after generating `Cargo.lock`.
+CI runs the underlying wrapper commands with `--locked` after generating `Cargo.lock`.
 
 ## 2) Run the in-repo examples (no filesystem I/O)
 

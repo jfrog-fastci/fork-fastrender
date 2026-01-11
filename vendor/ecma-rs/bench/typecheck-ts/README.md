@@ -5,7 +5,7 @@ Deterministic, small-input performance exercises for the TypeScript pipeline.
 ## Running
 
 ```
-cargo bench -p typecheck-ts-bench
+bash scripts/cargo_agent.sh bench -p typecheck-ts-bench
 ```
 
 By default a human-readable summary is printed. To additionally emit structured
@@ -14,7 +14,7 @@ environment. When JSON output is enabled, the human-readable summary is emitted
 to stderr and stdout is reserved for JSON so it can be redirected to a file.
 
 All `typecheck-ts-bench` bench binaries accept `--json` as an alternative to the
-environment variable (pass it after `--` to `cargo bench`). Using
+environment variable (pass it after `--` to `bash scripts/cargo_agent.sh bench`). Using
 `TYPECHECK_TS_BENCH_JSON=1` is preferred since Cargo forwards flags to every
 benchmark/test binary and libtest harnesses may reject unknown arguments.
 
@@ -26,18 +26,18 @@ deterministic ordering/format while reducing total work.
 ### Reproducing the nightly JSON report locally
 
 ```
-cargo generate-lockfile
+bash scripts/cargo_agent.sh generate-lockfile
 mkdir -p reports
 TYPECHECK_TS_BENCH_JSON=1 TYPECHECK_TS_BENCH_ITERS_SCALE=10 \
-  cargo bench -p typecheck-ts-bench --bench pipeline --locked \
+  bash scripts/cargo_agent.sh bench -p typecheck-ts-bench --bench pipeline --locked \
   > reports/typecheck-ts-bench.json
 
 TYPECHECK_TS_BENCH_JSON=1 \
-  cargo bench -p typecheck-ts-bench --bench body_alloc --locked \
+  bash scripts/cargo_agent.sh bench -p typecheck-ts-bench --bench body_alloc --locked \
   > reports/typecheck-ts-body-alloc.json
 
 TYPECHECK_TS_BENCH_JSON=1 \
-  cargo bench -p typecheck-ts-bench --bench check_body_alloc --locked \
+  bash scripts/cargo_agent.sh bench -p typecheck-ts-bench --bench check_body_alloc --locked \
   > reports/typecheck-ts-check-body-alloc.json
 ```
 

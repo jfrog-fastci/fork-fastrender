@@ -128,7 +128,7 @@ With full ownership (no backwards-compat constraints), prioritize these hygiene 
   - Prefer `&str` for TS/JS source (valid UTF-8 is required for correct identifier handling).
   - Avoid having some crates/tests/docs pass `&[u8]` while the parser expects `&str`. Pick one and enforce it via doctests + CI.
 - **Make workspace build/test green**
-  - Ensure `cargo check --workspace` and `cargo test --workspace` succeed (or document intentionally excluded crates/targets).
+  - Ensure `bash scripts/cargo_agent.sh check --workspace` and `bash scripts/cargo_agent.sh test --workspace` succeed (or document intentionally excluded crates/targets).
   - Treat doc examples as compile-tested (doctests) for public APIs.
 - **Deterministic + lock-minimal semantics**
   - Avoid `Arc<RwLock<...>>` as the default representation for scopes/symbols; prefer immutable arenas + `ScopeId`/`SymbolId` indices.
@@ -678,15 +678,15 @@ Create a harness that:
 
 - **Parser conformance (existing)**:
 
-  - `cargo run -p parse-js --release --features conformance-runner --bin conformance_runner`
+  - `bash scripts/cargo_agent.sh run -p parse-js --release --features conformance-runner --bin conformance_runner`
 
   Notes:
   - the current parser runner skips `@filename:` multi-file tests; the typecheck harness must not
 
 - **Type checker conformance (new)**:
 
-  - `cargo run -p typecheck-ts-harness --release -- conformance --filter <glob-or-regex>`
-  - `cargo run -p typecheck-ts-harness --release -- conformance --shard 0/16`
+  - `bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance --filter <glob-or-regex>`
+  - `bash scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance --shard 0/16`
 
   Recommended harness flags:
   - `--json` (machine-readable output)
@@ -785,7 +785,7 @@ Assume a “one-shot” rebuild with unlimited resources. The phases below are *
   - stable codes + labels + notes
 - Make the workspace **build/test green**:
   - eliminate drift/rot between crates by stabilizing AST/HIR boundaries
-  - enforce `cargo check --workspace` and `cargo test --workspace` in CI
+  - enforce `bash scripts/cargo_agent.sh check --workspace` and `bash scripts/cargo_agent.sh test --workspace` in CI
 - Add `tracing` instrumentation policy and a `--profile` JSON output mode in `typecheck-ts-harness`.
 
 ### Phase B — Unified semantics (`semantic-js`) + stable IDs (`hir-js`)

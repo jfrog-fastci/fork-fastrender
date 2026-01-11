@@ -94,12 +94,12 @@ See [`EXEC.plan.md`](../EXEC.plan.md) → “Our TypeScript Dialect” for the c
 
 ## 2) Typecheck in strict-native mode
 
-### Raw cargo command (inside the ecma-rs workspace)
+### Command (inside the ecma-rs workspace)
 
 If you’re in `vendor/ecma-rs/`:
 
 ```bash
-cargo run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --strict-native path/to/file.ts
 ```
 
 ### Recommended wrapper (agent-safe)
@@ -146,10 +146,10 @@ The “native compiler” work needs a correctness backstop. We use a **VM oracl
 - Run the JS under our deterministic interpreter, [`vm-js`](../vm-js/),
 - (Eventually) compare oracle behavior against the native pipeline output.
 
-### Raw cargo command (inside the ecma-rs workspace)
+### Command (inside the ecma-rs workspace)
 
 ```bash
-cargo test -p native-oracle-harness
+bash scripts/cargo_agent.sh test -p native-oracle-harness
 ```
 
 ### Recommended (agent-safe wrapper)
@@ -164,7 +164,7 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness
 bash scripts/cargo_agent.sh test -p native-oracle-harness
 ```
 
-Expected output is standard `cargo test` output.
+Expected output is standard test output.
 Today the harness asserts that fixtures erase to JS and execute successfully in the oracle runtime; native-vs-oracle comparison is expected to be added later.
 
 > Note: the oracle fixture corpus intentionally includes some **TypeScript-only expression wrappers**

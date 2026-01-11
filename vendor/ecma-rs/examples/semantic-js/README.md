@@ -91,10 +91,10 @@ assert_eq!(
 ```
 
 This snippet is also available as a doctest in `semantic-js`'s crate
-documentation (`cargo test -p semantic-js --doc`).
+documentation (`bash scripts/cargo_agent.sh test -p semantic-js --doc`).
 
 For a runnable, compiled version of the same flow see:
 
 ```bash
-cargo run -p semantic-js --example js_mode_basic
+bash scripts/cargo_agent.sh run -p semantic-js --example js_mode_basic
 ```

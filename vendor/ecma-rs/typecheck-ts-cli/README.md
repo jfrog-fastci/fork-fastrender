@@ -10,22 +10,22 @@ sources.
 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck fixtures/basic.ts
 
 # Or, from within vendor/ecma-rs/:
-cargo run -p typecheck-ts-cli -- typecheck fixtures/basic.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck fixtures/basic.ts
 
 # Enforce the repo's strict-native TypeScript subset (see EXEC.plan):
-cargo run -p typecheck-ts-cli -- typecheck --strict-native fixtures/basic.ts
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --strict-native fixtures/basic.ts
 
 # Load a real project via tsconfig.json (entries are optional in project mode):
-cargo run -p typecheck-ts-cli -- typecheck --project path/to/tsconfig.json
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck --project path/to/tsconfig.json
 
 # Request extra output:
-cargo run -p typecheck-ts-cli -- typecheck fixtures/basic.ts \
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck fixtures/basic.ts \
   --type-at fixtures/basic.ts:42 \
   --symbol-at fixtures/basic.ts:17 \
   --exports fixtures/basic.ts
 
 # Emit structured JSON (diagnostics + query results)
-cargo run -p typecheck-ts-cli -- typecheck fixtures/basic.ts --json
+bash scripts/cargo_agent.sh run -p typecheck-ts-cli -- typecheck fixtures/basic.ts --json
 ```
 
 ### Options

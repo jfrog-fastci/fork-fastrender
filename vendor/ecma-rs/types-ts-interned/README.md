@@ -12,7 +12,7 @@ Interned, deterministic TypeScript type representation + evaluator/relation engi
 ## Runnable example
 
 ```bash
-cargo run -p types-ts-interned --example types_ts_interned_basic
+bash scripts/cargo_agent.sh run -p types-ts-interned --example types_ts_interned_basic
 ```
 
 This example shows how to create a [`TypeStore`], intern structural types, and
@@ -40,10 +40,10 @@ From the repo root:
 
 ```bash
 # one-time
-cargo install cargo-fuzz
+bash scripts/cargo_agent.sh install cargo-fuzz
 
 # run the fuzzer
-cargo fuzz run type_graph
+bash scripts/cargo_agent.sh fuzz run type_graph
 ```
 
 This repo pins a stable toolchain, but `cargo fuzz` requires nightly-only
@@ -53,5 +53,5 @@ compiler flags for sanitizer coverage. The workspace config opts into
 If you prefer to use nightly explicitly, run:
 
 ```bash
-cargo +nightly fuzz run type_graph
+bash scripts/cargo_agent.sh +nightly fuzz run type_graph
 ```

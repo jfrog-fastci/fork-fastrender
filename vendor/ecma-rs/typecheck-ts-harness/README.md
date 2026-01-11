@@ -18,10 +18,10 @@ git submodule update --init --recursive parse-js/tests/TypeScript
 cd typecheck-ts-harness && npm ci
 
 # 3) Run the Rust conformance harness
-cargo run -p typecheck-ts-harness --release -- conformance --filter "*/es2020/**" --shard 0/8 --shard-strategy hash
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance --filter "*/es2020/**" --shard 0/8 --shard-strategy hash
 
 # 4) (Optional) Regenerate difftsc baselines for local fixtures
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --update-baselines
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --update-baselines
 ```
 
 If setup fails because the TypeScript suite is missing or you see “cannot find
@@ -82,18 +82,18 @@ Runs the Rust checker against upstream TypeScript conformance cases.
 
 ```
 # Default root, release build
-cargo run -p typecheck-ts-harness --release -- conformance
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance
 
 # Filter (glob or regex) and shard
-cargo run -p typecheck-ts-harness --release -- conformance \
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
   --filter "*/es2020/**" \
   --shard 3/16
 
 # Larger timeout per test (seconds)
-cargo run -p typecheck-ts-harness --release -- conformance --timeout-secs 30
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance --timeout-secs 30
 
 # Ignore known failures via manifest + allow-only-new-failures
-cargo run -p typecheck-ts-harness --release -- conformance \
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance \
   --manifest typecheck-ts-harness/fixtures/conformance_manifest.toml \
   --fail-on new
 ```
@@ -148,7 +148,7 @@ This is **not** a Rust-vs-tsc comparison; it is snapshot-vs-tsc (baseline
 integrity).
 
 ```
-cargo run -p typecheck-ts-harness --release -- \
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
   verify-snapshots \
   --root typecheck-ts-harness/fixtures/conformance-mini \
   --jobs 2 \
@@ -171,7 +171,7 @@ Run 8–16 shards in parallel matrix jobs to keep wall time low:
 matrix:
   shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
 
-run: cargo run -p typecheck-ts-harness --release -- conformance --shard ${{matrix.shard}}/16 --shard-strategy hash --timeout-secs 20 --json
+run: bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance --shard ${{matrix.shard}}/16 --shard-strategy hash --timeout-secs 20 --json
 ```
 
 If the TypeScript suite is missing the command errors with setup instructions
@@ -185,19 +185,19 @@ differential testing (tsc vs the Rust checker).
 
 ```
 # Regenerate baselines for the bundled suite
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --update-baselines
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --update-baselines
 
 # Compare live tsc output against baselines
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc
 
 # Differential mode: tsc vs Rust
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust
 
 # Differential mode using stored baselines instead of shelling out to tsc
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust --use-baselines
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust --use-baselines
 
 # Filter by id (`<suite>/<test>`) and shard (zero-based)
-cargo run -p typecheck-ts-harness --release -- difftsc \
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc \
   --suite fixtures/difftsc \
   --filter "difftsc/triple_slash_*" \
   --shard 0/4 \
@@ -205,19 +205,19 @@ cargo run -p typecheck-ts-harness --release -- difftsc \
   --use-baselines
 
 # Allow small span drift (bytes)
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --span-tolerance 2
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --span-tolerance 2
 
 # Print raw tsc payloads for mismatches
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --print-tsc
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --print-tsc
 
 # Limit parallel workers (defaults to CPU count)
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust --use-baselines --jobs 4
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust --use-baselines --jobs 4
 
 # Increase timeout per test (seconds)
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --timeout-secs 40
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --timeout-secs 40
 
 # Emit JSON (includes diff details) and continue even if mismatches are found
-cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust --json --allow-mismatches
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --compare-rust --json --allow-mismatches
 ```
 
 - Node is discovered by running `node --version`; use `--node` to override.
@@ -262,7 +262,7 @@ Run 8–16 shards in parallel matrix jobs:
 matrix:
   shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
 
-run: cargo run -p typecheck-ts-harness --release -- difftsc \
+run: bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc \
   --suite typecheck-ts-harness/fixtures/difftsc \
   --compare-rust --use-baselines \
   --shard ${{matrix.shard}}/16 \
@@ -286,23 +286,23 @@ machine-readable triage report on stdout.
 
 ```
 # Generate a conformance JSON report artifact
-cargo run -p typecheck-ts-harness --release -- conformance --json --allow-mismatches > report.json
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance --json --allow-mismatches > report.json
 
 # Print the human triage summary (stderr)
-cargo run -p typecheck-ts-harness --release -- triage --input report.json
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- triage --input report.json
 
 # Emit structured triage JSON (stdout) while still printing the summary to stderr
-cargo run -p typecheck-ts-harness --release -- triage --input report.json --json > triage.json
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- triage --input report.json --json > triage.json
 
 # Limit the output to the top N groups/cases
-cargo run -p typecheck-ts-harness --release -- triage --input report.json --top 50
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- triage --input report.json --top 50
 
 # Show regressions/fixes vs a previous JSON report
-cargo run -p typecheck-ts-harness --release -- triage --input report.json --baseline previous.json
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- triage --input report.json --baseline previous.json
 
 # Pipe a JSON report directly into triage (use `--input -` for stdin)
-cargo run -p typecheck-ts-harness --release -- conformance --json --allow-mismatches \
-  | cargo run -p typecheck-ts-harness --release -- triage --input - --json > triage.json
+bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- conformance --json --allow-mismatches \
+  | bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- triage --input - --json > triage.json
 ```
 
 ### Expectations manifests
@@ -350,7 +350,7 @@ the suite name (e.g. `difftsc/assignability`).
   generate them.
 - To add/update tests:
   1. Drop files under `fixtures/<suite>/...`
-  2. Regenerate baselines: `cargo run -p typecheck-ts-harness --release -- difftsc --suite fixtures/<suite> --update-baselines`
+  2. Regenerate baselines: `bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/<suite> --update-baselines`
   3. Commit both fixtures and baselines.
 
 ## CI: live `tsc` smoke run
@@ -360,7 +360,7 @@ the suite name (e.g. `difftsc/assignability`).
  baselines. The workflow installs `typescript@5.9.3` and executes:
 
 ```
-RAYON_NUM_THREADS=2 cargo run -p typecheck-ts-harness --release --locked --jobs 2 -- \
+RAYON_NUM_THREADS=2 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release --locked --jobs 2 -- \
   difftsc \
   --suite typecheck-ts-harness/fixtures/difftsc \
   --compare-rust \

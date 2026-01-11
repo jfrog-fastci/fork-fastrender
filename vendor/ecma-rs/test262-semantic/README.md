@@ -47,8 +47,8 @@ the `ecma-rs` repo root requires no extra flags.
 Quick sanity check (from `vendor/ecma-rs/`):
 
 ```bash
-cargo run -p test262-semantic -- list
-# (or: cargo run -p test262-semantic -- --list)
+bash scripts/cargo_agent.sh run -p test262-semantic -- list
+# (or: bash scripts/cargo_agent.sh run -p test262-semantic -- --list)
 ```
 
 Alternatively, you can clone `test262` anywhere and pass `--test262-dir`:
@@ -97,7 +97,7 @@ Suites are small TOML/JSON files that select tests by:
 The runner ships with a built-in suite at `suites/smoke.toml`, usable via:
 
 ```bash
-cargo run -p test262-semantic -- --suite smoke
+bash scripts/cargo_agent.sh run -p test262-semantic -- --suite smoke
 ```
 
 If a suite lists an explicit test ID that does not exist in the checkout, the
@@ -139,7 +139,7 @@ Use `--json` to write the versioned report to stdout, and `--report-path` to
 write it to a file:
 
 ```bash
-cargo run -p test262-semantic -- \
+bash scripts/cargo_agent.sh run -p test262-semantic -- \
   --suite smoke \
   --json --report-path out/test262_semantic.json
 ```
@@ -153,5 +153,5 @@ For wiring/CI experiments where you want the harness to run but always report
 success, enable the `stub_executor` feature:
 
 ```bash
-cargo run -p test262-semantic --features stub_executor -- --suite smoke
+bash scripts/cargo_agent.sh run -p test262-semantic --features stub_executor -- --suite smoke
 ```
