@@ -193,7 +193,8 @@ pub fn compile_program(
 /// [`compile_program`] and pass an explicit [`FileId`].
 ///
 /// The returned [`CompilationOutput::llvm_ir`] is populated only when
-/// `options.emit == EmitKind::LlvmIr`.
+/// `options.emit == EmitKind::LlvmIr` or when `options.emit_ir` is set (in which
+/// case the IR is read back from the `.ll` file written to `emit_ir`).
 pub fn compile(
   program: &Program,
   options: &CompilerOptions,
@@ -229,9 +230,14 @@ use native_js::compile_program(program, entry, opts) and pass an explicit FileId
 
   let artifact = compile_program(program, entry, options)?;
   let llvm_ir = if options.emit == EmitKind::LlvmIr {
+    let path = artifact.path.clone();
     Some(
-      std::fs::read_to_string(&artifact.path).map_err(|source| NativeJsError::Io {
-        path: artifact.path.clone(),
+      std::fs::read_to_string(&path).map_err(|source| NativeJsError::Io { path, source })?,
+    )
+  } else if let Some(path) = options.emit_ir.as_ref() {
+    Some(
+      std::fs::read_to_string(path).map_err(|source| NativeJsError::Io {
+        path: path.to_path_buf(),
         source,
       })?,
     )
