@@ -77,6 +77,26 @@ fn semantics_match(a: &ApiSemantics, b: &ApiSemantics) -> bool {
     && a.properties == b.properties
 }
 
+fn validate_depends_on_args(api: &ApiSemantics, args: &[usize], errors: &mut Vec<ValidationError>) {
+  const MAX_DEPENDS_ON_ARG_INDEX: usize = 10_000;
+
+  if args.is_empty() {
+    errors.push(ValidationError::EmptyDependsOnArgs {
+      api: api.name.clone(),
+    });
+    return;
+  }
+
+  for &index in args {
+    if index > MAX_DEPENDS_ON_ARG_INDEX {
+      errors.push(ValidationError::InvalidDependsOnArgsIndex {
+        api: api.name.clone(),
+        index,
+      });
+    }
+  }
+}
+
 fn validate_encoding_enum(
   api: &ApiSemantics,
   field: &str,
@@ -96,8 +116,6 @@ fn validate_encoding_enum(
 }
 
 pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
-  const MAX_DEPENDS_ON_ARG_INDEX: usize = 10_000;
-
   let mut errors = Vec::new();
 
   // Detect ambiguous/duplicate name spellings from aliases.
@@ -192,31 +210,12 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       }
     }
 
-    // Validate callback-dependence templates when present.
-    //
-    // The templates encode the indices directly, so we validate those rather than
-    // any ad-hoc `properties.depends_on_args` metadata.
-    let mut validate_args = |args: &[usize]| {
-      if args.is_empty() {
-        errors.push(ValidationError::EmptyDependsOnArgs {
-          api: api.name.clone(),
-        });
-        return;
-      }
-      for &index in args {
-        if index > MAX_DEPENDS_ON_ARG_INDEX {
-          errors.push(ValidationError::InvalidDependsOnArgsIndex {
-            api: api.name.clone(),
-            index,
-          });
-        }
-      }
-    };
+    // Validate callback-dependent templates.
     if let EffectTemplate::DependsOnArgs { args, .. } = &api.effects {
-      validate_args(args);
+      validate_depends_on_args(api, args, &mut errors);
     }
     if let PurityTemplate::DependsOnArgs { args, .. } = &api.purity {
-      validate_args(args);
+      validate_depends_on_args(api, args, &mut errors);
     }
 
     // Catch obvious semantic contradictions.
@@ -307,7 +306,7 @@ mod tests {
     let db = ApiDatabase::from_entries([api(
       "String.prototype.slice",
       EffectTemplate::Custom(EffectSet::ALLOCATES),
-      PurityTemplate::Pure,
+      PurityTemplate::Allocating,
       &[("encoding.output", JsonValue::String("bogus".to_string()))],
     )]);
 
@@ -323,12 +322,12 @@ mod tests {
     let db = ApiDatabase::from_entries([api(
       "Array.prototype.map",
       EffectTemplate::DependsOnArgs {
-        base: EffectSet::empty(),
-        args: vec![10001],
+        base: EffectSet::ALLOCATES,
+        args: vec![0, 10001],
       },
       PurityTemplate::DependsOnArgs {
-        base: Purity::Pure,
-        args: vec![10001],
+        base: Purity::Allocating,
+        args: vec![0, 10001],
       },
       &[],
     )]);
@@ -345,11 +344,11 @@ mod tests {
     let db = ApiDatabase::from_entries([api(
       "Array.prototype.map",
       EffectTemplate::DependsOnArgs {
-        base: EffectSet::empty(),
+        base: EffectSet::ALLOCATES,
         args: Vec::new(),
       },
       PurityTemplate::DependsOnArgs {
-        base: Purity::Pure,
+        base: Purity::Allocating,
         args: Vec::new(),
       },
       &[],
