@@ -44,7 +44,7 @@ For the first milestone we use **frame-pointer walking** on Linux:
 
 This only works if **all code that can run on GC-managed threads keeps frame pointers**.
 
-### Stackmap SP reconstruction (AArch64-specific)
+### Stackmap `stack_size` caveat (`Indirect [SP + off]` locations)
 
 LLVM stackmaps for `gc.statepoint` usually describe stack roots as:
 
@@ -52,25 +52,25 @@ LLVM stackmaps for `gc.statepoint` usually describe stack roots as:
 Indirect [SP + off]
 ```
 
-For AArch64 (LLVM 18, `llc -frame-pointer=all`) we empirically observe:
+In LLVM StackMaps, `SP` is the **caller**'s stack pointer value at the stackmap record PC (the
+callsite return address), not the callee's current `SP`.
 
-- `DWARF_SP_REG = 31` (`SP`)
-- `DWARF_FP_REG = 29` (`X29`)
-- StackMap function `stack_size` is the **total** stack-pointer delta for the frame.
-- The fixed `{fp, lr}` save area is always **16 bytes**.
+The stackmap function record also includes a fixed `stack_size`, which is sometimes used to
+normalize SP-relative slots into FP-relative offsets when inspecting stackmaps offline. However,
+`stack_size` does **not** account for per-callsite stack adjustments (e.g. outgoing stack argument
+pushes), so it is not reliable for reconstructing the exact callsite `SP` in general.
 
-This lets the runtime reconstruct the `SP` value used as the base for stackmap locations from
-`FP` + `stack_size`:
+`runtime-native` avoids this by deriving the callsite `SP` directly from the callee frame pointer
+when walking frames:
 
 ```
-sp_at_safepoint = fp - (stack_size - 16)
-               = (fp + 16) - stack_size
+caller_sp_callsite = callee_fp + 16
 ```
 
-The frame record layout remains:
+Frame record layout remains:
 
 - next FP at `[fp + 0]`
-- return PC (saved LR) at `[fp + 8]`
+- return PC at `[fp + 8]`
 
 ### Enforcement
 
