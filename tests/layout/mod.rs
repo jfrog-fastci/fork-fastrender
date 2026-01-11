@@ -2,6 +2,7 @@
 
 mod absolute_position_body;
 mod abspos_aspect_ratio_auto_auto_non_replaced;
+mod abspos_bottom_inset_auto_height_containing_block;
 mod abspos_fixed_flex_auto_height;
 mod abspos_auto_height_intrinsic_remeasure_clamped_width;
 mod abspos_blockification;

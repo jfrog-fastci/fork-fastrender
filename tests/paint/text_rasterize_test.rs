@@ -1520,6 +1520,34 @@ fn test_render_very_small_font_size() {
 }
 
 #[test]
+fn test_render_zero_font_size() {
+  let font = match get_test_font() {
+    Some(f) => f,
+    None => return,
+  };
+
+  let face = font.as_ttf_face().unwrap();
+  let glyph_id = face.glyph_index('X').map(|g| g.0 as u32).unwrap_or(0);
+
+  let glyphs = vec![GlyphPosition {
+    glyph_id,
+    cluster: 0,
+    x_offset: 0.0,
+    y_offset: 0.0,
+    x_advance: 10.0,
+    y_advance: 0.0,
+  }];
+
+  let mut pixmap = create_test_pixmap(20, 20);
+  let mut rasterizer = TextRasterizer::new();
+  let result = rasterizer.render_glyphs(&glyphs, &font, 0.0, 0.0, 10.0, Rgba::BLACK, &mut pixmap);
+
+  assert!(result.is_ok());
+  assert_eq!(result.unwrap(), 10.0);
+  assert!(!has_changed_pixels(&pixmap));
+}
+
+#[test]
 fn test_render_large_font_size() {
   let font = match get_test_font() {
     Some(f) => f,
