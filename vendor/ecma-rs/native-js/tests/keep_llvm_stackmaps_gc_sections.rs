@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use native_js::link::{link_elf_executable_with_options, LinkOpts, LinkerFlavor};
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSegment};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::tempdir;
@@ -16,6 +16,21 @@ fn has_section_containing(path: &Path, needle: &str) -> Result<bool> {
       .filter_map(|section| section.name().ok())
       .any(|section_name| section_name.contains(needle)),
   )
+}
+
+fn has_wx_load_segment(path: &Path) -> Result<bool> {
+  let data = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+  let file = object::File::parse(&*data).context("parse linked output")?;
+  for seg in file.segments() {
+    let flags = seg.flags();
+    if let object::SegmentFlags::Elf { p_flags } = flags {
+      // PF_X=1, PF_W=2.
+      if (p_flags & 1) != 0 && (p_flags & 2) != 0 {
+        return Ok(true);
+      }
+    }
+  }
+  Ok(false)
 }
 
 fn find_clang() -> Result<&'static str> {
@@ -157,6 +172,26 @@ main:
   .context("link with KEEP() linker script (system ld)")?;
   if !has_section_containing(&out_with_script_ld, "llvm_stackmaps")? {
     bail!("expected llvm_stackmaps section(s) to survive --gc-sections (system ld)");
+  }
+
+  // PIE + system ld: ensure we use the GNU ld-specific stackmaps fragment to avoid RWX segments.
+  let out_with_script_pie_ld = td.path().join("d_pie.out");
+  link_elf_executable_with_options(
+    &out_with_script_pie_ld,
+    &[obj_path.clone()],
+    LinkOpts {
+      gc_sections: true,
+      pie: true,
+      linker: LinkerFlavor::System,
+      ..Default::default()
+    },
+  )
+  .context("link with KEEP() linker script (system ld + PIE)")?;
+  if !has_section_containing(&out_with_script_pie_ld, "llvm_stackmaps")? {
+    bail!("expected llvm_stackmaps section(s) to survive --gc-sections (system ld + PIE)");
+  }
+  if has_wx_load_segment(&out_with_script_pie_ld)? {
+    bail!("unexpected RWX LOAD segment in system-ld PIE output (expected stackmaps_gnuld.ld placement)");
   }
 
   Ok(())
