@@ -75,6 +75,7 @@ mod flex_abspos_static_position;
 mod flex_abspos_static_position_flexing;
 mod flex_abspos_static_position_margins;
 mod flex_abspos_static_position_siblings;
+mod flex_abspos_static_position_inherited_containing_block;
 mod flex_abspos_percent_containing_block;
 mod flex_abspos_descendant_uses_flex_containing_block_height;
 mod flex_align_content_gaps;

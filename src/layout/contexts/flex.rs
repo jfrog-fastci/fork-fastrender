@@ -12526,7 +12526,7 @@ impl FlexFormattingContext {
     _in_flow_children: &[&BoxNode],
     positioned: &[PositionedCandidate],
     auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
-    padding_origin: Point,
+    _padding_origin: Point,
     anchor_index: &crate::layout::anchor_positioning::AnchorIndex,
     query_parent_box_id: usize,
   ) -> Result<FxHashMap<usize, Point>, LayoutError> {
@@ -12789,12 +12789,10 @@ impl FlexFormattingContext {
       if let Ok(layout) = taffy.layout(node) {
         let margin_edge_x = layout.location.x - layout.margin.left;
         let margin_edge_y = layout.location.y - layout.margin.top;
+        let cb_origin = candidate.cb.origin();
         positions.insert(
           candidate.child_id,
-          Point::new(
-            margin_edge_x - padding_origin.x,
-            margin_edge_y - padding_origin.y,
-          ),
+          Point::new(margin_edge_x - cb_origin.x, margin_edge_y - cb_origin.y),
         );
       }
     }
