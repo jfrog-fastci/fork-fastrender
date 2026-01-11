@@ -475,6 +475,13 @@ struct StackMapRecord {
 };
 ```
 
+`PatchPointID` corresponds to the `gc.statepoint` **ID** immediate in LLVM IR.
+When using LLVM 18’s `rewrite-statepoints-for-gc`, LLVM defaults to a constant ID
+(`0xABCDEF00`) unless overridden via callsite directive string attributes
+(`"statepoint-id"`, `"statepoint-num-patch-bytes"`). See:
+
+- `docs/llvm_statepoint_directives.md`
+
 #### Mapping from PC → record
 At a safepoint, each thread has a program counter `pc` which must be mapped to a
 stackmap record.
