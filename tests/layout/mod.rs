@@ -325,6 +325,7 @@ mod subgrid_abspos_auto_placement_named_lines;
 mod subgrid_auto_span;
 mod subgrid_autorepeat_named_lines;
 mod subgrid_baseline_contribution;
+mod subgrid_parent_baseline_alignment;
 mod subgrid_nested_contributions;
 mod table_anonymous_inheritance;
 mod table_auto_layout_fills_forced_width;

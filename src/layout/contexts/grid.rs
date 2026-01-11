@@ -7904,10 +7904,13 @@ impl GridFormattingContext {
     if fragment.children.is_empty() {
       return Ok(());
     }
-    if detailed.items.len() != fragment.children.len() || child_ids.len() != fragment.children.len()
-    {
+    if child_ids.len() != fragment.children.len() {
       return Ok(());
     }
+    if detailed.items.len() < child_ids.len() {
+      return Ok(());
+    }
+    let item_infos = &detailed.items[..child_ids.len()];
 
     let container_style = match taffy.style(node_id) {
       Ok(style) => style,
@@ -7955,7 +7958,7 @@ impl GridFormattingContext {
 
     for (idx, ((child_id, item_info), child_fragment)) in child_ids
       .iter()
-      .zip(detailed.items.iter())
+      .zip(item_infos.iter())
       .zip(fragment.children.iter())
       .enumerate()
     {
