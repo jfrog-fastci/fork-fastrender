@@ -3,7 +3,6 @@ use std::fmt;
 
 use effect_model::{EffectFlags, EffectSummary, EffectTemplate, PurityTemplate, ThrowBehavior};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 
 mod ids;
 pub use ids::ApiId;
@@ -69,7 +68,7 @@ pub struct ApiSemantics {
   /// Values are JSON so the knowledge base can preserve structured metadata
   /// (booleans/numbers/arrays/maps) without losing author intent.
   #[serde(default)]
-  pub properties: BTreeMap<String, JsonValue>,
+  pub properties: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -415,7 +414,7 @@ struct ApiRaw {
   parallelizable: Option<bool>,
 
   #[serde(default)]
-  properties: BTreeMap<String, JsonValue>,
+  properties: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -460,7 +459,7 @@ struct ApiBodyRaw {
   parallelizable: Option<bool>,
 
   #[serde(default)]
-  properties: BTreeMap<String, JsonValue>,
+  properties: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1059,6 +1058,12 @@ purity: DependsOnCallback
         .get("encoding.length_preserving_if")
         .and_then(|v| v.as_str()),
       Some("ascii")
+    );
+
+    let trim = kb.get("String.prototype.trim").unwrap();
+    assert_eq!(
+      trim.properties.get("encoding.output").map(|s| s.as_str()),
+      Some("same_as_input")
     );
 
     let split = kb.get("String.prototype.split").unwrap();

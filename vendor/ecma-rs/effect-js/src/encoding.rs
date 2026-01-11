@@ -248,14 +248,10 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
 
   fn encoding_via_kb(&self, api: &str, input: StringEncoding) -> Option<StringEncoding> {
     let entry = self.kb.get(api)?;
-    let output = entry.properties.get("encoding.output")?.as_str()?;
+    let output = entry.properties.get("encoding.output")?.as_str();
 
-    if let Some(preserves) = entry
-      .properties
-      .get("encoding.preserves_input_if")
-      .and_then(|v| v.as_str())
-    {
-      let required = parse_encoding(preserves)?;
+    if let Some(preserves) = entry.properties.get("encoding.preserves_input_if") {
+      let required = parse_encoding(preserves.as_str())?;
       return (input == required).then_some(input);
     }
 
@@ -446,5 +442,46 @@ mod tests {
     let root = results.get(&root_body_id).unwrap();
 
     assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Unknown);
+  }
+
+  #[cfg(feature = "typed")]
+  #[test]
+  fn trim_preserves_ascii_via_kb() {
+    use crate::typed::TypecheckProgram;
+    use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase};
+    use typecheck_ts::{FileKey, MemoryHost, Program};
+
+    let key = FileKey::new("index.ts");
+    let mut host = MemoryHost::new();
+    host.insert(key.clone(), "\"ABC\".trim();");
+
+    let program = Program::new(host, vec![key.clone()]);
+    let diagnostics = program.check();
+    assert!(
+      diagnostics.is_empty(),
+      "typecheck diagnostics: {diagnostics:#?}"
+    );
+
+    let file = program.file_id(&key).expect("index.ts loaded");
+    let lowered = program.hir_lowered(file).expect("HIR lowered");
+    let root_body_id = lowered.root_body();
+    let root_body = lowered.body(root_body_id).expect("root body exists");
+
+    let expr_id = find_first_expr(root_body, |kind| matches!(kind, hir_js::ExprKind::Call(_)));
+
+    let types = TypecheckProgram::new(&program);
+    let entries = parse_api_semantics_yaml_str(
+      r#"
+- name: String.prototype.trim
+  properties:
+    encoding.output: same_as_input
+"#,
+    )
+    .unwrap();
+    let kb = ApiDatabase::from_entries(entries);
+    let results = analyze_string_encodings_typed(lowered.as_ref(), &kb, &types);
+    let root = results.get(&root_body_id).unwrap();
+
+    assert_eq!(root.encodings[expr_id.0 as usize], StringEncoding::Ascii);
   }
 }
