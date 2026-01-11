@@ -1120,6 +1120,22 @@ impl Program {
     top_level_mode: TopLevelMode,
     debug: bool,
   ) -> OptimizeResult<Self> {
+    Self::compile_lowered_with_cfg_options(
+      source,
+      lower,
+      top_level_mode,
+      debug,
+      CompileCfgOptions::default(),
+    )
+  }
+
+  pub fn compile_lowered_with_cfg_options(
+    source: &str,
+    lower: LowerResult,
+    top_level_mode: TopLevelMode,
+    debug: bool,
+    cfg_options: CompileCfgOptions,
+  ) -> OptimizeResult<Self> {
     let source_file = lower.hir.file;
     let top_level_node = parse_source(source, source_file, top_level_mode)?;
     Self::compile_with_lower(
@@ -1128,7 +1144,7 @@ impl Program {
       top_level_mode,
       debug,
       Default::default(),
-      CompileCfgOptions::default(),
+      cfg_options,
     )
   }
 }
