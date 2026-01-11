@@ -168,8 +168,8 @@ pub(crate) fn promise_new_with_payload(layout: PromiseLayout) -> PromiseRef {
   };
 
   let promise = Box::new(RtPromise::new_pending());
-  // Store the payload pointer in `value` even while pending; this allows worker threads to obtain
-  // the buffer without settling the promise.
+  // Store the payload pointer even while pending; this allows worker threads to obtain the buffer
+  // without settling the promise.
   promise.value.store(payload as usize, Ordering::Relaxed);
   promise
     .header
@@ -197,7 +197,6 @@ pub(crate) fn promise_payload_ptr(p: PromiseRef) -> *mut u8 {
   if flags & FLAG_HAS_PAYLOAD == 0 {
     return core::ptr::null_mut();
   }
-
   // Safety: `FLAG_HAS_PAYLOAD` is only set by `promise_new_with_payload`, which allocates an
   // `RtPromise` (header prefix + out-of-line payload pointer stored in `value`).
   let ptr = promise_ptr(p);
@@ -512,6 +511,23 @@ pub(crate) fn promise_header(p: PromiseRef) -> crate::async_abi::PromiseRef {
 // -----------------------------------------------------------------------------
 // Test hooks / debug helpers (not stable API)
 // -----------------------------------------------------------------------------
+
+/// Test-only helper: destroy a legacy `RtPromise` allocated by this module.
+///
+/// # Safety
+/// `p` must be a promise handle previously returned by [`promise_new`] or
+/// [`promise_new_with_payload`]. Passing a non-`RtPromise` allocation (e.g. a native async-ABI
+/// `PromiseHeader + payload`) is UB.
+#[doc(hidden)]
+pub(crate) unsafe fn debug_drop_promise(p: PromiseRef) {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
+    return;
+  }
+  unsafe {
+    drop(Box::from_raw(ptr));
+  }
+}
 
 pub(crate) struct PromiseWaiterRaceHook {
   stage: AtomicU8,

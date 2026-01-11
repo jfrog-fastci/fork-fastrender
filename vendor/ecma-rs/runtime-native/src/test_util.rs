@@ -15,6 +15,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::abi::PromiseRef;
+use crate::abi::ValueRef;
 use crate::async_rt;
 use crate::gc::YOUNG_SPACE;
 use crate::time;
@@ -194,6 +195,33 @@ impl Drop for PromiseWaiterRaceGuard {
 /// Debug/test helper: is the promise's reaction list currently empty?
 pub fn promise_waiters_is_empty(p: PromiseRef) -> bool {
   async_rt::promise::debug_waiters_is_empty(p)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyPromiseOutcome {
+  Pending,
+  Fulfilled(ValueRef),
+  Rejected(ValueRef),
+}
+
+/// Debug/test helper: return the outcome of a legacy `async_rt::promise::RtPromise`.
+pub fn legacy_promise_outcome(p: PromiseRef) -> LegacyPromiseOutcome {
+  match async_rt::promise::promise_outcome(p) {
+    async_rt::promise::PromiseOutcome::Pending => LegacyPromiseOutcome::Pending,
+    async_rt::promise::PromiseOutcome::Fulfilled(v) => LegacyPromiseOutcome::Fulfilled(v),
+    async_rt::promise::PromiseOutcome::Rejected(e) => LegacyPromiseOutcome::Rejected(e),
+  }
+}
+
+/// Debug/test helper: drop a legacy `async_rt::promise::RtPromise` allocated by the runtime.
+///
+/// # Safety
+/// `p` must be a legacy promise created by `rt_promise_new_legacy` (or any other runtime API that
+/// returns a legacy `PromiseRef`). Passing a native async-ABI promise is UB.
+pub unsafe fn drop_legacy_promise(p: PromiseRef) {
+  unsafe {
+    async_rt::promise::debug_drop_promise(p);
+  }
 }
 
 pub fn unhandled_rejection_count() -> usize {
