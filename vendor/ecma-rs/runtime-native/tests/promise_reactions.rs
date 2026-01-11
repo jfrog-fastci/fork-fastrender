@@ -195,7 +195,7 @@ fn promise_fulfill_abi_drains_then_reactions() {
   let promise = Box::new(AbiPromise {
     header: PromiseHeader {
       state: AtomicU8::new(123),
-      reactions: AtomicUsize::new(456),
+      waiters: AtomicUsize::new(456),
       flags: AtomicU8::new(7),
     },
     payload: 0,

@@ -119,7 +119,7 @@ fn promise_reactions_drain_in_fifo_registration_order() {
 
   let mut promise = Box::new(PromiseHeader {
     state: AtomicU8::new(0),
-    reactions: AtomicUsize::new(0),
+    waiters: AtomicUsize::new(0),
     flags: AtomicU8::new(0),
   });
   let p_hdr: PromiseHeaderRef = &mut *promise;

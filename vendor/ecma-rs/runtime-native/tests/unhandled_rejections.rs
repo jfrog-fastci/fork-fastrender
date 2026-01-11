@@ -106,7 +106,7 @@ fn native_promise_rejection_is_reported_as_unhandled() {
 
   let mut promise_header = Box::new(PromiseHeader {
     state: core::sync::atomic::AtomicU8::new(0),
-    reactions: core::sync::atomic::AtomicUsize::new(0),
+    waiters: core::sync::atomic::AtomicUsize::new(0),
     flags: core::sync::atomic::AtomicU8::new(0),
   });
   let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());
@@ -130,7 +130,7 @@ fn native_promise_mark_handled_before_checkpoint_suppresses_unhandled() {
 
   let mut promise_header = Box::new(PromiseHeader {
     state: core::sync::atomic::AtomicU8::new(0),
-    reactions: core::sync::atomic::AtomicUsize::new(0),
+    waiters: core::sync::atomic::AtomicUsize::new(0),
     flags: core::sync::atomic::AtomicU8::new(0),
   });
   let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());
@@ -154,7 +154,7 @@ fn native_promise_mark_handled_after_unhandled_reports_rejectionhandled() {
 
   let mut promise_header = Box::new(PromiseHeader {
     state: core::sync::atomic::AtomicU8::new(0),
-    reactions: core::sync::atomic::AtomicUsize::new(0),
+    waiters: core::sync::atomic::AtomicUsize::new(0),
     flags: core::sync::atomic::AtomicU8::new(0),
   });
   let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());

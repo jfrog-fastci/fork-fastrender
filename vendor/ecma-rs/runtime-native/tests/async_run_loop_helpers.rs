@@ -200,7 +200,7 @@ fn block_on_wakes_on_native_promise_settlement_without_payload() {
   // after the header and may be empty.
   let header = Box::new(PromiseHeader {
     state: AtomicU8::new(PromiseHeader::PENDING),
-    reactions: AtomicUsize::new(0),
+    waiters: AtomicUsize::new(0),
     flags: AtomicU8::new(0),
   });
   let p = PromiseRef(Box::into_raw(header).cast());
