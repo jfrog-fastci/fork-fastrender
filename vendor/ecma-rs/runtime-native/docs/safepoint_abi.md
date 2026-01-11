@@ -35,6 +35,28 @@ Notes:
   removed from the global mutator set while `RT_GC_EPOCH` is odd. Callers must not hold runtime
   locks while unregistering.
 
+## `rt_thread_attach` / `rt_thread_detach`
+
+`runtime-native` also exposes a per-`Runtime` attach/detach API:
+
+```c
+Thread* rt_thread_attach(Runtime* runtime);
+void rt_thread_detach(Thread* thread);
+```
+
+This API exists for embedder compatibility and for creating the per-thread `RT_THREAD` TLS record
+used by older native codegen prototypes.
+
+**Canonical mutator contract:** stop-the-world safepoints and GC root enumeration use the **global**
+thread registry described above. As a result:
+
+* `rt_thread_attach` will ensure the calling OS thread is registered in the global registry
+  (as `External`) if it is not already registered.
+* If the thread was already registered (e.g. via `rt_thread_register` / `rt_thread_init`),
+  `rt_thread_attach` is idempotent with respect to the global registry (no double-register).
+* `rt_thread_detach` will unregister the thread from the global registry **only if**
+  `rt_thread_attach` performed the registration.
+
 ## `parked` semantics
 
 The runtime may mark a registered thread as **parked** while it is idle and blocked inside the

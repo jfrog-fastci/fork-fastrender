@@ -49,18 +49,18 @@ fn compile_obj(out_dir: &Path) -> PathBuf {
   // output section does not exist, so our stackmaps linker fragment must anchor
   // on a section that is always present (we use `.text`).
   let asm = r#"
-.text
-.globl _start
-_start:
-  mov $60, %rax
-  xor %rdi, %rdi
-  syscall
+ .text
+ .globl _start
+ _start:
+   mov $60, %rax
+   xor %rdi, %rdi
+   syscall
 
-.section .llvm_stackmaps,"a",@progbits
-  .byte 1,2,3,4
+ .section .llvm_stackmaps,"a",@progbits
+   .byte 1,2,3,4
 
-.section .note.GNU-stack,"",@progbits
-"#;
+ .section .note.GNU-stack,"",@progbits
+ "#;
 
   let asm_path = out_dir.join("stackmaps.S");
   write_file(&asm_path, asm);

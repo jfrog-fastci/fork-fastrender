@@ -1,17 +1,18 @@
+use crate::sync::{GcAwareMutex, GcAwareRwLock};
 use crate::thread;
-use crate::Thread;
-use crate::sync::GcAwareMutex;
-use crate::sync::GcAwareRwLock;
-use crate::threading;
-use crate::threading::ThreadKind;
 use crate::threading::safepoint::StopReason;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
+use crate::threading::{self, ThreadKind};
+use crate::Thread;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Global runtime object.
 ///
-/// At the moment this only manages thread attachment and provides a registry of
-/// all threads that are currently attached to the runtime.
+/// At the moment this only manages `rt_thread_attach` / `rt_thread_detach` and
+/// provides a registry of all threads currently attached to this `Runtime`
+/// instance.
+///
+/// Note: stop-the-world GC safepoints are coordinated by the process-global
+/// thread registry in [`crate::threading`], not by this per-runtime registry.
 pub struct Runtime {
   // Read-locked during normal execution. Used to establish stop-the-world phases where the thread
   // registry can be iterated without concurrent attach/detach.
@@ -19,6 +20,9 @@ pub struct Runtime {
   // This is a GC-aware lock: contended acquisition temporarily enters a GC-safe ("native") region
   // while blocked so global stop-the-world safepoints don't deadlock on threads waiting for this
   // lock.
+  //
+  // Note: global GC stop-the-world safepoints are coordinated by the process-global thread
+  // registry in `crate::threading`, not by this per-runtime lock.
   world_lock: GcAwareRwLock<()>,
 
   // Likewise, the registry mutex is GC-aware so contended attach/detach can be treated as
@@ -74,6 +78,10 @@ impl Runtime {
       return Err(AttachError::AlreadyAttached);
     }
 
+    // Determine whether we "own" the global registration: if the thread is already registered (e.g.
+    // via `rt_thread_init` / `rt_thread_register`), `detach` must *not* unregister it.
+    let was_registered = threading::registry::current_thread_id().is_some();
+
     // Ensure this OS thread participates in the global GC safepoint protocol.
     //
     // This is idempotent, and if a stop-the-world is already active it will park
@@ -96,7 +104,14 @@ impl Runtime {
     let (stack_lo, stack_hi) = thread::current_stack_bounds();
     let os_tid = thread::current_os_tid();
 
-    let thread: &'static mut Thread = Box::leak(Box::new(Thread::new(self, id, os_tid, stack_lo, stack_hi)));
+    let thread: &'static mut Thread = Box::leak(Box::new(Thread::new(
+      self,
+      id,
+      os_tid,
+      stack_lo,
+      stack_hi,
+      !was_registered,
+    )));
     let thread_ptr = thread as *mut Thread;
 
     {
@@ -134,6 +149,7 @@ impl Runtime {
     // safepoint poll here.
     crate::threading::safepoint_poll();
 
+    let unregister_global;
     {
       // Prevent detach while a stop-the-world phase is active.
       let _world = self.world_lock.read();
@@ -153,6 +169,8 @@ impl Runtime {
         }
       }
 
+      unregister_global = (*thread).registered_by_attach;
+
       // Mark detached before clearing TLS (so other code that might have kept a
       // reference can observe the state change).
       (*thread).set_state(crate::ThreadState::Detached);
@@ -160,9 +178,10 @@ impl Runtime {
       thread::set_current_thread_ptr(std::ptr::null_mut());
     }
 
-    // Also detach from the global GC thread registry (if present). The thread is
-    // no longer expected to run mutator code after detaching from the runtime.
-    threading::unregister_current_thread();
+    if unregister_global {
+      // Unregister from the global GC thread registry only if `attach` performed the registration.
+      threading::unregister_current_thread();
+    }
 
     Ok(())
   }

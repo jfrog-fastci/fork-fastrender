@@ -1,6 +1,6 @@
 use runtime_native::current_thread;
-use runtime_native::Runtime;
 use runtime_native::threading;
+use runtime_native::Runtime;
 use runtime_native::threading::safepoint::StopReason;
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -17,6 +17,7 @@ fn thread_attach_detach_registry_and_tls() {
   let runtime = Arc::new(Runtime::new());
 
   assert_eq!(runtime.thread_count(), 0);
+  let baseline = threading::thread_counts();
 
   let attached = Arc::new(Barrier::new(n + 1));
   let detach = Arc::new(Barrier::new(n + 1));
@@ -31,6 +32,11 @@ fn thread_attach_detach_registry_and_tls() {
 
       let thread = current_thread().expect("TLS should be set after attach");
       assert_eq!(thread.id, guard.thread().id);
+
+      assert!(
+        threading::registry::current_thread_id().is_some(),
+        "attached thread must be registered in the global thread registry"
+      );
 
       // Double attach is rejected.
       assert!(runtime.attach_current_thread().is_err());
@@ -49,6 +55,10 @@ fn thread_attach_detach_registry_and_tls() {
   attached.wait();
   assert_eq!(runtime.thread_count(), n);
 
+  let counts = threading::thread_counts();
+  assert_eq!(counts.total, baseline.total + n);
+  assert_eq!(counts.external, baseline.external + n);
+
   // Allow threads to detach.
   detach.wait();
 
@@ -61,6 +71,23 @@ fn thread_attach_detach_registry_and_tls() {
 
   let uniq: HashSet<u32> = ids.into_iter().collect();
   assert_eq!(uniq.len(), n);
+
+  let deadline = std::time::Instant::now() + Duration::from_secs(2);
+  loop {
+    let counts = threading::thread_counts();
+    if counts.total == baseline.total {
+      assert_eq!(counts.main, baseline.main);
+      assert_eq!(counts.worker, baseline.worker);
+      assert_eq!(counts.io, baseline.io);
+      assert_eq!(counts.external, baseline.external);
+      break;
+    }
+    assert!(
+      std::time::Instant::now() < deadline,
+      "global thread registry did not return to baseline after detach"
+    );
+    std::thread::yield_now();
+  }
 }
 
 #[test]

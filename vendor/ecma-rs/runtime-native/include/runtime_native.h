@@ -203,6 +203,11 @@ extern __thread Thread* RT_THREAD;
 extern Thread* RT_THREAD;
 #endif
 
+// Attach/detach is a compatibility API that also participates in the global mutator thread
+// registry:
+// - If the current OS thread is not yet registered (via `rt_thread_register` / `rt_thread_init`),
+//   `rt_thread_attach` will register it as `External`.
+// - `rt_thread_detach` will unregister only if attach performed the registration.
 Thread* rt_thread_attach(Runtime* runtime);
 void rt_thread_detach(Thread* thread);
 

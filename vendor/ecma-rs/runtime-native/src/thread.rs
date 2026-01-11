@@ -65,6 +65,16 @@ pub struct Thread {
 
   pub state: AtomicU8,
 
+  /// True if this thread's global GC registration was created by
+  /// `Runtime::attach_current_thread{,_raw}` / `rt_thread_attach`.
+  ///
+  /// When set, `detach` will also unregister the current OS thread from the
+  /// global thread registry.
+  ///
+  /// Placed directly after `state` so it occupies existing padding and does not
+  /// change the `Thread` layout/size used by native codegen.
+  pub(crate) registered_by_attach: bool,
+
   pub local_epoch: AtomicU64,
 
   // Published statepoint context. The JIT will update these at safepoints so the
@@ -79,7 +89,14 @@ pub struct Thread {
 }
 
 impl Thread {
-  pub(crate) fn new(runtime: &Runtime, id: u32, os_tid: u64, stack_lo: usize, stack_hi: usize) -> Self {
+  pub(crate) fn new(
+    runtime: &Runtime,
+    id: u32,
+    os_tid: u64,
+    stack_lo: usize,
+    stack_hi: usize,
+    registered_by_attach: bool,
+  ) -> Self {
     Self {
       id,
       os_tid,
@@ -91,6 +108,7 @@ impl Thread {
       fp: AtomicUsize::new(0),
       ip: AtomicUsize::new(0),
       runtime: runtime as *const Runtime,
+      registered_by_attach,
     }
   }
 
@@ -179,6 +197,7 @@ mod tests {
     assert_eq!(offset_of!(Thread, stack_lo), 16);
     assert_eq!(offset_of!(Thread, stack_hi), 24);
     assert_eq!(offset_of!(Thread, state), 32);
+    assert_eq!(offset_of!(Thread, registered_by_attach), 33);
     assert_eq!(offset_of!(Thread, local_epoch), 40);
     assert_eq!(offset_of!(Thread, sp), 48);
     assert_eq!(offset_of!(Thread, fp), 56);

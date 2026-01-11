@@ -61,9 +61,11 @@ extern "C" fn rt_gc_safepoint_slow_impl(caller_fp: usize, caller_pc: usize, sp_e
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_safepoint();
 
-  // `rt_gc_safepoint` is only meaningful for threads that have been registered
-  // with `rt_thread_init` / `rt_thread_register`. For non-attached threads this
-  // is a no-op: they do not participate in stop-the-world coordination.
+  // `rt_gc_safepoint` is only meaningful for threads that have been registered with the global
+  // mutator thread registry (via `rt_thread_init` / `rt_thread_register`, or via `rt_thread_attach`).
+  //
+  // For threads that never register, this is a no-op: they do not participate in stop-the-world
+  // coordination.
   if crate::threading::registry::current_thread_id().is_none() {
     return;
   }

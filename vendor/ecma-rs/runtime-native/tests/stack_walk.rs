@@ -25,6 +25,10 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
   // [callee_fp] -> saved caller fp
   // [callee_fp+8] -> return address
   // caller_sp at the callsite is derived from the callee frame pointer (`callee_fp + 16`).
+  //
+  // This intentionally does *not* use the stackmap function record's `stack_size`: LLVM's fixed
+  // stack_size does not include per-callsite outgoing argument pushes/adjustments, so it is not a
+  // reliable way to reconstruct callsite SP for arbitrary frames.
   let mut stack = AlignedStack([0usize; 64]);
   let base = stack.0.as_mut_ptr() as usize;
 
