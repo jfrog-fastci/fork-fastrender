@@ -2193,6 +2193,15 @@ impl BrowserTabHost {
       ) -> Result<()> {
         let mut span = host.trace.span("js.script.execute", "js");
         span.arg_u64("script_id", self.script_id.as_u64());
+        span.arg_str(
+          "script_type",
+          match script_type {
+            ScriptType::Classic => "classic",
+            ScriptType::Module => "module",
+            ScriptType::ImportMap => "importmap",
+            ScriptType::Unknown => "unknown",
+          },
+        );
         if let Some(url) = self.spec.src.as_deref() {
           span.arg_str("url", url);
         }
@@ -2638,6 +2647,16 @@ impl BrowserTabHost {
           script_id.as_u64()
         ))
       })?;
+
+    span.arg_str(
+      "script_type",
+      match spec.script_type {
+        ScriptType::Classic => "classic",
+        ScriptType::Module => "module",
+        ScriptType::ImportMap => "importmap",
+        ScriptType::Unknown => "unknown",
+      },
+    );
 
     // HTML: module scripts are fetched in CORS mode by default. The `crossorigin` attribute only
     // controls the *credentials mode* ("anonymous" vs "use-credentials"). For classic scripts, CORS

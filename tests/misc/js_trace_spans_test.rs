@@ -160,9 +160,25 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
     .expect("traceEvents array");
 
   let mut names: Vec<&str> = Vec::new();
+  let mut script_execute_type = None;
+  let mut script_fetch_type = None;
   for event in events {
     if let Some(name) = event.get("name").and_then(|v| v.as_str()) {
       names.push(name);
+      if name == "js.script.execute" {
+        script_execute_type = event
+          .get("args")
+          .and_then(|args| args.get("script_type"))
+          .and_then(|v| v.as_str())
+          .or(script_execute_type);
+      }
+      if name == "js.script.fetch" {
+        script_fetch_type = event
+          .get("args")
+          .and_then(|args| args.get("script_type"))
+          .and_then(|v| v.as_str())
+          .or(script_fetch_type);
+      }
     }
   }
 
@@ -181,5 +197,16 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
   assert!(
     names.contains(&"js.microtask_checkpoint"),
     "expected js.microtask_checkpoint span; got names={names:?}"
+  );
+
+  assert_eq!(
+    script_fetch_type,
+    Some("classic"),
+    "expected js.script.fetch span to include args.script_type=classic"
+  );
+  assert_eq!(
+    script_execute_type,
+    Some("classic"),
+    "expected js.script.execute span to include args.script_type=classic"
   );
 }
