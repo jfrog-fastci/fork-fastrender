@@ -188,6 +188,7 @@ impl IoOp {
 
     Ok(Self {
       bufs: io_bufs,
+      // The backing stores are owned (and pinned) by the `PinnedIoVec` itself.
       _pinned: Vec::new(),
       pinned_iovecs: Some(pinned_iovecs),
       #[cfg(unix)]
