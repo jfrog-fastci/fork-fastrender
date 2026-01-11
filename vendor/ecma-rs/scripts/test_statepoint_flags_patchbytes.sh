@@ -42,20 +42,21 @@ if [[ "$(uname -m)" != "x86_64" ]]; then
   exit 0
 fi
 
-llc_version_line="$("${LLC}" --version | head -n1 || true)"
-if [[ "${llc_version_line}" != *"version 18."* ]]; then
-  die "expected LLVM 18.x (${LLC}), got: ${llc_version_line}"
-fi
+require_llvm18() {
+  local tool="$1"
+  local out
+  out="$("${tool}" --version 2>/dev/null || true)"
 
-readobj_version_line="$("${LLVM_READOBJ}" --version | head -n1 || true)"
-if [[ "${readobj_version_line}" != *"version 18."* ]]; then
-  die "expected LLVM 18.x (${LLVM_READOBJ}), got: ${readobj_version_line}"
-fi
+  # Some LLVM builds print the version on line 1 ("Ubuntu LLVM version 18.1.x"),
+  # others print it on line 2 ("LLVM (http://llvm.org/):" then "LLVM version 18.1.x").
+  if ! grep -Eq 'version 18\.' <<<"${out}"; then
+    die "expected LLVM 18.x (${tool}), got: $(echo "${out}" | head -n2 | tr '\n' ' ')"
+  fi
+}
 
-objdump_version_line="$("${LLVM_OBJDUMP}" --version | head -n1 || true)"
-if [[ "${objdump_version_line}" != *"version 18."* ]]; then
-  die "expected LLVM 18.x (${LLVM_OBJDUMP}), got: ${objdump_version_line}"
-fi
+require_llvm18 "${LLC}"
+require_llvm18 "${LLVM_READOBJ}"
+require_llvm18 "${LLVM_OBJDUMP}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ECMA_RS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -226,17 +227,31 @@ fi
 DIS_A="$("${LLVM_OBJDUMP}" -d --no-show-raw-insn "${OBJ_A}")"
 DIS_B="$("${LLVM_OBJDUMP}" -d --no-show-raw-insn "${OBJ_B}")"
 
-if ! grep -Eq '[[:space:]]call' <<<"${DIS_A}"; then
+extract_function_body() {
+  local objdump_out="$1"
+  local func="$2"
+  printf '%s\n' "${objdump_out}" |
+    awk -v f="${func}" '
+      $0 ~ "<"f">:" {in_func=1; print; next}
+      in_func && /^[0-9a-fA-F]+ <.*>:/ {exit}
+      in_func {print}
+    '
+}
+
+DIS_A_TEST="$(extract_function_body "${DIS_A}" "test")"
+DIS_B_TEST="$(extract_function_body "${DIS_B}" "test")"
+
+if ! grep -Eq '[[:space:]]call' <<<"${DIS_A_TEST}"; then
   echo "${DIS_A}" >&2
   die "expected fixture A to contain a direct call at the statepoint site (patch_bytes=0)"
 fi
 
-if grep -Eq '[[:space:]]call' <<<"${DIS_B}"; then
+if grep -Eq '[[:space:]]call' <<<"${DIS_B_TEST}"; then
   echo "${DIS_B}" >&2
   die "expected fixture B to contain no direct call at the statepoint site (patch_bytes>0 should emit a NOP sled on x86_64)"
 fi
 
-if ! grep -Eq '\bnop' <<<"${DIS_B}"; then
+if ! grep -Eq '\bnop' <<<"${DIS_B_TEST}"; then
   echo "${DIS_B}" >&2
   die "expected fixture B to contain NOP padding at the statepoint site"
 fi
