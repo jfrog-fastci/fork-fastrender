@@ -13,3 +13,4 @@ RUSTC_BOOTSTRAP = "1"
 # be built directly from this subdirectory as well.
 [target.'cfg(target_os = "linux")']
 linker = "clang"
+rustflags = ["-C", "force-frame-pointers=yes"]

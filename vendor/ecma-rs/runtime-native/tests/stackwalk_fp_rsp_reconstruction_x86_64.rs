@@ -35,8 +35,16 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   //   [fp - 8]  = local slot #1
   //
   // Start walking from a runtime frame that "returns into" the managed frame at `callsite_ra`.
-  let start_fp = align_up(base + 0x40, 16);
   let caller_fp = align_up(base + 0x80, 16);
+  // Model the relationship between the callee frame pointer and the caller's stack pointer at the
+  // callsite:
+  // - x86_64 `call` pushes the return address (8 bytes),
+  // - the callee prologue pushes the caller's RBP (8 bytes),
+  // so `callee_fp = caller_sp_callsite - 16`.
+  //
+  // With `stack_size = 24`, `caller_sp_callsite = caller_fp + 8 - stack_size = caller_fp - 16`, so
+  // `callee_fp = caller_fp - 32`.
+  let start_fp = caller_fp - 0x20;
   assert!(caller_fp > start_fp);
 
   let slot0 = caller_fp - 0x10;

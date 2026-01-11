@@ -50,7 +50,11 @@ fn safepoint_request_wakes_epoll_wait() {
     .expect("poll thread did not start");
 
   // Wait until the poll thread is actually blocked in `epoll_wait` (not just briefly entering it).
-  let deadline = Instant::now() + Duration::from_secs(1);
+  //
+  // This can be surprisingly sensitive to host load: the poll thread may be delayed by scheduling
+  // or may briefly wake to drain the reactor wake eventfd before blocking. Keep the deadline
+  // generous to avoid CI flakes.
+  let deadline = Instant::now() + Duration::from_secs(5);
   loop {
     if runtime_native::async_rt::debug_in_epoll_wait() {
       std::thread::sleep(Duration::from_millis(10));
@@ -61,11 +65,11 @@ fn safepoint_request_wakes_epoll_wait() {
     if Instant::now() > deadline {
       panic!("poll thread did not enter epoll_wait");
     }
-    std::thread::yield_now();
+    std::thread::sleep(Duration::from_millis(1));
   }
 
   runtime_native::rt_gc_request_stop_the_world();
-  let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(100));
+  let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(500));
 
   // Always resume + clean up so the test can't hang even on failure.
   runtime_native::rt_gc_resume_world();

@@ -24,6 +24,7 @@ use crate::BackingStoreAllocator;
 use crate::shape_table;
 use crate::threading;
 use crate::threading::registry;
+use crate::trap;
 use crate::Runtime;
 use crate::Thread;
 use once_cell::sync::Lazy;
@@ -194,12 +195,12 @@ pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::GcPtr {
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_alloc_array(len, elem_size);
-
   let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
     crate::trap::rt_trap_invalid_arg("rt_alloc_array: invalid elem_size");
   };
+  #[cfg(feature = "gc_stats")]
+  crate::gc_stats::record_alloc_array(len, spec.elem_size);
+
   let size = array::checked_total_bytes(len, spec.elem_size)
     .unwrap_or_else(|| crate::trap::rt_trap_invalid_arg("rt_alloc_array: size overflow"));
 
@@ -217,6 +218,51 @@ pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::
   }
 
   obj
+}
+
+#[no_mangle]
+pub extern "C" fn rt_alloc_ptr_array(len: usize) -> *mut u8 {
+  rt_alloc_array(len, array::RT_ARRAY_ELEM_PTR_FLAG | core::mem::size_of::<*mut u8>())
+}
+
+#[no_mangle]
+pub extern "C" fn rt_array_len(obj: *mut u8) -> usize {
+  if obj.is_null() {
+    trap::rt_trap_invalid_arg("rt_array_len called with null");
+  }
+  // SAFETY: The ABI contract requires `obj` be a valid array object.
+  unsafe {
+    let mut obj = obj;
+    let header = &*(obj as *const ObjHeader);
+    if header.is_forwarded() {
+      obj = header.forwarding_ptr();
+    }
+    let header = &*(obj as *const ObjHeader);
+    if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
+      trap::rt_trap_invalid_arg("rt_array_len called on non-array object");
+    }
+    (*(obj as *const RtArrayHeader)).len
+  }
+}
+
+#[no_mangle]
+pub extern "C" fn rt_array_data(obj: *mut u8) -> *mut u8 {
+  if obj.is_null() {
+    trap::rt_trap_invalid_arg("rt_array_data called with null");
+  }
+  // SAFETY: The ABI contract requires `obj` be a valid array object.
+  unsafe {
+    let mut obj = obj;
+    let header = &*(obj as *const ObjHeader);
+    if header.is_forwarded() {
+      obj = header.forwarding_ptr();
+    }
+    let header = &*(obj as *const ObjHeader);
+    if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
+      trap::rt_trap_invalid_arg("rt_array_data called on non-array object");
+    }
+    obj.add(array::RT_ARRAY_DATA_OFFSET)
+  }
 }
 
 /// Register the current OS thread with the runtime.

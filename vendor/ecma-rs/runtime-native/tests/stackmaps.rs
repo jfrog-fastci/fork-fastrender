@@ -210,11 +210,14 @@ fn callsite_reloc_pairs_skip_deopt_operands() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn callsite_reloc_pairs_require_statepoint_patchpoint_id() {
+fn callsite_reloc_pairs_do_not_require_statepoint_patchpoint_id() {
   use runtime_native::stackmaps::{CallSite, StackMapRecord};
 
   // Record that looks like a statepoint (3 constant headers + even tail), but uses a non-statepoint
-  // patchpoint_id. `reloc_pairs` must not interpret it as `gc.relocate` metadata.
+  // patchpoint_id.
+  //
+  // `CallSite::reloc_pairs` detects statepoints by their structural prefix, not by patchpoint id
+  // (LLVM does not contractually guarantee a specific id).
   let rec = StackMapRecord {
     patchpoint_id: 123,
     instruction_offset: 0,
@@ -241,8 +244,6 @@ fn callsite_reloc_pairs_require_statepoint_patchpoint_id() {
     record: &rec,
   };
 
-  assert!(
-    callsite.reloc_pairs().next().is_none(),
-    "non-statepoint records must not produce relocation pairs"
-  );
+  let pairs: Vec<_> = callsite.reloc_pairs().collect();
+  assert_eq!(pairs.len(), 1);
 }

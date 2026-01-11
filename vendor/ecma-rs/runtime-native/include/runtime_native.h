@@ -206,6 +206,13 @@ GcPtr rt_alloc(size_t size, RtShapeId shape);
 // host embeddings that require stable addresses.
 GcPtr rt_alloc_pinned(size_t size, RtShapeId shape);
 GcPtr rt_alloc_array(size_t len, size_t elem_size);
+uint8_t* rt_alloc_ptr_array(size_t len);
+
+// -----------------------------------------------------------------------------
+// Arrays
+// -----------------------------------------------------------------------------
+size_t rt_array_len(uint8_t* obj);
+uint8_t* rt_array_data(uint8_t* obj);
 
 // Register the global shape table used by `RtShapeId`.
 //

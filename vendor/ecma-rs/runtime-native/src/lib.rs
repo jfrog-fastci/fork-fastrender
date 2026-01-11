@@ -467,6 +467,7 @@ mod tests {
     if !was_registered {
       rt_thread_init(0);
     }
+
     struct Deinit {
       was_registered: bool,
     }
@@ -647,6 +648,9 @@ mod tests {
       "GcPtr rt_alloc_array(size_t len, size_t elem_size);",
       "void rt_register_shape_table(const RtShapeDescriptor* table, size_t len);",
       "bool rt_gc_poll(void);",
+      "uint8_t* rt_alloc_ptr_array(size_t len);",
+      "size_t rt_array_len(uint8_t* obj);",
+      "uint8_t* rt_array_data(uint8_t* obj);",
       "void rt_gc_safepoint(void);",
       "GcPtr rt_gc_safepoint_relocate_h(GcHandle slot);",
       "void rt_gc_safepoint_slow(uint64_t epoch);",
@@ -733,6 +737,9 @@ mod tests {
     let _alloc: extern "C" fn(usize, abi::RtShapeId) -> *mut u8 = rt_alloc;
     let _alloc_pinned: extern "C" fn(usize, abi::RtShapeId) -> *mut u8 = rt_alloc_pinned;
     let _alloc_array: extern "C" fn(usize, usize) -> *mut u8 = rt_alloc_array;
+    let _alloc_ptr_array: extern "C" fn(usize) -> *mut u8 = rt_alloc_ptr_array;
+    let _array_len: extern "C" fn(*mut u8) -> usize = rt_array_len;
+    let _array_data: extern "C" fn(*mut u8) -> *mut u8 = rt_array_data;
     let _register_shape_table: unsafe extern "C" fn(*const abi::RtShapeDescriptor, usize) =
       crate::shape_table::rt_register_shape_table;
     let _gc_poll: extern "C" fn() -> bool = rt_gc_poll;
@@ -814,6 +821,9 @@ mod tests {
       _alloc,
       _alloc_pinned,
       _alloc_array,
+      _alloc_ptr_array,
+      _array_len,
+      _array_data,
       _register_shape_table,
       _gc_poll,
       _safepoint,
@@ -1128,8 +1138,9 @@ mod tests {
     data.release.store(true, Ordering::SeqCst);
     rt_parallel_join(tasks.as_ptr(), tasks.len());
 
+    let max_active = data.max_active.load(Ordering::SeqCst);
     assert!(
-      data.max_active.load(Ordering::SeqCst) >= 2,
+      max_active >= 2,
       "expected at least two tasks to overlap; worker_count={workers}"
     );
   }

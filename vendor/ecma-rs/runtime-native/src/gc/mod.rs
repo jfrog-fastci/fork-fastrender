@@ -253,6 +253,11 @@ impl TypeDescriptor {
 
   #[inline]
   pub fn ptr_offsets(&self) -> &[u32] {
+    if self.ptr_offsets_len == 0 {
+      return &[];
+    }
+    debug_assert!(!self.ptr_offsets.is_null());
+    // SAFETY: `ptr_offsets` points to `ptr_offsets_len` `u32` values.
     unsafe { slice::from_raw_parts(self.ptr_offsets, self.ptr_offsets_len as usize) }
   }
 }
