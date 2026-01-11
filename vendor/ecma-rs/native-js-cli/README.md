@@ -7,6 +7,9 @@ file** to textual LLVM IR (via a small `parse-js`-driven IR emitter in
 `native-js`), invokes `clang` to produce a temporary executable, and then runs
 it.
 
+> Note: this path does **not** run the TypeScript checker; it parses the input
+> and lowers a small expression-only subset directly to LLVM IR.
+
 This is primarily useful for:
 
 - smoke-testing the native pipeline end-to-end (TS → LLVM IR → native executable)
@@ -28,6 +31,9 @@ This is primarily useful for:
 `native-js-cli` shells out to `clang` to compile the generated `.ll` into a
 temporary executable. Using `cargo_llvm.sh` is the easiest way to ensure the
 LLVM 18 `clang` is on `PATH`.
+
+If you are setting up LLVM locally, see [`native-js/README.md`](../native-js/README.md)
+for required packages and the `LLVM_SYS_180_PREFIX` environment variable.
 
 ### Run a TypeScript file
 
