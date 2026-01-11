@@ -247,6 +247,7 @@ jobs:
           cargo test -p runtime-native --locked \
             --test reactor_conformance \
             --test reactor_kqueue \
+            --test kqueue_reactor \
             --test async_event_loop \
             --test async_fd
 
@@ -254,5 +255,6 @@ jobs:
           cargo test -p runtime-native --locked --features force_pipe_wake \
             --test reactor_conformance \
             --test reactor_kqueue_pipe_wake \
+            --test kqueue_reactor \
             --test async_event_loop \
             --test async_fd
