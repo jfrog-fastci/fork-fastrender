@@ -183,7 +183,7 @@ Today the harness asserts that fixtures erase to JS and execute successfully in 
 #### Optional: enable the `optimize-js` TS→JS fallback
 
 If TS→JS erasure fails (common causes: `ts-erase` rejects TypeScript *runtime* constructs like `enum`/`namespace` in strict-native mode,
-or `emit-js` cannot emit a statement kind like `switch` yet), you can enable the heavier fallback:
+or `emit-js` reports unsupported syntax during emission), you can enable the heavier fallback:
 
 ```bash
 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p native-oracle-harness --features optimize-js-fallback

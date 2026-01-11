@@ -642,13 +642,18 @@ mod tests {
 
   #[cfg(feature = "optimize-js-fallback")]
   #[test]
-  fn optimize_js_fallback_can_handle_emit_js_unsupported_syntax() {
-    // `emit-js`'s JS emitter is intentionally minimal; many statement kinds (like function
-    // declarations and switch statements) are not supported yet. When the fallback feature is
-    // enabled, the harness should be able to produce runnable JS anyway via the `optimize-js`
-    // decompiler.
+  fn optimize_js_fallback_emits_parseable_js() {
+    // Sanity check that the optimize-js compile+decompile fallback produces runnable JS output.
+    //
+    // The primary TS→JS path (parse → ts-erase → emit-js) is expected to handle most fixtures.
+    // This fallback is only intended for syntax that is not supported by the lightweight erasure
+    // pipeline yet.
     let source = "switch(1){case 1:break;}";
-    let js = erase_typescript_to_js(source).expect("erase via optimize-js fallback");
+    let js = super::erase_with_optimize_js_fallback(
+      source,
+      super::TsToJsError::Optimize(Vec::new()),
+    )
+    .expect("erase via optimize-js fallback");
 
     parse_js::parse_with_options(
       &js,
