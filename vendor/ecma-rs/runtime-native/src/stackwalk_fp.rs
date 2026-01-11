@@ -1242,4 +1242,49 @@ mod tests {
     let caller_sp = caller_sp_callsite_from_callee_fp(callee_fp).unwrap();
     assert_eq!(caller_sp, 0x1010_u64);
   }
+
+  #[test]
+  fn skips_non_statepoint_stackmap_records() {
+    // `enumerate_roots_for_frame` should ignore non-statepoint stackmap records
+    // (e.g. those emitted by `llvm.experimental.stackmap` / patchpoints).
+    //
+    // Regression test: the FP walker previously attempted to decode every
+    // `.llvm_stackmaps` record as a `gc.statepoint`, causing root enumeration to
+    // fail when a non-statepoint record was present.
+    let record = crate::stackmaps::StackMapRecord {
+      patchpoint_id: 1,
+      instruction_offset: 0,
+      locations: vec![
+        Location::Register {
+          size: 8,
+          dwarf_reg: 0,
+          offset: 0,
+        },
+        Location::Register {
+          size: 8,
+          dwarf_reg: 0,
+          offset: 0,
+        },
+        Location::Register {
+          size: 8,
+          dwarf_reg: 0,
+          offset: 0,
+        },
+      ],
+      live_outs: vec![],
+    };
+
+    let callsite = CallSite {
+      stack_size: StackSize::Known(0),
+      record: &record,
+    };
+
+    let bounds = StackBounds { lo: 0, hi: 0x10_000 };
+    let mut visited = false;
+    enumerate_roots_for_frame(0x1000, 0x2000, callsite, bounds, None, &mut |_| {
+      visited = true;
+    })
+    .unwrap();
+    assert!(!visited, "non-statepoint records must not contribute GC roots");
+  }
 }
