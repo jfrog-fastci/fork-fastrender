@@ -187,9 +187,15 @@ pub fn run_edge_dataflow<A: ForwardEdgeDataFlowAnalysis>(
   let boundary_state = analysis.boundary_state(entry_label, cfg);
   let mut worklist = VecDeque::from([entry_label]);
   let mut queued = HashSet::from_iter([entry_label]);
+  // Track which blocks we've processed at least once. If a block's initial
+  // processing computes states equal to the `bottom` seed values, we still need
+  // to enqueue its successors so downstream blocks can run their transfer
+  // functions (some analyses derive facts purely from local block contents).
+  let mut processed = HashSet::default();
 
   while let Some(label) = worklist.pop_front() {
     queued.remove(&label);
+    let first_time = processed.insert(label);
 
     let incoming = if label == entry_label {
       boundary_state.clone()
@@ -215,11 +221,13 @@ pub fn run_edge_dataflow<A: ForwardEdgeDataFlowAnalysis>(
         .get_mut(&(label, succ))
         .unwrap_or_else(|| panic!("missing edge state for ({label}, {succ})"));
       let widened = analysis.widen_edge(label, succ, edge, &edge_new);
+      let mut enqueue_succ = first_time;
       if *edge != widened {
         *edge = widened;
-        if queued.insert(succ) {
-          worklist.push_back(succ);
-        }
+        enqueue_succ = true;
+      }
+      if enqueue_succ && queued.insert(succ) {
+        worklist.push_back(succ);
       }
     }
 
@@ -272,6 +280,7 @@ mod tests {
   use super::{run_edge_dataflow, ForwardEdgeDataFlowAnalysis};
   use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph, Terminator};
   use crate::il::inst::{Arg, Inst};
+  use std::collections::BTreeSet;
 
   fn cfg(labels: &[u32], edges: &[(u32, u32)], block: impl Fn(u32) -> Vec<Inst>) -> Cfg {
     let mut graph = CfgGraph::default();
@@ -469,5 +478,51 @@ mod tests {
     assert_eq!(result.edge(2, 1), Some(&100));
     assert_eq!(result.block_entry(1), Some(&100));
     assert_eq!(result.block_exit(2), Some(&102));
+  }
+
+  #[derive(Default)]
+  struct LocalFactOnly;
+
+  impl ForwardEdgeDataFlowAnalysis for LocalFactOnly {
+    type State = BTreeSet<u32>;
+
+    fn bottom(&self, _cfg: &Cfg) -> Self::State {
+      BTreeSet::new()
+    }
+
+    fn meet(&mut self, incoming: &[(u32, &Self::State)]) -> Self::State {
+      incoming
+        .iter()
+        .flat_map(|(_, state)| state.iter().copied())
+        .collect()
+    }
+
+    fn apply_to_block(&mut self, label: u32, _block: &[Inst], state: &Self::State) -> Self::State {
+      // Derive a fact purely from local block contents (here: the label). The
+      // entry block 0 produces no facts, so its outgoing edge state stays at
+      // bottom and would otherwise fail to enqueue successors.
+      let mut next = state.clone();
+      if label == 1 {
+        next.insert(label);
+      }
+      next
+    }
+
+    fn apply_to_instruction(
+      &mut self,
+      _label: u32,
+      _inst_idx: usize,
+      _inst: &Inst,
+      _state: &mut Self::State,
+    ) {
+    }
+  }
+
+  #[test]
+  fn successors_are_processed_even_when_edge_state_stays_bottom() {
+    let cfg = cfg(&[0, 1], &[(0, 1)], |_| Vec::new());
+    let result = run_edge_dataflow(&mut LocalFactOnly::default(), &cfg, 0);
+    let expected: BTreeSet<u32> = [1].into_iter().collect();
+    assert_eq!(result.block_exit(1), Some(&expected));
   }
 }
