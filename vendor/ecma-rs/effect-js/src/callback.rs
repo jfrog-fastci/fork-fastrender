@@ -245,16 +245,6 @@ pub fn analyze_inline_callback(
   let cb_body_data = lowered.body(*cb_body)?;
   let func = cb_body_data.function.as_ref()?;
 
-  let params_are_simple = func.params.iter().all(|param| {
-    if param.rest || param.default.is_some() {
-      return false;
-    }
-    cb_body_data
-      .pats
-      .get(param.pat.0 as usize)
-      .is_some_and(|pat| matches!(pat.kind, PatKind::Ident(_)))
-  });
-
   let arguments_object_available = !*is_arrow
     && !func
       .params
@@ -313,7 +303,6 @@ pub fn analyze_inline_callback(
     kb,
     body: *cb_body,
     arguments_object_available,
-    var_shadows_params: !params_are_simple,
     index_param,
     array_param,
     uses_index,
@@ -343,12 +332,7 @@ pub fn analyze_inline_callback(
     FunctionBody::Block(stmts) => {
       // The function body is a lexical scope; declarations inside it are hoisted
       // for the purposes of name resolution.
-      let mut scope = analyzer.scan_shadow_in_stmts(cb_body_data, stmts);
-      let var_scope = analyzer.scan_hoisted_var_shadow_in_stmts(cb_body_data, stmts);
-      scope.shadow_index |= var_scope.shadow_index;
-      scope.shadow_array |= var_scope.shadow_array;
-      scope.shadow_arguments |= var_scope.shadow_arguments;
-      analyzer.shadow_stack[0] = scope;
+      analyzer.shadow_stack[0] = analyzer.scan_shadow_in_stmts(cb_body_data, stmts);
       for stmt in stmts {
         analyzer.visit_stmt(cb_body_data, *stmt);
       }
@@ -404,7 +388,6 @@ struct CallbackAnalyzer<'a> {
   kb: &'a KnowledgeBase,
   body: BodyId,
   arguments_object_available: bool,
-  var_shadows_params: bool,
   index_param: Option<NameId>,
   array_param: Option<NameId>,
   uses_index: bool,
@@ -489,107 +472,6 @@ impl CallbackAnalyzer<'_> {
       };
     }
     scope
-  }
-
-  fn scan_hoisted_var_shadow_in_stmts(&self, body: &Body, stmts: &[StmtId]) -> ShadowScope {
-    let mut scope = ShadowScope::default();
-    if !self.var_shadows_params {
-      return scope;
-    }
-    if self.index_param.is_none() && self.array_param.is_none() && !self.arguments_object_available {
-      return scope;
-    }
-    for stmt in stmts {
-      self.scan_hoisted_var_shadow_in_stmt(body, *stmt, &mut scope);
-    }
-    scope
-  }
-
-  fn scan_hoisted_var_shadow_in_stmt(&self, body: &Body, stmt_id: StmtId, scope: &mut ShadowScope) {
-    let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
-      return;
-    };
-    match &stmt.kind {
-      StmtKind::Var(var) => {
-        if var.kind == VarDeclKind::Var {
-          let var_scope = self.scan_shadow_in_var_decl(body, var);
-          scope.shadow_index |= var_scope.shadow_index;
-          scope.shadow_array |= var_scope.shadow_array;
-          scope.shadow_arguments |= var_scope.shadow_arguments;
-        }
-      }
-      StmtKind::Block(stmts) => {
-        for stmt in stmts {
-          self.scan_hoisted_var_shadow_in_stmt(body, *stmt, scope);
-        }
-      }
-      StmtKind::If {
-        consequent,
-        alternate,
-        ..
-      } => {
-        self.scan_hoisted_var_shadow_in_stmt(body, *consequent, scope);
-        if let Some(alternate) = alternate {
-          self.scan_hoisted_var_shadow_in_stmt(body, *alternate, scope);
-        }
-      }
-      StmtKind::While { body: inner, .. } | StmtKind::DoWhile { body: inner, .. } => {
-        self.scan_hoisted_var_shadow_in_stmt(body, *inner, scope);
-      }
-      StmtKind::For { init, body: inner, .. } => {
-        if let Some(ForInit::Var(var)) = init.as_ref() {
-          if var.kind == VarDeclKind::Var {
-            let var_scope = self.scan_shadow_in_var_decl(body, var);
-            scope.shadow_index |= var_scope.shadow_index;
-            scope.shadow_array |= var_scope.shadow_array;
-            scope.shadow_arguments |= var_scope.shadow_arguments;
-          }
-        }
-        self.scan_hoisted_var_shadow_in_stmt(body, *inner, scope);
-      }
-      StmtKind::ForIn { left, body: inner, .. } => {
-        if let ForHead::Var(var) = left {
-          if var.kind == VarDeclKind::Var {
-            let var_scope = self.scan_shadow_in_var_decl(body, var);
-            scope.shadow_index |= var_scope.shadow_index;
-            scope.shadow_array |= var_scope.shadow_array;
-            scope.shadow_arguments |= var_scope.shadow_arguments;
-          }
-        }
-        self.scan_hoisted_var_shadow_in_stmt(body, *inner, scope);
-      }
-      StmtKind::Switch { cases, .. } => {
-        for case in cases {
-          for stmt in &case.consequent {
-            self.scan_hoisted_var_shadow_in_stmt(body, *stmt, scope);
-          }
-        }
-      }
-      StmtKind::Try {
-        block,
-        catch,
-        finally_block,
-      } => {
-        self.scan_hoisted_var_shadow_in_stmt(body, *block, scope);
-        if let Some(catch) = catch {
-          self.scan_hoisted_var_shadow_in_stmt(body, catch.body, scope);
-        }
-        if let Some(finally_block) = finally_block {
-          self.scan_hoisted_var_shadow_in_stmt(body, *finally_block, scope);
-        }
-      }
-      StmtKind::Labeled { body: inner, .. } | StmtKind::With { body: inner, .. } => {
-        self.scan_hoisted_var_shadow_in_stmt(body, *inner, scope);
-      }
-      StmtKind::Expr(_)
-      | StmtKind::Decl(_)
-      | StmtKind::Return(_)
-      | StmtKind::Throw(_)
-      | StmtKind::Break(_)
-      | StmtKind::Continue(_)
-      | StmtKind::Debugger
-      | StmtKind::Empty => {}
-    }
   }
 
   fn scan_shadow_in_switch(&self, body: &Body, cases: &[SwitchCase]) -> ShadowScope {
@@ -2368,7 +2250,22 @@ mod tests {
     let (body, call_expr) = first_stmt_expr(&lowered);
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
-    assert_eq!(info.callback_uses_index, Some(false));
+    assert_eq!(info.callback_uses_index, Some(true));
+  }
+
+  #[test]
+  fn var_decl_does_not_shadow_arguments_object_when_params_are_not_simple() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x, i = 0) { var arguments; return arguments[1]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
+    assert_eq!(info.callback_uses_array, Some(false));
   }
 
   #[test]
