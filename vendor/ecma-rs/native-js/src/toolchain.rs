@@ -32,9 +32,11 @@ pub struct LlvmToolchain {
 impl LlvmToolchain {
   pub fn detect() -> Result<Self> {
     let clang = find_executable(&["clang-18", "clang"])
-      .ok_or_else(|| anyhow!("failed to find clang (expected `clang-18` in PATH)"))?;
+      .ok_or_else(|| anyhow!("failed to find clang (expected `clang-18` or `clang` in PATH)"))?;
     let llvm_objdump = find_executable(&["llvm-objdump-18", "llvm-objdump"])
-      .ok_or_else(|| anyhow!("failed to find llvm-objdump (expected `llvm-objdump-18` in PATH)"))?;
+      .ok_or_else(|| {
+        anyhow!("failed to find llvm-objdump (expected `llvm-objdump-18` or `llvm-objdump` in PATH)")
+      })?;
     Ok(Self { clang, llvm_objdump })
   }
 

@@ -14,7 +14,13 @@ use native_js::tail_calls::{
 
 #[test]
 fn ts_codegen_disables_tail_calls_in_optimized_builds() -> Result<()> {
-  let tc = LlvmToolchain::detect()?;
+  let tc = match LlvmToolchain::detect() {
+    Ok(tc) => tc,
+    Err(_) => {
+      eprintln!("skipping: LLVM toolchain not found in PATH (need clang + llvm-objdump)");
+      return Ok(());
+    }
+  };
   let triple = tc.host_target_triple()?;
   let ir = tailcall_regression_module_ir(&triple);
 
