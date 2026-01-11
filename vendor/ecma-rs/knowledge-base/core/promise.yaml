@@ -63,12 +63,10 @@ symbols:
     semantics: PromiseThen
     since: "baseline"
     purity:
-      template: depends_on_callback
+      depends_on_args:
+        base: Allocating
+        args: [0, 1]
     effects:
-      template: depends_on_callback
-      may_throw: true
-      allocates: true
-      io: false
-      network: false
-      nondeterministic: true
-
+      depends_on_args:
+        base: ALLOCATES | NONDETERMINISTIC | MAY_THROW
+        args: [0, 1]
