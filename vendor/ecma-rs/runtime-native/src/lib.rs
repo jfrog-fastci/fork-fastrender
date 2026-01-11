@@ -90,6 +90,14 @@ pub mod stackwalk_fp;
 pub mod test_util;
 pub mod statepoint_verify;
 
+// Loom model-checking harness for the promise waiter protocol.
+//
+// Keep it available to integration tests, but don't treat it as stable API.
+#[cfg(feature = "loom")]
+pub mod loom_promise_waiters;
+#[cfg(not(feature = "loom"))]
+mod loom_promise_waiters;
+
 // Core object model used by the planned Immix + generational collector.
 pub mod metadata;
 pub mod object;

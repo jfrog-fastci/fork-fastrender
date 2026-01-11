@@ -35,6 +35,14 @@ rt-trace = []
 # Intended for tests to exercise the portable fallback even on macOS.
 force_pipe_wake = []
 
+# Test-only feature:
+# - Enables Loom model-checking tests (`tests/loom_*.rs`)
+# - Swaps the small Loom-specific test harness' atomics/Arc/Mutex to loom types
+#
+# Run with:
+#   cargo test -p runtime-native --features loom loom_
+loom = ["dep:loom"]
+
 [dependencies]
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -53,6 +61,7 @@ serde_json = { workspace = true }
 stackmap-context = { path = "../stackmap-context" }
 thiserror = { workspace = true }
 runtime-native-abi = { workspace = true }
+loom = { version = "0.7", optional = true }
 
 [build-dependencies]
 object = { workspace = true }
@@ -66,6 +75,7 @@ rand = { workspace = true }
 tempfile = { workspace = true }
 backtrace = "0.3"
 object = { workspace = true }
+loom = "0.7"
 
 [[bin]]
 name = "stackmap-dump"
