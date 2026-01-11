@@ -38035,15 +38035,15 @@ pub fn apply_content_visibility_implied_containment(styles: &mut ComputedStyle) 
 /// flags into the final computed style after cascade. This must OR flags so explicit `contain:`
 /// continues to apply.
 pub fn apply_container_type_implied_containment(styles: &mut ComputedStyle) {
-  match styles.container_type {
-    ContainerType::Size | ContainerType::SizeScrollState => {
-      styles.containment.style = true;
-      styles.containment.size = true;
-    }
-    ContainerType::InlineSize | ContainerType::InlineSizeScrollState => {
-      styles.containment.style = true;
-      styles.containment.inline_size = true;
-    }
-    ContainerType::Normal | ContainerType::ScrollState => {}
+  let container_type = styles.container_type;
+
+  if container_type.supports_size() {
+    styles.containment.style = true;
+    styles.containment.size = true;
+  }
+
+  if container_type.supports_inline_size() {
+    styles.containment.style = true;
+    styles.containment.inline_size = true;
   }
 }
