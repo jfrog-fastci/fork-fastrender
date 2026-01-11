@@ -104,6 +104,7 @@ RULES = [
     Rule("NJS", r"^NJS\d{4}$", allowed_crates={"native-js", "native-js-cli"}),
     Rule("RTN", r"^RTN\d{4}$", allowed_crates={"runtime-native"}),
     Rule("KB", r"^KB\d{4}$", allowed_crates={"knowledge-base"}),
+    Rule("ORACLE", r"^ORACLE\d{4}$", allowed_crates={"native-oracle-harness"}),
     Rule("TS", r"^TS\d{4,5}$", shared=True),
     Rule("OPT", r"^OPT\d{4}$", allowed_crates={"optimize-js"}),
     Rule("EMIT", r"^EMIT\d{4}$", allowed_crates={"emit-js"}),
