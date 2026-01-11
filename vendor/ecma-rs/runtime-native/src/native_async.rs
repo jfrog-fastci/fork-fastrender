@@ -6,7 +6,7 @@ use crate::async_abi::{
   PROMISE_FLAG_EXTERNAL_PENDING,
 };
 use crate::ffi::abort_on_panic;
-use crate::promise_reactions::{enqueue_reaction_job, reverse_list, PromiseReactionNode, PromiseReactionVTable};
+use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
 use crate::PromiseRef as AbiPromiseRef;
 
 /// Internal promise state used while a promise is being settled.
@@ -109,14 +109,7 @@ fn drain_reactions(promise: *mut PromiseHeader) {
   // The list is pushed in LIFO order; reverse to preserve FIFO registration order.
   head = unsafe { reverse_list(head) };
 
-  while !head.is_null() {
-    let next = unsafe { (*head).next };
-    unsafe {
-      (*head).next = null_mut();
-    }
-    enqueue_reaction_job(promise, head);
-    head = next;
-  }
+  enqueue_reaction_jobs(promise, head);
 }
 
 fn promise_mark_handled(p: *mut PromiseHeader) {

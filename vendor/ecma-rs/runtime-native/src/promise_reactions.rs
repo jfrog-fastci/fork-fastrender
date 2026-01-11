@@ -85,6 +85,38 @@ pub(crate) fn enqueue_reaction_job(promise: PromiseRef, node: *mut PromiseReacti
   ));
 }
 
+/// Enqueue a linked list of reactions as microtasks in a single queue operation.
+///
+/// This is intended for promise settlement paths that may enqueue many reactions at once (e.g. many
+/// coroutines awaiting the same promise). Batching avoids a race where an event-loop thread wakes on
+/// the first enqueued microtask and drains the queue faster than another thread can enqueue the
+/// remaining reaction jobs.
+pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseReactionNode) {
+  if head.is_null() {
+    return;
+  }
+
+  let mut tasks: Vec<Task> = Vec::new();
+  while !head.is_null() {
+    let next = unsafe { (*head).next };
+    unsafe {
+      (*head).next = null_mut();
+    }
+
+    let node = head;
+    let job = Box::new(PromiseReactionJob { node, promise });
+    tasks.push(Task::new_with_drop(
+      run_promise_reaction_job,
+      Box::into_raw(job) as *mut u8,
+      drop_promise_reaction_job,
+    ));
+
+    head = next;
+  }
+
+  async_global().enqueue_microtasks(tasks);
+}
+
 /// Reverse an intrusive singly-linked list in place.
 ///
 /// # Safety

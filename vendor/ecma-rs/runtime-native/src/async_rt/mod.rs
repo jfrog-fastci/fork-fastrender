@@ -15,8 +15,8 @@
 
 mod event_loop;
 mod reactor;
-mod timer;
 mod teardown_queue;
+mod timer;
 
 pub(crate) mod coroutine;
 pub(crate) mod promise;
@@ -25,9 +25,9 @@ pub mod gc;
 
 pub use reactor::Interest;
 pub use reactor::WatcherId;
+pub use teardown_queue::{Discard, TeardownQueue};
 pub use timer::TimerId;
 pub use timer::Timers;
-pub use teardown_queue::{Discard, TeardownQueue};
 
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -157,11 +157,7 @@ impl Task {
   }
 
   fn run(self) {
-    let data = self
-      .gc_root
-      .as_ref()
-      .map(|r| r.ptr())
-      .unwrap_or(self.data);
+    let data = self.gc_root.as_ref().map(|r| r.ptr()).unwrap_or(self.data);
     (self.callback)(data);
   }
 }
@@ -187,6 +183,10 @@ impl AsyncRuntime {
 
   pub fn enqueue_microtask(&self, task: Task) {
     self.loop_.enqueue_microtask(task);
+  }
+
+  pub fn enqueue_microtasks(&self, tasks: impl IntoIterator<Item = Task>) {
+    self.loop_.enqueue_microtasks(tasks);
   }
 
   pub fn enqueue_macrotask(&self, task: Task) {
@@ -255,7 +255,9 @@ fn wake_event_loop_for_safepoint() {
 }
 
 pub fn global() -> &'static AsyncRuntime {
-  let rt = GLOBAL.get_or_init(|| AsyncRuntime::new().expect("failed to initialize runtime-native async runtime"));
+  let rt = GLOBAL.get_or_init(|| {
+    AsyncRuntime::new().expect("failed to initialize runtime-native async runtime")
+  });
 
   // Register the reactor wake function exactly once so GC stop-the-world
   // requests can wake a thread blocked in the reactor wait syscall.

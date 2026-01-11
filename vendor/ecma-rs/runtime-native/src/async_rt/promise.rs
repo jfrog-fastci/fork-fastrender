@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::PromiseHeader;
 use crate::async_runtime::PromiseLayout;
-use crate::promise_reactions::{enqueue_reaction_job, reverse_list, PromiseReactionNode, PromiseReactionVTable};
+use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
 use std::sync::{Condvar, Mutex};
 
 use super::{global as async_global, Task};
@@ -207,14 +207,7 @@ fn drain_reactions(ptr: *mut RtPromise) {
   head = unsafe { reverse_list(head) };
 
   let promise = ptr.cast::<PromiseHeader>();
-  while !head.is_null() {
-    let next = unsafe { (*head).next };
-    unsafe {
-      (*head).next = null_mut();
-    }
-    enqueue_reaction_job(promise, head);
-    head = next;
-  }
+  enqueue_reaction_jobs(promise, head);
 }
 
 pub(crate) fn promise_is_handled(p: PromiseRef) -> bool {

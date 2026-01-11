@@ -85,6 +85,34 @@ impl EventLoop {
     }
   }
 
+  pub fn enqueue_microtasks(&self, tasks: impl IntoIterator<Item = Task>) {
+    let needs_wake = {
+      let mut q = self.microtasks.lock().unwrap();
+      if async_runtime::has_error() {
+        return;
+      }
+      let mut queued_any = false;
+      let needs_wake = q.is_empty();
+      for task in tasks {
+        queued_any = true;
+        if let Some(max_len) = async_runtime::max_ready_queue_len() {
+          if q.len() >= max_len {
+            async_runtime::set_error_once(format!(
+              "async runaway: ready queue exceeded max_ready_queue_len={max_len}"
+            ));
+            self.reactor.wake();
+            return;
+          }
+        }
+        q.push_back(task);
+      }
+      needs_wake && queued_any
+    };
+    if needs_wake {
+      self.reactor.wake();
+    }
+  }
+
   pub fn enqueue_macrotask(&self, task: Task) {
     let needs_wake = {
       let mut q = self.macrotasks.lock().unwrap();
