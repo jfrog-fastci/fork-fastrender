@@ -233,7 +233,12 @@ pub fn analyze_inline_callback(
   let callsite_body = lowered.body(body)?;
   let cb_expr = callsite_body.exprs.get(callback_expr.0 as usize)?;
 
-  let ExprKind::FunctionExpr { body: cb_body, .. } = cb_expr.kind else {
+  let ExprKind::FunctionExpr {
+    body: cb_body,
+    is_arrow,
+    ..
+  } = cb_expr.kind
+  else {
     return analyze_known_callback_reference(lowered, callsite_body, callback_expr, kb);
   };
 
@@ -260,6 +265,7 @@ pub fn analyze_inline_callback(
     lowered,
     kb,
     body: cb_body,
+    is_arrow,
     index_param,
     array_param,
     uses_index: false,
@@ -324,6 +330,7 @@ struct CallbackAnalyzer<'a> {
   lowered: &'a hir_js::LowerResult,
   kb: &'a KnowledgeBase,
   body: BodyId,
+  is_arrow: bool,
   index_param: Option<NameId>,
   array_param: Option<NameId>,
   uses_index: bool,
@@ -997,6 +1004,10 @@ impl CallbackAnalyzer<'_> {
   }
 
   fn record_ident(&mut self, name: NameId) {
+    if !self.is_arrow && self.lowered.names.resolve(name) == Some("arguments") {
+      self.uses_index = true;
+      self.uses_array = true;
+    }
     if Some(name) == self.index_param && !self.name_is_shadowed(name) {
       self.uses_index = true;
     }
@@ -1100,6 +1111,21 @@ mod tests {
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
     assert!(cb.uses_index);
+  }
+
+  #[test]
+  fn callback_using_arguments_counts_as_index_and_array_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(function (x) { return arguments[1]; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
+    assert_eq!(info.callback_uses_array, Some(true));
   }
 
   #[test]
