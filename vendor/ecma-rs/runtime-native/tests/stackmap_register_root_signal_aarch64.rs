@@ -33,6 +33,15 @@ fn tool_available(tool: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
+fn find_clang() -> Option<&'static str> {
+  for cand in ["clang-18", "clang"] {
+    if tool_available(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 fn run_success(mut cmd: Command) {
   let cmd_str = format!("{cmd:?}");
   let out = cmd.output().unwrap_or_else(|e| panic!("failed to run {cmd_str}: {e}"));
@@ -151,12 +160,16 @@ fn stackmaps_section_bytes_from_loaded_elf(path: &Path, base_addr: usize) -> &'s
 
 #[test]
 fn signal_handler_can_rewrite_register_root_via_stackmaps() {
-  for tool in ["llvm-as-18", "llc-18", "clang-18"] {
+  for tool in ["llvm-as-18", "llc-18"] {
     if !tool_available(tool) {
       eprintln!("skipping: {tool} not available in PATH");
       return;
     }
   }
+  let Some(clang) = find_clang() else {
+    eprintln!("skipping: clang not available in PATH (expected `clang-18` or `clang`)");
+    return;
+  };
 
   let tmp = tempfile::tempdir().expect("create tempdir");
   let ll = tmp.path().join("reg_root.ll");
@@ -199,7 +212,7 @@ entry:
     .arg(&obj);
   run_success(llc_cmd);
 
-  let mut clang_cmd = Command::new("clang-18");
+  let mut clang_cmd = Command::new(clang);
   clang_cmd.arg("-shared").arg("-o").arg(&so).arg(&obj);
   run_success(clang_cmd);
 
