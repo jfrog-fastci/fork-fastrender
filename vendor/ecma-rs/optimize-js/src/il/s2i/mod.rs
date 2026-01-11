@@ -11,7 +11,7 @@ use crate::util::counter::Counter;
 use crate::ProgramCompiler;
 use ahash::HashMap;
 use ahash::HashMapExt;
-use hir_js::{Body, BodyId, ExprId, NameId, PatId};
+use hir_js::{Body, BodyId, DefId, ExprId, NameId, PatId};
 
 // CondGoto fallthrough placeholder label.
 pub const DUMMY_LABEL: u32 = u32::MAX;
@@ -94,6 +94,10 @@ impl<'p> HirSourceToInst<'p> {
       );
     }
     sym
+  }
+
+  pub fn symbol_for_def(&self, def: DefId) -> Option<SymbolId> {
+    self.program.symbol_for_def(def)
   }
 
   pub fn classify_symbol(&self, symbol: Option<SymbolId>, name: String) -> VarType {

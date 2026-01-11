@@ -724,6 +724,46 @@ pub fn lower_call_inst<V: VarNamer, F: FnEmitter>(
   }
 }
 
+pub fn lower_return_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+) -> Option<Node<Stmt>> {
+  if inst.t != InstTyp::Return {
+    return None;
+  }
+  debug_assert!(
+    inst.args.len() <= 1,
+    "Return inst expects 0 or 1 args, got {}",
+    inst.args.len()
+  );
+  let value = inst
+    .args
+    .get(0)
+    .map(|arg| lower_arg(var_namer, fn_emitter, arg));
+  Some(node(Stmt::Return(node(ReturnStmt { value }))))
+}
+
+pub fn lower_throw_inst<V: VarNamer, F: FnEmitter>(
+  var_namer: &V,
+  fn_emitter: &F,
+  inst: &Inst,
+) -> Option<Node<Stmt>> {
+  if inst.t != InstTyp::Throw {
+    return None;
+  }
+  debug_assert_eq!(
+    inst.args.len(),
+    1,
+    "Throw inst expects exactly 1 arg, got {}",
+    inst.args.len()
+  );
+  let arg = inst.args.get(0)?;
+  Some(node(Stmt::Throw(node(ThrowStmt {
+    value: lower_arg(var_namer, fn_emitter, arg),
+  }))))
+}
+
 pub fn lower_effect_inst<V: VarNamer, F: FnEmitter>(
   var_namer: &V,
   fn_emitter: &F,
@@ -736,6 +776,8 @@ pub fn lower_effect_inst<V: VarNamer, F: FnEmitter>(
     InstTyp::ForeignStore => lower_foreign_store_inst(var_namer, fn_emitter, inst),
     InstTyp::UnknownStore => lower_unknown_store_inst(var_namer, fn_emitter, inst),
     InstTyp::Call => lower_call_inst(var_namer, fn_emitter, inst, None, None, None, init),
+    InstTyp::Return => lower_return_inst(var_namer, fn_emitter, inst),
+    InstTyp::Throw => lower_throw_inst(var_namer, fn_emitter, inst),
     _ => None,
   }
 }
@@ -1319,12 +1361,32 @@ fn lower_inst(inst: &Inst, bindings: &ForeignBindings) -> LoweredInst {
       args: inst.args[2..].iter().map(lowered_arg).collect(),
       spreads: inst.spreads.clone(),
     },
-    InstTyp::Return => LoweredInst::Return {
-      value: lowered_arg(&inst.args[0]),
-    },
-    InstTyp::Throw => LoweredInst::Throw {
-      value: lowered_arg(&inst.args[0]),
-    },
+    InstTyp::Return => {
+      debug_assert!(
+        inst.args.len() <= 1,
+        "Return inst expects 0 or 1 args, got {}",
+        inst.args.len()
+      );
+      let value = inst
+        .args
+        .get(0)
+        .map(lowered_arg)
+        .unwrap_or(LoweredArg::Const(Const::Undefined));
+      LoweredInst::Return { value }
+    }
+    InstTyp::Throw => {
+      debug_assert_eq!(
+        inst.args.len(),
+        1,
+        "Throw inst expects exactly 1 arg, got {}",
+        inst.args.len()
+      );
+      let value = match inst.args.get(0) {
+        Some(arg) => lowered_arg(arg),
+        None => LoweredArg::Const(Const::Undefined),
+      };
+      LoweredInst::Throw { value }
+    }
     InstTyp::ForeignLoad => LoweredInst::IdentLoad {
       tgt: inst.tgts[0],
       name: bindings

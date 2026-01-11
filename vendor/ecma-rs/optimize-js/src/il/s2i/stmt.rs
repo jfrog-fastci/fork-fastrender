@@ -7,8 +7,8 @@ use crate::OptimizeResult;
 use crate::ProgramCompiler;
 use crate::TextRange;
 use hir_js::{
-  Body, BodyId, BodyKind, ExprId, ExprKind, ForHead, ForInit, NameId, ObjectKey, PatId, PatKind,
-  StmtId, StmtKind, VarDecl, VarDeclKind, VarDeclarator,
+  Body, BodyId, BodyKind, DefKind, ExprId, ExprKind, ForHead, ForInit, NameId, ObjectKey, PatId,
+  PatKind, StmtId, StmtKind, VarDecl, VarDeclKind, VarDeclarator,
 };
 use parse_js::loc::Loc;
 use parse_js::num::JsNumber;
@@ -171,6 +171,44 @@ impl<'p> HirSourceToInst<'p> {
           .push(Inst::var_assign(tmp, Arg::Const(Const::Undefined)));
       }
     }
+  }
+
+  fn hoist_function_decls(&mut self) -> OptimizeResult<()> {
+    let mut decls = Vec::new();
+    for stmt in self.body.stmts.iter() {
+      if let StmtKind::Decl(def_id) = stmt.kind {
+        decls.push((stmt.span.start, stmt.span.end, def_id));
+      }
+    }
+    decls.sort_by_key(|(start, end, def_id)| (*start, *end, *def_id));
+
+    for (_, _, def_id) in decls {
+      let Some(def) = self.program.lower.def(def_id) else {
+        continue;
+      };
+      if def.path.kind != DefKind::Function {
+        continue;
+      }
+      let Some(body) = def.body else {
+        // TypeScript overload signatures and ambient function declarations have no runtime body.
+        continue;
+      };
+      let fn_arg = self.compile_func(def_id, body, Some(def.name))?;
+
+      let inst = match self.symbol_for_def(def_id) {
+        Some(sym) => {
+          if self.program.foreign_vars.contains(&sym) {
+            Inst::foreign_store(sym, fn_arg)
+          } else {
+            let tmp = self.symbol_to_temp(sym);
+            Inst::var_assign(tmp, fn_arg)
+          }
+        }
+        None => Inst::unknown_store(self.name_for(def.name), fn_arg),
+      };
+      self.out.push(inst);
+    }
+    Ok(())
   }
 
   pub fn compile_destructuring_via_prop(
@@ -920,6 +958,7 @@ pub fn translate_body(
     }
   }
   compiler.hoist_var_decls();
+  compiler.hoist_function_decls()?;
   for stmt in root_statements(compiler.body) {
     compiler.compile_stmt(stmt)?;
   }

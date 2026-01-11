@@ -11,13 +11,13 @@ use crate::il::inst::{Arg, BinOp, Const};
 use crate::{Program, ProgramFunction};
 use hir_js::{lower_file, FileKind as HirFileKind};
 use parse_js::ast::expr::lit::{LitBoolExpr, LitNullExpr, LitNumExpr};
-use parse_js::ast::expr::pat::{IdPat, Pat};
+use parse_js::ast::expr::pat::{ClassOrFuncName, IdPat, Pat};
 use parse_js::ast::expr::{BinaryExpr, Expr, IdExpr, UnaryExpr};
+use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::node::Node;
-use parse_js::ast::stmt::decl::{PatDecl, VarDecl, VarDeclMode, VarDeclarator};
+use parse_js::ast::stmt::decl::{FuncDecl, PatDecl, VarDecl, VarDeclMode, VarDeclarator};
 use parse_js::ast::stmt::{
-  BlockStmt, BreakStmt, ContinueStmt, ExprStmt, IfStmt, LabelStmt, ReturnStmt, Stmt, ThrowStmt,
-  WhileStmt,
+  BlockStmt, BreakStmt, ContinueStmt, ExprStmt, IfStmt, LabelStmt, Stmt, WhileStmt,
 };
 use parse_js::ast::stx::TopLevel;
 use parse_js::loc::Loc;
@@ -69,6 +69,17 @@ pub fn program_to_ast(
   opts: &DecompileOptions,
 ) -> il::DecompileResult<Node<TopLevel>> {
   let lowered = lower_program(program);
+
+  let mut body = Vec::new();
+  for (id, func) in program.functions.iter().enumerate() {
+    body.push(decompile_nested_function(
+      id,
+      func,
+      &lowered.foreign_bindings,
+      opts,
+    )?);
+  }
+
   let control = structure_cfg(&program.top_level.body);
   let labeled_loops = collect_labeled_loops(&control);
 
@@ -81,7 +92,6 @@ pub fn program_to_ast(
   );
 
   let temps: Vec<u32> = collect_temps(&program.top_level);
-  let mut body = Vec::new();
   if let Some(decl) = decompiler.prepare_temp_decls(&temps) {
     body.push(decl);
   }
@@ -94,6 +104,43 @@ pub fn program_to_ast(
   };
 
   Ok(top)
+}
+
+fn decompile_nested_function(
+  id: usize,
+  func: &ProgramFunction,
+  bindings: &ForeignBindings,
+  opts: &DecompileOptions,
+) -> il::DecompileResult<Node<Stmt>> {
+  let control = structure_cfg(&func.body);
+  let labeled_loops = collect_labeled_loops(&control);
+
+  let mut decompiler =
+    FunctionDecompiler::new(func, bindings, opts, TempDeclScope::Function, labeled_loops);
+
+  let temps: Vec<u32> = collect_temps(func);
+  let mut body = Vec::new();
+  if let Some(decl) = decompiler.prepare_temp_decls(&temps) {
+    body.push(decl);
+  }
+  body.extend(decompiler.lower_tree(&control)?);
+
+  Ok(node(Stmt::FunctionDecl(node(FuncDecl {
+    export: false,
+    export_default: false,
+    name: Some(node(ClassOrFuncName {
+      name: format!("fn{id}"),
+    })),
+    function: node(Func {
+      arrow: false,
+      async_: false,
+      generator: false,
+      type_parameters: None,
+      parameters: Vec::new(),
+      return_type: None,
+      body: Some(FuncBody::Block(body)),
+    }),
+  }))))
 }
 
 /// Converts the optimized [`Program`] into emitted JS bytes using `emit-js`.
@@ -322,11 +369,7 @@ impl<'a> FunctionDecompiler<'a> {
   }
 
   fn ensure_supported_arg(&self, arg: &Arg) -> il::DecompileResult<()> {
-    if let Arg::Fn(id) = arg {
-      return Err(il::DecompileError::Unsupported(format!(
-        "function literals not supported (fn{id})"
-      )));
-    }
+    let _ = arg;
     Ok(())
   }
 
@@ -561,15 +604,11 @@ impl<'a> FunctionDecompiler<'a> {
           return Ok(None);
         }
         self.ensure_supported_args(inst.args.iter())?;
-        let value = self.lower_arg(inst.as_return())?;
-        Ok(Some(node(Stmt::Return(node(ReturnStmt {
-          value: Some(value),
-        })))))
+        Ok(il::lower_return_inst(self, self, inst))
       }
       InstTyp::Throw => {
         self.ensure_supported_args(inst.args.iter())?;
-        let value = self.lower_arg(inst.as_throw())?;
-        Ok(Some(node(Stmt::Throw(node(ThrowStmt { value })))))
+        Ok(il::lower_throw_inst(self, self, inst))
       }
       InstTyp::Phi => Err(il::DecompileError::Unsupported(
         "phi instructions are not supported in decompiler output".into(),

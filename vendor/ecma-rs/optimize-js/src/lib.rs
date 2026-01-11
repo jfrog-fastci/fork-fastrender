@@ -54,6 +54,7 @@ use dashmap::DashMap;
 use dom::Dom;
 use hir_js::Body;
 use hir_js::BodyId;
+use hir_js::DefId;
 use hir_js::ExprId;
 use hir_js::FileKind as HirFileKind;
 use hir_js::LowerResult;
@@ -318,6 +319,7 @@ pub struct ProgramSymbols {
 pub(crate) struct HirSymbolBindings {
   exprs: HashMap<BodyId, HashMap<ExprId, Option<SymbolId>>>,
   pats: HashMap<BodyId, HashMap<PatId, Option<SymbolId>>>,
+  defs: HashMap<DefId, Option<SymbolId>>,
 }
 
 impl HirSymbolBindings {
@@ -336,23 +338,30 @@ impl HirSymbolBindings {
       .and_then(|m| m.get(&pat))
       .and_then(|s| *s)
   }
+
+  fn symbol_for_def(&self, def: DefId) -> Option<SymbolId> {
+    self.defs.get(&def).and_then(|s| *s)
+  }
 }
 
 fn collect_hir_symbol_bindings(ast: &mut Node<TopLevel>, lower: &LowerResult) -> HirSymbolBindings {
   use derive_visitor::{DriveMut, VisitorMut};
+  use parse_js::ast::expr::pat::ClassOrFuncName;
   use parse_js::ast::expr::pat::IdPat;
   use parse_js::ast::expr::IdExpr;
 
   #[derive(VisitorMut)]
-  #[visitor(IdExprNode(enter), IdPatNode(enter))]
+  #[visitor(IdExprNode(enter), IdPatNode(enter), ClassOrFuncNameNode(enter))]
   struct Collector<'a> {
     span_map: &'a hir_js::span_map::SpanMap,
     expr_spans: BTreeMap<TextRange, Option<SymbolId>>,
     pat_spans: BTreeMap<TextRange, Option<SymbolId>>,
+    def_spans: BTreeMap<TextRange, Option<SymbolId>>,
   }
 
   type IdExprNode = Node<IdExpr>;
   type IdPatNode = Node<IdPat>;
+  type ClassOrFuncNameNode = Node<ClassOrFuncName>;
 
   impl<'a> Collector<'a> {
     fn map_symbol(&self, assoc: &NodeAssocData) -> Option<SymbolId> {
@@ -390,6 +399,15 @@ fn collect_hir_symbol_bindings(ast: &mut Node<TopLevel>, lower: &LowerResult) ->
       None
     }
 
+    fn def_for_span(&self, span: TextRange) -> Option<DefId> {
+      for offset in Self::offsets(span) {
+        if let Some(span) = self.span_map.def_span_at_offset(offset) {
+          return Some(span.id);
+        }
+      }
+      None
+    }
+
     fn record_expr(&mut self, span: TextRange, sym: Option<SymbolId>) {
       self.expr_spans.insert(span, sym);
       self.pat_spans.insert(span, sym);
@@ -397,6 +415,10 @@ fn collect_hir_symbol_bindings(ast: &mut Node<TopLevel>, lower: &LowerResult) ->
 
     fn record_pat(&mut self, span: TextRange, sym: Option<SymbolId>) {
       self.pat_spans.insert(span, sym);
+    }
+
+    fn record_def(&mut self, span: TextRange, sym: Option<SymbolId>) {
+      self.def_spans.insert(span, sym);
     }
 
     fn enter_id_expr_node(&mut self, node: &mut IdExprNode) {
@@ -410,6 +432,12 @@ fn collect_hir_symbol_bindings(ast: &mut Node<TopLevel>, lower: &LowerResult) ->
       let sym = self.map_symbol(&node.assoc);
       self.record_pat(span, sym);
     }
+
+    fn enter_class_or_func_name_node(&mut self, node: &mut ClassOrFuncNameNode) {
+      let span = TextRange::new(node.loc.start_u32(), node.loc.end_u32());
+      let sym = self.map_symbol(&node.assoc);
+      self.record_def(span, sym);
+    }
   }
 
   let span_map = &lower.hir.span_map;
@@ -418,6 +446,7 @@ fn collect_hir_symbol_bindings(ast: &mut Node<TopLevel>, lower: &LowerResult) ->
     span_map,
     expr_spans: BTreeMap::new(),
     pat_spans: BTreeMap::new(),
+    def_spans: BTreeMap::new(),
   };
   ast.drive_mut(&mut collector);
 
@@ -433,6 +462,20 @@ fn collect_hir_symbol_bindings(ast: &mut Node<TopLevel>, lower: &LowerResult) ->
   for (span, sym) in collector.pat_spans.iter() {
     if let Some((body, pat_id)) = collector.pat_for_span(*span) {
       bindings.pats.entry(body).or_default().insert(pat_id, *sym);
+    }
+  }
+  for (span, sym) in collector.def_spans.iter() {
+    if let Some(def_id) = collector.def_for_span(*span) {
+      // Prefer a concrete symbol id when multiple spans map to the same def.
+      bindings
+        .defs
+        .entry(def_id)
+        .and_modify(|existing| {
+          if existing.is_none() {
+            *existing = *sym;
+          }
+        })
+        .or_insert(*sym);
     }
   }
 
@@ -648,6 +691,10 @@ impl ProgramCompiler {
 
   fn symbol_for_pat(&self, body: BodyId, pat: PatId) -> Option<SymbolId> {
     self.bindings.symbol_for_pat(body, pat)
+  }
+
+  fn symbol_for_def(&self, def: DefId) -> Option<SymbolId> {
+    self.bindings.symbol_for_def(def)
   }
 
   fn body(&self, id: BodyId) -> &Body {
