@@ -78,12 +78,18 @@ jobs:
           -D clippy::suspicious
 
       - name: cargo check (workspace)
+        env:
+          # `runtime-native` enforces frame pointers for FP-based stack walking (see runtime-native/build.rs).
+          RUSTFLAGS: -C force-frame-pointers=yes
         run: >
           cargo check --workspace --all-targets
           --exclude native-js --exclude native-js-cli
           --locked
 
       - name: cargo test (workspace)
+        env:
+          # `runtime-native` enforces frame pointers for FP-based stack walking (see runtime-native/build.rs).
+          RUSTFLAGS: -C force-frame-pointers=yes
         run: >
           cargo test --workspace
           --exclude native-js --exclude native-js-cli
@@ -160,6 +166,9 @@ jobs:
   runtime-native-macos:
     runs-on: macos-latest
     needs: fmt-js
+    env:
+      # `runtime-native` enforces frame pointers for FP-based stack walking (see runtime-native/build.rs).
+      RUSTFLAGS: -C force-frame-pointers=yes
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
