@@ -1343,6 +1343,46 @@ mod tests {
   }
 
   #[test]
+  fn module_loader_keeps_module_graph_attached_for_microtasks_that_call_dynamic_import() -> Result<()> {
+    let entry_url = "https://example.com/entry.js";
+    let dep_url = "https://example.com/dep.js";
+    let document_url = "https://example.com/index.html";
+
+    let mut map = HashMap::<String, FetchedResource>::new();
+    map.insert(
+      entry_url.to_string(),
+      FetchedResource::new(
+        "Promise.resolve().then(() => { globalThis.importPromise = import('./dep.js'); });"
+          .as_bytes()
+          .to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+    map.insert(
+      dep_url.to_string(),
+      FetchedResource::new(
+        "export const value = 2;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let fetcher = Arc::new(MapFetcher::new(map));
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = crate::js::WindowHostState::new_with_fetcher(dom, document_url, fetcher.clone())?;
+    let mut event_loop = EventLoop::<crate::js::WindowHostState>::new();
+    host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
+
+    let mut loader = VmJsModuleLoader::new(fetcher.clone(), document_url);
+    loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+
+    assert!(
+      matches!(get_global_prop(&mut host, "importPromise"), Value::Object(_)),
+      "expected microtask to store an import() Promise on globalThis"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn module_loader_caches_modules_by_url() -> Result<()> {
     let entry_a = "https://example.com/a.js";
     let entry_b = "https://example.com/b.js";
