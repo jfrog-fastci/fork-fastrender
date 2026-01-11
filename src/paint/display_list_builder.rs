@@ -3282,6 +3282,16 @@ impl DisplayListBuilder {
     };
 
     let mut child_visibility = context_visibility;
+    if expand_left > 0.0 || expand_top > 0.0 || expand_right > 0.0 || expand_bottom > 0.0 {
+      child_visibility.rect = child_visibility.rect.map(|rect| {
+        Rect::from_xywh(
+          rect.min_x() - expand_left,
+          rect.min_y() - expand_top,
+          rect.width() + expand_left + expand_right,
+          rect.height() + expand_top + expand_bottom,
+        )
+      });
+    }
     if let Some(bounds) = clip_path.as_ref().map(|clip| clip.bounds()) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
     } else if let Some((_, rect)) = clip_path_mask.as_ref() {

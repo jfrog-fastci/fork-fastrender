@@ -666,8 +666,8 @@ impl Canvas {
 
   /// Pushes a new offscreen layer with explicit bounds.
   ///
-  /// The layer pixmap will be clipped to the provided bounds (after clamping to the canvas)
-  /// and drawing inside the layer will be translated so global coordinates continue to work.
+  /// The layer pixmap will be clipped to the provided bounds and drawing inside the layer will be
+  /// translated so global coordinates continue to work.
   pub fn push_layer_bounded(
     &mut self,
     opacity: f32,
@@ -930,14 +930,7 @@ impl Canvas {
           };
         }
         if let Some(mask) = self.current_state.clip_mask.take() {
-          self.current_state.clip_mask = crop_mask(
-            mask.as_ref(),
-            origin_x as u32,
-            origin_y as u32,
-            width,
-            height,
-          )?
-          .map(Rc::new);
+          crop_mask_i32(mask.as_ref(), origin_x, origin_y, width, height)?.map(Rc::new);
         }
       }
     }
@@ -1002,23 +995,41 @@ impl Canvas {
       return None;
     }
 
-    let x0 = bounds.min_x().floor() as i32;
-    let y0 = bounds.min_y().floor() as i32;
-    let x1 = bounds.max_x().ceil() as i32;
-    let y1 = bounds.max_y().ceil() as i32;
+    let x0f = bounds.min_x().floor();
+    let y0f = bounds.min_y().floor();
+    let x1f = bounds.max_x().ceil();
+    let y1f = bounds.max_y().ceil();
 
-    let canvas_w = self.pixmap.width() as i32;
-    let canvas_h = self.pixmap.height() as i32;
-    let clamped_x0 = x0.clamp(0, canvas_w);
-    let clamped_y0 = y0.clamp(0, canvas_h);
-    let clamped_x1 = x1.clamp(0, canvas_w);
-    let clamped_y1 = y1.clamp(0, canvas_h);
-    let width = clamped_x1.saturating_sub(clamped_x0) as u32;
-    let height = clamped_y1.saturating_sub(clamped_y0) as u32;
+    // Avoid saturating float→int casts producing surprising enormous bounds.
+    if x0f < i32::MIN as f32
+      || x0f > i32::MAX as f32
+      || y0f < i32::MIN as f32
+      || y0f > i32::MAX as f32
+      || x1f < i32::MIN as f32
+      || x1f > i32::MAX as f32
+      || y1f < i32::MIN as f32
+      || y1f > i32::MAX as f32
+    {
+      return None;
+    }
+
+    let x0 = x0f as i32;
+    let y0 = y0f as i32;
+    let x1 = x1f as i32;
+    let y1 = y1f as i32;
+
+    let width_i64 = x1 as i64 - x0 as i64;
+    let height_i64 = y1 as i64 - y0 as i64;
+    let Ok(width) = u32::try_from(width_i64) else {
+      return None;
+    };
+    let Ok(height) = u32::try_from(height_i64) else {
+      return None;
+    };
     if width == 0 || height == 0 {
       return None;
     }
-    Some((clamped_x0, clamped_y0, width, height))
+    Some((x0, y0, width, height))
   }
 
   fn layer_bounds_unclamped(&self, bounds: Rect) -> Option<(i32, i32, u32, u32)> {
@@ -4592,6 +4603,83 @@ pub(crate) fn crop_mask(
     let src_idx = (origin_y as usize + row) * src_stride + origin_x as usize;
     let dst_idx = row * dst_stride;
     dst[dst_idx..dst_idx + dst_stride].copy_from_slice(&src[src_idx..src_idx + dst_stride]);
+  }
+
+  Ok(Some(out))
+}
+
+pub(crate) fn crop_mask_i32(
+  mask: &Mask,
+  origin_x: i32,
+  origin_y: i32,
+  width: u32,
+  height: u32,
+) -> RenderResult<Option<Mask>> {
+  if width == 0 || height == 0 {
+    return Ok(None);
+  }
+
+  let mask_width = mask.width();
+  let mask_height = mask.height();
+  if mask_width == 0 || mask_height == 0 {
+    return Ok(None);
+  }
+
+  // Fast path: fully contained non-negative region can reuse the unsigned crop implementation.
+  if origin_x >= 0 && origin_y >= 0 {
+    let ox = origin_x as u32;
+    let oy = origin_y as u32;
+    let max_x = ox.saturating_add(width);
+    let max_y = oy.saturating_add(height);
+    if ox < mask_width && oy < mask_height && max_x <= mask_width && max_y <= mask_height {
+      return crop_mask(mask, ox, oy, width, height);
+    }
+  }
+
+  let dst_x0 = origin_x as i64;
+  let dst_y0 = origin_y as i64;
+  let dst_x1 = dst_x0 + width as i64;
+  let dst_y1 = dst_y0 + height as i64;
+
+  let src_x0 = 0i64;
+  let src_y0 = 0i64;
+  let src_x1 = mask_width as i64;
+  let src_y1 = mask_height as i64;
+
+  let inter_x0 = dst_x0.max(src_x0);
+  let inter_y0 = dst_y0.max(src_y0);
+  let inter_x1 = dst_x1.min(src_x1);
+  let inter_y1 = dst_y1.min(src_y1);
+  if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
+    return Ok(None);
+  }
+
+  check_active(RenderStage::Paint)?;
+  let Some(mut out) = Mask::new(width, height) else {
+    return Ok(None);
+  };
+
+  // Out-of-bounds pixels in the source mask are treated as 0 (fully clipped).
+  out.data_mut().fill(0);
+
+  let src = mask.data();
+  let dst = out.data_mut();
+  let src_stride = mask_width as usize;
+  let dst_stride = width as usize;
+
+  let src_x = inter_x0 as usize;
+  let src_y = inter_y0 as usize;
+  let dst_x = (inter_x0 - dst_x0) as usize;
+  let dst_y = (inter_y0 - dst_y0) as usize;
+  let copy_w = (inter_x1 - inter_x0) as usize;
+  let copy_h = (inter_y1 - inter_y0) as usize;
+
+  let mut deadline_counter = 0usize;
+  for row in 0..copy_h {
+    check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
+    let src_idx = (src_y + row) * src_stride + src_x;
+    let dst_idx = (dst_y + row) * dst_stride + dst_x;
+    dst[dst_idx..dst_idx + copy_w].copy_from_slice(&src[src_idx..src_idx + copy_w]);
   }
 
   Ok(Some(out))

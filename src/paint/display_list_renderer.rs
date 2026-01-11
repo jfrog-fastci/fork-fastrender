@@ -19,7 +19,7 @@ use crate::paint::blur::{
 };
 use crate::paint::canvas::Canvas;
 use crate::paint::canvas::{
-  apply_mask_with_offset, composite_layer_into_pixmap, crop_mask, draw_pixmap_with_plus_blend,
+  apply_mask_with_offset, composite_layer_into_pixmap, crop_mask_i32, draw_pixmap_with_plus_blend,
   LayerRecord,
 };
 use crate::paint::depth_sort;
@@ -1513,10 +1513,10 @@ where
     }
   }
 
-  let (filtered_data, filtered_width) = if let Some(cached) = cached_filtered.as_ref() {
-    (cached.data(), cached.width() as usize)
+  let (filtered_data, filtered_width, filtered_height) = if let Some(cached) = cached_filtered.as_ref() {
+    (cached.data(), cached.width() as usize, cached.height() as usize)
   } else {
-    (region.data(), region.width() as usize)
+    (region.data(), region.width() as usize, region.height() as usize)
   };
 
   // For projective stacking contexts we render the subtree into an untransformed layer and warp it
@@ -1981,13 +1981,24 @@ where
   let src_start_x = (write_x as i32 + dest_origin_in_src.0 - clamped_x as i32).max(0) as u32;
   let src_start_y = (write_y as i32 + dest_origin_in_src.1 - clamped_y as i32).max(0) as u32;
 
-  let filtered_height = if let Some(cached) = cached_filtered.as_ref() {
-    cached.height() as usize
-  } else {
-    region.height() as usize
-  };
-  let max_write_w = (filtered_width as u32).saturating_sub(src_start_x);
-  let max_write_h = (filtered_height as u32).saturating_sub(src_start_y);
+  // `bounds_in_src` can extend outside the available backdrop image (e.g. due to blur outsets or
+  // off-canvas stacking-context bounds). Clamp the write region to the filtered pixmap extents so
+  // mask/data indexing stays in-bounds. Pixels outside the backdrop are treated as fully clipped.
+  if src_start_x as usize >= filtered_width || src_start_y as usize >= filtered_height {
+    scratch.region = Some(region);
+    if let Some(mask) = radii_mask {
+      scratch.radii_mask = Some(mask);
+    }
+    if let Some(mask) = path_mask {
+      scratch.path_mask = Some(mask);
+    }
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
+    return Ok(());
+  }
+  let max_write_w = filtered_width.saturating_sub(src_start_x as usize) as u32;
+  let max_write_h = filtered_height.saturating_sub(src_start_y as usize) as u32;
   write_w = write_w.min(max_write_w);
   write_h = write_h.min(max_write_h);
   if write_w == 0 || write_h == 0 {
@@ -4956,7 +4967,7 @@ impl DisplayListRenderer {
       layer_bounds.y() - expand_top,
       layer_bounds.width() + expand_left + expand_right,
       layer_bounds.height() + expand_top + expand_bottom,
-    );
+      );
 
     if has_filters {
       // For filter effects, the input to the filter must not be clipped to the current clip/canvas
@@ -5011,7 +5022,6 @@ impl DisplayListRenderer {
         None => return None,
       };
     }
-
     if layer_bounds.width() <= 0.0
       || layer_bounds.height() <= 0.0
       || !layer_bounds.x().is_finite()
@@ -5063,19 +5073,26 @@ impl DisplayListRenderer {
     );
 
     if let Some(clip) = self.canvas.clip_bounds() {
-      let clip = Rect::from_xywh(
+      let expanded_clip = Rect::from_xywh(
         clip.x() - expand_left,
         clip.y() - expand_top,
         clip.width() + expand_left + expand_right,
         clip.height() + expand_top + expand_bottom,
       );
-      layer_bounds = match layer_bounds.intersection(clip) {
+      layer_bounds = match layer_bounds.intersection(expanded_clip) {
         Some(r) => r,
         None => return None,
       };
     }
 
-    layer_bounds = match layer_bounds.intersection(self.canvas.bounds()) {
+    let canvas_bounds = self.canvas.bounds();
+    let expanded_canvas = Rect::from_xywh(
+      canvas_bounds.x() - expand_left,
+      canvas_bounds.y() - expand_top,
+      canvas_bounds.width() + expand_left + expand_right,
+      canvas_bounds.height() + expand_top + expand_bottom,
+    );
+    layer_bounds = match layer_bounds.intersection(expanded_canvas) {
       Some(r) => r,
       None => return None,
     };
@@ -13866,7 +13883,7 @@ impl DisplayListRenderer {
 
     if let Some(mask) = clip_override.or_else(|| self.canvas.clip_mask()) {
       let Some(cropped) =
-        crop_mask(mask, origin_x as u32, origin_y as u32, width, height).map_err(Error::Render)?
+        crop_mask_i32(mask, origin_x, origin_y, width, height).map_err(Error::Render)?
       else {
         return Ok(None);
       };
@@ -14810,14 +14827,7 @@ impl DisplayListRenderer {
             }
           }
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
-          // CSS `filter` effects are applied to the stacking context's output before ancestor clips
-          // (e.g. `overflow:hidden`) are applied. If we inherit the ancestor clip while painting
-          // into the offscreen layer, kernel-based filters like blur will treat the clip edge as
-          // transparent and produce incorrect results near the boundary.
-          //
-          // Clear the inherited clip when a filter is present so descendants can paint into the
-          // halo region we allocated in `stacking_layer_bounds`.
-          if projective_transform.is_some() || !scaled_filters.is_empty() {
+          if projective_transform.is_some() || !scaled_filters.is_empty() || has_backdrop {
             self.canvas.clear_clip();
           }
         } else {

@@ -58,6 +58,7 @@ mod filter_blur_bleeds_from_offscreen_source;
 mod filter_calc_length;
 mod filter_clip_halo;
 mod filter_cache_regressions;
+mod filter_blur_clip_halo;
 mod filter_premultiplication;
 mod filter_transform_order_projective;
 mod filter_url_svg_display_list;
