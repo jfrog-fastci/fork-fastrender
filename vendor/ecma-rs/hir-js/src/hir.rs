@@ -743,7 +743,26 @@ pub enum ArrayChainOp {
 
 #[cfg(feature = "semantic-ops")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ApiId(pub u32);
+pub struct ApiId(pub u64);
+
+#[cfg(feature = "semantic-ops")]
+impl ApiId {
+  /// Construct an [`ApiId`] from a canonical API name (e.g. `"JSON.parse"`).
+  ///
+  /// This uses the same stable 64-bit FNV-1a hashing algorithm as `hir-js` ID
+  /// allocation so IDs are reproducible across crates without depending on
+  /// `std`'s platform-specific `Hasher` implementations.
+  pub fn from_name(name: &str) -> ApiId {
+    let mut hasher = crate::ids::StableHasher::new();
+    hasher.write_str(name);
+    ApiId(hasher.finish())
+  }
+
+  #[inline]
+  pub const fn raw(self) -> u64 {
+    self.0
+  }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
