@@ -128,6 +128,8 @@ pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseR
 
   // Root the promise once and clone the handle into each task so the promise remains valid even if
   // it relocates under a moving GC while the reaction jobs are queued.
+  //
+  // This also avoids N separate handle-table allocations when draining many reactions at once.
   let promise_root = unsafe { gc::Root::new_unchecked(promise.cast::<u8>()) };
   let mut tasks: Vec<Task> = Vec::new();
   while !head.is_null() {
@@ -164,4 +166,71 @@ pub(crate) unsafe fn reverse_list(mut head: *mut PromiseReactionNode) -> *mut Pr
     head = next;
   }
   prev
+}
+
+#[cfg(test)]
+mod tests {
+  use std::sync::atomic::{AtomicUsize, Ordering};
+
+  use super::*;
+
+  #[repr(C)]
+  struct TestNode {
+    header: PromiseReactionNode,
+    drops: *const AtomicUsize,
+    bad_next: *const AtomicUsize,
+  }
+
+  extern "C" fn test_run(_node: *mut PromiseReactionNode, _promise: PromiseRef) {
+    std::process::abort();
+  }
+
+  extern "C" fn test_drop(node: *mut PromiseReactionNode) {
+    let node = node.cast::<TestNode>();
+    unsafe {
+      if !(*node).header.next.is_null() {
+        (*(*node).bad_next).fetch_add(1, Ordering::SeqCst);
+      }
+      (*(*node).drops).fetch_add(1, Ordering::SeqCst);
+      drop(Box::from_raw(node));
+    }
+  }
+
+  static TEST_VTABLE: PromiseReactionVTable = PromiseReactionVTable {
+    run: test_run,
+    drop: test_drop,
+  };
+
+  fn make_node(
+    next: *mut PromiseReactionNode,
+    drops: *const AtomicUsize,
+    bad_next: *const AtomicUsize,
+  ) -> *mut PromiseReactionNode {
+    Box::into_raw(Box::new(TestNode {
+      header: PromiseReactionNode {
+        next,
+        vtable: &TEST_VTABLE,
+      },
+      drops,
+      bad_next,
+    }))
+    .cast::<PromiseReactionNode>()
+  }
+
+  #[test]
+  fn enqueue_reaction_jobs_drops_nodes_when_promise_is_null() {
+    let drops = Box::new(AtomicUsize::new(0));
+    let bad_next = Box::new(AtomicUsize::new(0));
+    let drops_ptr: *const AtomicUsize = &*drops;
+    let bad_next_ptr: *const AtomicUsize = &*bad_next;
+
+    let n3 = make_node(null_mut(), drops_ptr, bad_next_ptr);
+    let n2 = make_node(n3, drops_ptr, bad_next_ptr);
+    let n1 = make_node(n2, drops_ptr, bad_next_ptr);
+
+    enqueue_reaction_jobs(null_mut(), n1);
+
+    assert_eq!(drops.load(Ordering::SeqCst), 3);
+    assert_eq!(bad_next.load(Ordering::SeqCst), 0);
+  }
 }
