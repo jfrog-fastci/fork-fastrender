@@ -120,22 +120,25 @@ impl Waker {
     #[cfg(target_os = "linux")]
     {
       let val: u64 = 1;
-      let rc = unsafe {
-        libc::write(
-          self.inner.eventfd.as_raw_fd(),
-          &val as *const u64 as *const libc::c_void,
-          std::mem::size_of::<u64>(),
-        )
-      };
-      if rc == -1 {
-        let err = io::Error::last_os_error();
-        // Counter overflow is practically impossible; treat EAGAIN as coalescing.
-        if err.kind() == io::ErrorKind::WouldBlock {
-          return Ok(());
+      loop {
+        let rc = unsafe {
+          libc::write(
+            self.inner.eventfd.as_raw_fd(),
+            &val as *const u64 as *const libc::c_void,
+            std::mem::size_of::<u64>(),
+          )
+        };
+        if rc == -1 {
+          let err = io::Error::last_os_error();
+          match err.kind() {
+            io::ErrorKind::Interrupted => continue,
+            // Counter overflow is practically impossible; treat EAGAIN as coalescing.
+            io::ErrorKind::WouldBlock => return Ok(()),
+            _ => return Err(err),
+          }
         }
-        return Err(err);
+        return Ok(());
       }
-      return Ok(());
     }
 
     #[cfg(any(
@@ -311,10 +314,17 @@ impl Reactor {
 }
 
 fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
-  let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-  if flags == -1 {
-    return Err(io::Error::last_os_error());
-  }
+  let flags = loop {
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags != -1 {
+      break flags;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  };
   if flags & libc::O_NONBLOCK == 0 {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
