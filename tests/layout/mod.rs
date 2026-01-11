@@ -209,6 +209,7 @@ mod grid_calc_gap;
 mod grid_column_shorthand_longhand_merge;
 mod grid_calc_tracks_viewport_units;
 mod grid_box_sizing_test;
+mod grid_block_axis_intrinsic_keyword_resolution;
 mod grid_calc_length_font_relative;
 mod grid_forced_breaks;
 mod grid_fragmentation;

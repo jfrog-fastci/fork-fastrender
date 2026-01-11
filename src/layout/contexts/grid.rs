@@ -1717,24 +1717,37 @@ impl GridFormattingContext {
       _ => true,
     };
 
-    let has_horizontal_keyword = style
-      .width_keyword
-      .is_some_and(|kw| should_resolve_keyword(kw))
-      || style
-        .min_width_keyword
+    // Block-axis intrinsic sizing keywords on grid items (e.g. `min-height: min-content`) depend on
+    // the item's *used* inline size (text wrapping, percentage padding/borders, etc.). That inline
+    // size is determined by grid track sizing and is therefore not known when pre-resolving sizing
+    // keywords prior to running Taffy.
+    //
+    // Avoid resolving intrinsic sizing keywords on the physical block axis for non-root nodes.
+    // (Root nodes have a definite inline size from parent constraints.)
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let resolve_horizontal_axis = inline_is_horizontal || resolve_fit_content;
+    let resolve_vertical_axis = !inline_is_horizontal || resolve_fit_content;
+
+    let has_horizontal_keyword = resolve_horizontal_axis
+      && (style
+        .width_keyword
         .is_some_and(|kw| should_resolve_keyword(kw))
-      || style
-        .max_width_keyword
-        .is_some_and(|kw| should_resolve_keyword(kw));
-    let has_vertical_keyword = style
-      .height_keyword
-      .is_some_and(|kw| should_resolve_keyword(kw))
-      || style
-        .min_height_keyword
+        || style
+          .min_width_keyword
+          .is_some_and(|kw| should_resolve_keyword(kw))
+        || style
+          .max_width_keyword
+          .is_some_and(|kw| should_resolve_keyword(kw)));
+    let has_vertical_keyword = resolve_vertical_axis
+      && (style
+        .height_keyword
         .is_some_and(|kw| should_resolve_keyword(kw))
-      || style
-        .max_height_keyword
-        .is_some_and(|kw| should_resolve_keyword(kw));
+        || style
+          .min_height_keyword
+          .is_some_and(|kw| should_resolve_keyword(kw))
+        || style
+          .max_height_keyword
+          .is_some_and(|kw| should_resolve_keyword(kw)));
     if !(has_horizontal_keyword || has_vertical_keyword) {
       return Ok(None);
     }
@@ -1765,43 +1778,51 @@ impl GridFormattingContext {
       (0.0, 0.0)
     };
 
-    let mut min_width_border_box = if let Some(keyword) = style
-      .min_width_keyword
-      .filter(|kw| should_resolve_keyword(*kw))
-    {
-      self.intrinsic_keyword_size_from_min_max(
-        keyword,
-        intrinsic_min_w,
-        intrinsic_max_w,
-        available_width,
-        style,
-        horizontal_edges,
-      )
-    } else if let Some(length) = style.min_width {
-      self
-        .resolve_length_px_with_base(length, available_width, style)
-        .map(|px| border_size_from_box_sizing(px, horizontal_edges, style.box_sizing))
-        .unwrap_or(0.0)
+    let mut min_width_border_box = if resolve_horizontal_axis {
+      if let Some(keyword) = style
+        .min_width_keyword
+        .filter(|kw| should_resolve_keyword(*kw))
+      {
+        self.intrinsic_keyword_size_from_min_max(
+          keyword,
+          intrinsic_min_w,
+          intrinsic_max_w,
+          available_width,
+          style,
+          horizontal_edges,
+        )
+      } else if let Some(length) = style.min_width {
+        self
+          .resolve_length_px_with_base(length, available_width, style)
+          .map(|px| border_size_from_box_sizing(px, horizontal_edges, style.box_sizing))
+          .unwrap_or(0.0)
+      } else {
+        0.0
+      }
     } else {
       0.0
     };
-    let mut max_width_border_box = if let Some(keyword) = style
-      .max_width_keyword
-      .filter(|kw| should_resolve_keyword(*kw))
-    {
-      self.intrinsic_keyword_size_from_min_max(
-        keyword,
-        intrinsic_min_w,
-        intrinsic_max_w,
-        available_width,
-        style,
-        horizontal_edges,
-      )
-    } else if let Some(length) = style.max_width {
-      self
-        .resolve_length_px_with_base(length, available_width, style)
-        .map(|px| border_size_from_box_sizing(px, horizontal_edges, style.box_sizing))
-        .unwrap_or(f32::INFINITY)
+    let mut max_width_border_box = if resolve_horizontal_axis {
+      if let Some(keyword) = style
+        .max_width_keyword
+        .filter(|kw| should_resolve_keyword(*kw))
+      {
+        self.intrinsic_keyword_size_from_min_max(
+          keyword,
+          intrinsic_min_w,
+          intrinsic_max_w,
+          available_width,
+          style,
+          horizontal_edges,
+        )
+      } else if let Some(length) = style.max_width {
+        self
+          .resolve_length_px_with_base(length, available_width, style)
+          .map(|px| border_size_from_box_sizing(px, horizontal_edges, style.box_sizing))
+          .unwrap_or(f32::INFINITY)
+      } else {
+        f32::INFINITY
+      }
     } else {
       f32::INFINITY
     };
@@ -1815,43 +1836,51 @@ impl GridFormattingContext {
       max_width_border_box = f32::INFINITY;
     }
 
-    let mut min_height_border_box = if let Some(keyword) = style
-      .min_height_keyword
-      .filter(|kw| should_resolve_keyword(*kw))
-    {
-      self.intrinsic_keyword_size_from_min_max(
-        keyword,
-        intrinsic_min_h,
-        intrinsic_max_h,
-        available_height,
-        style,
-        vertical_edges,
-      )
-    } else if let Some(length) = style.min_height {
-      self
-        .resolve_length_px_with_base(length, available_height, style)
-        .map(|px| border_size_from_box_sizing(px, vertical_edges, style.box_sizing))
-        .unwrap_or(0.0)
+    let mut min_height_border_box = if resolve_vertical_axis {
+      if let Some(keyword) = style
+        .min_height_keyword
+        .filter(|kw| should_resolve_keyword(*kw))
+      {
+        self.intrinsic_keyword_size_from_min_max(
+          keyword,
+          intrinsic_min_h,
+          intrinsic_max_h,
+          available_height,
+          style,
+          vertical_edges,
+        )
+      } else if let Some(length) = style.min_height {
+        self
+          .resolve_length_px_with_base(length, available_height, style)
+          .map(|px| border_size_from_box_sizing(px, vertical_edges, style.box_sizing))
+          .unwrap_or(0.0)
+      } else {
+        0.0
+      }
     } else {
       0.0
     };
-    let mut max_height_border_box = if let Some(keyword) = style
-      .max_height_keyword
-      .filter(|kw| should_resolve_keyword(*kw))
-    {
-      self.intrinsic_keyword_size_from_min_max(
-        keyword,
-        intrinsic_min_h,
-        intrinsic_max_h,
-        available_height,
-        style,
-        vertical_edges,
-      )
-    } else if let Some(length) = style.max_height {
-      self
-        .resolve_length_px_with_base(length, available_height, style)
-        .map(|px| border_size_from_box_sizing(px, vertical_edges, style.box_sizing))
-        .unwrap_or(f32::INFINITY)
+    let mut max_height_border_box = if resolve_vertical_axis {
+      if let Some(keyword) = style
+        .max_height_keyword
+        .filter(|kw| should_resolve_keyword(*kw))
+      {
+        self.intrinsic_keyword_size_from_min_max(
+          keyword,
+          intrinsic_min_h,
+          intrinsic_max_h,
+          available_height,
+          style,
+          vertical_edges,
+        )
+      } else if let Some(length) = style.max_height {
+        self
+          .resolve_length_px_with_base(length, available_height, style)
+          .map(|px| border_size_from_box_sizing(px, vertical_edges, style.box_sizing))
+          .unwrap_or(f32::INFINITY)
+      } else {
+        f32::INFINITY
+      }
     } else {
       f32::INFINITY
     };
@@ -1868,9 +1897,10 @@ impl GridFormattingContext {
     let mut next_style: ComputedStyle = style.clone();
     let mut changed = false;
 
-    if style
-      .min_width_keyword
-      .is_some_and(|kw| should_resolve_keyword(kw))
+    if resolve_horizontal_axis
+      && style
+        .min_width_keyword
+        .is_some_and(|kw| should_resolve_keyword(kw))
     {
       let specified = self.specified_size_for_border_box(
         min_width_border_box,
@@ -1881,9 +1911,10 @@ impl GridFormattingContext {
       next_style.min_width_keyword = None;
       changed = true;
     }
-    if style
-      .max_width_keyword
-      .is_some_and(|kw| should_resolve_keyword(kw))
+    if resolve_horizontal_axis
+      && style
+        .max_width_keyword
+        .is_some_and(|kw| should_resolve_keyword(kw))
     {
       let specified = self.specified_size_for_border_box(
         max_width_border_box,
@@ -1894,7 +1925,8 @@ impl GridFormattingContext {
       next_style.max_width_keyword = None;
       changed = true;
     }
-    if let Some(keyword) = style.width_keyword.filter(|kw| should_resolve_keyword(*kw)) {
+    if resolve_horizontal_axis {
+      if let Some(keyword) = style.width_keyword.filter(|kw| should_resolve_keyword(*kw)) {
       let base = self.intrinsic_keyword_size_from_min_max(
         keyword,
         intrinsic_min_w,
@@ -1909,11 +1941,13 @@ impl GridFormattingContext {
       next_style.width = Some(Length::px(specified));
       next_style.width_keyword = None;
       changed = true;
+      }
     }
 
-    if style
-      .min_height_keyword
-      .is_some_and(|kw| should_resolve_keyword(kw))
+    if resolve_vertical_axis
+      && style
+        .min_height_keyword
+        .is_some_and(|kw| should_resolve_keyword(kw))
     {
       let specified =
         self.specified_size_for_border_box(min_height_border_box, vertical_edges, style.box_sizing);
@@ -1921,9 +1955,10 @@ impl GridFormattingContext {
       next_style.min_height_keyword = None;
       changed = true;
     }
-    if style
-      .max_height_keyword
-      .is_some_and(|kw| should_resolve_keyword(kw))
+    if resolve_vertical_axis
+      && style
+        .max_height_keyword
+        .is_some_and(|kw| should_resolve_keyword(kw))
     {
       let specified =
         self.specified_size_for_border_box(max_height_border_box, vertical_edges, style.box_sizing);
@@ -1931,24 +1966,26 @@ impl GridFormattingContext {
       next_style.max_height_keyword = None;
       changed = true;
     }
-    if let Some(keyword) = style
-      .height_keyword
-      .filter(|kw| should_resolve_keyword(*kw))
-    {
-      let base = self.intrinsic_keyword_size_from_min_max(
-        keyword,
-        intrinsic_min_h,
-        intrinsic_max_h,
-        available_height,
-        style,
-        vertical_edges,
-      );
-      let border_box = clamp_with_order(base, min_height_border_box, max_height_border_box);
-      let specified =
-        self.specified_size_for_border_box(border_box, vertical_edges, style.box_sizing);
-      next_style.height = Some(Length::px(specified));
-      next_style.height_keyword = None;
-      changed = true;
+    if resolve_vertical_axis {
+      if let Some(keyword) = style
+        .height_keyword
+        .filter(|kw| should_resolve_keyword(*kw))
+      {
+        let base = self.intrinsic_keyword_size_from_min_max(
+          keyword,
+          intrinsic_min_h,
+          intrinsic_max_h,
+          available_height,
+          style,
+          vertical_edges,
+        );
+        let border_box = clamp_with_order(base, min_height_border_box, max_height_border_box);
+        let specified =
+          self.specified_size_for_border_box(border_box, vertical_edges, style.box_sizing);
+        next_style.height = Some(Length::px(specified));
+        next_style.height_keyword = None;
+        changed = true;
+      }
     }
 
     if changed {
@@ -2456,6 +2493,13 @@ impl GridFormattingContext {
     let style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
+    // As with `resolve_intrinsic_sizing_keywords_for_node`, avoid resolving intrinsic sizing
+    // keywords on the physical block axis for non-root nodes. The used inline size for grid items is
+    // determined during track sizing, so resolving block-axis keywords here (before Taffy runs) can
+    // wildly mis-estimate sizes due to text wrapping at the element's min-content inline size.
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let resolve_width_axis = inline_is_horizontal;
+    let resolve_height_axis = !inline_is_horizontal;
     let keyword_to_mode = |kw: IntrinsicSizeKeyword| match kw {
       IntrinsicSizeKeyword::MinContent => Some(IntrinsicSizingMode::MinContent),
       IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
@@ -2474,12 +2518,14 @@ impl GridFormattingContext {
         Some(IntrinsicSizeKeyword::FitContent { .. })
       );
 
-    let has_intrinsic_keyword = style.width_keyword.and_then(keyword_to_mode).is_some()
-      || style.height_keyword.and_then(keyword_to_mode).is_some()
-      || style.min_width_keyword.and_then(keyword_to_mode).is_some()
-      || style.max_width_keyword.and_then(keyword_to_mode).is_some()
-      || style.min_height_keyword.and_then(keyword_to_mode).is_some()
-      || style.max_height_keyword.and_then(keyword_to_mode).is_some();
+    let has_intrinsic_keyword = (resolve_width_axis
+      && (style.width_keyword.and_then(keyword_to_mode).is_some()
+        || style.min_width_keyword.and_then(keyword_to_mode).is_some()
+        || style.max_width_keyword.and_then(keyword_to_mode).is_some()))
+      || (resolve_height_axis
+        && (style.height_keyword.and_then(keyword_to_mode).is_some()
+          || style.min_height_keyword.and_then(keyword_to_mode).is_some()
+          || style.max_height_keyword.and_then(keyword_to_mode).is_some()));
     if !has_intrinsic_keyword {
       return Ok(());
     }
@@ -2553,15 +2599,43 @@ impl GridFormattingContext {
       })
     };
 
-    if let Some(mode) = style.width_keyword.and_then(keyword_to_mode) {
-      // `max-width: fit-content(...)` must be resolved using the available grid area size. Since
-      // the Taffy template cache can't represent this dependency, keep the preferred size as `auto`
-      // and let the measure callback compute the final used size for this axis.
-      if !width_has_fit_content_max_constraint {
+    if resolve_width_axis {
+      if let Some(mode) = style.width_keyword.and_then(keyword_to_mode) {
+        // `max-width: fit-content(...)` must be resolved using the available grid area size. Since
+        // the Taffy template cache can't represent this dependency, keep the preferred size as `auto`
+        // and let the measure callback compute the final used size for this axis.
+        if !width_has_fit_content_max_constraint {
+          match intrinsic_physical_width(mode) {
+            Ok(border_box) => {
+              if border_box.is_finite() {
+                taffy_style.size.width =
+                  Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Horizontal));
+              }
+            }
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => {}
+          }
+        }
+      }
+
+      if let Some(mode) = style.min_width_keyword.and_then(keyword_to_mode) {
         match intrinsic_physical_width(mode) {
           Ok(border_box) => {
             if border_box.is_finite() {
-              taffy_style.size.width =
+              taffy_style.min_size.width =
+                Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Horizontal));
+            }
+          }
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => {}
+        }
+      }
+
+      if let Some(mode) = style.max_width_keyword.and_then(keyword_to_mode) {
+        match intrinsic_physical_width(mode) {
+          Ok(border_box) => {
+            if border_box.is_finite() {
+              taffy_style.max_size.width =
                 Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Horizontal));
             }
           }
@@ -2571,12 +2645,27 @@ impl GridFormattingContext {
       }
     }
 
-    if let Some(mode) = style.height_keyword.and_then(keyword_to_mode) {
-      if !height_has_fit_content_max_constraint {
+    if resolve_height_axis {
+      if let Some(mode) = style.height_keyword.and_then(keyword_to_mode) {
+        if !height_has_fit_content_max_constraint {
+          match intrinsic_physical_height(mode) {
+            Ok(border_box) => {
+              if border_box.is_finite() {
+                taffy_style.size.height =
+                  Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Vertical));
+              }
+            }
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => {}
+          }
+        }
+      }
+
+      if let Some(mode) = style.min_height_keyword.and_then(keyword_to_mode) {
         match intrinsic_physical_height(mode) {
           Ok(border_box) => {
             if border_box.is_finite() {
-              taffy_style.size.height =
+              taffy_style.min_size.height =
                 Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Vertical));
             }
           }
@@ -2584,57 +2673,18 @@ impl GridFormattingContext {
           Err(_) => {}
         }
       }
-    }
 
-    if let Some(mode) = style.min_width_keyword.and_then(keyword_to_mode) {
-      match intrinsic_physical_width(mode) {
-        Ok(border_box) => {
-          if border_box.is_finite() {
-            taffy_style.min_size.width =
-              Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Horizontal));
+      if let Some(mode) = style.max_height_keyword.and_then(keyword_to_mode) {
+        match intrinsic_physical_height(mode) {
+          Ok(border_box) => {
+            if border_box.is_finite() {
+              taffy_style.max_size.height =
+                Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Vertical));
+            }
           }
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => {}
         }
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {}
-      }
-    }
-
-    if let Some(mode) = style.min_height_keyword.and_then(keyword_to_mode) {
-      match intrinsic_physical_height(mode) {
-        Ok(border_box) => {
-          if border_box.is_finite() {
-            taffy_style.min_size.height =
-              Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Vertical));
-          }
-        }
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {}
-      }
-    }
-
-    if let Some(mode) = style.max_width_keyword.and_then(keyword_to_mode) {
-      match intrinsic_physical_width(mode) {
-        Ok(border_box) => {
-          if border_box.is_finite() {
-            taffy_style.max_size.width =
-              Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Horizontal));
-          }
-        }
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {}
-      }
-    }
-
-    if let Some(mode) = style.max_height_keyword.and_then(keyword_to_mode) {
-      match intrinsic_physical_height(mode) {
-        Ok(border_box) => {
-          if border_box.is_finite() {
-            taffy_style.max_size.height =
-              Dimension::length(to_taffy_size(border_box.max(0.0), Axis::Vertical));
-          }
-        }
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {}
       }
     }
 
