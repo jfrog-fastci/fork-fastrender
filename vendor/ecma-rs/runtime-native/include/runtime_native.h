@@ -646,12 +646,14 @@ PromiseRef rt_async_spawn_deferred(CoroutineRef coro);
 // Cancel all queued runtime-owned coroutine frames.
 void rt_async_cancel_all(void);
 
-// Drive the async runtime/event loop for one "turn".
+// Drive the native async scheduler (microtasks).
+//
+// This is a **non-blocking** poll: it only drains currently queued microtasks (including promise
+// reaction jobs that resume native async-ABI coroutines).
 //
 // Returns:
-// - true  if there is still pending work after the call (queued microtasks/macrotasks,
-//         active timers, or active I/O watchers)
-// - false if the runtime is quiescent (no tasks, timers, or watchers)
+// - true  if at least one microtask was executed
+// - false if there was no runnable work
 bool rt_async_poll(void);
 
 // Block until at least one async task becomes ready.
