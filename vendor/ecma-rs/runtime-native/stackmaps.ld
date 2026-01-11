@@ -7,7 +7,8 @@
  */
 
 SECTIONS {
-  /* Hardened location: writable during relocation, then protected by RELRO. */
+  /* Writable during relocation (avoids DT_TEXTREL). Whether this ends up in
+   * PT_GNU_RELRO depends on the linker and where the fragment is inserted. */
   .data.rel.ro.llvm_stackmaps : ALIGN(8) {
     __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;

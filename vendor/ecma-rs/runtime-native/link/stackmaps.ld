@@ -18,9 +18,10 @@
  * The runtime can then read the section bytes directly from memory without
  * parsing `/proc/self/exe`.
  *
- * We place the output section in `.data.rel.ro.llvm_stackmaps` so the dynamic
- * loader can relocate it for PIE binaries (writable during relocation, then
- * protected by RELRO).
+ * We place the output section in `.data.rel.ro.llvm_stackmaps` so PIE/DSO
+ * relocations can be applied in writable memory without requiring `DT_TEXTREL`.
+ * Depending on the linker and where this fragment is inserted, the section may
+ * or may not end up inside `PT_GNU_RELRO` (RELRO).
  *
  * Placement:
  * - This output section is writable (to allow dynamic relocations under PIE/DSO).
