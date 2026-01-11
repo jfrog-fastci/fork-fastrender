@@ -45,7 +45,9 @@ impl ValueTypeSummary {
   }
 
   pub fn excludes_nullish(self) -> bool {
-    !self.is_unknown() && !self.contains(Self::NULLISH)
+    // `contains(NULLISH)` would only be true for types that include *both* `null` and `undefined`;
+    // for our purposes we care about whether the summary may include *either* nullish value.
+    !self.is_unknown() && (self.0 & Self::NULLISH.0) == 0
   }
 
   pub fn is_definitely_string(self) -> bool {
