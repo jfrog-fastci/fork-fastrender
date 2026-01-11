@@ -78,6 +78,14 @@ fn validate_body_syntax(
   out: &mut Vec<Diagnostic>,
 ) {
   let file_resolver = resolver.for_file(file);
+  let expr_stmt_roots: std::collections::HashSet<hir_js::ExprId> = body
+    .stmts
+    .iter()
+    .filter_map(|stmt| match stmt.kind {
+      StmtKind::Expr(expr) => Some(expr),
+      _ => None,
+    })
+    .collect();
   // Body-level constructs.
   match body.kind {
     BodyKind::Class => {
@@ -114,7 +122,8 @@ fn validate_body_syntax(
     }
   }
 
-  for expr in body.exprs.iter() {
+  for (idx, expr) in body.exprs.iter().enumerate() {
+    let expr_id = hir_js::ExprId(idx as u32);
     match &expr.kind {
       ExprKind::Super => {
         push_unsupported_syntax(out, Span::new(file, expr.span), "`super` is not supported yet");
@@ -210,6 +219,14 @@ fn validate_body_syntax(
         );
       }
       ExprKind::Call(call) => {
+        let is_print_intrinsic = callee_is_ident(body, lowered, call.callee, "print");
+        if is_print_intrinsic && !expr_stmt_roots.contains(&expr_id) {
+          push_unsupported_syntax(
+            out,
+            Span::new(file, expr.span),
+            "`print(...)` is only supported as a standalone statement in native-js strict subset",
+          );
+        }
         if call.optional {
           push_unsupported_syntax(
             out,
@@ -242,7 +259,6 @@ fn validate_body_syntax(
         }
 
         // `print(...)` is a codegen intrinsic, so allow it even when it comes from `.d.ts` libs.
-        let is_print_intrinsic = callee_is_ident(body, lowered, call.callee, "print");
         if !is_print_intrinsic {
           let ok = (|| {
             let BindingId::Def(def) = file_resolver.resolve_expr_ident(body, call.callee)? else {

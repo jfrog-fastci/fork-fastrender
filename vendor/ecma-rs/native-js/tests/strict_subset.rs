@@ -234,6 +234,23 @@ fn accepts_print_statement() {
 }
 
 #[test]
+fn rejects_print_used_as_expression() {
+  let err = validate(
+    r#"
+      function f(): number {
+        const x = print(1);
+        return 0;
+      }
+
+      f();
+    "#,
+    FileKind::Ts,
+  )
+  .unwrap_err();
+  assert_has_code(&err, "NJS0009");
+}
+
+#[test]
 fn accepts_direct_function_call() {
   let ok = validate(
     r#"
