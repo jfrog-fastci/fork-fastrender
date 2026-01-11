@@ -60,8 +60,9 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
       "legend" => {
         styles.shrink_to_fit_inline_size = true;
       }
-      "img" | "video" | "audio" | "canvas" | "svg" | "iframe" | "embed" | "object" => {
+      "img" | "video" | "audio" | "canvas" | "iframe" | "embed" | "object" => {
         // Compatibility default (non-standard): `max-width: 100%` on replaced elements.
+        // (Intentionally excludes `<svg>`.)
         //
         // This is *not* a standard UA default, but many "responsive" pages rely on author CSS that
         // effectively does the same thing (e.g. `img { max-width: 100%; height: auto; }`). Keeping
@@ -305,6 +306,17 @@ mod tests {
     }
   }
 
+  fn collect_svg_widths(node: &FragmentNode, svgs: &mut Vec<f32>) {
+    if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
+      if matches!(replaced_type, ReplacedType::Svg { .. }) {
+        svgs.push(node.bounds.width());
+      }
+    }
+    for child in node.children.iter() {
+      collect_svg_widths(child, svgs);
+    }
+  }
+
   #[test]
   fn non_ascii_whitespace_parse_dimension_attribute_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
@@ -396,6 +408,36 @@ mod tests {
     (embeds, objects)
   }
 
+  fn layout_svg_widths(toggle: &str) -> Vec<f32> {
+    let _guard = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      ENV_COMPAT_REPLACED_MAX_WIDTH_100.to_string(),
+      toggle.to_string(),
+    )]))));
+
+    let html = r#"
+      <html>
+        <body style="margin:0">
+          <svg viewBox="0 0 86 24" preserveAspectRatio="xMinYMin meet" style="height:40px"></svg>
+        </body>
+      </html>
+    "#;
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled =
+      crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = crate::tree::box_generation::generate_box_tree_with_anonymous_fixup(&styled)
+      .expect("box tree");
+
+    let engine =
+      crate::layout::engine::LayoutEngine::new(crate::layout::engine::LayoutConfig::for_viewport(
+        crate::geometry::Size::new(100.0, 100.0),
+      ));
+    let fragment_tree = engine.layout_tree(&box_tree).expect("layout");
+
+    let mut svgs = Vec::new();
+    collect_svg_widths(&fragment_tree.root, &mut svgs);
+    svgs
+  }
+
   #[test]
   fn compat_replaced_max_width_clamps_embed_and_object() {
     let (embeds_off, objects_off) = layout_widths("0");
@@ -425,5 +467,20 @@ mod tests {
       "expected <object> to be clamped to the viewport with compat max-width, got {}",
       objects_on[0]
     );
+  }
+
+  #[test]
+  fn compat_replaced_max_width_does_not_apply_to_svg() {
+    let expected = 40.0 * (86.0 / 24.0);
+
+    for toggle in ["0", "1"] {
+      let widths = layout_svg_widths(toggle);
+      assert_eq!(widths.len(), 1, "expected one <svg> fragment");
+      assert!(
+        (widths[0] - expected).abs() < 0.05,
+        "expected <svg> width {expected}, got {} (toggle={toggle})",
+        widths[0]
+      );
+    }
   }
 }

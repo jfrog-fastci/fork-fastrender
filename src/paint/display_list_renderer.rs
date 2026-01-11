@@ -7581,6 +7581,43 @@ impl DisplayListRenderer {
     let transform = self.canvas.transform();
     let color = item.color;
 
+    // When the element has rounded corners, the outline should follow the same corner curves.
+    // Rendering it as a set of straight edge strokes produces square corners and can visibly
+    // diverge from browsers (e.g. pill-shaped focus rings).
+    let radii = self.ds_radii(item.radii);
+    let outer_radii = radii.shrink(-expand);
+    if outer_radii.has_radius()
+      && matches!(item.style, CssBorderStyle::Solid)
+      && !color.is_transparent()
+      && outer_w > 0.0
+      && outer_h > 0.0
+    {
+      if let Some(path) = crate::paint::rasterize::build_rounded_rect_ring_path(
+        outer_x,
+        outer_y,
+        outer_w,
+        outer_h,
+        &outer_radii,
+        width,
+      ) {
+        let mut paint = tiny_skia::Paint::default();
+        set_paint_color(&mut paint, &color, opacity);
+        paint.blend_mode = blend_mode;
+        paint.anti_alias = true;
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::EvenOdd,
+            transform,
+            clip.as_ref(),
+          );
+        });
+        self.canvas.restore();
+        return;
+      }
+    }
+
     // Top
     self.render_border_edge(
       BorderEdge::Top,
@@ -23994,6 +24031,7 @@ mod tests {
     let mut list = DisplayList::new();
     list.push(DisplayItem::Outline(OutlineItem {
       rect: Rect::from_xywh(2.0, 2.0, 2.0, 2.0),
+      radii: BorderRadii::ZERO,
       width: 2.0,
       style: CssBorderStyle::Solid,
       color: Rgba::BLACK,
@@ -24006,6 +24044,27 @@ mod tests {
     assert_eq!(pixel(&pixmap, 0, 0), (0, 0, 0, 255));
     // Inside the original rect stays untouched.
     assert_eq!(pixel(&pixmap, 3, 3), (255, 255, 255, 255));
+  }
+
+  #[test]
+  fn outline_respects_border_radius() {
+    let renderer = DisplayListRenderer::new(16, 16, Rgba::WHITE, FontContext::new()).unwrap();
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::Outline(OutlineItem {
+      rect: Rect::from_xywh(4.0, 4.0, 8.0, 8.0),
+      radii: BorderRadii::uniform(3.0),
+      width: 2.0,
+      style: CssBorderStyle::Solid,
+      color: Rgba::BLACK,
+      offset: 0.0,
+      invert: false,
+    }));
+
+    let pixmap = renderer.render(&list).unwrap();
+    // Rounded outline should not fill the extreme outer corner pixel.
+    assert_eq!(pixel(&pixmap, 2, 2), (255, 255, 255, 255));
+    // But the top band should still contain outline pixels.
+    assert_eq!(pixel(&pixmap, 8, 3), (0, 0, 0, 255));
   }
 
   #[test]
@@ -24049,6 +24108,7 @@ mod tests {
     list.push(DisplayItem::PopClip);
     list.push(DisplayItem::Outline(OutlineItem {
       rect: Rect::from_xywh(8.0, 8.0, 4.0, 4.0),
+      radii: BorderRadii::ZERO,
       width: 2.0,
       style: CssBorderStyle::Solid,
       color: Rgba::RED,

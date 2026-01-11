@@ -3859,6 +3859,7 @@ fn outline_ignores_clip_path() {
   }));
   list.push(DisplayItem::Outline(OutlineItem {
     rect: Rect::from_xywh(5.0, 5.0, 20.0, 20.0),
+    radii: BorderRadii::ZERO,
     width: 4.0,
     style: BorderStyle::Solid,
     color: Rgba::RED,

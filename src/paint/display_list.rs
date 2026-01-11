@@ -475,6 +475,9 @@ pub struct OutlineItem {
   /// Border-rect in CSS px (before offset expansion)
   pub rect: Rect,
 
+  /// Border radii for the outline (matches the element's border box radii).
+  pub radii: BorderRadii,
+
   /// Outline width in CSS px
   pub width: f32,
 

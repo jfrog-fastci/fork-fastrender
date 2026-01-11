@@ -9249,10 +9249,12 @@ impl DisplayListBuilder {
       rect.width(),
       self.viewport,
     );
+    let radii = Self::border_radii(rect, style).clamped(rect.width(), rect.height());
     let (color, invert) = style.outline_color.resolve(style.color);
     if ow > 0.0 && !color.is_transparent() {
       self.list.push(DisplayItem::Outline(OutlineItem {
         rect,
+        radii,
         width: ow,
         style: outline_style,
         color,

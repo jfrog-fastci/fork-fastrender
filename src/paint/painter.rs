@@ -22838,7 +22838,9 @@ mod tests {
       }
     }
     assert!(found_outline, "outline stroke should paint outside the box");
-    assert_eq!(color_at(&pixmap, 0, 0), (255, 255, 255, 255));
+    // With `outline-offset: 2px` and `outline-width: 4px`, the outline's outer edge is 6px away
+    // from the element border edge, so it should reach the origin for a box placed at (4px,4px).
+    assert_eq!(color_at(&pixmap, 0, 0), (255, 0, 0, 255));
   }
 
   #[test]
