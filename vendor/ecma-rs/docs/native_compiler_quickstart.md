@@ -111,9 +111,8 @@ bash scripts/cargo_llvm.sh test -p native-js --test strict_validator
 > Or from the repo root with the wrapper:
 >
 > ```bash
-> bash scripts/cargo_agent.sh run \
->   --manifest-path vendor/ecma-rs/Cargo.toml \
->   -p typecheck-ts-cli -- \
+> # From the repo root:
+> bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-cli -- \
 >   typecheck --strict-native path/to/file.ts
 > ```
 
