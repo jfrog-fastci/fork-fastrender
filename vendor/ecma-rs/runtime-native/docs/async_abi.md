@@ -15,7 +15,8 @@ Two Rust entry points execute pending work without blocking:
   - Returns `true` if it executed any microtasks.
 - `rt_async_run_until_idle() -> bool`
   - Runs ready macrotasks + microtasks until both queues are empty.
-  - Does **not** block in `epoll_wait` (timers and I/O readiness are not waited on).
+  - Does **not** block in the platform reactor wait syscall (`epoll_wait`/`kevent`)
+    (timers and I/O readiness are not waited on).
   - Returns `true` if it executed any work.
 
 Both functions are **non-reentrant** by design (HTML-style microtask checkpoint semantics). If
@@ -334,7 +335,8 @@ Drives the full event loop for one turn:
 
 - Executes at most one macrotask (timer/I/O/etc), then performs a microtask checkpoint.
 - If there are no macrotasks, it drains microtasks directly.
-- Blocks in `epoll_wait` when there is no ready work but there are pending I/O watchers or timers.
+- Blocks in the platform reactor wait syscall (`epoll_wait`/`kevent`) when there is no ready work but
+  there are pending I/O watchers or timers.
 
 The return value indicates whether there is still pending work (timers, I/O watchers, microtasks,
 macrotasks) after the turn.
