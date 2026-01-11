@@ -195,6 +195,9 @@ fn detach_transfer_and_resize_are_blocked_while_pinned() {
   assert_eq!(buffer.byte_len(), 0);
   assert!(matches!(buffer.pin(), Err(ArrayBufferError::Detached)));
   assert_eq!(alloc.external_bytes(), 0);
+
+  let transferred = buffer.transfer().unwrap();
+  assert!(transferred.is_detached());
 }
 
 #[test]
