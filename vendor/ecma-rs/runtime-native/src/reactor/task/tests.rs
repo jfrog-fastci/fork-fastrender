@@ -167,7 +167,7 @@ fn stale_event_does_not_wake_new_registration() {
 
   // Hold the state lock so the poll thread gets stuck after `epoll_wait` returns but before it can
   // look up the entry and wake a waker.
-  let mut state = reactor.inner.state.lock().unwrap();
+  let mut state = reactor.inner.state.lock().unwrap_or_else(|e| e.into_inner());
 
   let (started_tx, started_rx) = mpsc::channel();
   let (done_tx, done_rx) = mpsc::channel();

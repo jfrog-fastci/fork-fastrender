@@ -1160,7 +1160,7 @@ mod tests {
       let (rfd, wfd) = pipe().unwrap();
 
       let (array_obj, buffer_obj, promise_obj, bytes_ptr) = {
-        let mut heap = heap.lock().unwrap();
+        let mut heap = heap.lock().unwrap_or_else(|e| e.into_inner());
         let buffer_obj = alloc_array_buffer(&mut heap, 1);
         let array_obj = alloc_uint8_array(&mut heap, buffer_obj, 0, 1);
         let promise_obj = alloc_dummy(&mut heap);

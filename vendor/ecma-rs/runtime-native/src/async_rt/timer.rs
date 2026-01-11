@@ -138,7 +138,7 @@ mod tests {
     // Safety: `data` is a stable pointer to a `RecordCtx` owned by the `Task`.
     let ctx = unsafe { &*(data as *const RecordCtx) };
     let out = unsafe { &*ctx.out };
-    out.lock().unwrap().push(ctx.payload);
+    out.lock().unwrap_or_else(|e| e.into_inner()).push(ctx.payload);
   }
 
   extern "C" fn record_drop(data: *mut u8) {
@@ -210,12 +210,12 @@ mod tests {
         }
         expected_payloads.sort_unstable();
 
-        fired.lock().unwrap().clear();
+        fired.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let due = timers.drain_due(now);
         for task in due {
           task.run();
         }
-        let mut got = std::mem::take(&mut *fired.lock().unwrap());
+        let mut got = std::mem::take(&mut *fired.lock().unwrap_or_else(|e| e.into_inner()));
         got.sort_unstable();
         assert_eq!(got, expected_payloads);
       }
