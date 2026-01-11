@@ -474,6 +474,11 @@ matching the validator’s checks):
   - `async` / generator functions, `await`, `yield`
   - object literals, array literals, and destructuring patterns
   - property access (`obj.prop`, `obj["prop"]`)
+  - calls:
+    - optional calls (`foo?.()`)
+    - spread call arguments (`foo(...args)`)
+    - `new` expressions (`new Foo()`)
+    - only direct identifier calls are supported (no member calls like `obj.foo()`)
   - template literals / tagged templates
   - `import()` expressions, `import.meta`
   - `super`, `new.target`
