@@ -169,13 +169,7 @@ fn aarch64_safepoint_stub_disassembles_with_fp_lr_capture() {
   // is a cheap disassembly sanity check (it does not link the full runtime).
   std::fs::write(
     &shim_rs,
-    format!(
-      r#"
-      use core::arch::global_asm;
-
-      global_asm!(include_str!({safepoint_asm:?}));
-      "#
-    ),
+    format!("use core::arch::global_asm;\n\nglobal_asm!(include_str!({safepoint_asm:?}));\n"),
   )
   .expect("write shim");
 

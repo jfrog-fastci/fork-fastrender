@@ -1995,6 +1995,16 @@ int main(void) {
   }
 
   const CHILD_ENV: &str = "ECMA_RS_RUNTIME_NATIVE_PANIC_BOUNDARY_CHILD";
+  const OOM_CHILD_ENV: &str = "ECMA_RS_RUNTIME_NATIVE_OOM_BOUNDARY_CHILD";
+
+  fn assert_child_aborted(status: std::process::ExitStatus) {
+    assert!(!status.success());
+    #[cfg(unix)]
+    {
+      use std::os::unix::process::ExitStatusExt;
+      assert_eq!(status.signal(), Some(6));
+    }
+  }
 
   #[test]
   fn exported_ffi_functions_abort_on_panic() {
@@ -2011,14 +2021,244 @@ int main(void) {
       .status()
       .expect("failed to spawn child test process");
 
-    assert!(!status.success());
-
-    #[cfg(unix)]
-    {
-      use std::os::unix::process::ExitStatusExt;
-      assert_eq!(status.signal(), Some(6));
-    }
+    assert_child_aborted(status);
   }
+
+  #[test]
+  fn exported_ffi_functions_abort_on_oom() {
+    if std::env::var_os(OOM_CHILD_ENV).is_some() {
+      extern "C" fn noop_task(_data: *mut u8, _promise: PromiseRef) {}
+
+      // Force a deterministic OOM via the runtime-native bump arena (Linux) or
+      // by asking the allocator for an absurdly large allocation (non-Linux
+      // fallback).
+      let size = if cfg!(target_os = "linux") {
+        128 * 1024
+      } else {
+        // `alloc::alloc_bytes` uses `Layout::from_size_align`, which rejects
+        // sizes > `isize::MAX`. Pick a still-ridiculous size that's within that
+        // bound so we get an OOM (not an "invalid layout" trap).
+        (isize::MAX as usize) / 2
+      };
+
+      let _ = rt_parallel_spawn_promise(noop_task, core::ptr::null_mut(), PromiseLayout { size, align: 1 });
+      unreachable!("rt_parallel_spawn_promise must abort the process on OOM");
+    }
+
+    let exe = std::env::current_exe().expect("failed to get current test executable path");
+    let status = std::process::Command::new(exe)
+      .env(OOM_CHILD_ENV, "1")
+      // Make the bump arena tiny so an allocation deterministically overflows
+      // it and triggers `rt_trap_oom`.
+      .env("RUNTIME_NATIVE_BUMP_ARENA_SIZE", "64K")
+      .env("RUNTIME_NATIVE_BUMP_CHUNK_SIZE", "32K")
+      .arg("--exact")
+      .arg("tests::exported_ffi_functions_abort_on_oom")
+      .status()
+      .expect("failed to spawn child test process");
+
+    assert_child_aborted(status);
+  }
+
+  #[test]
+  fn exported_ffi_functions_have_abort_on_panic_boundaries() {
+    fn visit_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+      for entry in std::fs::read_dir(dir).expect("failed to read src directory") {
+        let entry = entry.expect("failed to read src directory entry");
+        let path = entry.path();
+        if path.is_dir() {
+          // Skip `src/bin`: those are standalone binaries and not part of the
+          // runtime-native C ABI surface.
+          if path.file_name() == Some(std::ffi::OsStr::new("bin")) {
+            continue;
+          }
+          visit_rs_files(&path, out);
+          continue;
+        }
+        if path.extension() == Some(std::ffi::OsStr::new("rs")) {
+          out.push(path);
+        }
+      }
+    }
+
+    let mut files = Vec::new();
+    visit_rs_files(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), &mut files);
+
+    // Linker-visible `#[no_mangle]` statics are not unwindable.
+    let allowed_no_mangle_statics = [
+      // `rt_gc_poll` fast-path epoch.
+      "RT_GC_EPOCH",
+      // Thread-local `Thread*`.
+      "RT_THREAD",
+      // Test-only dummy `.llvm_stackmaps` section.
+      "__RUNTIME_NATIVE_DUMMY_STACKMAPS",
+    ];
+
+    for file in files {
+      let src = std::fs::read_to_string(&file).expect("failed to read source file");
+      let lines: Vec<&str> = src.lines().collect();
+      let mut i = 0usize;
+        while i < lines.len() {
+          if lines[i].trim() != "#[no_mangle]" {
+            i += 1;
+            continue;
+          }
+
+          // Find the item header after the attribute (skip other attributes and
+          // doc comments).
+          let mut is_naked_fn = false;
+          // `#[unsafe(naked)]`/`#[naked]` may appear before or after `#[no_mangle]` (e.g. after
+          // `#[cfg(...)]`). Scan the contiguous attribute block surrounding `#[no_mangle]`.
+          let mut attr_scan = i;
+          while attr_scan > 0 {
+            let l = lines[attr_scan - 1].trim();
+            if l.is_empty() || l.starts_with("//") {
+              attr_scan -= 1;
+              continue;
+            }
+            if l.starts_with("#[") {
+              if l.contains("naked") {
+                is_naked_fn = true;
+              }
+              attr_scan -= 1;
+              continue;
+            }
+            break;
+          }
+          let mut header_idx = i + 1;
+          while header_idx < lines.len() {
+            let l = lines[header_idx].trim();
+            if l.starts_with("#[") && l.contains("naked") {
+              is_naked_fn = true;
+            }
+            if l.is_empty() || l.starts_with("#[") || l.starts_with("//") {
+              header_idx += 1;
+              continue;
+            }
+            break;
+        }
+        assert!(header_idx < lines.len(), "#[no_mangle] at EOF in {}", file.display());
+
+        let header = lines[header_idx].trim();
+        if header.contains(" static ") || header.starts_with("static ") {
+          let words: Vec<&str> = header.split_whitespace().collect();
+          let static_pos = words
+            .iter()
+            .position(|&w| w == "static")
+            .expect("static item must contain `static` keyword");
+          let name_token = if words.get(static_pos + 1) == Some(&"mut") {
+            words
+              .get(static_pos + 2)
+              .copied()
+              .expect("expected static name after `static mut`")
+          } else {
+            words
+              .get(static_pos + 1)
+              .copied()
+              .expect("expected static name after `static`")
+          };
+          let name = name_token.trim_end_matches(':');
+          assert!(
+            allowed_no_mangle_statics.contains(&name),
+            "unexpected #[no_mangle] static `{name}` in {} (add to allowlist if intentional)",
+            file.display()
+          );
+          i = header_idx + 1;
+          continue;
+        }
+
+        if !header.contains("fn ") {
+          panic!(
+            "unexpected #[no_mangle] item in {}:{}: {}",
+            file.display(),
+            header_idx + 1,
+            header
+          );
+        }
+        assert!(
+          header.contains("extern \"C\"") || header.contains("extern \"C-unwind\""),
+          "#[no_mangle] function must be `extern \"C\"` in {}:{}: {}",
+          file.display(),
+          header_idx + 1,
+          header
+        );
+
+        // Find the opening `{` (may be on the same line or a subsequent line for
+        // multi-line signatures).
+        let mut brace_idx = header_idx;
+        while brace_idx < lines.len() && !lines[brace_idx].contains('{') {
+          brace_idx += 1;
+        }
+          assert!(
+            brace_idx < lines.len(),
+            "missing `{{` for #[no_mangle] function starting at {}:{}",
+            file.display(),
+            header_idx + 1
+          );
+
+          // Naked functions are implemented in inline assembly (`naked_asm!`) and cannot call into
+          // Rust helpers like `abort_on_panic`, but they also cannot panic. These are used for
+          // low-level ABI shims (e.g. safepoint entrypoints).
+          if !is_naked_fn {
+            // First non-trivial statement in the function body should wrap with `abort_on_panic`.
+            //
+            // Allow a small prelude of local bindings (e.g. capturing a frame pointer) before the
+            // abort boundary is established.
+            let mut saw_boundary = false;
+            let mut first_real_line = String::new();
+
+            // Seed with any trailing content on the `{` line.
+            let mut body_idx = brace_idx;
+            let mut pending: Option<&str> = None;
+            if let Some(pos) = lines[brace_idx].find('{') {
+              let rest = lines[brace_idx][pos + 1..].trim();
+              if !rest.is_empty() {
+                pending = Some(rest);
+              }
+            }
+
+            loop {
+              let l = if let Some(p) = pending.take() {
+                p.trim()
+              } else {
+                body_idx += 1;
+                if body_idx >= lines.len() {
+                  break;
+                }
+                lines[body_idx].trim()
+              };
+
+              if l.is_empty() || l.starts_with("//") {
+                continue;
+              }
+
+              if l.contains("abort_on_panic(") {
+                saw_boundary = true;
+                break;
+              }
+
+              // Allow a small prelude of local bindings before the abort boundary.
+              if l.starts_with("let ") || l.starts_with("const ") || l.starts_with("#[") {
+                continue;
+              }
+
+              first_real_line = l.to_string();
+              break;
+            }
+
+            assert!(
+              saw_boundary,
+              "missing abort_on_panic wrapper for #[no_mangle] function in {}:{}\n  first body line: {}",
+              file.display(),
+              header_idx + 1,
+              first_real_line
+            );
+          }
+
+          i = brace_idx + 1;
+        }
+      }
+    }
 }
 
 // Exported functions used by `tests/frame_pointers.rs` to validate the
@@ -2030,20 +2270,22 @@ int main(void) {
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_fp_test_leaf(x: u64) -> u64 {
-  x.wrapping_add(1)
+  crate::ffi::abort_on_panic(|| x.wrapping_add(1))
 }
 
 #[cfg(feature = "fp_regression")]
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_fp_test_mid(x: u64) -> u64 {
-  // Ensure a real call so we get a distinct frame in the disassembly.
-  rt_fp_test_leaf(x).wrapping_mul(3)
+  crate::ffi::abort_on_panic(|| {
+    // Ensure a real call so we get a distinct frame in the disassembly.
+    rt_fp_test_leaf(x).wrapping_mul(3)
+  })
 }
 
 #[cfg(feature = "fp_regression")]
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_fp_test_entry(x: u64) -> u64 {
-  rt_fp_test_mid(x).wrapping_sub(7)
+  crate::ffi::abort_on_panic(|| rt_fp_test_mid(x).wrapping_sub(7))
 }

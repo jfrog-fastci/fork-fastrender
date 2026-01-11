@@ -168,7 +168,7 @@ pub(crate) fn validate_alloc_request(
 #[cfg(feature = "gc_debug")]
 #[no_mangle]
 pub extern "C" fn rt_debug_shape_count() -> usize {
-  abort_on_panic(shape_count)
+  abort_on_panic(|| shape_count())
 }
 
 #[cfg(feature = "gc_debug")]

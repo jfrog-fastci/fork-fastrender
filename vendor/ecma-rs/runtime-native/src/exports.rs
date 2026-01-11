@@ -279,47 +279,51 @@ pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::
 
 #[no_mangle]
 pub extern "C" fn rt_alloc_ptr_array(len: usize) -> *mut u8 {
-  rt_alloc_array(len, array::RT_ARRAY_ELEM_PTR_FLAG | core::mem::size_of::<*mut u8>())
+  abort_on_panic(|| rt_alloc_array(len, array::RT_ARRAY_ELEM_PTR_FLAG | core::mem::size_of::<*mut u8>()))
 }
 
 #[no_mangle]
 pub extern "C" fn rt_array_len(obj: *mut u8) -> usize {
-  if obj.is_null() {
-    trap::rt_trap_invalid_arg("rt_array_len called with null");
-  }
-  // SAFETY: The ABI contract requires `obj` be a valid array object.
-  unsafe {
-    let mut obj = obj;
-    let header = &*(obj as *const ObjHeader);
-    if header.is_forwarded() {
-      obj = header.forwarding_ptr();
+  abort_on_panic(|| {
+    if obj.is_null() {
+      trap::rt_trap_invalid_arg("rt_array_len called with null");
     }
-    let header = &*(obj as *const ObjHeader);
-    if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
-      trap::rt_trap_invalid_arg("rt_array_len called on non-array object");
+    // SAFETY: The ABI contract requires `obj` be a valid array object.
+    unsafe {
+      let mut obj = obj;
+      let header = &*(obj as *const ObjHeader);
+      if header.is_forwarded() {
+        obj = header.forwarding_ptr();
+      }
+      let header = &*(obj as *const ObjHeader);
+      if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
+        trap::rt_trap_invalid_arg("rt_array_len called on non-array object");
+      }
+      (*(obj as *const RtArrayHeader)).len
     }
-    (*(obj as *const RtArrayHeader)).len
-  }
+  })
 }
 
 #[no_mangle]
 pub extern "C" fn rt_array_data(obj: *mut u8) -> *mut u8 {
-  if obj.is_null() {
-    trap::rt_trap_invalid_arg("rt_array_data called with null");
-  }
-  // SAFETY: The ABI contract requires `obj` be a valid array object.
-  unsafe {
-    let mut obj = obj;
-    let header = &*(obj as *const ObjHeader);
-    if header.is_forwarded() {
-      obj = header.forwarding_ptr();
+  abort_on_panic(|| {
+    if obj.is_null() {
+      trap::rt_trap_invalid_arg("rt_array_data called with null");
     }
-    let header = &*(obj as *const ObjHeader);
-    if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
-      trap::rt_trap_invalid_arg("rt_array_data called on non-array object");
+    // SAFETY: The ABI contract requires `obj` be a valid array object.
+    unsafe {
+      let mut obj = obj;
+      let header = &*(obj as *const ObjHeader);
+      if header.is_forwarded() {
+        obj = header.forwarding_ptr();
+      }
+      let header = &*(obj as *const ObjHeader);
+      if header.type_desc != &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
+        trap::rt_trap_invalid_arg("rt_array_data called on non-array object");
+      }
+      obj.add(array::RT_ARRAY_DATA_OFFSET)
     }
-    obj.add(array::RT_ARRAY_DATA_OFFSET)
-  }
+  })
 }
 
 /// Register the current OS thread with the runtime.
@@ -441,9 +445,7 @@ pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
 /// `rewrite-statepoints-for-gc` does not wrap the poll itself in a statepoint.
 #[no_mangle]
 pub extern "C" fn rt_gc_poll() -> bool {
-  // Panic-safety: this must remain a leaf (see doc comment above) and is
-  // intentionally panic-free.
-  (crate::threading::safepoint::RT_GC_EPOCH.load(Ordering::Acquire) & 1) != 0
+  abort_on_panic(|| (crate::threading::safepoint::RT_GC_EPOCH.load(Ordering::Acquire) & 1) != 0)
 }
 // LLVM `place-safepoints` poll function.
 //
@@ -582,59 +584,59 @@ unsafe fn remember_old_object(obj: *mut u8) {
 /// Write barrier for GC.
 #[no_mangle]
 pub unsafe extern "C" fn rt_write_barrier(obj: crate::roots::GcPtr, slot: *mut u8) {
-  // Panic-safety: this is on a very hot path in generated code. Keep it
-  // panic-free and avoid `abort_on_panic` overhead here.
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_write_barrier();
+  abort_on_panic(|| unsafe {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_write_barrier();
 
-  if obj.is_null() || slot.is_null() {
-    return;
-  }
+    if obj.is_null() || slot.is_null() {
+      return;
+    }
 
-  // Avoid UB on misaligned pointers: the barrier is specified to read a pointer-sized value from
-  // `slot` and to treat `obj` as an `ObjHeader` base pointer.
-  if (slot as usize) % std::mem::align_of::<*mut u8>() != 0 {
-    std::process::abort();
-  }
-  if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
-    std::process::abort();
-  }
+    // Avoid UB on misaligned pointers: the barrier is specified to read a pointer-sized value from
+    // `slot` and to treat `obj` as an `ObjHeader` base pointer.
+    if (slot as usize) % std::mem::align_of::<*mut u8>() != 0 {
+      std::process::abort();
+    }
+    if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+      std::process::abort();
+    }
 
-  // SAFETY: The write barrier contract requires `slot` be aligned and contain a
-  // valid GC pointer or null.
-  let value = (slot as *const *mut u8).read();
-  if value.is_null() {
-    return;
-  }
+    // SAFETY: The write barrier contract requires `slot` be aligned and contain a
+    // valid GC pointer or null.
+    let value = (slot as *const *mut u8).read();
+    if value.is_null() {
+      return;
+    }
 
-  if !YOUNG_SPACE.contains(value as usize) {
-    return;
-  }
+    if !YOUNG_SPACE.contains(value as usize) {
+      return;
+    }
 
-  // Writes into young objects don't need a barrier: nursery tracing will find
-  // the edge.
-  if YOUNG_SPACE.contains(obj as usize) {
-    return;
-  }
+    // Writes into young objects don't need a barrier: nursery tracing will find
+    // the edge.
+    if YOUNG_SPACE.contains(obj as usize) {
+      return;
+    }
 
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_write_barrier_old_young_hit();
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_write_barrier_old_young_hit();
 
-  // Old → young store. Mark the base object as remembered.
-  //
-  // Note: `rt_write_barrier` is `NoGC` (must not allocate or safepoint). The process-global
-  // remembered set is fixed-capacity; if it ever overflows we abort rather than silently drop an
-  // old->young edge (which would be unsound).
-  remember_old_object(obj);
+    // Old → young store. Mark the base object as remembered.
+    //
+    // Note: `rt_write_barrier` is `NoGC` (must not allocate or safepoint). The process-global
+    // remembered set is fixed-capacity; if it ever overflows we abort rather than silently drop an
+    // old->young edge (which would be unsound).
+    remember_old_object(obj);
 
-  // If this object has a per-object card table, mark the card for the written slot.
-  let header = &*(obj as *const ObjHeader);
-  let card_table = header.card_table_ptr();
-  if !card_table.is_null() {
-    let slot_offset = (slot as usize).wrapping_sub(obj as usize);
-    let card = slot_offset / crate::gc::CARD_SIZE;
-    mark_card_range(card_table, card, card);
-  }
+    // If this object has a per-object card table, mark the card for the written slot.
+    let header = &*(obj as *const ObjHeader);
+    let card_table = header.card_table_ptr();
+    if !card_table.is_null() {
+      let slot_offset = (slot as usize).wrapping_sub(obj as usize);
+      let card = slot_offset / crate::gc::CARD_SIZE;
+      mark_card_range(card_table, card, card);
+    }
+  })
 }
 
 /// Range write barrier for GC.
@@ -651,58 +653,58 @@ pub unsafe extern "C" fn rt_write_barrier_range(
   start_slot: *mut u8,
   len: usize,
 ) {
-  // Panic-safety: this is on a hot path in generated code. Keep it panic-free
-  // and avoid `abort_on_panic` overhead here.
-  #[cfg(feature = "gc_stats")]
-  crate::gc_stats::record_write_barrier_range();
+  abort_on_panic(|| unsafe {
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_write_barrier_range();
 
-  if obj.is_null() || start_slot.is_null() || len == 0 {
-    return;
-  }
+    if obj.is_null() || start_slot.is_null() || len == 0 {
+      return;
+    }
 
-  // Avoid UB on misaligned pointers: `obj` must be a valid `ObjHeader` base pointer.
-  if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
-    std::process::abort();
-  }
+    // Avoid UB on misaligned pointers: `obj` must be a valid `ObjHeader` base pointer.
+    if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+      std::process::abort();
+    }
 
-  // Writes into young objects don't need a barrier: nursery tracing will find the edge.
-  if YOUNG_SPACE.contains(obj as usize) {
-    return;
-  }
+    // Writes into young objects don't need a barrier: nursery tracing will find the edge.
+    if YOUNG_SPACE.contains(obj as usize) {
+      return;
+    }
 
-  // Old-object bulk write. Mark the base object as remembered (idempotently) so
-  // minor GC can consult its dirty cards and/or rescan it.
-  remember_old_object(obj);
+    // Old-object bulk write. Mark the base object as remembered (idempotently) so
+    // minor GC can consult its dirty cards and/or rescan it.
+    remember_old_object(obj);
 
-  let header = &*(obj as *const ObjHeader);
-  let card_table = header.card_table_ptr();
-  if card_table.is_null() {
-    return;
-  }
+    let header = &*(obj as *const ObjHeader);
+    let card_table = header.card_table_ptr();
+    if card_table.is_null() {
+      return;
+    }
 
-  let obj_addr = obj as usize;
-  let start_addr = start_slot as usize;
-  if start_addr < obj_addr {
-    std::process::abort();
-  }
-  let start_offset = start_addr - obj_addr;
+    let obj_addr = obj as usize;
+    let start_addr = start_slot as usize;
+    if start_addr < obj_addr {
+      std::process::abort();
+    }
+    let start_offset = start_addr - obj_addr;
 
-  if header.type_desc.is_null() {
-    std::process::abort();
-  }
-  let obj_size = crate::gc::obj_size(obj);
-  if start_offset >= obj_size {
-    return;
-  }
+    if header.type_desc.is_null() {
+      std::process::abort();
+    }
+    let obj_size = crate::gc::obj_size(obj);
+    if start_offset >= obj_size {
+      return;
+    }
 
-  let end_offset = start_offset.saturating_add(len).min(obj_size);
-  if end_offset <= start_offset {
-    return;
-  }
+    let end_offset = start_offset.saturating_add(len).min(obj_size);
+    if end_offset <= start_offset {
+      return;
+    }
 
-  let start_card = start_offset / crate::gc::CARD_SIZE;
-  let end_card = (end_offset - 1) / crate::gc::CARD_SIZE;
-  mark_card_range(card_table, start_card, end_card);
+    let start_card = start_offset / crate::gc::CARD_SIZE;
+    let end_card = (end_offset - 1) / crate::gc::CARD_SIZE;
+    mark_card_range(card_table, start_card, end_card);
+  })
 }
 
 #[cfg(test)]
@@ -941,13 +943,15 @@ pub extern "C" fn rt_backing_store_external_bytes() -> usize {
 /// - The current thread must be registered with `rt_thread_init`.
 #[no_mangle]
 pub unsafe extern "C" fn rt_root_push(slot: crate::roots::GcHandle) {
-  if slot.is_null() {
-    crate::trap::rt_trap_invalid_arg("rt_root_push: slot was null");
-  }
-  let Some(thread) = registry::current_thread_state() else {
-    crate::trap::rt_trap_invalid_arg("rt_root_push: current thread is not registered");
-  };
-  thread.handle_stack_push(slot);
+  abort_on_panic(|| {
+    if slot.is_null() {
+      crate::trap::rt_trap_invalid_arg("rt_root_push: slot was null");
+    }
+    let Some(thread) = registry::current_thread_state() else {
+      crate::trap::rt_trap_invalid_arg("rt_root_push: current thread is not registered");
+    };
+    thread.handle_stack_push(slot);
+  })
 }
 
 /// Pop a root slot from the current thread's shadow stack.
@@ -959,13 +963,15 @@ pub unsafe extern "C" fn rt_root_push(slot: crate::roots::GcHandle) {
 /// - The current thread must be registered with `rt_thread_init`.
 #[no_mangle]
 pub unsafe extern "C" fn rt_root_pop(slot: crate::roots::GcHandle) {
-  if slot.is_null() {
-    crate::trap::rt_trap_invalid_arg("rt_root_pop: slot was null");
-  }
-  let Some(thread) = registry::current_thread_state() else {
-    crate::trap::rt_trap_invalid_arg("rt_root_pop: current thread is not registered");
-  };
-  thread.handle_stack_pop_debug(slot);
+  abort_on_panic(|| {
+    if slot.is_null() {
+      crate::trap::rt_trap_invalid_arg("rt_root_pop: slot was null");
+    }
+    let Some(thread) = registry::current_thread_state() else {
+      crate::trap::rt_trap_invalid_arg("rt_root_pop: current thread is not registered");
+    };
+    thread.handle_stack_pop_debug(slot);
+  })
 }
 
 // -----------------------------------------------------------------------------
@@ -979,13 +985,13 @@ pub unsafe extern "C" fn rt_root_pop(slot: crate::roots::GcHandle) {
 /// to update the slot in-place.
 #[no_mangle]
 pub extern "C" fn rt_global_root_register(slot: *mut usize) {
-  crate::roots::register_global_root_slot(slot);
+  abort_on_panic(|| crate::roots::register_global_root_slot(slot))
 }
 
 /// Unregister a global/static root slot previously registered via [`rt_global_root_register`].
 #[no_mangle]
 pub extern "C" fn rt_global_root_unregister(slot: *mut usize) {
-  crate::roots::unregister_global_root_slot(slot);
+  abort_on_panic(|| crate::roots::unregister_global_root_slot(slot))
 }
 
 /// Register an addressable root slot with the runtime.
@@ -1028,9 +1034,11 @@ pub extern "C" fn rt_gc_unpin(handle: u32) {
 /// Returns null if `handle` is invalid/stale/removed.
 #[no_mangle]
 pub extern "C" fn rt_gc_root_get(handle: u32) -> *mut u8 {
-  crate::roots::global_root_registry()
-    .get(handle)
-    .unwrap_or(std::ptr::null_mut())
+  abort_on_panic(|| {
+    crate::roots::global_root_registry()
+      .get(handle)
+      .unwrap_or(std::ptr::null_mut())
+  })
 }
 
 /// Updates the pointer value for a root handle created by [`rt_gc_register_root_slot`] or
@@ -1039,7 +1047,7 @@ pub extern "C" fn rt_gc_root_get(handle: u32) -> *mut u8 {
 /// Returns `false` if `handle` is invalid/stale/removed.
 #[no_mangle]
 pub extern "C" fn rt_gc_root_set(handle: u32, ptr: *mut u8) -> bool {
-  crate::roots::global_root_registry().set(handle, ptr)
+  abort_on_panic(|| crate::roots::global_root_registry().set(handle, ptr))
 }
 
 // -----------------------------------------------------------------------------
@@ -1053,7 +1061,7 @@ pub extern "C" fn rt_gc_root_set(handle: u32, ptr: *mut u8) -> bool {
 /// Allocate a new persistent handle rooting `ptr`.
 #[no_mangle]
 pub extern "C" fn rt_handle_alloc(ptr: *mut u8) -> u64 {
-  crate::roots::global_persistent_handle_table().alloc(ptr).to_u64()
+  abort_on_panic(|| crate::roots::global_persistent_handle_table().alloc(ptr).to_u64())
 }
 
 /// Free a persistent handle created by [`rt_handle_alloc`].
@@ -1061,7 +1069,9 @@ pub extern "C" fn rt_handle_alloc(ptr: *mut u8) -> u64 {
 /// Invalid handles are ignored.
 #[no_mangle]
 pub extern "C" fn rt_handle_free(handle: u64) {
-  let _ = crate::roots::global_persistent_handle_table().free(HandleId::from_u64(handle));
+  abort_on_panic(|| {
+    let _ = crate::roots::global_persistent_handle_table().free(HandleId::from_u64(handle));
+  })
 }
 
 /// Resolve a persistent handle back to the (possibly relocated) pointer stored in its slot.
@@ -1069,9 +1079,11 @@ pub extern "C" fn rt_handle_free(handle: u64) {
 /// Returns null if the handle is invalid or has been freed.
 #[no_mangle]
 pub extern "C" fn rt_handle_load(handle: u64) -> *mut u8 {
-  crate::roots::global_persistent_handle_table()
-    .get(HandleId::from_u64(handle))
-    .unwrap_or(std::ptr::null_mut())
+  abort_on_panic(|| {
+    crate::roots::global_persistent_handle_table()
+      .get(HandleId::from_u64(handle))
+      .unwrap_or(std::ptr::null_mut())
+  })
 }
 
 /// Update the pointer stored in a persistent handle slot.
@@ -1079,7 +1091,9 @@ pub extern "C" fn rt_handle_load(handle: u64) -> *mut u8 {
 /// Invalid handles are ignored.
 #[no_mangle]
 pub extern "C" fn rt_handle_store(handle: u64, ptr: *mut u8) {
-  let _ = crate::roots::global_persistent_handle_table().set(HandleId::from_u64(handle), ptr);
+  abort_on_panic(|| {
+    let _ = crate::roots::global_persistent_handle_table().set(HandleId::from_u64(handle), ptr);
+  })
 }
 
 #[cfg(feature = "gc_stats")]
@@ -2914,27 +2928,27 @@ pub extern "C" fn rt_clear_timer(id: TimerId) {
 
 #[no_mangle]
 pub extern "C" fn rt_promise_new() -> PromiseRef {
-  rt_promise_new_legacy()
+  abort_on_panic(|| rt_promise_new_legacy())
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_resolve(p: PromiseRef, value: ValueRef) {
-  rt_promise_resolve_legacy(p, value)
+  abort_on_panic(|| rt_promise_resolve_legacy(p, value))
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_then(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
-  rt_promise_then_legacy(p, on_settle, data)
+  abort_on_panic(|| rt_promise_then_legacy(p, on_settle, data))
 }
 
 #[no_mangle]
 pub extern "C" fn rt_promise_then_rooted(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
-  rt_promise_then_rooted_legacy(p, on_settle, data)
+  abort_on_panic(|| rt_promise_then_rooted_legacy(p, on_settle, data))
 }
 
 #[no_mangle]
 pub extern "C" fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: PromiseRef, next_state: u32) {
-  rt_coro_await_legacy(coro, awaited, next_state)
+  abort_on_panic(|| rt_coro_await_legacy(coro, awaited, next_state))
 }
 
 #[no_mangle]
@@ -2951,8 +2965,10 @@ pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
 /// For non-payload promises, this may return null.
 #[no_mangle]
 pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
-  ensure_current_thread_registered();
-  async_rt::promise::promise_payload_ptr(p)
+  abort_on_panic(|| {
+    ensure_current_thread_registered();
+    async_rt::promise::promise_payload_ptr(p)
+  })
 }
 
 #[no_mangle]
@@ -2989,8 +3005,10 @@ pub extern "C" fn rt_promise_resolve_promise_legacy(p: PromiseRef, other: Promis
 
 #[no_mangle]
 pub extern "C" fn rt_promise_drop_legacy(p: PromiseRef) {
-  ensure_current_thread_registered();
-  async_rt::promise::promise_drop(p);
+  abort_on_panic(|| {
+    ensure_current_thread_registered();
+    async_rt::promise::promise_drop(p);
+  })
 }
 
 /// Test/debug helper: query a promise's current outcome without requiring access
