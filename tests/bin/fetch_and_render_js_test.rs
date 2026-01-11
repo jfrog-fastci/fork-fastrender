@@ -664,6 +664,42 @@ body { background: rgb(255, 0, 0); }
 }
 
 #[test]
+fn js_flag_supports_document_write_from_promise_microtask_during_parsing() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let html_path = tmp.path().join("page.html");
+  fs::write(
+    &html_path,
+    r#"<!doctype html><html><head><style>
+html, body { margin: 0; width: 100%; height: 100%; }
+body { background: rgb(255, 0, 0); }
+</style>
+<script>
+  Promise.resolve().then(function() {
+    document.write('<style>body { background: rgb(0, 255, 0); }</style>');
+  });
+</script>
+</head><body></body></html>"#,
+  )
+  .expect("write html fixture");
+
+  let url = url::Url::from_file_path(&html_path).unwrap().to_string();
+  let no_js_png = tmp.path().join("no_js.png");
+  let js_png = tmp.path().join("js.png");
+
+  let no_js_pixel = render_pixel(&url, &no_js_png, /* js */ false);
+  let js_pixel = render_pixel(&url, &js_png, /* js */ true);
+
+  assert_red(
+    no_js_pixel,
+    "baseline run should not execute document.write from a Promise microtask",
+  );
+  assert_green(
+    js_pixel,
+    "JS run should allow document.write() from a Promise microtask during parsing",
+  );
+}
+
+#[test]
 fn js_flag_resolves_fetch_urls_using_base_href_timing() {
   let tmp = tempfile::TempDir::new().expect("tempdir");
   let html_path = tmp.path().join("page.html");
