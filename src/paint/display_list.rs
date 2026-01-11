@@ -1448,7 +1448,7 @@ pub struct BoxShadowItem {
   /// Shadow offset from box
   pub offset: Point,
 
-  /// Blur radius (CSS blur radius)
+  /// Blur radius as specified by CSS `box-shadow` (in CSS px).
   pub blur_radius: f32,
 
   /// Spread radius

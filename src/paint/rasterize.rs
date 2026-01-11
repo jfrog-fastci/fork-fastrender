@@ -153,10 +153,10 @@ pub struct BoxShadow {
   pub offset_x: f32,
   /// Vertical offset (positive = down)
   pub offset_y: f32,
-  /// Blur radius as specified by CSS `box-shadow` (in device pixels).
+  /// Blur radius as specified by CSS `box-shadow` (in device pixels, i.e. after DPR scaling).
   ///
-  /// The rasterizer converts this to a gaussian sigma when applying the blur kernel; see
-  /// `box_shadow_blur_radius_to_sigma`.
+  /// This is the CSS "blur radius" value, **not** gaussian sigma. The rasterizer converts this to
+  /// a gaussian sigma when applying the blur kernel; see `box_shadow_blur_radius_to_sigma`.
   pub blur_radius: f32,
   /// Spread radius (expands/contracts shadow)
   pub spread_radius: f32,
@@ -171,6 +171,10 @@ pub struct BoxShadow {
 /// CSS exposes a "blur radius" for `box-shadow`, but the underlying implementation uses a gaussian
 /// blur kernel parameterized by `sigma`. Blink/Skia converts between the two using
 /// `radius * 0.57735 + 0.5` (see [`crate::paint::blur::css_shadow_blur_radius_to_sigma`]).
+///
+/// Note: This conversion should be applied in the *same coordinate space* the blur will run in
+/// (device pixels for rasterization). The `+ 0.5` term is specified in pixels, so doing
+/// `sigma(css_px) * dpr` is **not** equivalent to `sigma(css_px * dpr)`.
 ///
 /// This helper centralizes that conversion so call sites (paint bounds, display-list renderer,
 /// rasterizer) stay in sync.

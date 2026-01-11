@@ -9992,8 +9992,9 @@ impl DisplayListRenderer {
     let mut shadow = BoxShadow {
       offset_x: self.ds_len(item.offset.x),
       offset_y: self.ds_len(item.offset.y),
-      blur_radius: self
-        .ds_len(crate::paint::blur::css_shadow_blur_radius_to_sigma(item.blur_radius)),
+      // `rasterize::BoxShadow.blur_radius` stores the CSS blur radius in *device* px; the rasterizer
+      // converts to gaussian sigma internally (matching Skia/Blink).
+      blur_radius: self.ds_len(item.blur_radius),
       spread_radius: self.ds_len(item.spread_radius),
       color: item.color,
       inset: item.inset,
@@ -24769,8 +24770,7 @@ mod tests {
     let mut shadow = BoxShadow {
       offset_x: renderer.ds_len(item.offset.x),
       offset_y: renderer.ds_len(item.offset.y),
-      blur_radius: renderer
-        .ds_len(crate::paint::blur::css_shadow_blur_radius_to_sigma(item.blur_radius)),
+      blur_radius: renderer.ds_len(item.blur_radius),
       spread_radius: renderer.ds_len(item.spread_radius),
       color: item.color,
       inset: item.inset,
@@ -24920,6 +24920,75 @@ mod tests {
         "box shadow output mismatch for case {name}"
       );
     }
+  }
+
+  #[test]
+  fn box_shadow_blur_radius_matches_rasterizer_contract() {
+    // Regression test: `DisplayListRenderer` must pass the CSS blur radius (scaled into device px)
+    // through to the rasterizer without pre-converting it to sigma. If the renderer converts first,
+    // the rasterizer will convert again, producing under-blurred shadows.
+    let item = BoxShadowItem {
+      rect: Rect::from_xywh(20.0, 15.0, 20.0, 20.0),
+      radii: BorderRadii::ZERO,
+      offset: Point::new(0.0, 5.0),
+      blur_radius: 10.0,
+      spread_radius: 0.0,
+      color: Rgba::new(0, 0, 0, 0.6),
+      inset: false,
+    };
+
+    let (new_pixmap, reference_pixmap) = box_shadow_scene(|_| {}, &item);
+    assert_eq!(
+      new_pixmap.data(),
+      reference_pixmap.data(),
+      "box-shadow blur radius conversion mismatch (DPR=1)"
+    );
+  }
+
+  #[test]
+  fn box_shadow_blur_radius_matches_rasterizer_contract_hidpi() {
+    // Hi-DPR regression: converting blur radius to sigma *before* scaling produces different results
+    // because the `+0.5` term is specified in device pixels.
+    let item = BoxShadowItem {
+      rect: Rect::from_xywh(20.0, 15.0, 20.0, 20.0),
+      radii: BorderRadii::ZERO,
+      offset: Point::new(0.0, 5.0),
+      blur_radius: 10.0,
+      spread_radius: 0.0,
+      color: Rgba::new(0, 0, 0, 0.6),
+      inset: false,
+    };
+
+    let scale = 2.0;
+    let mut new_renderer = DisplayListRenderer::new_scaled(
+      64,
+      64,
+      Rgba::WHITE,
+      FontContext::new(),
+      scale,
+    )
+    .expect("renderer");
+    new_renderer
+      .render_box_shadow(&item)
+      .expect("render_box_shadow");
+    let new_pixmap = new_renderer.canvas.into_pixmap();
+
+    let mut reference_renderer = DisplayListRenderer::new_scaled(
+      64,
+      64,
+      Rgba::WHITE,
+      FontContext::new(),
+      scale,
+    )
+    .expect("renderer");
+    render_box_shadow_reference(&mut reference_renderer, &item).expect("reference");
+    let reference_pixmap = reference_renderer.canvas.into_pixmap();
+
+    assert_eq!(
+      new_pixmap.data(),
+      reference_pixmap.data(),
+      "box-shadow blur radius conversion mismatch (DPR={scale})"
+    );
   }
 
   #[test]
