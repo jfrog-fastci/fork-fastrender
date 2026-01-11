@@ -5705,8 +5705,14 @@ impl GridFormattingContext {
             let delta =
               Point::new(bounds.x() - laid_out.bounds.x(), bounds.y() - laid_out.bounds.y());
             translate_fragment_tree(&mut laid_out, delta, &mut translate_deadline_counter)?;
-            laid_out.content = FragmentContent::Block {
-              box_id: Some(child.id),
+            laid_out.content = match &child.box_type {
+              crate::tree::box_tree::BoxType::Replaced(replaced_box) => FragmentContent::Replaced {
+                replaced_type: replaced_box.replaced_type.clone(),
+                box_id: Some(child.id),
+              },
+              _ => FragmentContent::Block {
+                box_id: Some(child.id),
+              },
             };
             laid_out.style = Some(child.style.clone());
             Ok((idx, laid_out))
@@ -5852,8 +5858,14 @@ impl GridFormattingContext {
             let delta =
               Point::new(bounds.x() - laid_out.bounds.x(), bounds.y() - laid_out.bounds.y());
             translate_fragment_tree(&mut laid_out, delta, &mut translate_deadline_counter)?;
-            laid_out.content = FragmentContent::Block {
-              box_id: Some(child.id),
+            laid_out.content = match &child.box_type {
+              crate::tree::box_tree::BoxType::Replaced(replaced_box) => FragmentContent::Replaced {
+                replaced_type: replaced_box.replaced_type.clone(),
+                box_id: Some(child.id),
+              },
+              _ => FragmentContent::Block {
+                box_id: Some(child.id),
+              },
             };
             laid_out.style = Some(child.style.clone());
             Ok((idx, laid_out))
@@ -6737,8 +6749,14 @@ impl GridFormattingContext {
       )?;
       let delta = Point::new(bounds.x() - laid_out.bounds.x(), bounds.y() - laid_out.bounds.y());
       translate_fragment_tree(&mut laid_out, delta, deadline_counter)?;
-      laid_out.content = FragmentContent::Block {
-        box_id: Some(box_node.id),
+      laid_out.content = match &box_node.box_type {
+        crate::tree::box_tree::BoxType::Replaced(replaced_box) => FragmentContent::Replaced {
+          replaced_type: replaced_box.replaced_type.clone(),
+          box_id: Some(box_node.id),
+        },
+        _ => FragmentContent::Block {
+          box_id: Some(box_node.id),
+        },
       };
       laid_out.style = Some(box_node.style.clone());
       let percentage_base = constraints
@@ -9526,8 +9544,14 @@ impl GridFormattingContext {
           .width()
           .unwrap_or_else(|| fragment.bounds.width()),
       };
-      fragment.content = FragmentContent::Block {
-        box_id: Some(box_node.id),
+      fragment.content = match &box_node.box_type {
+        crate::tree::box_tree::BoxType::Replaced(replaced_box) => FragmentContent::Replaced {
+          replaced_type: replaced_box.replaced_type.clone(),
+          box_id: Some(box_node.id),
+        },
+        _ => FragmentContent::Block {
+          box_id: Some(box_node.id),
+        },
       };
       fragment.style = Some(box_node.style.clone());
       let mut content_size = Self::content_box_size_for_taffy_style(
@@ -10512,8 +10536,14 @@ impl GridFormattingContext {
         .width()
         .unwrap_or_else(|| fragment.bounds.width()),
     };
-    fragment.content = FragmentContent::Block {
-      box_id: Some(box_node.id),
+    fragment.content = match &box_node.box_type {
+      crate::tree::box_tree::BoxType::Replaced(replaced_box) => FragmentContent::Replaced {
+        replaced_type: replaced_box.replaced_type.clone(),
+        box_id: Some(box_node.id),
+      },
+      _ => FragmentContent::Block {
+        box_id: Some(box_node.id),
+      },
     };
     fragment.style = Some(box_node.style.clone());
     let mut content_size = Self::content_box_size_for_taffy_style(
@@ -18552,8 +18582,16 @@ mod tests {
                   .width()
                   .unwrap_or_else(|| fragment.bounds.width()),
               };
-              fragment.content = FragmentContent::Block {
-                box_id: Some(box_node.id),
+              fragment.content = match &box_node.box_type {
+                crate::tree::box_tree::BoxType::Replaced(replaced_box) => {
+                  FragmentContent::Replaced {
+                    replaced_type: replaced_box.replaced_type.clone(),
+                    box_id: Some(box_node.id),
+                  }
+                }
+                _ => FragmentContent::Block {
+                  box_id: Some(box_node.id),
+                },
               };
               fragment.style = Some(box_node.style.clone());
               let content_size = this.content_box_size(&fragment, &box_node.style, percentage_base);

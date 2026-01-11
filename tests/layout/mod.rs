@@ -193,6 +193,7 @@ mod grid_auto_height_does_not_fill_viewport;
 mod grid_auto_placement_dense;
 mod grid_auto_placement_column_dense;
 mod grid_auto_min_size_compressible_replaced;
+mod grid_replaced_items_preserve_fragment_content;
 mod grid_cyclic_percentage_replaced_min_content;
 mod grid_baseline_column_sizing;
 mod grid_baseline_row_sizing;

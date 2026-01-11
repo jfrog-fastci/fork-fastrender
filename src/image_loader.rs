@@ -12126,6 +12126,23 @@ impl Clone for ImageCache {
   }
 
   #[test]
+  fn inline_svg_renders_with_style_attributes_and_rgba_colors() {
+    let cache = ImageCache::new();
+    // Inline `<svg>` replaced elements are serialized with computed styles re-emitted via
+    // `style=""` attributes. Ensure `rgba()` colors in those style attributes are accepted by the
+    // SVG renderer.
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" style="fill: none; color: rgba(66,84,102,1.000); font-family: sohne-var, &quot;Helvetica Neue&quot;, Arial, sans-serif"><rect width="10" height="10" style="fill: rgba(0,0,0,1.000)"/></svg>"#;
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(svg, 10, 10, "inline-svg", 1.0)
+      .expect("render svg with style attributes");
+
+    let pixel = pixmap.pixel(5, 5).expect("center pixel");
+    assert_eq!(pixel.alpha(), 255);
+    assert_eq!((pixel.red(), pixel.green(), pixel.blue()), (0, 0, 0));
+  }
+
+  #[test]
   fn simple_svg_fast_path_stroke_renders() {
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0 L10 10" stroke="red" stroke-width="2" fill="none"/></svg>"#;
     let pixmap = try_render_simple_svg_pixmap(svg, 20, 20)
