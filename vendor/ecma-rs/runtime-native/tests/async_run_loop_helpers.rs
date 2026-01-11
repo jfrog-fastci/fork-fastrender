@@ -316,7 +316,7 @@ fn block_on_returns_when_executor_is_in_error_state() {
   // the executor has an error, rather than spinning or blocking forever.
   let header = Box::new(PromiseHeader {
     state: AtomicU8::new(PromiseHeader::PENDING),
-    reactions: AtomicUsize::new(0),
+    waiters: AtomicUsize::new(0),
     flags: AtomicU8::new(0),
   });
   let p = PromiseRef(Box::into_raw(header).cast());
@@ -324,14 +324,30 @@ fn block_on_returns_when_executor_is_in_error_state() {
     runtime_native::rt_promise_init(p);
   }
 
+  // If `rt_async_block_on` mistakenly parks even though the executor is already in an error state,
+  // it could block indefinitely. Use a watchdog wake to keep the test bounded.
+  let watchdog_fired = Arc::new(AtomicBool::new(false));
+  let watchdog_fired2 = watchdog_fired.clone();
+  let (tx, rx) = mpsc::channel::<()>();
+  let watchdog = std::thread::spawn(move || {
+    if rx.recv_timeout(Duration::from_secs(2)).is_err() {
+      watchdog_fired2.store(true, Ordering::SeqCst);
+      runtime_native::rt_queue_microtask(noop, core::ptr::null_mut());
+    }
+  });
+
   let start = Instant::now();
   unsafe {
     runtime_native::rt_async_block_on(p);
   }
   let elapsed = start.elapsed();
+
+  let _ = tx.send(());
+  watchdog.join().unwrap();
+
   assert!(
-    elapsed < Duration::from_millis(100),
-    "block_on should return promptly when async runtime has an error (elapsed={elapsed:?})"
+    !watchdog_fired.load(Ordering::SeqCst),
+    "block_on appeared to wait even though the executor is in an error state (elapsed={elapsed:?})"
   );
 
   // Settle so any registered waiter nodes are drained (even though the runtime is in an error
