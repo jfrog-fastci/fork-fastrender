@@ -175,6 +175,9 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
   let mut script_fetch_type = None;
   let mut script_fetch_destination = None;
   let mut script_fetch_credentials_mode = None;
+  let mut script_fetch_async_attr = None;
+  let mut script_fetch_defer_attr = None;
+  let mut script_fetch_parser_inserted = None;
   for event in events {
     if let Some(name) = event.get("name").and_then(|v| v.as_str()) {
       names.push(name);
@@ -198,6 +201,21 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
           .and_then(|args| args.get("credentials_mode"))
           .and_then(|v| v.as_str())
           .or(script_fetch_credentials_mode);
+        script_fetch_async_attr = event
+          .get("args")
+          .and_then(|args| args.get("async_attr"))
+          .and_then(|v| v.as_bool())
+          .or(script_fetch_async_attr);
+        script_fetch_defer_attr = event
+          .get("args")
+          .and_then(|args| args.get("defer_attr"))
+          .and_then(|v| v.as_bool())
+          .or(script_fetch_defer_attr);
+        script_fetch_parser_inserted = event
+          .get("args")
+          .and_then(|args| args.get("parser_inserted"))
+          .and_then(|v| v.as_bool())
+          .or(script_fetch_parser_inserted);
         script_fetch_type = event
           .get("args")
           .and_then(|args| args.get("script_type"))
@@ -238,6 +256,21 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
     script_fetch_credentials_mode,
     Some("include"),
     "expected js.script.fetch span to include args.credentials_mode=include"
+  );
+  assert_eq!(
+    script_fetch_async_attr,
+    Some(true),
+    "expected js.script.fetch span to include args.async_attr=true"
+  );
+  assert_eq!(
+    script_fetch_defer_attr,
+    Some(false),
+    "expected js.script.fetch span to include args.defer_attr=false"
+  );
+  assert_eq!(
+    script_fetch_parser_inserted,
+    Some(true),
+    "expected js.script.fetch span to include args.parser_inserted=true"
   );
   assert!(
     script_execute_types.contains("classic"),

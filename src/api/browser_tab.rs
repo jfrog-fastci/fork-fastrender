@@ -2683,6 +2683,10 @@ impl BrowserTabHost {
         ))
       })?;
 
+    span.arg_bool("async_attr", spec.async_attr);
+    span.arg_bool("defer_attr", spec.defer_attr);
+    span.arg_bool("parser_inserted", spec.parser_inserted);
+
     span.arg_str(
       "script_type",
       match spec.script_type {
