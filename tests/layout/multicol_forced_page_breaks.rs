@@ -417,6 +417,69 @@ fn multicol_break_after_verso_inserts_blank_page_ltr() {
 }
 
 #[test]
+fn multicol_break_after_verso_does_not_insert_blank_page_ltr() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: ltr; }
+          @page { size: 200px 200px; margin: 20px; }
+          @page :left { @top-center { content: "LEFT"; } }
+          @page :right { @top-center { content: "RIGHT"; } }
+          @page :blank { @top-center { content: "Blank"; } }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { height: 80px; margin: 0; }
+          #a { break-after: verso; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="blk" id="a">A</div>
+          <div class="blk" id="b">B</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 2);
+
+  let page1 = page_roots[0];
+  let page2 = page_roots[1];
+
+  assert!(margin_boxes_contain_text(page1, "RIGHT"));
+  assert!(!margin_boxes_contain_text(page1, "LEFT"));
+  assert!(!margin_boxes_contain_text(page1, "Blank"));
+
+  let page1_content = page_content(page1);
+  assert!(find_text_eq(page1_content, "A").is_some());
+  assert!(find_text_eq(page1_content, "B").is_none());
+
+  assert!(margin_boxes_contain_text(page2, "LEFT"));
+  assert!(!margin_boxes_contain_text(page2, "RIGHT"));
+  assert!(!margin_boxes_contain_text(page2, "Blank"));
+
+  let page2_content = page_content(page2);
+  assert!(find_text_eq(page2_content, "A").is_none());
+  assert!(find_text_eq(page2_content, "B").is_some());
+
+  let pos_b = find_text_position(page2, "B", (0.0, 0.0)).expect("B on page 2");
+  assert!(
+    pos_b.1 <= page_content_start_y(page2) + 1.0,
+    "expected B to start at the top of the second page; pos={pos_b:?} content_start_y={}",
+    page_content_start_y(page2)
+  );
+}
+
+#[test]
 fn multicol_break_after_recto_inserts_blank_page_ltr_progression() {
   let html = r#"
     <html>
