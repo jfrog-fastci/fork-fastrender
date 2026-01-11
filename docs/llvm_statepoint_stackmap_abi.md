@@ -29,7 +29,7 @@ declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32, i32)
 define void @stackmap_abi_callee(ptr addrspace(1) %p) { ret void }
 
 define ptr addrspace(1) @stackmap_abi_test(ptr addrspace(1) %obj)
-    gc "statepoint-example" {
+    gc "coreclr" {
 entry:
   %tok = call token (i64, i32, ptr, i32, i32, ...)
       @llvm.experimental.gc.statepoint.p0(

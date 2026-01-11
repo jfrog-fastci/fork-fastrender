@@ -12,7 +12,7 @@ entry:
   ret void
 }
 
-define ptr addrspace(1) @stackmap_abi_test(ptr addrspace(1) %obj) gc "statepoint-example" {
+define ptr addrspace(1) @stackmap_abi_test(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   ; NOTE: the `elementtype(...)` annotation on the callee is required by LLVM 18
   ; with opaque pointers, otherwise the IR verifier rejects the statepoint.
@@ -30,4 +30,3 @@ entry:
   %rel = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token %tok, i32 0, i32 0)
   ret ptr addrspace(1) %rel
 }
-

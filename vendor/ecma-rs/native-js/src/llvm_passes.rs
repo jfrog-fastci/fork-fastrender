@@ -221,7 +221,7 @@ mod tests {
     let ir = r#"
       source_filename = "njs_place_safepoints"
 
-      define void @foo() gc "statepoint-example" {
+      define void @foo() gc "coreclr" {
       entry:
         ret void
       }

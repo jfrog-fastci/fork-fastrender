@@ -10,9 +10,12 @@ use llvm_sys::{LLVMOpcode, LLVMTypeKind};
 use std::ffi::CStr;
 use std::fmt;
 
+use super::gc::{GC_ADDR_SPACE, GC_STRATEGY};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LintRule {
-  /// Rule 1: under `gc "statepoint-example"`, all pointer params/returns must be `ptr addrspace(1)`.
+  /// Rule 1: under our GC strategy (`native_js::llvm::gc::GC_STRATEGY`), all pointer
+  /// params/returns must be `ptr addrspace(1)`.
   GcFunctionSignatureUsesNonGcPointer,
   /// Rule 2: forbid `ptrtoint` from `ptr addrspace(1)`.
   PtrToIntFromGcPointer,
@@ -57,7 +60,7 @@ impl fmt::Display for LintError {
 
 impl std::error::Error for LintError {}
 
-/// Enforce a conservative LLVM GC pointer discipline for our `gc "statepoint-example"` strategy.
+/// Enforce a conservative LLVM GC pointer discipline for our GC strategy.
 ///
 /// ## Why this exists
 /// LLVM's `rewrite-statepoints-for-gc` pass only relocates SSA values of type `ptr addrspace(1)`.
@@ -72,10 +75,10 @@ pub fn lint_gc_pointer_discipline(module: LLVMModuleRef) -> Result<(), LintError
   let mut violations = Vec::<LintViolation>::new();
 
   unsafe {
-    // Rule 1: `gc "statepoint-example"` functions must use `ptr addrspace(1)` in their signature.
+    // Rule 1: GC functions must use `ptr addrspace(1)` in their signature.
     let mut func = LLVMGetFirstFunction(module);
     while !func.is_null() {
-      if is_statepoint_example_gc_function(func) {
+      if is_native_js_gc_function(func) {
         lint_gc_function_signature(func, &mut violations);
       }
 
@@ -107,9 +110,10 @@ unsafe fn lint_gc_function_signature(func: LLVMValueRef, violations: &mut Vec<Li
     violations.push(LintViolation {
       rule: LintRule::GcFunctionSignatureUsesNonGcPointer,
       message: format!(
-        "function `{}` has return type `{}` under `gc \"statepoint-example\"`; expected `ptr addrspace(1)`",
+        "function `{}` has return type `{}` under `gc \"{}\"`; expected `ptr addrspace(1)`",
         func_name,
-        type_to_string(ret_ty)
+        type_to_string(ret_ty),
+        GC_STRATEGY
       ),
     });
   }
@@ -122,10 +126,11 @@ unsafe fn lint_gc_function_signature(func: LLVMValueRef, violations: &mut Vec<Li
       violations.push(LintViolation {
         rule: LintRule::GcFunctionSignatureUsesNonGcPointer,
         message: format!(
-          "function `{}` param #{} has type `{}` under `gc \"statepoint-example\"`; expected `ptr addrspace(1)`",
+          "function `{}` param #{} has type `{}` under `gc \"{}\"`; expected `ptr addrspace(1)`",
           func_name,
           i,
-          type_to_string(param_ty)
+          type_to_string(param_ty),
+          GC_STRATEGY
         ),
       });
     }
@@ -195,7 +200,7 @@ unsafe fn lint_instruction(
       let result_ty = LLVMTypeOf(inst);
       if is_gc_pointer_type(operand_ty)
         && is_pointer_type(result_ty)
-        && LLVMGetPointerAddressSpace(result_ty) != 1
+        && LLVMGetPointerAddressSpace(result_ty) != GC_ADDR_SPACE
       {
         violations.push(LintViolation {
           rule: LintRule::AddrSpaceCastFromGcPointer,
@@ -236,13 +241,13 @@ unsafe fn lint_instruction(
   }
 }
 
-unsafe fn is_statepoint_example_gc_function(func: LLVMValueRef) -> bool {
+unsafe fn is_native_js_gc_function(func: LLVMValueRef) -> bool {
   let gc = LLVMGetGC(func);
   if gc.is_null() {
     return false;
   }
   match CStr::from_ptr(gc).to_str() {
-    Ok("statepoint-example") => true,
+    Ok(strategy) if strategy == GC_STRATEGY => true,
     _ => false,
   }
 }
@@ -252,7 +257,7 @@ unsafe fn is_pointer_type(ty: LLVMTypeRef) -> bool {
 }
 
 unsafe fn is_gc_pointer_type(ty: LLVMTypeRef) -> bool {
-  is_pointer_type(ty) && LLVMGetPointerAddressSpace(ty) == 1
+  is_pointer_type(ty) && LLVMGetPointerAddressSpace(ty) == GC_ADDR_SPACE
 }
 
 unsafe fn known_memory_slot_type(ptr: LLVMValueRef) -> Option<LLVMTypeRef> {
@@ -427,7 +432,7 @@ mod tests {
       r#"
         source_filename = "test"
 
-        define void @good(ptr addrspace(1) %p) gc "statepoint-example" {
+        define void @good(ptr addrspace(1) %p) gc "coreclr" {
         entry:
           %slot = alloca ptr addrspace(1)
           store ptr addrspace(1) %p, ptr %slot
@@ -446,7 +451,7 @@ mod tests {
       r#"
         source_filename = "test"
 
-        define void @bad_sig(ptr %p) gc "statepoint-example" {
+        define void @bad_sig(ptr %p) gc "coreclr" {
         entry:
           ret void
         }
@@ -466,7 +471,7 @@ mod tests {
       r#"
         source_filename = "test"
 
-        define i64 @bad_ptrtoint(ptr addrspace(1) %p) gc "statepoint-example" {
+        define i64 @bad_ptrtoint(ptr addrspace(1) %p) gc "coreclr" {
         entry:
           %i = ptrtoint ptr addrspace(1) %p to i64
           ret i64 %i
@@ -484,7 +489,7 @@ mod tests {
       r#"
         source_filename = "test"
 
-        define ptr addrspace(1) @bad_inttoptr(i64 %i) gc "statepoint-example" {
+        define ptr addrspace(1) @bad_inttoptr(i64 %i) gc "coreclr" {
         entry:
           %p = inttoptr i64 %i to ptr addrspace(1)
           ret ptr addrspace(1) %p
@@ -504,7 +509,7 @@ mod tests {
 
         declare void @use(ptr)
 
-        define void @bad_as_cast(ptr addrspace(1) %p) gc "statepoint-example" {
+        define void @bad_as_cast(ptr addrspace(1) %p) gc "coreclr" {
         entry:
           %q = addrspacecast ptr addrspace(1) %p to ptr
           call void @use(ptr %q)
@@ -523,7 +528,7 @@ mod tests {
       r#"
         source_filename = "test"
 
-        define void @bad_store(ptr addrspace(1) %p) gc "statepoint-example" {
+        define void @bad_store(ptr addrspace(1) %p) gc "coreclr" {
         entry:
           %slot = alloca i64
           store ptr addrspace(1) %p, ptr %slot
