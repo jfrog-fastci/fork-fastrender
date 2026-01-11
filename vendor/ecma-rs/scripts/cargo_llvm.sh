@@ -51,11 +51,11 @@ cd "${REPO_ROOT}"
 
 # Higher RAM limit for LLVM operations.
 #
-# Default to 96GB (matches `vendor/ecma-rs/EXEC.plan.md`). Allow callers to
-# override via the standard `FASTR_CARGO_LIMIT_AS` knob (preferred).
+# Default to 96GB (matches `vendor/ecma-rs/EXEC.plan.md`). Override via the same
+# knob as `scripts/cargo_agent.sh` (preferred):
+#   FASTR_CARGO_LIMIT_AS=128G bash scripts/cargo_llvm.sh build --release -p native-js
 #
-# `LLVM_LIMIT_AS` is kept as a legacy alias for older automation; if both are
-# unset we fall back to 96G.
+# `LLVM_LIMIT_AS` is kept as a legacy alias for older automation.
 if [[ -z "${FASTR_CARGO_LIMIT_AS:-}" ]]; then
   export FASTR_CARGO_LIMIT_AS="${LLVM_LIMIT_AS:-96G}"
 fi
