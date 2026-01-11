@@ -47,7 +47,7 @@ fn statepoint_stackmap_x86_64_has_two_gc_live_pointers() {
   assert_eq!(stackmap.records.len(), 2);
 
   for record in &stackmap.records {
-    assert_eq!(record.patchpoint_id, 0xABCD_EF00);
+    assert_eq!(record.patchpoint_id, LLVM_STATEPOINT_PATCHPOINT_ID);
     assert_eq!(record.locations.len(), 7);
 
     let sp = StatepointRecord::new(record).unwrap();
@@ -78,7 +78,7 @@ fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
   assert_eq!(stackmap.records.len(), 2);
 
   for record in &stackmap.records {
-    assert_eq!(record.patchpoint_id, 0xABCD_EF00);
+    assert_eq!(record.patchpoint_id, LLVM_STATEPOINT_PATCHPOINT_ID);
     assert_eq!(record.locations.len(), 7);
 
     let sp = StatepointRecord::new(record).unwrap();
