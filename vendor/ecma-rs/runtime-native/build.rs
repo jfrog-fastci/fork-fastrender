@@ -55,7 +55,10 @@ Building without frame pointers can lead to stack walking failures and hard cras
 Fix:
   - Set: RUSTFLAGS="-C force-frame-pointers=yes"
   - Or use the LLVM wrapper script (injects this flag automatically):
+      # From the repository root:
       bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p runtime-native
+      # From the vendor/ecma-rs workspace root:
+      bash scripts/cargo_llvm.sh build -p runtime-native
 
 Escape hatch (unsafe; for experiments only):
   - Enable feature `allow_omit_frame_pointers`:

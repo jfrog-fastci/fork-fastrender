@@ -143,6 +143,7 @@ When linking from Rust, you still need to pass the script to the final link step
 
 ```bash
 RUSTFLAGS="\
+  -C force-frame-pointers=yes \
   -C linker=clang-18 \
   -C link-arg=-fuse-ld=lld \
   -C link-arg=-Wl,-T,$PWD/runtime-native/link/stackmaps.ld" \
