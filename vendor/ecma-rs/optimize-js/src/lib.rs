@@ -111,8 +111,9 @@ pub struct CompileCfgOptions {
   /// Retain SSA form (including `InstTyp::Phi`) in [`ProgramFunction::body`].
   ///
   /// When this is `false` (default), SSA is always deconstructed before it is
-  /// stored in the returned program's `body`. The preserved SSA copy is still
-  /// available via [`ProgramFunction::ssa_body`]/[`ProgramFunction::cfg_ssa`].
+  /// stored in the returned program's `body`. The preserved SSA CFG (annotated
+  /// with ownership/escape metadata) is still available via
+  /// [`ProgramFunction::ssa_body`]/[`ProgramFunction::cfg_ssa`].
   pub keep_ssa: bool,
   /// Run optimisation passes after SSA construction.
   ///
