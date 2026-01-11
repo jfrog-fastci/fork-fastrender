@@ -1219,6 +1219,14 @@ pub struct BoxNode {
   /// release builds.
   pub generated_pseudo: Option<GeneratedPseudoElement>,
 
+  /// Form control metadata for `appearance: none` controls rendered as non-replaced boxes.
+  ///
+  /// Native form controls are normally represented as replaced elements (see
+  /// `ReplacedType::FormControl`). When `appearance: none` is set we generate normal element boxes
+  /// so authored/pseudo content can participate in layout, but intrinsic sizing should still
+  /// follow form-control rules instead of sizing to the synthesized fallback text.
+  pub form_control: Option<Arc<FormControl>>,
+
   /// HTML table cell span metadata (for `<td>` / `<th>`), if applicable.
   pub table_cell_span: Option<TableCellSpan>,
 
@@ -1245,6 +1253,7 @@ impl Clone for BoxNode {
         debug_info: node.debug_info.clone(),
         styled_node_id: node.styled_node_id,
         generated_pseudo: node.generated_pseudo,
+        form_control: node.form_control.clone(),
         table_cell_span: node.table_cell_span,
         table_column_span: node.table_column_span,
         first_line_style: node.first_line_style.clone(),
@@ -1387,6 +1396,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -1408,6 +1418,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -1427,6 +1438,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -1452,6 +1464,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -1471,6 +1484,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -1490,6 +1504,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -1519,6 +1534,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -1540,6 +1556,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -1561,6 +1578,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -1582,6 +1600,7 @@ impl BoxNode {
       debug_info: None,
       styled_node_id: None,
       generated_pseudo: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,

@@ -3821,6 +3821,7 @@ impl InlineFormattingContext {
       generated_pseudo: None,
       debug_info: None,
       styled_node_id: None,
+      form_control: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,

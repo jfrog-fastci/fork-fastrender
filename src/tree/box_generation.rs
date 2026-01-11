@@ -4288,6 +4288,7 @@ fn generate_boxes_for_styled_into(
     quote_containment_snapshot: Option<usize>,
     in_footnote: bool,
     force_position_relative: bool,
+    form_control: Option<Arc<FormControl>>,
     composed_children: Option<ComposedChildren<'a>>,
     child_idx: usize,
     pending_children: Vec<&'a StyledNode>,
@@ -4304,6 +4305,7 @@ fn generate_boxes_for_styled_into(
         quote_containment_snapshot: None,
         in_footnote,
         force_position_relative: false,
+        form_control: None,
         composed_children: None,
         child_idx: 0,
         pending_children: Vec::new(),
@@ -4745,6 +4747,7 @@ fn generate_boxes_for_styled_into(
           debug_assert!(false, "frame exists");
           break;
         };
+        frame.form_control = appearance_none_form_control.map(Arc::new);
         frame.composed_children = Some(composed_children);
         frame.children = Vec::with_capacity(composed_len + 3 + fallback_children.len());
         frame.child_idx = 0;
@@ -4834,6 +4837,7 @@ fn generate_boxes_for_styled_into(
         debug_assert!(frame.entered_counter_scope);
         let in_footnote = frame.in_footnote;
         let force_position_relative = frame.force_position_relative;
+        let form_control = frame.form_control;
         let styled = frame.styled;
         let mut children = frame.children;
         let entered_style_containment_scope = frame.entered_style_containment_scope;
@@ -4999,6 +5003,7 @@ fn generate_boxes_for_styled_into(
         box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
         box_node.first_line_style = styled.first_line_styles.as_ref().map(Arc::clone);
         box_node.first_letter_style = styled.first_letter_styles.as_ref().map(Arc::clone);
+        box_node.form_control = form_control;
 
         if options.enable_footnote_floats && styled.styles.float == Float::Footnote && !in_footnote
         {
@@ -7491,6 +7496,7 @@ fn create_replaced_box_from_styled(
     debug_info: None,
     styled_node_id: None,
     generated_pseudo: None,
+    form_control: None,
     table_cell_span: None,
     table_column_span: None,
     first_line_style: None,

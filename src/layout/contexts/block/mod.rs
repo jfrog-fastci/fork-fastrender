@@ -7032,6 +7032,7 @@ impl BlockFormattingContext {
       generated_pseudo: parent.generated_pseudo,
       debug_info: parent.debug_info.clone(),
       styled_node_id: parent.styled_node_id,
+      form_control: parent.form_control.clone(),
       table_cell_span: parent.table_cell_span,
       table_column_span: parent.table_column_span,
       first_line_style: parent.first_line_style.clone(),
@@ -7950,6 +7951,51 @@ impl std::fmt::Debug for BlockFormattingContext {
   }
 }
 
+fn has_percentage_sizing_hint(style: &ComputedStyle) -> bool {
+  style
+    .width
+    .as_ref()
+    .is_some_and(|len| len.has_percentage())
+    || style
+      .height
+      .as_ref()
+      .is_some_and(|len| len.has_percentage())
+    || style
+      .min_width
+      .as_ref()
+      .is_some_and(|len| len.has_percentage())
+    || style
+      .max_width
+      .as_ref()
+      .is_some_and(|len| len.has_percentage())
+    || style
+      .min_height
+      .as_ref()
+      .is_some_and(|len| len.has_percentage())
+    || style
+      .max_height
+      .as_ref()
+      .is_some_and(|len| len.has_percentage())
+    || style
+      .width_keyword
+      .is_some_and(|keyword| keyword.has_percentage())
+    || style
+      .height_keyword
+      .is_some_and(|keyword| keyword.has_percentage())
+    || style
+      .min_width_keyword
+      .is_some_and(|keyword| keyword.has_percentage())
+    || style
+      .max_width_keyword
+      .is_some_and(|keyword| keyword.has_percentage())
+    || style
+      .min_height_keyword
+      .is_some_and(|keyword| keyword.has_percentage())
+    || style
+      .max_height_keyword
+      .is_some_and(|keyword| keyword.has_percentage())
+}
+
 impl BlockFormattingContext {
   fn compute_intrinsic_inline_sizes_internal(
     &self,
@@ -8049,6 +8095,72 @@ impl BlockFormattingContext {
       return Ok((result, result));
     }
 
+    let has_percentage_sizing = has_percentage_sizing_hint(style);
+
+    if let Some(control) = box_node.form_control.as_deref() {
+      // `appearance:none` form controls are generated as normal boxes so their authored/pseudo
+      // content can participate in layout, but intrinsic sizing must still follow form-control
+      // rules. In particular, text inputs/areas must not use the synthesized placeholder/value
+      // text for their min-content size because that feeds flexbox's `min-width:auto` algorithm and
+      // makes inputs appear unshrinkable.
+      let shaper = self.factory.shaping_pipeline();
+      let intrinsic_size =
+        crate::tree::form_control_intrinsic::intrinsic_content_size_for_form_control(
+          control,
+          style,
+          self.viewport_size,
+          None,
+          &self.font_context,
+          Some(&shaper),
+        );
+      // Use a synthetic replaced box to reuse the replaced sizing algorithm. The replaced type is
+      // irrelevant here (the only branch in `compute_replaced_size` that depends on it is intrinsic
+      // aspect-ratio derivation, which we disable to match form-control behavior).
+      let synthetic_replaced = ReplacedBox {
+        replaced_type: crate::tree::box_tree::ReplacedType::Canvas,
+        intrinsic_size: Some(intrinsic_size),
+        aspect_ratio: None,
+        no_intrinsic_ratio: true,
+      };
+
+      let max_size = compute_replaced_size(style, &synthetic_replaced, None, self.viewport_size);
+      let max_inline_size = if inline_is_horizontal {
+        max_size.width
+      } else {
+        max_size.height
+      };
+      let max_result = (max_inline_size + edges).max(0.0);
+
+      let mut min_result = if has_percentage_sizing {
+        let min_size = compute_replaced_size(
+          style,
+          &synthetic_replaced,
+          Some(Size::new(0.0, 0.0)),
+          self.viewport_size,
+        );
+        let min_inline_size = if inline_is_horizontal {
+          min_size.width
+        } else {
+          min_size.height
+        };
+        (min_inline_size + edges).max(0.0).min(max_result)
+      } else {
+        max_result
+      };
+
+      use crate::tree::box_tree::FormControlKind;
+      if matches!(
+        &control.control,
+        FormControlKind::Text { .. } | FormControlKind::TextArea { .. }
+      ) {
+        min_result = edges.max(0.0).min(max_result);
+      }
+
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, min_result);
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max_result);
+      return Ok((min_result, max_result));
+    }
+
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
       // Replaced elements' min- and max-content sizes are typically equal because they do not
       // wrap. However, when a replaced element's used size is defined in terms of percentages
@@ -8062,48 +8174,6 @@ impl BlockFormattingContext {
       // sizing hint includes percentages. The max-content size continues to treat unresolved
       // percentages as `auto` so the intrinsic preferred size remains available to algorithms
       // that need it.
-      let has_percentage_sizing = style
-        .width
-        .as_ref()
-        .is_some_and(|len| len.has_percentage())
-        || style
-          .height
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .min_width
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .max_width
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .min_height
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .max_height
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .width_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .height_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .min_width_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .max_width_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .min_height_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .max_height_keyword
-          .is_some_and(|keyword| keyword.has_percentage());
 
       let max_size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
       let max_inline = if inline_is_horizontal {
@@ -11005,6 +11075,72 @@ impl FormattingContext for BlockFormattingContext {
       return Ok((result, result));
     }
 
+    let has_percentage_sizing = has_percentage_sizing_hint(style);
+
+    if let Some(control) = box_node.form_control.as_deref() {
+      // `appearance:none` form controls are generated as normal boxes so their authored/pseudo
+      // content can participate in layout, but intrinsic sizing must still follow form-control
+      // rules. In particular, text inputs/areas must not use the synthesized placeholder/value
+      // text for their min-content size because that feeds flexbox's `min-width:auto` algorithm and
+      // makes inputs appear unshrinkable.
+      let shaper = self.factory.shaping_pipeline();
+      let intrinsic_size =
+        crate::tree::form_control_intrinsic::intrinsic_content_size_for_form_control(
+          control,
+          style,
+          self.viewport_size,
+          None,
+          &self.font_context,
+          Some(&shaper),
+        );
+      // Use a synthetic replaced box to reuse the replaced sizing algorithm. The replaced type is
+      // irrelevant here (the only branch in `compute_replaced_size` that depends on it is intrinsic
+      // aspect-ratio derivation, which we disable to match form-control behavior).
+      let synthetic_replaced = ReplacedBox {
+        replaced_type: crate::tree::box_tree::ReplacedType::Canvas,
+        intrinsic_size: Some(intrinsic_size),
+        aspect_ratio: None,
+        no_intrinsic_ratio: true,
+      };
+
+      let max_size = compute_replaced_size(style, &synthetic_replaced, None, self.viewport_size);
+      let max_inline_size = if inline_is_horizontal {
+        max_size.width
+      } else {
+        max_size.height
+      };
+      let max_result = (max_inline_size + edges).max(0.0);
+
+      let mut min_result = if has_percentage_sizing {
+        let min_size = compute_replaced_size(
+          style,
+          &synthetic_replaced,
+          Some(Size::new(0.0, 0.0)),
+          self.viewport_size,
+        );
+        let min_inline_size = if inline_is_horizontal {
+          min_size.width
+        } else {
+          min_size.height
+        };
+        (min_inline_size + edges).max(0.0).min(max_result)
+      } else {
+        max_result
+      };
+
+      use crate::tree::box_tree::FormControlKind;
+      if matches!(
+        &control.control,
+        FormControlKind::Text { .. } | FormControlKind::TextArea { .. }
+      ) {
+        min_result = edges.max(0.0).min(max_result);
+      }
+
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, min_result);
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max_result);
+      return Ok((min_result, max_result));
+    }
+
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
       // Replaced elements' min- and max-content sizes are typically equal because they do not
       // wrap. However, when a replaced element's used size is defined in terms of percentages
@@ -11018,48 +11154,6 @@ impl FormattingContext for BlockFormattingContext {
       // sizing hint includes percentages. The max-content size continues to treat unresolved
       // percentages as `auto` so the intrinsic preferred size remains available to algorithms
       // that need it.
-      let has_percentage_sizing = style
-        .width
-        .as_ref()
-        .is_some_and(|len| len.has_percentage())
-        || style
-          .height
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .min_width
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .max_width
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .min_height
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .max_height
-          .as_ref()
-          .is_some_and(|len| len.has_percentage())
-        || style
-          .width_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .height_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .min_width_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .max_width_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .min_height_keyword
-          .is_some_and(|keyword| keyword.has_percentage())
-        || style
-          .max_height_keyword
-          .is_some_and(|keyword| keyword.has_percentage());
 
       let max_size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
       let max_inline_size = if inline_is_horizontal {
