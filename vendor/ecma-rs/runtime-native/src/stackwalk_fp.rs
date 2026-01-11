@@ -82,6 +82,10 @@ pub enum WalkError {
     fp_record_size: u64,
   },
   #[error(
+    "stackmap function record for return address {return_addr:#x} reports unknown stack_size (u64::MAX)"
+  )]
+  UnknownStackSize { return_addr: u64 },
+  #[error(
     "stack pointer underflow while computing caller SP: caller_fp={caller_fp:#x} stack_size={stack_size} fp_record_size={fp_record_size}"
   )]
   StackPointerUnderflow {
@@ -696,6 +700,13 @@ fn caller_sp_from_stack_size(
   // It is kept only as a fallback for the top frame when the safepoint context does not provide a
   // stackmap-semantics `SP` (`ctx.sp == 0`). Non-top frames must derive callsite `SP` from the
   // callee frame pointer (see `caller_sp_callsite_from_callee_fp`).
+  //
+  // Some LLVM configurations emit `stack_size = u64::MAX` for dynamic/realigned frames.
+  if stack_size == u64::MAX {
+    return Err(WalkError::UnknownStackSize {
+      return_addr: caller_ra,
+    });
+  }
   if stack_size < arch::FP_RECORD_SIZE {
     return Err(WalkError::InvalidStackSize {
       return_addr: caller_ra,
