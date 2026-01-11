@@ -516,11 +516,23 @@ mod borrow_tests {
       buf.try_with_slice(|_| ()).unwrap_err(),
       ArrayBufferError::Borrow(BorrowError::Borrowed)
     );
+    assert_eq!(
+      buf.try_with_slice_mut(|_| ()).unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
     drop(read_guard);
 
     assert_eq!(buf.try_with_slice(|s| s.len()).unwrap(), 4);
 
     let write_guard = buf.try_borrow_io_write().unwrap();
+    assert_eq!(
+      buf.data_ptr().unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    assert_eq!(
+      buf.try_with_slice(|_| ()).unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
     assert_eq!(
       buf.try_with_slice_mut(|_| ()).unwrap_err(),
       ArrayBufferError::Borrow(BorrowError::Borrowed)
@@ -531,6 +543,49 @@ mod borrow_tests {
       buf.try_with_slice_mut(|s| { s[0] = 7; s[0] }).unwrap(),
       7
     );
+  }
+
+  #[test]
+  fn detach_transfer_resize_slice_fail_while_io_borrowed() {
+    let mut buf = ArrayBuffer::new_zeroed(4).unwrap();
+
+    let read_guard = buf.try_borrow_io_read().unwrap();
+    assert_eq!(
+      buf.detach().unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    assert_eq!(
+      buf.transfer().unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    assert_eq!(
+      buf.resize(8).unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    assert_eq!(
+      buf.slice(0, 1).unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    drop(read_guard);
+
+    let write_guard = buf.try_borrow_io_write().unwrap();
+    assert_eq!(
+      buf.detach().unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    assert_eq!(
+      buf.transfer().unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    assert_eq!(
+      buf.resize(8).unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    assert_eq!(
+      buf.slice(0, 1).unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+    drop(write_guard);
   }
 }
 
