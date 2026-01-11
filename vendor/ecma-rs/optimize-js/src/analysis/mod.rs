@@ -18,6 +18,8 @@ pub mod ownership;
 pub mod purity;
 pub mod range;
 pub mod registers;
+#[cfg(feature = "serde")]
+pub(crate) mod serde;
 pub mod single_use_insts;
 
 pub use driver::{

@@ -48,8 +48,10 @@ pub struct BlockState<T> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(bound(serialize = "T: serde::Serialize")))]
 pub struct DataFlowResult<T> {
   pub boundary: ResolvedAnalysisBoundary,
+  #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
   pub blocks: HashMap<u32, BlockState<T>>,
 }
 

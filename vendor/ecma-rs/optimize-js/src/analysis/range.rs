@@ -128,7 +128,10 @@ impl IntRange {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum RangeState {
   Unreachable,
-  Vars(HashMap<u32, IntRange>),
+  Vars(
+    #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
+    HashMap<u32, IntRange>,
+  ),
 }
  
 impl RangeState {
@@ -197,6 +200,7 @@ impl RangeState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct RangeResult {
+  #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
   pub blocks: HashMap<u32, BlockState<RangeState>>,
   pub edges: HashMap<Edge, RangeState>,
 }

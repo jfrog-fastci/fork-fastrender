@@ -11,6 +11,7 @@ use ahash::HashMap;
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct EncodingState {
   reachable: bool,
+  #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
   vars: HashMap<u32, StringEncoding>,
 }
 
@@ -62,6 +63,7 @@ impl EncodingState {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct EncodingResult {
   pub boundary: ResolvedAnalysisBoundary,
+  #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
   pub blocks: HashMap<u32, BlockState<EncodingState>>,
 }
 

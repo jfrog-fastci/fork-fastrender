@@ -29,12 +29,16 @@ impl<T> EdgeDataFlowResult<T> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(bound(serialize = "T: serde::Serialize")))]
 pub struct ForwardEdgeDataFlowResult<T> {
   pub entry: u32,
+  #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
   pub block_entry: HashMap<u32, T>,
   /// State at the end of a block after applying instruction transfers, but before
   /// successor-specific edge refinement.
+  #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
   pub block_exit: HashMap<u32, T>,
+  #[cfg_attr(feature = "serde", serde(serialize_with = "crate::analysis::serde::serialize_hashmap_sorted"))]
   pub edge_out: HashMap<(u32, u32), T>,
 }
 

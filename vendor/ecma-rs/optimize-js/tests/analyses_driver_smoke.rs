@@ -4,6 +4,8 @@ mod common;
 use common::compile_source;
 use optimize_js::analysis::analyze_cfg;
 use optimize_js::TopLevelMode;
+#[cfg(feature = "serde")]
+use serde_json::to_string;
 
 #[test]
 fn analyses_driver_smoke_is_deterministic() {
@@ -31,6 +33,16 @@ fn analyses_driver_smoke_is_deterministic() {
 
   assert_eq!(first, second, "analysis results should be stable across invocations");
 
+  #[cfg(feature = "serde")]
+  {
+    let first_json = to_string(&first).expect("serialize first analysis result");
+    let second_json = to_string(&second).expect("serialize second analysis result");
+    assert_eq!(
+      first_json, second_json,
+      "serialized analysis results should be deterministic across invocations"
+    );
+  }
+
   assert!(
     first.range.entry(cfg.entry).is_some(),
     "range analysis should contain an entry for the CFG entry block"
@@ -44,4 +56,3 @@ fn analyses_driver_smoke_is_deterministic() {
     "encoding analysis should contain an entry state for the CFG entry block"
   );
 }
-
