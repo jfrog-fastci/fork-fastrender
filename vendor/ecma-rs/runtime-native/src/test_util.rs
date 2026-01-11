@@ -106,6 +106,15 @@ pub fn with_test_runtime<T>(f: impl FnOnce() -> T) -> T {
   f()
 }
 
+/// Debug/test helper: hold the spawn_blocking queue lock.
+///
+/// This exists to deterministically reproduce contention on the blocking pool's
+/// internal queue mutex for stop-the-world safepoint tests.
+#[doc(hidden)]
+pub fn debug_hold_blocking_pool_queue_lock() -> impl Drop {
+  crate::blocking_pool::debug_hold_queue_lock()
+}
+
 // --- GC testing helpers -------------------------------------------------------------------------
 
 static GC_TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));

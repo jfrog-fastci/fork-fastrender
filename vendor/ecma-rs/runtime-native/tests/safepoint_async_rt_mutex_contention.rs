@@ -2,9 +2,11 @@ use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
 use runtime_native::io::IoRuntime;
+use runtime_native::abi::PromiseRef;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 extern "C" fn noop_task(_data: *mut u8) {}
@@ -228,5 +230,71 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_io_registry_mutex() {
 
   handle.join().unwrap();
   drop(io_rt);
+  threading::unregister_current_thread();
+}
+
+extern "C" fn spawn_blocking_noop(data: *mut u8, promise: PromiseRef) {
+  let done = unsafe { &*(data as *const AtomicBool) };
+  done.store(true, Ordering::Release);
+  runtime_native::rt_promise_resolve_legacy(promise, core::ptr::null_mut());
+}
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_blocked_on_spawn_blocking_queue_mutex() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let done = Box::new(AtomicBool::new(false));
+  let done_ptr = Box::into_raw(done);
+  let done_bits = done_ptr as usize;
+
+  let hold = runtime_native::test_util::debug_hold_blocking_pool_queue_lock();
+
+  // While holding the lock, spawn a worker that will contend and block trying to enqueue.
+  let (tx_id, rx_id) = mpsc::channel();
+  let started = Arc::new(Barrier::new(2));
+
+  let started_worker = started.clone();
+  let handle = std::thread::spawn(move || {
+    let id = threading::register_current_thread(ThreadKind::Worker);
+    tx_id.send(id.get()).unwrap();
+
+    // Begin contended acquisition deterministically.
+    started_worker.wait();
+
+    let _ = runtime_native::rt_spawn_blocking(spawn_blocking_noop, done_bits as *mut u8);
+
+    threading::unregister_current_thread();
+  });
+
+  let worker_id = rx_id.recv().unwrap();
+  started.wait();
+
+  // Wait until the worker is blocked in the contended path (NativeSafe).
+  wait_until_thread_native_safe(worker_id, Duration::from_secs(2));
+
+  // Stop-the-world should *not* wait for a thread that's blocked on the blocking pool mutex.
+  runtime_native::rt_gc_request_stop_the_world();
+  let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+  runtime_native::rt_gc_resume_world();
+  assert!(
+    stopped,
+    "world did not stop while worker thread was blocked on the spawn_blocking queue mutex"
+  );
+
+  // Allow the worker to enqueue the task and finish.
+  drop(hold);
+  handle.join().unwrap();
+
+  let deadline = std::time::Instant::now() + Duration::from_secs(2);
+  while !unsafe { &*done_ptr }.load(Ordering::Acquire) {
+    assert!(std::time::Instant::now() < deadline, "spawn_blocking task did not run in time");
+    std::thread::yield_now();
+  }
+
+  unsafe {
+    drop(Box::from_raw(done_ptr));
+  }
+
   threading::unregister_current_thread();
 }

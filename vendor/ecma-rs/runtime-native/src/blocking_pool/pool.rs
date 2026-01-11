@@ -1,15 +1,15 @@
 use crate::async_rt;
 use crate::abi::PromiseRef;
+use crate::sync::GcAwareMutex;
 use crate::threading;
 use crate::threading::ThreadKind;
 use once_cell::sync::OnceCell;
+use parking_lot::Condvar;
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::sync::Condvar;
-use std::sync::Mutex;
 
 enum WorkData {
   Unrooted(*mut u8),
@@ -31,7 +31,7 @@ struct WorkItem {
 unsafe impl Send for WorkItem {}
 
 struct Shared {
-  queue: Mutex<VecDeque<WorkItem>>,
+  queue: GcAwareMutex<VecDeque<WorkItem>>,
   cv: Condvar,
   shutdown: AtomicBool,
 }
@@ -45,6 +45,21 @@ static POOL: OnceCell<BlockingPool> = OnceCell::new();
 
 pub(crate) fn global() -> &'static BlockingPool {
   POOL.get_or_init(BlockingPool::new)
+}
+
+#[doc(hidden)]
+pub(super) fn debug_hold_queue_lock() -> impl Drop {
+  struct Hold {
+    _guard: parking_lot::MutexGuard<'static, VecDeque<WorkItem>>,
+  }
+
+  impl Drop for Hold {
+    fn drop(&mut self) {}
+  }
+
+  Hold {
+    _guard: global().shared.queue.lock(),
+  }
 }
 
 impl BlockingPool {
@@ -67,7 +82,7 @@ impl BlockingPool {
       .unwrap_or(default_threads);
 
     let shared = Arc::new(Shared {
-      queue: Mutex::new(VecDeque::new()),
+      queue: GcAwareMutex::new(VecDeque::new()),
       cv: Condvar::new(),
       shutdown: AtomicBool::new(false),
     });
@@ -95,7 +110,7 @@ impl BlockingPool {
     let promise = async_rt::promise::promise_new();
 
     {
-      let mut q = self.shared.queue.lock().unwrap();
+      let mut q = self.shared.queue.lock();
       q.push_back(WorkItem {
         task,
         data: WorkData::Unrooted(data),
@@ -119,7 +134,7 @@ impl BlockingPool {
     let root = unsafe { async_rt::gc::Root::new_unchecked(data) };
 
     {
-      let mut q = self.shared.queue.lock().unwrap();
+      let mut q = self.shared.queue.lock();
       q.push_back(WorkItem {
         task,
         data: WorkData::Rooted(root),
@@ -138,7 +153,7 @@ fn worker_loop(shared: Arc<Shared>) {
     threading::safepoint_poll();
 
     let work = {
-      let mut q = shared.queue.lock().unwrap();
+      let mut q = shared.queue.lock();
       loop {
         if let Some(work) = q.pop_front() {
           break Some(work);
@@ -148,7 +163,7 @@ fn worker_loop(shared: Arc<Shared>) {
         }
         // While idle, mark as parked so stop-the-world GC treats this thread as quiescent.
         threading::set_parked(true);
-        q = shared.cv.wait(q).unwrap();
+        shared.cv.wait(&mut q);
         threading::set_parked(false);
       }
     };
