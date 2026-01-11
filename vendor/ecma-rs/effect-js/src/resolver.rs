@@ -565,6 +565,51 @@ mod tests {
   }
 
   #[test]
+  fn resolves_namespace_import() {
+    let calls = resolved_calls(
+      r#"
+        import * as fs from 'node:fs';
+        fs.readFile('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_named_imports() {
+    let calls = resolved_calls(
+      r#"
+        import { readFile, writeFile as wf } from 'fs';
+        readFile('x', () => {});
+        wf('y', 'z', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile", "node:fs.writeFile"]);
+  }
+
+  #[test]
+  fn resolves_default_import() {
+    let calls = resolved_calls(
+      r#"
+        import fs from 'node:fs';
+        fs.readFile('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
+  fn resolves_import_equals_require() {
+    let calls = resolved_calls(
+      r#"
+        import fs = require('fs');
+        fs.readFile('x', () => {});
+      "#,
+    );
+    assert_eq!(calls, vec!["node:fs.readFile"]);
+  }
+
+  #[test]
   fn resolves_root_require_bindings_inside_nested_bodies() {
     let calls = resolved_calls_all_bodies(
       r#"
