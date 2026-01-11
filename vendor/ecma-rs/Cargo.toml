@@ -22,6 +22,7 @@ members = [
   "runtime-native",
   "vm-js",
   "runtime-js",
+  "stackmap-context",
   "webidl",
   "webidl-vm-js",
   "types-ts-interned",
@@ -119,6 +120,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3.19", default-features = false }
 unicode-ident = "1.0"
 walkdir = "2.5"
+libc = "0.2"
 
 [patch.crates-io]
 derive-visitor = { path = "third_party/derive-visitor" }
