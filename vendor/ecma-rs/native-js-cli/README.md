@@ -9,6 +9,9 @@ it.
 
 > Note: this path does **not** run the TypeScript checker; it parses the input
 > and lowers a small expression-only subset directly to LLVM IR.
+>
+> The input is parsed as a TypeScript **module** (`Dialect::Ts` +
+> `SourceType::Module`).
 
 This is primarily useful for:
 

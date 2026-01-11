@@ -184,6 +184,11 @@ compiler that lowers a single TypeScript module to textual LLVM IR.
 It exists to make it easy to debug the LLVM plumbing and basic lowering logic,
 and is the backend used by `native-js-cli`.
 
+The input is always parsed as a **TypeScript module**:
+
+- `parse-js` `Dialect::Ts`
+- `parse-js` `SourceType::Module`
+
 Only `CompileOptions::builtins` is currently honored by this path; the remaining
 fields are reserved for the eventual LLVM-backed backend.
 
