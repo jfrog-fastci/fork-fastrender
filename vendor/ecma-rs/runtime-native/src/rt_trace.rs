@@ -49,7 +49,8 @@ mod imp {
   }
 
   fn register_thread_counters(counters: &'static ThreadCounters) {
-    let mut reg = registry().lock().unwrap();
+    // This is debug-only accounting; poisoning is not meaningful.
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     // Avoid duplicates (should be impossible since TLS init is one-shot, but keep it defensive).
     if reg.iter().any(|&c| std::ptr::eq(c, counters)) {
       return;
@@ -123,7 +124,8 @@ mod imp {
   pub fn rt_debug_snapshot_counters() -> RtDebugCountersSnapshot {
     let mut snap = RtDebugCountersSnapshot::default();
 
-    let reg = registry().lock().unwrap();
+    // This is debug-only accounting; poisoning is not meaningful.
+    let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     for c in reg.iter() {
       snap.steals_attempted = snap
         .steals_attempted
