@@ -2,6 +2,8 @@ use crate::thread;
 use crate::Thread;
 use crate::sync::GcAwareMutex;
 use crate::sync::GcAwareRwLock;
+use crate::threading;
+use crate::threading::ThreadKind;
 use crate::threading::safepoint::StopReason;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
@@ -72,6 +74,12 @@ impl Runtime {
       return Err(AttachError::AlreadyAttached);
     }
 
+    // Ensure this OS thread participates in the global GC safepoint protocol.
+    //
+    // This is idempotent, and if a stop-the-world is already active it will park
+    // before returning (so the thread cannot start mutator work mid-STW).
+    threading::register_current_thread(ThreadKind::External);
+
     // Avoid mutating the thread registry while a stop-the-world safepoint is in
     // progress.
     //
@@ -126,29 +134,35 @@ impl Runtime {
     // safepoint poll here.
     crate::threading::safepoint_poll();
 
-    // Prevent detach while a stop-the-world phase is active.
-    let _world = self.world_lock.read();
-
-    // Ensure this is the current thread (TLS). This keeps the API honest and
-    // avoids accidentally clearing some other thread's TLS.
-    if thread::current_thread_ptr() != thread {
-      return Err(DetachError::NotCurrentThread);
-    }
-
     {
-      let mut reg = self.registry.lock();
-      if let Some(pos) = reg.threads.iter().position(|&t| t == thread) {
-        reg.threads.swap_remove(pos);
-      } else {
-        return Err(DetachError::NotInRegistry);
+      // Prevent detach while a stop-the-world phase is active.
+      let _world = self.world_lock.read();
+
+      // Ensure this is the current thread (TLS). This keeps the API honest and
+      // avoids accidentally clearing some other thread's TLS.
+      if thread::current_thread_ptr() != thread {
+        return Err(DetachError::NotCurrentThread);
       }
+
+      {
+        let mut reg = self.registry.lock();
+        if let Some(pos) = reg.threads.iter().position(|&t| t == thread) {
+          reg.threads.swap_remove(pos);
+        } else {
+          return Err(DetachError::NotInRegistry);
+        }
+      }
+
+      // Mark detached before clearing TLS (so other code that might have kept a
+      // reference can observe the state change).
+      (*thread).set_state(crate::ThreadState::Detached);
+
+      thread::set_current_thread_ptr(std::ptr::null_mut());
     }
 
-    // Mark detached before clearing TLS (so other code that might have kept a
-    // reference can observe the state change).
-    (*thread).set_state(crate::ThreadState::Detached);
-
-    thread::set_current_thread_ptr(std::ptr::null_mut());
+    // Also detach from the global GC thread registry (if present). The thread is
+    // no longer expected to run mutator code after detaching from the runtime.
+    threading::unregister_current_thread();
 
     Ok(())
   }
