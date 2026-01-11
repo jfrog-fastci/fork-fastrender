@@ -2434,13 +2434,13 @@ fn container_style_query_range_feature_matches_line_height_number() {
 }
 
 #[test]
-fn container_style_query_range_feature_matches_line_height_percentage() {
+fn container_style_query_range_feature_matches_line_height_percentage_computed_as_length() {
   let html = r#"
     <style>
-      .container-short { container-type: inline-size; line-height: 100%; }
-      .container-tall { container-type: inline-size; line-height: 150%; }
+      .container-short { container-type: inline-size; font-size: 20px; line-height: 100%; }
+      .container-tall { container-type: inline-size; font-size: 20px; line-height: 150%; }
       .child { color: rgb(0 0 255); }
-      @container style(line-height > 100%) {
+      @container style(line-height > 20px) {
         .child { color: rgb(255 0 0); }
       }
     </style>

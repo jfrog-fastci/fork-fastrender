@@ -261,7 +261,7 @@ fn not_container_query_parses_and_evaluates() {
 }
 
 #[test]
-fn container_query_or_with_unknown_branch_matches_when_known_branch_true() {
+fn container_query_or_with_scroll_state_requires_scroll_state_container() {
   let css = r#"
     .target { display: block; }
     @container (min-width: 400px) or scroll-state(snapped: top) {
@@ -270,7 +270,7 @@ fn container_query_or_with_unknown_branch_matches_when_known_branch_true() {
   "#;
   let styled = cascade_with_container(css, 500.0, vec![]);
 
-  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
 }
 
 #[test]
