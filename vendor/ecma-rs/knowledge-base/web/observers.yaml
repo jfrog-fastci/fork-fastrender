@@ -1,0 +1,139 @@
+# Observer APIs (MutationObserver / IntersectionObserver / ResizeObserver).
+
+- name: MutationObserver
+  kind: constructor
+  aliases:
+    - MutationObserver
+    - window.MutationObserver
+    - globalThis.MutationObserver
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES | WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: MutationObserver.prototype.observe
+  kind: function
+  aliases:
+    - MutationObserver.prototype.observe
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: MutationObserver.prototype.disconnect
+  kind: function
+  aliases:
+    - MutationObserver.prototype.disconnect
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Never
+  purity: Impure
+
+- name: MutationObserver.prototype.takeRecords
+  kind: function
+  aliases:
+    - MutationObserver.prototype.takeRecords
+  since: "baseline"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+
+- name: IntersectionObserver
+  kind: constructor
+  aliases:
+    - IntersectionObserver
+    - window.IntersectionObserver
+    - globalThis.IntersectionObserver
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES | WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: IntersectionObserver.prototype.observe
+  kind: function
+  aliases:
+    - IntersectionObserver.prototype.observe
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: IntersectionObserver.prototype.unobserve
+  kind: function
+  aliases:
+    - IntersectionObserver.prototype.unobserve
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Never
+  purity: Impure
+
+- name: IntersectionObserver.prototype.disconnect
+  kind: function
+  aliases:
+    - IntersectionObserver.prototype.disconnect
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Never
+  purity: Impure
+
+- name: ResizeObserver
+  kind: constructor
+  aliases:
+    - ResizeObserver
+    - window.ResizeObserver
+    - globalThis.ResizeObserver
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES | WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: ResizeObserver.prototype.observe
+  kind: function
+  aliases:
+    - ResizeObserver.prototype.observe
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: ResizeObserver.prototype.unobserve
+  kind: function
+  aliases:
+    - ResizeObserver.prototype.unobserve
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Never
+  purity: Impure
+
+- name: ResizeObserver.prototype.disconnect
+  kind: function
+  aliases:
+    - ResizeObserver.prototype.disconnect
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Never
+  purity: Impure
