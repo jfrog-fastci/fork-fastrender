@@ -3,6 +3,7 @@ use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
@@ -174,4 +175,87 @@ fn root_registry_get_and_set_observe_slot_updates() {
     drop(Box::from_raw(obj_a));
     drop(Box::from_raw(obj_b));
   }
+}
+
+#[test]
+fn root_registry_enumeration_does_not_allow_mutator_to_run_during_stw_request() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  const TIMEOUT: Duration = Duration::from_secs(2);
+
+  let obj = Box::into_raw(Box::new(0u8)) as *mut u8;
+  let handle = runtime_native::rt_gc_pin(obj);
+
+  let ran = Arc::new(AtomicBool::new(false));
+
+  std::thread::scope(|scope| {
+    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    let (start_tx, start_rx) = mpsc::channel::<()>();
+    let (attempt_tx, attempt_rx) = mpsc::channel::<()>();
+
+    let ran_worker = Arc::clone(&ran);
+    scope.spawn(move || {
+      threading::register_current_thread(ThreadKind::Worker);
+      ready_tx.send(()).unwrap();
+
+      start_rx.recv().unwrap();
+      attempt_tx.send(()).unwrap();
+
+      runtime_native::roots::global_root_registry().for_each_root_slot(|_slot| {
+        ran_worker.store(true, Ordering::Release);
+      });
+
+      runtime_native::rt_gc_safepoint();
+      threading::unregister_current_thread();
+    });
+
+    ready_rx
+      .recv_timeout(TIMEOUT)
+      .expect("worker should register");
+
+    let stop_epoch = runtime_native::rt_gc_request_stop_the_world();
+    assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
+
+    struct ResumeOnDrop;
+    impl Drop for ResumeOnDrop {
+      fn drop(&mut self) {
+        runtime_native::rt_gc_resume_world();
+      }
+    }
+
+    {
+      let _resume = ResumeOnDrop;
+
+      // Let the worker try to enumerate roots while STW is active.
+      start_tx.send(()).unwrap();
+      attempt_rx
+        .recv_timeout(TIMEOUT)
+        .expect("worker should begin enumeration attempt");
+
+      assert!(
+        runtime_native::rt_gc_wait_for_world_stopped_timeout(TIMEOUT),
+        "world failed to stop within timeout"
+      );
+
+      assert!(
+        !ran.load(Ordering::Acquire),
+        "root registry enumeration ran on a mutator thread during stop-the-world"
+      );
+    }
+
+    // After resuming, the enumeration should complete and run its closure.
+    let deadline = Instant::now() + TIMEOUT;
+    while !ran.load(Ordering::Acquire) {
+      assert!(Instant::now() < deadline, "worker did not finish enumeration after resume");
+      std::thread::yield_now();
+    }
+  });
+
+  runtime_native::rt_gc_unpin(handle);
+  unsafe {
+    drop(Box::from_raw(obj));
+  }
+
+  threading::unregister_current_thread();
 }

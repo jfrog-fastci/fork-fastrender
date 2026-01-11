@@ -145,24 +145,19 @@ impl RootRegistry {
 
   /// Enumerate all registered root slots.
   pub fn for_each_root_slot(&self, mut f: impl FnMut(*mut *mut u8)) {
-    if crate::threading::safepoint::current_epoch() & 1 == 1 {
-      // Root enumeration runs during stop-the-world (odd epoch). `GcAwareMutex::lock()` refuses to
-      // return while the epoch is odd, so the GC coordinator must use `lock_for_gc()`.
-      let mut inner = self.inner.lock_for_gc();
-      for slot in &mut inner.slots {
-        let Some(entry) = slot.entry.as_mut() else {
-          continue;
-        };
-        f(entry.slot_ptr());
-      }
-    } else {
-      let mut inner = self.inner.lock();
-      for slot in &mut inner.slots {
-        let Some(entry) = slot.entry.as_mut() else {
-          continue;
-        };
-        f(entry.slot_ptr());
-      }
+    // Use the GC-aware `lock()` path so:
+    // - contended acquisition enters a GC-safe ("NativeSafe") region (avoids STW deadlocks), and
+    // - mutator threads cannot observe a stop-the-world (odd) epoch and still proceed holding this
+    //   lock (they will safepoint instead).
+    //
+    // The GC coordinator can still acquire the lock during stop-the-world: `GcAwareMutex::lock()`
+    // treats the coordinator thread as special and returns a guard even while the epoch is odd.
+    let mut inner = self.inner.lock();
+    for slot in &mut inner.slots {
+      let Some(entry) = slot.entry.as_mut() else {
+        continue;
+      };
+      f(entry.slot_ptr());
     }
   }
 
