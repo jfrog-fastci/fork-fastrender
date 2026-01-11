@@ -44,7 +44,13 @@ fn lld_can_link_stackmaps_section_with_explicit_range_symbols() {
     };
 
     let ws_root = workspace_root();
-    let stackmaps_ld = ws_root.join("runtime-native").join("link").join("stackmaps.ld");
+    // This test emits a plain `.llvm_stackmaps` section (non-PIE layout). Use the
+    // non-PIE linker script fragment that retains `.llvm_stackmaps` under
+    // `--gc-sections` and defines `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`.
+    let stackmaps_ld = ws_root
+        .join("runtime-native")
+        .join("link")
+        .join("stackmaps_nopie.ld");
 
     let tmp = tempfile::tempdir().expect("create tempdir");
     let project_dir = tmp.path();
@@ -103,7 +109,7 @@ fn main() {
     // Speed up the nested build: we only care about the final link result (symbols + section
     // retention), not debug info.
     let rustflags = format!(
-        "-C debuginfo=0 -C linker={clang} -C link-arg=-fuse-ld={lld_fuse} -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
+        "-C debuginfo=0 -C linker={clang} -C link-arg=-fuse-ld={lld_fuse} -C link-arg=-no-pie -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
         stackmaps_ld.display()
     );
 

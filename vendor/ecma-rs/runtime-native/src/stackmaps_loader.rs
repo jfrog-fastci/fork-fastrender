@@ -3,7 +3,8 @@
 //! On Linux/ELF we support three strategies:
 //! 1) **Fast path (zero I/O):** use linker-defined start/stop symbols emitted by
 //!    a stackmaps linker-script fragment:
-//!    - `runtime-native/link/stackmaps.ld` (preferred, lld-friendly)
+//!    - `runtime-native/link/stackmaps_nopie.ld` (non-PIE; keeps `.llvm_stackmaps`)
+//!    - `runtime-native/link/stackmaps.ld` (PIE/DSO; keeps `.data.rel.ro.llvm_stackmaps`)
 //!    - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening)
 //!    - `runtime-native/stackmaps.ld` (compat)
 //!    Symbols:

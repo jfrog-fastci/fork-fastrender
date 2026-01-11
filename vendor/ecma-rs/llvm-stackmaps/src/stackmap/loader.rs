@@ -6,11 +6,17 @@ use core::{ptr, slice};
 /// - **Linux/ELF:** uses linker-script-defined range symbols:
 ///   - `__start_llvm_stackmaps`
 ///   - `__stop_llvm_stackmaps`
-///   The repo provides a ready-to-use script fragment at
-///   `vendor/ecma-rs/runtime-native/link/stackmaps.ld` (lld-oriented) or
-///   `vendor/ecma-rs/runtime-native/link/stackmaps_gnuld.ld` (GNU ld-oriented). The
-///   legacy path `vendor/ecma-rs/runtime-native/stackmaps.ld` is kept as a
-///   compatibility shim. The fragment also defines:
+///   The repo provides ready-to-use linker script fragments:
+///   - **non-PIE executables:** `vendor/ecma-rs/runtime-native/link/stackmaps_nopie.ld`
+///     (keeps `.llvm_stackmaps`)
+///   - **PIE/DSO builds (lld):** `vendor/ecma-rs/runtime-native/link/stackmaps.ld`
+///     (expects stackmaps in `.data.rel.ro.llvm_stackmaps`, e.g. after an `llvm-objcopy
+///     --rename-section` step)
+///   - **PIE/DSO builds (GNU ld):** `vendor/ecma-rs/runtime-native/link/stackmaps_gnuld.ld`
+///   The legacy path `vendor/ecma-rs/runtime-native/stackmaps.ld` is kept as a
+///   compatibility shim.
+///
+///   These fragments also define:
 ///   - `__stackmaps_start` / `__stackmaps_end` (generic aliases)
 ///   - `__fastr_stackmaps_*` (project-specific aliases)
 ///   - `__llvm_stackmaps_*` (legacy aliases)

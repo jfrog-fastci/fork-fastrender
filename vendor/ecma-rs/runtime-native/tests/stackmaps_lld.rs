@@ -61,16 +61,16 @@ edition = "2021"
   )
   .expect("write Cargo.toml");
 
-  // Define `.llvm_stackmaps` bytes without creating any Rust-level references to
-  // them. With `--gc-sections` enabled, the linker would drop the section unless
-  // our linker script uses `KEEP(*(.llvm_stackmaps))`.
+  // Define `.data.rel.ro.llvm_stackmaps` bytes without creating any Rust-level
+  // references to them. With `--gc-sections` enabled, the linker would drop the
+  // section unless our linker script uses `KEEP(*(.data.rel.ro.llvm_stackmaps))`.
   std::fs::write(
     project_dir.join("src/main.rs"),
     r##"use std::arch::global_asm;
 
 global_asm!(
     r#"
-    .section .llvm_stackmaps,"a",@progbits
+    .section .data.rel.ro.llvm_stackmaps,"aw",@progbits
     // Minimal LLVM StackMap v3 header (16 bytes):
     //   u8  version = 3
     //   u8  reserved0 = 0

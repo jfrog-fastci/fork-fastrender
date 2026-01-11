@@ -6,10 +6,10 @@ use core::slice;
 use runtime_native::stackmaps::STACKMAP_VERSION;
 
 // Define a tiny but valid StackMap v3 blob (0 functions / 1 constant / 0 records) inside
-// `.llvm_stackmaps`.
+// `.data.rel.ro.llvm_stackmaps`.
 //
 // Note: runtime-native's build script links tests with `link/stackmaps.ld`, which:
-// - keeps `.llvm_stackmaps` under `--gc-sections`, and
+// - keeps `.data.rel.ro.llvm_stackmaps` under `--gc-sections`, and
 // - defines `__fastr_stackmaps_start/end` to delimit the in-memory stackmaps byte range (the entire
 //   output section, which may contain multiple concatenated stackmap blobs from all linked objects).
 //
@@ -20,7 +20,7 @@ use runtime_native::stackmaps::STACKMAP_VERSION;
 // locate the injected blob and validate byte-for-byte inclusion.
 global_asm!(
   r#"
-  .section .llvm_stackmaps,"a",@progbits
+  .section .data.rel.ro.llvm_stackmaps,"aw",@progbits
   .p2align 3
   .globl __runtime_native_test_stackmaps_fixture_start
   .globl __runtime_native_test_stackmaps_fixture_end
