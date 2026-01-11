@@ -1,7 +1,7 @@
 use core::fmt;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -23,6 +23,7 @@ use std::sync::Arc;
 pub struct HandleId(u64);
 
 impl HandleId {
+  /// Create a `HandleId` from its raw parts.
   #[inline]
   pub const fn from_parts(index: u32, generation: u32) -> Self {
     Self((index as u64) | ((generation as u64) << 32))
@@ -51,6 +52,18 @@ impl HandleId {
   pub const fn from_u64(raw: u64) -> Self {
     Self(raw)
   }
+
+  /// Alias for [`HandleId::to_u64`].
+  #[inline]
+  pub const fn to_raw(self) -> u64 {
+    self.0
+  }
+
+  /// Alias for [`HandleId::from_u64`].
+  #[inline]
+  pub const fn from_raw(raw: u64) -> Self {
+    Self(raw)
+  }
 }
 
 impl From<u64> for HandleId {
@@ -76,34 +89,52 @@ impl fmt::Debug for HandleId {
   }
 }
 
-#[derive(Clone, Copy)]
-struct Slot<T> {
-  generation: u32,
-  // Null pointer indicates a free slot.
-  ptr: *mut T,
+/// Internal pointer wrapper stored in the table.
+///
+/// On newer Rust versions, raw pointers and `NonNull<T>` are `!Send + !Sync` by default to prevent
+/// accidentally building unsound safe abstractions. `HandleTable` treats pointers as opaque
+/// addresses; dereferencing remains `unsafe` and the caller's responsibility.
+///
+/// It is therefore sound for this wrapper to be `Send + Sync` regardless of `T`.
+#[derive(Copy, Clone)]
+struct StoredPtr<T>(*mut T);
+
+unsafe impl<T> Send for StoredPtr<T> {}
+unsafe impl<T> Sync for StoredPtr<T> {}
+
+impl<T> StoredPtr<T> {
+  #[inline]
+  fn from_nonnull(ptr: NonNull<T>) -> Self {
+    Self(ptr.as_ptr())
+  }
+
+  /// # Safety
+  ///
+  /// The stored pointer must be non-null.
+  #[inline]
+  unsafe fn as_nonnull(&self) -> NonNull<T> {
+    NonNull::new_unchecked(self.0)
+  }
 }
 
-/// A generational handle table that can act as a *persistent root set*.
+/// A generational, thread-safe handle table that can act as a *persistent root set*.
 ///
-/// The table stores relocatable pointers to GC-managed objects. Host-owned work queues store
-/// [`HandleId`] values instead of direct pointers, allowing the GC to move objects and update the
-/// table entries during compaction.
+/// The table stores relocatable pointers to GC-managed objects. Host-owned queues (async tasks,
+/// I/O watchers, OS event loop userdata, etc.) store [`HandleId`] values instead of direct pointers,
+/// allowing the GC to move objects and update table entries during compaction.
 ///
-/// ## Stop-the-world relocation updates
+/// # Concurrency
 ///
-/// [`HandleTable::update`] and [`HandleTable::iter_live_mut`] are intended to be used by a moving
-/// collector to update pointers after relocating objects. These operations assume a stop-the-world
-/// (STW) pause: all mutator threads must be parked while relocation updates run.
+/// - [`HandleTable::get`] takes a shared lock (`RwLock` read).
+/// - Allocation/freeing takes an exclusive lock (`RwLock` write).
+///
+/// # Stop-the-world relocation updates
+///
+/// Moving collectors must update handle table pointers only when all mutator threads are parked.
+/// Use [`HandleTable::with_stw_update`]; this API does **not** stop threads itself.
 pub struct HandleTable<T> {
-  slots: Vec<Slot<T>>,
-  free_list: Vec<u32>,
+  inner: RwLock<HandleTableInner<T>>,
 }
-
-// SAFETY: `HandleTable` stores raw pointers as opaque values. It has no interior mutability of its
-// own; concurrent access must be synchronized externally (e.g. by the GC's stop-the-world pause or
-// a mutex). This mirrors the safety rationale used by other pointer tables in this crate (e.g.
-// `WeakHandles`).
-unsafe impl<T> Send for HandleTable<T> {}
 
 impl<T> Default for HandleTable<T> {
   fn default() -> Self {
@@ -113,9 +144,10 @@ impl<T> Default for HandleTable<T> {
 
 impl<T> fmt::Debug for HandleTable<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let inner = self.inner.read();
     f.debug_struct("HandleTable")
-      .field("slots", &self.slots.len())
-      .field("free_list", &self.free_list.len())
+      .field("slots", &inner.slots.len())
+      .field("free_head", &inner.free_head)
       .finish()
   }
 }
@@ -125,96 +157,174 @@ impl<T> HandleTable<T> {
   #[inline]
   pub fn new() -> Self {
     Self {
-      slots: Vec::new(),
-      free_list: Vec::new(),
+      inner: RwLock::new(HandleTableInner {
+        slots: Vec::new(),
+        free_head: None,
+      }),
     }
   }
 
   /// Allocates a new handle for `ptr` and returns its stable [`HandleId`].
   ///
   /// The allocated entry is considered a **GC root** until it is freed via [`HandleTable::free`].
-  pub fn alloc(&mut self, ptr: NonNull<T>) -> HandleId {
-    if let Some(index) = self.free_list.pop() {
-      let slot = &mut self.slots[index as usize];
-      debug_assert!(slot.ptr.is_null(), "free_list points at a live slot");
-      slot.ptr = ptr.as_ptr();
-      HandleId::from_parts(index, slot.generation)
-    } else {
-      let index: u32 = self
-        .slots
-        .len()
-        .try_into()
-        .expect("HandleTable index overflow (more than u32::MAX slots)");
-      self.slots.push(Slot {
-        generation: 0,
-        ptr: ptr.as_ptr(),
-      });
-      HandleId::from_parts(index, 0)
+  pub fn alloc(&self, ptr: NonNull<T>) -> HandleId {
+    let mut inner = self.inner.write();
+    let HandleTableInner { slots, free_head } = &mut *inner;
+
+    if let Some(index) = *free_head {
+      let slot = &mut slots[index as usize];
+      let generation = match slot {
+        Slot::Free {
+          next_free,
+          generation,
+        } => {
+          *free_head = *next_free;
+          *generation
+        }
+        Slot::Live { .. } => unreachable!("free list points at a live slot"),
+      };
+
+      *slot = Slot::Live {
+        ptr: StoredPtr::from_nonnull(ptr),
+        generation,
+      };
+
+      return HandleId::from_parts(index, generation);
     }
+
+    let index: u32 = slots
+      .len()
+      .try_into()
+      .expect("HandleTable index overflow (more than u32::MAX slots)");
+
+    // Start generations at 1 so HandleId(0) can be used as a sentinel (e.g. empty userdata).
+    let generation = 1;
+
+    slots.push(Slot::Live {
+      ptr: StoredPtr::from_nonnull(ptr),
+      generation,
+    });
+
+    HandleId::from_parts(index, generation)
   }
 
   /// Returns the current pointer for `id` if it is still live.
   #[inline]
   pub fn get(&self, id: HandleId) -> Option<NonNull<T>> {
-    let slot = self.slots.get(id.index() as usize)?;
-    (slot.generation == id.generation()).then_some(())?;
-    NonNull::new(slot.ptr)
-  }
-
-  /// Updates the pointer stored for `id`.
-  ///
-  /// This is intended for use by a moving GC when relocating objects during an STW pause.
-  ///
-  /// Returns `true` if the handle was live and successfully updated.
-  pub fn update(&mut self, id: HandleId, new_ptr: NonNull<T>) -> bool {
-    let Some(slot) = self.slots.get_mut(id.index() as usize) else {
-      return false;
-    };
-    if slot.generation != id.generation() {
-      return false;
+    let inner = self.inner.read();
+    let slot = inner.slots.get(id.index() as usize)?;
+    match slot {
+      Slot::Live { ptr, generation } if *generation == id.generation() => {
+        // Safety: all live slots are stored as non-null pointers.
+        Some(unsafe { ptr.as_nonnull() })
+      }
+      _ => None,
     }
-    if slot.ptr.is_null() {
-      return false;
-    };
-    slot.ptr = new_ptr.as_ptr();
-    true
   }
 
   /// Frees `id`, removing it from the persistent root set and making its slot reusable.
   ///
-  /// Returns `true` if the handle was live and successfully freed.
-  pub fn free(&mut self, id: HandleId) -> bool {
-    let Some(slot) = self.slots.get_mut(id.index() as usize) else {
-      return false;
-    };
-    if slot.generation != id.generation() {
-      return false;
-    }
-    if slot.ptr.is_null() {
-      return false;
-    }
-    slot.ptr = core::ptr::null_mut();
+  /// Returns the stored pointer if the handle was live.
+  pub fn free(&self, id: HandleId) -> Option<NonNull<T>> {
+    let mut inner = self.inner.write();
+    let HandleTableInner { slots, free_head } = &mut *inner;
 
-    slot.generation = slot.generation.wrapping_add(1);
-    self.free_list.push(id.index());
-    true
+    let slot = slots.get_mut(id.index() as usize)?;
+
+    match slot {
+      Slot::Live { ptr, generation } if *generation == id.generation() => {
+        // Safety: all live slots are stored as non-null pointers.
+        let old_ptr = unsafe { ptr.as_nonnull() };
+
+        // Bump generation to invalidate stale IDs.
+        let mut new_generation = generation.wrapping_add(1);
+        if new_generation == 0 {
+          // Keep 0 reserved for sentinel use.
+          new_generation = 1;
+        }
+
+        *slot = Slot::Free {
+          next_free: *free_head,
+          generation: new_generation,
+        };
+        *free_head = Some(id.index());
+
+        Some(old_ptr)
+      }
+      _ => None,
+    }
   }
 
-  /// Iterates over all live entries, yielding a mutable reference to each pointer slot.
+  /// Stop-the-world (STW) update hook for moving/compacting GC relocation.
   ///
-  /// This is intended for bulk relocation updates by a moving GC during an STW pause.
-  pub fn iter_live_mut(&mut self) -> impl Iterator<Item = (HandleId, &mut *mut T)> {
-    self.slots.iter_mut().enumerate().filter_map(|(index, slot)| {
-      let generation = slot.generation;
-      if slot.ptr.is_null() {
-        return None;
-      }
-      let ptr = &mut slot.ptr;
-      let index: u32 = index
-        .try_into()
-        .expect("HandleTable index overflow (more than u32::MAX slots)");
-      Some((HandleId::from_parts(index, generation), ptr))
+  /// This method takes an exclusive lock and exposes mutable access to all live slot pointers
+  /// through the provided guard.
+  ///
+  /// # Important: caller must already be in STW
+  ///
+  /// This API **does not** itself park/stop other mutator threads. The caller must ensure that:
+  /// - no other thread will call [`HandleTable::get`] / [`HandleTable::alloc`] / [`HandleTable::free`]
+  ///   while the closure runs, and
+  /// - no thread is currently blocked holding a read lock when entering STW (otherwise this can
+  ///   deadlock waiting for the write lock).
+  pub fn with_stw_update<R>(&self, f: impl FnOnce(&mut HandleTableStwGuard<'_, T>) -> R) -> R {
+    let guard = self.inner.write();
+    let mut guard = HandleTableStwGuard { guard };
+    f(&mut guard)
+  }
+}
+
+struct HandleTableInner<T> {
+  slots: Vec<Slot<T>>,
+  free_head: Option<u32>,
+}
+
+enum Slot<T> {
+  Free {
+    next_free: Option<u32>,
+    generation: u32,
+  },
+  Live {
+    ptr: StoredPtr<T>,
+    generation: u32,
+  },
+}
+
+/// Guard object passed to [`HandleTable::with_stw_update`].
+pub struct HandleTableStwGuard<'a, T> {
+  guard: RwLockWriteGuard<'a, HandleTableInner<T>>,
+}
+
+impl<'a, T> HandleTableStwGuard<'a, T> {
+  /// Iterates over the raw pointers stored in all currently-live slots.
+  ///
+  /// Each returned `&mut *mut T` may be rewritten by the caller to point at the object's new
+  /// location after relocation.
+  ///
+  /// The pointer must remain non-null.
+  pub fn iter_live_slots_mut(&mut self) -> impl Iterator<Item = &mut *mut T> + '_ {
+    self.guard.slots.iter_mut().filter_map(|slot| match slot {
+      Slot::Live { ptr, .. } => Some(&mut ptr.0),
+      Slot::Free { .. } => None,
     })
+  }
+
+  /// Like [`HandleTableStwGuard::iter_live_slots_mut`], but also yields the corresponding live
+  /// [`HandleId`].
+  pub fn iter_live_mut(&mut self) -> impl Iterator<Item = (HandleId, &mut *mut T)> + '_ {
+    self.guard
+      .slots
+      .iter_mut()
+      .enumerate()
+      .filter_map(|(index, slot)| match slot {
+        Slot::Live { ptr, generation } => {
+          let index: u32 = index
+            .try_into()
+            .expect("HandleTable index overflow (more than u32::MAX slots)");
+          Some((HandleId::from_parts(index, *generation), &mut ptr.0))
+        }
+        Slot::Free { .. } => None,
+      })
   }
 }
 
@@ -222,13 +332,12 @@ impl<T> HandleTable<T> {
 ///
 /// This is intended for host code that wants to avoid leaking handles on early returns.
 ///
-/// While this guard is alive it holds a mutable borrow of the [`HandleTable`]. For long-lived
-/// handles stored in host state (queued async work, OS event loop userdata, etc.), prefer storing
-/// the returned [`HandleId`] from [`HandleTable::alloc`] directly and calling
+/// For long-lived handles stored in host state (queued async work, OS event loop userdata, etc.),
+/// prefer storing the returned [`HandleId`] from [`HandleTable::alloc`] directly and calling
 /// [`HandleTable::free`] explicitly when done.
 #[must_use]
 pub struct PersistentHandle<'a, T> {
-  table: &'a mut HandleTable<T>,
+  table: &'a HandleTable<T>,
   id: HandleId,
 
   // `PersistentHandle` is intentionally `!Send`/`!Sync` by default.
@@ -237,7 +346,7 @@ pub struct PersistentHandle<'a, T> {
 
 impl<'a, T> PersistentHandle<'a, T> {
   /// Allocates a new persistent handle and returns an RAII guard that frees it on drop.
-  pub fn new(table: &'a mut HandleTable<T>, ptr: NonNull<T>) -> Self {
+  pub fn new(table: &'a HandleTable<T>, ptr: NonNull<T>) -> Self {
     let id = table.alloc(ptr);
     Self {
       table,
@@ -258,30 +367,16 @@ impl<'a, T> PersistentHandle<'a, T> {
     self.table.get(self.id)
   }
 
-  /// Updates the pointer stored for this handle.
-  ///
-  /// Returns `true` if the handle was live and successfully updated.
+  /// Borrows the underlying table.
   #[inline]
-  pub fn update(&mut self, new_ptr: NonNull<T>) -> bool {
-    self.table.update(self.id, new_ptr)
-  }
-
-  /// Borrows the underlying table immutably.
-  #[inline]
-  pub fn table(&self) -> &HandleTable<T> {
-    &*self.table
-  }
-
-  /// Borrows the underlying table mutably.
-  #[inline]
-  pub fn table_mut(&mut self) -> &mut HandleTable<T> {
-    &mut *self.table
+  pub fn table(&self) -> &'a HandleTable<T> {
+    self.table
   }
 }
 
 impl<T> Drop for PersistentHandle<'_, T> {
   fn drop(&mut self) {
-    self.table.free(self.id);
+    let _ = self.table.free(self.id);
   }
 }
 

@@ -35,6 +35,11 @@ RUSTC_BOOTSTRAP = "1"
 # Force-disable any globally configured wrapper so `scripts/cargo_agent.sh` works reliably.
 rustc-wrapper = ""
 rustc-workspace-wrapper = ""
+
+# `vendor/ecma-rs/runtime-native`'s FP-based stack walker requires frame pointers.
+# Enforce them at the repo level so `cargo test --manifest-path vendor/ecma-rs/...` works from
+# this repository root without extra environment setup.
+rustflags = ["-C", "force-frame-pointers=yes"]
 [target.'cfg(target_os = "linux")']
 # Use `clang` as the linker driver on Linux.
 linker = "clang"

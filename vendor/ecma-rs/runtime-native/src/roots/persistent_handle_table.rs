@@ -41,7 +41,7 @@ impl PersistentHandleTable {
 
   /// Frees `id`, removing it from the persistent root set and allowing slot reuse.
   pub fn free(&self, id: HandleId) -> bool {
-    self.inner.lock().free(id)
+    self.inner.lock().free(id).is_some()
   }
 
   /// Enumerate all live pointer slots.
@@ -49,10 +49,12 @@ impl PersistentHandleTable {
   /// This is intended to be used by the GC while the world is stopped, so it can trace/update
   /// persistent-handle roots in bulk.
   pub(crate) fn for_each_root_slot(&self, mut f: impl FnMut(*mut *mut u8)) {
-    let mut table = self.inner.lock();
-    for (_id, slot) in table.iter_live_mut() {
-      f(slot as *mut *mut u8);
-    }
+    let table = self.inner.lock();
+    table.with_stw_update(|guard| {
+      for slot in guard.iter_live_slots_mut() {
+        f(slot as *mut *mut u8);
+      }
+    });
   }
 
   pub(crate) fn clear_for_tests(&self) {
@@ -65,4 +67,3 @@ pub fn global_persistent_handle_table() -> &'static PersistentHandleTable {
   static GLOBAL: Lazy<PersistentHandleTable> = Lazy::new(PersistentHandleTable::new);
   &GLOBAL
 }
-

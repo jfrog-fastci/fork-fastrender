@@ -97,7 +97,8 @@ fn minor_gc_promotes_young_reachable_from_remembered_old_object() {
   let mut heap = GcHeap::new();
 
   const PTR_OFFSETS: [u32; 1] = [OBJ_HEADER_SIZE as u32];
-  static DESC_ONE_PTR: TypeDescriptor = TypeDescriptor::new(OBJ_HEADER_SIZE + std::mem::size_of::<*mut u8>(), &PTR_OFFSETS);
+  static DESC_ONE_PTR: TypeDescriptor =
+    TypeDescriptor::new(OBJ_HEADER_SIZE + core::mem::size_of::<*mut u8>(), &PTR_OFFSETS);
 
   let mut remembered = SimpleRememberedSet::new();
 
@@ -166,62 +167,74 @@ use core::ptr::NonNull;
 
 #[test]
 fn alloc_get_free_lifecycle() {
-  let mut table = HandleTable::<u8>::new();
-  let mut value = Box::new(123u8);
-  let ptr = NonNull::from(value.as_mut());
+  let table = HandleTable::<u8>::new();
 
+  let ptr = NonNull::new(Box::into_raw(Box::new(123u8))).unwrap();
   let id = table.alloc(ptr);
+
   assert_eq!(table.get(id), Some(ptr));
 
-  assert!(table.free(id));
+  let freed = table.free(id).expect("handle must be live");
+  assert_eq!(freed, ptr);
   assert_eq!(table.get(id), None);
+
+  unsafe {
+    drop(Box::from_raw(ptr.as_ptr()));
+  }
 }
 
 #[test]
 fn stale_generation_detection() {
-  let mut table = HandleTable::<u8>::new();
+  let table = HandleTable::<u8>::new();
 
-  let mut v1 = Box::new(1u8);
-  let id1 = table.alloc(NonNull::from(v1.as_mut()));
-  assert!(table.free(id1));
+  let p1 = NonNull::new(Box::into_raw(Box::new(1u8))).unwrap();
+  let id1 = table.alloc(p1);
+  assert!(table.free(id1).is_some());
+  unsafe {
+    drop(Box::from_raw(p1.as_ptr()));
+  }
 
-  let mut v2 = Box::new(2u8);
-  let id2 = table.alloc(NonNull::from(v2.as_mut()));
+  let p2 = NonNull::new(Box::into_raw(Box::new(2u8))).unwrap();
+  let id2 = table.alloc(p2);
 
   // The old handle must not "resurrect" a new allocation in the reused slot.
   assert_eq!(table.get(id1), None);
-  assert_eq!(table.get(id2), Some(NonNull::from(v2.as_mut())));
-}
+  assert_eq!(table.get(id2), Some(p2));
 
-#[test]
-fn slot_reuse_changes_generation() {
-  let mut table = HandleTable::<u8>::new();
+  assert_eq!(id1.index(), id2.index());
+  assert_ne!(id1.generation(), id2.generation());
 
-  let mut v1 = Box::new(1u8);
-  let id1 = table.alloc(NonNull::from(v1.as_mut()));
-  assert!(table.free(id1));
-
-  let mut v2 = Box::new(2u8);
-  let id2 = table.alloc(NonNull::from(v2.as_mut()));
-
-  assert_eq!(id2.index(), id1.index());
-  assert_ne!(id2.generation(), id1.generation());
+  let freed = table.free(id2).unwrap();
+  assert_eq!(freed, p2);
+  unsafe {
+    drop(Box::from_raw(p2.as_ptr()));
+  }
 }
 
 #[test]
 fn relocation_update_changes_get_result() {
-  let mut table = HandleTable::<u8>::new();
+  let table = HandleTable::<u8>::new();
 
-  let mut v1 = Box::new(1u8);
-  let mut v2 = Box::new(2u8);
-  let ptr1 = NonNull::from(v1.as_mut());
-  let ptr2 = NonNull::from(v2.as_mut());
+  let p1 = NonNull::new(Box::into_raw(Box::new(1u8))).unwrap();
+  let p2 = NonNull::new(Box::into_raw(Box::new(2u8))).unwrap();
+  let id = table.alloc(p1);
 
-  let id = table.alloc(ptr1);
-  assert_eq!(table.get(id), Some(ptr1));
+  table.with_stw_update(|stw| {
+    for (hid, slot) in stw.iter_live_mut() {
+      if hid == id {
+        *slot = p2.as_ptr();
+      }
+    }
+  });
 
-  assert!(table.update(id, ptr2));
-  assert_eq!(table.get(id), Some(ptr2));
+  assert_eq!(table.get(id), Some(p2));
+
+  let freed = table.free(id).unwrap();
+  assert_eq!(freed, p2);
+  unsafe {
+    drop(Box::from_raw(p1.as_ptr()));
+    drop(Box::from_raw(p2.as_ptr()));
+  }
 }
 
 #[test]
@@ -233,4 +246,122 @@ fn handle_id_round_trip_u64() {
   assert_eq!(id, id2);
   assert_eq!(id.index(), 123);
   assert_eq!(id.generation(), 456);
+}
+
+use std::sync::{Arc, Barrier};
+use std::thread;
+
+#[test]
+fn handle_table_is_send_sync_even_when_t_isnt() {
+  fn assert_send_sync<T: Send + Sync>() {}
+
+  // Rc is !Send + !Sync; HandleTable stores opaque pointers and should still be Send + Sync.
+  assert_send_sync::<HandleTable<std::rc::Rc<()>>>();
+}
+
+#[test]
+fn concurrent_get_with_alloc_free() {
+  const READERS: usize = 4;
+  const READ_ITERS: usize = 25_000;
+  const WRITES: usize = 2_000;
+
+  let table = Arc::new(HandleTable::<u8>::new());
+
+  // A stable handle that readers will query while the writer thread mutates the table.
+  let stable_box = Box::new(123u8);
+  let stable_ptr = NonNull::new(Box::into_raw(stable_box)).unwrap();
+  let stable_addr = stable_ptr.as_ptr() as usize;
+  let stable_handle = table.alloc(stable_ptr);
+
+  let start = Arc::new(Barrier::new(READERS + 1));
+
+  let mut readers = Vec::new();
+  for _ in 0..READERS {
+    let table = Arc::clone(&table);
+    let start = Arc::clone(&start);
+    readers.push(thread::spawn(move || {
+      start.wait();
+      for _ in 0..READ_ITERS {
+        let got = table.get(stable_handle).expect("stable handle must stay live");
+        assert_eq!(got.as_ptr() as usize, stable_addr);
+      }
+    }));
+  }
+
+  let writer_table = Arc::clone(&table);
+  let start_writer = Arc::clone(&start);
+  let writer = thread::spawn(move || {
+    start_writer.wait();
+    for i in 0..WRITES {
+      let ptr = NonNull::new(Box::into_raw(Box::new(i as u8))).unwrap();
+      let h = writer_table.alloc(ptr);
+
+      assert_eq!(writer_table.get(h).unwrap().as_ptr(), ptr.as_ptr());
+
+      let freed = writer_table.free(h).expect("freshly allocated handle must be live");
+      assert_eq!(freed.as_ptr(), ptr.as_ptr());
+
+      // Safety: we just removed this pointer from the table.
+      unsafe {
+        drop(Box::from_raw(ptr.as_ptr()));
+      }
+    }
+  });
+
+  writer.join().unwrap();
+  for reader in readers {
+    reader.join().unwrap();
+  }
+
+  let freed = table.free(stable_handle).unwrap();
+  assert_eq!(freed.as_ptr(), stable_ptr.as_ptr());
+  unsafe {
+    drop(Box::from_raw(stable_ptr.as_ptr()));
+  }
+}
+
+#[test]
+fn stw_relocation_updates_pointers() {
+  let table = Arc::new(HandleTable::<u8>::new());
+
+  let old_ptr = NonNull::new(Box::into_raw(Box::new(1u8))).unwrap();
+  let new_ptr = NonNull::new(Box::into_raw(Box::new(2u8))).unwrap();
+
+  let handle = table.alloc(old_ptr);
+
+  let reader_table = Arc::clone(&table);
+  let old_addr = old_ptr.as_ptr() as usize;
+  let new_addr = new_ptr.as_ptr() as usize;
+  let (tx_read, rx_read) = std::sync::mpsc::channel::<usize>();
+  let (tx_updated, rx_updated) = std::sync::mpsc::channel::<()>();
+  let reader = thread::spawn(move || {
+    let before = reader_table.get(handle).unwrap().as_ptr();
+    assert_eq!(before as usize, old_addr);
+    tx_read.send(before as usize).unwrap();
+
+    rx_updated.recv().unwrap();
+    let after = reader_table.get(handle).unwrap().as_ptr();
+    assert_eq!(after as usize, new_addr);
+  });
+
+  assert_eq!(rx_read.recv().unwrap(), old_addr);
+
+  table.with_stw_update(|stw| {
+    for slot in stw.iter_live_slots_mut() {
+      if *slot == old_ptr.as_ptr() {
+        *slot = new_ptr.as_ptr();
+      }
+    }
+  });
+
+  tx_updated.send(()).unwrap();
+  reader.join().unwrap();
+
+  // Cleanup.
+  let freed = table.free(handle).unwrap();
+  assert_eq!(freed.as_ptr(), new_ptr.as_ptr());
+  unsafe {
+    drop(Box::from_raw(old_ptr.as_ptr()));
+    drop(Box::from_raw(new_ptr.as_ptr()));
+  }
 }

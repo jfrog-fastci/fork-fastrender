@@ -107,7 +107,6 @@ fn c_can_link_and_call_runtime_native() {
     r#"
 #include "runtime_native.h"
 #include <unistd.h>
-
 static void set_int(uint8_t* data) {
   int* flag = (int*)data;
   *flag = 1;
@@ -117,13 +116,13 @@ static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
   rt_promise_resolve_legacy(promise, (ValueRef)0);
 }
 
-static void par_for_body(size_t i, uint8_t* data) {
-  uint32_t* out = (uint32_t*)data;
-  out[i] = (uint32_t)(i * 3u + 1u);
-}
+ static void par_for_body(size_t i, uint8_t* data) {
+   uint32_t* out = (uint32_t*)data;
+   out[i] = (uint32_t)(i * 3u + 1u);
+ }
 
-int main(void) {
-  rt_thread_init(0);
+ int main(void) {
+   rt_thread_init(0);
 
   static const RtShapeDescriptor kShapes[1] = {
     {
@@ -153,10 +152,8 @@ int main(void) {
   int settled = 0;
   LegacyPromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
   rt_promise_then_legacy(p, set_int, (uint8_t*)&settled);
+
   // Drive the event loop until the promise settles.
-  //
-  // Under heavy CI load, the blocking worker may not run immediately, so the timer can fire
-  // before the promise settles. That's OK: this is a C link smoke test, not a latency test.
   for (int i = 0; i < 1000 && !settled; i++) {
     rt_async_poll_legacy();
   }

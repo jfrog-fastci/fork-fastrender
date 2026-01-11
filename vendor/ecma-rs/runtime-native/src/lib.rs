@@ -35,8 +35,7 @@
 //!   userdata.
 //! - The table stores a relocatable [`core::ptr::NonNull`] pointer.
 //! - During relocation/compaction the GC updates pointers in-place via
-//!   [`gc::HandleTable::update`] / [`gc::HandleTable::iter_live_mut`] under a stop-the-world (STW)
-//!   pause.
+//!   [`gc::HandleTable::with_stw_update`] under a stop-the-world (STW) pause.
 //!
 //! The GC-managed objects themselves remain movable; only the handle IDs and handle table slots are
 //! stable.
