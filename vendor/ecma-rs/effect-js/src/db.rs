@@ -2,6 +2,17 @@ use anyhow::{anyhow, Result};
 
 use knowledge_base::{Api, KnowledgeBase};
 
+/// Lightweight per-callsite metadata used by heuristics in `effect-js`.
+///
+/// This is intentionally small and conservative: when a field is `None`, the
+/// analysis could not confidently infer the property.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CallSiteInfo {
+  pub callback_is_pure: Option<bool>,
+  pub callback_uses_index: Option<bool>,
+  pub callback_uses_array: Option<bool>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EffectDb {
   kb: KnowledgeBase,
