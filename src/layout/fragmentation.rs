@@ -3968,6 +3968,20 @@ pub(crate) fn collect_forced_boundaries_for_pagination_with_axes_and_page_progre
   )
 }
 
+pub(crate) fn collect_forced_boundaries_for_explicit_page_breaks_with_axes_and_page_progression(
+  node: &FragmentNode,
+  abs_start: f32,
+  axes: FragmentAxes,
+  page_progression_is_ltr: bool,
+) -> Vec<ForcedBoundary> {
+  collect_forced_boundaries_for_pagination_with_axes_and_page_progression_excluding_always(
+    node,
+    abs_start,
+    axes,
+    page_progression_is_ltr,
+  )
+}
+
 pub(crate) fn collect_forced_boundaries_with_axes(
   node: &FragmentNode,
   abs_start: f32,
@@ -4005,7 +4019,6 @@ fn collect_forced_boundaries_with_axes_internal(
       _ => false,
     }
   }
-
   fn break_side_hint(between: BreakBetween, page_progression_is_ltr: bool) -> Option<PageSide> {
     match between {
       BreakBetween::Left => Some(PageSide::Left),
@@ -4189,11 +4202,11 @@ fn collect_forced_boundaries_with_axes_internal(
             continue;
           };
           let child = &node.children[child_idx];
-          let child_style = child
-            .style
-            .as_ref()
-            .map(|s| s.as_ref())
-            .unwrap_or(default_style);
+           let child_style = child
+              .style
+              .as_ref()
+              .map(|s| s.as_ref())
+              .unwrap_or(default_style);
 
           if is_forced_page_break(child_style.break_before, include_always) {
             if let Some(req) = boundary_reqs.get_mut(line_idx) {

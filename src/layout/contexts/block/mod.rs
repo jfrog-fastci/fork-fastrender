@@ -55,8 +55,7 @@ use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation::{
-  clip_node_with_axes,
-  collect_forced_boundaries_for_pagination_with_axes_and_page_progression_excluding_always,
+  clip_node_with_axes, collect_forced_boundaries_for_explicit_page_breaks_with_axes_and_page_progression,
   forces_break_between, normalize_fragment_margins_with_axes, propagate_fragment_metadata,
   propagate_fragmentainer_columns, ForcedBoundary, FragmentationAnalyzer, FragmentationContext,
 };
@@ -7448,7 +7447,7 @@ impl BlockFormattingContext {
       // context (CSS Break 4). In paged multi-column layout that is the column context, so `always`
       // must not be promoted to a column-set boundary (which would create an extra page).
       forced_pagination_boundaries =
-        collect_forced_boundaries_for_pagination_with_axes_and_page_progression_excluding_always(
+        collect_forced_boundaries_for_explicit_page_breaks_with_axes_and_page_progression(
           &physical_flow_root,
           0.0,
           axes,
