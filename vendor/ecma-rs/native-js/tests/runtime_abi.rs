@@ -1,5 +1,8 @@
 use inkwell::context::Context;
+use inkwell::values::AsValueRef;
 use native_js::runtime_abi::RuntimeAbi;
+use llvm_sys::core::LLVMGetStringAttributeAtIndex;
+use llvm_sys::LLVMAttributeFunctionIndex;
 use std::process::{Command, Stdio};
 
 fn function_block(ir: &str, func_name: &str) -> String {
@@ -21,6 +24,20 @@ fn function_block(ir: &str, func_name: &str) -> String {
 
   assert!(in_func, "function {func_name} not found in IR:\n{ir}");
   out.join("\n")
+}
+
+fn has_gc_leaf_attr(func: inkwell::values::FunctionValue<'_>) -> bool {
+  // Mirror the convention used by LLVM's `rewrite-statepoints-for-gc` pass.
+  const KEY: &[u8] = b"gc-leaf-function\0";
+  unsafe {
+    !LLVMGetStringAttributeAtIndex(
+      func.as_value_ref(),
+      LLVMAttributeFunctionIndex,
+      KEY.as_ptr().cast(),
+      (KEY.len() - 1) as u32,
+    )
+    .is_null()
+  }
 }
 
 #[test]
@@ -130,6 +147,39 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     ir.contains("declare void @rt_parallel_for"),
     "missing rt_parallel_for declaration:\n{ir}"
   );
+  // Scheduler entrypoints are MayGC (they may block/allocate). If we accidentally mark them as GC
+  // leaf functions, LLVM will omit statepoint rewriting and we won't have stackmaps to enumerate
+  // roots if a GC occurs while the mutator is inside the scheduler.
+  assert!(
+    !has_gc_leaf_attr(fns.rt_parallel_spawn),
+    "rt_parallel_spawn must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_parallel_join),
+    "rt_parallel_join must not be marked gc-leaf-function"
+  );
+  assert!(
+    !has_gc_leaf_attr(fns.rt_parallel_for),
+    "rt_parallel_for must not be marked gc-leaf-function"
+  );
+
+  // ABI regression guards for scheduler signatures.
+  let spawn_params = fns.rt_parallel_spawn.get_type().get_param_types();
+  assert_eq!(spawn_params.len(), 2);
+  assert!(spawn_params[0].is_pointer_type());
+  assert!(spawn_params[1].is_pointer_type());
+
+  let join_params = fns.rt_parallel_join.get_type().get_param_types();
+  assert_eq!(join_params.len(), 2);
+  assert!(join_params[0].is_pointer_type());
+  assert_eq!(join_params[1].into_int_type().get_bit_width(), 64);
+
+  let for_params = fns.rt_parallel_for.get_type().get_param_types();
+  assert_eq!(for_params.len(), 4);
+  assert_eq!(for_params[0].into_int_type().get_bit_width(), 64);
+  assert_eq!(for_params[1].into_int_type().get_bit_width(), 64);
+  assert!(for_params[2].is_pointer_type());
+  assert!(for_params[3].is_pointer_type());
 }
 
 fn find_clang() -> Option<&'static str> {
