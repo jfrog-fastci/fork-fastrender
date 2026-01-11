@@ -46,6 +46,11 @@ int main(void) {
   rt_root_push(&tmp);
   rt_gc_safepoint();
   rt_root_pop(&tmp);
+  // `rt_keep_alive_gc_ref` is the native equivalent of Go's `runtime.KeepAlive`: it exists to
+  // extend the liveness of GC objects when native/compiled code uses derived raw pointers.
+  // This smoke test doesn't model those derived pointers, but it does ensure the symbol is present
+  // and callable from C.
+  rt_keep_alive_gc_ref(obj1);
 
   // Persistent handle API: stable u64 ids for keeping GC objects alive across
   // async / OS boundaries.
