@@ -163,7 +163,6 @@ pub(crate) fn run_weak_cleanups(heap: &mut GcHeap) {
     idx += 1;
   }
 }
- 
 static GLOBAL_WEAK_HANDLES: Lazy<GcAwareMutex<WeakHandles>> =
   Lazy::new(|| GcAwareMutex::new(WeakHandles::new()));
 
@@ -177,6 +176,24 @@ pub(crate) fn global_weak_get(handle: WeakHandle) -> Option<*mut u8> {
 
 pub(crate) fn global_weak_remove(handle: WeakHandle) {
   GLOBAL_WEAK_HANDLES.lock().weak_remove(handle);
+}
+
+/// Debug/test helper: lock the process-global weak-handle table for `duration`.
+///
+/// This is used by integration tests to force lock contention while exercising stop-the-world GC
+/// coordination. It is not considered stable API.
+#[doc(hidden)]
+#[cfg(debug_assertions)]
+pub fn debug_hold_global_weak_handles_lock(duration: std::time::Duration) {
+  let _guard = GLOBAL_WEAK_HANDLES.lock();
+  std::thread::sleep(duration);
+}
+
+/// Debug/test helper: check whether the process-global weak-handle table lock is currently held.
+#[doc(hidden)]
+#[cfg(debug_assertions)]
+pub fn debug_global_weak_handles_lock_is_locked() -> bool {
+  GLOBAL_WEAK_HANDLES.try_lock().is_none()
 }
 
 pub(crate) fn process_global_weak_handles_minor(heap: &GcHeap) {
