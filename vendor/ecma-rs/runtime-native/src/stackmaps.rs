@@ -262,9 +262,10 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
       break;
     }
     if bytes.len() - off < STACKMAP_HEADER_SIZE {
-      // We already skipped any 0x00 padding. StackMap v3 headers are 16 bytes, so any remaining
-      // non-zero bytes cannot start a valid blob.
-      return Err(StackMapError::TrailingNonZeroBytes { offset: off });
+      // StackMap v3 headers are 16 bytes. Any remaining tail cannot contain a full header, so it
+      // cannot start another blob. Empirically some toolchains can leave non-zero alignment
+      // padding here; ignore it.
+      break;
     }
 
     let (map, len) = StackMap::parse_with_len(&bytes[off..])?;
