@@ -1,6 +1,8 @@
 use std::mem;
 use std::slice;
 
+use crate::array;
+
 mod young;
 pub mod heap;
 pub mod roots;
@@ -237,6 +239,34 @@ pub(crate) unsafe fn for_each_ptr_slot(mut obj: *mut u8, mut f: impl FnMut(*mut 
     let slot = obj.add(offset) as *mut *mut u8;
     f(slot);
   }
+
+  // Arrays have a dynamic pointer tail; special-case their element slots based on the header.
+  if header.type_desc == &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
+    array::for_each_ptr_elem_slot(obj, |slot| f(slot));
+  }
+}
+
+/// Return the total size of the object at `obj` in bytes.
+///
+/// This is normally `obj.header.type_desc.size`, but some object kinds (notably arrays) have a
+/// dynamic size derived from header fields.
+///
+/// # Safety
+/// - `obj` must point to the start of a valid GC-managed object.
+pub(crate) unsafe fn obj_size(mut obj: *mut u8) -> usize {
+  debug_assert!(!obj.is_null());
+
+  // Follow forwarding pointers (nursery evacuation).
+  let header = unsafe { &*(obj as *const ObjHeader) };
+  if header.is_forwarded() {
+    obj = header.forwarding_ptr();
+  }
+
+  let header = unsafe { &*(obj as *const ObjHeader) };
+  if header.type_desc == &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
+    return array::array_total_size_from_obj(obj);
+  }
+  unsafe { header.type_desc() }.size
 }
 
 #[cfg(any(debug_assertions, feature = "gc_debug"))]

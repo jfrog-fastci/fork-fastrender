@@ -9,6 +9,9 @@ use super::ObjHeader;
 use super::TypeDescriptor;
 use super::weak::WeakHandle;
 use super::weak::WeakHandles;
+use crate::array;
+use crate::array::RtArrayHeader;
+use crate::trap;
 use crate::immix;
 use crate::immix::ImmixSpace;
 use crate::los::LargeObjectSpace;
@@ -232,6 +235,48 @@ impl GcHeap {
     }
 
     self.stats.bytes_allocated_young += desc.size;
+    obj
+  }
+
+  /// Allocate a GC-managed array object in the nursery (young generation).
+  ///
+  /// The returned pointer is the **object base pointer** (start of [`ObjHeader`]), and can be cast
+  /// to [`RtArrayHeader`].
+  ///
+  /// `elem_size` uses the same encoding as the public `rt_alloc_array` ABI: the high bit is
+  /// reserved for `RT_ARRAY_ELEM_PTR_FLAG` (see [`crate::array::decode_rt_array_elem_size`]).
+  pub fn alloc_array_young(&mut self, len: usize, elem_size: usize) -> *mut u8 {
+    #[cfg(any(debug_assertions, feature = "gc_debug"))]
+    super::verify::register_type_descriptor(&array::RT_ARRAY_TYPE_DESC);
+
+    let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
+      trap::rt_trap_invalid_arg("invalid rt_alloc_array elem_size");
+    };
+    let size = array::checked_total_bytes(len, spec.elem_size)
+      .unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
+
+    let obj = self
+      .nursery_tlab
+      .alloc(size, OBJ_ALIGN, &self.nursery)
+      .expect("nursery out of space");
+
+    // SAFETY: The nursery allocation is valid for `size` bytes.
+    unsafe {
+      // Ensure all pointer slots start out as null so tracing never sees uninitialized garbage.
+      ptr::write_bytes(obj, 0, size);
+
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
+      header.meta = 0;
+      header.set_mark_epoch(self.mark_epoch);
+
+      let arr = &mut *(obj as *mut RtArrayHeader);
+      arr.len = len;
+      arr.elem_size = spec.elem_size as u32;
+      arr.elem_flags = spec.elem_flags;
+    }
+
+    self.stats.bytes_allocated_young += size;
     obj
   }
 

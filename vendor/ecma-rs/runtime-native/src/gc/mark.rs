@@ -97,9 +97,9 @@ impl Marker<'_> {
       let header = &mut *(obj as *mut ObjHeader);
       header.set_mark_epoch(self.epoch);
 
-      let desc = header.type_desc();
+      let size = super::obj_size(obj);
       if self.heap.is_in_immix(obj) {
-        self.heap.immix.set_lines_for_live_object(obj, desc.size);
+        self.heap.immix.set_lines_for_live_object(obj, size);
       } else {
         debug_assert!(self.heap.is_in_los(obj), "unknown heap object location");
       }

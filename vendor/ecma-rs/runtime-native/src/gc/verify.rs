@@ -169,13 +169,13 @@ impl GcHeap {
       );
     }
 
-    let desc = unsafe { &*header.type_desc };
-    assert!(desc.size >= mem::size_of::<ObjHeader>(), "object size too small");
+    let size = unsafe { super::obj_size(obj) };
+    assert!(size >= mem::size_of::<ObjHeader>(), "object size too small");
 
     // Only nursery objects have a contiguous allocated range we can bounds-check.
     if self.is_in_nursery(obj) {
       assert!(
-        addr + desc.size <= nursery_alloc_end,
+        addr + size <= nursery_alloc_end,
         "nursery object overruns nursery allocation range"
       );
     }

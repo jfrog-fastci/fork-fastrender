@@ -17,8 +17,6 @@
 
 use core::ptr::NonNull;
 
-use crate::trap;
-
 #[cfg(target_os = "linux")]
 mod imp {
   use core::cell::Cell;
@@ -259,15 +257,14 @@ pub(crate) fn alloc_bytes(size: usize, align: usize, context: &str) -> *mut u8 {
   imp::alloc_bytes(size, align, context)
 }
 
-/// Allocate `len * elem_size` bytes, aborting on overflow, and return zero-initialized memory.
-pub(crate) fn calloc_array(len: usize, elem_size: usize, context: &str) -> *mut u8 {
-  if len == 0 || elem_size == 0 {
+/// Allocate `size` bytes with the requested alignment and return zero-initialized memory.
+///
+/// Notes:
+/// - The allocator is leak-only for now (no frees).
+/// - `align` must be a power of two. `align = 1` is allowed.
+pub(crate) fn alloc_bytes_zeroed(size: usize, align: usize, context: &str) -> *mut u8 {
+  if size == 0 {
     return NonNull::<u8>::dangling().as_ptr();
   }
-
-  let bytes = len
-    .checked_mul(elem_size)
-    .unwrap_or_else(|| trap::rt_trap_invalid_arg("allocation size overflow"));
-
-  imp::alloc_bytes_zeroed(bytes, 16, context)
+  imp::alloc_bytes_zeroed(size, align, context)
 }

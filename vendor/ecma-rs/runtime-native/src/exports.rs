@@ -6,9 +6,12 @@ use crate::abi::TimerId;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
 use crate::alloc;
+use crate::array;
+use crate::array::RtArrayHeader;
 use crate::async_rt;
 use crate::async_rt::WatcherId;
 use crate::gc::ObjHeader;
+use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::threading;
@@ -52,7 +55,27 @@ pub extern "C" fn rt_alloc_pinned(size: usize, _shape: RtShapeId) -> *mut u8 {
 pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc_array(len, elem_size);
-  alloc::calloc_array(len, elem_size, "rt_alloc_array")
+
+  let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
+    crate::trap::rt_trap_invalid_arg("rt_alloc_array: invalid elem_size");
+  };
+  let size = array::checked_total_bytes(len, spec.elem_size)
+    .unwrap_or_else(|| crate::trap::rt_trap_invalid_arg("rt_alloc_array: size overflow"));
+
+  let obj = alloc::alloc_bytes_zeroed(size, 16, "rt_alloc_array");
+  // SAFETY: `obj` points to `size` bytes of writable, zeroed memory.
+  unsafe {
+    let header = &mut *(obj as *mut ObjHeader);
+    header.type_desc = &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor;
+    header.meta = 0;
+
+    let arr = &mut *(obj as *mut RtArrayHeader);
+    arr.len = len;
+    arr.elem_size = spec.elem_size as u32;
+    arr.elem_flags = spec.elem_flags;
+  }
+
+  obj
 }
 
 /// Register the current OS thread with the runtime.

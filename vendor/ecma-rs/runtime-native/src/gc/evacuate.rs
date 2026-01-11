@@ -92,8 +92,7 @@ impl Evacuator<'_> {
         return header.forwarding_ptr();
       }
 
-      let desc = header.type_desc();
-      let size = desc.size;
+      let size = super::obj_size(obj);
 
       let new_obj = self.heap.alloc_old_raw(size, mem::align_of::<ObjHeader>());
 

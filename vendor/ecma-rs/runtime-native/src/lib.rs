@@ -29,6 +29,7 @@
 //! - `include/runtime_native.h` for the authoritative stable C ABI surface.
 
 pub mod abi;
+pub mod array;
 pub mod arch;
 pub mod gc_safe;
 pub mod async_abi;
@@ -773,5 +774,85 @@ mod tests {
       data.max_active.load(Ordering::SeqCst) >= 2,
       "expected at least two tasks to overlap; worker_count={workers}"
     );
+  }
+
+  #[repr(C)]
+  struct Leaf {
+    header: crate::gc::ObjHeader,
+  }
+
+  static LEAF_DESC: crate::gc::TypeDescriptor = crate::gc::TypeDescriptor::new(
+    core::mem::size_of::<Leaf>(),
+    &[],
+  );
+
+  #[test]
+  fn gc_traces_pointer_arrays_in_minor_gc() {
+    let mut heap = GcHeap::new();
+
+    let a = heap.alloc_young(&LEAF_DESC);
+    let b = heap.alloc_young(&LEAF_DESC);
+    let array = heap.alloc_array_young(2, core::mem::size_of::<*mut u8>() | array::RT_ARRAY_ELEM_PTR_FLAG);
+
+    // Store pointers to `a` and `b` in the array payload.
+    let elems = unsafe { array::array_data_ptr(array).cast::<*mut u8>() };
+    unsafe {
+      elems.add(0).write(a);
+      elems.add(1).write(b);
+    }
+
+    let mut root_array = array;
+    let mut roots = RootStack::new();
+    roots.push(&mut root_array as *mut *mut u8);
+    let mut remembered = crate::gc::SimpleRememberedSet::new();
+
+    heap.collect_minor(&mut roots, &mut remembered);
+
+    assert!(!heap.is_in_nursery(root_array));
+
+    let elems = unsafe { array::array_data_ptr(root_array).cast::<*mut u8>() };
+    let a2 = unsafe { elems.add(0).read() };
+    let b2 = unsafe { elems.add(1).read() };
+    assert!(!heap.is_in_nursery(a2), "array element should be promoted out of nursery");
+    assert!(!heap.is_in_nursery(b2), "array element should be promoted out of nursery");
+    assert!(heap.is_in_immix(a2));
+    assert!(heap.is_in_immix(b2));
+  }
+
+  #[test]
+  fn gc_does_not_trace_ptr_sized_byte_arrays_in_minor_gc() {
+    let mut heap = GcHeap::new();
+
+    let obj = heap.alloc_young(&LEAF_DESC);
+    // Pointer-sized elements but *no* RT_ARRAY_ELEM_PTR_FLAG => raw bytes.
+    let array = heap.alloc_array_young(1, core::mem::size_of::<*mut u8>());
+
+    // Stash the object pointer bits into the array payload.
+    let slot = unsafe { array::array_data_ptr(array) as *mut *mut u8 };
+    unsafe {
+      slot.write(obj);
+    }
+
+    let mut root_array = array;
+    let mut roots = RootStack::new();
+    roots.push(&mut root_array as *mut *mut u8);
+    let mut remembered = crate::gc::SimpleRememberedSet::new();
+
+    heap.collect_minor(&mut roots, &mut remembered);
+
+    // If the GC incorrectly treated the payload as pointer slots, it would have evacuated `obj`
+    // and updated the stored value to point to the promoted object (outside the nursery).
+    let slot = unsafe { array::array_data_ptr(root_array) as *const *mut u8 };
+    let stored = unsafe { slot.read() };
+    assert!(
+      heap.is_in_nursery(stored),
+      "raw bytes must not be treated as GC pointers"
+    );
+  }
+
+  #[test]
+  fn array_size_overflow_is_detected() {
+    assert!(array::decode_rt_array_elem_size(array::RT_ARRAY_ELEM_PTR_FLAG | 4).is_none());
+    assert!(array::checked_total_bytes(usize::MAX, 16).is_none());
   }
 }
