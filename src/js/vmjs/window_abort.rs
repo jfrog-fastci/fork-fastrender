@@ -30,6 +30,13 @@ use vm_js::{
 const CONTROLLER_SIGNAL_INTERNAL_KEY: &str = "__fastrender_abort_controller_signal";
 const SIGNAL_BRAND_KEY: &str = "__fastrender_abort_signal";
 const EVENT_TARGET_BRAND_KEY: &str = "__fastrender_event_target";
+/// Hard cap on how many entries `AbortSignal.any(signals)` will process.
+///
+/// This is a hostile-input guardrail: `AbortSignal.any` is specified to take a `sequence`, so callers
+/// can pass an object with an arbitrarily large `length` and force the host to perform unbounded
+/// work. Real-world uses are small (usually a handful of signals).
+const MAX_ABORT_SIGNAL_ANY_INPUT_SIGNALS: u32 = 10_000;
+const ABORT_SIGNAL_ANY_TOO_MANY_SIGNALS_ERROR: &str = "AbortSignal.any input is too large";
 
 fn data_desc(value: Value, writable: bool) -> PropertyDescriptor {
   PropertyDescriptor {
@@ -542,15 +549,17 @@ fn abort_signal_static_any_native(
     length = 0.0;
   }
   let length = length.trunc().min(u32::MAX as f64) as u32;
+  if length > MAX_ABORT_SIGNAL_ANY_INPUT_SIGNALS {
+    return Err(VmError::TypeError(ABORT_SIGNAL_ANY_TOO_MANY_SIGNALS_ERROR));
+  }
 
   for idx in 0..length {
     let key_s = scope.alloc_string(&idx.to_string())?;
     scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
     let item = vm.get(scope, seq_obj, key)?;
-    let Value::Object(source_signal) = item else {
-      return Err(VmError::TypeError("AbortSignal.any input is not an AbortSignal"));
-    };
+    let source_signal =
+      require_abort_signal(scope, item, "AbortSignal.any input is not an AbortSignal")?;
 
     // If already aborted, synchronously create an already-aborted composite signal.
     let aborted_key = alloc_key(scope, "aborted")?;

@@ -1,5 +1,6 @@
 // META: script=/resources/testharness.js
 // META: script=/resources/fastrender_testharness_report.js
+// META: timeout=long
 //
 // Regression test: the vm-js WPT backend must use deterministic virtual time.
 // `Date.now()` and `performance.now()` should both start at 0 and advance with the virtual clock
@@ -93,10 +94,10 @@ function time_determinism_fail(err) {
   t.done();
 }
 
-function on_time_determinism_timeout_30010() {
+function on_time_determinism_timeout_29990() {
   assert_virtual_clock(
-    30010,
-    "virtual clock should read 30010 in 30000ms timer callback"
+    29990,
+    "virtual clock should read 29990 in ~30s timer callback"
   );
 }
 
@@ -111,7 +112,9 @@ function on_time_determinism_timeout_10() {
     return;
   }
 
-  setTimeout(t.step_func_done(on_time_determinism_timeout_30010), 30000);
+  // Use a timer just under the harness "long" timeout budget so the runner can fast-forward to it
+  // while keeping the virtual clock comfortably below the deadline.
+  setTimeout(t.step_func_done(on_time_determinism_timeout_29990), 29980);
 }
 
 function run_time_determinism_test(t) {

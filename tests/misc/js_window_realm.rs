@@ -1465,6 +1465,159 @@ document.body.dispatchEvent(new Event('y'));
 }
 
 #[test]
+fn abort_signal_timeout_aborts_after_delay_and_sets_timeout_reason() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock.clone());
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__events = 0;
+globalThis.__sig = AbortSignal.timeout(5);
+__sig.addEventListener('abort', () => { globalThis.__events++; });
+"#,
+  )?;
+
+  // Timer is not due yet.
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    assert_eq!(get_data_prop(&mut scope, global, "__events"), Value::Number(0.0));
+    let Value::Object(sig) = get_data_prop(&mut scope, global, "__sig") else {
+      return Err(Error::Other("expected AbortSignal.timeout to return an object".to_string()));
+    };
+    assert_eq!(get_data_prop(&mut scope, sig, "aborted"), Value::Bool(false));
+  }
+
+  // Advance deterministic time so the timeout becomes due.
+  clock.advance(std::time::Duration::from_millis(5));
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let (events, aborted, reason_name) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let events = get_data_prop(&mut scope, global, "__events");
+    let Value::Object(sig) = get_data_prop(&mut scope, global, "__sig") else {
+      return Err(Error::Other("expected __sig to be an object".to_string()));
+    };
+    let aborted = get_data_prop(&mut scope, sig, "aborted");
+    let Value::Object(reason) = get_data_prop(&mut scope, sig, "reason") else {
+      return Err(Error::Other("expected AbortSignal.reason to be an object".to_string()));
+    };
+    let reason_name_value = get_data_prop(&mut scope, reason, "name");
+    let reason_name = get_string(scope.heap(), reason_name_value);
+    (events, aborted, reason_name)
+  };
+
+  assert_eq!(events, Value::Number(1.0));
+  assert_eq!(aborted, Value::Bool(true));
+  assert_eq!(reason_name, "TimeoutError");
+  Ok(())
+}
+
+#[test]
+fn abort_signal_any_aborts_when_input_signal_aborts_and_forwards_reason() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__events = 0;
+globalThis.__same_reason = false;
+
+const c1 = new AbortController();
+const c2 = new AbortController();
+
+const s = AbortSignal.any([c1.signal, c2.signal]);
+globalThis.__sig = s;
+s.addEventListener('abort', () => { globalThis.__events++; });
+
+c2.abort();
+globalThis.__same_reason = (s.reason === c2.signal.reason);
+"#,
+  )?;
+
+  // Abort dispatch is synchronous, but run a checkpoint to ensure any nested microtasks are drained.
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+
+  let (events, aborted, same_reason, reason_name) = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let events = get_data_prop(&mut scope, global, "__events");
+    let same_reason = get_data_prop(&mut scope, global, "__same_reason");
+    let Value::Object(sig) = get_data_prop(&mut scope, global, "__sig") else {
+      return Err(Error::Other("expected __sig to be an object".to_string()));
+    };
+    let aborted = get_data_prop(&mut scope, sig, "aborted");
+    let Value::Object(reason) = get_data_prop(&mut scope, sig, "reason") else {
+      return Err(Error::Other("expected AbortSignal.any composite reason to be an object".to_string()));
+    };
+    let reason_name_value = get_data_prop(&mut scope, reason, "name");
+    let reason_name = get_string(scope.heap(), reason_name_value);
+    (events, aborted, same_reason, reason_name)
+  };
+
+  assert_eq!(events, Value::Number(1.0));
+  assert_eq!(aborted, Value::Bool(true));
+  assert_eq!(same_reason, Value::Bool(true));
+  assert_eq!(reason_name, "AbortError");
+  Ok(())
+}
+
+#[test]
+fn abort_signal_any_rejects_unbounded_sequence_lengths() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+globalThis.__err_name = "";
+try {
+  // Hostile input: a huge length would otherwise cause unbounded work.
+  AbortSignal.any({ length: 1000000000 });
+  globalThis.__err_name = "no throw";
+} catch (e) {
+  globalThis.__err_name = e && e.name;
+}
+"#,
+  )?;
+
+  let name = {
+    let window = host.window_mut();
+    let global = window.global_object();
+    let (_vm, heap) = window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let err_value = get_data_prop(&mut scope, global, "__err_name");
+    get_string(scope.heap(), err_value)
+  };
+  assert_eq!(name, "TypeError");
+  Ok(())
+}
+
+#[test]
 fn promise_jobs_abort_when_render_deadline_is_expired() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
