@@ -111,8 +111,7 @@ fn ssa_body_has_arg_use_modes_for_consuming_return() {
   let program = compile_source(src, TopLevelMode::Module, false);
   assert_eq!(program.functions.len(), 1);
   let cfg = program.functions[0]
-    .ssa_body
-    .as_ref()
+    .cfg_ssa()
     .expect("expected SSA body to be preserved for backend analyses");
 
   let (ret_label, ret_idx, _ret_var) = find_unique_return_var(cfg);
@@ -364,4 +363,3 @@ fn global_escape_forces_shared() {
     "shared values should not be consumed at call sites"
   );
 }
-

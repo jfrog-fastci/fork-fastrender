@@ -69,11 +69,14 @@ fn return_void_lowers_to_return_without_value() {
   let program = compile_source(src, TopLevelMode::Module, false);
   assert_eq!(program.functions.len(), 1);
 
-  let saw_return_undefined = program.functions[0]
+  let saw_return_void = program.functions[0]
     .body
     .bblocks
     .all()
     .flat_map(|(_, b)| b.iter())
     .any(|inst| inst.t == InstTyp::Return && inst.as_return().is_none());
-  assert!(saw_return_undefined, "expected Return inst with implicit undefined for `return;`");
+  assert!(
+    saw_return_void,
+    "expected Return inst with no explicit value for `return;` (implicit `undefined`)"
+  );
 }
