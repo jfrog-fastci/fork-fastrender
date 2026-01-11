@@ -1,0 +1,21 @@
+[package]
+name = "native-oracle-harness"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+# Enable falling back to the `optimize-js` decompiler when `emit-js` cannot
+# erase a particular TypeScript construct yet.
+optimize-js-fallback = ["dep:optimize-js"]
+
+[dependencies]
+emit-js = { workspace = true }
+parse-js = { workspace = true }
+runtime-js = { workspace = true }
+vm-js = { workspace = true }
+
+optimize-js = { workspace = true, optional = true }
+

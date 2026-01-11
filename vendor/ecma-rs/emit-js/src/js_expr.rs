@@ -1,7 +1,8 @@
 use parse_js::ast::expr::{
   lit::{LitBoolExpr, LitNumExpr, LitRegexExpr, LitStrExpr},
   ArrowFuncExpr, BinaryExpr, CallExpr, ComputedMemberExpr, CondExpr, Expr, IdExpr,
-  InstantiationExpr, MemberExpr, UnaryExpr, UnaryPostfixExpr,
+  InstantiationExpr, MemberExpr, NonNullAssertionExpr, SatisfiesExpr, TypeAssertionExpr, UnaryExpr,
+  UnaryPostfixExpr,
 };
 use parse_js::ast::func::FuncBody;
 use parse_js::ast::node::Node;
@@ -54,6 +55,9 @@ impl<'a> JsExprEmitter<'a> {
       Expr::Cond(cond) => self.emit_cond(cond),
       Expr::Id(id) => self.emit_id(id),
       Expr::Instantiation(instantiation) => self.emit_instantiation(instantiation),
+      Expr::TypeAssertion(assertion) => self.emit_type_assertion(assertion),
+      Expr::NonNullAssertion(non_null) => self.emit_non_null_assertion(non_null),
+      Expr::SatisfiesExpr(satisfies) => self.emit_satisfies_expr(satisfies),
       Expr::LitBool(lit) => self.emit_lit_bool(lit),
       Expr::LitNum(lit) => self.emit_lit_num(lit),
       Expr::LitRegex(lit) => self.emit_lit_regex(lit),
@@ -203,6 +207,21 @@ impl<'a> JsExprEmitter<'a> {
     self.emit_expr_with_min_prec(&instantiation.stx.expression, call_member_precedence())
   }
 
+  fn emit_type_assertion(&mut self, assertion: &Node<TypeAssertionExpr>) -> JsEmitResult {
+    // TypeScript type assertions erase to their underlying expression in JS output.
+    self.emit_expr(assertion.stx.expression.as_ref())
+  }
+
+  fn emit_non_null_assertion(&mut self, non_null: &Node<NonNullAssertionExpr>) -> JsEmitResult {
+    // TypeScript non-null assertions erase to their underlying expression in JS output.
+    self.emit_expr(non_null.stx.expression.as_ref())
+  }
+
+  fn emit_satisfies_expr(&mut self, satisfies: &Node<SatisfiesExpr>) -> JsEmitResult {
+    // TypeScript `satisfies` expressions erase to their underlying expression in JS output.
+    self.emit_expr(satisfies.stx.expression.as_ref())
+  }
+
   fn emit_cond(&mut self, cond: &Node<CondExpr>) -> JsEmitResult {
     let cond_prec = OPERATORS[&OperatorName::Conditional].precedence;
     let assignment_prec = assignment_precedence();
@@ -302,6 +321,9 @@ fn expr_precedence(expr: &Node<Expr>) -> Result<u8, JsEmitError> {
     Expr::Call(_) => Ok(call_member_precedence()),
     Expr::ComputedMember(_) => Ok(call_member_precedence()),
     Expr::Instantiation(_) => Ok(call_member_precedence()),
+    Expr::TypeAssertion(assertion) => expr_precedence(assertion.stx.expression.as_ref()),
+    Expr::NonNullAssertion(non_null) => expr_precedence(non_null.stx.expression.as_ref()),
+    Expr::SatisfiesExpr(satisfies) => expr_precedence(satisfies.stx.expression.as_ref()),
     Expr::Cond(_) => Ok(OPERATORS[&OperatorName::Conditional].precedence),
     Expr::Id(_)
     | Expr::LitBool(_)

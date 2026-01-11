@@ -10,6 +10,7 @@ members = [
   "minify-js-cli",
   "minify-js-nodejs",
   "minify-js",
+  "native-oracle-harness",
   "optimize-js-debugger",
   "optimize-js",
   "parse-js-cli",
@@ -59,6 +60,7 @@ parse-js = { path = "parse-js", version = "0.24.1" }
 semantic-js = { path = "semantic-js", version = "0.1.0" }
 typecheck-ts = { path = "typecheck-ts", version = "0.1.0" }
 types-ts-interned = { path = "types-ts-interned", version = "0.1.0" }
+native-oracle-harness = { path = "native-oracle-harness", version = "0.1.0" }
 vm-js = { path = "vm-js", version = "0.1.0" }
 runtime-js = { path = "runtime-js", version = "0.1.0" }
 runtime-native = { path = "runtime-native", version = "0.1.0" }
