@@ -2,8 +2,8 @@
 //!
 //! This crate provides:
 //! - A stable C ABI surface that LLVM-generated code can link against.
-//! - A stop-the-world generational GC implementation (`gc::GcHeap`) that backs the exported
-//!   allocation and collection entrypoints (`rt_alloc*`, `rt_gc_collect`).
+//! - A stop-the-world generational GC implementation (`gc::GcHeap`) used by tests and as the
+//!   backing storage for the exported allocation entrypoints (`rt_alloc*`).
 //!
 //! Note:
 //! - `rt_alloc` / `rt_alloc_array` return **object base pointers** into the GC heap.

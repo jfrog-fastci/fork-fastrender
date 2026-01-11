@@ -12,7 +12,7 @@ It also specifies the semantics and policy defaults for **per-object card tables
 
 ## Implementation status (runtime-native today)
 
-`runtime-native` contains a stop-the-world generational GC under `src/gc/*` (exercised by Rust tests), and some exported runtime entrypoints are wired to it (notably `rt_alloc_array`).
+`runtime-native` contains a stop-the-world generational GC under `src/gc/*` (exercised by Rust tests), and the exported allocation entrypoints (`rt_alloc`, `rt_alloc_pinned`, `rt_alloc_array`) allocate into the GC heap (nursery/Immix/LOS).
 
 - The exported symbols **`rt_write_barrier`** and **`rt_write_barrier_range`** exist (see `src/exports.rs`).
   - `rt_write_barrier` loads the stored pointer value from `slot` and performs the young-range fast-path checks described in this document.
@@ -26,9 +26,7 @@ It also specifies the semantics and policy defaults for **per-object card tables
     the written byte range (when a card table is present) and may over-mark cards (minor GC scanning
     + sticky rebuild keeps correctness).
 - The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
-- The exported symbol **`rt_gc_collect`** performs a stop-the-world handshake and can enumerate roots (via stackmaps), but does **not** yet run a full GC algorithm (mark/copy/etc).
-  - `rt_alloc` / `rt_alloc_pinned` still use the milestone bump allocator.
-  - `rt_alloc_array` is GC-backed.
+- The exported symbol **`rt_gc_collect`** triggers a stop-the-world collection (minor evacuation + major mark/sweep) and may relocate nursery objects.
 - Per-object card tables are installed automatically for large old-generation pointer arrays:
   - Only for array objects (`RT_ARRAY_TYPE_DESC`) with `RT_ARRAY_FLAG_PTR_ELEMS` payloads.
   - Only when the pointer payload is at least **8× `CARD_SIZE`** (i.e. ≥ 4 KiB with the default 512 B cards).
