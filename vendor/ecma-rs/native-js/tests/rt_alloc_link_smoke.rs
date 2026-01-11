@@ -25,7 +25,7 @@ fn find_clang() -> Option<&'static str> {
 }
 
 #[test]
-fn links_and_runs_rt_alloc_with_u32_shape_id_abi() {
+fn links_and_runs_rt_alloc_and_rt_alloc_pinned_with_u32_shape_id_abi() {
   let Some(clang) = find_clang() else {
     eprintln!("skipping: clang not found in PATH");
     return;
@@ -74,16 +74,32 @@ fn links_and_runs_rt_alloc_with_u32_shape_id_abi() {
 
   let wrappers = RuntimeAbi::new(&context, &module).ensure_wrappers();
   let rt_alloc = wrappers.rt_alloc;
+  let rt_alloc_pinned = wrappers.rt_alloc_pinned;
 
   let params = rt_alloc.get_type().get_param_types();
   assert_eq!(params.len(), 2, "rt_alloc should take exactly 2 params");
   let shape_ty = params[1]
     .into_int_type();
 
+  {
+    let pinned_params = rt_alloc_pinned.get_type().get_param_types();
+    assert_eq!(
+      pinned_params.len(),
+      2,
+      "rt_alloc_pinned should take exactly 2 params"
+    );
+    assert_eq!(
+      pinned_params[1],
+      params[1],
+      "rt_alloc_pinned should use the same shape-id ABI type as rt_alloc"
+    );
+  }
+
   let alloc_smoke_ty = context
     .i32_type()
     .fn_type(&[params[0].into(), params[1].into()], false);
   let alloc_smoke = module.add_function("alloc_smoke", alloc_smoke_ty, None);
+  let alloc_smoke_pinned = module.add_function("alloc_smoke_pinned", alloc_smoke_ty, None);
 
   let entry = context.append_basic_block(alloc_smoke, "entry");
   let ok_block = context.append_basic_block(alloc_smoke, "ok");
@@ -120,6 +136,45 @@ fn links_and_runs_rt_alloc_with_u32_shape_id_abi() {
     .build_return(Some(&context.i32_type().const_int(0, false)))
     .expect("return ok");
 
+  let entry = context.append_basic_block(alloc_smoke_pinned, "entry");
+  let ok_block = context.append_basic_block(alloc_smoke_pinned, "ok");
+  let fail_block = context.append_basic_block(alloc_smoke_pinned, "fail");
+
+  builder.position_at_end(entry);
+  let size = alloc_smoke_pinned
+    .get_nth_param(0)
+    .expect("alloc_smoke_pinned size param")
+    .into_int_value();
+  let shape = alloc_smoke_pinned
+    .get_nth_param(1)
+    .expect("alloc_smoke_pinned shape param")
+    .into_int_value();
+
+  let one = shape_ty.const_int(1, false);
+  let shape_is_one = builder
+    .build_int_compare(IntPredicate::EQ, shape, one, "shape_is_one")
+    .expect("build shape compare");
+  builder
+    .build_conditional_branch(shape_is_one, ok_block, fail_block)
+    .expect("build branch");
+
+  builder.position_at_end(fail_block);
+  builder
+    .build_return(Some(&context.i32_type().const_int(1, false)))
+    .expect("return fail");
+
+  builder.position_at_end(ok_block);
+  let _ = builder
+    .build_call(
+      rt_alloc_pinned,
+      &[size.into(), shape.into()],
+      "pinned_obj",
+    )
+    .expect("call rt_alloc_pinned");
+  builder
+    .build_return(Some(&context.i32_type().const_int(0, false)))
+    .expect("return ok");
+
   let ir = module.print_to_string().to_string();
 
   // Compile + link a tiny C driver against runtime-native and our generated object.
@@ -140,6 +195,8 @@ fn links_and_runs_rt_alloc_with_u32_shape_id_abi() {
 
 // `alloc_smoke` is implemented in LLVM IR (native-js) and calls `rt_alloc`.
 extern int32_t alloc_smoke(uint64_t size, uint32_t shape);
+// `alloc_smoke_pinned` is implemented in LLVM IR (native-js) and calls `rt_alloc_pinned`.
+extern int32_t alloc_smoke_pinned(uint64_t size, uint32_t shape);
 
 int main(void) {{
   rt_thread_init(0);
@@ -159,17 +216,27 @@ int main(void) {{
   // Force `%rdx` non-zero before the call. If `alloc_smoke` (and therefore
   // `rt_alloc`) ever takes an `i128` shape id, the high 64 bits will be read
   // from `%rdx` and the `shape == 1` check will fail.
-  int32_t res;
+  int32_t res1;
   __asm__ __volatile__(
     "mov $0x1122334455667788, %%rdx\n\t"
     "call alloc_smoke\n\t"
-    : "=a"(res)
+    : "=a"(res1)
+    : "D"((uint64_t)16), "S"((uint64_t)1)
+    : "rdx", "rcx", "r8", "r9", "r10", "r11", "memory"
+  );
+
+  // Same as above, but exercise the `rt_alloc_pinned` wrapper.
+  int32_t res2;
+  __asm__ __volatile__(
+    "mov $0x8877665544332211, %%rdx\n\t"
+    "call alloc_smoke_pinned\n\t"
+    : "=a"(res2)
     : "D"((uint64_t)16), "S"((uint64_t)1)
     : "rdx", "rcx", "r8", "r9", "r10", "r11", "memory"
   );
 
   rt_thread_deinit();
-  return res;
+  return res1 | res2;
 }}
 "#
     ),
