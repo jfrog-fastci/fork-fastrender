@@ -2062,6 +2062,11 @@ pub extern "C" fn rt_io_register_rooted(
 /// # Safety
 /// `data` must be a valid, aligned pointer to a writable `*mut u8` slot containing a GC-managed
 /// object base pointer.
+///
+/// ## Nonblocking / edge-triggered contract
+///
+/// Like [`rt_io_register`], the provided `fd` **must already be set to `O_NONBLOCK`**. The runtime
+/// does not modify caller file descriptor flags.
 #[no_mangle]
 pub unsafe extern "C" fn rt_io_register_rooted_h(
   fd: i32,
