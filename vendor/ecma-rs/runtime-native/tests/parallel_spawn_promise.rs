@@ -20,7 +20,7 @@ static EMPTY_PTR_OFFSETS: [u32; 0] = [];
 
 fn ensure_shape_table() {
   SHAPE_TABLE_ONCE.call_once(|| unsafe {
-    static SHAPES: [RtShapeDescriptor; 3] = [
+    static SHAPES: [RtShapeDescriptor; 4] = [
       RtShapeDescriptor {
         size: mem::size_of::<GcBox<AwaitParallelPromiseCoroutine>>() as u32,
         align: 16,
@@ -45,6 +45,14 @@ fn ensure_shape_table() {
         ptr_offsets_len: 0,
         reserved: 0,
       },
+      RtShapeDescriptor {
+        size: mem::size_of::<GcBox<AwaitParallelRejectPromiseCoroutine>>() as u32,
+        align: 16,
+        flags: 0,
+        ptr_offsets: EMPTY_PTR_OFFSETS.as_ptr(),
+        ptr_offsets_len: 0,
+        reserved: 0,
+      },
     ];
     shape_table::rt_register_shape_table(SHAPES.as_ptr(), SHAPES.len());
   });
@@ -61,6 +69,14 @@ extern "C" fn parallel_add_one_task(data: *mut u8, promise: PromiseRef) {
     let out = runtime_native::rt_promise_payload_ptr(promise) as *mut u32;
     *out = input.wrapping_add(1);
     runtime_native::rt_promise_fulfill(promise);
+  }
+}
+
+extern "C" fn parallel_reject_task(_data: *mut u8, promise: PromiseRef) {
+  unsafe {
+    let out = runtime_native::rt_promise_payload_ptr(promise) as *mut u32;
+    *out = 0xDEAD_BEEF_u32;
+    runtime_native::rt_promise_reject(promise);
   }
 }
 
@@ -90,6 +106,44 @@ extern "C" fn await_parallel_promise_resume(coro: *mut RtCoroutineHeader) -> RtC
         assert_eq!((*coro).header.await_is_error, 0);
         let payload = (*coro).header.await_value as *const u32;
         assert_eq!(*payload, 42);
+        *(*coro).completed = true;
+        runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
+        RtCoroStatus::Done
+      }
+      other => panic!("unexpected coroutine state: {other}"),
+    }
+  }
+}
+
+#[repr(C)]
+struct AwaitParallelRejectPromiseCoroutine {
+  header: RtCoroutineHeader,
+  completed: *mut bool,
+}
+
+extern "C" fn await_parallel_reject_promise_resume(coro: *mut RtCoroutineHeader) -> RtCoroStatus {
+  let coro = coro as *mut AwaitParallelRejectPromiseCoroutine;
+  assert!(!coro.is_null());
+
+  unsafe {
+    match (*coro).header.state {
+      0 => {
+        let promise = runtime_native::rt_parallel_spawn_promise(
+          parallel_reject_task,
+          core::ptr::null_mut(),
+          PromiseLayout::of::<u32>(),
+        );
+        runtime_native::rt_coro_await_legacy(&mut (*coro).header, promise, 1);
+        RtCoroStatus::Pending
+      }
+      1 => {
+        assert_eq!((*coro).header.await_is_error, 1);
+        assert!(!(*coro).header.await_error.is_null());
+        assert_eq!(
+          *((*coro).header.await_error as *const u32),
+          0xDEAD_BEEF_u32
+        );
+        assert!((*coro).header.await_value.is_null());
         *(*coro).completed = true;
         runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
         RtCoroStatus::Done
@@ -283,6 +337,36 @@ fn parallel_spawn_promise_can_be_awaited_from_coroutine() {
   unsafe {
     drop(Box::from_raw(input_ptr));
   }
+  assert!(completed);
+}
+
+#[test]
+fn parallel_spawn_promise_rejection_can_be_awaited_from_coroutine() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut completed = false;
+  let coro_obj = unsafe { alloc_pinned::<AwaitParallelRejectPromiseCoroutine>(RtShapeId(4)) };
+  let coro = unsafe { &mut (*coro_obj).payload };
+  coro.header = RtCoroutineHeader {
+    resume: await_parallel_reject_promise_resume,
+    promise: PromiseRef::null(),
+    state: 0,
+    await_is_error: 0,
+    await_value: core::ptr::null_mut(),
+    await_error: core::ptr::null_mut(),
+  };
+  coro.completed = &mut completed;
+
+  runtime_native::rt_async_spawn_legacy(&mut coro.header);
+  let start = Instant::now();
+  while !completed {
+    runtime_native::rt_async_poll_legacy();
+    assert!(
+      start.elapsed() < Duration::from_secs(2),
+      "timeout waiting for parallel promise to settle"
+    );
+  }
+
   assert!(completed);
 }
 
