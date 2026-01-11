@@ -59,6 +59,18 @@
   properties:
     encoding.output: ascii
 
+- name: URL.prototype.toJSON
+  aliases:
+    - URL.prototype.toJSON
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
 # Treat getters as pure reads.
 - name: URL.prototype.href
   aliases:
@@ -87,6 +99,78 @@
 - name: URL.prototype.origin
   aliases:
     - URL.prototype.origin
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: URL.prototype.protocol
+  aliases:
+    - URL.prototype.protocol
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: URL.prototype.host
+  aliases:
+    - URL.prototype.host
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: URL.prototype.hostname
+  aliases:
+    - URL.prototype.hostname
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: URL.prototype.port
+  aliases:
+    - URL.prototype.port
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: URL.prototype.search
+  aliases:
+    - URL.prototype.search
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: URL.prototype.hash
+  aliases:
+    - URL.prototype.hash
   since: "baseline"
   effects:
     Custom:
