@@ -910,3 +910,224 @@
   properties:
     kind: observable_method
     starts_execution: true
+- name: rxjs.operators.mergeWith
+  aliases: []
+  semantics: MergeWith
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: combinator
+
+- name: rxjs.operators.concatWith
+  aliases: []
+  semantics: ConcatWith
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: combinator
+
+- name: rxjs.operators.combineLatestWith
+  aliases: []
+  semantics: CombineLatestWith
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: combinator
+    depends_on_scheduling: "true"
+
+- name: rxjs.operators.zipWith
+  aliases: []
+  semantics: ZipWith
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: combinator
+
+- name: rxjs.operators.observeOn
+  aliases: []
+  semantics: ObserveOn
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: scheduling
+    depends_on_scheduling: "true"
+
+- name: rxjs.operators.subscribeOn
+  aliases: []
+  semantics: SubscribeOn
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: scheduling
+    depends_on_scheduling: "true"
+
+- name: rxjs.operators.auditTime
+  aliases: []
+  semantics: AuditTime
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: timing
+    timer_based: "true"
+
+- name: rxjs.operators.sampleTime
+  aliases: []
+  semantics: SampleTime
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: timing
+    timer_based: "true"
+
+- name: rxjs.operators.bufferTime
+  aliases: []
+  semantics: BufferTime
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: buffering
+    timer_based: "true"
+
+- name: rxjs.operators.first
+  aliases: []
+  semantics: First
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: limiting
+
+- name: rxjs.operators.last
+  aliases: []
+  semantics: Last
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: limiting
+
+- name: rxjs.operators.mergeAll
+  aliases: []
+  semantics: MergeAll
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: flattening

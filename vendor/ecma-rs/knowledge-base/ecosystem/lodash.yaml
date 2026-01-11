@@ -943,3 +943,360 @@
   properties:
     kind: string_operator
     output: string
+
+- name: lodash.isEmpty
+  aliases: [_.isEmpty]
+  semantics: IsEmpty
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isNil
+  aliases: [_.isNil]
+  semantics: IsNil
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isArray
+  aliases: [_.isArray]
+  semantics: IsArray
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isPlainObject
+  aliases: [_.isPlainObject]
+  semantics: IsPlainObject
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.identity
+  aliases: [_.identity]
+  semantics: Identity
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: function
+    output: input
+
+- name: lodash.noop
+  aliases: [_.noop]
+  semantics: Noop
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: function
+    output: undefined
+
+- name: lodash.constant
+  aliases: [_.constant]
+  semantics: Constant
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: function_factory
+    returns: function
+
+- name: lodash.times
+  aliases: [_.times]
+  semantics: Times
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+
+- name: lodash.range
+  aliases: [_.range]
+  semantics: Range
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+
+- name: lodash.random
+  aliases: [_.random]
+  semantics: Random
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: nondeterministic
+    output: number
+
+- name: lodash.now
+  aliases: [_.now]
+  semantics: Now
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: never
+  effects:
+    template: unknown
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: true
+  properties:
+    kind: nondeterministic
+    output: number
+
+- name: lodash.uniqueId
+  aliases: [_.uniqueId]
+  semantics: UniqueId
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: never
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: true
+  properties:
+    kind: stateful
+    output: string
+
+- name: lodash.delay
+  aliases: [_.delay]
+  semantics: Delay
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: timing
+    timer_based: "true"
+
+- name: lodash.defer
+  aliases: [_.defer]
+  semantics: Defer
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: timing
+    timer_based: "true"
+
+- name: lodash.once
+  aliases: [_.once]
+  semantics: Once
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: function_wrapper
+    stateful: "true"
+    returns: function
+
+- name: lodash.escape
+  aliases: [_.escape]
+  semantics: EscapeHtml
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.unescape
+  aliases: [_.unescape]
+  semantics: UnescapeHtml
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.trim
+  aliases: [_.trim]
+  semantics: Trim
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.trimStart
+  aliases: [_.trimStart]
+  semantics: TrimStart
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.trimEnd
+  aliases: [_.trimEnd]
+  semantics: TrimEnd
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
