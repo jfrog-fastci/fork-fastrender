@@ -6,7 +6,9 @@ use typecheck_ts::{FileId, FileKey, MemoryHost, Program};
 
 const STRICT_LIB_KEY: &str = "native_strict_globals.d.ts";
 const STRICT_LIB: &str = r#"
-interface Array<T> {}
+interface Array<T> {
+  [index: number]: T;
+}
 interface Boolean {}
 interface IArguments {}
 interface Number {}
@@ -455,6 +457,18 @@ fn native_strict_bans_global_object_set_prototype_of() {
         && diag.primary.range == span
     }),
     "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_allows_array_indexing_with_number_key() {
+  let source = "const xs: number[] = [1, 2]; const i = 0; void xs[i];";
+  let (diagnostics, _) = check(source, true);
+  assert!(
+    !diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.as_str()
+    }),
+    "did not expect computed-key diagnostic for array indexing, got {diagnostics:?}"
   );
 }
 

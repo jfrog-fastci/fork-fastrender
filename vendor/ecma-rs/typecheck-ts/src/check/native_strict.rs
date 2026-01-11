@@ -3,7 +3,7 @@ use crate::BodyCheckResult;
 use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use hir_js::{Body, ExprKind, Literal, NameInterner, ObjectKey, PatKind, StmtKind};
 use std::collections::{HashMap, HashSet};
-use types_ts_interned::{RelateCtx, TypeId, TypeKind, TypeStore};
+use types_ts_interned::{Indexer, ObjectType, RelateCtx, Shape, TypeId, TypeKind, TypeStore};
 
 pub fn validate_native_strict_body(
   body: &Body,
@@ -238,6 +238,17 @@ pub fn validate_native_strict_body(
   }
 
   let strict_null_checks = relate.options.strict_null_checks;
+  let numeric_indexer_obj_ty = {
+    let mut shape = Shape::new();
+    shape.indexers.push(Indexer {
+      key_type: prim.number,
+      value_type: prim.unknown,
+      readonly: true,
+    });
+    let shape_id = store.intern_shape(shape);
+    let obj = store.intern_object(ObjectType { shape: shape_id });
+    store.intern_type(TypeKind::Object(obj))
+  };
 
   for (idx, expr) in body.exprs.iter().enumerate() {
     match &expr.kind {
@@ -482,17 +493,36 @@ pub fn validate_native_strict_body(
             &key.kind,
             ExprKind::Literal(Literal::String(_) | Literal::Number(_) | Literal::BigInt(_))
           ) || matches!(&key.kind, ExprKind::Template(tpl) if tpl.spans.is_empty());
-          if !key_is_const {
-            let span = result
-              .expr_spans
-              .get(key_expr.0 as usize)
-              .copied()
-              .unwrap_or(key.span);
-            diagnostics.push(codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.error(
-              "computed property access requires a constant key when `native_strict` is enabled",
-              Span::new(file, span),
-            ));
+          if key_is_const {
+            continue;
           }
+
+          let obj_ty = result
+            .expr_types
+            .get(member.object.0 as usize)
+            .copied()
+            .unwrap_or(prim.unknown);
+          let obj_ty = store.canon(obj_ty);
+          let obj_has_numeric_indexer = relate.is_assignable(obj_ty, numeric_indexer_obj_ty);
+          let key_ty = result
+            .expr_types
+            .get(key_expr.0 as usize)
+            .copied()
+            .unwrap_or(prim.unknown);
+          let key_is_number = relate.is_assignable(key_ty, prim.number);
+          if obj_has_numeric_indexer && key_is_number {
+            continue;
+          }
+
+          let span = result
+            .expr_spans
+            .get(key_expr.0 as usize)
+            .copied()
+            .unwrap_or(key.span);
+          diagnostics.push(codes::NATIVE_STRICT_COMPUTED_PROPERTY_KEY.error(
+            "computed property access requires a constant key when `native_strict` is enabled",
+            Span::new(file, span),
+          ));
         }
       }
       ExprKind::Ident(name) => {

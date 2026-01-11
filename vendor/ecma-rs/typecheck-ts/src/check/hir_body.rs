@@ -5955,16 +5955,26 @@ impl<'a> Checker<'a> {
 
   fn check_unary(&mut self, op: OperatorName, arg: &Node<AstExpr>) -> TypeId {
     match op {
-      OperatorName::LogicalNot => self.store.primitive_ids().boolean,
+      OperatorName::LogicalNot => {
+        let _ = self.check_expr(arg);
+        self.store.primitive_ids().boolean
+      }
       OperatorName::UnaryPlus | OperatorName::UnaryNegation | OperatorName::BitwiseNot => {
+        let _ = self.check_expr(arg);
         self.store.primitive_ids().number
       }
       OperatorName::Await => {
         let inner = self.check_expr(arg);
         awaited_type(self.store.as_ref(), inner, self.ref_expander)
       }
-      OperatorName::Typeof => self.store.primitive_ids().string,
-      OperatorName::Void => self.store.primitive_ids().undefined,
+      OperatorName::Typeof => {
+        let _ = self.check_expr(arg);
+        self.store.primitive_ids().string
+      }
+      OperatorName::Void => {
+        let _ = self.check_expr(arg);
+        self.store.primitive_ids().undefined
+      }
       _ => {
         let _ = self.check_expr(arg);
         self.store.primitive_ids().unknown
