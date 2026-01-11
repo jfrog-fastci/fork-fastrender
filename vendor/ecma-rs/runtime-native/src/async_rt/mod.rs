@@ -311,18 +311,6 @@ pub fn global() -> &'static AsyncRuntime {
   rt
 }
 
-// -----------------------------------------------------------------------------
-// Queueing helpers used by the promise/coroutine lowering.
-// -----------------------------------------------------------------------------
-
-pub(crate) fn queue_microtask(func: TaskFn, data: *mut u8) {
-  global().enqueue_microtask(Task::new(func, data));
-}
-
-pub(crate) fn queue_macrotask(func: TaskFn, data: *mut u8) {
-  global().enqueue_macrotask(Task::new(func, data));
-}
-
 /// Drive the async runtime for one event-loop turn.
 ///
 /// Returns `true` if there is still pending work after the turn.
