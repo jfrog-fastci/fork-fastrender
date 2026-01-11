@@ -85,3 +85,29 @@ fn nbsp_does_not_soft_wrap_before_inline_block_pseudo_element() {
   let lines = line_texts(html, 200);
   assert_eq!(lines, ["A\u{00A0}LongLongLongLong"]);
 }
+
+#[test]
+fn does_not_wrap_between_word_and_following_inline_punctuation() {
+  // Regression: inline box boundaries are not automatic line break opportunities. When an inline
+  // element follows immediately after a word (no whitespace), UAX#14 still governs whether a break
+  // is permitted. If the trailing inline doesn't fit, we must backtrack to an earlier break
+  // opportunity (here: the space before `Good`) rather than splitting the word from its trailing
+  // punctuation.
+  //
+  // This matches real-world patterns like MkDocs' `h1 > a.headerlink { visibility: hidden }`, where
+  // the hidden pilcrow should still participate in line breaking.
+  let without_pilcrow = r#"
+    <div style="font-family: 'DejaVu Sans', sans-serif; font-size: 72px">
+      The Public Good
+    </div>
+  "#;
+  assert_eq!(line_texts(without_pilcrow, 460), ["The Public Good"]);
+
+  let with_pilcrow = r#"
+    <div style="font-family: 'DejaVu Sans', sans-serif; font-size: 72px">
+      The Public Good<span style="visibility: hidden">¶</span>
+    </div>
+  "#;
+  let lines = line_texts(with_pilcrow, 460);
+  assert_eq!(lines, ["The Public", "Good¶"]);
+}

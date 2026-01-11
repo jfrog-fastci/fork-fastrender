@@ -560,6 +560,52 @@ fn last_text_char_for_soft_wrap(item: &InlineItem) -> Option<char> {
   }
 }
 
+fn first_text_char_for_soft_wrap(item: &InlineItem) -> Option<char> {
+  match item {
+    InlineItem::Text(text) => text.text.chars().next(),
+    InlineItem::InlineBox(inline_box) => inline_box.children.iter().find_map(first_text_char_for_soft_wrap),
+    InlineItem::Ruby(ruby) => ruby.segments.iter().find_map(|seg| {
+      seg
+        .base_items
+        .iter()
+        .find_map(first_text_char_for_soft_wrap)
+        .or_else(|| {
+          seg
+            .annotation_top
+            .as_ref()
+            .and_then(|items| items.iter().find_map(first_text_char_for_soft_wrap))
+        })
+        .or_else(|| {
+          seg
+            .annotation_bottom
+            .as_ref()
+            .and_then(|items| items.iter().find_map(first_text_char_for_soft_wrap))
+        })
+    }),
+    InlineItem::SoftBreak
+    | InlineItem::Tab(_)
+    | InlineItem::HardBreak(_)
+    | InlineItem::InlineBlock(_)
+    | InlineItem::Replaced(_)
+    | InlineItem::Floating(_)
+    | InlineItem::StaticPositionAnchor(_) => None,
+  }
+}
+
+fn soft_wrap_opportunity_between_chars(prev: char, next: char) -> bool {
+  if is_no_break_after_character(prev) {
+    return false;
+  }
+
+  let mut text = String::new();
+  text.push(prev);
+  text.push(next);
+  let boundary = prev.len_utf8();
+  crate::text::line_break::find_break_opportunities(&text)
+    .iter()
+    .any(|brk| brk.byte_offset == boundary)
+}
+
 pub(crate) fn log_line_width_enabled() -> bool {
   runtime::runtime_toggles().truthy("FASTR_LOG_LINE_WIDTH")
 }
@@ -4567,9 +4613,26 @@ impl<'a> LineBuilder<'a> {
           force_break,
         } => (fragment, remainder, ends_with_hard_break, force_break),
         SplitInlineBoxForLineResult::BreakBefore { inline_box } => {
-          self.finish_line()?;
-          remaining_box = inline_box;
-          continue;
+          if self.soft_wrap_opportunity_before_inline_box(&inline_box) {
+            self.finish_line()?;
+            remaining_box = inline_box;
+            continue;
+          }
+
+          if let Some(moved) = self.rewind_line_break_before_glued_inline_box(&inline_box) {
+            self.finish_line()?;
+            for item in moved {
+              self.add_item_internal(item)?;
+            }
+            remaining_box = inline_box;
+            continue;
+          }
+
+          // No earlier break opportunity exists; keep the inline box glued to the previous content
+          // and overflow this line instead of breaking at a prohibited position.
+          let width = inline_box.width();
+          self.place_item_with_width(InlineItem::InlineBox(inline_box), width);
+          break;
         }
       };
 
@@ -4594,6 +4657,485 @@ impl<'a> LineBuilder<'a> {
     }
 
     Ok(())
+  }
+
+  fn soft_wrap_opportunity_before_inline_box(&self, inline_box: &InlineBoxItem) -> bool {
+    let Some(next_first) = inline_box
+      .children
+      .iter()
+      .find_map(first_text_char_for_soft_wrap)
+    else {
+      return true;
+    };
+
+    let Some(prev) = self
+      .current_line
+      .items
+      .iter()
+      .rev()
+      .find_map(|pos| match &pos.item {
+        InlineItem::StaticPositionAnchor(_)
+        | InlineItem::Floating(_)
+        | InlineItem::HardBreak(_) => None,
+        other => Some(other),
+      })
+    else {
+      return true;
+    };
+
+    let Some(prev_last) = last_text_char_for_soft_wrap(prev) else {
+      return true;
+    };
+
+    item_allows_soft_wrap(prev) && soft_wrap_opportunity_between_chars(prev_last, next_first)
+  }
+
+  fn split_inline_box_at_last_break_opportunity(
+    &mut self,
+    inline_box: &InlineBoxItem,
+  ) -> Option<(InlineBoxItem, InlineBoxItem)> {
+    if inline_box.children.is_empty() {
+      return None;
+    }
+
+    let children = &inline_box.children;
+
+    for idx in (0..children.len()).rev() {
+      let InlineItem::Text(text_item) = &children[idx] else {
+        continue;
+      };
+      if !allows_soft_wrap(text_item.style.as_ref()) {
+        continue;
+      }
+
+      let break_opportunity = text_item
+        .break_opportunities
+        .iter()
+        .rev()
+        .find(|brk| {
+          matches!(brk.break_type, BreakType::Allowed)
+            && brk.kind == BreakOpportunityKind::Normal
+            && brk.byte_offset > 0
+            && brk.byte_offset < text_item.text.len()
+        })
+        .or_else(|| {
+          text_item.break_opportunities.iter().rev().find(|brk| {
+            matches!(brk.break_type, BreakType::Allowed)
+              && brk.kind == BreakOpportunityKind::Emergency
+              && brk.byte_offset > 0
+              && brk.byte_offset < text_item.text.len()
+          })
+        })
+        .copied();
+
+      let Some(break_opportunity) = break_opportunity else {
+        continue;
+      };
+
+      let (mut before, after) = text_item.split_at(
+        break_opportunity.byte_offset,
+        break_opportunity.adds_hyphen,
+        &self.shaper,
+        &self.font_context,
+        &mut self.reshape_cache,
+      )?;
+
+      let mut drop_before = false;
+      if matches!(break_opportunity.break_type, BreakType::Allowed)
+        && matches!(
+          text_item.style.white_space,
+          WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+        )
+      {
+        let trimmed_len = before.text.trim_end_matches(' ').len();
+        if trimmed_len < before.text.len() {
+          if trimmed_len == 0 {
+            drop_before = true;
+          } else if let Some((trimmed, _)) = before.split_at(
+            trimmed_len,
+            false,
+            &self.shaper,
+            &self.font_context,
+            &mut self.reshape_cache,
+          ) {
+            before = trimmed;
+          }
+        }
+      }
+
+      let mut before_children: Vec<InlineItem> = children[..idx].to_vec();
+      if !drop_before && before.advance_for_layout > 0.0 {
+        before_children.push(InlineItem::Text(before));
+      }
+
+      let mut after_children: Vec<InlineItem> = Vec::new();
+      after_children.push(InlineItem::Text(after));
+      after_children.extend_from_slice(&children[idx + 1..]);
+
+      let has_in_flow_before = before_children.iter().any(|child| {
+        !matches!(
+          child,
+          InlineItem::StaticPositionAnchor(_)
+            | InlineItem::Floating(_)
+            | InlineItem::HardBreak(_)
+        )
+      });
+      if !has_in_flow_before {
+        continue;
+      }
+
+      let split_idx = before_children.len();
+      let mut before_gaps = Vec::new();
+      let mut after_gaps = Vec::new();
+      if !inline_box.justify_gaps.is_empty() {
+        if split_idx > 1 {
+          before_gaps.extend_from_slice(&inline_box.justify_gaps[..split_idx - 1]);
+        }
+        if split_idx < inline_box.justify_gaps.len() {
+          after_gaps.extend_from_slice(&inline_box.justify_gaps[split_idx..]);
+        }
+      }
+
+      let before_metrics = super::compute_inline_box_metrics(
+        &before_children,
+        inline_box.content_offset_y,
+        inline_box.bottom_inset,
+        inline_box.strut_metrics,
+      );
+      let after_metrics = super::compute_inline_box_metrics(
+        &after_children,
+        inline_box.content_offset_y,
+        inline_box.bottom_inset,
+        inline_box.strut_metrics,
+      );
+
+      let mut before_box = InlineBoxItem::new(
+        inline_box.start_edge,
+        0.0,
+        inline_box.content_offset_y,
+        before_metrics,
+        inline_box.style.clone(),
+        inline_box.box_index,
+        inline_box.direction,
+        inline_box.unicode_bidi,
+      );
+      before_box.box_id = inline_box.box_id;
+      before_box.border_left = inline_box.border_left;
+      before_box.border_right = 0.0;
+      before_box.border_top = inline_box.border_top;
+      before_box.border_bottom = inline_box.border_bottom;
+      before_box.bottom_inset = inline_box.bottom_inset;
+      before_box.strut_metrics = inline_box.strut_metrics;
+      before_box.vertical_align = inline_box.vertical_align;
+      before_box.children = before_children;
+      before_box.justify_gaps = before_gaps;
+
+      let mut after_box = InlineBoxItem::new(
+        0.0,
+        inline_box.end_edge,
+        inline_box.content_offset_y,
+        after_metrics,
+        inline_box.style.clone(),
+        inline_box.box_index,
+        inline_box.direction,
+        inline_box.unicode_bidi,
+      );
+      after_box.box_id = inline_box.box_id;
+      after_box.border_left = 0.0;
+      after_box.border_right = inline_box.border_right;
+      after_box.border_top = inline_box.border_top;
+      after_box.border_bottom = inline_box.border_bottom;
+      after_box.bottom_inset = inline_box.bottom_inset;
+      after_box.strut_metrics = inline_box.strut_metrics;
+      after_box.vertical_align = inline_box.vertical_align;
+      after_box.children = after_children;
+      after_box.justify_gaps = after_gaps;
+
+      return Some((before_box, after_box));
+    }
+
+    for split_idx in (1..children.len()).rev() {
+      let prev = &children[split_idx - 1];
+      let next = &children[split_idx];
+      let (Some(prev_last), Some(next_first)) = (
+        last_text_char_for_soft_wrap(prev),
+        first_text_char_for_soft_wrap(next),
+      ) else {
+        continue;
+      };
+      if !item_allows_soft_wrap(prev) || !item_allows_soft_wrap(next) {
+        continue;
+      }
+      if !soft_wrap_opportunity_between_chars(prev_last, next_first) {
+        continue;
+      }
+
+      let before_children: Vec<InlineItem> = children[..split_idx].to_vec();
+      let after_children: Vec<InlineItem> = children[split_idx..].to_vec();
+
+      let split_idx = before_children.len();
+      let mut before_gaps = Vec::new();
+      let mut after_gaps = Vec::new();
+      if !inline_box.justify_gaps.is_empty() {
+        if split_idx > 1 {
+          before_gaps.extend_from_slice(&inline_box.justify_gaps[..split_idx - 1]);
+        }
+        if split_idx < inline_box.justify_gaps.len() {
+          after_gaps.extend_from_slice(&inline_box.justify_gaps[split_idx..]);
+        }
+      }
+
+      let before_metrics = super::compute_inline_box_metrics(
+        &before_children,
+        inline_box.content_offset_y,
+        inline_box.bottom_inset,
+        inline_box.strut_metrics,
+      );
+      let after_metrics = super::compute_inline_box_metrics(
+        &after_children,
+        inline_box.content_offset_y,
+        inline_box.bottom_inset,
+        inline_box.strut_metrics,
+      );
+
+      let mut before_box = InlineBoxItem::new(
+        inline_box.start_edge,
+        0.0,
+        inline_box.content_offset_y,
+        before_metrics,
+        inline_box.style.clone(),
+        inline_box.box_index,
+        inline_box.direction,
+        inline_box.unicode_bidi,
+      );
+      before_box.box_id = inline_box.box_id;
+      before_box.border_left = inline_box.border_left;
+      before_box.border_right = 0.0;
+      before_box.border_top = inline_box.border_top;
+      before_box.border_bottom = inline_box.border_bottom;
+      before_box.bottom_inset = inline_box.bottom_inset;
+      before_box.strut_metrics = inline_box.strut_metrics;
+      before_box.vertical_align = inline_box.vertical_align;
+      before_box.children = before_children;
+      before_box.justify_gaps = before_gaps;
+
+      let mut after_box = InlineBoxItem::new(
+        0.0,
+        inline_box.end_edge,
+        inline_box.content_offset_y,
+        after_metrics,
+        inline_box.style.clone(),
+        inline_box.box_index,
+        inline_box.direction,
+        inline_box.unicode_bidi,
+      );
+      after_box.box_id = inline_box.box_id;
+      after_box.border_left = 0.0;
+      after_box.border_right = inline_box.border_right;
+      after_box.border_top = inline_box.border_top;
+      after_box.border_bottom = inline_box.border_bottom;
+      after_box.bottom_inset = inline_box.bottom_inset;
+      after_box.strut_metrics = inline_box.strut_metrics;
+      after_box.vertical_align = inline_box.vertical_align;
+      after_box.children = after_children;
+      after_box.justify_gaps = after_gaps;
+
+      return Some((before_box, after_box));
+    }
+
+    None
+  }
+
+  fn rewind_line_break_before_glued_inline_box(
+    &mut self,
+    inline_box: &InlineBoxItem,
+  ) -> Option<Vec<InlineItem>> {
+    if self.current_line.is_empty() {
+      return None;
+    }
+
+    let mut group_first_char = inline_box
+      .children
+      .iter()
+      .find_map(first_text_char_for_soft_wrap)?;
+
+    let original_items = self.current_line.items.clone();
+    let original_x = self.current_x;
+
+    let mut moved_rev: Vec<InlineItem> = Vec::new();
+    let mut found_break = false;
+
+    loop {
+      while matches!(
+        self.current_line.items.last().map(|p| &p.item),
+        Some(InlineItem::StaticPositionAnchor(_))
+          | Some(InlineItem::Floating(_))
+          | Some(InlineItem::HardBreak(_))
+      ) {
+        if let Some(popped) = self.current_line.items.pop() {
+          moved_rev.push(popped.item);
+        }
+      }
+
+      let Some(prev_item) = self.current_line.items.last().map(|p| p.item.clone()) else {
+        break;
+      };
+
+      let Some(prev_last) = last_text_char_for_soft_wrap(&prev_item) else {
+        found_break = !moved_rev.is_empty();
+        break;
+      };
+
+      if item_allows_soft_wrap(&prev_item)
+        && soft_wrap_opportunity_between_chars(prev_last, group_first_char)
+      {
+        found_break = !moved_rev.is_empty();
+        break;
+      }
+
+      if let InlineItem::Text(text_item) = &prev_item {
+        if allows_soft_wrap(text_item.style.as_ref()) {
+          let break_opportunity = text_item
+            .break_opportunities
+            .iter()
+            .rev()
+            .find(|brk| {
+              matches!(brk.break_type, BreakType::Allowed)
+                && brk.kind == BreakOpportunityKind::Normal
+                && brk.byte_offset > 0
+                && brk.byte_offset < text_item.text.len()
+            })
+            .or_else(|| {
+              text_item.break_opportunities.iter().rev().find(|brk| {
+                matches!(brk.break_type, BreakType::Allowed)
+                  && brk.kind == BreakOpportunityKind::Emergency
+                  && brk.byte_offset > 0
+                  && brk.byte_offset < text_item.text.len()
+              })
+            })
+            .copied();
+
+          if let Some(break_opportunity) = break_opportunity {
+            if let Some((mut before, after)) = text_item.split_at(
+              break_opportunity.byte_offset,
+              break_opportunity.adds_hyphen,
+              &self.shaper,
+              &self.font_context,
+              &mut self.reshape_cache,
+            ) {
+              let mut drop_before = false;
+              if matches!(break_opportunity.break_type, BreakType::Allowed)
+                && matches!(
+                  text_item.style.white_space,
+                  WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+                )
+              {
+                let trimmed_len = before.text.trim_end_matches(' ').len();
+                if trimmed_len < before.text.len() {
+                  if trimmed_len == 0 {
+                    drop_before = true;
+                  } else if let Some((trimmed, _)) = before.split_at(
+                    trimmed_len,
+                    false,
+                    &self.shaper,
+                    &self.font_context,
+                    &mut self.reshape_cache,
+                  ) {
+                    before = trimmed;
+                  }
+                }
+              }
+
+              if drop_before || before.advance_for_layout <= 0.0 {
+                self.current_line.items.pop();
+              } else if let Some(last_mut) = self.current_line.items.last_mut() {
+                last_mut.item = InlineItem::Text(before);
+              }
+
+              moved_rev.push(InlineItem::Text(after));
+              found_break = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if let InlineItem::InlineBox(prev_box) = &prev_item {
+        if let Some((before_box, after_box)) =
+          self.split_inline_box_at_last_break_opportunity(prev_box)
+        {
+          if let Some(last_mut) = self.current_line.items.last_mut() {
+            last_mut.item = InlineItem::InlineBox(before_box);
+          }
+          moved_rev.push(InlineItem::InlineBox(after_box));
+          found_break = true;
+          break;
+        }
+      }
+
+      if let Some(popped) = self.current_line.items.pop() {
+        if let Some(ch) = first_text_char_for_soft_wrap(&popped.item) {
+          group_first_char = ch;
+        }
+        moved_rev.push(popped.item);
+        continue;
+      }
+
+      break;
+    }
+
+    if !found_break || moved_rev.is_empty() {
+      self.current_line.items = original_items;
+      self.current_x = original_x;
+
+      self.baseline_acc = LineBaselineAccumulator::new(&self.strut_metrics);
+      for positioned in &mut self.current_line.items {
+        let vertical_align = positioned.item.vertical_align();
+        let metrics = if vertical_align.is_line_relative() {
+          positioned.item.baseline_metrics()
+        } else {
+          positioned.item.line_metrics()
+        };
+        positioned.baseline_offset = if vertical_align.is_line_relative() {
+          self
+            .baseline_acc
+            .add_line_relative(&metrics, vertical_align);
+          0.0
+        } else {
+          self
+            .baseline_acc
+            .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics))
+        };
+      }
+
+      return None;
+    }
+
+    moved_rev.reverse();
+
+    self.current_x = self.current_line.items.iter().map(|p| p.item.width()).sum();
+
+    self.baseline_acc = LineBaselineAccumulator::new(&self.strut_metrics);
+    for positioned in &mut self.current_line.items {
+      let vertical_align = positioned.item.vertical_align();
+      let metrics = if vertical_align.is_line_relative() {
+        positioned.item.baseline_metrics()
+      } else {
+        positioned.item.line_metrics()
+      };
+      positioned.baseline_offset = if vertical_align.is_line_relative() {
+        self
+          .baseline_acc
+          .add_line_relative(&metrics, vertical_align);
+        0.0
+      } else {
+        self
+          .baseline_acc
+          .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics))
+      };
+    }
+
+    Some(moved_rev)
   }
 
   /// Places an item on the current line without breaking
