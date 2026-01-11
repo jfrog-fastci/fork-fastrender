@@ -915,6 +915,8 @@ TimerId rt_set_timeout_handle(void (*cb)(GcPtr), HandleId data, uint64_t delay_m
 TimerId rt_set_timeout_handle_with_drop(void (*cb)(GcPtr), HandleId data, void (*drop_data)(GcPtr), uint64_t delay_ms);
 TimerId rt_set_interval_handle(void (*cb)(GcPtr), HandleId data, uint64_t interval_ms);
 TimerId rt_set_interval_handle_with_drop(void (*cb)(GcPtr), HandleId data, void (*drop_data)(GcPtr), uint64_t interval_ms);
+// Handle-based I/O watchers (`rt_io_register_handle*`) follow the same contract as the regular
+// I/O watcher APIs below (nonblocking fd + edge-triggered drain requirement).
 IoWatcherId rt_io_register_handle(
   RtFd fd,
   uint32_t interests,
