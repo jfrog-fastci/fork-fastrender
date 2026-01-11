@@ -3,7 +3,7 @@ use std::fmt;
 
 use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
 use serde::{de::Error as _, Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+pub use serde_json::Value as JsonValue;
 
 mod ids;
 pub use ids::ApiId;

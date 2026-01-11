@@ -5,7 +5,7 @@ use effect_js::{
   ApiId, RecognizedPattern,
 };
 use hir_js::{ExprId, ExprKind, FileKind, ObjectKey};
-use knowledge_base::KnowledgeBase;
+use knowledge_base::{ApiKind, KnowledgeBase};
 use parse_js::{parse_with_options, ParseOptions};
 use std::fs;
 use std::path::PathBuf;
@@ -93,7 +93,14 @@ fn run_kb(command: KbCommand) {
       if let Some(until) = entry.until.as_deref() {
         println!("until: {until}");
       }
-      if let Some(kind) = entry.kind.as_deref() {
+      if entry.kind != ApiKind::Function {
+        let kind = match entry.kind {
+          ApiKind::Function => "function",
+          ApiKind::Constructor => "constructor",
+          ApiKind::Getter => "getter",
+          ApiKind::Setter => "setter",
+          ApiKind::Value => "value",
+        };
         println!("kind: {kind}");
       }
       if let Some(async_) = entry.async_ {

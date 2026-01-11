@@ -159,6 +159,9 @@ Consumers must be tolerant of missing or malformed values.
 
 `effect-js` uses `properties` on API entries to understand string encodings.
 
+`properties` values are JSON (strings/booleans/numbers/arrays/objects). Encoding keys use string
+values.
+
 Standardized keys:
 
 - `encoding.output`: `ascii|latin1|utf8|unknown|same_as_input`
