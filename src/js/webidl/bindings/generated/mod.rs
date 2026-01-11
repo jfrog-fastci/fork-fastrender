@@ -1750,7 +1750,12 @@ pub mod window {
     rt.scope.push_root(Value::Object(global))?;
 
     let key = rt.property_key("EventTarget")?;
-    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
       return Ok(());
     }
 
@@ -1758,7 +1763,6 @@ pub mod window {
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
     let proto_event_target = rt.alloc_object()?;
-
     let func =
       rt.alloc_native_function(event_target_add_event_listener, None, "addEventListener", 2)?;
     rt.define_data_property_str(
@@ -1825,7 +1829,12 @@ pub mod window {
     rt.scope.push_root(Value::Object(global))?;
 
     let key = rt.property_key("Node")?;
-    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
       return Ok(());
     }
 
@@ -2104,7 +2113,12 @@ pub mod window {
     rt.scope.push_root(Value::Object(global))?;
 
     let key = rt.property_key("URL")?;
-    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
       return Ok(());
     }
 
@@ -2112,7 +2126,6 @@ pub mod window {
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
     let proto_u_r_l = rt.alloc_object()?;
-
     let func = rt.alloc_native_function(u_r_l_to_j_s_o_n, None, "toJSON", 0)?;
     rt.define_data_property_str(
       proto_u_r_l,
@@ -2187,7 +2200,12 @@ pub mod window {
     rt.scope.push_root(Value::Object(global))?;
 
     let key = rt.property_key("URLSearchParams")?;
-    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
       return Ok(());
     }
 
@@ -2195,7 +2213,6 @@ pub mod window {
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
     let proto_u_r_l_search_params = rt.alloc_object()?;
-
     let func = rt.alloc_native_function(u_r_l_search_params_append, None, "append", 2)?;
     rt.define_data_property_str(
       proto_u_r_l_search_params,
@@ -2322,17 +2339,26 @@ pub mod window {
     rt.scope.push_root(Value::Object(global))?;
 
     let global_var_attrs = DataPropertyAttributes::new(true, false, true);
-
     {
       let key = rt.property_key("alert")?;
-      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(global, &key)?
+        .is_none()
+      {
         let func = rt.alloc_native_function(window_alert, None, "alert", 0)?;
         rt.define_data_property_str(global, "alert", Value::Object(func), global_var_attrs)?;
       }
     }
     {
       let key = rt.property_key("clearInterval")?;
-      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(global, &key)?
+        .is_none()
+      {
         let func = rt.alloc_native_function(window_clear_interval, None, "clearInterval", 0)?;
         rt.define_data_property_str(
           global,
@@ -2344,7 +2370,12 @@ pub mod window {
     }
     {
       let key = rt.property_key("clearTimeout")?;
-      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(global, &key)?
+        .is_none()
+      {
         let func = rt.alloc_native_function(window_clear_timeout, None, "clearTimeout", 0)?;
         rt.define_data_property_str(
           global,
@@ -2356,7 +2387,12 @@ pub mod window {
     }
     {
       let key = rt.property_key("queueMicrotask")?;
-      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(global, &key)?
+        .is_none()
+      {
         let func = rt.alloc_native_function(window_queue_microtask, None, "queueMicrotask", 1)?;
         rt.define_data_property_str(
           global,
@@ -2368,14 +2404,24 @@ pub mod window {
     }
     {
       let key = rt.property_key("setInterval")?;
-      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(global, &key)?
+        .is_none()
+      {
         let func = rt.alloc_native_function(window_set_interval, None, "setInterval", 1)?;
         rt.define_data_property_str(global, "setInterval", Value::Object(func), global_var_attrs)?;
       }
     }
     {
       let key = rt.property_key("setTimeout")?;
-      if rt.scope.heap().object_get_own_property(global, &key)?.is_none() {
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(global, &key)?
+        .is_none()
+      {
         let func = rt.alloc_native_function(window_set_timeout, None, "setTimeout", 1)?;
         rt.define_data_property_str(global, "setTimeout", Value::Object(func), global_var_attrs)?;
       }
@@ -3814,7 +3860,12 @@ pub mod worker {
     rt.scope.push_root(Value::Object(global))?;
 
     let key = rt.property_key("EventTarget")?;
-    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
       return Ok(());
     }
 
@@ -3822,7 +3873,6 @@ pub mod worker {
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
     let proto_event_target = rt.alloc_object()?;
-
     let func =
       rt.alloc_native_function(event_target_add_event_listener, None, "addEventListener", 2)?;
     rt.define_data_property_str(
@@ -3889,7 +3939,12 @@ pub mod worker {
     rt.scope.push_root(Value::Object(global))?;
 
     let key = rt.property_key("URL")?;
-    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
       return Ok(());
     }
 
@@ -3897,7 +3952,6 @@ pub mod worker {
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
     let proto_u_r_l = rt.alloc_object()?;
-
     let func = rt.alloc_native_function(u_r_l_to_j_s_o_n, None, "toJSON", 0)?;
     rt.define_data_property_str(
       proto_u_r_l,
@@ -3972,7 +4026,12 @@ pub mod worker {
     rt.scope.push_root(Value::Object(global))?;
 
     let key = rt.property_key("URLSearchParams")?;
-    if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {
+    if rt
+      .scope
+      .heap()
+      .object_get_own_property(global, &key)?
+      .is_some()
+    {
       return Ok(());
     }
 
@@ -3980,7 +4039,6 @@ pub mod worker {
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
     let proto_u_r_l_search_params = rt.alloc_object()?;
-
     let func = rt.alloc_native_function(u_r_l_search_params_append, None, "append", 2)?;
     rt.define_data_property_str(
       proto_u_r_l_search_params,
@@ -4113,6 +4171,6 @@ pub use window::install_event_target_bindings_vm_js;
 pub use window::install_node_bindings_vm_js;
 pub use window::install_url_bindings_vm_js;
 pub use window::install_url_search_params_bindings_vm_js;
-pub use window::install_window_ops_bindings_vm_js;
 pub use window::install_window_bindings_vm_js;
+pub use window::install_window_ops_bindings_vm_js;
 pub use worker::install_worker_bindings_vm_js;
