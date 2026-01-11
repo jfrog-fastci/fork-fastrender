@@ -566,8 +566,7 @@ where
   }
 
   let len = range.end - range.start;
-  let rt = crate::rt_ensure_init();
-  let workers = rt.parallel.worker_count();
+  let workers = crate::rt_parallel().worker_count();
 
   let estimate = WorkEstimate {
     items: len,
@@ -625,6 +624,5 @@ pub fn parallel_for_raw(
   data: *mut u8,
   chunking: Chunking,
 ) {
-  let rt = crate::rt_ensure_init();
-  rt.parallel.parallel_for_with_chunking(range.start, range.end, body, data, chunking);
+  crate::rt_parallel().parallel_for_with_chunking(range.start, range.end, body, data, chunking);
 }

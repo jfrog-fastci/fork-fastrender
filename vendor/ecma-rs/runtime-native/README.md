@@ -273,16 +273,16 @@ Many host APIs are inherently blocking (filesystem, DNS, crypto, etc.). To prese
 without blocking the event loop, `runtime-native` exposes a dedicated blocking thread pool.
 
 `rt_spawn_blocking` runs `task(data, promise)` on the blocking pool and returns the allocated
-`PromiseRef`:
+`LegacyPromiseRef`:
 
 ```c
-PromiseRef rt_spawn_blocking(void (*task)(uint8_t* data, PromiseRef promise), uint8_t* data);
+LegacyPromiseRef rt_spawn_blocking(void (*task)(uint8_t* data, LegacyPromiseRef promise), uint8_t* data);
 ```
 
 Contract:
 
 - The runtime allocates a new pending promise and passes it to the task.
-- The task must settle the promise via `rt_promise_resolve` / `rt_promise_reject`.
+- The task must settle the promise via `rt_promise_resolve_legacy` / `rt_promise_reject_legacy`.
 - `data` must remain valid for the duration of the task and must be safe to access from a blocking
   worker thread.
 - Blocking tasks execute in a GC-safe ("NativeSafe") region and must not touch the GC heap.
@@ -321,9 +321,9 @@ struct RtCoroutineHeader {
 * `Pending`: coroutine suspended on an `await` (the runtime must stop executing it now).
 * `Yield`: cooperative yield (runtime schedules the coroutine to resume later).
 
-## Key semantic requirement (`rt_async_spawn`)
+## Key semantic requirement (`rt_async_spawn_legacy`)
 
-`rt_async_spawn` must run the coroutine **synchronously** on the calling thread until it either:
+`rt_async_spawn_legacy` must run the coroutine **synchronously** on the calling thread until it either:
 
 * completes (`Done`), or
 * reaches its first suspension point (`Pending` / `await`).
@@ -339,12 +339,12 @@ f(); // side_effect happens immediately
 
 The runtime provides a minimal `Promise` implementation sufficient for async/await:
 
-* create a pending promise (`rt_promise_new`)
-* resolve/reject it (`rt_promise_resolve` / `rt_promise_reject`)
-* register a continuation (`rt_promise_then`)
+* create a pending promise (`rt_promise_new_legacy`)
+* resolve/reject it (`rt_promise_resolve_legacy` / `rt_promise_reject_legacy`)
+* register a continuation (`rt_promise_then_legacy`)
 
 Continuations are always scheduled onto the async runtime **microtask** queue and are executed
-FIFO by calling `rt_async_poll()`.
+FIFO by calling `rt_async_poll_legacy()`.
 
 ## Benchmarks
 

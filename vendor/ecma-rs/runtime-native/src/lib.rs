@@ -177,15 +177,26 @@ pub use thread::{
 use std::sync::OnceLock;
 
 struct GlobalRuntime {
-  parallel: parallel::ParallelRuntime,
+  /// Lazily-initialized parallel worker pool.
+  ///
+  /// Creating worker threads can take noticeable time; keep this on-demand so
+  /// `rt_async_poll` (and other non-parallel entrypoints) don't pay the cost on
+  /// first use.
+  parallel: OnceLock<parallel::ParallelRuntime>,
 }
 
 static RUNTIME: OnceLock<GlobalRuntime> = OnceLock::new();
 
 fn rt_ensure_init() -> &'static GlobalRuntime {
   RUNTIME.get_or_init(|| GlobalRuntime {
-    parallel: parallel::ParallelRuntime::new(),
+    parallel: OnceLock::new(),
   })
+}
+
+fn rt_parallel() -> &'static parallel::ParallelRuntime {
+  rt_ensure_init()
+    .parallel
+    .get_or_init(|| parallel::ParallelRuntime::new())
 }
 
 /// Spawn an async coroutine and return its result promise.
@@ -755,7 +766,9 @@ mod tests {
       "expected .llvm_stackmaps to be linked in (test includes a dummy section)"
     );
     if bytes.is_empty() {
-      // No stackmaps were linked into this binary.
+      // This loader is opt-in: when the `llvm_stackmaps_linker` feature is disabled (or stackmaps
+      // are not present on this platform), we intentionally treat the stackmaps section as
+      // unavailable.
       return;
     }
 

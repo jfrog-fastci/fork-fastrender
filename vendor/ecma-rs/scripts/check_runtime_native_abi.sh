@@ -66,6 +66,7 @@ required_symbols=(
   rt_gc_safepoint
   rt_gc_safepoint_relocate_h
   rt_gc_safepoint_slow
+  rt_keep_alive_gc_ref
   rt_write_barrier
   rt_write_barrier_range
   rt_gc_collect
@@ -93,23 +94,31 @@ required_symbols=(
   rt_promise_reject
 
   rt_async_spawn
+  rt_async_spawn_deferred
   rt_async_poll
   rt_async_set_strict_await_yields
 
   # Legacy async ABI (temporary; will be removed once codegen migrates).
   rt_promise_new_legacy
   rt_promise_resolve_legacy
+  rt_promise_resolve_into_legacy
+  rt_promise_resolve_promise_legacy
+  rt_promise_resolve_thenable_legacy
   rt_promise_reject_legacy
   rt_promise_then_legacy
-  rt_coro_await_legacy
-
   rt_async_spawn_legacy
+  rt_async_spawn_deferred_legacy
   rt_async_poll_legacy
   rt_async_sleep_legacy
+  rt_coro_await_legacy
+  rt_coro_await_value_legacy
   rt_queue_microtask
   rt_set_timeout
   rt_set_interval
   rt_clear_timer
+  rt_io_register
+  rt_io_update
+  rt_io_unregister
 )
 
 missing=0

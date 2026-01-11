@@ -240,6 +240,18 @@ impl IoOpRecord {
   }
 }
 
+impl Drop for IoOpRecord {
+  fn drop(&mut self) {
+    // Ensure any global-root pins held for the duration of the I/O op are released
+    // as soon as the op record is dropped.
+    //
+    // This avoids observable intermediate states where the I/O limiter counters
+    // have reached 0 but GC pins are still present (teardown tests expect pins
+    // to be released promptly once the last op record reference is dropped).
+    self.roots.clear();
+  }
+}
+
 pub(crate) struct OpRegistry {
   next_id: u64,
   ops: HashMap<IoOpId, Arc<IoOpRecord>>,

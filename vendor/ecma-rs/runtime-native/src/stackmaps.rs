@@ -256,21 +256,13 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
     // satisfy alignment constraints. Skip that padding to find the next
     // `version=3` blob header.
     //
-    // Note: we only skip *zero* bytes here. If the remaining tail is shorter
-    // than a StackMap v3 header (16 bytes), it cannot start another blob; ignore
-    // it (some toolchains leave short non-zero alignment noise).
+    // Note: we only skip *zero* bytes here. If the remaining tail is shorter than a StackMap v3
+    // header (16 bytes), it cannot start another blob; ignore it (some toolchains leave short
+    // non-zero alignment noise).
     while off < bytes.len() && bytes[off] == 0 {
       off += 1;
     }
-    if off >= bytes.len() {
-      break;
-    }
-    if bytes.len() - off < STACKMAP_HEADER_SIZE {
-      // We already skipped any 0x00 padding. StackMap v3 headers are 16 bytes, so any remaining
-      // bytes cannot start a valid blob.
-      //
-      // Some toolchains produce short non-zero tails (e.g. section alignment noise). Treat those
-      // bytes as ignorable and stop parsing.
+    if off >= bytes.len() || bytes.len() - off < STACKMAP_HEADER_SIZE {
       break;
     }
 

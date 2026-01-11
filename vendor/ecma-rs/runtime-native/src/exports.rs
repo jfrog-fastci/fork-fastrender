@@ -786,8 +786,8 @@ pub extern "C" fn rt_weak_remove(handle: u64) {
 #[no_mangle]
 pub extern "C" fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId {
   let res = catch_unwind(AssertUnwindSafe(|| {
-    let rt = crate::rt_ensure_init();
-    rt.parallel.spawn(task, data)
+    let _ = crate::rt_ensure_init();
+    crate::rt_parallel().spawn(task, data)
   }));
   match res {
     Ok(id) => id,
@@ -798,8 +798,8 @@ pub extern "C" fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8)
 #[no_mangle]
 pub extern "C" fn rt_parallel_join(tasks: *const TaskId, count: usize) {
   let res = catch_unwind(AssertUnwindSafe(|| {
-    let rt = crate::rt_ensure_init();
-    rt.parallel.join(tasks, count)
+    let _ = crate::rt_ensure_init();
+    crate::rt_parallel().join(tasks, count)
   }));
   if res.is_err() {
     std::process::abort();
@@ -814,8 +814,8 @@ pub extern "C" fn rt_parallel_for(
   data: *mut u8,
 ) {
   let res = catch_unwind(AssertUnwindSafe(|| {
-    let rt = crate::rt_ensure_init();
-    rt.parallel.parallel_for(start, end, body, data)
+    let _ = crate::rt_ensure_init();
+    crate::rt_parallel().parallel_for(start, end, body, data)
   }));
   if res.is_err() {
     std::process::abort();
@@ -900,6 +900,9 @@ pub extern "C" fn rt_async_cancel_all() {
 /// This runtime maintains process-global singleton state. `rt_async_poll_legacy` may be called from
 /// multiple threads, but calls are **globally serialized** (only one thread executes the poll loop
 /// at a time).
+///
+/// Returns `true` if there is still pending work after this poll turn (queued tasks, active
+/// timers, or I/O watchers). Returns `false` when the runtime is quiescent.
 #[no_mangle]
 pub extern "C" fn rt_async_poll_legacy() -> bool {
   abort_on_panic(|| {

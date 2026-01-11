@@ -462,7 +462,12 @@ PromiseRef rt_async_spawn_deferred(CoroutineRef coro);
 // Cancel all queued runtime-owned coroutine frames.
 void rt_async_cancel_all(void);
 
-// Drive the async runtime. Returns true if any work was performed.
+// Drive the async runtime/event loop for one "turn".
+//
+// Returns:
+// - true  if there is still pending work after the call (queued microtasks/macrotasks,
+//         active timers, or active I/O watchers)
+// - false if the runtime is quiescent (no tasks, timers, or watchers)
 bool rt_async_poll(void);
 
 // Block until at least one async task becomes ready.
@@ -516,6 +521,9 @@ void rt_coro_await_value_legacy(RtCoroutineHeader* coro, PromiseResolveInput awa
 // -----------------------------------------------------------------------------
 // Microtasks + timers (queueMicrotask/setTimeout/setInterval)
 // -----------------------------------------------------------------------------
+
+// Resolve a promise after `delay_ms` milliseconds.
+PromiseRef rt_async_sleep(uint64_t delay_ms);
 // Enqueue a microtask to run during the next microtask checkpoint (end of the current macrotask,
 // or during `rt_async_poll_legacy` when the event loop is otherwise idle).
 void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);
