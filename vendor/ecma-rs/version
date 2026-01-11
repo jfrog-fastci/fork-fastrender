@@ -104,7 +104,7 @@ if (hasRemote) {
   console.log("Skipping git pull: no remotes configured");
 }
 
-cmd("cargo", "test");
+cmd("bash", "scripts/cargo_agent.sh", "test");
 
 for (const file of [
   "minify-js/Cargo.toml",
@@ -134,14 +134,14 @@ replaceInFile(
   `$1${NEW_VERSION}`,
 );
 
-cmd("cargo", "generate-lockfile");
-cmd("cargo", "test", "--workspace", "--locked");
+cmd("bash", "scripts/cargo_agent.sh", "generate-lockfile");
+cmd("bash", "scripts/cargo_agent.sh", "test", "--workspace", "--locked");
 
 cmd("git", "add", "-A");
 cmd("git", "commit", "-m", NEW_VERSION);
 cmd("git", "tag", "-a", `v${NEW_VERSION}`, "-m", "");
 // minify-js is publishable; CLI and Node bindings are marked publish = false.
-cmd("cargo", "publish", "--allow-dirty", "-p", "minify-js");
+cmd("bash", "scripts/cargo_agent.sh", "publish", "--allow-dirty", "-p", "minify-js");
 if (hasRemote) {
   cmd("git", "push", "--follow-tags");
 } else {

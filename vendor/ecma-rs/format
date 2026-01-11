@@ -4,7 +4,13 @@ set -Eeuxo pipefail
 
 pushd "$(dirname "$0")" >/dev/null
 
-cargo fmt --all
+#
+# NOTE: This repo is vendored into the FastRender monorepo, where all cargo
+# invocations must go through the resource-limited wrapper.
+#
+# `scripts/cargo_agent.sh` also ensures we run within the nested `vendor/ecma-rs`
+# workspace (picking up `rust-toolchain.toml`).
+bash scripts/cargo_agent.sh fmt --all
 
 if command -v npx >/dev/null 2>&1; then
   npx --yes prettier@3.4.2 --write \
