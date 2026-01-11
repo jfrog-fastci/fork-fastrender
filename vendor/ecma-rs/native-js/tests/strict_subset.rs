@@ -40,7 +40,10 @@ impl Host for TestHost {
       key: FileKey::new("native-js:test-builtins.d.ts"),
       name: Arc::from("native-js test builtins"),
       kind: FileKind::Dts,
-      text: Arc::from("declare function print(value: number): void;\n"),
+      // `arguments` is a magic per-function binding in JS; we only declare it so `typecheck-ts`
+      // accepts samples that reference it and the strict-subset validator can produce the intended
+      // `NJS0009` diagnostic.
+      text: Arc::from("declare function print(value: number): void;\ndeclare const arguments: number;\n"),
     }]
   }
 
