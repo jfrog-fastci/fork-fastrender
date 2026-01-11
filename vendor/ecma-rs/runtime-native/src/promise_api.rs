@@ -14,8 +14,8 @@
 use crate::async_abi::{PromiseHeader, PromiseRef};
 use crate::async_rt::{global as async_global, Task};
 use crate::promise_reactions::{reverse_list, PromiseReactionNode, PromiseReactionVTable};
+use crate::sync::GcAwareMutex;
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::any::Any;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
@@ -106,7 +106,8 @@ struct RejectionTracker {
   handled_events: Vec<RejectionHandled>,
 }
 
-static REJECTION_TRACKER: Lazy<Mutex<RejectionTracker>> = Lazy::new(|| Mutex::new(RejectionTracker::default()));
+static REJECTION_TRACKER: Lazy<GcAwareMutex<RejectionTracker>> =
+  Lazy::new(|| GcAwareMutex::new(RejectionTracker::default()));
 
 pub fn rt_take_unhandled_rejections() -> Vec<UnhandledRejection> {
   let mut tracker = REJECTION_TRACKER.lock();
@@ -177,7 +178,7 @@ union PromisePayload<T> {
 pub struct Promise<T> {
   pub header: PromiseHeader,
   payload: UnsafeCell<MaybeUninit<PromisePayload<T>>>,
-  wakers: Mutex<Vec<Waker>>,
+  wakers: GcAwareMutex<Vec<Waker>>,
 }
 
 // Safety: `Promise` uses atomics for its externally-visible state and stores the payload exactly
@@ -232,7 +233,7 @@ where
         flags: std::sync::atomic::AtomicU8::new(0),
       },
       payload: UnsafeCell::new(MaybeUninit::uninit()),
-      wakers: Mutex::new(Vec::new()),
+      wakers: GcAwareMutex::new(Vec::new()),
     });
     let resolve = PromiseResolver { promise: p.clone() };
     let reject = PromiseRejector { promise: p.clone() };
@@ -268,7 +269,7 @@ where
       results: Vec<Option<T>>,
     }
 
-    let state = Arc::new(Mutex::new(AllState {
+    let state = Arc::new(GcAwareMutex::new(AllState {
       remaining: promises.len(),
       done: false,
       results: vec![None; promises.len()],
@@ -362,7 +363,7 @@ where
       results: Vec<Option<Settled<T>>>,
     }
 
-    let state = Arc::new(Mutex::new(State {
+    let state = Arc::new(GcAwareMutex::new(State {
       remaining: promises.len(),
       results: vec![None; promises.len()],
     }));
@@ -386,7 +387,7 @@ where
     }
 
     fn finish_all_settled<T: Clone + Send + Sync + 'static>(
-      state: &Arc<Mutex<State<T>>>,
+      state: &Arc<GcAwareMutex<State<T>>>,
       idx: usize,
       val: Settled<T>,
       resolve_out: &PromiseResolver<Vec<Settled<T>>>,
@@ -429,7 +430,7 @@ where
       errors: Vec<Option<PromiseRejection>>,
     }
 
-    let state = Arc::new(Mutex::new(AnyState {
+    let state = Arc::new(GcAwareMutex::new(AnyState {
       remaining: promises.len(),
       done: false,
       errors: vec![None; promises.len()],
@@ -615,7 +616,7 @@ where
   }
 }
 
-fn wake_waiters(wakers: &Mutex<Vec<Waker>>) {
+fn wake_waiters(wakers: &GcAwareMutex<Vec<Waker>>) {
   let to_wake = std::mem::take(&mut *wakers.lock());
   for w in to_wake {
     w.wake();
@@ -895,7 +896,7 @@ where
     F: FnOnce() -> R + Send + 'static,
     R: Into<PromiseReturn<()>>,
   {
-    let on_finally = Arc::new(Mutex::new(Some(on_finally)));
+    let on_finally = Arc::new(GcAwareMutex::new(Some(on_finally)));
 
     self.then(
       {
@@ -933,4 +934,28 @@ where
   fn into_future(self) -> PromiseFuture<T> {
     PromiseFuture { promise: self }
   }
+}
+
+// -----------------------------------------------------------------------------
+// Debug / test hooks
+// -----------------------------------------------------------------------------
+
+/// Test-only hook: execute `f` while holding the global unhandled-rejection tracker lock.
+///
+/// This exists to deterministically force contention on the promise API's internal rejection
+/// tracker for stop-the-world safepoint tests.
+#[doc(hidden)]
+pub fn debug_with_rejection_tracker_lock<R>(f: impl FnOnce() -> R) -> R {
+  let _guard = REJECTION_TRACKER.lock();
+  f()
+}
+
+/// Test-only hook: execute `f` while holding a promise's waker list lock.
+///
+/// This exists to deterministically force contention on the per-promise waker mutex for
+/// stop-the-world safepoint tests.
+#[doc(hidden)]
+pub fn debug_with_promise_wakers_lock<T, R>(promise: &Arc<Promise<T>>, f: impl FnOnce() -> R) -> R {
+  let _guard = promise.wakers.lock();
+  f()
 }

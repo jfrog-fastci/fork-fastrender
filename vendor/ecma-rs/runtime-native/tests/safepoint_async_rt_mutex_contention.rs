@@ -3,13 +3,28 @@ use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
 use runtime_native::io::IoRuntime;
 use runtime_native::abi::PromiseRef;
+use runtime_native::promise_api::{Promise, PromiseExt};
+use std::future::Future;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, RawWaker, RawWakerVTable, Waker};
 use std::time::Duration;
 
 extern "C" fn noop_task(_data: *mut u8) {}
+
+fn noop_waker() -> Waker {
+  unsafe fn clone(_: *const ()) -> RawWaker {
+    RawWaker::new(std::ptr::null(), &VTABLE)
+  }
+  unsafe fn wake(_: *const ()) {}
+  unsafe fn wake_by_ref(_: *const ()) {}
+  unsafe fn drop_waker(_: *const ()) {}
+
+  static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
+  unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+}
 
 fn wait_until_thread_native_safe(thread_id: u64, timeout: Duration) {
   let deadline = std::time::Instant::now() + timeout;
@@ -296,5 +311,95 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_spawn_blocking_queue_mutex
     drop(Box::from_raw(done_ptr));
   }
 
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_blocked_on_promise_rejection_tracker_mutex() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let handle = runtime_native::promise_api::debug_with_rejection_tracker_lock(|| {
+    let (tx_id, rx_id) = mpsc::channel();
+    let started = Arc::new(Barrier::new(2));
+    let started_worker = started.clone();
+
+    let handle = std::thread::spawn(move || {
+      let id = threading::register_current_thread(ThreadKind::Worker);
+      tx_id.send(id.get()).unwrap();
+
+      started_worker.wait();
+
+      // Contend on the global rejection tracker lock deterministically.
+      let _ = runtime_native::promise_api::rt_take_unhandled_rejections();
+
+      threading::unregister_current_thread();
+    });
+
+    let worker_id = rx_id.recv().unwrap();
+    started.wait();
+
+    wait_until_thread_native_safe(worker_id, Duration::from_secs(2));
+
+    runtime_native::rt_gc_request_stop_the_world();
+    let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+    runtime_native::rt_gc_resume_world();
+    assert!(
+      stopped,
+      "world did not stop while worker thread was blocked on the promise rejection tracker mutex"
+    );
+
+    handle
+  });
+
+  handle.join().unwrap();
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_blocked_on_promise_wakers_mutex() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let (promise, _resolve, _reject) = Promise::<u8>::new();
+
+  let handle = runtime_native::promise_api::debug_with_promise_wakers_lock(&promise, || {
+    let (tx_id, rx_id) = mpsc::channel();
+    let started = Arc::new(Barrier::new(2));
+
+    let promise_worker = promise.clone();
+    let started_worker = started.clone();
+    let handle = std::thread::spawn(move || {
+      let id = threading::register_current_thread(ThreadKind::Worker);
+      tx_id.send(id.get()).unwrap();
+
+      started_worker.wait();
+
+      // Contend on the per-promise wakers lock by polling the pending future.
+      let waker = noop_waker();
+      let mut cx = Context::from_waker(&waker);
+      let mut fut = Box::pin(promise_worker.into_future());
+      let _ = fut.as_mut().poll(&mut cx);
+
+      threading::unregister_current_thread();
+    });
+
+    let worker_id = rx_id.recv().unwrap();
+    started.wait();
+
+    wait_until_thread_native_safe(worker_id, Duration::from_secs(2));
+
+    runtime_native::rt_gc_request_stop_the_world();
+    let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+    runtime_native::rt_gc_resume_world();
+    assert!(
+      stopped,
+      "world did not stop while worker thread was blocked on the promise wakers mutex"
+    );
+
+    handle
+  });
+
+  handle.join().unwrap();
   threading::unregister_current_thread();
 }
