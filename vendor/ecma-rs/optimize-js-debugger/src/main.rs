@@ -696,10 +696,8 @@ mod tests {
   fn stable_cfg_uses_cfg_entry_for_bblock_order() {
     let mut graph = CfgGraph::default();
     // Insert two disconnected nodes (0 and 1) so we can verify we start traversal from `cfg.entry`.
-    graph.connect(0, 0);
-    graph.disconnect(0, 0);
-    graph.connect(1, 1);
-    graph.disconnect(1, 1);
+    graph.ensure_label(0);
+    graph.ensure_label(1);
 
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(0, vec![]);
