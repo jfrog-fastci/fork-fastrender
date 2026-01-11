@@ -364,22 +364,35 @@ impl CallbackAnalyzer<'_> {
       let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
         continue;
       };
-      let StmtKind::Var(var) = &stmt.kind else {
-        continue;
+      match &stmt.kind {
+        StmtKind::Var(var) => {
+          if !is_lexical_var_decl(var) {
+            continue;
+          }
+          if let Some(index) = index {
+            if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
+              scope.shadow_index = true;
+            }
+          }
+          if let Some(array) = array {
+            if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
+              scope.shadow_array = true;
+            }
+          }
+        }
+        StmtKind::Decl(def_id) => {
+          let Some(def) = self.lowered.def(*def_id) else {
+            continue;
+          };
+          if Some(def.name) == index {
+            scope.shadow_index = true;
+          }
+          if Some(def.name) == array {
+            scope.shadow_array = true;
+          }
+        }
+        _ => continue,
       };
-      if !is_lexical_var_decl(var) {
-        continue;
-      }
-      if let Some(index) = index {
-        if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
-          scope.shadow_index = true;
-        }
-      }
-      if let Some(array) = array {
-        if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
-          scope.shadow_array = true;
-        }
-      }
     }
     scope
   }
@@ -396,21 +409,34 @@ impl CallbackAnalyzer<'_> {
         let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
           continue;
         };
-        let StmtKind::Var(var) = &stmt.kind else {
-          continue;
-        };
-        if !is_lexical_var_decl(var) {
-          continue;
-        }
-        if let Some(index) = index {
-          if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
-            scope.shadow_index = true;
+        match &stmt.kind {
+          StmtKind::Var(var) => {
+            if !is_lexical_var_decl(var) {
+              continue;
+            }
+            if let Some(index) = index {
+              if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, index)) {
+                scope.shadow_index = true;
+              }
+            }
+            if let Some(array) = array {
+              if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
+                scope.shadow_array = true;
+              }
+            }
           }
-        }
-        if let Some(array) = array {
-          if var.declarators.iter().any(|d| pat_binds_name(body, d.pat, array)) {
-            scope.shadow_array = true;
+          StmtKind::Decl(def_id) => {
+            let Some(def) = self.lowered.def(*def_id) else {
+              continue;
+            };
+            if Some(def.name) == index {
+              scope.shadow_index = true;
+            }
+            if Some(def.name) == array {
+              scope.shadow_array = true;
+            }
           }
+          _ => continue,
         }
       }
     }
@@ -1243,6 +1269,34 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
       "arr.map((x, i) => { { let i = 0; return i; } });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+  }
+
+  #[test]
+  fn function_decl_shadow_does_not_count_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i) => { { function i() { return 0; } return i(); } });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(false));
+  }
+
+  #[test]
+  fn class_decl_shadow_does_not_count_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i) => { { class i {} return i; } });",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
