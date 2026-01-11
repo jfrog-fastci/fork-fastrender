@@ -411,7 +411,7 @@ fn fixture_runtime_toggles_from_env_map(
   //
   // Keep this opt-out via `FASTR_WEB_FONT_WAIT_MS=0` for cases where matching a pre-swap baseline is
   // desirable.
-  let default_web_font_wait_ms = "500";
+  let default_web_font_wait_ms = if patch_html_for_chrome_baseline { "1000" } else { "500" };
   raw
     .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
     .or_insert_with(|| default_web_font_wait_ms.to_string());
@@ -2152,12 +2152,12 @@ mod tests {
   }
 
   #[test]
-  fn fixture_runtime_toggles_defaults_web_font_wait_ms_is_post_swap_by_default() {
+  fn fixture_runtime_toggles_defaults_web_font_wait_ms_based_on_patch_mode() {
     let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), false);
     assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("500"));
 
     let toggles = fixture_runtime_toggles_from_env_map(HashMap::new(), true);
-    assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("500"));
+    assert_eq!(toggles.get("FASTR_WEB_FONT_WAIT_MS"), Some("1000"));
 
     let mut raw = HashMap::new();
     raw.insert("FASTR_WEB_FONT_WAIT_MS".to_string(), "123".to_string());
