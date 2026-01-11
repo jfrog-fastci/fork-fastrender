@@ -46,43 +46,90 @@ pub trait TypeProvider {
   /// Returns `true` when the expression is a known array/readonly-array/tuple.
   #[cfg(feature = "typed")]
   fn expr_is_array(&self, body: BodyId, expr: ExprId) -> bool {
-    let Some(ty) = self.expr_type(body, expr) else {
+    let Some(mut ty) = self.expr_type(body, expr) else {
       return false;
     };
-    match self.type_kind(ty) {
-      Some(TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }) => true,
-      Some(TypeKindSummary::Ref { def, .. }) => matches!(
-        self.def_name(def).as_deref(),
-        Some("Array" | "ReadonlyArray")
-      ),
-      _ => false,
+
+    // `typecheck-ts` models many type aliases as `Ref` nodes. Since `effect-js`
+    // uses unexpanded kinds (to preserve names like `Map`/`Promise`), we need to
+    // peel through type aliases to reliably detect arrays.
+    const MAX_ALIAS_DEPTH: usize = 8;
+    for _ in 0..MAX_ALIAS_DEPTH {
+      match self.type_kind(ty) {
+        Some(TypeKindSummary::Array { .. } | TypeKindSummary::Tuple { .. }) => return true,
+        Some(TypeKindSummary::Ref { def, .. }) => {
+          if matches!(self.def_name(def).as_deref(), Some("Array" | "ReadonlyArray")) {
+            return true;
+          }
+
+          let Some(typed) = self.as_typed_program() else {
+            return false;
+          };
+          let Some(typecheck_ts::DefKind::TypeAlias(_)) = typed.def_kind(def) else {
+            return false;
+          };
+          ty = typed.program().declared_type_of_def_interned(def);
+        }
+        _ => return false,
+      }
     }
+    false
   }
 
   /// Returns `true` when the expression is a known string (including literal/template types).
   #[cfg(feature = "typed")]
   fn expr_is_string(&self, body: BodyId, expr: ExprId) -> bool {
-    let Some(ty) = self.expr_type(body, expr) else {
+    let Some(mut ty) = self.expr_type(body, expr) else {
       return false;
     };
-    matches!(
-      self.type_kind(ty),
-      Some(
-        TypeKindSummary::String | TypeKindSummary::StringLiteral(_) | TypeKindSummary::TemplateLiteral
-      )
-    )
+
+    const MAX_ALIAS_DEPTH: usize = 8;
+    for _ in 0..MAX_ALIAS_DEPTH {
+      match self.type_kind(ty) {
+        Some(
+          TypeKindSummary::String | TypeKindSummary::StringLiteral(_) | TypeKindSummary::TemplateLiteral,
+        ) => return true,
+        Some(TypeKindSummary::Ref { def, .. }) => {
+          let Some(typed) = self.as_typed_program() else {
+            return false;
+          };
+          let Some(typecheck_ts::DefKind::TypeAlias(_)) = typed.def_kind(def) else {
+            return false;
+          };
+          ty = typed.program().declared_type_of_def_interned(def);
+        }
+        _ => return false,
+      }
+    }
+    false
   }
 
   /// Returns `true` when the expression's top-level type is a reference to a
   /// definition with the given name (e.g. `"Map"` or `"Promise"`).
   #[cfg(feature = "typed")]
   fn expr_is_named_ref(&self, body: BodyId, expr: ExprId, expected: &str) -> bool {
-    let Some(ty) = self.expr_type(body, expr) else {
+    let Some(mut ty) = self.expr_type(body, expr) else {
       return false;
     };
-    let Some(TypeKindSummary::Ref { def, .. }) = self.type_kind(ty) else {
-      return false;
-    };
-    self.def_name(def).as_deref() == Some(expected)
+
+    const MAX_ALIAS_DEPTH: usize = 8;
+    for _ in 0..MAX_ALIAS_DEPTH {
+      let Some(TypeKindSummary::Ref { def, .. }) = self.type_kind(ty) else {
+        return false;
+      };
+
+      if self.def_name(def).as_deref() == Some(expected) {
+        return true;
+      }
+
+      let Some(typed) = self.as_typed_program() else {
+        return false;
+      };
+      let Some(typecheck_ts::DefKind::TypeAlias(_)) = typed.def_kind(def) else {
+        return false;
+      };
+      ty = typed.program().declared_type_of_def_interned(def);
+    }
+    false
   }
 }
