@@ -220,7 +220,7 @@ impl GcHeap {
     let nursery =
       nursery::NurserySpace::new(config.nursery_size_bytes).expect("failed to reserve nursery space");
 
-    Self {
+    let mut heap = Self {
       config,
       limits,
       nursery_tlab: ThreadNursery::new(),
@@ -240,7 +240,17 @@ impl GcHeap {
       stats: GcStats::default(),
       root_handles: RootHandles::new(),
       work_stack: WorkStack::new(),
-    }
+    };
+
+    // Minor GC can install per-object card tables when promoting large pointer arrays. That update
+    // path must be allocation-free while `gc_in_progress()` is true; pre-reserve enough capacity up
+    // front so `collect_minor`/`collect_major` don't need to touch the global allocator.
+    //
+    // This also keeps `rt_gc_collect` allocation-free after thread init (see
+    // `tests/no_alloc_rt_gc_collect.rs`).
+    heap.reserve_card_table_objects_for_minor_gc();
+
+    heap
   }
 
   pub fn with_nursery_size(nursery_size: usize) -> Self {
