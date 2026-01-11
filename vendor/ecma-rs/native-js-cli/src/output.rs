@@ -29,29 +29,38 @@ struct JsonDiagnosticsOutput {
   diagnostics: Vec<Diagnostic>,
 }
 
+pub fn emit_json_diagnostics(mut diagnostics: Vec<Diagnostic>) -> std::io::Result<bool> {
+  diagnostics::sort_diagnostics(&mut diagnostics);
+  let has_errors = diagnostics
+    .iter()
+    .any(|diagnostic| diagnostic.severity == Severity::Error);
+
+  let payload = JsonDiagnosticsOutput {
+    schema_version: JSON_SCHEMA_VERSION,
+    diagnostics,
+  };
+  let stdout = std::io::stdout();
+  let mut handle = stdout.lock();
+  serde_json::to_writer_pretty(&mut handle, &payload)
+    .map_err(std::io::Error::other)
+    .and_then(|()| writeln!(&mut handle))?;
+  Ok(has_errors)
+}
+
 pub fn emit_diagnostics(
   program: &Program,
   mut diagnostics: Vec<Diagnostic>,
   json: bool,
   render: RenderOptions,
 ) -> std::io::Result<bool> {
+  if json {
+    return emit_json_diagnostics(diagnostics);
+  }
+
   diagnostics::sort_diagnostics(&mut diagnostics);
   let has_errors = diagnostics
     .iter()
     .any(|diagnostic| diagnostic.severity == Severity::Error);
-
-  if json {
-    let payload = JsonDiagnosticsOutput {
-      schema_version: JSON_SCHEMA_VERSION,
-      diagnostics,
-    };
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
-    serde_json::to_writer_pretty(&mut handle, &payload)
-      .map_err(std::io::Error::other)
-      .and_then(|()| writeln!(&mut handle))?;
-    return Ok(has_errors);
-  }
 
   let snapshot = snapshot_from_program(program);
   for diagnostic in diagnostics {
@@ -92,4 +101,3 @@ fn snapshot_from_program(program: &Program) -> ProgramSourceSnapshot {
   }
   ProgramSourceSnapshot { names, texts }
 }
-

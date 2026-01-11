@@ -125,6 +125,38 @@ fn json_check_error_contains_diagnostics_array() {
 }
 
 #[test]
+fn json_check_missing_entry_emits_host_error_diagnostic() {
+  let tmp = TempDir::new().unwrap();
+  let missing = tmp.path().join("missing.ts");
+
+  let assert = native_js()
+    .timeout(Duration::from_secs(30))
+    .arg("--json")
+    .arg("check")
+    .arg(&missing)
+    .assert()
+    .failure()
+    .code(2);
+
+  assert!(
+    assert.get_output().stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&assert.get_output().stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+  let value: Value = serde_json::from_str(&stdout).expect("stdout to be valid JSON");
+  assert_eq!(value["schema_version"], 1);
+
+  let diagnostics = value
+    .get("diagnostics")
+    .and_then(|value| value.as_array())
+    .expect("expected diagnostics array");
+  assert_eq!(diagnostics.len(), 1);
+  assert_eq!(diagnostics[0]["code"], "HOST0001");
+}
+
+#[test]
 fn run_rejects_json_flag() {
   let tmp = TempDir::new().unwrap();
   let entry = tmp.path().join("entry.ts");
