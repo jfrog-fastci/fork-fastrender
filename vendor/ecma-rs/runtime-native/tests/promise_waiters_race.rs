@@ -2,6 +2,7 @@ use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDe
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::{promise_waiters_is_empty, PromiseWaiterRaceGuard, TestRuntimeGuard};
+use runtime_native_abi::PromiseHeader as AbiPromiseHeader;
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
@@ -102,7 +103,7 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
     let _promise = runtime_native::rt_async_spawn_legacy(coro_ptr);
   });
   let resolve_thread = std::thread::spawn(move || {
-    let awaited = PromiseRef(awaited_raw as *mut _);
+    let awaited = PromiseRef(awaited_raw as *mut AbiPromiseHeader);
     runtime_native::rt_promise_resolve_legacy(awaited, 0xDEAD_BEEF as ValueRef);
   });
 

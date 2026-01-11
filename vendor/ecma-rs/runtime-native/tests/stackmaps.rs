@@ -1,7 +1,7 @@
 use runtime_native::stackmaps::{Location, StackMap};
+use runtime_native::statepoints::{StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP};
 #[cfg(target_arch = "x86_64")]
 use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
-use runtime_native::statepoints::{StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP};
 use runtime_native::test_util::TestRuntimeGuard;
 
 const STACKMAP_CONST_X86_64: &[u8] = include_bytes!("fixtures/bin/stackmap_const_x86_64.bin");

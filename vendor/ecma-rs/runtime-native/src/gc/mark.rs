@@ -15,6 +15,7 @@ use super::ObjHeader;
 use super::Tracer;
 use crate::gc::heap::AllocError;
 use crate::gc::heap::GcHeap;
+use crate::gc::heap::IMMIX_BLOCK_SIZE;
 use crate::gc::heap::IMMIX_LINES_PER_BLOCK;
 use crate::gc::heap::IMMIX_MAX_OBJECT_SIZE;
 use crate::immix::BumpCursor;
@@ -308,7 +309,8 @@ impl Compactor<'_> {
   }
 
   fn alloc_to_space(&mut self, size: usize, align: usize) -> *mut u8 {
-    let obj = if size > IMMIX_MAX_OBJECT_SIZE {
+    debug_assert!(align != 0 && align.is_power_of_two());
+    let obj = if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
       self.heap.los.alloc(size, align)
     } else {
       self
@@ -335,9 +337,9 @@ impl Compactor<'_> {
         return obj;
       }
 
+      let desc = header.type_desc();
       let size = super::obj_size(obj);
-
-      let new_obj = self.alloc_to_space(size, mem::align_of::<ObjHeader>());
+      let new_obj = self.alloc_to_space(size, desc.align);
       ptr::copy_nonoverlapping(obj, new_obj, size);
       header.set_forwarding_ptr(new_obj);
       new_obj
