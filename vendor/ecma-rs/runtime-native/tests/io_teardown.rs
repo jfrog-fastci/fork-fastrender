@@ -76,7 +76,10 @@ fn teardown_clears_registry_but_keeps_pins_until_cancel_ack() {
 
   // Let the worker thread finish and drop the op record, releasing pins/permit.
   debug.release_finish();
-  wait_until(start + Duration::from_secs(2), || io_rt.debug_counters().inflight_ops_current == 0);
+  wait_until(start + Duration::from_secs(2), || {
+    let c = io_rt.debug_counters();
+    c.inflight_ops_current == 0 && c.pinned_bytes_current == 0 && root_registry_len() == 0
+  });
 
   assert_eq!(io_rt.debug_counters().pinned_bytes_current, 0);
   assert_eq!(root_registry_len(), 0);
@@ -127,7 +130,10 @@ fn teardown_detaches_queued_completion_tasks() {
 
   // Allow the worker thread to drop the op record.
   debug.release_finish();
-  wait_until(start + Duration::from_secs(2), || io_rt.debug_counters().inflight_ops_current == 0);
+  wait_until(start + Duration::from_secs(2), || {
+    let c = io_rt.debug_counters();
+    c.inflight_ops_current == 0 && c.pinned_bytes_current == 0 && root_registry_len() == 0
+  });
 
   assert_eq!(io_rt.debug_counters().pinned_bytes_current, 0);
   assert_eq!(root_registry_len(), 0);
@@ -188,7 +194,10 @@ fn teardown_keeps_backing_store_pins_until_cancel_ack() {
   assert_eq!(buffer.detach(), Err(ArrayBufferError::Pinned));
 
   debug.release_finish();
-  wait_until(start + Duration::from_secs(2), || io_rt.debug_counters().inflight_ops_current == 0);
+  wait_until(start + Duration::from_secs(2), || {
+    let c = io_rt.debug_counters();
+    c.inflight_ops_current == 0 && root_registry_len() == 0 && buffer.pin_count() == 0
+  });
 
   assert_eq!(buffer.pin_count(), 0);
   assert_eq!(root_registry_len(), 0);

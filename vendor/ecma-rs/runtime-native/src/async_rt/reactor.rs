@@ -92,10 +92,18 @@ struct IoTask {
 }
 
 extern "C" fn run_io_task(data: *mut u8) {
-  // Safety: `data` is allocated via `Box::into_raw(IoTask)` in `wait`.
-  let task = unsafe { Box::from_raw(data as *mut IoTask) };
+  // Safety: `data` is allocated via `Box::into_raw(IoTask)` in `wait` and freed by the task drop
+  // hook.
+  let task = unsafe { &*(data as *const IoTask) };
   if task.active.load(Ordering::Acquire) {
     (task.cb)(task.events, task.data);
+  }
+}
+
+extern "C" fn drop_io_task(data: *mut u8) {
+  // Safety: allocated by `Box::into_raw` in `wait`.
+  unsafe {
+    drop(Box::from_raw(data as *mut IoTask));
   }
 }
 
@@ -251,7 +259,11 @@ impl Reactor {
               events: delivered,
               active: io.active.clone(),
             });
-            tasks.push(Task::new(run_io_task, Box::into_raw(task) as *mut u8));
+            tasks.push(Task::new_with_drop(
+              run_io_task,
+              Box::into_raw(task) as *mut u8,
+              drop_io_task,
+            ));
           }
         }
       }
