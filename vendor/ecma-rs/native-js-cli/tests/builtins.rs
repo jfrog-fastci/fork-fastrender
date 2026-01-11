@@ -1,15 +1,72 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::ops::{Deref, DerefMut};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 use tempfile::tempdir;
+
+const MAX_CONCURRENT_CLI_PROCS: usize = 2;
+static CLI_LIMITER: OnceLock<(Mutex<usize>, Condvar)> = OnceLock::new();
 
 // These tests spawn `native-js-cli`, which performs LLVM object emission and system linking.
 // Under heavy CI/agent contention this can take tens of seconds per invocation, so keep the
 // timeout generous to avoid flaky `<interrupted>` failures.
 const CLI_TIMEOUT: Duration = Duration::from_secs(180);
 
-fn native_js_cli() -> Command {
-  assert_cmd::cargo::cargo_bin_cmd!("native-js-cli")
+struct CliPermit;
+
+impl CliPermit {
+  fn acquire() -> Self {
+    let (lock, cv) = CLI_LIMITER.get_or_init(|| (Mutex::new(MAX_CONCURRENT_CLI_PROCS), Condvar::new()));
+    let mut available = lock.lock().unwrap();
+    while *available == 0 {
+      available = cv.wait(available).unwrap();
+    }
+    *available -= 1;
+    CliPermit
+  }
+}
+
+impl Drop for CliPermit {
+  fn drop(&mut self) {
+    let (lock, cv) = CLI_LIMITER
+      .get()
+      .expect("CLI limiter must be initialized before drop");
+    let mut available = lock.lock().unwrap();
+    *available += 1;
+    cv.notify_one();
+  }
+}
+
+struct LimitedCommand {
+  _permit: CliPermit,
+  cmd: Command,
+}
+
+impl LimitedCommand {
+  fn new() -> Self {
+    let permit = CliPermit::acquire();
+    let cmd = assert_cmd::cargo::cargo_bin_cmd!("native-js-cli");
+    Self { _permit: permit, cmd }
+  }
+}
+
+impl Deref for LimitedCommand {
+  type Target = Command;
+
+  fn deref(&self) -> &Self::Target {
+    &self.cmd
+  }
+}
+
+impl DerefMut for LimitedCommand {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.cmd
+  }
+}
+
+fn native_js_cli() -> LimitedCommand {
+  LimitedCommand::new()
 }
 
 #[test]

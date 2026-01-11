@@ -47,6 +47,7 @@
 //! iterate `stackmaps[..]` and parse blobs until the end of the range. See `docs/stackmaps.md`.
 
 pub mod compiler;
+pub mod builtins;
 pub mod codegen;
 pub mod codes;
 pub mod emit;

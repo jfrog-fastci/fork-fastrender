@@ -155,6 +155,8 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 
 The API is intentionally small and currently consists of:
 
+- `builtins::native_js_builtins_lib()`: host-provided `.d.ts` lib that declares
+  the typechecked pipeline intrinsics (stable file key: `native-js:builtins.d.ts`).
 - `CodeGen`: a minimal façade around `inkwell` that enforces the stack-walking
   invariant (`frame-pointer="all"`, `disable-tail-calls="true"`) and marks
   generated functions with the default GC strategy (`gc "coreclr"`).
@@ -449,6 +451,20 @@ Type annotations in function declarations (current):
 Everything else currently fails with a coarse `native_js::codegen::CodegenError`
 (`unsupported statement`, `unsupported expression`, `unsupported operator: ...`,
 etc).
+
+## Typechecked pipeline intrinsics (`native_js::builtins`)
+
+The typechecked AOT pipeline (HIR-backed) implements a small set of global
+intrinsics. Frontends should inject `native_js::builtins::native_js_builtins_lib()`
+into `typecheck-ts` via `Host::lib_files()` so these globals have stable,
+well-typed signatures.
+
+The `.d.ts` file key is stable (`native-js:builtins.d.ts`) to keep module graphs
+and diagnostics deterministic.
+
+Currently supported intrinsics:
+
+- `declare function print(value: number): void;`
 
 ## Strict compilation subset (`native_js::validate`)
 

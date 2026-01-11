@@ -248,7 +248,16 @@ fn validate_body_syntax(
         }
 
         // `print(...)` is a codegen intrinsic, but only in statement position.
-        if callee_is_ident(body, lowered, call.callee, "print") {
+        let is_global_print_intrinsic =
+          matches!(
+            callee_native_js_intrinsic(body, lowered, call.callee),
+            Some(crate::builtins::NativeJsIntrinsic::Print)
+          )
+          && matches!(
+            file_resolver.resolve_expr_ident(body, call.callee),
+            Some(BindingId::Def(_))
+          );
+        if is_global_print_intrinsic {
           push_unsupported_syntax(
             out,
             Span::new(file, expr.span),
@@ -532,7 +541,10 @@ fn validate_body_types(
     }
 
     // Don't treat the `print` intrinsic as a normal callable; it's only supported in statement position.
-    if callee_is_ident(hir, lowered, call.callee, "print") {
+    if matches!(
+      callee_native_js_intrinsic(hir, lowered, call.callee),
+      Some(crate::builtins::NativeJsIntrinsic::Print)
+    ) {
       continue;
     }
 
@@ -635,6 +647,21 @@ fn callee_is_ident(body: &Body, lowered: &hir_js::LowerResult, expr: hir_js::Exp
     ExprKind::Ident(name) => lowered.names.resolve(*name) == Some(target),
     _ => false,
   }
+}
+
+fn callee_native_js_intrinsic(
+  body: &Body,
+  lowered: &hir_js::LowerResult,
+  expr: hir_js::ExprId,
+) -> Option<crate::builtins::NativeJsIntrinsic> {
+  let Some(expr) = body.exprs.get(expr.0 as usize) else {
+    return None;
+  };
+  let ExprKind::Ident(name) = &expr.kind else {
+    return None;
+  };
+  let resolved = lowered.names.resolve(*name)?;
+  crate::builtins::intrinsic_by_name(resolved)
 }
 
 fn resolve_import_def(program: &Program, def: typecheck_ts::DefId) -> Option<typecheck_ts::DefId> {
@@ -992,7 +1019,10 @@ impl<'a, 'b> SyntaxState<'a, 'b> {
     let ExprKind::Ident(name) = &callee_expr.kind else {
       return;
     };
-    if self.lowered.names.resolve(*name) != Some("print") {
+    let Some(resolved) = self.lowered.names.resolve(*name) else {
+      return;
+    };
+    if crate::builtins::intrinsic_by_name(resolved) != Some(crate::builtins::NativeJsIntrinsic::Print) {
       return;
     }
     if self.is_shadowed(*name) {

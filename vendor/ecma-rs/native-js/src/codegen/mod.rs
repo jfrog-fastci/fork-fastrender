@@ -45,6 +45,7 @@
 //!
 //! Entrypoint-related errors are emitted by [`crate::strict::entrypoint`]
 //! (`NJS0108..NJS0111`).
+use crate::builtins::NativeJsIntrinsic;
 use crate::resolve::BindingId;
 use crate::strict::Entrypoint;
 use crate::codes;
@@ -1072,7 +1073,7 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
       return Ok(false);
     }
 
-    if !self.callee_is_global_intrinsic(call.callee, "print") {
+    if self.callee_global_intrinsic(call.callee) != Some(NativeJsIntrinsic::Print) {
       return Ok(false);
     }
 
@@ -1081,18 +1082,15 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
     Ok(true)
   }
 
-  fn callee_is_global_intrinsic(&self, expr: ExprId, name: &str) -> bool {
-    let Ok(expr) = self.expr_data(expr) else {
-      return false;
-    };
+  fn callee_global_intrinsic(&self, expr: ExprId) -> Option<NativeJsIntrinsic> {
+    let expr = self.expr_data(expr).ok()?;
     let ExprKind::Ident(ident) = expr.kind else {
-      return false;
+      return None;
     };
-    if self.names.resolve(ident) != Some(name) {
-      return false;
-    }
+    let resolved = self.names.resolve(ident)?;
+    let intrinsic = crate::builtins::intrinsic_by_name(resolved)?;
     // Don't treat a shadowed local binding as an intrinsic.
-    self.env.resolve(ident).is_none()
+    self.env.resolve(ident).is_none().then_some(intrinsic)
   }
 
   fn emit_print_i32(&self, value: IntValue<'ctx>) {
