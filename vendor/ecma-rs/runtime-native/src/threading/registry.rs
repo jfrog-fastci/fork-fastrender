@@ -548,10 +548,6 @@ pub fn thread_counts() -> ThreadCounts {
 pub fn set_current_thread_parked(parked: bool) {
   TLS_THREAD_REGISTRATION.with(|cell| {
     if let Some(reg) = cell.borrow().as_ref() {
-      if parked {
-        let ctx = crate::arch::capture_safepoint_context();
-        set_current_thread_safepoint_context(ctx);
-      }
       reg.state.parked.store(parked, Ordering::Release);
       safepoint::notify_state_change();
     }

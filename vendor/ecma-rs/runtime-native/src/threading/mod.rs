@@ -51,6 +51,7 @@ pub fn register_reactor_waker(waker: fn()) {
 pub fn set_parked(parked: bool) {
   let thread = registry::current_thread_state();
   let is_registered = thread.is_some();
+  let was_parked = thread.as_ref().is_some_and(|t| t.is_parked());
   if parked {
     // A parked thread is treated as *already quiescent* by stop-the-world GC. That is only correct
     // if there are no live GC pointers in registers/stack at this boundary.
@@ -71,6 +72,34 @@ pub fn set_parked(parked: bool) {
       );
     }
   }
+
+  // Parked threads are treated as already quiescent by stop-the-world GC. Publish a safepoint
+  // context (for stack walking) before advertising the parked state. Call
+  // `arch::capture_safepoint_context` directly from this runtime helper frame so it captures the
+  // *outer* caller frame that remains live while the thread is blocked.
+  if parked && is_registered && !was_parked {
+    let mut ctx = crate::arch::capture_safepoint_context();
+    if let Some(stackmaps) = crate::stackmap::try_stackmaps() {
+      if stackmaps.lookup(ctx.ip as u64).is_none() {
+        if let Some(cursor) = crate::stackwalk::find_nearest_managed_cursor(ctx.fp as u64, stackmaps) {
+          let sp_callsite = cursor.sp.unwrap_or(0);
+          #[cfg(target_arch = "x86_64")]
+          let sp_entry = sp_callsite.saturating_sub(crate::arch::WORD_SIZE as u64);
+          #[cfg(not(target_arch = "x86_64"))]
+          let sp_entry = sp_callsite;
+
+          ctx = crate::arch::SafepointContext {
+            sp_entry: sp_entry as usize,
+            sp: sp_callsite as usize,
+            fp: cursor.fp as usize,
+            ip: cursor.pc as usize,
+          };
+        }
+      }
+    }
+    registry::set_current_thread_safepoint_context(ctx);
+  }
+
   registry::set_current_thread_parked(parked);
   // Leaving the parked/idle state must immediately poll the safepoint barrier
   // so a thread that unblocks during an in-progress stop-the-world GC doesn't
