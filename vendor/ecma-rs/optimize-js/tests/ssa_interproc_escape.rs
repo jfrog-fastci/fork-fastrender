@@ -21,11 +21,7 @@ fn caller_fn<'a>(program: &'a optimize_js::Program) -> &'a optimize_js::ProgramF
     .functions
     .iter()
     .find(|func| {
-      func
-        .ssa_body
-        .as_ref()
-        .and_then(find_object_alloc)
-        .is_some()
+      func.cfg_ssa().and_then(find_object_alloc).is_some()
     })
     .expect("expected one function to contain an object allocation")
 }
@@ -47,7 +43,7 @@ fn ssa_escape_does_not_force_global_escape_for_non_capturing_helper_call() {
   .expect("compile");
 
   let func = caller_fn(&program);
-  let ssa_cfg = func.ssa_body.as_ref().expect("ssa_body should be populated");
+  let ssa_cfg = func.cfg_ssa().expect("ssa_body should be populated");
   let alloc = find_object_alloc(ssa_cfg).expect("allocation should exist");
   assert_eq!(
     alloc.meta.result_escape,
@@ -72,7 +68,7 @@ fn ssa_escape_propagates_return_aliasing_through_helper_call() {
   .expect("compile");
 
   let func = caller_fn(&program);
-  let ssa_cfg = func.ssa_body.as_ref().expect("ssa_body should be populated");
+  let ssa_cfg = func.cfg_ssa().expect("ssa_body should be populated");
   let alloc = find_object_alloc(ssa_cfg).expect("allocation should exist");
   assert_eq!(
     alloc.meta.result_escape,
@@ -99,7 +95,7 @@ fn ssa_escape_marks_global_escape_when_helper_stores_to_outer_scope() {
   .expect("compile");
 
   let func = caller_fn(&program);
-  let ssa_cfg = func.ssa_body.as_ref().expect("ssa_body should be populated");
+  let ssa_cfg = func.cfg_ssa().expect("ssa_body should be populated");
   let alloc = find_object_alloc(ssa_cfg).expect("allocation should exist");
   assert_eq!(
     alloc.meta.result_escape,
