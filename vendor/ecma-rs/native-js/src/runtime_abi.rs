@@ -399,10 +399,11 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
         .expect("load rt_keep_alive_gc_ref fp")
         .into_pointer_value();
 
-      let _ = self
+      let call = self
         .builder
         .build_indirect_call(fn_ty, fp, &[gc_ref.into()], "")
         .expect("call rt_keep_alive_gc_ref via indirect call");
+      crate::stack_walking::mark_call_notail(call);
 
       self.builder.build_return(None).expect("return void");
     })

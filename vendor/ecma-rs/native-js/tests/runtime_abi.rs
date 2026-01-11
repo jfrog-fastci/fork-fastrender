@@ -199,8 +199,8 @@ fn runtime_wrappers_do_not_addrspacecast_gc_pointers() {
     "expected rt_keep_alive_gc_ref_gc to indirect-call @rt_keep_alive_gc_ref:\n{keep_alive}"
   );
   assert!(
-    keep_alive.contains("call void %") && keep_alive.contains("ptr addrspace(1)"),
-    "expected rt_keep_alive_gc_ref_gc to call via function pointer with GC pointer arg:\n{keep_alive}"
+    keep_alive.contains("notail call void %") && keep_alive.contains("ptr addrspace(1)"),
+    "expected rt_keep_alive_gc_ref_gc to emit a notail indirect call (prevent TCO):\n{keep_alive}"
   );
   assert!(
     !keep_alive.contains("addrspacecast"),
