@@ -666,6 +666,40 @@ fn non_statepoint_records_are_skipped() {
 
 #[cfg(target_arch = "x86_64")]
 #[test]
+fn statepoint_prefix_with_invalid_layout_is_skipped() {
+  // Construct a record that starts with the statepoint-style 3-constant header, but uses an invalid
+  // `deopt_count` so decoding as a `gc.statepoint` fails. The FP walker should treat it as a
+  // non-statepoint record and skip it (rather than erroring while attempting to decode).
+  let bytes = build_stackmaps_with_invalid_statepoint_deopt_count();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+  let (callsite_ra, _callsite) = stackmaps.iter().next().expect("callsite");
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  let start_fp = align_up(base + 128, 16);
+  let caller_fp = align_up(base + 256, 16);
+
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, callsite_ra);
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  let mut visited = Vec::new();
+  unsafe {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
+      visited.push(slot as usize);
+    })
+    .expect("walk");
+  }
+  assert!(visited.is_empty());
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
 fn multiple_derived_pointers_share_base_and_are_relocated() {
   use std::collections::BTreeSet;
 
@@ -944,6 +978,71 @@ fn build_stackmaps_with_two_records_one_derived_pointer() -> Vec<u8> {
     while out.len() % 8 != 0 {
       out.push(0);
     }
+  }
+
+  out
+}
+
+#[cfg(target_arch = "x86_64")]
+fn build_stackmaps_with_invalid_statepoint_deopt_count() -> Vec<u8> {
+  // StackMap v3 blob with one record:
+  // - 3 constant header locations (statepoint prefix)
+  // - 2 Indirect locations
+  //
+  // The third header constant (`deopt_count`) is set so large that the record cannot be decoded as
+  // a valid statepoint.
+  let mut out = Vec::new();
+
+  // Header.
+  out.push(3); // version
+  out.push(0); // reserved0
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved1
+  out.extend_from_slice(&1u32.to_le_bytes()); // num_functions
+  out.extend_from_slice(&0u32.to_le_bytes()); // num_constants
+  out.extend_from_slice(&1u32.to_le_bytes()); // num_records
+
+  // One function record.
+  out.extend_from_slice(&0u64.to_le_bytes()); // address
+  out.extend_from_slice(&32u64.to_le_bytes()); // stack_size
+  out.extend_from_slice(&1u64.to_le_bytes()); // record_count
+
+  // One record.
+  out.extend_from_slice(&0x1234u64.to_le_bytes()); // patchpoint_id
+  out.extend_from_slice(&0x1234u32.to_le_bytes()); // instruction_offset => callsite pc = 0x1234
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+  out.extend_from_slice(&5u16.to_le_bytes()); // num_locations
+
+  // callconv=0, flags=0, deopt_count=100 (invalid: exceeds locations).
+  for &val in &[0i32, 0i32, 100i32] {
+    out.extend_from_slice(&[4, 0]); // Constant, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&0u16.to_le_bytes()); // dwarf_reg
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&val.to_le_bytes()); // small const
+  }
+
+  // Two Indirect locations (these are *not* gc-live pairs; they only exist so the record looks
+  // plausible under the non-statepoint scanning/validation paths).
+  for &off in &[0i32, 8i32] {
+    out.extend_from_slice(&[3, 0]); // Indirect, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&off.to_le_bytes()); // offset
+  }
+
+  // Align to 8.
+  while out.len() % 8 != 0 {
+    out.push(0);
+  }
+
+  // LiveOuts (none).
+  out.extend_from_slice(&0u16.to_le_bytes()); // padding
+  out.extend_from_slice(&0u16.to_le_bytes()); // num_live_outs
+
+  // Record trailer aligned to 8 bytes.
+  while out.len() % 8 != 0 {
+    out.push(0);
   }
 
   out
