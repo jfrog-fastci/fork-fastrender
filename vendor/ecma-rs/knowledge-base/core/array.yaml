@@ -48,6 +48,31 @@
       forbid_uses_index: true
       forbid_uses_array: true
 
+- name: Array.prototype.flatMap
+  semantics: FlatMap
+  effects:
+    depends_on_args:
+      base: ALLOCATES | MAY_THROW
+      args: [0]
+  purity:
+    depends_on_args:
+      base: Allocating
+      args: [0]
+  properties:
+    output:
+      length_relation: unknown
+
+- name: Array.prototype.flat
+  semantics: Flat
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Allocating
+  properties:
+    output:
+      length_relation: unknown
+
 - name: Array.prototype.reduce
   semantics: Reduce
   effects:

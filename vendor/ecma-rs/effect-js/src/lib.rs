@@ -81,6 +81,8 @@ mod tests {
     let required = [
       "Array.prototype.map",
       "Array.prototype.filter",
+      "Array.prototype.flatMap",
+      "Array.prototype.flat",
       "Array.prototype.reduce",
       "Array.prototype.forEach",
       "Promise.all",
