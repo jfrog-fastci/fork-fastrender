@@ -310,4 +310,5 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
     runtime_native::test_util::drain_promise_rejection_events(),
     vec![PromiseRejectionEvent::RejectionHandled { promise: p_ref }]
   );
+  assert!(runtime_native::rt_handle_load(handle).is_null());
 }
