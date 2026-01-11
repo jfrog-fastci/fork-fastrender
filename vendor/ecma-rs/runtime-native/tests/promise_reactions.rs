@@ -2,10 +2,10 @@ use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDe
 use runtime_native::async_abi::{
   Coroutine, CoroutineStep, CoroutineVTable, PromiseHeader, CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
+use runtime_native::CoroutineId;
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
 use runtime_native::test_util::TestRuntimeGuard;
-use runtime_native::CoroutineId;
 use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};

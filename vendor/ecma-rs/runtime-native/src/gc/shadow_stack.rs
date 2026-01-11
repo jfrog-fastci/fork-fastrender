@@ -1,191 +1,197 @@
-//! Per-thread shadow stack roots for runtime-native Rust code.
-//!
-//! Runtime-native mutator code (event loop, scheduler, I/O drivers) is not compiled with LLVM GC
-//! statepoints, so it does not have stack maps that allow the GC to find and update live
-//! references held in Rust stack frames.
-//!
-//! This module provides a small *shadow root stack* abstraction intended to live in per-thread
-//! runtime state. Callers can explicitly push any GC pointers they need to remain valid across a
-//! safepoint/allocation that may trigger GC.
-//!
-//! # Invariants
-//! - Runtime-native code must push any [`GcRawPtr`] that will be used after a safepoint/allocation
-//!   that may perform GC.
-//! - [`ShadowStack::visit_roots_mut`] is intended to be called only during a stop-the-world (STW)
-//!   phase, where no mutator thread is concurrently mutating its shadow stack.
-//!
-//! The GC may update roots in place during compaction/evacuation.
-//!
-//! Note: this structure intentionally stores the pointer values (not addresses of stack locals) so
-//! it can be updated even when Rust frames are opaque to the GC.
+use core::fmt;
 
-use std::collections::TryReserveError;
-use std::ptr::NonNull;
+use smallvec::SmallVec;
 
-/// Opaque raw pointer type stored in the shadow stack.
+use super::roots::RootSet;
+use super::thread::ThreadState;
+
+/// Per-thread shadow stack used to expose GC roots held by Rust runtime code.
 ///
-/// This is intentionally untyped; higher-level code can wrap it in `GcPtr<T>` or similar.
-pub type GcRawPtr = NonNull<u8>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RtError {
-  /// Failed to allocate memory to grow the shadow stack.
-  ///
-  /// Note: `Vec::try_reserve` can also fail due to capacity overflow. We currently surface both
-  /// cases as `OutOfMemory` because `TryReserveErrorKind` is unstable.
-  OutOfMemory,
-}
-
-impl From<TryReserveError> for RtError {
-  fn from(_err: TryReserveError) -> Self {
-    RtError::OutOfMemory
-  }
-}
-
-impl std::fmt::Display for RtError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      RtError::OutOfMemory => write!(f, "out of memory"),
-    }
-  }
-}
-
-impl std::error::Error for RtError {}
-
-/// Per-thread stack of GC roots for runtime-native Rust code.
-#[derive(Debug, Default)]
+/// Runtime-native mutator code (event loop, scheduler, string interner, etc.) is not compiled with
+/// LLVM GC statepoints, so it does not have stack maps that allow the GC to find and update live
+/// references held in Rust stack frames.
+///
+/// This shadow stack stores GC pointer *values* in a per-thread vector so the GC can enumerate and
+/// update them during stop-the-world evacuation/compaction.
+///
+/// ## Concurrency
+///
+/// The owning mutator thread may push/pop roots at any time. The GC enumerates and mutates slots
+/// only while the world is stopped.
 pub struct ShadowStack {
-  slots: Vec<GcRawPtr>,
+  slots: std::cell::UnsafeCell<Vec<*mut u8>>,
 }
 
 impl ShadowStack {
-  pub fn new() -> Self {
-    Self { slots: Vec::new() }
-  }
-
-  /// Create an RAII scope that truncates the shadow stack back to its entry length on drop.
-  #[must_use]
-  pub fn scope(&mut self) -> RootScope<'_> {
-    RootScope {
-      len_at_entry: self.slots.len(),
-      stack: self,
+  pub(crate) fn new(reserve_slots: usize) -> Self {
+    let mut slots = Vec::new();
+    slots.reserve(reserve_slots);
+    Self {
+      slots: std::cell::UnsafeCell::new(slots),
     }
   }
 
-  /// Visit each root slot mutably.
-  ///
-  /// The visitor may update the slot in place (e.g. during relocation/compaction).
-  ///
-  /// This should only be called during stop-the-world GC.
-  pub fn visit_roots_mut(&mut self, mut f: impl FnMut(&mut GcRawPtr)) {
-    for slot in &mut self.slots {
-      f(slot);
+  #[inline]
+  fn slots(&self) -> &Vec<*mut u8> {
+    // Safety: per-thread (mutator) access, or GC access while the world is stopped.
+    unsafe { &*self.slots.get() }
+  }
+
+  #[inline]
+  fn slots_mut(&self) -> &mut Vec<*mut u8> {
+    // Safety: per-thread (mutator) access, or GC access while the world is stopped.
+    unsafe { &mut *self.slots.get() }
+  }
+
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.slots().len()
+  }
+
+  pub(crate) fn push(&self, ptr: *mut u8) -> usize {
+    debug_assert!(
+      !super::gc_in_progress(),
+      "cannot mutate shadow stack while GC is in progress"
+    );
+    let slots = self.slots_mut();
+
+    if slots.len() == slots.capacity() {
+      slots.reserve(1);
+    }
+
+    slots.push(ptr);
+    slots.len() - 1
+  }
+
+  pub(crate) fn truncate(&self, len: usize) {
+    debug_assert!(
+      !super::gc_in_progress(),
+      "cannot mutate shadow stack while GC is in progress"
+    );
+    self.slots_mut().truncate(len);
+  }
+
+  pub(crate) fn get(&self, idx: usize) -> *mut u8 {
+    self.slots()[idx]
+  }
+
+  pub(crate) fn set(&self, idx: usize, ptr: *mut u8) {
+    debug_assert!(
+      !super::gc_in_progress(),
+      "cannot mutate shadow stack while GC is in progress"
+    );
+    self.slots_mut()[idx] = ptr;
+  }
+}
+
+impl fmt::Debug for ShadowStack {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("ShadowStack")
+      .field("len", &self.len())
+      .finish()
+  }
+}
+
+// Safety: `ShadowStack` is shared across threads via `ThreadState` in the global thread registry.
+// The GC only touches it during stop-the-world, and only the owning mutator thread mutates it while
+// running.
+unsafe impl Send for ShadowStack {}
+unsafe impl Sync for ShadowStack {}
+
+impl RootSet for &ShadowStack {
+  fn for_each_root_slot(&mut self, f: &mut dyn FnMut(*mut *mut u8)) {
+    let slots = self.slots_mut();
+    for slot in slots {
+      f(slot as *mut *mut u8);
     }
   }
 }
 
-/// RAII scope for managing a stack discipline on top of a [`ShadowStack`].
-pub struct RootScope<'a> {
-  stack: &'a mut ShadowStack,
-  len_at_entry: usize,
+/// A stack-rooting scope for shadow-stack roots.
+///
+/// On drop, truncates the current thread's shadow stack back to the depth it had when the scope was
+/// created.
+pub struct RootScope<'ts> {
+  ts: &'ts ThreadState,
+  stack_len_at_entry: usize,
 }
 
-impl RootScope<'_> {
-  /// Push a single GC root onto the shadow stack.
-  pub fn push_root(&mut self, ptr: GcRawPtr) -> Result<(), RtError> {
-    self.stack.slots.try_reserve(1)?;
-    self.stack.slots.push(ptr);
-    Ok(())
+impl<'ts> RootScope<'ts> {
+  #[inline]
+  pub fn new(ts: &'ts ThreadState) -> Self {
+    Self {
+      ts,
+      stack_len_at_entry: ts.shadow_stack().len(),
+    }
   }
 
-  /// Push multiple GC roots onto the shadow stack.
-  pub fn push_roots(&mut self, ptrs: &[GcRawPtr]) -> Result<(), RtError> {
-    if ptrs.is_empty() {
-      return Ok(());
+  #[inline]
+  pub fn root<'scope>(&'scope self, ptr: *mut u8) -> RootHandle<'scope> {
+    let idx = self.ts.shadow_stack().push(ptr);
+    RootHandle { ts: self.ts, idx }
+  }
+
+  pub fn root_many<'scope>(&'scope self, ptrs: &[*mut u8]) -> SmallVec<[RootHandle<'scope>; 8]> {
+    let mut out = SmallVec::with_capacity(ptrs.len());
+    for &ptr in ptrs {
+      out.push(self.root(ptr));
     }
-    self.stack.slots.try_reserve(ptrs.len())?;
-    self.stack.slots.extend_from_slice(ptrs);
-    Ok(())
+    out
   }
 }
 
 impl Drop for RootScope<'_> {
   fn drop(&mut self) {
-    self.stack.slots.truncate(self.len_at_entry);
+    self.ts.shadow_stack().truncate(self.stack_len_at_entry);
   }
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
+/// A handle to a rooted GC reference.
+///
+/// A `RootHandle` provides indirection through the shadow stack, allowing the GC to update the
+/// pointer value in-place during evacuation/compaction.
+pub struct RootHandle<'scope> {
+  ts: &'scope ThreadState,
+  idx: usize,
+}
 
-  fn raw(addr: usize) -> GcRawPtr {
-    assert_ne!(addr, 0);
-    // The shadow stack stores opaque pointers; tests never dereference them.
-    unsafe { NonNull::new_unchecked(addr as *mut u8) }
+impl<'scope> Clone for RootHandle<'scope> {
+  fn clone(&self) -> Self {
+    *self
+  }
+}
+
+impl<'scope> Copy for RootHandle<'scope> {}
+
+impl RootHandle<'_> {
+  #[inline]
+  pub fn get(&self) -> *mut u8 {
+    self.ts.shadow_stack().get(self.idx)
   }
 
-  #[test]
-  fn scope_truncation() {
-    let mut stack = ShadowStack::new();
-    assert!(stack.slots.is_empty());
-
-    let p1 = raw(0x1000);
-    let p2 = raw(0x2000);
-    let p3 = raw(0x3000);
-
-    {
-      let mut outer = stack.scope();
-      outer.push_root(p1).unwrap();
-      outer.push_root(p2).unwrap();
-      assert_eq!(outer.stack.slots.len(), 2);
-
-      {
-        let mut inner = outer.stack.scope();
-        inner.push_root(p3).unwrap();
-        assert_eq!(inner.stack.slots.len(), 3);
-      }
-
-      assert_eq!(outer.stack.slots.len(), 2);
-    }
-
-    assert!(stack.slots.is_empty());
+  #[inline]
+  pub fn set(&self, ptr: *mut u8) {
+    self.ts.shadow_stack().set(self.idx, ptr);
   }
+}
 
-  #[test]
-  fn push_multiple_roots() {
-    let mut stack = ShadowStack::new();
+/// Root set consisting of the shadow stacks for *all* registered threads.
+///
+/// This is intended to be used during stop-the-world GC: the thread registry and all shadow stacks
+/// must be stable for the duration of root enumeration.
+pub struct ThreadShadowStackRoots;
 
-    let p1 = raw(0x1111);
-    let p2 = raw(0x2222);
-    let p3 = raw(0x3333);
-
-    {
-      let mut scope = stack.scope();
-      scope.push_roots(&[p1, p2, p3]).unwrap();
-      assert_eq!(scope.stack.slots, vec![p1, p2, p3]);
-    }
+impl ThreadShadowStackRoots {
+  pub fn new() -> Self {
+    Self
   }
+}
 
-  #[test]
-  fn visit_roots_mut_relocates() {
-    let mut stack = ShadowStack::new();
-
-    let p1 = raw(0x1000);
-    let p2 = raw(0x2000);
-    let delta = 0x10usize;
-
-    {
-      let mut scope = stack.scope();
-      scope.push_roots(&[p1, p2]).unwrap();
-
-      scope.stack.visit_roots_mut(|slot| {
-        let addr = slot.as_ptr() as usize;
-        *slot = raw(addr + delta);
-      });
-
-      assert_eq!(scope.stack.slots[0].as_ptr() as usize, 0x1000 + delta);
-      assert_eq!(scope.stack.slots[1].as_ptr() as usize, 0x2000 + delta);
-    }
+impl RootSet for ThreadShadowStackRoots {
+  fn for_each_root_slot(&mut self, f: &mut dyn FnMut(*mut *mut u8)) {
+    crate::threading::registry::for_each_thread(|ts| {
+      let mut stack = ts.shadow_stack();
+      stack.for_each_root_slot(f);
+    });
   }
 }

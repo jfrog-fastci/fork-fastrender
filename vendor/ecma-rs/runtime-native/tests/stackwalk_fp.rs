@@ -1103,7 +1103,7 @@ fn build_stackmaps_with_shared_base_derived_offsets(derived_offsets: &[i32]) -> 
     out.extend_from_slice(&derived_off.to_le_bytes()); // offset
   }
 
-  // Align to 8.
+  // Align to 8 before the live-out header.
   while out.len() % 8 != 0 {
     out.push(0);
   }
@@ -1112,7 +1112,7 @@ fn build_stackmaps_with_shared_base_derived_offsets(derived_offsets: &[i32]) -> 
   out.extend_from_slice(&0u16.to_le_bytes());
   out.extend_from_slice(&0u16.to_le_bytes());
 
-  // Align to 8.
+  // Record ends aligned to 8.
   while out.len() % 8 != 0 {
     out.push(0);
   }

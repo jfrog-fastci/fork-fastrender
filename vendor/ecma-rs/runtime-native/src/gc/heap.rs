@@ -9,6 +9,7 @@ use super::roots::RootHandle;
 use super::roots::RememberedSet;
 use super::roots::RootHandles;
 use super::roots::RootSet;
+use super::shadow_stack::ThreadShadowStackRoots;
 use super::work_stack::WorkStack;
 use super::weak::WeakHandle;
 use super::weak::WeakHandles;
@@ -286,6 +287,33 @@ impl GcHeap {
 
   pub fn nursery_allocated_bytes(&self) -> usize {
     self.nursery.allocated_bytes()
+  }
+
+  /// Convenience wrapper for a stop-the-world minor GC that uses *all threads'* shadow stacks as the
+  /// root set.
+  ///
+  /// This is intended for runtime-native Rust code that needs to hold GC pointers across potential
+  /// collections without relying on LLVM stack maps for Rust frames.
+  ///
+  /// # Stop-the-world requirement
+  /// The caller must ensure:
+  /// - there are no concurrent mutators, and
+  /// - all threads' shadow stacks are stable for the duration of the call.
+  pub fn collect_minor_with_shadow_stacks(
+    &mut self,
+    remembered: &mut dyn RememberedSet,
+  ) -> Result<(), AllocError> {
+    let mut roots = ThreadShadowStackRoots::new();
+    self.collect_minor(&mut roots, remembered)
+  }
+
+  /// Like [`GcHeap::collect_minor_with_shadow_stacks`], but for a major GC.
+  pub fn collect_major_with_shadow_stacks(
+    &mut self,
+    remembered: &mut dyn RememberedSet,
+  ) -> Result<(), AllocError> {
+    let mut roots = ThreadShadowStackRoots::new();
+    self.collect_major(&mut roots, remembered)
   }
 
   pub fn weak_add(&mut self, ptr: *mut u8) -> WeakHandle {

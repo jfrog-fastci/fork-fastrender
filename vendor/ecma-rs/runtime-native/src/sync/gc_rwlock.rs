@@ -69,12 +69,23 @@ impl<T> GcAwareRwLock<T> {
     }
 
     loop {
+      // The stop-the-world coordinator must be able to acquire locks while the world is stopped;
+      // otherwise root enumeration can deadlock if a mutator thread is contending on the same lock.
+      let epoch = threading::safepoint::current_epoch();
+      if threading::safepoint::in_stop_the_world() || threading::safepoint::is_stop_the_world_coordinator(epoch) {
+        return self.inner.read();
+      }
+
       let gc_safe = threading::enter_gc_safe_region();
       let guard = self.inner.read();
 
       // If a stop-the-world is active, do not resume mutator execution while
       // holding the lock: release and retry after the world is resumed.
-      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
+      let epoch = threading::safepoint::current_epoch();
+      if epoch & 1 == 1
+        && !threading::safepoint::in_stop_the_world()
+        && !threading::safepoint::is_stop_the_world_coordinator(epoch)
+      {
         drop(guard);
         threading::safepoint::wait_while_stop_the_world();
         drop(gc_safe);
@@ -83,7 +94,11 @@ impl<T> GcAwareRwLock<T> {
       }
 
       gc_safe.exit_no_wait();
-      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
+      let epoch = threading::safepoint::current_epoch();
+      if epoch & 1 == 1
+        && !threading::safepoint::in_stop_the_world()
+        && !threading::safepoint::is_stop_the_world_coordinator(epoch)
+      {
         drop(guard);
         threading::safepoint_poll();
         continue;
@@ -110,12 +125,23 @@ impl<T> GcAwareRwLock<T> {
     }
 
     loop {
+      // The stop-the-world coordinator must be able to acquire locks while the world is stopped;
+      // otherwise root enumeration can deadlock if a mutator thread is contending on the same lock.
+      let epoch = threading::safepoint::current_epoch();
+      if threading::safepoint::in_stop_the_world() || threading::safepoint::is_stop_the_world_coordinator(epoch) {
+        return self.inner.write();
+      }
+
       let gc_safe = threading::enter_gc_safe_region();
       let guard = self.inner.write();
 
       // If a stop-the-world is active, do not resume mutator execution while
       // holding the lock: release and retry after the world is resumed.
-      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
+      let epoch = threading::safepoint::current_epoch();
+      if epoch & 1 == 1
+        && !threading::safepoint::in_stop_the_world()
+        && !threading::safepoint::is_stop_the_world_coordinator(epoch)
+      {
         drop(guard);
         threading::safepoint::wait_while_stop_the_world();
         drop(gc_safe);
@@ -124,7 +150,11 @@ impl<T> GcAwareRwLock<T> {
       }
 
       gc_safe.exit_no_wait();
-      if threading::safepoint::current_epoch() & 1 == 1 && !threading::safepoint::in_stop_the_world() {
+      let epoch = threading::safepoint::current_epoch();
+      if epoch & 1 == 1
+        && !threading::safepoint::in_stop_the_world()
+        && !threading::safepoint::is_stop_the_world_coordinator(epoch)
+      {
         drop(guard);
         threading::safepoint_poll();
         continue;

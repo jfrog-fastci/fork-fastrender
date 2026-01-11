@@ -44,6 +44,29 @@ pub enum StopReason {
 
 thread_local! {
   static IN_STOP_THE_WORLD: Cell<bool> = const { Cell::new(false) };
+  /// Stop-the-world epoch this thread initiated as coordinator, if any.
+  ///
+  /// This is used by GC-aware synchronization primitives to distinguish the GC coordinator from
+  /// mutator threads while the world is stopped.
+  ///
+  /// The higher-level [`stop_the_world`] helper sets `IN_STOP_THE_WORLD` (a boolean), but lower-level
+  /// stop-the-world APIs (`rt_gc_try_request_stop_the_world`, `rt_gc_request_stop_the_world`) are
+  /// also used directly by runtime code and tests. Those call sites need a way to identify the
+  /// coordinator thread without relying on `IN_STOP_THE_WORLD`.
+  static STW_COORDINATOR_EPOCH: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Returns `true` if the current thread is the stop-the-world coordinator for `epoch`.
+///
+/// This is intended for internal use by GC-aware locks. The coordinator must be able to acquire
+/// locks while the world is stopped; mutator threads must not proceed holding such locks during a
+/// stop-the-world epoch, or root enumeration can deadlock.
+#[inline]
+pub(crate) fn is_stop_the_world_coordinator(epoch: u64) -> bool {
+  if epoch & 1 == 0 {
+    return false;
+  }
+  STW_COORDINATOR_EPOCH.with(|cell| cell.get() == epoch)
 }
 
 /// Returns whether the current thread is acting as the stop-the-world coordinator.
@@ -236,6 +259,7 @@ pub fn rt_gc_try_request_stop_the_world() -> Option<u64> {
         // Mark this thread as the active STW coordinator so GC-safe transitions and GC-aware locks
         // can distinguish it from mutators.
         IN_STOP_THE_WORLD.with(|flag| flag.set(true));
+        STW_COORDINATOR_EPOCH.with(|cell| cell.set(next));
         coord.notify_all_locked(&guard);
         drop(guard);
         wake_all_gc_wakers();
@@ -421,6 +445,7 @@ where
   }
 
   let stop_epoch = cur + 1;
+  STW_COORDINATOR_EPOCH.with(|cell| cell.set(stop_epoch));
   RT_GC_EPOCH.store(stop_epoch, Ordering::Release);
   coord.notify_all_locked(&cv_guard);
 
@@ -498,6 +523,7 @@ where
     RT_GC_EPOCH.store(resume_epoch, Ordering::Release);
     coord.notify_all_locked(&guard);
   }
+  STW_COORDINATOR_EPOCH.with(|cell| cell.set(0));
 
   let deadline = cfg!(debug_assertions).then(|| Instant::now() + Duration::from_secs(5));
   let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
@@ -799,6 +825,11 @@ pub fn rt_gc_resume_world() -> u64 {
     let next = cur + 1;
     match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
       Ok(_) => {
+        STW_COORDINATOR_EPOCH.with(|cell| {
+          if cell.get() == cur {
+            cell.set(0);
+          }
+        });
         coord.notify_all_locked(&guard);
         IN_STOP_THE_WORLD.with(|flag| flag.set(false));
         return next;

@@ -80,6 +80,7 @@ parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 stackmap-context = { workspace = true }
+smallvec = { workspace = true }
 thiserror = { workspace = true }
 runtime-native-abi = { workspace = true }
 runtime-io-uring = { workspace = true }

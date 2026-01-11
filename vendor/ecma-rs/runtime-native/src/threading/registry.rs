@@ -1,5 +1,6 @@
 use crate::arch::SafepointContext;
 use crate::safepoint::FrameCursor;
+use crate::gc::shadow_stack::ShadowStack;
 use crate::threading::safepoint;
 use std::collections::HashMap;
 use std::cell::RefCell;
@@ -53,6 +54,8 @@ impl ThreadKind {
   }
 }
 
+const DEFAULT_SHADOW_STACK_CAPACITY: usize = 1024;
+
 /// Stack bounds metadata for precise stack scanning.
 ///
 /// Stacks on supported platforms are assumed to grow **downward** (toward lower
@@ -80,6 +83,9 @@ pub struct ThreadState {
 
   /// OS thread id (best-effort; used for debugging and diagnostics).
   os_thread_id: u64,
+
+  /// Per-thread shadow stack of GC root slots.
+  pub(crate) shadow_stack: ShadowStack,
 
   /// Nesting depth of "GC-safe / native" regions.
   ///
@@ -159,6 +165,10 @@ impl ThreadState {
         Err(actual) => cur = actual,
       }
     }
+  }
+
+  pub fn shadow_stack(&self) -> &ShadowStack {
+    &self.shadow_stack
   }
 
   pub fn is_parked(&self) -> bool {
@@ -332,6 +342,7 @@ impl ThreadRegistry {
       id,
       kind: AtomicU8::new(kind as u8),
       os_thread_id: current_os_thread_id(),
+      shadow_stack: ShadowStack::new(DEFAULT_SHADOW_STACK_CAPACITY),
       native_safe_depth: AtomicUsize::new(0),
       parked: AtomicBool::new(false),
       detached: AtomicBool::new(false),

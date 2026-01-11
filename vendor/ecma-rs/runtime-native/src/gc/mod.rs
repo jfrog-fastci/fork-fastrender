@@ -2,6 +2,33 @@ use std::mem;
 use std::slice;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+static GC_IN_PROGRESS_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns `true` while a GC cycle (minor or major) is actively running.
+pub(crate) fn gc_in_progress() -> bool {
+  GC_IN_PROGRESS_DEPTH.load(Ordering::Acquire) != 0
+}
+
+/// RAII guard that marks a GC cycle as active for the duration of its lifetime.
+///
+/// This is used to assert that runtime root management (shadow stack push/pop) does not occur while
+/// the GC is actively tracing/evacuating.
+#[must_use]
+pub(crate) struct GcInProgressGuard(());
+
+impl GcInProgressGuard {
+  pub(crate) fn new() -> Self {
+    GC_IN_PROGRESS_DEPTH.fetch_add(1, Ordering::SeqCst);
+    Self(())
+  }
+}
+
+impl Drop for GcInProgressGuard {
+  fn drop(&mut self) {
+    GC_IN_PROGRESS_DEPTH.fetch_sub(1, Ordering::SeqCst);
+  }
+}
+
 use crate::array;
 use crate::trap;
 
@@ -11,6 +38,7 @@ pub mod heap;
 pub mod roots;
 pub mod handle_table;
 pub mod shadow_stack;
+pub mod thread;
 pub mod weak;
 mod young;
 mod cards;
@@ -28,10 +56,10 @@ pub use roots::RememberedSet;
 pub use roots::RootHandle;
 pub use roots::RootSet;
 pub use roots::RootStack;
-pub use shadow_stack::GcRawPtr;
 pub use shadow_stack::RootScope;
 pub use shadow_stack::ShadowStack;
 pub use roots::SimpleRememberedSet;
+pub use thread::with_thread_state;
 pub use weak::register_weak_cleanup;
 pub use weak::WeakHandle;
 pub use weak::WeakHandles;

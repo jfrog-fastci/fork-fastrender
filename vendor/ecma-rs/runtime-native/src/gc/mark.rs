@@ -35,6 +35,7 @@ impl GcHeap {
     roots: &mut dyn RootSet,
     remembered: &mut dyn RememberedSet,
   ) -> Result<(), AllocError> {
+    let _gc_guard = super::GcInProgressGuard::new();
     self.collect_minor(roots, remembered)?;
     self.stats.major_collections += 1;
     let start = Instant::now();
