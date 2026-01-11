@@ -654,14 +654,17 @@ mod tests {
     for (label, source) in [
       ("enum", "enum E { A = 1 }"),
       ("namespace", "namespace N { const x = 1; }"),
+      ("decorators", "@dec class C {}"),
+      ("jsx", "const el = <div>{x}</div>;"),
+      ("using", "using x = null;"),
     ] {
       let err = erase_typescript_to_js(source).expect_err("expected strict-native erasure failure");
       let TsToJsError::Erase(diags) = err else {
         panic!("expected TsToJsError::Erase for {label}, got {err:?}");
       };
       assert!(
-        !diags.is_empty(),
-        "expected at least one diagnostic for {label}"
+        diags.iter().any(|diag| diag.code.as_str() == "MINIFYTS0001"),
+        "expected MINIFYTS0001 diagnostic for {label}, got: {diags:?}"
       );
     }
   }
