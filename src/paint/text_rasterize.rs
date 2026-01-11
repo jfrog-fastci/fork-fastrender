@@ -91,6 +91,7 @@ const DEFAULT_COLOR_GLYPH_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const ENV_COLOR_GLYPH_CACHE_ITEMS: &str = "FASTR_COLOR_GLYPH_CACHE_ITEMS";
 const ENV_COLOR_GLYPH_CACHE_BYTES: &str = "FASTR_COLOR_GLYPH_CACHE_BYTES";
 const ENV_TEXT_SUBPIXEL_AA_GAMMA: &str = "FASTR_TEXT_SUBPIXEL_AA_GAMMA";
+const ENV_TEXT_SUBPIXEL_AA_DIAGNOSTICS: &str = "FASTR_TEXT_SUBPIXEL_AA_DIAGNOSTICS";
 const SCALE_QUANTIZATION: f32 = 512.0;
 const DEADLINE_STRIDE: usize = 256;
 const SUBPIXEL_AA_SCALE_X: u32 = 3;
@@ -152,6 +153,19 @@ impl SubpixelAAScratch {
 struct SubpixelAAGammaLut {
   gamma: f32,
   table: [u8; 256],
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct SubpixelAADiagnostics {
+  skips_disabled: u64,
+  skips_blend_mode: u64,
+  skips_rotation: u64,
+  attempts: u64,
+  successes: u64,
+  failures_non_axis_aligned: u64,
+  failures_clip_mask_mismatch: u64,
+  failures_mask_overflow: u64,
+  failures_other: u64,
 }
 
 impl std::fmt::Debug for SubpixelAAGammaLut {
@@ -1005,11 +1019,39 @@ pub struct TextRasterizer {
   subpixel_aa_enabled: bool,
   subpixel_aa_gamma: Option<SubpixelAAGammaLut>,
   subpixel_scratch: SubpixelAAScratch,
+  subpixel_aa_diagnostics: Option<SubpixelAADiagnostics>,
 }
 
 impl Default for TextRasterizer {
   fn default() -> Self {
     Self::new()
+  }
+}
+
+impl Drop for TextRasterizer {
+  fn drop(&mut self) {
+    let Some(stats) = self.subpixel_aa_diagnostics else {
+      return;
+    };
+    if stats.attempts == 0
+      && stats.skips_disabled == 0
+      && stats.skips_blend_mode == 0
+      && stats.skips_rotation == 0
+    {
+      return;
+    }
+    eprintln!(
+      "text_subpixel_aa: skips(disabled={}, blend_mode={}, rotation={}) attempts={} ok={} failures(non_axis_aligned={}, clip_mismatch={}, mask_overflow={}, other={})",
+      stats.skips_disabled,
+      stats.skips_blend_mode,
+      stats.skips_rotation,
+      stats.attempts,
+      stats.successes,
+      stats.failures_non_axis_aligned,
+      stats.failures_clip_mask_mismatch,
+      stats.failures_mask_overflow,
+      stats.failures_other
+    );
   }
 }
 
@@ -1064,6 +1106,11 @@ impl TextRasterizer {
     let toggles = runtime::runtime_toggles();
     let hinting_enabled = toggles.truthy("FASTR_TEXT_HINTING");
     let subpixel_aa_enabled = toggles.truthy("FASTR_TEXT_SUBPIXEL_AA");
+    let subpixel_aa_diagnostics = if toggles.truthy(ENV_TEXT_SUBPIXEL_AA_DIAGNOSTICS) {
+      Some(SubpixelAADiagnostics::default())
+    } else {
+      None
+    };
     let subpixel_aa_gamma = if subpixel_aa_enabled {
       toggles.f64(ENV_TEXT_SUBPIXEL_AA_GAMMA).and_then(|gamma| {
         let gamma = gamma as f32;
@@ -1084,6 +1131,30 @@ impl TextRasterizer {
       subpixel_aa_enabled,
       subpixel_aa_gamma,
       subpixel_scratch: SubpixelAAScratch::default(),
+      subpixel_aa_diagnostics,
+    }
+  }
+
+  fn record_subpixel_aa_failure(&mut self, err: &Error) {
+    let Some(stats) = self.subpixel_aa_diagnostics.as_mut() else {
+      return;
+    };
+
+    match err {
+      Error::Render(RenderError::RasterizationFailed { reason }) => {
+        if reason.contains("non-axis-aligned") {
+          stats.failures_non_axis_aligned = stats.failures_non_axis_aligned.saturating_add(1);
+        } else if reason.contains("clip mask size mismatch") {
+          stats.failures_clip_mask_mismatch = stats.failures_clip_mask_mismatch.saturating_add(1);
+        } else if reason.contains("mask width overflow") {
+          stats.failures_mask_overflow = stats.failures_mask_overflow.saturating_add(1);
+        } else {
+          stats.failures_other = stats.failures_other.saturating_add(1);
+        }
+      }
+      _ => {
+        stats.failures_other = stats.failures_other.saturating_add(1);
+      }
     }
   }
 
@@ -1771,18 +1842,32 @@ impl TextRasterizer {
               && state.blend_mode == SkiaBlendMode::SourceOver
               && rotation.is_none()
             {
-              if self
-                .fill_path_subpixel_aa(
-                  pixmap,
-                  path.as_ref(),
-                  transform,
-                  fill_alpha,
-                  color,
-                  state.clip_mask,
-                )
-                .is_ok()
-              {
-                used_subpixel = true;
+              if let Some(stats) = self.subpixel_aa_diagnostics.as_mut() {
+                stats.attempts = stats.attempts.saturating_add(1);
+              }
+              match self.fill_path_subpixel_aa(
+                pixmap,
+                path.as_ref(),
+                transform,
+                fill_alpha,
+                color,
+                state.clip_mask,
+              ) {
+                Ok(()) => {
+                  used_subpixel = true;
+                  if let Some(stats) = self.subpixel_aa_diagnostics.as_mut() {
+                    stats.successes = stats.successes.saturating_add(1);
+                  }
+                }
+                Err(err) => self.record_subpixel_aa_failure(&err),
+              }
+            } else if let Some(stats) = self.subpixel_aa_diagnostics.as_mut() {
+              if !self.subpixel_aa_enabled {
+                stats.skips_disabled = stats.skips_disabled.saturating_add(1);
+              } else if state.blend_mode != SkiaBlendMode::SourceOver {
+                stats.skips_blend_mode = stats.skips_blend_mode.saturating_add(1);
+              } else if rotation.is_some() {
+                stats.skips_rotation = stats.skips_rotation.saturating_add(1);
               }
             }
 
