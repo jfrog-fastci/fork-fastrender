@@ -23,7 +23,6 @@ use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::BackingStoreAllocator;
-use crate::shape_table;
 #[cfg(feature = "gc_stats")]
 use crate::abi::RtGcStatsSnapshot;
 use crate::sync::GcAwareMutex;
@@ -249,27 +248,7 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc(size);
   // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| {
-    let shape_desc = shape_table::lookup_rt_descriptor(shape);
-    if size != shape_desc.size as usize {
-      trap::rt_trap_invalid_arg("rt_alloc: size does not match registered shape descriptor");
-    }
-    let align = (shape_desc.align as usize)
-      .max(16)
-      .max(core::mem::align_of::<ObjHeader>());
-    let type_desc = shape_table::lookup_type_descriptor(shape);
-    #[cfg(any(debug_assertions, feature = "gc_debug"))]
-    crate::gc::register_type_descriptor_ptr(type_desc as *const TypeDescriptor);
-
-    let obj = crate::alloc::alloc_bytes_zeroed(size, align, "rt_alloc");
-    // SAFETY: `obj` points to `size` bytes of writable, zeroed memory.
-    unsafe {
-      let header = &mut *(obj as *mut ObjHeader);
-      header.type_desc = type_desc as *const TypeDescriptor;
-      header.meta.store(0, Ordering::Relaxed);
-    }
-    obj
-  }));
+  let res = catch_unwind(AssertUnwindSafe(|| crate::rt_alloc::alloc(size, shape)));
 
   match res {
     Ok(ptr) => ptr,
@@ -277,37 +256,14 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
   }
 }
 
-/// Allocate a pinned (non-moving) object.
+/// Allocate a pinned (non-moving) GC object.
 ///
-/// NOTE: The milestone runtime does not yet wire allocations into the GC. This entrypoint exists so
-/// codegen/FFI can request a stable address today and so future GC-backed allocation can route
-/// pinned objects to a non-moving space.
+/// Pinned objects live in the runtime's non-moving space and will not be relocated during GC.
 #[no_mangle]
 #[inline(never)]
 pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
   // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| {
-    let shape_desc = shape_table::lookup_rt_descriptor(shape);
-    if size != shape_desc.size as usize {
-      trap::rt_trap_invalid_arg("rt_alloc_pinned: size does not match registered shape descriptor");
-    }
-    let align = (shape_desc.align as usize)
-      .max(16)
-      .max(core::mem::align_of::<ObjHeader>());
-    let type_desc = shape_table::lookup_type_descriptor(shape);
-    #[cfg(any(debug_assertions, feature = "gc_debug"))]
-    crate::gc::register_type_descriptor_ptr(type_desc as *const TypeDescriptor);
-
-    let obj = crate::alloc::alloc_bytes_zeroed(size, align, "rt_alloc_pinned");
-    // SAFETY: `obj` points to `size` bytes of writable, zeroed memory.
-    unsafe {
-      let header = &mut *(obj as *mut ObjHeader);
-      header.type_desc = type_desc as *const TypeDescriptor;
-      header.meta.store(0, Ordering::Relaxed);
-      header.set_pinned(true);
-    }
-    obj
-  }));
+  let res = catch_unwind(AssertUnwindSafe(|| crate::rt_alloc::alloc_pinned(size, shape)));
 
   match res {
     Ok(ptr) => ptr,
