@@ -304,6 +304,7 @@ fn validate_body_syntax(
             | BinaryOp::BitXor
             | BinaryOp::ShiftLeft
             | BinaryOp::ShiftRight
+            | BinaryOp::ShiftRightUnsigned
             | BinaryOp::LessThan
             | BinaryOp::LessEqual
             | BinaryOp::GreaterThan
@@ -312,6 +313,9 @@ fn validate_body_syntax(
             | BinaryOp::Inequality
             | BinaryOp::StrictEquality
             | BinaryOp::StrictInequality
+            | BinaryOp::LogicalOr
+            | BinaryOp::LogicalAnd
+            | BinaryOp::Comma
         ) {
           push_unsupported_syntax(
             out,

@@ -471,7 +471,9 @@ Cyclic runtime module dependencies are not supported (they are rejected with
 - Supported expressions include:
   - boolean literals (`true`/`false`)
   - unary: `+x`, `-x`, `!x`, `~x`
-  - binary arithmetic/bitwise: `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`
+  - binary arithmetic/bitwise: `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`, `>>>`
+  - short-circuit logical: `&&`, `||`
+  - comma operator: `(a, b)`
   - comparisons/equality: `<`, `<=`, `>`, `>=`, `==`, `!=`, `===`, `!==`
   - assignment to identifiers (`=`, `+=`, `-=`, `*=`, `/=`, `%=`)
   - updates (`++x`, `x++`, `--x`, `x--`)

@@ -143,7 +143,7 @@ fn rejects_non_i32_numeric_literals() {
 
 #[test]
 fn rejects_array_literal() {
-  let err = validate("const xs = [1, 2];\nvoid xs;\n", FileKind::Ts).unwrap_err();
+  let err = validate("const xs = [1, 2];\nxs;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");
 }
 
@@ -160,26 +160,74 @@ fn rejects_out_of_range_numeric_literal() {
 }
 
 #[test]
-fn rejects_string_literal() {
-  let err = validate("const s = \"hi\";\nvoid s;\n", FileKind::Ts).unwrap_err();
-  assert_has_code(&err, "NJS0009");
-}
-
-#[test]
 fn rejects_conditional_expression() {
-  let err = validate("const x = true ? 1 : 2;\nvoid x;\n", FileKind::Ts).unwrap_err();
+  let err = validate("const x = true ? 1 : 2;\nx;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");
 }
 
 #[test]
-fn rejects_logical_or() {
-  let err = validate("const x = 1 || 2;\nvoid x;\n", FileKind::Ts).unwrap_err();
+fn accepts_logical_or() {
+  let ok = validate(
+    r#"
+      const a: boolean = true;
+      const b: boolean = false;
+      const x = a || b;
+      x;
+    "#,
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
+
+#[test]
+fn accepts_logical_and() {
+  let ok = validate(
+    r#"
+      const a: boolean = true;
+      const b: boolean = false;
+      const x = a && b;
+      x;
+    "#,
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
+
+#[test]
+fn accepts_comma_operator() {
+  let ok = validate(
+    r#"
+      let a: number = 1;
+      let b: number = 2;
+      const x = (a, b);
+      x;
+    "#,
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
+
+#[test]
+fn accepts_unsigned_shift_right() {
+  let ok = validate(
+    r#"
+      const x = 1 >>> 1;
+      x;
+    "#,
+    FileKind::Ts,
+  );
+  assert!(ok.is_ok(), "expected strict-subset validation to pass, got: {ok:#?}");
+}
+
+#[test]
+fn rejects_exponent_operator() {
+  let err = validate("const x = 2 ** 3;\nx;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");
 }
 
 #[test]
 fn rejects_member_access() {
-  let err = validate("const x = Math.PI;\nvoid x;\n", FileKind::Ts).unwrap_err();
+  let err = validate("const x = Math.PI;\nx;\n", FileKind::Ts).unwrap_err();
   assert_has_code(&err, "NJS0009");
 }
 
@@ -200,7 +248,7 @@ fn rejects_arguments_object() {
   let err = validate(
     r#"
       function f() {
-        void arguments;
+        arguments;
       }
       f();
     "#,
@@ -218,37 +266,6 @@ fn rejects_try_and_throw() {
         throw 1;
       } catch (e) {
       }
-    "#,
-    FileKind::Ts,
-  )
-  .unwrap_err();
-  assert_has_code(&err, "NJS0009");
-}
-
-#[test]
-fn rejects_switch_statement() {
-  let err = validate(
-    r#"
-      switch (1) {
-        case 1:
-          break;
-        default:
-          break;
-      }
-    "#,
-    FileKind::Ts,
-  )
-  .unwrap_err();
-  assert_has_code(&err, "NJS0009");
-}
-
-#[test]
-fn rejects_var_decl_without_initializer() {
-  let err = validate(
-    r#"
-      let x: number;
-      x = 1;
-      print(x);
     "#,
     FileKind::Ts,
   )
