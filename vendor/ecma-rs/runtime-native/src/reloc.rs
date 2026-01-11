@@ -53,7 +53,7 @@ pub fn relocate_derived_pair(
       return;
     }
 
-    let delta = derived.wrapping_sub(base);
-    derived_slot.write_unaligned(new_base.wrapping_add(delta));
+    let delta = (derived as isize) - (base as isize);
+    derived_slot.write_unaligned((new_base as isize + delta) as usize);
   }
 }
