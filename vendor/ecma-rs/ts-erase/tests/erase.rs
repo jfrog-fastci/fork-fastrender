@@ -275,6 +275,17 @@ fn strict_native_mode_erases_ambient_decls_and_this_params() {
 }
 
 #[test]
+fn strict_native_mode_inlines_const_enums() {
+  let src = r#"
+    const enum E { A = 1, B = 2 }
+    function f() { return E.A + E.B; }
+  "#;
+
+  let output = strict_erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert_eq!(output, "function f(){return 1+2;}");
+}
+
+#[test]
 fn full_mode_lowers_runtime_ts_constructs() {
   let src = r#"
     export enum E { A, B = 5 }
