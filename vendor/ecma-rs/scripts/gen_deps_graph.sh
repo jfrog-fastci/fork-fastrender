@@ -17,7 +17,7 @@ cargo_agent = repo_root / "scripts" / "cargo_agent.sh"
 
 metadata = json.loads(
     subprocess.check_output(
-        ["bash", str(cargo_agent), "metadata", "--format-version", "1", "--no-deps"],
+        ["bash", str(cargo_agent), "metadata", "--manifest-path", "Cargo.toml", "--format-version", "1", "--no-deps"],
         cwd=str(repo_root),
     )
 )
