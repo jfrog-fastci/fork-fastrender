@@ -14,22 +14,33 @@ unsafe extern "C" fn dummy_destroy(_coro: *mut Coroutine) {}
 #[test]
 fn abi_version_mismatch_aborts() {
   let exe = std::env::current_exe().expect("current_exe");
-  let status = Command::new(exe)
+  let output = Command::new(exe)
     .arg("--exact")
     .arg("abi_version_mismatch_child")
     .arg("--nocapture")
     .env("RT_ASYNC_ABI_MISMATCH_CHILD", "1")
-    .status()
+    .output()
     .expect("spawn child test process");
 
-  assert!(!status.success(), "expected child to abort");
+  assert!(
+    !output.status.success(),
+    "expected child to abort (stdout: {}, stderr: {})",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
 
   // `std::process::abort()` should terminate the process by signal on Unix,
   // rather than returning a normal exit code (e.g. panic exit code 101).
   #[cfg(unix)]
   {
     use std::os::unix::process::ExitStatusExt;
-    assert_eq!(status.signal(), Some(libc::SIGABRT), "expected SIGABRT");
+    assert_eq!(
+      output.status.signal(),
+      Some(libc::SIGABRT),
+      "expected SIGABRT (stdout: {}, stderr: {})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
   }
 }
 
@@ -67,20 +78,31 @@ fn abi_version_mismatch_child() {
 #[test]
 fn reserved_nonzero_aborts() {
   let exe = std::env::current_exe().expect("current_exe");
-  let status = Command::new(exe)
+  let output = Command::new(exe)
     .arg("--exact")
     .arg("reserved_nonzero_child")
     .arg("--nocapture")
     .env("RT_ASYNC_ABI_RESERVED_CHILD", "1")
-    .status()
+    .output()
     .expect("spawn child test process");
 
-  assert!(!status.success(), "expected child to abort");
+  assert!(
+    !output.status.success(),
+    "expected child to abort (stdout: {}, stderr: {})",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
 
   #[cfg(unix)]
   {
     use std::os::unix::process::ExitStatusExt;
-    assert_eq!(status.signal(), Some(libc::SIGABRT), "expected SIGABRT");
+    assert_eq!(
+      output.status.signal(),
+      Some(libc::SIGABRT),
+      "expected SIGABRT (stdout: {}, stderr: {})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
   }
 }
 
@@ -115,20 +137,31 @@ fn reserved_nonzero_child() {
 #[test]
 fn promise_align_not_power_of_two_aborts() {
   let exe = std::env::current_exe().expect("current_exe");
-  let status = Command::new(exe)
+  let output = Command::new(exe)
     .arg("--exact")
     .arg("promise_align_not_power_of_two_child")
     .arg("--nocapture")
     .env("RT_ASYNC_ABI_ALIGN_CHILD", "1")
-    .status()
+    .output()
     .expect("spawn child test process");
 
-  assert!(!status.success(), "expected child to abort");
+  assert!(
+    !output.status.success(),
+    "expected child to abort (stdout: {}, stderr: {})",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
 
   #[cfg(unix)]
   {
     use std::os::unix::process::ExitStatusExt;
-    assert_eq!(status.signal(), Some(libc::SIGABRT), "expected SIGABRT");
+    assert_eq!(
+      output.status.signal(),
+      Some(libc::SIGABRT),
+      "expected SIGABRT (stdout: {}, stderr: {})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
   }
 }
 
@@ -164,20 +197,31 @@ fn promise_align_not_power_of_two_child() {
 #[test]
 fn promise_size_too_small_aborts() {
   let exe = std::env::current_exe().expect("current_exe");
-  let status = Command::new(exe)
+  let output = Command::new(exe)
     .arg("--exact")
     .arg("promise_size_too_small_child")
     .arg("--nocapture")
     .env("RT_ASYNC_ABI_SIZE_CHILD", "1")
-    .status()
+    .output()
     .expect("spawn child test process");
 
-  assert!(!status.success(), "expected child to abort");
+  assert!(
+    !output.status.success(),
+    "expected child to abort (stdout: {}, stderr: {})",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
 
   #[cfg(unix)]
   {
     use std::os::unix::process::ExitStatusExt;
-    assert_eq!(status.signal(), Some(libc::SIGABRT), "expected SIGABRT");
+    assert_eq!(
+      output.status.signal(),
+      Some(libc::SIGABRT),
+      "expected SIGABRT (stdout: {}, stderr: {})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
   }
 }
 
@@ -212,20 +256,31 @@ fn promise_size_too_small_child() {
 #[test]
 fn promise_align_too_small_aborts() {
   let exe = std::env::current_exe().expect("current_exe");
-  let status = Command::new(exe)
+  let output = Command::new(exe)
     .arg("--exact")
     .arg("promise_align_too_small_child")
     .arg("--nocapture")
     .env("RT_ASYNC_ABI_ALIGN_SMALL_CHILD", "1")
-    .status()
+    .output()
     .expect("spawn child test process");
 
-  assert!(!status.success(), "expected child to abort");
+  assert!(
+    !output.status.success(),
+    "expected child to abort (stdout: {}, stderr: {})",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
 
   #[cfg(unix)]
   {
     use std::os::unix::process::ExitStatusExt;
-    assert_eq!(status.signal(), Some(libc::SIGABRT), "expected SIGABRT");
+    assert_eq!(
+      output.status.signal(),
+      Some(libc::SIGABRT),
+      "expected SIGABRT (stdout: {}, stderr: {})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
   }
 }
 
