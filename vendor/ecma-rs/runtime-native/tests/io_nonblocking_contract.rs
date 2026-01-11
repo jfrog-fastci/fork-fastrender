@@ -1,18 +1,25 @@
 #![cfg(target_os = "linux")]
 
 use runtime_native::abi::RT_IO_READABLE;
+use runtime_native::gc::roots::GlobalRootSet;
+use runtime_native::gc::ObjHeader;
+use runtime_native::gc::SimpleRememberedSet;
 use runtime_native::io::AsyncFd;
 use runtime_native::rt_async_poll_legacy as rt_async_poll;
 use runtime_native::rt_io_debug;
 use runtime_native::rt_io_debug_take_last_error;
 use runtime_native::rt_io_register;
+use runtime_native::rt_io_register_rooted;
+use runtime_native::rt_io_register_with_drop;
 use runtime_native::rt_io_unregister;
 use runtime_native::rt_io_update;
 use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::GcHeap;
+use runtime_native::TypeDescriptor;
 use std::future::Future;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
@@ -22,6 +29,11 @@ extern "C" fn noop_cb(_events: u32, _data: *mut u8) {}
 extern "C" fn set_timeout_flag(data: *mut u8) {
   let flag = unsafe { &*(data as *const AtomicBool) };
   flag.store(true, Ordering::SeqCst);
+}
+
+extern "C" fn inc_drop_count(data: *mut u8) {
+  let ctr = unsafe { &*(data as *const AtomicUsize) };
+  ctr.fetch_add(1, Ordering::SeqCst);
 }
 
 fn pipe_blocking() -> io::Result<(OwnedFd, OwnedFd)> {
@@ -104,6 +116,27 @@ fn write_byte(fd: RawFd) {
   let byte: u8 = 1;
   let rc = unsafe { libc::write(fd, &byte as *const u8 as *const libc::c_void, 1) };
   assert_eq!(rc, 1, "write failed: {}", io::Error::last_os_error());
+}
+
+const HEADER_SIZE: usize = std::mem::size_of::<ObjHeader>();
+static NO_PTR_OFFSETS: [u32; 0] = [];
+static ROOTED_OBJ_DESC: TypeDescriptor = TypeDescriptor::new(HEADER_SIZE, &NO_PTR_OFFSETS);
+
+fn collect_major(heap: &mut GcHeap) {
+  let mut roots = GlobalRootSet::new();
+  let mut remembered = SimpleRememberedSet::new();
+  heap.collect_major(&mut roots, &mut remembered).unwrap();
+}
+
+struct WeakHandleGuard(u64);
+
+impl Drop for WeakHandleGuard {
+  fn drop(&mut self) {
+    if self.0 != 0 {
+      runtime_native::rt_weak_remove(self.0);
+      self.0 = 0;
+    }
+  }
 }
 
 fn poll_once_with_immediate_timer() -> bool {
@@ -206,6 +239,78 @@ fn rt_io_register_invalid_fd_reports_other_error() {
     rt_io_debug::ERR_OTHER,
     "invalid fd should not be misclassified as a nonblocking contract violation"
   );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_with_drop_calls_drop_on_registration_failure() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_blocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *mut AtomicUsize = Box::into_raw(dropped);
+
+  let id = rt_io_register_with_drop(
+    rfd.as_raw_fd(),
+    RT_IO_READABLE,
+    noop_cb,
+    dropped_ptr.cast::<u8>(),
+    inc_drop_count,
+  );
+  assert_eq!(id, 0, "expected rt_io_register_with_drop to fail for blocking fd");
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    1,
+    "drop_data should have been invoked on registration failure"
+  );
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_FD_NOT_NONBLOCKING,
+    "expected failure to be diagnosable as nonblocking contract violation"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+
+  unsafe {
+    drop(Box::from_raw(dropped_ptr));
+  }
+}
+
+#[test]
+fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let (rfd, _wfd) = pipe_blocking().unwrap();
+  let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
+  assert_eq!(id, 0, "expected rt_io_register_rooted to fail for blocking fd");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_FD_NOT_NONBLOCKING,
+    "expected failure to be diagnosable as nonblocking contract violation"
+  );
+
+  // If the rooted wrapper leaked its GC root on the failure path, the object would remain alive
+  // indefinitely. It should become collectable once we run a major collection.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "GC object stayed alive after rooted I/O watcher registration failed (root leak?)"
+    );
+    std::thread::yield_now();
+  }
 
   let pending = poll_once_with_immediate_timer();
   assert!(!pending, "runtime should be idle if no watcher leaked");

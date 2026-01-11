@@ -1666,13 +1666,16 @@ pub extern "C" fn rt_io_register_with_drop(
   drop_data: extern "C" fn(*mut u8),
 ) -> IoWatcherId {
   abort_on_panic(|| {
+    rt_io_set_last_error(rt_io_debug::OK);
     if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      rt_io_set_last_error(rt_io_debug::ERR_INVALID_INTERESTS);
       maybe_log_rt_io_failure(
         "rt_io_register_with_drop",
         format_args!(
           "fd={fd} interests=0x{interests:x}: invalid interest mask (must include RT_IO_READABLE and/or RT_IO_WRITABLE)"
         ),
       );
+      ensure_current_thread_registered();
       drop_data(data);
       return 0;
     }
@@ -1681,8 +1684,19 @@ pub extern "C" fn rt_io_register_with_drop(
     match async_rt::global().register_io_with_drop(fd, interests, cb, data, drop_data) {
       Ok(id) => id.as_raw(),
       Err(err) => {
+        let is_nonblocking_contract_violation =
+          err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
+        let code = if is_nonblocking_contract_violation {
+          rt_io_debug::ERR_FD_NOT_NONBLOCKING
+        } else if err.kind() == io::ErrorKind::AlreadyExists {
+          rt_io_debug::ERR_ALREADY_REGISTERED
+        } else {
+          rt_io_debug::ERR_OTHER
+        };
+        rt_io_set_last_error(code);
+
         drop_data(data);
-        if err.kind() == io::ErrorKind::InvalidInput {
+        if is_nonblocking_contract_violation {
           maybe_log_rt_io_failure(
             "rt_io_register_with_drop",
             format_args!(
@@ -1714,7 +1728,9 @@ pub extern "C" fn rt_io_register_rooted(
   data: *mut u8,
 ) -> IoWatcherId {
   abort_on_panic(|| {
+    rt_io_set_last_error(rt_io_debug::OK);
     if interests & (crate::abi::RT_IO_READABLE | crate::abi::RT_IO_WRITABLE) == 0 {
+      rt_io_set_last_error(rt_io_debug::ERR_INVALID_INTERESTS);
       maybe_log_rt_io_failure(
         "rt_io_register_rooted",
         format_args!(
@@ -1742,9 +1758,20 @@ pub extern "C" fn rt_io_register_rooted(
     ) {
       Ok(id) => id.as_raw(),
       Err(err) => {
+        let is_nonblocking_contract_violation =
+          err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
+        let code = if is_nonblocking_contract_violation {
+          rt_io_debug::ERR_FD_NOT_NONBLOCKING
+        } else if err.kind() == io::ErrorKind::AlreadyExists {
+          rt_io_debug::ERR_ALREADY_REGISTERED
+        } else {
+          rt_io_debug::ERR_OTHER
+        };
+        rt_io_set_last_error(code);
+
         // Registration failed; drop the rooted wrapper to avoid leaking the persistent handle.
         drop_rooted_io_watcher_data(ctx_ptr);
-        if err.kind() == io::ErrorKind::InvalidInput {
+        if is_nonblocking_contract_violation {
           maybe_log_rt_io_failure(
             "rt_io_register_rooted",
             format_args!(
