@@ -41,18 +41,23 @@ u.hostname;
 u.port;
 u.search;
 u.hash;
+u["pathname"];
 
 const s: string = "hi";
 s.length;
+s["length"];
 
 const m: Map<string, number> = new Map();
 m.size;
+m["size"];
 
 const set: Set<string> = new Set();
 set.size;
+set["size"];
 
 const xs: number[] = [1];
 xs.length;
+xs["length"];
 "#;
 
 fn find_member_expr(
@@ -90,6 +95,42 @@ fn find_member_expr(
     .unwrap_or_else(|| panic!("expected to find `{recv_name}.{prop_name}` member expression"))
 }
 
+fn find_computed_member_expr(
+  lowered: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  recv_name: &str,
+  prop_name: &str,
+) -> ExprId {
+  body
+    .exprs
+    .iter()
+    .enumerate()
+    .find_map(|(idx, expr)| {
+      let ExprKind::Member(member) = &expr.kind else {
+        return None;
+      };
+      if member.optional {
+        return None;
+      }
+      let ObjectKey::Computed(prop_expr) = member.property else {
+        return None;
+      };
+      let prop_expr = body.exprs.get(prop_expr.0 as usize)?;
+      match &prop_expr.kind {
+        ExprKind::Literal(hir_js::Literal::String(s)) if s.lossy.as_str() == prop_name => {}
+        _ => return None,
+      }
+
+      let recv = body.exprs.get(member.object.0 as usize)?;
+      let ExprKind::Ident(name) = recv.kind else {
+        return None;
+      };
+      let recv = lowered.names.resolve(name)?;
+      (recv == recv_name).then_some(ExprId(idx as u32))
+    })
+    .unwrap_or_else(|| panic!("expected to find `{recv_name}[\"{prop_name}\"]` member expression"))
+}
+
 #[test]
 fn resolves_known_member_reads_typed() {
   let index_key = FileKey::new("index.ts");
@@ -124,6 +165,11 @@ fn resolves_known_member_reads_typed() {
   let map_size = find_member_expr(&lowered, body, "m", "size");
   let set_size = find_member_expr(&lowered, body, "set", "size");
   let length = find_member_expr(&lowered, body, "xs", "length");
+  let computed_pathname = find_computed_member_expr(&lowered, body, "u", "pathname");
+  let computed_str_length = find_computed_member_expr(&lowered, body, "s", "length");
+  let computed_map_size = find_computed_member_expr(&lowered, body, "m", "size");
+  let computed_set_size = find_computed_member_expr(&lowered, body, "set", "size");
+  let computed_length = find_computed_member_expr(&lowered, body, "xs", "length");
 
   let resolved_pathname = resolve_member(&lowered, root_body, pathname, &types).expect("resolve u.pathname");
   assert_eq!(resolved_pathname.api.as_str(), "URL.prototype.pathname");
@@ -165,16 +211,36 @@ fn resolves_known_member_reads_typed() {
     resolve_member(&lowered, root_body, str_length, &types).expect("resolve s.length");
   assert_eq!(resolved_str_length.api.as_str(), "String.prototype.length");
 
+  let resolved_computed_str_length =
+    resolve_member(&lowered, root_body, computed_str_length, &types).expect("resolve s[\"length\"]");
+  assert_eq!(resolved_computed_str_length.api.as_str(), "String.prototype.length");
+
   let resolved_map_size =
     resolve_member(&lowered, root_body, map_size, &types).expect("resolve m.size");
   assert_eq!(resolved_map_size.api.as_str(), "Map.prototype.size");
+
+  let resolved_computed_map_size =
+    resolve_member(&lowered, root_body, computed_map_size, &types).expect("resolve m[\"size\"]");
+  assert_eq!(resolved_computed_map_size.api.as_str(), "Map.prototype.size");
 
   let resolved_set_size =
     resolve_member(&lowered, root_body, set_size, &types).expect("resolve set.size");
   assert_eq!(resolved_set_size.api.as_str(), "Set.prototype.size");
 
+  let resolved_computed_set_size =
+    resolve_member(&lowered, root_body, computed_set_size, &types).expect("resolve set[\"size\"]");
+  assert_eq!(resolved_computed_set_size.api.as_str(), "Set.prototype.size");
+
   let resolved_length = resolve_member(&lowered, root_body, length, &types).expect("resolve xs.length");
   assert_eq!(resolved_length.api.as_str(), "Array.prototype.length");
+
+  let resolved_computed_length =
+    resolve_member(&lowered, root_body, computed_length, &types).expect("resolve xs[\"length\"]");
+  assert_eq!(resolved_computed_length.api.as_str(), "Array.prototype.length");
+
+  let resolved_computed_pathname =
+    resolve_member(&lowered, root_body, computed_pathname, &types).expect("resolve u[\"pathname\"]");
+  assert_eq!(resolved_computed_pathname.api.as_str(), "URL.prototype.pathname");
 
   // Ensure side tables are wired up as well.
   let tables = analyze_body_tables_typed(&lowered, &types);
@@ -192,7 +258,15 @@ fn resolves_known_member_reads_typed() {
     Some("Array.prototype.length")
   );
   assert_eq!(
+    root_tables.resolved_member[computed_length.0 as usize].map(|api| api.as_str()),
+    Some("Array.prototype.length")
+  );
+  assert_eq!(
     root_tables.resolved_member[str_length.0 as usize].map(|api| api.as_str()),
+    Some("String.prototype.length")
+  );
+  assert_eq!(
+    root_tables.resolved_member[computed_str_length.0 as usize].map(|api| api.as_str()),
     Some("String.prototype.length")
   );
   assert_eq!(
@@ -200,7 +274,19 @@ fn resolves_known_member_reads_typed() {
     Some("Map.prototype.size")
   );
   assert_eq!(
+    root_tables.resolved_member[computed_map_size.0 as usize].map(|api| api.as_str()),
+    Some("Map.prototype.size")
+  );
+  assert_eq!(
     root_tables.resolved_member[set_size.0 as usize].map(|api| api.as_str()),
     Some("Set.prototype.size")
+  );
+  assert_eq!(
+    root_tables.resolved_member[computed_set_size.0 as usize].map(|api| api.as_str()),
+    Some("Set.prototype.size")
+  );
+  assert_eq!(
+    root_tables.resolved_member[computed_pathname.0 as usize].map(|api| api.as_str()),
+    Some("URL.prototype.pathname")
   );
 }

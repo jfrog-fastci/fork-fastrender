@@ -931,7 +931,7 @@ pub struct ResolvedMember {
 ///
 /// Typed-only and intentionally conservative:
 /// - skips optional chaining (`obj?.prop`)
-/// - skips computed keys (`obj[expr]`)
+/// - skips computed keys unless the key expression is a string literal (`obj["prop"]`)
 #[cfg(feature = "typed")]
 pub fn resolve_member(
   lowered: &LowerResult,
@@ -948,10 +948,21 @@ pub fn resolve_member(
     return None;
   }
 
-  let ObjectKey::Ident(prop) = member.property else {
-    return None;
+  let prop = match &member.property {
+    ObjectKey::Ident(prop) => ident_name(lowered, *prop)?,
+    // Allow bracket access with a literal string key: `obj["prop"]`.
+    ObjectKey::Computed(prop_expr) => {
+      let prop_expr = strip_transparent_wrappers(body_ref, *prop_expr);
+      let prop_expr = body_ref.exprs.get(prop_expr.0 as usize)?;
+      match &prop_expr.kind {
+        ExprKind::Literal(hir_js::Literal::String(s)) => s.lossy.as_str(),
+        _ => return None,
+      }
+    }
+    // Be conservative around numeric/string member keys; `hir-js` currently lowers
+    // bracket access as `Computed`, so these variants are generally for object literals.
+    ObjectKey::String(_) | ObjectKey::Number(_) => return None,
   };
-  let prop = ident_name(lowered, prop)?;
 
   let api = match prop {
     "length" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
