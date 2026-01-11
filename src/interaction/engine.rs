@@ -1225,7 +1225,6 @@ fn box_node_by_id(box_tree: &BoxTree, target_box_id: usize) -> Option<&BoxNode> 
   }
   None
 }
-
 fn byte_offset_for_char_idx(text: &str, char_idx: usize) -> usize {
   if char_idx == 0 {
     return 0;
@@ -1974,11 +1973,17 @@ fn select_control_snapshot_from_box_tree(
 fn style_for_styled_node_id(box_tree: &BoxTree, styled_node_id: usize) -> Option<Arc<ComputedStyle>> {
   // Multiple box nodes can map back to the same styled node id (e.g. anonymous wrappers,
   // fragmentation, etc). For interaction purposes we only need a representative computed style
-  // (currently just text direction for caret movement), so return the first non-pseudo box style.
+  // (currently just text direction for caret movement), so prefer the first non-pseudo box style.
   let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  let mut fallback: Option<Arc<ComputedStyle>> = None;
   while let Some(node) = stack.pop() {
-    if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
-      return Some(Arc::clone(&node.style));
+    if node.styled_node_id == Some(styled_node_id) {
+      if node.generated_pseudo.is_none() {
+        return Some(Arc::clone(&node.style));
+      }
+      if fallback.is_none() {
+        fallback = Some(Arc::clone(&node.style));
+      }
     }
     if let Some(body) = node.footnote_body.as_deref() {
       stack.push(body);
@@ -1987,7 +1992,7 @@ fn style_for_styled_node_id(box_tree: &BoxTree, styled_node_id: usize) -> Option
       stack.push(child);
     }
   }
-  None
+  fallback
 }
 
 fn find_ancestor_form(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
