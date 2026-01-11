@@ -47,7 +47,7 @@
   semantics: ObservableFrom
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -66,7 +66,7 @@
   semantics: ObservableMerge
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -85,7 +85,7 @@
   semantics: ObservableCombineLatest
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -305,7 +305,7 @@
   semantics: WithLatestFrom
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -399,7 +399,7 @@
   semantics: TakeUntil
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -690,7 +690,7 @@
   semantics: ObservableForkJoin
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -707,7 +707,7 @@
   semantics: ObservableZip
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -724,7 +724,7 @@
   semantics: ObservableRace
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -922,7 +922,7 @@
   semantics: MergeWith
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -958,7 +958,7 @@
   semantics: CombineLatestWith
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure
@@ -977,7 +977,7 @@
   semantics: ZipWith
   since: "v0.1.0"
   purity:
-    template: pure
+    template: allocating
   throws: maybe
   effects:
     template: pure

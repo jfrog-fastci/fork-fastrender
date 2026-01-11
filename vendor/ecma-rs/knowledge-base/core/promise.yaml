@@ -23,7 +23,7 @@ symbols:
     signature: "(iterable) => Promise"
     since: "baseline"
     purity:
-      template: pure
+      template: allocating
     effects:
       template: unknown
       may_throw: true

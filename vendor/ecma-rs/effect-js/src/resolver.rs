@@ -6,6 +6,24 @@ use hir_js::{
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct LexicalDecls {
+  ranges: BTreeMap<NameId, Vec<(u32, u32)>>,
+}
+
+impl LexicalDecls {
+  fn insert(&mut self, name: NameId, range: (u32, u32)) {
+    self.ranges.entry(name).or_default().push(range);
+  }
+
+  fn shadows_at(&self, name: NameId, offset: u32) -> bool {
+    self
+      .ranges
+      .get(&name)
+      .is_some_and(|ranges| ranges.iter().any(|(start, end)| *start <= offset && offset < *end))
+  }
+}
+
 fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
   loop {
     let Some(node) = body.exprs.get(expr.0 as usize) else {
@@ -50,226 +68,182 @@ fn collect_pat_idents(body: &Body, pat: PatId, out: &mut BTreeSet<NameId>) {
   }
 }
 
-fn collect_lexical_names(lower: &LowerResult, body: &Body) -> BTreeSet<NameId> {
-  let mut names = BTreeSet::new();
+fn collect_lexical_decls(lower: &LowerResult, body: &Body) -> LexicalDecls {
+  fn is_type_only_decl(def: &hir_js::DefData) -> bool {
+    matches!(
+      def.type_info,
+      Some(hir_js::DefTypeInfo::TypeAlias { .. } | hir_js::DefTypeInfo::Interface { .. })
+    )
+  }
 
-  if let Some(func) = &body.function {
-    for param in func.params.iter() {
-      collect_pat_idents(body, param.pat, &mut names);
+  fn collect_in_scope(
+    lower: &LowerResult,
+    body: &Body,
+    stmts: &[hir_js::StmtId],
+    scope_span: (u32, u32),
+    body_span: (u32, u32),
+    out: &mut LexicalDecls,
+  ) {
+    for stmt_id in stmts.iter().copied() {
+      collect_in_stmt(lower, body, stmt_id, scope_span, body_span, out);
     }
   }
 
-  fn visit_stmt_id(lower: &LowerResult, body: &Body, stmt_id: hir_js::StmtId, out: &mut BTreeSet<NameId>) {
+  fn collect_in_stmt(
+    lower: &LowerResult,
+    body: &Body,
+    stmt_id: hir_js::StmtId,
+    scope_span: (u32, u32),
+    body_span: (u32, u32),
+    out: &mut LexicalDecls,
+  ) {
     let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
       return;
     };
+    let stmt_span = (stmt.span.start, stmt.span.end);
 
     match &stmt.kind {
       StmtKind::Var(var_decl) => {
+        let mut names = BTreeSet::new();
         for decl in var_decl.declarators.iter() {
-          collect_pat_idents(body, decl.pat, out);
+          collect_pat_idents(body, decl.pat, &mut names);
+        }
+
+        let target_span = match var_decl.kind {
+          hir_js::VarDeclKind::Var => body_span,
+          hir_js::VarDeclKind::Let
+          | hir_js::VarDeclKind::Const
+          | hir_js::VarDeclKind::Using
+          | hir_js::VarDeclKind::AwaitUsing => scope_span,
+        };
+
+        for name in names {
+          out.insert(name, target_span);
         }
       }
-      StmtKind::Decl(def) => {
-        if let Some(def) = lower.def(*def) {
-          out.insert(def.name);
+      StmtKind::Decl(def_id) => {
+        if let Some(def) = lower.def(*def_id) {
+          if !is_type_only_decl(def) {
+            out.insert(def.name, scope_span);
+          }
         }
       }
-      StmtKind::Block(stmts) => {
-        for stmt in stmts {
-          visit_stmt_id(lower, body, *stmt, out);
-        }
-      }
+      StmtKind::Block(stmts) => collect_in_scope(lower, body, stmts, stmt_span, body_span, out),
       StmtKind::If {
         consequent,
         alternate,
         ..
       } => {
-        visit_stmt_id(lower, body, *consequent, out);
+        collect_in_stmt(lower, body, *consequent, scope_span, body_span, out);
         if let Some(alt) = alternate {
-          visit_stmt_id(lower, body, *alt, out);
+          collect_in_stmt(lower, body, *alt, scope_span, body_span, out);
         }
       }
       StmtKind::While { body: inner, .. }
       | StmtKind::DoWhile { body: inner, .. }
+      | StmtKind::Labeled { body: inner, .. }
       | StmtKind::With { body: inner, .. } => {
-        visit_stmt_id(lower, body, *inner, out);
+        collect_in_stmt(lower, body, *inner, scope_span, body_span, out);
       }
       StmtKind::For { init, body: inner, .. } => {
         if let Some(init) = init {
-          if let hir_js::ForInit::Var(var) = init {
-            for decl in var.declarators.iter() {
-              collect_pat_idents(body, decl.pat, out);
+          if let hir_js::ForInit::Var(var_decl) = init {
+            let mut names = BTreeSet::new();
+            for decl in var_decl.declarators.iter() {
+              collect_pat_idents(body, decl.pat, &mut names);
+            }
+
+            let target_span = match var_decl.kind {
+              hir_js::VarDeclKind::Var => body_span,
+              hir_js::VarDeclKind::Let
+              | hir_js::VarDeclKind::Const
+              | hir_js::VarDeclKind::Using
+              | hir_js::VarDeclKind::AwaitUsing => stmt_span,
+            };
+
+            for name in names {
+              out.insert(name, target_span);
             }
           }
         }
-        visit_stmt_id(lower, body, *inner, out);
+
+        collect_in_stmt(lower, body, *inner, scope_span, body_span, out);
       }
-      StmtKind::ForIn {
-        left,
-        body: inner,
-        ..
-      } => {
-        match left {
-          hir_js::ForHead::Pat(pat) => collect_pat_idents(body, *pat, out),
-          hir_js::ForHead::Var(var) => {
-            for decl in var.declarators.iter() {
-              collect_pat_idents(body, decl.pat, out);
-            }
+      StmtKind::ForIn { left, body: inner, .. } => {
+        if let hir_js::ForHead::Var(var_decl) = left {
+          let mut names = BTreeSet::new();
+          for decl in var_decl.declarators.iter() {
+            collect_pat_idents(body, decl.pat, &mut names);
+          }
+
+          let target_span = match var_decl.kind {
+            hir_js::VarDeclKind::Var => body_span,
+            hir_js::VarDeclKind::Let
+            | hir_js::VarDeclKind::Const
+            | hir_js::VarDeclKind::Using
+            | hir_js::VarDeclKind::AwaitUsing => stmt_span,
+          };
+
+          for name in names {
+            out.insert(name, target_span);
           }
         }
-        visit_stmt_id(lower, body, *inner, out);
+
+        collect_in_stmt(lower, body, *inner, scope_span, body_span, out);
+      }
+      StmtKind::Switch { cases, .. } => {
+        for case in cases.iter() {
+          collect_in_scope(lower, body, &case.consequent, stmt_span, body_span, out);
+        }
       }
       StmtKind::Try {
         block,
         catch,
         finally_block,
       } => {
-        visit_stmt_id(lower, body, *block, out);
+        collect_in_stmt(lower, body, *block, scope_span, body_span, out);
+
         if let Some(catch) = catch {
           if let Some(param) = catch.param {
-            collect_pat_idents(body, param, out);
+            let catch_span = body
+              .stmts
+              .get(catch.body.0 as usize)
+              .map(|stmt| (stmt.span.start, stmt.span.end))
+              .unwrap_or(scope_span);
+            let mut names = BTreeSet::new();
+            collect_pat_idents(body, param, &mut names);
+            for name in names {
+              out.insert(name, catch_span);
+            }
           }
-          visit_stmt_id(lower, body, catch.body, out);
+          collect_in_stmt(lower, body, catch.body, scope_span, body_span, out);
         }
+
         if let Some(finally) = finally_block {
-          visit_stmt_id(lower, body, *finally, out);
+          collect_in_stmt(lower, body, *finally, scope_span, body_span, out);
         }
       }
-      StmtKind::Switch { cases, .. } => {
-        for case in cases {
-          for stmt in &case.consequent {
-            visit_stmt_id(lower, body, *stmt, out);
-          }
-        }
-      }
-      StmtKind::Labeled { body: inner, .. } => visit_stmt_id(lower, body, *inner, out),
       _ => {}
     }
   }
 
-  for stmt_id in body.root_stmts.iter().copied() {
-    visit_stmt_id(lower, body, stmt_id, &mut names);
-  }
+  let mut decls = LexicalDecls::default();
+  let body_span = (body.span.start, body.span.end);
 
-  names
-}
-
-fn pat_binds_name(body: &Body, pat: PatId, name: NameId) -> bool {
-  let Some(pat) = body.pats.get(pat.0 as usize) else {
-    return false;
-  };
-  match &pat.kind {
-    PatKind::Ident(id) => *id == name,
-    PatKind::Array(arr) => {
-      for element in arr.elements.iter().flatten() {
-        if pat_binds_name(body, element.pat, name) {
-          return true;
-        }
-      }
-      arr
-        .rest
-        .is_some_and(|rest| pat_binds_name(body, rest, name))
+  // Function parameters shadow outer bindings for the entire body.
+  if let Some(func) = &body.function {
+    let mut names = BTreeSet::new();
+    for param in func.params.iter() {
+      collect_pat_idents(body, param.pat, &mut names);
     }
-    PatKind::Object(obj) => {
-      for prop in &obj.props {
-        if pat_binds_name(body, prop.value, name) {
-          return true;
-        }
-      }
-      obj
-        .rest
-        .is_some_and(|rest| pat_binds_name(body, rest, name))
-    }
-    PatKind::Rest(inner) => pat_binds_name(body, **inner, name),
-    PatKind::Assign { target, .. } => pat_binds_name(body, *target, name),
-    PatKind::AssignTarget(_) => false,
-  }
-}
-
-fn name_is_shadowed_in_block_scope(lower: &LowerResult, body: &Body, name: NameId, use_start: u32) -> bool {
-  fn block_declares_name(lower: &LowerResult, body: &Body, stmts: &[hir_js::StmtId], name: NameId) -> bool {
-    for stmt_id in stmts {
-      let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
-        continue;
-      };
-      match &stmt.kind {
-        StmtKind::Var(var_decl) => {
-          if matches!(var_decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
-            for decl in &var_decl.declarators {
-              if pat_binds_name(body, decl.pat, name) {
-                return true;
-              }
-            }
-          }
-        }
-        StmtKind::Decl(def) => {
-          if let Some(def) = lower.def(*def) {
-            if def.name == name {
-              return true;
-            }
-          }
-        }
-        _ => {}
-      }
-    }
-    false
-  }
-
-  fn walk(lower: &LowerResult, body: &Body, stmt_id: hir_js::StmtId, name: NameId, pos: u32) -> bool {
-    let Some(stmt) = body.stmts.get(stmt_id.0 as usize) else {
-      return false;
-    };
-    if pos < stmt.span.start || pos >= stmt.span.end {
-      return false;
-    }
-
-    match &stmt.kind {
-      StmtKind::Block(stmts) => {
-        if block_declares_name(lower, body, stmts, name) {
-          return true;
-        }
-        stmts.iter().any(|inner| walk(lower, body, *inner, name, pos))
-      }
-      StmtKind::If {
-        consequent,
-        alternate,
-        ..
-      } => {
-        walk(lower, body, *consequent, name, pos)
-          || alternate.is_some_and(|alt| walk(lower, body, alt, name, pos))
-      }
-      StmtKind::While { body: inner, .. }
-      | StmtKind::DoWhile { body: inner, .. }
-      | StmtKind::With { body: inner, .. }
-      | StmtKind::For { body: inner, .. }
-      | StmtKind::ForIn { body: inner, .. }
-      | StmtKind::Labeled { body: inner, .. } => walk(lower, body, *inner, name, pos),
-      StmtKind::Try {
-        block,
-        catch,
-        finally_block,
-      } => {
-        walk(lower, body, *block, name, pos)
-          || catch
-            .as_ref()
-            .is_some_and(|catch| walk(lower, body, catch.body, name, pos))
-          || finally_block.is_some_and(|finally| walk(lower, body, finally, name, pos))
-      }
-      StmtKind::Switch { cases, .. } => cases.iter().any(|case| {
-        case
-          .consequent
-          .iter()
-          .any(|stmt| walk(lower, body, *stmt, name, pos))
-      }),
-      _ => false,
+    for name in names {
+      decls.insert(name, body_span);
     }
   }
 
-  body
-    .root_stmts
-    .iter()
-    .any(|stmt| walk(lower, body, *stmt, name, use_start))
+  collect_in_scope(lower, body, &body.root_stmts, body_span, body_span, &mut decls);
+
+  decls
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -539,7 +513,7 @@ fn collect_require_bindings_seeded(
     return out;
   };
 
-  let local_decls = collect_lexical_names(lower, body);
+  let local_decls = collect_lexical_decls(lower, body);
   let mut available = seed.clone();
 
   for stmt_id in body.root_stmts.iter().copied() {
@@ -619,14 +593,18 @@ fn extract_alias_target(
   expr: ExprId,
   available: &RequireBindings,
   local: &RequireBindings,
-  local_decls: &BTreeSet<NameId>,
+  local_decls: &LexicalDecls,
   use_start: u32,
 ) -> Option<BindingTarget> {
   let (base, member_path) = flatten_member_chain(lower, body, expr)?;
   let ExprKind::Ident(name) = &body.exprs[base.0 as usize].kind else {
     return None;
   };
-  let bindings = if local_decls.contains(name) { local } else { available };
+  let bindings = if local_decls.shadows_at(*name, use_start) {
+    local
+  } else {
+    available
+  };
   let target = bindings.resolve(*name, use_start)?;
   let mut path = target.path.clone();
   path.extend(member_path);
@@ -764,7 +742,7 @@ pub fn resolve_api_call<'a>(
   }
 
   let use_start = body.exprs[call.callee.0 as usize].span.start;
-  let local_decls = collect_lexical_names(lower, body);
+  let local_decls = collect_lexical_decls(lower, body);
   let mut seed = RequireBindings::default();
   if body_id != lower.hir.root_body {
     // Top-level CommonJS `require()` bindings are visible to nested function bodies; the call
@@ -791,8 +769,7 @@ pub fn resolve_api_call<'a>(
       //
       // `let`/`const` bindings are in TDZ before their declaration is evaluated, so even uses
       // *before* the declaration should not resolve to an outer `require()` binding.
-      if local_decls.contains(name) || name_is_shadowed_in_block_scope(lower, body, *name, use_start)
-      {
+      if local_decls.shadows_at(*name, use_start) {
         if let Some(target) = local_bindings.resolve(*name, use_start) {
           let mut path = target.path.clone();
           path.extend(member_path);
@@ -838,7 +815,7 @@ pub fn resolve_api_call_typed<'a>(
   }
  
   let use_start = body.exprs[call.callee.0 as usize].span.start;
-  let local_decls = collect_lexical_names(lower, body);
+  let local_decls = collect_lexical_decls(lower, body);
   let mut seed = RequireBindings::default();
   if body_id != lower.hir.root_body {
     // Top-level CommonJS `require()` bindings are visible to nested function bodies; the call
@@ -865,8 +842,7 @@ pub fn resolve_api_call_typed<'a>(
       //
       // `let`/`const` bindings are in TDZ before their declaration is evaluated, so even uses
       // *before* the declaration should not resolve to an outer `require()` binding.
-      if local_decls.contains(name) || name_is_shadowed_in_block_scope(lower, body, *name, use_start)
-      {
+      if local_decls.shadows_at(*name, use_start) {
         if let Some(target) = local_bindings.resolve(*name, use_start) {
           let mut path = target.path.clone();
           path.extend(member_path);
