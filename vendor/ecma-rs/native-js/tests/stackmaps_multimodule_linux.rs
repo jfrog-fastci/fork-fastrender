@@ -28,6 +28,15 @@ fn cmd_works(cmd: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
+fn find_clang() -> Option<&'static str> {
+  for cand in ["clang-18", "clang"] {
+    if cmd_works(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 fn clang_available() -> bool {
   cmd_works("clang-18") || cmd_works("clang")
 }
@@ -572,21 +581,6 @@ fn lto_link_merges_stackmap_blobs_into_one_table() {
 // Clang-produced `.llvm_stackmaps` section concatenation regression
 // -----------------------------------------------------------------------------
 
-fn clang() -> &'static str {
-  for cand in ["clang-18", "clang"] {
-    if Command::new(cand)
-      .arg("--version")
-      .stdout(Stdio::null())
-      .stderr(Stdio::null())
-      .status()
-      .is_ok_and(|s| s.success())
-    {
-      return cand;
-    }
-  }
-  panic!("unable to locate clang (expected `clang-18` or `clang`)");
-}
-
 fn write_file(path: &Path, contents: &str) {
   fs::write(path, contents).unwrap();
 }
@@ -604,12 +598,12 @@ fn run(cmd: &mut Command) {
   );
 }
 
-fn compile_ll_to_obj(out_dir: &Path, name: &str, ll_src: &str) -> PathBuf {
+fn compile_ll_to_obj(clang: &str, out_dir: &Path, name: &str, ll_src: &str) -> PathBuf {
   let ll_path = out_dir.join(format!("{name}.ll"));
   let obj_path = out_dir.join(format!("{name}.o"));
   write_file(&ll_path, ll_src);
 
-  let mut cmd = Command::new(clang());
+  let mut cmd = Command::new(clang);
   cmd.args(["-c", "-o"]).arg(&obj_path).arg(&ll_path);
   run(&mut cmd);
   obj_path
@@ -631,10 +625,10 @@ fn align_up(v: usize, align: usize) -> usize {
 
 #[test]
 fn object_link_concatenates_multiple_stackmap_blobs_from_clang_ir() {
-  if !clang_available() {
+  let Some(clang) = find_clang() else {
     eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
     return;
-  }
+  };
   if !lld_available() {
     eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
     return;
@@ -672,8 +666,8 @@ entry:
 "#;
 
   let td = tempfile::tempdir().unwrap();
-  let obj_a = compile_ll_to_obj(td.path(), "a", module_a);
-  let obj_b = compile_ll_to_obj(td.path(), "b", module_b);
+  let obj_a = compile_ll_to_obj(clang, td.path(), "a", module_a);
+  let obj_b = compile_ll_to_obj(clang, td.path(), "b", module_b);
 
   let size_a = llvm_stackmaps_obj_section_size(&obj_a);
   let size_b = llvm_stackmaps_obj_section_size(&obj_b);
