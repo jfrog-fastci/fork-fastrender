@@ -35,6 +35,12 @@ LLVM 18 `clang` is on `PATH`.
 If you are setting up LLVM locally, see [`native-js/README.md`](../native-js/README.md)
 for required packages and the `LLVM_SYS_180_PREFIX` environment variable.
 
+The CLI takes a single positional input file plus flags:
+
+```text
+native-js-cli [--no-builtins] [--emit-llvm <PATH>] <INPUT.ts>
+```
+
 ### Run a TypeScript file
 
 Create a small program:
@@ -69,6 +75,13 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
   /tmp/main.ts
 
 opt-18 -verify -disable-output /tmp/out.ll
+```
+
+Note: `native-js-cli` still runs the compiled program after writing the IR. If
+you want to stop after compilation, compile the emitted IR yourself:
+
+```bash
+clang -x ir /tmp/out.ll -o /tmp/out
 ```
 
 ### `--no-builtins`
