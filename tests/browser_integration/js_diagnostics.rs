@@ -98,3 +98,92 @@ fn browser_tab_exceptions_do_not_abort_subsequent_scripts() -> fastrender::Resul
   Ok(())
 }
 
+#[test]
+fn browser_tab_js_exception_stack_includes_inline_script_name() -> fastrender::Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <script>throw new Error("boom")</script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let executor = VmJsBrowserTabExecutor::default();
+  let mut tab = BrowserTab::from_html(html, options, executor)?;
+  let _ = tab.render_frame()?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert_eq!(
+    diagnostics.js_exceptions.len(),
+    1,
+    "expected one exception; got {:?}",
+    diagnostics.js_exceptions
+  );
+  let exception = &diagnostics.js_exceptions[0];
+  assert!(
+    exception.message.contains("boom"),
+    "unexpected exception message: {:?}",
+    exception.message
+  );
+  let stack = exception
+    .stack
+    .as_deref()
+    .expect("expected stack trace to be captured for Error throws");
+  assert!(
+    stack.contains("<inline script"),
+    "expected stack trace to include inline script name; got {stack:?}"
+  );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_js_exception_stack_includes_external_script_url() -> fastrender::Result<()> {
+  let url = "https://example.com/a.js";
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let executor = VmJsBrowserTabExecutor::default();
+  let mut tab = BrowserTab::from_html("<!doctype html><html></html>", options.clone(), executor)?;
+  tab.register_script_source(url, r#"throw new Error("boom");"#);
+
+  let html = format!(
+    r#"<!doctype html>
+    <html>
+      <body>
+        <script src="{url}"></script>
+      </body>
+    </html>"#
+  );
+  tab.navigate_to_html(&html, options)?;
+  let _ = tab.render_frame()?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert_eq!(
+    diagnostics.js_exceptions.len(),
+    1,
+    "expected one exception; got {:?}",
+    diagnostics.js_exceptions
+  );
+  let exception = &diagnostics.js_exceptions[0];
+  assert!(
+    exception.message.contains("boom"),
+    "unexpected exception message: {:?}",
+    exception.message
+  );
+  let stack = exception
+    .stack
+    .as_deref()
+    .expect("expected stack trace to be captured for Error throws");
+  assert!(
+    stack.contains(url),
+    "expected stack trace to include script URL {url:?}; got {stack:?}"
+  );
+  Ok(())
+}
