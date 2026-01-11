@@ -733,6 +733,8 @@ pub fn lower_file_with_diagnostics_with_cancellation(
 
   span_map.finalize();
 
+  let types = Arc::new(types);
+
   (
     LowerResult {
       hir: Arc::new(HirFile::new(
@@ -745,6 +747,7 @@ pub fn lower_file_with_diagnostics_with_cancellation(
         imports,
         exports,
         span_map,
+        Arc::clone(&types),
       )),
       defs,
       bodies,

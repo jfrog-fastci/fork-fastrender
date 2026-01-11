@@ -51,6 +51,7 @@ pub struct HirFile {
   pub imports: Vec<Import>,
   pub exports: Vec<Export>,
   pub span_map: SpanMap,
+  pub types: Arc<TypeArenasByDef>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -230,7 +231,7 @@ pub struct LowerResult {
   pub hir: Arc<HirFile>,
   pub defs: Vec<DefData>,
   pub bodies: Vec<Arc<Body>>,
-  pub types: TypeArenasByDef,
+  pub types: Arc<TypeArenasByDef>,
   pub names: Arc<NameInterner>,
   pub def_index: BTreeMap<DefId, usize>,
   pub body_index: BTreeMap<BodyId, usize>,
@@ -1266,6 +1267,7 @@ impl HirFile {
     imports: Vec<Import>,
     exports: Vec<Export>,
     span_map: SpanMap,
+    types: Arc<TypeArenasByDef>,
   ) -> Self {
     Self {
       file,
@@ -1277,6 +1279,7 @@ impl HirFile {
       imports,
       exports,
       span_map,
+      types,
     }
   }
 }

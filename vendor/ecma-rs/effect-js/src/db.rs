@@ -2,16 +2,12 @@ use anyhow::{anyhow, Result};
 
 use knowledge_base::{Api, KnowledgeBase};
 
-/// Lightweight per-callsite metadata used by heuristics in `effect-js`.
+/// Per-callsite metadata used by heuristics in `effect-js`.
 ///
-/// This is intentionally small and conservative: when a field is `None`, the
-/// analysis could not confidently infer the property.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct CallSiteInfo {
-  pub callback_is_pure: Option<bool>,
-  pub callback_uses_index: Option<bool>,
-  pub callback_uses_array: Option<bool>,
-}
+/// This is derived from inline callback analysis in [`crate::callback`]. It is
+/// re-exported here to keep older call sites that used `effect_js::db::CallSiteInfo`
+/// compiling while the API stabilizes.
+pub type CallSiteInfo = crate::callback::CallSiteInfo;
 
 #[derive(Debug, Clone)]
 pub struct EffectDb {
@@ -34,4 +30,3 @@ impl EffectDb {
     &self.kb
   }
 }
-
