@@ -1,6 +1,5 @@
-use super::alias::{self, AbstractLoc};
 use crate::cfg::cfg::Cfg;
-use crate::il::inst::{Arg, InstTyp};
+use crate::il::inst::{Arg, BinOp, InstTyp};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Escape classification for allocations local to a function.
@@ -107,58 +106,75 @@ fn collect_param_vars(cfg: &Cfg) -> BTreeSet<u32> {
   uses.into_iter().filter(|v| !defs.contains(v)).collect()
 }
 
-fn collect_alloc_sites(cfg: &Cfg) -> (BTreeSet<u32>, BTreeMap<AbstractLoc, u32>) {
-  let mut alloc_vars = BTreeSet::<u32>::new();
-  let mut loc_to_var = BTreeMap::<AbstractLoc, u32>::new();
+#[derive(Default)]
+struct LocalAllocFlowFacts {
+  /// Allocation-defining SSA temps (allocation id = temp).
+  alloc_vars: BTreeSet<u32>,
+  /// `tgt = src`
+  var_assigns: Vec<(u32, Arg)>,
+  /// `tgt = phi(args...)`
+  phis: Vec<(u32, Vec<Arg>)>,
+  /// `tgt = __optimize_js_array/object/regex(...args)`
+  ///
+  /// The args are treated as values stored into the newly allocated container.
+  alloc_inits: Vec<(u32, Vec<Arg>)>,
+  /// `obj[prop] = val` (prop ignored; field-insensitive)
+  prop_assigns: Vec<(Arg, Arg)>,
+  /// `tgt = obj[prop]` (prop ignored; field-insensitive)
+  getprops: Vec<(u32, Arg)>,
+}
+
+fn collect_local_alloc_flow_facts(cfg: &Cfg) -> LocalAllocFlowFacts {
+  let mut facts = LocalAllocFlowFacts::default();
 
   for label in cfg_labels_sorted(cfg) {
     let Some(block) = cfg.bblocks.maybe_get(label) else {
       continue;
     };
-    for (idx, inst) in block.iter().enumerate() {
-      if inst.t != InstTyp::Call {
-        continue;
+    for inst in block.iter() {
+      match inst.t {
+        InstTyp::Call => {
+          let (tgt, callee, _this, args, _spreads) = inst.as_call();
+          let Some(tgt) = tgt else {
+            continue;
+          };
+          if !is_internal_alloc_builder(callee) {
+            continue;
+          }
+          facts.alloc_vars.insert(tgt);
+          facts.alloc_inits.push((tgt, args.to_vec()));
+        }
+        InstTyp::VarAssign => {
+          let (tgt, arg) = inst.as_var_assign();
+          facts.var_assigns.push((tgt, arg.clone()));
+        }
+        InstTyp::Phi => {
+          let tgt = inst.tgts[0];
+          facts.phis.push((tgt, inst.args.clone()));
+        }
+        InstTyp::PropAssign => {
+          let (obj, _prop, val) = inst.as_prop_assign();
+          facts.prop_assigns.push((obj.clone(), val.clone()));
+        }
+        InstTyp::Bin if inst.bin_op == BinOp::GetProp => {
+          let (tgt, obj, _op, _prop) = inst.as_bin();
+          facts.getprops.push((tgt, obj.clone()));
+        }
+        _ => {}
       }
-      let (tgt, callee, _this, _args, _spreads) = inst.as_call();
-      let Some(tgt) = tgt else {
-        continue;
-      };
-      if !is_internal_alloc_builder(callee) {
-        continue;
-      }
-      alloc_vars.insert(tgt);
-      loc_to_var.insert(
-        AbstractLoc::Alloc {
-          block: label,
-          inst_idx: idx as u32,
-        },
-        tgt,
-      );
     }
   }
 
-  (alloc_vars, loc_to_var)
+  facts
 }
 
-fn allocs_for_arg(
-  aliases: &alias::AliasResult,
-  loc_to_var: &BTreeMap<AbstractLoc, u32>,
-  arg: &Arg,
-) -> BTreeSet<u32> {
-  let Arg::Var(v) = arg else {
-    return BTreeSet::new();
-  };
-  let Some(pts) = aliases.points_to.get(v) else {
-    // We treat missing points-to info as "not one of our local allocations" rather than `Top`.
-    return BTreeSet::new();
-  };
-  let mut out = BTreeSet::new();
-  for loc in pts.iter() {
-    if let Some(var) = loc_to_var.get(loc) {
-      out.insert(*var);
-    }
+type VarAllocs = BTreeMap<u32, BTreeSet<u32>>;
+
+fn allocs_for_arg(var_allocs: &VarAllocs, arg: &Arg) -> BTreeSet<u32> {
+  match arg {
+    Arg::Var(v) => var_allocs.get(v).cloned().unwrap_or_default(),
+    _ => BTreeSet::new(),
   }
-  out
 }
 
 fn join_escape(states: &mut BTreeMap<u32, EscapeState>, alloc: u32, esc: EscapeState) {
@@ -170,14 +186,115 @@ fn join_escape(states: &mut BTreeMap<u32, EscapeState>, alloc: u32, esc: EscapeS
 }
 
 pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
-  let aliases = alias::calculate_alias(cfg);
   let param_vars = collect_param_vars(cfg);
-  let (alloc_vars, loc_to_var) = collect_alloc_sites(cfg);
+  let facts = collect_local_alloc_flow_facts(cfg);
+  let alloc_vars = facts.alloc_vars.clone();
+
+  // Infer which local allocations may flow through each SSA variable.
+  //
+  // This is field-insensitive: `GetProp` may read any allocation ever stored into the receiver.
+  // This is necessary because alias analysis currently returns `Top` for `GetProp`, which would
+  // otherwise let escapes slip through (e.g. store allocation into a local object, read it back,
+  // then pass the loaded value to an unknown call).
+  let mut var_allocs: VarAllocs = VarAllocs::new();
+  for &alloc in alloc_vars.iter() {
+    var_allocs.insert(alloc, BTreeSet::from([alloc]));
+  }
+  let mut stored_into: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+
+  let mut changed = true;
+  while changed {
+    changed = false;
+
+    for (tgt, arg) in facts.var_assigns.iter() {
+      let src_allocs = allocs_for_arg(&var_allocs, arg);
+      if src_allocs.is_empty() {
+        continue;
+      }
+      let entry = var_allocs.entry(*tgt).or_default();
+      let before = entry.len();
+      entry.extend(src_allocs);
+      if entry.len() != before {
+        changed = true;
+      }
+    }
+
+    for (tgt, args) in facts.phis.iter() {
+      let mut merged = BTreeSet::new();
+      for arg in args.iter() {
+        merged.extend(allocs_for_arg(&var_allocs, arg));
+      }
+      if merged.is_empty() {
+        continue;
+      }
+      let entry = var_allocs.entry(*tgt).or_default();
+      let before = entry.len();
+      entry.extend(merged);
+      if entry.len() != before {
+        changed = true;
+      }
+    }
+
+    // Container initialization: treat internal literal builder args as stored into the result.
+    for (container, args) in facts.alloc_inits.iter() {
+      let entry = stored_into.entry(*container).or_default();
+      let before = entry.len();
+      for arg in args.iter() {
+        entry.extend(allocs_for_arg(&var_allocs, arg));
+      }
+      if entry.len() != before {
+        changed = true;
+      }
+    }
+
+    // Property stores: `obj[prop] = val` stores `val` into any possible container allocation.
+    for (obj, val) in facts.prop_assigns.iter() {
+      let value_allocs = allocs_for_arg(&var_allocs, val);
+      if value_allocs.is_empty() {
+        continue;
+      }
+      let container_allocs = allocs_for_arg(&var_allocs, obj);
+      if container_allocs.is_empty() {
+        continue;
+      }
+      for container in container_allocs {
+        let entry = stored_into.entry(container).or_default();
+        let before = entry.len();
+        entry.extend(value_allocs.iter().copied());
+        if entry.len() != before {
+          changed = true;
+        }
+      }
+    }
+
+    // Property loads: `tgt = obj[prop]` may read any allocation stored into the receiver.
+    for (tgt, obj) in facts.getprops.iter() {
+      let container_allocs = allocs_for_arg(&var_allocs, obj);
+      if container_allocs.is_empty() {
+        continue;
+      }
+      let mut loaded = BTreeSet::new();
+      for container in container_allocs {
+        if let Some(values) = stored_into.get(&container) {
+          loaded.extend(values.iter().copied());
+        }
+      }
+      if loaded.is_empty() {
+        continue;
+      }
+      let entry = var_allocs.entry(*tgt).or_default();
+      let before = entry.len();
+      entry.extend(loaded);
+      if entry.len() != before {
+        changed = true;
+      }
+    }
+  }
 
   let mut alloc_states: BTreeMap<u32, EscapeState> =
     alloc_vars.iter().copied().map(|v| (v, EscapeState::NoEscape)).collect();
-  let mut stored_into: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
 
+  // Find escape sinks and record direct escapes.
   for label in cfg_labels_sorted(cfg) {
     let Some(block) = cfg.bblocks.maybe_get(label) else {
       continue;
@@ -185,33 +302,25 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
     for inst in block.iter() {
       match inst.t {
         InstTyp::ForeignStore | InstTyp::UnknownStore => {
-          for alloc in allocs_for_arg(&aliases, &loc_to_var, &inst.args[0]) {
+          for alloc in allocs_for_arg(&var_allocs, &inst.args[0]) {
             join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
           }
         }
         InstTyp::Call => {
-          let (_tgt, callee, _this, args, _spreads) = inst.as_call();
+          let (_tgt, callee, _this, _args, _spreads) = inst.as_call();
           if is_internal_alloc_builder(callee) {
-            // Treat allocation builtins as container initialization.
-            if let Some(&container) = inst.tgts.get(0) {
-              for arg in args.iter() {
-                for value_alloc in allocs_for_arg(&aliases, &loc_to_var, arg) {
-                  stored_into.entry(container).or_default().insert(value_alloc);
-                }
-              }
-            }
-          } else {
-            // Unknown/impure call: conservatively treat any allocation passed as escaping.
-            for arg in inst.args.iter() {
-              for alloc in allocs_for_arg(&aliases, &loc_to_var, arg) {
-                join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
-              }
+            continue;
+          }
+          // Unknown/impure call: conservatively treat any allocation passed as escaping.
+          for arg in inst.args.iter() {
+            for alloc in allocs_for_arg(&var_allocs, arg) {
+              join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
             }
           }
         }
         InstTyp::PropAssign => {
           let (obj, _prop, val) = inst.as_prop_assign();
-          let value_allocs = allocs_for_arg(&aliases, &loc_to_var, val);
+          let value_allocs = allocs_for_arg(&var_allocs, val);
           if value_allocs.is_empty() {
             continue;
           }
@@ -225,15 +334,8 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
             }
           }
 
-          let container_allocs = allocs_for_arg(&aliases, &loc_to_var, obj);
-          if !container_allocs.is_empty() {
-            for container in container_allocs {
-              stored_into
-                .entry(container)
-                .or_default()
-                .extend(value_allocs.iter().copied());
-            }
-          } else {
+          let container_allocs = allocs_for_arg(&var_allocs, obj);
+          if container_allocs.is_empty() {
             // Receiver is not a local allocation we can reason about; conservatively treat as
             // escape to global/unknown memory.
             for value in value_allocs {
@@ -274,15 +376,12 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
     out.insert(
       alloc,
       alloc_states.get(&alloc).copied().unwrap_or(EscapeState::NoEscape),
-    );
+      );
   }
 
-  for (var, pts) in aliases.points_to_sorted() {
+  for (&var, allocs) in var_allocs.iter() {
     let mut state = EscapeState::NoEscape;
-    for loc in pts.iter() {
-      let Some(alloc) = loc_to_var.get(loc) else {
-        continue;
-      };
+    for alloc in allocs.iter() {
       let alloc_state = alloc_states
         .get(alloc)
         .copied()
@@ -304,7 +403,7 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
 mod tests {
   use super::*;
   use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
-  use crate::il::inst::{Const, Inst};
+  use crate::il::inst::{BinOp, Const, Inst};
   use crate::symbol::semantics::SymbolId;
   use parse_js::num::JsNumber;
 
@@ -481,6 +580,55 @@ mod tests {
   }
 
   #[test]
+  fn getprop_loaded_allocation_escapes_when_passed_to_call() {
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::call(
+            1,
+            Arg::Builtin("__optimize_js_object".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![],
+            vec![],
+          ),
+          Inst::prop_assign(
+            Arg::Var(0),
+            Arg::Const(Const::Str("x".to_string())),
+            Arg::Var(1),
+          ),
+          Inst::bin(
+            2,
+            Arg::Var(0),
+            BinOp::GetProp,
+            Arg::Const(Const::Str("x".to_string())),
+          ),
+          Inst::unknown_load(3, "f".to_string()),
+          Inst::call(
+            4,
+            Arg::Var(3),
+            Arg::Const(Const::Undefined),
+            vec![Arg::Var(2)],
+            vec![],
+          ),
+        ],
+      )],
+      &[],
+    );
+
+    let escape = analyze_cfg_escapes(&cfg);
+    assert_eq!(escape_of(&escape, 0), EscapeState::NoEscape);
+    assert_eq!(escape_of(&escape, 1), EscapeState::GlobalEscape);
+  }
+
+  #[test]
   fn builtin_initializers_propagate_escape() {
     let cfg = cfg_with_blocks(
       &[(
@@ -511,4 +659,3 @@ mod tests {
     assert_eq!(escape_of(&escape, 0), EscapeState::GlobalEscape);
   }
 }
-
