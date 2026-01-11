@@ -109,8 +109,7 @@ fn alloc_array_buffer(heap: &mut GcHeap, byte_len: usize) -> *mut u8 {
 fn alloc_uint8_array(heap: &mut GcHeap, buffer: *mut u8, byte_offset: usize, length: usize) -> *mut u8 {
   let obj = heap.alloc_young(&UINT8_ARRAY_DESC);
   let payload = unsafe { obj.add(OBJ_HEADER_SIZE) as *mut Uint8Array };
-  let buffer_payload = unsafe { &*(buffer.add(OBJ_HEADER_SIZE) as *const ArrayBuffer) };
-  let view = Uint8Array::view(buffer_payload, byte_offset, length).unwrap();
+  let view = Uint8Array::view_gc(buffer, byte_offset, length).unwrap();
   unsafe {
     payload.write(view);
   }

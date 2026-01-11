@@ -2,6 +2,7 @@ use core::ptr::NonNull;
 
 use super::array_buffer::{ArrayBuffer, ArrayBufferError, PinnedArrayBuffer};
 use super::backing_store::BackingStore;
+use crate::gc::{ObjHeader, OBJ_HEADER_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypedArrayError {
@@ -20,12 +21,54 @@ impl From<ArrayBufferError> for TypedArrayError {
 #[derive(Debug)]
 #[repr(C)]
 pub struct Uint8Array {
+  /// Object base pointer of the underlying `ArrayBuffer` (start of `ObjHeader`).
+  ///
+  /// This is a GC-traced edge and must therefore be an **object pointer**, not a payload pointer
+  /// (`base + OBJ_HEADER_SIZE`).
+  ///
+  /// For non-GC uses of `Uint8Array` (e.g. standalone Rust `ArrayBuffer` values), this may be null.
+  /// Such views must not be embedded in the GC heap with a trace map that expects `buffer_obj` to
+  /// contain a valid object pointer.
+  buffer_obj: *mut u8,
+  /// Non-GC pointer to the `ArrayBuffer` header.
+  ///
+  /// When `buffer_obj` is non-null, this pointer is treated as a cached convenience pointer only:
+  /// it is **not traced/relocated** by the GC and may become stale if the buffer header moves. In
+  /// that case, methods derive the payload pointer from `buffer_obj` instead.
   buffer: NonNull<ArrayBuffer>,
   byte_offset: usize,
   length: usize,
 }
 
 impl Uint8Array {
+  #[inline]
+  unsafe fn buffer_obj_ptr(&self) -> *mut u8 {
+    debug_assert!(!self.buffer_obj.is_null());
+    let mut obj = self.buffer_obj;
+    loop {
+      let header = &*(obj as *const ObjHeader);
+      if header.is_forwarded() {
+        obj = header.forwarding_ptr();
+        continue;
+      }
+      return obj;
+    }
+  }
+
+  #[inline]
+  fn buffer(&self) -> &ArrayBuffer {
+    if self.buffer_obj.is_null() {
+      // Non-GC/standalone view: `buffer` points directly to an `ArrayBuffer` value.
+      // SAFETY: `buffer` is a non-null pointer to a live `ArrayBuffer` header.
+      return unsafe { self.buffer.as_ref() };
+    }
+
+    // GC-managed view: derive the payload pointer from the traced object base pointer.
+    // SAFETY: `buffer_obj` is a GC-managed edge. In the real runtime, it is traced and kept alive.
+    unsafe { &*(self.buffer_obj_ptr().add(OBJ_HEADER_SIZE) as *const ArrayBuffer) }
+  }
+
+  #[inline]
   pub fn view(
     buffer: &ArrayBuffer,
     byte_offset: usize,
@@ -42,6 +85,53 @@ impl Uint8Array {
       return Err(TypedArrayError::Range);
     }
     Ok(Self {
+      buffer_obj: core::ptr::null_mut(),
+      buffer: NonNull::from(buffer),
+      byte_offset,
+      length,
+    })
+  }
+
+  /// Create a view over a GC-managed `ArrayBuffer` object.
+  ///
+  /// `buffer_obj` must be the **object base pointer** (start of [`ObjHeader`]) for a GC-managed
+  /// allocation that contains an [`ArrayBuffer`] payload at `buffer_obj + OBJ_HEADER_SIZE`.
+  pub fn view_gc(
+    buffer_obj: *mut u8,
+    byte_offset: usize,
+    length: usize,
+  ) -> Result<Self, TypedArrayError> {
+    let buffer_obj = NonNull::new(buffer_obj).ok_or(TypedArrayError::Buffer(ArrayBufferError::Detached))?;
+
+    // Follow forwarding pointers defensively: callers should not pass stale nursery pointers, but
+    // this makes the helper more robust in debug/test scenarios.
+    let mut obj = buffer_obj.as_ptr();
+    loop {
+      // SAFETY: `obj` is expected to point to the start of a valid GC-managed object.
+      let header = unsafe { &*(obj as *const ObjHeader) };
+      if header.is_forwarded() {
+        obj = header.forwarding_ptr();
+        continue;
+      }
+      break;
+    }
+
+    // SAFETY: `obj` points to the base of an `ArrayBuffer` allocation.
+    let buffer = unsafe { &*(obj.add(OBJ_HEADER_SIZE) as *const ArrayBuffer) };
+    if buffer.is_detached() {
+      return Err(TypedArrayError::Buffer(ArrayBufferError::Detached));
+    }
+
+    let buffer_byte_len = buffer.byte_len();
+    let end = byte_offset
+      .checked_add(length)
+      .ok_or(TypedArrayError::Range)?;
+    if end > buffer_byte_len {
+      return Err(TypedArrayError::Range);
+    }
+
+    Ok(Self {
+      buffer_obj: obj,
       buffer: NonNull::from(buffer),
       byte_offset,
       length,
@@ -50,9 +140,7 @@ impl Uint8Array {
 
   #[inline]
   pub fn is_detached(&self) -> bool {
-    // SAFETY: `buffer` is a GC-managed edge. In the real runtime, `buffer` is traced and kept alive.
-    let buffer = unsafe { self.buffer.as_ref() };
-    buffer.is_detached()
+    self.buffer().is_detached()
   }
 
   /// `Uint8Array.prototype.length`.
@@ -88,8 +176,7 @@ impl Uint8Array {
       return Ok(None);
     }
 
-    // SAFETY: `buffer` is traced/kept alive by the GC in the real runtime.
-    let buffer = unsafe { self.buffer.as_ref() };
+    let buffer = self.buffer();
     let base_ptr = buffer.data_ptr()?;
 
     let abs = self
@@ -109,8 +196,7 @@ impl Uint8Array {
   ///
   /// Callers that need to hold the pointer across async I/O must use [`Self::pin`].
   pub fn as_ptr_range(&self) -> Result<(*mut u8, usize), TypedArrayError> {
-    // SAFETY: this is a GC-managed edge. In the real runtime, `buffer` is traced and kept alive.
-    let buffer = unsafe { self.buffer.as_ref() };
+    let buffer = self.buffer();
     let base_ptr = buffer.data_ptr()?;
 
     let end = self
@@ -131,10 +217,8 @@ impl Uint8Array {
   /// This is intended for async I/O/FFI subsystems that need to retain/pin the backing allocation
   /// without storing raw pointers to GC-managed `ArrayBuffer`/`TypedArray` headers.
   pub fn backing_store_handle(&self) -> Result<BackingStore, TypedArrayError> {
-    // SAFETY: `buffer` is a GC-managed edge. In the real runtime, `buffer` is traced and kept alive.
-    let buffer = unsafe { self.buffer.as_ref() };
-
-    buffer
+    self
+      .buffer()
       .backing_store_handle()
       .ok_or(TypedArrayError::Buffer(ArrayBufferError::Detached))
   }
@@ -164,8 +248,7 @@ impl Uint8Array {
       .checked_add(range.end)
       .ok_or(TypedArrayError::Range)?;
 
-    // SAFETY: GC-managed edge (see above).
-    let buffer = unsafe { self.buffer.as_ref() };
+    let buffer = self.buffer();
     let pinned = buffer.pin_range(abs_start..abs_end)?;
 
     Ok(PinnedUint8Array {
@@ -229,6 +312,60 @@ impl PinnedUint8Array {
   #[inline]
   pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
     core::slice::from_raw_parts_mut(self.as_ptr(), self.len)
+  }
+}
+
+#[cfg(test)]
+mod gc_trace_tests {
+  use super::*;
+  use crate::gc::{GcHeap, RootStack, SimpleRememberedSet, TypeDescriptor};
+
+  // `Uint8Array` contains exactly one GC pointer field: the base pointer to its backing `ArrayBuffer`
+  // header.
+  static UINT8_ARRAY_PTR_OFFSETS: [u32; 1] = [OBJ_HEADER_SIZE as u32];
+  static GC_UINT8_ARRAY_DESC: TypeDescriptor = TypeDescriptor::new(
+    OBJ_HEADER_SIZE + core::mem::size_of::<Uint8Array>(),
+    &UINT8_ARRAY_PTR_OFFSETS,
+  );
+
+  #[test]
+  fn minor_gc_relocates_uint8array_buffer_pointer() {
+    let mut heap = GcHeap::new();
+
+    let buffer_obj = heap.alloc_array_buffer_young(1).unwrap();
+    let array_obj = heap.alloc_young(&GC_UINT8_ARRAY_DESC);
+    unsafe {
+      (array_obj.add(OBJ_HEADER_SIZE) as *mut Uint8Array).write(Uint8Array::view_gc(buffer_obj, 0, 1).unwrap());
+    }
+
+    let mut root = array_obj;
+    let mut roots = RootStack::new();
+    roots.push(&mut root as *mut *mut u8);
+    let mut remembered = SimpleRememberedSet::new();
+    heap.collect_minor(&mut roots, &mut remembered);
+
+    assert!(!heap.is_in_nursery(root));
+
+    // SAFETY: `root` is a valid `Uint8Array` object after GC.
+    let view = unsafe { &*(root.add(OBJ_HEADER_SIZE) as *const Uint8Array) };
+    let buffer_after = view.buffer_obj;
+    assert!(!heap.is_in_nursery(buffer_after));
+    assert!(
+      heap.is_in_immix(buffer_after) || heap.is_in_los(buffer_after),
+      "expected relocated buffer in old/LOS"
+    );
+
+    // Ensure the view can still access the bytes after relocation.
+    let (ptr, len) = view.as_ptr_range().unwrap();
+    assert_eq!(len, 1);
+    unsafe {
+      ptr.write(123);
+    }
+    assert_eq!(view.get(0).unwrap(), Some(123));
+
+    // Drop the backing store handle so the test doesn't leak external bytes.
+    let buffer_payload = unsafe { &mut *(buffer_after.add(OBJ_HEADER_SIZE) as *mut ArrayBuffer) };
+    buffer_payload.finalize();
   }
 }
 

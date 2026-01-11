@@ -833,8 +833,7 @@ mod tests {
   ) -> *mut u8 {
     let obj = heap.alloc_young(&UINT8_ARRAY_DESC);
     let payload = unsafe { obj.add(OBJ_HEADER_SIZE) as *mut Uint8Array };
-    let buffer_payload = unsafe { &*(buffer.add(OBJ_HEADER_SIZE) as *const ArrayBuffer) };
-    let view = Uint8Array::view(buffer_payload, byte_offset, length).unwrap();
+    let view = Uint8Array::view_gc(buffer, byte_offset, length).unwrap();
     unsafe {
       payload.write(view);
     }
