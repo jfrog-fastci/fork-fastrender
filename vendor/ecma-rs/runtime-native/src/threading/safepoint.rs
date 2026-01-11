@@ -945,7 +945,7 @@ fn stackmaps_for_self() -> Option<&'static crate::StackMaps> {
 pub fn for_each_reloc_pair_world_stopped(
   stop_epoch: u64,
   f: impl FnMut(crate::gc_roots::RelocPair),
-) -> Result<(), crate::WalkError> {
+) -> Result<(), crate::scan::ScanError> {
   for_each_reloc_pair_world_stopped_with_stackmaps(stop_epoch, stackmaps_for_self(), f)
 }
 
@@ -959,7 +959,7 @@ pub fn for_each_reloc_pair_world_stopped_with_stackmaps(
   stop_epoch: u64,
   stackmaps: Option<&crate::StackMaps>,
   mut f: impl FnMut(crate::gc_roots::RelocPair),
-) -> Result<(), crate::WalkError> {
+) -> Result<(), crate::scan::ScanError> {
   assert_eq!(
     stop_epoch & 1,
     1,
@@ -1001,7 +1001,7 @@ pub fn for_each_reloc_pair_world_stopped_with_stackmaps(
   };
 
   let coordinator_id = registry::current_thread_id();
-  registry::try_for_each_thread(|thread| -> Result<(), crate::WalkError> {
+  registry::try_for_each_thread(|thread| -> Result<(), crate::scan::ScanError> {
     if thread.is_detached() {
       return Ok(());
     }
@@ -1032,11 +1032,26 @@ pub fn for_each_reloc_pair_world_stopped_with_stackmaps(
       .stack_bounds()
       .and_then(|b| crate::stackwalk::StackBounds::new(b.lo as u64, b.hi as u64).ok());
 
+    let thread_id = thread.id().get();
+    let os_tid = thread.os_thread_id();
+
     // SAFETY: The caller guarantees the world is stopped and the thread's stack
     // is stable to read.
     unsafe {
-      crate::stackwalk_fp::walk_gc_reloc_pairs_from_safepoint_context(&ctx, stack_bounds, stackmaps, |pair| {
-        f(pair);
+      crate::stackwalk_fp::walk_gc_reloc_pairs_from_safepoint_context(
+        &ctx,
+        stack_bounds,
+        stackmaps,
+        |pair| {
+          f(pair);
+        },
+      )
+      .map_err(|source| crate::scan::ScanError::StackWalkFailed {
+        thread_id,
+        os_tid,
+        fp: ctx.fp,
+        ip: ctx.ip,
+        source,
       })?;
     }
     Ok(())
@@ -1142,7 +1157,7 @@ pub fn for_each_root_slot_world_stopped_with_stackmaps(
 pub fn for_each_root_reloc_pair_world_stopped(
   stop_epoch: u64,
   f: impl FnMut(RelocPair),
-) -> Result<(), crate::WalkError> {
+) -> Result<(), crate::scan::ScanError> {
   // Backwards-compatible alias: keep the original API name requested by older callers, but delegate
   // to the canonical reloc-pair enumerator.
   for_each_reloc_pair_world_stopped(stop_epoch, f)
