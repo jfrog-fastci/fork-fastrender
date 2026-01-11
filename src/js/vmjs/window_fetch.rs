@@ -3172,19 +3172,66 @@ fn response_ctor_construct(
   let mut headers = CoreHeaders::new_with_guard_and_limits(HeadersGuard::Response, &limits);
 
   let body = args.get(0).copied().unwrap_or(Value::Undefined);
-  let body_bytes = if matches!(body, Value::Undefined | Value::Null) {
-    None
-  } else {
-    Some(
-      to_rust_string_limited(
-        scope.heap_mut(),
-        body,
-        headers.limits().max_response_body_bytes,
-        FETCH_BODY_TOO_LONG_ERROR,
-      )?
-      .into_bytes(),
-    )
-  };
+  let mut body_bytes: Option<Vec<u8>> = None;
+  let mut inferred_content_type: Option<String> = None;
+  if !matches!(body, Value::Undefined | Value::Null) {
+    let max_body_bytes = headers.limits().max_response_body_bytes;
+    let bytes: Vec<u8> = match body {
+      Value::Object(obj) => {
+        if scope.heap().is_array_buffer_object(obj) {
+          let data = scope.heap().array_buffer_data(obj)?;
+          if data.len() > max_body_bytes {
+            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+          }
+          data.to_vec()
+        } else if scope.heap().is_uint8_array_object(obj) {
+          let data = scope.heap().uint8_array_data(obj)?;
+          if data.len() > max_body_bytes {
+            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+          }
+          data.to_vec()
+        } else if let Some(serialized) =
+          window_url::serialize_url_search_params_for_fetch(vm, scope.heap(), obj)?
+        {
+          if serialized.as_bytes().len() > max_body_bytes {
+            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+          }
+          inferred_content_type = Some("application/x-www-form-urlencoded;charset=UTF-8".to_string());
+          serialized.into_bytes()
+        } else if let Some(blob) = window_blob::clone_blob_data_for_fetch(vm, scope.heap(), body)? {
+          if blob.bytes.len() > max_body_bytes {
+            return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+          }
+          if !blob.r#type.is_empty() {
+            inferred_content_type = Some(blob.r#type.clone());
+          }
+          blob.bytes
+        } else if let Some(entries) =
+          window_form_data::clone_form_data_entries_for_fetch(vm, scope.heap(), body)?
+        {
+          let boundary_id = with_env_state_mut(env_id, |state| {
+            let id = state.multipart_boundary_counter;
+            state.multipart_boundary_counter = state.multipart_boundary_counter.saturating_add(1);
+            Ok(id)
+          })?;
+          let boundary = format!("----fastrenderformdata{boundary_id}");
+          let multipart = encode_form_data_as_multipart(&entries, &boundary, max_body_bytes)?;
+          inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
+          multipart
+        } else {
+          let s = scope.to_string(vm, host, host_hooks, body)?;
+          js_string_to_rust_string_limited(scope.heap(), s, max_body_bytes, FETCH_BODY_TOO_LONG_ERROR)?
+            .into_bytes()
+        }
+      }
+      other => {
+        let s = scope.to_string(vm, host, host_hooks, other)?;
+        js_string_to_rust_string_limited(scope.heap(), s, max_body_bytes, FETCH_BODY_TOO_LONG_ERROR)?
+          .into_bytes()
+      }
+    };
+    body_bytes = Some(bytes);
+  }
 
   if !matches!(init, Value::Undefined | Value::Null) {
     let Value::Object(init_obj) = init else {
@@ -3239,6 +3286,17 @@ fn response_ctor_construct(
       host_hooks,
       "Response cannot have a body with a null body status",
     ));
+  }
+
+  if let Some(content_type) = inferred_content_type {
+    let has_content_type = headers
+      .has("Content-Type")
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+    if !has_content_type {
+      headers
+        .append("Content-Type", &content_type)
+        .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+    }
   }
 
   let mut response = CoreResponse::new(status);
@@ -6863,6 +6921,242 @@ mod tests {
       return Err(VmError::InvariantViolation("Blob.type missing"));
     };
     assert_eq!(scope.heap().get_string(type_s)?.to_utf8_lossy(), "text/plain");
+
+    Ok(())
+  }
+
+  #[test]
+  fn response_ctor_accepts_uint8_array_body() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host.window.exec_script(
+      "(function(){\
+         const bytes = new Uint8Array(2);\
+         bytes[0] = 65;\
+         bytes[1] = 66;\
+         return new Response(bytes).arrayBuffer();\
+       })()",
+    )?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation(
+        "Response.arrayBuffer must return a Promise object",
+      ));
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = host.window.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Response.arrayBuffer promise missing result",
+      ));
+    };
+    let Value::Object(ab_obj) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.arrayBuffer must resolve to an ArrayBuffer object",
+      ));
+    };
+
+    let (_vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(ab_obj))?;
+    assert!(scope.heap().is_array_buffer_object(ab_obj));
+    assert_eq!(scope.heap().array_buffer_data(ab_obj)?, &[65, 66]);
+
+    Ok(())
+  }
+
+  #[test]
+  fn response_ctor_accepts_url_search_params_body_and_sets_content_type() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let result_obj = host.window.exec_script(
+      "(function(){\
+         const resp = new Response(new URLSearchParams('a=1&b=2'));\
+         return { ct: resp.headers.get('Content-Type'), promise: resp.text() };\
+       })()",
+    )?;
+    let Value::Object(result_obj) = result_obj else {
+      return Err(VmError::InvariantViolation(
+        "expected response ctor test script to return an object",
+      ));
+    };
+
+    let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(result_obj))?;
+
+    let ct_key = alloc_key(&mut scope, "ct")?;
+    let Value::String(ct_s) = vm.get(&mut scope, result_obj, ct_key)? else {
+      return Err(VmError::InvariantViolation("expected ct to be a string"));
+    };
+    assert_eq!(
+      scope.heap().get_string(ct_s)?.to_utf8_lossy(),
+      "application/x-www-form-urlencoded;charset=UTF-8"
+    );
+
+    let promise_key = alloc_key(&mut scope, "promise")?;
+    let promise = vm.get(&mut scope, result_obj, promise_key)?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation("expected promise to be an object"));
+    };
+    assert_eq!(
+      scope.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = scope.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation("Response.text promise missing result"));
+    };
+    let Value::String(text_s) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.text must resolve to a string",
+      ));
+    };
+    assert_eq!(scope.heap().get_string(text_s)?.to_utf8_lossy(), "a=1&b=2");
+
+    Ok(())
+  }
+
+  #[test]
+  fn response_ctor_accepts_blob_body_and_sets_content_type() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let result_obj = host.window.exec_script(
+      "(function(){\
+         const resp = new Response(new Blob(['hi'], { type: 'Text/Plain' }));\
+         return { ct: resp.headers.get('Content-Type'), promise: resp.text() };\
+       })()",
+    )?;
+    let Value::Object(result_obj) = result_obj else {
+      return Err(VmError::InvariantViolation(
+        "expected response ctor test script to return an object",
+      ));
+    };
+
+    let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(result_obj))?;
+
+    let ct_key = alloc_key(&mut scope, "ct")?;
+    let Value::String(ct_s) = vm.get(&mut scope, result_obj, ct_key)? else {
+      return Err(VmError::InvariantViolation("expected ct to be a string"));
+    };
+    assert_eq!(scope.heap().get_string(ct_s)?.to_utf8_lossy(), "text/plain");
+
+    let promise_key = alloc_key(&mut scope, "promise")?;
+    let promise = vm.get(&mut scope, result_obj, promise_key)?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation("expected promise to be an object"));
+    };
+    assert_eq!(
+      scope.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = scope.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation("Response.text promise missing result"));
+    };
+    let Value::String(text_s) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.text must resolve to a string",
+      ));
+    };
+    assert_eq!(scope.heap().get_string(text_s)?.to_utf8_lossy(), "hi");
+
+    Ok(())
+  }
+
+  #[test]
+  fn response_ctor_accepts_form_data_body_and_sets_boundary() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let result_obj = host.window.exec_script(
+      r#"(function(){
+           const fd = new FormData();
+           fd.append('a', 'b');
+           fd.append('file', new Blob(['hi'], { type: 'text/plain' }), 'f.txt');
+           const resp = new Response(fd);
+           return { ct: resp.headers.get('Content-Type'), promise: resp.text() };
+         })()"#,
+    )?;
+    let Value::Object(result_obj) = result_obj else {
+      return Err(VmError::InvariantViolation(
+        "expected response ctor test script to return an object",
+      ));
+    };
+
+    let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(result_obj))?;
+
+    let ct_key = alloc_key(&mut scope, "ct")?;
+    let Value::String(ct_s) = vm.get(&mut scope, result_obj, ct_key)? else {
+      return Err(VmError::InvariantViolation("expected ct to be a string"));
+    };
+    assert_eq!(
+      scope.heap().get_string(ct_s)?.to_utf8_lossy(),
+      "multipart/form-data; boundary=----fastrenderformdata1"
+    );
+
+    let promise_key = alloc_key(&mut scope, "promise")?;
+    let promise = vm.get(&mut scope, result_obj, promise_key)?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation("expected promise to be an object"));
+    };
+    assert_eq!(
+      scope.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = scope.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation("Response.text promise missing result"));
+    };
+    let Value::String(text_s) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.text must resolve to a string",
+      ));
+    };
+    let text = scope.heap().get_string(text_s)?.to_utf8_lossy();
+
+    let expected = concat!(
+      "------fastrenderformdata1\r\n",
+      "Content-Disposition: form-data; name=\"a\"\r\n",
+      "\r\n",
+      "b\r\n",
+      "------fastrenderformdata1\r\n",
+      "Content-Disposition: form-data; name=\"file\"; filename=\"f.txt\"\r\n",
+      "Content-Type: text/plain\r\n",
+      "\r\n",
+      "hi\r\n",
+      "------fastrenderformdata1--\r\n"
+    );
+    assert_eq!(text, expected);
 
     Ok(())
   }
