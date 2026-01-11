@@ -244,7 +244,11 @@ impl ProgramFunction {
     self.ssa_body.as_ref()
   }
 
-  /// Returns the deconstructed CFG (phi nodes removed).
+  /// Returns the primary CFG stored on this function (usually SSA-deconstructed).
+  ///
+  /// In the default compilation pipeline (`CompileCfgOptions::keep_ssa == false`),
+  /// [`ProgramFunction::body`] is always SSA-deconstructed (no phi nodes). When
+  /// `keep_ssa == true`, the body is in SSA form and may still contain phi nodes.
   pub fn cfg_deconstructed(&self) -> &Cfg {
     &self.body
   }
