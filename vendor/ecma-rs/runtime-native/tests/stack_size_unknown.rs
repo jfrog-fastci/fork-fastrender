@@ -1,8 +1,12 @@
 use object::{Object, ObjectSection};
-use runtime_native::arch::SafepointContext;
 use runtime_native::stackmaps::{Location, StackMap, StackMaps, StackSize};
+#[cfg(target_arch = "x86_64")]
+use runtime_native::arch::SafepointContext;
+#[cfg(target_arch = "x86_64")]
 use runtime_native::stackwalk::StackBounds;
+#[cfg(target_arch = "x86_64")]
 use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
+#[cfg(target_arch = "x86_64")]
 use runtime_native::{walk_gc_roots_from_fp, WalkError};
 use std::fs;
 use std::process::{Command, Stdio};

@@ -106,7 +106,7 @@ fn drain_read_nonblocking(fd: RawFd) -> io::Result<usize> {
 fn register_requires_nonblocking() {
   let (read, _write) = pipe().unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let err = reactor
     .register(read.as_fd(), Token(11), Interest::READABLE)
     .expect_err("expected registering a blocking fd to fail");
@@ -116,7 +116,7 @@ fn register_requires_nonblocking() {
 
 #[test]
 fn waker_interrupts_poll_some_timeout() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   std::thread::spawn(move || {
@@ -141,7 +141,7 @@ fn waker_interrupts_poll_some_timeout() {
 
 #[test]
 fn waker_interrupts_poll_none_timeout() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   std::thread::spawn(move || {
@@ -181,7 +181,7 @@ fn event_merge_by_token_read_write() {
     }
   }
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(
       a.as_fd(),
@@ -219,7 +219,7 @@ fn eof_hup_semantics_pipe() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(read.as_fd(), Token(4), Interest::READABLE)
     .unwrap();
@@ -256,7 +256,7 @@ fn eof_hup_semantics_socketpair() {
     }
   }
 
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   reactor
     .register(
       a.as_fd(),
@@ -285,7 +285,7 @@ fn eof_hup_semantics_socketpair() {
 
 #[test]
 fn waker_no_loss_stress() {
-  let mut reactor = Reactor::new().unwrap();
+  let reactor = Reactor::new().unwrap();
   let waker = reactor.waker();
 
   let (req_tx, req_rx) = std::sync::mpsc::channel::<()>();
