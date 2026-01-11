@@ -353,8 +353,9 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
     if let Some(raw_kind) = api.properties.get("purity.kind") {
       if let Some(kind) = raw_kind.as_str() {
         // `purity.kind` is legacy/informational metadata. Be conservative and only
-        // catch the most obvious contradictions.
-        let forbidden = EffectSet::IO | EffectSet::NETWORK | EffectSet::WRITES_GLOBAL;
+        // catch obvious contradictions.
+        let forbidden =
+          EffectSet::IO | EffectSet::NETWORK | EffectSet::READS_GLOBAL | EffectSet::WRITES_GLOBAL;
         if normalize_ident(kind) == "pure" && base_effects.intersects(forbidden) {
           errors.push(ValidationError::InconsistentPurityEffects {
             api: api.name.clone(),
@@ -384,8 +385,11 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       // - be non-deterministic (determinism is tracked separately in KB metadata)
       // - be partially unknown (conservative placeholders)
       //
-      // But they should not perform I/O or write observable global state.
-      let forbidden = EffectSet::IO | EffectSet::NETWORK | EffectSet::WRITES_GLOBAL;
+      // But they should not:
+      // - perform I/O
+      // - read or write observable global state
+      let forbidden =
+        EffectSet::IO | EffectSet::NETWORK | EffectSet::READS_GLOBAL | EffectSet::WRITES_GLOBAL;
       if combined.intersects(forbidden) {
         errors.push(ValidationError::InconsistentPurityEffects {
           api: api.name.clone(),
@@ -473,6 +477,22 @@ mod tests {
   }
 
   #[test]
+  fn flags_pure_with_global_read_as_inconsistent() {
+    let db = ApiDatabase::from_entries([api(
+      "document.querySelector",
+      EffectTemplate::Custom(EffectSet::READS_GLOBAL),
+      PurityTemplate::Pure,
+      &[],
+    )]);
+
+    let errs = validate(&db).unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+      e,
+      ValidationError::InconsistentPurityEffects { .. }
+    )));
+  }
+
+  #[test]
   fn effects_base_accepts_global_tokens() {
     let db = ApiDatabase::from_entries([api(
       "queue.drain",
@@ -498,6 +518,29 @@ mod tests {
       &[(
         "effects.base",
         JsonValue::Array(vec![JsonValue::String("writes_global".to_string())]),
+      )],
+    );
+    api
+      .properties
+      .insert("purity.kind".to_string(), JsonValue::String("pure".to_string()));
+    let db = ApiDatabase::from_entries([api]);
+
+    let errs = validate(&db).unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+      e,
+      ValidationError::InconsistentPurityEffects { .. }
+    )));
+  }
+
+  #[test]
+  fn purity_kind_pure_with_global_read_as_inconsistent() {
+    let mut api = api(
+      "document.querySelector",
+      EffectTemplate::Custom(EffectSet::READS_GLOBAL),
+      PurityTemplate::Impure,
+      &[(
+        "effects.base",
+        JsonValue::Array(vec![JsonValue::String("reads_global".to_string())]),
       )],
     );
     api
