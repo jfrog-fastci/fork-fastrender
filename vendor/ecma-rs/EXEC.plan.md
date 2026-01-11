@@ -6,6 +6,197 @@ Concrete end-to-end plan. No holding back.
 
 ---
 
+## System Requirements (Ubuntu x64)
+
+Install once per machine before running agents:
+
+```bash
+# Core build tools
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  pkg-config \
+  libssl-dev \
+  util-linux \
+  git \
+  curl
+
+# Rust toolchain (if not present)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+rustup default stable
+
+# LLVM 18 (for native codegen backend)
+# Using LLVM's official apt repo for latest stable
+wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main" | \
+  sudo tee /etc/apt/sources.list.d/llvm-18.list
+sudo apt-get update
+sudo apt-get install -y \
+  llvm-18 \
+  llvm-18-dev \
+  clang-18 \
+  lld-18
+
+# Set LLVM paths (add to ~/.bashrc or agent env)
+export LLVM_SYS_180_PREFIX=/usr/lib/llvm-18
+export PATH="/usr/lib/llvm-18/bin:$PATH"
+```
+
+### What's Required
+
+| Package | Why |
+|---------|-----|
+| `build-essential` | gcc, make, etc. for linking |
+| `util-linux` | `flock`, `prlimit` for resource limiting |
+| `llvm-18`, `llvm-18-dev` | LLVM backend for native codegen |
+| `clang-18`, `lld-18` | Compiler/linker for native code |
+| Rust stable | Compilation |
+
+### Verification
+
+```bash
+# Run the system check script
+bash vendor/ecma-rs/scripts/check_system.sh
+
+# Or manually:
+rustc --version
+llvm-config-18 --version
+flock --version
+prlimit --version
+```
+
+---
+
+## Agent Resource Guidelines
+
+**Context:** Hundreds of concurrent coding agents on one system (192 vCPU, 1.5TB RAM, 110TB disk).
+
+**Critical constraint:** RAM. Too many concurrent memory-heavy processes will OOM-kill everything.
+
+**Not a constraint:** CPU and disk I/O. Scheduler handles contention fine. Don't be overly conservative.
+
+### Rules
+
+**1. Always use the wrapper scripts:**
+```bash
+# CORRECT:
+bash scripts/cargo_agent.sh build --release -p native-js
+bash scripts/cargo_agent.sh test -p effect-js --lib
+
+# WRONG (will spawn uncontrolled parallelism):
+cargo build
+cargo test
+```
+
+The wrapper (`scripts/cargo_agent.sh`) enforces:
+- Slot-based concurrency limiting (prevents cargo stampedes)
+- Per-command RAM cap via `RLIMIT_AS` (default 64GB)
+- Reasonable test thread counts
+
+**2. Scope your cargo commands:**
+```bash
+# CORRECT (scoped to specific crate):
+bash scripts/cargo_agent.sh test -p native-js --lib
+bash scripts/cargo_agent.sh build -p effect-js
+
+# WRONG (compiles entire workspace):
+bash scripts/cargo_agent.sh build --all
+bash scripts/cargo_agent.sh test
+```
+
+**3. LLVM operations need extra RAM:**
+
+LLVM compilation is memory-hungry. Use the LLVM wrapper for native codegen:
+```bash
+# Preferred: use the LLVM wrapper (sets 96GB limit automatically):
+bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
+
+# Or set manually:
+FASTR_CARGO_LIMIT_AS=96G bash scripts/cargo_agent.sh test -p native-js --lib
+
+# For full release builds with LTO (very hungry):
+FASTR_CARGO_LIMIT_AS=128G bash scripts/cargo_agent.sh build --release -p native-js
+```
+
+**4. Don't artificially limit parallelism:**
+```bash
+# WRONG (too conservative - wastes resources):
+FASTR_CARGO_JOBS=1 bash scripts/cargo_agent.sh build ...
+
+# RIGHT (let the wrapper decide based on available slots):
+bash scripts/cargo_agent.sh build ...
+
+# RIGHT (if you need to limit for a specific reason, document why):
+# Reduce parallelism because this test spawns subprocesses
+FASTR_CARGO_JOBS=8 bash scripts/cargo_agent.sh test ...
+```
+
+**5. Long-running processes need timeouts:**
+```bash
+# Running compiled binaries - always with limits:
+bash scripts/run_limited.sh --as 32G --cpu 300 -- ./target/release/my_binary
+
+# Don't run indefinitely:
+timeout 600 bash scripts/run_limited.sh --as 32G -- ./target/release/my_binary
+```
+
+**6. Clean up disk when over budget:**
+```bash
+# Before long loops, check target/ size:
+TARGET_MAX_GB="${TARGET_MAX_GB:-400}"
+if [[ -d target ]]; then
+  size_gb=$(du -sg target 2>/dev/null | cut -f1 || echo 0)
+  if [[ "${size_gb}" -ge "${TARGET_MAX_GB}" ]]; then
+    echo "target/ at ${size_gb}GB, cleaning..." >&2
+    bash scripts/cargo_agent.sh clean
+  fi
+fi
+```
+
+### Resource Estimates
+
+| Operation | RAM (per process) | Notes |
+|-----------|-------------------|-------|
+| `cargo check -p crate` | 2-8 GB | Depends on crate size |
+| `cargo build -p crate` | 4-16 GB | Debug build |
+| `cargo build --release -p crate` | 8-32 GB | Release + optimizations |
+| `cargo build --release` (LTO) | 32-96 GB | Full workspace LTO |
+| `cargo test -p crate` | 4-16 GB | Depends on test count |
+| LLVM codegen (our native-js) | 16-64 GB | Per compilation unit |
+| Running compiled binary | 1-32 GB | Depends on workload |
+
+### What NOT to Worry About
+
+- **CPU contention**: Scheduler handles it. If 200 agents all want CPU, they get time-sliced.
+- **Disk I/O contention**: NVMe handles parallel I/O well. Don't serialize disk operations.
+- **Network**: Not relevant for compilation.
+- **Concurrent git operations**: Each agent has own repo copy. No conflicts.
+
+### Quick Reference
+
+```bash
+# Standard build/test (most operations):
+bash scripts/cargo_agent.sh build -p <crate>
+bash scripts/cargo_agent.sh test -p <crate> --lib
+
+# LLVM-heavy operations (native-js, runtime-native):
+bash vendor/ecma-rs/scripts/cargo_llvm.sh build -p native-js
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
+
+# Or with explicit limit:
+FASTR_CARGO_LIMIT_AS=96G bash scripts/cargo_agent.sh <command>
+
+# Running binaries:
+bash scripts/run_limited.sh --as 32G --cpu 300 -- ./target/release/binary
+
+# Check if target/ needs cleaning:
+du -sh target/
+```
+
+---
+
 ## Key Decisions
 
 ### Our TypeScript Dialect ("Strict Mode")
