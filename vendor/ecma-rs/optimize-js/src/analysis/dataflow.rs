@@ -5,6 +5,7 @@ use itertools::Itertools;
 use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Direction {
   Forward,
   Backward,
@@ -12,6 +13,7 @@ pub enum Direction {
 
 /// Describes where to seed a dataflow analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum AnalysisBoundary {
   /// Start from an existing CFG entry block.
   Entry(u32),
@@ -22,6 +24,7 @@ pub enum AnalysisBoundary {
 
 /// Boundary used for a particular analysis run, including synthetic nodes.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum ResolvedAnalysisBoundary {
   Entry(u32),
   VirtualExit { label: u32, predecessors: Vec<u32> },
@@ -37,12 +40,14 @@ impl ResolvedAnalysisBoundary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct BlockState<T> {
   pub entry: T,
   pub exit: T,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DataFlowResult<T> {
   pub boundary: ResolvedAnalysisBoundary,
   pub blocks: HashMap<u32, BlockState<T>>,

@@ -18,7 +18,12 @@ pub mod range;
 pub mod registers;
 pub mod single_use_insts;
 
-pub use driver::{analyze_program, annotate_program, FunctionKey, ProgramAnalyses};
+pub use driver::{
+  analyze_cfg, analyze_program, annotate_program, FunctionAnalyses, FunctionKey, ProgramAnalyses,
+};
+
+#[cfg(feature = "typed")]
+pub use driver::analyze_cfg_typed;
 
 #[cfg(test)]
 mod tests;

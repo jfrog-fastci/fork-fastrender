@@ -5,6 +5,7 @@ use std::fmt;
 use std::fmt::Formatter;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct NullabilityMask(u8);
 
 impl NullabilityMask {
@@ -94,6 +95,7 @@ impl std::ops::BitAndAssign for NullabilityMask {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct State {
   reachable: bool,
   masks: Vec<NullabilityMask>,
@@ -137,7 +139,8 @@ impl State {
   }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct NullabilityResult {
   result: ForwardEdgeDataFlowResult<State>,
 }

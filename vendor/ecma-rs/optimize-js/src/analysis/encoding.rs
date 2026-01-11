@@ -7,6 +7,7 @@ use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp, StringEncoding, UnOp};
 use ahash::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct EncodingState {
   reachable: bool,
   vars: HashMap<u32, StringEncoding>,
@@ -57,6 +58,7 @@ impl EncodingState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct EncodingResult {
   pub boundary: ResolvedAnalysisBoundary,
   pub blocks: HashMap<u32, BlockState<EncodingState>>,

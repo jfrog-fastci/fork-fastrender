@@ -9,6 +9,7 @@ use parse_js::num::JsNumber;
 use std::cmp::Ordering;
  
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Bound {
   NegInf,
   Finite(i64),
@@ -47,6 +48,7 @@ impl Ord for Bound {
 }
  
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum IntRange {
   Bottom,
   Range { lo: Bound, hi: Bound },
@@ -122,6 +124,7 @@ impl IntRange {
 }
  
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum RangeState {
   Unreachable,
   Vars(HashMap<u32, IntRange>),
@@ -190,7 +193,8 @@ impl RangeState {
   }
 }
  
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct RangeResult {
   pub blocks: HashMap<u32, BlockState<RangeState>>,
 }

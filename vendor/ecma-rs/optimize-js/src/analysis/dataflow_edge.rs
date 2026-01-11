@@ -28,6 +28,7 @@ impl<T> EdgeDataFlowResult<T> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ForwardEdgeDataFlowResult<T> {
   pub entry: u32,
   pub block_entry: HashMap<u32, T>,

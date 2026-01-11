@@ -14,6 +14,37 @@ use ahash::HashMapExt;
 
 use super::{alias, effect, encoding, escape, nullability, ownership, purity, range};
 
+/// Per-function analysis bundle.
+///
+/// This is a convenience wrapper used by downstream passes/codegen that only
+/// need the core dataflow analyses (range/nullability/encoding) for a single
+/// [`Cfg`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct FunctionAnalyses {
+  pub nullability: nullability::NullabilityResult,
+  pub range: range::RangeResult,
+  pub encoding: encoding::EncodingResult,
+}
+
+/// Compute the core analyses (range/nullability/encoding) for a single function CFG.
+pub fn analyze_cfg(cfg: &Cfg) -> FunctionAnalyses {
+  FunctionAnalyses {
+    nullability: nullability::calculate_nullability(cfg),
+    range: range::analyze_ranges(cfg),
+    encoding: encoding::analyze_cfg_encoding(cfg),
+  }
+}
+
+/// Typed entry point for [`analyze_cfg`].
+///
+/// The current core analyses are driven entirely by IL metadata, so the typed
+/// and untyped entry points are identical.
+#[cfg(feature = "typed")]
+pub fn analyze_cfg_typed(cfg: &Cfg, _types: &crate::types::TypeContext) -> FunctionAnalyses {
+  analyze_cfg(cfg)
+}
+
 /// Stable identifier for a function in a [`Program`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum FunctionKey {
