@@ -61,6 +61,19 @@ fn rt_async_poll_macrotask_pending_semantics() {
 }
 
 #[test]
+fn rt_async_poll_runs_microtasks_but_returns_false_when_fully_idle_afterwards() {
+  let _rt = TestRuntimeGuard::new();
+
+  let counter: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(0)));
+  runtime_native::test_util::enqueue_microtask(inc, counter as *const AtomicUsize as *mut u8);
+
+  // Even though the microtask executes, the runtime becomes fully idle, so the poll call returns
+  // `false` under the "pending after turn" contract.
+  assert!(!runtime_native::rt_async_poll());
+  assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn rt_async_poll_timer_pending_semantics() {
   let _rt = TestRuntimeGuard::new();
 
