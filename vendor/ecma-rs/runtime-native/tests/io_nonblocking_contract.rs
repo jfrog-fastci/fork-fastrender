@@ -6,6 +6,7 @@ use runtime_native::gc::ObjHeader;
 use runtime_native::gc::SimpleRememberedSet;
 use runtime_native::io::AsyncFd;
 use runtime_native::rt_async_poll_legacy as rt_async_poll;
+use runtime_native::rt_async_cancel_all;
 use runtime_native::rt_handle_alloc;
 use runtime_native::rt_handle_load;
 use runtime_native::rt_handle_free;
@@ -1020,6 +1021,93 @@ fn rt_io_register_handle_callback_ignores_stale_handle() {
 
   let pending = poll_once_with_immediate_timer();
   assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
+fn rt_async_cancel_all_frees_handle_io_watchers() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let handle = rt_handle_alloc(obj);
+
+  let id = rt_io_register_handle(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle);
+  assert_ne!(id, 0, "expected rt_io_register_handle to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+  assert!(
+    !rt_handle_load(handle).is_null(),
+    "handle must remain live while the watcher is registered"
+  );
+
+  rt_async_cancel_all();
+
+  assert!(
+    rt_handle_load(handle).is_null(),
+    "rt_async_cancel_all must clear watchers and free consumed handles"
+  );
+
+  // The watcher id should now be invalid.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after rt_async_cancel_all"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after cancellation");
+}
+
+#[test]
+fn rt_async_cancel_all_runs_handle_watcher_drop_hook_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::External);
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *const AtomicUsize = &*dropped;
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&HANDLE_DROP_COUNTER_DESC);
+  unsafe {
+    (*(obj as *mut HandleDropCounterObj)).drop_counter = dropped_ptr;
+  }
+  let handle = rt_handle_alloc(obj);
+
+  let id = rt_io_register_handle_with_drop(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, handle, inc_handle_drop_count);
+  assert_ne!(id, 0, "expected rt_io_register_handle_with_drop to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+  assert_eq!(
+    dropped.load(Ordering::SeqCst),
+    0,
+    "drop_data must not run before cancellation"
+  );
+
+  rt_async_cancel_all();
+
+  assert_eq!(
+    dropped.load(Ordering::SeqCst),
+    1,
+    "rt_async_cancel_all must run drop_data for handle watchers"
+  );
+  assert!(
+    rt_handle_load(handle).is_null(),
+    "rt_async_cancel_all must free the consumed handle"
+  );
+
+  // Subsequent unregister must not re-run the drop hook.
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "watcher id should be invalid after cancellation"
+  );
+  assert_eq!(dropped.load(Ordering::SeqCst), 1, "drop_data must not run twice");
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after cancellation");
 }
 
 #[test]
