@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "diagnostics": [
+    {
+      "engine": "rust",
+      "code": "TC4002",
+      "file": "/function_constructor_call.ts",
+      "start": 38,
+      "end": 46,
+      "severity": "error",
+      "message": "`Function` constructor is forbidden when `native_strict` is enabled"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "diagnostics": [
+    {
+      "engine": "rust",
+      "code": "TC4001",
+      "file": "/global_eval_computed.ts",
+      "start": 54,
+      "end": 72,
+      "severity": "error",
+      "message": "`eval` is forbidden when `native_strict` is enabled"
+    }
+  ]
+}
