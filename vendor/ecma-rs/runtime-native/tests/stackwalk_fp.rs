@@ -1,5 +1,5 @@
 #[cfg(target_arch = "x86_64")]
-use runtime_native::{walk_gc_roots_from_fp, StackMaps, WalkError};
+use runtime_native::{walk_gc_root_pairs_from_fp, walk_gc_roots_from_fp, StackMaps, WalkError};
 
 #[cfg(target_arch = "aarch64")]
 use runtime_native::{walk_gc_roots_from_fp, StackMaps};
@@ -188,6 +188,66 @@ fn derived_pointers_are_relocated_from_base() {
   let derived_after = unsafe { read_u64(caller_sp_callsite + 8) };
   assert_eq!(base_after, base_val + 0x1000);
   assert_eq!(derived_after, (base_val + 0x1000) + delta);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn synthetic_stack_enumerates_root_pairs_from_stackmaps() {
+  use std::collections::BTreeSet;
+
+  let bytes = build_stackmaps_with_two_records_one_derived_pointer();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+
+  // Pick two callsite records so we can build a multi-frame managed call chain.
+  let callsites: Vec<(u64, runtime_native::stackmaps::CallSite<'_>)> =
+    stackmaps.iter().take(2).collect();
+  assert_eq!(callsites.len(), 2);
+
+  let mut stack = vec![0u8; 1024];
+  let base = stack.as_mut_ptr() as usize;
+
+  let start_fp = align_up(base + 0x100, 16);
+  let caller1_fp = align_up(base + 0x200, 16);
+  let caller2_fp = align_up(base + 0x300, 16);
+
+  let caller1_sp_callsite = start_fp + 16;
+  let caller2_sp_callsite = caller1_fp + 16;
+
+  unsafe {
+    // runtime frame -> caller1
+    write_u64(start_fp + 0, caller1_fp as u64);
+    write_u64(start_fp + 8, callsites[0].0);
+
+    // caller1 -> caller2
+    write_u64(caller1_fp + 0, caller2_fp as u64);
+    write_u64(caller1_fp + 8, callsites[1].0);
+
+    // caller2 -> null
+    write_u64(caller2_fp + 0, 0);
+    write_u64(caller2_fp + 8, 0);
+
+    // Fill the slots so the walker can safely read them (even though this API
+    // only reports addresses).
+    write_u64(caller1_sp_callsite + 0, 0x1111);
+    write_u64(caller1_sp_callsite + 8, 0x2222);
+    write_u64(caller2_sp_callsite + 0, 0x3333);
+    write_u64(caller2_sp_callsite + 8, 0x4444);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+  let mut visited = BTreeSet::<(usize, usize)>::new();
+  unsafe {
+    walk_gc_root_pairs_from_fp(start_fp as u64, Some(bounds), &stackmaps, |pair| {
+      visited.insert((pair.base_slot as usize, pair.derived_slot as usize));
+    })
+    .expect("walk");
+  }
+
+  let expected = BTreeSet::from([
+    (caller1_sp_callsite + 0, caller1_sp_callsite + 8),
+    (caller2_sp_callsite + 0, caller2_sp_callsite + 8),
+  ]);
+  assert_eq!(visited, expected);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -584,6 +644,73 @@ fn build_stackmaps_with_derived_pointer() -> Vec<u8> {
 #[cfg(target_arch = "x86_64")]
 fn build_stackmaps_with_two_derived_pointers() -> Vec<u8> {
   build_stackmaps_with_shared_base_derived_offsets(&[8, 16])
+}
+
+#[cfg(target_arch = "x86_64")]
+fn build_stackmaps_with_two_records_one_derived_pointer() -> Vec<u8> {
+  // Like `build_stackmaps_with_shared_base_derived_offsets`, but emits *two* callsite records so we
+  // can construct a multi-frame synthetic call chain.
+  let mut out = Vec::new();
+
+  // Header.
+  out.push(3); // version
+  out.push(0); // reserved0
+  out.extend_from_slice(&0u16.to_le_bytes()); // reserved1
+  out.extend_from_slice(&1u32.to_le_bytes()); // num_functions
+  out.extend_from_slice(&0u32.to_le_bytes()); // num_constants
+  out.extend_from_slice(&2u32.to_le_bytes()); // num_records
+
+  // One function record.
+  out.extend_from_slice(&0x1000u64.to_le_bytes()); // address
+  out.extend_from_slice(&40u64.to_le_bytes()); // stack_size
+  out.extend_from_slice(&2u64.to_le_bytes()); // record_count
+
+  for instruction_offset in [0x10u32, 0x20u32] {
+    // One record.
+    out.extend_from_slice(&0xabcdef00u64.to_le_bytes()); // patchpoint_id
+    out.extend_from_slice(&instruction_offset.to_le_bytes()); // instruction_offset
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&5u16.to_le_bytes()); // num_locations (3 header consts + 1 pair)
+
+    // 3 leading constants (statepoint header).
+    for _ in 0..3 {
+      out.extend_from_slice(&[4, 0]); // Constant, reserved
+      out.extend_from_slice(&8u16.to_le_bytes()); // size
+      out.extend_from_slice(&0u16.to_le_bytes()); // dwarf_reg
+      out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+      out.extend_from_slice(&0i32.to_le_bytes()); // small const
+    }
+
+    // base: Indirect [SP + 0]
+    out.extend_from_slice(&[3, 0]); // Indirect, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&0i32.to_le_bytes()); // offset
+
+    // derived: Indirect [SP + 8]
+    out.extend_from_slice(&[3, 0]); // Indirect, reserved
+    out.extend_from_slice(&8u16.to_le_bytes()); // size
+    out.extend_from_slice(&7u16.to_le_bytes()); // dwarf_reg (x86_64 SP)
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&8i32.to_le_bytes()); // offset
+
+    // Align to 8.
+    while out.len() % 8 != 0 {
+      out.push(0);
+    }
+
+    // LiveOuts (none).
+    out.extend_from_slice(&0u16.to_le_bytes()); // num_live_outs
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+
+    // Align to 8.
+    while out.len() % 8 != 0 {
+      out.push(0);
+    }
+  }
+
+  out
 }
 
 #[cfg(target_arch = "x86_64")]

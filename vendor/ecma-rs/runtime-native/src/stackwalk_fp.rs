@@ -564,7 +564,15 @@ pub unsafe fn walk_gc_root_pairs_from_fp(
     }
 
     if let Some(callsite) = stackmaps.lookup(caller_ra) {
-      enumerate_root_pairs_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+      let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
+      enumerate_root_pairs_for_frame_with_caller_sp(
+        caller_fp,
+        caller_sp,
+        caller_ra,
+        callsite,
+        bounds,
+        &mut visit,
+      )?;
     }
 
     cur_fp = caller_fp;
@@ -610,7 +618,29 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
   }
 
   if let Some(callsite) = stackmaps.lookup(caller_ra) {
-    enumerate_root_pairs_for_frame(caller_fp, caller_ra, callsite, &mut visit)?;
+    let looks_like_statepoint =
+      callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+        && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+          .iter()
+          .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+    if looks_like_statepoint {
+      // Prefer the captured stackmap-semantics SP for the top frame. This is
+      // required on x86_64 where the callee-entry RSP is 8 bytes lower than the
+      // stackmap base (return address pushed by `call`).
+      let caller_sp = if ctx.sp != 0 {
+        ctx.sp as u64
+      } else {
+        caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?
+      };
+      enumerate_root_pairs_for_frame_with_caller_sp(
+        caller_fp,
+        caller_sp,
+        caller_ra,
+        callsite,
+        bounds,
+        &mut visit,
+      )?;
+    }
   }
 
   walk_gc_root_pairs_from_fp(caller_fp, bounds, stackmaps, visit)
@@ -849,38 +879,32 @@ fn enumerate_roots_for_frame_with_caller_sp(
   Ok(())
 }
 
-fn enumerate_root_pairs_for_frame(
+fn enumerate_root_pairs_for_frame_with_caller_sp(
   caller_fp: u64,
+  caller_sp: u64,
   caller_ra: u64,
   callsite: CallSite<'_>,
+  bounds: Option<StackBounds>,
   visit: &mut impl FnMut(StatepointRootPair),
 ) -> Result<(), WalkError> {
-  let stack_size = callsite.stack_size;
-  if stack_size < arch::FP_RECORD_SIZE {
-    return Err(WalkError::InvalidStackSize {
-      return_addr: caller_ra,
-      stack_size,
-      fp_record_size: arch::FP_RECORD_SIZE,
-    });
+  let looks_like_statepoint =
+    callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+      && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+        .iter()
+        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
+  if !looks_like_statepoint {
+    return Ok(());
   }
 
-  let locals_size = stack_size - arch::FP_RECORD_SIZE;
-  let caller_sp_checked = caller_fp
-    .checked_sub(locals_size)
-    .ok_or(WalkError::StackPointerUnderflow {
-      caller_fp,
-      stack_size,
-      fp_record_size: arch::FP_RECORD_SIZE,
-    })?;
-
-  #[cfg(target_arch = "x86_64")]
-  let caller_sp = {
-    let sp = compute_rsp_x86_64(caller_fp as usize, stack_size) as u64;
-    debug_assert_eq!(sp, caller_sp_checked);
-    sp
-  };
-  #[cfg(target_arch = "aarch64")]
-  let caller_sp = caller_sp_checked;
+  if let Some(bounds) = bounds {
+    if caller_sp < bounds.lo || caller_sp > bounds.hi {
+      return Err(WalkError::StackPointerOutOfBounds {
+        caller_sp,
+        lo: bounds.lo,
+        hi: bounds.hi,
+      });
+    }
+  }
 
   let statepoint = crate::statepoints::StatepointRecord::new(callsite.record).map_err(|source| {
     WalkError::InvalidStatepoint {
@@ -891,9 +915,11 @@ fn enumerate_root_pairs_for_frame(
 
   let mut pairs: Vec<(usize, usize)> = Vec::with_capacity(statepoint.gc_pair_count());
   for pair in statepoint.gc_pairs() {
-    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.base)? as usize;
-    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.derived)? as usize;
-    pairs.push((base_slot, derived_slot));
+    let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.base)?;
+    let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, &pair.derived)?;
+    validate_root_slot(base_slot, bounds, caller_ra)?;
+    validate_root_slot(derived_slot, bounds, caller_ra)?;
+    pairs.push((base_slot as usize, derived_slot as usize));
   }
   pairs.sort_unstable();
   pairs.dedup();
