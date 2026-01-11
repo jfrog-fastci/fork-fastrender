@@ -2113,6 +2113,74 @@ mod tests {
   }
 
   #[test]
+  fn webidl_event_target_dispatch_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+
+    // Force the generated WebIDL EventTarget bindings to install (WindowRealm ships with a
+    // handcrafted EventTarget implementation by default).
+    {
+      let window = host.host_mut().window_mut();
+      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let key_s = scope
+        .alloc_string("EventTarget")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      scope
+        .push_root(Value::String(key_s))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let key = PropertyKey::from_string(key_s);
+      scope
+        .delete_property_or_throw(global, key)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    host.exec_script(
+      r#"
+      globalThis.__host_ok_cb = false;
+      globalThis.__host_ok_type = false;
+      globalThis.__err = "";
+      try {
+        const t = new EventTarget();
+        t.addEventListener('x', () => { globalThis.__host_ok_cb = recordHost(); });
+        const e = {};
+        Object.defineProperty(e, "type", {
+          get() {
+            globalThis.__host_ok_type = recordHost();
+            return "x";
+          }
+        });
+        t.dispatchEvent(e);
+      } catch (e) {
+        globalThis.__err = String(e && (e.stack || e.message) || e);
+      }
+      "#,
+    )?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok_cb"),
+      Value::Bool(true)
+    ));
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok_type"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+
+  #[test]
   fn dispatch_event_listener_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

@@ -232,6 +232,16 @@ impl VmJsHostHooksPayload {
     Some(unsafe { ptr.as_mut() })
   }
 
+  /// Returns the raw pointer to the active `VmHost` context, if one was installed.
+  ///
+  /// This is useful for embedder-side glue that needs to recover the host context without holding a
+  /// mutable borrow of the payload (for example, when the caller needs to invoke `vm-js` APIs that
+  /// also borrow the active host hooks).
+  #[inline]
+  pub fn vm_host_ptr(&self) -> Option<NonNull<dyn VmHost + 'static>> {
+    self.vm_host
+  }
+
   /// Returns the embedder host environment value as a `dyn Any`.
   #[inline]
   pub fn embedder_state_any_mut(&mut self) -> Option<&mut dyn Any> {

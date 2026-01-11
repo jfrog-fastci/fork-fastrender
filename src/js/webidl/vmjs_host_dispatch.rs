@@ -16,7 +16,7 @@ use vm_js::{
   Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 use webidl_vm_js::bindings_runtime::BindingValue;
-use webidl_vm_js::{IterableKind, WebIdlBindingsHost};
+use webidl_vm_js::{IterableKind, VmJsHostHooksPayload, WebIdlBindingsHost};
 
 const URL_INVALID_ERROR: &str = "Invalid URL";
 const URLSP_ITER_VALUES_SLOT: &str = "__fastrender_urlsp_iter_values";
@@ -49,6 +49,68 @@ struct EventTargetState {
 
 fn is_callable(scope: &Scope<'_>, value: Value) -> bool {
   scope.heap().is_callable(value).unwrap_or(false)
+}
+
+fn with_active_vm_host_and_hooks<R>(
+  vm: &mut Vm,
+  f: impl FnOnce(&mut Vm, &mut dyn VmHost, &mut dyn VmHostHooks) -> Result<R, VmError>,
+) -> Result<Option<R>, VmError> {
+  let Some(hooks_ptr) = vm.active_host_hooks_ptr() else {
+    return Ok(None);
+  };
+  // SAFETY: the returned pointer is only exposed by `vm-js` while an embedder-owned `VmHostHooks`
+  // value is mutably borrowed for a single JS execution boundary.
+  let hooks = unsafe { &mut *hooks_ptr };
+  let host_ptr = {
+    let Some(any) = hooks.as_any_mut() else {
+      return Ok(None);
+    };
+    let any_ptr: *mut dyn std::any::Any = any;
+    // SAFETY: `any_ptr` is derived from `hooks.as_any_mut()` and is only used within this block.
+    unsafe {
+      (&mut *any_ptr)
+        .downcast_mut::<VmJsHostHooksPayload>()
+        .and_then(|payload| payload.vm_host_ptr())
+    }
+  };
+  let Some(mut host_ptr) = host_ptr else {
+    return Ok(None);
+  };
+  // SAFETY: the embedder is responsible for ensuring the host pointer remains valid for the
+  // duration of the JS execution boundary where it was installed.
+  let host = unsafe { host_ptr.as_mut() };
+  Ok(Some(f(vm, host, hooks)?))
+}
+
+fn get_with_active_vm_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<Value, VmError> {
+  if let Some(value) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+    vm.get_with_host_and_hooks(host, scope, hooks, obj, key)
+  })? {
+    Ok(value)
+  } else {
+    vm.get(scope, obj, key)
+  }
+}
+
+fn call_with_active_vm_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  callee: Value,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  if let Some(value) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+    vm.call_with_host_and_hooks(host, scope, hooks, callee, this, args)
+  })? {
+    Ok(value)
+  } else {
+    vm.call_without_host(scope, callee, this, args)
+  }
 }
 
 fn urlsp_iterator_next_native(
@@ -190,7 +252,7 @@ fn js_string_to_rust_string(scope: &Scope<'_>, value: Value) -> Result<String, V
 
 fn array_length(vm: &mut Vm, scope: &mut Scope<'_>, array: GcObject) -> Result<usize, VmError> {
   let length_key = key_from_str(scope, "length")?;
-  let len = vm.get(scope, array, length_key)?;
+  let len = get_with_active_vm_host_and_hooks(vm, scope, array, length_key)?;
   match len {
     Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as usize),
     _ => Err(VmError::TypeError(
@@ -206,7 +268,7 @@ fn array_get(
   idx: usize,
 ) -> Result<Value, VmError> {
   let key = key_from_str(scope, &idx.to_string())?;
-  vm.get(scope, array, key)
+  get_with_active_vm_host_and_hooks(vm, scope, array, key)
 }
 
 fn url_parse_result_to_vm_error(err: crate::js::UrlError) -> VmError {
@@ -382,14 +444,14 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       .ok_or(VmError::Unimplemented("WebIDL host missing global object"))?;
 
     let ctor_key = key_from_str(scope, "URL")?;
-    let ctor = vm.get(scope, global, ctor_key)?;
+    let ctor = get_with_active_vm_host_and_hooks(vm, scope, global, ctor_key)?;
     scope.push_root(ctor)?;
     let Value::Object(ctor_obj) = ctor else {
       return Err(VmError::TypeError("globalThis.URL is not an object"));
     };
 
     let proto_key = key_from_str(scope, "prototype")?;
-    let proto = vm.get(scope, ctor_obj, proto_key)?;
+    let proto = get_with_active_vm_host_and_hooks(vm, scope, ctor_obj, proto_key)?;
     scope.push_root(proto)?;
     let Value::Object(proto_obj) = proto else {
       return Err(VmError::TypeError("URL.prototype is not an object"));
@@ -904,7 +966,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
         let event_type = match event_val {
           Value::Object(ev_obj) => {
             let key = key_from_str(scope, "type")?;
-            let value = vm.get(scope, ev_obj, key)?;
+            let value = get_with_active_vm_host_and_hooks(vm, scope, ev_obj, key)?;
             if let Value::String(_) = value {
               js_string_to_rust_string(scope, value)?
             } else {
@@ -928,7 +990,8 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
           if listener.event_type != event_type {
             continue;
           }
-          let _ = vm.call_without_host(
+          let _ = call_with_active_vm_host_and_hooks(
+            vm,
             scope,
             listener.callback.value,
             Value::Object(obj),
@@ -1070,7 +1133,7 @@ impl<Host: WindowRealmHost + 'static> WebIdlBindingsHost for VmJsWebIdlBindingsH
                   continue;
                 }
                 let name = scope.heap().get_string(key_s)?.to_utf8_lossy();
-                let value = vm.get(scope, init_obj, key)?;
+                let value = get_with_active_vm_host_and_hooks(vm, scope, init_obj, key)?;
                 let value = js_string_to_rust_string(scope, value)?;
                 params
                   .append(&name, &value)

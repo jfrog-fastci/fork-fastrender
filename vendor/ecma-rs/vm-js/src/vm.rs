@@ -574,6 +574,25 @@ impl Vm {
     f(&mut *guard.vm)
   }
 
+  /// Returns the currently-active host hook implementation pointer, if one is installed.
+  ///
+  /// `vm-js` stores the active hooks as a raw pointer so call/construct entry points can borrow-split
+  /// `&mut Vm` and `&mut dyn VmHostHooks` (and so nested calls can reuse the same hooks).
+  ///
+  /// This accessor exists for embedder-side glue that needs to recover the active hooks (and any
+  /// payload exposed via [`VmHostHooks::as_any_mut`]) from contexts that only have access to
+  /// `&mut Vm` (for example, WebIDL host dispatch).
+  ///
+  /// # Safety
+  ///
+  /// The returned pointer is only valid during the dynamic extent of a VM entry point that
+  /// installed a hooks override (e.g. [`Vm::call_with_host_and_hooks`], [`Vm::construct_with_host_and_hooks`],
+  /// or [`Vm::with_host_hooks_override`]). Do not dereference it outside that extent.
+  #[inline]
+  pub fn active_host_hooks_ptr(&self) -> Option<*mut (dyn VmHostHooks + 'static)> {
+    self.host_hooks_override
+  }
+
   /// Performs a microtask checkpoint, draining the VM's microtask queue.
   ///
   /// This is a convenience wrapper that uses a dummy host context (`()`), preserving
