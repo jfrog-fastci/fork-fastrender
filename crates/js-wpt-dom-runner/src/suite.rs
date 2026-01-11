@@ -8,6 +8,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -194,6 +195,10 @@ impl Filter {
 }
 
 pub fn run_suite(config: &SuiteConfig) -> Result<Report> {
+  let trace_tests = std::env::var("FASTERENDER_WPT_DOM_TRACE_TESTS")
+    .ok()
+    .is_some_and(|v| !v.trim().is_empty() && v.trim() != "0");
+
   let fs = WptFs::new(&config.wpt_root).with_context(|| {
     format!(
       "create WPT fs rooted at {}",
@@ -243,10 +248,14 @@ pub fn run_suite(config: &SuiteConfig) -> Result<Report> {
     },
   );
 
-  let mut results: Vec<TestResult> = selected
-    .iter()
-    .map(|test| run_single(&runner, test, expectations.lookup(&test.id)))
-    .collect();
+  let mut results: Vec<TestResult> = Vec::with_capacity(selected.len());
+  for (idx, test) in selected.iter().enumerate() {
+    if trace_tests {
+      eprintln!("[{}/{}] {}", idx + 1, selected.len(), test.id);
+      let _ = std::io::stderr().flush();
+    }
+    results.push(run_single(&runner, test, expectations.lookup(&test.id)));
+  }
 
   results.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.kind.cmp(&b.kind)));
 
