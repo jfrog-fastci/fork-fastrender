@@ -1629,7 +1629,7 @@ console.log:
       .find(|api| api.name == "console.log")
       .expect("console.log entry");
     assert_eq!(entry.purity, PurityTemplate::Impure);
-    assert!(entry.effect_summary.contains(EffectSet::IO));
+    assert!(entry.effect_summary.flags.contains(EffectSet::IO));
   }
 
   #[test]

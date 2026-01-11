@@ -1,0 +1,99 @@
+# Navigation-related Web APIs (Location + History).
+
+- name: location.assign
+  kind: function
+  aliases:
+    - location.assign
+    - window.location.assign
+    - globalThis.location.assign
+  since: "baseline"
+  effects: Io
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: location.replace
+  kind: function
+  aliases:
+    - location.replace
+    - window.location.replace
+    - globalThis.location.replace
+  since: "baseline"
+  effects: Io
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: location.reload
+  kind: function
+  aliases:
+    - location.reload
+    - window.location.reload
+    - globalThis.location.reload
+  since: "baseline"
+  effects: Io
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: history.pushState
+  kind: function
+  aliases:
+    - history.pushState
+    - window.history.pushState
+    - globalThis.history.pushState
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: history.replaceState
+  kind: function
+  aliases:
+    - history.replaceState
+    - window.history.replaceState
+    - globalThis.history.replaceState
+  since: "baseline"
+  effects:
+    Custom:
+      flags: WRITES_GLOBAL
+      throws: Maybe
+  purity: Impure
+
+- name: history.back
+  kind: function
+  aliases:
+    - history.back
+    - window.history.back
+    - globalThis.history.back
+  since: "baseline"
+  effects: Io
+  purity: Impure
+
+- name: history.forward
+  kind: function
+  aliases:
+    - history.forward
+    - window.history.forward
+    - globalThis.history.forward
+  since: "baseline"
+  effects: Io
+  purity: Impure
+
+- name: history.go
+  kind: function
+  aliases:
+    - history.go
+    - window.history.go
+    - globalThis.history.go
+  since: "baseline"
+  effects: Io
+  purity: Impure
