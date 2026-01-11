@@ -13,10 +13,16 @@ The intent is that a new contributor can implement:
 without having to reverse-engineer assumptions from codegen.
 
 > Target platform for the initial implementation: **Linux x86_64, ELF**.
-> PIE is the eventual goal, but current LLVM 18 experiments show PIE linking may
-> emit `TEXTREL` warnings due to relocations in `.llvm_stackmaps`; using
-> `-no-pie` avoids this in a minimal setup. Treat this as an implementation
-> consideration while stackmap/relocation handling stabilizes.
+> PIE is the eventual goal. On Linux, LLVM `.llvm_stackmaps` records contain
+> absolute code addresses, producing dynamic relocations under PIE.
+>
+> - If `.llvm_stackmaps` is kept in a read-only segment, lld will either reject
+>   the link or require `DT_TEXTREL` (`-Wl,-z,notext`).
+> - Our preferred approach is to keep PIE **without** `DT_TEXTREL` by rewriting
+>   `.llvm_stackmaps` to be writable before linking (so relocations apply to RW
+>   memory), and retaining the section via a small linker script.
+>
+> See: `scripts/native_js_link_linux.sh` and `runtime-native/stackmaps.ld`.
 
 ## ABI header + external smoke test
 

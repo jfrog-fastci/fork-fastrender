@@ -13,14 +13,19 @@
 //! absolute addresses.
 //!
 //! ## Supporting PIE safely
-//! PIE can be enabled via [`LinkOpts::pie`], but **safe** PIE support requires the runtime stackmap
-//! reader to become relocation-aware (apply relocations / account for the load base) instead of
-//! relying on text relocations.
+//! PIE can be enabled via [`LinkOpts::pie`] **without** `DT_TEXTREL` by making the input
+//! `.llvm_stackmaps` section writable before linking. This allows lld to emit normal dynamic
+//! relocations against the writable section instead of requiring text relocations.
+//!
+//! The dynamic loader applies these relocations at startup, so the stackmap records contain the
+//! final relocated absolute PCs at runtime, and stackmap lookup continues to work by comparing
+//! return addresses directly.
 
 use anyhow::Context;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::process::Stdio;
 
 /// Symbol exported by the final ELF that points at the first byte of `.llvm_stackmaps`.
 pub const FASTR_STACKMAPS_START_SYM: &str = "__fastr_stackmaps_start";
@@ -49,7 +54,9 @@ pub struct LinkOpts {
   ///
   /// Ubuntu toolchains default to PIE, but LLVM stackmaps contain absolute relocations against
   /// function symbols. Preserving `.llvm_stackmaps` in a read-only segment (so the runtime can read
-  /// it directly) is incompatible with PIE unless the linker is allowed to emit text relocations.
+  /// it directly) is incompatible with PIE unless we either:
+  /// - allow text relocations (`-Wl,-z,notext`), or
+  /// - rewrite `.llvm_stackmaps` to be writable before linking so lld can relocate it normally.
   ///
   /// We therefore default to `pie: false` and use `-no-pie` unless the caller explicitly opts into
   /// PIE. On Linux, `pie: true` passes `-pie` explicitly so the link mode is reproducible across
@@ -79,8 +86,10 @@ const LLVM_STACKMAPS_LD_FRAGMENT: &str = r#"
 SECTIONS {
   .llvm_stackmaps : {
     __fastr_stackmaps_start = .;
+    __llvm_stackmaps_start = .;
     KEEP(*(.llvm_stackmaps .llvm_stackmaps.*))
     __fastr_stackmaps_end = .;
+    __llvm_stackmaps_end = .;
   }
 } INSERT AFTER .text;
 "#;
@@ -104,8 +113,8 @@ fn find_clang() -> Option<&'static str> {
   for cand in ["clang-18", "clang"] {
     if Command::new(cand)
       .arg("--version")
-      .stdout(std::process::Stdio::null())
-      .stderr(std::process::Stdio::null())
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
       .status()
       .is_ok()
     {
@@ -119,8 +128,8 @@ fn find_clang_18() -> Option<&'static str> {
   let cand = "clang-18";
   if Command::new(cand)
     .arg("--version")
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
     .status()
     .is_ok()
   {
@@ -128,6 +137,21 @@ fn find_clang_18() -> Option<&'static str> {
   } else {
     None
   }
+}
+
+fn find_llvm_objcopy() -> Option<&'static str> {
+  for cand in ["llvm-objcopy-18", "llvm-objcopy"] {
+    if Command::new(cand)
+      .arg("--version")
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .status()
+      .is_ok()
+    {
+      return Some(cand);
+    }
+  }
+  None
 }
 
 /// Link one or more object files into an ELF executable.
@@ -154,6 +178,43 @@ pub fn link_elf_executable_with_options(
   let script_path = out_dir.join("fastr_stackmaps.ld");
   write_stackmaps_linker_script(&script_path)?;
 
+  // If producing a PIE, ensure `.llvm_stackmaps` is writable in the input objects so lld can apply
+  // the required relocations without emitting DT_TEXTREL.
+  //
+  // We copy objects into a tempdir to avoid mutating the caller's build artifacts in-place.
+  let mut patched_obj_dir: Option<tempfile::TempDir> = None;
+  let mut object_files: Vec<PathBuf> = object_files.to_vec();
+  if cfg!(target_os = "linux") && opts.pie {
+    let objcopy = find_llvm_objcopy()
+      .context("unable to locate llvm-objcopy (expected `llvm-objcopy-18` or `llvm-objcopy`)")?;
+    let td = tempfile::tempdir().context("failed to create tempdir for stackmaps objcopy")?;
+    let mut patched = Vec::with_capacity(object_files.len());
+    for (idx, src) in object_files.iter().enumerate() {
+      let dst = td.path().join(format!("obj{idx}.o"));
+      fs::copy(src, &dst)
+        .with_context(|| format!("failed to copy object {} to {}", src.display(), dst.display()))?;
+
+      // `llvm-objcopy` is a no-op if the section doesn't exist, so we can apply this unconditionally.
+      let status = Command::new(objcopy)
+        .args([
+          "--set-section-flags",
+          ".llvm_stackmaps=alloc,load,contents,data",
+        ])
+        .arg(&dst)
+        .status()
+        .with_context(|| format!("failed to spawn {objcopy}"))?;
+      if !status.success() {
+        anyhow::bail!("{objcopy} failed with status {status}");
+      }
+
+      patched.push(dst);
+    }
+    object_files = patched;
+    patched_obj_dir = Some(td);
+  }
+  // Keep the tempdir alive until after linking completes.
+  let _patched_obj_dir = patched_obj_dir;
+
   let mut cmd = Command::new(clang);
   cmd.arg("-o").arg(output_path);
 
@@ -167,11 +228,6 @@ pub fn link_elf_executable_with_options(
   if cfg!(target_os = "linux") {
     if opts.pie {
       cmd.arg("-pie");
-      if matches!(opts.linker, LinkerFlavor::Lld) {
-        // Allow text relocations for experimentation. Safe PIE support requires relocation-aware
-        // stackmap parsing; see module docs.
-        cmd.arg("-Wl,-z,notext");
-      }
     } else {
       cmd.arg("-no-pie");
     }
@@ -183,7 +239,7 @@ pub fn link_elf_executable_with_options(
 
   cmd.arg(format!("-Wl,-T,{}", script_path.display()));
 
-  for obj in object_files {
+  for obj in &object_files {
     cmd.arg(obj);
   }
 
