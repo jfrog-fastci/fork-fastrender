@@ -442,6 +442,8 @@ mod tests {
       const out = ((o) => {
         return ((x) => x + 1)(o?.x);
       })({ x: 1 });
+      // `typeof` produces a string result, which should get encoding metadata.
+      sink(typeof out);
       void out;
     "#;
 
@@ -474,6 +476,11 @@ mod tests {
     assert!(
       any_inst(&program, |inst| inst.t == InstTyp::CondGoto && inst.meta.nullability_narrowing.is_some()),
       "expected at least one CondGoto to record nullability narrowing"
+    );
+
+    assert!(
+      any_inst(&program, |inst| inst.meta.result_type.string_encoding.is_some()),
+      "expected at least one instruction to record string encoding in InstMeta.result_type"
     );
 
     let top_cfg = &program.top_level.body;
