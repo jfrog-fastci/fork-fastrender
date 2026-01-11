@@ -34,6 +34,14 @@ fn find_llc() -> &'static str {
   find_tool(&["llc-18", "llc"])
 }
 
+fn find_llvm_objcopy() -> &'static str {
+  find_tool(&["llvm-objcopy-18", "llvm-objcopy"])
+}
+
+fn find_llvm_readobj() -> &'static str {
+  find_tool(&["llvm-readobj-18", "llvm-readobj"])
+}
+
 fn run(cmd: &mut Command) {
   let out = cmd.output().unwrap();
   assert!(
@@ -79,10 +87,43 @@ fn compile_ir_to_obj(out_dir: &Path, module_name: &str, patchpoint_id: u64) -> P
   obj_path
 }
 
-fn link_shared(out_dir: &Path, objs: &[PathBuf]) -> PathBuf {
+fn rename_stackmaps_section_to_data_rel_ro(obj: &Path) {
+  // `.llvm_stackmaps` contains absolute code pointers, so it needs relocations under PIE/DSO.
+  // Renaming the input section to `.data.rel.ro.llvm_stackmaps` allows relocations to be applied
+  // in a writable segment, then protected by RELRO, avoiding DT_TEXTREL.
+  let mut cmd = Command::new(find_llvm_objcopy());
+  cmd.arg("--rename-section")
+    .arg(".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents")
+    .arg(obj);
+  run(&mut cmd);
+
+  // Sanity check the rename so this test actually exercises the `.data.rel.ro.*` discovery path.
+  let mut check = Command::new(find_llvm_readobj());
+  check.arg("--sections").arg(obj);
+  let out = check.output().unwrap();
+  assert!(
+    out.status.success(),
+    "command failed (status={}):\n  cmd={check:?}\n  stdout:\n{}\n  stderr:\n{}\n",
+    out.status,
+    String::from_utf8_lossy(&out.stdout),
+    String::from_utf8_lossy(&out.stderr),
+  );
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  assert!(
+    stdout.contains(".data.rel.ro.llvm_stackmaps"),
+    "expected renamed section .data.rel.ro.llvm_stackmaps in {obj:?}, got:\n{stdout}"
+  );
+}
+
+fn link_shared(out_dir: &Path, objs: &[PathBuf], linker_script: &Path) -> PathBuf {
   let so_path = out_dir.join("libstackmaps.so");
   let mut cmd = Command::new(find_clang());
   cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so_path);
+  // Force stackmaps into a dedicated output section (`.data.rel.ro.llvm_stackmaps`) with stable
+  // boundaries. This mirrors the native-js link pipeline and avoids the default linker script
+  // folding `.data.rel.ro.*` into `.data.rel.ro` (which would hide stackmaps behind a generic
+  // section name).
+  cmd.arg(format!("-Wl,-T,{}", linker_script.display()));
   for obj in objs {
     cmd.arg(obj);
   }
@@ -129,7 +170,18 @@ fn discovers_stackmaps_in_dlopened_shared_library() {
   let td = tempfile::tempdir().unwrap();
   let obj_a = compile_ir_to_obj(td.path(), "sm_a", PATCHPOINT_ID_A);
   let obj_b = compile_ir_to_obj(td.path(), "sm_b", PATCHPOINT_ID_B);
-  let so = link_shared(td.path(), &[obj_a, obj_b]);
+
+  rename_stackmaps_section_to_data_rel_ro(&obj_a);
+  rename_stackmaps_section_to_data_rel_ro(&obj_b);
+
+  let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  let linker_script = manifest_dir.join("link/stackmaps.ld");
+  assert!(
+    linker_script.exists(),
+    "missing linker script at {linker_script:?}"
+  );
+
+  let so = link_shared(td.path(), &[obj_a, obj_b], &linker_script);
 
   // Load the shared library so it appears in `dl_iterate_phdr` output.
   let _handle = unsafe { dlopen(&so) };
