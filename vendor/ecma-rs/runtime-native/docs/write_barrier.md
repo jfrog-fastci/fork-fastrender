@@ -2,11 +2,9 @@
 
 This document specifies the **compiler/runtime ABI contract** for the generational GC write barrier used by runtime-native codegen.
 
-The intent is to make it unambiguous:
+It also records the current policy defaults for **per-object card tables** used for large pointer arrays (card size + representation).
 
-* **When** native code must call the barrier.
-* **What** arguments it must pass (and why it is safe).
-* **Which** compiler optimizations / eliminations are allowed.
+> Note: the milestone-1 `runtime-native` implementation does not have a GC yet and `rt_write_barrier` is currently a no-op.
 
 ---
 
@@ -132,6 +130,56 @@ Minor GC behavior:
   * cards with no remaining young pointers are cleared
 
 This keeps scanning proportional to the number of old-array regions that actually reference the nursery.
+
+### Policy defaults
+
+#### Card size
+
+**Default:** `CARD_SIZE = 512 B`
+
+We benchmarked 128 B (Immix line-sized), 512 B (common generational choice), and 1 KiB cards. In the `runtime-native/benches/card_table.rs` microbench, 512 B cards were consistently faster than 128 B for both marking and scanning due to:
+
+- fewer card indices to compute and iterate
+- less card-table metadata to walk per object
+
+1 KiB was sometimes faster still, but it increases over-scanning when writes are sparse (each dirty mark forces scanning a larger region), so 512 B is the default compromise.
+
+#### Representation
+
+**Default:** **bitset** (1 bit per card)
+
+We benchmarked:
+
+- byte-per-card (`u8` dirty flag)
+- bitset (`u64` words)
+
+The microbench showed:
+
+- **Marking:** byte-per-card is cheaper (single store) than bitset (read/OR/write). In the benchmark (1 MiB buffer, 16k random slot marks), bitset was ~1.7× slower.
+- **Scanning / rebuilding:** bitset is significantly faster at low dirty rates because it scans far less metadata and can skip all-zero words quickly. At 1% dirty, bitset was ~6× faster than byte-per-card for 512 B cards.
+
+Minor GC performance is dominated by scanning, and large old objects typically have low dirty rates between minor collections, so the default is bitset.
+
+### When to enable per-object card tables
+
+Card tables are most valuable when:
+
+1) the object contains a **large contiguous run of pointer slots** (arrays, property backing stores, etc), and
+2) the mutation rate is **low enough** that only a small fraction of cards are marked between minor GCs.
+
+Suggested starting heuristic:
+
+- Enable a card table when a pointer buffer is at least **8× `CARD_SIZE`** (i.e. ≥ 4 KiB of pointers with the 512 B default), and the buffer is expected to survive into old-gen.
+
+For smaller pointer buffers, scanning the whole object is usually cheaper than maintaining card metadata and running the barrier.
+
+### Benchmarking
+
+To reproduce the benchmarks locally:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_agent.sh bench -p runtime-native --bench card_table
+```
 
 ---
 

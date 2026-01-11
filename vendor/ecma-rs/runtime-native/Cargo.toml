@@ -15,3 +15,11 @@ bitflags = { workspace = true }
 libc = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+rand = { workspace = true }
+
+[[bench]]
+name = "card_table"
+harness = false
