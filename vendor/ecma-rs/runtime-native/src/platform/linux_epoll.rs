@@ -5,12 +5,13 @@ use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::os::fd::RawFd;
 
+#[allow(dead_code)]
 pub struct Epoll {
   fd: OwnedFd,
 }
 
-#[allow(dead_code)]
 impl Epoll {
+  #[allow(dead_code)]
   pub fn new() -> io::Result<Self> {
     // SAFETY: syscall.
     let fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
@@ -21,14 +22,17 @@ impl Epoll {
     Ok(Self { fd: unsafe { OwnedFd::from_raw_fd(fd) } })
   }
 
+  #[allow(dead_code)]
   pub fn ctl_add(&self, fd: RawFd, events: u32, token: u64) -> io::Result<()> {
     self.ctl(libc::EPOLL_CTL_ADD, fd, events, token)
   }
 
+  #[allow(dead_code)]
   pub fn ctl_mod(&self, fd: RawFd, events: u32, token: u64) -> io::Result<()> {
     self.ctl(libc::EPOLL_CTL_MOD, fd, events, token)
   }
 
+  #[allow(dead_code)]
   pub fn ctl_del(&self, fd: RawFd) -> io::Result<()> {
     // Per `epoll_ctl(2)`, the `event` argument can be null for DEL.
     loop {
@@ -51,6 +55,7 @@ impl Epoll {
     }
   }
 
+  #[allow(dead_code)]
   fn ctl(&self, op: libc::c_int, fd: RawFd, events: u32, token: u64) -> io::Result<()> {
     let mut ev: libc::epoll_event = unsafe { mem::zeroed() };
     ev.events = events;
@@ -68,6 +73,7 @@ impl Epoll {
     }
   }
 
+  #[allow(dead_code)]
   pub fn wait(&self, events: &mut [libc::epoll_event], timeout_ms: i32) -> io::Result<usize> {
     debug_assert!(timeout_ms >= -1);
 
