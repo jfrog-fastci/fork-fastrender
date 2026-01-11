@@ -272,6 +272,10 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
 
     // Linkers align concatenated input sections; `.llvm_stackmaps` uses (at least) 8-byte
     // alignment.
+    //
+    // Note: some linkers may insert padding beyond the minimum required for alignment (e.g. due to
+    // input section alignment). The next iteration will skip any 0-filled padding until the next
+    // `version=3` header.
     let aligned = off.checked_add(7).ok_or(StackMapError::UnexpectedEof)? & !7;
     if aligned > bytes.len() {
       return Err(StackMapError::UnexpectedEof);

@@ -359,8 +359,10 @@ unsafe fn remember_old_object(obj: *mut u8) {
   debug_assert!(!obj.is_null());
   // Avoid taking the mutex in the common case where the object was already
   // recorded by a previous barrier hit.
-  let header = &*(obj as *const ObjHeader);
-  if header.is_remembered() {
+  // Keep the header reference's lifetime short: `remember` will create a `&mut ObjHeader` from the
+  // same raw pointer.
+  let already_remembered = (&*(obj as *const ObjHeader)).is_remembered();
+  if already_remembered {
     return;
   }
   REMEMBERED_SET.lock().remember(obj);
@@ -434,13 +436,14 @@ pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u
     return;
   }
 
+  // Avoid UB on misaligned pointers: `obj` must be a valid `ObjHeader` base pointer.
+  if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
+    std::process::abort();
+  }
+
   // Writes into young objects don't need a barrier: nursery tracing will find the edge.
   if YOUNG_SPACE.contains(obj as usize) {
     return;
-  }
-
-  if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
-    std::process::abort();
   }
 
   // Old-object bulk write. Remember the base object (idempotently) so minor GC
@@ -484,7 +487,8 @@ mod write_barrier_tests {
   use crate::gc::roots::RememberedSet;
 
   static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
-
+  // These tests mutate global write-barrier state (`YOUNG_SPACE` + `REMEMBERED_SET`), so they must
+  // not run concurrently under the default parallel Rust test runner.
   fn with_test_lock<T>(f: impl FnOnce() -> T) -> T {
     let _g = TEST_LOCK.lock();
     f()
