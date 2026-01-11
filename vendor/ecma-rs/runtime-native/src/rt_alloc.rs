@@ -277,6 +277,12 @@ pub(crate) fn on_thread_registered(_id: ThreadId) {
     alloc.nursery_epoch = NURSERY_EPOCH.load(Ordering::Relaxed);
     alloc.major_epoch = MAJOR_EPOCH.load(Ordering::Relaxed);
   });
+
+  // Ensure the global heap is initialized while we're still outside any `rt_gc_collect` measured
+  // section (see `tests/no_alloc_rt_gc_collect.rs`). This may allocate via the Rust global
+  // allocator (metadata) and/or OS syscalls (mmap), so it must not run inside the stop-the-world
+  // collector.
+  ensure_global_heap_init();
 }
 
 pub(crate) fn on_thread_unregistered(_id: ThreadId) {

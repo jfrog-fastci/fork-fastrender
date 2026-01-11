@@ -25,7 +25,7 @@ impl TestPromise {
 }
 
 fn abi_promise_from_header(p: *mut PromiseHeader) -> AbiPromiseRef {
-  AbiPromiseRef(p as *mut _)
+  AbiPromiseRef(p.cast())
 }
 
 #[repr(C)]
@@ -93,7 +93,7 @@ fn spawn_vs_deferred_spawn_immediacy_native() {
   let coro_id = CoroutineId(handle);
   let promise = unsafe { runtime_native::rt_async_spawn(coro_id) };
   assert_eq!(counter.load(Ordering::SeqCst), 1);
-  assert_eq!(promise.0, coro.header.promise as *mut _);
+  assert_eq!(promise.0, coro.header.promise.cast());
   assert_eq!(promise_ptr.load(Ordering::SeqCst), coro.header.promise as usize);
   // Coroutine completed synchronously; runtime must have freed the handle.
   assert!(runtime_native::rt_handle_load(handle).is_null());
@@ -118,7 +118,7 @@ fn spawn_vs_deferred_spawn_immediacy_native() {
   let coro_id = CoroutineId(handle);
   let promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_id) };
   assert_eq!(counter.load(Ordering::SeqCst), 0);
-  assert_eq!(promise.0, unsafe { (*coro).header.promise as *mut _ });
+  assert_eq!(promise.0, unsafe { (*coro).header.promise.cast() });
   assert_eq!(promise_ptr.load(Ordering::SeqCst), 0);
 
   while runtime_native::rt_async_poll() {}
@@ -217,7 +217,7 @@ fn deferred_spawn_registers_waiter_when_polled_native() {
   let handle = runtime_native::rt_handle_alloc(coro as *mut u8);
   let coro_id = CoroutineId(handle);
   let promise = unsafe { runtime_native::rt_async_spawn_deferred(coro_id) };
-  assert_eq!(promise.0, unsafe { (*coro).header.promise as *mut _ });
+  assert_eq!(promise.0, unsafe { (*coro).header.promise.cast() });
   assert!(!started);
   assert!(!completed);
 

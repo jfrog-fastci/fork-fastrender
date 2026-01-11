@@ -10,7 +10,7 @@ use runtime_native::RtShapeId;
 use std::sync::Mutex;
 
 fn abi_promise_from_header(p: *mut PromiseHeader) -> AbiPromiseRef {
-  AbiPromiseRef(p as *mut _)
+  AbiPromiseRef(p.cast())
 }
 
 #[repr(C)]

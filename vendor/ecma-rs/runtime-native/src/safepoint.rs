@@ -258,31 +258,6 @@ pub fn visit_reloc_pairs_from_safepoint_context_with_bounds(
   }
 }
 
-/// Cooperatively enter a safepoint at the current callsite while a stop-the-world
-/// request is active.
-///
-/// This is used by `rt_gc_collect` when a thread attempts to initiate GC while a
-/// collection is already in progress: it must still publish a safepoint context
-/// and block until the world is resumed.
-pub(crate) fn enter_safepoint_at_current_callsite(stop_epoch: u64) {
-  // If we're inside runtime code (e.g. the allocator slow path called
-  // `rt_gc_collect`) we may be several runtime frames away from the nearest
-  // managed callsite that has a stackmap record. Recover that callsite cursor by
-  // walking the FP chain.
-  //
-  // Call `arch::capture_safepoint_context` directly from this helper (avoid
-  // routing it through combinators like `unwrap_or_else`) so the capture
-  // implementation can reliably walk out to the *outer* caller frame.
-  let mut ctx = arch::capture_safepoint_context();
-  ctx = threading::safepoint::fixup_safepoint_context_to_nearest_managed(ctx, crate::stackmap::try_stackmaps());
-  threading::registry::set_current_thread_safepoint_context(ctx);
-  threading::registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
-  threading::safepoint::notify_state_change();
-
-  // Block until the stop-the-world epoch is resumed.
-  threading::safepoint::wait_while_stop_the_world();
-}
-
 pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
   // Mark this thread as the coordinator so GC-aware locks can be acquired while the stop-the-world
   // epoch is active (required for root enumeration).
@@ -313,15 +288,6 @@ pub(crate) fn with_world_stopped_requested(stop_epoch: u64, f: impl FnOnce()) {
     threading::safepoint::dump_stop_the_world_timeout(stop_epoch, timeout);
     panic!("world did not reach safepoint in time (timeout={timeout:?}, epoch={stop_epoch})");
   }
-
-  // Root enumeration hook. This is intentionally a "plumbing" step: we count
-  // roots to validate that:
-  // - stop-the-world coordination works across threads
-  // - per-thread safepoint context capture is wired
-  // - stackmap lookup / stack walking does not crash when available
-  let mut roots = 0usize;
-  let _ = threading::safepoint::for_each_root_slot_world_stopped(stop_epoch, |_| roots += 1);
-  let _ = roots;
 
   f();
 

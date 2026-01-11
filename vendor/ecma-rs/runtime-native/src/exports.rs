@@ -499,7 +499,6 @@ pub unsafe extern "C" fn rt_gc_get_young_range(
     }
   })
 }
-
 /// Reset write barrier state for tests.
 ///
 /// This clears only process-global state used by the exported barrier:
@@ -833,43 +832,25 @@ pub extern "C" fn rt_gc_collect() {
   let fallback_ctx = crate::arch::capture_safepoint_context();
 
   abort_on_panic(|| {
-    #[cfg(feature = "gc_stats")]
-    crate::gc_stats::record_gc_collect();
-
-    // If a stop-the-world is already active, join it as a mutator safepoint at
-    // this callsite (so we still publish a safepoint context for stack walking).
-    let epoch = crate::threading::safepoint::current_epoch();
-    if epoch & 1 == 1 {
-      crate::safepoint::enter_safepoint_at_current_callsite(epoch);
-      return;
-    }
-
-    // Attempt to become the stop-the-world coordinator.
-    let Some(stop_epoch) = crate::threading::safepoint::rt_gc_try_request_stop_the_world() else {
-      // Lost the race; if a GC is now active, join it.
-      let epoch = crate::threading::safepoint::current_epoch();
-      if epoch & 1 == 1 {
-        crate::safepoint::enter_safepoint_at_current_callsite(epoch);
+    fn publish_current_thread_safepoint_context(
+      entry_fp: u64,
+      fallback_ctx: crate::arch::SafepointContext,
+      stop_epoch: u64,
+    ) {
+      // If the current thread isn't registered, it doesn't participate in stackmap root enumeration.
+      if registry::current_thread_id().is_none() {
+        return;
       }
-      return;
-    };
 
-    // If `rt_gc_collect` is called from an attached mutator thread, publish the
-    // initiator's safepoint context before waiting for other threads. This keeps
-    // the initiator's stack eligible for stackmap-based root enumeration while
-    // the world is stopped.
-    if registry::current_thread_id().is_some() {
-      // If GC is triggered while executing inside runtime code (e.g. `rt_alloc`
-      // decides to collect), the nearest managed frame is suspended at the
-      // callsite into the *outermost* runtime frame (which has a stackmap
-      // record). Recover that managed callsite cursor by walking the FP chain.
+      // If GC is triggered while executing inside runtime code (e.g. `rt_alloc` decides to collect),
+      // the nearest managed frame is suspended at the callsite into the *outermost* runtime frame
+      // (which has a stackmap record). Recover that managed callsite cursor by walking the FP chain.
       //
-      // Call `capture_safepoint_context` directly from this function on fallback.
+      // Call `capture_safepoint_context` directly from `rt_gc_collect` on fallback.
       //
-      // The capture helper walks the frame-pointer chain assuming it is invoked
-      // by a *runtime helper* frame. Calling it indirectly (e.g. via
-      // `Option::unwrap_or_else`) introduces an extra frame and changes which FP/IP
-      // are captured.
+      // The capture helper walks the frame-pointer chain assuming it is invoked by a *runtime helper*
+      // frame. Calling it indirectly (e.g. via `Option::unwrap_or_else`) introduces an extra frame and
+      // changes which FP/IP are captured.
       let ctx = match crate::stackmap::try_stackmaps()
         .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor(entry_fp, stackmaps))
       {
@@ -889,28 +870,72 @@ pub extern "C" fn rt_gc_collect() {
         }
         None => fallback_ctx,
       };
+
       registry::set_current_thread_safepoint_context(ctx);
       registry::set_current_thread_safepoint_epoch_observed(stop_epoch);
       crate::threading::safepoint::notify_state_change();
     }
+
+    fn join_stop_the_world(entry_fp: u64, fallback_ctx: crate::arch::SafepointContext, stop_epoch: u64) {
+      publish_current_thread_safepoint_context(entry_fp, fallback_ctx, stop_epoch);
+
+      // Block until the stop-the-world epoch is resumed.
+      crate::threading::safepoint::wait_while_stop_the_world();
+
+      // Post-resume barrier: publish that we've observed the resumed (even) epoch before returning to
+      // mutator code. Without this, the coordinator's `rt_gc_wait_for_world_resumed_timeout` can time
+      // out if this thread joined the stop-the-world request via `rt_gc_collect` instead of the
+      // standard `rt_gc_safepoint` slow path.
+      if registry::current_thread_id().is_some() {
+        let resume_epoch = crate::threading::safepoint::current_epoch();
+        registry::set_current_thread_safepoint_epoch_observed(resume_epoch);
+        crate::threading::safepoint::notify_state_change();
+      }
+    }
+
+    #[cfg(feature = "gc_stats")]
+    crate::gc_stats::record_gc_collect();
+
+    // If a stop-the-world is already active, join it as a mutator safepoint at
+    // this callsite (so we still publish a safepoint context for stack walking).
+    let epoch = crate::threading::safepoint::current_epoch();
+    if epoch & 1 == 1 {
+      join_stop_the_world(entry_fp, fallback_ctx, epoch);
+      return;
+    }
+
+    // Attempt to become the stop-the-world coordinator.
+    let Some(stop_epoch) = crate::threading::safepoint::rt_gc_try_request_stop_the_world() else {
+      // Lost the race; if a GC is now active, join it.
+      let epoch = crate::threading::safepoint::current_epoch();
+      if epoch & 1 == 1 {
+        join_stop_the_world(entry_fp, fallback_ctx, epoch);
+      }
+      return;
+    };
+
+    // If `rt_gc_collect` is called from an attached mutator thread, publish the initiator's safepoint
+    // context before waiting for other threads. This keeps the initiator's stack eligible for
+    // stackmap-based root enumeration while the world is stopped.
+    publish_current_thread_safepoint_context(entry_fp, fallback_ctx, stop_epoch);
 
     crate::safepoint::with_world_stopped_requested(stop_epoch, move || {
       struct AbiRootSet {
         stop_epoch: u64,
       }
 
-       impl crate::gc::RootSet for AbiRootSet {
-         fn for_each_root_slot(&mut self, f: &mut dyn FnMut(*mut *mut u8)) {
-           // Roots for stopped mutator threads + global roots/handles.
-           crate::threading::safepoint::for_each_root_slot_world_stopped(self.stop_epoch, |slot| {
-             f(slot);
-           })
-           .unwrap_or_else(|err| {
-             eprintln!("rt_gc_collect: failed to enumerate roots: {err:?}");
-             std::process::abort();
-           });
-         }
-       }
+      impl crate::gc::RootSet for AbiRootSet {
+        fn for_each_root_slot(&mut self, f: &mut dyn FnMut(*mut *mut u8)) {
+          // Roots for stopped mutator threads + global roots/handles.
+          crate::threading::safepoint::for_each_root_slot_world_stopped(self.stop_epoch, |slot| {
+            f(slot);
+          })
+          .unwrap_or_else(|err| {
+            eprintln!("rt_gc_collect: failed to enumerate roots: {err:?}");
+            std::process::abort();
+          });
+        }
+      }
 
       let mut remembered = global_remset::WorldStoppedRememberedSet::new();
       let mut roots = AbiRootSet { stop_epoch };

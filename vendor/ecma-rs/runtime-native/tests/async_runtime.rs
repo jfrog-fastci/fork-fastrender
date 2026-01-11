@@ -73,7 +73,10 @@ fn promise_header_ptr(p: PromiseHandle) -> PromisePtr {
 }
 
 fn promise_handle_from_ptr(p: PromisePtr) -> PromiseHandle {
-  PromiseHandle(p as *mut _)
+  // `runtime_native::async_abi::PromiseHeader` and `runtime_native_abi::PromiseHeader` have an
+  // identical `#[repr(C)]` layout but are distinct Rust types. The public handle type uses the ABI
+  // crate definition; the native async runtime uses the internal one.
+  PromiseHandle(p.cast())
 }
 
 fn promise_state(p: PromisePtr) -> u8 {

@@ -277,13 +277,13 @@ impl ThreadState {
   }
 
   #[inline]
-  pub(crate) fn remset_drain_raw(&self, f: impl FnMut(*mut u8)) {
-    self.remset.drain_raw(f);
+  pub(crate) fn remset_for_each_raw(&self, f: impl FnMut(*mut u8)) {
+    self.remset.for_each_raw(f);
   }
 
   #[inline]
-  pub(crate) fn remset_for_each_raw(&self, f: impl FnMut(*mut u8)) {
-    self.remset.for_each_raw(f);
+  pub(crate) fn remset_drain_raw(&self, f: impl FnMut(*mut u8)) {
+    self.remset.drain_raw(f);
   }
 
   #[inline]
