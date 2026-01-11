@@ -1287,6 +1287,14 @@ impl StyleOverrideFlags {
   const LAYOUT_CLEAR_WIDTHS_AND_MARGINS: Self = Self(1 << 1);
   const COLLAPSE_ZERO_BORDERS: Self = Self(1 << 2);
   const HIDE_EMPTY_RESET_BG_AND_TRANSPARENT_BORDERS: Self = Self(1 << 3);
+  // `max-height` is widely ignored on table cells by browsers (especially when combined with
+  // `box-sizing: border-box`). Applying it during table cell layout can collapse rows and clip
+  // contents in ways that diverge significantly from Chrome.
+  //
+  // We intentionally ignore `max-height` during the cell's internal BFC layout and let the table
+  // algorithms determine row heights from content. This is a table-specific override (not a
+  // general max-height behavior change).
+  const IGNORE_MAX_HEIGHT: Self = Self(1 << 4);
 
   fn is_empty(self) -> bool {
     self.0 == 0
@@ -1500,7 +1508,8 @@ impl StyleOverrideCache {
     // still keeping the per-style bucket small on typical tables.
     let mut canonical_buckets: HashMap<u64, Vec<Arc<ComputedStyle>>> = HashMap::new();
 
-    let mut layout_flags = StyleOverrideFlags::LAYOUT_CLEAR_WIDTHS_AND_MARGINS;
+    let mut layout_flags =
+      StyleOverrideFlags::LAYOUT_CLEAR_WIDTHS_AND_MARGINS | StyleOverrideFlags::IGNORE_MAX_HEIGHT;
     if include_layout && structure.border_collapse == BorderCollapse::Collapse {
       layout_flags |= StyleOverrideFlags::COLLAPSE_ZERO_BORDERS;
     }
@@ -1724,6 +1733,10 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
     style.margin_right = Some(Length::px(0.0));
     style.margin_top = Some(Length::px(0.0));
     style.margin_bottom = Some(Length::px(0.0));
+  }
+  if flags.contains(StyleOverrideFlags::IGNORE_MAX_HEIGHT) {
+    style.max_height = None;
+    style.max_height_keyword = None;
   }
   if flags.contains(StyleOverrideFlags::COLLAPSE_ZERO_BORDERS) {
     style.border_left_width = Length::px(0.0);
@@ -5965,7 +5978,8 @@ impl TableFormattingContext {
     let hide_empty = border_collapse == BorderCollapse::Separate
       && cell_box.style.empty_cells == EmptyCells::Hide
       && cell_is_visually_empty(cell_box);
-    let mut flags = StyleOverrideFlags::LAYOUT_CLEAR_WIDTHS_AND_MARGINS;
+    let mut flags =
+      StyleOverrideFlags::LAYOUT_CLEAR_WIDTHS_AND_MARGINS | StyleOverrideFlags::IGNORE_MAX_HEIGHT;
     if hide_empty {
       flags |= StyleOverrideFlags::HIDE_EMPTY_RESET_BG_AND_TRANSPARENT_BORDERS;
     }

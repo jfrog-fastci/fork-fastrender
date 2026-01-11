@@ -67,13 +67,16 @@ pub fn resolve_text_shadows_with_viewport(
         style.root_font_size,
         viewport,
       ),
-      blur_radius: resolve_shadow_length(
-        &shadow.blur_radius,
-        style.font_size,
-        style.root_font_size,
-        viewport,
-      )
-      .max(0.0),
+      blur_radius: {
+        let radius = resolve_shadow_length(
+          &shadow.blur_radius,
+          style.font_size,
+          style.root_font_size,
+          viewport,
+        )
+        .max(0.0);
+        crate::paint::blur::css_shadow_blur_radius_to_sigma(radius)
+      },
       color: shadow.color.unwrap_or(style.color),
     })
     .collect()
@@ -155,5 +158,24 @@ mod tests {
     let shadows = resolve_text_shadows_with_viewport(&style, None);
     assert_eq!(shadows.len(), 1);
     assert_eq!(shadows[0].offset_x, 0.0);
+  }
+
+  #[test]
+  fn text_shadow_blur_radius_converts_to_sigma() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 10.0;
+    style.root_font_size = 10.0;
+    style.color = Rgba::BLACK;
+    style.text_shadow = Arc::from(vec![TextShadow {
+      offset_x: Length::px(0.0),
+      offset_y: Length::px(0.0),
+      blur_radius: Length::px(10.0),
+      color: None,
+    }]);
+
+    let shadows = resolve_text_shadows_with_viewport(&style, None);
+    assert_eq!(shadows.len(), 1);
+    let expected = crate::paint::blur::css_shadow_blur_radius_to_sigma(10.0);
+    assert!((shadows[0].blur_radius - expected).abs() < 1e-6);
   }
 }

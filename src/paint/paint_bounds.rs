@@ -57,19 +57,19 @@ pub(crate) fn fragment_paint_bounds(
         rect.width(),
         viewport,
       );
-      let blur = resolve_length_for_paint(
+      let blur_radius = resolve_length_for_paint(
         &shadow.blur_radius,
         style.font_size,
         style.root_font_size,
         rect.width(),
         viewport,
       )
-      .max(0.0)
-        * 3.0;
-      min_x = min_x.min(rect.min_x() + offset_x - blur);
-      min_y = min_y.min(rect.min_y() + offset_y - blur);
-      max_x = max_x.max(rect.max_x() + offset_x + blur);
-      max_y = max_y.max(rect.max_y() + offset_y + blur);
+      .max(0.0);
+      let blur_outset = crate::paint::blur::css_shadow_blur_radius_to_sigma(blur_radius) * 3.0;
+      min_x = min_x.min(rect.min_x() + offset_x - blur_outset);
+      min_y = min_y.min(rect.min_y() + offset_y - blur_outset);
+      max_x = max_x.max(rect.max_x() + offset_x + blur_outset);
+      max_y = max_y.max(rect.max_y() + offset_y + blur_outset);
     }
     bounds = bounds.union(Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y));
   }
@@ -266,7 +266,7 @@ fn box_shadow_bounds(
       rect.width(),
       viewport,
     );
-    let blur = resolve_length_for_paint(
+    let blur_radius = resolve_length_for_paint(
       &shadow.blur_radius,
       style.font_size,
       style.root_font_size,
@@ -274,6 +274,7 @@ fn box_shadow_bounds(
       viewport,
     )
     .max(0.0);
+    let blur = crate::paint::blur::css_shadow_blur_radius_to_sigma(blur_radius);
     let spread = resolve_length_for_paint(
       &shadow.spread_radius,
       style.font_size,

@@ -4297,6 +4297,89 @@ impl<'a> LineBuilder<'a> {
             }
             InlineItem::InlineBox(child_box) => {
               let remaining_width = (available_children_width - used_width).max(0.0);
+              // `white-space: nowrap` suppresses soft wraps inside this inline box. Treat it as
+              // atomic: if the parent inline box already placed in-flow content, break before it;
+              // otherwise only overflow it when the parent box itself starts a new line.
+              if !allows_soft_wrap(child_box.style.as_ref()) {
+                if fragment_has_in_flow_children {
+                  remaining.push_front(InlineItem::InlineBox(child_box));
+                  break;
+                }
+                if !allow_emergency_breaks {
+                  remaining.push_front(InlineItem::InlineBox(child_box));
+                  let remaining_children: Vec<InlineItem> = remaining.into();
+                  let metrics = super::compute_inline_box_metrics(
+                    &remaining_children,
+                    content_offset_y,
+                    bottom_inset,
+                    strut_metrics,
+                  );
+                  let mut inline_box = InlineBoxItem::new(
+                    start_edge,
+                    end_edge,
+                    content_offset_y,
+                    metrics,
+                    style.clone(),
+                    box_index,
+                    direction,
+                    unicode_bidi,
+                  );
+                  inline_box.box_id = box_id;
+                  inline_box.border_left = border_left;
+                  inline_box.border_right = border_right;
+                  inline_box.border_top = border_top;
+                  inline_box.border_bottom = border_bottom;
+                  inline_box.bottom_inset = bottom_inset;
+                  inline_box.strut_metrics = strut_metrics;
+                  inline_box.vertical_align = vertical_align;
+                  inline_box.children = remaining_children;
+                  return Ok(SplitInlineBoxForLineResult::BreakBefore { inline_box });
+                }
+
+                fragment_has_in_flow_children = true;
+                fragment_children.push(InlineItem::InlineBox(child_box));
+                used_width += next_width;
+                break;
+              }
+
+              let min_width = self.min_required_width_for_inline_box_item(&child_box);
+              if min_width > remaining_width + LINE_FIT_EPSILON {
+                if fragment_has_in_flow_children {
+                  remaining.push_front(InlineItem::InlineBox(child_box));
+                  break;
+                }
+                if !allow_emergency_breaks {
+                  remaining.push_front(InlineItem::InlineBox(child_box));
+                  let remaining_children: Vec<InlineItem> = remaining.into();
+                  let metrics = super::compute_inline_box_metrics(
+                    &remaining_children,
+                    content_offset_y,
+                    bottom_inset,
+                    strut_metrics,
+                  );
+                  let mut inline_box = InlineBoxItem::new(
+                    start_edge,
+                    end_edge,
+                    content_offset_y,
+                    metrics,
+                    style.clone(),
+                    box_index,
+                    direction,
+                    unicode_bidi,
+                  );
+                  inline_box.box_id = box_id;
+                  inline_box.border_left = border_left;
+                  inline_box.border_right = border_right;
+                  inline_box.border_top = border_top;
+                  inline_box.border_bottom = border_bottom;
+                  inline_box.bottom_inset = bottom_inset;
+                  inline_box.strut_metrics = strut_metrics;
+                  inline_box.vertical_align = vertical_align;
+                  inline_box.children = remaining_children;
+                  return Ok(SplitInlineBoxForLineResult::BreakBefore { inline_box });
+                }
+              }
+
               // Emergency breaks are only desirable when there's *nothing* before the inline box on
               // the line. If the parent inline box already placed content, prefer breaking before
               // this child box rather than splitting inside it at an arbitrary character boundary.
@@ -7151,6 +7234,79 @@ mod tests {
     let lines = builder.finish().unwrap().lines;
     // Second item should go to new line
     assert_eq!(lines.len(), 2);
+  }
+
+  #[test]
+  fn inline_boxes_fragment_to_fill_remaining_line_width() {
+    // Regression: Inline boxes were only fragmented after forcing them onto a fresh line, causing
+    // unnecessary extra line breaks (notably alongside floats).
+    let mut builder = make_builder(100.0);
+    builder
+      .add_item(InlineItem::Text(make_text_item("Hello ", 60.0)))
+      .unwrap();
+
+    let mut inline_box = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    inline_box.add_child(InlineItem::Text(make_text_item("World Wide", 60.0)));
+    builder.add_item(InlineItem::InlineBox(inline_box)).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 2);
+
+    let line0_text: String = lines[0].items.iter().map(|p| flatten_text(&p.item)).collect();
+    let line1_text: String = lines[1].items.iter().map(|p| flatten_text(&p.item)).collect();
+    assert_eq!(line0_text, "Hello World");
+    assert_eq!(line1_text, "Wide");
+  }
+
+  #[test]
+  fn nested_inline_boxes_fragment_to_fill_remaining_line_width() {
+    // Same as `inline_boxes_fragment_to_fill_remaining_line_width`, but exercises nested inline
+    // boxes. Previously we would refuse to split a nested inline box once some content had already
+    // been added to the current fragment, forcing the entire nested box onto the next line.
+    let mut builder = make_builder(100.0);
+
+    let mut inner = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    inner.add_child(InlineItem::Text(make_text_item("World Wide", 60.0)));
+
+    let mut outer = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    outer.add_child(InlineItem::Text(make_text_item("Hello ", 60.0)));
+    outer.add_child(InlineItem::InlineBox(inner));
+
+    builder.add_item(InlineItem::InlineBox(outer)).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 2);
+    let line0_text: String = lines[0].items.iter().map(|p| flatten_text(&p.item)).collect();
+    let line1_text: String = lines[1].items.iter().map(|p| flatten_text(&p.item)).collect();
+    assert_eq!(line0_text, "Hello World");
+    assert_eq!(line1_text, "Wide");
   }
 
   #[test]

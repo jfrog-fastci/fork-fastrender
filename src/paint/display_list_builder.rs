@@ -8850,23 +8850,11 @@ impl DisplayListBuilder {
                   intersection.height() * scale_y,
                 );
                 let src_rect = {
-                  let src_x = src_rect.x().max(0.0).floor() as u32;
-                  let src_y = src_rect.y().max(0.0).floor() as u32;
-                  let src_w = src_rect.width().ceil() as u32;
-                  let src_h = src_rect.height().ceil() as u32;
-                  let max_x = image.width.saturating_sub(src_x);
-                  let max_y = image.height.saturating_sub(src_y);
-                  let crop_w = src_w.min(max_x);
-                  let crop_h = src_h.min(max_y);
-                  if src_x == 0
-                    && src_y == 0
-                    && crop_w == image.width
-                    && crop_h == image.height
-                  {
-                    None
-                  } else {
-                    Some(src_rect)
-                  }
+                  let full_src_rect = src_rect.x().abs() < 1e-3
+                    && src_rect.y().abs() < 1e-3
+                    && (src_rect.width() - image.width as f32).abs() < 1e-3
+                    && (src_rect.height() - image.height as f32).abs() < 1e-3;
+                  if full_src_rect { None } else { Some(src_rect) }
                 };
 
                 self.emit_background_tile(DisplayItem::Image(ImageItem {
@@ -8944,7 +8932,7 @@ impl DisplayListBuilder {
         percentage_base,
         self.viewport,
       );
-      let blur = Self::resolve_length_for_paint(
+      let blur_radius = Self::resolve_length_for_paint(
         &shadow.blur_radius,
         style.font_size,
         style.root_font_size,
@@ -8952,6 +8940,7 @@ impl DisplayListBuilder {
         self.viewport,
       )
       .max(0.0);
+      let blur_radius = crate::paint::blur::css_shadow_blur_radius_to_sigma(blur_radius);
       let spread = Self::resolve_length_for_paint(
         &shadow.spread_radius,
         style.font_size,
@@ -8965,7 +8954,7 @@ impl DisplayListBuilder {
         rect: base_rect,
         radii,
         offset: Point::new(offset_x, offset_y),
-        blur_radius: blur,
+        blur_radius,
         spread_radius: spread,
         color: shadow.color,
         inset,
@@ -15975,6 +15964,35 @@ mod tests {
   }
 
   #[test]
+  fn box_shadow_blur_radius_converts_to_sigma() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.box_shadow = vec![crate::css::types::BoxShadow {
+      offset_x: Length::px(0.0),
+      offset_y: Length::px(0.0),
+      blur_radius: Length::px(10.0),
+      spread_radius: Length::px(0.0),
+      color: Rgba::BLACK,
+      inset: false,
+    }];
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let list = DisplayListBuilder::new().build(&fragment);
+    let item = list.items().iter().find_map(|item| match item {
+      DisplayItem::BoxShadow(shadow) => Some(shadow),
+      _ => None,
+    });
+    let item = item.expect("expected display list to contain a box shadow item");
+    let expected = crate::paint::blur::css_shadow_blur_radius_to_sigma(10.0);
+    assert!((item.blur_radius - expected).abs() < 1e-6);
+  }
+
+  #[test]
   fn stacking_context_bounds_include_descendant_box_shadow_paint_overflow() {
     let mut outer_style = ComputedStyle::default();
     outer_style.display = Display::Block;
@@ -16080,10 +16098,21 @@ mod tests {
       DisplayItem::PushStackingContext(sc) if sc.is_isolated => Some(sc.bounds),
       _ => None,
     });
-    assert_eq!(
-      sc_bounds,
-      Some(Rect::from_xywh(5.0, 25.0, 55.0, 50.0)),
-      "stacking context bounds should include text-shadow paint overflow"
+    let blur_outset = crate::paint::blur::css_shadow_blur_radius_to_sigma(5.0) * 3.0;
+    let expected = Rect::from_xywh(
+      20.0 - blur_outset,
+      40.0 - blur_outset,
+      40.0 + blur_outset,
+      20.0 + blur_outset * 2.0,
+    );
+    let sc_bounds = sc_bounds.expect("expected isolated stacking context bounds");
+    let eps = 1e-5;
+    assert!(
+      (sc_bounds.x() - expected.x()).abs() <= eps
+        && (sc_bounds.y() - expected.y()).abs() <= eps
+        && (sc_bounds.width() - expected.width()).abs() <= eps
+        && (sc_bounds.height() - expected.height()).abs() <= eps,
+      "stacking context bounds should include text-shadow paint overflow (got={sc_bounds:?} expected={expected:?})"
     );
   }
 

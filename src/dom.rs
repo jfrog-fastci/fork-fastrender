@@ -9589,6 +9589,36 @@ mod tests {
   }
 
   #[test]
+  fn parse_html_inserts_implicit_tbody_for_table_rows() {
+    let dom = parse_html("<!doctype html><table id=t><tr id=r1><td></td></tr></table>").expect("parse");
+    let table = find_node_by_id(&dom, "t").expect("table element");
+
+    // HTML table parsing inserts a `<tbody>` element when `<tr>` appears directly under `<table>`.
+    // Real-world CSS (including Bootstrap) relies on this for selectors like `table > tbody > tr`.
+    let tbody = table
+      .children
+      .iter()
+      .find(|child| child.tag_name().is_some_and(|tag| tag.eq_ignore_ascii_case("tbody")))
+      .expect("expected implicit <tbody> element");
+
+    assert!(
+      !table
+        .children
+        .iter()
+        .any(|child| child.tag_name().is_some_and(|tag| tag.eq_ignore_ascii_case("tr"))),
+      "expected <tr> elements to be children of <tbody>, not direct children of <table>"
+    );
+
+    assert!(
+      tbody
+        .children
+        .iter()
+        .any(|child| child.get_attribute_ref("id") == Some("r1")),
+      "expected <tbody> to contain the <tr> element"
+    );
+  }
+
+  #[test]
   fn declarative_shadow_dom_only_attaches_first_template() {
     let html = "<div id='host'><template shadowroot='open'><p id='first'>first</p></template><template shadowroot='closed'><p id='second'>second</p></template><p id='light'>light</p></div>";
     let dom = parse_html(html).expect("parse html");

@@ -10475,6 +10475,7 @@ impl Painter {
               viewport,
             )
             .max(0.0);
+            let blur = crate::paint::blur::css_shadow_blur_radius_to_sigma(blur);
             let spread = resolve_length_for_paint(
               &shadow.spread_radius,
               style.font_size,
@@ -10683,6 +10684,7 @@ impl Painter {
               viewport,
             )
             .max(0.0);
+            let blur = crate::paint::blur::css_shadow_blur_radius_to_sigma(blur);
             let spread = resolve_length_for_paint(
               &shadow.spread_radius,
               style.font_size,

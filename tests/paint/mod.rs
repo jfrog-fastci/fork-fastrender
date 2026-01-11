@@ -190,6 +190,8 @@ mod svg_use_currentcolor_cross_root;
 mod svg_clip_path_url_fragment_test;
 mod svg_mask_image_reference_test;
 mod system_color_keywords_test;
+mod table_cell_max_height;
+mod table_row_striping;
 mod text_cache_test;
 mod text_justify_display_list_test;
 mod text_decoration_line_through_golden_test;

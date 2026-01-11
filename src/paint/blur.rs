@@ -19,6 +19,15 @@ const FAST_GAUSS_THRESHOLD_SIGMA: f32 = 5.0;
 const BLUR_DEADLINE_STRIDE: usize = 256;
 const PARALLEL_BLUR_MIN_PIXELS: usize = 512 * 512;
 
+/// Converts a CSS `box-shadow`/`text-shadow` blur radius (in CSS px) to a gaussian sigma.
+#[inline]
+pub(crate) fn css_shadow_blur_radius_to_sigma(radius: f32) -> f32 {
+  if !radius.is_finite() || radius <= 0.0 {
+    return 0.0;
+  }
+  radius * 0.57735 + 0.5
+}
+
 #[inline]
 fn deterministic_paint_enabled() -> bool {
   cfg!(test) || runtime::runtime_toggles().truthy("FASTR_DETERMINISTIC_PAINT")
