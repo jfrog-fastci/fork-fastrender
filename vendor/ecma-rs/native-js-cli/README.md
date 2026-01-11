@@ -325,7 +325,7 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 ## `native-js` (typechecked AOT pipeline)
 
 The `native-js` binary is an early proof-of-concept for a typechecked AOT path.
-It expects the entry file to export a `main()` function.
+It expects the entry module to export `main()`.
 
 ### Usage
 
