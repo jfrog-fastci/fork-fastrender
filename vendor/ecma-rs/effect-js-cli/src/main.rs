@@ -84,6 +84,9 @@ fn run_kb(kb_dir: Option<&Path>, command: KbCommand) {
 
       println!("name: {}", entry.name);
       println!("id: 0x{:x}", entry.id.raw());
+      if let Some(src) = kb.source_of(&name) {
+        println!("source: {src}");
+      }
       if !entry.aliases.is_empty() {
         println!("aliases:");
         for alias in entry.aliases.iter() {

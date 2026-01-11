@@ -269,6 +269,33 @@ impl ApiDatabase {
     self.api_for_target(name_or_alias, &TargetEnv::Unknown)
   }
 
+  /// Return the source path (relative to the `knowledge-base/` crate root) that defined the best
+  /// entry for `name_or_alias` under the given `target`.
+  pub fn source_for_target(&self, name_or_alias: &str, target: &TargetEnv) -> Option<&str> {
+    let canonical = self.canonical_name(name_or_alias)?;
+    let entries = self.apis.get(canonical)?;
+
+    let mut best: Option<&ApiEntry> = None;
+    for entry in entries {
+      if !entry_matches_target(entry, target) {
+        continue;
+      }
+      best = match best {
+        None => Some(entry),
+        Some(current) => Some(select_better(current, entry, target)),
+      };
+    }
+
+    best
+      .and_then(|entry| entry.source.as_deref())
+      .or_else(|| self.sources.get(canonical).map(|s| s.as_str()))
+  }
+
+  /// Convenience wrapper around [`ApiDatabase::source_for_target`] using `TargetEnv::Unknown`.
+  pub fn source_of(&self, name_or_alias: &str) -> Option<&str> {
+    self.source_for_target(name_or_alias, &TargetEnv::Unknown)
+  }
+
   pub fn canonical_name(&self, name_or_alias: &str) -> Option<&str> {
     if let Some((key, _)) = self.apis.get_key_value(name_or_alias) {
       return Some(key.as_str());
@@ -1736,6 +1763,16 @@ console.log:
     let yaml = serde_yaml::to_string(fetch).unwrap();
     let parsed: ApiSemantics = serde_yaml::from_str(&yaml).unwrap();
     assert_eq!(&parsed, fetch);
+  }
+
+  #[test]
+  fn source_paths_are_recorded() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    let src = kb.source_of("fetch").expect("fetch has a source path");
+    assert!(
+      src.ends_with("web/fetch.yaml"),
+      "unexpected fetch source path: {src}"
+    );
   }
 
   #[test]
