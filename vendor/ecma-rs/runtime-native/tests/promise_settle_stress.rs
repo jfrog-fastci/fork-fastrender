@@ -4,7 +4,7 @@ use runtime_native::promise_reactions::{PromiseReactionNode, PromiseReactionVTab
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::PromiseRef as AbiPromiseRef;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 #[repr(C)]
@@ -74,6 +74,72 @@ fn drain_microtasks_until(timeout: Duration, done: impl Fn() -> bool) {
     }
     std::thread::yield_now();
   }
+}
+
+#[repr(C)]
+struct LogReaction {
+  node: PromiseReactionNode,
+  log: *const Mutex<Vec<usize>>,
+  idx: usize,
+}
+
+extern "C" fn log_reaction_run(node: *mut PromiseReactionNode, _promise: PromiseHeaderRef) {
+  // Safety: allocated by `alloc_log_reaction`.
+  let node = unsafe { &*(node as *const LogReaction) };
+  unsafe { &*node.log }.lock().unwrap().push(node.idx);
+}
+
+extern "C" fn log_reaction_drop(node: *mut PromiseReactionNode) {
+  // Safety: allocated by `alloc_log_reaction`.
+  unsafe {
+    drop(Box::from_raw(node as *mut LogReaction));
+  }
+}
+
+static LOG_REACTION_VTABLE: PromiseReactionVTable = PromiseReactionVTable {
+  run: log_reaction_run,
+  drop: log_reaction_drop,
+};
+
+fn alloc_log_reaction(log: *const Mutex<Vec<usize>>, idx: usize) -> *mut PromiseReactionNode {
+  let node = Box::new(LogReaction {
+    node: PromiseReactionNode {
+      next: null_mut(),
+      vtable: &LOG_REACTION_VTABLE,
+    },
+    log,
+    idx,
+  });
+  Box::into_raw(node) as *mut PromiseReactionNode
+}
+
+#[test]
+fn promise_reactions_drain_in_fifo_registration_order() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut promise = Box::new(PromiseHeader {
+    state: AtomicU8::new(0),
+    reactions: AtomicUsize::new(0),
+    flags: AtomicU8::new(0),
+  });
+  let p_hdr: PromiseHeaderRef = &mut *promise;
+  let p = AbiPromiseRef(p_hdr.cast());
+  unsafe { runtime_native::rt_promise_init(p) };
+
+  let log = Box::new(Mutex::new(Vec::new()));
+  let log_ptr: *const Mutex<Vec<usize>> = &*log;
+
+  // Register in ascending order. The internal list is a Treiber stack (LIFO), so correct FIFO
+  // draining requires reversing before enqueuing microtasks.
+  for idx in 0..8 {
+    let node = alloc_log_reaction(log_ptr, idx);
+    unsafe { push_reaction(p_hdr, node) };
+  }
+
+  unsafe { runtime_native::rt_promise_fulfill(p) };
+  drain_microtasks_until(Duration::from_secs(2), || log.lock().unwrap().len() == 8);
+
+  assert_eq!(&*log.lock().unwrap(), &[0, 1, 2, 3, 4, 5, 6, 7]);
 }
 
 #[test]
