@@ -128,7 +128,12 @@ impl Task {
   }
 
   fn run(self) {
-    (self.callback)(self.data);
+    let data = self
+      .gc_root
+      .as_ref()
+      .map(|r| r.ptr())
+      .unwrap_or(self.data);
+    (self.callback)(data);
   }
 }
 

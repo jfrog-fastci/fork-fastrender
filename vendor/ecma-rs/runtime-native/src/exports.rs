@@ -211,6 +211,12 @@ pub extern "C" fn rt_gc_safepoint() {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_safepoint();
 
+  // Fast path: if no stop-the-world is requested, `rt_gc_safepoint` is a cheap
+  // no-op even for threads that are not registered with the runtime.
+  if !crate::threading::safepoint::rt_gc_poll() {
+    return;
+  }
+
   // `rt_gc_safepoint` is only meaningful for threads that have been registered
   // with `rt_thread_init`. For non-attached threads this is a no-op: they do not
   // participate in stop-the-world coordination.

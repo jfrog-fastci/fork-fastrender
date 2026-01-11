@@ -423,3 +423,96 @@ pub fn for_each_root_slot_world_stopped(
 
   Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+  use crate::alloc;
+  use crate::gc::ObjHeader;
+  use crate::gc::TypeDescriptor;
+  use crate::threading;
+  use crate::threading::ThreadKind;
+  use std::sync::Arc;
+  use std::sync::Barrier;
+  use std::sync::atomic::AtomicUsize;
+  use std::sync::atomic::Ordering;
+ 
+  #[repr(C)]
+  struct Obj {
+    header: ObjHeader,
+    value: usize,
+  }
+ 
+  static OBJ_DESC: TypeDescriptor = TypeDescriptor::new(core::mem::size_of::<Obj>(), &[]);
+ 
+  fn alloc_obj(value: usize) -> *mut u8 {
+    let size = core::mem::size_of::<Obj>();
+    let align = core::mem::align_of::<Obj>();
+    let obj = alloc::alloc_bytes(size, align, "safepoint test");
+    unsafe {
+      core::ptr::write_bytes(obj, 0, size);
+      let header = &mut *(obj as *mut ObjHeader);
+      header.type_desc = &OBJ_DESC as *const TypeDescriptor;
+      header.meta = 0;
+      (*(obj as *mut Obj)).value = value;
+    }
+    obj
+  }
+ 
+  #[test]
+  fn stw_safepoint_barrier_is_deadlock_free() {
+    const WORKERS: usize = 4;
+    const WORKER_ITERS: usize = 2_000;
+    const GC_ITERS: usize = 20;
+ 
+    // Register the coordinator (main test thread) so it participates in STW accounting.
+    threading::register_current_thread(ThreadKind::Main);
+ 
+    let barrier = Arc::new(Barrier::new(WORKERS + 1));
+    let completed = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::with_capacity(WORKERS);
+ 
+    for idx in 0..WORKERS {
+      let barrier = barrier.clone();
+      let completed = completed.clone();
+      handles.push(std::thread::spawn(move || {
+        threading::register_current_thread(ThreadKind::Worker);
+ 
+        // Root a single object through the per-thread handle stack.
+        let mut root: *mut u8 = core::ptr::null_mut();
+        let mut scope = crate::roots::RootScope::new();
+        scope.push(&mut root as *mut *mut u8);
+        root = alloc_obj(idx);
+ 
+        barrier.wait();
+ 
+        for _ in 0..WORKER_ITERS {
+          crate::rt_gc_safepoint();
+          // Allocate a little garbage to keep the mutator doing work between safepoints.
+          let _ = alloc_obj(idx.wrapping_add(1000));
+        }
+ 
+        // Ensure the rooted object remains readable after repeated STW pauses.
+        unsafe {
+          assert_eq!((*(root as *mut Obj)).value, idx);
+        }
+ 
+        completed.fetch_add(1, Ordering::Release);
+        threading::unregister_current_thread();
+      }));
+    }
+ 
+    // Let all workers start their loops.
+    barrier.wait();
+ 
+    for _ in 0..GC_ITERS {
+      crate::rt_gc_collect();
+    }
+ 
+    for h in handles {
+      h.join().unwrap();
+    }
+ 
+    assert_eq!(completed.load(Ordering::Acquire), WORKERS);
+    threading::unregister_current_thread();
+  }
+}

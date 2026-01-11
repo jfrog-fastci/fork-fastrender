@@ -252,8 +252,11 @@ pub fn parse_all_stackmaps(bytes: &[u8]) -> Result<Vec<StackMap>, StackMapError>
   let mut off: usize = 0;
 
   while off < bytes.len() {
-    // Linkers may insert 0-filled alignment padding between concatenated input sections. Skip it
-    // so we always parse at a stackmap header (`version=3`).
+    // Linkers may insert 0-filled alignment padding between concatenated input
+    // sections. Skip that padding to find the next `version=3` blob header.
+    //
+    // Note: we only skip *zero* bytes here. Any other trailing/non-header bytes
+    // indicate a malformed section and should surface as a parse error.
     while off < bytes.len() && bytes[off] == 0 {
       off += 1;
     }
