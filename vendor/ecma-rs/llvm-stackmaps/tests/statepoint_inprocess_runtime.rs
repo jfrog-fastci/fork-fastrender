@@ -175,8 +175,9 @@ fn main() {
 
     // Force non-PIE output to avoid needing object section flag rewriting for `.llvm_stackmaps`.
     let rustflags = format!(
-        "-C linker=clang-18 \
-         -C link-arg=-fuse-ld=lld \
+        "-C debuginfo=0 \
+         -C linker=clang-18 \
+         -C link-arg=-fuse-ld=lld-18 \
          -C link-arg=-Wl,-no-pie \
          -C link-arg=-Wl,-T,{} \
          -C link-arg=-Wl,--gc-sections \
