@@ -129,11 +129,15 @@ Query types/symbols by **byte offset** (UTF-8):
 cargo run -p typecheck-ts-cli --locked -- typecheck fixtures/basic.ts --type-at fixtures/basic.ts:0
 ```
 
-#### Native LLVM CLI (`native-js-cli`)
+#### Native LLVM CLIs (`native-js-cli` / `native-js`)
 
-Experimental CLI that compiles a **single TypeScript file** to textual LLVM IR
-and runs it (TS → LLVM IR → `clang` → native executable). This currently uses a
-small `parse-js`-driven IR emitter (no typechecking yet).
+The `native-js-cli` package currently builds **two experimental** tools:
+
+- `native-js-cli`: compiles a **single TypeScript file** to textual LLVM IR and runs it
+  (TS → LLVM IR → `clang` → native executable). This uses a small `parse-js`-driven
+  IR emitter (**no TypeScript typechecking**).
+- `native-js`: proof-of-concept **typechecked AOT** pipeline (very small subset today):
+  `typecheck-ts` + `native-js` strict validation + HIR → LLVM + object emission + `clang` link.
 
 ```bash
 cat > /tmp/native_js_cli_demo.ts <<'TS'
@@ -149,8 +153,20 @@ bash scripts/cargo_llvm.sh run -p native-js-cli --locked -- \
   /tmp/native_js_cli_demo.ts
 ```
 
-See [`native-js-cli/README.md`](./native-js-cli/README.md) for the current
-supported subset and flags.
+Typechecked AOT demo (`native-js` expects an exported `main()`):
+
+```bash
+cat > /tmp/native_js_aot_demo.ts <<'TS'
+export function main(): number { return 42; }
+TS
+
+# Compiles + runs the output. (The program exits with code 42.)
+bash scripts/cargo_llvm.sh run -p native-js-cli --locked --bin native-js -- \
+  run /tmp/native_js_aot_demo.ts
+```
+
+See [`native-js-cli/README.md`](./native-js-cli/README.md) for details on both
+binaries, supported subsets, and flags.
 
 #### Harness (`typecheck-ts-harness`)
 

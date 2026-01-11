@@ -151,11 +151,20 @@ The “native compiler” work needs a correctness backstop. We use a **VM oracl
 cargo test -p native-oracle-harness
 ```
 
-> Note: if `native-oracle-harness` does not exist in your checkout yet, the closest “native pipeline smoke test”
-> today is `native-js-cli` (TS → LLVM IR → native executable) for a tiny expression-only subset:
+> Note: if `native-oracle-harness` does not exist in your checkout yet, there are two native pipeline smoke-test CLIs today:
+>
+> - `native-js-cli`: a minimal `parse-js`-driven LLVM IR emitter (no typechecking).
+> - `native-js`: a proof-of-concept typechecked AOT pipeline (`typecheck-ts` + strict validation + HIR → LLVM).
 >
 > ```bash
+> # Minimal emitter (builtins smoke tests, no typechecking):
 > bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- /tmp/main.ts
+>
+> # Typechecked AOT pipeline (expects `export function main()`):
+> cat > /tmp/aot.ts <<'TS'
+> export function main(): number { return 0; }
+> TS
+> bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- run /tmp/aot.ts
 > ```
 
 ### Recommended (LLVM-heavy wrapper)
