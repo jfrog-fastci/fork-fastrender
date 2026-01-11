@@ -265,17 +265,50 @@ unsafe fn validate_async_abi_coro_vtable(coro: CoroutineRef) {
     crate::trap::rt_trap_invalid_arg("rt_async_spawn: coro.vtable was misaligned");
   }
 
-  if (*vtable).abi_version != crate::async_abi::RT_ASYNC_ABI_VERSION {
+  // Treat the vtable as an opaque byte blob while validating. This avoids UB if
+  // the compiler/runtime disagree on the vtable layout (e.g. if the function
+  // pointer fields are null, which would be an invalid Rust `fn` pointer value).
+  let vtable_bytes = vtable.cast::<u8>();
+
+  let resume_ptr_bits = vtable_bytes
+    .add(core::mem::offset_of!(crate::async_abi::CoroutineVTable, resume))
+    .cast::<usize>()
+    .read_unaligned();
+  if resume_ptr_bits == 0 {
+    eprintln!("runtime-native async ABI mismatch: CoroutineVTable.resume was null");
+    std::process::abort();
+  }
+
+  let destroy_ptr_bits = vtable_bytes
+    .add(core::mem::offset_of!(crate::async_abi::CoroutineVTable, destroy))
+    .cast::<usize>()
+    .read_unaligned();
+  if destroy_ptr_bits == 0 {
+    eprintln!("runtime-native async ABI mismatch: CoroutineVTable.destroy was null");
+    std::process::abort();
+  }
+
+  let abi_version = vtable_bytes
+    .add(core::mem::offset_of!(crate::async_abi::CoroutineVTable, abi_version))
+    .cast::<u32>()
+    .read_unaligned();
+  if abi_version != crate::async_abi::RT_ASYNC_ABI_VERSION {
     eprintln!(
       "runtime-native async ABI mismatch: expected abi_version={} but got {}",
       crate::async_abi::RT_ASYNC_ABI_VERSION,
-      (*vtable).abi_version
+      abi_version
     );
     std::process::abort();
   }
 
-  let promise_size = (*vtable).promise_size as usize;
-  let promise_align = (*vtable).promise_align as usize;
+  let promise_size = vtable_bytes
+    .add(core::mem::offset_of!(crate::async_abi::CoroutineVTable, promise_size))
+    .cast::<u32>()
+    .read_unaligned() as usize;
+  let promise_align = vtable_bytes
+    .add(core::mem::offset_of!(crate::async_abi::CoroutineVTable, promise_align))
+    .cast::<u32>()
+    .read_unaligned() as usize;
   if promise_size < core::mem::size_of::<crate::async_abi::PromiseHeader>() {
     eprintln!(
       "runtime-native async ABI mismatch: CoroutineVTable.promise_size={} is smaller than PromiseHeader size {}",
@@ -291,13 +324,19 @@ unsafe fn validate_async_abi_coro_vtable(coro: CoroutineRef) {
       "runtime-native async ABI mismatch: CoroutineVTable.promise_align={} is invalid (must be a power-of-two >= PromiseHeader align {})",
       promise_align,
       core::mem::align_of::<crate::async_abi::PromiseHeader>()
-    );
+      );
     std::process::abort();
   }
 
-  if (*vtable).reserved.iter().any(|&x| x != 0) {
-    eprintln!("runtime-native async ABI mismatch: CoroutineVTable.reserved must be all zeros");
-    std::process::abort();
+  let reserved_ptr = vtable_bytes
+    .add(core::mem::offset_of!(crate::async_abi::CoroutineVTable, reserved))
+    .cast::<usize>();
+  for i in 0..4 {
+    let value = reserved_ptr.add(i).read_unaligned();
+    if value != 0 {
+      eprintln!("runtime-native async ABI mismatch: CoroutineVTable.reserved must be all zeros");
+      std::process::abort();
+    }
   }
 }
 

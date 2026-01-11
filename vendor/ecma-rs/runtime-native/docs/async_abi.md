@@ -235,6 +235,14 @@ Codegen must set `CoroutineVTable::abi_version` to exactly this value. The runti
 version (and basic promise layout metadata) before dereferencing the vtable or calling into
 compiler-provided function pointers.
 
+Specifically, `rt_async_spawn` / `rt_async_spawn_deferred` validate:
+
+- `coro` and `coro.vtable` are non-null and correctly aligned.
+- `CoroutineVTable::abi_version == RT_ASYNC_ABI_VERSION`
+- `CoroutineVTable::promise_size >= sizeof(PromiseHeader)`
+- `CoroutineVTable::promise_align` is a power of two and `>= alignof(PromiseHeader)`
+- `CoroutineVTable::reserved` is all zeros
+
 Any validation failure is treated as a **fatal error**: the runtime calls `abort()` to fail fast and
 avoid undefined behavior if the compiler and runtime evolve independently.
 

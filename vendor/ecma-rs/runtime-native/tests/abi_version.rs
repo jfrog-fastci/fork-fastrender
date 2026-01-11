@@ -29,7 +29,7 @@ fn abi_version_mismatch_aborts() {
   #[cfg(unix)]
   {
     use std::os::unix::process::ExitStatusExt;
-    assert_eq!(status.signal(), Some(6), "expected SIGABRT");
+    assert_eq!(status.signal(), Some(libc::SIGABRT), "expected SIGABRT");
   }
 }
 

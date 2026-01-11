@@ -611,11 +611,16 @@ struct CoroutineVTable {
   // If the coroutine frame is runtime-owned (`CORO_FLAG_RUNTIME_OWNS_FRAME` set in `coro.flags`),
   // the runtime will call this exactly once after completion or cancellation.
   void (*destroy)(CoroutineRef coro);
+  // Allocation size in bytes of the coroutine's result promise (`Promise<T>`).
+  // Must be >= sizeof(PromiseHeader).
   uint32_t promise_size;
+  // Allocation alignment of the coroutine's result promise (`Promise<T>`).
+  // Must be a power of two and >= alignof(PromiseHeader).
   uint32_t promise_align;
   RtShapeId promise_shape_id;
   // Must equal `RT_ASYNC_ABI_VERSION`.
   uint32_t abi_version;
+  // Reserved for future ABI extensions; must be zeroed by generated code.
   uintptr_t reserved[4];
 };
 
