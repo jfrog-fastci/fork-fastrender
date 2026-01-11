@@ -45,7 +45,6 @@ graph TD
     effect_js --> hir_js
     effect_js --> knowledge_base
     effect_js --> typecheck_ts
-    effect_js --> types_ts_interned
     effect_js_cli --> diagnostics
     effect_js_cli --> effect_js
     effect_js_cli --> hir_js
@@ -83,7 +82,6 @@ graph TD
     native_oracle_harness --> emit_js
     native_oracle_harness --> optimize_js
     native_oracle_harness --> parse_js
-    native_oracle_harness --> runtime_js
     native_oracle_harness --> ts_erase
     native_oracle_harness --> vm_js
     optimize_js --> diagnostics
