@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// - and an HTML-like event loop (`setTimeout`/microtasks) via [`EventLoop`].
 ///
 /// `document.currentScript` is observable during script execution via the embedder `VmHost` context
-/// passed to the `vm-js` runtime (see [`WindowRealmHost::vm_js_host_context`]).
+/// passed to the `vm-js` runtime (for `WindowHost`, this is the [`DocumentHostState`]).
 pub struct WindowHost {
   host: WindowHostState,
   event_loop: EventLoop<WindowHostState>,
@@ -663,11 +663,6 @@ impl WindowRealmHost for WindowHostState {
 
   fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
     Some(&mut self.webidl_bindings_host)
-  }
-
-  fn vm_js_host_context(&mut self) -> crate::js::VmJsHostContext {
-    let dom_ptr = NonNull::from(self.document.dom_mut());
-    crate::js::VmJsHostContext::new(Some(dom_ptr), Some(self.document.current_script_state().clone()))
   }
 }
 
@@ -1492,6 +1487,68 @@ mod tests {
 
     assert!(matches!(get_global_prop(&mut host, "__calls"), Value::Number(n) if n == 1.0));
     assert!(matches!(get_global_prop(&mut host, "__host_ok"), Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn set_timeout_callback_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+ 
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      setTimeout(() => { globalThis.__host_ok = recordHost(); }, 0);
+      "#,
+    )?;
+ 
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(false)
+    ));
+ 
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 10,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
+ 
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
+    Ok(())
+  }
+ 
+  #[test]
+  fn request_animation_frame_callback_runs_with_real_vm_host() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    install_record_host(&mut host);
+ 
+    host.exec_script(
+      r#"
+      globalThis.__host_ok = false;
+      requestAnimationFrame(() => { globalThis.__host_ok = recordHost(); });
+      "#,
+    )?;
+ 
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(false)
+    ));
+ 
+    // `requestAnimationFrame` callbacks are queued separately from task/microtask queues.
+    {
+      let WindowHost { host: host_state, event_loop } = &mut host;
+      let _ = event_loop.run_animation_frame(host_state)?;
+    }
+ 
+    assert!(matches!(
+      get_global_prop(&mut host, "__host_ok"),
+      Value::Bool(true)
+    ));
     Ok(())
   }
 

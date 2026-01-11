@@ -275,14 +275,15 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       // `import()` resolves through import maps and fetches modules via the document fetcher.
       let dom_ptr = document.dom_non_null();
       let mut host_ctx = crate::js::VmJsHostContext::new(Some(dom_ptr), current_script_state.clone());
-      let mut inner = VmJsEventLoopHooks::<BrowserTabHost>::new(&mut host_ctx);
-      if let Some(mut host_ptr) = webidl_bindings_host {
-        // SAFETY: `BrowserTabHost` stores a stable WebIDL bindings host for the lifetime of the
-        // executor.
-        unsafe {
-          inner.set_webidl_bindings_host(host_ptr.as_mut());
-        }
-      }
+      let webidl_bindings_host = match webidl_bindings_host {
+        Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
+        None => None,
+      };
+      let inner = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+        &mut host_ctx,
+        realm,
+        webidl_bindings_host,
+      );
       let mut hooks = ModuleLoaderHooks {
         inner,
         fetcher,
@@ -538,6 +539,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let options = self.js_execution_options;
     let entry_bytes = script_text.as_bytes().len();
     let document_origin = self.document_origin.clone();
+    let current_script_state = self.current_script_state.clone();
     let webidl_bindings_host = self.webidl_bindings_host;
     let module_map = &mut self.module_map;
     let module_url_by_id = &mut self.module_url_by_id;
@@ -548,6 +550,21 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         .map_err(|err| Error::Other(err.to_string()))?;
       realm.set_base_url(spec.base_url.clone());
       realm.reset_interrupt();
+
+      // Route Promise jobs (including module-loading promise reactions) through FastRender's
+      // microtask queue.
+      let dom_ptr = document.dom_non_null();
+      let mut host_ctx = crate::js::VmJsHostContext::new(Some(dom_ptr), current_script_state.clone());
+      let webidl_bindings_host = match webidl_bindings_host {
+        Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
+        None => None,
+      };
+      let inner_hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+        &mut host_ctx,
+        realm,
+        webidl_bindings_host,
+      );
+
       // Apply a fresh per-run VM budget (fuel + deadline) for module parsing/loading/evaluation.
       //
       // Module scripts are executed from event loop tasks (like classic scripts) and must be
@@ -629,18 +646,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         id
       };
 
-      // Route Promise jobs (including module-loading promise reactions) through FastRender's
-      // microtask queue.
-      let mut inner = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
-      if let Some(mut host_ptr) = webidl_bindings_host {
-        // SAFETY: `BrowserTabHost` stores a stable WebIDL bindings host for the lifetime of the
-        // executor.
-        unsafe {
-          inner.set_webidl_bindings_host(host_ptr.as_mut());
-        }
-      }
       let mut hooks = ModuleLoaderHooks {
-        inner,
+        inner: inner_hooks,
         fetcher: document.fetcher(),
         options,
         loaded_modules,
@@ -801,14 +808,15 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     update_time_bindings_clock(realm.heap(), clock).map_err(|err| Error::Other(err.to_string()))?;
     realm.reset_interrupt();
-    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(document);
-    if let Some(mut host_ptr) = webidl_bindings_host {
-      // SAFETY: `BrowserTabHost` stores a stable WebIDL bindings host for the lifetime of the
-      // executor.
-      unsafe {
-        hooks.set_webidl_bindings_host(host_ptr.as_mut());
-      }
-    }
+    let webidl_bindings_host = match webidl_bindings_host {
+      Some(mut host_ptr) => Some(unsafe { host_ptr.as_mut() }),
+      None => None,
+    };
+    let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_vm_host_and_window_realm(
+      document,
+      realm,
+      webidl_bindings_host,
+    );
     let source_text = Arc::new(SourceText::new("<lifecycle>", Arc::from(source)));
     let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
     if let Some(err) = hooks.finish(realm.heap_mut()) {

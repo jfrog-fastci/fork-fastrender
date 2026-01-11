@@ -56,9 +56,9 @@ pub const WEBIDL_BINDINGS_HOST_NOT_AVAILABLE: &str =
 /// - `host: &mut dyn vm_js::VmHost` (embedder-provided context), and
 /// - `hooks: &mut dyn vm_js::VmHostHooks` (host hooks for Promise jobs, job callbacks, etc).
 ///
-/// Many real call paths (including FastRender's script evaluator) use `Vm::call_with_host`, which
-/// supplies a dummy `VmHost` (`()`). This means native handlers must not rely on downcasting
-/// `VmHost` for access to embedder state.
+/// Some call paths (notably [`Vm::call_with_host`] and other hook-only convenience wrappers) supply
+/// a dummy `VmHost` (`()`). This means native handlers must not *universally* rely on downcasting
+/// the `VmHost` argument for access to embedder state.
 ///
 /// The canonical mechanism for vm-js WebIDL bindings to reach embedder state is:
 /// 1) the embedding stores a pointer to an implementation of this trait inside a
@@ -144,8 +144,8 @@ impl WebIdlBindingsHostSlot {
 ///
 /// The embedding needs `as_any_mut()` to serve two independent consumers:
 /// - WebIDL bindings (`host_from_hooks`) need access to a [`WebIdlBindingsHostSlot`].
-/// - Some `vm-js` entry points pass a dummy [`VmHost`] (`()`), so tests and host-side code may need
-///   to recover the real embedder [`VmHost`] context through the hooks.
+/// - Some `vm-js` convenience entry points pass a dummy [`VmHost`] (`()`), so host-side code may
+///   still need to recover the embedder [`VmHost`] context through the hooks.
 ///
 /// This payload keeps both pointers in a single concrete type so `Any::downcast_mut` works.
 #[derive(Debug, Default)]

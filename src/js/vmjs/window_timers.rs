@@ -340,12 +340,14 @@ pub struct VmJsEventLoopHooks<Host: WindowRealmHost + 'static> {
 impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
   /// Create host hooks for `vm-js` execution.
   ///
-  /// Note: `vm-js` entry points like [`vm_js::Vm::call_with_host`] and
-  /// [`vm_js::JsRuntime::exec_script_with_hooks`] pass a dummy [`vm_js::VmHost`] (`()`) to native
-  /// handlers, so bindings that need embedder state must downcast via
-  /// [`vm_js::VmHostHooks::as_any_mut`]. This hook implementation wires that up by returning a
-  /// [`webidl_vm_js::VmJsHostHooksPayload`] containing:
-  /// - the active [`vm_js::VmHost`] context (for downcasting), and
+  /// FastRender's canonical `WindowHost` pipeline enters JS via `*_with_host_and_hooks` APIs, so
+  /// native call/construct handlers receive the embedder [`vm_js::VmHost`] context directly.
+  ///
+  /// Some `vm-js` convenience entry points accept only [`vm_js::VmHostHooks`] and therefore execute
+  /// native handlers with a dummy [`vm_js::VmHost`] (`()`). To support those paths (and WebIDL host
+  /// dispatch), this hook implementation also exposes a [`webidl_vm_js::VmJsHostHooksPayload`] via
+  /// [`vm_js::VmHostHooks::as_any_mut`] containing:
+  /// - a pointer to the active embedder [`vm_js::VmHost`] context, and
   /// - a [`webidl_vm_js::WebIdlBindingsHostSlot`] for WebIDL host dispatch.
   pub fn new(host_ctx: &mut dyn VmHost) -> Self {
     let mut any = VmJsHostHooksPayload::default();
@@ -382,6 +384,21 @@ impl<Host: WindowRealmHost + 'static> VmJsEventLoopHooks<Host> {
   /// hooks.
   pub fn set_webidl_bindings_host(&mut self, host: &mut dyn WebIdlBindingsHost) {
     self.any.webidl_bindings_host_slot_mut().set(host);
+  }
+
+  /// Create host hooks when the embedding already has a borrow-split `(VmHost, WindowRealm)` pair.
+  pub fn new_with_vm_host_and_window_realm(
+    vm_host: &mut dyn VmHost,
+    window_realm: &mut crate::js::WindowRealm,
+    webidl_bindings_host: Option<&mut dyn WebIdlBindingsHost>,
+  ) -> Self {
+    let mut hooks = Self::new(vm_host);
+    hooks.heap_ptr = Some(NonNull::from(window_realm.heap_mut()));
+    hooks.heap_alive = Some(Arc::clone(window_realm.heap_alive_flag()));
+    if let Some(bindings_host) = webidl_bindings_host {
+      hooks.any.webidl_bindings_host_slot_mut().set(bindings_host);
+    }
+    hooks
   }
 
   pub fn finish(mut self, heap: &mut Heap) -> Option<crate::error::Error> {

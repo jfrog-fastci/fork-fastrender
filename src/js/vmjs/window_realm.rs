@@ -10,7 +10,10 @@ use crate::js::document_write::{current_document_write_state_mut, DocumentWriteL
 use crate::js::window_env::{
   install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv,
 };
-use crate::js::{runtime, DocumentHostState, ScriptOrchestrator, ScriptType, TaskSource, VmJsHostContext, WindowHostState};
+use crate::js::{
+  runtime, DocumentHostState, ScriptOrchestrator, ScriptType, TaskSource, WindowHostState,
+};
+use crate::js::vm_host_context::VmJsHostContext;
 use crate::js::host_document::ActiveEventGuard;
 use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::DomHostVmJs;
@@ -615,16 +618,6 @@ pub trait WindowRealmHost {
   fn vm_host(&mut self) -> &mut dyn VmHost {
     let (host, _) = self.vm_host_and_window_realm();
     host
-  }
-
-  /// Create a fresh `vm-js` host context for a single JS call turn.
-  ///
-  /// Embeddings that have a real `dom2::Document` (and other per-window state) should override this
-  /// to populate [`crate::js::VmJsHostContext`]. The default implementation returns an empty host
-  /// context.
-  #[inline]
-  fn vm_js_host_context(&mut self) -> crate::js::VmJsHostContext {
-    crate::js::VmJsHostContext::default()
   }
 }
 

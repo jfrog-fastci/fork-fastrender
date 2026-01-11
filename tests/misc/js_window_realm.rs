@@ -193,12 +193,11 @@ fn install_assert_non_dummy_vm_host(host: &mut WindowHostState) -> Result<()> {
 }
 
 #[test]
-fn vm_js_host_context_is_threaded_through_window_entry_points() -> Result<()> {
-  use fastrender::js::VmJsHostContext;
+fn document_host_state_is_threaded_through_window_entry_points() -> Result<()> {
+  use fastrender::js::DocumentHostState;
   use vm_js::{Scope, Value, Vm, VmError, VmHost};
 
-  const HOST_CONTEXT_DOWNCAST_ERROR: &str = "VmHost is not VmJsHostContext";
-  const HOST_CONTEXT_DOM_MISSING_ERROR: &str = "VmJsHostContext missing dom pointer";
+  const HOST_CONTEXT_DOWNCAST_ERROR: &str = "VmHost is not DocumentHostState";
 
   fn host_ctx_tick_native(
     _vm: &mut Vm,
@@ -209,12 +208,10 @@ fn vm_js_host_context_is_threaded_through_window_entry_points() -> Result<()> {
     _this: Value,
     _args: &[Value],
   ) -> std::result::Result<Value, VmError> {
-    let Some(ctx) = host.as_any_mut().downcast_mut::<VmJsHostContext>() else {
+    let Some(ctx) = host.as_any_mut().downcast_mut::<DocumentHostState>() else {
       return Err(VmError::TypeError(HOST_CONTEXT_DOWNCAST_ERROR));
     };
-    if ctx.dom_ptr().is_none() {
-      return Err(VmError::TypeError(HOST_CONTEXT_DOM_MISSING_ERROR));
-    }
+    let _ = ctx.dom().root();
     Ok(Value::Number(1.0))
   }
 
@@ -464,12 +461,11 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
       _script: NodeId,
       _script_type: ScriptType,
     ) -> Result<()> {
-      let mut host_ctx = host.vm_js_host_context();
-      let realm = host.window_mut();
+      let (vm_host, realm) = host.vm_host_and_window_realm();
       let mut hooks = NoopHostHooks::default();
       let value = realm
         .exec_script_with_host_and_hooks(
-          &mut host_ctx,
+          vm_host,
           &mut hooks,
           "document.currentScript.__fastrender_node_id",
         )
@@ -501,11 +497,10 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
 
   // Outside execution, currentScript should be null.
   {
-    let mut host_ctx = host.vm_js_host_context();
-    let realm = host.window_mut();
+    let (vm_host, realm) = host.vm_host_and_window_realm();
     let mut hooks = NoopHostHooks::default();
     let value = realm
-      .exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, "document.currentScript")
+      .exec_script_with_host_and_hooks(vm_host, &mut hooks, "document.currentScript")
       .map_err(|e| Error::Other(e.to_string()))?;
     assert_eq!(value, Value::Null);
   }
@@ -517,11 +512,10 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
     &mut executor,
   )?;
   {
-    let mut host_ctx = host.vm_js_host_context();
-    let realm = host.window_mut();
+    let (vm_host, realm) = host.vm_host_and_window_realm();
     let mut hooks = NoopHostHooks::default();
     let value = realm
-      .exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, "document.currentScript")
+      .exec_script_with_host_and_hooks(vm_host, &mut hooks, "document.currentScript")
       .map_err(|e| Error::Other(e.to_string()))?;
     assert_eq!(value, Value::Null);
   }
@@ -533,11 +527,10 @@ fn document_current_script_tracks_sequential_classic_scripts() -> Result<()> {
     &mut executor,
   )?;
   {
-    let mut host_ctx = host.vm_js_host_context();
-    let realm = host.window_mut();
+    let (vm_host, realm) = host.vm_host_and_window_realm();
     let mut hooks = NoopHostHooks::default();
     let value = realm
-      .exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, "document.currentScript")
+      .exec_script_with_host_and_hooks(vm_host, &mut hooks, "document.currentScript")
       .map_err(|e| Error::Other(e.to_string()))?;
     assert_eq!(value, Value::Null);
   }
@@ -2313,12 +2306,11 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
       _script_type: ScriptType,
     ) -> Result<()> {
       let stable = {
-        let mut host_ctx = host.vm_js_host_context();
+        let (vm_host, realm) = host.vm_host_and_window_realm();
         let mut hooks = NoopHostHooks::default();
-        let realm = host.window_mut();
         realm
           .exec_script_with_host_and_hooks(
-            &mut host_ctx,
+            vm_host,
             &mut hooks,
             "document.currentScript === document.currentScript",
           )
@@ -2332,12 +2324,11 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
       self.wrapper_identity_ok.push(stable);
 
       let node_id = {
-        let mut host_ctx = host.vm_js_host_context();
+        let (vm_host, realm) = host.vm_host_and_window_realm();
         let mut hooks = NoopHostHooks::default();
-        let realm = host.window_mut();
         realm
           .exec_script_with_host_and_hooks(
-            &mut host_ctx,
+            vm_host,
             &mut hooks,
             "document.currentScript.__fastrender_node_id",
           )

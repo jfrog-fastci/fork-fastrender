@@ -2,7 +2,7 @@ use fastrender::error::Error;
 use fastrender::js::runtime::with_event_loop;
 use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
-  install_window_timers_bindings, EventLoop, RunLimits, VirtualClock, VmJsHostContext, VmJsModuleLoader,
+  install_window_timers_bindings, EventLoop, RunLimits, VirtualClock, VmJsModuleLoader,
   WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use fastrender::resource::{FetchedResource, ResourceFetcher};
@@ -133,8 +133,8 @@ fn install_assert_host_ctx_global(vm: &mut Vm, realm: &Realm, heap: &mut vm_js::
     _this: Value,
     _args: &[Value],
   ) -> Result<Value, VmError> {
-    if host.as_any_mut().downcast_mut::<VmJsHostContext>().is_none() {
-      return Err(VmError::TypeError("expected VmJsHostContext"));
+    if host.as_any_mut().downcast_mut::<VmHostCtx>().is_none() {
+      return Err(VmError::TypeError("expected VmHostCtx"));
     }
     Ok(Value::Undefined)
   }
@@ -309,7 +309,7 @@ fn webidl_dispatch_works_during_module_evaluation() -> FrResult<()> {
 }
 
 #[test]
-fn vmjs_host_context_is_available_during_module_evaluation() -> FrResult<()> {
+fn vm_host_is_available_during_module_evaluation() -> FrResult<()> {
   let clock = Arc::new(VirtualClock::new());
   let mut host = HooksRegressionHost::new(clock.clone())?;
   let mut event_loop = EventLoop::<HooksRegressionHost>::with_clock(clock);

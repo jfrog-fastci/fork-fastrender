@@ -45,6 +45,7 @@ pub mod clock;
 pub mod document_lifecycle;
 pub mod event_loop;
 pub mod host_document;
+pub mod vm_host_context;
 pub mod html_classic_scripts;
 pub mod html_scripting;
 pub mod html_script_processing;
@@ -66,7 +67,6 @@ pub(crate) mod sri;
 pub mod time;
 pub mod url;
 pub mod url_resolve;
-pub mod vm_host_context;
 pub mod streaming;
 pub mod streaming_dom2;
 pub mod streaming_pipeline;
@@ -158,6 +158,7 @@ pub use event_loop::{
 pub use options::{JsExecutionOptions, ParseBudget};
 pub use document_write::{DocumentWriteLimitError, DocumentWriteState, with_document_write_state};
 pub use host_document::{DocumentHostState, HostDocumentState};
+pub use vm_host_context::VmJsHostContext;
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
   ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
@@ -186,7 +187,6 @@ pub use script_loader_resource::ResourceScriptLoader;
 pub use page_load::{
   HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor, ScriptFetcher as PageLoadScriptFetcher,
 };
-pub use vm_host_context::VmJsHostContext;
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_resolve::{resolve_url, UrlResolveError};
