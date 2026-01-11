@@ -147,6 +147,11 @@ impl std::fmt::Display for DocumentOrigin {
       return write!(f, "file://");
     }
     let host = self.host.as_deref().unwrap_or("<unknown>");
+    let host = if host.contains(':') && !host.starts_with('[') {
+      format!("[{host}]")
+    } else {
+      host.to_string()
+    };
     match self.effective_port() {
       Some(port) => write!(f, "{}://{}:{}", self.scheme, host, port),
       None => write!(f, "{}://{}", self.scheme, host),
@@ -12894,6 +12899,19 @@ mod tests {
       http_browser_origin_and_referer_for_origin(&origin).expect("origin+referer");
     assert_eq!(origin_str, "https://[fe80::1%25en0]");
     assert_eq!(referer, "https://[fe80::1%25en0]/");
+  }
+
+  #[test]
+  fn document_origin_display_brackets_ipv6_hosts() {
+    let origin = origin_from_url("https://[::1]/").expect("origin");
+    assert_eq!(origin.to_string(), "https://[::1]:443");
+
+    let origin = DocumentOrigin::new(
+      "https".to_string(),
+      Some("fe80::1%25en0".to_string()),
+      None,
+    );
+    assert_eq!(origin.to_string(), "https://[fe80::1%25en0]:443");
   }
 
   #[test]
