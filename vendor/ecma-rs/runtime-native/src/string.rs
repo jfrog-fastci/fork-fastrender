@@ -50,7 +50,7 @@ pub extern "C" fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_l
     return StringRef::empty();
   }
 
-  let out = alloc::malloc_bytes(len, "rt_string_concat");
+  let out = alloc::alloc_bytes(len, 1, "rt_string_concat");
 
   // Safety: `out` points to a unique allocation of `len` bytes.
   unsafe {

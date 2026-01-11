@@ -25,7 +25,7 @@ fn ensure_event_loop_thread_registered() {
 pub extern "C" fn rt_alloc(size: usize, _shape: ShapeId) -> *mut u8 {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc(size);
-  alloc::malloc_bytes(size, "rt_alloc")
+  alloc::alloc_bytes(size, 16, "rt_alloc")
 }
 
 /// Allocate a pinned (non-moving) object.
@@ -35,7 +35,7 @@ pub extern "C" fn rt_alloc(size: usize, _shape: ShapeId) -> *mut u8 {
 /// pinned objects to a non-moving space.
 #[no_mangle]
 pub extern "C" fn rt_alloc_pinned(size: usize, _shape: ShapeId) -> *mut u8 {
-  alloc::malloc_bytes(size, "rt_alloc_pinned")
+  alloc::alloc_bytes(size, 16, "rt_alloc_pinned")
 }
 
 #[no_mangle]
