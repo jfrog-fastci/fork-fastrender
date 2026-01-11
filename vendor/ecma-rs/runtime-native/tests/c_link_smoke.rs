@@ -105,9 +105,18 @@ fn c_can_link_and_call_runtime_native() {
   fs::write(
     &c_path,
     r#"
-#define _GNU_SOURCE
+#define _POSIX_C_SOURCE 200809L
 #include "runtime_native.h"
 #include <unistd.h>
+#include <time.h>
+
+static void sleep_us(long us) {
+  struct timespec ts;
+  ts.tv_sec = us / 1000000;
+  ts.tv_nsec = (us % 1000000) * 1000;
+  nanosleep(&ts, (struct timespec*)0);
+}
+
 static void set_int(uint8_t* data) {
   int* flag = (int*)data;
   *flag = 1;
@@ -115,40 +124,29 @@ static void set_int(uint8_t* data) {
 
 static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
   (void)data;
+  // Ensure the main thread has time to enter `rt_async_poll_legacy` so this test
+  // exercises the cross-thread wake-up path from the blocking pool.
+  sleep_us(50 * 1000);
   rt_promise_resolve_legacy(promise, (ValueRef)0);
 }
 
- static void par_for_body(size_t i, uint8_t* data) {
-   uint32_t* out = (uint32_t*)data;
-   out[i] = (uint32_t)(i * 3u + 1u);
- }
+static void par_for_body(size_t i, uint8_t* data) {
+  uint32_t* out = (uint32_t*)data;
+  out[i] = (uint32_t)(i * 3u + 1u);
+}
 
- int main(void) {
-   rt_thread_init(0);
+int main(void) {
+  rt_thread_init(0);
 
-   // Global root registration (word-sized slot).
-   static size_t global_root = 0;
-   rt_global_root_register(&global_root);
-   rt_global_root_unregister(&global_root);
- 
-   // Warm up the blocking pool: the first `rt_spawn_blocking` call may need to
-   // spawn many worker threads, which can take longer than our wake-up timer on
-   // constrained/oversubscribed test hosts.
-   int warm_settled = 0;
-   LegacyPromiseRef warm = rt_spawn_blocking(blocking_task, (uint8_t*)0);
-   rt_promise_then_legacy(warm, set_int, (uint8_t*)&warm_settled);
-   for (int i = 0; i < 100000 && !warm_settled; i++) {
-     rt_async_poll_legacy();
-   }
-   if (!warm_settled) {
-     rt_thread_deinit();
-     return 1;
-   }
+  // Global root registration (word-sized slot).
+  static size_t global_root = 0;
+  rt_global_root_register(&global_root);
+  rt_global_root_unregister(&global_root);
 
-   static const RtShapeDescriptor kShapes[1] = {
-     {
-       .size = 16,
-       .align = 16,
+  static const RtShapeDescriptor kShapes[1] = {
+    {
+      .size = 16,
+      .align = 16,
       .flags = 0,
       .ptr_offsets = (const uint32_t*)0,
       .ptr_offsets_len = 0,
@@ -165,13 +163,8 @@ static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
   // event loop thread.
   //
   // Note: the blocking pool spins up worker threads on first use; give it enough slack so the
-  // test isn't flaky under contention while still ensuring `rt_async_poll_legacy` wakes promptly
-  // from `epoll_wait` once the promise is settled.
+  // test isn't flaky under contention.
   int timer_fired = 0;
-  // Use a generous timeout: the intent is to keep `rt_async_poll_legacy` blocked in
-  // `epoll_wait` while the blocking worker resolves the promise (and wakes the
-  // event loop). On heavily loaded CI, spawning the blocking pool can take longer
-  // than a few hundred milliseconds.
   TimerId t = rt_set_timeout(set_int, (uint8_t*)&timer_fired, 2000);
 
   int settled = 0;
@@ -180,16 +173,16 @@ static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
 
   // Drive the event loop until the promise settles.
   //
-  // Under heavy CI load, the blocking worker may not run immediately, so the timer can fire
-  // before the promise settles. That's OK: this is a C link smoke test, not a latency test.
+  // Under heavy CI load, the blocking worker may not run immediately. That's OK: this is a C
+  // link smoke test, not a latency test.
   for (int i = 0; i < 5000 && !settled; i++) {
     rt_async_poll_legacy();
-    usleep(1000);
+    sleep_us(1000);
   }
   rt_clear_timer(t);
   if (!settled) {
     rt_thread_deinit();
-    return 1;
+    return 10;
   }
 
   enum { N = 4096 };
