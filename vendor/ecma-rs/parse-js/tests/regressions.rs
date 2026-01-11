@@ -62,6 +62,8 @@ mod numeric_separators;
 mod object_literal_modifier_line_terminator;
 #[path = "regressions/object_literal_method_type_params.rs"]
 mod object_literal_method_type_params;
+#[path = "regressions/object_literal_get_set_colon.rs"]
+mod object_literal_get_set_colon;
 #[path = "regressions/private_index_signature.rs"]
 mod private_index_signature;
 #[path = "regressions/strict_ecma_rejections.rs"]

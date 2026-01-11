@@ -24,7 +24,6 @@ RUST_MIN_STACK = "4194304"
 # Force-disable any globally configured wrapper so `scripts/cargo_agent.sh` works reliably.
 rustc-wrapper = ""
 rustc-workspace-wrapper = ""
-
 [target.'cfg(target_os = "linux")']
 # Use `clang` as the linker driver on Linux.
 linker = "clang"

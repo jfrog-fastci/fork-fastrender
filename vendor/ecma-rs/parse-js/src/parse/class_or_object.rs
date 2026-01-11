@@ -1636,7 +1636,9 @@ impl<'a> Parser<'a> {
       }
       // Getter (may have invalid type parameters like get foo<T>())
       // Error recovery: also handle getters without parentheses like "get e"
-      (TT::KeywordGet, _, TT::ParenthesisOpen, _) | (TT::KeywordGet, _, TT::ChevronLeft, _) => {
+      (TT::KeywordGet, _, TT::ParenthesisOpen, _) | (TT::KeywordGet, _, TT::ChevronLeft, _)
+        if b.typ != TT::Colon =>
+      {
         let (k, v) = self.class_or_obj_getter_impl(ctx, abstract_)?;
         (k, v.into())
       }
@@ -1661,7 +1663,9 @@ impl<'a> Parser<'a> {
       }
       // Setter (may have invalid type parameters like set foo<T>(x))
       // Error recovery: also handle setters without parentheses like "set f"
-      (TT::KeywordSet, _, TT::ParenthesisOpen, _) | (TT::KeywordSet, _, TT::ChevronLeft, _) => {
+      (TT::KeywordSet, _, TT::ParenthesisOpen, _) | (TT::KeywordSet, _, TT::ChevronLeft, _)
+        if b.typ != TT::Colon =>
+      {
         let (k, v) = self.class_or_obj_setter_impl(ctx, abstract_)?;
         (k, v.into())
       }

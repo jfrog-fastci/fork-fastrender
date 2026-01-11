@@ -1,0 +1,329 @@
+{
+  "version": 1,
+  "files": {
+    "arena_gc.js": {
+      "source_sha256": "c48efd4d4bcde6c5b6428b1a590eeda5eb8a8ffa278efa5e5ca2b46ecc0815d5",
+      "parse": {
+        "top_level_stmts": 19
+      },
+      "hir": {
+        "defs": 162,
+        "bodies": 84,
+        "exprs": 964,
+        "stmts": 218,
+        "pats": 161,
+        "type_exprs": 24,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "ok",
+        "summary": {
+          "functions": 6,
+          "instructions": 20,
+          "dom_calculations": 12
+        }
+      }
+    },
+    "business_0.js": {
+      "source_sha256": "5b0bbcf539f2fce3ad1a4d189a26234f1aa1399aa950d25b485935c23d28f13a",
+      "parse": {
+        "top_level_stmts": 6
+      },
+      "hir": {
+        "defs": 70,
+        "bodies": 34,
+        "exprs": 474,
+        "stmts": 107,
+        "pats": 57,
+        "type_exprs": 17,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "ok",
+        "summary": {
+          "functions": 1,
+          "instructions": 1,
+          "dom_calculations": 2
+        }
+      }
+    },
+    "business_1.js": {
+      "source_sha256": "db8ee8c46dcd692c13566488830b880646a811949688e8325104b1bc5f16eaad",
+      "parse": {
+        "top_level_stmts": 8
+      },
+      "hir": {
+        "defs": 65,
+        "bodies": 33,
+        "exprs": 297,
+        "stmts": 79,
+        "pats": 57,
+        "type_exprs": 4,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "ok",
+        "summary": {
+          "functions": 1,
+          "instructions": 5,
+          "dom_calculations": 2
+        }
+      }
+    },
+    "business_2.js": {
+      "source_sha256": "0bbe817ff16e1bb5f8ed44b0a8754ec5940e91ea5646b09618860dd123f623c0",
+      "parse": {
+        "top_level_stmts": 16
+      },
+      "hir": {
+        "defs": 101,
+        "bodies": 48,
+        "exprs": 354,
+        "stmts": 109,
+        "pats": 99,
+        "type_exprs": 0,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "ok",
+        "summary": {
+          "functions": 12,
+          "instructions": 158,
+          "dom_calculations": 25
+        }
+      }
+    },
+    "optimizable_0.js": {
+      "source_sha256": "9a384076fed3baa4e84ec4d973caaa2322733beae7f68ca46ecc9c118d8ff40a",
+      "parse": {
+        "top_level_stmts": 8
+      },
+      "hir": {
+        "defs": 80,
+        "bodies": 43,
+        "exprs": 441,
+        "stmts": 94,
+        "pats": 73,
+        "type_exprs": 9,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "ok",
+        "summary": {
+          "functions": 1,
+          "instructions": 8,
+          "dom_calculations": 2
+        }
+      }
+    },
+    "optimizable_1.js": {
+      "source_sha256": "a6e2f4bd5e1e53c01a41a9e43ae40fce87df5e7118e69f245fb58796da85d97e",
+      "parse": {
+        "top_level_stmts": 13
+      },
+      "hir": {
+        "defs": 68,
+        "bodies": 32,
+        "exprs": 294,
+        "stmts": 82,
+        "pats": 66,
+        "type_exprs": 5,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "ok",
+        "summary": {
+          "functions": 4,
+          "instructions": 13,
+          "dom_calculations": 8
+        }
+      }
+    },
+    "reactive_pipeline.js": {
+      "source_sha256": "97ff22b3e39728044d6463924c3c9cf1bf295871c3db0573df47265c9ed88810",
+      "parse": {
+        "top_level_stmts": 10
+      },
+      "hir": {
+        "defs": 144,
+        "bodies": 69,
+        "exprs": 831,
+        "stmts": 204,
+        "pats": 137,
+        "type_exprs": 21,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "ok",
+        "summary": {
+          "functions": 6,
+          "instructions": 32,
+          "dom_calculations": 12
+        }
+      }
+    },
+    "scientific_computing.js": {
+      "source_sha256": "684e609bb6a7c31dab9a9b825e6d73eea3de9d397add6d2bd34acd339994332c",
+      "parse": {
+        "top_level_stmts": 6
+      },
+      "hir": {
+        "defs": 202,
+        "bodies": 95,
+        "exprs": 1359,
+        "stmts": 265,
+        "pats": 238,
+        "type_exprs": 3,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "ok",
+        "summary": {
+          "functions": 1,
+          "instructions": 0,
+          "dom_calculations": 1
+        }
+      }
+    },
+    "static_analysis.js": {
+      "source_sha256": "ce7ba4f970316a47e6525ed6a42bce12a87ddb7ab29e829ad93730ad231bce28",
+      "parse": {
+        "top_level_stmts": 18
+      },
+      "hir": {
+        "defs": 106,
+        "bodies": 65,
+        "exprs": 860,
+        "stmts": 148,
+        "pats": 81,
+        "type_exprs": 1,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "err",
+        "diagnostics": [
+          {
+            "code": "OPT0002",
+            "message": "object accessor literals are not supported",
+            "start": 633,
+            "end": 1097
+          }
+        ]
+      }
+    },
+    "stream_processing.js": {
+      "source_sha256": "cb3d11976f52c9edcb34145c50e8c1e13eeafc9a7b5d5030f1e95ec527399f62",
+      "parse": {
+        "top_level_stmts": 7
+      },
+      "hir": {
+        "defs": 113,
+        "bodies": 60,
+        "exprs": 450,
+        "stmts": 153,
+        "pats": 94,
+        "type_exprs": 6,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "err",
+        "diagnostics": [
+          {
+            "code": "OPT0002",
+            "message": "unsupported expression Yield { expr: Some(ExprId(9)), delegate: false }",
+            "start": 1200,
+            "end": 1275
+          }
+        ]
+      }
+    },
+    "task_scheduler.js": {
+      "source_sha256": "7b851b4f8e762bb43de4eb18da21cf3a539b4713b226b6140808059f1353a7ca",
+      "parse": {
+        "top_level_stmts": 16
+      },
+      "hir": {
+        "defs": 127,
+        "bodies": 66,
+        "exprs": 531,
+        "stmts": 138,
+        "pats": 108,
+        "type_exprs": 8,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "err",
+        "diagnostics": [
+          {
+            "code": "OPT0002",
+            "message": "object method literals are not supported",
+            "start": 681,
+            "end": 857
+          }
+        ]
+      }
+    },
+    "vdom.js": {
+      "source_sha256": "07a5369495da83598d760eae59ae52f1e66a8814a6a3c50f95e6ee97b0ea6937",
+      "parse": {
+        "top_level_stmts": 12
+      },
+      "hir": {
+        "defs": 204,
+        "bodies": 101,
+        "exprs": 904,
+        "stmts": 283,
+        "pats": 203,
+        "type_exprs": 12,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "ok",
+        "summary": {
+          "functions": 20,
+          "instructions": 588,
+          "dom_calculations": 46
+        }
+      }
+    },
+    "weird.js": {
+      "source_sha256": "cf9914f03b544f2f4522b35ebdc85ea9f0d42398d83f1e964b0b3a6d100de821",
+      "parse": {
+        "top_level_stmts": 20
+      },
+      "hir": {
+        "defs": 120,
+        "bodies": 70,
+        "exprs": 511,
+        "stmts": 184,
+        "pats": 110,
+        "type_exprs": 0,
+        "type_members": 0,
+        "type_params": 0
+      },
+      "optimize": {
+        "result": "err",
+        "diagnostics": [
+          {
+            "code": "BIND0003",
+            "message": "Cannot access `b` before initialization",
+            "start": 3373,
+            "end": 3374
+          }
+        ]
+      }
+    }
+  }
+}

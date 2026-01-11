@@ -210,8 +210,18 @@ pub fn optpass_cfg_prune(cfg: &mut Cfg) -> PassResult {
             bblocks.pop().unwrap();
           };
         }
-        // For all other empty leaves, remove them. They should be unreachable.
+        // For all other empty leaves, redirect any remaining incoming edges into the merged leaf
+        // (e.g. implicit fallthrough) and then remove them.
+        //
+        // Note: the CondGoto-to-leaf edges are handled above by patching the terminating
+        // instruction's labels. But empty leaf blocks can still be targeted by graph-only edges
+        // (implicit fallthrough); those also need redirecting before we can safely `pop` them.
+        let merged_leaf = empty_leaves[0];
         for label in empty_leaves.into_iter().skip(1) {
+          for parent in cfg.graph.parents_sorted(label) {
+            cfg.graph.disconnect(parent, label);
+            cfg.graph.connect(parent, merged_leaf);
+          }
           if cfg.bblocks.maybe_get(label).is_some() {
             cfg.pop(label);
           }
