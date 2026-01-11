@@ -23,7 +23,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.filter
   aliases: [_.filter]
@@ -42,7 +42,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.reduce
   aliases: [_.reduce]
@@ -79,7 +79,7 @@
     nondeterministic: false
   properties:
     kind: cloning
-    does_not_mutate_inputs: "true"
+    does_not_mutate_inputs: true
 
 - name: lodash.merge
   aliases: [_.merge]
@@ -98,8 +98,8 @@
     nondeterministic: false
   properties:
     kind: object_mutation
-    mutates_argument: "0"
-    returns_argument: "0"
+    mutates_argument: 0
+    returns_argument: 0
 
 - name: lodash.debounce
   aliases: [_.debounce]
@@ -117,7 +117,7 @@
     nondeterministic: true
   properties:
     kind: timing
-    timer_based: "true"
+    timer_based: true
     returns: function
 
 - name: lodash.throttle
@@ -136,7 +136,7 @@
     nondeterministic: true
   properties:
     kind: timing
-    timer_based: "true"
+    timer_based: true
     returns: function
 
 - name: lodash.memoize
@@ -155,7 +155,7 @@
     nondeterministic: false
   properties:
     kind: caching
-    stateful_cache: "true"
+    stateful_cache: true
     returns: function
 
 - name: lodash.get
@@ -174,7 +174,7 @@
     nondeterministic: false
   properties:
     kind: object_read
-    reads_from_argument: "0"
+    reads_from_argument: 0
 
 - name: lodash.set
   aliases: [_.set]
@@ -192,8 +192,8 @@
     nondeterministic: false
   properties:
     kind: object_mutation
-    mutates_argument: "0"
-    returns_argument: "0"
+    mutates_argument: 0
+    returns_argument: 0
 
 - name: lodash.isEqual
   aliases: [_.isEqual]
@@ -229,7 +229,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.sortBy
   aliases: [_.sortBy]
@@ -392,7 +392,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.drop
   aliases: [_.drop]
@@ -411,7 +411,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.pick
   aliases: [_.pick]
@@ -465,7 +465,7 @@
     nondeterministic: false
   properties:
     kind: cloning
-    shallow: "true"
+    shallow: true
 
 - name: lodash.flatten
   aliases: [_.flatten]
@@ -520,7 +520,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.intersection
   aliases: [_.intersection]
@@ -539,7 +539,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.difference
   aliases: [_.difference]
@@ -558,7 +558,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.sum
   aliases: [_.sum]
@@ -629,7 +629,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.concat
   aliases: [_.concat]
@@ -648,7 +648,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.uniqBy
   aliases: [_.uniqBy]
@@ -667,7 +667,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.differenceBy
   aliases: [_.differenceBy]
@@ -686,7 +686,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.unionBy
   aliases: [_.unionBy]
@@ -705,7 +705,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.intersectionBy
   aliases: [_.intersectionBy]
@@ -724,7 +724,7 @@
   properties:
     kind: collection_operator
     output: new_array
-    preserves_order: "true"
+    preserves_order: true
 
 - name: lodash.orderBy
   aliases: [_.orderBy]
@@ -760,8 +760,8 @@
     nondeterministic: false
   properties:
     kind: object_mutation
-    mutates_argument: "0"
-    returns_argument: "0"
+    mutates_argument: 0
+    returns_argument: 0
 
 - name: lodash.defaults
   aliases: [_.defaults]
@@ -779,8 +779,8 @@
     nondeterministic: false
   properties:
     kind: object_mutation
-    mutates_argument: "0"
-    returns_argument: "0"
+    mutates_argument: 0
+    returns_argument: 0
 
 - name: lodash.pickBy
   aliases: [_.pickBy]

@@ -20,8 +20,8 @@
     nondeterministic: false
   properties:
     kind: observable
-    lazy: "true"
-    subscribe_function_argument: "0"
+    lazy: true
+    subscribe_function_argument: 0
 
 - name: rxjs.of
   aliases: []
@@ -39,7 +39,7 @@
     nondeterministic: false
   properties:
     kind: observable_creation
-    lazy: "true"
+    lazy: true
 
 - name: rxjs.from
   aliases: []
@@ -57,7 +57,7 @@
     nondeterministic: true
   properties:
     kind: observable_creation
-    lazy: "true"
+    lazy: true
     nondeterministic_if: input_is_promise_or_async_iterable
 
 - name: rxjs.merge
@@ -76,8 +76,8 @@
     nondeterministic: true
   properties:
     kind: observable_combinator
-    lazy: "true"
-    interleaves_sources: "true"
+    lazy: true
+    interleaves_sources: true
 
 - name: rxjs.combineLatest
   aliases: []
@@ -95,8 +95,8 @@
     nondeterministic: true
   properties:
     kind: observable_combinator
-    lazy: "true"
-    depends_on_scheduling: "true"
+    lazy: true
+    depends_on_scheduling: true
 
 - name: rxjs.operators.map
   aliases: []
@@ -151,7 +151,7 @@
   properties:
     kind: operator
     operator_type: flattening
-    concurrency: "true"
+    concurrency: true
 
 - name: rxjs.operators.switchMap
   aliases: []
@@ -170,7 +170,7 @@
   properties:
     kind: operator
     operator_type: flattening
-    cancels_previous_inner: "true"
+    cancels_previous_inner: true
 
 - name: rxjs.operators.tap
   aliases: []
@@ -243,7 +243,7 @@
   properties:
     kind: operator
     operator_type: timing
-    timer_based: "true"
+    timer_based: true
 
 - name: rxjs.operators.distinctUntilChanged
   aliases: []
@@ -316,7 +316,7 @@
   properties:
     kind: operator
     operator_type: combinator
-    depends_on_scheduling: "true"
+    depends_on_scheduling: true
 
 - name: rxjs.operators.delay
   aliases: []
@@ -335,7 +335,7 @@
   properties:
     kind: operator
     operator_type: timing
-    timer_based: "true"
+    timer_based: true
 
 - name: rxjs.Subject
   aliases: []
@@ -353,7 +353,7 @@
     nondeterministic: false
   properties:
     kind: subject
-    stateful: "true"
+    stateful: true
 
 - name: rxjs.BehaviorSubject
   aliases: []
@@ -371,7 +371,7 @@
     nondeterministic: false
   properties:
     kind: subject
-    stateful: "true"
+    stateful: true
 
 - name: rxjs.operators.scan
   aliases: []
@@ -426,7 +426,7 @@
   properties:
     kind: operator
     operator_type: error_handling
-    resubscribes: "true"
+    resubscribes: true
 
 - name: rxjs.operators.timeout
   aliases: []
@@ -445,7 +445,7 @@
   properties:
     kind: operator
     operator_type: timing
-    timer_based: "true"
+    timer_based: true
 
 - name: rxjs.operators.throttleTime
   aliases: []
@@ -464,7 +464,7 @@
   properties:
     kind: operator
     operator_type: timing
-    timer_based: "true"
+    timer_based: true
 
 - name: rxjs.operators.shareReplay
   aliases: []
@@ -483,7 +483,7 @@
   properties:
     kind: operator
     operator_type: multicasting
-    stateful: "true"
+    stateful: true
 
 - name: rxjs.interval
   aliases: []
@@ -501,7 +501,7 @@
     nondeterministic: true
   properties:
     kind: observable_creation
-    timer_based: "true"
+    timer_based: true
 
 - name: rxjs.timer
   aliases: []
@@ -519,7 +519,7 @@
     nondeterministic: true
   properties:
     kind: observable_creation
-    timer_based: "true"
+    timer_based: true
 
 - name: rxjs.fromEvent
   aliases: []
@@ -537,7 +537,7 @@
     nondeterministic: true
   properties:
     kind: observable_creation
-    depends_on_external_events: "true"
+    depends_on_external_events: true
 
 - name: rxjs.defer
   aliases: []
@@ -680,7 +680,7 @@
   properties:
     kind: operator
     operator_type: multicasting
-    stateful: "true"
+    stateful: true
 
 - name: rxjs.forkJoin
   aliases: []
@@ -732,7 +732,7 @@
     nondeterministic: true
   properties:
     kind: observable_combinator
-    depends_on_scheduling: "true"
+    depends_on_scheduling: true
 
 - name: rxjs.concat
   aliases: []
@@ -909,4 +909,4 @@
     nondeterministic: true
   properties:
     kind: observable_method
-    starts_execution: "true"
+    starts_execution: true

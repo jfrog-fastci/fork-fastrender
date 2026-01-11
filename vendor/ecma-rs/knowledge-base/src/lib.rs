@@ -1133,10 +1133,7 @@ purity: DependsOnCallback
     let api = kb
       .get("lodash.debounce")
       .expect("lodash.debounce exists in bundled knowledge base");
-    assert_eq!(
-      api.properties.get("timer_based").and_then(|v| v.as_str()),
-      Some("true")
-    );
+    assert_eq!(api.properties.get("timer_based"), Some(&JsonValue::Bool(true)));
   }
 
   #[test]
