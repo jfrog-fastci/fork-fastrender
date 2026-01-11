@@ -1,9 +1,16 @@
-use std::collections::BTreeMap;
+mod target;
+mod version_range;
+
+pub use target::{TargetEnv, WebPlatform};
+pub use version_range::{VersionRange, VersionRangeSpec};
+
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use effect_model::{EffectSet, EffectTemplate, Purity, PurityTemplate, ThrowBehavior};
+use semver::Version;
 use serde::{de::Error as _, Deserialize, Serialize};
 pub use serde_json::Value as JsonValue;
 
@@ -197,9 +204,24 @@ impl ApiSemantics {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ApiEnv {
+  Node,
+  Web,
+  Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApiEntry {
+  api: ApiSemantics,
+  env: ApiEnv,
+  platform: WebPlatform,
+  source: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApiDatabase {
-  apis: BTreeMap<String, ApiSemantics>,
+  apis: BTreeMap<String, Vec<ApiEntry>>,
   aliases: BTreeMap<String, String>,
   ids: BTreeMap<ApiId, String>,
   sources: BTreeMap<String, String>,
@@ -213,10 +235,15 @@ pub type Api = ApiSemantics;
 
 impl ApiDatabase {
   pub fn from_entries(entries: impl IntoIterator<Item = ApiSemantics>) -> Self {
-    let mut apis = BTreeMap::new();
+    let mut apis = BTreeMap::<String, Vec<ApiEntry>>::new();
     for mut api in entries {
       api.id = ApiId::from_name(&api.name);
-      apis.insert(api.name.clone(), api);
+      apis.entry(api.name.clone()).or_default().push(ApiEntry {
+        api,
+        env: ApiEnv::Unknown,
+        platform: WebPlatform::Generic,
+        source: None,
+      });
     }
     let sources = BTreeMap::new();
     let aliases = build_alias_map(&apis, &sources).unwrap_or_default();
@@ -230,8 +257,7 @@ impl ApiDatabase {
   }
 
   pub fn get(&self, name_or_alias: &str) -> Option<&ApiSemantics> {
-    let canonical = self.canonical_name(name_or_alias)?;
-    self.apis.get(canonical)
+    self.api_for_target(name_or_alias, &TargetEnv::Unknown)
   }
 
   pub fn canonical_name(&self, name_or_alias: &str) -> Option<&str> {
@@ -243,7 +269,7 @@ impl ApiDatabase {
 
   pub fn get_by_id(&self, id: ApiId) -> Option<&ApiSemantics> {
     let name = self.ids.get(&id)?;
-    self.apis.get(name)
+    self.api_for_target(name, &TargetEnv::Unknown)
   }
 
   /// Resolve `name_or_alias` into the canonical [`ApiId`].
@@ -256,11 +282,43 @@ impl ApiDatabase {
       .get(name_or_alias)
       .map(|s| s.as_str())
       .unwrap_or(name_or_alias);
-    self.apis.get(canonical).map(|api| api.id)
+    self
+      .apis
+      .get(canonical)
+      .and_then(|entries| entries.first())
+      .map(|entry| entry.api.id)
   }
 
   pub fn iter(&self) -> impl Iterator<Item = (&str, &ApiSemantics)> {
-    self.apis.iter().map(|(k, v)| (k.as_str(), v))
+    self.apis.iter().filter_map(|(name, entries)| {
+      let mut best: Option<&ApiEntry> = None;
+      for entry in entries {
+        best = match best {
+          None => Some(entry),
+          Some(current) => Some(select_better(current, entry, &TargetEnv::Unknown)),
+        };
+      }
+      best.map(|entry| (name.as_str(), &entry.api))
+    })
+  }
+
+  /// Returns the best matching API entry for a given target environment.
+  pub fn api_for_target(&self, name_or_alias: &str, target: &TargetEnv) -> Option<&ApiSemantics> {
+    let canonical = self.canonical_name(name_or_alias)?;
+    let entries = self.apis.get(canonical)?;
+
+    let mut best: Option<&ApiEntry> = None;
+    for entry in entries {
+      if !entry_matches_target(entry, target) {
+        continue;
+      }
+      best = match best {
+        None => Some(entry),
+        Some(current) => Some(select_better(current, entry, target)),
+      };
+    }
+
+    best.map(|entry| &entry.api)
   }
 
   /// Load the bundled knowledge base embedded into the crate.
@@ -271,21 +329,24 @@ impl ApiDatabase {
   }
 
   pub fn load_default() -> Result<Self, KnowledgeBaseError> {
-    let mut apis = BTreeMap::<String, ApiSemantics>::new();
+    let mut apis = BTreeMap::<String, Vec<ApiEntry>>::new();
     let mut sources = BTreeMap::<String, String>::new();
 
     for file in bundled_kb::BUNDLED_KB_FILES {
       let parsed = parse_bundled_file(file)?;
+      let env = env_for_path(file.path);
       for api in parsed {
-        if let Some(prev) = sources.get(&api.name) {
-          return Err(KnowledgeBaseError::DuplicateApi {
-            name: api.name,
-            first: prev.clone(),
-            second: file.path.to_string(),
-          });
-        }
-        sources.insert(api.name.clone(), file.path.to_string());
-        apis.insert(api.name.clone(), api);
+        // Duplicates are allowed as long as they have non-overlapping version ranges; keep the
+        // first source path for stable diagnostics (individual entries retain their own sources).
+        sources
+          .entry(api.name.clone())
+          .or_insert_with(|| file.path.to_string());
+        apis.entry(api.name.clone()).or_default().push(ApiEntry {
+          api,
+          env,
+          platform: WebPlatform::Generic,
+          source: Some(file.path.to_string()),
+        });
       }
     }
 
@@ -314,7 +375,7 @@ impl ApiDatabase {
     }
     files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
 
-    let mut apis = BTreeMap::<String, ApiSemantics>::new();
+    let mut apis = BTreeMap::<String, Vec<ApiEntry>>::new();
     let mut sources = BTreeMap::<String, String>::new();
 
     for file in files {
@@ -326,16 +387,19 @@ impl ApiDatabase {
         BundledKbFormat::Yaml => parse_yaml_str(&file.rel_path, &contents),
         BundledKbFormat::Toml => parse_toml_str(&file.rel_path, &contents),
       }?;
+      let env = env_for_path(&file.rel_path);
       for api in parsed {
-        if let Some(prev) = sources.get(&api.name) {
-          return Err(KnowledgeBaseError::DuplicateApi {
-            name: api.name,
-            first: prev.clone(),
-            second: file.rel_path.clone(),
-          });
-        }
-        sources.insert(api.name.clone(), file.rel_path.clone());
-        apis.insert(api.name.clone(), api);
+        // Duplicates are allowed as long as they have non-overlapping version ranges; keep the
+        // first source path for stable diagnostics (individual entries retain their own sources).
+        sources
+          .entry(api.name.clone())
+          .or_insert_with(|| file.rel_path.clone());
+        apis.entry(api.name.clone()).or_default().push(ApiEntry {
+          api,
+          env,
+          platform: WebPlatform::Generic,
+          source: Some(file.rel_path.clone()),
+        });
       }
     }
 
@@ -361,26 +425,205 @@ impl ApiDatabase {
       ids, self.ids,
       "ApiDatabase internal ApiId map is out of sync; please rebuild the database"
     );
+    validate_versioned_duplicates(&self.apis)?;
     self.warn_inconsistent_metadata();
     Ok(())
   }
 
   fn warn_inconsistent_metadata(&self) {
-    for api in self.apis.values() {
-      if api.deterministic == Some(true) && api.purity == PurityTemplate::Impure {
-        tracing::warn!(
-          api = api.name,
-          "sanity check: deterministic=true but purity.template=impure (likely inconsistent)"
-        );
-      }
-      if api.async_ == Some(true) && api.purity == PurityTemplate::Pure {
-        tracing::warn!(
-          api = api.name,
-          "sanity check: async=true but purity.template=pure (rare; verify intent)"
-        );
+    for entries in self.apis.values() {
+      for entry in entries {
+        let api = &entry.api;
+        if api.deterministic == Some(true) && api.purity == PurityTemplate::Impure {
+          tracing::warn!(
+            api = api.name,
+            "sanity check: deterministic=true but purity.template=impure (likely inconsistent)"
+          );
+        }
+        if api.async_ == Some(true) && api.purity == PurityTemplate::Pure {
+          tracing::warn!(
+            api = api.name,
+            "sanity check: async=true but purity.template=pure (rare; verify intent)"
+          );
+        }
       }
     }
   }
+}
+
+fn env_for_path(path: &str) -> ApiEnv {
+  if path.starts_with("node/") {
+    ApiEnv::Node
+  } else if path.starts_with("web/") {
+    ApiEnv::Web
+  } else {
+    ApiEnv::Unknown
+  }
+}
+
+fn entry_version_range(entry: &ApiEntry) -> VersionRangeSpec {
+  VersionRangeSpec::from_since_until(entry.api.since.as_deref(), entry.api.until.as_deref())
+}
+
+fn entry_matches_target(entry: &ApiEntry, target: &TargetEnv) -> bool {
+  match target {
+    TargetEnv::Unknown => true,
+    TargetEnv::Node { version } => match entry.env {
+      ApiEnv::Web => false,
+      ApiEnv::Node | ApiEnv::Unknown => match entry_version_range(entry) {
+        VersionRangeSpec::Parsed(range) => range.contains(version),
+        VersionRangeSpec::Unparsed { .. } => false,
+      },
+    },
+    TargetEnv::Web { platform } => {
+      if matches!(entry.env, ApiEnv::Node) {
+        return false;
+      }
+      // Conservative: if since/until aren't parseable, this entry is only usable under
+      // `TargetEnv::Unknown`.
+      if entry_version_range(entry).is_unparsed() {
+        return false;
+      }
+
+      match entry.env {
+        ApiEnv::Unknown => true,
+        ApiEnv::Web => {
+          if *platform == WebPlatform::Generic {
+            entry.platform == WebPlatform::Generic
+          } else {
+            entry.platform == *platform || entry.platform == WebPlatform::Generic
+          }
+        }
+        ApiEnv::Node => false,
+      }
+    }
+  }
+}
+
+fn entry_since_version(entry: &ApiEntry) -> Option<Version> {
+  match entry_version_range(entry) {
+    VersionRangeSpec::Parsed(range) => range.since().cloned(),
+    VersionRangeSpec::Unparsed { .. } => None,
+  }
+}
+
+fn select_better<'a>(a: &'a ApiEntry, b: &'a ApiEntry, target: &TargetEnv) -> &'a ApiEntry {
+  let a_spec = env_specificity(a, target);
+  let b_spec = env_specificity(b, target);
+  if a_spec != b_spec {
+    return if b_spec > a_spec { b } else { a };
+  }
+
+  match (entry_since_version(a), entry_since_version(b)) {
+    (Some(av), Some(bv)) if av != bv => return if bv > av { b } else { a },
+    (None, Some(_)) => return b,
+    (Some(_), None) => return a,
+    _ => {}
+  }
+
+  // Deterministic final tie-breaker.
+  let a_src = a.source.as_deref().unwrap_or("");
+  let b_src = b.source.as_deref().unwrap_or("");
+  if b_src < a_src { b } else { a }
+}
+
+fn env_specificity(entry: &ApiEntry, target: &TargetEnv) -> u8 {
+  match target {
+    TargetEnv::Node { .. } => match entry.env {
+      ApiEnv::Node => 2,
+      ApiEnv::Unknown => 1,
+      ApiEnv::Web => 0,
+    },
+    TargetEnv::Web { platform } => match entry.env {
+      ApiEnv::Web => {
+        if *platform == entry.platform {
+          3
+        } else if entry.platform == WebPlatform::Generic {
+          2
+        } else {
+          0
+        }
+      }
+      ApiEnv::Unknown => 1,
+      ApiEnv::Node => 0,
+    },
+    TargetEnv::Unknown => match entry.env {
+      ApiEnv::Node => 2,
+      ApiEnv::Web => 1,
+      ApiEnv::Unknown => 0,
+    },
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ApiEnvKey {
+  Node,
+  Web(WebPlatform),
+  Unknown,
+}
+
+impl fmt::Display for ApiEnvKey {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      ApiEnvKey::Node => f.write_str("Node"),
+      ApiEnvKey::Web(platform) => write!(f, "Web({platform:?})"),
+      ApiEnvKey::Unknown => f.write_str("Unknown"),
+    }
+  }
+}
+
+fn env_key_for_entry(entry: &ApiEntry) -> ApiEnvKey {
+  if entry_version_range(entry).is_unparsed() {
+    return ApiEnvKey::Unknown;
+  }
+
+  match entry.env {
+    ApiEnv::Node => ApiEnvKey::Node,
+    ApiEnv::Web => ApiEnvKey::Web(entry.platform),
+    ApiEnv::Unknown => ApiEnvKey::Unknown,
+  }
+}
+
+fn ranges_overlap(a: &VersionRangeSpec, b: &VersionRangeSpec) -> bool {
+  match (a.parsed(), b.parsed()) {
+    (Some(ar), Some(br)) => ar.overlaps(br),
+    // Conservative: if either side is unparseable, assume it overlaps.
+    _ => true,
+  }
+}
+
+fn validate_versioned_duplicates(
+  apis: &BTreeMap<String, Vec<ApiEntry>>,
+) -> Result<(), KnowledgeBaseError> {
+  for (name, entries) in apis {
+    let mut groups = HashMap::<ApiEnvKey, Vec<&ApiEntry>>::new();
+    for entry in entries {
+      groups.entry(env_key_for_entry(entry)).or_default().push(entry);
+    }
+
+    for (env_key, entries) in groups {
+      for i in 0..entries.len() {
+        for j in (i + 1)..entries.len() {
+          let a = entries[i];
+          let b = entries[j];
+          let a_range = entry_version_range(a);
+          let b_range = entry_version_range(b);
+          if ranges_overlap(&a_range, &b_range) {
+            return Err(KnowledgeBaseError::OverlappingApiRanges {
+              name: name.clone(),
+              env: env_key.to_string(),
+              first: a.source.clone().unwrap_or_else(|| "<unknown>".to_string()),
+              first_range: a_range.display(),
+              second: b.source.clone().unwrap_or_else(|| "<unknown>".to_string()),
+              second_range: b_range.display(),
+            });
+          }
+        }
+      }
+    }
+  }
+
+  Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,6 +698,18 @@ pub enum KnowledgeBaseError {
     first_source: String,
     second_name: String,
     second_source: String,
+  },
+
+  #[error(
+    "overlapping API definitions for `{name}` in {env}: {first} ({first_range}) overlaps {second} ({second_range})"
+  )]
+  OverlappingApiRanges {
+    name: String,
+    env: String,
+    first: String,
+    first_range: String,
+    second: String,
+    second_range: String,
   },
 }
 
@@ -986,94 +1241,112 @@ fn parse_toml_str(path: &str, contents: &str) -> Result<Vec<ApiSemantics>, Knowl
 }
 
 fn build_id_map(
-  apis: &BTreeMap<String, ApiSemantics>,
+  apis: &BTreeMap<String, Vec<ApiEntry>>,
   sources: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<ApiId, String>, KnowledgeBaseError> {
   let mut ids = BTreeMap::<ApiId, String>::new();
 
-  for api in apis.values() {
-    if let Some(prev) = ids.get(&api.id).filter(|prev| *prev != &api.name) {
-      let first_source = sources
-        .get(prev)
-        .cloned()
-        .unwrap_or_else(|| "<unknown>".to_string());
-      let second_source = sources
-        .get(&api.name)
-        .cloned()
-        .unwrap_or_else(|| "<unknown>".to_string());
-      return Err(KnowledgeBaseError::ApiIdCollision {
-        id: api.id.raw(),
-        first_name: prev.clone(),
-        first_source,
-        second_name: api.name.clone(),
-        second_source,
-      });
-    }
+  for entries in apis.values() {
+    for entry in entries {
+      let api = &entry.api;
+      if let Some(prev) = ids.get(&api.id).filter(|prev| *prev != &api.name) {
+        let first_source = sources
+          .get(prev)
+          .cloned()
+          .unwrap_or_else(|| "<unknown>".to_string());
+        let second_source = sources
+          .get(&api.name)
+          .cloned()
+          .or_else(|| entry.source.clone())
+          .unwrap_or_else(|| "<unknown>".to_string());
+        return Err(KnowledgeBaseError::ApiIdCollision {
+          id: api.id.raw(),
+          first_name: prev.clone(),
+          first_source,
+          second_name: api.name.clone(),
+          second_source,
+        });
+      }
 
-    ids.insert(api.id, api.name.clone());
+      ids.insert(api.id, api.name.clone());
+    }
   }
 
   Ok(ids)
 }
 
 fn build_alias_map(
-  apis: &BTreeMap<String, ApiSemantics>,
+  apis: &BTreeMap<String, Vec<ApiEntry>>,
   sources: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, KnowledgeBaseError> {
   let mut aliases = BTreeMap::<String, String>::new();
 
-  for api in apis.values() {
-    let node_alias = api.name.strip_prefix("node:");
-    for alias in api
-      .aliases
-      .iter()
-      .map(|s| s.as_str())
-      .chain(node_alias)
-    {
-      if alias.is_empty() || alias == api.name {
-        continue;
-      }
-
-      if let Some(prev) = apis.get(alias) {
-        if semantics_match(prev, api) {
+  for entries in apis.values() {
+    for entry in entries {
+      let api = &entry.api;
+      let node_alias = api.name.strip_prefix("node:");
+      for alias in api
+        .aliases
+        .iter()
+        .map(|s| s.as_str())
+        .chain(node_alias)
+      {
+        if alias.is_empty() || alias == api.name {
           continue;
         }
 
-        return Err(KnowledgeBaseError::DuplicateAlias {
-          alias: alias.to_string(),
-          first_name: prev.name.clone(),
-          first_source: sources
-            .get(&prev.name)
-            .cloned()
-            .unwrap_or_else(|| "<unknown>".to_string()),
-          second_name: api.name.clone(),
-          second_source: sources
-            .get(&api.name)
-            .cloned()
-            .unwrap_or_else(|| "<unknown>".to_string()),
-        });
-      }
+        if let Some(prev_entries) = apis.get(alias) {
+          // Some modules materialize alias spellings as standalone entries (e.g. `fs.readFile`)
+          // alongside a canonical form (e.g. `node:fs.readFile`) that also lists the alias.
+          //
+          // When the semantics match, this is redundant but unambiguous: lookups can resolve the
+          // alias directly via the entry, so we skip building an alias mapping rather than treating
+          // it as an error.
+          if prev_entries
+            .iter()
+            .any(|prev| semantics_match(&prev.api, api))
+          {
+            continue;
+          }
 
-      match aliases.get(alias) {
-        Some(prev) if prev == &api.name => continue,
-        Some(prev) => {
           return Err(KnowledgeBaseError::DuplicateAlias {
             alias: alias.to_string(),
-            first_name: prev.clone(),
+            first_name: alias.to_string(),
             first_source: sources
-              .get(prev)
+              .get(alias)
               .cloned()
               .unwrap_or_else(|| "<unknown>".to_string()),
             second_name: api.name.clone(),
             second_source: sources
               .get(&api.name)
               .cloned()
+              .or_else(|| entry.source.clone())
               .unwrap_or_else(|| "<unknown>".to_string()),
-          })
+          });
         }
-        None => {}
+
+        match aliases.get(alias) {
+          Some(prev) if prev == &api.name => continue,
+          Some(prev) => {
+            return Err(KnowledgeBaseError::DuplicateAlias {
+              alias: alias.to_string(),
+              first_name: prev.clone(),
+              first_source: sources
+                .get(prev)
+                .cloned()
+                .unwrap_or_else(|| "<unknown>".to_string()),
+              second_name: api.name.clone(),
+              second_source: sources
+                .get(&api.name)
+                .cloned()
+                .or_else(|| entry.source.clone())
+                .unwrap_or_else(|| "<unknown>".to_string()),
+            })
+          }
+          None => {}
+        }
+        aliases.insert(alias.to_string(), api.name.clone());
       }
-      aliases.insert(alias.to_string(), api.name.clone());
     }
   }
 
@@ -1205,6 +1478,41 @@ mod tests {
   use effect_model::EffectSet;
   use serde_json::Value as JsonValue;
 
+  fn test_api(
+    name: &str,
+    since: Option<&str>,
+    until: Option<&str>,
+    semantics: Option<&str>,
+  ) -> ApiSemantics {
+    ApiSemantics {
+      id: ApiId::from_name(name),
+      name: name.to_string(),
+      aliases: vec![],
+      effects: EffectTemplate::Pure,
+      effect_summary: EffectSet::empty(),
+      purity: PurityTemplate::Pure,
+      async_: None,
+      idempotent: None,
+      deterministic: None,
+      parallelizable: None,
+      semantics: semantics.map(|s| s.to_string()),
+      signature: None,
+      since: since.map(|s| s.to_string()),
+      until: until.map(|s| s.to_string()),
+      kind: ApiKind::Function,
+      properties: BTreeMap::new(),
+    }
+  }
+
+  fn test_entry(api: ApiSemantics, env: ApiEnv, source: &str) -> ApiEntry {
+    ApiEntry {
+      api,
+      env,
+      platform: WebPlatform::Generic,
+      source: Some(source.to_string()),
+    }
+  }
+
   #[test]
   fn parse_yaml_file_single_and_list() {
     let one = r#"
@@ -1301,14 +1609,13 @@ purity:
   }
 
   #[test]
-  fn node_and_web_modules_parse_and_have_unique_api_names() {
+  fn web_modules_parse_via_parse_api_semantics_yaml_str() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut yaml_paths = Vec::new();
     collect_yaml_files(&root.join("web"), &mut yaml_paths);
     yaml_paths.sort();
 
-    let mut seen = BTreeSet::new();
-
+    let mut apis = BTreeMap::<String, Vec<ApiEntry>>::new();
     for path in yaml_paths {
       let src = fs::read_to_string(&path).unwrap_or_else(|err| {
         panic!("failed to read {}: {err}", path.display());
@@ -1316,15 +1623,20 @@ purity:
       let entries = parse_api_semantics_yaml_str(&src).unwrap_or_else(|err| {
         panic!("failed to parse {}: {err}", path.display());
       });
-      for entry in entries {
-        assert!(
-          seen.insert(entry.name.clone()),
-          "duplicate API `{}` (while loading {})",
-          entry.name,
-          path.display(),
-        );
+      let rel = path.strip_prefix(&root).unwrap_or(&path);
+      let rel = rel.to_string_lossy().replace('\\', "/");
+      let env = env_for_path(&rel);
+      for api in entries {
+        apis.entry(api.name.clone()).or_default().push(ApiEntry {
+          api,
+          env,
+          platform: WebPlatform::Generic,
+          source: Some(rel.clone()),
+        });
       }
     }
+
+    validate_versioned_duplicates(&apis).expect("web module ranges should be non-overlapping");
   }
 
   #[test]
@@ -1595,5 +1907,130 @@ properties:
       .expect("node:fs.existsSync exists in bundled knowledge base");
     assert!(api.effect_summary.contains(EffectSet::IO));
     assert!(!api.effect_summary.contains(EffectSet::MAY_THROW));
+  }
+
+  #[test]
+  fn overlapping_version_ranges_are_rejected() {
+    let name = "node:test";
+    let mut apis = BTreeMap::<String, Vec<ApiEntry>>::new();
+    apis.entry(name.to_string()).or_default().push(test_entry(
+      test_api(name, Some("18"), Some("20"), Some("v18")),
+      ApiEnv::Node,
+      "a.yaml",
+    ));
+    apis.entry(name.to_string()).or_default().push(test_entry(
+      test_api(name, Some("19"), Some("21"), Some("v19")),
+      ApiEnv::Node,
+      "b.yaml",
+    ));
+
+    let sources = BTreeMap::new();
+    let aliases = build_alias_map(&apis, &sources).unwrap();
+    let ids = build_id_map(&apis, &sources).unwrap();
+    let kb = ApiDatabase {
+      apis,
+      aliases,
+      ids,
+      sources,
+    };
+
+    let err = kb.validate().unwrap_err();
+    match err {
+      KnowledgeBaseError::OverlappingApiRanges {
+        name: err_name,
+        env,
+        first,
+        second,
+        first_range,
+        second_range,
+      } => {
+        assert_eq!(err_name, name);
+        assert_eq!(env, "Node");
+        assert_eq!(first, "a.yaml");
+        assert_eq!(second, "b.yaml");
+        assert!(!first_range.is_empty());
+        assert!(!second_range.is_empty());
+      }
+      other => panic!("expected OverlappingApiRanges, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn non_overlapping_version_ranges_are_accepted() {
+    let name = "node:test";
+    let mut apis = BTreeMap::<String, Vec<ApiEntry>>::new();
+    apis.entry(name.to_string()).or_default().push(test_entry(
+      test_api(name, Some("18"), Some("20"), None),
+      ApiEnv::Node,
+      "a.yaml",
+    ));
+    apis.entry(name.to_string()).or_default().push(test_entry(
+      test_api(name, Some("20"), Some("22"), None),
+      ApiEnv::Node,
+      "b.yaml",
+    ));
+
+    let sources = BTreeMap::new();
+    let aliases = build_alias_map(&apis, &sources).unwrap();
+    let ids = build_id_map(&apis, &sources).unwrap();
+    let kb = ApiDatabase {
+      apis,
+      aliases,
+      ids,
+      sources,
+    };
+
+    kb.validate().expect("non-overlapping ranges should validate");
+  }
+
+  #[test]
+  fn api_for_target_selects_correct_entry_for_node_version() {
+    let name = "node:test";
+    let mut apis = BTreeMap::<String, Vec<ApiEntry>>::new();
+    apis.entry(name.to_string()).or_default().push(test_entry(
+      test_api(name, None, None, Some("generic")),
+      ApiEnv::Unknown,
+      "generic.yaml",
+    ));
+    apis.entry(name.to_string()).or_default().push(test_entry(
+      test_api(name, Some("18"), Some("20"), Some("v18")),
+      ApiEnv::Node,
+      "v18.yaml",
+    ));
+    apis.entry(name.to_string()).or_default().push(test_entry(
+      test_api(name, Some("20"), None, Some("v20")),
+      ApiEnv::Node,
+      "v20.yaml",
+    ));
+
+    let sources = BTreeMap::new();
+    let aliases = build_alias_map(&apis, &sources).unwrap();
+    let ids = build_id_map(&apis, &sources).unwrap();
+    let kb = ApiDatabase {
+      apis,
+      aliases,
+      ids,
+      sources,
+    };
+
+    let api_19 = kb
+      .api_for_target(
+        name,
+        &TargetEnv::Node {
+          version: Version::parse("19.0.0").unwrap(),
+        },
+      )
+      .expect("v18 entry matches Node 19");
+    assert_eq!(api_19.semantics.as_deref(), Some("v18"));
+
+    let api_20 = kb
+      .api_for_target(
+        name,
+        &TargetEnv::Node {
+          version: Version::parse("20.0.0").unwrap(),
+        },
+      )
+      .expect("v20 entry matches Node 20");
+    assert_eq!(api_20.semantics.as_deref(), Some("v20"));
   }
 }
