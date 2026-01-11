@@ -24,7 +24,7 @@ use crate::property::PropertyKey;
 use crate::promise::PromiseCapability;
 use crate::{
   GcObject, GcString, ImportAttribute, LoadedModuleRequest, ModuleId, ModuleRequest, PromiseState,
-  RealmId, RootId, Scope, ScriptId, ScriptOrModule, Value, Vm, VmError,
+  RealmId, RootId, Scope, ScriptId, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use std::any::Any;
 use std::cell::RefCell;
@@ -189,7 +189,8 @@ impl GraphLoadingState {
   fn new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn crate::VmHostHooks,
+    host_ctx: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
     host_defined: HostDefined,
   ) -> Result<(Self, Value), VmError> {
     // Create a nested scope so any temporary stack roots created while constructing the promise
@@ -198,7 +199,12 @@ impl GraphLoadingState {
     // `GraphLoadingState` itself keeps the capability values alive via persistent roots.
     let (cap, promise_roots) = {
       let mut root_scope = scope.reborrow();
-      let cap = crate::promise_ops::new_promise_capability(vm, &mut root_scope, host)?;
+      let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+        vm,
+        &mut root_scope,
+        host_ctx,
+        hooks,
+      )?;
       let promise_roots = root_promise_capability(&mut root_scope, cap)?;
       Ok((cap, promise_roots))
     }?;
@@ -274,7 +280,8 @@ impl GraphLoadingState {
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     modules: &mut ModuleGraph,
-    host: &mut dyn crate::VmHostHooks,
+    host_ctx: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
   ) -> Result<(), VmError> {
     let (cap, roots, dynamic_import) = {
       let mut state = self.0.borrow_mut();
@@ -300,9 +307,10 @@ impl GraphLoadingState {
     let result = (|| {
       let mut call_scope = scope.reborrow();
       call_scope.push_root(cap.resolve)?;
-      let _ = vm.call_with_host(
+      let _ = vm.call_with_host_and_hooks(
+        host_ctx,
         &mut call_scope,
-        host,
+        hooks,
         cap.resolve,
         Value::Undefined,
         &[Value::Undefined],
@@ -327,20 +335,19 @@ impl GraphLoadingState {
       let global_object = dynamic_import.state.global_object();
       let realm_id = dynamic_import.state.realm_id();
 
-      let mut dummy_host = ();
       let eval_promise = match modules.evaluate_with_scope(
         vm,
         scope,
         global_object,
         realm_id,
         dynamic_import.module,
-        &mut dummy_host,
-        host,
+        host_ctx,
+        hooks,
       ) {
         Ok(promise) => promise,
         Err(err) => {
           if let Some(reason) = err.thrown_value() {
-            dynamic_import.state.reject(vm, scope, host, reason)?;
+            dynamic_import.state.reject(vm, scope, host_ctx, hooks, reason)?;
             return Ok(());
           }
           dynamic_import.state.teardown_roots(scope.heap_mut());
@@ -368,7 +375,7 @@ impl GraphLoadingState {
           };
           dynamic_import
             .state
-            .resolve(vm, &mut eval_scope, host, Value::Object(ns))?;
+            .resolve(vm, &mut eval_scope, host_ctx, hooks, Value::Object(ns))?;
         }
         PromiseState::Rejected => {
           let reason = eval_scope
@@ -377,7 +384,7 @@ impl GraphLoadingState {
             .unwrap_or(Value::Undefined);
           dynamic_import
             .state
-            .reject(vm, &mut eval_scope, host, reason)?;
+            .reject(vm, &mut eval_scope, host_ctx, hooks, reason)?;
         }
         PromiseState::Pending => {
           dynamic_import.state.teardown_roots(eval_scope.heap_mut());
@@ -395,7 +402,8 @@ impl GraphLoadingState {
     &self,
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn crate::VmHostHooks,
+    host_ctx: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
     err: VmError,
   ) -> Result<(), VmError> {
     let (cap, roots, dynamic_import) = {
@@ -423,7 +431,14 @@ impl GraphLoadingState {
       let mut call_scope = scope.reborrow();
       call_scope.push_root(cap.reject)?;
       call_scope.push_root(reason)?;
-      let _ = vm.call_with_host(&mut call_scope, host, cap.reject, Value::Undefined, &[reason])?;
+      let _ = vm.call_with_host_and_hooks(
+        host_ctx,
+        &mut call_scope,
+        hooks,
+        cap.reject,
+        Value::Undefined,
+        &[reason],
+      )?;
       Ok(())
     })();
 
@@ -443,7 +458,7 @@ impl GraphLoadingState {
     if let Some(dynamic_import) = dynamic_import {
       dynamic_import
         .state
-        .reject(vm, scope, host, reason)?;
+        .reject(vm, scope, host_ctx, hooks, reason)?;
     }
 
     Ok(())
@@ -528,7 +543,8 @@ impl DynamicImportState {
     &self,
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn crate::VmHostHooks,
+    host_ctx: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
     value: Value,
   ) -> Result<(), VmError> {
     let (cap, roots) = {
@@ -543,7 +559,14 @@ impl DynamicImportState {
       let mut call_scope = scope.reborrow();
       call_scope.push_root(cap.resolve)?;
       call_scope.push_root(value)?;
-      let _ = vm.call_with_host(&mut call_scope, host, cap.resolve, Value::Undefined, &[value])?;
+      let _ = vm.call_with_host_and_hooks(
+        host_ctx,
+        &mut call_scope,
+        hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[value],
+      )?;
       Ok(())
     })();
 
@@ -557,7 +580,8 @@ impl DynamicImportState {
     &self,
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn crate::VmHostHooks,
+    host_ctx: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
     reason: Value,
   ) -> Result<(), VmError> {
     let (cap, roots) = {
@@ -572,7 +596,14 @@ impl DynamicImportState {
       let mut call_scope = scope.reborrow();
       call_scope.push_root(cap.reject)?;
       call_scope.push_root(reason)?;
-      let _ = vm.call_with_host(&mut call_scope, host, cap.reject, Value::Undefined, &[reason])?;
+      let _ = vm.call_with_host_and_hooks(
+        host_ctx,
+        &mut call_scope,
+        hooks,
+        cap.reject,
+        Value::Undefined,
+        &[reason],
+      )?;
       Ok(())
     })();
 
@@ -731,40 +762,84 @@ fn try_clone_module_requests(vm: &mut Vm, values: &[ModuleRequest]) -> Result<Ve
 ///
 /// This starts the module graph loading state machine and returns a Promise that is fulfilled once
 /// all modules in the static import graph have been loaded.
+///
+/// ## ⚠️ Dummy `VmHost` context
+///
+/// This hook-only API passes a **dummy host context** (`()`) to any native call/construct handlers
+/// invoked while loading/evaluating modules.
+///
+/// Embeddings that need native handlers to observe real host state should prefer
+/// [`load_requested_modules_with_host_and_hooks`].
 pub fn load_requested_modules(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn crate::VmHostHooks,
+  host: &mut dyn VmHostHooks,
+  module: ModuleId,
+  host_defined: HostDefined,
+) -> Result<Value, VmError> {
+  let mut dummy_host = ();
+  load_requested_modules_with_host_and_hooks(vm, scope, modules, &mut dummy_host, host, module, host_defined)
+}
+
+/// Host-context aware variant of [`load_requested_modules`].
+pub fn load_requested_modules_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  modules: &mut ModuleGraph,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   module: ModuleId,
   host_defined: HostDefined,
 ) -> Result<Value, VmError> {
   vm.tick()?;
-  let (state, promise) = GraphLoadingState::new(vm, scope, host, host_defined)?;
-  if let Err(err) = inner_module_loading(vm, scope, modules, host, &state, module) {
+  let (state, promise) = GraphLoadingState::new(vm, scope, host_ctx, hooks, host_defined)?;
+  if let Err(err) = inner_module_loading_with_host_and_hooks(vm, scope, modules, host_ctx, hooks, &state, module) {
     // `GraphLoadingState` owns persistent roots for the promise capability. If we abort the
     // algorithm with an abrupt completion (OOM, termination, etc), ensure those roots are released
     // before returning the error to the host.
     state.set_is_loading(false);
-    let _ = state.reject_promise(vm, scope, host, err.clone());
+    let _ = state.reject_promise(vm, scope, host_ctx, hooks, err.clone());
     return Err(err);
   }
   Ok(promise)
 }
 
 /// Implements ECMA-262 `InnerModuleLoading(state, module)`.
+///
+/// ## ⚠️ Dummy `VmHost` context
+///
+/// This hook-only API passes a **dummy host context** (`()`) to any native call/construct handlers
+/// invoked while loading modules.
+///
+/// Embeddings that need native handlers to observe real host state should prefer
+/// [`inner_module_loading_with_host_and_hooks`].
 pub fn inner_module_loading(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn crate::VmHostHooks,
+  host: &mut dyn VmHostHooks,
+  state: &GraphLoadingState,
+  module: ModuleId,
+) -> Result<(), VmError> {
+  let mut dummy_host = ();
+  inner_module_loading_with_host_and_hooks(vm, scope, modules, &mut dummy_host, host, state, module)
+}
+
+/// Host-context aware variant of [`inner_module_loading`].
+pub fn inner_module_loading_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  modules: &mut ModuleGraph,
+  host_ctx: &mut dyn VmHost,
+  host: &mut dyn VmHostHooks,
   state: &GraphLoadingState,
   module: ModuleId,
 ) -> Result<(), VmError> {
   vm.tick()?;
   let Some(record) = modules.get_module(module) else {
     state.set_is_loading(false);
-    state.reject_promise(vm, scope, host, VmError::invalid_handle())?;
+    state.reject_promise(vm, scope, host_ctx, host, VmError::invalid_handle())?;
     return Ok(());
   };
 
@@ -796,19 +871,21 @@ pub fn inner_module_loading(
             &message,
           )?;
 
-          continue_module_loading(
+          continue_module_loading_with_host_and_hooks(
             vm,
             scope,
             modules,
+            host_ctx,
             host,
             ModuleLoadPayload::graph_loading_state(state.clone()),
             Err(VmError::Throw(err_value)),
           )?;
         } else {
-          continue_module_loading(
+          continue_module_loading_with_host_and_hooks(
             vm,
             scope,
             modules,
+            host_ctx,
             host,
             ModuleLoadPayload::graph_loading_state(state.clone()),
             Err(VmError::Unimplemented(
@@ -817,7 +894,7 @@ pub fn inner_module_loading(
           )?;
         }
       } else if let Some(loaded_module) = modules.get_imported_module(module, &request) {
-        inner_module_loading(vm, scope, modules, host, state, loaded_module)?;
+        inner_module_loading_with_host_and_hooks(vm, scope, modules, host_ctx, host, state, loaded_module)?;
       } else {
         host.host_load_imported_module(
           vm,
@@ -856,7 +933,7 @@ pub fn inner_module_loading(
       }
     }
   }
-  state.resolve_promise(vm, scope, modules, host)?;
+  state.resolve_promise(vm, scope, modules, host_ctx, host)?;
   Ok(())
 }
 
@@ -864,11 +941,45 @@ pub fn inner_module_loading(
 ///
 /// Hosts must call this exactly once for each [`crate::VmHostHooks::host_load_imported_module`]
 /// invocation, either synchronously (re-entrantly) or asynchronously later.
+///
+/// ## ⚠️ Dummy `VmHost` context
+///
+/// This hook-only API passes a **dummy host context** (`()`) to any native call/construct handlers
+/// invoked while continuing module loading.
+///
+/// Embeddings that need native handlers to observe real host state should prefer
+/// [`finish_loading_imported_module_with_host_and_hooks`].
 pub fn finish_loading_imported_module(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn crate::VmHostHooks,
+  host: &mut dyn VmHostHooks,
+  referrer: ModuleReferrer,
+  module_request: ModuleRequest,
+  payload: ModuleLoadPayload,
+  result: ModuleCompletion,
+) -> Result<(), VmError> {
+  let mut dummy_host = ();
+  finish_loading_imported_module_with_host_and_hooks(
+    vm,
+    scope,
+    modules,
+    &mut dummy_host,
+    host,
+    referrer,
+    module_request,
+    payload,
+    result,
+  )
+}
+
+/// Host-context aware variant of [`finish_loading_imported_module`].
+pub fn finish_loading_imported_module_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  modules: &mut ModuleGraph,
+  host_ctx: &mut dyn VmHost,
+  host: &mut dyn VmHostHooks,
   referrer: ModuleReferrer,
   module_request: ModuleRequest,
   payload: ModuleLoadPayload,
@@ -916,18 +1027,20 @@ pub fn finish_loading_imported_module(
   };
 
   match payload.0 {
-    ModuleLoadPayloadInner::GraphLoadingState(state) => continue_module_loading(
+    ModuleLoadPayloadInner::GraphLoadingState(state) => continue_module_loading_with_host_and_hooks(
       vm,
       scope,
       modules,
+      host_ctx,
       host,
       ModuleLoadPayload::graph_loading_state(state),
       result,
     ),
-    ModuleLoadPayloadInner::PromiseCapability(state) => continue_dynamic_import(
+    ModuleLoadPayloadInner::PromiseCapability(state) => continue_dynamic_import_with_host_and_hooks(
       vm,
       scope,
       modules,
+      host_ctx,
       host,
       ModuleLoadPayload::promise_capability(state),
       result,
@@ -948,7 +1061,7 @@ impl Vm {
     &mut self,
     scope: &mut Scope<'_>,
     modules: &mut ModuleGraph,
-    host: &mut dyn crate::VmHostHooks,
+    host: &mut dyn VmHostHooks,
     referrer: ModuleReferrer,
     module_request: ModuleRequest,
     payload: ModuleLoadPayload,
@@ -965,14 +1078,62 @@ impl Vm {
       result,
     )
   }
+
+  /// Host-context aware variant of [`Vm::finish_loading_imported_module`].
+  #[inline]
+  pub fn finish_loading_imported_module_with_host_and_hooks(
+    &mut self,
+    host_ctx: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    modules: &mut ModuleGraph,
+    hooks: &mut dyn VmHostHooks,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    payload: ModuleLoadPayload,
+    result: ModuleCompletion,
+  ) -> Result<(), VmError> {
+    finish_loading_imported_module_with_host_and_hooks(
+      self,
+      scope,
+      modules,
+      host_ctx,
+      hooks,
+      referrer,
+      module_request,
+      payload,
+      result,
+    )
+  }
 }
 
 /// Implements ECMA-262 `ContinueModuleLoading(state, moduleCompletion)`.
+///
+/// ## ⚠️ Dummy `VmHost` context
+///
+/// This hook-only API passes a **dummy host context** (`()`) to any native call/construct handlers
+/// invoked while continuing module loading.
+///
+/// Embeddings that need native handlers to observe real host state should prefer
+/// [`continue_module_loading_with_host_and_hooks`].
 pub fn continue_module_loading(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn crate::VmHostHooks,
+  host: &mut dyn VmHostHooks,
+  payload: ModuleLoadPayload,
+  result: ModuleCompletion,
+) -> Result<(), VmError> {
+  let mut dummy_host = ();
+  continue_module_loading_with_host_and_hooks(vm, scope, modules, &mut dummy_host, host, payload, result)
+}
+
+/// Host-context aware variant of [`continue_module_loading`].
+pub fn continue_module_loading_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  modules: &mut ModuleGraph,
+  host_ctx: &mut dyn VmHost,
+  host: &mut dyn VmHostHooks,
   payload: ModuleLoadPayload,
   result: ModuleCompletion,
 ) -> Result<(), VmError> {
@@ -989,17 +1150,17 @@ pub fn continue_module_loading(
 
   match result {
     Ok(module) => {
-      if let Err(err) = inner_module_loading(vm, scope, modules, host, &state, module) {
+      if let Err(err) = inner_module_loading_with_host_and_hooks(vm, scope, modules, host_ctx, host, &state, module) {
         // Ensure promise roots are released even on abrupt completion.
         state.set_is_loading(false);
-        let _ = state.reject_promise(vm, scope, host, err.clone());
+        let _ = state.reject_promise(vm, scope, host_ctx, host, err.clone());
         return Err(err);
       }
       Ok(())
     }
     Err(err) => {
       state.set_is_loading(false);
-      state.reject_promise(vm, scope, host, err)
+      state.reject_promise(vm, scope, host_ctx, host, err)
     }
   }
 }
@@ -1174,6 +1335,15 @@ fn cmp_utf16_code_units(a: &str, b: &str) -> std::cmp::Ordering {
 ///
 /// This implements the import-attributes portion of `EvaluateImportCall`:
 /// <https://tc39.es/ecma262/#sec-evaluate-import-call>
+///
+/// ## ⚠️ Dummy `VmHost` context
+///
+/// This hook-only API can invoke user JS (for example getters on `options.with` and enumerating the
+/// attributes object), but will pass a **dummy host context** (`()`) to any native call/construct
+/// handlers reached through those invocations.
+///
+/// Embeddings that need native handlers to observe real host state should prefer
+/// [`import_attributes_from_options_with_host_and_hooks`].
 pub fn import_attributes_from_options(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1282,6 +1452,117 @@ pub fn import_attributes_from_options(
   Ok(attributes)
 }
 
+/// Host-context aware variant of [`import_attributes_from_options`].
+pub fn import_attributes_from_options_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  options: Value,
+  supported_keys: &[&str],
+) -> Result<Vec<ImportAttribute>, ImportCallError> {
+  vm.tick().map_err(ImportCallError::Vm)?;
+  if matches!(options, Value::Undefined) {
+    return Ok(Vec::new());
+  }
+
+  let Value::Object(options_obj) = options else {
+    return Err(ImportCallError::TypeError(ImportCallTypeError::OptionsNotObject));
+  };
+
+  // Root the options object across allocations/GC while inspecting it.
+  let mut scope = scope.reborrow();
+  scope
+    .push_root(Value::Object(options_obj))
+    .map_err(ImportCallError::Vm)?;
+
+  let with_key =
+    PropertyKey::from_string(make_key_string(&mut scope, "with").map_err(ImportCallError::Vm)?);
+  let attributes_obj = scope
+    .ordinary_get_with_host_and_hooks(vm, host_ctx, hooks, options_obj, with_key, Value::Object(options_obj))
+    .map_err(ImportCallError::Vm)?;
+
+  if matches!(attributes_obj, Value::Undefined) {
+    return Ok(Vec::new());
+  }
+
+  let Value::Object(attributes_obj) = attributes_obj else {
+    return Err(ImportCallError::TypeError(
+      ImportCallTypeError::AttributesNotObject,
+    ));
+  };
+
+  // Root the attributes object so property enumeration/getters cannot collect it.
+  scope
+    .push_root(Value::Object(attributes_obj))
+    .map_err(ImportCallError::Vm)?;
+
+  let own_keys = scope
+    .ordinary_own_property_keys_with_tick(attributes_obj, || vm.tick())
+    .map_err(ImportCallError::Vm)?;
+
+  let mut attributes = Vec::<ImportAttribute>::new();
+  attributes
+    .try_reserve_exact(own_keys.len())
+    .map_err(|_| ImportCallError::Vm(VmError::OutOfMemory))?;
+
+  for key in own_keys {
+    vm.tick().map_err(ImportCallError::Vm)?;
+    let PropertyKey::String(key_string) = key else {
+      continue;
+    };
+
+    let Some(desc) = scope
+      .ordinary_get_own_property(attributes_obj, key)
+      .map_err(ImportCallError::Vm)?
+    else {
+      continue;
+    };
+
+    if !desc.enumerable {
+      continue;
+    }
+
+    let value = scope
+      .ordinary_get_with_host_and_hooks(vm, host_ctx, hooks, attributes_obj, key, Value::Object(attributes_obj))
+      .map_err(ImportCallError::Vm)?;
+
+    let Value::String(value_string) = value else {
+      return Err(ImportCallError::TypeError(
+        ImportCallTypeError::AttributeValueNotString,
+      ));
+    };
+
+    let key = clone_heap_string_to_string(scope.heap(), key_string).map_err(ImportCallError::Vm)?;
+    let value =
+      clone_heap_string_to_string(scope.heap(), value_string).map_err(ImportCallError::Vm)?;
+
+    attributes.push(ImportAttribute { key, value });
+  }
+
+  // `AllImportAttributesSupported`.
+  for attribute in &attributes {
+    vm.tick().map_err(ImportCallError::Vm)?;
+    if !supported_keys
+      .iter()
+      .any(|supported| *supported == attribute.key.as_str())
+    {
+      return Err(ImportCallError::TypeError(
+        ImportCallTypeError::UnsupportedImportAttribute {
+          key: attribute.key.clone(),
+        },
+      ));
+    }
+  }
+
+  // Sort by key (and value for determinism) by UTF-16 code unit order.
+  attributes.sort_by(|a, b| match cmp_utf16_code_units(&a.key, &b.key) {
+    std::cmp::Ordering::Equal => cmp_utf16_code_units(&a.value, &b.value),
+    non_eq => non_eq,
+  });
+  Ok(attributes)
+}
+
 /// Spec helper: `AllImportAttributesSupported(attributes)`.
 pub fn all_import_attributes_supported(supported_keys: &[&str], attributes: &[ImportAttribute]) -> bool {
   attributes
@@ -1310,11 +1591,44 @@ fn first_unsupported_import_attribute_key<'a>(
 }
 
 /// Spec-shaped dynamic import entry point (EvaluateImportCall).
+///
+/// ## ⚠️ Dummy `VmHost` context
+///
+/// This hook-only API can invoke user JS (for example `ToString(specifier)` or getters on the
+/// `options` argument), but will pass a **dummy host context** (`()`) to any native call/construct
+/// handlers reached through those invocations.
+///
+/// Embeddings that need native handlers to observe real host state should prefer
+/// [`start_dynamic_import_with_host_and_hooks`].
 pub fn start_dynamic_import(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn crate::VmHostHooks,
+  host: &mut dyn VmHostHooks,
+  global_object: GcObject,
+  specifier: Value,
+  options: Value,
+) -> Result<Value, VmError> {
+  let mut dummy_host = ();
+  start_dynamic_import_with_host_and_hooks(
+    vm,
+    scope,
+    modules,
+    &mut dummy_host,
+    host,
+    global_object,
+    specifier,
+    options,
+  )
+}
+
+/// Host-context aware variant of [`start_dynamic_import`].
+pub fn start_dynamic_import_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  modules: &mut ModuleGraph,
+  host_ctx: &mut dyn VmHost,
+  host: &mut dyn VmHostHooks,
   global_object: GcObject,
   specifier: Value,
   options: Value,
@@ -1330,7 +1644,12 @@ pub fn start_dynamic_import(
   // 1. Let promiseCapability be ? NewPromiseCapability(%Promise%).
   let (state, promise, realm_id) = {
     let mut root_scope = import_scope.reborrow();
-    let cap = crate::promise_ops::new_promise_capability(vm, &mut root_scope, host)?;
+    let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+      vm,
+      &mut root_scope,
+      host_ctx,
+      host,
+    )?;
     let realm_id = vm.current_realm().ok_or(VmError::Unimplemented(
       "dynamic import requires an active Realm (push an ExecutionContext)",
     ))?;
@@ -1339,10 +1658,7 @@ pub fn start_dynamic_import(
   }?;
 
   // 2. Let specifierString be ? ToString(specifier).
-  let specifier_string = match {
-    let mut dummy_host = ();
-    import_scope.to_string(vm, &mut dummy_host, host, specifier)
-  } {
+  let specifier_string = match import_scope.to_string(vm, host_ctx, host, specifier) {
     Ok(s) => {
       // Root the resulting string while converting it into a Rust `String`, since this can allocate
       // and trigger GC later (e.g. during import attribute validation).
@@ -1359,7 +1675,7 @@ pub fn start_dynamic_import(
       }
     }
     Err(VmError::Throw(value) | VmError::ThrowWithStack { value, .. }) => {
-      state.reject(vm, &mut import_scope, host, value)?;
+      state.reject(vm, &mut import_scope, host_ctx, host, value)?;
       return Ok(promise);
     }
     Err(VmError::TypeError(message)) => {
@@ -1375,7 +1691,7 @@ pub fn start_dynamic_import(
         "TypeError",
         message,
       )?;
-      state.reject(vm, &mut import_scope, host, err_value)?;
+      state.reject(vm, &mut import_scope, host_ctx, host, err_value)?;
       return Ok(promise);
     }
     Err(e) => {
@@ -1386,7 +1702,14 @@ pub fn start_dynamic_import(
 
   // 3. Extract import attributes from options (reject on validation errors).
   let supported = host.host_get_supported_import_attributes();
-  let attributes = match import_attributes_from_options(vm, &mut import_scope, options, supported) {
+  let attributes = match import_attributes_from_options_with_host_and_hooks(
+    vm,
+    &mut import_scope,
+    host_ctx,
+    host,
+    options,
+    supported,
+  ) {
     Ok(attrs) => attrs,
     Err(ImportCallError::TypeError(kind)) => {
       let Some(intr) = vm.intrinsics() else {
@@ -1409,7 +1732,7 @@ pub fn start_dynamic_import(
               "TypeError",
               &msg,
             )?;
-            state.reject(vm, &mut import_scope, host, err_value)?;
+            state.reject(vm, &mut import_scope, host_ctx, host, err_value)?;
             Ok(promise)
           };
         }
@@ -1417,12 +1740,12 @@ pub fn start_dynamic_import(
 
       let err_value =
         crate::new_error(&mut import_scope, intr.type_error_prototype(), "TypeError", message)?;
-      state.reject(vm, &mut import_scope, host, err_value)?;
+      state.reject(vm, &mut import_scope, host_ctx, host, err_value)?;
       return Ok(promise);
     }
     Err(ImportCallError::Vm(err)) => {
       if let Some(reason) = err.thrown_value() {
-        state.reject(vm, &mut import_scope, host, reason)?;
+        state.reject(vm, &mut import_scope, host_ctx, host, reason)?;
         return Ok(promise);
       }
       state.teardown_roots(import_scope.heap_mut());
@@ -1451,7 +1774,7 @@ pub fn start_dynamic_import(
     payload,
   ) {
     if let Some(reason) = err.thrown_value() {
-      state.reject(vm, &mut import_scope, host, reason)?;
+      state.reject(vm, &mut import_scope, host_ctx, host, reason)?;
       return Ok(promise);
     }
     state.teardown_roots(import_scope.heap_mut());
@@ -1464,11 +1787,32 @@ pub fn start_dynamic_import(
 
 /// Implements ECMA-262 `ContinueDynamicImport`.
 ///
+/// ## ⚠️ Dummy `VmHost` context
+///
+/// This hook-only API passes a **dummy host context** (`()`) to any native call/construct handlers
+/// invoked while continuing the dynamic import state machine.
+///
+/// Embeddings that need native handlers to observe real host state should prefer
+/// [`continue_dynamic_import_with_host_and_hooks`].
 pub fn continue_dynamic_import(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   modules: &mut ModuleGraph,
-  host: &mut dyn crate::VmHostHooks,
+  host: &mut dyn VmHostHooks,
+  payload: ModuleLoadPayload,
+  module_completion: ModuleCompletion,
+) -> Result<(), VmError> {
+  let mut dummy_host = ();
+  continue_dynamic_import_with_host_and_hooks(vm, scope, modules, &mut dummy_host, host, payload, module_completion)
+}
+
+/// Host-context aware variant of [`continue_dynamic_import`].
+pub fn continue_dynamic_import_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  modules: &mut ModuleGraph,
+  host_ctx: &mut dyn VmHost,
+  host: &mut dyn VmHostHooks,
   payload: ModuleLoadPayload,
   module_completion: ModuleCompletion,
 ) -> Result<(), VmError> {
@@ -1481,7 +1825,7 @@ pub fn continue_dynamic_import(
   match module_completion {
     Err(err) => {
       if let Some(reason) = err.thrown_value() {
-        state.reject(vm, scope, host, reason)?;
+        state.reject(vm, scope, host_ctx, host, reason)?;
         return Ok(());
       }
       state.teardown_roots(scope.heap_mut());
@@ -1490,11 +1834,14 @@ pub fn continue_dynamic_import(
     Ok(module) => {
       // Start `LoadRequestedModules` for the newly-loaded module. The dynamic import promise is
       // resolved once the graph-loading promise settles (via the `GraphLoadingState` continuation).
-      let (graph_state, _promise) = GraphLoadingState::new(vm, scope, host, HostDefined::default())?;
+      let (graph_state, _promise) =
+        GraphLoadingState::new(vm, scope, host_ctx, host, HostDefined::default())?;
       graph_state.set_dynamic_import(state, module)?;
-      if let Err(err) = inner_module_loading(vm, scope, modules, host, &graph_state, module) {
+      if let Err(err) =
+        inner_module_loading_with_host_and_hooks(vm, scope, modules, host_ctx, host, &graph_state, module)
+      {
         graph_state.set_is_loading(false);
-        let _ = graph_state.reject_promise(vm, scope, host, err.clone());
+        let _ = graph_state.reject_promise(vm, scope, host_ctx, host, err.clone());
         return Err(err);
       }
       Ok(())
@@ -1758,10 +2105,11 @@ mod tests {
     // will panic in debug builds.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       let mut host = Host;
+      let mut host_ctx = ();
       let mut scope = heap.scope();
       let mut modules = ModuleGraph::new();
       let (state, _promise) =
-        GraphLoadingState::new(&mut vm, &mut scope, &mut host, HostDefined::default()).unwrap();
+        GraphLoadingState::new(&mut vm, &mut scope, &mut host_ctx, &mut host, HostDefined::default()).unwrap();
 
       // Capture the persistent roots created by `GraphLoadingState::new` so we can observe whether
       // they are removed.
@@ -1785,7 +2133,7 @@ mod tests {
       });
 
       let err = state
-        .resolve_promise(&mut vm, &mut scope, &mut modules, &mut host)
+        .resolve_promise(&mut vm, &mut scope, &mut modules, &mut host_ctx, &mut host)
         .unwrap_err();
       assert!(matches!(err, VmError::Termination(_)));
 
@@ -1821,9 +2169,10 @@ mod tests {
     // will panic in debug builds.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       let mut host = Host;
+      let mut host_ctx = ();
       let mut scope = heap.scope();
       let (state, _promise) =
-        GraphLoadingState::new(&mut vm, &mut scope, &mut host, HostDefined::default()).unwrap();
+        GraphLoadingState::new(&mut vm, &mut scope, &mut host_ctx, &mut host, HostDefined::default()).unwrap();
 
       let (promise_root, resolve_root, reject_root) = {
         let guard = state.0.borrow();
@@ -1889,6 +2238,7 @@ mod tests {
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       let mut host = Host;
+      let mut host_ctx = ();
       let mut scope = heap.scope();
       let mut modules = ModuleGraph::new();
 
@@ -1898,7 +2248,7 @@ mod tests {
       );
 
       let (state, _promise) =
-        GraphLoadingState::new(&mut vm, &mut scope, &mut host, HostDefined::default()).unwrap();
+        GraphLoadingState::new(&mut vm, &mut scope, &mut host_ctx, &mut host, HostDefined::default()).unwrap();
 
       assert_eq!(
         (scope.heap().root_stack.len(), scope.heap().env_root_stack.len()),
@@ -1911,7 +2261,7 @@ mod tests {
         scope.heap().env_root_stack.len(),
       );
       state
-        .resolve_promise(&mut vm, &mut scope, &mut modules, &mut host)
+        .resolve_promise(&mut vm, &mut scope, &mut modules, &mut host_ctx, &mut host)
         .unwrap();
       assert_eq!(
         (scope.heap().root_stack.len(), scope.heap().env_root_stack.len()),
@@ -1920,7 +2270,7 @@ mod tests {
 
       // Fresh state to exercise `reject_promise`.
       let (state2, _promise2) =
-        GraphLoadingState::new(&mut vm, &mut scope, &mut host, HostDefined::default()).unwrap();
+        GraphLoadingState::new(&mut vm, &mut scope, &mut host_ctx, &mut host, HostDefined::default()).unwrap();
       assert_eq!(
         (scope.heap().root_stack.len(), scope.heap().env_root_stack.len()),
         roots_before
@@ -1934,6 +2284,7 @@ mod tests {
         .reject_promise(
           &mut vm,
           &mut scope,
+          &mut host_ctx,
           &mut host,
           VmError::LimitExceeded("test"),
         )

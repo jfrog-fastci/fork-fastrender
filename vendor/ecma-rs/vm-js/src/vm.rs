@@ -1762,6 +1762,14 @@ impl Vm {
   }
 
   /// ECMAScript `Get(O, P)` for ordinary objects.
+  ///
+  /// ## ⚠️ Dummy `VmHost` context
+  ///
+  /// This convenience wrapper can invoke user JS via accessors but will pass a **dummy host
+  /// context** (`()`) to any native call/construct handlers reached through those invocations.
+  ///
+  /// Embeddings that need native handlers to observe real host state should prefer
+  /// [`Vm::get_with_host_and_hooks`].
   pub fn get(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1771,6 +1779,19 @@ impl Vm {
     // Delegate to the ordinary object internal-method implementation. `Get(O, P)` uses
     // `receiver = O`.
     scope.ordinary_get(self, obj, key, Value::Object(obj))
+  }
+
+  /// ECMAScript `Get(O, P)` for ordinary objects, using an explicit embedder host context and host
+  /// hook implementation.
+  pub fn get_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+  ) -> Result<Value, VmError> {
+    scope.ordinary_get_with_host_and_hooks(self, host, hooks, obj, key, Value::Object(obj))
   }
 
   /// ECMAScript `GetMethod(O, P)` where `O` is already known to be an object.
@@ -1795,6 +1816,14 @@ impl Vm {
   ///
   /// Note: `GetMethod` uses `GetV`, which in turn uses `ToObject`. Full `ToObject` boxing semantics
   /// are implemented by boxing primitives via the intrinsic `Object` constructor.
+  ///
+  /// ## ⚠️ Dummy `VmHost` context
+  ///
+  /// This convenience wrapper can invoke user JS via accessors but will pass a **dummy host
+  /// context** (`()`) to any native call/construct handlers reached through those invocations.
+  ///
+  /// Embeddings that need native handlers to observe real host state should prefer
+  /// [`Vm::get_method_with_host_and_hooks`].
   pub fn get_method(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1846,6 +1875,19 @@ impl Vm {
       return Err(VmError::TypeError("GetMethod: target is not callable"));
     }
     Ok(Some(func))
+  }
+
+  /// ECMAScript `GetMethod(V, P)` (partial), using an explicit embedder host context and host hook
+  /// implementation.
+  pub fn get_method_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    scope: &mut Scope<'_>,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+    key: PropertyKey,
+  ) -> Result<Option<Value>, VmError> {
+    crate::spec_ops::get_method_with_host_and_hooks(self, scope, host, hooks, value, key)
   }
 
   /// Constructs `callee` with the provided arguments and `new_target`.

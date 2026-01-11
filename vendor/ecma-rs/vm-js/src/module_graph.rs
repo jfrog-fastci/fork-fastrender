@@ -504,9 +504,10 @@ impl ModuleGraph {
       let intr = vm
         .intrinsics()
         .ok_or(VmError::Unimplemented("module evaluation requires intrinsics"))?;
-      let cap = crate::builtins::new_promise_capability(
+      let cap = crate::builtins::new_promise_capability_with_host_and_hooks(
         vm,
         &mut eval_scope,
+        host,
         hooks,
         Value::Object(intr.promise()),
       )?;

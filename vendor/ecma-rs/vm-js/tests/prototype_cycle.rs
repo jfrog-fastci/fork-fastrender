@@ -127,12 +127,20 @@ fn prototype_chain_traversal_is_bounded() -> Result<(), VmError> {
 
   assert!(matches!(scope.heap().get_property(leaf, &key)?, Some(_)));
 
-  // One more hop should exceed the cap.
+  // `Heap::get_property` starts traversal from the receiver itself, while `ordinary_get` /
+  // `ordinary_set` start from the receiver's prototype. Add two hops so *both* paths exceed the
+  // traversal cap.
+  let at_limit = scope.alloc_object()?;
+  unsafe {
+    scope
+      .heap_mut()
+      .object_set_prototype_unchecked(at_limit, Some(leaf))?;
+  }
   let too_deep = scope.alloc_object()?;
   unsafe {
     scope
       .heap_mut()
-      .object_set_prototype_unchecked(too_deep, Some(leaf))?;
+      .object_set_prototype_unchecked(too_deep, Some(at_limit))?;
   }
   assert!(matches!(
     scope.heap().get_property(too_deep, &key),

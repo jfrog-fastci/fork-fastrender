@@ -46,7 +46,17 @@ pub(crate) fn bind_pattern(
   let value = scope.push_root(value)?;
 
   match pat {
-    Pat::Id(id) => bind_identifier(vm, env, &mut scope, &id.stx.name, value, kind, strict),
+    Pat::Id(id) => bind_identifier(
+      vm,
+      host,
+      hooks,
+      env,
+      &mut scope,
+      &id.stx.name,
+      value,
+      kind,
+      strict,
+    ),
     Pat::Obj(obj) => bind_object_pattern(
       vm,
       host,
@@ -110,6 +120,8 @@ pub(crate) fn bind_assignment_target(
   match &*target.stx {
     Expr::Id(id) => bind_identifier(
       vm,
+      host,
+      hooks,
       env,
       &mut scope,
       &id.stx.name,
@@ -119,6 +131,8 @@ pub(crate) fn bind_assignment_target(
     ),
     Expr::IdPat(id) => bind_identifier(
       vm,
+      host,
+      hooks,
       env,
       &mut scope,
       &id.stx.name,
@@ -178,6 +192,8 @@ pub(crate) fn bind_assignment_target(
 
 fn bind_identifier(
   vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   env: &mut RuntimeEnv,
   scope: &mut Scope<'_>,
   name: &str,
@@ -186,7 +202,7 @@ fn bind_identifier(
   strict: bool,
 ) -> Result<(), VmError> {
   match kind {
-    BindingKind::Var => env.set_var(vm, scope, name, value),
+    BindingKind::Var => env.set_var(vm, host, hooks, scope, name, value),
     BindingKind::Let => {
       let env_rec = env.lexical_env();
       if !scope.heap().env_has_binding(env_rec, name)? {
@@ -203,7 +219,7 @@ fn bind_identifier(
       }
       scope.heap_mut().env_initialize_binding(env_rec, name, value)
     }
-    BindingKind::Assignment => env.set(vm, scope, name, value, strict),
+    BindingKind::Assignment => env.set(vm, host, hooks, scope, name, value, strict),
   }
 }
 

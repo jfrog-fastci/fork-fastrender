@@ -31,6 +31,12 @@ pub fn new_promise_capability_with_host_and_hooks(
   )
 }
 
+/// Convenience wrapper around [`new_promise_capability_with_host_and_hooks`] that passes a dummy
+/// host context (`()`).
+///
+/// Promise construction and resolution can invoke user JS (thenables and `then` callbacks), so host
+/// embeddings that need native handlers to observe real host state should prefer
+/// [`new_promise_capability_with_host_and_hooks`].
 pub fn new_promise_capability(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -75,6 +81,11 @@ pub fn promise_resolve_with_host_and_hooks(
   Ok(cap.promise)
 }
 
+/// Convenience wrapper around [`promise_resolve_with_host_and_hooks`] that passes a dummy host
+/// context (`()`).
+///
+/// Promise resolution can invoke user JS (thenables), so host embeddings that need native handlers
+/// to observe real host state should prefer [`promise_resolve_with_host_and_hooks`].
 pub fn promise_resolve(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -110,6 +121,11 @@ pub fn perform_promise_then_with_host_and_hooks(
   )
 }
 
+/// Convenience wrapper around [`perform_promise_then_with_host_and_hooks`] that passes a dummy host
+/// context (`()`).
+///
+/// Promise reactions can invoke user JS, so host embeddings that need native handlers to observe
+/// real host state should prefer [`perform_promise_then_with_host_and_hooks`].
 pub fn perform_promise_then(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

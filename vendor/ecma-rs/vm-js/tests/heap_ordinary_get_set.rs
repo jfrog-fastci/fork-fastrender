@@ -236,6 +236,9 @@ fn heap_ordinary_get_and_set_respect_prototype_chain_bounds() -> Result<(), VmEr
     )?;
 
     let mut prev = base;
+    // Build a prototype chain that is just below the traversal cap; `too_deep` below adds two more
+    // hops to ensure `[[Get]]` / `[[Set]]` fail with `PrototypeChainTooDeep` without relying on
+    // off-by-one behaviour.
     for _ in 0..(MAX_PROTOTYPE_CHAIN - 1) {
       let obj = scope.alloc_object()?;
       unsafe {
@@ -247,12 +250,20 @@ fn heap_ordinary_get_and_set_respect_prototype_chain_bounds() -> Result<(), VmEr
     }
     let leaf = prev;
 
-    // One more hop should exceed the cap.
+    // Build:
+    // - `at_limit`: reaches the traversal cap exactly.
+    // - `too_deep`: exceeds the traversal cap.
+    let at_limit = scope.alloc_object()?;
+    unsafe {
+      scope
+        .heap_mut()
+        .object_set_prototype_unchecked(at_limit, Some(leaf))?;
+    }
     let too_deep = scope.alloc_object()?;
     unsafe {
       scope
         .heap_mut()
-        .object_set_prototype_unchecked(too_deep, Some(leaf))?;
+        .object_set_prototype_unchecked(too_deep, Some(at_limit))?;
     }
 
     let base_root = scope.heap_mut().add_root(Value::Object(base))?;

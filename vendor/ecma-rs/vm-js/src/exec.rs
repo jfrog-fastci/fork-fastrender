@@ -360,6 +360,8 @@ impl RuntimeEnv {
   pub(crate) fn set(
     &mut self,
     vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
     scope: &mut Scope<'_>,
     name: &str,
     value: Value,
@@ -422,14 +424,14 @@ impl RuntimeEnv {
           }
           return Ok(());
         }
-        PropertyKind::Accessor { .. } => {
-          let receiver = Value::Object(global_object);
-          let ok = key_scope.ordinary_set(vm, global_object, key, value, receiver)?;
-          if ok {
-            return Ok(());
-          }
-          if strict {
-            let msg = format!("Cannot assign to read only property '{name}'");
+         PropertyKind::Accessor { .. } => {
+           let receiver = Value::Object(global_object);
+           let ok = key_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, global_object, key, value, receiver)?;
+           if ok {
+             return Ok(());
+           }
+           if strict {
+             let msg = format!("Cannot assign to read only property '{name}'");
             return Err(throw_type_error(vm, &mut key_scope, &msg)?);
           }
           return Ok(());
@@ -445,6 +447,8 @@ impl RuntimeEnv {
   pub(crate) fn set_var(
     &mut self,
     vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
     scope: &mut Scope<'_>,
     name: &str,
     value: Value,
@@ -480,14 +484,14 @@ impl RuntimeEnv {
                 "assignment to non-writable global property",
               ));
             }
-            PropertyKind::Accessor { .. } => {
-              let receiver = Value::Object(global_object);
-              let ok = key_scope.ordinary_set(vm, global_object, key, value, receiver)?;
-              if ok {
-                return Ok(());
-              }
-              return Err(VmError::Unimplemented(
-                "assignment to non-writable global property",
+             PropertyKind::Accessor { .. } => {
+               let receiver = Value::Object(global_object);
+               let ok = key_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, global_object, key, value, receiver)?;
+               if ok {
+                 return Ok(());
+               }
+               return Err(VmError::Unimplemented(
+                 "assignment to non-writable global property",
               ));
             }
           }
@@ -1484,7 +1488,14 @@ impl<'a> Evaluator<'a> {
     let mut assign_scope = scope.reborrow();
     assign_scope.push_root(Value::Object(func_obj))?;
     let (vm, env) = (&mut self.vm, &mut self.env);
-    env.set_var(vm, &mut assign_scope, &name.stx.name, Value::Object(func_obj))?;
+    env.set_var(
+      vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      &mut assign_scope,
+      &name.stx.name,
+      Value::Object(func_obj),
+    )?;
     Ok(())
   }
 
@@ -3319,10 +3330,11 @@ impl<'a> Evaluator<'a> {
     // remains stable even if the runtime is moved.
     let modules = unsafe { &mut *modules_ptr };
 
-    crate::start_dynamic_import(
+    crate::start_dynamic_import_with_host_and_hooks(
       self.vm,
       &mut import_scope,
       modules,
+      &mut *self.host,
       &mut *self.hooks,
       self.env.global_object(),
       specifier,
@@ -3469,7 +3481,7 @@ impl<'a> Evaluator<'a> {
     value: Value,
   ) -> Result<(), VmError> {
     match *reference {
-      Reference::Binding(name) => self.env.set(self.vm, scope, name, value, self.strict),
+      Reference::Binding(name) => self.env.set(self.vm, self.host, self.hooks, scope, name, value, self.strict),
       Reference::Property { base, key } => {
         let mut set_scope = scope.reborrow();
         self.root_reference(&mut set_scope, reference)?;
@@ -5274,19 +5286,26 @@ impl<'a> Evaluator<'a> {
       .well_known_symbols()
       .has_instance;
     let has_instance_key = PropertyKey::from_symbol(has_instance_sym);
-    let method = match self
-      .vm
-      .get_method(&mut scope, constructor, has_instance_key)
-    {
-      Ok(method) => method,
-      Err(VmError::TypeError(_) | VmError::NotCallable) => {
+    let method = {
+      let value = scope.ordinary_get_with_host_and_hooks(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        constructor_obj,
+        has_instance_key,
+        Value::Object(constructor_obj),
+      )?;
+      if matches!(value, Value::Undefined | Value::Null) {
+        None
+      } else if !scope.heap().is_callable(value)? {
         return Err(throw_type_error(
           self.vm,
           &mut scope,
           "@@hasInstance is not callable",
         )?);
+      } else {
+        Some(value)
       }
-      Err(err) => return Err(err),
     };
 
     if let Some(method) = method {
@@ -5323,9 +5342,14 @@ impl<'a> Evaluator<'a> {
     // P = Get(C, "prototype").
     let prototype_s = scope.alloc_string("prototype")?;
     scope.push_root(Value::String(prototype_s))?;
-    let prototype = self
-      .vm
-      .get(scope, constructor, PropertyKey::from_string(prototype_s))?;
+    let prototype = scope.ordinary_get_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      constructor,
+      PropertyKey::from_string(prototype_s),
+      Value::Object(constructor),
+    )?;
 
     let Value::Object(prototype) = prototype else {
       return Err(throw_type_error(

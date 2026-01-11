@@ -1,11 +1,38 @@
 use vm_js::{
-  GcObject, Heap, HeapLimits, JsRuntime, MicrotaskQueue, Scope, Value, Vm, VmError, VmHost,
-  VmHostHooks, VmOptions,
+  GcObject, Heap, HeapLimits, HostDefined, JsRuntime, MicrotaskQueue, ModuleGraph, ModuleLoadPayload,
+  ModuleReferrer, ModuleRequest, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 #[derive(Debug, Default)]
 struct Host {
   counter: u32,
+}
+
+#[derive(Debug, Default)]
+struct ImportFailingHooks {
+  microtasks: MicrotaskQueue,
+}
+
+impl VmHostHooks for ImportFailingHooks {
+  fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<RealmId>) {
+    self.microtasks.host_enqueue_promise_job(job, realm);
+  }
+
+  fn host_load_imported_module(
+    &mut self,
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _modules: &mut ModuleGraph,
+    _referrer: ModuleReferrer,
+    _module_request: ModuleRequest,
+    _host_defined: HostDefined,
+    _payload: ModuleLoadPayload,
+  ) -> Result<(), VmError> {
+    // Signal a *loading failure* (dynamic `import()` promise rejection) via a thrown value rather
+    // than an internal VM error.
+    let err_s = scope.alloc_string("HostLoadImportedModule")?;
+    Err(VmError::Throw(Value::String(err_s)))
+  }
 }
 
 fn inc_host_counter(
@@ -110,5 +137,94 @@ fn host_context_is_preserved_when_ordinary_create_from_constructor_gets_new_targ
   )?;
 
   assert_eq!(host.counter, 1);
+  Ok(())
+}
+
+#[test]
+fn host_context_is_preserved_when_instanceof_gets_symbol_has_instance() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("inc", inc_host_counter, 0)?;
+
+  let mut host = Host::default();
+  let mut hooks = MicrotaskQueue::new();
+  assert_eq!(host.counter, 0);
+
+  // `instanceof` performs `GetMethod(C, @@hasInstance)`, which can invoke an accessor getter.
+  // Ensure the getter runs with the embedder host context.
+  rt.exec_script_with_host_and_hooks(
+    &mut host,
+    &mut hooks,
+    r#"
+      function C() {}
+      Object.defineProperty(C, Symbol.hasInstance, {
+        get: function () {
+          inc();
+          return function () { return true; };
+        },
+        configurable: true,
+      });
+      ({} instanceof C);
+    "#,
+  )?;
+
+  assert_eq!(host.counter, 1);
+  Ok(())
+}
+
+#[test]
+fn host_context_is_preserved_when_global_assignment_invokes_accessor_setter() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("inc", inc_host_counter, 0)?;
+
+  let mut host = Host::default();
+  let mut hooks = MicrotaskQueue::new();
+  assert_eq!(host.counter, 0);
+
+  // Sloppy-mode assignment to an unqualified identifier uses the global object as the target.
+  // If an accessor setter exists on the global object, it must be invoked with the embedder host
+  // context.
+  rt.exec_script_with_host_and_hooks(
+    &mut host,
+    &mut hooks,
+    r#"
+      Object.defineProperty(globalThis, "x", {
+        set(v) { inc(); },
+        configurable: true,
+      });
+      x = 1;
+    "#,
+  )?;
+
+  assert_eq!(host.counter, 1);
+  Ok(())
+}
+
+#[test]
+fn host_context_is_preserved_when_dynamic_import_coerces_specifier_and_options() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  rt.register_global_native_function("inc", inc_host_counter, 0)?;
+
+  let mut host = Host::default();
+  let mut hooks = ImportFailingHooks::default();
+  assert_eq!(host.counter, 0);
+
+  // Dynamic `import()` must synchronously:
+  // - coerce the module specifier via `ToString`, and
+  // - inspect the `options.with` property when import attributes are present.
+  //
+  // Both operations can invoke user code.
+  rt.exec_script_with_host_and_hooks(
+    &mut host,
+    &mut hooks,
+    r#"
+      import(
+        { toString() { inc(); return "./m.js"; } },
+        { get with() { inc(); } }
+      );
+    "#,
+  )?;
+
+  hooks.microtasks.cancel_all(&mut rt);
+  assert_eq!(host.counter, 2);
   Ok(())
 }

@@ -204,6 +204,12 @@ impl<'a> Scope<'a> {
   }
 
   /// ECMAScript `[[Get]]` for ordinary objects.
+  ///
+  /// ## ⚠️ Dummy `VmHost` context
+  ///
+  /// Accessor getters are invoked using a **dummy host context** (`()`). Host embeddings that need
+  /// native handlers to observe real host state should prefer
+  /// [`Scope::ordinary_get_with_host_and_hooks`].
   pub fn ordinary_get(
     &mut self,
     vm: &mut Vm,
@@ -375,6 +381,12 @@ impl<'a> Scope<'a> {
   }
 
   /// ECMAScript `[[Set]]` for ordinary objects.
+  ///
+  /// ## ⚠️ Dummy `VmHost` context
+  ///
+  /// Accessor setters are invoked using a **dummy host context** (`()`). Host embeddings that need
+  /// native handlers to observe real host state should prefer
+  /// [`Scope::ordinary_set_with_host_and_hooks`].
   pub fn ordinary_set(
     &mut self,
     vm: &mut Vm,

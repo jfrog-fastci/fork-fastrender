@@ -10,7 +10,7 @@ use crate::symbol::JsSymbol;
 use crate::CompiledFunctionRef;
 use crate::{
   EnvRootId, GcEnv, GcObject, GcString, GcSymbol, HeapId, RealmId, RootId, Value, Vm, VmError,
-  VmHost,
+  VmHost, VmHostHooks,
 };
 use core::mem;
 use semantic_js::js::SymbolId;
@@ -1663,6 +1663,12 @@ impl Heap {
   /// - returns data property values,
   /// - and invokes accessor getters using `vm.call` with `receiver` as `this`.
   ///
+  /// ## ⚠️ Dummy `VmHost` context
+  ///
+  /// Accessor getters are invoked using a **dummy host context** (`()`). Host embeddings that need
+  /// native handlers to observe real host state should prefer
+  /// [`Heap::ordinary_get_with_host_and_hooks`].
+  ///
   /// # Rooting
   ///
   /// The returned [`Value`] is **not automatically rooted**. If the caller will perform any
@@ -1679,9 +1685,32 @@ impl Heap {
     scope.ordinary_get(vm, obj, key, receiver)
   }
 
+  /// ECMAScript `[[Get]]` for ordinary objects (full semantics, including accessors), using an
+  /// explicit embedder host context and host hook implementation.
+  ///
+  /// This is a convenience wrapper around [`Scope::ordinary_get_with_host_and_hooks`].
+  pub fn ordinary_get_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    receiver: Value,
+  ) -> Result<Value, VmError> {
+    let mut scope = self.scope();
+    scope.ordinary_get_with_host_and_hooks(vm, host, hooks, obj, key, receiver)
+  }
+
   /// ECMAScript `[[Set]]` for ordinary objects (full semantics, including accessors).
   ///
   /// This is a convenience wrapper around [`Scope::ordinary_set`].
+  ///
+  /// ## ⚠️ Dummy `VmHost` context
+  ///
+  /// Accessor setters are invoked using a **dummy host context** (`()`). Host embeddings that need
+  /// native handlers to observe real host state should prefer
+  /// [`Heap::ordinary_set_with_host_and_hooks`].
   ///
   /// # Rooting
   ///
@@ -1696,6 +1725,24 @@ impl Heap {
   ) -> Result<bool, VmError> {
     let mut scope = self.scope();
     scope.ordinary_set(vm, obj, key, value, receiver)
+  }
+
+  /// ECMAScript `[[Set]]` for ordinary objects (full semantics, including accessors), using an
+  /// explicit embedder host context and host hook implementation.
+  ///
+  /// This is a convenience wrapper around [`Scope::ordinary_set_with_host_and_hooks`].
+  pub fn ordinary_set_with_host_and_hooks(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    obj: GcObject,
+    key: PropertyKey,
+    value: Value,
+    receiver: Value,
+  ) -> Result<bool, VmError> {
+    let mut scope = self.scope();
+    scope.ordinary_set_with_host_and_hooks(vm, host, hooks, obj, key, value, receiver)
   }
 
   /// Implements the `OwnPropertyKeys` internal method (ECMA-262) for ordinary objects.
