@@ -71,6 +71,8 @@ pub enum WalkError {
   ReturnAddressNonCanonical { fp: u64, return_addr: u64 },
   #[error("frame pointer chain is not monotonically increasing: cur_fp={cur_fp:#x} caller_fp={caller_fp:#x}")]
   NonMonotonicFp { cur_fp: u64, caller_fp: u64 },
+  #[error("stack pointer overflow while deriving callsite SP from callee FP: callee_fp={callee_fp:#x}")]
+  CallerSpOverflow { callee_fp: u64 },
   #[error(
     "stackmap function record for return address {return_addr:#x} reports stack_size={stack_size}, smaller than FP_RECORD_SIZE={fp_record_size}"
   )]
@@ -292,6 +294,20 @@ pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce
 /// `(caller_fp, caller_ra)` extracted from the current frame, and enumerate
 /// roots in the *caller* frame.
 ///
+/// ### Callsite SP derivation (critical correctness note)
+///
+/// Stackmap locations are typically `Indirect [SP + off]`, where `SP` is the *caller* frame's stack
+/// pointer at the callsite return address.
+///
+/// The stackmap function record `stack_size` is a fixed frame size and does **not** include per-call
+/// outgoing argument pushes/adjustments, so it is not sufficient to reconstruct the caller's
+/// callsite `SP` for arbitrary callsites.
+///
+/// With frame pointers enforced (our ABI contract), we derive the caller callsite `SP` from the
+/// **callee's frame pointer**:
+///
+/// `caller_sp = callee_fp + 16`
+///
 /// For patchable statepoints (`gc.statepoint` with `patch_bytes > 0`), LLVM 18
 /// records the return address as the byte *after the reserved patchable region*.
 /// Any runtime patcher must ensure the actual call return address matches that
@@ -343,14 +359,22 @@ pub unsafe fn walk_gc_roots_from_fp(
       });
     }
 
+    let caller_sp = caller_sp_callsite_from_callee_fp(cur_fp)?;
     match stackmaps.lookup(caller_ra) {
       Some(callsite) => {
-        enumerate_roots_for_frame(caller_fp, caller_ra, callsite, bounds, &mut visit)?;
+        enumerate_roots_for_frame_with_caller_sp(
+          caller_fp,
+          caller_sp,
+          caller_ra,
+          callsite,
+          bounds,
+          &mut visit,
+        )?;
       }
       None => {
         #[cfg(any(debug_assertions, feature = "conservative_roots"))]
         {
-          conservative_scan_frame_words(cur_fp, caller_fp, bounds, &mut visit);
+          conservative_scan_frame_words(caller_sp, caller_fp, bounds, &mut visit);
         }
 
         #[cfg(not(any(debug_assertions, feature = "conservative_roots")))]
@@ -632,6 +656,13 @@ fn caller_sp_from_stack_size(
   caller_ra: u64,
   stack_size: u64,
 ) -> Result<u64, WalkError> {
+  // NOTE: This uses the stackmap function record's fixed `stack_size` to relate `FP` and `SP`.
+  // That is only valid when the caller's `SP` at the callsite matches the function's fixed frame
+  // size (i.e. no outgoing-argument pushes/stack adjustments at that specific callsite).
+  //
+  // It is kept only as a fallback for the top frame when the safepoint context does not provide a
+  // stackmap-semantics `SP` (`ctx.sp == 0`). Non-top frames must derive callsite `SP` from the
+  // callee frame pointer (see `caller_sp_callsite_from_callee_fp`).
   if stack_size < arch::FP_RECORD_SIZE {
     return Err(WalkError::InvalidStackSize {
       return_addr: caller_ra,
@@ -972,10 +1003,34 @@ fn check_fp_alignment(fp: u64) -> Result<(), WalkError> {
   Ok(())
 }
 
+#[inline]
+fn caller_sp_callsite_from_callee_fp(callee_fp: u64) -> Result<u64, WalkError> {
+  // With frame pointers enabled on both x86_64 SysV and AArch64:
+  // - the call instruction reserves 8 bytes for the return address (x86_64 only),
+  // - the callee prologue saves FP (and LR on AArch64) in a 16-byte frame record,
+  //
+  // so `callee_fp = caller_sp_callsite - 16`.
+  callee_fp
+    .checked_add(arch::WORD * 2)
+    .ok_or(WalkError::CallerSpOverflow { callee_fp })
+}
+
 #[cfg(target_arch = "x86_64")]
 fn compute_rsp_x86_64(fp: usize, stack_size: u64) -> usize {
-  // See the derivation in `enumerate_roots_for_frame`: with frame pointers enabled, LLVM's
+  // See the derivation in `caller_sp_from_stack_size`: with frame pointers enabled, LLVM's
   // `stack_size` includes the pushed old RBP, so the caller-frame RSP at the statepoint callsite
   // return address is `RBP + 8 - stack_size`.
   fp + (arch::WORD as usize) - (stack_size as usize)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn derives_callsite_sp_from_callee_fp() {
+    let callee_fp = 0x1000_u64;
+    let caller_sp = caller_sp_callsite_from_callee_fp(callee_fp).unwrap();
+    assert_eq!(caller_sp, 0x1010_u64);
+  }
 }

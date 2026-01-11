@@ -24,28 +24,26 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
     "fixture must contain at least two callsites to test multi-frame walking"
   );
 
-  let stack_size = callsites[0].1.stack_size;
-  assert_eq!(
-    callsites[1].1.stack_size, stack_size,
-    "fixture callsites should share a single function stack_size"
-  );
-
   // Fake stack memory.
-  let mut stack = vec![0u8; 2048];
+  let mut stack = vec![0u8; 4096];
   let base = stack.as_mut_ptr() as usize;
 
-  // We choose SP explicitly and compute FP from it. This lets the test validate
-  // the walker's FP→SP reconstruction formula.
+  // This test models the statepoint ABI the runtime relies on:
   //
-  // x86_64 FP_RECORD_SIZE=8.
-  let fp_delta = (stack_size - 8) as usize;
-  let caller1_sp = align_up(base + 512, 16);
-  let caller1_fp = caller1_sp + fp_delta;
-  let caller2_sp = align_up(base + 1024, 16);
-  let caller2_fp = caller2_sp + fp_delta;
-
-  // Start from a runtime frame that returns to `caller1` at callsite 0.
-  let start_fp = align_up(base + 256, 16);
+  // - Stackmap `Indirect [SP + off]` locations are based on the *callsite* SP in the caller.
+  // - `stack_size` in the stackmap function record is *not* the callsite SP when the caller pushes
+  //   outgoing stack arguments (or otherwise adjusts SP around a call).
+  // - With frame pointers enabled, we recover the caller callsite SP from the callee frame pointer:
+  //     caller_sp_callsite = callee_fp + 16
+  //
+  // We construct a 2-frame managed call chain:
+  //   runtime_frame (start_fp) -> caller1_fp -> caller2_fp -> null
+  let start_fp = align_up(base + 0x100, 16);
+  let caller1_fp = align_up(base + 0x600, 16);
+  let caller2_fp = align_up(base + 0xB00, 16);
+ 
+  let caller1_sp_callsite = start_fp + 16;
+  let caller2_sp_callsite = caller1_fp + 16;
 
   unsafe {
     // runtime frame -> caller1
@@ -60,11 +58,27 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
     write_u64(caller2_fp + 0, 0);
     write_u64(caller2_fp + 8, 0);
   }
+ 
+  // Regression guard: ensure our synthetic frame pointers model a callsite with extra SP
+  // adjustment (e.g. outgoing stack args) such that the old `fp - stack_size` reconstruction would
+  // be wrong for non-top frames.
+  let stack_size = callsites[1].1.stack_size;
+  let old_locals = stack_size.checked_sub(8).expect("stack_size < FP_RECORD_SIZE");
+  let old_sp = (caller2_fp as u64)
+    .checked_sub(old_locals)
+    .expect("old SP estimate underflow");
+  assert_ne!(
+    old_sp, caller2_sp_callsite as u64,
+    "test requires callsite SP to differ from stack_size-based estimate"
+  );
 
   // Fill each unique root slot in each frame with a distinct pointer value, and
   // record the expected slot->value mapping.
   let mut expected: BTreeMap<usize, usize> = BTreeMap::new();
-  for (frame_sp, callsite) in [(caller1_sp, callsites[0].1), (caller2_sp, callsites[1].1)] {
+  for (frame_sp, callsite) in [
+    (caller1_sp_callsite, callsites[0].1),
+    (caller2_sp_callsite, callsites[1].1),
+  ] {
     let statepoint = StatepointRecord::new(callsite.record).expect("decode statepoint layout");
 
     let mut slots: Vec<usize> = Vec::new();
@@ -116,16 +130,14 @@ fn derived_pointers_are_relocated_from_base() {
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
 
   let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
-  let stack_size = callsite.stack_size;
+  let _stack_size = callsite.stack_size;
 
   let mut stack = vec![0u8; 512];
   let base = stack.as_mut_ptr() as usize;
 
-  // x86_64 FP_RECORD_SIZE=8.
-  let fp_delta = (stack_size - 8) as usize;
-  let caller_sp = align_up(base + 256, 16);
-  let caller_fp = caller_sp + fp_delta;
+  let caller_fp = align_up(base + 256, 16);
   let start_fp = align_up(base + 128, 16);
+  let caller_sp_callsite = start_fp + 16;
 
   unsafe {
     write_u64(start_fp + 0, caller_fp as u64);
@@ -145,8 +157,8 @@ fn derived_pointers_are_relocated_from_base() {
   let base_val = Box::into_raw(Box::new(0u8)) as u64;
   let delta = 8u64;
   unsafe {
-    write_u64(caller_sp + 0, base_val);
-    write_u64(caller_sp + 8, base_val + delta);
+    write_u64(caller_sp_callsite + 0, base_val);
+    write_u64(caller_sp_callsite + 8, base_val + delta);
   }
 
   let mut visited = BTreeSet::<usize>::new();
@@ -166,14 +178,14 @@ fn derived_pointers_are_relocated_from_base() {
 
   assert_eq!(visited.len(), 1, "expected to visit only the base root slot");
   assert!(
-    visited.contains(&(caller_sp + 0)),
+    visited.contains(&(caller_sp_callsite + 0)),
     "expected to visit base slot [SP+0]={:#x}, visited={visited:?}",
-    caller_sp
+    caller_sp_callsite
   );
 
   // Derived slot should have been updated based on the relocated base value.
-  let base_after = unsafe { read_u64(caller_sp + 0) };
-  let derived_after = unsafe { read_u64(caller_sp + 8) };
+  let base_after = unsafe { read_u64(caller_sp_callsite + 0) };
+  let derived_after = unsafe { read_u64(caller_sp_callsite + 8) };
   assert_eq!(base_after, base_val + 0x1000);
   assert_eq!(derived_after, (base_val + 0x1000) + delta);
 }
@@ -192,16 +204,14 @@ fn statepoints_with_custom_patchpoint_id_are_walked() {
 
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
   let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
-  let stack_size = callsite.stack_size;
+  let _stack_size = callsite.stack_size;
 
   let mut stack = vec![0u8; 512];
   let base = stack.as_mut_ptr() as usize;
 
-  // x86_64 FP_RECORD_SIZE=8.
-  let fp_delta = (stack_size - 8) as usize;
-  let caller_sp = align_up(base + 256, 16);
-  let caller_fp = caller_sp + fp_delta;
+  let caller_fp = align_up(base + 256, 16);
   let start_fp = align_up(base + 128, 16);
+  let caller_sp_callsite = start_fp + 16;
 
   unsafe {
     write_u64(start_fp + 0, caller_fp as u64);
@@ -217,8 +227,8 @@ fn statepoints_with_custom_patchpoint_id_are_walked() {
   let base_val = Box::into_raw(Box::new(0u8)) as u64;
   let delta = 8u64;
   unsafe {
-    write_u64(caller_sp + 0, base_val);
-    write_u64(caller_sp + 8, base_val + delta);
+    write_u64(caller_sp_callsite + 0, base_val);
+    write_u64(caller_sp_callsite + 8, base_val + delta);
   }
 
   let mut visited = BTreeSet::<usize>::new();
@@ -234,10 +244,14 @@ fn statepoints_with_custom_patchpoint_id_are_walked() {
   }
 
   assert_eq!(visited.len(), 1, "expected to visit only the base root slot");
-  assert!(visited.contains(&(caller_sp + 0)));
+  assert!(
+    visited.contains(&(caller_sp_callsite + 0)),
+    "expected to visit base slot [SP+0]={:#x}, visited={visited:?}",
+    caller_sp_callsite
+  );
 
-  let base_after = unsafe { read_u64(caller_sp + 0) };
-  let derived_after = unsafe { read_u64(caller_sp + 8) };
+  let base_after = unsafe { read_u64(caller_sp_callsite + 0) };
+  let derived_after = unsafe { read_u64(caller_sp_callsite + 8) };
   assert_eq!(base_after, base_val + 0x1000);
   assert_eq!(derived_after, base_after + delta);
 }
@@ -251,16 +265,14 @@ fn null_derived_pointers_remain_null_after_base_relocation() {
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
 
   let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
-  let stack_size = callsite.stack_size;
+  let _stack_size = callsite.stack_size;
 
   let mut stack = vec![0u8; 512];
   let base = stack.as_mut_ptr() as usize;
 
-  // x86_64 FP_RECORD_SIZE=8.
-  let fp_delta = (stack_size - 8) as usize;
-  let caller_sp = align_up(base + 256, 16);
-  let caller_fp = caller_sp + fp_delta;
+  let caller_fp = align_up(base + 256, 16);
   let start_fp = align_up(base + 128, 16);
+  let caller_sp_callsite = start_fp + 16;
 
   unsafe {
     write_u64(start_fp + 0, caller_fp as u64);
@@ -278,8 +290,8 @@ fn null_derived_pointers_remain_null_after_base_relocation() {
   // Derived is intentionally null; it must remain null after base relocation.
   let base_val = Box::into_raw(Box::new(0u8)) as u64;
   unsafe {
-    write_u64(caller_sp + 0, base_val);
-    write_u64(caller_sp + 8, 0);
+    write_u64(caller_sp_callsite + 0, base_val);
+    write_u64(caller_sp_callsite + 8, 0);
   }
 
   let mut visited = BTreeSet::<usize>::new();
@@ -298,13 +310,13 @@ fn null_derived_pointers_remain_null_after_base_relocation() {
 
   assert_eq!(visited.len(), 1, "expected to visit only the base root slot");
   assert!(
-    visited.contains(&(caller_sp + 0)),
+    visited.contains(&(caller_sp_callsite + 0)),
     "expected to visit base slot [SP+0]={:#x}, visited={visited:?}",
-    caller_sp
+    caller_sp_callsite
   );
 
-  let base_after = unsafe { read_u64(caller_sp + 0) };
-  let derived_after = unsafe { read_u64(caller_sp + 8) };
+  let base_after = unsafe { read_u64(caller_sp_callsite + 0) };
+  let derived_after = unsafe { read_u64(caller_sp_callsite + 8) };
   assert_eq!(base_after, base_val + 0x1000);
   assert_eq!(derived_after, 0, "null derived pointer must remain null");
 }
@@ -364,16 +376,14 @@ fn multiple_derived_pointers_share_base_and_are_relocated() {
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
 
   let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
-  let stack_size = callsite.stack_size;
+  let _stack_size = callsite.stack_size;
 
   let mut stack = vec![0u8; 512];
   let base = stack.as_mut_ptr() as usize;
 
-  // x86_64 FP_RECORD_SIZE=8.
-  let fp_delta = (stack_size - 8) as usize;
-  let caller_sp = align_up(base + 256, 16);
-  let caller_fp = caller_sp + fp_delta;
+  let caller_fp = align_up(base + 256, 16);
   let start_fp = align_up(base + 128, 16);
+  let caller_sp_callsite = start_fp + 16;
 
   unsafe {
     write_u64(start_fp + 0, caller_fp as u64);
@@ -391,9 +401,9 @@ fn multiple_derived_pointers_share_base_and_are_relocated() {
   //   derived2 = [SP + 16]
   let base_val = Box::into_raw(Box::new(0u8)) as u64;
   unsafe {
-    write_u64(caller_sp + 0, base_val);
-    write_u64(caller_sp + 8, base_val + 8);
-    write_u64(caller_sp + 16, base_val + 16);
+    write_u64(caller_sp_callsite + 0, base_val);
+    write_u64(caller_sp_callsite + 8, base_val + 8);
+    write_u64(caller_sp_callsite + 16, base_val + 16);
   }
 
   let mut visited = BTreeSet::<usize>::new();
@@ -411,15 +421,15 @@ fn multiple_derived_pointers_share_base_and_are_relocated() {
 
   assert_eq!(visited.len(), 1, "expected to visit only the base root slot");
   assert!(
-    visited.contains(&(caller_sp + 0)),
+    visited.contains(&(caller_sp_callsite + 0)),
     "expected to visit base slot [SP+0]={:#x}, visited={visited:?}",
-    caller_sp
+    caller_sp_callsite
   );
 
-  let base_after = unsafe { read_u64(caller_sp + 0) };
+  let base_after = unsafe { read_u64(caller_sp_callsite + 0) };
   assert_eq!(base_after, base_val + 0x1000);
-  assert_eq!(unsafe { read_u64(caller_sp + 8) }, base_after + 8);
-  assert_eq!(unsafe { read_u64(caller_sp + 16) }, base_after + 16);
+  assert_eq!(unsafe { read_u64(caller_sp_callsite + 8) }, base_after + 8);
+  assert_eq!(unsafe { read_u64(caller_sp_callsite + 16) }, base_after + 16);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -485,38 +495,34 @@ fn out_of_bounds_caller_fp_is_rejected() {
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn out_of_bounds_caller_sp_is_rejected() {
-  // Construct bounds that include the FP chain but exclude the reconstructed caller SP.
-  //
-  // This simulates a bad/partial stack bounds capture: the walker must stop cleanly rather than
-  // attempting to compute root addresses from an out-of-bounds `caller_sp`.
+  use runtime_native::arch::SafepointContext;
+  use runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context;
+
+  // Ensure we reject a top-frame `caller_sp` that is outside the provided stack
+  // bounds (this can happen if bounds capture is wrong or a context is corrupt).
   let bytes = build_stackmaps_with_derived_pointer();
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
-  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
-  let stack_size = callsite.stack_size;
+  let (callsite_ra, _callsite) = stackmaps.iter().next().expect("callsite");
 
   let mut stack = vec![0u8; 512];
   let base = stack.as_mut_ptr() as usize;
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
 
-  let fp_delta = (stack_size - 8) as usize;
-  let caller_sp = align_up(base + 256, 16);
-  let caller_fp = caller_sp + fp_delta;
-  let start_fp = caller_fp - 16;
-  assert_eq!(start_fp % 16, 0);
-
+  let caller_fp = align_up(base + 256, 16);
   unsafe {
-    write_u64(start_fp + 0, caller_fp as u64);
-    write_u64(start_fp + 8, callsite_ra);
     write_u64(caller_fp + 0, 0);
     write_u64(caller_fp + 8, 0);
-    // Base slot is [SP + 0].
-    write_u64(caller_sp + 0, 0xdead_beef);
-    write_u64(caller_sp + 8, 0xdead_beef);
   }
 
-  // Bounds start at the runtime frame FP, which is higher than the caller SP (256). This causes
-  // the walker to reject the derived `caller_sp` during stackmap root decoding.
-  let bounds = StackBounds::new(start_fp as u64, (base + stack.len()) as u64).unwrap();
-  let res = unsafe { walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |_| {}) };
+  // Point the captured SP above the synthetic stack range.
+  let caller_sp = (base + stack.len() + 64) as usize;
+  let ctx = SafepointContext {
+    sp_entry: caller_sp,
+    sp: caller_sp,
+    fp: caller_fp,
+    ip: callsite_ra as usize,
+  };
+  let res = unsafe { walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |_| {}) };
   assert!(matches!(res, Err(WalkError::StackPointerOutOfBounds { .. })));
 }
 
@@ -663,17 +669,15 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
     .expect("parse stackmaps");
 
   let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
-  let stack_size = callsite.stack_size;
+  let _stack_size = callsite.stack_size;
 
   // Fake stack memory.
-  let mut stack = vec![0u8; 1024];
+  let mut stack = vec![0u8; 2048];
   let base = stack.as_mut_ptr() as usize;
 
-  // AArch64 FP_RECORD_SIZE=16 (saved X29+X30).
-  let fp_delta = (stack_size - 16) as usize;
-  let caller_sp = align_up(base + 512, 16);
-  let caller_fp = caller_sp + fp_delta;
-  let start_fp = align_up(base + 256, 16);
+  let start_fp = align_up(base + 0x100, 16);
+  let caller_fp = align_up(base + 0x300, 16);
+  let caller_sp_callsite = start_fp + 16;
 
   unsafe {
     // runtime frame -> caller
@@ -694,7 +698,7 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
       match loc {
         Location::Indirect { dwarf_reg, offset, .. } => {
           assert_eq!(*dwarf_reg, 31, "fixture roots must be [SP + off]");
-          let slot_addr = add_signed_u64(caller_sp as u64, *offset).expect("slot addr");
+          let slot_addr = add_signed_u64(caller_sp_callsite as u64, *offset).expect("slot addr");
           slots.push(slot_addr as usize);
         }
         other => panic!("unexpected root location kind in fixture: {other:?}"),

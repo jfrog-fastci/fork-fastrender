@@ -510,6 +510,12 @@ pub struct StackMaps {
 pub struct CallsiteEntry {
   pub pc: u64,
   pub function_address: u64,
+  /// Fixed stack frame size for the function containing this callsite, as reported by LLVM.
+  ///
+  /// This is **not** the caller's runtime `SP` at an arbitrary callsite: it excludes dynamic
+  /// adjustments like outgoing stack argument pushes. Runtimes must not reconstruct callsite `SP`
+  /// from `stack_size`; instead derive it from the callee frame pointer when frame pointers are
+  /// enforced (see `stackwalk_fp`).
   pub stack_size: u64,
   pub stackmap_index: usize,
   pub record_index: usize,
@@ -520,6 +526,7 @@ pub type StackMapRegistry = StackMaps;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CallSite<'a> {
+  /// See [`CallsiteEntry::stack_size`].
   pub stack_size: u64,
   pub record: &'a StackMapRecord,
 }
@@ -665,6 +672,11 @@ impl<'a> CallSite<'a> {
   ///   - x86_64: `frame_record_size = 8` (saved RBP; return address is outside `stack_size`)
   ///   - aarch64: `frame_record_size = 16` (saved X29 + X30)
   /// - `Indirect [FP + off]` becomes `fp_off = off`
+  ///
+  /// Note: this conversion uses `stack_size` to relate `SP` and `FP`. That is only valid when the
+  /// caller's `SP` at the callsite matches the function's fixed frame size (i.e. no outgoing-argument
+  /// pushes/stack adjustments at that specific callsite). Runtime stack walking must instead use
+  /// per-callsite `SP` derived from the callee frame pointer (see `stackwalk_fp`).
   pub fn gc_root_rbp_offsets_strict(&self) -> Result<Vec<i32>, StackMapError> {
     let mut out: Vec<i32> = Vec::new();
     // Detect LLVM `gc.statepoint` record layout by structure, not by `patchpoint_id`.
