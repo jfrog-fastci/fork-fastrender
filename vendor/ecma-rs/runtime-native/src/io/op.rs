@@ -191,7 +191,7 @@ impl IoOp {
 
     Ok(Self {
       bufs: io_bufs,
-      _backings: Vec::new(),
+      _pinned: Vec::new(),
       pinned_iovecs: Some(pinned_iovecs),
       pinned_msghdr: None,
       _permit: permit,

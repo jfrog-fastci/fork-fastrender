@@ -78,13 +78,14 @@ pub fn scan_roots(
   stackmaps: &StackMaps,
   visitor: &mut impl RootVisitor,
 ) -> Result<(), ScanError> {
-  scan_reloc_pairs(thread_ctx, stackmaps, |base_slot, derived_slot| {
+  for (base_slot, derived_slot) in scan_reloc_pairs(thread_ctx, stackmaps)? {
     if base_slot == derived_slot {
       visitor.visit_root(base_slot);
     } else {
       visitor.visit_derived_pair(base_slot, derived_slot);
     }
-  })
+  }
+  Ok(())
 }
 
 /// Enumerate `(base_slot, derived_slot)` relocation pairs at the current callsite.

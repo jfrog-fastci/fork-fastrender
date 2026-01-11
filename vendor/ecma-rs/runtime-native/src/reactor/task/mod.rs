@@ -40,7 +40,7 @@ impl Reactor {
   fn unsupported() -> std::io::Error {
     std::io::Error::new(
       std::io::ErrorKind::Unsupported,
-      "runtime-native reactor only supports linux",
+      "runtime-native reactor::task is currently only supported on Linux (epoll/eventfd)",
     )
   }
 
@@ -73,4 +73,3 @@ impl Reactor {
     Err(Self::unsupported())
   }
 }
-

@@ -175,7 +175,7 @@ impl BackingStore {
   /// may reference the same backing store multiple times.
   #[inline]
   pub(crate) fn id(&self) -> usize {
-    Arc::as_ptr(&self.inner) as usize
+    self.inner as usize
   }
 
   #[inline]

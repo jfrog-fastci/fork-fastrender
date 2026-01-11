@@ -185,18 +185,27 @@ pipe-based wake.
 
 ## Testing kqueue backends
 
+The portable conformance suite lives in `tests/reactor_conformance.rs` and should pass on both
+`epoll` and `kqueue` platforms.
+
 Linux CI primarily exercises the `epoll` backend. To validate the kqueue implementation locally on
 macOS/BSD, run:
 
 ```bash
-RUSTFLAGS="-C force-frame-pointers=yes" \
-  bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native --test reactor_kqueue
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native --test reactor_conformance
 ```
 
-To force and test the pipe-based wake fallback even on platforms where `EVFILT_USER` is available:
+To force and test the pipe-based wake fallback even on platforms where `EVFILT_USER` is available
+(macOS/BSD only):
 
 ```bash
-RUSTFLAGS="-C force-frame-pointers=yes" \
-  bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native \
-    --test reactor_kqueue_pipe_wake --features force_pipe_wake
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native \
+  --test reactor_conformance --features force_pipe_wake
+```
+
+There are also kqueue-specific regression tests (macOS/BSD only):
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native --test reactor_kqueue
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native --test reactor_kqueue_pipe_wake --features force_pipe_wake
 ```
