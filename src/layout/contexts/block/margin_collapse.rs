@@ -70,7 +70,13 @@ fn has_non_zero_block_size(style: &ComputedStyle) -> bool {
     return true;
   }
 
-  block_size.is_some_and(|len| len.to_px() > 0.0)
+  // We generally cannot fully resolve relative/calc lengths here (e.g. `height: calc(100% - 200px)`
+  // depends on the containing block height). For the purposes of "is this box empty enough that
+  // margins can collapse through it?", treat any *non-zero* specified block-size as non-empty.
+  //
+  // This is intentionally conservative: collapsing through a box that later resolves to a non-zero
+  // used size would cause sibling overlap (as the BFC cursor would not advance).
+  block_size.is_some_and(|len| !len.is_zero())
 }
 
 fn has_non_zero_min_block_size(style: &ComputedStyle) -> bool {
@@ -84,7 +90,7 @@ fn has_non_zero_min_block_size(style: &ComputedStyle) -> bool {
     return true;
   }
 
-  min_block.is_some_and(|len| len.to_px() > 0.0)
+  min_block.is_some_and(|len| !len.is_zero())
 }
 
 /// A collapsible margin that tracks positive and negative components separately
