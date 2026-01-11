@@ -151,7 +151,17 @@ fn parse_bound(raw: &str, kind: FieldKind) -> Result<Bound<Version>, ()> {
     ("", raw)
   };
 
-  let version = parse_lenient_version(rest.trim()).ok_or(())?;
+  let rest = rest.trim();
+
+  // Web platform KB entries often use `since: "baseline"` as a human-readable
+  // availability marker. Treat this as "no version constraint" so that web
+  // entries can participate in `TargetEnv::Web` filtering and env-specific
+  // overrides without needing semver.
+  if rest.eq_ignore_ascii_case("baseline") {
+    return Ok(Bound::Unbounded);
+  }
+
+  let version = parse_lenient_version(rest).ok_or(())?;
 
   match kind {
     FieldKind::Since => match op {

@@ -2030,4 +2030,18 @@ properties:
       .expect("v20 entry matches Node 20");
     assert_eq!(api_20.semantics.as_deref(), Some("v20"));
   }
+
+  #[test]
+  fn api_for_target_selects_web_entries_with_baseline_versions() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    let fetch = kb
+      .api_for_target(
+        "fetch",
+        &TargetEnv::Web {
+          platform: WebPlatform::Generic,
+        },
+      )
+      .expect("fetch should resolve for web targets");
+    assert_eq!(fetch.name, "fetch");
+  }
 }
