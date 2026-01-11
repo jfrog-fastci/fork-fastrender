@@ -465,6 +465,9 @@ void rt_async_cancel_all(void);
 // Drive the async runtime. Returns true if any work was performed.
 bool rt_async_poll(void);
 
+// Block until at least one async task becomes ready.
+void rt_async_wait(void);
+
 // Configure whether `await` on an already-settled promise yields (strict JS microtask semantics) or
 // resumes synchronously (fast-path).
 //

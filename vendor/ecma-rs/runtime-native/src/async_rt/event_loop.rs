@@ -136,6 +136,10 @@ impl EventLoop {
     self.macrotasks.lock().unwrap().pop_front()
   }
 
+  fn has_macrotasks(&self) -> bool {
+    !self.macrotasks.lock().unwrap().is_empty()
+  }
+
   fn has_microtasks(&self) -> bool {
     !self.microtasks.lock().unwrap().is_empty()
   }
@@ -285,6 +289,50 @@ impl EventLoop {
 
   pub(crate) fn debug_timers_count(&self) -> usize {
     self.timers.len()
+  }
+
+  /// Block until at least one task becomes ready.
+  ///
+  /// This is a "parking" primitive used by `rt_async_wait`: when the runtime is
+  /// idle (no ready microtasks/macrotasks), the event-loop thread can sleep
+  /// until some other thread enqueues work (promise settlement, I/O completion,
+  /// etc.) and wakes the reactor.
+  pub fn wait_for_work(&self) {
+    let _guard = self.poll_lock.lock();
+
+    loop {
+      threading::safepoint_poll();
+      self.flush_due_timers();
+
+      if self.has_microtasks() || self.has_macrotasks() {
+        return;
+      }
+
+      // Nothing ready. Block until either:
+      // - a timer becomes due (epoll_wait timeout)
+      // - an I/O watcher becomes ready (epoll event)
+      // - another thread enqueues work and calls `wake()` (eventfd)
+      let timeout_ms = self.compute_timeout_ms();
+
+      threading::safepoint_poll();
+      let parked = if timeout_ms != 0 {
+        Some(ParkedGuard::new())
+      } else {
+        None
+      };
+      let ready = self.reactor.wait(timeout_ms).expect("reactor wait failed");
+      threading::safepoint_poll();
+      drop(parked);
+
+      if !ready.is_empty() {
+        self.macrotasks.lock().unwrap().extend(ready);
+        return;
+      }
+
+      // `ready.is_empty()` can happen when the wake eventfd fired without any
+      // watcher readiness (e.g. a microtask enqueue or GC safepoint wake).
+      // Loop to re-check queues and timers.
+    }
   }
   pub(crate) fn reset_for_tests(&self) {
     let _guard = self.poll_lock.lock();

@@ -151,6 +151,10 @@ impl AsyncRuntime {
     self.loop_.poll()
   }
 
+  pub fn wait_for_work(&self) {
+    self.loop_.wait_for_work()
+  }
+
   pub fn enqueue_microtask(&self, task: Task) {
     self.loop_.enqueue_microtask(task);
   }
@@ -249,6 +253,12 @@ pub(crate) fn drain_microtasks_nonblocking() -> bool {
 pub(crate) fn run_until_idle_nonblocking() -> bool {
   let _guard = POLL_LOCK.lock();
   global().loop_.run_until_idle_nonblocking()
+}
+
+/// Block the current thread until at least one task is ready.
+pub(crate) fn wait_for_work() {
+  let _guard = POLL_LOCK.lock();
+  global().wait_for_work();
 }
 
 /// Test helper: reset the process-global async runtime to a clean idle state.

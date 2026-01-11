@@ -98,6 +98,15 @@ fn mark_card_range(card_table: *mut AtomicU64, start_card: usize, end_card: usiz
   }
 }
 
+#[inline(always)]
+fn ensure_current_thread_registered() {
+  // Promise settlement and other runtime hooks may run on arbitrary threads
+  // (I/O completions, external callbacks). Treat unregistered threads as
+  // "external" by default so we don't incorrectly classify them as the main
+  // event-loop thread.
+  crate::threading::register_current_thread(crate::threading::ThreadKind::External);
+}
+
 #[no_mangle]
 pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
   #[cfg(feature = "gc_stats")]
@@ -911,6 +920,20 @@ pub extern "C" fn rt_async_set_strict_await_yields(strict: bool) {
   })
 }
 
+/// Block the current thread until at least one async task becomes ready.
+///
+/// This allows an event-loop thread to park when the runtime is idle (no timers
+/// or I/O watchers) and be woken by promise settlement or other cross-thread
+/// enqueues.
+#[no_mangle]
+pub extern "C" fn rt_async_wait() {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    async_rt::wait_for_work();
+  })
+}
+
 #[no_mangle]
 pub extern "C" fn rt_async_sleep_legacy(delay_ms: u64) -> PromiseRef {
   abort_on_panic(|| {
@@ -1191,7 +1214,7 @@ pub extern "C" fn rt_clear_timer(id: TimerId) {
 #[no_mangle]
 pub extern "C" fn rt_promise_new_legacy() -> PromiseRef {
   abort_on_panic(|| {
-    ensure_event_loop_thread_registered();
+    ensure_current_thread_registered();
     async_rt::promise::promise_new()
   })
 }
@@ -1208,7 +1231,7 @@ pub extern "C" fn rt_promise_payload_ptr(p: PromiseRef) -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn rt_promise_resolve_legacy(p: PromiseRef, value: ValueRef) {
   abort_on_panic(|| {
-    ensure_event_loop_thread_registered();
+    ensure_current_thread_registered();
     async_rt::promise::promise_resolve(p, value)
   })
 }
@@ -1216,7 +1239,7 @@ pub extern "C" fn rt_promise_resolve_legacy(p: PromiseRef, value: ValueRef) {
 #[no_mangle]
 pub extern "C" fn rt_promise_reject_legacy(p: PromiseRef, err: ValueRef) {
   abort_on_panic(|| {
-    ensure_event_loop_thread_registered();
+    ensure_current_thread_registered();
     async_rt::promise::promise_reject(p, err)
   })
 }
@@ -1242,7 +1265,7 @@ pub extern "C" fn rt_promise_resolve_thenable_legacy(p: PromiseRef, thenable: Th
 #[no_mangle]
 pub extern "C" fn rt_promise_then_legacy(p: PromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8) {
   abort_on_panic(|| {
-    ensure_event_loop_thread_registered();
+    ensure_current_thread_registered();
     async_rt::promise::promise_then(p, on_settle, data)
   })
 }

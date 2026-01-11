@@ -10,9 +10,10 @@ use std::time::Duration;
 /// (`rt_gc_safepoint` / `rt_gc_collect`) at the safepoint callsite.
 pub fn visit_reloc_pairs(
   top_callee_fp: u64,
+  bounds: Option<StackBounds>,
   visit: &mut dyn FnMut(*mut *mut u8, *mut u8),
 ) -> Result<(), WalkError> {
-  visit_reloc_pairs_with_bounds(top_callee_fp, None, visit)
+  visit_reloc_pairs_with_bounds(top_callee_fp, bounds, visit)
 }
 
 /// Like [`visit_reloc_pairs`], but allows passing stack bounds for additional safety checks.

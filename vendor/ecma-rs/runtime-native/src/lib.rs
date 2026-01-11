@@ -589,6 +589,7 @@ mod tests {
       "PromiseRef rt_async_spawn(CoroutineRef coro);",
       "void rt_async_cancel_all(void);",
       "bool rt_async_poll(void);",
+      "void rt_async_wait(void);",
       "void rt_async_set_strict_await_yields(bool strict);",
       "LegacyPromiseRef rt_promise_new_legacy(void);",
       "void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);",
@@ -666,6 +667,8 @@ mod tests {
     let _async_spawn: unsafe extern "C" fn(CoroutineRef) -> PromiseRef = rt_async_spawn;
     let _async_cancel_all: extern "C" fn() = rt_async_cancel_all;
     let _async_poll: extern "C" fn() -> bool = rt_async_poll;
+    let _async_wait: extern "C" fn() = rt_async_wait;
+    let _async_set_strict_await_yields: extern "C" fn(bool) = rt_async_set_strict_await_yields;
     let _promise_new_legacy: extern "C" fn() -> abi::PromiseRef = rt_promise_new_legacy;
     let _promise_resolve_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve_legacy;
     let _promise_reject_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
@@ -729,6 +732,8 @@ mod tests {
       _async_spawn,
       _async_cancel_all,
       _async_poll,
+      _async_wait,
+      _async_set_strict_await_yields,
       _promise_new_legacy,
       _promise_resolve_legacy,
       _promise_reject_legacy,

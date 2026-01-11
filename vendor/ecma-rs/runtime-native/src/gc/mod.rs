@@ -48,7 +48,6 @@ pub(crate) fn align_up(value: usize, align: usize) -> usize {
 
 /// Number of bytes covered by a single card in a per-object card table.
 pub const CARD_SIZE: usize = 512;
-
 /// Object header that prefixes every GC-managed allocation.
 ///
 /// # Layout
