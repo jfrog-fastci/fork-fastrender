@@ -10,8 +10,9 @@ This crate is still early. The typechecked pipeline is wired end-to-end
 (typecheck-ts → HIR/types → LLVM module → artifact), but the HIR→LLVM lowering is
 still under construction.
 
-- a minimal `parse-js`-driven **textual** LLVM IR emitter (`compile_typescript_to_llvm_ir`)
-  used by the `native-js-cli` binary for smoke tests and IR debugging
+- minimal `parse-js`-driven **textual** LLVM IR emitters:
+  - `compile_typescript_to_llvm_ir` (single module string)
+  - `compile_project_to_llvm_ir` (multi-file ES module subset; used by the `native-js-cli` binary)
 - an early **HIR-driven** backend used by the typechecked `native-js` binary
   (`native-js-cli --bin native-js`)
 
@@ -330,7 +331,10 @@ The intended place to define new native-js diagnostics is
 compiler that lowers a single TypeScript module to textual LLVM IR.
 
 It exists to make it easy to debug the LLVM plumbing and basic lowering logic,
-and is the backend used by `native-js-cli` (see
+and is used by in-tree tests/examples.
+
+The `native-js-cli` binary uses `compile_project_to_llvm_ir`, which extends this
+emitter with a small multi-file ES module subset (see
 [`native-js-cli/README.md`](../native-js-cli/README.md)).
 
 The input is always parsed as a **TypeScript module**:
@@ -467,9 +471,10 @@ pub fn validate(program: &Program, files: &[FileId]) -> Vec<Diagnostic>
 ```
 
 This validator is intended to be run on a `typecheck-ts` program, but it is
-**not** invoked by the minimal `compile_typescript_to_llvm_ir` emitter (the
-default `native-js-cli` binary). The typechecked `native-js` CLI may run it as
-an optional extra pass (e.g. `native-js --extra-strict`).
+**not** invoked by the minimal `parse-js`-driven emitters
+(`compile_typescript_to_llvm_ir` / `compile_project_to_llvm_ir`) used by the
+default `native-js-cli` binary. The typechecked `native-js` CLI may run it as an
+optional extra pass (e.g. `native-js --extra-strict`).
 
 ### Rejected constructs (enforced today)
 
