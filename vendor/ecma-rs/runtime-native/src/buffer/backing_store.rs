@@ -710,16 +710,20 @@ mod borrow_tests {
   #[test]
   fn read_borrows_are_shared_and_block_write_borrow() {
     let alloc = GlobalBackingStoreAllocator::default();
-    let store = alloc.alloc_zeroed(4).unwrap();
+    let mut store = alloc.alloc_zeroed(4).unwrap();
 
     let g1 = store.try_borrow_io_read().unwrap();
     let g2 = store.try_borrow_io_read().unwrap();
+    assert!(store.is_io_borrowed());
     assert!(matches!(
       store.try_borrow_io_write(),
       Err(BorrowError::Borrowed)
     ));
+    assert_eq!(store.try_with_slice(|_| ()), Err(BorrowError::Borrowed));
+    assert_eq!(store.try_with_slice_mut(|_| ()), Err(BorrowError::Borrowed));
     drop(g1);
     drop(g2);
+    assert!(!store.is_io_borrowed());
 
     let _g3 = store.try_borrow_io_write().unwrap();
   }
