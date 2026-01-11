@@ -115,6 +115,49 @@ fn direct_fn_call_return_fresh_alloc_with_spread_is_owned() {
 }
 
 #[test]
+fn direct_fn_call_return_fresh_alloc_with_spread_args_is_owned() {
+  let src = r#"
+    const make = () => ({x:1});
+    const args = [];
+    const out = make(...args);
+    out.x = 2;
+  "#;
+
+  let mut program = compile_source(src, TopLevelMode::Module, false);
+  annotate_program(&mut program);
+
+  let call = find_direct_fn_call(&program, 0);
+  assert_eq!(
+    call.meta.ownership,
+    OwnershipState::Owned,
+    "expected call result to be Owned when direct Arg::Fn call uses spread args, got {:?}",
+    call.meta.ownership
+  );
+}
+
+#[test]
+fn direct_fn_call_return_fresh_alloc_through_spread_call_is_owned() {
+  let src = r#"
+    const g = () => ({x:1});
+    const f = (...args) => g(...args);
+    const out = f();
+    out.x = 2;
+  "#;
+
+  let mut program = compile_source(src, TopLevelMode::Module, false);
+  annotate_program(&mut program);
+
+  // g is function 0, f is function 1.
+  let call = find_direct_fn_call(&program, 1);
+  assert_eq!(
+    call.meta.ownership,
+    OwnershipState::Owned,
+    "expected call result to be Owned when callee returns fresh alloc via spread call, got {:?}",
+    call.meta.ownership
+  );
+}
+
+#[test]
 fn direct_fn_call_param_escape_is_propagated() {
   let src = r#"
     const f = (a) => { globalSink(a); };

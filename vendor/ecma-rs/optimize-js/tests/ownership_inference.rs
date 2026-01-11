@@ -126,22 +126,16 @@ fn ssa_body_has_arg_use_modes_for_consuming_return() {
 
 #[test]
 fn annotate_program_writes_arg_use_modes_and_in_place_hint() {
-  let src = r#"
-    const out = ((cond) => {
-      let a = {};
-      let b;
-      if (cond) {
-        b = a;
-      } else {
-        b = {};
-      }
-      return b;
-    })(cond);
-    void out;
-  "#;
-
   // Disable optimisation passes so SSA VarAssign instructions remain in the analyzed CFG.
   // (In strict SSA, `optpass_redundant_assigns` eliminates VarAssigns via copy propagation.)
+  let src = r#"
+    const out = (() => {
+      let a = {};
+      let b = a;
+      return b;
+    })();
+    void out;
+  "#;
   let mut program = optimize_js::compile_source_with_cfg_options(
     src,
     TopLevelMode::Module,

@@ -75,18 +75,29 @@ fn call_return_kind(inst: &Inst, call_summaries: Option<&[FnSummary]>) -> Return
   if inst.t != InstTyp::Call {
     return ReturnKind::Unknown;
   }
- 
+
   let (_tgt, callee, _this, _args, spreads) = inst.as_call();
-  if !spreads.is_empty() {
-    return ReturnKind::Unknown;
-  }
- 
-  match (call_summaries, callee) {
+
+  let kind = match (call_summaries, callee) {
     (Some(summaries), Arg::Fn(id)) => summaries
       .get(*id)
       .map(|s| s.return_kind)
       .unwrap_or(ReturnKind::Unknown),
     _ => ReturnKind::Unknown,
+  };
+
+  // When a call site contains spreads, argument indexing is ambiguous after the
+  // first spread. Only preserve `AliasParam(i)` when we can prove `i` is before
+  // any spread argument; otherwise stay conservative.
+  if let ReturnKind::AliasParam(i) = kind {
+    let first_spread_arg = spreads.iter().copied().min().map(|idx| idx.saturating_sub(2));
+    if first_spread_arg.is_some_and(|first| i >= first) {
+      ReturnKind::Unknown
+    } else {
+      kind
+    }
+  } else {
+    kind
   }
 }
  

@@ -26,6 +26,7 @@ fn escape_and_ownership_metadata_is_attached() {
 
   let mut alloc_escape = None;
   let mut return_use = None;
+
   let mut labels = cfg.graph.labels_sorted();
   labels.sort_unstable();
   for label in labels {

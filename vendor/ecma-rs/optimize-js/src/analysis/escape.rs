@@ -250,13 +250,15 @@ fn collect_local_alloc_flow_facts(
             continue;
           }
 
-          if spreads.is_empty() {
-            if let (Some(call_summaries), Arg::Fn(id)) = (call_summaries, callee) {
-              if let Some(summary) = call_summaries.get(*id) {
-                if matches!(summary.return_kind, ReturnKind::FreshAlloc) {
-                  facts.alloc_vars.insert(tgt);
-                  continue;
-                }
+          // Direct nested-function calls that always return a fresh allocation
+          // are treated as local allocation sites, even when the call uses
+          // spread arguments (spreads do not change the "fresh allocation"
+          // property).
+          if let (Some(call_summaries), Arg::Fn(id)) = (call_summaries, callee) {
+            if let Some(summary) = call_summaries.get(*id) {
+              if matches!(summary.return_kind, ReturnKind::FreshAlloc) {
+                facts.alloc_vars.insert(tgt);
+                continue;
               }
             }
           }

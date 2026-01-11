@@ -2,7 +2,8 @@ use crate::cfg::cfg::Cfg;
 use crate::il::inst::{Arg, InstTyp};
 use crate::analysis::escape::EscapeState;
 use crate::Program;
-use std::collections::HashMap;
+use crate::symbol::semantics::SymbolId;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -84,8 +85,18 @@ impl FnSummary {
 enum VarDef {
   Alias(u32),
   Const,
+  Fn(usize),
   FreshAlloc,
-  CallFn { id: usize, args: Vec<Arg> },
+  CallFn {
+    id: usize,
+    args: Vec<Arg>,
+    /// Index (within `args`) of the first spread argument, if any.
+    ///
+    /// Spread arguments make parameter→argument mapping ambiguous after the
+    /// first spread, so we only model `ReturnKind::AliasParam(i)` through
+    /// call results when `i < first_spread_arg`.
+    first_spread_arg: Option<usize>,
+  },
   Phi(Vec<Arg>),
   Unknown,
 }
@@ -124,9 +135,100 @@ fn collect_insts(cfg: &Cfg) -> Vec<&crate::il::inst::Inst> {
     .collect()
 }
 
+fn collect_constant_foreign_fns(program: &Program) -> HashMap<SymbolId, usize> {
+  // This is used to recover direct `Arg::Fn` calls through captured constant
+  // bindings, e.g.:
+  //
+  //   const g = () => ({x:1});
+  //   const f = (...args) => g(...args);
+  //
+  // Inside `f` the callee is a `ForeignLoad` of the captured symbol. If the
+  // symbol is only ever assigned a single function ID, treat loads from that
+  // symbol as that function for summary purposes.
+  let mut candidates = HashMap::<SymbolId, usize>::new();
+  let mut invalid = HashSet::<SymbolId>::new();
+
+  let mut scan_cfg = |cfg: &Cfg| {
+    for inst in collect_insts(cfg) {
+      if inst.t != InstTyp::ForeignStore {
+        continue;
+      }
+      let sym = inst.foreign;
+      if invalid.contains(&sym) {
+        continue;
+      }
+      match inst.args.get(0) {
+        Some(Arg::Fn(id)) => match candidates.get(&sym) {
+          None => {
+            candidates.insert(sym, *id);
+          }
+          Some(existing) if *existing == *id => {}
+          Some(_) => {
+            candidates.remove(&sym);
+            invalid.insert(sym);
+          }
+        },
+        _ => {
+          candidates.remove(&sym);
+          invalid.insert(sym);
+        }
+      }
+    }
+  };
+
+  scan_cfg(program.top_level.analyzed_cfg());
+  for func in &program.functions {
+    scan_cfg(func.analyzed_cfg());
+  }
+
+  candidates
+}
+
+fn resolve_var_fn_id(var: u32, defs: &HashMap<u32, VarDef>, visiting: &mut Vec<u32>) -> Option<usize> {
+  if visiting.contains(&var) {
+    return None;
+  }
+  visiting.push(var);
+
+  let out = match defs.get(&var) {
+    Some(VarDef::Fn(id)) => Some(*id),
+    Some(VarDef::Alias(src)) => resolve_var_fn_id(*src, defs, visiting),
+    Some(VarDef::Phi(args)) => {
+      let mut merged: Option<usize> = None;
+      for arg in args {
+        let Arg::Var(v) = arg else {
+          return None;
+        };
+        let Some(id) = resolve_var_fn_id(*v, defs, visiting) else {
+          return None;
+        };
+        merged = match merged {
+          None => Some(id),
+          Some(prev) if prev == id => Some(prev),
+          _ => return None,
+        };
+      }
+      merged
+    }
+    _ => None,
+  };
+
+  visiting.pop();
+  out
+}
+
+fn resolve_fn_id(arg: &Arg, defs: &HashMap<u32, VarDef>) -> Option<usize> {
+  match arg {
+    Arg::Fn(id) => Some(*id),
+    Arg::Var(v) => resolve_var_fn_id(*v, defs, &mut Vec::new()),
+    _ => None,
+  }
+}
+
 fn build_var_defs(
   cfg: &Cfg,
   callee_summaries: &[FnSummary],
+  foreign_fns: &HashMap<SymbolId, usize>,
 ) -> HashMap<u32, VarDef> {
   let mut defs = HashMap::<u32, VarDef>::new();
   for inst in collect_insts(cfg) {
@@ -138,8 +240,14 @@ fn build_var_defs(
       InstTyp::VarAssign => match &inst.args[0] {
         Arg::Var(src) => VarDef::Alias(*src),
         Arg::Const(_) => VarDef::Const,
+        Arg::Fn(id) => VarDef::Fn(*id),
         _ => VarDef::Unknown,
       },
+      InstTyp::ForeignLoad => foreign_fns
+        .get(&inst.foreign)
+        .copied()
+        .map(VarDef::Fn)
+        .unwrap_or(VarDef::Unknown),
       InstTyp::Phi => VarDef::Phi(inst.args.clone()),
       InstTyp::Call => {
         let (tgt, callee, _this, args, spreads) = inst.as_call();
@@ -148,14 +256,13 @@ fn build_var_defs(
         }
         if is_alloc_builtin(callee) {
           VarDef::FreshAlloc
-        } else if !spreads.is_empty() {
-          VarDef::Unknown
-        } else if let Arg::Fn(id) = callee {
+        } else if let Some(id) = resolve_fn_id(callee, &defs) {
           // If callee isn't in-bounds, treat as unknown.
-          if *id < callee_summaries.len() {
+          if id < callee_summaries.len() {
             VarDef::CallFn {
-              id: *id,
+              id,
               args: args.to_vec(),
+              first_spread_arg: spreads.iter().copied().min().map(|idx| idx.saturating_sub(2)),
             }
           } else {
             VarDef::Unknown
@@ -232,14 +339,33 @@ fn resolve_var_origin(
       }
       merged.unwrap_or(Origin::Unknown)
     }
-    Some(VarDef::CallFn { id, args }) => {
+    Some(VarDef::CallFn {
+      id,
+      args,
+      first_spread_arg,
+    }) => {
       match callee_summaries.get(*id) {
         Some(summary) => match &summary.return_kind {
           ReturnKind::FreshAlloc => Origin::FreshAlloc,
           ReturnKind::Const => Origin::Const,
           ReturnKind::AliasParam(i) => args
             .get(*i)
-            .map(|arg| resolve_arg_origin(arg, param_to_index, defs, callee_summaries, visiting))
+            .and_then(|arg| {
+              // Only model param aliasing through calls when we can map the
+              // parameter index to a concrete argument (i.e. the argument
+              // position is before any spread).
+              if first_spread_arg.is_some_and(|first| *i >= first) {
+                None
+              } else {
+                Some(resolve_arg_origin(
+                  arg,
+                  param_to_index,
+                  defs,
+                  callee_summaries,
+                  visiting,
+                ))
+              }
+            })
             .unwrap_or(Origin::Unknown),
           ReturnKind::Unknown => Origin::Unknown,
         },
@@ -264,6 +390,7 @@ fn max_escape(a: EscapeState, b: EscapeState) -> EscapeState {
 fn summarize_function(
   func: &crate::ProgramFunction,
   callee_summaries: &[FnSummary],
+  foreign_fns: &HashMap<SymbolId, usize>,
 ) -> FnSummary {
   let cfg = func.analyzed_cfg();
   let mut param_escape = vec![EscapeState::NoEscape; func.params.len()];
@@ -275,7 +402,7 @@ fn summarize_function(
     .map(|(idx, var)| (var, idx))
     .collect();
 
-  let defs = build_var_defs(cfg, callee_summaries);
+  let defs = build_var_defs(cfg, callee_summaries, foreign_fns);
 
   let mut return_origins = Vec::<Origin>::new();
 
@@ -397,6 +524,7 @@ fn summarize_function(
 /// `Arg::Fn(id)` indices). Summaries are computed to a fixpoint in a deterministic
 /// order.
 pub fn summarize_program(program: &Program) -> Vec<FnSummary> {
+  let foreign_fns = collect_constant_foreign_fns(program);
   let mut summaries: Vec<_> = program
     .functions
     .iter()
@@ -410,7 +538,7 @@ pub fn summarize_program(program: &Program) -> Vec<FnSummary> {
   for _ in 0..max_iters {
     let mut changed = false;
     for (idx, func) in program.functions.iter().enumerate() {
-      let computed = summarize_function(func, &summaries);
+      let computed = summarize_function(func, &summaries, &foreign_fns);
       changed |= summaries[idx].refine_with(computed);
     }
     if !changed {
