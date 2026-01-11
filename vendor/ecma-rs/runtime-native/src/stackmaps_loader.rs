@@ -826,9 +826,34 @@ mod linux_phdr {
         break;
       }
 
-      // Only accept a blob start when the v3 header signature matches. If it doesn't, we've likely
-      // reached the next unrelated section in the same PT_LOAD segment.
+      // Only accept a blob start when the v3 header signature matches.
+      //
+      // If it doesn't, we've likely reached the next unrelated section in the same PT_LOAD segment.
+      // However, some toolchains have been observed to leave a few non-zero bytes between
+      // concatenated `.llvm_stackmaps` input sections. If we've already parsed at least one blob,
+      // try to resynchronize by scanning forward for the next plausible v3 header.
       if bytes.get(off..off + 4) != Some(&STACKMAP_V3_HEADER) {
+        if !parsed_any {
+          break;
+        }
+
+        const MAX_PADDING_SCAN: usize = 256;
+        let scan_end = (off + MAX_PADDING_SCAN).min(bytes.len().saturating_sub(4));
+        let mut found: Option<usize> = None;
+        for i in off + 1..=scan_end {
+          if i % 8 != 0 {
+            continue;
+          }
+          if bytes.get(i..i + 4) == Some(&STACKMAP_V3_HEADER) {
+            found = Some(i);
+            break;
+          }
+        }
+        if let Some(i) = found {
+          off = i;
+          continue;
+        }
+
         break;
       }
 
@@ -897,5 +922,76 @@ mod linux_phdr {
     }
 
     parsed_any.then_some(end)
+  }
+
+  #[cfg(test)]
+  mod tests {
+    use super::try_parse_stackmaps_region;
+    use crate::stackmaps::STACKMAP_VERSION;
+ 
+    fn build_stackmap_blob(function_address: u64, instruction_offset: u32, patchpoint_id: u64) -> Vec<u8> {
+      let mut bytes = Vec::new();
+ 
+      // StackMapHeader
+      bytes.push(STACKMAP_VERSION); // version
+      bytes.push(0); // reserved0
+      bytes.extend_from_slice(&0u16.to_le_bytes()); // reserved1
+      bytes.extend_from_slice(&1u32.to_le_bytes()); // num_functions
+      bytes.extend_from_slice(&0u32.to_le_bytes()); // num_constants
+      bytes.extend_from_slice(&1u32.to_le_bytes()); // num_records
+ 
+      // FunctionRecord
+      bytes.extend_from_slice(&function_address.to_le_bytes());
+      bytes.extend_from_slice(&0u64.to_le_bytes()); // stack_size
+      bytes.extend_from_slice(&1u64.to_le_bytes()); // record_count
+ 
+      // CallSiteRecord
+      bytes.extend_from_slice(&patchpoint_id.to_le_bytes());
+      bytes.extend_from_slice(&instruction_offset.to_le_bytes());
+      bytes.extend_from_slice(&0u16.to_le_bytes()); // reserved
+      bytes.extend_from_slice(&1u16.to_le_bytes()); // num_locations
+ 
+      // Location: register R#5, size 8
+      bytes.push(1); // LocationKind::Register
+      bytes.push(0); // reserved
+      bytes.extend_from_slice(&8u16.to_le_bytes()); // size
+      bytes.extend_from_slice(&5u16.to_le_bytes()); // dwarf_reg_num
+      bytes.extend_from_slice(&0u16.to_le_bytes()); // reserved2
+      bytes.extend_from_slice(&0i32.to_le_bytes()); // offset_or_small_constant
+ 
+      // Align to 8 before live-outs.
+      while bytes.len() % 8 != 0 {
+        bytes.push(0);
+      }
+ 
+      // LiveOuts: padding + num_live_outs = 0
+      bytes.extend_from_slice(&0u16.to_le_bytes()); // padding
+      bytes.extend_from_slice(&0u16.to_le_bytes()); // num_live_outs
+ 
+      // Align to 8 for next record/end.
+      while bytes.len() % 8 != 0 {
+        bytes.push(0);
+      }
+ 
+      bytes
+    }
+ 
+    #[test]
+    fn recovers_from_non_zero_padding_between_concatenated_blobs() {
+      let blob_a = build_stackmap_blob(0x1000, 4, 1);
+      let blob_b = build_stackmap_blob(0x2000, 8, 2);
+ 
+      let mut bytes = Vec::new();
+      bytes.extend_from_slice(&blob_a);
+ 
+      // Some linkers/toolchains can leave a few non-zero bytes between concatenated stackmap
+      // payloads. Ensure the segment scanner still finds the later blob.
+      bytes.extend_from_slice(&[3, 1, 2, 3, 0, 0, 0, 0]);
+      bytes.extend_from_slice(&blob_b);
+ 
+      let exec_ranges = [0x1000..0x3000];
+      let len = try_parse_stackmaps_region(&bytes, &exec_ranges).expect("should parse both blobs");
+      assert_eq!(len, bytes.len());
+    }
   }
 }
