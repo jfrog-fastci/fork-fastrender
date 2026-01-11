@@ -178,6 +178,20 @@ impl Drop for BackingStore {
 }
 
 impl BackingStore {
+  fn try_borrow_io_write_scoped(&self) -> Result<ScopedWriteBorrow, BorrowError> {
+    let Some(inner) = self.inner_nn() else {
+      return Ok(ScopedWriteBorrow { inner: None });
+    };
+    let borrow_state = unsafe { &inner.as_ref().borrow_state };
+    if borrow_state
+      .compare_exchange(0, WRITE_BORROWED, Ordering::AcqRel, Ordering::Acquire)
+      .is_err()
+    {
+      return Err(BorrowError::Borrowed);
+    }
+    Ok(ScopedWriteBorrow { inner: Some(inner) })
+  }
+
   #[inline]
   fn inner_nn(&self) -> Option<NonNull<BackingStoreInner>> {
     NonNull::new(self.inner)
@@ -231,9 +245,7 @@ impl BackingStore {
   /// let _leaked: &[u8] = store.try_with_slice(|s| s).unwrap();
   /// ```
   pub fn try_with_slice<R>(&self, f: impl for<'a> FnOnce(&'a [u8]) -> R) -> Result<R, BorrowError> {
-    if self.is_io_borrowed() {
-      return Err(BorrowError::Borrowed);
-    }
+    let _borrow = self.try_borrow_io_write_scoped()?;
     // SAFETY: backing store pointer/len invariants are upheld by construction.
     let slice =
       unsafe { core::slice::from_raw_parts(self.as_ptr() as *const u8, self.byte_len()) };
@@ -258,9 +270,7 @@ impl BackingStore {
     &mut self,
     f: impl for<'a> FnOnce(&'a mut [u8]) -> R,
   ) -> Result<R, BorrowError> {
-    if self.is_io_borrowed() {
-      return Err(BorrowError::Borrowed);
-    }
+    let _borrow = self.try_borrow_io_write_scoped()?;
     if let Some(inner) = self.inner_nn() {
       // If there are other handles (including in-flight pin guards), we must not create a `&mut
       // [u8]` slice: doing so would violate Rust aliasing rules.
@@ -420,6 +430,27 @@ impl BackingStore {
     Ok(Self {
       inner: inner_ptr.as_ptr(),
     })
+  }
+}
+
+/// A non-`Send` scoped borrow used by `try_with_slice(_mut)` to block async I/O borrows while a safe
+/// Rust slice reference is live.
+///
+/// Unlike `BorrowGuardWrite`, this does **not** clone the `BackingStore` handle (and therefore does
+/// not affect `ref_count`), since it is only ever used while an existing `&BackingStore`/`&mut
+/// BackingStore` borrow keeps the allocation alive.
+#[must_use]
+struct ScopedWriteBorrow {
+  inner: Option<NonNull<BackingStoreInner>>,
+}
+
+impl Drop for ScopedWriteBorrow {
+  fn drop(&mut self) {
+    let Some(inner) = self.inner else {
+      return;
+    };
+    let prev = unsafe { inner.as_ref() }.borrow_state.swap(0, Ordering::AcqRel);
+    debug_assert_eq!(prev, WRITE_BORROWED, "invalid write borrow state");
   }
 }
 
@@ -795,5 +826,24 @@ mod borrow_tests {
     drop(s2);
 
     assert_eq!(s1.try_with_slice_mut(|s| { s[0] = 1; s[0] }).unwrap(), 1);
+  }
+
+  #[test]
+  fn try_with_slice_blocks_io_borrows_for_callback_duration() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let store = alloc.alloc_zeroed(4).unwrap();
+
+    store
+      .try_with_slice(|_| {
+        assert_eq!(store.try_borrow_io_read().unwrap_err(), BorrowError::Borrowed);
+        assert_eq!(store.try_borrow_io_write().unwrap_err(), BorrowError::Borrowed);
+      })
+      .unwrap();
+
+    // After the callback completes, I/O borrows should be possible again.
+    let read = store.try_borrow_io_read().unwrap();
+    drop(read);
+    let write = store.try_borrow_io_write().unwrap();
+    drop(write);
   }
 }
