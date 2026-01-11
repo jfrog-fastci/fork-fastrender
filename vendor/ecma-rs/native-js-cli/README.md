@@ -244,6 +244,9 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
 If you have the binary installed on your `PATH`, the equivalent invocation is:
 
 ```bash
+native-js check input.ts
+native-js run input.ts
+
 native-js check path/to/entry.ts
 native-js run path/to/entry.ts
 ```
