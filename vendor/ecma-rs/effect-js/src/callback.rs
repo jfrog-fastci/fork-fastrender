@@ -568,6 +568,13 @@ impl CallbackAnalyzer<'_> {
         }
       }
       StmtKind::ForIn { left, right, body: inner, .. } => {
+        // In `for..in`/`for..of`, the RHS is evaluated *before* introducing the
+        // per-loop lexical environment for `let`/`const` bindings.
+        //
+        // Example:
+        //   for (let i of [i]) {}
+        // Here the `[i]` refers to the outer `i`, not the loop binding.
+        self.visit_expr(body, *right);
         let mut pushed = false;
         if let ForHead::Var(var) = left {
           if is_lexical_var_decl(var) {
@@ -579,7 +586,6 @@ impl CallbackAnalyzer<'_> {
           ForHead::Pat(pat) => self.visit_assign_pat(body, *pat),
           ForHead::Var(var) => self.visit_var_decl(body, var),
         }
-        self.visit_expr(body, *right);
         self.visit_stmt(body, *inner);
         if pushed {
           self.shadow_stack.pop();
@@ -1343,6 +1349,34 @@ mod tests {
 
     let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
     assert_eq!(info.callback_uses_index, Some(false));
+  }
+
+  #[test]
+  fn for_of_shadow_does_not_hide_right_expr_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i) => { for (let i of [i]) {} return x; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
+  }
+
+  #[test]
+  fn for_in_shadow_does_not_hide_right_expr_index_usage() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i) => { for (let i in { [i]: 1 }) {} return x; });",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+    assert_eq!(info.callback_uses_index, Some(true));
   }
 
   #[test]
