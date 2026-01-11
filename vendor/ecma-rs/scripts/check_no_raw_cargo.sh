@@ -24,7 +24,10 @@ cd "${repo_root}"
 #   env RUSTFLAGS="..." cargo test ...
 # and toolchain overrides:
 #   cargo +nightly test ...
-pattern='^[[:space:]]*(?:env[[:space:]]+)?(?:[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*cargo(?:[[:space:]]+\+[^[:space:]]+)?[[:space:]]+'
+#
+# Note: we support both quoted and unquoted env var values since things like
+# `RUSTFLAGS="-C foo=bar"` commonly include spaces.
+pattern="^[[:space:]]*(?:env[[:space:]]+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\\S+)[[:space:]]+)*cargo\\b(?:[[:space:]]+\\+[^[:space:]]+)?(?:[[:space:]]+|$)"
 
 fail=0
 
