@@ -96,6 +96,11 @@ static void blocking_task(uint8_t* data, PromiseRef promise) {
   rt_promise_resolve(promise, (ValueRef)0);
 }
 
+static void par_for_body(size_t i, uint8_t* data) {
+  uint32_t* out = (uint32_t*)data;
+  out[i] = (uint32_t)(i * 3u + 1u);
+}
+
 int main(void) {
   rt_thread_init(0);
 
@@ -138,6 +143,19 @@ int main(void) {
     // Event loop did not wake promptly (likely blocked until timeout).
     rt_thread_deinit();
     return 1;
+  }
+
+  enum { N = 4096 };
+  uint32_t out[N];
+  for (size_t i = 0; i < N; i++) {
+    out[i] = 0;
+  }
+  rt_parallel_for(0, N, par_for_body, (uint8_t*)out);
+  for (size_t i = 0; i < N; i++) {
+    if (out[i] != (uint32_t)(i * 3u + 1u)) {
+      rt_thread_deinit();
+      return 2;
+    }
   }
 
   rt_gc_safepoint();
