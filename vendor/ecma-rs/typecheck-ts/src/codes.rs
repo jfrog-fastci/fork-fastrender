@@ -890,6 +890,98 @@ pub const NATIVE_STRICT_PROXY: Code = Code::new(
   &[],
 );
 
+/// TN0100: `eval` is forbidden in `strict_native` mode.
+///
+/// - Primary span: the `eval(...)` call expression.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_FORBIDDEN_EVAL: Code = Code::new(
+  "TN0100",
+  "forbidden eval",
+  "call expression invoking `eval`",
+  &["primary: eval call expression"],
+  &[],
+);
+
+/// TN0101: `Function` constructor is forbidden in `strict_native` mode.
+///
+/// - Primary span: the `new Function(...)` / `Function(...)` call expression.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_FORBIDDEN_FUNCTION_CONSTRUCTOR: Code = Code::new(
+  "TN0101",
+  "forbidden function constructor",
+  "call/new expression invoking the global `Function` constructor",
+  &["primary: Function constructor call/new expression"],
+  &[],
+);
+
+/// TN0102: `with` statements are forbidden in `strict_native` mode.
+///
+/// - Primary span: the `with (...) { ... }` statement.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_FORBIDDEN_WITH: Code = Code::new(
+  "TN0102",
+  "forbidden with statement",
+  "`with` statement span",
+  &["primary: with statement"],
+  &[],
+);
+
+/// TN0103: `Proxy` usage is forbidden in `strict_native` mode.
+///
+/// - Primary span: the `new Proxy(...)` / `Proxy.revocable(...)` call expression.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_FORBIDDEN_PROXY: Code = Code::new(
+  "TN0103",
+  "forbidden Proxy",
+  "call/new expression invoking `Proxy`",
+  &["primary: Proxy usage"],
+  &[],
+);
+
+/// TN0104: `arguments` object usage is forbidden in `strict_native` mode.
+///
+/// - Primary span: the `arguments` identifier reference.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_FORBIDDEN_ARGUMENTS: Code = Code::new(
+  "TN0104",
+  "forbidden arguments object",
+  "`arguments` identifier reference",
+  &["primary: arguments reference"],
+  &[],
+);
+
+/// TN0105: Prototype mutation is forbidden in `strict_native` mode.
+///
+/// - Primary span: the assignment/call expression mutating prototype state.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_FORBIDDEN_PROTOTYPE_MUTATION: Code = Code::new(
+  "TN0105",
+  "forbidden prototype mutation",
+  "assignment or call expression mutating prototypes",
+  &["primary: prototype mutation site"],
+  &[],
+);
+
+/// TN0106: Computed property access requires a constant key in `strict_native`
+/// mode.
+///
+/// - Primary span: the computed key expression inside `obj[key]`.
+/// - Labels: primary only.
+/// - Notes: none.
+pub const STRICT_NATIVE_COMPUTED_KEY_NOT_CONSTANT: Code = Code::new(
+  "TN0106",
+  "computed property key must be constant",
+  "computed member expression key",
+  &["primary: computed property key expression"],
+  &[],
+);
+
 /// HOST0001: Host environment failed to provide required input.
 ///
 /// - Primary span: zero-length placeholder when no source span is available.

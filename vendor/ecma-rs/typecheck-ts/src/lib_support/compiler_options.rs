@@ -107,8 +107,9 @@ pub struct CompilerOptions {
   pub no_unchecked_indexed_access: bool,
   /// Enable "strict-native" mode.
   ///
-  /// This is a repo-specific option intended for enforcing a stricter subset of
-  /// TypeScript suitable for native tooling. When enabled, additional
+  /// This is a repo-specific dialect that forbids dynamic JavaScript constructs
+  /// (e.g. `eval`, `with`, `Proxy`, prototype mutation) that break
+  /// ahead-of-time optimizations and soundness. When enabled, additional
   /// diagnostics with the `TN####` prefix may be produced.
   #[cfg_attr(feature = "serde", serde(default))]
   pub strict_native: bool,

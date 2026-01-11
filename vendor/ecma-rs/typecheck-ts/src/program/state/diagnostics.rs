@@ -68,6 +68,7 @@ impl ProgramState {
       };
       ast.as_ref().drive(&mut collector);
     }
+    diags.extend(self.strict_native_dynamic_diagnostics());
     diags
   }
 

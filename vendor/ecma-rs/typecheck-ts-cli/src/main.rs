@@ -106,7 +106,8 @@ struct TypecheckArgs {
   #[arg(long, action = ArgAction::SetTrue)]
   no_unchecked_indexed_access: bool,
 
-  /// Enable strict-native diagnostics.
+  /// Enable strict-native dialect bans (forbid dynamic JS constructs like
+  /// `eval`, `with`, `Proxy`, etc.).
   #[arg(long, action = ArgAction::SetTrue)]
   strict_native: bool,
 
