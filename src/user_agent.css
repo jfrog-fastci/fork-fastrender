@@ -3,6 +3,7 @@
 /* Document structure */
 html {
     display: block;
+    font-family: "Times New Roman", Times, serif;
 }
 body {
     display: block;
@@ -394,10 +395,11 @@ input, textarea, select, button {
     border: 1px solid #767676;
     background-color: white;
     color: black;
-    font-family: inherit;
-    font-size: inherit;
-    line-height: 1.2;
-    border-radius: 4px;
+    /* Match Chrome's default form-control typography more closely than inheriting the page font. */
+    font-family: sans-serif;
+    font-size: 13.333333px;
+    line-height: normal;
+    border-radius: 3px;
 }
 
 progress, meter {
@@ -432,9 +434,10 @@ input[type="search"] {
 }
 
 input[type="submit"], input[type="button"], input[type="reset"], button {
-    padding: 4px 10px;
-    background-color: rgb(240, 240, 240);
+    padding: 2px 7px;
+    background-color: rgb(239, 239, 239);
     border: 1px solid #767676;
+    border-radius: 3px;
     text-align: center;
     /* In grid/layout contexts, buttons should default to their intrinsic (content) width rather
        than stretching to fill the grid area. */
@@ -445,10 +448,10 @@ input[type="submit"], input[type="button"], input[type="reset"], button {
 input[type="file"]::file-selector-button,
 input[type="file"]::-webkit-file-upload-button {
     display: inline-block;
-    padding: 4px 10px;
-    background-color: rgb(240, 240, 240);
+    padding: 2px 7px;
+    background-color: rgb(239, 239, 239);
     border: 1px solid #767676;
-    border-radius: 4px;
+    border-radius: 3px;
     cursor: pointer;
     margin-right: 6px;
 }
