@@ -125,6 +125,10 @@ These APIs take a callback that is generic over the slice lifetime (`for<'a>`), 
 cannot return the `&[u8]` / `&mut [u8]` and hold it beyond the call (which would allow aliasing
 across in-flight async I/O borrows).
 
+Additionally, `try_with_slice` / `try_with_slice_mut` acquire an internal scoped borrow for the
+duration of the callback so that **new** async I/O borrows cannot start while a safe Rust slice
+reference is live.
+
 ## Invariants (turn these into asserts/tests)
 
 These invariants are the contract between the GC, buffer implementation, and
@@ -187,6 +191,9 @@ records until completion/cancellation.
 
 - **Borrow blocks safe access:** while any I/O borrow is active, safe slice access APIs must
   deterministically fail.
+- **Safe access blocks new I/O borrows:** while `try_with_slice` / `try_with_slice_mut` are executing
+  their callback, attempting to start an async I/O borrow must fail (so safe Rust references can
+  never overlap kernel I/O access).
 - **Borrow released on all paths:** completion, cancellation, and drop paths must always release the
   borrow state (RAII guards).
 
