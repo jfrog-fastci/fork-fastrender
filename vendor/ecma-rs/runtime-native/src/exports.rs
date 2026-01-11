@@ -894,6 +894,20 @@ pub extern "C" fn rt_gc_collect() {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_gc_collect();
 
+  // Capture the current frame pointer *before* entering `catch_unwind`.
+  //
+  // `std::panic::catch_unwind` lives in the prebuilt sysroot and may not preserve a
+  // reliable frame-pointer chain (e.g. it can repurpose RBP as a general register).
+  // If we call `find_nearest_managed_cursor_from_here` from inside the `catch_unwind`
+  // closure, the saved "caller FP" in that closure frame may be junk and the walk
+  // will fail, causing us to publish a runtime-internal IP instead of the managed
+  // safepoint callsite.
+  //
+  // By grabbing the FP of this outer `rt_gc_collect` frame here and walking from it
+  // later, we avoid depending on the sysroot's FP behavior while still keeping the
+  // entire body under `catch_unwind` to prevent unwinding across the C ABI.
+  let entry_fp = crate::stackwalk::current_frame_pointer();
+
   let res = catch_unwind(AssertUnwindSafe(|| {
     // If a stop-the-world is already active, join it as a mutator safepoint at
     // this callsite (so we still publish a safepoint context for stack walking).
@@ -923,7 +937,7 @@ pub extern "C" fn rt_gc_collect() {
       // callsite into the *outermost* runtime frame (which has a stackmap
       // record). Recover that managed callsite cursor by walking the FP chain.
       let ctx = crate::stackmap::try_stackmaps()
-        .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor_from_here(stackmaps))
+        .and_then(|stackmaps| crate::stackwalk::find_nearest_managed_cursor(entry_fp, stackmaps))
         .map(|cursor| {
           let sp_callsite = cursor.sp.unwrap_or(0);
           #[cfg(target_arch = "x86_64")]

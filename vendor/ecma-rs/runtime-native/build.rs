@@ -126,12 +126,6 @@ fn has_force_frame_pointers_yes(flags: &[String]) -> bool {
 }
 
 fn maybe_enable_stackmaps_linker_symbols() {
-  // Only inject the linker script when the consumer opted in to linker-defined stackmap symbols.
-  // This keeps runtime-native usable as a general-purpose library (tests, tools, C linking)
-  // without requiring a custom linker script.
-  if std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_none() {
-    return;
-  }
   let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
   if target_os != "linux" {
     return;
@@ -148,7 +142,19 @@ fn maybe_enable_stackmaps_linker_symbols() {
 
   // Pass an *absolute* path so the linker can always find it, regardless of the current working
   // directory Cargo uses for the link step.
-  println!("cargo:rustc-link-arg=-Wl,-T,{}", script.display());
+  //
+  // Note: We always inject this script for this crate's *tests* so stackmap-driven stack walking
+  // integration tests can load `.llvm_stackmaps` even when the linker uses `--gc-sections`.
+  //
+  // Consumers can opt in to the same behavior for their final binaries with feature
+  // `llvm_stackmaps_linker`.
+  println!("cargo:rustc-link-arg-tests=-Wl,-T,{}", script.display());
+  if std::env::var_os("CARGO_FEATURE_LLVM_STACKMAPS_LINKER").is_some() {
+    // Only inject the linker script for non-test builds when the consumer opted in to linker-defined
+    // stackmap symbols. This keeps runtime-native usable as a general-purpose library (tools, C
+    // linking) without requiring a custom linker script.
+    println!("cargo:rustc-link-arg=-Wl,-T,{}", script.display());
+  }
 }
 
 fn maybe_build_stackmap_test_artifact() {

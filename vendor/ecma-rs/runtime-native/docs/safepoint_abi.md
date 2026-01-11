@@ -59,3 +59,35 @@ the stop epoch.
 Because unparking can block on an in-progress STW, callers should avoid holding runtime locks
 while calling `rt_thread_set_parked(false)`.
 
+## Stack walking invariants (statepoint stackmaps)
+
+The stop-the-world GC needs to enumerate GC roots precisely. `runtime-native` uses LLVM **statepoint**
+stackmaps plus a first-milestone **frame-pointer-based** stack walker to do this.
+
+This requires a stable frame chain across *both* generated code and runtime-native code:
+
+* LLVM-generated code must keep frame pointers and avoid tail calls (`frame-pointer="all"`,
+  `disable-tail-calls="true"`; see `native-js/docs/gc_stack_walking.md`).
+* The Rust runtime (and any other Rust code that can run on GC-managed threads) must be compiled with
+  frame pointers enabled (`-C force-frame-pointers=yes`).
+
+In this repository, the wrapper scripts automatically inject the Rust flag:
+
+```bash
+# From the monorepo root:
+bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p runtime-native
+
+# Or from vendor/ecma-rs:
+bash scripts/cargo_llvm.sh test -p runtime-native
+```
+
+### Retaining `.llvm_stackmaps` in the final binary (Linux)
+
+On Linux, linkers may discard `.llvm_stackmaps` under `--gc-sections` unless it is explicitly kept.
+The recommended setup is to enable the `runtime-native` feature `llvm_stackmaps_linker`, which injects
+`runtime-native/link/stackmaps.ld` to:
+
+* `KEEP` the stackmap section
+* and define stable in-memory boundary symbols (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps`)
+
+This allows the runtime to load stackmaps without scanning memory or parsing `/proc/self/exe`.
