@@ -19,7 +19,7 @@ mod elf;
   about = "Inspect LLVM .llvm_stackmaps (statepoints)"
 )]
 struct Cli {
-  /// Path to a binary/object containing a `.llvm_stackmaps` section.
+  /// Path to a binary/object containing an LLVM stackmaps section.
   ///
   /// If the file is not an ELF file, it is treated as raw `.llvm_stackmaps` section bytes.
   path: PathBuf,
@@ -64,10 +64,13 @@ fn main() -> Result<()> {
   let file = std::fs::read(&cli.path)
     .with_context(|| format!("failed to read input file: {}", cli.path.display()))?;
 
-  // Stackmaps can live in different output sections depending on link mode. For PIE builds we
-  // often rewrite the input section to `.data.rel.ro.llvm_stackmaps` so relocations can be
-  // applied safely.
-  const STACKMAP_SECTION_NAMES: [&str; 2] = [".data.rel.ro.llvm_stackmaps", ".llvm_stackmaps"];
+  // Stackmaps can live in different output sections depending on link mode.
+  //
+  // - For PIE builds we often rewrite the input section to `.data.rel.ro.llvm_stackmaps` so
+  //   relocations can be applied safely.
+  // - Some linkers/scripts can end up with an output section name without a leading dot.
+  const STACKMAP_SECTION_NAMES: [&str; 3] =
+    [".data.rel.ro.llvm_stackmaps", ".llvm_stackmaps", "llvm_stackmaps"];
   let section_bytes = if cli.raw_section {
     file.as_slice()
   } else if file.starts_with(b"\x7fELF") {
