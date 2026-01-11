@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use typecheck_ts::lib_support::{CompilerOptions, FileKind, LibFile};
+use typecheck_ts::lib_support::{CompilerOptions, FileKind, LibFile, LibName, ScriptTarget};
 use typecheck_ts::resolve::{canonicalize_path, NodeResolver, ResolveOptions};
 use typecheck_ts::{FileId, FileKey, Host, HostError, Program};
 
@@ -441,7 +441,7 @@ enum LoadMode {
 }
 
 fn load_program(input: &Path, mode: LoadMode) -> Result<(DiskHost, Program, FileId), String> {
-  let compiler_options = match mode {
+  let mut compiler_options = match mode {
     // For the legacy `project` pipeline, `typecheck-ts` is only used for module graph discovery and
     // export maps. Avoid loading TypeScript's bundled standard library (`lib.dom.d.ts`, etc), which
     // is large and makes the CLI (and its integration tests) extremely slow.
@@ -449,10 +449,36 @@ fn load_program(input: &Path, mode: LoadMode) -> Result<(DiskHost, Program, File
       no_default_lib: true,
       ..Default::default()
     },
-    // The checked pipeline runs real typechecking and strict-subset validation, so it needs the
-    // normal library set.
+    // The checked pipeline runs real typechecking and strict-subset validation. The native-js
+    // backend targets Node-like native executables, so the DOM lib is unnecessary and slow to load.
+    // Match the `native-js` binary defaults: load only the target ES lib unless the user explicitly
+    // configured libs.
     LoadMode::Checked => CompilerOptions::default(),
   };
+
+  if compiler_options.libs.is_empty() && !compiler_options.no_default_lib {
+    let es_lib = match compiler_options.target {
+      ScriptTarget::Es3 | ScriptTarget::Es5 => "es5",
+      ScriptTarget::Es2015 => "es2015",
+      ScriptTarget::Es2016 => "es2016",
+      ScriptTarget::Es2017 => "es2017",
+      ScriptTarget::Es2018 => "es2018",
+      ScriptTarget::Es2019 => "es2019",
+      ScriptTarget::Es2020 => "es2020",
+      ScriptTarget::Es2021 => "es2021",
+      ScriptTarget::Es2022 => "es2022",
+      ScriptTarget::EsNext => "esnext",
+    };
+    compiler_options.libs.push(
+      LibName::parse(es_lib).expect("built-in ES lib name should parse as a LibName"),
+    );
+    if matches!(compiler_options.target, ScriptTarget::EsNext) {
+      compiler_options.libs.push(
+        LibName::parse("esnext.disposable")
+          .expect("built-in ES lib name should parse as a LibName"),
+      );
+    }
+  }
 
   let (host, entry_key) = DiskHost::new(input, compiler_options)?;
   let program = Program::new(host.clone(), vec![entry_key.clone()]);
