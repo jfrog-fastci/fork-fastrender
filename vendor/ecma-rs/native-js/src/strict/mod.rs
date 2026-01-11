@@ -7,7 +7,9 @@
 //! constructs.
 
 use diagnostics::{Diagnostic, Span, TextRange};
-use hir_js::{BodyKind, ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind, TypeExprKind};
+use hir_js::{
+  BinaryOp, BodyKind, ExprId, ExprKind, Literal, ObjectKey, PatId, PatKind, StmtKind, TypeExprKind,
+};
 use std::collections::{HashMap, HashSet};
 use typecheck_ts::{BodyId, DefId, FileId, Program, TypeId};
 use types_ts_interned as tti;
@@ -422,13 +424,22 @@ fn call_targets_name(
   if callee_matches_name(body, lowered, callee, target) {
     return true;
   }
-  let Some(ExprKind::Member(member)) = body.exprs.get(callee.0 as usize).map(|e| &e.kind) else {
+  let Some(kind) = body.exprs.get(callee.0 as usize).map(|e| &e.kind) else {
     return false;
   };
-
-  let is_call_or_apply = member_property_matches_name(body, lowered, &member.property, "call")
-    || member_property_matches_name(body, lowered, &member.property, "apply");
-  is_call_or_apply && callee_matches_name(body, lowered, member.object, target)
+  match kind {
+    ExprKind::Member(member) => {
+      let is_call_or_apply = member_property_matches_name(body, lowered, &member.property, "call")
+        || member_property_matches_name(body, lowered, &member.property, "apply");
+      is_call_or_apply && callee_matches_name(body, lowered, member.object, target)
+    }
+    ExprKind::Binary {
+      op: BinaryOp::Comma,
+      right,
+      ..
+    } => call_targets_name(body, lowered, *right, target),
+    _ => false,
+  }
 }
 
 fn member_property_matches_name(
