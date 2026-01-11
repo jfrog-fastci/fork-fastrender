@@ -17,6 +17,8 @@ use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
 use native_js::llvm::passes;
 use object::{Object, ObjectSection, ObjectSymbol};
+use runtime_native::stackmap_loader;
+use runtime_native::stackmaps::StackMaps;
 
 fn cmd_works(cmd: &str) -> bool {
   Command::new(cmd)
@@ -218,9 +220,10 @@ fn deep_ts_call_chain_callsite_pcs_are_present_in_stackmaps() {
   let f0_to_f1_ret = call_return_address_x86_64(&file, f0_sym, f1_sym.address());
   let f1_to_f2_ret = call_return_address_x86_64(&file, f1_sym, f2_sym.address());
 
-  let stackmaps_section = llvm_stackmaps::elf::stackmaps_section_bytes(&exe)
-    .expect("stackmaps section bytes");
-  let maps = llvm_stackmaps::StackMaps::parse(stackmaps_section).expect("parse stackmaps");
+  let stackmaps_section = stackmap_loader::find_stackmap_section(&exe)
+    .expect("find stackmaps section")
+    .expect("missing stackmaps section (was it GC'd?)");
+  let maps = StackMaps::parse(stackmaps_section.bytes).expect("parse stackmaps");
 
   assert!(
     maps.lookup(f0_to_f1_ret).is_some(),

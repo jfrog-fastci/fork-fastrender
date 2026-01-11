@@ -147,7 +147,8 @@ main:
     }
   }
 
-  // Fixed: native-js link helpers always inject `runtime-native/link/stackmaps.ld`.
+  // Fixed: native-js link helpers always inject a stackmaps retention linker script fragment
+  // (`runtime-native/link/stackmaps*.ld`).
   // When linking with lld, stackmaps are often merged into a broader output section (e.g.
   // `.data.rel.ro`), so assert based on the payload bytes rather than section names.
   if lld_fuse.is_some() {

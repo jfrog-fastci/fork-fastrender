@@ -183,9 +183,9 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let file = object::File::parse(&*bytes).unwrap();
 
   // The stackmaps linker fragment should place stackmaps into a dedicated
-  // `.data.rel.ro.llvm_stackmaps` output section (inserted before `.bss` to stay
-  // lld-friendly). Some historical variants placed stackmaps inside `.data.rel.ro`,
-  // so accept either.
+  // `.data.rel.ro.llvm_stackmaps` output section (currently inserted before `.bss` to remain
+  // lld-friendly). Some historical/script variants may merge them into `.data.rel.ro`, so accept
+  // either.
   let section = file
     .section_by_name(".data.rel.ro.llvm_stackmaps")
     .or_else(|| file.section_by_name(".data.rel.ro"))
