@@ -33,6 +33,8 @@ struct Capture {
   ok: bool,
 }
 
+// `test_fn` (compiled from an LLVM statepoint module in build.rs) calls into this
+// symbol. It captures FP/SP and delegates to the Rust helper below.
 core::arch::global_asm!(
   r#"
   .text

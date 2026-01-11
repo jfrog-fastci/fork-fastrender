@@ -365,6 +365,22 @@ pub fn clear_write_barrier_state_for_tests() {
   rt_gc_set_young_range(core::ptr::null_mut(), core::ptr::null_mut());
 }
 
+/// Debug/test helper: rebuild the global remembered set in-place.
+///
+/// Retains only objects for which `object_has_young_refs` returns `true`,
+/// clearing the per-object `REMEMBERED` bit for removed objects.
+///
+/// This is used by model-based generational GC tests that simulate minor GC
+/// scanning and want to validate the sticky remembered-set rebuild logic.
+#[doc(hidden)]
+pub fn remembered_set_scan_and_rebuild_for_tests(
+  mut object_has_young_refs: impl FnMut(*mut u8) -> bool,
+) {
+  REMEMBERED_SET
+    .lock()
+    .scan_and_rebuild(|obj| object_has_young_refs(obj));
+}
+
 #[inline]
 unsafe fn remember_old_object(obj: *mut u8) {
   debug_assert!(!obj.is_null());

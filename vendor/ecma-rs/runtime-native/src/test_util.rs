@@ -11,10 +11,12 @@
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::abi::PromiseRef;
 use crate::async_rt;
+use crate::gc::YOUNG_SPACE;
 use crate::time;
 
 static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -67,6 +69,43 @@ impl Drop for TestRuntimeGuard {
 pub fn with_test_runtime<T>(f: impl FnOnce() -> T) -> T {
   let _guard = TestRuntimeGuard::new();
   f()
+}
+
+// --- GC testing helpers -------------------------------------------------------------------------
+
+static GC_TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// A per-test guard that serializes access to global GC state used by the write barrier.
+///
+/// Today this includes the process-global young-generation range (`YOUNG_SPACE`) set via
+/// `rt_gc_set_young_range`. Integration tests that mutate the range must acquire this guard to stay
+/// deterministic under parallel test execution.
+pub struct TestGcGuard {
+  _lock: parking_lot::MutexGuard<'static, ()>,
+  prev_young_start: usize,
+  prev_young_end: usize,
+}
+
+impl TestGcGuard {
+  pub fn new() -> Self {
+    let lock = GC_TEST_MUTEX.lock();
+    let prev_young_start = YOUNG_SPACE.start.load(Ordering::Acquire);
+    let prev_young_end = YOUNG_SPACE.end.load(Ordering::Acquire);
+    Self {
+      _lock: lock,
+      prev_young_start,
+      prev_young_end,
+    }
+  }
+}
+
+impl Drop for TestGcGuard {
+  fn drop(&mut self) {
+    YOUNG_SPACE
+      .start
+      .store(self.prev_young_start, Ordering::Release);
+    YOUNG_SPACE.end.store(self.prev_young_end, Ordering::Release);
+  }
 }
 
 // --- Scheduling helpers used by integration tests ----------------------------------------------

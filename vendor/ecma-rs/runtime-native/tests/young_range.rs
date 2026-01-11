@@ -2,6 +2,7 @@ use std::mem;
 use std::ptr;
 
 use runtime_native::gc::ObjHeader;
+use runtime_native::test_util::TestGcGuard;
 
 #[repr(C)]
 struct FakeObj {
@@ -26,6 +27,7 @@ fn ptr_range_for_obj(obj: &mut FakeObj) -> (*mut u8, *mut u8) {
 
 #[test]
 fn write_barrier_uses_updateable_young_range() {
+  let _gc = TestGcGuard::new();
   let mut young_a = new_fake_obj();
   let (start_a, end_a) = ptr_range_for_obj(&mut young_a);
   runtime_native::rt_gc_set_young_range(start_a, end_a);

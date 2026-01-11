@@ -138,6 +138,17 @@ done
 set -- "${argv[@]}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Directory to run `cargo` in.
+#
+# By default, we execute cargo from the monorepo root so it picks up:
+# - `<repo_root>/.cargo/config.toml`
+# - `<repo_root>/rust-toolchain.toml` (if present)
+#
+# However, `vendor/ecma-rs` is a nested workspace with its own `.cargo/config.toml`
+# (notably `RUSTC_BOOTSTRAP=1` for `cargo-fuzz` + a few runtime crates). When we
+# auto-scope a command to the nested workspace, run cargo from `vendor/ecma-rs/`
+# so those settings are applied.
+cargo_workdir="${repo_root}"
 
 # Compatibility: `vendor/ecma-rs` is a nested workspace (excluded from the
 # top-level Cargo workspace). Some workflows still want to run commands like:
@@ -172,6 +183,7 @@ if [[ "$*" != *"--manifest-path"* ]]; then
         "${argv[@]:${insert_pos}}"
       )
       set -- "${argv[@]}"
+      cargo_workdir="${repo_root}/vendor/ecma-rs"
       break
     fi
   done
@@ -289,6 +301,7 @@ run_cargo() {
   local cargo_cmd=(cargo)
   local toolchain_arg=""
   local subcommand=""
+  local workdir="${cargo_workdir}"
 
   # Cargo expects `-j/--jobs` to appear after the subcommand (`cargo test -j 1`, not `cargo -j 1 test`).
   # See: https://doc.rust-lang.org/cargo/commands/cargo.html
@@ -326,6 +339,7 @@ run_cargo() {
   # RLIMIT_AS cap). This keeps the wrapper compatible with `scripts/cargo_agent.sh xtask ...` while
   # allowing xtask to run nested cargo commands.
   if [[ "${subcommand}" == "xtask" ]]; then
+    workdir="${repo_root}"
     local build_cmd=(cargo)
     if [[ -n "${toolchain_arg}" ]]; then
       build_cmd+=("${toolchain_arg}")
@@ -335,9 +349,9 @@ run_cargo() {
       build_cmd+=(-j "${jobs}")
     fi
     if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" ]]; then
-      "${build_cmd[@]}"
+      (cd "${workdir}" && "${build_cmd[@]}")
     else
-      bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${build_cmd[@]}"
+      (cd "${workdir}" && bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${build_cmd[@]}")
     fi
 
     local target_dir="${CARGO_TARGET_DIR:-}"
@@ -357,9 +371,9 @@ run_cargo() {
     fi
 
     if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" ]]; then
-      "${xtask_bin}" "$@"
+      (cd "${workdir}" && "${xtask_bin}" "$@")
     else
-      bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${xtask_bin}" "$@"
+      (cd "${workdir}" && bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${xtask_bin}" "$@")
     fi
     return $?
   fi
@@ -379,14 +393,14 @@ run_cargo() {
   cargo_cmd+=("$@")
 
   if [[ -z "${limit_as}" || "${limit_as}" == "0" || "${limit_as}" == "off" ]]; then
-    "${cargo_cmd[@]}"
+    (cd "${workdir}" && "${cargo_cmd[@]}")
     return $?
   fi
 
   # Invoke through `bash`:
   # - Some agent/CI environments mount repos with `noexec`, which prevents executing scripts directly.
   # - Some environments check out scripts without the executable bit (e.g. CI artifact tars).
-  bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}"
+  (cd "${workdir}" && bash "${repo_root}/scripts/run_limited.sh" --as "${limit_as}" -- "${cargo_cmd[@]}")
   return $?
 }
 
