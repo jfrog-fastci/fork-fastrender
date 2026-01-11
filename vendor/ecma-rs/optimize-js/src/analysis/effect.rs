@@ -308,7 +308,7 @@ mod tests {
 
   #[test]
   fn return_is_pure_and_never_throws() {
-    let inst = Inst::ret(Arg::Const(Const::Undefined));
+    let inst = Inst::ret(None);
     let eff = inst_local_effect(&inst);
     assert!(eff.is_pure());
     assert_eq!(eff.summary.throws, ThrowBehavior::Never);

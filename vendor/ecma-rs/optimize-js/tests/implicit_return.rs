@@ -2,7 +2,7 @@
 mod common;
 
 use common::compile_source;
-use optimize_js::il::inst::{Arg, Const, InstTyp};
+use optimize_js::il::inst::InstTyp;
 use optimize_js::TopLevelMode;
 
 #[test]
@@ -19,13 +19,11 @@ fn function_falling_off_end_inserts_explicit_return() {
     .bblocks
     .all()
     .flat_map(|(_, block)| block.iter())
-    .any(|inst| {
-      inst.t == InstTyp::Return && matches!(inst.as_return(), Arg::Const(Const::Undefined))
-    });
+    .any(|inst| inst.t == InstTyp::Return && inst.as_return().is_none());
 
   assert!(
     has_implicit_return,
-    "expected implicit function return to be lowered as Return(undefined)"
+    "expected implicit function return to be lowered as Return() (implicit undefined)"
   );
 }
 

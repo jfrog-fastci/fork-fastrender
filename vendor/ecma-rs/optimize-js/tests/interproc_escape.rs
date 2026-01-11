@@ -36,7 +36,7 @@ fn escape_of(result: &escape::EscapeResult, var: u32) -> EscapeState {
 #[test]
 fn passing_alloc_to_helper_returning_param_does_not_force_global_escape() {
   // helper(x) { return x; }
-  let helper = func(cfg_single_block(vec![Inst::ret(Arg::Var(0))]), vec![0]);
+  let helper = func(cfg_single_block(vec![Inst::ret(Some(Arg::Var(0)))]), vec![0]);
 
   // caller() { const o = {}; helper(o); }
   let caller = func(
@@ -55,7 +55,7 @@ fn passing_alloc_to_helper_returning_param_does_not_force_global_escape() {
         vec![Arg::Var(0)],
         Vec::new(),
       ),
-      Inst::ret(Arg::Const(Const::Undefined)),
+      Inst::ret(None),
     ]),
     Vec::new(),
   );
@@ -80,7 +80,7 @@ fn passing_alloc_to_helper_returning_param_does_not_force_global_escape() {
 #[test]
 fn returning_helper_call_result_marks_alloc_as_return_escape() {
   // helper(x) { return x; }
-  let helper = func(cfg_single_block(vec![Inst::ret(Arg::Var(0))]), vec![0]);
+  let helper = func(cfg_single_block(vec![Inst::ret(Some(Arg::Var(0)))]), vec![0]);
 
   // caller() { const o = {}; return helper(o); }
   let caller = func(
@@ -99,7 +99,7 @@ fn returning_helper_call_result_marks_alloc_as_return_escape() {
         vec![Arg::Var(0)],
         Vec::new(),
       ),
-      Inst::ret(Arg::Var(1)),
+      Inst::ret(Some(Arg::Var(1))),
     ]),
     Vec::new(),
   );
@@ -127,7 +127,7 @@ fn helper_storing_param_to_global_forces_global_escape() {
   let helper = func(
     cfg_single_block(vec![
       Inst::unknown_store("unknownGlobal".to_string(), Arg::Var(0)),
-      Inst::ret(Arg::Const(Const::Undefined)),
+      Inst::ret(None),
     ]),
     vec![0],
   );
@@ -149,7 +149,7 @@ fn helper_storing_param_to_global_forces_global_escape() {
         vec![Arg::Var(0)],
         Vec::new(),
       ),
-      Inst::ret(Arg::Const(Const::Undefined)),
+      Inst::ret(None),
     ]),
     Vec::new(),
   );
@@ -173,7 +173,7 @@ fn helper_storing_param_to_global_forces_global_escape() {
 
 #[test]
 fn summaries_are_deterministic() {
-  let helper = func(cfg_single_block(vec![Inst::ret(Arg::Var(0))]), vec![0]);
+  let helper = func(cfg_single_block(vec![Inst::ret(Some(Arg::Var(0)))]), vec![0]);
   let caller = func(
     cfg_single_block(vec![
       Inst::call(
@@ -190,7 +190,7 @@ fn summaries_are_deterministic() {
         vec![Arg::Var(0)],
         Vec::new(),
       ),
-      Inst::ret(Arg::Var(1)),
+      Inst::ret(Some(Arg::Var(1))),
     ]),
     Vec::new(),
   );

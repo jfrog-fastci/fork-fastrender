@@ -362,7 +362,7 @@ mod tests {
         vec![],
         vec![],
       ),
-      Inst::ret(Arg::Var(0)),
+      Inst::ret(Some(Arg::Var(0))),
     ]);
     let ownership = analyze_cfg_ownership(&cfg);
     assert_eq!(ownership.get(&0), Some(&OwnershipState::Owned));

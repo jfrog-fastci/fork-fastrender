@@ -308,14 +308,17 @@ fn summarize_function(
         }
       }
       InstTyp::Return => {
-        let value = inst.as_return();
-        let origin = resolve_arg_origin(
-          value,
-          &param_to_index,
-          &defs,
-          callee_summaries,
-          &mut Vec::new(),
-        );
+        let origin = match inst.as_return() {
+          Some(value) => resolve_arg_origin(
+            value,
+            &param_to_index,
+            &defs,
+            callee_summaries,
+            &mut Vec::new(),
+          ),
+          // `return;` / falling off the end returns `undefined`.
+          None => Origin::Const,
+        };
         return_origins.push(origin);
         if let Origin::Param(p) = origin {
           param_escape[p] = max_escape(param_escape[p], EscapeState::ReturnEscape);

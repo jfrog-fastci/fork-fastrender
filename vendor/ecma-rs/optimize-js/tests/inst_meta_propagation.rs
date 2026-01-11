@@ -107,7 +107,7 @@ fn typed_type_id_survives_ssa_phi_lowering() {
     for (_, block) in cfg.bblocks.all() {
       for inst in block.iter() {
         if inst.t == InstTyp::Return {
-          if let Arg::Var(v) = inst.as_return() {
+          if let Some(Arg::Var(v)) = inst.as_return() {
             returned_vars.push(*v);
           }
         }

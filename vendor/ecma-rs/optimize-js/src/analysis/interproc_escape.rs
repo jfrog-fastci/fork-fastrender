@@ -258,9 +258,12 @@ fn compute_cfg_escape_summary(
     for inst in block.iter() {
       match inst.t {
         InstTyp::Return => {
-          for idx in params_for_arg(&var_params, inst.as_return()) {
-            summary.param_escape[idx] = summary.param_escape[idx].join(EscapeState::ReturnEscape);
-            summary.returns_param.insert(idx);
+          if let Some(value) = inst.as_return() {
+            for idx in params_for_arg(&var_params, value) {
+              summary.param_escape[idx] =
+                summary.param_escape[idx].join(EscapeState::ReturnEscape);
+              summary.returns_param.insert(idx);
+            }
           }
         }
         InstTyp::Throw => {

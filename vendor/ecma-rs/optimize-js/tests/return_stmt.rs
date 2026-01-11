@@ -74,6 +74,9 @@ fn return_void_lower_to_return_undefined() {
     .bblocks
     .all()
     .flat_map(|(_, b)| b.iter())
-    .any(|inst| inst.t == InstTyp::Return && inst.args.as_slice() == [Arg::Const(Const::Undefined)]);
-  assert!(saw_return_undefined, "expected Return inst returning undefined for `return;`");
+    .any(|inst| inst.t == InstTyp::Return && inst.as_return().is_none());
+  assert!(
+    saw_return_undefined,
+    "expected Return inst with implicit undefined for `return;`"
+  );
 }
