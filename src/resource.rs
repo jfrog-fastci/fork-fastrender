@@ -3865,11 +3865,6 @@ struct HttpCacheValidators<'a> {
 // CORS preflight cache (Fetch Standard)
 // ============================================================================
 
-/// Default `Access-Control-Max-Age` value when the header is missing/invalid.
-///
-/// Fetch Standard: https://fetch.spec.whatwg.org/#cors-preflight-fetch (step 9.6).
-const CORS_PREFLIGHT_DEFAULT_MAX_AGE_SECS: u64 = 5;
-
 /// Max cap applied to `Access-Control-Max-Age`.
 ///
 /// Fetch allows an "imposed limit on max-age". FastRender clamps to 2 hours to avoid unbounded
@@ -3907,7 +3902,7 @@ fn cors_preflight_cache_entry_match(
   partition_key: Option<&str>,
   origin: &str,
   url: &str,
-  credentials_mode: FetchCredentialsMode,
+  credentialed: bool,
 ) -> bool {
   if entry.partition_key.as_deref() != partition_key {
     return false;
@@ -3918,11 +3913,7 @@ fn cors_preflight_cache_entry_match(
   if entry.url != url {
     return false;
   }
-
-  // Fetch Standard "cache entry match":
-  // - credentialed cache entries can match non-credentialed requests
-  // - non-credentialed entries do not match credentialed requests
-  entry.credentials || credentials_mode != FetchCredentialsMode::Include
+  entry.credentials == credentialed
 }
 
 fn cors_preflight_method_cache_entry_match(entry_method: Option<&str>, method: &str) -> bool {
@@ -3952,11 +3943,11 @@ impl CorsPreflightCache {
     partition_key: Option<&str>,
     origin: &str,
     url: &str,
-    credentials_mode: FetchCredentialsMode,
+    credentialed: bool,
     method: &str,
   ) -> bool {
     self.entries.iter().any(|entry| {
-      cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentials_mode)
+      cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
         && cors_preflight_method_cache_entry_match(entry.method.as_deref(), method)
     })
   }
@@ -3966,11 +3957,11 @@ impl CorsPreflightCache {
     partition_key: Option<&str>,
     origin: &str,
     url: &str,
-    credentials_mode: FetchCredentialsMode,
+    credentialed: bool,
     header_name: &str,
   ) -> bool {
     self.entries.iter().any(|entry| {
-      cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentials_mode)
+      cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
         && cors_preflight_header_name_cache_entry_match(entry.header_name.as_deref(), header_name)
     })
   }
@@ -3982,15 +3973,21 @@ impl CorsPreflightCache {
     partition_key: Option<&str>,
     origin: &str,
     url: &str,
-    credentials_mode: FetchCredentialsMode,
+    credentialed: bool,
     method: &str,
   ) {
     let expiry = cors_preflight_expiry(now, max_age_secs);
 
+    let method = if method == "*" {
+      "*".to_string()
+    } else {
+      method.to_ascii_lowercase()
+    };
+
     let mut updated_any = false;
     for entry in &mut self.entries {
-      if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentials_mode)
-        && cors_preflight_method_cache_entry_match(entry.method.as_deref(), method)
+      if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
+        && cors_preflight_method_cache_entry_match(entry.method.as_deref(), &method)
       {
         entry.expires_at = expiry;
         updated_any = true;
@@ -4005,8 +4002,8 @@ impl CorsPreflightCache {
       origin: origin.to_string(),
       url: url.to_string(),
       expires_at: expiry,
-      credentials: credentials_mode == FetchCredentialsMode::Include,
-      method: Some(method.to_string()),
+      credentials: credentialed,
+      method: Some(method),
       header_name: None,
     });
   }
@@ -4018,15 +4015,21 @@ impl CorsPreflightCache {
     partition_key: Option<&str>,
     origin: &str,
     url: &str,
-    credentials_mode: FetchCredentialsMode,
+    credentialed: bool,
     header_name: &str,
   ) {
     let expiry = cors_preflight_expiry(now, max_age_secs);
 
+    let header_name = if header_name == "*" {
+      "*".to_string()
+    } else {
+      header_name.to_ascii_lowercase()
+    };
+
     let mut updated_any = false;
     for entry in &mut self.entries {
-      if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentials_mode)
-        && cors_preflight_header_name_cache_entry_match(entry.header_name.as_deref(), header_name)
+      if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
+        && cors_preflight_header_name_cache_entry_match(entry.header_name.as_deref(), &header_name)
       {
         entry.expires_at = expiry;
         updated_any = true;
@@ -4041,9 +4044,9 @@ impl CorsPreflightCache {
       origin: origin.to_string(),
       url: url.to_string(),
       expires_at: expiry,
-      credentials: credentials_mode == FetchCredentialsMode::Include,
+      credentials: credentialed,
       method: None,
-      header_name: Some(header_name.to_string()),
+      header_name: Some(header_name),
     });
   }
 }
@@ -5273,73 +5276,152 @@ impl HttpFetcher {
 
     let method_is_safelisted = is_cors_safelisted_method(method);
 
-    let mut sanitized_user_headers: Vec<(String, String)> = Vec::new();
-    merge_user_request_headers(url, &mut sanitized_user_headers, user_headers)?;
-
-    let unsafe_header_names = cors_unsafe_request_header_names(&sanitized_user_headers);
     // Determine which user-specified headers are CORS-unsafe and would therefore need to be
     // included in `Access-Control-Request-Headers`.
     //
     // Note: this uses Fetch's "CORS-unsafe request-header names" algorithm, which accounts for
     // each header list entry (preserving duplicates) and applies a 1024-byte cap over the total
     // size of CORS-safelisted header values.
+    let mut sanitized_user_headers: Vec<(String, String)> = Vec::new();
+    merge_user_request_headers(url, &mut sanitized_user_headers, user_headers)?;
+    let unsafe_header_names = cors_unsafe_request_header_names(&sanitized_user_headers);
+
     let needs_preflight = !method_is_safelisted || !unsafe_header_names.is_empty();
     if !needs_preflight {
       return Ok(());
     }
 
-    let Some(origin_header_value) =
-      cors_origin_key_from_client_origin(Some(client_origin)).filter(|value| !value.is_empty())
-    else {
+    let origin_header_value = build_http_header_pairs(
+      url,
+      &self.user_agent,
+      &self.accept_language,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      destination,
+      Some(client_origin),
+      referrer_url,
+      referrer_policy,
+    )
+    .into_iter()
+    .find(|(name, _)| name.eq_ignore_ascii_case("origin"))
+    .map(|(_, value)| value)
+    .filter(|value| !value.is_empty());
+    let Some(origin_header_value) = origin_header_value else {
       return Ok(());
     };
+
     let partition_key = cors_cache_partitioning_enabled().then(|| origin_header_value.clone());
+    let credentialed = cookies_allowed_for_request(credentials_mode, url, Some(client_origin));
 
     let now = Instant::now();
+    let needs_method_entry = !method_is_safelisted;
     {
       let mut cache = self.cors_preflight_cache.lock().unwrap();
       cache.prune_expired(now);
 
-      let missing_method_match = !method_is_safelisted
+      let missing_method_match = needs_method_entry
         && !cache.method_cache_entry_match(
           partition_key.as_deref(),
           &origin_header_value,
           url,
-          credentials_mode,
+          credentialed,
           method,
         );
-
       let missing_header_match = unsafe_header_names.iter().any(|name| {
         !cache.header_name_cache_entry_match(
           partition_key.as_deref(),
           &origin_header_value,
           url,
-          credentials_mode,
+          credentialed,
           name,
         )
       });
-
       if !missing_method_match && !missing_header_match {
         return Ok(());
       }
     }
 
-    self.perform_cors_preflight_request(
+    let preflight_response = self.perform_cors_preflight_request(
       kind,
       destination,
       url,
       method,
-      &sanitized_user_headers,
       &unsafe_header_names,
       Some(client_origin),
       referrer_url,
       referrer_policy,
-      credentials_mode,
-      partition_key.as_deref(),
-      &origin_header_value,
       deadline,
       started,
-    )
+    )?;
+
+    if let Err(message) =
+      validate_cors_allow_origin(&preflight_response, url, Some(client_origin), credentials_mode)
+    {
+      return Err(response_resource_error(&preflight_response, url, message));
+    }
+
+    let allow_methods = cors_preflight_extract_methods(&preflight_response)
+      .map_err(|message| response_resource_error(&preflight_response, url, message))?;
+    let allow_headers = cors_preflight_extract_header_names(&preflight_response)
+      .map_err(|message| response_resource_error(&preflight_response, url, message))?;
+
+    cors_preflight_validate_allow_methods(
+      method,
+      method_is_safelisted,
+      credentials_mode,
+      allow_methods.as_deref(),
+      &preflight_response,
+      url,
+    )?;
+
+    cors_preflight_validate_allow_headers(
+      &sanitized_user_headers,
+      &unsafe_header_names,
+      credentials_mode,
+      allow_headers.as_deref(),
+      &preflight_response,
+      url,
+    )?;
+
+    let Some(max_age_secs) = cors_preflight_parse_max_age_secs(&preflight_response) else {
+      return Ok(());
+    };
+    if max_age_secs == 0 {
+      return Ok(());
+    }
+    let max_age_secs = max_age_secs.min(CORS_PREFLIGHT_MAX_AGE_CAP_SECS);
+
+    let now = Instant::now();
+    let mut cache = self.cors_preflight_cache.lock().unwrap();
+    cache.prune_expired(now);
+    if let Some(methods) = allow_methods.as_deref() {
+      for allowed in methods {
+        cache.update_or_insert_method(
+          now,
+          max_age_secs,
+          partition_key.as_deref(),
+          &origin_header_value,
+          url,
+          credentialed,
+          allowed,
+        );
+      }
+    }
+    if let Some(header_names) = allow_headers.as_deref() {
+      for allowed in header_names {
+        cache.update_or_insert_header_name(
+          now,
+          max_age_secs,
+          partition_key.as_deref(),
+          &origin_header_value,
+          url,
+          credentialed,
+          allowed,
+        );
+      }
+    }
+
+    Ok(())
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -5349,17 +5431,13 @@ impl HttpFetcher {
     destination: FetchDestination,
     url: &str,
     method: &str,
-    request_headers: &[(String, String)],
     unsafe_header_names: &[String],
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
-    credentials_mode: FetchCredentialsMode,
-    partition_key: Option<&str>,
-    origin_header_value: &str,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
-  ) -> Result<()> {
+  ) -> Result<FetchedResource> {
     // Determine a request timeout consistent with the main fetch path (best-effort; preflight
     // responses should be small).
     let timeout_budget = self.timeout_budget(deadline);
@@ -5443,103 +5521,15 @@ impl HttpFetcher {
     let headers = response.headers();
     let (access_control_allow_origin, access_control_allow_credentials) =
       parse_cors_response_headers(headers);
+    let response_headers = collect_response_headers(headers);
     let mut preflight_resource = FetchedResource::new(Vec::new(), None);
     preflight_resource.status = Some(status);
     preflight_resource.final_url = Some(url.to_string());
     preflight_resource.access_control_allow_origin = access_control_allow_origin;
     preflight_resource.access_control_allow_credentials = access_control_allow_credentials;
-    let mut response_headers: Vec<(String, String)> = Vec::new();
-    for name in ["access-control-allow-methods", "access-control-allow-headers"] {
-      for value in headers.get_all(name) {
-        let value = value.to_str().map_err(|_| {
-          Error::Resource(
-            ResourceError::new(url.to_string(), format!("CORS preflight failed: invalid {name} value"))
-              .with_status(status)
-              .with_final_url(url.to_string()),
-          )
-        })?;
-        response_headers.push((name.to_string(), value.to_string()));
-      }
-    }
-    // Fetch: invalid/malformed `Access-Control-Max-Age` values are treated as a default max-age
-    // (5 seconds), so we ignore invalid bytes rather than failing the preflight.
-    for value in headers.get_all("access-control-max-age") {
-      if let Ok(value) = value.to_str() {
-        response_headers.push(("access-control-max-age".to_string(), value.to_string()));
-      }
-    }
     preflight_resource.response_headers = Some(response_headers);
-    if let Err(message) =
-      validate_cors_allow_origin(&preflight_resource, url, client_origin, credentials_mode)
-    {
-      return Err(Error::Resource(
-        ResourceError::new(
-          url.to_string(),
-          format!("blocked by CORS preflight: {message}"),
-        )
-        .with_status(status)
-        .with_final_url(url.to_string()),
-      ));
-    }
 
-    let allow_methods = cors_preflight_extract_methods(&preflight_resource)
-      .map_err(|message| response_resource_error(&preflight_resource, url, message))?;
-    let allow_headers = cors_preflight_extract_header_names(&preflight_resource)
-      .map_err(|message| response_resource_error(&preflight_resource, url, message))?;
-
-    let method_is_safelisted = is_cors_safelisted_method(method);
-    cors_preflight_validate_allow_methods(
-      method,
-      method_is_safelisted,
-      credentials_mode,
-      allow_methods.as_deref(),
-      &preflight_resource,
-      url,
-    )?;
-    cors_preflight_validate_allow_headers(
-      request_headers,
-      unsafe_header_names,
-      credentials_mode,
-      allow_headers.as_deref(),
-      &preflight_resource,
-      url,
-    )?;
-
-    let max_age_secs = cors_preflight_parse_max_age_secs(&preflight_resource)
-      .unwrap_or(CORS_PREFLIGHT_DEFAULT_MAX_AGE_SECS)
-      .min(CORS_PREFLIGHT_MAX_AGE_CAP_SECS);
-
-    let now = Instant::now();
-    let mut cache = self.cors_preflight_cache.lock().unwrap();
-    cache.prune_expired(now);
-    if let Some(methods) = allow_methods.as_deref() {
-      for allowed in methods {
-        cache.update_or_insert_method(
-          now,
-          max_age_secs,
-          partition_key,
-          origin_header_value,
-          url,
-          credentials_mode,
-          allowed,
-        );
-      }
-    }
-    if let Some(header_names) = allow_headers.as_deref() {
-      for allowed in header_names {
-        cache.update_or_insert_header_name(
-          now,
-          max_age_secs,
-          partition_key,
-          origin_header_value,
-          url,
-          credentials_mode,
-          allowed,
-        );
-      }
-    }
-
-    Ok(())
+    Ok(preflight_resource)
   }
 
   fn fetch_http_with_context_inner<'a>(
