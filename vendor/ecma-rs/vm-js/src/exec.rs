@@ -1984,6 +1984,21 @@ impl<'a> Evaluator<'a> {
       return Ok(Completion::empty());
     }
 
+    // If the block declares no lexical bindings, evaluating the statement list in the existing
+    // lexical environment is equivalent to creating a fresh empty environment.
+    //
+    // This avoids allocating an empty `EnvRecord` for blocks like `{ x++; }` that are executed in
+    // tight loops, keeping fuel-based termination responsive for hostile input.
+    let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
+      Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+      Stmt::ClassDecl(_) => true,
+      Stmt::FunctionDecl(_) => self.strict,
+      _ => false,
+    });
+    if !needs_lexical_env {
+      return self.eval_stmt_list(scope, &block.body);
+    }
+
     let outer = self.env.lexical_env;
     let block_env = scope.env_create(Some(outer))?;
     self.env.set_lexical_env(scope.heap_mut(), block_env);
