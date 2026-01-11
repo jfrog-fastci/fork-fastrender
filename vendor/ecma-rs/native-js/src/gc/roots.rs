@@ -97,6 +97,7 @@ unsafe fn direct_callee_gc_effect_from_attrs(callee: LLVMValueRef) -> Option<GcE
 
 pub struct GcFrame {
   gc_ptr_ty: LLVMTypeRef,
+  entry_block: LLVMBasicBlockRef,
   alloca_builder: LLVMBuilderRef,
   rooted: RefCell<Vec<GcRoot>>,
   next_slot_id: Cell<usize>,
@@ -133,6 +134,7 @@ impl GcFrame {
 
     Self {
       gc_ptr_ty,
+      entry_block,
       alloca_builder,
       rooted: RefCell::new(Vec::new()),
       next_slot_id: Cell::new(0),
@@ -149,6 +151,21 @@ impl GcFrame {
   /// dedicated alloca builder) while the initializing store happens at the
   /// caller's current insertion point.
   unsafe fn alloc_slot_untracked(&self, builder: LLVMBuilderRef, init: LLVMValueRef) -> GcSlot {
+    // Place allocas at the start of the entry block so they dominate all uses, regardless of where
+    // roots are created from (including from within nested blocks) and regardless of how the
+    // caller positions its main builder within the entry block.
+    //
+    // This is important even if the entry block was empty at `GcFrame::new` time: other codegen may
+    // later insert instructions into the entry, and the alloca builder's insertion point would
+    // otherwise drift to the end of the block, producing `store` instructions that can precede the
+    // alloca in the same block (invalid IR).
+    let first = LLVMGetFirstInstruction(self.entry_block);
+    if first.is_null() {
+      LLVMPositionBuilderAtEnd(self.alloca_builder, self.entry_block);
+    } else {
+      LLVMPositionBuilderBefore(self.alloca_builder, first);
+    }
+
     let slot_id = self.next_slot_id.get();
     self.next_slot_id.set(slot_id + 1);
     let slot_name = CString::new(format!("gc_root{slot_id}")).unwrap();
@@ -363,15 +380,22 @@ impl GcFrame {
     match effect {
       GcEffect::NoGc => {
         let ret_ty = LLVMGetReturnType(callee_fn_ty);
+        let is_void = LLVMGetTypeKind(ret_ty) == LLVMTypeKind::LLVMVoidTypeKind;
+        // Void-typed instructions must not have SSA names (`%x = call void ...` is invalid).
+        let call_name = if is_void {
+          b"\0".as_ptr().cast()
+        } else {
+          b"call\0".as_ptr().cast()
+        };
         let call = LLVMBuildCall2(
           builder,
           callee_fn_ty,
           callee_ptr,
           call_args.as_ptr().cast_mut(),
           call_args.len() as u32,
-          b"call\0".as_ptr().cast(),
+          call_name,
         );
-        if LLVMGetTypeKind(ret_ty) == LLVMTypeKind::LLVMVoidTypeKind {
+        if is_void {
           None
         } else {
           Some(call)

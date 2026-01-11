@@ -1,12 +1,14 @@
 use crate::gc::roots::GcFrame;
 use crate::gc::statepoint::StatepointEmitter;
+use crate::runtime_fn::GcEffect;
 use llvm_sys::analysis::{LLVMVerifyModule, LLVMVerifierFailureAction};
 use llvm_sys::core::{
-  LLVMAppendBasicBlockInContext, LLVMBuildGEP2, LLVMBuildRetVoid, LLVMConstInt, LLVMConstNull,
-  LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
-  LLVMDisposeMessage, LLVMDisposeModule, LLVMFunctionType, LLVMGetNamedFunction, LLVMGetParam,
-  LLVMInt8TypeInContext, LLVMInt64TypeInContext, LLVMPointerType, LLVMModuleCreateWithNameInContext,
-  LLVMPositionBuilderAtEnd, LLVMPrintModuleToString, LLVMSetGC, LLVMVoidTypeInContext,
+  LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildGEP2, LLVMBuildRetVoid, LLVMConstInt,
+  LLVMConstNull, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext,
+  LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMFunctionType, LLVMGetNamedFunction,
+  LLVMGetParam, LLVMInt8TypeInContext, LLVMInt64TypeInContext, LLVMPointerType,
+  LLVMModuleCreateWithNameInContext, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore,
+  LLVMPrintModuleToString, LLVMSetGC, LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{LLVMModuleRef, LLVMValueRef};
 use std::ffi::{CStr, CString};
@@ -52,6 +54,119 @@ pub fn demo_gc_root_slots_ir() -> String {
 
     frame.safepoint_call(builder, &mut sp, callee, &[]);
 
+    LLVMBuildRetVoid(builder);
+
+    verify_module(module);
+
+    let c_str = LLVMPrintModuleToString(module);
+    let ir = CStr::from_ptr(c_str).to_string_lossy().into_owned();
+    LLVMDisposeMessage(c_str);
+
+    LLVMDisposeBuilder(builder);
+    LLVMDisposeModule(module);
+    LLVMContextDispose(ctx);
+
+    ir
+  }
+}
+
+/// Regression fixture for `GcFrame` alloca placement.
+///
+/// This intentionally creates the `GcFrame` while the entry block is empty, then inserts a normal
+/// instruction into the entry block, repositions the main builder *before* that instruction, and
+/// finally creates a rooted slot.
+///
+/// If allocas are inserted at the end of the entry block, the root slot store would precede the
+/// alloca in the same block (invalid IR). The module verifier should therefore succeed only if the
+/// `GcFrame` always inserts allocas at the entry block start.
+pub fn demo_gc_root_alloca_dominance_ir() -> String {
+  unsafe {
+    let ctx = LLVMContextCreate();
+    let module = LLVMModuleCreateWithNameInContext(b"demo_alloca_dominance\0".as_ptr().cast(), ctx);
+    let builder = LLVMCreateBuilderInContext(ctx);
+
+    // Declare `void @callee()`.
+    let void_ty = LLVMVoidTypeInContext(ctx);
+    let callee_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
+    let callee = llvm_get_or_add_fn(module, "callee", callee_fn_ty);
+
+    // Define `void @test() gc "coreclr"`.
+    let test_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
+    let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
+    let gc_name = CString::new(GC_STRATEGY).unwrap();
+    LLVMSetGC(test_fn, gc_name.as_ptr());
+
+    let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
+    LLVMPositionBuilderAtEnd(builder, entry);
+
+    // Create the frame while the entry block is empty.
+    let frame = GcFrame::new(ctx, entry);
+    let null_gc = LLVMConstNull(frame.gc_ptr_ty());
+
+    // Insert a dummy call so we have an instruction to position the builder before.
+    let dummy_call = LLVMBuildCall2(
+      builder,
+      callee_fn_ty,
+      callee,
+      ptr::null_mut(),
+      0,
+      // Note: void-returning instructions must not have SSA names.
+      b"\0".as_ptr().cast(),
+    );
+
+    // Now position the builder before the dummy call and allocate a rooted slot. This will emit a
+    // store at this position, while the alloca itself should still be placed at the start of the
+    // entry block.
+    LLVMPositionBuilderBefore(builder, dummy_call);
+    frame.alloc_slot(builder, null_gc);
+
+    // Finish the function.
+    LLVMPositionBuilderAtEnd(builder, entry);
+    LLVMBuildRetVoid(builder);
+
+    verify_module(module);
+
+    let c_str = LLVMPrintModuleToString(module);
+    let ir = CStr::from_ptr(c_str).to_string_lossy().into_owned();
+    LLVMDisposeMessage(c_str);
+
+    LLVMDisposeBuilder(builder);
+    LLVMDisposeModule(module);
+    LLVMContextDispose(ctx);
+
+    ir
+  }
+}
+
+/// Regression fixture for `GcFrame::compiled_call` when `effect = NoGc` and the callee returns `void`.
+///
+/// A `call void ...` instruction must not have an SSA name (`%x = call void ...` is invalid IR).
+pub fn demo_compiled_call_nogc_void_ir() -> String {
+  unsafe {
+    let ctx = LLVMContextCreate();
+    let module = LLVMModuleCreateWithNameInContext(b"demo_compiled_call\0".as_ptr().cast(), ctx);
+    let builder = LLVMCreateBuilderInContext(ctx);
+
+    // Declare `void @callee()`.
+    let void_ty = LLVMVoidTypeInContext(ctx);
+    let callee_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
+    let callee = llvm_get_or_add_fn(module, "callee", callee_fn_ty);
+
+    // Define `void @test() gc "coreclr"`.
+    let test_fn_ty = LLVMFunctionType(void_ty, ptr::null_mut(), 0, 0);
+    let test_fn = llvm_get_or_add_fn(module, "test", test_fn_ty);
+    let gc_name = CString::new(GC_STRATEGY).unwrap();
+    LLVMSetGC(test_fn, gc_name.as_ptr());
+
+    let entry = LLVMAppendBasicBlockInContext(ctx, test_fn, b"entry\0".as_ptr().cast());
+    LLVMPositionBuilderAtEnd(builder, entry);
+
+    // The statepoint emitter won't be used for `NoGc`, but `compiled_call` still requires it.
+    let gc_ptr_ty = LLVMPointerType(void_ty, 1);
+    let mut sp = StatepointEmitter::new(ctx, module, gc_ptr_ty);
+    let frame = GcFrame::new(ctx, entry);
+
+    frame.compiled_call(builder, &mut sp, callee, &[], Some(GcEffect::NoGc));
     LLVMBuildRetVoid(builder);
 
     verify_module(module);

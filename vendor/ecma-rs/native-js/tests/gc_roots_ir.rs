@@ -1,4 +1,5 @@
 use native_js::poc::{
+  demo_compiled_call_nogc_void_ir, demo_gc_root_alloca_dominance_ir,
   demo_gc_root_derived_ptr_ir, demo_gc_root_multi_derived_ptr_ir, demo_gc_root_slots_indirect_call_ir,
   demo_gc_root_slots_ir,
 };
@@ -39,6 +40,14 @@ fn parse_relocates(ir: &str) -> Vec<(String, u32, u32)> {
 fn gc_root_slots_writeback_relocates() {
   let ir = demo_gc_root_slots_ir();
 
+  // `native-js` uses the same default patchpoint ID as LLVM's `rewrite-statepoints-for-gc` pass
+  // (0xABCDEF00 / 2882400000) so `runtime-native` can cheaply identify statepoint records in debug
+  // verification mode.
+  assert!(
+    ir.contains("@llvm.experimental.gc.statepoint.p0(i64 2882400000, i32 0"),
+    "expected default statepoint patchpoint ID in IR:\n{ir}"
+  );
+
   // Allocas are in the entry block.
   assert!(ir.contains("entry:"));
   assert!(ir.contains("alloca ptr addrspace(1)"));
@@ -63,6 +72,38 @@ fn gc_root_slots_writeback_relocates() {
       "expected relocate result {ssa} to be stored back into {slot_name}:\n{ir}"
     );
   }
+}
+
+#[test]
+fn gc_root_alloca_dominates_entry_store() {
+  let ir = demo_gc_root_alloca_dominance_ir();
+
+  assert!(
+    ir.contains("alloca ptr addrspace(1)"),
+    "expected rooted slot alloca in IR:\n{ir}"
+  );
+  assert!(
+    ir.contains("store ptr addrspace(1) null, ptr %gc_root0"),
+    "expected root slot store in IR:\n{ir}"
+  );
+  assert!(
+    ir.contains("call void @callee"),
+    "expected fixture to contain the dummy call used to stress builder placement:\n{ir}"
+  );
+}
+
+#[test]
+fn compiled_call_nogc_void_emits_unnamed_void_call() {
+  let ir = demo_compiled_call_nogc_void_ir();
+
+  assert!(
+    ir.contains("call void @callee()"),
+    "expected a direct void call in IR:\n{ir}"
+  );
+  assert!(
+    !ir.contains("= call void @callee()"),
+    "void calls must not have SSA names:\n{ir}"
+  );
 }
 
 #[test]

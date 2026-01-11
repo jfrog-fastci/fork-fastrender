@@ -12,6 +12,13 @@ use llvm_sys::{LLVMCallConv, LLVMTypeKind};
 use std::collections::HashMap;
 use std::ffi::CString;
 
+/// Default `gc.statepoint` patchpoint ID (`patchpoint_id` in `.llvm_stackmaps`).
+///
+/// LLVM's `rewrite-statepoints-for-gc` pass uses this fixed ID by default. `runtime-native` uses it
+/// as a convention to cheaply identify statepoint-shaped stackmap records when running in
+/// verification mode.
+const DEFAULT_STATEPOINT_ID: u64 = 0xABCDEF00;
+
 /// Result of emitting a `gc.statepoint` + `gc.relocate` sequence.
 pub struct StatepointCall {
   pub token: LLVMValueRef,
@@ -243,7 +250,7 @@ impl StatepointEmitter {
     // In the PoC we emit no transition/deopt args and carry live pointers via
     // the `"gc-live"` operand bundle.
     let mut sp_args = Vec::with_capacity(5 + call_args.len() + 2);
-    sp_args.push(LLVMConstInt(self.i64_ty, 0, 0));
+    sp_args.push(LLVMConstInt(self.i64_ty, DEFAULT_STATEPOINT_ID, 0));
     // patch_bytes = 0 (normal call; patchable callsites reserve space with patch_bytes>0).
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0));
     sp_args.push(callee_ptr);
