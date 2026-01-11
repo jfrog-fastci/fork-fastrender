@@ -321,4 +321,46 @@ mod tests {
       drop(Box::from_raw(promise2_alloc));
     }
   }
+
+  #[test]
+  fn enqueue_reaction_jobs_roots_promise_once_for_batched_jobs() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    let drops = Box::new(AtomicUsize::new(0));
+    let bad_next = Box::new(AtomicUsize::new(0));
+    let drops_ptr: *const AtomicUsize = &*drops;
+    let bad_next_ptr: *const AtomicUsize = &*bad_next;
+
+    let n2 = make_node(null_mut(), drops_ptr, bad_next_ptr);
+    let n1 = make_node(n2, drops_ptr, bad_next_ptr);
+
+    let mut base_handles = 0usize;
+    crate::roots::global_persistent_handle_table().for_each_root_slot(|_| base_handles += 1);
+
+    let promise_alloc = Box::into_raw(Box::new(crate::test_util::new_promise_header_pending()));
+    let promise: PromiseRef = promise_alloc;
+    enqueue_reaction_jobs(promise, n1);
+
+    let mut handles_after_enqueue = 0usize;
+    crate::roots::global_persistent_handle_table().for_each_root_slot(|_| handles_after_enqueue += 1);
+    assert_eq!(
+      handles_after_enqueue,
+      base_handles + 1,
+      "batched reaction jobs must share a single persistent handle for the promise"
+    );
+
+    // Drop queued microtasks; this should drop both reaction nodes and release the persistent handle.
+    crate::async_rt::clear_state_for_tests();
+
+    let mut handles_after_clear = 0usize;
+    crate::roots::global_persistent_handle_table().for_each_root_slot(|_| handles_after_clear += 1);
+    assert_eq!(handles_after_clear, base_handles);
+
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
+    assert_eq!(bad_next.load(Ordering::SeqCst), 0);
+
+    unsafe {
+      drop(Box::from_raw(promise_alloc));
+    }
+  }
 }
