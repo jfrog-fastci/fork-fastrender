@@ -2772,6 +2772,19 @@ mod tests {
   }
 
   #[test]
+  fn font_metrics_use_os2_typo_metrics_when_use_typo_metrics_bit_is_set() {
+    // Mirrors `font_metrics_respect_use_typo_metrics_bit`, but with OS/2.fsSelection bit 7 set.
+    // We should switch to OS/2 typographic metrics (sTypo*).
+    let data = include_bytes!("../../tests/fixtures/fonts/line-metrics-selection-test-use-typo.ttf");
+    let metrics = FontMetrics::from_data(data, 0).expect("parse metrics");
+    assert_eq!(metrics.units_per_em, 1000);
+    assert_eq!(metrics.ascent, 800);
+    assert_eq!(metrics.descent, -200);
+    assert_eq!(metrics.line_gap, 0);
+    assert_eq!(metrics.line_height, 1000);
+  }
+
+  #[test]
   fn test_generic_family_from_str() {
     assert_eq!(GenericFamily::parse("serif"), Some(GenericFamily::Serif));
     assert_eq!(

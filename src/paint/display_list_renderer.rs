@@ -4559,6 +4559,25 @@ impl DisplayListRenderer {
   }
 
   #[inline]
+  fn snap_axis_aligned_stroke_center_to_device_pixels(coord: f32, width: f32) -> f32 {
+    if width <= 0.0 || !coord.is_finite() || !width.is_finite() {
+      return coord;
+    }
+    if !Self::is_near_integer(width) {
+      return coord;
+    }
+    let width_i = width.round() as i32;
+    if width_i <= 0 {
+      return coord;
+    }
+    if width_i % 2 == 0 {
+      coord.round()
+    } else {
+      (coord - 0.5).round() + 0.5
+    }
+  }
+
+  #[inline]
   fn snap_rect_origin_to_device_pixels(rect: Rect) -> Rect {
     Rect::from_xywh(rect.x().round(), rect.y().round(), rect.width(), rect.height())
   }
@@ -7465,6 +7484,40 @@ impl DisplayListRenderer {
         stroke.dash = StrokeDash::new(vec![3.0 * side.width, side.width], 0.0);
       }
       _ => {}
+    }
+
+    let mut x1 = x1;
+    let mut y1 = y1;
+    let mut x2 = x2;
+    let mut y2 = y2;
+    let transform_is_translate_only = (transform.sx - 1.0).abs() < 1e-6
+      && (transform.sy - 1.0).abs() < 1e-6
+      && transform.kx.abs() < 1e-6
+      && transform.ky.abs() < 1e-6;
+    if transform_is_translate_only
+      && stroke.dash.is_none()
+      && matches!(stroke.line_cap, tiny_skia::LineCap::Butt)
+      && Self::is_near_integer(stroke.width)
+    {
+      match edge.orientation() {
+        EdgeOrientation::Horizontal => {
+          let device_y = y1 + transform.ty;
+          let snapped_device_y =
+            Self::snap_axis_aligned_stroke_center_to_device_pixels(device_y, stroke.width);
+          let snapped_local_y = snapped_device_y - transform.ty;
+          y1 = snapped_local_y;
+          y2 = snapped_local_y;
+        }
+        EdgeOrientation::Vertical => {
+          let device_x = x1 + transform.tx;
+          let snapped_device_x =
+            Self::snap_axis_aligned_stroke_center_to_device_pixels(device_x, stroke.width);
+          let snapped_local_x = snapped_device_x - transform.tx;
+          x1 = snapped_local_x;
+          x2 = snapped_local_x;
+        }
+      }
+      paint.anti_alias = false;
     }
 
     let mut path = PathBuilder::new();
@@ -22935,6 +22988,36 @@ mod tests {
       .unwrap();
 
     assert_eq!(pix_double.data(), pix_solid.data());
+  }
+
+  #[test]
+  fn axis_aligned_border_snaps_to_single_device_pixel_row() {
+    let renderer = DisplayListRenderer::new(6, 4, Rgba::WHITE, FontContext::new()).unwrap();
+    let mut list = DisplayList::new();
+    let none = BorderSide {
+      width: 0.0,
+      style: CssBorderStyle::None,
+      color: Rgba::BLACK,
+    };
+    let bottom = BorderSide {
+      width: 1.0,
+      style: CssBorderStyle::Solid,
+      color: Rgba::rgb(221, 221, 221),
+    };
+    list.push(DisplayItem::Border(Box::new(BorderItem {
+      rect: Rect::from_xywh(0.0, 0.0, 6.0, 2.2),
+      top: none.clone(),
+      right: none.clone(),
+      bottom,
+      left: none,
+      image: None,
+      radii: BorderRadii::ZERO,
+      gap: None,
+    })));
+
+    let pixmap = renderer.render(&list).unwrap();
+    assert_eq!(pixel(&pixmap, 3, 1), (221, 221, 221, 255));
+    assert_eq!(pixel(&pixmap, 3, 2), (255, 255, 255, 255));
   }
 
   #[test]

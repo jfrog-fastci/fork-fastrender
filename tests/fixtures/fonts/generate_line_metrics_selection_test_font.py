@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Generate a tiny OpenType font fixture to test line metric selection.
+"""Generate tiny OpenType font fixtures to test line metric selection.
 
 The generated font intentionally sets different OS/2 typographic metrics vs hhea metrics, while
-leaving the OS/2.fsSelection.USE_TYPO_METRICS bit *unset*.
+allowing the OS/2.fsSelection.USE_TYPO_METRICS bit to be toggled.
 
 This lets the Rust side assert that we follow FreeType/browser metric selection rules: prefer hhea
-metrics unless USE_TYPO_METRICS is enabled.
+metrics unless USE_TYPO_METRICS is enabled, in which case prefer OS/2 typographic metrics.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def empty_glyph():
   return TTGlyphPen(None).glyph()
 
 
-def build_font(path: Path) -> None:
+def build_font(path: Path, *, use_typo_metrics: bool) -> None:
   fb = FontBuilder(UNITS_PER_EM, isTTF=True)
   glyph_order = [".notdef", "space", "A"]
   fb.setupGlyphOrder(glyph_order)
@@ -76,8 +76,11 @@ def build_font(path: Path) -> None:
     usWinDescent=max(abs(OS2_DESCENT), abs(HHEA_DESCENT)),
     usWeightClass=400,
   )
-  # Ensure USE_TYPO_METRICS stays unset.
-  fb.font["OS/2"].fsSelection = 0
+  # The USE_TYPO_METRICS bit is specified in OS/2 table version 4+. Set the version explicitly so
+  # toggling it is well-defined.
+  fb.font["OS/2"].version = 4
+  # Toggle OS/2.fsSelection.USE_TYPO_METRICS (bit 7).
+  fb.font["OS/2"].fsSelection = 0x80 if use_typo_metrics else 0
 
   fb.setupPost()
   fb.setupMaxp()
@@ -102,11 +105,14 @@ def build_font(path: Path) -> None:
 
 
 def main() -> None:
-  out = Path(__file__).resolve().parent / "line-metrics-selection-test.ttf"
-  build_font(out)
-  print(f"Wrote {out}")
+  out_dir = Path(__file__).resolve().parent
+  out_unset = out_dir / "line-metrics-selection-test.ttf"
+  out_set = out_dir / "line-metrics-selection-test-use-typo.ttf"
+  build_font(out_unset, use_typo_metrics=False)
+  build_font(out_set, use_typo_metrics=True)
+  print(f"Wrote {out_unset}")
+  print(f"Wrote {out_set}")
 
 
 if __name__ == "__main__":
   main()
-

@@ -3846,9 +3846,15 @@ impl FormattingContext for FlexFormattingContext {
       // child coordinates are computed against the final border-box dimensions.
       let rect_eps = 0.01;
       for _ in 0..2 {
-        let root_layout = taffy_tree
+        // Taffy rounds its published layout results to device pixels, but CSS layout needs to
+        // retain subpixel precision (e.g. `line-height: 1.4` produces a fractional cross size).
+        //
+        // Use the unrounded layout values for all downstream sizing/caching decisions so we don't
+        // accumulate rounding error as we walk the fragment tree.
+        taffy_tree
           .layout(root_node)
           .map_err(|e| LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e)))?;
+        let root_layout = taffy_tree.unrounded_layout(root_node);
         let taffy_border_box =
           Size::new(root_layout.size.width, root_layout.size.height);
         let desired_border_box =
@@ -3927,9 +3933,10 @@ impl FormattingContext for FlexFormattingContext {
         break;
       }
 
-      let root_layout = taffy_tree
+      taffy_tree
         .layout(root_node)
         .map_err(|e| LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e)))?;
+      let root_layout = taffy_tree.unrounded_layout(root_node);
       let root_origin_x = root_layout.location.x;
       let root_origin_y = root_layout.location.y;
 
@@ -4005,9 +4012,10 @@ impl FormattingContext for FlexFormattingContext {
         if auto_unskipped_nodes.contains(&ptr) {
           continue;
         }
-        let child_layout = taffy_tree.layout(*node_id).map_err(|e| {
+        taffy_tree.layout(*node_id).map_err(|e| {
           LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e))
         })?;
+        let child_layout = taffy_tree.unrounded_layout(*node_id);
         let mut child_bounds = Rect::from_xywh(
           child_layout.location.x - root_origin_x,
           child_layout.location.y - root_origin_y,
@@ -4129,7 +4137,8 @@ impl FormattingContext for FlexFormattingContext {
           style.max_size.height,
         );
       }
-      if let Ok(layout) = taffy_tree.layout(root_node) {
+      if let Ok(_) = taffy_tree.layout(root_node) {
+        let layout = taffy_tree.unrounded_layout(root_node);
         eprintln!(
           "[flex-taffy-root-layout] size=({:.2},{:.2}) loc=({:.2},{:.2})",
           layout.size.width, layout.size.height, layout.location.x, layout.location.y,
@@ -8962,9 +8971,10 @@ impl FlexFormattingContext {
     let rect_eps = 0.01;
 
     // Get layout from Taffy
-    let layout = taffy_tree
+    taffy_tree
       .layout(taffy_node)
       .map_err(|e| LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e)))?;
+    let layout = taffy_tree.unrounded_layout(taffy_node);
 
     // Create fragment rect (Taffy uses relative coordinates)
     let mut rect = Rect::new(
@@ -9469,9 +9479,10 @@ impl FlexFormattingContext {
         continue;
       };
 
-      let child_layout = taffy_tree
-        .layout(child_taffy)
-        .map_err(|e| LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e)))?;
+      taffy_tree.layout(child_taffy).map_err(|e| {
+        LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e))
+      })?;
+      let child_layout = taffy_tree.unrounded_layout(child_taffy);
       let child_loc_x = child_layout.location.x - rect.origin.x;
       let child_loc_y = child_layout.location.y - rect.origin.y;
       let mut layout_width = child_layout.size.width;

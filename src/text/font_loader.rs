@@ -1854,9 +1854,21 @@ impl FontContext {
     let target_weight = face.weight.0;
 
     let id = resolve_local_face_id(&self.db, local_name).or_else(|| {
-      self
-        .db
-        .query_full(local_name, FontWeight::new(target_weight), target_style, FontStretch::Normal)
+      // Some authors (and even real-world stylesheets in our fixture corpus) use `local()` with a
+      // *family* name instead of a full face/PostScript name. Support that compat pattern by
+      // attempting a family-name query.
+      //
+      // IMPORTANT: `local()` is still a strict lookup. It must not fall back to generic families
+      // (e.g. `sans-serif`) when the requested family is missing; otherwise a missing `local()`
+      // source would incorrectly "succeed" and prevent later `url(...)` sources from loading.
+      let families = [fontdb::Family::Name(local_name)];
+      let query = fontdb::Query {
+        families: &families,
+        weight: fontdb::Weight(target_weight),
+        style: target_style.into(),
+        stretch: FontStretch::Normal.into(),
+      };
+      self.db.inner().query(&query)
     });
 
     if let Some(id) = id {
@@ -4767,6 +4779,240 @@ mod tests {
       .get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal)
       .expect("expected font to load");
     assert_eq!(loaded.data.as_slice(), font_data);
+  }
+
+  #[test]
+  fn web_font_src_urls_resolve_relative_to_source_stylesheet_url() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let font_fixture = manifest_dir.join("tests/fixtures/fonts/NotoSansMono-subset.ttf");
+    if !font_fixture.is_file() {
+      return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let assets_dir = dir.path().join("assets");
+    fs::create_dir(&assets_dir).expect("create assets dir");
+
+    let font_target = assets_dir.join("font.ttf");
+    fs::copy(&font_fixture, &font_target).expect("copy font fixture");
+
+    let stylesheet_path = assets_dir.join("styles.css");
+    fs::write(&stylesheet_path, b"/* stylesheet base */").expect("write stylesheet");
+    let stylesheet_url = Url::from_file_path(&stylesheet_path)
+      .expect("stylesheet file URL")
+      .to_string();
+
+    let doc_path = dir.path().join("index.html");
+    fs::write(&doc_path, b"<!doctype html>").expect("write html");
+    let doc_url = Url::from_file_path(&doc_path)
+      .expect("document file URL")
+      .to_string();
+
+    let ctx = FontContext::with_database(Arc::new(FontDatabase::empty()));
+    let face = FontFaceRule {
+      source_stylesheet_url: Some(stylesheet_url),
+      family: Some("TestFace".to_string()),
+      sources: vec![FontFaceSource::url("font.ttf")],
+      display: Some(FontDisplay::Swap),
+      ..Default::default()
+    };
+
+    ctx
+      .load_web_fonts(&[face], Some(doc_url.as_str()), None)
+      .expect("load web fonts");
+    assert!(
+      ctx.wait_for_pending_web_fonts(Duration::from_secs(1)),
+      "expected web font loads to settle"
+    );
+
+    assert!(
+      ctx.get_font_simple("TestFace", 400, FontStyle::Normal)
+        .is_some(),
+      "expected font to load using stylesheet-relative src URL"
+    );
+  }
+
+  #[test]
+  fn docs_rs_fixture_loads_fira_sans_web_font() {
+    // docs.rs uses `@font-face` in an external stylesheet with relative `src: url(...)` values.
+    // When those fonts fail to load, text layout (especially `line-height: normal`) diverges
+    // visibly across large portions of the page.
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixture_dir = manifest_dir.join("tests/pages/fixtures/docs.rs");
+    let stylesheet_path =
+      fixture_dir.join("assets/9a57a32ce6808f0f482e185ad23a5170.css");
+    if !stylesheet_path.is_file() {
+      return;
+    }
+
+    let css = std::fs::read_to_string(&stylesheet_path).expect("read fixture css");
+    let stylesheet_url = Url::from_file_path(&stylesheet_path)
+      .expect("fixture stylesheet file url")
+      .to_string();
+    let expected_font_url = Url::from_file_path(
+      fixture_dir.join("assets/0fe48aded097c2a11942a70bfef48510.woff2"),
+    )
+    .expect("fixture font file url")
+    .to_string();
+
+    let absolutized =
+      crate::css::loader::absolutize_css_urls_cow(&css, &stylesheet_url)
+        .expect("absolutize urls")
+        .into_owned();
+    assert!(
+      absolutized.contains(&expected_font_url),
+      "expected absolutized CSS to reference {expected_font_url}"
+    );
+
+    let media_ctx = MediaContext::screen(1040.0, 1240.0);
+    let mut sheet =
+      crate::css::parser::parse_stylesheet_with_media(&absolutized, &media_ctx, None)
+        .expect("parse stylesheet");
+    sheet.set_font_face_source_stylesheet_url(&stylesheet_url);
+
+    let faces = sheet.collect_font_face_rules(&media_ctx);
+    assert!(
+      faces.iter().any(|face| face.family.as_deref() == Some("Fira Sans")),
+      "expected fixture stylesheet to define @font-face for Fira Sans"
+    );
+
+    let fira_regular = faces
+      .iter()
+      .find(|face| {
+        face.family.as_deref() == Some("Fira Sans")
+          && matches!(face.style, FontFaceStyle::Normal)
+          && face.weight == (400, 400)
+      })
+      .cloned()
+      .expect("find Fira Sans regular @font-face");
+
+    let primary_source_url = fira_regular
+      .sources
+      .iter()
+      .find_map(|src| match src {
+        FontFaceSource::Url(url_src)
+          if url_src
+            .url
+            .contains("0fe48aded097c2a11942a70bfef48510.woff2") =>
+        {
+          Some(url_src.url.clone())
+        }
+        _ => None,
+      })
+      .expect("expected fixture @font-face src to include Fira Sans woff2");
+    let resolved_primary = resolve_font_url(
+      &primary_source_url,
+      fira_regular
+        .source_stylesheet_url
+        .as_deref()
+        .or(Some(stylesheet_url.as_str())),
+    );
+    assert_eq!(
+      resolved_primary, expected_font_url,
+      "expected primary woff2 src URL to resolve to fixture font file URL"
+    );
+
+    let url_sources: Vec<String> = fira_regular
+      .sources
+      .iter()
+      .filter_map(|src| match src {
+        FontFaceSource::Url(url_src) => Some(resolve_font_url(
+          &url_src.url,
+          fira_regular.source_stylesheet_url.as_deref(),
+        )),
+        _ => None,
+      })
+      .collect();
+    assert!(
+      url_sources.first().is_some_and(|u| u == &expected_font_url),
+      "expected @font-face src URLs to try the woff2 file first (urls={url_sources:?})"
+    );
+
+    let doc_url = Url::from_file_path(fixture_dir.join("index.html"))
+      .expect("fixture document url")
+      .to_string();
+
+    // Ensure the resolved URL is actually loadable via the low-level fetch+decode path. If this
+    // fails, `load_web_fonts` will fall back to later `src:` entries (the docs.rs fixture includes
+    // a DejaVu Sans placeholder for `format(\"woff\")`).
+    {
+      let direct_ctx = FontContext::with_config(FontConfig::bundled_only());
+      let outcome = direct_ctx.load_remote_face(
+        "Fira Sans",
+        &resolved_primary,
+        &fira_regular,
+        0,
+        Instant::now(),
+        fira_regular.source_stylesheet_url.as_deref(),
+      );
+      assert!(
+        matches!(outcome, Ok(LoadOutcome::Loaded)),
+        "expected primary Fira Sans woff2 source to load (url={resolved_primary}), got {outcome:?}"
+      );
+      direct_ctx.activate_loaded_web_fonts();
+      let families = vec!["Fira Sans".to_string(), "sans-serif".to_string()];
+      let loaded = direct_ctx
+        .get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal)
+        .expect("resolve direct-loaded font");
+      assert_eq!(
+        loaded.metrics().expect("metrics").units_per_em,
+        1000,
+        "expected the direct-loaded font bytes to be Fira Sans (not placeholder fallback)"
+      );
+    }
+
+    // Ensure `load_face_sources_with_report` honors the `src:` ordering and uses the woff2
+    // file before falling back to placeholder formats.
+    {
+      let sync_ctx = FontContext::with_config(FontConfig::bundled_only());
+      let start = Instant::now();
+      let event = sync_ctx.load_face_sources_with_report(
+        "Fira Sans",
+        &fira_regular,
+        Some(doc_url.as_str()),
+        0,
+        start,
+        true,
+      );
+      assert!(
+        matches!(event.status, FontLoadStatus::Loaded),
+        "expected sync @font-face load to succeed (event={event:?})"
+      );
+      assert_eq!(
+        event.source.as_deref(),
+        Some(expected_font_url.as_str()),
+        "expected @font-face to load the woff2 URL before placeholder fallbacks (event={event:?})"
+      );
+    }
+
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx
+      .load_web_fonts(&[fira_regular], Some(doc_url.as_str()), Some(&[b'A' as u32]))
+      .expect("load web fonts");
+    assert!(
+      ctx.wait_for_pending_web_fonts(Duration::from_secs(2)),
+      "expected fixture web font load to settle"
+    );
+
+    let families = vec!["Fira Sans".to_string(), "sans-serif".to_string()];
+    let loaded = ctx
+      .get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal)
+      .expect("resolve Fira Sans from web fonts");
+    assert_eq!(
+      loaded.family, "Fira Sans",
+      "expected @font-face to win over bundled/system fallbacks"
+    );
+
+    let metrics = loaded.metrics().expect("read font metrics");
+    assert_eq!(metrics.units_per_em, 1000);
+    let scaled = ctx
+      .get_scaled_metrics(&loaded, 16.0)
+      .expect("scale metrics");
+    assert!(
+      (scaled.line_height - 20.0).abs() < 0.05,
+      "expected Fira Sans `line-height: normal` to snap to 20px at 16px, got {:.3}",
+      scaled.line_height
+    );
   }
 
   #[test]
