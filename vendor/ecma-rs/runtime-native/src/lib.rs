@@ -569,6 +569,50 @@ mod tests {
     counter.fetch_add(1, Ordering::Relaxed);
   }
 
+  #[repr(C)]
+  struct NestedSpawnCtx {
+    counters: *const AtomicUsize,
+    n_children: usize,
+  }
+
+  extern "C" fn nested_parent_task(data: *mut u8) {
+    let ctx = unsafe { Box::from_raw(data as *mut NestedSpawnCtx) };
+
+    let mut tasks: Vec<abi::TaskId> = Vec::with_capacity(ctx.n_children);
+    for idx in 0..ctx.n_children {
+      let child = Box::new(CounterTaskData {
+        counters: ctx.counters,
+        idx,
+      });
+      tasks.push(rt_parallel_spawn(
+        bump_indexed_counter,
+        Box::into_raw(child).cast::<u8>(),
+      ));
+    }
+    rt_parallel_join(tasks.as_ptr(), tasks.len());
+  }
+
+  #[test]
+  fn parallel_spawn_join_can_spawn_from_worker_thread() {
+    const CHILDREN: usize = 4096;
+    let counters: Vec<AtomicUsize> = (0..CHILDREN).map(|_| AtomicUsize::new(0)).collect();
+
+    let ctx = Box::new(NestedSpawnCtx {
+      counters: counters.as_ptr(),
+      n_children: CHILDREN,
+    });
+    let parent = rt_parallel_spawn(nested_parent_task, Box::into_raw(ctx).cast::<u8>());
+    rt_parallel_join(&parent as *const _, 1);
+
+    for (idx, counter) in counters.iter().enumerate() {
+      assert_eq!(
+        counter.load(Ordering::Relaxed),
+        1,
+        "nested task {idx} ran unexpected number of times"
+      );
+    }
+  }
+
   #[test]
   fn parallel_spawn_stress_runs_each_task_exactly_once() {
     const TASKS: usize = 50_000;
