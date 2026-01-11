@@ -927,6 +927,14 @@ impl GcHeap {
     self.nursery.contains(obj)
   }
 
+  /// Return the nursery (young-generation) address range `(start, end)`.
+  ///
+  /// This is used by the exported write barrier fast path (`rt_write_barrier`)
+  /// which implements `is_young(ptr)` as a simple range check.
+  pub fn nursery_range(&self) -> (*mut u8, *mut u8) {
+    (self.nursery.start(), self.nursery.end())
+  }
+
   pub fn is_in_immix(&self, obj: *mut u8) -> bool {
     self.immix.contains(obj)
   }

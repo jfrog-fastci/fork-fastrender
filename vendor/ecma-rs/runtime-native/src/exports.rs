@@ -17,6 +17,7 @@ use crate::async_rt;
 use crate::async_rt::WatcherId;
 use crate::ffi::abort_on_panic;
 use crate::async_abi::PromiseHeader;
+use crate::gc::global_remset;
 use crate::gc::HandleId;
 use crate::gc::ObjHeader;
 use crate::gc::TypeDescriptor;
@@ -37,7 +38,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::io;
 use std::os::raw::c_char;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 #[inline]
@@ -475,55 +476,6 @@ pub unsafe extern "C" fn rt_gc_get_young_range(
   })
 }
 
-// --- Process-global remembered set ---------------------------------------------------------------
-//
-// The exported write barrier (`rt_write_barrier`) is classified as `NoGC` and must not allocate or
-// safepoint. We still need a process-global remembered-set for tests and for future minor GC wiring.
-// To keep the barrier allocation-free, use a fixed-capacity array.
-//
-// If this overflows we abort: failing to record old→young edges is unsound for a generational GC.
-const REMEMBERED_SET_CAPACITY: usize = 1 << 20; // ~1M entries = 8MB on 64-bit
-
-struct FixedRememberedSet {
-  len: AtomicUsize,
-  entries: [AtomicUsize; REMEMBERED_SET_CAPACITY],
-}
-
-impl FixedRememberedSet {
-  const fn new() -> Self {
-    Self {
-      len: AtomicUsize::new(0),
-      entries: [const { AtomicUsize::new(0) }; REMEMBERED_SET_CAPACITY],
-    }
-  }
-
-  #[inline]
-  fn insert(&self, obj: *mut u8) {
-    if obj.is_null() {
-      std::process::abort();
-    }
-    let idx = self.len.fetch_add(1, Ordering::AcqRel);
-    if idx >= REMEMBERED_SET_CAPACITY {
-      // The write barrier must not allocate, so we cannot grow. Overflow would allow missing an
-      // old→young edge, which can lead to use-after-move/free during minor GC.
-      std::process::abort();
-    }
-    self.entries[idx].store(obj as usize, Ordering::Release);
-  }
-
-  fn clear(&self) {
-    let len = self.len.swap(0, Ordering::AcqRel).min(REMEMBERED_SET_CAPACITY);
-    for i in 0..len {
-      // Only clear the runtime's remembered-set tracking (raw pointers). The per-object remembered
-      // bit is owned by the objects themselves, and this helper is used primarily to avoid leaving
-      // dangling raw pointers in tests.
-      self.entries[i].store(0, Ordering::Release);
-    }
-  }
-}
-
-static REMEMBERED_SET: FixedRememberedSet = FixedRememberedSet::new();
-
 /// Reset write barrier state for tests.
 ///
 /// This clears only process-global state used by the exported barrier:
@@ -536,7 +488,7 @@ static REMEMBERED_SET: FixedRememberedSet = FixedRememberedSet::new();
 #[doc(hidden)]
 pub fn clear_write_barrier_state_for_tests() {
   rt_gc_set_young_range(core::ptr::null_mut(), core::ptr::null_mut());
-  REMEMBERED_SET.clear();
+  global_remset::remset_clear();
 }
 
 /// Debug/test helper: is the given object base pointer currently in the remembered set?
@@ -557,7 +509,7 @@ pub fn remembered_set_contains(obj: *mut u8) -> bool {
 /// Debug/test helper: rebuild remembered-set tracking after a simulated minor GC.
 ///
 /// The exported write barrier sets the per-object `REMEMBERED` header bit and records newly
-/// remembered objects in a fixed-capacity process-global list ([`REMEMBERED_SET`]). Since the
+/// remembered objects in a fixed-capacity process-global list. Since the
 /// milestone runtime cannot enumerate heap objects, tests that allocate/free synthetic objects can
 /// leave stale pointers in that list.
 ///
@@ -576,7 +528,7 @@ pub fn remembered_set_scan_and_rebuild_for_tests(
   // Rebuild from the provided list of candidate old objects. `runtime-native` cannot currently
   // enumerate all objects from the heap, and the process-global remembered set may contain stale
   // pointers left behind by other tests.
-  REMEMBERED_SET.clear();
+  global_remset::remset_clear();
   for &obj in objs {
     if obj.is_null() {
       continue;
@@ -584,16 +536,12 @@ pub fn remembered_set_scan_and_rebuild_for_tests(
     if (obj as usize) % std::mem::align_of::<ObjHeader>() != 0 {
       std::process::abort();
     }
+    // SAFETY: alignment checked above; `obj` is expected to be a valid object base pointer.
+    let header = unsafe { &*(obj as *const ObjHeader) };
+    // Clear first so `remset_add` records the object even if it was already remembered.
+    header.clear_remembered_idempotent();
     if object_has_young_refs(obj) {
-      // SAFETY: alignment checked above; `obj` is expected to be a valid object base pointer.
-      let header = unsafe { &*(obj as *const ObjHeader) };
-      // Keep the per-object remembered bit in sync with the rebuilt tracking list.
-      header.set_remembered_idempotent();
-      REMEMBERED_SET.insert(obj);
-    } else {
-      // SAFETY: alignment checked above; `obj` is expected to be a valid object base pointer.
-      let header = unsafe { &*(obj as *const ObjHeader) };
-      header.clear_remembered_idempotent();
+      global_remset::remset_add(obj);
     }
   }
 }
@@ -603,7 +551,7 @@ pub fn remembered_set_scan_and_rebuild_for_tests(
 /// Intended for tests and debugging only.
 #[doc(hidden)]
 pub fn remembered_set_len_for_tests() -> usize {
-  REMEMBERED_SET.len.load(Ordering::Acquire).min(REMEMBERED_SET_CAPACITY)
+  global_remset::remset_len_for_tests()
 }
 
 #[inline]
@@ -611,15 +559,7 @@ unsafe fn remember_old_object(obj: *mut u8) {
   if obj.is_null() {
     std::process::abort();
   }
-  // `rt_write_barrier` is classified as `NoGC` by the ABI contract (must not allocate or safepoint).
-  // Record remembered objects into a fixed-capacity global set so tests (and future minor GC wiring)
-  // can iterate remembered objects without scanning the entire heap.
-  let header = &*(obj as *const ObjHeader);
-  if header.set_remembered_idempotent() {
-    #[cfg(feature = "gc_stats")]
-    crate::gc_stats::record_remembered_object_added();
-    REMEMBERED_SET.insert(obj);
-  }
+  global_remset::remset_add(obj);
 }
 /// Write barrier for GC.
 #[no_mangle]

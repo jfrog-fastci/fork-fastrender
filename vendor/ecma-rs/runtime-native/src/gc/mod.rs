@@ -6,6 +6,7 @@ use crate::array;
 use crate::trap;
 
 pub mod config;
+pub mod global_remset;
 pub mod heap;
 pub mod roots;
 pub mod handle_table;
@@ -123,7 +124,6 @@ pub const OBJ_ALIGN: usize = if mem::align_of::<ObjHeader>() > 16 {
 } else {
   16
 };
-
 // `meta` layout:
 // - bit 0: forwarded bit (nursery only)
 // - bit 1: mark epoch (0/1)
