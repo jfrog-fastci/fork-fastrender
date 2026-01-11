@@ -42,14 +42,19 @@ LLVM_STRIP="$(command -v llvm-strip || true)"
 LLVM_READOBJ="$(command -v llvm-readobj-18 || command -v llvm-readobj || true)"
 LLVM_OBJCOPY="$(command -v llvm-objcopy-18 || command -v llvm-objcopy || true)"
 
-stackmaps_ld="${script_dir}/../runtime-native/link/stackmaps.ld"
-if [[ ! -f "${stackmaps_ld}" ]]; then
+stackmaps_ld_pie="${script_dir}/../runtime-native/link/stackmaps.ld"
+stackmaps_ld_nopie="${script_dir}/../runtime-native/link/stackmaps_nopie.ld"
+if [[ ! -f "${stackmaps_ld_pie}" ]]; then
   # Compatibility path for older docs/build scripts.
-  stackmaps_ld="${script_dir}/../runtime-native/stackmaps.ld"
+  stackmaps_ld_pie="${script_dir}/../runtime-native/stackmaps.ld"
 fi
-if [[ ! -f "${stackmaps_ld}" ]]; then
-  echo "error: missing stackmaps linker script fragment at ${stackmaps_ld}" >&2
+if [[ ! -f "${stackmaps_ld_pie}" ]]; then
+  echo "error: missing PIE stackmaps linker script fragment at ${stackmaps_ld_pie}" >&2
   exit 1
+fi
+if [[ ! -f "${stackmaps_ld_nopie}" ]]; then
+  # Older checkouts only have a single fragment; treat it as the non-PIE fallback.
+  stackmaps_ld_nopie="${stackmaps_ld_pie}"
 fi
 
 LLD_FUSE=""
@@ -162,8 +167,8 @@ readelf_sections() {
 must_have_stackmaps() {
   local bin="$1"
   # Prefer a dedicated stackmaps output section name when present. Fall back to
-  # `.data.rel.ro` for linkers that embed stackmaps into the standard RELRO data
-  # section (lld-friendly default).
+  # `.data.rel.ro` for legacy link layouts that embed stackmaps into the standard
+  # RELRO data output section.
 
   local sec_name=""
   local sec_size_hex=""
@@ -212,8 +217,8 @@ must_have_stackmaps() {
 must_have_faultmaps() {
   local bin="$1"
   # Prefer a dedicated faultmaps output section name when present. Fall back to
-  # `.data.rel.ro` for linkers that embed faultmaps into the standard RELRO data
-  # section (lld-friendly default).
+  # `.data.rel.ro` for legacy link layouts that embed faultmaps into the standard
+  # RELRO data output section.
 
   local sec_name=""
   local sec_size_hex=""
@@ -503,8 +508,8 @@ echo "[stackmaps] link: ld (no-pie, --gc-sections) => EXPECTED DROP"
 must_not_have_stackmaps "${tmp}/a_ld_gc"
 must_not_have_faultmaps "${tmp}/a_ld_gc"
 
-echo "[stackmaps] link: ld (no-pie, --gc-sections + stackmaps.ld KEEP)"
-"${CLANG}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
+echo "[stackmaps] link: ld (no-pie, --gc-sections + stackmaps_nopie.ld KEEP)"
+"${CLANG}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld_nopie}" \
   -o "${tmp}/a_ld_policy" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_ld_policy"
 must_have_stackmaps_symbols "${tmp}/a_ld_policy"
@@ -561,16 +566,9 @@ if [[ -n "${LLD_FUSE}" ]]; then
   must_not_have_stackmaps "${tmp}/a_lld_gc"
   must_not_have_faultmaps "${tmp}/a_lld_gc"
 
-  echo "[stackmaps] link: lld (no-pie, --gc-sections + stackmaps.ld KEEP)"
-  # lld is stricter than GNU ld about RELRO layout. If we force stackmaps into
-  # `.data.rel.ro` via the linker fragment, lld requires the input stackmaps
-  # section to be writable so it participates in the RELRO region.
-  cp "${tmp}/mod_a.o" "${tmp}/mod_a.lld_policy.o"
-  cp "${tmp}/mod_b.o" "${tmp}/mod_b.lld_policy.o"
-  "${OBJCOPY}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${tmp}/mod_a.lld_policy.o"
-  "${OBJCOPY}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${tmp}/mod_b.lld_policy.o"
-  "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
-    -o "${tmp}/a_lld_policy" "${tmp}/main.o" "${tmp}/mod_a.lld_policy.o" "${tmp}/mod_b.lld_policy.o" "${tmp}/callee.o" "${tmp}/faultmaps.o"
+  echo "[stackmaps] link: lld (no-pie, --gc-sections + stackmaps_nopie.ld KEEP)"
+  "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld_nopie}" \
+    -o "${tmp}/a_lld_policy" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_lld_policy"
   must_have_stackmaps_symbols "${tmp}/a_lld_policy"
   must_have_faultmaps "${tmp}/a_lld_policy"
@@ -600,11 +598,19 @@ if [[ -n "${LLD_FUSE}" ]]; then
     # reject hardened links (e.g. `relro sections not contiguous`).
     cp "${tmp}/mod_a.o" "${tmp}/mod_a.pie.relro_now.o"
     cp "${tmp}/mod_b.o" "${tmp}/mod_b.pie.relro_now.o"
-    "${OBJCOPY}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${tmp}/mod_a.pie.relro_now.o"
-    "${OBJCOPY}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${tmp}/mod_b.pie.relro_now.o"
-    "${CLANG}" -fuse-ld="${LLD_FUSE}" -pie -Wl,-z,relro -Wl,-z,now -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
+    cp "${tmp}/faultmaps.o" "${tmp}/faultmaps.pie.relro_now.o"
+    "${LLVM_OBJCOPY}" --rename-section \
+      ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents" \
+      "${tmp}/mod_a.pie.relro_now.o"
+    "${LLVM_OBJCOPY}" --rename-section \
+      ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents" \
+      "${tmp}/mod_b.pie.relro_now.o"
+    "${LLVM_OBJCOPY}" --rename-section \
+      ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents" \
+      "${tmp}/faultmaps.pie.relro_now.o"
+    "${CLANG}" -fuse-ld="${LLD_FUSE}" -pie -Wl,-z,relro -Wl,-z,now -Wl,--gc-sections -Wl,-T,"${stackmaps_ld_pie}" \
       -o "${tmp}/a_lld_pie_relro_now" \
-      "${tmp}/main.o" "${tmp}/mod_a.pie.relro_now.o" "${tmp}/mod_b.pie.relro_now.o" "${tmp}/callee.o" "${tmp}/faultmaps.o"
+      "${tmp}/main.o" "${tmp}/mod_a.pie.relro_now.o" "${tmp}/mod_b.pie.relro_now.o" "${tmp}/callee.o" "${tmp}/faultmaps.pie.relro_now.o"
     must_have_stackmaps "${tmp}/a_lld_pie_relro_now"
     must_have_stackmaps_symbols "${tmp}/a_lld_pie_relro_now"
     must_have_faultmaps "${tmp}/a_lld_pie_relro_now"

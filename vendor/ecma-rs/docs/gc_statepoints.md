@@ -482,23 +482,34 @@ Important linker detail: because the section name starts with a dot (`.llvm_stac
 automatically synthesize usable `__start_*` / `__stop_*` boundary symbols for it. This repo therefore relies on a
 small linker script fragment to both `KEEP` the section and define stable start/end symbols.
 
-#### Linker script (repo default): `runtime-native/link/stackmaps.ld`
+#### Linker script fragments: `runtime-native/link/stackmaps*.ld`
 
-(`runtime-native/stackmaps.ld` exists for backwards compatibility and has the same effect.)
+`runtime-native` ships small linker script fragments which:
 
-`runtime-native` ships a linker script fragment which:
+- `KEEP` stackmaps/faultmaps under `--gc-sections`
+- define stable boundary symbols:
+  - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (preferred)
+  - plus aliases (`__stackmaps_*`, `__fastr_stackmaps_*`, `__llvm_stackmaps_*`)
 
-- `KEEP`s `.llvm_stackmaps` (even under `--gc-sections`)
-- defines:
-  - `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (stable boundary symbols; preferred)
-  - `__stackmaps_start` / `__stackmaps_end` (generic aliases)
-  - `__fastr_stackmaps_start` / `__fastr_stackmaps_end` (project-specific aliases)
-  - `__llvm_stackmaps_start` / `__llvm_stackmaps_end` (legacy aliases)
+Fragments:
 
-When linking a final ELF binary, apply it (example):
+- `runtime-native/link/stackmaps_nopie.ld` (non-PIE): keeps `.llvm_{stackmaps,faultmaps}*` (and
+  `.data.rel.ro.llvm_*` if present) and anchors after `.text`.
+- `runtime-native/link/stackmaps.ld` (PIE + lld): keeps rewritten `.data.rel.ro.llvm_*` inputs
+  (after `objcopy`/`llvm-objcopy --rename-section`) and anchors after `.data` to avoid lld RELRO
+  contiguity failures.
+- `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE): avoids RWX segments when stackmaps must be
+  writable for relocations.
+
+When linking a final ELF binary, apply the appropriate fragment:
 
 ```bash
-cc ... -Wl,-T,runtime-native/link/stackmaps.ld ...
+# non-PIE:
+cc ... -no-pie -Wl,-T,runtime-native/link/stackmaps_nopie.ld ...
+
+# PIE (lld): rewrite inputs first, then link with stackmaps.ld:
+llvm-objcopy-18 --rename-section .llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents <obj>
+cc ... -pie -Wl,-T,runtime-native/link/stackmaps.ld ...
 ```
 
 Verify the linked output still contains the stackmaps section (or its relocated variant):
@@ -510,7 +521,8 @@ llvm-readobj --sections <bin> | rg llvm_stackmaps
 When linking from Rust/Cargo:
 
 - `runtime-native` can provide weak fallback range symbols, but for `--gc-sections` builds you still want the final link
-  step to apply `runtime-native/link/stackmaps.ld` so the section is `KEEP`ed and fast symbol-based discovery works.
+  step to apply the appropriate `runtime-native/link/stackmaps*.ld` fragment so the section is `KEEP`ed and fast
+  symbol-based discovery works.
 - Cargo does **not** automatically propagate linker-script args from dependencies, so Rust binaries must pass the linker
   script at the final link step (e.g. via `RUSTFLAGS` or your build system), or use the `native_js::link` /
   `scripts/native_link.sh` helpers which always inject it.
@@ -679,9 +691,11 @@ When producing a PIE, native-js AOT output must:
    - `KEEP`s `.llvm_stackmaps` / `.llvm_faultmaps` so `--gc-sections` can’t discard them
    - defines `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (plus aliases like `__fastr_stackmaps_start/end`)
 
-   The script lives at:
-   - `runtime-native/link/stackmaps.ld` (preferred)
-   - `runtime-native/stackmaps.ld` (compat)
+   Linker fragments live at:
+   - `runtime-native/link/stackmaps_nopie.ld` (non-PIE)
+   - `runtime-native/link/stackmaps.ld` (PIE/lld; expects `.data.rel.ro.llvm_*` inputs)
+   - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening)
+   - `runtime-native/stackmaps.ld` (compat; older all-in-one fragment)
 
 3. Use `--gc-sections` in release builds (safe because stackmaps are explicitly kept).
 
@@ -721,10 +735,12 @@ immediately after `.text` (common `INSERT AFTER .text` fragments), GNU ld may me
 executable text PT_LOAD under PIE, producing an **RWX** segment once relocations require the
 segment to be writable.
 
-The repo's linker fragments avoid this by anchoring stackmaps in the RELRO/data region
-(`INSERT BEFORE .dynamic;`). For GNU ld + PIE, the wrappers (`scripts/native_link.sh`,
-`native_js::link`) select the GNU ld-specific fragment (`runtime-native/link/stackmaps_gnuld.ld`)
-automatically.
+The repo's linker fragments avoid this by *not* inserting writable stackmaps immediately after
+`.text`:
+
+- lld: `runtime-native/link/stackmaps.ld` inserts stackmaps/faultmaps after `.data`.
+- GNU ld + PIE: the wrappers (`scripts/native_link.sh`, `native_js::link`) select the GNU ld-specific
+  fragment (`runtime-native/link/stackmaps_gnuld.ld`) automatically.
 
 ## Example link commands
 
@@ -732,7 +748,7 @@ automatically.
 
 ```bash
 clang-18 -fuse-ld=lld-18 -no-pie \
-  -Wl,--script=runtime-native/link/stackmaps.ld \
+  -Wl,--script=runtime-native/link/stackmaps_nopie.ld \
   -o app_debug \
   main.o codegen.o
 ```
@@ -742,7 +758,7 @@ clang-18 -fuse-ld=lld-18 -no-pie \
 ```bash
 clang-18 -fuse-ld=lld-18 -no-pie \
   -Wl,--gc-sections \
-  -Wl,--script=runtime-native/link/stackmaps.ld \
+  -Wl,--script=runtime-native/link/stackmaps_nopie.ld \
   -o app_release \
   main.o codegen.o
 ```

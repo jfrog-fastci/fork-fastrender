@@ -196,8 +196,11 @@ The runtime reads stackmaps at runtime. Therefore:
 - Build tooling must not strip it (explicit `strip`, `objcopy`, or post-link
   tooling must preserve it).
 - When linking with `-Wl,--gc-sections`, the final link step must also apply a linker script fragment
-  that `KEEP`s stackmaps; in this repo that is:
-  - `runtime-native/link/stackmaps.ld` (preferred) / `runtime-native/stackmaps.ld` (compat)
+  that `KEEP`s stackmaps. In this repo:
+  - non-PIE: `runtime-native/link/stackmaps_nopie.ld`
+  - PIE + lld: `runtime-native/link/stackmaps.ld` (expects `.data.rel.ro.llvm_*` inputs)
+  - PIE + GNU ld: `runtime-native/link/stackmaps_gnuld.ld`
+  - `runtime-native/stackmaps.ld` is kept as a compatibility alias for older scripts.
 
 Verification:
 

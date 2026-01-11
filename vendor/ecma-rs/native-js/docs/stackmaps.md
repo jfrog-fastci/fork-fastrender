@@ -8,7 +8,7 @@ The `native-js` link pipeline preserves this data and exports global symbols tha
 in-memory byte range (see `native-js/src/link.rs` and `runtime-native/link/` linker fragments):
 
 - `runtime-native/link/stackmaps_nopie.ld` (non-PIE)
-- `runtime-native/link/stackmaps.ld` (PIE, lld-friendly; stackmaps may be merged into `.data.rel.ro`)
+- `runtime-native/link/stackmaps.ld` (PIE, lld-friendly; emits dedicated `.data.rel.ro.llvm_*` output sections)
 - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE hardening; avoids RWX segments)
 
 - Canonical:
@@ -30,8 +30,10 @@ retained.
 
 `native-js` solves this by always injecting a linker script fragment that:
 
-* uses `KEEP(*(.llvm_stackmaps* .data.rel.ro.llvm_stackmaps*))` so stackmaps survive
-  `--gc-sections`, and
+* keeps the relevant stackmap/faultmap sections so they survive `--gc-sections`:
+  * non-PIE: keep `.llvm_{stackmaps,faultmaps}*` (and `.data.rel.ro.llvm_*` if present)
+  * PIE: keep `.data.rel.ro.llvm_{stackmaps,faultmaps}*` (after rewriting input objects via
+    `llvm-objcopy --rename-section`)
 * defines stable boundary symbols (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps` and aliases).
 
 Notes:

@@ -138,9 +138,9 @@ link_args+=("-Wl,-T,${stackmaps_ld}")
 # variants) are writable in the *input* objects.
 #
 # - PIE/DSO: required so runtime relocations don't force DT_TEXTREL / `-z notext`.
-# - lld: also required even for some minimal non-PIE links when stackmaps are
-#   placed in RELRO-friendly data; otherwise lld can error with "relro sections
-#   not contiguous" diagnostics.
+# - When using the PIE linker fragment (`runtime-native/link/stackmaps.ld`),
+#   we also rename `.llvm_{stackmaps,faultmaps}` into `.data.rel.ro.llvm_*` so
+#   the linker script's `KEEP(*(.data.rel.ro.llvm_* ...))` patterns match.
 patched_dir=""
 cleanup() {
   if [[ -n "${patched_dir}" ]]; then
@@ -168,6 +168,17 @@ if [[ "${PIE}" == "1" || ( "${LINKER}" == "lld" && "${stackmaps_ld}" != "${stack
     src="${objs[$i]}"
     dst="${patched_dir}/obj${i}.o"
     cp "${src}" "${dst}"
+    # For PIE/DSO links, prefer to relocate stackmaps/faultmaps into
+    # `.data.rel.ro.llvm_*` sections so the linker script can place them into a
+    # writable output section without requiring `DT_TEXTREL`.
+    if [[ "${PIE}" == "1" || ( "${LINKER}" == "lld" && "${stackmaps_ld}" != "${stackmaps_ld_nopie}" ) ]]; then
+      "${objcopy}" --rename-section \
+        ".llvm_stackmaps=.data.rel.ro.llvm_stackmaps,alloc,load,data,contents" \
+        "${dst}"
+      "${objcopy}" --rename-section \
+        ".llvm_faultmaps=.data.rel.ro.llvm_faultmaps,alloc,load,data,contents" \
+        "${dst}"
+    fi
     if [[ "${objcopy}" == *llvm-objcopy* ]]; then
       "${objcopy}" --set-section-flags=.llvm_stackmaps=alloc,load,contents,data "${dst}"
       "${objcopy}" --set-section-flags=.llvm_faultmaps=alloc,load,contents,data "${dst}"

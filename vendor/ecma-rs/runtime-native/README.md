@@ -184,12 +184,12 @@ symbols, so the linker script (or an equivalent mechanism) is required.
 
 When linking from C/clang, pass the appropriate fragment explicitly:
 
-```bash
-# non-PIE:
-cc ... -no-pie -Wl,-T,runtime-native/link/stackmaps_nopie.ld ...
-
-# PIE + lld:
-cc ... -pie -Wl,-T,runtime-native/link/stackmaps.ld ...
+ ```bash
+ # non-PIE:
+ cc ... -no-pie -Wl,-T,runtime-native/link/stackmaps_nopie.ld ...
+ 
+ # PIE + lld (requires rewriting `.llvm_*` to `.data.rel.ro.llvm_*` in input objects):
+ cc ... -pie -Wl,-T,runtime-native/link/stackmaps.ld ...
 
 # PIE + GNU ld:
 cc ... -pie -Wl,-T,runtime-native/link/stackmaps_gnuld.ld ...
@@ -198,21 +198,21 @@ cc ... -pie -Wl,-T,runtime-native/link/stackmaps_gnuld.ld ...
 When linking from Rust, you still need to pass the script to the final link step
 (e.g. via `RUSTFLAGS` or your build system):
 
-```bash
-RUSTFLAGS="\
-  -C force-frame-pointers=yes \
-  -C linker=clang-18 \
-  -C link-arg=-fuse-ld=lld-18 \
-  -C link-arg=-Wl,-T,$PWD/runtime-native/link/stackmaps.ld" \
-  bash scripts/cargo_agent.sh build
-```
+ ```bash
+ RUSTFLAGS="\
+   -C force-frame-pointers=yes \
+   -C linker=clang-18 \
+   -C link-arg=-fuse-ld=lld-18 \
+   -C link-arg=-Wl,-T,$PWD/runtime-native/link/stackmaps_nopie.ld" \
+   bash scripts/cargo_agent.sh build
+ ```
 
 For `rustc`/Cargo consumers that don't use the feature-based build script hook, the equivalent is:
 
-```bash
-# Example:
-#   RUSTFLAGS="-C link-arg=-Wl,-T,/abs/path/to/runtime-native/link/stackmaps.ld" bash scripts/cargo_agent.sh build ...
-```
+ ```bash
+ # Example:
+ #   RUSTFLAGS="-C link-arg=-Wl,-T,/abs/path/to/runtime-native/link/stackmaps_nopie.ld" bash scripts/cargo_agent.sh build ...
+ ```
 
 PIE note (Linux): LLVM `.llvm_stackmaps` contains absolute code addresses, which become runtime
 relocations under PIE. If stackmaps end up in a read-only segment, this can lead to `DT_TEXTREL`
