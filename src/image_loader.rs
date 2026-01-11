@@ -6520,7 +6520,9 @@ impl ImageCache {
           && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES
         {
           if let Ok(mut cache) = self.raw_cache.lock() {
-            cache.insert(cache_key.to_string(), Arc::clone(&resource));
+            let key = cache_key.to_string();
+            let bytes = Self::estimate_raw_cache_entry_bytes(&key, resource.as_ref());
+            cache.insert(key, Arc::clone(&resource), bytes);
           }
         }
         return Ok(self.cache_placeholder_metadata(cache_key));
@@ -6638,7 +6640,9 @@ impl ImageCache {
     {
       if !resource.bytes.is_empty() && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES {
         if let Ok(mut cache) = self.raw_cache.lock() {
-          cache.insert(cache_key.to_string(), Arc::clone(&resource));
+          let key = cache_key.to_string();
+          let bytes = Self::estimate_raw_cache_entry_bytes(&key, resource.as_ref());
+          cache.insert(key, Arc::clone(&resource), bytes);
         }
       }
       return Ok(self.cache_placeholder_metadata(cache_key));
