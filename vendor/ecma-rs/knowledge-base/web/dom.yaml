@@ -1,0 +1,50 @@
+document.querySelector:
+  purity:
+    # Reads the DOM, which is external state.
+    template: readonly
+  # Invalid selector syntax.
+  throws: maybe
+  effects:
+    io: false
+    template: unknown
+
+document.getElementById:
+  purity:
+    template: readonly
+  throws: never
+  effects:
+    io: false
+    template: unknown
+
+Element.prototype.querySelector:
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    io: false
+    template: unknown
+
+Element.prototype.querySelectorAll:
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    io: false
+    template: unknown
+
+Element.prototype.getAttribute:
+  purity:
+    template: readonly
+  throws: never
+  effects:
+    io: false
+    template: unknown
+
+Element.prototype.setAttribute:
+  purity:
+    template: impure
+  # Invalid attribute name.
+  throws: maybe
+  effects:
+    io: false
+    template: unknown

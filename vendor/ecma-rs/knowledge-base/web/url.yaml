@@ -1,0 +1,71 @@
+URL:
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    io: false
+
+URL.createObjectURL:
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    io: false
+    template: unknown
+
+URL.prototype.toString:
+  purity:
+    template: readonly
+  throws: never
+  effects:
+    io: false
+
+# Treat getters as pure reads.
+URL.prototype.href:
+  purity:
+    template: readonly
+  throws: never
+  effects:
+    io: false
+
+URL.prototype.pathname:
+  purity:
+    template: readonly
+  throws: never
+  effects:
+    io: false
+
+URL.prototype.searchParams:
+  purity:
+    template: readonly
+  throws: never
+  effects:
+    io: false
+
+URLSearchParams.prototype.get:
+  purity:
+    template: readonly
+  throws: never
+  effects:
+    io: false
+
+URLSearchParams.prototype.set:
+  purity:
+    template: impure
+  throws: never
+  effects:
+    io: false
+
+URLSearchParams.prototype.append:
+  purity:
+    template: impure
+  throws: never
+  effects:
+    io: false
+
+URLSearchParams.prototype.toString:
+  purity:
+    template: readonly
+  throws: never
+  effects:
+    io: false

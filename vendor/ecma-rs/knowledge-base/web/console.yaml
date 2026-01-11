@@ -1,0 +1,6 @@
+console.log:
+  purity:
+    template: impure
+  throws: unknown
+  effects:
+    io: true
