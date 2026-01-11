@@ -56,8 +56,10 @@ pub mod validate;
 mod stack_walking;
 pub use stack_walking::CodeGen;
 
+use diagnostics::{Diagnostic, Severity};
 use llvm_sys as _;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+use std::path::PathBuf;
 use target_lexicon::Triple;
 
 /// Optimization level to apply during compilation.
@@ -138,6 +140,21 @@ impl Compiler {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum NativeJsError {
+  #[error("type checking failed")]
+  TypecheckFailed { diagnostics: Vec<Diagnostic> },
+
+  #[error("unsupported feature: {0}")]
+  UnsupportedFeature(String),
+
+  #[error("{0}")]
+  LlvmNotAvailable(String),
+
+  #[error("linker failed: {0}")]
+  LinkerFailed(String),
+
+  #[error("internal compiler error: {0}")]
+  Internal(String),
+
   #[error(transparent)]
   Parse(#[from] parse_js::error::SyntaxError),
 
@@ -149,6 +166,38 @@ pub enum NativeJsError {
 
   #[error("LLVM error: {0}")]
   Llvm(String),
+}
+
+/// Options for the top-level `native-js` AOT compilation API.
+#[derive(Clone, Debug, Default)]
+pub struct CompilerOptions {
+  /// Emit the textual LLVM IR for the compiled program.
+  pub emit_ir: bool,
+  /// Optional output location for produced artifacts.
+  pub output: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CompilationOutput {
+  /// Path to the produced artifact (executable/object file).
+  pub artifact: PathBuf,
+  /// Optional textual LLVM IR (when [`CompilerOptions::emit_ir`] is true).
+  pub llvm_ir: Option<String>,
+}
+
+pub fn compile(
+  program: &typecheck_ts::Program,
+  options: &CompilerOptions,
+) -> Result<CompilationOutput, NativeJsError> {
+  let diagnostics = program.check();
+  if diagnostics.iter().any(|diag| diag.severity == Severity::Error) {
+    return Err(NativeJsError::TypecheckFailed { diagnostics });
+  }
+
+  let _ = options;
+  Err(NativeJsError::UnsupportedFeature(
+    "native-js AOT compilation is not implemented yet".to_string(),
+  ))
 }
 
 pub fn compile_typescript_to_llvm_ir(
@@ -202,3 +251,4 @@ mod tests {
     }
   }
 }
+

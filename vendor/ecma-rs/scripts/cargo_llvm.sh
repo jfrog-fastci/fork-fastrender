@@ -19,6 +19,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Preserve the caller's working directory so we can normalize any relative
+# `--manifest-path` args before switching into the nested workspace.
+CALLER_DIR="$(pwd)"
+
+argv=("$@")
+for ((i = 0; i < ${#argv[@]}; i++)); do
+  if [[ "${argv[$i]}" == "--manifest-path" ]]; then
+    path="${argv[$((i + 1))]:-}"
+    if [[ -n "${path}" && "${path}" != /* ]]; then
+      argv[$((i + 1))]="${CALLER_DIR}/${path}"
+    fi
+  elif [[ "${argv[$i]}" == --manifest-path=* ]]; then
+    path="${argv[$i]#--manifest-path=}"
+    if [[ -n "${path}" && "${path}" != /* ]]; then
+      argv[$i]="--manifest-path=${CALLER_DIR}/${path}"
+    fi
+  fi
+done
 # Ensure we're running Cargo against the ecma-rs workspace, not the outer
 # fastrender workspace (which excludes `vendor/ecma-rs`).
 cd "${REPO_ROOT}"
@@ -39,4 +58,4 @@ if [[ -n "${LLVM_SYS_180_PREFIX:-}" && -d "${LLVM_SYS_180_PREFIX}/bin" ]]; then
 fi
 
 # Delegate to the repo-local cargo wrapper (which runs Cargo from the ecma-rs workspace).
-exec bash "${SCRIPT_DIR}/cargo_agent.sh" "$@"
+exec bash "${SCRIPT_DIR}/cargo_agent.sh" "${argv[@]}"

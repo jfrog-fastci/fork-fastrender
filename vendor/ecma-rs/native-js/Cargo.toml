@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Native (LLVM-backed) code generation for a strict TypeScript subset"
+publish = false
 
 [features]
 default = []
