@@ -9,6 +9,8 @@ use std::ptr::NonNull;
 use super::align_up;
 use super::ObjHeader;
 use super::TypeDescriptor;
+use crate::nursery;
+use crate::nursery::ThreadNursery;
 
 /// Immix block size in bytes.
 pub const IMMIX_BLOCK_SIZE: usize = 32 * 1024;
@@ -52,11 +54,6 @@ impl RawMemory {
   fn as_ptr(&self) -> *mut u8 {
     self.ptr.as_ptr()
   }
-
-  #[inline]
-  fn size(&self) -> usize {
-    self.layout.size()
-  }
 }
 
 impl Drop for RawMemory {
@@ -65,43 +62,6 @@ impl Drop for RawMemory {
     unsafe {
       dealloc(self.ptr.as_ptr(), self.layout);
     }
-  }
-}
-
-pub(crate) struct NurserySpace {
-  mem: RawMemory,
-  bump: usize,
-}
-
-impl NurserySpace {
-  fn new(size: usize) -> Self {
-    Self {
-      mem: RawMemory::new_zeroed(size, OBJ_ALIGN),
-      bump: 0,
-    }
-  }
-
-  fn alloc(&mut self, size: usize, align: usize) -> Option<*mut u8> {
-    let base = self.mem.as_ptr() as usize;
-    let start = align_up(base + self.bump, align);
-    let end = start.checked_add(size)?;
-    if end <= base + self.mem.size() {
-      self.bump = end - base;
-      Some(start as *mut u8)
-    } else {
-      None
-    }
-  }
-
-  pub(crate) fn reset(&mut self) {
-    self.bump = 0;
-  }
-
-  fn contains(&self, ptr: *mut u8) -> bool {
-    let base = self.mem.as_ptr() as usize;
-    let end = base + self.mem.size();
-    let p = ptr as usize;
-    p >= base && p < end
   }
 }
 
@@ -309,7 +269,8 @@ impl LargeObjectSpace {
 }
 
 pub struct GcHeap {
-  pub(crate) nursery: NurserySpace,
+  pub(crate) nursery: nursery::NurserySpace,
+  pub(crate) nursery_tlab: ThreadNursery,
   pub(crate) immix: ImmixSpace,
   pub(crate) los: LargeObjectSpace,
 
@@ -327,12 +288,13 @@ impl Default for GcHeap {
 
 impl GcHeap {
   pub fn new() -> Self {
-    Self::with_nursery_size(1024 * 1024)
+    Self::with_nursery_size(nursery::DEFAULT_NURSERY_SIZE_BYTES)
   }
 
   pub fn with_nursery_size(nursery_size: usize) -> Self {
     Self {
-      nursery: NurserySpace::new(nursery_size),
+      nursery: nursery::NurserySpace::new(nursery_size).expect("failed to reserve nursery space"),
+      nursery_tlab: ThreadNursery::new(),
       immix: ImmixSpace::new(),
       los: LargeObjectSpace::new(),
       mark_epoch: 0,
@@ -346,8 +308,8 @@ impl GcHeap {
 
   pub fn alloc_young(&mut self, desc: &'static TypeDescriptor) -> *mut u8 {
     let obj = self
-      .nursery
-      .alloc(desc.size, OBJ_ALIGN)
+      .nursery_tlab
+      .alloc(desc.size, OBJ_ALIGN, &self.nursery)
       .expect("nursery out of space");
 
     // Ensure pointer slots start out as null so tracing never sees uninitialized garbage.

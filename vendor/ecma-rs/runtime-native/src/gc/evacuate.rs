@@ -36,7 +36,12 @@ impl GcHeap {
 
     // All nursery pointers reachable from roots/remembered objects should now be
     // forwarded to old-gen.
-    self.nursery.reset();
+    self.nursery_tlab.clear();
+    // SAFETY: `collect_minor` is documented as stop-the-world; there must be no
+    // concurrent mutators or allocations when resetting the nursery.
+    unsafe {
+      self.nursery.reset();
+    }
     remembered.clear();
   }
 }
