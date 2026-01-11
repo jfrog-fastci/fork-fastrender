@@ -147,7 +147,11 @@ impl<'p> Evaluator<'p> {
         };
         let export_def = dep_export_defs
           .get(imported_name)
-          .and_then(|entry| entry.def)
+          .and_then(|entry| {
+            entry
+              .def
+              .or_else(|| self.program.symbol_info(entry.symbol).and_then(|info| info.def))
+          })
           .ok_or_else(|| {
             EvalError::new(format!("missing export def for imported name `{imported_name}`"))
           })?;
@@ -169,6 +173,39 @@ impl<'p> Evaluator<'p> {
       match export.kind {
         hir_js::ExportKind::Named(named) => {
           if named.is_type_only {
+            continue;
+          }
+          if let Some(source) = named.source.as_ref() {
+            let dep_file = self.resolve_module_specifier(file, &source.value)?;
+            self.eval_module(dep_file)?;
+            let dep_exports = self
+              .modules
+              .get(&dep_file)
+              .expect("dep module evaluated")
+              .exports
+              .clone();
+            for spec in named.specifiers {
+              if spec.is_type_only {
+                continue;
+              }
+              let Some(local_name) = lowered.names.resolve(spec.local) else {
+                continue;
+              };
+              let Some(exported_name) = lowered.names.resolve(spec.exported) else {
+                continue;
+              };
+              let Some(value) = dep_exports.get(local_name).cloned() else {
+                return Err(EvalError::new(format!(
+                  "re-exported name `{local_name}` not found in dep module"
+                )));
+              };
+              self
+                .modules
+                .get_mut(&file)
+                .unwrap()
+                .exports
+                .insert(exported_name.to_string(), value);
+            }
             continue;
           }
           for spec in named.specifiers {
@@ -195,6 +232,26 @@ impl<'p> Evaluator<'p> {
               .unwrap()
               .exports
               .insert(exported_name.to_string(), value);
+          }
+        }
+        hir_js::ExportKind::ExportAll(all) => {
+          if all.is_type_only {
+            continue;
+          }
+          let dep_file = self.resolve_module_specifier(file, &all.source.value)?;
+          self.eval_module(dep_file)?;
+          let dep_exports = self
+            .modules
+            .get(&dep_file)
+            .expect("dep module evaluated")
+            .exports
+            .clone();
+          let exports = &mut self.modules.get_mut(&file).unwrap().exports;
+          for (name, value) in dep_exports {
+            if name == "default" {
+              continue;
+            }
+            exports.entry(name).or_insert(value);
           }
         }
         _ => {

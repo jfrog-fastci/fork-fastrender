@@ -114,3 +114,89 @@ export function run() {
     .expect("evaluation succeeds");
   assert_eq!(value, 12);
 }
+
+#[test]
+fn import_from_reexport_module_resolves_correctly() {
+  let a_key = FileKey::new("a.ts");
+  let b_key = FileKey::new("b.ts");
+  let main_key = FileKey::new("main.ts");
+
+  let a_src = r#"
+export const x = 10;
+"#;
+
+  let b_src = r#"
+export { x } from "./a.ts";
+"#;
+
+  let main_src = r#"
+import { x } from "./b.ts";
+export function run() {
+  return x;
+}
+"#;
+
+  let mut host = es5_host();
+  host.insert(a_key.clone(), a_src);
+  host.insert(b_key.clone(), b_src);
+  host.insert(main_key.clone(), main_src);
+  host.link(b_key.clone(), "./a.ts", a_key.clone());
+  host.link(main_key.clone(), "./b.ts", b_key.clone());
+
+  let program = Program::new(host, vec![main_key.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.iter().all(|diag| diag.severity != Severity::Error),
+    "{diagnostics:#?}"
+  );
+
+  let file = program.file_id(&main_key).unwrap();
+  let mut evaluator = Evaluator::new(&program);
+  let value = evaluator
+    .run_exported_function_i64(file, "run")
+    .expect("evaluation succeeds");
+  assert_eq!(value, 10);
+}
+
+#[test]
+fn import_from_export_all_reexport_module_resolves_correctly() {
+  let a_key = FileKey::new("a.ts");
+  let b_key = FileKey::new("b.ts");
+  let main_key = FileKey::new("main.ts");
+
+  let a_src = r#"
+export const x = 10;
+"#;
+
+  let b_src = r#"
+export * from "./a.ts";
+"#;
+
+  let main_src = r#"
+import { x } from "./b.ts";
+export function run() {
+  return x;
+}
+"#;
+
+  let mut host = es5_host();
+  host.insert(a_key.clone(), a_src);
+  host.insert(b_key.clone(), b_src);
+  host.insert(main_key.clone(), main_src);
+  host.link(b_key.clone(), "./a.ts", a_key.clone());
+  host.link(main_key.clone(), "./b.ts", b_key.clone());
+
+  let program = Program::new(host, vec![main_key.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.iter().all(|diag| diag.severity != Severity::Error),
+    "{diagnostics:#?}"
+  );
+
+  let file = program.file_id(&main_key).unwrap();
+  let mut evaluator = Evaluator::new(&program);
+  let value = evaluator
+    .run_exported_function_i64(file, "run")
+    .expect("evaluation succeeds");
+  assert_eq!(value, 10);
+}

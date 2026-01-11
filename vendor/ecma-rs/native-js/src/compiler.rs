@@ -258,7 +258,15 @@ pub fn compile_entry_to_llvm_ir(program: &Program, file: FileId, entry_export: &
 
   // Ensure analysis/typechecking has run far enough that exports + HIR are available.
   let exports = program.exports_of(file);
-  if exports.get(entry_export).and_then(|entry| entry.def).is_none() {
+  if exports
+    .get(entry_export)
+    .and_then(|entry| {
+      entry
+        .def
+        .or_else(|| program.symbol_info(entry.symbol).and_then(|info| info.def))
+    })
+    .is_none()
+  {
     diagnostics.push(codes::UNSUPPORTED_EXPR.error(
       format!("missing export `{entry_export}`"),
       Span::new(file, TextRange::new(0, 0)),
