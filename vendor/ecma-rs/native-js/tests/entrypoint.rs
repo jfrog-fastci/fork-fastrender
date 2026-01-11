@@ -25,6 +25,19 @@ fn clang_available() -> bool {
   false
 }
 
+fn lld_available() -> bool {
+  for cand in ["ld.lld-18", "ld.lld"] {
+    if Command::new(cand)
+      .arg("--version")
+      .output()
+      .is_ok_and(|out| out.status.success())
+    {
+      return true;
+    }
+  }
+  false
+}
+
 fn require_executable_emission_or_skip() -> bool {
   if !cfg!(target_os = "linux") {
     eprintln!("skipping native-js entrypoint test: executable emission is linux-only");
@@ -32,6 +45,10 @@ fn require_executable_emission_or_skip() -> bool {
   }
   if !clang_available() {
     eprintln!("skipping native-js entrypoint test: clang not found");
+    return false;
+  }
+  if !lld_available() {
+    eprintln!("skipping native-js entrypoint test: lld not found");
     return false;
   }
   true

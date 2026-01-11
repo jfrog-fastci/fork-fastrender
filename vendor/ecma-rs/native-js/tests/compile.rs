@@ -48,6 +48,10 @@ fn compile_emits_executable_and_runs() {
     eprintln!("skipping: clang not found in PATH");
     return;
   }
+  if !command_works("ld.lld-18") && !command_works("ld.lld") {
+    eprintln!("skipping: lld not found in PATH");
+    return;
+  }
 
   let mut host = es5_host();
   let key = FileKey::new("main.ts");
@@ -114,6 +118,10 @@ fn compile_emits_executable_and_runs() {
 fn compile_allows_executable_output_path_without_parent_dir() {
   if !command_works("clang-18") && !command_works("clang") {
     eprintln!("skipping: clang not found in PATH");
+    return;
+  }
+  if !command_works("ld.lld-18") && !command_works("ld.lld") {
+    eprintln!("skipping: lld not found in PATH");
     return;
   }
 

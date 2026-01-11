@@ -1,7 +1,24 @@
 use native_js::{compile, CompilerOptions as NativeCompilerOptions, EmitKind, NativeJsError};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use typecheck_ts::lib_support::{CompilerOptions as TsCompilerOptions, LibName};
 use typecheck_ts::{FileKey, MemoryHost, Program};
+
+fn cmd_works(cmd: &str) -> bool {
+  Command::new(cmd)
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
+}
+
+fn clang_available() -> bool {
+  cmd_works("clang-18") || cmd_works("clang")
+}
+
+fn lld_available() -> bool {
+  cmd_works("ld.lld-18") || cmd_works("ld.lld")
+}
 
 #[test]
 fn compile_to_llvm_ir_contains_expected_symbols() {
@@ -55,6 +72,15 @@ fn compile_to_llvm_ir_contains_expected_symbols() {
 #[test]
 #[cfg(target_os = "linux")]
 fn compile_to_executable_and_run_returns_exit_code() {
+  if !clang_available() {
+    eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
+    return;
+  }
+  if !lld_available() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
+    return;
+  }
+
   let mut host = MemoryHost::with_options(TsCompilerOptions {
     libs: vec![LibName::parse("es5").expect("LibName::parse(es5)")],
     ..Default::default()
