@@ -124,6 +124,7 @@ mod sizing_keywords_test;
 mod string_set_test;
 mod style_containment_counters_test;
 mod style_containment_quotes_test;
+mod star_hack_declaration_recovery_test;
 mod styled_node_shallow_dom_clone;
 mod user_validity_pseudo_test;
 mod supports_rule_test;

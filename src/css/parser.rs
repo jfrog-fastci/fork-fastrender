@@ -720,6 +720,12 @@ fn recover_from_error<'i, 't>(parser: &mut Parser<'i, 't>) {
       break;
     }
     match parser.next() {
+      Ok(Token::Semicolon) => {
+        // Most parse errors happen inside declaration lists (e.g. invalid declarations like
+        // `*font-size: small;`). A semicolon is a safe synchronization point and should not cause
+        // us to skip the rest of the block.
+        break;
+      }
       Ok(Token::CurlyBracketBlock) => {
         let _: std::result::Result<(), ParseError<()>> = parser.parse_nested_block(|_| Ok(()));
         break;
