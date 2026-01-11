@@ -110,6 +110,41 @@ fn main() {
     }
   }
 
+  // cbindgen does not currently emit thread-local `extern` statics. The runtime exposes `RT_THREAD`
+  // as a TLS pointer to the current thread record so generated code can load it directly.
+  //
+  // Mirror the storage-specifier selection logic from `runtime_native.h` so the header composes
+  // cleanly across C/C++ toolchains.
+  if !header.contains("RT_THREAD;") {
+    let insert_at = header
+      .find("extern struct Thread *rt_thread_attach")
+      .or_else(|| header.find("extern Thread *rt_thread_attach"))
+      .or_else(|| header.find("extern struct Thread * rt_thread_attach"));
+    if let Some(insert_at) = insert_at {
+      header.insert_str(
+        insert_at,
+        concat!(
+          "// TLS pointer to the current thread record (set by `rt_thread_attach`).\n",
+          "//\n",
+          "// Generated code may load this symbol directly to access per-thread state with\n",
+          "// minimal overhead.\n",
+          "#if defined(__cplusplus)\n",
+          "extern thread_local Thread* RT_THREAD;\n",
+          "#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)\n",
+          "extern _Thread_local Thread* RT_THREAD;\n",
+          "#elif defined(__GNUC__) || defined(__clang__)\n",
+          "extern __thread Thread* RT_THREAD;\n",
+          "#else\n",
+          "// No TLS storage specifier available; declare as a normal extern as a best-effort fallback.\n",
+          "// Consumers that rely on per-thread state must compile with TLS support.\n",
+          "extern Thread* RT_THREAD;\n",
+          "#endif\n\n",
+        ),
+      );
+      modified = true;
+    }
+  }
+
   // Flexible array members (`[u8; 0]` in Rust) are emitted by cbindgen as
   // `uint8_t data[0]`, which is rejected by strict C++ compilers. Model the same
   // C/C++ split used in `runtime_native.h`:

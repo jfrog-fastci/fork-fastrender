@@ -1001,6 +1001,10 @@ mod tests {
       "missing Thread forward declaration"
     );
     assert!(
+      header.contains("RT_THREAD;"),
+      "missing RT_THREAD TLS symbol declaration"
+    );
+    assert!(
       header.contains("typedef struct RtPromise RtPromise;") || header.contains("struct RtPromise;"),
       "missing RtPromise forward declaration"
     );
