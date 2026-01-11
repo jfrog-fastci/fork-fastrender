@@ -17,9 +17,10 @@ It provides two foundational pieces:
 2. **Pattern recognition**
    - Lightweight recognition of common idioms and call sites in `hir-js` (optionally
      using types), producing `RecognizedPattern` values such as:
-     - `arr.map(...).filter(...).reduce(...)`
-     - `map.get(key) ?? default`
-     - `const x: T = JSON.parse(...)`
+      - `arr.map(...).filter(...).reduce(...)`
+      - `map.get(key) ?? default`
+      - `Promise.all([fetch(...), ...])`
+      - `const x: T = JSON.parse(...)`
 
 The long-term goal is for these pieces to feed an effect inference engine that
 can prove that code is pure/read-only/IO/etc, enabling aggressive compilation
@@ -57,7 +58,7 @@ The easiest way to get a `hir-js::LowerResult` (and, optionally, types) is via
 `typecheck-ts`:
 
 ```rust
-use effect_js::recognize_patterns_untyped;
+use effect_js::recognize_patterns_best_effort_untyped;
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 let key = FileKey::new("index.ts");
@@ -71,7 +72,7 @@ let file_id = program.file_id(&key).unwrap();
 let lowered = program.hir_lowered(file_id).unwrap();
 
 for body_id in lowered.hir.bodies.iter().copied() {
-  let patterns = recognize_patterns_untyped(&lowered, body_id);
+  let patterns = recognize_patterns_best_effort_untyped(&lowered, body_id);
   for pat in patterns {
     println!("{body_id:?}: {pat:?}");
   }
@@ -97,4 +98,3 @@ let patterns = recognize_patterns_typed(&lowered, lowered.root_body(), &types);
 # From the `vendor/ecma-rs/` workspace root:
 cargo run -p effect-js --example recognize --features typed
 ```
-

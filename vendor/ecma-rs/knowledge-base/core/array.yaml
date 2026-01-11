@@ -9,7 +9,6 @@
 - name: Array.prototype.reduce
   effects: DependsOnCallback
   purity: DependsOnCallback
-
 - name: Array.prototype.forEach
   effects: DependsOnCallback
   purity: DependsOnCallback

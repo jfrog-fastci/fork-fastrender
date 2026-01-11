@@ -1,11 +1,9 @@
-use effect_js::{ApiDatabase, RecognizedPattern};
+use effect_js::{recognize_patterns_best_effort_untyped, ApiDatabase, RecognizedPattern};
 use hir_js::{ExprId, ExprKind};
 use typecheck_ts::{FileKey, MemoryHost, Program};
 
 #[cfg(feature = "typed")]
 use effect_js::{recognize_patterns_typed, typed::TypecheckProgram};
-#[cfg(not(feature = "typed"))]
-use effect_js::recognize_patterns_untyped;
 
 const INDEX_TS: &str = r#"
 declare function require(spec: string): any;
@@ -35,6 +33,12 @@ const parsed: { x: number } = JSON.parse("{\"x\": 1}");
 declare function fetch(url: string, index: number, array: string[]): Promise<number>;
 const urls: string[] = ["https://example.com"];
 Promise.all(urls.map(fetch) as any as Promise<number>[]).then(xs => xs[0]);
+
+// Best-effort Promise.all([fetch(...), ...]) pattern.
+Promise.all([
+  fetch(urls[0] as string, 0, urls),
+  fetch(urls[0] as string, 0, urls),
+]).then(xs => xs[0]);
 "#;
 
 fn format_kb_semantics(db: &ApiDatabase, api: &str) -> String {
@@ -68,6 +72,20 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
       "MapGetOrDefault(map={}, key={}, default={})",
       map.0, key.0, default.0
     ),
+    RecognizedPattern::PromiseAllFetch {
+      all_call,
+      fetch_calls,
+    } => {
+      let fetch_calls = fetch_calls
+        .iter()
+        .map(|id| id.0.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+      format!(
+        "PromiseAllFetch(all_call={}, fetch_calls=[{}])",
+        all_call.0, fetch_calls
+      )
+    }
     RecognizedPattern::JsonParseTyped { call, target } => {
       format!("JsonParseTyped(call={}, target_type={})", call.0, target.0)
     }
@@ -133,9 +151,19 @@ fn main() {
     // 2) Recognize higher-level patterns (optionally typed).
     println!("recognized_patterns:");
     #[cfg(feature = "typed")]
-    let patterns = recognize_patterns_typed(&lowered, body_id, &types);
+    let patterns = {
+      // Prefer the type-gated recognizer, but also include best-effort untyped
+      // patterns that are not (yet) modeled in the typed pass.
+      let mut patterns = recognize_patterns_typed(&lowered, body_id, &types);
+      patterns.extend(
+        recognize_patterns_best_effort_untyped(&lowered, body_id)
+          .into_iter()
+          .filter(|pat| matches!(pat, RecognizedPattern::PromiseAllFetch { .. })),
+      );
+      patterns
+    };
     #[cfg(not(feature = "typed"))]
-    let patterns = recognize_patterns_untyped(&lowered, body_id);
+    let patterns = recognize_patterns_best_effort_untyped(&lowered, body_id);
 
     if patterns.is_empty() {
       println!("  (none)");
@@ -145,6 +173,7 @@ fn main() {
           RecognizedPattern::CanonicalCall { .. } => seen.insert("CanonicalCall"),
           RecognizedPattern::MapFilterReduce { .. } => seen.insert("MapFilterReduce"),
           RecognizedPattern::MapGetOrDefault { .. } => seen.insert("MapGetOrDefault"),
+          RecognizedPattern::PromiseAllFetch { .. } => seen.insert("PromiseAllFetch"),
           RecognizedPattern::JsonParseTyped { .. } => seen.insert("JsonParseTyped"),
         };
         println!("  - {}", format_pattern(&db, pat));
@@ -162,6 +191,10 @@ fn main() {
   assert!(
     seen.contains("JsonParseTyped"),
     "expected example to produce `JsonParseTyped` pattern"
+  );
+  assert!(
+    seen.contains("PromiseAllFetch"),
+    "expected example to produce `PromiseAllFetch` pattern"
   );
 
   #[cfg(feature = "typed")]
