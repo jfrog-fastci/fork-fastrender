@@ -5,6 +5,9 @@ use crate::abi::TaskId;
 use crate::abi::ValueRef;
 use crate::alloc;
 use crate::async_rt;
+use crate::gc::ObjHeader;
+use crate::gc::YOUNG_SPACE;
+use std::sync::atomic::Ordering;
 
 #[no_mangle]
 pub extern "C" fn rt_alloc(size: usize, _shape: ShapeId) -> *mut u8 {
@@ -22,11 +25,65 @@ pub extern "C" fn rt_gc_safepoint() {
   crate::threading::safepoint::rt_gc_safepoint();
 }
 
+/// Update the active young-space address range used by the write barrier.
+///
+/// This must be called by the GC during initialization and after each nursery
+/// flip/resize that changes the current young generation region.
+#[no_mangle]
+pub extern "C" fn rt_gc_set_young_range(start: *mut u8, end: *mut u8) {
+  YOUNG_SPACE.start.store(start as usize, Ordering::Release);
+  YOUNG_SPACE.end.store(end as usize, Ordering::Release);
+}
+
+/// Debug/test helper: return the current young-space range.
+///
+/// # Safety
+/// If `out_start`/`out_end` are non-null, they must be valid writable pointers.
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_get_young_range(out_start: *mut *mut u8, out_end: *mut *mut u8) {
+  if !out_start.is_null() {
+    *out_start = YOUNG_SPACE.start.load(Ordering::Acquire) as *mut u8;
+  }
+  if !out_end.is_null() {
+    *out_end = YOUNG_SPACE.end.load(Ordering::Acquire) as *mut u8;
+  }
+}
+
 /// Write barrier for GC.
 ///
-/// Milestone-1 runtime: no-op.
+/// Records old→young pointer stores in the remembered set.
 #[no_mangle]
-pub extern "C" fn rt_write_barrier(_obj: *mut u8, _field: *mut u8) {}
+pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8) {
+  if obj.is_null() || slot.is_null() {
+    return;
+  }
+
+  // SAFETY: The write barrier contract requires `slot` be aligned and contain a
+  // valid GC pointer or null.
+  let value = (slot as *const *mut u8).read();
+  if value.is_null() {
+    return;
+  }
+
+  if !YOUNG_SPACE.contains(value as usize) {
+    return;
+  }
+
+  // Writes into young objects don't need a barrier: nursery tracing will find
+  // the edge.
+  if YOUNG_SPACE.contains(obj as usize) {
+    return;
+  }
+
+  // Old → young store. Mark the object as remembered.
+  //
+  // TODO: Replace this with the real remembered-set / card-table update once
+  // runtime-native's GC is wired up to native codegen.
+  let header = &mut *(obj as *mut ObjHeader);
+  if !header.is_remembered() {
+    header.set_remembered(true);
+  }
+}
 
 /// Trigger a GC cycle.
 ///

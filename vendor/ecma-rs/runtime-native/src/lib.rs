@@ -126,6 +126,8 @@ mod tests {
       "void rt_gc_safepoint(void);",
       "void rt_write_barrier(uint8_t* obj, uint8_t* slot);",
       "void rt_gc_collect(void);",
+      "void rt_gc_set_young_range(uint8_t* start, uint8_t* end);",
+      "void rt_gc_get_young_range(uint8_t** out_start, uint8_t** out_end);",
       "StringRef rt_string_concat(const uint8_t* a, size_t a_len, const uint8_t* b, size_t b_len);",
       "InternedId rt_string_intern(const uint8_t* s, size_t len);",
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
@@ -150,8 +152,10 @@ mod tests {
     let _alloc: extern "C" fn(usize, abi::ShapeId) -> *mut u8 = rt_alloc;
     let _alloc_array: extern "C" fn(usize, usize) -> *mut u8 = rt_alloc_array;
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
-    let _write_barrier: extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
+    let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
     let _collect: extern "C" fn() = rt_gc_collect;
+    let _set_young_range: extern "C" fn(*mut u8, *mut u8) = rt_gc_set_young_range;
+    let _get_young_range: unsafe extern "C" fn(*mut *mut u8, *mut *mut u8) = rt_gc_get_young_range;
     let _concat: extern "C" fn(*const u8, usize, *const u8, usize) -> abi::StringRef = rt_string_concat;
     let _intern: extern "C" fn(*const u8, usize) -> abi::InternedId = rt_string_intern;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
@@ -169,6 +173,8 @@ mod tests {
       _safepoint,
       _write_barrier,
       _collect,
+      _set_young_range,
+      _get_young_range,
       _concat,
       _intern,
       _spawn,

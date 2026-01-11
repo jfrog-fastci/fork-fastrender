@@ -1,6 +1,7 @@
 use std::mem;
 use std::slice;
 
+mod young;
 pub mod heap;
 pub mod roots;
 
@@ -12,6 +13,9 @@ pub use roots::RememberedSet;
 pub use roots::RootSet;
 pub use roots::RootStack;
 pub use roots::SimpleRememberedSet;
+pub use young::YoungSpace;
+
+pub(crate) use young::YOUNG_SPACE;
 
 /// Object header that prefixes every GC-managed allocation.
 ///

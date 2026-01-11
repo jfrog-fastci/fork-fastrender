@@ -53,6 +53,13 @@ void rt_gc_safepoint(void);
 void rt_write_barrier(uint8_t* obj, uint8_t* slot);
 void rt_gc_collect(void);
 
+// Update the active nursery (young generation) address range used by the write barrier.
+// Must be called by the GC at initialization and after each nursery flip/resize.
+void rt_gc_set_young_range(uint8_t* start, uint8_t* end);
+
+// Debug/test helper: read the current young-space range.
+void rt_gc_get_young_range(uint8_t** out_start, uint8_t** out_end);
+
 // -----------------------------------------------------------------------------
 // Strings
 // -----------------------------------------------------------------------------
