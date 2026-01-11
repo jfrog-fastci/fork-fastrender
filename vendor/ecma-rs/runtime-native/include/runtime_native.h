@@ -185,11 +185,11 @@ void rt_thread_detach(Thread* thread);
 //
 // Alignment: the returned pointer is aligned to at least the registered shape
 // descriptor's `align` value (`RtShapeDescriptor.align`).
-uint8_t* rt_alloc(size_t size, RtShapeId shape);
+GcPtr rt_alloc(size_t size, RtShapeId shape);
 // Allocate a pinned (non-moving) object. Pinned objects are intended for FFI /
 // host embeddings that require stable addresses.
-uint8_t* rt_alloc_pinned(size_t size, RtShapeId shape);
-uint8_t* rt_alloc_array(size_t len, size_t elem_size);
+GcPtr rt_alloc_pinned(size_t size, RtShapeId shape);
+GcPtr rt_alloc_array(size_t len, size_t elem_size);
 
 // Register the global shape table used by `RtShapeId`.
 //
@@ -241,7 +241,7 @@ void rt_keep_alive_gc_ref(GcPtr gc_ref);
 // Contract: `obj` must be the same object base pointer that was returned from
 // `rt_alloc` (i.e. pointer to the start of the object's header), and `slot` must
 // point to the field being written.
-void rt_write_barrier(uint8_t* obj, uint8_t* slot);
+void rt_write_barrier(GcPtr obj, uint8_t* slot);
 // Generational range write barrier for bulk writes.
 //
 // Contract: called after a bulk write into `obj`.
@@ -249,7 +249,7 @@ void rt_write_barrier(uint8_t* obj, uint8_t* slot);
 // - `len` is the number of bytes written starting at `start_slot`.
 //
 // This barrier is conservative and may over-mark cards (it does not inspect the written values).
-void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);
+void rt_write_barrier_range(GcPtr obj, uint8_t* start_slot, size_t len);
 void rt_gc_collect(void);
 // Bytes currently owned by non-moving `ArrayBuffer`/`TypedArray` backing stores (allocated outside
 // the GC heap).
@@ -312,8 +312,8 @@ void rt_gc_stats_reset(void);
 // -----------------------------------------------------------------------------
 // Weak references (weak handles)
 // -----------------------------------------------------------------------------
-uint64_t rt_weak_add(uint8_t* value);
-uint8_t* rt_weak_get(uint64_t handle);
+uint64_t rt_weak_add(GcPtr value);
+GcPtr rt_weak_get(uint64_t handle);
 void rt_weak_remove(uint64_t handle);
 
 // -----------------------------------------------------------------------------

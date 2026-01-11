@@ -99,7 +99,7 @@ fn mark_card_range(card_table: *mut AtomicU64, start_card: usize, end_card: usiz
 }
 
 #[no_mangle]
-pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8 {
+pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc(size);
 
@@ -137,7 +137,7 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8 {
 /// codegen/FFI can request a stable address today and so future GC-backed allocation can route
 /// pinned objects to a non-moving space.
 #[no_mangle]
-pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
+pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
   // Don't let panics unwind across the extern "C" boundary.
   let res = catch_unwind(AssertUnwindSafe(|| {
     let desc = shape_table::lookup_rt_descriptor(shape);
@@ -169,7 +169,7 @@ pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8 {
 }
 
 #[no_mangle]
-pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8 {
+pub extern "C" fn rt_alloc_array(len: usize, elem_size: usize) -> crate::roots::GcPtr {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc_array(len, elem_size);
 
@@ -278,7 +278,9 @@ pub extern "C" fn rt_gc_safepoint() {
 /// # Safety
 /// `slot` must be a valid writable pointer to a `*mut u8` slot.
 #[no_mangle]
-pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(slot: crate::roots::GcHandle) -> *mut u8 {
+pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(
+  slot: crate::roots::GcHandle,
+) -> crate::roots::GcPtr {
   if slot.is_null() {
     crate::trap::rt_trap_invalid_arg("rt_gc_safepoint_relocate_h: slot was null");
   }
@@ -331,7 +333,10 @@ pub extern "C" fn rt_gc_set_young_range(start: *mut u8, end: *mut u8) {
 /// # Safety
 /// If `out_start`/`out_end` are non-null, they must be valid writable pointers.
 #[no_mangle]
-pub unsafe extern "C" fn rt_gc_get_young_range(out_start: *mut *mut u8, out_end: *mut *mut u8) {
+pub unsafe extern "C" fn rt_gc_get_young_range(
+  out_start: *mut crate::roots::GcPtr,
+  out_end: *mut crate::roots::GcPtr,
+) {
   if !out_start.is_null() {
     *out_start = YOUNG_SPACE.start.load(Ordering::Acquire) as *mut u8;
   }
@@ -363,7 +368,7 @@ unsafe fn remember_old_object(obj: *mut u8) {
 ///
 /// Records old→young pointer stores in the remembered set.
 #[no_mangle]
-pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8) {
+pub unsafe extern "C" fn rt_write_barrier(obj: crate::roots::GcPtr, slot: *mut u8) {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_write_barrier();
 
@@ -422,7 +427,11 @@ pub unsafe extern "C" fn rt_write_barrier(obj: *mut u8, slot: *mut u8) {
 ///
 /// This barrier is conservative and does not inspect the stored values; it may over-mark cards.
 #[no_mangle]
-pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u8, len: usize) {
+pub unsafe extern "C" fn rt_write_barrier_range(
+  obj: crate::roots::GcPtr,
+  start_slot: *mut u8,
+  len: usize,
+) {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_write_barrier_range();
 
@@ -700,7 +709,7 @@ pub unsafe extern "C" fn rt_root_pop(slot: crate::roots::GcHandle) {
 /// `slot` must point to a writable `*mut u8` and must remain valid until the
 /// returned handle is passed to [`rt_gc_unregister_root_slot`].
 #[no_mangle]
-pub extern "C" fn rt_gc_register_root_slot(slot: *mut *mut u8) -> u32 {
+pub extern "C" fn rt_gc_register_root_slot(slot: crate::roots::GcHandle) -> u32 {
   crate::roots::global_root_registry().register_root_slot(slot)
 }
 
@@ -715,7 +724,7 @@ pub extern "C" fn rt_gc_unregister_root_slot(handle: u32) {
 /// This is primarily intended for FFI/host embeddings that want a persistent
 /// handle without managing slot storage themselves.
 #[no_mangle]
-pub extern "C" fn rt_gc_pin(ptr: *mut u8) -> u32 {
+pub extern "C" fn rt_gc_pin(ptr: crate::roots::GcPtr) -> u32 {
   crate::roots::global_root_registry().pin(ptr)
 }
 
@@ -749,13 +758,13 @@ pub extern "C" fn rt_gc_stats_reset() {
 /// Weak handles do not keep the referent alive. If the referent is collected, `rt_weak_get`
 /// returns null.
 #[no_mangle]
-pub extern "C" fn rt_weak_add(value: *mut u8) -> u64 {
+pub extern "C" fn rt_weak_add(value: crate::roots::GcPtr) -> u64 {
   crate::gc::weak::global_weak_add(value).as_u64()
 }
 
 /// Resolve a weak handle back to a pointer, or null if the referent is dead/cleared.
 #[no_mangle]
-pub extern "C" fn rt_weak_get(handle: u64) -> *mut u8 {
+pub extern "C" fn rt_weak_get(handle: u64) -> crate::roots::GcPtr {
   crate::gc::weak::global_weak_get(WeakHandle::from_u64(handle)).unwrap_or(std::ptr::null_mut())
 }
 

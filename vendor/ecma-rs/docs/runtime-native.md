@@ -285,6 +285,7 @@ generation strategy.
 | `rt_gc_poll` | NoGC | Cheap leaf poll used by backedge safepoints (codegen may also inline `RT_GC_EPOCH`). |
 | `rt_gc_safepoint_slow` | MayGC | Slow-path safepoint call taken only when GC is requested. |
 | `rt_gc_safepoint` | MayGC | Convenience wrapper around the slow-path safepoint. |
+| `rt_gc_safepoint_relocate_h` | MayGC | Handle-based helper: safepoint + reload `*slot` for moving-GC safe runtime calls. |
 | `rt_write_barrier` | NoGC | Must not allocate or safepoint; safe to call without statepoint. |
 | `rt_gc_collect` | MayGC | Explicit collection trigger (debug/forcing). |
 | `rt_string_concat` | MayGC | Allocates a new string buffer. |

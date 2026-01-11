@@ -173,9 +173,9 @@ extern "C" {
   pub fn rt_thread_set_parked(parked: bool);
 
   // Memory
-  pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
-  pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8;
-  pub fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8;
+  pub fn rt_alloc(size: usize, shape: RtShapeId) -> GcPtr;
+  pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> GcPtr;
+  pub fn rt_alloc_array(len: usize, elem_size: usize) -> GcPtr;
 
   pub fn rt_register_shape_table(table: *const RtShapeDescriptor, len: usize);
 
@@ -187,8 +187,8 @@ extern "C" {
   pub fn rt_gc_safepoint_relocate_h(slot: GcHandle) -> GcPtr;
   pub fn rt_gc_safepoint_slow(requested_epoch: u64);
   pub fn rt_gc_poll() -> bool;
-  pub fn rt_write_barrier(obj: *mut u8, slot: *mut u8);
-  pub fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u8, len: usize);
+  pub fn rt_write_barrier(obj: GcPtr, slot: *mut u8);
+  pub fn rt_write_barrier_range(obj: GcPtr, start_slot: *mut u8, len: usize);
   pub fn rt_gc_collect();
 
   // Strings

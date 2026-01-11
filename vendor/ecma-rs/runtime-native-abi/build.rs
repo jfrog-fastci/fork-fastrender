@@ -78,7 +78,13 @@ fn main() {
   // `RT_GC_EPOCH` as a link-visible symbol used by codegen for fast safepoint
   // polling; inject an extern declaration so the generated header is complete.
   if !header.contains("RT_GC_EPOCH") {
-    if let Some(insert_at) = header.find("extern uint8_t *rt_alloc") {
+    // cbindgen's emitted prototype for `rt_alloc` depends on the Rust signature; prefer matching
+    // against that, but be robust to future typedefs.
+    let insert_at = header
+      .find("extern uint8_t *rt_alloc")
+      .or_else(|| header.find("extern GcPtr rt_alloc"))
+      .or_else(|| header.find("extern "));
+    if let Some(insert_at) = insert_at {
       header.insert_str(
         insert_at,
         concat!(
