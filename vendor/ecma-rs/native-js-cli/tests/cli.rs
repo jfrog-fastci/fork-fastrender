@@ -843,6 +843,40 @@ export function main(): number { return x; }
 }
 
 #[test]
+fn export_all_reexport_initializes_dependency() {
+  let tmp = TempDir::new().unwrap();
+
+  let dep = tmp.path().join("dep.ts");
+  fs::write(
+    &dep,
+    r#"export let x: number = 40;
+x += 2;
+"#,
+  )
+  .unwrap();
+
+  let reexport = tmp.path().join("reexport.ts");
+  fs::write(&reexport, r#"export * from "./dep";"#).unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"import { x } from "./reexport";
+export function main(): number { return x; }
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(CLI_TIMEOUT)
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("42\n"));
+}
+
+#[test]
 fn type_only_reexport_does_not_execute_module() {
   let tmp = TempDir::new().unwrap();
 
