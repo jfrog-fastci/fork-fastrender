@@ -34,6 +34,9 @@ pub fn reset_runtime_state() {
   crate::exports::clear_web_timers_for_tests();
   crate::roots::global_root_registry().clear_for_tests();
   crate::roots::global_persistent_handle_table().clear_for_tests();
+  // Stackmap registry is process-global and can be mutated by dlopen/JIT style
+  // consumers. Keep tests isolated by clearing it between runs.
+  *crate::global_stackmap_registry().write() = crate::StackMapRegistry::default();
   time::debug_clear_state_for_tests();
   crate::async_runtime::reset_for_tests();
   crate::clear_write_barrier_state_for_tests();
