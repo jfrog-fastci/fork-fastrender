@@ -174,7 +174,11 @@ impl ParallelRuntime {
     }
     drop(live);
 
-    for task in &tasks {
+    // Consume the task list so each `Arc<TaskState>` is dropped as soon as that
+    // task completes, rather than keeping the full vector alive until the end
+    // of the join call. This reduces peak per-task bookkeeping memory when
+    // joining large batches.
+    for task in tasks {
       while !task.done.load(Ordering::Acquire) {
         // Join can block waiting for other tasks. Poll the GC safepoint here so
         // an STW request doesn't have to wait for the join loop to make
