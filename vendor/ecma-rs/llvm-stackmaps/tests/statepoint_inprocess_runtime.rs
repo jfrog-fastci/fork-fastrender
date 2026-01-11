@@ -32,7 +32,14 @@ attributes #0 = { "gc-leaf-function" }
 
 define ptr addrspace(1) @test(ptr addrspace(1) %p) gc "coreclr" {
 entry:
-  %obj = call ptr addrspace(1) @allocate(i64 16)
+  ; Include both a `"deopt"(...)` operand bundle and a `"gc-transition"(...)` bundle.
+  ;
+  ; LLVM 18 encodes this in the stackmap record as:
+  ; - locations[1] = flags (== 1 when gc-transition is present)
+  ; - locations[2] = NumDeoptArgs
+  ; - locations[3..] = the deopt operand locations themselves (not GC roots)
+  ; - then the GC (base, derived) relocation pairs.
+  %obj = call ptr addrspace(1) @allocate(i64 16) [ "deopt"(i64 1, i64 2), "gc-transition"(i64 99) ]
   call void @use(ptr addrspace(1) %p)
   ret ptr addrspace(1) %obj
 }
@@ -163,12 +170,17 @@ fn main() {
         .unwrap_or_else(|| panic!("expected stackmap record for captured return address 0x{ra:x}"));
     assert_eq!(rec.callsite_pc, ra);
 
-    let sp = maps
-        .lookup_statepoint(ra)
-        .expect("expected record to match statepoint layout");
-    assert_eq!(sp.num_gc_roots(), 1);
-}
-"##,
+     let sp = maps
+         .lookup_statepoint(ra)
+         .expect("expected record to match statepoint layout");
+     assert_eq!(sp.call_conv, 0);
+     assert_eq!(sp.flags, 1);
+     assert_eq!(sp.deopt_args.len(), 2);
+     assert_eq!(sp.deopt_args[0].as_u64(), Some(1));
+     assert_eq!(sp.deopt_args[1].as_u64(), Some(2));
+     assert_eq!(sp.num_gc_roots(), 1);
+ }
+ "##,
     )?;
 
     let target_dir = dir.join("target");
