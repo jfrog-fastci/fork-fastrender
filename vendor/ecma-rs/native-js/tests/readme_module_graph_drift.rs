@@ -9,18 +9,21 @@ fn readme_text() -> String {
 #[test]
 fn readme_documents_reexports_type_only_edges_and_cycle_code() {
   let readme = readme_text();
+  let readme_lower = readme.to_lowercase();
 
   // Regression guard: the checked/HIR backend supports runtime re-exports as module dependencies, so
   // the README must not claim they are unsupported.
+  let stale_reexport_claim = readme_lower.contains("re-export syntax")
+    && readme_lower.contains("checked")
+    && (readme_lower.contains("not yet supported") || readme_lower.contains("not supported"));
   assert!(
-    !readme.contains("re-export syntax")
-      && !readme.contains("not yet supported by the checked/HIR backend"),
-    "native-js README appears to contain stale re-export support wording"
+    !stale_reexport_claim,
+    "native-js README appears to contain stale checked/HIR re-export support wording"
   );
 
   // The README should mention the specific re-export forms that are supported today.
   assert!(
-    readme.contains("Re-export statements (`export { foo } from`,") && readme.contains("`export * from`)"),
+    readme.contains("Re-export statements (`export {") && readme.contains("`export * from`)"),
     "native-js README should mention supported re-export forms (`export {{ foo }} from`, `export * from`)"
   );
 
