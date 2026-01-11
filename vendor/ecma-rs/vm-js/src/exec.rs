@@ -338,6 +338,7 @@ impl RuntimeEnv {
 
       current = scope.heap().env_outer(env)?;
     }
+
     Ok(None)
   }
 
@@ -553,10 +554,7 @@ impl RuntimeEnv {
         return Ok(());
       }
 
-      match scope
-        .heap_mut()
-        .env_set_mutable_binding(env, name, value, strict)
-      {
+      match scope.heap_mut().env_set_mutable_binding(env, name, value, strict) {
         Ok(()) => return Ok(()),
         // TDZ sentinel from `Heap::{env_get_binding_value, env_set_mutable_binding}`.
         Err(VmError::Throw(Value::Null)) => {
@@ -565,11 +563,7 @@ impl RuntimeEnv {
         }
         // `const` assignment sentinel from `Heap::env_set_mutable_binding`.
         Err(VmError::Throw(Value::Undefined)) => {
-          return Err(throw_type_error(
-            vm,
-            scope,
-            "Assignment to constant variable.",
-          )?);
+          return Err(throw_type_error(vm, scope, "Assignment to constant variable.")?);
         }
         Err(err) => return Err(err),
       }
@@ -1446,6 +1440,12 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     stmts: &[Node<Stmt>],
   ) -> Result<(), VmError> {
+    if self.strict {
+      for stmt in stmts {
+        self.strict_mode_with_early_error(stmt)?;
+      }
+    }
+
     // Minimal early error checks:
     // - Duplicate lexical declarations (let/const) in the same statement list.
     // - Lexical declarations may not collide with var-scoped names (var + function declarations).
@@ -1535,6 +1535,84 @@ impl<'a> Evaluator<'a> {
     Ok(())
   }
 
+  fn strict_mode_with_early_error(&mut self, stmt: &Node<Stmt>) -> Result<(), VmError> {
+    // `with` is a strict mode early error (ECMA-262 14.11.1 Static Semantics: Early Errors).
+    //
+    // We run this check during instantiation so strict-mode failures do not partially hoist `var`
+    // bindings before throwing.
+    self.tick()?;
+
+    match &*stmt.stx {
+      Stmt::With(_) => Err(syntax_error(
+        stmt.loc,
+        "with statements are not allowed in strict mode",
+      )),
+      Stmt::Block(block) => {
+        for s in &block.stx.body {
+          self.strict_mode_with_early_error(s)?;
+        }
+        Ok(())
+      }
+      Stmt::If(stmt) => {
+        self.strict_mode_with_early_error(&stmt.stx.consequent)?;
+        if let Some(alt) = &stmt.stx.alternate {
+          self.strict_mode_with_early_error(alt)?;
+        }
+        Ok(())
+      }
+      Stmt::Try(stmt) => {
+        for s in &stmt.stx.wrapped.stx.body {
+          self.strict_mode_with_early_error(s)?;
+        }
+        if let Some(catch) = &stmt.stx.catch {
+          for s in &catch.stx.body {
+            self.strict_mode_with_early_error(s)?;
+          }
+        }
+        if let Some(finally) = &stmt.stx.finally {
+          for s in &finally.stx.body {
+            self.strict_mode_with_early_error(s)?;
+          }
+        }
+        Ok(())
+      }
+      Stmt::While(stmt) => self.strict_mode_with_early_error(&stmt.stx.body),
+      Stmt::DoWhile(stmt) => self.strict_mode_with_early_error(&stmt.stx.body),
+      Stmt::ForTriple(stmt) => {
+        for s in &stmt.stx.body.stx.body {
+          self.strict_mode_with_early_error(s)?;
+        }
+        Ok(())
+      }
+      Stmt::ForIn(stmt) => {
+        for s in &stmt.stx.body.stx.body {
+          self.strict_mode_with_early_error(s)?;
+        }
+        Ok(())
+      }
+      Stmt::ForOf(stmt) => {
+        for s in &stmt.stx.body.stx.body {
+          self.strict_mode_with_early_error(s)?;
+        }
+        Ok(())
+      }
+      Stmt::Label(stmt) => self.strict_mode_with_early_error(&stmt.stx.statement),
+      Stmt::Switch(stmt) => {
+        const BRANCH_TICK_EVERY: usize = 32;
+        for (i, branch) in stmt.stx.branches.iter().enumerate() {
+          if i % BRANCH_TICK_EVERY == 0 {
+            self.tick()?;
+          }
+          for s in &branch.stx.body {
+            self.strict_mode_with_early_error(s)?;
+          }
+        }
+        Ok(())
+      }
+      _ => Ok(()),
+    }
+  }
+
   fn instantiate_var_decls(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1602,6 +1680,9 @@ impl<'a> Evaluator<'a> {
         }
         Ok(())
       }
+      Stmt::With(stmt) => {
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx)
+      }
       Stmt::While(stmt) => {
         self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx)
       }
@@ -1619,9 +1700,6 @@ impl<'a> Evaluator<'a> {
       }
       Stmt::Label(stmt) => {
         self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx)
-      }
-      Stmt::With(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx)
       }
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
@@ -1680,6 +1758,7 @@ impl<'a> Evaluator<'a> {
         }
         Ok(())
       }
+      Stmt::With(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
       Stmt::While(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
       Stmt::DoWhile(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
       Stmt::ForTriple(stmt) => {
@@ -1701,7 +1780,6 @@ impl<'a> Evaluator<'a> {
         Ok(())
       }
       Stmt::Label(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.statement.stx, out),
-      Stmt::With(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
@@ -2168,6 +2246,9 @@ impl<'a> Evaluator<'a> {
           }
         }
       }
+      Stmt::With(stmt) => {
+        self.collect_var_names(&stmt.stx.body.stx, out)?;
+      }
       Stmt::While(stmt) => {
         self.collect_var_names(&stmt.stx.body.stx, out)?;
       }
@@ -2209,9 +2290,6 @@ impl<'a> Evaluator<'a> {
       }
       Stmt::Label(stmt) => {
         self.collect_var_names(&stmt.stx.statement.stx, out)?;
-      }
-      Stmt::With(stmt) => {
-        self.collect_var_names(&stmt.stx.body.stx, out)?;
       }
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
@@ -2391,13 +2469,13 @@ impl<'a> Evaluator<'a> {
       }
       Stmt::Throw(stmt) => self.eval_throw(scope, stmt),
       Stmt::Try(stmt) => self.eval_try(scope, &stmt.stx),
+      Stmt::With(stmt) => self.eval_with(scope, &stmt.stx, label_set),
       Stmt::Return(stmt) => self.eval_return(scope, &stmt.stx),
       Stmt::While(stmt) => self.eval_while(scope, &stmt.stx, label_set),
       Stmt::DoWhile(stmt) => self.eval_do_while(scope, &stmt.stx, label_set),
       Stmt::ForTriple(stmt) => self.eval_for_triple(scope, &stmt.stx, label_set),
       Stmt::ForIn(stmt) => self.eval_for_in(scope, &stmt.stx, label_set),
       Stmt::ForOf(stmt) => self.eval_for_of(scope, &stmt.stx, label_set),
-      Stmt::With(stmt) => self.eval_with(scope, &stmt.stx, label_set),
       Stmt::Switch(stmt) => {
         let result = self.eval_switch(scope, &stmt.stx)?;
         Ok(Self::normalise_iteration_break(result))
