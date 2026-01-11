@@ -443,8 +443,7 @@ This crate provides [`gc::HandleTable`], a generational handle table intended to
 - Hosts store a stable [`gc::HandleId`] (convertible to/from `u64`) in their queues or OS userdata.
 - The table stores a relocatable `NonNull<T>` pointer.
 - During relocation/compaction the GC updates pointers in-place via
-  [`gc::HandleTable::update`] / [`gc::HandleTable::iter_live_mut`] under a stop-the-world (STW)
-  pause.
+  [`gc::HandleTable::with_stw_update`] under a stop-the-world (STW) pause.
 - When host work is canceled/dropped, callers must `free` the handle to allow collection.
 
 The GC-managed objects themselves remain movable; only the handle IDs and handle table slots are
