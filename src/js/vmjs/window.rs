@@ -2615,6 +2615,54 @@ mod tests {
   }
 
   #[test]
+  fn dynamic_external_script_sri_cross_origin_without_crossorigin_blocks_execution() -> Result<()> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
+    let dom = dom2::Document::from_renderer_dom(&renderer_dom);
+
+    let script_source = "this.__ran = true;";
+    let script_url = "https://cross-origin.invalid/app.js";
+
+    let mut resource = FetchedResource::new(
+      script_source.as_bytes().to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    resource.status = Some(200);
+
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    fetcher.insert(script_url, resource);
+
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.invalid/", fetcher)?;
+
+    let digest = BASE64_STANDARD.encode(Sha256::digest(script_source.as_bytes()));
+    let integrity = format!("sha256-{digest}");
+    host.exec_script(&format!(
+      "(() => {{\n\
+        this.__ran = false;\n\
+        const s = document.createElement('script');\n\
+        s.src = '{script_url}';\n\
+        s.setAttribute('integrity', '{integrity}');\n\
+        document.head.appendChild(s);\n\
+      }})()"
+    ))?;
+
+    let err = host
+      .run_until_idle(RunLimits::unbounded())
+      .expect_err("expected cross-origin SRI without crossorigin to block execution");
+    let Error::Other(msg) = err else {
+      panic!("expected Error::Other, got {err:?}");
+    };
+    assert_eq!(
+      msg,
+      format!(
+        "SRI blocked script {script_url}: cross-origin integrity requires a CORS-enabled fetch (missing crossorigin attribute)"
+      )
+    );
+    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(false)));
+    Ok(())
+  }
+
+  #[test]
   fn dynamic_external_script_sri_match_executes() -> Result<()> {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
