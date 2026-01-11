@@ -2,10 +2,9 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
+use std::io::Read;
 use std::ops::{Deref, DerefMut};
-use std::process::Command as StdCommand;
-use std::process::ExitStatus;
-use std::process::Stdio;
+use std::process::{Command as StdCommand, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -77,15 +76,32 @@ fn native_js_cli() -> PermitCommand {
   }
 }
 
-fn run_with_timeout(cmd: &mut StdCommand, timeout: Duration) -> std::io::Result<ExitStatus> {
-  let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
-  match child.wait_timeout(timeout)? {
-    Some(status) => Ok(status),
+fn run_with_timeout(cmd: &mut StdCommand, timeout: Duration) -> std::io::Result<Output> {
+  let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+
+  let status = match child.wait_timeout(timeout)? {
+    Some(status) => status,
     None => {
       let _ = child.kill();
-      child.wait()
+      child.wait()?
     }
+  };
+
+  // These tiny test programs produce minimal output, so reading after `wait_timeout` is fine.
+  let mut stdout = Vec::new();
+  let mut stderr = Vec::new();
+  if let Some(mut out) = child.stdout.take() {
+    out.read_to_end(&mut stdout)?;
   }
+  if let Some(mut err) = child.stderr.take() {
+    err.read_to_end(&mut stderr)?;
+  }
+
+  Ok(Output {
+    status,
+    stdout,
+    stderr,
+  })
 }
 
 #[test]
@@ -681,12 +697,14 @@ fn checked_pipeline_build_with_emit_llvm_writes_executable_and_ir_file() {
     "expected IR to use native-js GC strategy"
   );
 
-  // This program prints to stdout; silence it so test output stays clean even
-  // when the harness captures and replays child stdout/stderr.
-  let mut cmd = StdCommand::new(&out);
-  cmd.stdout(Stdio::null()).stderr(Stdio::null());
-  let status = run_with_timeout(&mut cmd, Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(7));
+  let output = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(output.status.code(), Some(7));
+  assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
+  assert!(
+    output.stderr.is_empty(),
+    "expected stderr to be empty, got: {}",
+    String::from_utf8_lossy(&output.stderr)
+  );
 }
 
 #[test]
@@ -1162,8 +1180,13 @@ export function main(): number {
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(45));
+  let output = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(output.status.code(), Some(45));
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -1194,8 +1217,13 @@ export function main(): number {
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(1));
+  let output = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(output.status.code(), Some(1));
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -1226,8 +1254,13 @@ export function main(): number {
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(3));
+  let output = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(output.status.code(), Some(3));
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -1261,6 +1294,11 @@ export function main(): number {
     .assert()
     .success();
 
-  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
-  assert_eq!(status.code(), Some(55));
+  let output = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(output.status.code(), Some(55));
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
