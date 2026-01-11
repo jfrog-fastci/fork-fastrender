@@ -325,7 +325,7 @@ fn absolute_child_uses_grid_track_static_position_with_vertical_writing_mode() {
     abs_fragment.bounds.y()
   );
   assert!(
-    (abs_fragment.bounds.x() - 50.0).abs() < 0.1,
+    (abs_fragment.bounds.x() - 0.0).abs() < 0.1,
     "static position should align with second grid row start on the physical x axis (got x = {})",
     abs_fragment.bounds.x()
   );

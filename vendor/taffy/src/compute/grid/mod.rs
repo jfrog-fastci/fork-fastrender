@@ -1658,17 +1658,58 @@ where
 
   // Set detailed grid information
   #[cfg(feature = "detailed_layout_info")]
-  tree.set_detailed_grid_info(
-    node,
-    DetailedGridInfo {
-      rows: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_row_counts, rows),
-      columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_col_counts, columns),
-      items: items
-        .iter()
-        .map(DetailedGridItemsInfo::from_grid_item)
-        .collect(),
-    },
-  );
+  {
+    // Expose expanded line-name vectors for integrations that need to resolve named placements
+    // outside of Taffy's in-flow grid-item pipeline (e.g. for absolutely positioned static
+    // positioning).
+    //
+    // `NamedLineResolver::expanded_*_line_names()` returns 1-indexed line-name vectors for the
+    // explicit grid only. However, detailed track info and grid item placement operate in the
+    // *full* grid line coordinate space that includes leading/trailing implicit tracks. Pad the
+    // expanded vectors so `line_names[line - 1]` is valid for the same line-number space used by
+    // `DetailedGridItemsInfo`.
+    fn pad_expanded_line_names(
+      mut names: Vec<Vec<String>>,
+      track_counts: TrackCounts,
+    ) -> Vec<Vec<String>> {
+      let leading = track_counts.negative_implicit as usize;
+      if leading > 0 {
+        let mut padded = Vec::with_capacity(leading + names.len());
+        for _ in 0..leading {
+          padded.push(Vec::new());
+        }
+        padded.append(&mut names);
+        names = padded;
+      }
+      let total_tracks = (track_counts.negative_implicit
+        .saturating_add(track_counts.explicit)
+        .saturating_add(track_counts.positive_implicit)) as usize;
+      let total_lines = total_tracks.saturating_add(1);
+      if names.len() < total_lines {
+        names.resize_with(total_lines, Vec::new);
+      }
+      names
+    }
+
+    let row_line_names =
+      pad_expanded_line_names(name_resolver.expanded_row_line_names(), final_row_counts);
+    let column_line_names =
+      pad_expanded_line_names(name_resolver.expanded_column_line_names(), final_col_counts);
+
+    tree.set_detailed_grid_info(
+      node,
+      DetailedGridInfo {
+        rows: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_row_counts, rows),
+        columns: DetailedGridTracksInfo::from_grid_tracks_and_track_count(final_col_counts, columns),
+        items: items
+          .iter()
+          .map(DetailedGridItemsInfo::from_grid_item)
+          .collect(),
+        row_line_names,
+        column_line_names,
+      },
+    );
+  }
 
   // If there are not items then return just the container size (no baseline)
   if items.is_empty() {
@@ -1726,6 +1767,18 @@ pub struct DetailedGridInfo {
   pub columns: DetailedGridTracksInfo,
   /// <https://drafts.csswg.org/css-grid-1/#grid-items>
   pub items: Vec<DetailedGridItemsInfo>,
+  /// Expanded (auto-repeat + area-derived) line names for rows.
+  ///
+  /// The indexing is the same 1-indexed line-number coordinate space used by
+  /// `DetailedGridItemsInfo::{row_start,row_end}`: `row_line_names[line - 1]` yields the line-name
+  /// list for that line. To achieve this, the underlying `NamedLineResolver` line-name vectors
+  /// (which only cover explicit tracks) are padded with empty entries for any leading/trailing
+  /// implicit tracks (`negative_implicit_tracks`/`positive_implicit_tracks`).
+  pub row_line_names: Vec<Vec<String>>,
+  /// Expanded (auto-repeat + area-derived) line names for columns.
+  ///
+  /// See `row_line_names` for indexing details.
+  pub column_line_names: Vec<Vec<String>>,
 }
 
 /// Information from the computation of grids tracks

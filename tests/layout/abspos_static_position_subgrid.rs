@@ -4,6 +4,7 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
+use fastrender::style::types::Direction;
 use fastrender::style::types::GridTrack;
 use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
@@ -195,7 +196,7 @@ fn absolute_child_in_subgrid_uses_grid_track_static_position_with_vertical_writi
     abs_fragment.bounds.y()
   );
   assert!(
-    (abs_fragment.bounds.x() - 50.0).abs() < 0.1,
+    (abs_fragment.bounds.x() - 0.0).abs() < 0.1,
     "static position should align with second inherited grid row start on the physical x axis (got x = {})",
     abs_fragment.bounds.x()
   );
@@ -285,7 +286,7 @@ fn absolute_child_in_nested_subgrid_uses_grid_track_static_position_with_vertica
     abs_fragment.bounds.y()
   );
   assert!(
-    (abs_fragment.bounds.x() - 50.0).abs() < 0.1,
+    (abs_fragment.bounds.x() - 0.0).abs() < 0.1,
     "static position should align with second inherited grid row start on the physical x axis (got x = {})",
     abs_fragment.bounds.x()
   );
@@ -488,6 +489,79 @@ fn absolute_child_in_subgrid_named_line_static_position_respects_parent_span() {
   assert!(
     (abs_fragment.bounds.x() - 30.0).abs() < 0.1,
     "static position should align with the second subgrid track (got x = {})",
+    abs_fragment.bounds.x()
+  );
+}
+
+#[test]
+fn absolute_child_in_subgrid_fallback_mirroring_respects_subgrid_span_in_rtl() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.position = Position::Relative;
+  parent_style.direction = Direction::Rtl;
+  parent_style.width = Some(Length::px(150.0));
+  parent_style.height = Some(Length::px(20.0));
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(50.0)),
+    GridTrack::Length(Length::px(50.0)),
+    GridTrack::Length(Length::px(50.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(20.0))];
+
+  // Place the subgrid on the *last two* columns. In RTL this subgrid ends up on the left edge of the
+  // parent, but its own inline axis still needs to mirror placement within its 2-track span.
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.position = Position::Relative;
+  subgrid_style.direction = Direction::Rtl;
+  subgrid_style.grid_column_subgrid = true;
+  subgrid_style.grid_column_start = 2;
+  subgrid_style.grid_column_end = 4;
+  subgrid_style.grid_row_start = 1;
+  subgrid_style.grid_row_end = 2;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.position = Position::Absolute;
+  abs_style.direction = Direction::Rtl;
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+  // Place the abspos box in the first column of the subgrid. Under RTL, the first column should
+  // be on the inline-start (right) side of the subgrid, i.e. x=50 within the subgrid's 100px span.
+  abs_style.grid_column_start = 1;
+  abs_style.grid_column_end = 2;
+  abs_style.grid_row_start = 1;
+  abs_style.grid_row_end = 2;
+
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![abs_child],
+  );
+  let container = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let constraints = LayoutConstraints::definite(150.0, 20.0);
+  let fc = GridFormattingContext::new();
+  let fragment = fc.layout(&container, &constraints).expect("grid layout");
+
+  let subgrid_fragment = &fragment.children[0];
+  let abs_fragment = subgrid_fragment
+    .iter_fragments()
+    .find(|node| {
+      matches!(
+        node.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
+    .expect("absolute fragment present");
+
+  assert!(
+    (abs_fragment.bounds.x() - 50.0).abs() < 0.1,
+    "static position should mirror within the subgrid span in RTL (got x = {})",
     abs_fragment.bounds.x()
   );
 }
