@@ -112,6 +112,13 @@ mod tests {
   }
 
   #[test]
+  fn headers_guard_request_ignores_user_agent() {
+    let mut headers = Headers::new_with_guard(HeadersGuard::Request);
+    headers.set("User-Agent", "spoof").unwrap();
+    assert!(!headers.has("user-agent").unwrap());
+  }
+
+  #[test]
   fn headers_guard_response_ignores_forbidden_response_headers() {
     let mut headers = Headers::new_with_guard(HeadersGuard::Response);
     headers.set("set-cookie", "a=b").unwrap();

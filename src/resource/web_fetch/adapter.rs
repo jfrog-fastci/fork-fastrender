@@ -2129,6 +2129,48 @@ mod tests {
   }
 
   #[test]
+  fn request_user_agent_header_is_not_spoofable() {
+    if skip_if_curl_backend_missing("request_user_agent_header_is_not_spoofable") {
+      return;
+    }
+    let Some(listener) = try_bind_localhost("request_user_agent_header_is_not_spoofable") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      *captured_req.lock().unwrap() = headers;
+      let body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher().with_user_agent("UA1");
+    let url = format!("http://{addr}/ua");
+    let mut request = Request::new("GET", &url);
+    request.headers.append("User-Agent", "UA2").unwrap();
+    let mut response =
+      execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    handle.join().unwrap();
+
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(req.contains("user-agent: ua1"), "expected UA1, got:\n{req}");
+    assert!(!req.contains("ua2"), "unexpected spoofed UA2, got:\n{req}");
+  }
+
+  #[test]
   fn sends_post_body_over_network() {
     if skip_if_curl_backend_missing("sends_post_body_over_network") {
       return;

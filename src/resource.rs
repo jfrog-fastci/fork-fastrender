@@ -1542,6 +1542,7 @@ fn fetch_http_request_header_forbidden(name: &str, value: &str) -> bool {
     | "trailer"
     | "transfer-encoding"
     | "upgrade"
+    | "user-agent"
     | "via" => true,
     other => {
       if other.starts_with("proxy-") || other.starts_with("sec-") {

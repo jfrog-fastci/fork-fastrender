@@ -656,6 +656,7 @@ fn is_forbidden_request_header(name: &HeaderName, value: &str) -> bool {
     | "trailer"
     | "transfer-encoding"
     | "upgrade"
+    | "user-agent"
     | "via" => true,
     name_str => {
       if name_str.starts_with("proxy-") || name_str.starts_with("sec-") {
