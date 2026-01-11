@@ -158,6 +158,11 @@ extern uint64_t RT_GC_EPOCH;
 bool rt_gc_poll(void);
 
 void rt_gc_safepoint(void);
+// Enter a safepoint and return the (possibly relocated) pointer stored in `slot`.
+//
+// This is an ABI helper for `may_gc` runtime entrypoints that accept GC-managed pointers as
+// pointer-to-slot handles.
+uint8_t* rt_gc_safepoint_relocate_h(uint8_t** slot);
 // Safepoint slow path entered only when `RT_GC_EPOCH` is odd (stop-the-world requested).
 // Callers should pass the observed odd epoch value.
 void rt_gc_safepoint_slow(uint64_t epoch);

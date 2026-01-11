@@ -6,6 +6,44 @@
 //! - long-lived "handles" created by host code / FFI
 //! - temporary roots created by runtime-native Rust code (without stackmaps)
 
+/// Raw pointer to a GC-managed object.
+pub type GcPtr = runtime_native_abi::GcPtr;
+
+/// A GC handle (pointer-to-slot).
+///
+/// This is the ABI-safe way to pass GC-managed pointers across any runtime entrypoint that may
+/// allocate / trigger GC: the runtime can reload the pointer from the slot after a safepoint.
+///
+/// Note: this is *not* the same as the persistent [`crate::gc::HandleId`] (an integer handle stored
+/// in [`RootRegistry`]). A `GcHandle` is just an addressable root slot (`*mut *mut u8`).
+pub type GcHandle = runtime_native_abi::GcHandle;
+
+/// Convert a mutable slot reference into a [`GcHandle`].
+#[inline]
+pub fn handle_from_slot(slot: &mut GcPtr) -> GcHandle {
+  slot as *mut GcPtr
+}
+
+/// Load the current pointer from a [`GcHandle`].
+///
+/// # Safety
+/// `h` must be valid for reads of a `GcPtr`.
+#[inline]
+pub unsafe fn load_handle(h: GcHandle) -> GcPtr {
+  debug_assert!(!h.is_null(), "GcHandle must not be null");
+  h.read()
+}
+
+/// Store a pointer into a [`GcHandle`]'s slot.
+///
+/// # Safety
+/// `h` must be valid for writes of a `GcPtr`.
+#[inline]
+pub unsafe fn store_handle(h: GcHandle, ptr: GcPtr) {
+  debug_assert!(!h.is_null(), "GcHandle must not be null");
+  h.write(ptr);
+}
+
 pub mod registry;
 
 pub use registry::{global_root_registry, RootRegistry, RootScope};
@@ -81,5 +119,24 @@ mod tests {
     global_root_registry().clear_for_tests();
     // Clearing should drop the entry; unregister should be a no-op now.
     global_root_registry().unregister(handle);
+  }
+
+  #[test]
+  fn gc_handle_helpers_roundtrip() {
+    let mut slot: GcPtr = 0x1234usize as *mut u8;
+    let h = handle_from_slot(&mut slot);
+    unsafe {
+      assert_eq!(load_handle(h), 0x1234usize as *mut u8);
+      store_handle(h, 0x5678usize as *mut u8);
+    }
+    assert_eq!(slot, 0x5678usize as *mut u8);
+  }
+
+  #[test]
+  fn exported_may_gc_helpers_use_gc_handles_in_signatures() {
+    // Compile-time ABI invariants: this assignment fails to compile if the exported function is
+    // changed to accept a raw `*mut u8` instead of a handle.
+    type Sig = unsafe extern "C" fn(GcHandle) -> GcPtr;
+    let _f: Sig = crate::rt_gc_safepoint_relocate_h;
   }
 }

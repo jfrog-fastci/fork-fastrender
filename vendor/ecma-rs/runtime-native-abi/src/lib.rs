@@ -26,6 +26,16 @@ pub const RT_NATIVE_ABI_VERSION: u32 = 0;
 pub const RT_PTR_SIZE_BYTES: usize = 8;
 pub const RT_PTR_ALIGN_BYTES: usize = 8;
 
+/// Raw pointer to a GC-managed object.
+pub type GcPtr = *mut u8;
+
+/// GC handle (pointer-to-slot) used for passing GC-managed pointers across `may_gc` runtime calls.
+///
+/// This is the runtime-native "handle ABI": instead of passing a raw `GcPtr`, callers pass a
+/// pointer to a root slot that contains the `GcPtr`. A moving GC updates that slot during
+/// relocation, and runtime code can reload `*handle` after any safepoint.
+pub type GcHandle = *mut GcPtr;
+
 /// Reserved invalid / sentinel runtime shape id value (raw).
 ///
 /// Shape tables are 1-indexed: `RtShapeId(1)` refers to the first descriptor.
@@ -159,8 +169,9 @@ extern "C" {
   ///
   /// This is an atomic `u64` in the runtime; treat it as `_Atomic uint64_t` from C.
   pub static RT_GC_EPOCH: u64;
-
+ 
   pub fn rt_gc_safepoint();
+  pub fn rt_gc_safepoint_relocate_h(slot: GcHandle) -> GcPtr;
   pub fn rt_gc_safepoint_slow(requested_epoch: u64);
   pub fn rt_gc_poll() -> bool;
   pub fn rt_write_barrier(obj: *mut u8, slot: *mut u8);
@@ -203,6 +214,11 @@ mod tests {
     assert!(size_of::<PromiseRef>() == 8);
     assert!(align_of::<PromiseRef>() == 8);
 
+    assert!(size_of::<GcPtr>() == 8);
+    assert!(align_of::<GcPtr>() == 8);
+    assert!(size_of::<GcHandle>() == 8);
+    assert!(align_of::<GcHandle>() == 8);
+
     assert!(size_of::<StringRef>() == 16);
     assert!(align_of::<StringRef>() == 8);
 
@@ -221,7 +237,7 @@ mod tests {
       header.contains("typedef struct StringRef") || header.contains("typedef struct StringRef {"),
       "missing StringRef typedef"
     );
-    for ty in ["RtShapeId", "InternedId", "TaskId", "PromiseRef"] {
+    for ty in ["RtShapeId", "InternedId", "TaskId", "PromiseRef", "GcPtr", "GcHandle"] {
       assert!(header.contains(ty), "missing type `{ty}` in generated header");
     }
     assert!(
@@ -239,6 +255,7 @@ mod tests {
       "rt_gc_safepoint(",
       "rt_gc_safepoint_slow(",
       "rt_gc_poll(",
+      "rt_gc_safepoint_relocate_h(",
       "rt_write_barrier(",
       "rt_write_barrier_range(",
       "rt_gc_collect(",

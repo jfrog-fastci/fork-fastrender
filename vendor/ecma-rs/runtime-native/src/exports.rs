@@ -221,6 +221,23 @@ pub extern "C" fn rt_gc_safepoint() {
   crate::threading::safepoint::rt_gc_safepoint();
 }
 
+/// Enter a GC safepoint and return the (possibly relocated) pointer stored in `slot`.
+///
+/// This is a `may_gc` helper intended for ABI design/testing. Any runtime function that may trigger
+/// GC but also needs to use GC-managed pointer arguments must accept those pointers as
+/// pointer-to-slot handles (see `docs/gc_handle_abi.md`).
+///
+/// # Safety
+/// `slot` must be a valid writable pointer to a `*mut u8` slot.
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_safepoint_relocate_h(slot: crate::roots::GcHandle) -> *mut u8 {
+  if slot.is_null() {
+    crate::trap::rt_trap_invalid_arg("rt_gc_safepoint_relocate_h: slot was null");
+  }
+  rt_gc_safepoint();
+  crate::roots::load_handle(slot)
+}
+
 /// Cheap GC poll used by compiler-inserted fast paths (e.g. loop backedge safepoints).
 ///
 /// Returns `true` if a stop-the-world GC/safepoint is currently requested.
