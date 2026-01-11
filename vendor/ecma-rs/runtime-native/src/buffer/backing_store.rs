@@ -329,3 +329,4 @@ static GLOBAL_BACKING_STORE_ALLOCATOR: GlobalBackingStoreAllocator =
 pub fn global_backing_store_allocator() -> &'static GlobalBackingStoreAllocator {
   &GLOBAL_BACKING_STORE_ALLOCATOR
 }
+
