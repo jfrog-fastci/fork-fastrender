@@ -44,7 +44,7 @@ pub struct StrictNativeArgs {
   #[arg(long)]
   pub update_baselines: bool,
 
-  /// Emit JSON output in addition to the human summary.
+  /// Emit JSON output on stdout (suppresses the human summary).
   #[arg(long)]
   pub json: bool,
 
