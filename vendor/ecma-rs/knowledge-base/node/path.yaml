@@ -33,26 +33,6 @@
   effects: Pure
   purity: Pure
 
-- name: path.join
-  effects: Pure
-  purity: Pure
-
-- name: path.resolve
-  effects: Pure
-  purity: Pure
-
-- name: path.basename
-  effects: Pure
-  purity: Pure
-
-- name: path.dirname
-  effects: Pure
-  purity: Pure
-
-- name: path.extname
-  effects: Pure
-  purity: Pure
-
 - name: node:path.normalize
   aliases:
     - path.normalize
@@ -85,25 +65,5 @@
   aliases:
     - path.format
   since: "v0.1.0"
-  effects: Pure
-  purity: Pure
-
-- name: path.normalize
-  effects: Pure
-  purity: Pure
-
-- name: path.isAbsolute
-  effects: Pure
-  purity: Pure
-
-- name: path.relative
-  effects: Pure
-  purity: Pure
-
-- name: path.parse
-  effects: Pure
-  purity: Pure
-
-- name: path.format
   effects: Pure
   purity: Pure

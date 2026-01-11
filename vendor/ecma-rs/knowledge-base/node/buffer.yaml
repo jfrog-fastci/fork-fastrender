@@ -19,31 +19,3 @@
       flags: ALLOCATES
       throws: Maybe
   purity: Impure
-
-- name: buffer.Buffer.from
-  effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Impure
-
-- name: Buffer.from
-  effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Impure
-
-- name: buffer.Buffer.alloc
-  effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Impure
-
-- name: Buffer.alloc
-  effects:
-    Custom:
-      flags: ALLOCATES
-      throws: Maybe
-  purity: Impure
