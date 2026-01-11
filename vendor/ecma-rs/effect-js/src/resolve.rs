@@ -335,6 +335,40 @@ pub fn resolve_call(
           }
         }
 
+        if types.expr_is_named_ref(body_id, member.object, "Map") {
+          if let Some(api_id) = match prop {
+            "get" => Some(ApiId::MapPrototypeGet),
+            _ => None,
+          } {
+            if let Some(api) = db.get(api_id.as_str()) {
+              return Some(ResolvedCall {
+                call: call_expr,
+                api: api.name.clone(),
+                api_id: Some(api_id),
+                receiver: Some(member.object),
+                args: call.args.iter().map(|arg| arg.expr).collect(),
+              });
+            }
+          }
+        }
+
+        if types.expr_is_named_ref(body_id, member.object, "Promise") {
+          if let Some(api_id) = match prop {
+            "then" => Some(ApiId::PromisePrototypeThen),
+            _ => None,
+          } {
+            if let Some(api) = db.get(api_id.as_str()) {
+              return Some(ResolvedCall {
+                call: call_expr,
+                api: api.name.clone(),
+                api_id: Some(api_id),
+                receiver: Some(member.object),
+                args: call.args.iter().map(|arg| arg.expr).collect(),
+              });
+            }
+          }
+        }
+
         None
       }
 

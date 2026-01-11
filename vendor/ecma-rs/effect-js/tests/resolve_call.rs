@@ -76,3 +76,50 @@ fn resolves_typed_array_prototype_methods() {
   assert_eq!(resolved.api, "Array.prototype.map");
   assert_eq!(resolved.api_id, Some(ApiId::ArrayPrototypeMap));
 }
+
+#[cfg(feature = "typed")]
+#[test]
+fn resolves_typed_map_and_promise_instance_methods() {
+  use effect_js::typed::TypedProgram;
+  use std::sync::Arc;
+  use typecheck_ts::{FileKey, MemoryHost, Program};
+
+  let source = r#"
+const m: Map<string, number> = new Map();
+m.get("a");
+
+const p: Promise<number> = Promise.resolve(1);
+p.then(x => x + 1);
+"#;
+  let file = FileKey::new("file0.ts");
+  let mut host = MemoryHost::new();
+  host.insert(file.clone(), source);
+  let program = Arc::new(Program::new(host, vec![file.clone()]));
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "typecheck diagnostics: {diagnostics:?}"
+  );
+
+  let file_id = program.file_id(&file).expect("file id");
+  let lowered = program.hir_lowered(file_id).expect("HIR lowered");
+  let lower = lowered.as_ref();
+  let body_id = lower.root_body();
+  let body = lower.body(body_id).unwrap();
+  let types = TypedProgram::from_program(program.clone(), file_id);
+  let db = effect_js::load_default_api_database();
+
+  let map_get_span = range_of(source, "m.get(\"a\")");
+  let map_get = find_call_expr(body, map_get_span);
+  let resolved =
+    resolve_call(lower, body_id, body, map_get, &db, Some(&types)).expect("resolve Map.get");
+  assert_eq!(resolved.api, "Map.prototype.get");
+  assert_eq!(resolved.api_id, Some(ApiId::MapPrototypeGet));
+
+  let promise_then_span = range_of(source, "p.then(x => x + 1)");
+  let promise_then = find_call_expr(body, promise_then_span);
+  let resolved = resolve_call(lower, body_id, body, promise_then, &db, Some(&types))
+    .expect("resolve Promise.then");
+  assert_eq!(resolved.api, "Promise.prototype.then");
+  assert_eq!(resolved.api_id, Some(ApiId::PromisePrototypeThen));
+}
