@@ -33,3 +33,83 @@
   parallelizable: true
   idempotent: true
   deterministic: true
+
+- name: node:url.URL
+  kind: constructor
+  aliases:
+    - url.URL
+  since: "v0.1.0"
+  effects:
+    base: [alloc, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:url.URLSearchParams
+  kind: constructor
+  aliases:
+    - url.URLSearchParams
+  since: "v0.1.0"
+  effects:
+    base: [alloc, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:url.domainToASCII
+  kind: function
+  aliases:
+    - url.domainToASCII
+  since: "v0.1.0"
+  effects:
+    base: [alloc, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:url.domainToUnicode
+  kind: function
+  aliases:
+    - url.domainToUnicode
+  since: "v0.1.0"
+  effects:
+    base: [alloc, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:url.urlToHttpOptions
+  kind: function
+  aliases:
+    - url.urlToHttpOptions
+  since: "v0.1.0"
+  effects:
+    base: [alloc, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
