@@ -59,6 +59,23 @@ pub(crate) fn notify_state_change() {
   coordinator().notify_all();
 }
 
+/// Block the current thread until any in-progress stop-the-world request is resumed.
+///
+/// This is used by GC-safe ("native") region transitions: a thread must not leave
+/// a GC-safe region and resume mutator execution while a stop-the-world GC is
+/// active.
+pub(crate) fn wait_while_stop_the_world() {
+  let coord = coordinator();
+  let mut guard = coord.cv_mutex.lock().unwrap();
+  loop {
+    let epoch = coord.epoch.load(Ordering::Acquire);
+    if epoch & 1 == 0 {
+      return;
+    }
+    guard = coord.cv.wait(guard).unwrap();
+  }
+}
+
 /// Fast-path safepoint poll used by compiler-inserted statepoints and runtime loops.
 ///
 /// - Fast path: one atomic load + branch.
@@ -196,6 +213,17 @@ fn world_stopped(stop_epoch: u64, coordinator_id: Option<registry::ThreadId>) ->
       continue;
     }
     if thread.is_parked() {
+      continue;
+    }
+    if thread.is_native_safe() {
+      debug_assert!(
+        thread
+          .safepoint_context()
+          .map(|ctx| ctx.ip != 0)
+          .unwrap_or(false),
+        "thread {:?} is NativeSafe but has no published safepoint ip",
+        thread.id()
+      );
       continue;
     }
     if thread.safepoint_epoch_observed() == stop_epoch {

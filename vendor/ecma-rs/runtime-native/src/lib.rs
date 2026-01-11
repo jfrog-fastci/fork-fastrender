@@ -18,12 +18,14 @@
 
 pub mod abi;
 pub mod arch;
+pub mod gc_safe;
 pub mod gc;
 pub mod immix;
 pub mod los;
 pub mod nursery;
 pub mod stackmap;
 pub mod parallel;
+pub mod sync;
 pub mod threading;
 pub mod async_rt;
 pub mod stackmaps;

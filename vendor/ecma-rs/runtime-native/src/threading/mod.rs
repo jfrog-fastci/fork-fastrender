@@ -17,6 +17,9 @@ pub use registry::ThreadId;
 pub use registry::ThreadKind;
 pub use registry::ThreadState;
 
+pub use crate::gc_safe::enter_gc_safe_region;
+pub use crate::gc_safe::GcSafeGuard;
+
 /// Mark/unmark the current thread as parked (idle) inside the runtime.
 ///
 /// While `parked == true`, the safepoint coordinator treats the thread as

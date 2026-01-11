@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::cell::RefCell;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -48,6 +49,13 @@ pub struct ThreadState {
   /// OS thread id (best-effort; used for debugging and diagnostics).
   os_thread_id: u64,
 
+  /// Nesting depth of "GC-safe / native" regions.
+  ///
+  /// While this is non-zero, the safepoint coordinator treats the thread as
+  /// already safe for stop-the-world requests. The thread must not touch/mutate
+  /// the managed heap until it exits the region (depth returns to 0).
+  pub(crate) native_safe_depth: AtomicUsize,
+
   /// Whether this thread is currently parked/idle inside the runtime.
   parked: AtomicBool,
 
@@ -66,6 +74,10 @@ pub struct ThreadState {
 impl ThreadState {
   pub fn id(&self) -> ThreadId {
     self.id
+  }
+
+  pub fn is_native_safe(&self) -> bool {
+    self.native_safe_depth.load(Ordering::Acquire) != 0
   }
 
   pub fn kind(&self) -> ThreadKind {
@@ -136,6 +148,7 @@ impl ThreadRegistry {
       id,
       kind,
       os_thread_id: current_os_thread_id(),
+      native_safe_depth: AtomicUsize::new(0),
       parked: AtomicBool::new(false),
       safepoint_epoch_observed: AtomicU64::new(initial_observed),
       safepoint_context: Mutex::new(None),
