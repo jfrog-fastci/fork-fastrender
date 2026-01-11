@@ -478,6 +478,9 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
         };
         if rc == -1 {
           let err = io::Error::last_os_error();
+          if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+          }
           if err.kind() == io::ErrorKind::WouldBlock {
             return Ok(());
           }
