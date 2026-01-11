@@ -164,7 +164,9 @@ use crate::style::cascade::ContainerQueryInfo;
 use crate::style::cascade::PreparedCascade;
 use crate::style::cascade::StyledNode;
 use crate::style::color::Rgba;
-use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache, MediaType, Scripting};
+use crate::style::media::{
+  MediaContext, MediaQuery, MediaQueryCache, MediaType, PointerCapability, Scripting,
+};
 use crate::style::page::resolve_page_style;
 use crate::style::page::PageSide;
 use crate::style::style_set::StyleSet;
@@ -225,6 +227,21 @@ const MAX_CONTAINER_QUERY_ITERATIONS: usize = 6;
 // the window/viewport is resized via `--window-size`. Some sites (including Techmeme) gate layout
 // changes on legacy `device-width` media features, so match the baseline environment here.
 const HEADLESS_CHROME_SCREEN_SIZE: Size = Size::new(800.0, 600.0);
+
+// Headless Chrome reports no input devices for Media Queries Level 4 interaction features.
+// This means `(hover: hover)` / `(pointer: fine)` do not match even with a "desktop" viewport.
+// Since the pageset harness compares against headless Chrome baselines, we emulate that here so
+// responsive layouts match the reference output.
+fn headless_chrome_screen_media_context(width: f32, height: f32) -> MediaContext {
+  let mut ctx = MediaContext::screen(width, height);
+  ctx.can_hover = false;
+  ctx.any_can_hover = false;
+  ctx.pointer = PointerCapability::None;
+  ctx.any_pointer = PointerCapability::None;
+  ctx.any_pointer_coarse = false;
+  ctx.any_pointer_fine = false;
+  ctx
+}
 // Re-export Pixmap from tiny-skia for public use
 pub use crate::image_loader::ImageCacheConfig;
 pub use crate::layout::pagination::PageStacking;
@@ -10762,9 +10779,12 @@ impl FastRender {
         });
       let media_ctx = match options.media_type {
         MediaType::Print => MediaContext::print(viewport_size.width, viewport_size.height),
-        MediaType::Screen => MediaContext::screen(viewport_size.width, viewport_size.height),
+        MediaType::Screen => {
+          headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
+        }
         other => {
-          MediaContext::screen(viewport_size.width, viewport_size.height).with_media_type(other)
+          headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
+            .with_media_type(other)
         }
       }
       .with_device_size(device_size.width, device_size.height)
@@ -11623,9 +11643,12 @@ impl FastRender {
     };
     let media_ctx = match media_type {
       MediaType::Print => MediaContext::print(viewport_size.width, viewport_size.height),
-      MediaType::Screen => MediaContext::screen(viewport_size.width, viewport_size.height),
+      MediaType::Screen => {
+        headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
+      }
       other => {
-        MediaContext::screen(viewport_size.width, viewport_size.height).with_media_type(other)
+        headless_chrome_screen_media_context(viewport_size.width, viewport_size.height)
+          .with_media_type(other)
       }
     }
     .with_device_size(device_size.width, device_size.height)
@@ -13619,7 +13642,7 @@ impl FastRender {
   ) -> MediaContext {
     let mut base = match media_type {
       MediaType::Print => MediaContext::print(width, height),
-      _ => MediaContext::screen(width, height),
+      _ => headless_chrome_screen_media_context(width, height),
     };
     if !matches!(media_type, MediaType::Print) {
       base = base.with_device_size(

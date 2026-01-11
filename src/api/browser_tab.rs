@@ -666,7 +666,7 @@ impl BrowserTabHost {
     let height = viewport_h as f32;
     let mut ctx = match options.media_type {
       MediaType::Print => MediaContext::print(width, height),
-      _ => MediaContext::screen(width, height),
+      _ => super::headless_chrome_screen_media_context(width, height),
     };
     ctx.media_type = options.media_type;
     if let Some(dpr) = options.device_pixel_ratio {
