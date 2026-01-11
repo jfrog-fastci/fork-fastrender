@@ -196,6 +196,22 @@ fn rt_io_register_rejects_blocking_fd_and_reports_error() {
 }
 
 #[test]
+fn rt_io_register_invalid_fd_reports_other_error() {
+  let _rt = TestRuntimeGuard::new();
+
+  let id = rt_io_register(-1, RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_eq!(id, 0, "expected rt_io_register to fail for an invalid fd");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_OTHER,
+    "invalid fd should not be misclassified as a nonblocking contract violation"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
 fn rt_io_register_rejects_empty_interests_and_reports_error() {
   let _rt = TestRuntimeGuard::new();
   let (rfd, _wfd) = pipe_nonblocking().unwrap();

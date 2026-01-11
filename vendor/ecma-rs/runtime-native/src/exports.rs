@@ -30,7 +30,6 @@ use crate::threading::registry;
 use crate::trap;
 use crate::Runtime;
 use crate::Thread;
-use crate::rt_alloc as rt_alloc_mod;
 use once_cell::sync::Lazy;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -1620,13 +1619,18 @@ pub extern "C" fn rt_io_register(
     match async_rt::global().register_io(fd, interests, cb, data) {
       Ok(id) => id.as_raw(),
       Err(err) => {
-        let code = match err.kind() {
-          io::ErrorKind::InvalidInput => rt_io_debug::ERR_FD_NOT_NONBLOCKING,
-          io::ErrorKind::AlreadyExists => rt_io_debug::ERR_ALREADY_REGISTERED,
-          _ => rt_io_debug::ERR_OTHER,
+        let is_nonblocking_contract_violation =
+          err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_none();
+        let code = if is_nonblocking_contract_violation {
+          rt_io_debug::ERR_FD_NOT_NONBLOCKING
+        } else if err.kind() == io::ErrorKind::AlreadyExists {
+          rt_io_debug::ERR_ALREADY_REGISTERED
+        } else {
+          rt_io_debug::ERR_OTHER
         };
         rt_io_set_last_error(code);
-        if err.kind() == io::ErrorKind::InvalidInput {
+
+        if is_nonblocking_contract_violation {
           maybe_log_rt_io_failure(
             "rt_io_register",
             format_args!(
