@@ -39,6 +39,11 @@
 //!
 //! This module therefore automatically extends `"gc-live"` with any `ptr addrspace(1)` call
 //! arguments so callers can't accidentally omit them.
+//!
+//! Note: the `.llvm_stackmaps` “GC locations” emitted for a statepoint are driven by
+//! `llvm.experimental.gc.relocate` uses, not by the `"gc-live"` list alone. If you need a pointer
+//! to be reported in stackmaps (for root scanning / relocation), ensure it has a corresponding
+//! `gc.relocate` user.
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
