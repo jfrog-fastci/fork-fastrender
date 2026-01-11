@@ -1745,7 +1745,236 @@ fn rewrite_html_resource_attrs(
       .or_else(|err| Err(err))
   })?;
 
+  rewritten = rewrite_lazy_load_image_attrs(&rewritten, base_url, ctx, catalog)?;
+
   Ok(rewritten)
+}
+
+fn rewrite_lazy_load_image_attrs(
+  input: &str,
+  base_url: &Url,
+  ctx: ReferenceContext,
+  catalog: &mut AssetCatalog,
+) -> Result<String> {
+  fn capture_first_match<'t>(
+    caps: &'t regex::Captures<'t>,
+    groups: &[usize],
+  ) -> Option<regex::Match<'t>> {
+    groups.iter().find_map(|idx| caps.get(*idx))
+  }
+
+  fn src_or_srcset_placeholder(value: &str) -> bool {
+    let value = decode_html_entities_if_needed(value);
+    let trimmed = value.trim();
+    trimmed.is_empty() || fastrender::dom::img_src_is_placeholder(trimmed)
+  }
+
+  fn srcset_is_placeholder(value: &str) -> bool {
+    let value = decode_html_entities_if_needed(value);
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+      return true;
+    }
+    let candidates = fastrender::html::image_attrs::parse_srcset_with_limit(trimmed, 32);
+    if candidates.is_empty() {
+      return false;
+    }
+    candidates
+      .iter()
+      .all(|candidate| fastrender::dom::img_src_is_placeholder(&candidate.url))
+  }
+
+  fn insert_attr(tag: &mut String, key: &str, value: &str) {
+    let value = value.replace('\"', "&quot;");
+    let Some(close_idx) = tag.rfind('>') else {
+      return;
+    };
+
+    let mut insert_pos = close_idx;
+    let mut cursor = close_idx;
+    while cursor > 0 && tag.as_bytes()[cursor - 1].is_ascii_whitespace() {
+      cursor -= 1;
+    }
+    if cursor > 0 && tag.as_bytes()[cursor - 1] == b'/' {
+      insert_pos = cursor - 1;
+    }
+    tag.insert_str(insert_pos, &format!(" {key}=\"{value}\""));
+  }
+
+  let img_tag = Regex::new("(?is)<img\\b[^>]*>").expect("img tag regex must compile");
+  let source_tag = Regex::new("(?is)<source\\b[^>]*>").expect("source tag regex must compile");
+  let attr_src = Regex::new("(?is)(?:^|\\s)src\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+    .expect("img src attr regex must compile");
+  let attr_srcset =
+    Regex::new("(?is)(?:^|\\s)srcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')").expect("srcset attr regex must compile");
+  let attr_sizes =
+    Regex::new("(?is)(?:^|\\s)sizes\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").expect("sizes attr regex must compile");
+
+  let attr_data_src =
+    Regex::new("(?is)(?:^|\\s)data-src\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("data-src attr regex must compile");
+  let attr_data_srcset = Regex::new("(?is)(?:^|\\s)data-srcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+    .expect("data-srcset attr regex must compile");
+  let attr_data_sizes =
+    Regex::new("(?is)(?:^|\\s)data-sizes\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("data-sizes attr regex must compile");
+
+  // Keep these limits aligned with the main rewrite pass.
+  const IMG_SRCSET_MAX_CANDIDATES: usize = 1;
+  const SRCSET_MAX_CANDIDATES: usize = 32;
+
+  let mut out = String::with_capacity(input.len());
+  let mut last = 0usize;
+  for tag_match in img_tag.find_iter(input) {
+    let tag = &input[tag_match.start()..tag_match.end()];
+    let mut rewritten_tag = tag.to_string();
+
+    let mut data_src_rewritten: Option<String> = None;
+    if let Some(caps) = attr_data_src.captures(&rewritten_tag) {
+      if let Some(m) = capture_first_match(&caps, &[1, 2, 3]) {
+        if let Some(new_value) = rewrite_reference(m.as_str(), base_url, ctx, catalog)? {
+          let start = m.start();
+          let end = m.end();
+          rewritten_tag = format!(
+            "{}{}{}",
+            &rewritten_tag[..start],
+            new_value,
+            &rewritten_tag[end..]
+          );
+          data_src_rewritten = Some(new_value);
+        }
+      }
+    }
+
+    let mut data_srcset_rewritten: Option<String> = None;
+    if let Some(caps) = attr_data_srcset.captures(&rewritten_tag) {
+      if let Some(m) = capture_first_match(&caps, &[1, 2]) {
+        let new_value =
+          rewrite_srcset_with_limit(m.as_str(), base_url, ctx, catalog, IMG_SRCSET_MAX_CANDIDATES)?;
+        let start = m.start();
+        let end = m.end();
+        rewritten_tag = format!(
+          "{}{}{}",
+          &rewritten_tag[..start],
+          new_value,
+          &rewritten_tag[end..]
+        );
+        data_srcset_rewritten = Some(new_value);
+      }
+    }
+
+    if let Some(new_src) = &data_src_rewritten {
+      if let Some(src_caps) = attr_src.captures(&rewritten_tag) {
+        if let Some(m) = capture_first_match(&src_caps, &[1, 2, 3]) {
+          if src_or_srcset_placeholder(m.as_str()) {
+            let start = m.start();
+            let end = m.end();
+            rewritten_tag = format!(
+              "{}{}{}",
+              &rewritten_tag[..start],
+              new_src,
+              &rewritten_tag[end..]
+            );
+          }
+        }
+      } else {
+        insert_attr(&mut rewritten_tag, "src", new_src);
+      }
+    }
+
+    if let Some(new_srcset) = &data_srcset_rewritten {
+      if let Some(srcset_caps) = attr_srcset.captures(&rewritten_tag) {
+        if let Some(m) = capture_first_match(&srcset_caps, &[1, 2]) {
+          if srcset_is_placeholder(m.as_str()) {
+            let start = m.start();
+            let end = m.end();
+            rewritten_tag = format!(
+              "{}{}{}",
+              &rewritten_tag[..start],
+              new_srcset,
+              &rewritten_tag[end..]
+            );
+          }
+        }
+      } else {
+        insert_attr(&mut rewritten_tag, "srcset", new_srcset);
+      }
+    }
+
+    let data_sizes_value = attr_data_sizes
+      .captures(&rewritten_tag)
+      .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string()));
+    if let Some(value) = data_sizes_value {
+      if !value.is_empty() && !attr_sizes.is_match(&rewritten_tag) {
+        insert_attr(&mut rewritten_tag, "sizes", &value);
+      }
+    }
+
+    out.push_str(&input[last..tag_match.start()]);
+    out.push_str(&rewritten_tag);
+    last = tag_match.end();
+  }
+  out.push_str(&input[last..]);
+  let input = out;
+
+  let mut out = String::with_capacity(input.len());
+  let mut last = 0usize;
+  for tag_match in source_tag.find_iter(&input) {
+    let tag = &input[tag_match.start()..tag_match.end()];
+    let mut rewritten_tag = tag.to_string();
+
+    let mut data_srcset_rewritten: Option<String> = None;
+    if let Some(caps) = attr_data_srcset.captures(&rewritten_tag) {
+      if let Some(m) = capture_first_match(&caps, &[1, 2]) {
+        let new_value =
+          rewrite_srcset_with_limit(m.as_str(), base_url, ctx, catalog, SRCSET_MAX_CANDIDATES)?;
+        let start = m.start();
+        let end = m.end();
+        rewritten_tag = format!(
+          "{}{}{}",
+          &rewritten_tag[..start],
+          new_value,
+          &rewritten_tag[end..]
+        );
+        data_srcset_rewritten = Some(new_value);
+      }
+    }
+
+    if let Some(new_srcset) = &data_srcset_rewritten {
+      if let Some(srcset_caps) = attr_srcset.captures(&rewritten_tag) {
+        if let Some(m) = capture_first_match(&srcset_caps, &[1, 2]) {
+          if srcset_is_placeholder(m.as_str()) {
+            let start = m.start();
+            let end = m.end();
+            rewritten_tag = format!(
+              "{}{}{}",
+              &rewritten_tag[..start],
+              new_srcset,
+              &rewritten_tag[end..]
+            );
+          }
+        }
+      } else {
+        insert_attr(&mut rewritten_tag, "srcset", new_srcset);
+      }
+    }
+
+    let data_sizes_value = attr_data_sizes
+      .captures(&rewritten_tag)
+      .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string()));
+    if let Some(value) = data_sizes_value {
+      if !value.is_empty() && !attr_sizes.is_match(&rewritten_tag) {
+        insert_attr(&mut rewritten_tag, "sizes", &value);
+      }
+    }
+
+    out.push_str(&input[last..tag_match.start()]);
+    out.push_str(&rewritten_tag);
+    last = tag_match.end();
+  }
+  out.push_str(&input[last..]);
+
+  Ok(out)
 }
 
 fn replace_attr_values_with<F>(
@@ -2373,6 +2602,75 @@ mod tests {
     Ok(())
   }
 
+  fn write_synthetic_bundle_with_lazy_loaded_images(dir: &Path) -> Result<()> {
+    let resources_dir = dir.join("resources");
+    fs::create_dir_all(&resources_dir)?;
+
+    // Use a well-known 1×1 transparent GIF placeholder (common in lazy-loading implementations).
+    let document_html = r#"<!doctype html>
+<html>
+  <body>
+    <picture>
+      <source data-srcset="https://example.test/img.webp" type="image/webp">
+      <img
+        src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+        data-src="https://example.test/img.png"
+        alt="lazy image"
+      >
+    </picture>
+  </body>
+</html>
+"#;
+    fs::write(dir.join("document.html"), document_html)?;
+
+    fs::write(resources_dir.join("00000_img.webp"), b"dummy webp")?;
+    fs::write(resources_dir.join("00001_img.png"), b"dummy png")?;
+
+    let manifest = json!({
+      "version": 1,
+      "original_url": "https://example.test/",
+      "document": {
+        "path": "document.html",
+        "content_type": "text/html; charset=utf-8",
+        "final_url": "https://example.test/",
+        "status": 200,
+        "etag": null,
+        "last_modified": null
+      },
+      "render": {
+        "viewport": [800, 600],
+        "device_pixel_ratio": 1.0,
+        "scroll_x": 0.0,
+        "scroll_y": 0.0,
+        "full_page": false
+      },
+      "resources": {
+        "https://example.test/img.webp": {
+          "path": "resources/00000_img.webp",
+          "content_type": "image/webp",
+          "status": 200,
+          "final_url": "https://example.test/img.webp",
+          "etag": null,
+          "last_modified": null
+        },
+        "https://example.test/img.png": {
+          "path": "resources/00001_img.png",
+          "content_type": "image/png",
+          "status": 200,
+          "final_url": "https://example.test/img.png",
+          "etag": null,
+          "last_modified": null
+        }
+      }
+    });
+    fs::write(
+      dir.join("bundle.json"),
+      serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )?;
+
+    Ok(())
+  }
+
   fn write_synthetic_bundle_with_font_face_fallbacks(dir: &Path) -> Result<()> {
     let resources_dir = dir.join("resources");
     fs::create_dir_all(&resources_dir)?;
@@ -2663,6 +2961,76 @@ body{background:url("/bg.png");}
       !index_html.to_ascii_lowercase().contains("<noscript"),
       "expected noscript blocks to be stripped from output HTML: {index_html}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn import_promotes_lazy_loaded_image_attrs_to_src_and_srcset() -> Result<()> {
+    let bundle_dir = tempdir()?;
+    write_synthetic_bundle_with_lazy_loaded_images(bundle_dir.path())?;
+
+    let output = tempdir()?;
+    let output_root = output.path().join("fixtures");
+    let fixture_name = "lazy_loading";
+
+    run_import_page_fixture(ImportPageFixtureArgs {
+      bundle: bundle_dir.path().to_path_buf(),
+      fixture_name: fixture_name.to_string(),
+      output_root: output_root.clone(),
+      overwrite: true,
+      allow_missing: false,
+      allow_http_references: false,
+      legacy_rewrite: false,
+      rewrite_scripts: false,
+      dry_run: false,
+    })?;
+
+    let fixture_dir = output_root.join(fixture_name);
+    let index_html = fs::read_to_string(fixture_dir.join("index.html"))?;
+    assert_no_remote_url_strings(&index_html);
+    assert!(
+      !index_html.contains("data:image/gif"),
+      "expected placeholder src to be replaced with local asset: {index_html}"
+    );
+
+    let assets_dir = fixture_dir.join(ASSETS_DIR);
+    let mut png_asset = None;
+    let mut webp_asset = None;
+    for entry in fs::read_dir(&assets_dir)? {
+      let entry = entry?;
+      if !entry.file_type()?.is_file() {
+        continue;
+      }
+      let filename = entry.file_name().to_string_lossy().to_string();
+      if filename.ends_with(".png") {
+        png_asset = Some(filename);
+      } else if filename.ends_with(".webp") {
+        webp_asset = Some(filename);
+      }
+    }
+
+    let png_asset = png_asset.expect("missing png asset");
+    let webp_asset = webp_asset.expect("missing webp asset");
+    let png_path = format!("{ASSETS_DIR}/{png_asset}");
+    let webp_path = format!("{ASSETS_DIR}/{webp_asset}");
+
+    assert!(
+      index_html.contains(&format!("src=\"{png_path}\"")),
+      "expected lazy-loaded img src= to be promoted and rewritten: {index_html}"
+    );
+    assert!(
+      index_html.contains(&format!("data-src=\"{png_path}\"")),
+      "expected data-src= to be rewritten to local asset: {index_html}"
+    );
+    assert!(
+      index_html.contains(&format!("srcset=\"{webp_path}\"")),
+      "expected lazy-loaded source srcset= to be promoted and rewritten: {index_html}"
+    );
+    assert!(
+      index_html.contains(&format!("data-srcset=\"{webp_path}\"")),
+      "expected data-srcset= to be rewritten to local asset: {index_html}"
+    );
+
     Ok(())
   }
 
