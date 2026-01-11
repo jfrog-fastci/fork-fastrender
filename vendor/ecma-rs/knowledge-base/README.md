@@ -151,8 +151,8 @@ purity:
 ```
 
 Some modules additionally include `effects.base: [...]` as a shorthand list of base effect tokens
-(e.g. `[alloc, io, may_throw]`). The loader treats these as defaults for the boolean fields and
-ignores unknown tokens (e.g. `async`).
+(e.g. `[alloc, io, network, reads_global, may_throw]`). The loader treats these as defaults for the
+boolean fields and ignores unknown tokens (e.g. `async`).
 
 `template: depends_on_callback` is treated as “depends on argument 0” for now.
 
