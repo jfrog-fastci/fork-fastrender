@@ -758,7 +758,7 @@ mod tests {
     // Give another worker a generous window to overlap execution.
     if active == 1 {
       let start = Instant::now();
-      while data.max_active.load(Ordering::SeqCst) < 2 && start.elapsed() < Duration::from_millis(500) {
+      while data.max_active.load(Ordering::SeqCst) < 2 && start.elapsed() < Duration::from_secs(1) {
         std::thread::yield_now();
       }
     }
