@@ -79,9 +79,10 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
 
 ## Compatibility toggles
 
-- `FASTR_COMPAT_REPLACED_MAX_WIDTH_100=0|1` – control whether FastRender applies a **non-standard** default `max-width: 100%` to replaced elements (`img`, `video`, `audio`, `canvas`, `svg`, `iframe`, `embed`, `object`).
-  - Default: `1` (enabled) to preserve historical fixture/CI expectations.
-  - Set `0` to use spec-correct defaults (no `max-width` by default), which may allow replaced elements to overflow their containing block unless author CSS constrains them.
+- `FASTR_COMPAT_REPLACED_MAX_WIDTH_100=0|1` – control whether FastRender applies a **non-standard** default `max-width: 100%` to replaced elements (`img`, `video`, `audio`, `canvas`, `iframe`, `embed`, `object`).
+  - Default: `0` (disabled) to match browser UA defaults (no implicit `max-width`).
+  - Set `1` to enable the compatibility behavior, which may prevent replaced elements from overflowing their containing block when author CSS does not constrain them.
+  - Note: this toggle intentionally does **not** apply to inline `<svg>` elements.
 
 ## HTTP fetch tuning
 

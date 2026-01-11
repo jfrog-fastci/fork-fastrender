@@ -450,7 +450,7 @@ impl DebugConfig {
     );
     config.insert_bool(
       "FASTR_COMPAT_REPLACED_MAX_WIDTH_100",
-      truthy(raw.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), true),
+      truthy(raw.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), false),
     );
     config.insert_bool(
       "FASTR_CASCADE_PROFILE",

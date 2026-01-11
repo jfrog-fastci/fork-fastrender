@@ -67,7 +67,7 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
         // effectively does the same thing (e.g. `img { max-width: 100%; height: auto; }`). Keeping
         // this behavior behind a runtime toggle makes it possible to A/B against Chrome/pageset
         // fixtures without silently masking missing author styles.
-        if runtime_toggles().truthy_with_default(ENV_COMPAT_REPLACED_MAX_WIDTH_100, true) {
+        if runtime_toggles().truthy(ENV_COMPAT_REPLACED_MAX_WIDTH_100) {
           styles.max_width = Some(Length::percent(100.0));
           styles.max_width_keyword = None;
         }
@@ -316,6 +316,17 @@ mod tests {
     }
   }
 
+  fn collect_image_bounds(node: &FragmentNode, images: &mut Vec<(f32, f32)>) {
+    if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
+      if matches!(replaced_type, ReplacedType::Image { .. }) {
+        images.push((node.bounds.width(), node.bounds.height()));
+      }
+    }
+    for child in node.children.iter() {
+      collect_image_bounds(child, images);
+    }
+  }
+
   #[test]
   fn non_ascii_whitespace_parse_dimension_attribute_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
@@ -437,6 +448,42 @@ mod tests {
     svgs
   }
 
+  fn layout_flex_column_image_bounds_default_toggle() -> Vec<(f32, f32)> {
+    // Intentionally does *not* set `FASTR_COMPAT_REPLACED_MAX_WIDTH_100`, so the default toggle
+    // behavior stays covered by a regression test.
+    let _guard = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())));
+
+    let html = r#"
+      <html>
+        <body style="margin: 0">
+          <div style="display: flex; flex-direction: column; width: 100px; height: 300px">
+            <div style="height: 50px"></div>
+            <img
+              src="about:blank"
+              alt=""
+              style="flex: 1; width: 100%; aspect-ratio: 1 / 1; display: block"
+            >
+          </div>
+        </body>
+      </html>
+    "#;
+
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = crate::tree::box_generation::generate_box_tree_with_anonymous_fixup(&styled)
+      .expect("box tree");
+
+    let engine =
+      crate::layout::engine::LayoutEngine::new(crate::layout::engine::LayoutConfig::for_viewport(
+        crate::geometry::Size::new(400.0, 400.0),
+      ));
+    let fragment_tree = engine.layout_tree(&box_tree).expect("layout");
+
+    let mut images = Vec::new();
+    collect_image_bounds(&fragment_tree.root, &mut images);
+    images
+  }
+
   #[test]
   fn compat_replaced_max_width_clamps_embed_and_object() {
     let (embeds_off, objects_off) = layout_widths("0");
@@ -481,5 +528,31 @@ mod tests {
         widths[0]
       );
     }
+  }
+
+  #[test]
+  fn compat_replaced_max_width_default_does_not_clamp_flex_column_item_height() {
+    // Regression: a replaced element with `flex: 1` and `aspect-ratio` must be able to grow in the
+    // main axis without being clamped back down to its cross size by a non-standard implicit
+    // `max-width: 100%`.
+    //
+    // Alibaba's hot-card carousel uses `img { aspect-ratio: 1/1; width: 100% }` plus `flex: 1`.
+    // When we applied a compatibility `max-width: 100%` default to all replaced elements, taffy
+    // transferred that max constraint via aspect ratio and effectively applied a max-height, which
+    // prevented the image from flexing to fill the remaining height.
+    let images = layout_flex_column_image_bounds_default_toggle();
+    assert_eq!(images.len(), 1, "expected one <img> fragment");
+
+    let (width, height) = images[0];
+    let expected_width = 100.0;
+    let expected_height = 250.0; // 300px card height - 50px header
+    assert!(
+      (width - expected_width).abs() < 0.05,
+      "expected <img> width {expected_width}, got {width}"
+    );
+    assert!(
+      (height - expected_height).abs() < 0.05,
+      "expected <img> height {expected_height}, got {height}"
+    );
   }
 }
