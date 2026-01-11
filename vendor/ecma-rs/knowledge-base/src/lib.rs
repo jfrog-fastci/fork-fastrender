@@ -54,6 +54,13 @@ impl ApiDatabase {
     self.apis.iter().map(|(k, v)| (k.as_str(), v))
   }
 
+  /// Load the bundled knowledge base embedded into the crate.
+  ///
+  /// This is a convenience alias for [`ApiDatabase::load_default`].
+  pub fn from_embedded() -> Result<Self, KnowledgeBaseError> {
+    Self::load_default()
+  }
+
   pub fn load_default() -> Result<Self, KnowledgeBaseError> {
     let mut apis = BTreeMap::<String, ApiSemantics>::new();
     let mut sources = BTreeMap::<String, String>::new();
