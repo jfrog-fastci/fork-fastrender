@@ -61,6 +61,11 @@ fn build_test_ir() -> String {
 
   let rt = RuntimeAbi::new(&context, &module);
 
+  // Leaf poll helper: should remain a normal call (never a statepoint).
+  let _ = rt
+    .emit_runtime_call(&builder, RuntimeFn::GcPoll, &[], "poll")
+    .expect("emit gc poll");
+
   // NoGC call: should *not* be rewritten into a statepoint.
   rt
     .emit_runtime_call(&builder, RuntimeFn::WriteBarrier, &[obj.into(), field.into()], "wb")
@@ -129,8 +134,20 @@ fn alloc_is_statepointed_write_barrier_is_not() {
   assert!(!ir.contains("call ptr @rt_alloc"));
   assert!(!ir.contains("call ptr addrspace(1) @rt_alloc"));
 
+  // Leaf poll stays a normal call (and must be marked `notail`).
+  assert!(
+    ir.contains("notail call i1 @rt_gc_poll"),
+    "expected a notail call to rt_gc_poll:\n{ir}"
+  );
+  for line in ir.lines() {
+    assert!(
+      !(line.contains("@llvm.experimental.gc.statepoint") && line.contains("@rt_gc_poll")),
+      "rt_gc_poll should not be statepointed:\n{line}\n\n{ir}"
+    );
+  }
+
   // Write barrier stays a normal call and must not be wrapped in a statepoint.
-  assert!(ir.contains("call void @rt_write_barrier_gc"));
+  assert!(ir.contains("notail call void @rt_write_barrier_gc"));
   for line in ir.lines() {
     assert!(
       !(line.contains("@llvm.experimental.gc.statepoint") && line.contains("@rt_write_barrier_gc")),
@@ -138,7 +155,7 @@ fn alloc_is_statepointed_write_barrier_is_not() {
     );
   }
 
-  assert!(ir.contains("call void @rt_write_barrier_range_gc"));
+  assert!(ir.contains("notail call void @rt_write_barrier_range_gc"));
   for line in ir.lines() {
     assert!(
       !(line.contains("@llvm.experimental.gc.statepoint")
@@ -147,7 +164,7 @@ fn alloc_is_statepointed_write_barrier_is_not() {
     );
   }
 
-  assert!(ir.contains("call void @rt_keep_alive_gc_ref_gc"));
+  assert!(ir.contains("notail call void @rt_keep_alive_gc_ref_gc"));
   for line in ir.lines() {
     assert!(
       !(line.contains("@llvm.experimental.gc.statepoint") && line.contains("@rt_keep_alive_gc_ref_gc")),
