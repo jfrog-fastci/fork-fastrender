@@ -81,3 +81,22 @@ fn relocate_pair_null_derived_stays_null() {
   assert_eq!(base, 0x9000);
   assert_eq!(derived, 0);
 }
+
+#[test]
+fn relocate_pair_forces_null_derived_if_base_relocates_to_zero() {
+  let mut base: usize = 0x1000;
+  let mut derived: usize = 0x1000 + 0x30;
+
+  unsafe {
+    relocate_pair(
+      StatepointRootPair {
+        base_slot: (&mut base) as *mut usize,
+        derived_slot: (&mut derived) as *mut usize,
+      },
+      |_old| 0,
+    );
+  }
+
+  assert_eq!(base, 0);
+  assert_eq!(derived, 0);
+}
