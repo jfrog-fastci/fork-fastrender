@@ -70,6 +70,8 @@ fn integration_statepoint_stackmap_lookup() {
 
     // Validate callsite PC computation: function address + instruction offset.
     assert_eq!(maps.functions.len(), 1);
+    assert_eq!(callsite.function_address, maps.functions[0].address);
+    assert_eq!(callsite.stack_size, maps.functions[0].stack_size);
     let expected_pc = maps.functions[0]
         .address
         .checked_add(rec.instruction_offset as u64)
