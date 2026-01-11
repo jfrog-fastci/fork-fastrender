@@ -218,6 +218,34 @@ fn queue_microtask_handle_with_drop_cancel_all_invokes_drop_hook() {
 }
 
 #[test]
+fn queue_microtask_handle_cancel_all_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  runtime_native::rt_queue_microtask_handle(record_ptr, h);
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_async_cancel_all();
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+  assert!(runtime_native::rt_handle_load(h).is_null());
+
+  threading::unregister_current_thread();
+}
+
+#[test]
 fn set_timeout_handle_reloads_userdata_from_persistent_handle() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
@@ -344,6 +372,34 @@ fn set_timeout_handle_with_drop_cancel_all_invokes_drop_hook() {
 }
 
 #[test]
+fn set_timeout_handle_cancel_all_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  let _timer = runtime_native::rt_set_timeout_handle(record_ptr, h, 60_000);
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_async_cancel_all();
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+  assert!(runtime_native::rt_handle_load(h).is_null());
+
+  threading::unregister_current_thread();
+}
+
+#[test]
 fn set_interval_handle_keeps_userdata_rooted_until_cleared() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
@@ -385,6 +441,38 @@ fn set_interval_handle_keeps_userdata_rooted_until_cleared() {
   );
 
   while runtime_native::rt_async_poll_legacy() {}
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn clear_interval_handle_frees_handle_without_drop_hook() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  let timer = runtime_native::rt_set_interval_handle(record_ptr, h, 60_000);
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_clear_timer(timer);
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+  assert!(runtime_native::rt_handle_load(h).is_null());
+
+  // Ensure the cleared interval does not fire later.
+  while runtime_native::rt_async_poll_legacy() {}
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
 
   threading::unregister_current_thread();
 }
@@ -486,6 +574,34 @@ fn set_interval_handle_with_drop_cancel_all_invokes_drop_hook() {
 }
 
 #[test]
+fn set_interval_handle_cancel_all_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  let _timer = runtime_native::rt_set_interval_handle(record_ptr, h, 60_000);
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_async_cancel_all();
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+  assert!(runtime_native::rt_handle_load(h).is_null());
+
+  threading::unregister_current_thread();
+}
+
+#[test]
 fn io_register_handle_reloads_userdata_from_persistent_handle() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
@@ -554,6 +670,100 @@ fn io_register_handle_invalid_interests_frees_handle() {
   assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
   assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
   assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn io_register_handle_rejects_blocking_fd_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+
+  let (rfd, wfd) = pipe_blocking();
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+
+  let watcher = runtime_native::rt_io_register_handle(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io,
+    h,
+  );
+  assert_eq!(watcher, 0);
+  assert_eq!(
+    runtime_native::rt_io_debug_take_last_error(),
+    runtime_native::rt_io_debug::ERR_FD_NOT_NONBLOCKING
+  );
+
+  assert!(runtime_native::rt_handle_load(h).is_null());
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+
+  drop(rfd);
+  drop(wfd);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn io_register_handle_rejects_already_registered_fd_and_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let (rfd, wfd) = pipe_nonblocking();
+
+  let h1 = runtime_native::rt_handle_alloc(obj1);
+  let watcher1 = runtime_native::rt_io_register_handle(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io,
+    h1,
+  );
+  assert_ne!(watcher1, 0, "rt_io_register_handle should succeed");
+
+  let h2 = runtime_native::rt_handle_alloc(obj2);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+
+  let watcher2 = runtime_native::rt_io_register_handle(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io,
+    h2,
+  );
+  assert_eq!(watcher2, 0);
+  assert_eq!(
+    runtime_native::rt_io_debug_take_last_error(),
+    runtime_native::rt_io_debug::ERR_ALREADY_REGISTERED
+  );
+
+  assert!(runtime_native::rt_handle_load(h2).is_null());
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+
+  runtime_native::rt_io_unregister(watcher1);
+  assert!(runtime_native::rt_handle_load(h1).is_null());
+
+  // Drain any wakeups triggered by unregistering the watcher.
+  while runtime_native::rt_async_poll_legacy() {}
+
+  drop(rfd);
+  drop(wfd);
 
   threading::unregister_current_thread();
 }
@@ -771,6 +981,46 @@ fn io_register_handle_with_drop_cancel_all_invokes_drop_hook() {
   assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
   assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
   assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+  assert!(runtime_native::rt_handle_load(h).is_null());
+
+  drop(rfd);
+  drop(wfd);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn io_register_handle_cancel_all_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let (rfd, wfd) = pipe_nonblocking();
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+
+  let watcher = runtime_native::rt_io_register_handle(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io,
+    h,
+  );
+  assert_ne!(watcher, 0);
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_async_cancel_all();
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
   assert!(runtime_native::rt_handle_load(h).is_null());
 
   drop(rfd);
