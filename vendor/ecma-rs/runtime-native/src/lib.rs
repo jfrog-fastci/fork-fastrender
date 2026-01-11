@@ -32,6 +32,7 @@ pub mod abi;
 pub mod arch;
 pub mod gc_safe;
 pub mod async_rt;
+pub mod timer_wheel;
 pub mod gc;
 pub mod immix;
 pub mod los;
@@ -75,6 +76,7 @@ pub use async_rt::set_strict_await_yields;
 pub use stackmaps::StackMaps;
 pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
 pub use string::*;
+pub use timer_wheel::{TimerKey, TimerWheel};
 pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section};
 pub use runtime::{AttachError, DetachError, Runtime, StopTheWorldGuard, ThreadGuard};
 pub use thread::{

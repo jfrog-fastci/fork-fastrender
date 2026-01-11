@@ -4,6 +4,7 @@ use crate::abi::RT_IO_WRITABLE;
 use crate::async_rt::Task;
 use crate::platform::linux_epoll::Epoll;
 use crate::platform::linux_epoll::EventFd;
+use crate::threading;
 use bitflags::bitflags;
 use std::collections::HashMap;
 use std::io;
@@ -236,7 +237,11 @@ impl Reactor {
     let mut events: [libc::epoll_event; MAX_EVENTS] = unsafe { std::mem::zeroed() };
 
     IN_EPOLL_WAIT.store(true, Ordering::Release);
+    // While blocked in `epoll_wait`, treat this thread as parked/idle inside the runtime. This
+    // allows stop-the-world GC coordination to consider it quiescent without needing to wake it.
+    threading::set_parked(true);
     let res = self.epoll.wait(&mut events, timeout_ms);
+    threading::set_parked(false);
     IN_EPOLL_WAIT.store(false, Ordering::Release);
     let n = res?;
 
