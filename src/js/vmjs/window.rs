@@ -1322,7 +1322,9 @@ mod tests {
     fetcher.insert(
       "https://example.invalid/scripts/mod.js",
       FetchedResource::new(
-        "export default 42;".as_bytes().to_vec(),
+        "export const url = import.meta.url; export default 42;"
+          .as_bytes()
+          .to_vec(),
         Some("application/javascript".to_string()),
       ),
     );
@@ -1343,9 +1345,10 @@ mod tests {
       "https://example.invalid/scripts/main.js",
       r#"
       globalThis.__x = 0;
+      globalThis.__url = "";
       globalThis.__err = "";
       import("./mod.js")
-        .then(m => { globalThis.__x = m.default; })
+        .then(m => { globalThis.__x = m.default; globalThis.__url = m.url; })
         .catch(e => { globalThis.__err = String(e && e.message || e); });
       "#,
     )?;
@@ -1361,6 +1364,10 @@ mod tests {
       get_global_prop(&mut host, "__x"),
       Value::Number(n) if n == 42.0
     ));
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__url").as_deref(),
+      Some("https://example.invalid/scripts/mod.js")
+    );
     Ok(())
   }
 
