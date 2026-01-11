@@ -78,15 +78,18 @@ pub fn compile_typescript_to_artifact(
 
       match opts.emit {
         EmitKind::Object => {
-          let obj = emit::emit_object(&module, target);
+          let obj =
+            emit::emit_object_with_statepoints(&module, target).map_err(|e| NativeJsError::Llvm(e.to_string()))?;
           write_file(&out_path, &obj)?;
         }
         EmitKind::Assembly => {
-          let asm = emit::emit_asm(&module, target);
+          let asm =
+            emit::emit_asm_with_statepoints(&module, target).map_err(|e| NativeJsError::Llvm(e.to_string()))?;
           write_file(&out_path, &asm)?;
         }
         EmitKind::Executable => {
-          let obj = emit::emit_object(&module, target);
+          let obj =
+            emit::emit_object_with_statepoints(&module, target).map_err(|e| NativeJsError::Llvm(e.to_string()))?;
 
           let mut tmp: Option<TempDir> = None;
           let obj_path = if opts.debug {
