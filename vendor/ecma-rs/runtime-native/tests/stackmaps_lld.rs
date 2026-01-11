@@ -10,13 +10,23 @@ fn has_cmd(cmd: &str) -> bool {
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
     .status()
-    .is_ok()
+    .is_ok_and(|s| s.success())
+}
+
+#[cfg(target_os = "linux")]
+fn find_cmd<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
+  candidates.iter().copied().find(|c| has_cmd(c))
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn lld_linker_script_defines_stackmaps_range_symbols() {
-  if !has_cmd("clang-18") || !has_cmd("ld.lld-18") || !has_cmd("llvm-nm") {
+  let Some(nm) = find_cmd(&["llvm-nm-18", "llvm-nm"]) else {
+    // Allow building in minimal environments; this test is specifically about
+    // lld + linker-script behavior.
+    return;
+  };
+  if !has_cmd("clang-18") || !has_cmd("ld.lld-18") {
     // Allow building in minimal environments; this test is specifically about
     // lld + linker-script behavior.
     return;
@@ -139,7 +149,7 @@ fn main() {
 
   // Ensure the expected symbols were actually defined in the output (i.e. we
   // didn't accidentally pass this test via some fallback mechanism).
-  let nm_out = Command::new("llvm-nm")
+  let nm_out = Command::new(nm)
     .arg(&exe_path)
     .output()
     .expect("run llvm-nm");

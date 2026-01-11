@@ -7,7 +7,11 @@ fn has_cmd(cmd: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .is_ok()
+        .is_ok_and(|s| s.success())
+}
+
+fn find_cmd<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
+    candidates.iter().copied().find(|c| has_cmd(c))
 }
 
 fn workspace_root() -> PathBuf {
@@ -20,7 +24,11 @@ fn workspace_root() -> PathBuf {
 #[cfg(target_os = "linux")]
 #[test]
 fn lld_can_link_stackmaps_section_with_explicit_range_symbols() {
-    if !has_cmd("clang-18") || !has_cmd("ld.lld-18") || !has_cmd("llvm-nm") {
+    let Some(nm) = find_cmd(&["llvm-nm-18", "llvm-nm"]) else {
+        // This test is specifically about lld + the linker script.
+        return;
+    };
+    if !has_cmd("clang-18") || !has_cmd("ld.lld-18") {
         // This test is specifically about lld + the linker script.
         return;
     }
@@ -110,7 +118,7 @@ fn main() {
     assert!(status.success(), "stackmaps_test_bin failed");
 
     // Ensure the expected symbols were actually defined by the linker script.
-    let nm_out = Command::new("llvm-nm")
+    let nm_out = Command::new(nm)
         .arg(&exe_path)
         .output()
         .expect("run llvm-nm");
