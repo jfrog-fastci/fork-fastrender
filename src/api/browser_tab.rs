@@ -3701,6 +3701,7 @@ impl BrowserTab {
   fn run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
     &mut self,
     limits: RunLimits,
+    render_between_turns: bool,
     mut on_error: impl FnMut(Error),
     mut on_render: impl FnMut(),
   ) -> Result<RunUntilIdleOutcome> {
@@ -3722,7 +3723,7 @@ impl BrowserTab {
           event_loop.clear_all_pending_work();
           return Ok(());
         }
-        if host.document.is_dirty() {
+        if render_between_turns && host.document.is_dirty() {
           if let Some(frame) = host.document.render_if_needed()? {
             *pending_frame = Some(frame);
             on_render();
@@ -3869,6 +3870,7 @@ impl BrowserTab {
     let diagnostics = self.diagnostics.clone();
     let outcome = self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
       limits,
+      /*render_between_turns=*/ false,
       move |err| {
         // Match browser behavior: report uncaught task errors but keep the event loop running.
         //
@@ -3948,6 +3950,7 @@ impl BrowserTab {
       // Drive event-loop work (tasks/microtasks/timers) first.
       match self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
         limits,
+        /*render_between_turns=*/ true,
         &mut report_error,
         || {
           frames_rendered = frames_rendered.saturating_add(1);
@@ -3988,6 +3991,7 @@ impl BrowserTab {
         };
         match self.run_event_loop_until_idle_handling_errors_with_pending_navigation_abort(
           microtask_limits,
+          /*render_between_turns=*/ false,
           &mut report_error,
           || {
             frames_rendered = frames_rendered.saturating_add(1);
@@ -4048,9 +4052,23 @@ impl BrowserTab {
         max_microtasks: run_limits.max_microtasks,
         max_wall_time: run_limits.max_wall_time,
       };
-      match self.event_loop.run_until_idle_with_hook(&mut self.host, microtask_limits, |host, event_loop| {
-        host.discover_dynamic_scripts(event_loop)
-      })? {
+      let trace = self.trace.clone();
+      let diagnostics = self.diagnostics.clone();
+      match self.event_loop.run_until_idle_handling_errors_with_hook(
+        &mut self.host,
+        microtask_limits,
+        move |err| {
+          let message = err.to_string();
+          if let Some(diag) = &diagnostics {
+            diag.record_js_exception(message.clone(), None);
+          }
+          if trace.is_enabled() {
+            let mut span = trace.span("js.uncaught_exception", "js");
+            span.arg_str("message", &message);
+          }
+        },
+        |host, event_loop| host.discover_dynamic_scripts(event_loop),
+      )? {
         RunUntilIdleOutcome::Idle
         | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
         RunUntilIdleOutcome::Stopped(reason) => {
@@ -4066,9 +4084,23 @@ impl BrowserTab {
         max_microtasks: run_limits.max_microtasks,
         max_wall_time: run_limits.max_wall_time,
       };
-      match self.event_loop.run_until_idle_with_hook(&mut self.host, one_task_limits, |host, event_loop| {
-        host.discover_dynamic_scripts(event_loop)
-      })? {
+      let trace = self.trace.clone();
+      let diagnostics = self.diagnostics.clone();
+      match self.event_loop.run_until_idle_handling_errors_with_hook(
+        &mut self.host,
+        one_task_limits,
+        move |err| {
+          let message = err.to_string();
+          if let Some(diag) = &diagnostics {
+            diag.record_js_exception(message.clone(), None);
+          }
+          if trace.is_enabled() {
+            let mut span = trace.span("js.uncaught_exception", "js");
+            span.arg_str("message", &message);
+          }
+        },
+        |host, event_loop| host.discover_dynamic_scripts(event_loop),
+      )? {
         RunUntilIdleOutcome::Idle
         | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
         RunUntilIdleOutcome::Stopped(reason) => {
