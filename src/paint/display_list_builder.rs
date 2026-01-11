@@ -11293,8 +11293,19 @@ impl DisplayListBuilder {
         Some(viewport),
         builder.font_ctx.root_font_metrics(),
       );
-      let metrics =
-        InlineTextItem::metrics_from_runs(&builder.font_ctx, &runs, line_height, style.font_size);
+      let metrics = match &style.line_height {
+        crate::style::types::LineHeight::Normal => InlineTextItem::metrics_from_runs(
+          &builder.font_ctx,
+          &runs,
+          line_height,
+          style.font_size,
+        ),
+        _ => InlineTextItem::metrics_from_first_available_font(
+          metrics_scaled.as_ref(),
+          line_height,
+          style.font_size,
+        ),
+      };
       let baseline_offset_y = if center_y {
         (rect.height() - line_height) / 2.0
       } else {
@@ -11589,12 +11600,19 @@ impl DisplayListBuilder {
             sample_text = "M";
           }
           let metrics_runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
-          let metrics = InlineTextItem::metrics_from_runs(
-            &self.font_ctx,
-            &metrics_runs,
-            line_height,
-            text_style.font_size,
-          );
+          let metrics = match &text_style.line_height {
+            crate::style::types::LineHeight::Normal => InlineTextItem::metrics_from_runs(
+              &self.font_ctx,
+              &metrics_runs,
+              line_height,
+              text_style.font_size,
+            ),
+            _ => InlineTextItem::metrics_from_first_available_font(
+              metrics_scaled.as_ref(),
+              line_height,
+              text_style.font_size,
+            ),
+          };
           let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
           let baseline_y =
             text_rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
@@ -11883,12 +11901,19 @@ impl DisplayListBuilder {
           metrics_sample = "M";
         }
         let metrics_runs = shape_text_runs(self, metrics_sample, &text_style).unwrap_or_default();
-        let metrics = InlineTextItem::metrics_from_runs(
-          &self.font_ctx,
-          &metrics_runs,
-          line_height,
-          text_style.font_size,
-        );
+        let metrics = match &text_style.line_height {
+          crate::style::types::LineHeight::Normal => InlineTextItem::metrics_from_runs(
+            &self.font_ctx,
+            &metrics_runs,
+            line_height,
+            text_style.font_size,
+          ),
+          _ => InlineTextItem::metrics_from_first_available_font(
+            metrics_scaled.as_ref(),
+            line_height,
+            text_style.font_size,
+          ),
+        };
         let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
 
         let mut y = rect.y();
@@ -13291,8 +13316,16 @@ impl DisplayListBuilder {
       line_height = style.font_size.max(1.0);
     }
 
-    let metrics =
-      InlineTextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
+    let metrics = match &style.line_height {
+      crate::style::types::LineHeight::Normal => {
+        InlineTextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size)
+      }
+      _ => InlineTextItem::metrics_from_first_available_font(
+        metrics_scaled.as_ref(),
+        line_height,
+        style.font_size,
+      ),
+    };
     let baseline = rect.y() + metrics.baseline_offset;
     let advance_width: f32 = runs.iter().map(|run| run.advance).sum();
     let start_x = Self::aligned_text_start_x(style, rect, advance_width);

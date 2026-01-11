@@ -71,6 +71,7 @@ mod drop_shadow_negative_spread_parallel_seam;
 mod fit_canvas_to_content;
 mod form_control_listbox_geometry_regression;
 mod form_control_placeholder_style_variant;
+mod form_control_non_normal_line_height_metrics;
 mod form_control_text_align;
 mod form_control_rtl_affordances;
 mod form_control_overflow_clip_padding_box;
