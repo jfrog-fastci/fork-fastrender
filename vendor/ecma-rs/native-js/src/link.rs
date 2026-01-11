@@ -20,6 +20,10 @@
 //! The dynamic loader applies these relocations at startup, so the stackmap records contain the
 //! final relocated absolute PCs at runtime, and stackmap lookup continues to work by comparing
 //! return addresses directly.
+//!
+//! Note: the `clang -flto` helpers in this module currently only support **non-PIE** output. LTO
+//! emits `.llvm_stackmaps` during link-time codegen, so we can't pre-patch input objects with
+//! `llvm-objcopy` the way we do for object-file linking.
 
 use anyhow::Context;
 use std::fs;
@@ -316,13 +320,12 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
 
   if cfg!(target_os = "linux") {
     if opts.pie {
-      cmd.arg("-pie");
-      if matches!(opts.linker, LinkerFlavor::Lld) {
-        cmd.arg("-Wl,-z,notext");
-      }
-    } else {
-      cmd.arg("-no-pie");
+      anyhow::bail!(
+        "PIE is not supported for `clang -flto` helpers without DT_TEXTREL; \
+use object-file linking with `LinkOpts {{ pie: true, .. }}` (objcopy-patched), or keep `pie: false`."
+      );
     }
+    cmd.arg("-no-pie");
   }
 
   match opts.linker {
@@ -392,14 +395,8 @@ pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) ->
   cmd.arg("-flto=full");
 
   if cfg!(target_os = "linux") {
-    if opts.pie {
-      cmd.arg("-pie");
-      if matches!(opts.linker, LinkerFlavor::Lld) {
-        cmd.arg("-Wl,-z,notext");
-      }
-    } else {
-      cmd.arg("-no-pie");
-    }
+    // We don't currently support PIE for this LTO helper (see module docs).
+    cmd.arg("-no-pie");
   }
 
   match opts.linker {
