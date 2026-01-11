@@ -95,3 +95,27 @@ fn reloc_pairs_force_null_if_base_relocates_to_zero() {
 
   assert_eq!(frame, [0, 0]);
 }
+
+#[test]
+fn reloc_pairs_preserve_null_derived_when_base_moves() {
+  let mut frame: [usize; 2] = [0; 2];
+  let base: usize = 0x1000;
+  frame[0] = base;
+  frame[1] = 0;
+
+  let base_slot = RootSlot::StackAddr((&mut frame[0] as *mut usize).cast::<u8>());
+  let derived_slot = RootSlot::StackAddr((&mut frame[1] as *mut usize).cast::<u8>());
+
+  let pairs = [RelocPair { base_slot, derived_slot }];
+
+  let mut calls = 0usize;
+  let mut ctx = ThreadContext::default();
+  relocate_reloc_pairs_in_place(&mut ctx, pairs, |old| {
+    calls += 1;
+    old + 0x1000
+  });
+
+  assert_eq!(calls, 1);
+  assert_eq!(frame[0], 0x2000);
+  assert_eq!(frame[1], 0);
+}
