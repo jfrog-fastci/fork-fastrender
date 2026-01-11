@@ -133,65 +133,126 @@ EOF
 
 objs=("${tmp}/main.o" "${tmp}/mod_a.o" "${tmp}/mod_b.o" "${tmp}/callee.o" "${tmp}/faultmaps.o")
 
+readelf_sections() {
+  # Normalize `readelf -S` output to stable `name addr_hex size_hex` triples.
+  #
+  # `readelf -W -S` prints section indices as either:
+  # - `[ 1] .interp ...` (space for single-digit indices; `$1` becomes `[`), or
+  # - `[10] .rela.plt ...` (no space; `$1` becomes `[10]`).
+  #
+  # Keep this parsing logic in one place so the rest of the script doesn't depend
+  # on column offsets.
+  local bin="$1"
+  "${READELF}" -W -S "${bin}" | awk '
+    $1 == "[" {
+      # Single-digit section index: `[ 1] <name> <type> <addr> <off> <size> ...`
+      # Section 0 has an empty name, which shifts columns; skip it.
+      if ($3 == "NULL") next
+      print $3, $5, $7
+      next
+    }
+    $1 ~ /^[[][0-9]+[]]$/ {
+      # Two+ digit section index: `[10] <name> <type> <addr> <off> <size> ...`
+      print $2, $4, $6
+      next
+    }
+  '
+}
+
 must_have_stackmaps() {
   local bin="$1"
-  local line
   # Prefer a dedicated stackmaps output section name when present. Fall back to
   # `.data.rel.ro` for linkers that embed stackmaps into the standard RELRO data
   # section (lld-friendly default).
-  line="$("${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro.llvm_stackmaps" { print $0; exit }')"
-  if [[ -z "${line}" ]]; then
-    line="$("${READELF}" -W -S "${bin}" | awk '$2==".llvm_stackmaps" { print $0; exit }')"
-  fi
-  if [[ -z "${line}" ]]; then
-    line="$("${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro" { print $0; exit }')"
-  fi
-  if [[ -z "${line}" ]]; then
+
+  local sec_name=""
+  local sec_size_hex=""
+  for cand in ".data.rel.ro.llvm_stackmaps" ".llvm_stackmaps" ".data.rel.ro"; do
+    sec_size_hex="$(readelf_sections "${bin}" | awk -v n="${cand}" '$1==n { print $3; exit }')"
+    if [[ -n "${sec_size_hex}" ]]; then
+      sec_name="${cand}"
+      break
+    fi
+  done
+  if [[ -z "${sec_size_hex}" ]]; then
     echo "expected stackmaps section (.data.rel.ro.llvm_stackmaps, .llvm_stackmaps, or .data.rel.ro) in: ${bin}" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
   fi
 
-  # readelf columns: [Nr] Name Type Address Off Size ES Flags Link Info Align
-  local sec_name sec_size_hex
-  sec_name="$(awk '{print $2}' <<<"${line}")"
-  sec_size_hex="$(awk '{print $6}' <<<"${line}")"
   local sec_size_dec=$((16#${sec_size_hex}))
   if [[ "${sec_size_dec}" -le 0 ]]; then
     echo "expected non-empty ${sec_name} in: ${bin} (size=0x${sec_size_hex})" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
+  fi
+
+  # `.data.rel.ro` exists even in many binaries that do *not* contain stackmaps. If we're using it
+  # as the container, require a non-empty linker-defined symbol range so this check doesn't
+  # accidentally pass when stackmaps were GC'd.
+  if [[ "${sec_name}" == ".data.rel.ro" ]]; then
+    local start_hex stop_hex
+    start_hex="$("${READELF}" -W -s "${bin}" | awk '$8=="__start_llvm_stackmaps" { print $2; exit }')"
+    stop_hex="$("${READELF}" -W -s "${bin}" | awk '$8=="__stop_llvm_stackmaps" { print $2; exit }')"
+    if [[ -z "${start_hex}" || -z "${stop_hex}" ]]; then
+      echo "expected __start_llvm_stackmaps/__stop_llvm_stackmaps when stackmaps are embedded in .data.rel.ro: ${bin}" >&2
+      "${READELF}" -W -s "${bin}" >&2 || true
+      exit 1
+    fi
+    local start_dec=$((16#${start_hex}))
+    local stop_dec=$((16#${stop_hex}))
+    if (( stop_dec <= start_dec )); then
+      echo "expected non-empty stackmaps symbol range when stackmaps are embedded in .data.rel.ro: ${bin}" >&2
+      echo "  __start_llvm_stackmaps=0x${start_hex} __stop_llvm_stackmaps=0x${stop_hex}" >&2
+      exit 1
+    fi
   fi
 }
 
 must_have_faultmaps() {
   local bin="$1"
-  local line
   # Prefer a dedicated faultmaps output section name when present. Fall back to
   # `.data.rel.ro` for linkers that embed faultmaps into the standard RELRO data
   # section (lld-friendly default).
-  line="$("${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro.llvm_faultmaps" { print $0; exit }')"
-  if [[ -z "${line}" ]]; then
-    line="$("${READELF}" -W -S "${bin}" | awk '$2==".llvm_faultmaps" { print $0; exit }')"
-  fi
-  if [[ -z "${line}" ]]; then
-    line="$("${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro" { print $0; exit }')"
-  fi
-  if [[ -z "${line}" ]]; then
+
+  local sec_name=""
+  local sec_size_hex=""
+  for cand in ".data.rel.ro.llvm_faultmaps" ".llvm_faultmaps" ".data.rel.ro"; do
+    sec_size_hex="$(readelf_sections "${bin}" | awk -v n="${cand}" '$1==n { print $3; exit }')"
+    if [[ -n "${sec_size_hex}" ]]; then
+      sec_name="${cand}"
+      break
+    fi
+  done
+  if [[ -z "${sec_size_hex}" ]]; then
     echo "expected faultmaps section (.data.rel.ro.llvm_faultmaps, .llvm_faultmaps, or .data.rel.ro) in: ${bin}" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
   fi
 
-  # readelf columns: [Nr] Name Type Address Off Size ES Flags Link Info Align
-  local sec_name sec_size_hex
-  sec_name="$(awk '{print $2}' <<<"${line}")"
-  sec_size_hex="$(awk '{print $6}' <<<"${line}")"
   local sec_size_dec=$((16#${sec_size_hex}))
   if [[ "${sec_size_dec}" -le 0 ]]; then
     echo "expected non-empty ${sec_name} in: ${bin} (size=0x${sec_size_hex})" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
+  fi
+
+  if [[ "${sec_name}" == ".data.rel.ro" ]]; then
+    local start_hex stop_hex
+    start_hex="$("${READELF}" -W -s "${bin}" | awk '$8=="__llvm_faultmaps_start" { print $2; exit }')"
+    stop_hex="$("${READELF}" -W -s "${bin}" | awk '$8=="__llvm_faultmaps_end" { print $2; exit }')"
+    if [[ -z "${start_hex}" || -z "${stop_hex}" ]]; then
+      echo "expected __llvm_faultmaps_start/__llvm_faultmaps_end when faultmaps are embedded in .data.rel.ro: ${bin}" >&2
+      "${READELF}" -W -s "${bin}" >&2 || true
+      exit 1
+    fi
+    local start_dec=$((16#${start_hex}))
+    local stop_dec=$((16#${stop_hex}))
+    if (( stop_dec <= start_dec )); then
+      echo "expected non-empty faultmaps symbol range when faultmaps are embedded in .data.rel.ro: ${bin}" >&2
+      echo "  __llvm_faultmaps_start=0x${start_hex} __llvm_faultmaps_end=0x${stop_hex}" >&2
+      exit 1
+    fi
   fi
 }
 
@@ -250,7 +311,7 @@ must_have_stackmaps_symbols() {
       container="${sec_name}"
       break
     fi
-  done < <("${READELF}" -W -S "${bin}" | awk 'NF>=6 && substr($2, 1, 1)=="." { print $2, $4, $6 }')
+  done < <(readelf_sections "${bin}")
 
   if [[ -z "${container}" ]]; then
     echo "stackmaps symbol range not contained in any section in: ${bin}" >&2
@@ -313,7 +374,7 @@ must_have_faultmaps_symbols() {
       container="${sec_name}"
       break
     fi
-  done < <("${READELF}" -W -S "${bin}" | awk 'NF>=6 && substr($2, 1, 1)=="." { print $2, $4, $6 }')
+  done < <(readelf_sections "${bin}")
 
   if [[ -z "${container}" ]]; then
     echo "faultmaps symbol range not contained in any section in: ${bin}" >&2
@@ -326,7 +387,7 @@ must_have_faultmaps_symbols() {
 
 must_not_have_stackmaps() {
   local bin="$1"
-  if "${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" {found=1} END {exit !found}'; then
+  if readelf_sections "${bin}" | awk '$1==".data.rel.ro.llvm_stackmaps" || $1==".llvm_stackmaps" {found=1} END {exit !found}'; then
     echo "expected no stackmaps section in: ${bin}" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
@@ -335,7 +396,7 @@ must_not_have_stackmaps() {
 
 must_not_have_faultmaps() {
   local bin="$1"
-  if "${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro.llvm_faultmaps" || $2==".llvm_faultmaps" {found=1} END {exit !found}'; then
+  if readelf_sections "${bin}" | awk '$1==".data.rel.ro.llvm_faultmaps" || $1==".llvm_faultmaps" {found=1} END {exit !found}'; then
     echo "expected no faultmaps section in: ${bin}" >&2
     "${READELF}" -W -S "${bin}" >&2 || true
     exit 1
