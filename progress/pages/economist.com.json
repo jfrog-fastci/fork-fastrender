@@ -18,11 +18,11 @@
   "auto_notes": "cached_html_status=403",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 123791,
-    "diff_percent": 9.5992,
-    "perceptual": 0.4617,
+    "diff_pixels": 29888,
+    "diff_percent": 3.1133,
+    "perceptual": 0.3072,
     "first_mismatch": {
-      "x": 472,
+      "x": 555,
       "y": 22,
       "baseline_rgba": [
         250,
@@ -31,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        199,
-        199,
-        199,
+        220,
+        220,
+        220,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "048dd36515ff5f63ac68dba2bbeb3a733ccff615"
+    "computed_at_commit": "4cf8b949629b5c2044d5abef3f7f46b9017ee11b"
   },
   "hotspot": "paint",
   "failure_stage": null,
