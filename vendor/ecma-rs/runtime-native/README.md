@@ -98,10 +98,21 @@ Expected artifacts:
 
 ## Link from C / clang
 
-Example (from the workspace root):
+The stackmaps linker-script fragment you need depends on which linker your C toolchain drives:
+
+- lld: `runtime-native/link/stackmaps.ld`
+- GNU ld: `runtime-native/link/stackmaps_gnuld.ld`
+
+To check which linker `cc` uses:
 
 ```bash
-cc -std=c99 \
+cc -Wl,--version
+```
+
+Example (lld, explicitly selected; from the workspace root):
+
+```bash
+clang-18 -fuse-ld=lld-18 \
   -I runtime-native/include \
   -Wl,-T,runtime-native/link/stackmaps.ld \
   /path/to/program.c \
@@ -109,12 +120,12 @@ cc -std=c99 \
   -o program
 ```
 
-If you want to force LLVM lld explicitly:
+Example (GNU ld; from the workspace root):
 
 ```bash
-clang-18 -fuse-ld=lld-18 \
+cc -std=c99 \
   -I runtime-native/include \
-  -Wl,-T,runtime-native/link/stackmaps.ld \
+  -Wl,-T,runtime-native/link/stackmaps_gnuld.ld \
   /path/to/program.c \
   target/release/libruntime_native.a \
   -o program
@@ -133,8 +144,8 @@ contain **multiple independent StackMap v3 blobs** back-to-back. The runtime’s
 parser (`runtime_native::stackmaps::StackMaps::parse`) handles this by scanning
 all blobs and building one callsite index.
 
-The `runtime-native/link/stackmaps.ld` linker script fragment defines all of these symbols and
-also provides legacy aliases:
+The `runtime-native/link/stackmaps.ld` (lld) and `runtime-native/link/stackmaps_gnuld.ld` (GNU ld)
+linker script fragments define all of these symbols and also provide legacy aliases:
 
 - `__fastr_stackmaps_{start,end}` and `__llvm_stackmaps_{start,end}`
 
@@ -145,10 +156,14 @@ When the section is absent, the symbols still define an empty range (`start == s
 Note: lld does not auto-define GNU ld-style `__start_<section>` / `__stop_<section>`
 symbols, so the linker script (or an equivalent mechanism) is required.
 
-When linking from C/clang, pass it explicitly:
+When linking from C/clang, pass the appropriate fragment explicitly:
 
 ```bash
+# lld:
 cc ... -Wl,-T,runtime-native/link/stackmaps.ld ...
+
+# GNU ld:
+cc ... -Wl,-T,runtime-native/link/stackmaps_gnuld.ld ...
 ```
 
 When linking from Rust, you still need to pass the script to the final link step
