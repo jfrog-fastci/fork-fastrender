@@ -72,7 +72,9 @@ fn main() {
   // Force clang+lld for the final link and explicitly pass the linker script
   // fragment that defines `__stackmaps_start` / `__stackmaps_end`.
   let rustflags = format!(
-    "-C linker=clang-18 -C link-arg=-fuse-ld=lld -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
+    // Speed up the nested build: we only care about the link result (symbols +
+    // section retention), not debug info.
+    "-C debuginfo=0 -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
     stackmaps_ld.display()
   );
 
