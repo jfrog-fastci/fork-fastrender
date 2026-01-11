@@ -385,6 +385,36 @@ mod tests {
       "<option id=light>Light</option>",
       "</select>",
     );
+  
+    let expected = crate::dom::parse_html(html).unwrap();
+    let doc = crate::dom2::parse_html(html).unwrap();
+  
+    let host = find_node_by_id(&doc, "host").expect("host element not found");
+    assert!(
+      doc.node(host)
+        .children
+        .iter()
+        .all(|&child| !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })),
+      "invalid shadow hosts must not have shadow roots attached"
+    );
+  
+    let roundtrip = doc.to_renderer_dom();
+    assert_eq!(
+      snapshot_dom(&expected),
+      snapshot_dom(&roundtrip),
+      "dom2 shadow attachment should match crate::dom::parse_html snapshot"
+    );
+  }
+
+  #[test]
+  fn attach_shadow_roots_ignores_invalid_shadow_hosts_with_shadowrootmode_and_matches_legacy_snapshot() {
+    let html = concat!(
+      "<!doctype html>",
+      "<select id=host>",
+      "<template shadowrootmode=open><div id=shadow></div></template>",
+      "<option id=light>Light</option>",
+      "</select>",
+    );
  
     let expected = crate::dom::parse_html(html).unwrap();
     let doc = crate::dom2::parse_html(html).unwrap();

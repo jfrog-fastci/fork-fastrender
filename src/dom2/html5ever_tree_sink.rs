@@ -1,4 +1,4 @@
-use crate::dom::{ShadowRootMode, HTML_NAMESPACE};
+use crate::dom::{is_valid_shadow_host_name, ShadowRootMode, HTML_NAMESPACE};
 use crate::css::loader::{resolve_href, resolve_href_with_base};
 use crate::html::base_url_tracker::BaseUrlTracker;
 
@@ -531,7 +531,20 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn allow_declarative_shadow_roots(&self, _intended_parent: &NodeId) -> bool {
-    true
+    let doc = self.document.borrow();
+    if _intended_parent.index() >= doc.nodes_len() {
+      return false;
+    }
+    match &doc.node(*_intended_parent).kind {
+      NodeKind::Element {
+        tag_name, namespace, ..
+      } => Self::is_html_namespace(namespace) && is_valid_shadow_host_name(tag_name),
+      NodeKind::Slot { namespace, .. } => {
+        // `attachShadow()` is not permitted on `<slot>`; keep this branch for completeness.
+        Self::is_html_namespace(namespace) && is_valid_shadow_host_name("slot")
+      }
+      _ => false,
+    }
   }
 
   fn attach_declarative_shadow(
@@ -568,12 +581,17 @@ impl TreeSink for Dom2TreeSink {
     });
 
     let mut doc = self.document.borrow_mut();
-    let is_shadow_host = match &doc.node(*location).kind {
-      NodeKind::Element { tag_name, .. } => !tag_name.eq_ignore_ascii_case("template"),
-      NodeKind::Slot { .. } => true,
+    let is_valid_shadow_host = match &doc.node(*location).kind {
+      NodeKind::Element {
+        tag_name, namespace, ..
+      } => Self::is_html_namespace(namespace) && is_valid_shadow_host_name(tag_name),
+      NodeKind::Slot { namespace, .. } => {
+        // `attachShadow()` is not permitted on `<slot>`; keep this branch for completeness.
+        Self::is_html_namespace(namespace) && is_valid_shadow_host_name("slot")
+      }
       _ => false,
     };
-    if !is_shadow_host {
+    if !is_valid_shadow_host {
       return false;
     }
     if doc

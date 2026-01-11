@@ -215,6 +215,24 @@ fn declarative_shadow_dom_is_not_attached_for_invalid_shadow_host() {
 }
 
 #[test]
+fn declarative_shadow_dom_is_not_attached_for_invalid_shadow_host_shadowrootmode() {
+  let html = concat!(
+    "<select id=host>",
+    "<template shadowrootmode=open><div id=shadow></div></template>",
+    "<option id=light>Light</option>",
+    "</select>",
+  );
+  let dom = parse_html(html).expect("parse html");
+
+  let host = find_by_id(&dom, "host").expect("host element");
+  assert!(
+    find_shadow_root(host).is_none(),
+    "invalid hosts (e.g. <select>) must not promote declarative shadow roots"
+  );
+  assert_eq!(count_shadow_roots(&dom), 0, "no shadow roots should be attached");
+}
+
+#[test]
 fn first_template_wins_for_multiple_declarative_shadow_roots() {
   let html = "<div id='host'><template shadowroot='open'><div id='first'>first</div></template><template shadowroot='closed'><div id='second'>second</div></template></div>";
   let dom = parse_html(html).expect("parse html");
