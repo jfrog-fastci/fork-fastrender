@@ -4608,7 +4608,25 @@ impl<'a> LineBuilder<'a> {
   fn finish_line(&mut self) -> Result<(), LayoutError> {
     check_layout_deadline(&mut self.deadline_counter)?;
     self.trim_soft_wrap_trailing_spaces();
-    if !self.current_line.is_empty() || self.current_line.ends_with_hard_break {
+    let push_empty_after_hard_break = self.current_line.is_empty()
+      && !self.current_line.ends_with_hard_break
+      && self
+        .lines
+        .last()
+        .is_some_and(|line| line.ends_with_hard_break);
+    if !self.current_line.is_empty()
+      || self.current_line.ends_with_hard_break
+      || push_empty_after_hard_break
+    {
+      let bookkeeping_only_line = !self.current_line.items.is_empty()
+        && !self.current_line.ends_with_hard_break
+        && self.current_line.items.iter().all(|item| match &item.item {
+          InlineItem::Floating(_) => true,
+          InlineItem::StaticPositionAnchor(anchor) => {
+            anchor.running.is_none() && anchor.footnote.is_none()
+          }
+          _ => false,
+        });
       // Calculate final line metrics
       self.current_line.width = self.current_x;
       self.current_line.height = self.baseline_acc.line_height();
@@ -4642,6 +4660,14 @@ impl<'a> LineBuilder<'a> {
           }
           _ => {}
         }
+      }
+
+      if bookkeeping_only_line {
+        // `position:absolute`/`fixed` descendants and floats are out-of-flow and must not create an
+        // empty line box that advances the block cursor (CSS 2.1 §9.5/§9.5.1). We keep the line in
+        // the stream so static-position anchors can still resolve, but give it zero block-size so
+        // it does not affect the formatting context's height.
+        self.current_line.height = 0.0;
       }
 
       let ended_hard = self.current_line.ends_with_hard_break;

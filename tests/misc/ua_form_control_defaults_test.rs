@@ -26,6 +26,7 @@ fn form_control_defaults_come_from_user_agent_stylesheet() {
   let html = r#"
     <form>
       <input id="text" type="text">
+      <input id="search" type="search">
       <textarea id="textarea"></textarea>
       <select id="select-default"><option>One</option></select>
       <select id="select-size-empty" size><option>One</option></select>
@@ -59,6 +60,12 @@ fn form_control_defaults_come_from_user_agent_stylesheet() {
 
   assert_eq!(input.styles.box_sizing, BoxSizing::ContentBox);
   assert_eq!(input.styles.cursor, CursorKeyword::Text);
+
+  // Chromium's UA stylesheet treats `type=search` controls as border-box sized so width
+  // constraints include padding/border (avoiding overflow for `width: 100%`).
+  let search = find_by_id(&styled, "search").expect("search input node");
+  assert_eq!(search.styles.box_sizing, BoxSizing::BorderBox);
+  assert_eq!(search.styles.cursor, CursorKeyword::Text);
 
   let textarea = find_by_id(&styled, "textarea").expect("textarea node");
   assert_eq!(textarea.styles.box_sizing, BoxSizing::ContentBox);

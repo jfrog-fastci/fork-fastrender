@@ -420,6 +420,11 @@ input:not([type]) {
     cursor: text;
 }
 
+/* Chromium-style search fields use border-box sizing so `width: 100%` includes padding/border. */
+input[type="search"] {
+    box-sizing: border-box;
+}
+
 input[type="submit"], input[type="button"], input[type="reset"], button {
     padding: 4px 10px;
     background-color: rgb(240, 240, 240);
