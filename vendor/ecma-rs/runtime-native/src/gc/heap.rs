@@ -19,6 +19,7 @@ use crate::immix::ImmixSpace;
 use crate::los::LargeObjectSpace;
 use crate::nursery;
 use crate::nursery::ThreadNursery;
+use crate::buffer::backing_store::{BackingStoreAllocator, GlobalBackingStoreAllocator};
 
 /// Immix block size in bytes.
 pub const IMMIX_BLOCK_SIZE: usize = immix::BLOCK_SIZE;
@@ -77,6 +78,9 @@ pub struct GcHeap {
   pub(crate) immix: ImmixSpace,
   pub(crate) los: LargeObjectSpace,
   weak_handles: WeakHandles,
+  backing_store_alloc: GlobalBackingStoreAllocator,
+  external_bytes: usize,
+  finalizers: Vec<FinalizerEntry>,
 
   /// Current mark epoch (toggled on every major GC).
   pub(crate) mark_epoch: u8,
@@ -85,6 +89,12 @@ pub struct GcHeap {
   pub(crate) stats: GcStats,
 
   pub(crate) root_handles: RootHandles,
+}
+
+#[derive(Clone, Copy)]
+struct FinalizerEntry {
+  obj: *mut u8,
+  finalize: unsafe fn(&mut GcHeap, *mut u8),
 }
 
 // SAFETY: `GcHeap` is not safe for concurrent access, but it is safe to move between threads as
@@ -111,6 +121,9 @@ impl GcHeap {
       immix: ImmixSpace::new(),
       los: LargeObjectSpace::new(),
       weak_handles: WeakHandles::new(),
+      backing_store_alloc: GlobalBackingStoreAllocator::default(),
+      external_bytes: 0,
+      finalizers: Vec::new(),
       mark_epoch: 0,
       major_compaction: MajorCompactionConfig::default(),
       stats: GcStats::default(),
@@ -405,5 +418,131 @@ impl GcHeap {
 
   pub fn los_object_count(&self) -> usize {
     self.los.object_count()
+  }
+
+  #[inline]
+  pub(crate) fn backing_store_allocator(&self) -> &GlobalBackingStoreAllocator {
+    &self.backing_store_alloc
+  }
+
+  #[inline]
+  pub fn add_external_bytes(&mut self, bytes: usize) {
+    self.external_bytes = self.external_bytes.saturating_add(bytes);
+  }
+
+  #[inline]
+  pub fn sub_external_bytes(&mut self, bytes: usize) {
+    debug_assert!(
+      self.external_bytes >= bytes,
+      "external_bytes underflow (tracked={}, sub={})",
+      self.external_bytes,
+      bytes
+    );
+    self.external_bytes = self.external_bytes.saturating_sub(bytes);
+  }
+
+  #[inline]
+  pub fn external_bytes(&self) -> usize {
+    self
+      .external_bytes
+      .saturating_add(self.backing_store_alloc.external_bytes())
+  }
+
+  /// Register a finalizer for a GC-managed object.
+  ///
+  /// Finalizers run exactly once when the object becomes unreachable:
+  /// - During minor GC for dead nursery objects (before nursery reset).
+  /// - During major GC for dead old/LOS objects (after marking, before sweeping).
+  ///
+  /// The finalizer must not assume the object has a stable address across GCs; it receives the
+  /// current object base pointer at the time it runs.
+  pub fn register_finalizer(&mut self, obj: *mut u8, finalize: unsafe fn(&mut GcHeap, *mut u8)) {
+    self.finalizers.push(FinalizerEntry { obj, finalize });
+  }
+
+  pub(crate) fn process_finalizers_minor(&mut self) {
+    let mut i = 0usize;
+    while i < self.finalizers.len() {
+      let obj = self.finalizers[i].obj;
+      if obj.is_null() {
+        self.finalizers.swap_remove(i);
+        continue;
+      }
+
+      if self.nursery.contains(obj) {
+        // SAFETY: `obj` is expected to point to the start of a nursery object.
+        unsafe {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            self.finalizers[i].obj = header.forwarding_ptr();
+            i += 1;
+          } else {
+            let entry = self.finalizers.swap_remove(i);
+            (entry.finalize)(self, obj);
+          }
+        }
+      } else {
+        i += 1;
+      }
+    }
+  }
+
+  pub(crate) fn process_finalizers_major(&mut self, epoch: u8) {
+    let mut i = 0usize;
+    while i < self.finalizers.len() {
+      let mut obj = self.finalizers[i].obj;
+      if obj.is_null() {
+        self.finalizers.swap_remove(i);
+        continue;
+      }
+
+      // Major GC should not see nursery pointers (it runs a minor GC first), but handle them
+      // defensively.
+      if self.nursery.contains(obj) {
+        // SAFETY: `obj` points into nursery memory.
+        unsafe {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            obj = header.forwarding_ptr();
+          } else {
+            let entry = self.finalizers.swap_remove(i);
+            (entry.finalize)(self, obj);
+            continue;
+          }
+        }
+      }
+
+      // If the object isn't in this heap anymore (e.g. swept large object), drop the finalizer
+      // record. This keeps us from dereferencing stale pointers if clients register finalizers on
+      // arbitrary pointers.
+      if !self.immix.contains(obj) && !self.los.contains(obj) {
+        self.finalizers.swap_remove(i);
+        continue;
+      }
+
+      // Follow forwarding pointers (used by nursery evacuation today, and by potential future major
+      // GC compaction).
+      unsafe {
+        loop {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            obj = header.forwarding_ptr();
+          } else {
+            break;
+          }
+        }
+      }
+
+      self.finalizers[i].obj = obj;
+
+      // SAFETY: `obj` points to a heap object header.
+      let marked = unsafe { (&*(obj as *const ObjHeader)).is_marked(epoch) };
+      if marked {
+        i += 1;
+      } else {
+        let entry = self.finalizers.swap_remove(i);
+        unsafe { (entry.finalize)(self, obj) };
+      }
+    }
   }
 }

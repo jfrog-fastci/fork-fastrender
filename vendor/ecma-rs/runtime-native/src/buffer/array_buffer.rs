@@ -2,6 +2,7 @@ use super::backing_store::{
   global_backing_store_allocator, BackingStore, BackingStoreAllocError, BackingStoreAllocator,
   BackingStorePinError, PinnedBackingStore,
 };
+use crate::gc::{GcHeap, ObjHeader, TypeDescriptor, OBJ_HEADER_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArrayBufferError {
@@ -289,5 +290,41 @@ impl PinnedArrayBuffer {
   #[inline]
   pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
     core::slice::from_raw_parts_mut(self.ptr, self.len)
+  }
+}
+
+// -----------------------------------------------------------------------------
+// GC integration
+// -----------------------------------------------------------------------------
+
+#[repr(C)]
+struct GcArrayBuffer {
+  header: ObjHeader,
+  buf: ArrayBuffer,
+}
+
+static GC_ARRAY_BUFFER_DESC: TypeDescriptor = TypeDescriptor::new(core::mem::size_of::<GcArrayBuffer>(), &[]);
+
+unsafe fn finalize_gc_array_buffer(heap: &mut GcHeap, obj: *mut u8) {
+  // SAFETY: `obj` points at a `GcArrayBuffer` allocation.
+  let buf = &mut *(obj.add(OBJ_HEADER_SIZE) as *mut ArrayBuffer);
+  buf.finalize_in(heap.backing_store_allocator());
+}
+
+impl GcHeap {
+  /// Allocate an `ArrayBuffer` header object in the nursery and register a GC finalizer that
+  /// releases the backing store when the object becomes unreachable.
+  pub fn alloc_array_buffer_young(&mut self, len: usize) -> Result<*mut u8, BackingStoreAllocError> {
+    let buf = ArrayBuffer::new_zeroed_in(self.backing_store_allocator(), len)?;
+
+    let obj = self.alloc_young(&GC_ARRAY_BUFFER_DESC);
+    // SAFETY: `obj` is valid for `GC_ARRAY_BUFFER_DESC.size` bytes; the payload begins after the
+    // object header.
+    unsafe {
+      (obj.add(OBJ_HEADER_SIZE) as *mut ArrayBuffer).write(buf);
+    }
+
+    self.register_finalizer(obj, finalize_gc_array_buffer);
+    Ok(obj)
   }
 }

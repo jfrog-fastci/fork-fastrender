@@ -118,6 +118,7 @@ impl GcHeap {
     self.process_weak_handles_major(epoch);
     process_global_weak_handles_major(self, epoch);
     run_weak_cleanups(self);
+    self.process_finalizers_major(epoch);
     self.stats.last_major_live_bytes = self.immix.line_map_used_bytes() + self.los.live_bytes(epoch);
     self.immix.finalize_after_marking();
     self.los.sweep(epoch);

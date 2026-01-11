@@ -48,6 +48,7 @@ impl GcHeap {
 
     // All nursery pointers reachable from roots/remembered objects should now be
     // forwarded to old-gen.
+    self.process_finalizers_minor();
     self.process_weak_handles_minor();
     process_global_weak_handles_minor(self);
     self.nursery_tlab.clear();
