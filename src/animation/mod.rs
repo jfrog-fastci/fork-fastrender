@@ -8886,7 +8886,6 @@ fn apply_transition_state_to_fragment(
         }
 
         if !updates.is_empty() || !custom_updates.is_empty() {
-          let original_color = style_arc.color;
           let color_changed = updates
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("color"));
