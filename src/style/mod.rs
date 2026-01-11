@@ -761,6 +761,7 @@ pub struct LogicalState {
   pub max_height_order: i32,
   pub contain_intrinsic_width_order: i32,
   pub contain_intrinsic_height_order: i32,
+  pub background_color_order: i32,
   pub background_repeat_order: i32,
   next_order: i32,
 }
@@ -789,6 +790,7 @@ impl Default for LogicalState {
       max_height_order: -1,
       contain_intrinsic_width_order: -1,
       contain_intrinsic_height_order: -1,
+      background_color_order: -1,
       background_repeat_order: -1,
       next_order: 0,
     }

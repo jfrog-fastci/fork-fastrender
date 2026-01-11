@@ -4103,6 +4103,16 @@ fn set_outline_width(styles: &mut ComputedStyle, value: Length, order: i32) {
   styles.logical.outline_width_order = order;
 }
 
+#[inline]
+fn set_background_color(styles: &mut ComputedStyle, value: Rgba, is_system: bool, order: i32) {
+  if order < styles.logical.background_color_order {
+    return;
+  }
+  styles.background_color = value;
+  styles.background_color_is_system = is_system;
+  styles.logical.background_color_order = order;
+}
+
 fn set_border_style_side(
   styles: &mut ComputedStyle,
   side: crate::style::PhysicalSide,
@@ -7174,8 +7184,12 @@ pub(crate) fn apply_property_from_source(
       styles.webkit_text_stroke_width = source.webkit_text_stroke_width;
     }
     "background-color" => {
-      styles.background_color = source.background_color;
-      styles.background_color_is_system = source.background_color_is_system;
+      set_background_color(
+        styles,
+        source.background_color,
+        source.background_color_is_system,
+        order,
+      );
     }
     "fill" => styles.svg_fill = source.svg_fill.clone(),
     "stroke" => styles.svg_stroke = source.svg_stroke.clone(),
@@ -15433,31 +15447,37 @@ fn apply_declaration_with_base_internal_with_order(
     "background-color" => {
       match resolved_value {
         PropertyValue::Color(c) => {
-          styles.background_color_is_system = c.uses_system_color();
-          styles.background_color = c.to_rgba_with_scheme_and_forced_colors(
-            styles.color,
-            is_dark_color_scheme,
-            styles.forced_colors,
-          );
-        }
-        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
-          styles.background_color_is_system = false;
-          styles.background_color = styles.color;
-        }
-        PropertyValue::Keyword(kw) => {
-          if let Ok(color) = Color::parse(kw) {
-            styles.background_color_is_system = color.uses_system_color();
-            styles.background_color = color.to_rgba_with_scheme_and_forced_colors(
+          set_background_color(
+            styles,
+            c.to_rgba_with_scheme_and_forced_colors(
               styles.color,
               is_dark_color_scheme,
               styles.forced_colors,
+            ),
+            c.uses_system_color(),
+            order,
+          );
+        }
+        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
+          set_background_color(styles, styles.color, false, order);
+        }
+        PropertyValue::Keyword(kw) => {
+          if let Ok(color) = Color::parse(kw) {
+            set_background_color(
+              styles,
+              color.to_rgba_with_scheme_and_forced_colors(
+                styles.color,
+                is_dark_color_scheme,
+                styles.forced_colors,
+              ),
+              color.uses_system_color(),
+              order,
             );
           }
         }
         _ => {
           if let Some(c) = resolve_color_value(resolved_value) {
-            styles.background_color_is_system = false;
-            styles.background_color = c;
+            set_background_color(styles, c, false, order);
           }
         }
       }
@@ -16199,8 +16219,12 @@ fn apply_declaration_with_base_internal_with_order(
       let Some(last) = parsed_layers.last() else {
         return;
       };
-      styles.background_color = last.color.unwrap_or(Rgba::TRANSPARENT);
-      styles.background_color_is_system = last.color.is_some() && last.color_is_system;
+      set_background_color(
+        styles,
+        last.color.unwrap_or(Rgba::TRANSPARENT),
+        last.color.is_some() && last.color_is_system,
+        order,
+      );
 
       let mut layers = Vec::new();
       for parsed in parsed_layers {
@@ -30764,6 +30788,37 @@ mod tests {
     // recomputing the shorthand does not clobber a later longhand (e.g. `outline-color`).
     styles.recompute_var_dependent_properties(&parent, DEFAULT_VIEWPORT);
     assert_eq!(styles.outline_color, OutlineColor::Color(Rgba::TRANSPARENT));
+  }
+
+  #[test]
+  fn recompute_var_dependent_background_shorthand_preserves_longhand_overrides() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+
+    let decls =
+      parse_declarations("background: var(--bg, url(a)); background-color: rgb(239,203,157);");
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut styles,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        false,
+      );
+    }
+
+    assert!(styles.var_dependent_declarations.contains_key("background"));
+    assert_eq!(styles.background_color, Rgba::from_rgba8(239, 203, 157, 255));
+
+    // Background shorthands can also depend on `var()` and are cached for recomputation after
+    // registered custom properties change. Ensure that recomputing a shorthand does not clobber a
+    // later longhand override such as `background-color`.
+    styles.recompute_var_dependent_properties(&parent, DEFAULT_VIEWPORT);
+    assert_eq!(styles.background_color, Rgba::from_rgba8(239, 203, 157, 255));
   }
 
   #[test]
