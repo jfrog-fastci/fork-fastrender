@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use effect_model::{EffectSet, EffectSummary, EffectTemplate, PurityTemplate};
-use knowledge_base::{ApiDatabase, ApiSemantics, JsonValue, TargetEnv, WebPlatform};
+use knowledge_base::{ApiDatabase, ApiSemantics, JsonValue};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
@@ -172,38 +172,13 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       // Only treat the alias spelling as a collision with a canonical entry when that spelling
       // exists as an actual API name in the DB.
       if db.canonical_name(alias).is_some_and(|canonical| canonical == alias) {
-        let prev = db.get(alias);
-        if prev.is_some_and(|prev| semantics_match(prev, api)) {
-          continue;
-        }
-
-        // `ApiDatabase::get` selects the "best" entry under `TargetEnv::Unknown`, but a canonical
-        // name can legitimately have multiple environment-specific entries (e.g. both `web/` and
-        // `node/` variants). When a synthesized `node:`-stripped alias collides with such a name,
-        // accept the alias as redundant as long as *some* web entry matches the `node:` semantics.
-        //
-        // This keeps shared spellings like `crypto.randomUUID` (WebCrypto global) and
-        // `node:crypto.randomUUID` (Node builtin module) conflict-free.
-        let mut matches_web_variant = false;
-        for platform in [
-          WebPlatform::Generic,
-          WebPlatform::Chrome,
-          WebPlatform::Firefox,
-          WebPlatform::Safari,
-        ] {
-          let target = TargetEnv::Web { platform };
-          if let Some(candidate) = db.api_for_target(alias, &target) {
-            if semantics_match(candidate, api) {
-              matches_web_variant = true;
-              break;
-            }
+        if let Some(mut entries) = db.entries(alias) {
+          if entries.any(|prev| semantics_match(prev, api)) {
+            continue;
           }
         }
-        if matches_web_variant {
-          continue;
-        }
 
-        if let Some(prev) = prev {
+        if let Some(prev) = db.get(alias) {
           errors.push(ValidationError::DuplicateApiName {
             name: alias.to_string(),
             first: prev.name.clone(),

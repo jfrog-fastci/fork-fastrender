@@ -258,6 +258,22 @@ impl ApiDatabase {
     self.api_for_target(name_or_alias, &TargetEnv::Unknown)
   }
 
+  /// Iterate over *all* API entries that share a canonical name.
+  ///
+  /// Unlike [`ApiDatabase::get`] (or [`ApiDatabase::iter`]), this does **not** select a "best"
+  /// entry for a specific target environment/version. It returns the full set of per-environment
+  /// definitions stored in the database (e.g. Node vs Web variants).
+  ///
+  /// This is primarily useful for linting/validation passes that need to compare or de-duplicate
+  /// entries across environments.
+  pub fn entries(&self, name_or_alias: &str) -> Option<impl Iterator<Item = &ApiSemantics> + '_> {
+    let canonical = self.canonical_name(name_or_alias)?;
+    self
+      .apis
+      .get(canonical)
+      .map(|entries| entries.iter().map(|entry| &entry.api))
+  }
+
   /// Return the source path (relative to the `knowledge-base/` crate root) that defined the best
   /// entry for `name_or_alias` under the given `target`.
   pub fn source_for_target(&self, name_or_alias: &str, target: &TargetEnv) -> Option<&str> {
