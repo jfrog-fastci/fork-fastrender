@@ -35,8 +35,8 @@ runtime_native_capture_safepoint_context:
   mov qword ptr [rdi + 16], r8
   mov qword ptr [rdi + 24], r9
   ret
-  .globl rt_gc_safepoint_slow
-rt_gc_safepoint_slow:
+  .globl runtime_native_gc_safepoint_slow_asm
+runtime_native_gc_safepoint_slow_asm:
   // epoch: rdi
   // Capture the entry stack pointer and return address before touching RSP.
   mov rax, rsp                // sp_entry
@@ -63,8 +63,8 @@ rt_gc_safepoint_slow:
   // runtime-internal callsite to `rt_gc_safepoint_slow`.
   //
   // Signature: `void gc.safepoint_poll(void)`.
-  .globl gc.safepoint_poll
-gc.safepoint_poll:
+  .globl runtime_native_gc_safepoint_poll_asm
+runtime_native_gc_safepoint_poll_asm:
   // epoch = RT_GC_EPOCH (Acquire)
   // Use GOT-relative addressing so this assembly is PIC-friendly (runtime-native
   // is built as a `cdylib` for some tests/tools).
@@ -99,3 +99,27 @@ gc.safepoint_poll:
 
   "#
 );
+
+// Exported wrappers for cdylib builds:
+//
+// On ELF, Rust's `cdylib` builds use a linker version script that only exports
+// Rust-defined `#[no_mangle]`/`#[export_name]` symbols. The raw `global_asm!`
+// labels above would otherwise be present in the object file but omitted from
+// the dynamic symbol table, breaking dynamic linking of native codegen modules.
+//
+// Define tiny naked Rust entrypoints that tail-jump to the assembly
+// implementations so these symbols are treated as part of the exported ABI.
+
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_safepoint_slow(_epoch: u64) {
+  core::arch::naked_asm!("jmp runtime_native_gc_safepoint_slow_asm");
+}
+
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
+#[export_name = "gc.safepoint_poll"]
+pub unsafe extern "C" fn gc_safepoint_poll() {
+  core::arch::naked_asm!("jmp runtime_native_gc_safepoint_poll_asm");
+}

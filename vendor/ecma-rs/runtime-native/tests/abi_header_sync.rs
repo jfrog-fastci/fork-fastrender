@@ -632,3 +632,137 @@ fn runtime_native_staticlib_exports_expected_global_symbols() {
     staticlib.display()
   );
 }
+
+fn find_cdylib(target_dir: &Path, profile: &str) -> PathBuf {
+  let direct = target_dir.join(profile).join("libruntime_native.so");
+  let deps_dir = target_dir.join(profile).join("deps");
+  let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+
+  if direct.is_file() {
+    let mtime = fs::metadata(&direct)
+      .and_then(|meta| meta.modified())
+      .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    newest = Some((mtime, direct.clone()));
+  }
+
+  if let Ok(entries) = fs::read_dir(&deps_dir) {
+    for entry in entries.flatten() {
+      let path = entry.path();
+      let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+        continue;
+      };
+      if !(file_name.starts_with("libruntime_native") && file_name.ends_with(".so")) {
+        continue;
+      }
+      let mtime = fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+      match newest {
+        Some((best, _)) if mtime <= best => {}
+        _ => newest = Some((mtime, path)),
+      }
+    }
+  }
+
+  if let Some((_, path)) = newest {
+    return path;
+  }
+
+  panic!(
+    "failed to find runtime-native cdylib at {} (checked {} and {})",
+    target_dir.display(),
+    direct.display(),
+    deps_dir.display()
+  );
+}
+
+#[test]
+fn runtime_native_cdylib_exports_rt_symbols() {
+  let _rt = TestRuntimeGuard::new();
+  if !cfg!(target_os = "linux") {
+    eprintln!("skipping: cdylib export check is only supported on Linux");
+    return;
+  }
+
+  // `nm` is part of the standard toolchain on Ubuntu; still skip gracefully if absent.
+  if Command::new("nm")
+    .arg("--version")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .is_err()
+  {
+    eprintln!("skipping: `nm` not available");
+    return;
+  }
+
+  let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+  let staticlib = find_staticlib(&target_dir(), profile);
+  let cdylib = find_cdylib(&target_dir(), profile);
+
+  // Extract the set of `rt_*` symbols defined by the archive and compare it to the set exported from
+  // the shared library. This prevents regressions where an ABI entrypoint is implemented in
+  // `global_asm!` (or other non-Rust objects) and is therefore omitted from `cdylib` exports by Rust's
+  // version-script-based export filtering.
+  let static_out = Command::new("nm")
+    .arg("-g")
+    .arg("--defined-only")
+    .arg(&staticlib)
+    .output()
+    .expect("run nm on staticlib");
+  assert!(
+    static_out.status.success(),
+    "nm failed for {}: status={:?} stderr={}",
+    staticlib.display(),
+    static_out.status,
+    String::from_utf8_lossy(&static_out.stderr)
+  );
+
+  let dylib_out = Command::new("nm")
+    .arg("-D")
+    .arg("--defined-only")
+    .arg(&cdylib)
+    .output()
+    .expect("run nm on cdylib");
+  assert!(
+    dylib_out.status.success(),
+    "nm failed for {}: status={:?} stderr={}",
+    cdylib.display(),
+    dylib_out.status,
+    String::from_utf8_lossy(&dylib_out.stderr)
+  );
+
+  let static_stdout = String::from_utf8_lossy(&static_out.stdout);
+  let dylib_stdout = String::from_utf8_lossy(&dylib_out.stdout);
+
+  let static_syms: std::collections::BTreeSet<String> = static_stdout
+    .lines()
+    .filter_map(|line| line.split_whitespace().last())
+    .filter(|name| name.starts_with("rt_"))
+    .map(|s| s.to_string())
+    .collect();
+  let dylib_syms: std::collections::BTreeSet<String> = dylib_stdout
+    .lines()
+    .filter_map(|line| line.split_whitespace().last())
+    .filter(|name| name.starts_with("rt_"))
+    .map(|s| s.to_string())
+    .collect();
+
+  let missing: Vec<String> = static_syms.difference(&dylib_syms).cloned().collect();
+  let extra: Vec<String> = dylib_syms.difference(&static_syms).cloned().collect();
+  if !missing.is_empty() || !extra.is_empty() {
+    panic!(
+      "runtime-native cdylib exports do not match staticlib:\nmissing in .so:\n{}\nextra in .so:\n{}",
+      missing.join("\n"),
+      extra.join("\n"),
+    );
+  }
+
+  // `place-safepoints` inserts calls to a symbol named `gc.safepoint_poll`. Ensure the runtime
+  // shared library exports it so native modules can link against `libruntime_native.so` directly.
+  assert!(
+    dylib_stdout.contains("gc.safepoint_poll"),
+    "expected gc.safepoint_poll to be exported from {}",
+    cdylib.display()
+  );
+}

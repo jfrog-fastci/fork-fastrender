@@ -44,8 +44,8 @@ runtime_native_capture_safepoint_context:
   ret
 
   // Legacy slow-path entrypoint used by some tests and runtime-internal polls.
-  .globl rt_gc_safepoint_slow
-rt_gc_safepoint_slow:
+  .globl runtime_native_gc_safepoint_slow_asm
+runtime_native_gc_safepoint_slow_asm:
   // epoch: x0
   // Capture SP/FP/LR before touching the stack.
   mov x2, sp          // sp_entry
@@ -71,8 +71,8 @@ rt_gc_safepoint_slow:
   // LLVM `place-safepoints` poll hook.
   //
   // Signature: `void gc.safepoint_poll(void)`.
-  .globl gc.safepoint_poll
-gc.safepoint_poll:
+  .globl runtime_native_gc_safepoint_poll_asm
+runtime_native_gc_safepoint_poll_asm:
   // epoch = RT_GC_EPOCH (Acquire)
   // Use GOT-relative addressing so this assembly is PIC-friendly (runtime-native
   // is built as a `cdylib` for some tests/tools).
@@ -133,8 +133,8 @@ runtime_native_capture_safepoint_context:
   ret
 
   // Legacy slow-path entrypoint used by some tests and runtime-internal polls.
-  .globl rt_gc_safepoint_slow
-rt_gc_safepoint_slow:
+  .globl runtime_native_gc_safepoint_slow_asm
+runtime_native_gc_safepoint_slow_asm:
   // epoch: x0
   // Capture SP/FP/LR before touching the stack.
   mov x2, sp          // sp_entry
@@ -160,8 +160,8 @@ rt_gc_safepoint_slow:
   // LLVM `place-safepoints` poll hook.
   //
   // Signature: `void gc.safepoint_poll(void)`.
-  .globl gc.safepoint_poll
-gc.safepoint_poll:
+  .globl runtime_native_gc_safepoint_poll_asm
+runtime_native_gc_safepoint_poll_asm:
   // epoch = RT_GC_EPOCH (Acquire)
   // Use GOT-relative addressing so this assembly is PIC-friendly (runtime-native
   // is built as a `cdylib` for some tests/tools).
@@ -193,3 +193,19 @@ gc.safepoint_poll:
   ret
   "#
 );
+
+// Exported wrappers for cdylib builds: see `arch/x86_64.rs` for rationale.
+
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
+#[no_mangle]
+pub unsafe extern "C" fn rt_gc_safepoint_slow(_epoch: u64) {
+  core::arch::naked_asm!("b runtime_native_gc_safepoint_slow_asm");
+}
+
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
+#[export_name = "gc.safepoint_poll"]
+pub unsafe extern "C" fn gc_safepoint_poll() {
+  core::arch::naked_asm!("b runtime_native_gc_safepoint_poll_asm");
+}
