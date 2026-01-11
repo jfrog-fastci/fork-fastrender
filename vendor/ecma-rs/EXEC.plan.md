@@ -3919,15 +3919,32 @@ pub struct RtShapeDescriptor {
   pub reserved: u32,
 }
 
+// -----------------------------------------------------------------------------
+// Moving-GC safe pointer ABI
+// -----------------------------------------------------------------------------
+//
+// LLVM statepoints/stackmaps describe only LLVM-generated frames; Rust runtime code is not
+// statepoint-compiled. Under a moving/compacting collector, this means:
+//
+// - Any runtime entrypoint that may allocate/safepoint/GC (**MayGC**) must not accept raw GC-managed
+//   pointers as arguments, because they could become stale if a GC moves objects during the call.
+// - Instead, pass GC pointers as *handles* (`GcHandle`): a pointer to a caller-owned root slot
+//   containing the pointer. The GC updates the slot during relocation, and the runtime can reload
+//   `*handle` after safepoints.
+//
+// See `runtime-native/docs/gc_handle_abi.md` for the detailed rule-set and rationale.
+pub type GcPtr = *mut u8;
+pub type GcHandle = *mut GcPtr;
+
 // Memory
 pub fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize);
-pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
-pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8;
-pub fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8;
+pub fn rt_alloc(size: usize, shape: RtShapeId) -> GcPtr;
+pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> GcPtr;
+pub fn rt_alloc_array(len: usize, elem_size: usize) -> GcPtr;
 
 // GC
 pub fn rt_gc_safepoint();
-pub fn rt_write_barrier(obj: *mut u8, field: *mut u8);
+pub fn rt_write_barrier(obj: GcPtr, field: *mut u8);
 pub fn rt_gc_collect();
 
 // Strings
