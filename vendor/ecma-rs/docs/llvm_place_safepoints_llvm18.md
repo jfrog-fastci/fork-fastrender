@@ -160,8 +160,10 @@ insert polling safepoints. (It only rewrites existing calls.)
    `gc "coreclr"` in this repo).
 2. Run `rewrite-statepoints-for-gc` to convert callsites to statepoints.
 3. For loop polling, have the compiler explicitly emit an IR poll:
-   - Fast path: load a global/TLS “GC requested” flag and branch.
-   - Slow path: call `rt_gc_safepoint()` (or similar) which triggers/joins GC.
+   - Fast path: load the runtime's exported safepoint epoch (`RT_GC_EPOCH`) and
+     branch on the low bit.
+   - Slow path: call `rt_gc_safepoint_slow(epoch)` (passing the **observed odd**
+     epoch value).
    - The slow-path call becomes a statepoint, so stack maps are correct when GC
      actually runs.
 

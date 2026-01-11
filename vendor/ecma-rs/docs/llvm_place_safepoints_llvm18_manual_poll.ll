@@ -8,9 +8,14 @@
 
 source_filename = "llvm_place_safepoints_llvm18_manual_poll"
 
-@gc_requested = external global i1
+; Global safepoint epoch (runtime-native):
+;   - even: no stop-the-world requested
+;   - odd:  stop-the-world requested
+@RT_GC_EPOCH = external global i64
 
-declare void @rt_gc_safepoint()
+; Slow-path entrypoint (runtime-native). Must be called with the *observed odd*
+; epoch value so the runtime can safely coordinate a stop-the-world.
+declare void @rt_gc_safepoint_slow(i64)
 
 define void @foo(i1 %cond) gc "coreclr" {
 entry:
@@ -18,12 +23,14 @@ entry:
 
 loop:
   ; Fast path is just a load+branch.
-  %flag = load i1, ptr @gc_requested
+  %epoch = load atomic i64, ptr @RT_GC_EPOCH acquire, align 8
+  %lowbit = and i64 %epoch, 1
+  %flag = icmp ne i64 %lowbit, 0
   br i1 %flag, label %poll_slow, label %poll_fast
 
 poll_slow:
   ; Slow path call becomes a `llvm.experimental.gc.statepoint.*`.
-  call void @rt_gc_safepoint()
+  call void @rt_gc_safepoint_slow(i64 %epoch)
   br label %poll_fast
 
 poll_fast:
