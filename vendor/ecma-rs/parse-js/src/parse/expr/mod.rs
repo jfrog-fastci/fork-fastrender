@@ -403,46 +403,39 @@ impl<'a> Parser<'a> {
     // as arrow function fails quickly. Complex patterns like `{a, b: { c: [d, e] } = f }` are
     // unlikely to be used as operands in a grouping.
 
-    // In strict ECMAScript mode, disambiguate `(<...>)` by looking for `=>` after the matching
-    // parenthesis.
-    //
-    // This avoids incorrect "definitely arrow function" heuristics (e.g. `(<expr containing =>>)`)
-    // and keeps parsing deterministic for `vm-js`'s lazy function snippet reparsing.
-    if self.is_strict_ecmascript() {
-      let checkpoint = self.checkpoint();
-      // Consume the opening `(` and scan to the matching `)`.
-      self.require(TT::ParenthesisOpen)?;
-      let mut depth: usize = 1;
-      while depth > 0 {
-        let t = self.consume();
-        match t.typ {
-          TT::ParenthesisOpen => depth += 1,
-          TT::ParenthesisClose => depth = depth.saturating_sub(1),
-          TT::EOF => break,
-          _ => {}
-        }
-      }
-      let is_arrow = self.peek().typ == TT::EqualsChevronRight;
-      self.reset_to(checkpoint.next_tok_i);
-      return if is_arrow {
-        Ok(self.arrow_func_expr(ctx, terminators)?.into_wrapped())
-      } else {
-        self.grouping(ctx, asi)
-      };
-    }
-
     // Try and parse as arrow function signature first.
     // If we fail, backtrack and parse as grouping instead.
-    self
-      .rewindable::<Node<Expr>, _>(|p| match p.arrow_func_expr(ctx, terminators) {
-        Ok(expr) => Ok(Some(expr.into_wrapped())),
-        Err(err) if err.typ == SyntaxErrorType::LineTerminatorAfterArrowFunctionParameters => {
-          Err(err)
+    //
+    // Note: once we have consumed the actual `=>` token that ends the arrow signature (i.e. at
+    // paren depth 0), we treat it as definitely an arrow function and do not backtrack. This
+    // avoids confusing error recovery where `(args) => <invalid>` is reinterpreted as a grouping.
+    let checkpoint = self.checkpoint();
+    match self.arrow_func_expr(ctx, terminators) {
+      Ok(expr) => Ok(expr.into_wrapped()),
+      Err(err) if err.typ == SyntaxErrorType::LineTerminatorAfterArrowFunctionParameters => {
+        Err(err)
+      }
+      Err(err) => {
+        let mut depth: u32 = 0;
+        let mut saw_arrow_at_depth_0 = false;
+        for tok in &self.buf[checkpoint.next_tok_i..self.next_tok_i] {
+          match tok.token.typ {
+            TT::ParenthesisOpen => depth = depth.saturating_add(1),
+            TT::ParenthesisClose => depth = depth.saturating_sub(1),
+            TT::EqualsChevronRight if depth == 0 => {
+              saw_arrow_at_depth_0 = true;
+              break;
+            }
+            _ => {}
+          }
         }
-        Err(_) => Ok(None),
-      })
-      .transpose()
-      .unwrap_or_else(|| self.grouping(ctx, asi))
+        if saw_arrow_at_depth_0 {
+          return Err(err);
+        }
+        self.reset_to(checkpoint.next_tok_i);
+        self.grouping(ctx, asi)
+      }
+    }
   }
 
   pub fn func_expr(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<FuncExpr>> {

@@ -126,3 +126,139 @@ fn async_throw_rejects_promise() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, value), "nope");
   Ok(())
 }
+
+#[test]
+fn return_expression_with_post_await_member_access() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() { return (await Promise.resolve({ x: "ok" })).x; }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_var_decl_nested_initializer_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        const v = (await Promise.resolve({ x: "ok" })).x;
+        return v;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_return_method_call() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        return (await Promise.resolve({
+          x: "ok",
+          f() { return this.x; },
+        })).f();
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_expression_statement_nested_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        (await Promise.resolve({ x: "ignored" })).x;
+        return "ok";
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_in_async_expression_body_nested_expression() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      (async () => (await Promise.resolve({ x: "ok" })).x)().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
+fn await_operand_throw_rejects_promise() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() { return await nope; }
+      f().then(function () { out = "bad"; }, function (e) { out = e.name; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ReferenceError");
+  Ok(())
+}
