@@ -90,7 +90,7 @@ use crate::{
 };
 use rayon::prelude::*;
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -4829,7 +4829,13 @@ struct TableStructureCacheEntry {
   structure: Arc<TableStructure>,
 }
 
+const TABLE_STRUCTURE_CACHE_MAX_ENTRIES: usize = 4_096;
+const COLUMN_CONSTRAINT_CACHE_MAX_ENTRIES: usize = 4_096;
+const COLLAPSED_BORDERS_CACHE_MAX_ENTRIES: usize = 4_096;
+const CELL_INTRINSIC_CACHE_MAX_ENTRIES: usize = 65_536;
+
 thread_local! {
+  static TABLE_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
   static TABLE_STRUCTURE_CACHE: RefCell<HashMap<TableStructureCacheKey, TableStructureCacheEntry>> =
     RefCell::new(HashMap::new());
 }
@@ -4877,6 +4883,42 @@ thread_local! {
     RefCell::new(HashMap::new());
   static CELL_INTRINSIC_CACHE: RefCell<HashMap<CellIntrinsicCacheKey, CellIntrinsicCacheEntry>> =
     RefCell::new(HashMap::new());
+}
+
+#[inline]
+fn ensure_table_cache_epoch() -> usize {
+  let epoch = intrinsic_cache_epoch();
+  TABLE_CACHE_EPOCH.with(|cell| {
+    if cell.get() == epoch {
+      return;
+    }
+    cell.set(epoch);
+    TABLE_STRUCTURE_CACHE.with(|cache| cache.borrow_mut().clear());
+    COLUMN_CONSTRAINT_CACHE.with(|cache| cache.borrow_mut().clear());
+    COLLAPSED_BORDERS_CACHE.with(|cache| cache.borrow_mut().clear());
+    CELL_INTRINSIC_CACHE.with(|cache| cache.borrow_mut().clear());
+  });
+  epoch
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TableCacheLens {
+  pub(crate) table_structure: usize,
+  pub(crate) column_constraints: usize,
+  pub(crate) collapsed_borders: usize,
+  pub(crate) cell_intrinsic: usize,
+}
+
+#[cfg(test)]
+pub(crate) fn table_cache_lens_for_test() -> TableCacheLens {
+  ensure_table_cache_epoch();
+  TableCacheLens {
+    table_structure: TABLE_STRUCTURE_CACHE.with(|cache| cache.borrow().len()),
+    column_constraints: COLUMN_CONSTRAINT_CACHE.with(|cache| cache.borrow().len()),
+    collapsed_borders: COLLAPSED_BORDERS_CACHE.with(|cache| cache.borrow().len()),
+    cell_intrinsic: CELL_INTRINSIC_CACHE.with(|cache| cache.borrow().len()),
+  }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -4956,7 +4998,7 @@ fn table_structure_cached(
   table_box: &BoxNode,
   root_metrics: Option<RootFontMetrics>,
 ) -> Arc<TableStructure> {
-  let epoch = intrinsic_cache_epoch();
+  let epoch = ensure_table_cache_epoch();
   let key = table_structure_cache_key(table_box);
   let build_structure =
     || Arc::new(TableStructure::from_box_tree_with_root_metrics(table_box, root_metrics));
@@ -4968,7 +5010,11 @@ fn table_structure_cached(
         }
       }
       let structure = build_structure();
-      cache.borrow_mut().insert(
+      let mut map = cache.borrow_mut();
+      if map.len() >= TABLE_STRUCTURE_CACHE_MAX_ENTRIES && !map.contains_key(&key) {
+        map.clear();
+      }
+      map.insert(
         key,
         TableStructureCacheEntry {
           epoch,
@@ -4987,7 +5033,7 @@ fn collapsed_borders_cached(
   structure: &TableStructure,
 ) -> Result<Arc<CollapsedBorders>, LayoutError> {
   let box_id = table_box.id();
-  let epoch = intrinsic_cache_epoch();
+  let epoch = ensure_table_cache_epoch();
   let build = || -> Result<Arc<CollapsedBorders>, LayoutError> {
     Ok(Arc::new(compute_collapsed_borders(table_box, structure)?))
   };
@@ -5004,7 +5050,11 @@ fn collapsed_borders_cached(
       return Ok(entry.clone());
     }
     let borders = build()?;
-    cache.borrow_mut().insert(key, borders.clone());
+    let mut map = cache.borrow_mut();
+    if map.len() >= COLLAPSED_BORDERS_CACHE_MAX_ENTRIES && !map.contains_key(&key) {
+      map.clear();
+    }
+    map.insert(key, borders.clone());
     Ok(borders)
   })
 }
@@ -5115,7 +5165,7 @@ impl TableFormattingContext {
     };
 
     let box_id = table_box.id();
-    let epoch = intrinsic_cache_epoch();
+    let epoch = ensure_table_cache_epoch();
     let percent_bits = if structure.percent_sensitive {
       percent_base_cache_key(percent_base)
     } else {
@@ -5144,7 +5194,11 @@ impl TableFormattingContext {
     }
     let constraints = build()?;
     COLUMN_CONSTRAINT_CACHE.with(|cache| {
-      cache.borrow_mut().insert(
+      let mut map = cache.borrow_mut();
+      if map.len() >= COLUMN_CONSTRAINT_CACHE_MAX_ENTRIES && !map.contains_key(&key) {
+        map.clear();
+      }
+      map.insert(
         key,
         ColumnConstraintCacheEntry {
           constraints: Arc::new(constraints.clone()),
@@ -5272,6 +5326,7 @@ impl TableFormattingContext {
     style_overrides: &StyleOverrideCache,
   ) -> Result<(f32, f32), LayoutError> {
     record_table_cell_intrinsic_measurement();
+    let epoch = ensure_table_cache_epoch();
     let length_is_percent = |len: &crate::style::values::Length| {
       matches!(len.unit, LengthUnit::Percent | LengthUnit::Calc)
     };
@@ -5316,7 +5371,7 @@ impl TableFormattingContext {
           style_ptr: Arc::as_ptr(&cell_box.style) as usize,
           percent_base_bits: percent_bits,
           collapsed: matches!(border_collapse, BorderCollapse::Collapse),
-          epoch: intrinsic_cache_epoch(),
+          epoch,
         })
       }
     };
@@ -5403,7 +5458,11 @@ impl TableFormattingContext {
     let result = (min.max(0.0), max.max(min));
     if let Some(key) = cache_key {
       CELL_INTRINSIC_CACHE.with(|cache| {
-        cache.borrow_mut().insert(
+        let mut map = cache.borrow_mut();
+        if map.len() >= CELL_INTRINSIC_CACHE_MAX_ENTRIES && !map.contains_key(&key) {
+          map.clear();
+        }
+        map.insert(
           key,
           CellIntrinsicCacheEntry {
             min: result.0,
@@ -10264,6 +10323,130 @@ mod tests {
     intrinsic_cache_use_epoch(intrinsic_cache_epoch().saturating_add(1), false);
     let third = table_structure_cached(&table, None);
     assert!(!Arc::ptr_eq(&first, &third));
+
+    intrinsic_cache_use_epoch(starting_epoch, true);
+  }
+
+  #[test]
+  fn table_caches_are_scoped_to_intrinsic_cache_epoch() -> Result<(), LayoutError> {
+    let _guard = intrinsic_cache_test_lock();
+    let starting_epoch = intrinsic_cache_epoch();
+    let epoch_base = starting_epoch.saturating_add(1);
+
+    intrinsic_cache_use_epoch(epoch_base, true);
+
+    let table_count = 16usize;
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_collapse = BorderCollapse::Collapse;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+    let table_style = Arc::new(table_style);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+    let row_style = Arc::new(row_style);
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    let cell_style = Arc::new(cell_style);
+
+    let mut tables = Vec::with_capacity(table_count);
+    for _ in 0..table_count {
+      let cell = BoxNode::new_block(cell_style.clone(), FormattingContextType::Block, vec![]);
+      let row = BoxNode::new_block(row_style.clone(), FormattingContextType::Block, vec![cell]);
+      tables.push(BoxNode::new_block(
+        table_style.clone(),
+        FormattingContextType::Table,
+        vec![row],
+      ));
+    }
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let tree = BoxTree::new(BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      tables,
+    ));
+    let tfc = TableFormattingContext::new();
+
+    for offset in 0..3usize {
+      intrinsic_cache_use_epoch(epoch_base.saturating_add(offset), false);
+      let lens_before = table_cache_lens_for_test();
+      assert_eq!(lens_before.table_structure, 0);
+      assert_eq!(lens_before.column_constraints, 0);
+      assert_eq!(lens_before.collapsed_borders, 0);
+      assert_eq!(lens_before.cell_intrinsic, 0);
+
+      for table in tree.root.children.iter() {
+        let structure = table_structure_cached(table, None);
+        collapsed_borders_cached(table, structure.as_ref())?;
+        let style_overrides = StyleOverrideCache::for_intrinsic_measurement(
+          "test_table_epoch_scoped",
+          table.id,
+          table,
+          structure.as_ref(),
+          DistributionMode::Auto,
+        );
+        tfc.column_constraints_cached(
+          table,
+          structure.as_ref(),
+          DistributionMode::Auto,
+          None,
+          &style_overrides,
+        )?;
+      }
+
+      let lens_after = table_cache_lens_for_test();
+      assert_eq!(lens_after.table_structure, table_count);
+      assert_eq!(lens_after.column_constraints, table_count);
+      assert_eq!(lens_after.collapsed_borders, table_count);
+      assert_eq!(lens_after.cell_intrinsic, table_count);
+    }
+
+    intrinsic_cache_use_epoch(starting_epoch, true);
+    Ok(())
+  }
+
+  #[test]
+  fn table_cache_max_entries_clears_when_exceeded() {
+    let _guard = intrinsic_cache_test_lock();
+    let starting_epoch = intrinsic_cache_epoch();
+    intrinsic_cache_use_epoch(starting_epoch.saturating_add(1), true);
+    assert_eq!(table_cache_lens_for_test().table_structure, 0);
+
+    let epoch = intrinsic_cache_epoch();
+    let dummy_structure = Arc::new(TableStructure::new());
+    TABLE_STRUCTURE_CACHE.with(|cache| {
+      let mut map = cache.borrow_mut();
+      map.clear();
+      for idx in 0..TABLE_STRUCTURE_CACHE_MAX_ENTRIES {
+        map.insert(
+          TableStructureCacheKey {
+            box_id: idx.saturating_add(1),
+            style_ptr: 0,
+          },
+          TableStructureCacheEntry {
+            epoch,
+            structure: dummy_structure.clone(),
+          },
+        );
+      }
+      assert_eq!(map.len(), TABLE_STRUCTURE_CACHE_MAX_ENTRIES);
+    });
+
+    let table = BoxTree::new(create_simple_table(1, 1)).root;
+    table_structure_cached(&table, None);
+
+    let lens = table_cache_lens_for_test();
+    assert_eq!(
+      lens.table_structure, 1,
+      "inserting a new key over the cap should clear the table structure cache"
+    );
+    assert_eq!(lens.column_constraints, 0);
+    assert_eq!(lens.collapsed_borders, 0);
+    assert_eq!(lens.cell_intrinsic, 0);
 
     intrinsic_cache_use_epoch(starting_epoch, true);
   }
