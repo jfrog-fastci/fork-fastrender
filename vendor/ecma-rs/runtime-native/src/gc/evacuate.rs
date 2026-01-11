@@ -20,6 +20,7 @@ impl GcHeap {
   pub fn collect_minor(&mut self, roots: &mut dyn RootSet, remembered: &mut dyn RememberedSet) {
     let start = Instant::now();
     self.stats.minor_collections += 1;
+    self.work_stack.clear();
 
     // Snapshot nursery usage so we can optionally poison the previously-used
     // region after `reset` (helps surface stale nursery pointers quickly).
@@ -44,6 +45,10 @@ impl GcHeap {
       remembered.for_each_remembered_obj(&mut |obj| {
         evac.visit_obj(obj);
       });
+
+      while let Some(obj) = evac.heap.work_stack.pop() {
+        evac.visit_obj(obj);
+      }
     }
 
     // All nursery pointers reachable from roots/remembered objects should now be
@@ -117,9 +122,7 @@ impl Tracer for Evacuator<'_> {
         *slot = new_obj;
       }
       if is_new {
-        // Depth-first evacuation: immediately scan the promoted copy to avoid allocating a worklist
-        // (GC must not allocate).
-        self.visit_obj(new_obj);
+        self.heap.work_stack.push(new_obj);
       }
     }
   }

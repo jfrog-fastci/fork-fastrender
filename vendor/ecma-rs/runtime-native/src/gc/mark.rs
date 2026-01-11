@@ -47,6 +47,7 @@ impl GcHeap {
         heap: self,
         epoch,
       };
+      marker.heap.work_stack.clear();
 
       roots.for_each_root_slot(&mut |slot| {
         marker.visit_slot(slot);
@@ -57,6 +58,10 @@ impl GcHeap {
         marker.visit_slot(slot);
       });
       marker.heap.root_handles = root_handles;
+
+      while let Some(obj) = marker.heap.work_stack.pop() {
+        marker.visit_obj(obj);
+      }
     }
 
     let cfg = self.major_compaction;
@@ -191,9 +196,7 @@ impl Marker<'_> {
         debug_assert!(self.heap.is_in_los(obj), "unknown heap object location");
       }
     }
-    // Depth-first marking: immediately scan the object's outgoing edges.
-    // This avoids heap allocations for a worklist (GC must not allocate).
-    self.visit_obj(obj);
+    self.heap.work_stack.push(obj);
   }
 }
 

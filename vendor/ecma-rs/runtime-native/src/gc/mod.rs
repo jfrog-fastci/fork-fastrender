@@ -14,6 +14,7 @@ mod young;
 mod evacuate;
 mod mark;
 mod keep_alive;
+mod work_stack;
 
 pub use heap::GcHeap;
 pub use heap::PersistentRoot;

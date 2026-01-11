@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use super::roots::RootHandle;
 use super::roots::RootHandles;
+use super::work_stack::WorkStack;
 use super::weak::WeakHandle;
 use super::weak::WeakHandles;
 use super::ObjHeader;
@@ -91,6 +92,7 @@ pub struct GcHeap {
   pub(crate) stats: GcStats,
 
   pub(crate) root_handles: RootHandles,
+  pub(crate) work_stack: WorkStack,
 }
 
 #[derive(Clone, Copy)]
@@ -193,6 +195,7 @@ impl GcHeap {
       major_compaction: MajorCompactionConfig::default(),
       stats: GcStats::default(),
       root_handles: RootHandles::new(),
+      work_stack: WorkStack::new(),
     }
   }
 
