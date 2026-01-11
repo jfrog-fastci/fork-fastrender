@@ -30,7 +30,7 @@
 //! # Runnable example
 //!
 //! ```bash
-//! cargo run -p optimize-js --example basic
+//! bash scripts/cargo_agent.sh run -p optimize-js --example basic
 //! ```
 
 pub mod analysis;

@@ -128,8 +128,8 @@
 //! `typecheck-ts/examples/`:
 //!
 //! ```bash
-//! cargo run -p typecheck-ts --example memory_host_basic
-//! cargo run -p typecheck-ts --example json_snapshot
+//! bash scripts/cargo_agent.sh run -p typecheck-ts --example memory_host_basic
+//! bash scripts/cargo_agent.sh run -p typecheck-ts --example json_snapshot
 //! ```
 //!
 //! # Features

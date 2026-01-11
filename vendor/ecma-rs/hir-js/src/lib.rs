@@ -19,7 +19,7 @@
 //! # Runnable example
 //!
 //! ```bash
-//! cargo run -p hir-js --example basic_lowering
+//! bash scripts/cargo_agent.sh run -p hir-js --example basic_lowering
 //! ```
 
 pub(crate) mod fingerprint;

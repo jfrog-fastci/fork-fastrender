@@ -114,7 +114,7 @@
 //! # Runnable example
 //!
 //! ```bash
-//! cargo run -p semantic-js --example js_mode_basic
+//! bash scripts/cargo_agent.sh run -p semantic-js --example js_mode_basic
 //! ```
 //!
 //! ## Determinism and integration notes

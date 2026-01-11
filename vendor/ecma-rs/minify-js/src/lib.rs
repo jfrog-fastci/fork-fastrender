@@ -6,7 +6,7 @@
 //! # Runnable example
 //!
 //! ```bash
-//! cargo run -p minify-js --example basic
+//! bash scripts/cargo_agent.sh run -p minify-js --example basic
 //! ```
 
 pub use diagnostics::{Diagnostic, FileId, Severity, Span, TextRange};
@@ -142,7 +142,7 @@ fn emit_minified(
 /// For a runnable example that avoids filesystem I/O:
 ///
 /// ```bash
-/// cargo run -p minify-js --example basic
+/// bash scripts/cargo_agent.sh run -p minify-js --example basic
 /// ```
 /// Options controlling how input is parsed before minification.
 pub struct MinifyOptions {

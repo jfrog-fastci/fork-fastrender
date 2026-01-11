@@ -1,5 +1,5 @@
 // When the `typed` feature is disabled we still want this benchmark target to
-// compile (so `cargo bench -p optimize-js` works). Criterion is only used when
+// compile (so `bash scripts/cargo_agent.sh bench -p optimize-js` works). Criterion is only used when
 // `typed` is enabled.
 #[cfg(not(feature = "typed"))]
 fn main() {}

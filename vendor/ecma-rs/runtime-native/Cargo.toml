@@ -56,9 +56,10 @@ conservative_roots = []
 # - Swaps the small Loom-specific test harness' atomics/Mutex to loom types
 #
 # Run with:
-#   bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p runtime-native --features loom --test loom_promise_waiters
-#   # or (if you already set `RUSTFLAGS="-C force-frame-pointers=yes"`):
-#   cargo test -p runtime-native --features loom --test loom_promise_waiters
+#   # `runtime-native` requires frame pointers; easiest is via the LLVM wrapper:
+#   bash scripts/cargo_llvm.sh test -p runtime-native --features loom --test loom_promise_waiters
+#   # Or, if you already set `RUSTFLAGS="-C force-frame-pointers=yes"`:
+#   bash scripts/cargo_agent.sh test -p runtime-native --features loom loom_
 loom = ["dep:loom"]
 
 # Internal/test-only: exported functions used by frame-pointer regression checks.

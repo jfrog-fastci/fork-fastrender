@@ -19,7 +19,7 @@
 //! # Runnable example
 //!
 //! ```bash
-//! cargo run -p emit-js --example basic
+//! bash scripts/cargo_agent.sh run -p emit-js --example basic
 //! ```
 
 pub mod asi;

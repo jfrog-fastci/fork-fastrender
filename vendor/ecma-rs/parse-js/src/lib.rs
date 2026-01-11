@@ -6,7 +6,7 @@
 //! # Runnable example
 //!
 //! ```bash
-//! cargo run -p parse-js --example basic
+//! bash scripts/cargo_agent.sh run -p parse-js --example basic
 //! ```
 
 use ast::node::Node;

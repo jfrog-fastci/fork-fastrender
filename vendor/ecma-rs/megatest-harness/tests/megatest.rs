@@ -16,9 +16,9 @@ fn megatest_parse_and_lower_match_baseline() -> Result<()> {
     let actual: BTreeSet<_> = fixtures.iter().map(|f| f.name.clone()).collect();
     if expected != actual {
       return Err(anyhow!(
-        "baseline entries do not match discovered fixtures (run `cargo run -p megatest-harness -- --update-baselines`)\n\
-expected: {expected:#?}\n\
-actual: {actual:#?}",
+        "baseline entries do not match discovered fixtures (run `bash scripts/cargo_agent.sh run -p megatest-harness -- --update-baselines`)\n\
+ expected: {expected:#?}\n\
+ actual: {actual:#?}",
       ));
     }
   }

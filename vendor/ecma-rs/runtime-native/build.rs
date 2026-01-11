@@ -62,7 +62,7 @@ Fix:
 
 Escape hatch (unsafe; for experiments only):
   - Enable feature `allow_omit_frame_pointers`:
-      cargo build -p runtime-native --features allow_omit_frame_pointers
+      bash vendor/ecma-rs/scripts/cargo_agent.sh build -p runtime-native --features allow_omit_frame_pointers
 
 Detected rustflags:
   {pretty_flags}

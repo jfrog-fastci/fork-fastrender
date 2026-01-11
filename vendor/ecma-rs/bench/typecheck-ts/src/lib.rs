@@ -3,9 +3,9 @@
 //! This crate is focused on providing stable, deterministic micro-benchmarks
 //! for the real parsing, lowering, binding, and type checking pipeline.
 //!
-//! Run with `cargo bench -p typecheck-ts-bench`. To emit JSON alongside the human
+//! Run with `bash scripts/cargo_agent.sh bench -p typecheck-ts-bench`. To emit JSON alongside the human
 //! summary, set `TYPECHECK_TS_BENCH_JSON=1` (preferred over passing `--json`
-//! directly to `cargo bench`, which forwards arguments to all test binaries).
+//! directly to the bench invocation, which forwards arguments to all test binaries).
 
 pub mod fixtures;
 pub mod pipeline;

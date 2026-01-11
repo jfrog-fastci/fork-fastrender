@@ -2,11 +2,11 @@
 //!
 //! Run with:
 //!   # `runtime-native` requires frame pointers; easiest is via the LLVM wrapper:
-//!   bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p runtime-native --features loom --test loom_promise_waiters
+//!   bash scripts/cargo_llvm.sh test -p runtime-native --features loom --test loom_promise_waiters
 //!
 //!   # Or, if you already have `RUSTFLAGS="-C force-frame-pointers=yes"` configured:
-//!   cargo test -p runtime-native --features loom --test loom_promise_waiters
-//!   cargo test -p runtime-native --features loom loom_
+//!   bash scripts/cargo_agent.sh test -p runtime-native --features loom --test loom_promise_waiters
+//!   bash scripts/cargo_agent.sh test -p runtime-native --features loom loom_
 
 #![cfg(feature = "loom")]
 
