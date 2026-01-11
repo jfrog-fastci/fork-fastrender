@@ -58,6 +58,7 @@ graph TD
     effect_js_cli --> parse_js
     emit_js --> diagnostics
     emit_js --> hir_js
+    emit_js --> knowledge_base
     emit_js --> parse_js
     emit_js --> ts_erase
     hir_js --> diagnostics
