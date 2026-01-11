@@ -36,7 +36,7 @@ use avif_decode::Decoder as AvifDecoder;
 use avif_decode::Image as AvifImage;
 use avif_parse::AvifData;
 use exif;
-use flate2::read::GzDecoder;
+use flate2::read::{GzDecoder, ZlibDecoder};
 use image::imageops;
 use image::DynamicImage;
 use image::GenericImageView;
@@ -67,6 +67,277 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tiny_skia::{FilterQuality, IntSize, Pixmap};
 use url::Url;
+
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const MAX_PNG_ICC_PROFILE_BYTES: usize = 1024 * 1024;
+
+fn extract_png_iccp_profile(png_bytes: &[u8]) -> Option<Vec<u8>> {
+  if png_bytes.len() < PNG_SIGNATURE.len() || &png_bytes[..PNG_SIGNATURE.len()] != PNG_SIGNATURE {
+    return None;
+  }
+
+  let mut offset = PNG_SIGNATURE.len();
+  while offset + 12 <= png_bytes.len() {
+    let length = u32::from_be_bytes(png_bytes.get(offset..offset + 4)?.try_into().ok()?) as usize;
+    let chunk_type: [u8; 4] = png_bytes.get(offset + 4..offset + 8)?.try_into().ok()?;
+    let data_start = offset + 8;
+    let data_end = data_start.checked_add(length)?;
+    let next = data_end.checked_add(4)?; // CRC
+    if next > png_bytes.len() {
+      break;
+    }
+
+    if &chunk_type == b"iCCP" {
+      let data = png_bytes.get(data_start..data_end)?;
+      let nul_pos = data.iter().position(|b| *b == 0)?;
+      // Name (null-terminated), then compression method (1 byte), then zlib data.
+      let compression_method = *data.get(nul_pos + 1)?;
+      if compression_method != 0 {
+        return None;
+      }
+      let compressed = data.get(nul_pos + 2..)?;
+      let mut out = Vec::new();
+      ZlibDecoder::new(compressed)
+        .take((MAX_PNG_ICC_PROFILE_BYTES + 1) as u64)
+        .read_to_end(&mut out)
+        .ok()?;
+      if out.len() > MAX_PNG_ICC_PROFILE_BYTES {
+        return None;
+      }
+      return Some(out);
+    }
+
+    if &chunk_type == b"IEND" {
+      break;
+    }
+
+    offset = next;
+  }
+
+  None
+}
+
+#[derive(Clone)]
+enum IccToneCurve {
+  Identity,
+  Gamma(f64),
+  Table(Vec<f64>),
+}
+
+impl IccToneCurve {
+  fn eval(&self, v: f64) -> f64 {
+    let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    match self {
+      Self::Identity => v,
+      Self::Gamma(gamma) if gamma.is_finite() && *gamma > 0.0 => v.powf(*gamma),
+      Self::Gamma(_) => v,
+      Self::Table(values) => {
+        if values.len() < 2 {
+          return v;
+        }
+        let last = (values.len() - 1) as f64;
+        let pos = v * last;
+        let idx = pos.floor() as usize;
+        if idx >= values.len() - 1 {
+          return values[values.len() - 1];
+        }
+        let t = pos - idx as f64;
+        values[idx] * (1.0 - t) + values[idx + 1] * t
+      }
+    }
+  }
+}
+
+struct IccMatrixProfileToSrgb {
+  /// Matrix that maps source *linear* RGB values into linear sRGB values.
+  ///
+  /// `linear_srgb = matrix * linear_src_rgb`
+  matrix: [[f64; 3]; 3],
+  /// Lookup tables mapping each encoded u8 channel value to the source profile's linear-light
+  /// component, after applying the TRC.
+  u8_to_linear: [[f64; 256]; 3],
+}
+
+fn mul3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+  let mut out = [[0.0; 3]; 3];
+  for i in 0..3 {
+    for j in 0..3 {
+      out[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+    }
+  }
+  out
+}
+
+fn apply_icc_profile_to_srgb(rgba: &mut RgbaImage, icc_profile: &[u8]) -> bool {
+  const D50_TO_D65: [[f64; 3]; 3] = [
+    [0.955_576_615, -0.023_039_344_7, 0.063_163_632_2],
+    [-0.028_289_544_2, 1.009_941_617_4, 0.021_007_655],
+    [0.012_298_165_7, -0.020_483_025_2, 1.329_909_826_4],
+  ];
+  // XYZ(D65) -> linear sRGB.
+  const XYZ_TO_SRGB: [[f64; 3]; 3] = [
+    [3.240_454_836, -1.537_138_850_1, -0.498_531_546_9],
+    [-0.969_266_389_9, 1.876_010_928_8, 0.041_556_082_3],
+    [0.055_643_419_6, -0.204_025_854_3, 1.057_225_162_5],
+  ];
+
+  fn read_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    bytes
+      .get(offset..offset + 4)
+      .and_then(|b| <[u8; 4]>::try_from(b).ok())
+      .map(u32::from_be_bytes)
+  }
+
+  fn read_u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
+    bytes
+      .get(offset..offset + 2)
+      .and_then(|b| <[u8; 2]>::try_from(b).ok())
+      .map(u16::from_be_bytes)
+  }
+
+  fn read_i32_at(bytes: &[u8], offset: usize) -> Option<i32> {
+    bytes
+      .get(offset..offset + 4)
+      .and_then(|b| <[u8; 4]>::try_from(b).ok())
+      .map(i32::from_be_bytes)
+  }
+
+  fn parse_xyz_tag(tag: &[u8]) -> Option<[f64; 3]> {
+    if tag.len() < 20 || &tag[..4] != b"XYZ " {
+      return None;
+    }
+    let x = read_i32_at(tag, 8)? as f64 / 65_536.0;
+    let y = read_i32_at(tag, 12)? as f64 / 65_536.0;
+    let z = read_i32_at(tag, 16)? as f64 / 65_536.0;
+    Some([x, y, z])
+  }
+
+  fn parse_trc_tag(tag: &[u8]) -> Option<IccToneCurve> {
+    if tag.len() < 12 {
+      return None;
+    }
+    match &tag[..4] {
+      b"curv" => {
+        let count = read_u32_at(tag, 8)? as usize;
+        match count {
+          0 => Some(IccToneCurve::Identity),
+          1 => {
+            let gamma = read_u16_at(tag, 12)? as f64 / 256.0;
+            Some(IccToneCurve::Gamma(gamma))
+          }
+          n => {
+            let table_len = 12usize.checked_add(n.checked_mul(2)?)?;
+            if table_len > tag.len() {
+              return None;
+            }
+            let mut values = Vec::with_capacity(n);
+            for i in 0..n {
+              let raw = read_u16_at(tag, 12 + i * 2)? as f64;
+              values.push(raw / 65_535.0);
+            }
+            Some(IccToneCurve::Table(values))
+          }
+        }
+      }
+      _ => None,
+    }
+  }
+
+  fn srgb_encode(linear: f64) -> f64 {
+    let linear = if linear.is_finite() { linear } else { 0.0 };
+    let linear = linear.clamp(0.0, 1.0);
+    if linear <= 0.003_130_8 {
+      12.92 * linear
+    } else {
+      1.055 * linear.powf(1.0 / 2.4) - 0.055
+    }
+  }
+
+  fn clamp_and_quantize(v: f64) -> u8 {
+    let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    let v = (v * 255.0 + 0.5).floor();
+    v.clamp(0.0, 255.0) as u8
+  }
+
+  let Some(profile) = (|| -> Option<IccMatrixProfileToSrgb> {
+    if icc_profile.len() < 132 {
+      return None;
+    }
+    let tag_count = read_u32_at(icc_profile, 128)? as usize;
+    let table_len = tag_count.checked_mul(12)?;
+    let table_end = 132usize.checked_add(table_len)?;
+    if table_end > icc_profile.len() {
+      return None;
+    }
+
+    let mut rxyz = None;
+    let mut gxyz = None;
+    let mut bxyz = None;
+    let mut rtrc = None;
+    let mut gtrc = None;
+    let mut btrc = None;
+
+    for i in 0..tag_count {
+      let base = 132 + i * 12;
+      let sig = icc_profile.get(base..base + 4)?;
+      let offset = read_u32_at(icc_profile, base + 4)? as usize;
+      let size = read_u32_at(icc_profile, base + 8)? as usize;
+      let end = offset.checked_add(size)?;
+      if end > icc_profile.len() {
+        continue;
+      }
+      let tag_bytes = icc_profile.get(offset..end)?;
+      match sig {
+        b"rXYZ" if rxyz.is_none() => rxyz = parse_xyz_tag(tag_bytes),
+        b"gXYZ" if gxyz.is_none() => gxyz = parse_xyz_tag(tag_bytes),
+        b"bXYZ" if bxyz.is_none() => bxyz = parse_xyz_tag(tag_bytes),
+        b"rTRC" if rtrc.is_none() => rtrc = parse_trc_tag(tag_bytes),
+        b"gTRC" if gtrc.is_none() => gtrc = parse_trc_tag(tag_bytes),
+        b"bTRC" if btrc.is_none() => btrc = parse_trc_tag(tag_bytes),
+        _ => {}
+      }
+    }
+
+    let [rx, ry, rz] = rxyz?;
+    let [gx, gy, gz] = gxyz?;
+    let [bx, by, bz] = bxyz?;
+    let r_curve = rtrc?;
+    let g_curve = gtrc?;
+    let b_curve = btrc?;
+
+    let m_src = [[rx, gx, bx], [ry, gy, by], [rz, gz, bz]];
+    let m_temp = mul3(&D50_TO_D65, &m_src);
+    let matrix = mul3(&XYZ_TO_SRGB, &m_temp);
+
+    let mut u8_to_linear = [[0.0; 256]; 3];
+    let curves = [r_curve, g_curve, b_curve];
+    for (c, curve) in curves.iter().enumerate() {
+      for i in 0..256 {
+        u8_to_linear[c][i] = curve.eval(i as f64 / 255.0);
+      }
+    }
+
+    Some(IccMatrixProfileToSrgb { matrix, u8_to_linear })
+  })() else {
+    return false;
+  };
+
+  for px in rgba.pixels_mut() {
+    let src_r = profile.u8_to_linear[0][px[0] as usize];
+    let src_g = profile.u8_to_linear[1][px[1] as usize];
+    let src_b = profile.u8_to_linear[2][px[2] as usize];
+
+    let lin_r = profile.matrix[0][0] * src_r + profile.matrix[0][1] * src_g + profile.matrix[0][2] * src_b;
+    let lin_g = profile.matrix[1][0] * src_r + profile.matrix[1][1] * src_g + profile.matrix[1][2] * src_b;
+    let lin_b = profile.matrix[2][0] * src_r + profile.matrix[2][1] * src_g + profile.matrix[2][2] * src_b;
+
+    px[0] = clamp_and_quantize(srgb_encode(lin_r));
+    px[1] = clamp_and_quantize(srgb_encode(lin_g));
+    px[2] = clamp_and_quantize(srgb_encode(lin_b));
+  }
+
+  true
+}
 
 fn shared_svg_fontdb() -> Arc<resvg::usvg::fontdb::Database> {
   static SVG_FONT_DB: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
@@ -6966,7 +7237,7 @@ impl ImageCache {
         frame.color_type,
         png::ColorType::Rgba | png::ColorType::GrayscaleAlpha
       );
-      let rgba = match (frame.color_type, frame.bit_depth) {
+      let mut rgba = match (frame.color_type, frame.bit_depth) {
         (png::ColorType::Rgba, png::BitDepth::Eight) => {
           if buf.len() != rgba_len {
             return Err(Error::Image(ImageError::DecodeFailed {
@@ -7136,6 +7407,9 @@ impl ImageCache {
         }
       };
 
+      if let Some(profile) = extract_png_iccp_profile(bytes) {
+        apply_icc_profile_to_srgb(&mut rgba, &profile);
+      }
       return Ok((DynamicImage::ImageRgba8(rgba), has_alpha));
     }
 
@@ -8468,6 +8742,21 @@ mod tests {
       .write_image(pixels.as_raw(), 1, 1, ColorType::Rgba8.into())
       .expect("encode png");
     png
+  }
+
+  #[test]
+  fn png_iccp_profile_is_converted_to_srgb() {
+    // Regression test for the ietf.org fixture: some PNGs embed an ICC profile (e.g. Display P3),
+    // and Chrome converts them to sRGB when rendering. If we ignore the embedded profile, images
+    // render with noticeably different colors.
+    let png = include_bytes!("../tests/pages/fixtures/ietf.org/assets/d569cb1453b4178adc5736e882edf968.png");
+    let cache = ImageCache::new();
+    let (decoded, _) = cache
+      .decode_with_format(png, ImageFormat::Png, "test://iccp.png")
+      .expect("decode png with icc profile");
+    let rgba = decoded.to_rgba8();
+    let px = rgba.get_pixel(414, 67).0;
+    assert_eq!([px[0], px[1], px[2]], [61, 136, 219]);
   }
 
   #[test]
