@@ -1003,6 +1003,166 @@ pub fn validate_native_strict_body(
               }
             }
 
+            if let ExprKind::Call(bound_call) = &callee.kind {
+              if !bound_call.is_new
+                && !bound_call.args.is_empty()
+                && !bound_call.args.iter().any(|arg| arg.spread)
+              {
+                if let Some(bound_callee) = body.exprs.get(bound_call.callee.0 as usize) {
+                  if let ExprKind::Member(bound_member) = &bound_callee.kind {
+                    let prop_is_bind =
+                      object_key_is_ident(&bound_member.property, bind_name)
+                        || object_key_is_string(&bound_member.property, "bind")
+                        || object_key_is_literal_string(body, &bound_member.property, "bind");
+                    if prop_is_bind {
+                      let is_object_define_property = expr_is_builtin_member(
+                        body,
+                        bound_member.object,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        define_property_name,
+                        "defineProperty",
+                      );
+                      let is_reflect_define_property = expr_is_builtin_member(
+                        body,
+                        bound_member.object,
+                        global_this_name,
+                        reflect_name,
+                        "Reflect",
+                        define_property_name,
+                        "defineProperty",
+                      );
+                      let is_object_define_properties = expr_is_builtin_member(
+                        body,
+                        bound_member.object,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        define_properties_name,
+                        "defineProperties",
+                      );
+                      let is_object_assign = expr_is_builtin_member(
+                        body,
+                        bound_member.object,
+                        global_this_name,
+                        object_name,
+                        "Object",
+                        assign_name,
+                        "assign",
+                      );
+
+                      let is_define_property = is_object_define_property || is_reflect_define_property;
+                      if is_define_property || is_object_define_properties || is_object_assign {
+                        let bound_arity = bound_call.args.len().saturating_sub(1);
+                        let effective_arg = |i: usize| -> Option<hir_js::ExprId> {
+                          if i < bound_arity {
+                            bound_call
+                              .args
+                              .get(i + 1)
+                              .filter(|arg| !arg.spread)
+                              .map(|arg| arg.expr)
+                          } else {
+                            call
+                              .args
+                              .get(i - bound_arity)
+                              .filter(|arg| !arg.spread)
+                              .map(|arg| arg.expr)
+                          }
+                        };
+
+                        if let Some(first_arg) = effective_arg(0) {
+                          if is_define_property {
+                            let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                              body,
+                              first_arg,
+                              prototype_name,
+                              proto_name,
+                            );
+                            if !is_proto_mutation {
+                              if let Some(key_arg) = effective_arg(1) {
+                                if expr_is_const_string(body, key_arg, "prototype")
+                                  || expr_is_const_string(body, key_arg, "__proto__")
+                                {
+                                  is_proto_mutation = true;
+                                }
+                              }
+                            }
+                            if is_proto_mutation {
+                              let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                              diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                "prototype mutation is forbidden when `native_strict` is enabled",
+                                Span::new(file, span),
+                              ));
+                            }
+                          }
+
+                          if is_object_define_properties {
+                            if let Some(props_arg) = effective_arg(1) {
+                              let is_proto_mutation = expr_chain_contains_proto_mutation(
+                                body,
+                                first_arg,
+                                prototype_name,
+                                proto_name,
+                              ) || expr_is_object_literal_with_proto_key(
+                                body,
+                                props_arg,
+                                prototype_name,
+                                proto_name,
+                              );
+                              if is_proto_mutation {
+                                let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                                diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                  "prototype mutation is forbidden when `native_strict` is enabled",
+                                  Span::new(file, span),
+                                ));
+                              }
+                            }
+                          }
+
+                          if is_object_assign {
+                            let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                              body,
+                              first_arg,
+                              prototype_name,
+                              proto_name,
+                            );
+                            if !is_proto_mutation {
+                              let outer_sources = call
+                                .args
+                                .iter()
+                                .skip(if bound_arity == 0 { 1 } else { 0 });
+                              for source_arg in bound_call.args.iter().skip(2).chain(outer_sources) {
+                                if source_arg.spread {
+                                  continue;
+                                }
+                                if expr_is_object_literal_with_proto_key(
+                                  body,
+                                  source_arg.expr,
+                                  prototype_name,
+                                  proto_name,
+                                ) {
+                                  is_proto_mutation = true;
+                                  break;
+                                }
+                              }
+                            }
+                            if is_proto_mutation {
+                              let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                              diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                                "prototype mutation is forbidden when `native_strict` is enabled",
+                                Span::new(file, span),
+                              ));
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
             // `Reflect.apply(eval, ...)` / `Reflect.apply(Function, ...)` etc.
             if let ExprKind::Member(member) = &callee.kind {
               let obj_is_reflect = expr_is_ident_or_global_this_member(
