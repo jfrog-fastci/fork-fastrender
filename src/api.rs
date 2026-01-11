@@ -20250,7 +20250,7 @@ fn needs_top_layer_state(node: &DomNode) -> Result<bool> {
           return Ok(true);
         }
 
-        if tag_name.eq_ignore_ascii_case("template") {
+        if current.template_contents_are_inert() {
           continue;
         }
 
@@ -24154,6 +24154,73 @@ mod tests {
       Ok(_) => panic!("expected dom_parse timeout, got Ok"),
       Err(err) => panic!("expected dom_parse timeout, got {err}"),
     }
+  }
+
+  #[test]
+  fn needs_top_layer_state_traverses_non_html_template_contents() {
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: selectors::context::QuirksMode::NoQuirks,
+        scripting_enabled: true,
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "svg".to_string(),
+          namespace: crate::dom::SVG_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "template".to_string(),
+            namespace: crate::dom::SVG_NAMESPACE.to_string(),
+            attributes: vec![],
+          },
+          children: vec![DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "div".to_string(),
+              namespace: crate::dom::HTML_NAMESPACE.to_string(),
+              attributes: vec![("data-fastr-open".to_string(), "true".to_string())],
+            },
+            children: vec![],
+          }],
+        }],
+      }],
+    };
+
+    assert!(
+      needs_top_layer_state(&dom).unwrap(),
+      "non-HTML <template> contents must not be treated as inert for top-layer state discovery"
+    );
+  }
+
+  #[test]
+  fn needs_top_layer_state_skips_html_template_contents() {
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: selectors::context::QuirksMode::NoQuirks,
+        scripting_enabled: true,
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "template".to_string(),
+          namespace: crate::dom::HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "div".to_string(),
+            namespace: crate::dom::HTML_NAMESPACE.to_string(),
+            attributes: vec![("data-fastr-open".to_string(), "true".to_string())],
+          },
+          children: vec![],
+        }],
+      }],
+    };
+
+    assert!(
+      !needs_top_layer_state(&dom).unwrap(),
+      "HTML <template> contents are inert and must be skipped for top-layer state discovery"
+    );
   }
 
   #[test]
