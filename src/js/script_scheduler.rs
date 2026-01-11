@@ -1160,21 +1160,17 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
           return Ok(DiscoveredScript { id, actions });
         }
 
-        // Inline import maps are processed synchronously when parser-inserted; dynamically inserted
-        // import maps execute as tasks (mirroring classic-script async-by-default behavior).
-        if element.parser_inserted {
-          actions.push(ScriptSchedulerAction::ExecuteNow {
-            script_id: id,
-            node_id,
-            source_text: element.inline_text,
-          });
-        } else {
-          actions.push(ScriptSchedulerAction::QueueTask {
-            script_id: id,
-            node_id,
-            source_text: element.inline_text,
-          });
-        }
+        // HTML `prepare a script`: inline scripts (no `src`) reach the step:
+        // "Otherwise, immediately execute the script element, even if other scripts are already executing."
+        //
+        // This applies to `type="importmap"` too: dynamically inserted import maps must take effect
+        // immediately so subsequently inserted module scripts observe the new mappings, even when
+        // the import map is inserted from within another running script.
+        actions.push(ScriptSchedulerAction::ExecuteNow {
+          script_id: id,
+          node_id,
+          source_text: element.inline_text,
+        });
       }
       ScriptType::Unknown => {
         // Unknown script types do not execute.
@@ -3720,4 +3716,69 @@ mod state_machine_tests {
     );
     Ok(())
   }
-}
+
+  #[test]
+  fn dynamic_importmap_executes_synchronously() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut scheduler = ScriptScheduler::<u32>::with_options(options);
+
+    let discovered =
+      scheduler.discovered_script(importmap_inline_dynamic("MAP"), /* node_id */ 1, None)?;
+    assert_eq!(discovered.actions.len(), 1);
+    assert!(
+      matches!(
+        &discovered.actions[0],
+        ScriptSchedulerAction::ExecuteNow { source_text, .. } if source_text == "MAP"
+      ),
+      "expected dynamically inserted inline importmap to produce ExecuteNow"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_importmap_src_queues_error() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut scheduler = ScriptScheduler::<u32>::with_options(options);
+
+    let mut spec = importmap_inline_dynamic("IGNORED");
+    spec.src_attr_present = true;
+    spec.src = Some("https://example.com/importmap.json".to_string());
+
+    let discovered = scheduler.discovered_script(spec, /* node_id */ 1, None)?;
+    assert_eq!(
+      discovered.actions,
+      vec![ScriptSchedulerAction::QueueScriptEventTask {
+        script_id: discovered.id,
+        node_id: 1u32,
+        event: ScriptElementEvent::Error,
+      }],
+      "expected `src` importmap to only queue an error event task"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_importmap_executes_before_dynamic_module_graph_fetch_starts() -> Result<()> {
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut h = Harness::new_with_options(options);
+
+    h.discover_dynamic(importmap_inline_dynamic("MAP"))?;
+    assert_eq!(
+      h.host.log,
+      vec!["script:MAP".to_string(), "microtask:MAP".to_string()],
+      "expected importmap ExecuteNow to be applied synchronously"
+    );
+
+    assert!(
+      h.started_module_graph_fetches.is_empty(),
+      "expected importmap discovery not to start any module graph fetch"
+    );
+
+    h.discover_dynamic(module_external_dynamic("m.js", /* async_attr */ false, /* force_async */ false))?;
+    assert_eq!(h.started_module_graph_fetches.len(), 1);
+    Ok(())
+  }
+} 
