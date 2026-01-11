@@ -55,8 +55,15 @@ fn collect_defined_vars(cfg: &Cfg) -> HashSet<u32> {
   defs
 }
 
-fn collect_input_vars(cfg: &Cfg, defs: &HashSet<u32>, uses: &HashMap<u32, usize>) -> HashSet<u32> {
+fn collect_input_vars(
+  cfg: &Cfg,
+  defs: &HashSet<u32>,
+  uses: &HashMap<u32, usize>,
+  params: &[u32],
+) -> HashSet<u32> {
   let mut inputs = HashSet::new();
+
+  inputs.extend(params.iter().copied());
 
   // Temps that are used but never defined in this function (typical for parameters).
   for &v in uses.keys() {
@@ -82,10 +89,10 @@ fn collect_input_vars(cfg: &Cfg, defs: &HashSet<u32>, uses: &HashMap<u32, usize>
   inputs
 }
 
-fn infer_ownership_with_escapes(cfg: &Cfg, escapes: &EscapeResult) -> OwnershipResult {
+fn infer_ownership_with_escapes(cfg: &Cfg, params: &[u32], escapes: &EscapeResult) -> OwnershipResult {
   let use_counts = collect_use_counts(cfg);
   let defs = collect_defined_vars(cfg);
-  let inputs = collect_input_vars(cfg, &defs, &use_counts);
+  let inputs = collect_input_vars(cfg, &defs, &use_counts, params);
 
   let mut allocations = HashSet::new();
   let mut flow_edges: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -175,7 +182,15 @@ pub fn analyze_cfg_ownership(cfg: &Cfg) -> OwnershipResult {
 /// This is useful for program-wide drivers that already computed escapes (e.g.
 /// to expose them via a side table) and want to avoid recomputing them.
 pub fn analyze_cfg_ownership_with_escapes(cfg: &Cfg, escapes: &EscapeResult) -> OwnershipResult {
-  infer_ownership_with_escapes(cfg, escapes)
+  infer_ownership_with_escapes(cfg, &[], escapes)
+}
+
+pub fn analyze_cfg_ownership_with_escapes_and_params(
+  cfg: &Cfg,
+  params: &[u32],
+  escapes: &EscapeResult,
+) -> OwnershipResult {
+  infer_ownership_with_escapes(cfg, params, escapes)
 }
 
 pub fn annotate_cfg_ownership(cfg: &mut Cfg, ownership: &OwnershipResult) {

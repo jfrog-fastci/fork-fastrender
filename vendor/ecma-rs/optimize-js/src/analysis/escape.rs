@@ -15,8 +15,8 @@ pub enum EscapeState {
   NoEscape,
   /// The allocation becomes reachable from an input/parameter object.
   ///
-  /// The payload is currently the SSA/temp variable representing that parameter object.
-  ArgEscape(u32),
+  /// The payload is the index into the function's parameter list.
+  ArgEscape(usize),
   /// Escapes by being returned from the current function.
   ///
   /// This includes values returned via [`InstTyp::Return`] or thrown via [`InstTyp::Throw`]. We do
@@ -211,7 +211,12 @@ fn join_escape(states: &mut BTreeMap<u32, EscapeState>, alloc: u32, esc: EscapeS
 }
 
 pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
-  let param_vars = collect_param_vars(cfg);
+  let mut params: Vec<u32> = collect_param_vars(cfg).into_iter().collect();
+  params.sort_unstable();
+  analyze_cfg_escapes_with_params(cfg, &params)
+}
+
+pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResult {
   let facts = collect_local_alloc_flow_facts(cfg);
   let alloc_vars = facts.alloc_vars.clone();
 
@@ -226,8 +231,8 @@ pub fn analyze_cfg_escapes(cfg: &Cfg) -> EscapeResult {
     var_allocs.insert(alloc, BTreeSet::from([alloc]));
   }
   let mut var_ext: BTreeMap<u32, EscapeState> = BTreeMap::new();
-  for &param in param_vars.iter() {
-    var_ext.insert(param, EscapeState::ArgEscape(param));
+  for (idx, &param) in params.iter().enumerate() {
+    var_ext.insert(param, EscapeState::ArgEscape(idx));
   }
   for &v in facts.external_defs.iter() {
     join_escape(&mut var_ext, v, EscapeState::GlobalEscape);
@@ -653,7 +658,7 @@ mod tests {
     );
 
     let escape = analyze_cfg_escapes(&cfg);
-    assert_eq!(escape_of(&escape, 0), EscapeState::ArgEscape(99));
+    assert_eq!(escape_of(&escape, 0), EscapeState::ArgEscape(0));
   }
 
   #[test]
@@ -829,7 +834,7 @@ mod tests {
     );
 
     let escape = analyze_cfg_escapes(&cfg);
-    assert_eq!(escape_of(&escape, 2), EscapeState::ArgEscape(99));
+    assert_eq!(escape_of(&escape, 2), EscapeState::ArgEscape(0));
   }
 
   #[test]

@@ -63,6 +63,13 @@ fn cfg_for_key(program: &Program, key: FunctionKey) -> &Cfg {
   }
 }
 
+fn params_for_key(program: &Program, key: FunctionKey) -> &[u32] {
+  match key {
+    FunctionKey::TopLevel => &program.top_level.params,
+    FunctionKey::Fn(id) => &program.functions[id].params,
+  }
+}
+
 fn cfg_for_key_mut(program: &mut Program, key: FunctionKey) -> &mut Cfg {
   match key {
     FunctionKey::TopLevel => &mut program.top_level.body,
@@ -173,19 +180,23 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
   for &key in &keys {
     analyses
       .escape
-      .insert(key, escape::analyze_cfg_escapes(cfg_for_key(program, key)));
+      .insert(
+        key,
+        escape::analyze_cfg_escapes_with_params(cfg_for_key(program, key), params_for_key(program, key)),
+      );
   }
 
   // 5) ownership
   for &key in &keys {
     let cfg = cfg_for_key(program, key);
+    let params = params_for_key(program, key);
     let escapes = analyses
       .escape
       .get(&key)
       .expect("escape results should be populated before ownership");
     analyses
       .ownership
-      .insert(key, ownership::analyze_cfg_ownership_with_escapes(cfg, escapes));
+      .insert(key, ownership::analyze_cfg_ownership_with_escapes_and_params(cfg, params, escapes));
   }
 
   // 6) nullability/range/encoding
@@ -262,18 +273,22 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   for &key in &keys {
     analyses
       .escape
-      .insert(key, escape::analyze_cfg_escapes(cfg_for_key(program, key)));
+      .insert(
+        key,
+        escape::analyze_cfg_escapes_with_params(cfg_for_key(program, key), params_for_key(program, key)),
+      );
   }
 
   // 5) ownership
   for &key in &keys {
     let ownership_result = {
       let cfg = cfg_for_key(program, key);
+      let params = params_for_key(program, key);
       let escapes = analyses
         .escape
         .get(&key)
         .expect("escape results should be populated before ownership");
-      ownership::analyze_cfg_ownership_with_escapes(cfg, escapes)
+      ownership::analyze_cfg_ownership_with_escapes_and_params(cfg, params, escapes)
     };
     ownership::annotate_cfg_ownership(cfg_for_key_mut(program, key), &ownership_result);
     analyses.ownership.insert(key, ownership_result);
