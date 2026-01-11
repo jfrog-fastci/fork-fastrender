@@ -7,7 +7,8 @@ use std::process::{Command, Output};
 use object::{Object, ObjectSection};
 use runtime_native::stackmaps::{Location, StackMap};
 use runtime_native::statepoint_verify::{
-  verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions, LLVM_STATEPOINT_PATCHPOINT_ID,
+  verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
+  LLVM_STATEPOINT_PATCHPOINT_ID,
 };
 use runtime_native::statepoints::StatepointRecord;
 use tempfile::TempDir;
@@ -15,7 +16,8 @@ use tempfile::TempDir;
 const LLVM_OPT: &str = "opt-18";
 const LLVM_LLC: &str = "llc-18";
 
-const TARGET_TRIPLE: &str = "x86_64-pc-linux-gnu";
+const X86_64_TRIPLE: &str = "x86_64-pc-linux-gnu";
+const AARCH64_TRIPLE: &str = "aarch64-unknown-linux-gnu";
 
 // Mitigation: do not allow statepoint GC roots to remain in callee-saved registers.
 // Required for frame-pointer-only stack walking without libunwind/ucontext.
@@ -117,13 +119,13 @@ fn has_register_roots(stackmap: &StackMap) -> bool {
   false
 }
 
-fn make_matrix_ir(max_roots: usize, add_pressure_variants: bool) -> String {
+fn make_matrix_ir(target_triple: &str, max_roots: usize, add_pressure_variants: bool) -> String {
   // Keep the IR generation explicit and deterministic so failures can be
   // reproduced by re-running the same module through `opt-18` + `llc-18`.
   let mut out = String::new();
   out.push_str("; ModuleID = \"statepoint_register_roots_matrix\"\n");
   out.push_str("source_filename = \"statepoint_register_roots_matrix\"\n\n");
-  out.push_str(&format!("target triple = \"{TARGET_TRIPLE}\"\n\n"));
+  out.push_str(&format!("target triple = \"{target_triple}\"\n\n"));
   out.push_str("declare void @callee(i64)\n");
   out.push_str("@sink = global i64 0, align 8\n\n");
 
@@ -203,13 +205,26 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
   let tmp = TempDir::new().expect("create tmpdir");
   let tmp = tmp.path();
 
-  let input_ll = path_in(tmp, "matrix.ll");
-  let rewritten_ll = path_in(tmp, "matrix.rewrite.ll");
-  write_file(
-    &input_ll,
-    &make_matrix_ir(/*max_roots=*/ 64, /*add_pressure_variants=*/ true),
-  );
-  rewrite_statepoints(tmp, &input_ll, &rewritten_ll);
+  #[derive(Clone, Copy)]
+  struct TargetCfg {
+    name: &'static str,
+    triple: &'static str,
+    arch: DwarfArch,
+  }
+
+  // We cross-compile both x86_64 and aarch64 stackmaps on the x86_64 Linux CI hosts.
+  let targets: &[TargetCfg] = &[
+    TargetCfg {
+      name: "x86_64",
+      triple: X86_64_TRIPLE,
+      arch: DwarfArch::X86_64,
+    },
+    TargetCfg {
+      name: "aarch64",
+      triple: AARCH64_TRIPLE,
+      arch: DwarfArch::AArch64,
+    },
+  ];
 
   #[derive(Clone, Copy)]
   struct LlcCfg {
@@ -246,44 +261,67 @@ fn statepoint_register_roots_do_not_occur_in_supported_matrix() {
     },
   ];
 
-  for (cfg_idx, cfg) in cfgs.iter().enumerate() {
-    let mut llc_flags = Vec::<&str>::new();
-    llc_flags.push(cfg.opt);
-    llc_flags.push(LCC_FIXUP_MAX_CSR_STATEPOINTS_0);
-    if let Some(fp) = cfg.frame_pointer {
-      llc_flags.push(fp);
-    }
-    if cfg.restrict_statepoint_remat {
-      llc_flags.push("--restrict-statepoint-remat");
-    }
+  for target in targets {
+    let input_ll = path_in(tmp, &format!("matrix_{}.ll", target.name));
+    let rewritten_ll = path_in(tmp, &format!("matrix_{}.rewrite.ll", target.name));
+    write_file(
+      &input_ll,
+      &make_matrix_ir(
+        target.triple,
+        /*max_roots=*/ 64,
+        /*add_pressure_variants=*/ true,
+      ),
+    );
+    rewrite_statepoints(tmp, &input_ll, &rewritten_ll);
 
-    let obj = path_in(tmp, &format!("matrix_{cfg_idx}.o"));
-    llc_to_obj(tmp, &rewritten_ll, &obj, &llc_flags);
-
-    let section = read_section(&obj, ".llvm_stackmaps");
-    let stackmap = StackMap::parse(&section).expect("parse stackmaps section");
-
-    // Hard correctness check: verify the spill-to-stack convention holds.
-    verify_statepoint_stackmap(
-      &stackmap,
-      VerifyStatepointOptions {
-        arch: DwarfArch::X86_64,
-        mode: VerifyMode::StatepointsOnly,
-      },
-    )
-    .unwrap_or_else(|e| panic!("matrix cfg {cfg_idx} llc_flags={llc_flags:?}: {e}"));
-
-    // Ensure we actually exercised the intended range of GC root counts.
-    let mut seen_n = BTreeSet::<usize>::new();
-    for rec in &stackmap.records {
-      if rec.patchpoint_id != LLVM_STATEPOINT_PATCHPOINT_ID {
-        continue;
+    for (cfg_idx, cfg) in cfgs.iter().enumerate() {
+      let mut llc_flags = Vec::<&str>::new();
+      llc_flags.push(cfg.opt);
+      llc_flags.push(LCC_FIXUP_MAX_CSR_STATEPOINTS_0);
+      if let Some(fp) = cfg.frame_pointer {
+        llc_flags.push(fp);
       }
-      let sp = StatepointRecord::new(rec).expect("decode statepoint record");
-      seen_n.insert(sp.gc_pair_count());
+      if cfg.restrict_statepoint_remat {
+        llc_flags.push("--restrict-statepoint-remat");
+      }
+
+      let obj = path_in(tmp, &format!("matrix_{}_{}.o", target.name, cfg_idx));
+      llc_to_obj(tmp, &rewritten_ll, &obj, &llc_flags);
+
+      let section = read_section(&obj, ".llvm_stackmaps");
+      let stackmap = StackMap::parse(&section).expect("parse stackmaps section");
+
+      // Hard correctness check: verify the spill-to-stack convention holds.
+      verify_statepoint_stackmap(
+        &stackmap,
+        VerifyStatepointOptions {
+          arch: target.arch,
+          mode: VerifyMode::StatepointsOnly,
+        },
+      )
+      .unwrap_or_else(|e| {
+        panic!(
+          "matrix target={} cfg {cfg_idx} llc_flags={llc_flags:?}: {e}",
+          target.name
+        )
+      });
+
+      // Ensure we actually exercised the intended range of GC root counts.
+      let mut seen_n = BTreeSet::<usize>::new();
+      for rec in &stackmap.records {
+        if rec.patchpoint_id != LLVM_STATEPOINT_PATCHPOINT_ID {
+          continue;
+        }
+        let sp = StatepointRecord::new(rec).expect("decode statepoint record");
+        seen_n.insert(sp.gc_pair_count());
+      }
+      let expected: BTreeSet<usize> = (0..=64).collect();
+      assert_eq!(
+        seen_n, expected,
+        "matrix target={} cfg {cfg_idx} missing root counts",
+        target.name
+      );
     }
-    let expected: BTreeSet<usize> = (0..=64).collect();
-    assert_eq!(seen_n, expected, "matrix cfg {cfg_idx} missing root counts");
   }
 }
 
@@ -299,7 +337,11 @@ fn fixup_max_csr_statepoints_0_forces_spills() {
   let rewritten_ll = path_in(tmp, "haz.rewrite.ll");
   write_file(
     &input_ll,
-    &make_matrix_ir(/*max_roots=*/ 6, /*add_pressure_variants=*/ false),
+    &make_matrix_ir(
+      X86_64_TRIPLE,
+      /*max_roots=*/ 6,
+      /*add_pressure_variants=*/ false,
+    ),
   );
   rewrite_statepoints(tmp, &input_ll, &rewritten_ll);
 

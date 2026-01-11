@@ -2761,12 +2761,16 @@ LLVM Integration:
   @llvm.experimental.gc.relocate - pointer relocation
   Stack maps - generated automatically by LLVM
 
-StackMap v3 invariant (LLVM 18, tested):
-  - On x86_64 SysV + aarch64 SysV, across -O0/-O2 and with/without `-frame-pointer=all`,
-    LLVM currently spills all `gc-live` values into stack slots for statepoints.
-  - As a result, GC root locations in the emitted stackmap are always `Indirect [SP + off]`.
-  - Runtime should assert/fail loudly if it ever encounters a non-Indirect location kind for a
-    GC root (would require register-context capture + restore support).
+StackMap v3 invariant (LLVM 18, tested; required by our runtime):
+  - LLVM StackMaps *can* encode roots in registers (`Register`) or as computed expressions (`Direct`).
+  - Our initial precise GC stack walking is frame-pointer-only and cannot update register roots in
+    arbitrary frames, so statepoint `gc-live` roots must be addressable stack slots:
+    `Indirect [SP + off]`.
+  - We enforce this by:
+    - codegen: `--fixup-max-csr-statepoints=0` (see `native-js` emitter)
+    - runtime: statepoint stackmap verifier (`runtime-native/src/statepoint_verify.rs`)
+  - Empirically, on x86_64 SysV + aarch64 SysV, across -O0/-O2 and with/without `-frame-pointer=all`,
+    statepoint roots are `Indirect [SP + off]` under the above codegen settings.
   - Repro: `opt-18 -passes=rewrite-statepoints-for-gc ...` → `llc-18 ...` → `llvm-readobj-18 --stackmap`.
 
 Write Barrier Elimination:

@@ -1012,11 +1012,15 @@ llvm-as /tmp/statepoint.ll -o /dev/null  # prints nothing on success; verifier e
 
 LLVM generates native code + stack maps (metadata describing where GC refs are at each safepoint).
 
-**LLVM 18 stackmap invariant (important):**
-On both **x86_64 SysV** and **aarch64 SysV**, across `-O0` and `-O2` (and with/without
-`-frame-pointer=all`), LLVM’s `rewrite-statepoints-for-gc` currently spills all `gc-live` values
-into stack slots. The emitted StackMap v3 root locations are always of the form:
-`Indirect [SP + off]` (spill slot), not `Register`/`Direct`.
+**Statepoint stackmap invariant (runtime requirement):**
+LLVM StackMaps *can* legally encode `gc-live` values in registers (`Register`) or as computed
+expressions (`Direct`). Our first runtime milestone uses **frame-pointer-only stack walking** and
+does not reconstruct a full register context for every frame, so we require statepoint roots be
+addressable stack slots (`Indirect [SP + off]`).
+
+In practice, with our configured LLVM 18 codegen (notably `--fixup-max-csr-statepoints=0`), we
+observe that on both **x86_64 SysV** and **aarch64 SysV**, across `-O0/-O2` and with/without
+`-frame-pointer=all`, statepoint `gc-live` roots are emitted as `Indirect [SP + off]` spill slots.
 
 This is good news: a moving GC can update the spill slot in memory, and the code after the
 statepoint reloads relocated values from those slots.
@@ -1024,6 +1028,8 @@ statepoint reloads relocated values from those slots.
 If LLVM ever starts emitting register roots for `gc-live`, our runtime must grow full
 register-context capture + restore support; until then we should assert/fail loudly if a non-stack
 GC root location kind is observed.
+
+See also: `docs/stackmaps.md` (required codegen flags + verifier tests).
 
 Repro (LLVM 18):
 ```bash
