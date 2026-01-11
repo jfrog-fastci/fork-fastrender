@@ -85,7 +85,7 @@ crosses into our Rust APIs. Byte-to-text decoding (and validation) must happen
 at I/O boundaries (CLI file reads, network, etc.), not deep inside compiler
 crates.
 
-CI (and `cargo test -p diagnostics --test utf8_api_guard`) runs
+CI (and `bash scripts/cargo_agent.sh test -p diagnostics --test utf8_api_guard`) runs
 [`scripts/check_utf8_apis.sh`](../scripts/check_utf8_apis.sh), which:
 
 - flags new `pub` APIs that take `&[u8]` or `Vec<u8>` **as inputs** in crates

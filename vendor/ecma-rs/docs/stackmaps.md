@@ -57,7 +57,7 @@ then one of the following is true:
 Run the regression suite:
 
 ```
-cargo test -p runtime-native --test statepoint_register_roots_codegen
+bash scripts/cargo_llvm.sh test -p runtime-native --test statepoint_register_roots_codegen
 ```
 
 The tests:
