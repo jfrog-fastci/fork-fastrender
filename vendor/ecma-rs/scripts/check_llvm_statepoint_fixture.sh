@@ -79,7 +79,9 @@ OBJ="${TMP_DIR}/statepoint.o"
 "${LLVM_AS}" "${FIXTURE_LL}" -o "${BC}"
 LLC_BIN="${LLC}" bash "${SCRIPT_DIR}/llc_fp.sh" -filetype=obj "${BC}" -o "${OBJ}"
 
-if ! "${LLVM_READOBJ}" --sections "${OBJ}" | grep -qF ".llvm_stackmaps"; then
+# Do not use `grep -q` under `set -o pipefail`: early pipe closure can cause
+# `llvm-readobj` to hit EPIPE/SIGPIPE and return non-zero.
+if ! "${LLVM_READOBJ}" --sections "${OBJ}" | grep -F ".llvm_stackmaps" >/dev/null; then
   "${LLVM_READOBJ}" --sections "${OBJ}" >&2 || true
   fail "expected .llvm_stackmaps section in output object: ${OBJ}"
 fi

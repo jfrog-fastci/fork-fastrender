@@ -95,14 +95,14 @@ out="${tmpdir}/app"
 bash "${repo_root}/scripts/native_js_link_linux.sh" --out "${out}" -- "${tmpdir}/main.o" "${tmpdir}/codegen.o"
 
 # Ensure output is PIE (ET_DYN).
-readelf -h "${out}" | grep -qE 'Type:[[:space:]]+DYN' || {
+readelf -h "${out}" | grep -E 'Type:[[:space:]]+DYN' >/dev/null || {
   echo "error: expected PIE ET_DYN output" >&2
   readelf -h "${out}" | sed -n '1,40p' >&2 || true
   exit 1
 }
 
 # Ensure no DT_TEXTREL.
-if readelf -d "${out}" | grep -q TEXTREL; then
+if readelf -d "${out}" | grep TEXTREL >/dev/null; then
   echo "error: unexpected DT_TEXTREL in linked PIE output" >&2
   readelf -d "${out}" >&2 || true
   exit 1
