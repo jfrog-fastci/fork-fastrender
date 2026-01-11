@@ -317,14 +317,39 @@ struct DriverInner {
   limiter: Arc<IoLimiter>,
 }
 
+#[cfg(target_os = "linux")]
+fn wake_eventfd(fd: RawFd) {
+  let val: u64 = 1;
+  loop {
+    let rc = unsafe {
+      libc::write(
+        fd,
+        (&val as *const u64).cast::<libc::c_void>(),
+        core::mem::size_of::<u64>(),
+      )
+    };
+
+    if rc == core::mem::size_of::<u64>() as isize {
+      return;
+    }
+    if rc == -1 {
+      let err = std::io::Error::last_os_error();
+      match err.raw_os_error() {
+        Some(libc::EINTR) => continue,
+        // Counter overflow is practically impossible; treat EAGAIN as coalescing.
+        Some(libc::EAGAIN) => return,
+        _ => return,
+      }
+    }
+    // Unexpected short write: treat it as a best-effort wake-up and avoid looping forever.
+    return;
+  }
+}
+
 impl Drop for DriverInner {
   fn drop(&mut self) {
     let _ = self.cmd_tx.send(Command::Shutdown);
-    let val: u64 = 1;
-    let buf = val.to_ne_bytes();
-    unsafe {
-      libc::write(self.wake_fd, buf.as_ptr() as *const libc::c_void, buf.len());
-    }
+    wake_eventfd(self.wake_fd);
   }
 }
 
@@ -349,10 +374,17 @@ impl UringDriver {
 
   pub fn new_with_limiter(entries: u32, limiter: Arc<IoLimiter>) -> Result<Self, std::io::Error> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
-    let wake_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-    if wake_fd < 0 {
-      return Err(std::io::Error::last_os_error());
-    }
+    let wake_fd = loop {
+      let wake_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+      if wake_fd >= 0 {
+        break wake_fd;
+      }
+      let err = std::io::Error::last_os_error();
+      if err.raw_os_error() == Some(libc::EINTR) {
+        continue;
+      }
+      return Err(err);
+    };
 
     #[cfg(target_os = "linux")]
     {
@@ -400,11 +432,7 @@ impl UringDriver {
   }
 
   fn signal(&self) {
-    let val: u64 = 1;
-    let buf = val.to_ne_bytes();
-    unsafe {
-      libc::write(self.inner.wake_fd, buf.as_ptr() as *const libc::c_void, buf.len());
-    }
+    wake_eventfd(self.inner.wake_fd);
   }
 
   /// Submit a read into a GC-managed `Uint8Array` object.
@@ -513,8 +541,12 @@ fn drain_eventfd(fd: RawFd) {
   loop {
     // SAFETY: `buf` is a valid writable buffer and `fd` is expected to be an eventfd.
     let rc = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-    if rc >= 0 {
+    if rc == buf.len() as isize {
       continue;
+    }
+    if rc >= 0 {
+      // Unexpected EOF or short read; treat as drained.
+      return;
     }
 
     let err = std::io::Error::last_os_error();
