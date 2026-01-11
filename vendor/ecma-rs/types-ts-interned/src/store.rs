@@ -1,6 +1,7 @@
 use crate::display::TypeDisplay;
 use crate::ids::{NameId, ObjectId, ShapeId, SignatureId, TypeId};
 use crate::kind::{CompositeKind, TypeKind};
+use crate::layout::{Layout, LayoutId, LayoutStore};
 use crate::options::TypeOptions;
 use crate::shape::{Indexer, ObjectType, Property, Shape};
 use crate::signature::{Param, Signature, TypeParamDecl};
@@ -173,6 +174,7 @@ pub struct TypeStore {
   fingerprint_fn: FingerprintFn,
   options: TypeOptions,
   primitives: PrimitiveIds,
+  layouts: LayoutStore,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +234,7 @@ impl TypeStore {
         symbol: TypeId(0),
         unique_symbol: TypeId(0),
       },
+      layouts: Default::default(),
     };
 
     let primitives = PrimitiveIds {
@@ -455,6 +458,7 @@ impl TypeStore {
       fingerprint_fn: default_fingerprint,
       options,
       primitives,
+      layouts: Default::default(),
     };
 
     {
@@ -564,6 +568,23 @@ impl TypeStore {
 
   pub fn contains_type_id(&self, id: TypeId) -> bool {
     self.types.contains_key(&id)
+  }
+
+  /// Compute (and memoize) the native runtime layout for a type.
+  ///
+  /// The layout model is intentionally LLVM-agnostic: it provides deterministic
+  /// field ordering, offsets, and tagging decisions that downstream native
+  /// backends can consume.
+  pub fn layout_of(&self, ty: TypeId) -> LayoutId {
+    self.layouts.layout_of_type(self, ty)
+  }
+
+  /// Fetch an already-interned [`Layout`] by [`LayoutId`].
+  ///
+  /// Panics if the ID was not produced by [`TypeStore::layout_of`] on this
+  /// store instance.
+  pub fn layout(&self, id: LayoutId) -> Layout {
+    self.layouts.layout(id)
   }
 
   pub fn intern_shape(&self, mut shape: Shape) -> ShapeId {
