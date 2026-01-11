@@ -24,6 +24,17 @@ use core::sync::atomic::AtomicU64;
 /// Bump this only for backwards-incompatible changes (layout/signature changes).
 pub const RT_NATIVE_ABI_VERSION: u32 = 0;
 
+/// Version of the native async coroutine ABI (`CoroutineVTable` layout/semantics).
+///
+/// This is intentionally separate from [`RT_NATIVE_ABI_VERSION`]: the native async ABI evolves with
+/// compiler/runtime codegen details (coroutine frame + promise layout metadata) and is validated at
+/// runtime via `CoroutineVTable::abi_version`.
+///
+/// Must match:
+/// - `runtime-native/include/runtime_native.h` (`RT_ASYNC_ABI_VERSION`)
+/// - `runtime-native/src/async_abi.rs` (`RT_ASYNC_ABI_VERSION`)
+pub const RT_ASYNC_ABI_VERSION: u32 = 1;
+
 // Pointer/usize assumptions (the ABI is currently 64-bit only).
 pub const RT_PTR_SIZE_BYTES: usize = 8;
 pub const RT_PTR_ALIGN_BYTES: usize = 8;

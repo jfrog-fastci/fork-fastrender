@@ -21,7 +21,7 @@ use crate::abi::RtShapeId;
 ///
 /// Generated code must set [`CoroutineVTable::abi_version`] to this value. The runtime validates the
 /// version before calling into compiler-provided function pointers.
-pub const RT_ASYNC_ABI_VERSION: u32 = 1;
+pub const RT_ASYNC_ABI_VERSION: u32 = runtime_native_abi::RT_ASYNC_ABI_VERSION;
 
 /// Promise state stored in [`PromiseHeader::state`].
 pub type PromiseState = u8;
