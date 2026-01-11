@@ -16,10 +16,28 @@ use std::collections::HashSet;
 impl<'a> Parser<'a> {
   // `scope` should be a newly created closure scope for this function.
   pub fn func_params(&mut self, ctx: ParseCtx) -> SyntaxResult<Vec<Node<ParamDecl>>> {
-    // `new.target` is syntactically allowed inside parameter initializers.
-    // Track it the same way as function bodies so `function f(x = new.target) {}` parses.
+    self.func_params_impl(ctx, true)
+  }
+
+  /// Parse arrow function parameter lists.
+  ///
+  /// Arrow functions do *not* introduce their own `new.target` binding; they can only reference
+  /// `new.target` when it is provided by an enclosing non-arrow function or class element.
+  pub fn arrow_func_params(&mut self, ctx: ParseCtx) -> SyntaxResult<Vec<Node<ParamDecl>>> {
+    self.func_params_impl(ctx, false)
+  }
+
+  fn func_params_impl(
+    &mut self,
+    ctx: ParseCtx,
+    introduces_new_target: bool,
+  ) -> SyntaxResult<Vec<Node<ParamDecl>>> {
+    // `new.target` is syntactically allowed inside parameter initializers when a `new.target`
+    // binding exists (functions and class elements).
     let prev_new_target_allowed = self.new_target_allowed;
-    self.new_target_allowed += 1;
+    if introduces_new_target {
+      self.new_target_allowed += 1;
+    }
     let res = (|| {
       self.require(TT::ParenthesisOpen)?;
       let mut parameters = Vec::new();

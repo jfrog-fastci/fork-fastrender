@@ -312,7 +312,7 @@ impl<'a> Parser<'a> {
         } else {
           None
         };
-        let params = p.func_params(ctx)?;
+        let params = p.arrow_func_params(ctx)?;
         // TypeScript: return type annotation (after params, before =>) - may be type predicate.
         let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
           Some(p.type_expr_or_predicate(ctx)?)
@@ -335,10 +335,8 @@ impl<'a> Parser<'a> {
         yield_expr_allowed: false,
       });
       let simple_params = Parser::is_simple_parameter_list(&parameters);
-      // Arrow functions have a lexical `new.target` binding and can therefore contain `new.target`
-      // expressions (which resolve to the surrounding `new.target` at runtime).
-      let prev_new_target_allowed = p.new_target_allowed;
-      p.new_target_allowed += 1;
+      // Arrow functions do not introduce a `new.target` binding; they can only reference
+      // `new.target` if one is provided by an enclosing non-arrow function or class element.
       let body_res = (|| -> SyntaxResult<_> {
         match p.peek().typ {
           TT::BraceOpen => {
@@ -370,7 +368,6 @@ impl<'a> Parser<'a> {
           }
         }
       })();
-      p.new_target_allowed = prev_new_target_allowed;
       let body = body_res?;
       if terminators.contains(&TT::Colon) && p.peek().typ != TT::Colon {
         return Err(

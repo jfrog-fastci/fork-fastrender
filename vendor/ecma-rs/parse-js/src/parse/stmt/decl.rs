@@ -369,7 +369,12 @@ impl<'a> Parser<'a> {
         let is_derived_class = extends.is_some();
         let prev_class_depth = p.class_is_derived.len();
         p.class_is_derived.push(is_derived_class);
-        let members = p.class_body_with_context(ctx, declare || abstract_);
+        // `abstract class` does not make all members abstract; only members explicitly marked
+        // `abstract` should carry `ClassMember.abstract_ = true`.
+        //
+        // However, in `declare class` declarations, methods often omit bodies (they're ambient), so
+        // we keep passing the `declare` flag as the "ambient" context for the class body parser.
+        let members = p.class_body_with_context(ctx, declare);
         p.class_is_derived.truncate(prev_class_depth);
         let members = members?;
         Ok(ClassDecl {

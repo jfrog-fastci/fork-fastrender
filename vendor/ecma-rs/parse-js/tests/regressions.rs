@@ -80,3 +80,5 @@ mod ts_module_blocks;
 mod ts_optional_call_type_args;
 #[path = "regressions/tuple_labels.rs"]
 mod tuple_labels;
+#[path = "regressions/abstract_class_members.rs"]
+mod abstract_class_members;
