@@ -3404,6 +3404,112 @@ fn multicol_break_before_recto_uses_root_page_progression() {
   );
 }
 
+#[test]
+fn multicol_break_after_verso_uses_root_page_progression() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 140px; margin: 20px; }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; direction: ltr; }
+          .a, .b { height: 60px; margin: 0; }
+          .a { break-after: verso; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="a">A</div>
+          <div class="b">B</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "expected verso break to start content on the next page without inserting a blank page"
+  );
+  let page1 = page_roots[0];
+  let page2 = page_roots[1];
+
+  assert!(find_text(page1, "A").is_some());
+  assert!(find_text(page1, "B").is_none());
+  assert!(find_text(page2, "A").is_none());
+  assert!(find_text(page2, "B").is_some());
+
+  let pos_b = find_text_position(page2, "B", (0.0, 0.0)).expect("B position");
+  assert!(
+    pos_b.1 <= page_content_start_y(page2) + 1.0,
+    "B should start near the top of the next column set/page (y={}, content_start={})",
+    pos_b.1,
+    page_content_start_y(page2)
+  );
+}
+
+#[test]
+fn multicol_break_before_verso_uses_root_page_progression() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { direction: rtl; }
+          @page { size: 200px 140px; margin: 20px; }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; direction: ltr; }
+          .a, .b { height: 60px; margin: 0; }
+          .b { break-before: verso; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="a">A</div>
+          <div class="b">B</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "expected verso break-before to start content on the next page without inserting a blank page"
+  );
+  let page1 = page_roots[0];
+  let page2 = page_roots[1];
+
+  assert!(find_text(page1, "A").is_some());
+  assert!(find_text(page1, "B").is_none());
+  assert!(find_text(page2, "A").is_none());
+  assert!(find_text(page2, "B").is_some());
+
+  let pos_b = find_text_position(page2, "B", (0.0, 0.0)).expect("B position");
+  assert!(
+    pos_b.1 <= page_content_start_y(page2) + 1.0,
+    "B should start near the top of the next column set/page (y={}, content_start={})",
+    pos_b.1,
+    page_content_start_y(page2)
+  );
+}
+
 fn multicol_balance_html(column_fill: &str) -> String {
   let mut lines = String::new();
   for idx in 0..36 {
