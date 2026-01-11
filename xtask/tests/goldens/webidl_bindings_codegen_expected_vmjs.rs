@@ -5,40 +5,8 @@
 
 pub mod window {
   use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
-  use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
+  use webidl_vm_js::bindings_runtime::{to_int32_f64, BindingsRuntime, DataPropertyAttributes};
   use webidl_vm_js::host_from_hooks;
-
-  #[allow(dead_code)]
-  fn to_int32_f64(n: f64) -> i32 {
-    if !n.is_finite() || n == 0.0 {
-      return 0;
-    }
-    let int = n.trunc();
-    let two32 = 4294967296.0;
-    let mut int32 = int % two32;
-    if int32 < 0.0 {
-      int32 += two32;
-    }
-    if int32 >= 2147483648.0 {
-      (int32 - two32) as i32
-    } else {
-      int32 as i32
-    }
-  }
-
-  #[allow(dead_code)]
-  fn to_uint32_f64(n: f64) -> u32 {
-    if !n.is_finite() || n == 0.0 {
-      return 0;
-    }
-    let int = n.trunc();
-    let two32 = 4294967296.0;
-    let mut out = int % two32;
-    if out < 0.0 {
-      out += two32;
-    }
-    out as u32
-  }
 
   #[allow(dead_code)]
   fn js_to_dict_foo_options(

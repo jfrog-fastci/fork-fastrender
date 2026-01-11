@@ -19,7 +19,7 @@ pub use dom_exception::DomExceptionClass;
 pub use dom_exception_vmjs::{dom_exception_from_rust, throw_dom_exception, DomExceptionClassVmJs};
 pub use generated::{install_window_bindings_vm_js, install_worker_bindings_vm_js};
 pub use generated_legacy::{install_window_bindings, install_worker_bindings};
-pub use host::{BindingValue, WebHostBindings};
+pub use host::{binding_value_to_js, BindingValue, WebHostBindings};
 pub use crate::js::vm_dom::{install_dom_bindings, install_dom_bindings_with_limits};
 
 #[cfg(test)]

@@ -152,11 +152,7 @@ where
       return Err(rt.throw_type_error("expected object for sequence"));
     }
     rt.with_stack_roots(&[v0], |rt| {
-      let iterator_key = rt.symbol_iterator()?;
-      let Some(method) = rt.get_method(host, v0, iterator_key)? else {
-        return Err(rt.throw_type_error("sequence: object is not iterable"));
-      };
-      let mut iterator_record = rt.get_iterator_from_method(host, v0, method)?;
+      let mut iterator_record = rt.get_iterator(host, v0)?;
       rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {
         let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
         while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
@@ -195,11 +191,7 @@ where
       return Err(rt.throw_type_error("expected object for FrozenArray"));
     }
     rt.with_stack_roots(&[v0], |rt| {
-      let iterator_key = rt.symbol_iterator()?;
-      let Some(method) = rt.get_method(host, v0, iterator_key)? else {
-        return Err(rt.throw_type_error("FrozenArray: object is not iterable"));
-      };
-      let mut iterator_record = rt.get_iterator_from_method(host, v0, method)?;
+      let mut iterator_record = rt.get_iterator(host, v0)?;
       rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {
         let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
         while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {
@@ -254,6 +246,56 @@ fn generated_bindings_convert_sequence_long_from_iterable() -> Result<(), VmErro
   rt.with_host_context(&mut host, |rt| {
     let this = rt.js_undefined();
     rt.call(func, this, &[iterable])
+  })?;
+
+  assert!(host.called);
+  assert_eq!(host.received.len(), 1);
+  let BindingValue::Sequence(values) = &host.received[0] else {
+    panic!("expected BindingValue::Sequence");
+  };
+  assert_eq!(values.len(), 2);
+  let BindingValue::Number(n0) = &values[0] else {
+    panic!("expected first element to be BindingValue::Number");
+  };
+  assert_eq!(*n0, 1.0);
+  let BindingValue::Number(n1) = &values[1] else {
+    panic!("expected second element to be BindingValue::Number");
+  };
+  assert_eq!(*n1, 2.0);
+  Ok(())
+}
+
+#[test]
+fn generated_bindings_convert_sequence_long_from_array() -> Result<(), VmError> {
+  // Stress rooting: force a GC before each allocation.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+  let mut host = SeqHost::new("takesSequence");
+
+  let func =
+    <VmJsRuntime as fastrender::js::webidl::WebIdlBindingsRuntime<SeqHost>>::create_function(
+      &mut rt,
+      "takesSequence",
+      1,
+      takes_sequence_wrapper::<SeqHost, VmJsRuntime>,
+    )?;
+  let _func_root = rt.heap_mut().add_root(func)?;
+
+  let array_obj = {
+    let mut scope = rt.heap_mut().scope();
+    scope.alloc_array(2)?
+  };
+  let array = Value::Object(array_obj);
+  rt.with_stack_roots(&[array], |rt| {
+    let key0 = rt.property_key_from_str("0")?;
+    webidl_js_runtime::JsRuntime::define_data_property(rt, array, key0, Value::Number(1.0), true)?;
+    let key1 = rt.property_key_from_str("1")?;
+    webidl_js_runtime::JsRuntime::define_data_property(rt, array, key1, Value::Number(2.0), true)?;
+    Ok(())
+  })?;
+
+  rt.with_host_context(&mut host, |rt| {
+    let this = rt.js_undefined();
+    rt.call(func, this, &[array])
   })?;
 
   assert!(host.called);

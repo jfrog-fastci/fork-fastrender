@@ -3722,8 +3722,8 @@ fn spawn_worker_with_factory_inner(
         }
       }
 
-      // `set_test_render_delay_ms` is process-global; ensure it is cleared when the worker exits so
-      // integration tests cannot leak configuration across runs.
+      // `set_test_render_delay_ms` is thread-local; ensure it is cleared when the worker exits so
+      // integration tests cannot leak configuration across runs (and so the thread is reusable).
       let _delay_guard = test_render_delay_ms.map(|delay| {
         crate::render_control::set_test_render_delay_ms(Some(delay));
         TestRenderDelayGuard

@@ -201,6 +201,26 @@ world:
 DOM bindings are currently implemented directly against `vm-js` realms in `src/js/legacy/vm_dom.rs`
 and are installed with `fastrender::js::install_dom_bindings(vm, heap, realm, ...)`.
 
+### Canonical binding/runtime helpers (avoid duplication)
+
+Generated bindings should stay as small and drift-free as possible: any non-trivial, spec-shaped
+algorithm should live in a shared runtime/helper layer (and be called from generated glue), rather
+than being duplicated in every generated module.
+
+In practice:
+
+- **Spec algorithms** (WebIDL conversions and overload resolution) live in `vendor/ecma-rs/webidl`
+  and are re-exported as `fastrender::js::webidl`.
+- **`vm-js` realm bindings runtime helpers** (property definition presets, small numeric helpers used
+  by generated glue) live in `crates/webidl-vm-js` (e.g.
+  `webidl_vm_js::bindings_runtime::to_int32_f64` / `to_uint32_f64`).
+- **Host return-value conversion** from `BindingValue` back to a JS value is provided once as
+  `fastrender::js::bindings::binding_value_to_js` (rather than emitting a copy per generated
+  module).
+- **Iterator acquisition** for list conversions (`sequence<T>` / `FrozenArray<T>`) should call
+  `WebIdlBindingsRuntime::get_iterator` so runtime-specific iterable handling (like Array
+  fast-paths in `vm-js`) is implemented once.
+
 ### Troubleshooting
 
 - If `src/js/webidl/bindings/generated_legacy.rs` fails to compile (common symptoms are Rust

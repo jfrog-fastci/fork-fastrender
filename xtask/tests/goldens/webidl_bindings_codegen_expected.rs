@@ -3,63 +3,16 @@
 // Source inputs:
 // - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)
 
-use super::host::{BindingValue, WebHostBindings};
+use super::host::{binding_value_to_js, BindingValue, WebHostBindings};
 
 pub mod window {
   use std::collections::BTreeMap;
 
-  use super::{BindingValue, WebHostBindings};
+  use super::{binding_value_to_js, BindingValue, WebHostBindings};
 
   use crate::js::webidl::conversions;
 
   use crate::js::webidl::DataPropertyAttributes;
-
-  fn binding_value_to_js<Host, R>(
-    rt: &mut R,
-    value: BindingValue<R::JsValue>,
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-  {
-    match value {
-      BindingValue::Undefined => Ok(rt.js_undefined()),
-      BindingValue::Null => Ok(rt.js_null()),
-      BindingValue::Bool(b) => Ok(rt.js_bool(b)),
-      BindingValue::Number(n) => Ok(rt.js_number(n)),
-      BindingValue::String(s) => rt.js_string(&s),
-      BindingValue::Object(v) => Ok(v),
-      BindingValue::Callback(_) => {
-        Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
-      }
-      BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
-        let obj = rt.create_array(values.len())?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(
-            obj,
-            &key,
-            value,
-            DataPropertyAttributes::new(true, true, true),
-          )?;
-        }
-        Ok(obj)
-      }
-      BindingValue::Dictionary(map) => {
-        let obj = rt.create_object()?;
-        for (key, item) in map {
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(
-            obj,
-            &key,
-            value,
-            DataPropertyAttributes::new(true, true, true),
-          )?;
-        }
-        Ok(obj)
-      }
-    }
-  }
 
   #[allow(dead_code, unused_variables)]
   fn js_to_dict_foo_options<Host, R>(

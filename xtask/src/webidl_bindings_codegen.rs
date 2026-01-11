@@ -1355,7 +1355,7 @@ fn generate_bindings_module_unformatted(
     "// - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)\n",
   );
   out.push_str("\n");
-  out.push_str("use super::host::{BindingValue, WebHostBindings};\n\n");
+  out.push_str("use super::host::{binding_value_to_js, BindingValue, WebHostBindings};\n\n");
 
   let targets: &[ExposureTarget] = match exposure_target {
     ExposureTarget::All => &[ExposureTarget::Window, ExposureTarget::Worker],
@@ -1469,46 +1469,9 @@ fn generate_bindings_module_for_target_unformatted(
   let mut out = String::new();
 
   out.push_str("use std::collections::BTreeMap;\n\n");
-  out.push_str("use super::{BindingValue, WebHostBindings};\n\n");
+  out.push_str("use super::{binding_value_to_js, BindingValue, WebHostBindings};\n\n");
   out.push_str("use crate::js::webidl::conversions;\n\n");
   out.push_str("use crate::js::webidl::DataPropertyAttributes;\n\n");
-
-  out.push_str("fn binding_value_to_js<Host, R>(\n");
-  out.push_str("  rt: &mut R,\n");
-  out.push_str("  value: BindingValue<R::JsValue>,\n");
-  out.push_str(") -> Result<R::JsValue, R::Error>\n");
-  out.push_str("where\n");
-  out.push_str("  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n");
-  out.push_str("{\n");
-  out.push_str("  match value {\n");
-  out.push_str("    BindingValue::Undefined => Ok(rt.js_undefined()),\n");
-  out.push_str("    BindingValue::Null => Ok(rt.js_null()),\n");
-  out.push_str("    BindingValue::Bool(b) => Ok(rt.js_bool(b)),\n");
-  out.push_str("    BindingValue::Number(n) => Ok(rt.js_number(n)),\n");
-  out.push_str("    BindingValue::String(s) => rt.js_string(&s),\n");
-  out.push_str("    BindingValue::Object(v) => Ok(v),\n");
-  out.push_str(
-    "    BindingValue::Callback(_) => Err(rt.throw_type_error(\"cannot return callback handles to JavaScript\")),\n",
-  );
-  out.push_str("    BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {\n");
-  out.push_str("      let obj = rt.create_array(values.len())?;\n");
-  out.push_str("      for (idx, item) in values.into_iter().enumerate() {\n");
-  out.push_str("        let key = idx.to_string();\n");
-  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
-  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
-  out.push_str("      }\n");
-  out.push_str("      Ok(obj)\n");
-  out.push_str("    }\n");
-  out.push_str("    BindingValue::Dictionary(map) => {\n");
-  out.push_str("      let obj = rt.create_object()?;\n");
-  out.push_str("      for (key, item) in map {\n");
-  out.push_str("        let value = binding_value_to_js::<Host, R>(rt, item)?;\n");
-  out.push_str("        rt.define_data_property_str(obj, &key, value, DataPropertyAttributes::new(true, true, true))?;\n");
-  out.push_str("      }\n");
-  out.push_str("      Ok(obj)\n");
-  out.push_str("    }\n");
-  out.push_str("  }\n");
-  out.push_str("}\n\n");
 
   // Dictionary conversion helpers (sorted).
   for dict_name in &referenced_dicts {
@@ -1831,50 +1794,8 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
     .any(|iface| !iface.attributes.is_empty() || !iface.static_attributes.is_empty());
 
   out.push_str("use vm_js::{GcObject, Heap, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks};\n");
-  if needs_accessor_property_attributes {
-    out.push_str(
-      "use webidl_vm_js::bindings_runtime::{AccessorPropertyAttributes, BindingsRuntime, DataPropertyAttributes};\n",
-    );
-  } else {
-    out.push_str("use webidl_vm_js::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};\n");
-  }
+  out.push_str("use webidl_vm_js::bindings_runtime::{AccessorPropertyAttributes, BindingsRuntime, DataPropertyAttributes, to_int32_f64, to_uint32_f64};\n");
   out.push_str("use webidl_vm_js::host_from_hooks;\n\n");
-
-  out.push_str(
-    r#"#[allow(dead_code)]
-fn to_int32_f64(n: f64) -> i32 {
-  if !n.is_finite() || n == 0.0 {
-    return 0;
-  }
-  let int = n.trunc();
-  let two32 = 4294967296.0;
-  let mut int32 = int % two32;
-  if int32 < 0.0 {
-    int32 += two32;
-  }
-  if int32 >= 2147483648.0 {
-    (int32 - two32) as i32
-  } else {
-    int32 as i32
-  }
-}
-
-#[allow(dead_code)]
-fn to_uint32_f64(n: f64) -> u32 {
-  if !n.is_finite() || n == 0.0 {
-    return 0;
-  }
-  let int = n.trunc();
-  let two32 = 4294967296.0;
-  let mut out = int % two32;
-  if out < 0.0 {
-    out += two32;
-  }
-  out as u32
-}
-
-"#,
-  );
 
   // Dictionary conversion helpers (sorted).
   for dict_name in &referenced_dicts {
@@ -2087,6 +2008,30 @@ fn to_uint32_f64(n: f64) -> u32 {
 
   out.push_str("  Ok(())\n");
   out.push_str("}\n");
+
+  // Avoid unused-import warnings in generated modules that don't use all helper symbols.
+  let needs_to_int32 = out.contains("to_int32_f64(");
+  let needs_to_uint32 = out.contains("to_uint32_f64(");
+  let mut imports: Vec<&str> = Vec::new();
+  if needs_accessor_property_attributes {
+    imports.push("AccessorPropertyAttributes");
+  }
+  imports.push("BindingsRuntime");
+  imports.push("DataPropertyAttributes");
+  if needs_to_int32 {
+    imports.push("to_int32_f64");
+  }
+  if needs_to_uint32 {
+    imports.push("to_uint32_f64");
+  }
+  let import_line = format!(
+    "use webidl_vm_js::bindings_runtime::{{{}}};\n",
+    imports.join(", ")
+  );
+  out = out.replace(
+    "use webidl_vm_js::bindings_runtime::{AccessorPropertyAttributes, BindingsRuntime, DataPropertyAttributes, to_int32_f64, to_uint32_f64};\n",
+    &import_line,
+  );
 
   Ok(out)
 }
@@ -3342,20 +3287,16 @@ fn emit_iterable_list_conversion_expr_ir(
   let elem_expr =
     emit_conversion_expr_ir_inner(resolved, type_ctx, elem_ty, "next", IrConversionState::default())?;
   Ok(format!(
-    r#"{{
-  if !rt.is_object({value_ident}) {{
-    return Err(rt.throw_type_error("expected object for {kind_label}"));
-  }}
-  rt.with_stack_roots(&[{value_ident}], |rt| {{
-    let iterator_key = rt.symbol_iterator()?;
-    let Some(method) = rt.get_method(host, {value_ident}, iterator_key)? else {{
-      return Err(rt.throw_type_error("{kind_label}: object is not iterable"));
-    }};
-    let mut iterator_record = rt.get_iterator_from_method(host, {value_ident}, method)?;
-    rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {{
-      let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
-      while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {{
-        if values.len() >= rt.limits().max_sequence_length {{
+     r#"{{
+   if !rt.is_object({value_ident}) {{
+     return Err(rt.throw_type_error("expected object for {kind_label}"));
+   }}
+   rt.with_stack_roots(&[{value_ident}], |rt| {{
+     let mut iterator_record = rt.get_iterator(host, {value_ident})?;
+     rt.with_stack_roots(&[iterator_record.iterator, iterator_record.next_method], |rt| {{
+       let mut values: Vec<BindingValue<R::JsValue>> = Vec::new();
+       while let Some(next) = rt.iterator_step_value(host, &mut iterator_record)? {{
+         if values.len() >= rt.limits().max_sequence_length {{
           return Err(rt.throw_range_error("{kind_label} exceeds maximum length"));
         }}
         let converted = rt.with_stack_roots(&[next], |rt| Ok({elem_expr}))?;

@@ -61,6 +61,44 @@ impl BindingValue {
   }
 }
 
+/// Convert an ECMAScript `Number` to `i32` using the `ToInt32` algorithm.
+///
+/// This is used by generated bindings when converting WebIDL integer types from `f64`.
+#[inline]
+pub fn to_int32_f64(n: f64) -> i32 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  let int = n.trunc();
+  let two32 = 4294967296.0;
+  let mut int32 = int % two32;
+  if int32 < 0.0 {
+    int32 += two32;
+  }
+  if int32 >= 2147483648.0 {
+    (int32 - two32) as i32
+  } else {
+    int32 as i32
+  }
+}
+
+/// Convert an ECMAScript `Number` to `u32` using the `ToUint32` algorithm.
+///
+/// This is used by generated bindings when converting WebIDL integer types from `f64`.
+#[inline]
+pub fn to_uint32_f64(n: f64) -> u32 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  let int = n.trunc();
+  let two32 = 4294967296.0;
+  let mut out = int % two32;
+  if out < 0.0 {
+    out += two32;
+  }
+  out as u32
+}
+
 /// Attributes for a data property definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DataPropertyAttributes {

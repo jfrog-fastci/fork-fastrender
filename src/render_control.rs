@@ -44,13 +44,19 @@ use std::sync::atomic::AtomicU64;
 // 1) explicit override set via `set_test_render_delay_ms`
 // 2) cached env var `FASTR_TEST_RENDER_DELAY_MS`
 #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
-static TEST_RENDER_DELAY_OVERRIDE_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+thread_local! {
+  // Thread-local so unit tests can safely tweak the delay without affecting other concurrently
+  // executing tests (the Rust test harness reuses worker threads).
+  //
+  // Keep the `u64::MAX` sentinel to mirror the historical AtomicU64 implementation.
+  static TEST_RENDER_DELAY_OVERRIDE_MS: Cell<u64> = const { Cell::new(u64::MAX) };
+}
 #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
 static TEST_RENDER_DELAY_ENV_CACHE_MS: AtomicU64 = AtomicU64::new(u64::MAX);
 
 #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
 fn resolved_test_render_delay_ms() -> u64 {
-  let override_ms = TEST_RENDER_DELAY_OVERRIDE_MS.load(Ordering::Relaxed);
+  let override_ms = TEST_RENDER_DELAY_OVERRIDE_MS.with(|cell| cell.get());
   if override_ms != u64::MAX {
     return override_ms;
   }
@@ -84,18 +90,18 @@ pub fn test_render_delay_ms() -> u64 {
   }
 }
 
-/// Override the global test render delay, in milliseconds.
+/// Override the test render delay for the current thread, in milliseconds.
 ///
-/// This affects *all* threads that call `RenderDeadline::check` while compiled with
-/// `debug_assertions`, `cfg(test)` or `feature = "browser_ui"`.
+/// This affects only the current thread. Keeping it thread-local avoids flaky unit tests when the
+/// Rust test harness runs multiple tests concurrently.
 #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
 pub fn set_test_render_delay_ms(ms: Option<u64>) {
   match ms {
-    Some(ms) => TEST_RENDER_DELAY_OVERRIDE_MS.store(ms, Ordering::Relaxed),
+    Some(ms) => TEST_RENDER_DELAY_OVERRIDE_MS.with(|cell| cell.set(ms)),
     None => {
       // Clear the override and reset the env cache so a subsequent call can observe changes to the
       // process environment (useful in tests that flip the env var).
-      TEST_RENDER_DELAY_OVERRIDE_MS.store(u64::MAX, Ordering::Relaxed);
+      TEST_RENDER_DELAY_OVERRIDE_MS.with(|cell| cell.set(u64::MAX));
       TEST_RENDER_DELAY_ENV_CACHE_MS.store(u64::MAX, Ordering::Relaxed);
     }
   }

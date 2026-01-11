@@ -650,12 +650,20 @@ impl BrowserTabHost {
     let NodeKind::Element { attributes, .. } = &dom.node(link).kind else {
       return true;
     };
-    let media_attr = attributes
+    let Some(media_attr) = attributes
       .iter()
       .find(|(name, _)| name.eq_ignore_ascii_case("media"))
       .map(|(_, value)| value.as_str())
-      .unwrap_or_default();
-    let queries = MediaQuery::parse_list(media_attr).unwrap_or_default();
+    else {
+      return true;
+    };
+    let trimmed = super::trim_ascii_whitespace(media_attr);
+    if trimmed.is_empty() {
+      return true;
+    }
+    let Ok(queries) = MediaQuery::parse_list(trimmed) else {
+      return false;
+    };
     self
       .stylesheet_media_context
       .evaluate_list_with_cache(&queries, Some(&mut self.stylesheet_media_query_cache))
@@ -831,6 +839,26 @@ impl BrowserTabHost {
     // Skip if we already started (or completed) a load for this node.
     if self.stylesheet_keys_by_node.contains_key(&link_node_id) {
       return Ok(());
+    }
+
+    // HTML: stylesheets with non-matching `media` attributes are not "script-blocking".
+    //
+    // Avoid wedging parser-blocking scripts behind `<link rel=stylesheet media="print">` when
+    // rendering for screen media. These stylesheets also do not affect our current rendering and
+    // stylesheet import parsing logic, so skip fetching entirely.
+    if let Ok(Some(media_attr)) = self.document.dom().get_attribute(link_node_id, "media") {
+      let trimmed = super::trim_ascii_whitespace(media_attr);
+      if !trimmed.is_empty() {
+        let matches = match MediaQuery::parse_list(trimmed) {
+          Ok(list) => self
+            .stylesheet_media_context
+            .evaluate_list_with_cache(&list, Some(&mut self.stylesheet_media_query_cache)),
+          Err(_) => false,
+        };
+        if !matches {
+          return Ok(());
+        }
+      }
     }
 
     if self.script_blocking_stylesheets.len() >= self.js_execution_options.max_pending_blocking_stylesheets {
@@ -8560,11 +8588,13 @@ html, body { margin: 0; padding: 0; }
   #[test]
   fn from_html_with_document_url_timeout_spans_delayed_script_triggered_navigation() -> Result<()> {
     use crate::error::{RenderError, RenderStage};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    let timeout = Duration::from_millis(200);
 
     struct SlowStyleFetcher {
       url: String,
-      delay: Duration,
     }
 
     impl ResourceFetcher for SlowStyleFetcher {
@@ -8576,7 +8606,6 @@ html, body { margin: 0; padding: 0; }
         if req.url != self.url {
           return Err(Error::Other(format!("unexpected fetch url {}", req.url)));
         }
-        std::thread::sleep(self.delay);
         Ok(FetchedResource::with_final_url(
           b"body { color: red; }".to_vec(),
           Some("text/css".to_string()),
@@ -8600,9 +8629,6 @@ html, body { margin: 0; padding: 0; }
         _event_loop: &mut EventLoop<BrowserTabHost>,
       ) -> Result<()> {
         if script_text == "NAVIGATE" && self.pending.is_none() {
-          // Sleep long enough that the overall from_html deadline expires *after* the stylesheet load
-          // unblocks this parser-inserted script.
-          std::thread::sleep(Duration::from_millis(60));
           self.pending = Some(LocationNavigationRequest {
             url: self.target_url.clone(),
             replace: false,
@@ -8628,7 +8654,13 @@ html, body { margin: 0; padding: 0; }
     }
 
     let document_url = "https://example.com/index.html";
-    let style_url = "https://example.com/style.css".to_string();
+    // Use a unique URL so any shared resource caches don't make this test flaky when running the
+    // full suite (other tests fetch the same `https://example.com/style.css`).
+    static NEXT_STYLE_URL_ID: AtomicUsize = AtomicUsize::new(0);
+    let style_url = format!(
+      "https://example.com/style-{}.css",
+      NEXT_STYLE_URL_ID.fetch_add(1, Ordering::Relaxed)
+    );
     let target_url = "https://example.com/target.html".to_string();
     let html = format!(
       "<!doctype html><html><head><link rel=\"stylesheet\" href=\"{style_url}\"></head><body><script>NAVIGATE</script></body></html>"
@@ -8636,7 +8668,6 @@ html, body { margin: 0; padding: 0; }
 
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(SlowStyleFetcher {
       url: style_url,
-      delay: Duration::from_millis(30),
     });
     let executor = SleepyNavigateExecutor {
       target_url: target_url.clone(),
@@ -8646,7 +8677,7 @@ html, body { margin: 0; padding: 0; }
     let mut tab = BrowserTab::from_html_with_document_url_and_fetcher(
       &html,
       document_url,
-      RenderOptions::default().with_timeout(Some(Duration::from_millis(70))),
+      RenderOptions::default().with_timeout(Some(timeout)),
       executor,
       fetcher,
     )?;
@@ -8677,6 +8708,12 @@ html, body { margin: 0; padding: 0; }
       tab.host.pending_navigation.is_some(),
       "expected delayed script to request a navigation"
     );
+
+    // Ensure the original from_html deadline expires *after* the delayed script has requested a
+    // navigation, so the timeout is attributed to the navigation commit (and not to parser or task
+    // execution timing, which can become nondeterministic when the full unit test suite is heavily
+    // loaded).
+    std::thread::sleep(timeout + Duration::from_millis(50));
 
     let err = match tab.commit_pending_navigation() {
       Ok(_) => panic!("expected from_html deadline to span delayed script-triggered navigation"),

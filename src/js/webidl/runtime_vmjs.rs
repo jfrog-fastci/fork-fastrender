@@ -1090,7 +1090,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
       return Err(self.throw_type_error("GetIterator: expected object"));
     };
 
-    self.with_stack_roots(&[iterable], |rt| {
+    self.with_stack_roots::<IteratorRecord<Self::JsValue>, _>(&[iterable], |rt| {
       // Minimal Array fast-path: `vm-js` does not yet expose `%Array.prototype%[@@iterator]` on the
       // intrinsic graph, but arrays should still be accepted as iterable inputs for `sequence<T>`.
       if let Ok(intr) = rt.intrinsics() {
@@ -1790,17 +1790,61 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     host: &mut Host,
     iterable: Self::JsValue,
   ) -> Result<IteratorRecord<Self::JsValue>, Self::Error> {
-    let iterator_key =
-      <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_iterator(self)?;
-    let Some(method) =
-      <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get_method(self, iterable, iterator_key)?
-    else {
+    let Value::Object(obj) = iterable else {
       return Err(<webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::throw_type_error(
         self,
-        "GetIterator: value is not iterable",
+        "GetIterator: expected object",
       ));
     };
-    self.get_iterator_from_method(host, iterable, method)
+
+    <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::with_stack_roots(
+      self,
+      &[iterable],
+      |rt| {
+      // Minimal Array fast-path: `vm-js` does not yet expose `%Array.prototype%[@@iterator]` for
+      // heap-only runtimes, but arrays should still be accepted as iterable inputs for `sequence<T>`.
+      //
+      // Detect arrays by their non-enumerable, non-configurable own `length` data property (the
+      // shape created by `vm-js` array exotic objects).
+      let length_key =
+        <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::property_key_from_str(
+          rt, "length",
+        )?;
+      if let Ok(Some(desc)) = rt.heap().object_get_own_property(obj, &length_key) {
+        if !desc.enumerable && !desc.configurable {
+          if let PropertyKind::Data {
+            value: Value::Number(len),
+            writable: true,
+          } = desc.kind
+          {
+            if len.is_finite() && len >= 0.0 && len.fract() == 0.0 && len <= (u32::MAX as f64) {
+              return Ok(IteratorRecord {
+                iterator: iterable,
+                next_method: Value::Undefined,
+                done: false,
+                kind: IteratorRecordKind::Array {
+                  array: iterable,
+                  next_index: 0,
+                  length: len as u32,
+                },
+              });
+            }
+          }
+        }
+      }
+
+      let iterator_key = <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::symbol_iterator(rt)?;
+      let Some(method) =
+        <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get_method(rt, iterable, iterator_key)?
+      else {
+        return Err(<webidl_js_runtime::VmJsRuntime as webidl_js_runtime::WebIdlJsRuntime>::throw_type_error(
+          rt,
+          "GetIterator: value is not iterable",
+        ));
+      };
+      rt.get_iterator_from_method(host, iterable, method)
+    },
+    )
   }
 
   fn get_iterator_from_method(
@@ -1826,18 +1870,50 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for webidl_js_runtime::VmJsRunti
     _host: &mut Host,
     iterator_record: &mut IteratorRecord<Self::JsValue>,
   ) -> Result<Option<Self::JsValue>, Self::Error> {
-    // Bridge through the legacy iterator record type.
-    let mut record = webidl_js_runtime::IteratorRecord {
-      iterator: iterator_record.iterator,
-      next_method: iterator_record.next_method,
-      done: iterator_record.done,
-    };
-    let out =
-      <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::iterator_step_value(
-        self, &mut record,
-      )?;
-    iterator_record.done = record.done;
-    Ok(out)
+    if iterator_record.done {
+      return Ok(None);
+    }
+
+    match &mut iterator_record.kind {
+      IteratorRecordKind::Array {
+        array,
+        next_index,
+        length,
+      } => {
+        if *next_index >= *length {
+          iterator_record.done = true;
+          return Ok(None);
+        }
+        let idx = *next_index;
+        *next_index = next_index.saturating_add(1);
+        <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::with_stack_roots(
+          self,
+          &[*array],
+          |rt| {
+            let key =
+              <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::property_key_from_u32(
+                rt, idx,
+              )?;
+            let value = <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::get(rt, *array, key)?;
+            Ok(Some(value))
+          },
+        )
+      }
+      IteratorRecordKind::Protocol => {
+        // Bridge through the legacy iterator record type.
+        let mut record = webidl_js_runtime::IteratorRecord {
+          iterator: iterator_record.iterator,
+          next_method: iterator_record.next_method,
+          done: iterator_record.done,
+        };
+        let out =
+          <webidl_js_runtime::VmJsRuntime as webidl_js_runtime::JsRuntime>::iterator_step_value(
+            self, &mut record,
+          )?;
+        iterator_record.done = record.done;
+        Ok(out)
+      }
+    }
   }
 
   fn create_object(&mut self) -> Result<Self::JsValue, Self::Error> {

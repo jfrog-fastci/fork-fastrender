@@ -3,63 +3,16 @@
 // Source inputs:
 // - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)
 
-use super::host::{BindingValue, WebHostBindings};
+use super::host::{binding_value_to_js, BindingValue, WebHostBindings};
 
 pub mod window {
   use std::collections::BTreeMap;
 
-  use super::{BindingValue, WebHostBindings};
+  use super::{binding_value_to_js, BindingValue, WebHostBindings};
 
   use crate::js::webidl::conversions;
 
   use crate::js::webidl::DataPropertyAttributes;
-
-  fn binding_value_to_js<Host, R>(
-    rt: &mut R,
-    value: BindingValue<R::JsValue>,
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-  {
-    match value {
-      BindingValue::Undefined => Ok(rt.js_undefined()),
-      BindingValue::Null => Ok(rt.js_null()),
-      BindingValue::Bool(b) => Ok(rt.js_bool(b)),
-      BindingValue::Number(n) => Ok(rt.js_number(n)),
-      BindingValue::String(s) => rt.js_string(&s),
-      BindingValue::Object(v) => Ok(v),
-      BindingValue::Callback(_) => {
-        Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
-      }
-      BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
-        let obj = rt.create_array(values.len())?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(
-            obj,
-            &key,
-            value,
-            DataPropertyAttributes::new(true, true, true),
-          )?;
-        }
-        Ok(obj)
-      }
-      BindingValue::Dictionary(map) => {
-        let obj = rt.create_object()?;
-        for (key, item) in map {
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(
-            obj,
-            &key,
-            value,
-            DataPropertyAttributes::new(true, true, true),
-          )?;
-        }
-        Ok(obj)
-      }
-    }
-  }
 
   #[allow(dead_code, unused_variables)]
   fn js_to_dict_add_event_listener_options<Host, R>(
@@ -470,24 +423,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -512,6 +447,24 @@ pub mod window {
     };
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt.js_undefined())
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -1472,58 +1425,11 @@ pub mod window {
 pub mod worker {
   use std::collections::BTreeMap;
 
-  use super::{BindingValue, WebHostBindings};
+  use super::{binding_value_to_js, BindingValue, WebHostBindings};
 
   use crate::js::webidl::conversions;
 
   use crate::js::webidl::DataPropertyAttributes;
-
-  fn binding_value_to_js<Host, R>(
-    rt: &mut R,
-    value: BindingValue<R::JsValue>,
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-  {
-    match value {
-      BindingValue::Undefined => Ok(rt.js_undefined()),
-      BindingValue::Null => Ok(rt.js_null()),
-      BindingValue::Bool(b) => Ok(rt.js_bool(b)),
-      BindingValue::Number(n) => Ok(rt.js_number(n)),
-      BindingValue::String(s) => rt.js_string(&s),
-      BindingValue::Object(v) => Ok(v),
-      BindingValue::Callback(_) => {
-        Err(rt.throw_type_error("cannot return callback handles to JavaScript"))
-      }
-      BindingValue::Sequence(values) | BindingValue::FrozenArray(values) => {
-        let obj = rt.create_array(values.len())?;
-        for (idx, item) in values.into_iter().enumerate() {
-          let key = idx.to_string();
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(
-            obj,
-            &key,
-            value,
-            DataPropertyAttributes::new(true, true, true),
-          )?;
-        }
-        Ok(obj)
-      }
-      BindingValue::Dictionary(map) => {
-        let obj = rt.create_object()?;
-        for (key, item) in map {
-          let value = binding_value_to_js::<Host, R>(rt, item)?;
-          rt.define_data_property_str(
-            obj,
-            &key,
-            value,
-            DataPropertyAttributes::new(true, true, true),
-          )?;
-        }
-        Ok(obj)
-      }
-    }
-  }
 
   #[allow(dead_code, unused_variables)]
   fn js_to_dict_add_event_listener_options<Host, R>(
@@ -1934,24 +1840,6 @@ pub mod worker {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1976,6 +1864,24 @@ pub mod worker {
     };
     host.set_attribute(rt, Some(this), "URL", "href", converted)?;
     Ok(rt.js_undefined())
+  }
+
+  #[allow(dead_code)]
+  fn u_r_l_get_attribute_origin<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt.is_object(this) {
+      return Err(rt.throw_type_error("Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
