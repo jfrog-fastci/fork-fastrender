@@ -15,9 +15,10 @@
 //! isolated RNG stream.
 
 use crate::js::window_realm::WindowRealmUserData;
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use vm_js::{
-  GcObject, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError,
-  VmHost, VmHostHooks,
+  new_promise_capability_with_host_and_hooks, new_type_error_object, GcObject, Heap, PromiseCapability,
+  PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
 const MAX_GET_RANDOM_VALUES_BYTES: usize = 65_536;
@@ -251,6 +252,147 @@ fn subtle_unimplemented_native(
   Err(VmError::TypeError("Unimplemented"))
 }
 
+fn subtle_digest_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // WebCrypto spec shape: always return a Promise (resolve/reject immediately for this MVP
+  // implementation).
+  let cap: PromiseCapability =
+    new_promise_capability_with_host_and_hooks(vm, scope, &mut *host, &mut *hooks)?;
+
+  // `NewPromiseCapability` requires intrinsics, so this should always be available if we reached
+  // this point.
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  // Root the Promise capability components while we allocate strings / ArrayBuffers below.
+  let mut scope = scope.reborrow();
+  scope.push_root(cap.promise)?;
+  scope.push_root(cap.resolve)?;
+  scope.push_root(cap.reject)?;
+
+  let algorithm = args.get(0).copied().unwrap_or(Value::Undefined);
+  let data = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  let algorithm_name: Option<String> = match algorithm {
+    Value::String(s) => Some(scope.heap().get_string(s)?.to_utf8_lossy()),
+    Value::Object(obj) => {
+      scope.push_root(Value::Object(obj))?;
+      let name_key_s = scope.alloc_string("name")?;
+      scope.push_root(Value::String(name_key_s))?;
+      let name_key = PropertyKey::from_string(name_key_s);
+      match scope
+        .heap()
+        .object_get_own_data_property_value(obj, &name_key)?
+        .unwrap_or(Value::Undefined)
+      {
+        Value::String(s) => Some(scope.heap().get_string(s)?.to_utf8_lossy()),
+        _ => None,
+      }
+    }
+    _ => None,
+  };
+
+  enum DigestAlg {
+    Sha256,
+    Sha384,
+    Sha512,
+  }
+
+  let digest_alg: Option<DigestAlg> = algorithm_name.as_deref().and_then(|name| {
+    let name = name.trim();
+    if name.eq_ignore_ascii_case("SHA-256") || name.eq_ignore_ascii_case("SHA256") {
+      Some(DigestAlg::Sha256)
+    } else if name.eq_ignore_ascii_case("SHA-384") || name.eq_ignore_ascii_case("SHA384") {
+      Some(DigestAlg::Sha384)
+    } else if name.eq_ignore_ascii_case("SHA-512") || name.eq_ignore_ascii_case("SHA512") {
+      Some(DigestAlg::Sha512)
+    } else {
+      None
+    }
+  });
+
+  let data_bytes: Option<Vec<u8>> = match data {
+    Value::Object(obj) => {
+      scope.push_root(Value::Object(obj))?;
+      let heap = scope.heap();
+      if heap.is_array_buffer_object(obj) {
+        Some(heap.array_buffer_data(obj)?.to_vec())
+      } else if heap.is_uint8_array_object(obj) {
+        Some(heap.uint8_array_data(obj)?.to_vec())
+      } else {
+        None
+      }
+    }
+    _ => None,
+  };
+
+  let result: Result<Vec<u8>, Value> = match (algorithm_name.as_deref(), digest_alg, data_bytes) {
+    (Some(_name), Some(alg), Some(data)) => {
+      let digest = match alg {
+        DigestAlg::Sha256 => Sha256::digest(&data).to_vec(),
+        DigestAlg::Sha384 => Sha384::digest(&data).to_vec(),
+        DigestAlg::Sha512 => Sha512::digest(&data).to_vec(),
+      };
+      Ok(digest)
+    }
+    (None, _, _) => Err(new_type_error_object(
+      &mut scope,
+      &intr,
+      "crypto.subtle.digest expects an algorithm name string",
+    )?),
+    (Some(name), None, _) => {
+      let message = format!("Unsupported digest algorithm: {name}");
+      Err(create_dom_exception_like(
+        &mut scope,
+        "NotSupportedError",
+        &message,
+      )?)
+    }
+    (_, _, None) => Err(new_type_error_object(
+      &mut scope,
+      &intr,
+      "crypto.subtle.digest expects an ArrayBuffer or Uint8Array",
+    )?),
+  };
+
+  match result {
+    Ok(digest) => {
+      let ab = scope.alloc_array_buffer_from_u8_vec(digest)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        &mut scope,
+        &mut *hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[Value::Object(ab)],
+      )?;
+    }
+    Err(err_value) => {
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        &mut scope,
+        &mut *hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
 pub(crate) fn install_window_crypto_bindings(
   vm: &mut Vm,
   realm: &Realm,
@@ -348,6 +490,7 @@ pub(crate) fn install_window_crypto_bindings(
   scope.push_root(Value::Object(subtle_obj))?;
 
   let subtle_unimpl_id = vm.register_native_call(subtle_unimplemented_native)?;
+  let subtle_digest_id = vm.register_native_call(subtle_digest_native)?;
   for (name, arity) in [
     ("encrypt", 3),
     ("decrypt", 3),
@@ -364,7 +507,12 @@ pub(crate) fn install_window_crypto_bindings(
   ] {
     let name_s = scope.alloc_string(name)?;
     scope.push_root(Value::String(name_s))?;
-    let func = scope.alloc_native_function(subtle_unimpl_id, None, name_s, arity)?;
+    let call_id = if name == "digest" {
+      subtle_digest_id
+    } else {
+      subtle_unimpl_id
+    };
+    let func = scope.alloc_native_function(call_id, None, name_s, arity)?;
     scope.heap_mut().object_set_prototype(func, Some(func_proto))?;
     set_own_data_prop(&mut scope, subtle_obj, name, Value::Object(func), /* writable */ true)?;
   }

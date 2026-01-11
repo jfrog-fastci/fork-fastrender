@@ -83,6 +83,7 @@ mod js_url_bindings;
 mod js_webidl_binding_value_array_return;
 mod js_webidl_sequence_conversion;
 mod js_webidl_window_alert;
+mod vm_js_crypto_subtle_digest;
 mod vm_js_define_own_property_smoke;
 mod vm_js_dom_bindings;
 mod vm_js_dom_exception_smoke;
