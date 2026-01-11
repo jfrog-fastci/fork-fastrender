@@ -79,8 +79,12 @@ fn elf64_le_has_wx_load_segment(bytes: &[u8]) -> Result<bool> {
 /// can require runtime relocations which often triggers `DT_TEXTREL` warnings.
 #[test]
 fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
-  if !command_works("clang-18") {
-    eprintln!("skipping: clang-18 not found in PATH");
+  if !clang_available() {
+    eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
+    return Ok(());
+  }
+  if !lld_available() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
     return Ok(());
   }
 
@@ -133,8 +137,12 @@ fn link_preserves_llvm_stackmaps_without_reloc_section() -> Result<()> {
 
 #[test]
 fn link_pie_without_textrel_keeps_llvm_stackmaps() -> Result<()> {
-  if !command_works("clang-18") {
-    eprintln!("skipping: clang-18 not found in PATH");
+  if !clang_available() {
+    eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
+    return Ok(());
+  }
+  if !lld_available() {
+    eprintln!("skipping: lld not found in PATH (expected `ld.lld-18` or `ld.lld`)");
     return Ok(());
   }
 
@@ -184,8 +192,8 @@ fn link_pie_without_textrel_keeps_llvm_stackmaps() -> Result<()> {
 
 #[test]
 fn link_object_to_executable_keeps_stackmaps_under_gc_sections() -> Result<()> {
-    if !command_works("clang-18") {
-        eprintln!("skipping: clang-18 not found in PATH");
+    if !clang_available() {
+        eprintln!("skipping: clang not found in PATH (expected `clang-18` or `clang`)");
         return Ok(());
     }
 
@@ -212,6 +220,14 @@ fn command_works(cmd: &str) -> bool {
     .output()
     .map(|o| o.status.success())
     .unwrap_or(false)
+}
+
+fn clang_available() -> bool {
+  command_works("clang-18") || command_works("clang")
+}
+
+fn lld_available() -> bool {
+  command_works("ld.lld-18") || command_works("ld.lld")
 }
 
 fn run(cmd: &mut Command) -> Result<()> {
