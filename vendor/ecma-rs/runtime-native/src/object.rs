@@ -71,21 +71,23 @@ impl Header {
 /// Convert a GC-visible object pointer to its header pointer.
 ///
 /// # Invariant
-/// `obj` points to the start of the object *payload* (immediately after the
-/// [`Header`]). This is the pointer returned to / used by generated code.
+/// `obj` points to the start of the object header (i.e. `obj` is the object base
+/// pointer). This matches the `runtime-native` ABI contract for GC object
+/// pointers.
 #[inline]
 pub unsafe fn header_from_obj(obj: *mut u8) -> *mut Header {
-  obj.sub(core::mem::size_of::<Header>()).cast::<Header>()
+  obj.cast::<Header>()
 }
 
-/// Convert a header pointer to the GC-visible object pointer (payload pointer).
+/// Convert a header pointer to the GC-visible object pointer (object base
+/// pointer).
 ///
 /// # Invariant
 /// `h` points to the start of an allocation that contains a [`Header`] followed
 /// immediately by the object payload.
 #[inline]
 pub unsafe fn obj_from_header(h: *mut Header) -> *mut u8 {
-  h.cast::<u8>().add(core::mem::size_of::<Header>())
+  h.cast::<u8>()
 }
 
 #[inline]
@@ -200,4 +202,3 @@ mod tests {
     }
   }
 }
-

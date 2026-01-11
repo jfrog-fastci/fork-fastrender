@@ -7,9 +7,9 @@
 //! Representation: **offset list** (plan option A).
 //!
 //! - Pointer slots are described as byte offsets from the start of the **object
-//!   payload** (i.e. the pointer returned from allocation, immediately after the
-//!   16-byte [`crate::object::Header`]).
-//! - Fixed-size objects have a non-zero `size` (payload size in bytes).
+//!   base pointer** (i.e. the start of the 16-byte [`crate::object::Header`]).
+//! - Fixed-size objects have a non-zero `size` (total object size in bytes,
+//!   including the header).
 //! - Variable-size objects have `size = 0` and use [`crate::object::Header::meta`]
 //!   as a length:
 //!   - [`TypeKind::PtrArray`]: `meta` is element count, elements are `*mut u8`
@@ -39,9 +39,10 @@ pub enum TypeKind {
 #[derive(Debug)]
 pub struct TypeDescriptor {
   pub kind: TypeKind,
-  /// Payload size in bytes for fixed-size objects; `0` for variable-sized kinds.
+  /// Total object size in bytes for fixed-size objects (including the header);
+  /// `0` for variable-sized kinds.
   pub size: usize,
-  /// Pointer slot offsets from the start of the object payload.
+  /// Pointer slot offsets from the start of the object base pointer.
   pub ptr_offsets: &'static [u32],
 }
 
@@ -74,7 +75,7 @@ impl TypeDescriptor {
 /// Trace an object precisely.
 ///
 /// # Safety
-/// - `obj` must be a valid pointer to an object payload allocated by this runtime.
+/// - `obj` must be a valid pointer to an object base (header) allocated by this runtime.
 /// - The object header must contain a valid `TypeDescriptor` pointer.
 /// - All offsets (for fixed objects) must be in-bounds and point to properly
 ///   aligned `*mut u8` slots.
@@ -94,8 +95,9 @@ pub unsafe fn trace_object(obj: *mut u8, mut visit: impl FnMut(*mut *mut u8)) {
     TypeKind::PtrArray => {
       let len = (*header_from_obj(obj)).meta;
       let stride = core::mem::size_of::<*mut u8>();
+      let payload = obj.add(core::mem::size_of::<crate::object::Header>());
       for i in 0..len {
-        let slot = obj.add(i * stride).cast::<*mut u8>();
+        let slot = payload.add(i * stride).cast::<*mut u8>();
         visit(slot);
       }
     }
@@ -121,8 +123,9 @@ mod tests {
       c: *mut u8,
     }
 
-    const OFFSETS: [u32; 2] = [0, 16];
-    let desc = TypeDescriptor::fixed(core::mem::size_of::<DummyObj>(), &OFFSETS);
+    const HEADER_SIZE: usize = core::mem::size_of::<Header>();
+    const OFFSETS: [u32; 2] = [(HEADER_SIZE + 0) as u32, (HEADER_SIZE + 16) as u32];
+    let desc = TypeDescriptor::fixed(HEADER_SIZE + core::mem::size_of::<DummyObj>(), &OFFSETS);
 
     unsafe {
       let layout = Layout::from_size_align(
@@ -136,7 +139,8 @@ mod tests {
 
       let header = base.cast::<Header>();
       header.write(Header::new(&desc));
-      let obj = obj_from_header(header).cast::<DummyObj>();
+      let obj_base = obj_from_header(header);
+      let obj = obj_base.add(HEADER_SIZE).cast::<DummyObj>();
 
       let mut x = 1u8;
       let mut y = 2u8;
@@ -146,11 +150,11 @@ mod tests {
         c: (&mut y as *mut u8),
       });
 
-      let expected_a = obj.cast::<u8>().add(0).cast::<*mut u8>();
-      let expected_c = obj.cast::<u8>().add(16).cast::<*mut u8>();
+      let expected_a = obj_base.add(HEADER_SIZE + 0).cast::<*mut u8>();
+      let expected_c = obj_base.add(HEADER_SIZE + 16).cast::<*mut u8>();
 
       let mut visited = Vec::<*mut *mut u8>::new();
-      trace_object(obj.cast::<u8>(), |slot| {
+      trace_object(obj_base, |slot| {
         visited.push(slot);
         *slot = core::ptr::null_mut();
       });
