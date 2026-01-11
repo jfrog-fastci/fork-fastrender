@@ -49,6 +49,7 @@ mod browser_cli_gpu_flags;
 mod browser_cli_start_url_scheme;
 mod browser_session_restore;
 mod browser_mem_limit_env;
+mod author_css_cannot_observe_data_fastr_hover;
 mod browser_thread_base_url_across_navigations;
 mod browser_worker_cancel_gens;
 mod browser_worker_cancellation;
