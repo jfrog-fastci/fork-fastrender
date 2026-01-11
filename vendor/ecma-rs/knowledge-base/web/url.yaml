@@ -228,6 +228,16 @@
     kind: pure
     template: pure
 
+- name: URLSearchParams.prototype.getAll
+  aliases:
+    - URLSearchParams.prototype.getAll
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
 - name: URLSearchParams.prototype.has
   aliases:
     - URLSearchParams.prototype.has
@@ -271,6 +281,16 @@
     kind: impure
     template: impure
 
+- name: URLSearchParams.prototype.sort
+  aliases:
+    - URLSearchParams.prototype.sort
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Impure
+
 - name: URLSearchParams.prototype.entries
   aliases:
     - URLSearchParams.prototype.entries
@@ -280,6 +300,33 @@
       flags: ALLOCATES
       throws: Never
   purity: Pure
+
+- name: URLSearchParams.prototype.keys
+  aliases:
+    - URLSearchParams.prototype.keys
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
+- name: URLSearchParams.prototype.values
+  aliases:
+    - URLSearchParams.prototype.values
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
+- name: URLSearchParams.prototype.forEach
+  aliases:
+    - URLSearchParams.prototype.forEach
+  since: "baseline"
+  effects: DependsOnCallback
+  purity: DependsOnCallback
 
 - name: URLSearchParams.prototype.toString
   kind: function
