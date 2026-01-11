@@ -109,7 +109,7 @@ impl Reactor {
   }
 
   pub fn register(&self, fd: RawFd, interest: Interest, waker: &Waker) -> io::Result<()> {
-    let mut state = self.inner.state.lock().unwrap();
+    let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
     self.register_locked(&mut state, fd, interest, waker)
   }
 
@@ -197,7 +197,7 @@ impl Reactor {
   }
 
   pub fn deregister(&self, fd: RawFd, interest: Interest) -> io::Result<()> {
-    let mut state = self.inner.state.lock().unwrap();
+    let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
     self.deregister_locked(&mut state, fd, interest)
   }
 
@@ -369,7 +369,7 @@ impl Reactor {
 
       // Capture any wakers to wake while holding the lock, then wake after dropping it.
       let (read_waker, write_waker) = {
-        let state = self.inner.state.lock().unwrap();
+        let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entry) = state.entries.get(&fd) else {
           continue;
         };

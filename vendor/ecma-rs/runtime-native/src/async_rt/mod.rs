@@ -64,9 +64,9 @@ fn debug_maybe_hold_poll_lock() {
 
   let gc_safe = crate::threading::enter_gc_safe_region();
   let (m, cv) = DEBUG_HOLD_POLL_LOCK_SYNC.get_or_init(|| (StdMutex::new(()), Condvar::new()));
-  let mut guard = m.lock().unwrap();
+  let mut guard = m.lock().unwrap_or_else(|e| e.into_inner());
   while DEBUG_HOLD_POLL_LOCK.load(Ordering::Acquire) {
-    guard = cv.wait(guard).unwrap();
+    guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
   }
   drop(guard);
   drop(gc_safe);
