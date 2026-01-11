@@ -237,8 +237,10 @@ fn synthetic_stack_enumerates_root_pairs_from_stackmaps() {
   let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
   let mut visited = BTreeSet::<(usize, usize)>::new();
   unsafe {
-    walk_gc_root_pairs_from_fp(start_fp as u64, Some(bounds), &stackmaps, |pair| {
-      visited.insert((pair.base_slot as usize, pair.derived_slot as usize));
+    walk_gc_root_pairs_from_fp(start_fp as u64, Some(bounds), &stackmaps, |_return_addr, pairs| {
+      for &(base_slot, derived_slot) in pairs {
+        visited.insert((base_slot as usize, derived_slot as usize));
+      }
     })
     .expect("walk");
   }
