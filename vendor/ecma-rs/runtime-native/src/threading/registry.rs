@@ -594,7 +594,7 @@ pub fn thread_counts() -> ThreadCounts {
 
 /// Mark the current thread as parked/unparked.
 pub fn set_current_thread_parked(parked: bool) {
-  TLS_THREAD_REGISTRATION.with(|cell| {
+  let _ = TLS_THREAD_REGISTRATION.try_with(|cell| {
     if let Some(reg) = cell.borrow().as_ref() {
       reg.state.parked.store(parked, Ordering::Release);
       safepoint::notify_state_change();
@@ -605,7 +605,7 @@ pub fn set_current_thread_parked(parked: bool) {
 /// Update the current thread's observed safepoint epoch.
 #[doc(hidden)]
 pub fn set_current_thread_safepoint_epoch_observed(epoch: u64) {
-  TLS_THREAD_REGISTRATION.with(|cell| {
+  let _ = TLS_THREAD_REGISTRATION.try_with(|cell| {
     if let Some(reg) = cell.borrow().as_ref() {
       reg
         .state
