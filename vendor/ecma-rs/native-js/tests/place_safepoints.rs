@@ -101,11 +101,11 @@ fn place_safepoints_polls_are_rewritten_into_statepoints() {
   module.set_triple(&tm.get_triple());
   module.set_data_layout(&tm.get_target_data().get_data_layout());
 
-  passes::place_safepoints_and_rewrite_for_gc(&module, &tm)
+  passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm)
     .expect("place-safepoints + rewrite-statepoints-for-gc failed");
   // The helper should be safe to call multiple times without re-adding the poll
   // declaration.
-  passes::place_safepoints_and_rewrite_for_gc(&module, &tm)
+  passes::place_safepoints_and_rewrite_statepoints_for_gc(&module, &tm)
     .expect("place-safepoints + rewrite-statepoints-for-gc (second run) failed");
 
   let ir = module.print_to_string().to_string();
