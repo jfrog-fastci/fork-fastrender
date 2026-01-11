@@ -1038,7 +1038,7 @@
   properties:
     kind: operator
     operator_type: timing
-    timer_based: "true"
+    timer_based: true
 
 - name: rxjs.operators.sampleTime
   aliases: []
@@ -1057,7 +1057,7 @@
   properties:
     kind: operator
     operator_type: timing
-    timer_based: "true"
+    timer_based: true
 
 - name: rxjs.operators.bufferTime
   aliases: []
@@ -1076,7 +1076,7 @@
   properties:
     kind: operator
     operator_type: buffering
-    timer_based: "true"
+    timer_based: true
 
 - name: rxjs.operators.first
   aliases: []
@@ -1131,3 +1131,166 @@
   properties:
     kind: operator
     operator_type: flattening
+
+- name: rxjs.Observable.prototype.pipe
+  aliases: []
+  semantics: Pipe
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: observable_method
+    output: observable
+
+- name: rxjs.Subscription.prototype.unsubscribe
+  aliases: []
+  semantics: Unsubscribe
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: subscription_method
+
+- name: rxjs.Subject.prototype.next
+  aliases: []
+  semantics: Next
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: subject_method
+    calls_observers: true
+
+- name: rxjs.Subject.prototype.error
+  aliases: []
+  semantics: Error
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: subject_method
+    calls_observers: true
+
+- name: rxjs.Subject.prototype.complete
+  aliases: []
+  semantics: Complete
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: subject_method
+    calls_observers: true
+
+- name: rxjs.Subject.prototype.asObservable
+  aliases: []
+  semantics: AsObservable
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: subject_method
+    output: observable
+
+- name: rxjs.BehaviorSubject.prototype.getValue
+  aliases: []
+  semantics: GetValue
+  since: "v0.1.0"
+  purity:
+    template: readonly
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: subject_method
+    output: value
+
+- name: rxjs.firstValueFrom
+  aliases: []
+  semantics: FirstValueFrom
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  async: true
+  properties:
+    kind: conversion
+    output: promise
+
+- name: rxjs.lastValueFrom
+  aliases: []
+  semantics: LastValueFrom
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  async: true
+  properties:
+    kind: conversion
+    output: promise

@@ -1172,7 +1172,7 @@
     nondeterministic: true
   properties:
     kind: timing
-    timer_based: "true"
+    timer_based: true
 
 - name: lodash.defer
   aliases: [_.defer]
@@ -1190,7 +1190,7 @@
     nondeterministic: true
   properties:
     kind: timing
-    timer_based: "true"
+    timer_based: true
 
 - name: lodash.once
   aliases: [_.once]
@@ -1300,3 +1300,373 @@
   properties:
     kind: string_operator
     output: string
+
+- name: lodash.capitalize
+  aliases: [_.capitalize]
+  semantics: Capitalize
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.deburr
+  aliases: [_.deburr]
+  semantics: Deburr
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.words
+  aliases: [_.words]
+  semantics: Words
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: new_array
+
+- name: lodash.toLower
+  aliases: [_.toLower]
+  semantics: ToLower
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.toUpper
+  aliases: [_.toUpper]
+  semantics: ToUpper
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.lowerCase
+  aliases: [_.lowerCase]
+  semantics: LowerCase
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.upperCase
+  aliases: [_.upperCase]
+  semantics: UpperCase
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: string_operator
+    output: string
+
+- name: lodash.clamp
+  aliases: [_.clamp]
+  semantics: Clamp
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: numeric_operator
+    output: number
+
+- name: lodash.round
+  aliases: [_.round]
+  semantics: Round
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: numeric_operator
+    output: number
+
+- name: lodash.floor
+  aliases: [_.floor]
+  semantics: Floor
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: numeric_operator
+    output: number
+
+- name: lodash.ceil
+  aliases: [_.ceil]
+  semantics: Ceil
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: numeric_operator
+    output: number
+
+- name: lodash.isNumber
+  aliases: [_.isNumber]
+  semantics: IsNumber
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isString
+  aliases: [_.isString]
+  semantics: IsString
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isBoolean
+  aliases: [_.isBoolean]
+  semantics: IsBoolean
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isFunction
+  aliases: [_.isFunction]
+  semantics: IsFunction
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isObject
+  aliases: [_.isObject]
+  semantics: IsObject
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isObjectLike
+  aliases: [_.isObjectLike]
+  semantics: IsObjectLike
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isDate
+  aliases: [_.isDate]
+  semantics: IsDate
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.isRegExp
+  aliases: [_.isRegExp]
+  semantics: IsRegExp
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: never
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: false
+    nondeterministic: false
+  properties:
+    kind: predicate
+
+- name: lodash.has
+  aliases: [_.has]
+  semantics: Has
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_read
+    output: boolean
+
+- name: lodash.hasIn
+  aliases: [_.hasIn]
+  semantics: HasIn
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_read
+    output: boolean
