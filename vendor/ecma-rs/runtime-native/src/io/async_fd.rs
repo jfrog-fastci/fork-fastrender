@@ -228,7 +228,20 @@ impl State {
     if let Some(id) = inner.watcher_id {
       if inner.interests != desired {
         if !async_rt::global().update_io(id, desired) {
-          return Err(io::Error::new(io::ErrorKind::Other, "failed to update reactor interest"));
+          // If we fail to update the reactor registration, drop the existing
+          // watcher so we don't leave a stale fd registration behind.
+          let _ = async_rt::global().deregister_fd(id);
+          let data = inner
+            .watcher_data
+            .take()
+            .expect("io watcher registered without watcher_data");
+          inner.watcher_id = None;
+          inner.interests = 0;
+          schedule_drop_arc(data);
+          return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "failed to update reactor interest",
+          ));
         }
         inner.interests = desired;
       }
