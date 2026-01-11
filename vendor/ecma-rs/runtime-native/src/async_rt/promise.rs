@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize
 
 use crate::abi::{PromiseRef, PromiseResolveInput, PromiseResolveKind, ThenableRef, ValueRef};
 use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING, PROMISE_FLAG_HAS_PAYLOAD};
+use crate::sync::GcAwareMutex;
 use once_cell::sync::Lazy;
 use std::collections::HashSet;
 use crate::async_runtime::PromiseLayout;
