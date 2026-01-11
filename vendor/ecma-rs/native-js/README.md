@@ -503,10 +503,10 @@ backend is still minimal; some programs may still fail later during codegen.
 
 ## HIR codegen diagnostics (`native_js::codegen`)
 
-The experimental HIR-driven backend (used by the `native-js` binary in
-`native-js-cli`) emits additional `NJS01xx` diagnostics when lowering HIR to LLVM
-fails (e.g. missing/invalid `main` body, unsupported operators or syntax in the
-HIR backend, unknown identifiers, etc.).
+The experimental HIR-driven backend (used by `native-js-cli --pipeline checked`
+and the `native-js` binary) emits additional `NJS01xx` diagnostics when lowering
+HIR to LLVM fails (e.g. missing/invalid `main` body, unsupported operators or
+syntax in the HIR backend, unknown identifiers, etc.).
 
 For the current list of codes, see the module-level docs in
 [`native-js/src/codegen/mod.rs`](./src/codegen/mod.rs).
@@ -576,7 +576,10 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib llvm_ir_sanity
 ### Run the native pipeline smoke tests
 
 The `native-js` workspace also contains `native-js-cli`, which exercises the
-current minimal IR emitter end-to-end (TS → LLVM IR → object emission + link → run):
+current native pipeline end-to-end:
+
+- minimal `parse-js` emitter (`native-js-cli --pipeline project`)
+- typechecked/HIR backend (`native-js-cli --pipeline checked` and the `native-js` binary)
 
 ```bash
 # From repo root:
