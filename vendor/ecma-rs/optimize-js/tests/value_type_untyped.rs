@@ -119,3 +119,30 @@ fn untyped_dvn_constant_propagation_updates_value_type() {
     "expected DVN to keep VarAssign.value_type consistent after constant propagation, got {assigns:?}"
   );
 }
+
+#[test]
+fn untyped_dvn_const_builtin_undefined_sets_value_type() {
+  let program = compile_source(
+    r#"
+      let x = undefined;
+      console.log(x);
+    "#,
+    TopLevelMode::Module,
+    true,
+  );
+
+  let step = find_step(&program.top_level, "opt1_dvn");
+  let insts = collect_insts(step);
+
+  let assign = insts
+    .iter()
+    .copied()
+    .find(|inst| inst.t == InstTyp::VarAssign && matches!(inst.args.get(0), Some(Arg::Const(Const::Undefined))))
+    .expect("expected DVN to canonicalize builtin undefined into Const::Undefined");
+
+  assert_eq!(
+    assign.value_type,
+    ValueTypeSummary::UNDEFINED,
+    "expected value_type to be updated when DVN canonicalizes builtin undefined"
+  );
+}

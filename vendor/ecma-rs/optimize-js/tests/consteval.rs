@@ -1,7 +1,7 @@
 use num_bigint::BigInt;
 use optimize_js::eval::consteval::{
   coerce_str_to_num, js_cmp, js_div, js_loose_eq, maybe_eval_const_bin_expr,
-  maybe_eval_const_builtin_call, maybe_eval_const_un_expr,
+  maybe_eval_const_builtin_call, maybe_eval_const_builtin_val, maybe_eval_const_un_expr,
 };
 use optimize_js::il::inst::Const::{BigInt as ConstBigInt, Num as ConstNum, Str as ConstStr};
 use optimize_js::il::inst::{BinOp, UnOp};
@@ -93,5 +93,17 @@ fn bitwise_and_shift_ops_follow_to_int32_semantics() {
   assert_eq!(
     maybe_eval_const_un_expr(UnOp::BitNot, &zero),
     Some(ConstNum(JN(-1.0)))
+  );
+}
+
+#[test]
+fn builtin_infinity_and_undefined_are_constant_folded() {
+  assert_eq!(
+    maybe_eval_const_builtin_val("Infinity"),
+    Some(ConstNum(JN(f64::INFINITY)))
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_val("undefined"),
+    Some(optimize_js::il::inst::Const::Undefined)
   );
 }

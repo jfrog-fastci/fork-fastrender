@@ -387,6 +387,7 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
 pub fn maybe_eval_const_builtin_val(path: &str) -> Option<Const> {
   #[rustfmt::skip]
   let v = match path {
+    "Infinity" => Num(JN(f64::INFINITY)),
     "Math.E" => Num(JN(E)),
     "Math.PI" => Num(JN(PI)),
     "NaN" => Num(JN(f64::NAN)),
@@ -396,6 +397,7 @@ pub fn maybe_eval_const_builtin_val(path: &str) -> Option<Const> {
     "Number.NaN" => Num(JN(f64::NAN)),
     "Number.NEGATIVE_INFINITY" => Num(JN(f64::NEG_INFINITY)),
     "Number.POSITIVE_INFINITY" => Num(JN(f64::INFINITY)),
+    "undefined" => Undefined,
     _ => return None,
   };
   Some(v)
