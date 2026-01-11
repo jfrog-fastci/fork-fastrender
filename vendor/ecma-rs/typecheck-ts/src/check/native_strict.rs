@@ -451,7 +451,6 @@ pub fn validate_native_strict_body(
                   || object_key_is_string(&member.property, "bind")
                   || object_key_is_literal_string(body, &member.property, "bind");
               let is_call_like = prop_is_call || prop_is_apply || prop_is_bind;
-              let is_call_or_apply = prop_is_call || prop_is_apply;
               if is_call_like
                 && expr_is_ident_or_global_this_member(
                   body,
@@ -523,7 +522,7 @@ pub fn validate_native_strict_body(
                 ));
               }
 
-              if is_call_or_apply {
+              if is_call_like {
                 let obj_is_object_define_property = expr_is_builtin_member(
                   body,
                   member.object,
@@ -571,8 +570,8 @@ pub fn validate_native_strict_body(
                   }
                 };
 
-                if prop_is_call {
-                  // `.call(thisArg, ...args)`
+                if prop_is_call || prop_is_bind {
+                  // `.call(thisArg, ...args)` / `.bind(thisArg, ...args)`
                   if let Some(target_obj) =
                     call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
                   {
