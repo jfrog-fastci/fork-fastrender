@@ -1117,12 +1117,14 @@ impl FormattingContext for FlexFormattingContext {
     // CSS2.1 §10.5: Percentage `height` values compute to `auto` when the containing block height
     // is not definite (i.e. it depends on content height) for in-flow elements.
     //
-    // Taffy treats percentage heights as resolving against the available space handed to it. When
-    // this formatting context is invoked with an indefinite block-size (common for block-flow
-    // layout), we must therefore translate unresolvable percentage heights to `auto` on the root
-    // node so `height:100%` doesn't incorrectly expand to the viewport/probe size.
+    // `LayoutConstraints` threads the containing block's definite percentage base through
+    // `block_percentage_base`. This lets scrollable block-flow layout carry a definite available
+    // height (the viewport) without incorrectly resolving `height:100%` against it.
+    //
+    // Taffy resolves percentage heights against the available space we pass to it, so translate
+    // unresolvable percentage heights to `auto` on the root node.
     if constraints.used_border_box_height.is_none()
-      && constraints.height().is_none()
+      && constraints.block_percentage_base.is_none()
       && style
         .height
         .as_ref()
@@ -1307,7 +1309,10 @@ impl FormattingContext for FlexFormattingContext {
         return None;
       };
 
-      let percentage_base = specified.has_percentage().then(|| constraints.height()).flatten();
+      let percentage_base = specified
+        .has_percentage()
+        .then(|| constraints.block_percentage_base)
+        .flatten();
       let resolved = resolve_length_with_percentage_metrics(
         *specified,
         percentage_base,
@@ -7356,7 +7361,10 @@ impl FlexFormattingContext {
       .filter(|h| h.is_finite())
       .or_else(|| {
         let specified = container_style.height.as_ref()?;
-        let percentage_base = specified.has_percentage().then(|| constraints.height()).flatten();
+        let percentage_base = specified
+          .has_percentage()
+          .then(|| constraints.block_percentage_base)
+          .flatten();
         let resolved = resolve_length_with_percentage_metrics(
           *specified,
           percentage_base,
@@ -7694,7 +7702,7 @@ impl FlexFormattingContext {
     } else if let Some(constraints) = constraints {
       (
         constraints.inline_percentage_base.or_else(|| constraints.width()),
-        constraints.height(),
+        constraints.block_percentage_base,
       )
     } else {
       (None, None)
@@ -8655,7 +8663,7 @@ impl FlexFormattingContext {
 
     let percentage_base_opt = match axis {
       Axis::Horizontal => constraints.width().or(constraints.inline_percentage_base),
-      Axis::Vertical => constraints.height(),
+      Axis::Vertical => constraints.block_percentage_base,
     };
     let resolve_length_px = |len: Length| -> Option<f32> {
       if len.has_percentage() && percentage_base_opt.is_none() {
@@ -9033,7 +9041,10 @@ impl FlexFormattingContext {
         let Some(height) = box_node.style.height.as_ref() else {
           return None;
         };
-        let percentage_base = height.has_percentage().then(|| constraints.height()).flatten();
+        let percentage_base = height
+          .has_percentage()
+          .then(|| constraints.block_percentage_base)
+          .flatten();
         let resolved = resolve_length_with_percentage_metrics(
           *height,
           percentage_base,
@@ -9185,8 +9196,10 @@ impl FlexFormattingContext {
 
         if max_child_bottom.is_finite() {
           let cb_width = rect.width().max(0.0);
-          let containing_block_height =
-            constraints.height().filter(|h| h.is_finite()).map(|h| h.max(0.0));
+          let containing_block_height = constraints
+            .block_percentage_base
+            .filter(|h| h.is_finite())
+            .map(|h| h.max(0.0));
 
           // Padding percentages resolve against the physical width, even for vertical edges.
           let padding_top =

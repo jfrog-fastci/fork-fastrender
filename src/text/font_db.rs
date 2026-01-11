@@ -2613,12 +2613,13 @@ impl FontMetrics {
     // Snap the "normal" line height metric to whole CSS pixels to better match browser output and
     // avoid this drift. Keep the per-face ascent/descent values un-snapped so baselines and glyph
     // alignment remain driven by the font metrics; only the overall line box height is snapped.
-    let mut line_height = raw_line_height.round();
-    // Avoid snapping below the font's ascent+descent (in case rounding would underflow).
-    let min_line_height = (ascent + descent).ceil();
-    if line_height < min_line_height {
-      line_height = min_line_height;
-    }
+    // Use the rounded pixel line height as the "normal" line box height.
+    //
+    // Important: do *not* clamp this to `ceil(ascent + descent)`. When ascent/descent scale to
+    // values like 20.16px, `ceil()` would force the line height up to 21px even though browsers
+    // (and FreeType) round the font height to the nearest pixel (20px here). That 1px inflation
+    // per line accumulates into large vertical drift on real pages.
+    let line_height = raw_line_height.round();
 
     ScaledMetrics {
       font_size,
@@ -2782,6 +2783,33 @@ mod tests {
     assert_eq!(metrics.descent, -200);
     assert_eq!(metrics.line_gap, 0);
     assert_eq!(metrics.line_height, 1000);
+  }
+
+  #[test]
+  fn normal_line_height_rounding_does_not_over_inflate() {
+    // When scaling yields fractional ascent+descent slightly above an integer, rounding the font's
+    // height should still round to the nearest pixel. Clamping to `ceil(ascent+descent)` would
+    // inflate the line height to the next pixel (21px here), causing large vertical drift as text
+    // lines stack.
+    let metrics = FontMetrics {
+      units_per_em: 1000,
+      ascent: 800,
+      descent: -460,
+      line_gap: 0,
+      line_height: 1260,
+      x_height: None,
+      cap_height: None,
+      underline_position: 0,
+      underline_thickness: 0,
+      strikeout_position: None,
+      strikeout_thickness: None,
+      is_bold: false,
+      is_italic: false,
+      is_monospace: false,
+    };
+
+    let scaled = metrics.scale(16.0);
+    assert_eq!(scaled.line_height, 20.0);
   }
 
   #[test]

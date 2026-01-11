@@ -76,6 +76,7 @@ mod flex_auto_min_size_replaced_percent_cache;
 mod flex_empty_anonymous_block_item;
 mod flex_percent_height_indefinite;
 mod flex_percent_height_definite_flex_item;
+mod flex_percent_height_requires_definite_block_percentage_base;
 mod flex_basis_calc;
 mod flex_calc_gap;
 mod flex_basis_content;

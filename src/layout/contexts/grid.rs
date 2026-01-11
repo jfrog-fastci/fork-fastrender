@@ -572,6 +572,17 @@ fn taffy_available_space_for_grid_container(
   // Note: in vertical writing modes, the CSS block axis maps to the physical X axis, so we must
   // drop the available *width* rather than the available *height*.
   if fragmentainer_block_size_hint().is_none() {
+    // Percent heights compute to `auto` when the containing block's block size is not definite
+    // (CSS2.1 §10.5). In that case, the grid container behaves like `height:auto` for sizing and
+    // should not be constrained by a definite available height inherited from ancestors (e.g. the
+    // viewport height threaded through scrollable layout).
+    let physical_height_is_effectively_auto = physical_height_is_auto(style)
+      || (style
+        .height
+        .as_ref()
+        .is_some_and(crate::style::values::Length::has_percentage)
+        && constraints.block_percentage_base.is_none());
+
     let physical_block_axis = if crate::style::inline_axis_is_horizontal(style.writing_mode) {
       PhysicalAxis::Y
     } else {
@@ -581,7 +592,7 @@ fn taffy_available_space_for_grid_container(
     match physical_block_axis {
       PhysicalAxis::Y => {
         if constraints.used_border_box_height.is_none()
-          && physical_height_is_auto(style)
+          && physical_height_is_effectively_auto
           && matches!(available_space.height, taffy::style::AvailableSpace::Definite(_))
         {
           available_space.height = taffy::style::AvailableSpace::MaxContent;
@@ -8842,6 +8853,21 @@ impl GridFormattingContext {
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
 
+    // Taffy sometimes reports the grid area's block size as a "known" size for stretched items.
+    // For content-sized grid tracks we must *not* treat that stretched size as a definite basis for
+    // nested percentage heights; doing so can create cyclic sizing feedback (`height:100%` expands
+    // to the probe size, inflating the track, which then inflates the probe again).
+    //
+    // Instead, keep the block size "unknown" so the item's intrinsic height is measured from
+    // content, matching CSS Grid's percentage resolution rules for indefinite track sizes.
+    let mut known_dimensions = known_dimensions;
+    if !allow_stretch_block_size_override
+      && physical_height_is_auto(style)
+      && taffy_style.align_self == Some(taffy::style::AlignItems::Stretch)
+    {
+      known_dimensions.height = None;
+    }
+
     let skip_contents = match style.content_visibility {
       crate::style::types::ContentVisibility::Hidden => true,
       crate::style::types::ContentVisibility::Auto => {
@@ -16842,6 +16868,82 @@ mod tests {
         "{label} height probe should measure by laying out the item with the available inline size"
       );
     }
+  }
+
+  #[test]
+  fn measure_grid_item_does_not_resolve_percent_heights_against_stretched_auto_track_probe() {
+    use taffy::style::AvailableSpace;
+
+    // Regression: Taffy can supply a definite "known height" for stretched items even when the
+    // grid track is content-sized (auto). That stretched probe must not become a definite
+    // containing-block height for percentage descendants, otherwise `height:100%` feeds back into
+    // track sizing and inflates the row.
+    let gc = GridFormattingContext::new();
+    let factory =
+      crate::layout::contexts::factory::FormattingContextFactory::with_font_context_viewport_and_cb(
+        gc.font_context.clone(),
+        gc.viewport_size,
+        gc.nearest_positioned_cb,
+      );
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+    let mut fixed_style = ComputedStyle::default();
+    fixed_style.display = CssDisplay::Block;
+    fixed_style.height = Some(Length::px(10.0));
+    fixed_style.height_keyword = None;
+    let fixed_child =
+      BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
+
+    let mut percent_style = ComputedStyle::default();
+    percent_style.display = CssDisplay::Block;
+    percent_style.height = Some(Length::percent(100.0));
+    percent_style.height_keyword = None;
+    let percent_child = BoxNode::new_block(
+      Arc::new(percent_style),
+      FormattingContextType::Block,
+      vec![fixed_child],
+    );
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = CssDisplay::Block;
+    let mut item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Block,
+      vec![percent_child],
+    );
+    item.id = 1;
+
+    let mut taffy_style: taffy::style::Style = taffy::style::Style::default();
+    taffy_style.align_self = Some(taffy::style::AlignItems::Stretch);
+
+    let output = gc.measure_grid_item(
+      &item as *const _,
+      TaffyNodeId::from(1u64),
+      taffy::geometry::Size {
+        width: Some(100.0),
+        height: Some(200.0),
+      },
+      taffy::geometry::Size {
+        width: AvailableSpace::Definite(100.0),
+        height: AvailableSpace::Definite(200.0),
+      },
+      Some(100.0),
+      false,
+      &taffy_style,
+      &FxHashSet::default(),
+      &factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    assert!(
+      (output.size.height - 10.0).abs() < 0.5,
+      "expected `height:100%` descendant to compute to auto under an auto track probe (got {:.2})",
+      output.size.height
+    );
   }
 
   #[test]
