@@ -1252,4 +1252,57 @@ mod tests {
       missing.join("\n")
     );
   }
+
+  #[test]
+  fn generated_header_compiles_as_c() {
+    use std::process::Command;
+
+    let out_dir = std::path::PathBuf::from(env!("OUT_DIR"));
+
+    let tmp_dir = std::env::temp_dir().join(std::format!(
+      "runtime_native_abi_header_smoke_{}",
+      std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+
+    let c_path = tmp_dir.join("header_smoke.c");
+    let obj_path = tmp_dir.join("header_smoke.o");
+
+    std::fs::write(
+      &c_path,
+      br#"
+#include "runtime_native_abi.h"
+
+int main(void) { return 0; }
+"#,
+    )
+    .unwrap();
+
+    // Support common CC values that include arguments (e.g. "ccache clang-18").
+    let cc = std::env::var("CC").unwrap_or_else(|_| std::string::String::from("cc"));
+    let mut cc_parts = cc.split_whitespace();
+    let program = cc_parts.next().unwrap_or("cc");
+    let mut cmd = Command::new(program);
+    cmd.args(cc_parts);
+    cmd
+      .arg("-std=c11")
+      .arg("-Wall")
+      .arg("-Wextra")
+      .arg("-Werror")
+      .arg("-c")
+      .arg(&c_path)
+      .arg(std::format!("-I{}", out_dir.display()))
+      .arg("-o")
+      .arg(&obj_path);
+
+    let output = cmd.output().unwrap_or_else(|e| panic!("failed to spawn C compiler: {e}"));
+    if !output.status.success() {
+      panic!(
+        "runtime_native_abi.h smoke compile failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+      );
+    }
+  }
 }

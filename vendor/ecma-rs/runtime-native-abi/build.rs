@@ -278,6 +278,40 @@ fn main() {
     }
   }
 
+  // cbindgen tends to use `struct Foo*` spellings in signatures to avoid having to emit forward
+  // typedef declarations for self-referential ABI types. The handwritten `runtime_native.h` prefers
+  // typedef names (e.g. `Foo*`) and explicitly forward-declares a few key structs.
+  //
+  // Since we also post-process the generated header to prefer typedef spellings, inject the same
+  // forward typedefs so the header remains valid C after we rewrite `struct Foo*` → `Foo*`.
+  //
+  // (Without these, the rewritten header would refer to typedef names like `RtCoroutineHeader*`
+  // before the typedef is introduced, which is a compile error.)
+  if !header.contains("typedef struct RtCoroutineHeader RtCoroutineHeader;") {
+    if let Some(pos) = header
+      .find("typedef enum RtCoroStatus (*RtCoroResumeFn)")
+      .or_else(|| header.find("typedef RtCoroStatus (*RtCoroResumeFn)"))
+    {
+      header.insert_str(pos, "typedef struct RtCoroutineHeader RtCoroutineHeader;\n");
+      modified = true;
+    }
+  }
+  if !header.contains("typedef struct PromiseResolveInput PromiseResolveInput;") {
+    if let Some(pos) = header.find("typedef struct ThenableVTable {") {
+      header.insert_str(pos, "typedef struct PromiseResolveInput PromiseResolveInput;\n\n");
+      modified = true;
+    }
+  }
+  if !header.contains("typedef struct Coroutine Coroutine;") {
+    if let Some(pos) = header
+      .find("typedef struct CoroutineStep (*CoroutineResumeFn)")
+      .or_else(|| header.find("typedef CoroutineStep (*CoroutineResumeFn)"))
+    {
+      header.insert_str(pos, "typedef struct Coroutine Coroutine;\n\n");
+      modified = true;
+    }
+  }
+
   // Prefer typedef names (no `struct`/`enum`/`union` tags) in signatures and struct fields so the
   // generated header matches `runtime_native.h` more closely. This is mostly cosmetic but helps
   // bindings generators that match on exact substrings.
