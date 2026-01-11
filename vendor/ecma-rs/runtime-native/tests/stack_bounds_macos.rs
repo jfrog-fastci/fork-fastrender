@@ -1,6 +1,7 @@
 #![cfg(target_os = "macos")]
 
 use runtime_native::stackwalk::StackBounds;
+use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::registry;
 use runtime_native::threading::ThreadKind;
@@ -11,6 +12,7 @@ extern "C" {
 
 #[test]
 fn stackwalk_current_thread_bounds_contains_local() {
+  let _rt = TestRuntimeGuard::new();
   let mut local = 123u64;
   let local_addr = (&mut local as *mut u64) as u64;
   std::hint::black_box(local_addr);
@@ -25,6 +27,7 @@ fn stackwalk_current_thread_bounds_contains_local() {
 
 #[test]
 fn thread_registry_records_stack_bounds() {
+  let _rt = TestRuntimeGuard::new();
   threading::unregister_current_thread();
   threading::register_current_thread(ThreadKind::External);
 
@@ -41,6 +44,7 @@ fn thread_registry_records_stack_bounds() {
 
 #[test]
 fn thread_registry_records_os_thread_id() {
+  let _rt = TestRuntimeGuard::new();
   threading::unregister_current_thread();
   threading::register_current_thread(ThreadKind::External);
 
