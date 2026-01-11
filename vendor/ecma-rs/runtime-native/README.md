@@ -157,8 +157,16 @@ For `rustc`/Cargo consumers that don't use the feature-based build script hook, 
 #   RUSTFLAGS="-C link-arg=-Wl,-T,/abs/path/to/runtime-native/link/stackmaps.ld" cargo build ...
 ```
 
-PIE note: current LLVM 18 experiments may emit `TEXTREL` warnings due to relocations in
-`.llvm_stackmaps`. Linking with `-no-pie` avoids this in a minimal setup.
+PIE note (Linux): LLVM `.llvm_stackmaps` contains absolute code addresses, which become runtime
+relocations under PIE. If stackmaps end up in a read-only segment, this can lead to `DT_TEXTREL`
+warnings (GNU ld) or hard link failures (lld).
+
+- Default policy in this repo: link AOT binaries as **non-PIE** (`-no-pie`) for maximum toolchain
+  compatibility.
+- If you require PIE, use the objcopy-based “no textrel” approach described in:
+  - `docs/gc_statepoints.md` (“Linux linking policy for .llvm_stackmaps”)
+  - `scripts/native_link.sh` (set `ECMA_RS_NATIVE_PIE=1`)
+  - `scripts/test_stackmaps_pie_link.sh` (regression test)
 
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.
