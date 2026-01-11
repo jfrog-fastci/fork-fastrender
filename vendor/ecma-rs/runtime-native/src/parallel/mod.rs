@@ -12,6 +12,7 @@ use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use crossbeam_utils::sync::{Parker, Unparker};
 
 use crate::abi::TaskId;
+use crate::sync::GcAwareMutex;
 use crate::threading::{self, ThreadKind};
 
 #[path = "parallel_for.rs"]
@@ -70,14 +71,14 @@ fn local_worker_ptr() -> Option<(*const Worker<Arc<TaskState>>, usize)> {
 /// generated/native code through the exported `rt_parallel_*` entrypoints.
 pub(crate) struct ParallelRuntime {
   scheduler: Scheduler,
-  live_task_ids: Mutex<HashSet<u64>>,
+  live_task_ids: GcAwareMutex<HashSet<u64>>,
 }
 
 impl ParallelRuntime {
   pub(crate) fn new() -> Self {
     Self {
       scheduler: Scheduler::new(),
-      live_task_ids: Mutex::new(HashSet::new()),
+      live_task_ids: GcAwareMutex::new(HashSet::new()),
     }
   }
 
@@ -92,10 +93,7 @@ impl ParallelRuntime {
     self.scheduler.enqueue(task_state.clone());
     let id = Arc::into_raw(task_state) as u64;
     {
-      let mut live = self
-        .live_task_ids
-        .lock()
-        .unwrap_or_else(|_| std::process::abort());
+      let mut live = self.live_task_ids.lock();
       live.insert(id);
     }
     TaskId(id)
@@ -123,10 +121,7 @@ impl ParallelRuntime {
     let ids = unsafe { std::slice::from_raw_parts(tasks, count) };
     let mut seen: HashSet<u64> = HashSet::with_capacity(ids.len());
     let mut tasks: Vec<Arc<TaskState>> = Vec::with_capacity(ids.len());
-    let mut live = self
-      .live_task_ids
-      .lock()
-      .unwrap_or_else(|_| std::process::abort());
+    let mut live = self.live_task_ids.lock();
     for &TaskId(id) in ids {
       // `TaskId` is an opaque handle and must be unique within a join call.
       // Duplicates would cause UB (double `Arc::from_raw`), so fail loudly.
