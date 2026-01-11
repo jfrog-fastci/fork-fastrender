@@ -916,12 +916,18 @@ pub(super) fn emit_llvm_module(
   out.push_str("declare void @abort()\n");
   out.push_str("declare void @llvm.trap()\n\n");
 
-  out.push_str("define i32 @main() {\n");
+  // Stack-walkability invariants for precise GC:
+  // - Keep frame pointers so the runtime can walk the frame chain.
+  // - Disable tail calls so frames are not elided.
+  //
+  // See `native-js/docs/gc_stack_walking.md`.
+  out.push_str("define i32 @main() #0 {\n");
   for line in &cg.main_body {
     out.push_str(line);
     out.push('\n');
   }
   out.push_str("}\n");
+  out.push_str("\nattributes #0 = { \"frame-pointer\"=\"all\" \"disable-tail-calls\"=\"true\" }\n");
 
   Ok(out)
 }
