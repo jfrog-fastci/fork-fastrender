@@ -10,6 +10,22 @@ Our initial native runtime stack-walking strategy is intentionally simple:
 
 That strategy is only correct if every GC root referenced by a stackmap is stored in a **memory location**.
 
+## `.llvm_stackmaps` can contain multiple StackMap v3 blobs
+
+LLVM emits a complete StackMap v3 table into each object file’s `.llvm_stackmaps` section.
+When linking multiple objects, ELF linkers concatenate those section payloads, producing
+**multiple independent StackMap v3 blobs back-to-back**, each starting with its own `version=3`
+header.
+
+This means runtime code must not assume `.llvm_stackmaps` is a single global header + tables.
+
+Runtime-native provides helpers that handle both cases:
+
+- Use `runtime_native::stackmaps::StackMaps::parse(bytes)` (preferred) when parsing a linked
+  image’s `.llvm_stackmaps` section; it iterates all blobs and builds one callsite index.
+- `runtime_native::stackmaps::StackMap::parse(bytes)` parses a **single** StackMap v3 blob and
+  will fail fast if it looks like the input contains multiple concatenated blobs.
+
 ## Contract: no `Register` GC roots
 
 At every statepoint, LLVM emits a stackmap record with a list of live GC pointer locations.
