@@ -38,6 +38,7 @@ const aliasMap: MapAlias = m;
 aliasMap.has("a");
 aliasMap.get("a");
 const v2 = aliasMap.get("a") ?? 0;
+const v3 = aliasMap.get("__effect_js_alias_key__")! ?? 54321;
 
 const p: Promise<number> = Promise.resolve(1);
 p.then(x => x + 1);
@@ -179,6 +180,23 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
     }
     _ => false,
   }));
+
+  let nullish_default = body
+    .exprs
+    .iter()
+    .enumerate()
+    .find_map(|(idx, expr)| match &expr.kind {
+      ExprKind::Literal(Literal::Number(n)) if n == "54321" => Some(ExprId(idx as u32)),
+      _ => None,
+    })
+    .expect("found default literal used in nullish MapGetOrDefault expression");
+  assert!(
+    patterns.iter().any(|pat| matches!(
+      pat,
+      RecognizedPattern::MapGetOrDefault { default, .. } if *default == nullish_default
+    )),
+    "expected MapGetOrDefault for `map.get(key)! ?? default`"
+  );
 
   let conditional_default = body
     .exprs

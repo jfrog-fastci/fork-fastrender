@@ -989,7 +989,8 @@ pub fn recognize_patterns_typed(
       if !matches!(op, BinaryOp::NullishCoalescing | BinaryOp::LogicalOr) {
         continue;
       }
-      if resolve_api_call_typed(lowered, body, *left, types) != Some(ApiId::MapPrototypeGet) {
+      let left = strip_transparent_wrappers(body_ref, *left);
+      if resolve_api_call_typed(lowered, body, left, types) != Some(ApiId::MapPrototypeGet) {
         continue;
       }
       let Some(call) = body_ref.exprs.get(left.0 as usize) else {
