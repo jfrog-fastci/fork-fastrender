@@ -5,6 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use object::{Object, ObjectSymbol};
+
 fn cmd_output(mut cmd: Command) -> String {
   let output = cmd.output().unwrap_or_else(|e| {
     panic!("failed to spawn {:?}: {e}", cmd);
@@ -58,6 +60,12 @@ fn disassemble_rlib(rlib_path: &Path, extract_dir: &Path) -> String {
   cmd.current_dir(extract_dir).arg("x").arg(rlib_path);
   cmd_output(cmd);
 
+  // The `runtime-native` rlib can contain many object files (multiple codegen
+  // units). Disassembling all of them is unnecessarily slow; instead, locate
+  // just the object file(s) that contain our regression symbols.
+  let wanted: [&str; 3] = ["rt_fp_test_entry", "rt_fp_test_mid", "rt_fp_test_leaf"];
+  let mut remaining: std::collections::BTreeSet<&str> = wanted.into_iter().collect();
+
   let mut out = String::new();
   for entry in fs::read_dir(extract_dir).unwrap() {
     let entry = entry.unwrap();
@@ -65,9 +73,40 @@ fn disassemble_rlib(rlib_path: &Path, extract_dir: &Path) -> String {
     if path.extension().and_then(|s| s.to_str()) != Some("o") {
       continue;
     }
+
+    // Fast prefilter: only disassemble object files that actually define one of
+    // the regression symbols.
+    let bytes = fs::read(&path).unwrap();
+    let Ok(obj) = object::File::parse(&*bytes) else {
+      continue;
+    };
+    let mut found_here = Vec::<&str>::new();
+    for sym in obj.symbols() {
+      let Ok(name) = sym.name() else {
+        continue;
+      };
+      if remaining.contains(name) {
+        found_here.push(name);
+      }
+    }
+    if found_here.is_empty() {
+      continue;
+    }
+
     out.push_str(&disassemble(&path));
     out.push('\n');
+    for name in found_here {
+      remaining.remove(name);
+    }
+    if remaining.is_empty() {
+      break;
+    }
   }
+
+  assert!(
+    remaining.is_empty(),
+    "failed to find regression symbols in extracted runtime-native rlib objects: missing {remaining:?}"
+  );
   out
 }
 
