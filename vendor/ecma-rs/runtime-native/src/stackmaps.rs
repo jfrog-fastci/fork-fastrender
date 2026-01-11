@@ -987,7 +987,9 @@ impl StackMaps {
       }
     }
 
-    callsites.sort_by_key(|e| e.pc);
+    // Sort by PC first, then by stable per-input order so any dedup decisions are deterministic
+    // even though `slice::sort_*` is not stable.
+    callsites.sort_by_key(|e| (e.pc, e.stackmap_index, e.record_index));
 
     // The runtime lookup key is the callsite *PC* (return address). We generally
     // require this to be unique to avoid ambiguous GC root enumeration.
@@ -1026,8 +1028,9 @@ impl StackMaps {
           let other_raw = &raws[other.stackmap_index];
           let other_rec = &other_raw.records[other.record_index];
 
-          if base_rec.patchpoint_id != other_rec.patchpoint_id
-            || base_rec.instruction_offset != other_rec.instruction_offset
+          // `patchpoint_id` is not part of the callsite identity here: LLVM allows overriding the
+          // per-callsite statepoint ID (`"statepoint-id"`) and IDs are not guaranteed to be unique.
+          if base_rec.instruction_offset != other_rec.instruction_offset
             || !Self::locations_semantically_equal(&base_rec.locations, &other_rec.locations)
             || !live_outs_equal(&base_rec.live_outs, &other_rec.live_outs)
           {
@@ -1599,6 +1602,42 @@ mod tests {
     bytes
   }
 
+  fn blob_one_constant_loc(
+    function_addr: u64,
+    patchpoint_id: u64,
+    instruction_offset: u32,
+    constant: i32,
+  ) -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::new();
+    build_header(&mut bytes, 1, 0, 1);
+
+    // Function record.
+    push_u64(&mut bytes, function_addr);
+    push_u64(&mut bytes, 32);
+    push_u64(&mut bytes, 1);
+
+    // Record (one Constant location).
+    push_u64(&mut bytes, patchpoint_id);
+    push_u32(&mut bytes, instruction_offset);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 1); // num_locations
+
+    // Location: Constant (value fits in i32).
+    push_u8(&mut bytes, 4); // kind = Constant
+    push_u8(&mut bytes, 0); // reserved
+    push_u16(&mut bytes, 8); // size
+    push_u16(&mut bytes, 0); // dwarf_reg
+    push_u16(&mut bytes, 0); // reserved2
+    push_i32(&mut bytes, constant);
+
+    align_to_8_with(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0);
+
+    bytes
+  }
+
   fn build_stackmaps_with_statepoint_pair(base_off: i32, derived_off: i32) -> Vec<u8> {
     // Minimal stackmap section containing a single statepoint record with one
     // `(base, derived)` pair.
@@ -1880,7 +1919,6 @@ mod tests {
     let constant = 0x1122_3344_5566_7788;
     let blob_a = constindex_blob(0x1000, 1, 0x10, &[constant, 0xDEAD_BEEF], 0);
     let blob_b = constindex_blob(0x1000, 1, 0x10, &[0xDEAD_BEEF, constant], 1);
-
     let mut concat = blob_a.clone();
     concat.extend_from_slice(&blob_b);
 
@@ -1912,10 +1950,55 @@ mod tests {
   }
 
   #[test]
+  fn parse_deduplicates_duplicate_callsite_pcs_even_when_patchpoint_ids_differ() {
+    // `patchpoint_id` is not required to be unique. The runtime identity is the callsite PC
+    // (function address + instruction offset), so identical callsites should still be deduped even
+    // if metadata IDs differ.
+    let blob_a = minimal_blob(0x1000, 111, 0x10);
+    let blob_b = minimal_blob(0x1000, 222, 0x10);
+    let mut concat = blob_a.clone();
+    concat.extend_from_slice(&blob_b);
+
+    let sm = StackMaps::parse(&concat).unwrap();
+    assert_eq!(sm.raws().len(), 2);
+    assert_eq!(sm.callsites().len(), 1);
+
+    let callsite = sm.lookup(0x1010).expect("deduped callsite");
+    assert_eq!(callsite.record.patchpoint_id, 111);
+  }
+
+  #[test]
+  fn parse_deduplicates_duplicate_callsite_pcs_with_semantically_equivalent_locations() {
+    // LLVM can choose different encodings for constants (inline `Constant` vs constant-pool
+    // `ConstIndex`) across stackmap blobs, and these should still dedupe under lld ICF.
+    let constant = 0x1234i32;
+    let constant_u64 = (constant as i64) as u64;
+
+    let blob_a = blob_one_constant_loc(0x1000, 1, 0x10, constant);
+    let blob_b = constindex_blob(0x1000, 1, 0x10, &[constant_u64], 0);
+    let mut concat = blob_a.clone();
+    concat.extend_from_slice(&blob_b);
+
+    let sm = StackMaps::parse(&concat).unwrap();
+    assert_eq!(sm.raws().len(), 2);
+    assert_eq!(sm.callsites().len(), 1);
+
+    match (&sm.raws()[0].records[0].locations[0], &sm.raws()[1].records[0].locations[0]) {
+      (Location::Constant { value: a, .. }, Location::ConstIndex { value: b, .. }) => {
+        assert_eq!(*a, constant_u64);
+        assert_eq!(*b, constant_u64);
+      }
+      other => panic!("unexpected locations: {other:?}"),
+    }
+
+    assert!(sm.lookup(0x1010).is_some());
+  }
+
+  #[test]
   fn parse_rejects_conflicting_duplicate_callsite_pcs() {
-    // Duplicate callsite PCs are only safe if the records are identical.
-    let blob_a = minimal_blob(0x1000, 1, 0x10);
-    let blob_b = minimal_blob(0x1000, 2, 0x10);
+    // Duplicate callsite PCs are only safe if the records are semantically identical.
+    let blob_a = blob_one_constant_loc(0x1000, 1, 0x10, 0);
+    let blob_b = blob_one_constant_loc(0x1000, 1, 0x10, 1);
     let mut concat = blob_a.clone();
     concat.extend_from_slice(&blob_b);
 
