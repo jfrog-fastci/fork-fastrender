@@ -16,13 +16,6 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-#[derive(Debug)]
-struct LlvmTools {
-  opt: String,
-  llc: String,
-  objcopy: String,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Location {
   loc_type: u8,
@@ -97,61 +90,32 @@ fn try_run(cmd: &mut Command) -> io::Result<()> {
   Ok(())
 }
 
-fn llvm_major_version_from_output(output: &str) -> Option<u32> {
-  let idx = output.find("LLVM version")?;
-  let mut rest = &output[idx + "LLVM version".len()..];
-  rest = rest.trim_start_matches(|c: char| c == ':' || c.is_whitespace());
-
-  let digits_end = rest
-    .find(|c: char| !c.is_ascii_digit())
-    .unwrap_or(rest.len());
-  rest[..digits_end].parse::<u32>().ok()
-}
-
-fn llvm_tool_major_version(tool: &str) -> io::Result<Option<u32>> {
-  let output = match Command::new(tool).arg("--version").output() {
-    Ok(out) => out,
-    Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-    Err(err) => return Err(err),
-  };
-  if !output.status.success() {
-    return Ok(None);
-  }
-
-  let mut text = String::new();
-  text.push_str(&String::from_utf8_lossy(&output.stdout));
-  text.push_str(&String::from_utf8_lossy(&output.stderr));
-  Ok(llvm_major_version_from_output(&text))
-}
-
-fn select_llvm18_tool(base: &str) -> Result<String, String> {
-  let preferred = format!("{base}-18");
-
-  for candidate in [&preferred[..], base] {
-    match llvm_tool_major_version(candidate) {
-      Ok(Some(18)) => return Ok(candidate.to_string()),
-      Ok(Some(_)) | Ok(None) => continue,
-      Err(_) => continue,
+fn find_llvm_tool(name: &str) -> Option<String> {
+  let candidates = [format!("{name}-18"), name.to_string()];
+  for candidate in candidates {
+    let output = Command::new(&candidate).arg("--version").output();
+    let output = match output {
+      Ok(output) if output.status.success() => output,
+      _ => continue,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let output = format!("{stdout}{stderr}").to_ascii_lowercase();
+    if output.contains("version 18.") {
+      return Some(candidate);
     }
   }
-
-  Err(format!(
-    "LLVM 18 `{base}` not available (tried `{preferred}` and `{base}`)"
-  ))
+  None
 }
 
-fn llvm18_tools() -> Result<LlvmTools, String> {
-  Ok(LlvmTools {
-    opt: select_llvm18_tool("opt")?,
-    llc: select_llvm18_tool("llc")?,
-    objcopy: select_llvm18_tool("llvm-objcopy")?,
-  })
-}
-
-fn dump_section(objcopy: &str, obj: &std::path::Path, out: &std::path::Path) -> io::Result<()> {
+fn dump_section(
+  llvm_objcopy: &str,
+  obj: &std::path::Path,
+  out: &std::path::Path,
+) -> io::Result<()> {
   // Linux/ELF.
   if try_run(
-    Command::new(objcopy)
+    Command::new(llvm_objcopy)
       .arg("--dump-section")
       .arg(format!(".llvm_stackmaps={}", out.display()))
       .arg(obj),
@@ -163,7 +127,7 @@ fn dump_section(objcopy: &str, obj: &std::path::Path, out: &std::path::Path) -> 
 
   // macOS/Mach-O (for completeness).
   try_run(
-    Command::new(objcopy)
+    Command::new(llvm_objcopy)
       .arg("--dump-section")
       .arg(format!("__LLVM_STACKMAPS={}", out.display()))
       .arg(obj),
@@ -244,10 +208,24 @@ fn parse_first_record_locations(stackmaps: &[u8]) -> io::Result<Vec<Location>> {
 
 #[test]
 fn llvm_statepoint_stackmap_has_header_and_pairs() -> io::Result<()> {
-  let tools = match llvm18_tools() {
-    Ok(tools) => tools,
-    Err(reason) => {
-      eprintln!("skipping: {reason}");
+  let opt = match find_llvm_tool("opt") {
+    Some(opt) => opt,
+    None => {
+      eprintln!("skipping: LLVM 18 `opt` not available");
+      return Ok(());
+    }
+  };
+  let llc = match find_llvm_tool("llc") {
+    Some(llc) => llc,
+    None => {
+      eprintln!("skipping: LLVM 18 `llc` not available");
+      return Ok(());
+    }
+  };
+  let llvm_objcopy = match find_llvm_tool("llvm-objcopy") {
+    Some(objcopy) => objcopy,
+    None => {
+      eprintln!("skipping: LLVM 18 `llvm-objcopy` not available");
       return Ok(());
     }
   };
@@ -279,7 +257,7 @@ entry:
   )?;
 
   try_run(
-    Command::new(&tools.opt)
+    Command::new(&opt)
       .arg("-passes=rewrite-statepoints-for-gc")
       .arg("-S")
       .arg(&input_ll)
@@ -288,14 +266,14 @@ entry:
   )?;
 
   try_run(
-    Command::new(&tools.llc)
+    Command::new(&llc)
       .arg("-filetype=obj")
       .arg(&rewritten_ll)
       .arg("-o")
       .arg(&obj),
   )?;
 
-  dump_section(&tools.objcopy, &obj, &stackmaps_bin)?;
+  dump_section(&llvm_objcopy, &obj, &stackmaps_bin)?;
   let stackmaps = fs::read(&stackmaps_bin)?;
   let locs = parse_first_record_locations(&stackmaps)?;
 
