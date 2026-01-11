@@ -49,7 +49,7 @@ SECTIONS {
 
     KEEP(*(.data.rel.ro.llvm_stackmaps))
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
-    /* Legacy: older LLVM/object files may still emit `.llvm_stackmaps`. */
+    /* Legacy: some objects/tools still use the `.llvm_stackmaps` name. */
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
 
@@ -68,7 +68,7 @@ SECTIONS {
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))
-    /* Legacy: older LLVM/object files may still emit `.llvm_faultmaps`. */
+    /* Legacy: some objects/tools still use the `.llvm_faultmaps` name. */
     KEEP(*(.llvm_faultmaps))
     KEEP(*(.llvm_faultmaps.*))
     . = ALIGN(8);
