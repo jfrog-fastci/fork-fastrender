@@ -10,6 +10,11 @@ static int check(int cond) {
 }
 
 int main(void) {
+  ShapeId shape = (ShapeId)0;
+  uint8_t* pinned = rt_alloc_pinned(16, shape);
+  (void)pinned;
+  rt_gc_safepoint();
+
   InternedId id1 = rt_string_intern(BYTES_LIT("hello"));
   InternedId id2 = rt_string_intern(BYTES_LIT("hello"));
   if (check(id1 == id2)) return 1;

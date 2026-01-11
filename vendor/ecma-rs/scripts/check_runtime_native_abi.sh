@@ -46,16 +46,25 @@ trap 'rm -f "${nm_syms_file}"' EXIT
 
 required_symbols=(
   rt_alloc
+  rt_alloc_pinned
   rt_alloc_array
   rt_gc_safepoint
   rt_write_barrier
   rt_gc_collect
+  rt_gc_set_young_range
+  rt_gc_get_young_range
   rt_string_concat
   rt_string_intern
   rt_parallel_spawn
   rt_parallel_join
+  rt_parallel_for
   rt_async_spawn
   rt_async_poll
+  rt_promise_new
+  rt_promise_resolve
+  rt_promise_reject
+  rt_promise_then
+  rt_coro_await
 )
 
 missing=0
