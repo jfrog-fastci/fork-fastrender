@@ -26,6 +26,7 @@ fn annotate_program_preserves_lowering_metadata_fields() {
   inst.meta.hir_expr = Some(ExprId(7));
   inst.meta.type_summary = Some(ValueTypeSummary::NUMBER);
   inst.meta.excludes_nullish = true;
+  inst.meta.preserve_var_assign = true;
 
   let mut bblocks = CfgBBlocks::default();
   bblocks.add(0, vec![inst]);
@@ -80,6 +81,10 @@ fn annotate_program_preserves_lowering_metadata_fields() {
     assert!(
       meta.excludes_nullish,
       "expected excludes_nullish to be preserved ({name})"
+    );
+    assert!(
+      meta.preserve_var_assign,
+      "expected preserve_var_assign to be preserved ({name})"
     );
   }
 }
