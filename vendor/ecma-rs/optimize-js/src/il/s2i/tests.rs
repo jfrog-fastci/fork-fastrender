@@ -1,6 +1,8 @@
 use super::super::inst::InstTyp;
 use crate::il::inst::{Arg, Const};
 use crate::compile_source;
+#[cfg(feature = "typed")]
+use crate::{compile_source_typed_cfg_options, CompileCfgOptions};
 use crate::Program;
 use crate::ProgramFunction;
 use crate::TopLevelMode;
@@ -230,6 +232,75 @@ fn spread_call_indices_include_callee_and_this() {
       "spread indices must be in bounds of args (len={args_len})"
     );
   }
+}
+
+#[cfg(feature = "typed")]
+#[test]
+fn typed_postfix_update_updates_original_local_symbol() {
+  let source = r#"
+    let x = 0;
+    x++;
+    x;
+  "#;
+
+  let program = compile_source_typed_cfg_options(
+    source,
+    TopLevelMode::Module,
+    false,
+    CompileCfgOptions {
+      keep_ssa: true,
+      run_opt_passes: false,
+    },
+  )
+  .expect("typed compile input");
+
+  let cfg = &program.top_level.body;
+  let mut insts = Vec::new();
+  for label in cfg.reverse_postorder() {
+    insts.extend(cfg.bblocks.get(label).iter());
+  }
+
+  let mut init_tgt = None;
+  let mut updated_tgt = None;
+  let mut last_preserved_rhs = None;
+
+  for inst in insts {
+    match inst.t {
+      InstTyp::VarAssign => {
+        let (tgt, arg) = inst.as_var_assign();
+        if matches!(arg, Arg::Const(Const::Num(JsNumber(0.0)))) {
+          init_tgt = Some(tgt);
+        }
+        if inst.meta.preserve_var_assign {
+          if let Arg::Var(rhs) = arg {
+            last_preserved_rhs = Some(*rhs);
+          }
+        }
+      }
+      InstTyp::Bin => {
+        let (tgt, _left, op, right) = inst.as_bin();
+        if op == crate::il::inst::BinOp::Add
+          && matches!(right, Arg::Const(Const::Num(JsNumber(1.0))))
+        {
+          updated_tgt = Some(tgt);
+        }
+      }
+      _ => {}
+    }
+  }
+
+  let init_tgt = init_tgt.expect("missing `let x = 0` initialization");
+  let updated_tgt = updated_tgt.expect("missing `x++` update bin instruction");
+  let last_preserved_rhs = last_preserved_rhs.expect("missing trailing identifier read");
+
+  assert_eq!(
+    last_preserved_rhs, updated_tgt,
+    "expected final read of x to use the updated SSA value"
+  );
+  assert_ne!(
+    last_preserved_rhs, init_tgt,
+    "expected final read of x to not use the pre-update SSA value"
+  );
 }
 
 #[test]

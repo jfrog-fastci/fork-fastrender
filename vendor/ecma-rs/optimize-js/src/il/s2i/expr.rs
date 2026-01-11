@@ -847,6 +847,20 @@ impl<'p> HirSourceToInst<'p> {
     prefix: bool,
   ) -> OptimizeResult<Arg> {
     let arg = self.compile_expr(argument)?;
+    // In typed builds, identifier reads materialize as a `VarAssign` copy so we can attach
+    // per-expression type metadata. For update expressions (e.g. `x++`) the operand is also the
+    // assignment target, so we must ensure we mutate the original variable rather than the typed
+    // identifier-read temporary.
+    //
+    // NB: This only redirects the update target for local identifiers. Foreign/unknown updates are
+    // still modelled via the operand temp (existing behaviour).
+    let update_tgt = match self.body.exprs[argument.0 as usize].kind {
+      ExprKind::Ident(name) => match self.classify_ident(argument, name) {
+        VarType::Local(local) => self.symbol_to_temp(local),
+        _ => arg.to_var(),
+      },
+      _ => arg.to_var(),
+    };
     match operator {
       UpdateOp::Decrement | UpdateOp::Increment => {
         let rhs = match operator {
@@ -857,22 +871,25 @@ impl<'p> HirSourceToInst<'p> {
           self.push_value_inst(
             expr_id,
             Inst::bin(
-              arg.to_var(),
+              update_tgt,
               arg.clone(),
               rhs,
               Arg::Const(Const::Num(JsNumber(1.0))),
             ),
           );
-          Ok(arg)
+          Ok(Arg::Var(update_tgt))
         } else {
           let tmp_var = self.c_temp.bump();
           self.push_value_inst(expr_id, Inst::var_assign(tmp_var, arg.clone()));
-          self.out.push(Inst::bin(
-            arg.clone().to_var(),
+          self.push_value_inst(
+            expr_id,
+            Inst::bin(
+              update_tgt,
             arg,
             rhs,
             Arg::Const(Const::Num(JsNumber(1.0))),
-          ));
+            ),
+          );
           Ok(Arg::Var(tmp_var))
         }
       }
