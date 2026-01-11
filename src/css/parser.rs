@@ -5999,11 +5999,16 @@ fn parse_declaration<'i, 't>(
 
   let value_start = parser.position();
   let mut important_pos = None;
+  let mut ended_with_semicolon = false;
 
   loop {
     let token_start = parser.position();
     match parser.next() {
-      Ok(Token::Semicolon) | Err(_) => break,
+      Ok(Token::Semicolon) => {
+        ended_with_semicolon = true;
+        break;
+      }
+      Err(_) => break,
       Ok(Token::Delim('!')) => {
         if parser
           .try_parse(|p| {
@@ -6042,7 +6047,12 @@ fn parse_declaration<'i, 't>(
   } else {
     full_slice_raw
   };
-  let value = trim_ascii_whitespace_end(value.trim_end_matches(';'));
+  let value = if ended_with_semicolon {
+    value.trim_end_matches(';')
+  } else {
+    value
+  };
+  let value = trim_ascii_whitespace_end(value);
 
   let contains_var = crate::style::var_resolution::contains_arbitrary_substitution_function(value);
   let parsed_value =
@@ -6157,11 +6167,16 @@ fn parse_declaration_in_style_block<'i, 't>(
   let value_location = errors.enabled().then(|| parser.current_source_location());
   let value_start = parser.position();
   let mut important_pos = None;
+  let mut ended_with_semicolon = false;
 
   loop {
     let token_start = parser.position();
     match parser.next() {
-      Ok(Token::Semicolon) | Err(_) => break,
+      Ok(Token::Semicolon) => {
+        ended_with_semicolon = true;
+        break;
+      }
+      Err(_) => break,
       Ok(Token::Delim('!')) => {
         if parser
           .try_parse(|p| {
@@ -6202,7 +6217,12 @@ fn parse_declaration_in_style_block<'i, 't>(
   } else {
     full_slice_raw
   };
-  let value = trim_ascii_whitespace_end(value.trim_end_matches(';'));
+  let value = if ended_with_semicolon {
+    value.trim_end_matches(';')
+  } else {
+    value
+  };
+  let value = trim_ascii_whitespace_end(value);
 
   let Some(property) = property else {
     return Ok(None);
@@ -6898,6 +6918,21 @@ mod tests {
       PropertyValue::Keyword(raw) => assert_eq!(raw, &format!("red{nbsp}")),
       PropertyValue::Color(_) => panic!("NBSP must not be trimmed from color keywords"),
       other => panic!("expected keyword value, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parse_declarations_does_not_trim_semicolon_inside_unterminated_function() {
+    let decls = parse_declarations("--x: var(--y;");
+    assert_eq!(decls.len(), 1);
+    match &decls[0].value {
+      PropertyValue::Custom(raw) | PropertyValue::Keyword(raw) => {
+        assert!(
+          raw.ends_with(';'),
+          "expected semicolon to be preserved inside unterminated function, got {raw:?}"
+        );
+      }
+      other => panic!("expected custom/keyword value, got {other:?}"),
     }
   }
 

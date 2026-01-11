@@ -2560,6 +2560,20 @@ mod tests {
   }
 
   #[test]
+  fn unterminated_var_function_is_invalid_syntax() {
+    // Real-world pages sometimes ship malformed CSS like `fill: var(--x;` (missing the closing `)`).
+    // Browsers treat this as invalid syntax and ignore the declaration; var() substitution must not
+    // "repair" it just because the referenced custom property exists.
+    let props = make_props(&[("--x", "red")]);
+    let value = PropertyValue::Keyword("fill: var(--x;".to_string());
+    let resolved = resolve_var_for_property(&value, &props, "");
+    assert!(
+      matches!(resolved, VarResolutionResult::InvalidSyntax(_)),
+      "expected unterminated var() to be invalid syntax, got {resolved:?}"
+    );
+  }
+
+  #[test]
   fn fallback_used_when_resolved_custom_property_starts_with_css_wide_keyword_sentinel() {
     let props = make_props(&[("--x", "initial #000")]);
     let value = PropertyValue::Keyword("var(--x, blue)".to_string());

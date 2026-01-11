@@ -3448,10 +3448,24 @@ fn serialize_svg_subtree(
         //
         // `style=""` attributes can contain many declarations; dropping them entirely would lose
         // unrelated values, so keep the original string in that case.
-        VarResolutionResult::NotFound(_)
-        | VarResolutionResult::RecursionLimitExceeded
-        | VarResolutionResult::InvalidSyntax(_) => {
+        VarResolutionResult::NotFound(_) | VarResolutionResult::RecursionLimitExceeded => {
           if is_style_attr {
+            idx += 1;
+          } else {
+            attrs.remove(idx);
+          }
+        }
+        VarResolutionResult::InvalidSyntax(_) => {
+          if is_style_attr {
+            // Style attributes can contain many declarations; we normally keep them when we can't
+            // resolve `var()`. However, syntactically-invalid substitution functions (e.g. an
+            // unterminated `var(`) can prevent resvg/usvg from parsing *subsequently merged*
+            // declarations (like the computed `fill`/`stroke` we inline below) once we strip SVG
+            // presentation attributes.
+            //
+            // Clear the broken style attribute so later `merge_style_attribute` calls produce a
+            // syntactically-valid declaration list.
+            attrs[idx].1.clear();
             idx += 1;
           } else {
             attrs.remove(idx);
@@ -3885,19 +3899,9 @@ fn serialize_svg_subtree(
         }
 
         if current_ns == SVG_NAMESPACE {
-          if let Some(extra) = svg_fill_from_root_current_color_injection(
-            &styled.styles,
-            parent_svg_styles,
-            root_fill_current_color_injection,
-            false,
-          ) {
-            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
-            merge_style_attribute(attrs_mut, &extra);
-          }
-          if let Some(extra) = svg_color_style(&styled.styles, parent_svg_styles) {
-            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
-            merge_style_attribute(attrs_mut, &extra);
-          }
+          // Resolve `var()` inside SVG attributes early, before we start merging computed style
+          // declarations into `style=""`. This ensures that if we need to drop/clear a broken
+          // `style=""` attribute we don't discard those merged declarations.
           if owned_attrs
             .as_deref()
             .unwrap_or(attributes)
@@ -3926,6 +3930,20 @@ fn serialize_svg_subtree(
           {
             let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
             resolve_svg_attribute_var_calls(attrs_mut, &styled.styles.custom_properties);
+          }
+
+          if let Some(extra) = svg_fill_from_root_current_color_injection(
+            &styled.styles,
+            parent_svg_styles,
+            root_fill_current_color_injection,
+            false,
+          ) {
+            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            merge_style_attribute(attrs_mut, &extra);
+          }
+          if let Some(extra) = svg_color_style(&styled.styles, parent_svg_styles) {
+            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            merge_style_attribute(attrs_mut, &extra);
           }
           if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
             let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
@@ -7570,6 +7588,78 @@ mod tests {
       marker
     );
     sign * value
+  }
+
+  #[test]
+  fn svg_serialization_clears_invalid_var_in_style_attribute() {
+    use crate::style::types::{ColorOrNone, FillRule};
+    use crate::style::color::Rgba;
+
+    fn styled_svg_element(tag: &str) -> StyledNode {
+      let mut node = styled_element(tag);
+      match &mut node.node.node_type {
+        DomNodeType::Element { namespace, .. } => {
+          *namespace = SVG_NAMESPACE.to_string();
+        }
+        _ => panic!("expected element node"),
+      }
+      node
+    }
+
+    let mut svg = styled_svg_element("svg");
+    svg.node_id = 1;
+    match &mut svg.node.node_type {
+      DomNodeType::Element { attributes, .. } => {
+        // Basic root attrs; ensure we don't short-circuit serialization.
+        attributes.push(("viewBox".to_string(), "0 0 10 10".to_string()));
+      }
+      _ => unreachable!(),
+    }
+
+    let mut g = styled_svg_element("g");
+    g.node_id = 2;
+    match &mut g.node.node_type {
+      DomNodeType::Element { attributes, .. } => {
+        attributes.push(("fill".to_string(), "none".to_string()));
+        attributes.push(("stroke".to_string(), "none".to_string()));
+        attributes.push(("fill-rule".to_string(), "evenodd".to_string()));
+        // Intentionally malformed var() call (unterminated) as seen in real-world fixtures.
+        attributes.push(("style".to_string(), "fill: var(--q-colors-text-red;".to_string()));
+      }
+      _ => unreachable!(),
+    }
+    {
+      let mut style = (*g.styles).clone();
+      style.svg_fill = Some(ColorOrNone::None);
+      style.svg_stroke = Some(ColorOrNone::None);
+      style.svg_fill_rule = Some(FillRule::EvenOdd);
+      style.color = Rgba::BLACK;
+      g.styles = Arc::new(style);
+    }
+
+    let mut path = styled_svg_element("path");
+    path.node_id = 3;
+    match &mut path.node.node_type {
+      DomNodeType::Element { attributes, .. } => {
+        attributes.push(("d".to_string(), "M0 0 L10 0 L10 10 L0 10 Z".to_string()));
+      }
+      _ => unreachable!(),
+    }
+
+    g.children.push(path);
+    svg.children.push(g);
+
+    let content = serialize_svg_subtree(&svg, "", None);
+    assert!(
+      !content.svg.contains("var(--q-colors-text-red;"),
+      "serialized SVG should not retain unterminated var() in style attribute: {}",
+      content.svg
+    );
+    assert!(
+      content.svg.contains("fill: none"),
+      "expected serialized SVG to include computed `fill: none`: {}",
+      content.svg
+    );
   }
 
   #[test]
