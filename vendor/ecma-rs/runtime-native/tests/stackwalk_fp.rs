@@ -1103,12 +1103,12 @@ fn build_stackmaps_with_shared_base_derived_offsets(derived_offsets: &[i32]) -> 
     out.extend_from_slice(&derived_off.to_le_bytes()); // offset
   }
 
-  // Align to 8 before the live-out header.
+  // StackMap v3 requires aligning the live-out header to 8 bytes after the locations array.
   while out.len() % 8 != 0 {
     out.push(0);
   }
 
-  // Live-out header: (padding, num_live_outs). For tests we keep both 0.
+  // Live-out header: u16 padding; u16 num_live_outs (none).
   out.extend_from_slice(&0u16.to_le_bytes());
   out.extend_from_slice(&0u16.to_le_bytes());
 

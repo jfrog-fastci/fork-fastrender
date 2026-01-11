@@ -1689,7 +1689,7 @@ mod tests {
     // No liveouts.
     push_u16(&mut bytes, 0); // padding
     push_u16(&mut bytes, 0); // num_liveouts
-    align_to_8_with(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0); // record-end padding
 
     let sm = StackMaps::parse(&bytes).unwrap();
     let callsite = sm.lookup(0x1010).unwrap();

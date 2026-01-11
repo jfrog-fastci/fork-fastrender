@@ -779,12 +779,9 @@ mod tests {
       header: crate::gc::ObjHeader,
       payload: DummyPayload,
     }
-
+ 
     let mut obj = DummyObject {
-      header: crate::gc::ObjHeader {
-        type_desc: &DESC,
-        meta: std::sync::atomic::AtomicUsize::new(0),
-      },
+      header: crate::gc::ObjHeader::new(&DESC),
       payload: DummyPayload {
         non_ptr0: 123,
         ptr0: 0x1111usize as *mut u8,
@@ -1421,8 +1418,7 @@ mod tests {
     data.max_active.fetch_max(active, Ordering::SeqCst);
 
     // Keep the task alive until the test releases it so other workers have a chance to overlap.
-    let start = Instant::now();
-    while !data.release.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(2) {
+    while !data.release.load(Ordering::SeqCst) {
       std::thread::yield_now();
     }
 

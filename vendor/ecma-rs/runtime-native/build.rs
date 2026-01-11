@@ -31,6 +31,7 @@ fn main() {
   // Linker script (optional): expose `.llvm_stackmaps` as a loaded in-memory byte slice via
   // linker-defined start/stop symbols (see `link/stackmaps.ld`).
   println!("cargo:rerun-if-changed=link/stackmaps.ld");
+  println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LLVM_STACKMAPS_LINKER");
   maybe_enable_stackmaps_linker_symbols();
 
   // Integration test artifact (x86_64 only): compile a tiny statepoint module and extract the

@@ -201,6 +201,38 @@ Only when `obj` is old *and* the stored value is young does the barrier perform 
 
 ---
 
+## Concurrency + GC coordination contract
+
+### Mutators
+
+* `rt_write_barrier` may be executed concurrently by multiple mutator threads.
+  * Multiple threads may mark the same card / set the same object’s `REMEMBERED` bit concurrently.
+
+Because Rust considers concurrent non-atomic writes a data race (UB) even when all writers store the same value, all shared metadata touched by the barrier is implemented using atomics:
+
+* **`ObjHeader` flags** (including `REMEMBERED`) are stored in an `AtomicUsize` and updated via `fetch_or`/`fetch_and`.
+* **Card tables** are stored as an atomic bitset (an array of [`AtomicU64`] words) and marked via `fetch_or`.
+* The pointer to the first `AtomicU64` word is stored in the high bits of `ObjHeader.meta`; the low flag bits are reserved for GC metadata, so card table allocations must be aligned such that those low bits are zero (16-byte alignment on 64-bit platforms).
+
+**Memory ordering:** the write barrier uses `Ordering::Relaxed` for remembered-bit and card-table updates.
+These marks are conservative bookkeeping; atomicity is required to avoid UB, but ordering is not.
+The collector consults and clears this metadata only after a stop-the-world (STW) synchronization point.
+
+### Minor GC
+
+The current `runtime-native` minor GC is **stop-the-world**:
+
+* The collector assumes there are no concurrent mutators while it scans and clears the remembered set / card tables.
+
+Even with this STW assumption, clearing logic is still implemented using atomics so that:
+
+* barrier/GC races are not UB (future-proofing for concurrent/incremental minor GC), and
+* a future concurrent collector can clear marks without introducing UB.
+
+If a future concurrent collector clears card marks while mutators are still running, it must take care to avoid **lost updates**. A common pattern is to atomically "take a snapshot" of each card-table word via `word.swap(0, Ordering::AcqRel)` and then scan the snapshot bits.
+
+---
+
 ## Remembered-set semantics (non-array objects)
 
 The minor collector traces nursery objects starting from roots plus a **remembered set** of old objects that may contain pointers into the nursery.

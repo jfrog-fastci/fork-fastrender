@@ -47,7 +47,6 @@ mod evacuate;
 mod mark;
 mod keep_alive;
 mod work_stack;
-
 pub use config::{HeapConfig, HeapLimits};
 pub use heap::{AllocError, AllocKind, AllocRequest, GcHeap, PersistentRoot};
 pub use keep_alive::keep_alive_gc_ref;
@@ -251,6 +250,13 @@ pub(crate) fn alloc_card_table(obj_size: usize) -> *mut AtomicU64 {
 }
 
 impl ObjHeader {
+  pub const fn new(type_desc: &'static TypeDescriptor) -> Self {
+    Self {
+      type_desc: type_desc as *const TypeDescriptor,
+      meta: AtomicUsize::new(0),
+    }
+  }
+
   #[inline]
   pub(crate) unsafe fn type_desc(&self) -> &TypeDescriptor {
     debug_assert!(!self.type_desc.is_null());
@@ -295,7 +301,7 @@ impl ObjHeader {
     if self.is_forwarded() {
       return;
     }
-    self.meta.fetch_and(!META_REMEMBERED, Ordering::Release);
+    self.meta.fetch_and(!META_REMEMBERED, Ordering::Relaxed);
   }
 
   #[inline]
@@ -310,7 +316,7 @@ impl ObjHeader {
     if self.is_forwarded() {
       return false;
     }
-    let prev = self.meta.fetch_or(META_REMEMBERED, Ordering::AcqRel);
+    let prev = self.meta.fetch_or(META_REMEMBERED, Ordering::Relaxed);
     (prev & META_REMEMBERED) == 0
   }
 
@@ -319,10 +325,9 @@ impl ObjHeader {
     if self.is_forwarded() {
       return;
     }
-    self.meta.fetch_and(!META_REMEMBERED, Ordering::AcqRel);
+    self.meta.fetch_and(!META_REMEMBERED, Ordering::Relaxed);
   }
 
-  #[inline]
   pub(crate) fn set_pinned(&mut self, pinned: bool) {
     debug_assert!(!self.is_forwarded(), "pinned objects must not be forwarded");
     if self.is_forwarded() {
@@ -347,7 +352,7 @@ impl ObjHeader {
   }
 
   #[inline]
-  pub(crate) fn set_mark_epoch(&mut self, epoch: u8) {
+  pub(crate) fn set_mark_epoch(&self, epoch: u8) {
     debug_assert!(epoch <= 1);
     if self.is_forwarded() {
       // Forwarded objects store relocation pointers in `meta` (used during minor

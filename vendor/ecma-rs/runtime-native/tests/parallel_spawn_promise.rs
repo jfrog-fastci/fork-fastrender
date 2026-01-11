@@ -345,11 +345,19 @@ extern "C" fn inc_and_fulfill(data: *mut u8, promise: PromiseRef) {
   }
 }
 
-extern "C" fn sleep_then_inc_and_fulfill(data: *mut u8, promise: PromiseRef) {
-  // Safety: caller passed `Arc::into_raw(counter.clone()) as *mut u8`.
-  let counter = unsafe { Arc::from_raw(data as *const AtomicUsize) };
-  std::thread::sleep(Duration::from_millis(200));
-  counter.fetch_add(1, Ordering::AcqRel);
+#[repr(C)]
+struct WaitForStart {
+  start: AtomicBool,
+  work: AtomicUsize,
+}
+
+extern "C" fn wait_for_start_then_inc_and_fulfill(data: *mut u8, promise: PromiseRef) {
+  // Safety: caller passed `Arc::into_raw(shared.clone()) as *mut u8`.
+  let shared = unsafe { Arc::from_raw(data as *const WaitForStart) };
+  while !shared.start.load(Ordering::Acquire) {
+    std::thread::yield_now();
+  }
+  shared.work.fetch_add(1, Ordering::AcqRel);
   unsafe {
     runtime_native::rt_promise_fulfill(promise);
   }
@@ -358,12 +366,16 @@ extern "C" fn sleep_then_inc_and_fulfill(data: *mut u8, promise: PromiseRef) {
 #[test]
 fn parallel_spawn_promise_wakes_blocked_async_poll() {
   let _rt = TestRuntimeGuard::new();
-  let work = Arc::new(AtomicUsize::new(0));
   let continuations = Arc::new(AtomicUsize::new(0));
 
+  let shared = Arc::new(WaitForStart {
+    start: AtomicBool::new(false),
+    work: AtomicUsize::new(0),
+  });
+
   let promise = runtime_native::rt_parallel_spawn_promise(
-    sleep_then_inc_and_fulfill,
-    Arc::into_raw(work.clone()) as *mut u8,
+    wait_for_start_then_inc_and_fulfill,
+    Arc::into_raw(shared.clone()) as *mut u8,
     PromiseLayout::of::<()>(),
   );
   runtime_native::rt_promise_then_legacy(
@@ -386,12 +398,9 @@ fn parallel_spawn_promise_wakes_blocked_async_poll() {
   });
 
   // Wait for the event loop to actually block in `epoll_wait` (not just spin or return early).
-  // This avoids timing flakes when the test thread is descheduled between spawning and waiting.
+  // Once blocked, release the worker so the promise fulfillment must wake the poll.
   let start = Instant::now();
   while !runtime_native::async_rt::debug_in_epoll_wait() {
-    if rx.try_recv().is_ok() {
-      panic!("rt_async_poll_legacy returned before blocking in epoll_wait");
-    }
     assert!(
       start.elapsed() < Duration::from_secs(2),
       "timeout waiting for rt_async_poll_legacy to block in epoll_wait"
@@ -399,10 +408,11 @@ fn parallel_spawn_promise_wakes_blocked_async_poll() {
     std::thread::yield_now();
   }
 
+  shared.start.store(true, Ordering::Release);
   rx.recv_timeout(Duration::from_secs(5))
     .expect("rt_async_poll_legacy did not wake after the parallel task completed");
 
-  assert_eq!(work.load(Ordering::Acquire), 1);
+  assert_eq!(shared.work.load(Ordering::Acquire), 1);
   assert_eq!(continuations.load(Ordering::Acquire), 1);
 }
 

@@ -213,16 +213,16 @@ fn mark_card_range(card_table: *mut AtomicU64, start_card: usize, end_card: usiz
       };
       let low_mask = (!0u64) << start_bit;
       let mask = high_mask & low_mask;
-      (*card_table.add(start_word)).fetch_or(mask, Ordering::Release);
+      (*card_table.add(start_word)).fetch_or(mask, Ordering::Relaxed);
       return;
     }
 
     // First word: mark from start_bit..=63.
-    (*card_table.add(start_word)).fetch_or((!0u64) << start_bit, Ordering::Release);
+    (*card_table.add(start_word)).fetch_or((!0u64) << start_bit, Ordering::Relaxed);
 
     // Middle words: mark all bits.
     for word in (start_word + 1)..end_word {
-      (*card_table.add(word)).fetch_or(!0u64, Ordering::Release);
+      (*card_table.add(word)).fetch_or(!0u64, Ordering::Relaxed);
     }
 
     // Last word: mark 0..=end_bit.
@@ -231,7 +231,7 @@ fn mark_card_range(card_table: *mut AtomicU64, start_card: usize, end_card: usiz
     } else {
       (1u64 << (end_bit + 1)) - 1
     };
-    (*card_table.add(end_word)).fetch_or(last_mask, Ordering::Release);
+    (*card_table.add(end_word)).fetch_or(last_mask, Ordering::Relaxed);
   }
 }
 
@@ -489,6 +489,8 @@ pub unsafe extern "C" fn rt_gc_get_young_range(
 /// objects in the current milestone GC).
 #[doc(hidden)]
 pub fn clear_write_barrier_state_for_tests() {
+  // Keep integration tests isolated: the young-space range is global and affects
+  // the write barrier's fast paths.
   rt_gc_set_young_range(core::ptr::null_mut(), core::ptr::null_mut());
   global_remset::remset_clear();
 }
@@ -555,7 +557,6 @@ pub fn remembered_set_scan_and_rebuild_for_tests(
 pub fn remembered_set_len_for_tests() -> usize {
   global_remset::remset_len_for_tests()
 }
-
 #[inline]
 unsafe fn remember_old_object(obj: *mut u8) {
   if obj.is_null() {
