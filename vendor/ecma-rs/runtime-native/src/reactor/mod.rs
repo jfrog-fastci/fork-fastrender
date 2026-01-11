@@ -591,10 +591,17 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
 
   impl ReactorSys {
     pub(super) fn new_with_waker() -> io::Result<(ReactorSys, super::Waker)> {
-      let kq = unsafe { libc::kqueue() };
-      if kq == -1 {
-        return Err(io::Error::last_os_error());
-      }
+      let kq = loop {
+        let kq = unsafe { libc::kqueue() };
+        if kq != -1 {
+          break kq;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err);
+      };
       let kqueue = unsafe { OwnedFd::from_raw_fd(kq) };
       set_cloexec(kqueue.as_raw_fd())?;
 
