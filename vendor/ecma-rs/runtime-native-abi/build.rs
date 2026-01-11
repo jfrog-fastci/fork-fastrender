@@ -36,6 +36,17 @@ fn main() {
     modified = true;
   }
 
+  // cbindgen emits some `usize`-typed bit flags as untyped integer expressions
+  // (e.g. `#define RT_ARRAY_ELEM_PTR_FLAG (1 << 63)`), which is UB in C (shifting
+  // a 32-bit `int` by 63). Rewrite those to explicitly use `size_t`.
+  if header.contains("#define RT_ARRAY_ELEM_PTR_FLAG (1 << 63)") {
+    header = header.replace(
+      "#define RT_ARRAY_ELEM_PTR_FLAG (1 << 63)",
+      "#define RT_ARRAY_ELEM_PTR_FLAG ((size_t)1u << 63)",
+    );
+    modified = true;
+  }
+
   // Make the header usable from C++ callers too (C linkage).
   if !header.contains("extern \"C\"") {
     if let Some(insert_at) = header.find("/**") {
@@ -78,6 +89,28 @@ fn main() {
         modified = true;
       }
     }
+  }
+
+  // Flexible array members (`[u8; 0]` in Rust) are emitted by cbindgen as
+  // `uint8_t data[0]`, which is rejected by strict C++ compilers. Model the same
+  // C/C++ split used in `runtime_native.h`:
+  // - C:   `uint8_t data[];`
+  // - C++: `uint8_t data[1];` (still yields the correct `offsetof` for the payload)
+  if header.contains("uint8_t data[0];") {
+    header = header.replace(
+      "uint8_t data[0];",
+      concat!(
+        "#if defined(__cplusplus)\n",
+        "  // Flexible array members are not standard C++; use a 1-byte trailing field to\n",
+        "  // keep the header usable from C++ while still computing the correct payload\n",
+        "  // offset via `offsetof(RtArrayHeader, data)`.\n",
+        "  uint8_t data[1];\n",
+        "#else\n",
+        "  uint8_t data[];\n",
+        "#endif\n",
+      ),
+    );
+    modified = true;
   }
 
   // cbindgen does not currently emit foreign `extern` statics. The runtime exports

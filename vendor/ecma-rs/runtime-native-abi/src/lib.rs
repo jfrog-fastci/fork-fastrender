@@ -77,7 +77,8 @@ pub type GcHandle = *mut GcPtr;
 ///
 /// The raw element size is `elem_size & !RT_ARRAY_ELEM_PTR_FLAG` and must equal
 /// `size_of::<*mut u8>()`.
-pub const RT_ARRAY_ELEM_PTR_FLAG: usize = 1usize << (usize::BITS - 1);
+// Note: the ABI is currently 64-bit only, so this is always bit 63.
+pub const RT_ARRAY_ELEM_PTR_FLAG: usize = 1usize << 63;
 
 /// Array header flag: the array payload is a `len`-long sequence of `*mut u8` GC pointers.
 pub const RT_ARRAY_FLAG_PTR_ELEMS: u32 = 1 << 0;
@@ -102,7 +103,8 @@ pub struct RtArrayHeader {
 }
 
 /// Byte offset from the array base pointer (header) to the start of the element payload.
-pub const RT_ARRAY_DATA_OFFSET: usize = core::mem::offset_of!(RtArrayHeader, data);
+// Note: the ABI is currently 64-bit only and `RtArrayHeader` is fixed-layout.
+pub const RT_ARRAY_DATA_OFFSET: usize = 32;
 
 /// Reserved invalid / sentinel runtime shape id value (raw).
 ///
@@ -535,6 +537,7 @@ mod tests {
 
     assert!(RT_ARRAY_ELEM_PTR_FLAG == (1usize << 63));
     assert!(RT_ARRAY_DATA_OFFSET == 32);
+    assert!(core::mem::offset_of!(RtArrayHeader, data) == RT_ARRAY_DATA_OFFSET);
 
     assert!(size_of::<RtArrayHeader>() == 32);
     assert!(align_of::<RtArrayHeader>() == 8);
@@ -626,6 +629,9 @@ mod tests {
       "RT_IO_READABLE",
       "RT_IO_WRITABLE",
       "RT_IO_ERROR",
+      "RT_ARRAY_ELEM_PTR_FLAG",
+      "RT_ARRAY_FLAG_PTR_ELEMS",
+      "RT_ARRAY_DATA_OFFSET",
       "RT_PROMISE_RESOLVE_VALUE",
       "RT_PROMISE_RESOLVE_PROMISE",
       "RT_PROMISE_RESOLVE_THENABLE",
@@ -659,6 +665,7 @@ mod tests {
       "RtCoroutineHeader",
       "GcPtr",
       "GcHandle",
+      "RtArrayHeader",
     ] {
       assert!(header.contains(ty), "missing type `{ty}` in generated header");
     }
