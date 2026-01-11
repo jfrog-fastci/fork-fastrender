@@ -27,6 +27,7 @@ graph TD
     optimize_js_debugger["optimize-js-debugger"]
     parse_js["parse-js"]
     parse_js_cli["parse-js-cli"]
+    runtime_io_uring["runtime-io-uring"]
     runtime_js["runtime-js"]
     runtime_native["runtime-native"]
     runtime_native_abi["runtime-native-abi"]
