@@ -428,6 +428,7 @@ fn sanitize_request_header_value(value: &str) -> String {
 /// - User headers override any existing headers with the same name (case-insensitive).
 fn merge_user_request_headers(
   url: &str,
+  method: &str,
   headers: &mut Vec<(String, String)>,
   user_headers: &[(String, String)],
 ) -> Result<()> {
@@ -437,7 +438,7 @@ fn merge_user_request_headers(
 
   let mut removed_defaults: HashSet<String> = HashSet::new();
   for (name, value) in user_headers {
-    if fetch_http_request_header_forbidden(name, value) {
+    if fetch_http_request_header_forbidden(method, name, value) {
       continue;
     }
     if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
@@ -1428,11 +1429,21 @@ impl<'a> HttpRequest<'a> {
   }
 }
 
-fn fetch_http_request_header_forbidden(name: &str, value: &str) -> bool {
+fn fetch_http_request_header_forbidden(method: &str, name: &str, value: &str) -> bool {
   // Mirrors Fetch's "forbidden request header" checks (see `web_fetch::Headers` guard rules).
   // We keep this local to the resource layer so `HttpFetcher` can safely accept user header pairs
   // without allowing `Cookie`, `Host`, etc. to be spoofed.
   let name = name.trim().to_ascii_lowercase();
+  // Internal CORS preflight requests need to set `Access-Control-Request-*` headers. These are
+  // forbidden for normal user requests, but are allowed for preflight `OPTIONS` requests.
+  if method.eq_ignore_ascii_case("OPTIONS")
+    && matches!(
+      name.as_str(),
+      "access-control-request-headers" | "access-control-request-method"
+    )
+  {
+    return false;
+  }
   match name.as_str() {
     "accept-charset"
     | "accept-encoding"
@@ -4387,7 +4398,9 @@ fn cors_preflight_validate_allow_methods(
     return Err(response_resource_error(
       response,
       requested_url,
-      format!("CORS preflight blocked method {request_method}"),
+      format!(
+        "CORS preflight blocked method {request_method}: Access-Control-Allow-Methods does not allow it"
+      ),
     ));
   }
   Ok(())
@@ -4413,7 +4426,7 @@ fn cors_preflight_validate_allow_headers(
     return Err(response_resource_error(
       response,
       requested_url,
-      "CORS preflight blocked non-wildcard Authorization header",
+      "CORS preflight blocked request header authorization: Access-Control-Allow-Headers must explicitly include authorization",
     ));
   }
 
@@ -4427,7 +4440,9 @@ fn cors_preflight_validate_allow_headers(
     return Err(response_resource_error(
       response,
       requested_url,
-      format!("CORS preflight blocked request header {unsafe_name}"),
+      format!(
+        "CORS preflight blocked request header {unsafe_name}: Access-Control-Allow-Headers does not allow it"
+      ),
     ));
   }
   Ok(())
@@ -5376,7 +5391,7 @@ impl HttpFetcher {
     // each header list entry (preserving duplicates) and applies a 1024-byte cap over the total
     // size of CORS-safelisted header values.
     let mut sanitized_user_headers: Vec<(String, String)> = Vec::new();
-    merge_user_request_headers(url, &mut sanitized_user_headers, user_headers)?;
+    merge_user_request_headers(url, method, &mut sanitized_user_headers, user_headers)?;
     let unsafe_header_names = cors_unsafe_request_header_names(&sanitized_user_headers);
 
     let needs_preflight = !method_is_safelisted || !unsafe_header_names.is_empty();
@@ -7082,7 +7097,7 @@ impl HttpFetcher {
           referrer_url,
           effective_referrer_policy,
         );
-        merge_user_request_headers(&current, &mut headers, user_headers)?;
+        merge_user_request_headers(&current, current_method, &mut headers, user_headers)?;
         if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
           // Ensure the cookie jar is authoritative (user `Cookie` is forbidden, but keep the
           // override semantics consistent).
@@ -7879,7 +7894,7 @@ impl HttpFetcher {
           referrer_url,
           effective_referrer_policy,
         );
-        merge_user_request_headers(&current, &mut headers, user_headers)?;
+        merge_user_request_headers(&current, current_method, &mut headers, user_headers)?;
         if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
           if let Some(value) = self.cookie_header_value(&current) {
             headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));

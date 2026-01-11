@@ -1962,6 +1962,156 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_does_not_require_allow_methods_for_safelisted_post() {
+    if skip_if_curl_backend_missing("cors_preflight_does_not_require_allow_methods_for_safelisted_post")
+    {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_does_not_require_allow_methods_for_safelisted_post")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      // Preflight OPTIONS request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let req = headers.to_ascii_lowercase();
+      assert!(
+        req.starts_with("options "),
+        "expected preflight OPTIONS request, got:\n{req}"
+      );
+      assert!(
+        req.contains("access-control-request-method: post"),
+        "expected Access-Control-Request-Method for preflight, got:\n{req}"
+      );
+      assert!(
+        req.contains("access-control-request-headers: x-test"),
+        "expected Access-Control-Request-Headers for preflight, got:\n{req}"
+      );
+      let response =
+        "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: http://client.example\r\nAccess-Control-Allow-Headers: x-test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual POST request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let req = headers.to_ascii_lowercase();
+      assert!(
+        req.starts_with("post "),
+        "expected POST request after successful preflight, got:\n{req}"
+      );
+      assert!(req.contains("x-test: 1"), "expected user header, got:\n{req}");
+      let body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/cors-post");
+    let mut request = Request::new("POST", &url);
+    request.headers.append("X-Test", "1").unwrap();
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    handle.join().unwrap();
+  }
+
+  #[test]
+  fn cors_preflight_wildcard_allow_headers_does_not_cover_authorization() {
+    if skip_if_curl_backend_missing(
+      "cors_preflight_wildcard_allow_headers_does_not_cover_authorization",
+    ) {
+      return;
+    }
+    let Some(listener) = try_bind_localhost(
+      "cors_preflight_wildcard_allow_headers_does_not_cover_authorization",
+    ) else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      // Preflight OPTIONS request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let req = headers.to_ascii_lowercase();
+      assert!(
+        req.starts_with("options "),
+        "expected preflight OPTIONS request, got:\n{req}"
+      );
+      assert!(
+        req.contains("access-control-request-method: get"),
+        "expected Access-Control-Request-Method for preflight, got:\n{req}"
+      );
+      assert!(
+        req.contains("access-control-request-headers: authorization"),
+        "expected Access-Control-Request-Headers for preflight, got:\n{req}"
+      );
+      let response =
+        "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: http://client.example\r\nAccess-Control-Allow-Headers: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Ensure the actual request is not sent.
+      listener.set_nonblocking(true).unwrap();
+      let start = std::time::Instant::now();
+      while start.elapsed() < Duration::from_millis(200) {
+        match listener.accept() {
+          Ok(_) => panic!("unexpected follow-up request after preflight failure"),
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept after preflight: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/cors-auth");
+    let mut request = Request::new("GET", &url);
+    request
+      .headers
+      .append("Authorization", "Bearer token")
+      .unwrap();
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected preflight failure");
+    let msg = err.to_string().to_ascii_lowercase();
+    assert!(
+      msg.contains("preflight") && msg.contains("authorization"),
+      "unexpected error: {err}"
+    );
+    assert!(
+      msg.contains("access-control-allow-headers"),
+      "unexpected error: {err}"
+    );
+    handle.join().unwrap();
+  }
+
+  #[test]
   fn sends_user_headers_over_network() {
     if skip_if_curl_backend_missing("sends_user_headers_over_network") {
       return;

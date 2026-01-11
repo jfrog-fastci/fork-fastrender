@@ -594,7 +594,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         referrer_url,
         effective_referrer_policy,
       );
-      super::merge_user_request_headers(&current, &mut headers, user_headers)?;
+      super::merge_user_request_headers(&current, current_method, &mut headers, user_headers)?;
       if super::cookies_allowed_for_request(credentials_mode, &current, client_origin) {
         if let Some(value) = fetcher.cookie_header_value(&current) {
           headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
