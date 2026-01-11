@@ -91,3 +91,12 @@ fn resolves_import_call_when_module_unresolved() {
     other => panic!("expected import def kind, got {other:?}"),
   }
 }
+
+#[test]
+fn resolves_namespace_import_call_when_module_unresolved() {
+  let (_program, _file, api) = resolve_single_call(
+    r#"import * as fs from "node:fs"; fs.readFile("x");"#,
+    false,
+  );
+  assert_eq!(api, "node:fs.readFile");
+}
