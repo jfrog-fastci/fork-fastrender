@@ -58,6 +58,12 @@ impl StackMap {
     let num_constants = r.read_u32()? as usize;
     let num_records = r.read_u32()? as usize;
 
+    // Defensively validate count fields against the remaining buffer so malformed inputs don't
+    // trigger enormous allocations (e.g. `Vec::with_capacity(u32::MAX)`).
+    if num_functions > r.remaining() / 24 {
+      return Err(StackMapError::UnexpectedEof);
+    }
+
     let mut functions = Vec::with_capacity(num_functions);
     for _ in 0..num_functions {
       let function_address = r.read_u64()?;
@@ -70,11 +76,32 @@ impl StackMap {
       });
     }
 
+    if num_constants > r.remaining() / 8 {
+      return Err(StackMapError::UnexpectedEof);
+    }
     let mut constants = Vec::with_capacity(num_constants);
     for _ in 0..num_constants {
       constants.push(r.read_u64()?);
     }
 
+    let mut expected_records: usize = 0;
+    for f in &functions {
+      expected_records = expected_records
+        .checked_add(f.record_count)
+        .ok_or(StackMapError::RecordCountOverflow)?;
+    }
+    if expected_records != num_records {
+      return Err(StackMapError::RecordCountMismatch {
+        header: num_records,
+        parsed: expected_records,
+      });
+    }
+
+    // Each record is at least 24 bytes, even with 0 locations and 0 live-outs.
+    const MIN_RECORD_SIZE: usize = 24;
+    if num_records > r.remaining() / MIN_RECORD_SIZE {
+      return Err(StackMapError::UnexpectedEof);
+    }
     let mut records = Vec::with_capacity(num_records);
     for f in &functions {
       for _ in 0..f.record_count {
@@ -229,6 +256,11 @@ impl StackMapRecord {
     let _reserved = r.read_u16()?;
     let num_locations = r.read_u16()? as usize;
 
+    // Location entries are 12 bytes each.
+    if num_locations > r.remaining() / 12 {
+      return Err(StackMapError::UnexpectedEof);
+    }
+
     if num_locations < 3 {
       return Err(StackMapError::InvalidStatepointLocations {
         patchpoint_id,
@@ -256,6 +288,11 @@ impl StackMapRecord {
     r.pad_to_align(8)?;
     let _padding = r.read_u16()?;
     let num_live_outs = r.read_u16()? as usize;
+
+    // Live-out entries are 4 bytes each (u16 reg, u8 reserved, u8 size).
+    if num_live_outs > r.remaining() / 4 {
+      return Err(StackMapError::UnexpectedEof);
+    }
     for _ in 0..num_live_outs {
       let _dwarf_reg_num = r.read_u16()?;
       let _reserved = r.read_u8()?;
@@ -400,6 +437,7 @@ impl StackMapRecord {
 pub enum StackMapError {
   UnexpectedEof,
   UnsupportedVersion(u8),
+  RecordCountOverflow,
   RecordCountMismatch { header: usize, parsed: usize },
   InvalidLocationKind { kind: u8 },
   ConstantIndexOutOfRange { index: usize, constants_len: usize },
@@ -432,6 +470,7 @@ impl fmt::Display for StackMapError {
     match self {
       UnexpectedEof => write!(f, "unexpected EOF while parsing LLVM stackmap"),
       UnsupportedVersion(v) => write!(f, "unsupported LLVM stackmap version {v} (expected 3)"),
+      RecordCountOverflow => write!(f, "stackmap record count overflow while summing functions"),
       RecordCountMismatch { header, parsed } => write!(
         f,
         "stackmap record count mismatch: header says {header}, parsed {parsed}"
@@ -562,6 +601,10 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
   fn new(bytes: &'a [u8]) -> Self {
     Self { bytes, pos: 0 }
+  }
+
+  fn remaining(&self) -> usize {
+    self.bytes.len().saturating_sub(self.pos)
   }
 
   fn read_u8(&mut self) -> Result<u8, StackMapError> {

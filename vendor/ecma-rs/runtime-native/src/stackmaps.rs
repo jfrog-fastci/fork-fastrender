@@ -91,6 +91,12 @@ impl StackMap {
     let num_constants = c.read_u32()? as usize;
     let num_records = c.read_u32()? as usize;
 
+    // Defensively validate count fields against the remaining buffer so malformed inputs don't
+    // trigger enormous allocations (e.g. `Vec::with_capacity(u32::MAX)`).
+    if num_functions > c.remaining() / StackSizeRecord::BYTE_SIZE {
+      return Err(StackMapError::UnexpectedEof);
+    }
+
     let mut functions = Vec::with_capacity(num_functions);
     for _ in 0..num_functions {
       functions.push(StackSizeRecord {
@@ -100,11 +106,19 @@ impl StackMap {
       });
     }
 
+    if num_constants > c.remaining() / 8 {
+      return Err(StackMapError::UnexpectedEof);
+    }
     let mut constants = Vec::with_capacity(num_constants);
     for _ in 0..num_constants {
       constants.push(c.read_u64()?);
     }
 
+    // Each record is at least 24 bytes, even with 0 locations and 0 live-outs.
+    const MIN_RECORD_SIZE: usize = 24;
+    if num_records > c.remaining() / MIN_RECORD_SIZE {
+      return Err(StackMapError::UnexpectedEof);
+    }
     let mut records = Vec::with_capacity(num_records);
     for _ in 0..num_records {
       let patchpoint_id = c.read_u64()?;
@@ -112,6 +126,9 @@ impl StackMap {
       let _reserved = c.read_u16()?;
       let num_locations = c.read_u16()? as usize;
 
+      if num_locations > c.remaining() / Location::BYTE_SIZE {
+        return Err(StackMapError::UnexpectedEof);
+      }
       let mut locations = Vec::with_capacity(num_locations);
       for _ in 0..num_locations {
         let kind = c.read_u8()?;
@@ -144,6 +161,9 @@ impl StackMap {
 
       let _padding = c.read_u16()?;
       let num_live_outs = c.read_u16()? as usize;
+      if num_live_outs > c.remaining() / LiveOut::BYTE_SIZE {
+        return Err(StackMapError::UnexpectedEof);
+      }
       let mut live_outs = Vec::with_capacity(num_live_outs);
       for _ in 0..num_live_outs {
         let dwarf_reg = c.read_u16()?;
@@ -177,6 +197,10 @@ pub struct StackSizeRecord {
   pub address: u64,
   pub stack_size: u64,
   pub record_count: u64,
+}
+
+impl StackSizeRecord {
+  const BYTE_SIZE: usize = 24;
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +243,10 @@ pub enum Location {
 }
 
 impl Location {
+  const BYTE_SIZE: usize = 12;
+}
+
+impl Location {
   pub fn size(&self) -> u16 {
     match *self {
       Location::Register { size, .. }
@@ -234,6 +262,10 @@ impl Location {
 pub struct LiveOut {
   pub dwarf_reg: u16,
   pub size: u8,
+}
+
+impl LiveOut {
+  const BYTE_SIZE: usize = 4;
 }
 
 fn parse_location(
@@ -297,6 +329,10 @@ struct Cursor<'a> {
 impl<'a> Cursor<'a> {
   fn new(bytes: &'a [u8]) -> Self {
     Self { bytes, off: 0 }
+  }
+
+  fn remaining(&self) -> usize {
+    self.bytes.len().saturating_sub(self.off)
   }
 
   fn read_u8(&mut self) -> Result<u8, StackMapError> {
