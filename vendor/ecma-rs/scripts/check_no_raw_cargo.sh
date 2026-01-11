@@ -27,7 +27,13 @@ cd "${repo_root}"
 #
 # Note: we support both quoted and unquoted env var values since things like
 # `RUSTFLAGS="-C foo=bar"` commonly include spaces.
-pattern="^[[:space:]]*(?:env[[:space:]]+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\\S+)[[:space:]]+)*cargo\\b(?:[[:space:]]+\\+[^[:space:]]+)?(?:[[:space:]]+|$)"
+#
+# The command may also be chained, e.g.:
+#   cd vendor/ecma-rs && cargo test ...
+#
+# Ignore comment-only lines (leading `#`), otherwise it's too easy to trip the guard
+# from documentation within scripts/justfile.
+pattern="^(?![[:space:]]*#)(?:[[:space:]]*(?:env[[:space:]]+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\\S+)[[:space:]]+)*cargo\\b(?:[[:space:]]+\\+[^[:space:]]+)?(?:[[:space:]]+|$)|.*?(?:&&|\\|\\||;|\\||\\(|\\))[[:space:]]*(?:env[[:space:]]+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\\S+)[[:space:]]+)*cargo\\b(?:[[:space:]]+\\+[^[:space:]]+)?(?:[[:space:]]+|$))"
 
 fail=0
 
