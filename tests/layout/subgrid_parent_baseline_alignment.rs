@@ -74,7 +74,7 @@ fn subgrid_virtual_items_do_not_disable_parent_baseline_alignment() {
   parent_style.width = Some(Length::px(200.0));
   parent_style.grid_template_columns = vec![GridTrack::Auto, GridTrack::Auto];
   parent_style.grid_template_rows = vec![GridTrack::Auto];
-  parent_style.align_items = Some(AlignItems::Baseline);
+  parent_style.align_items = AlignItems::Baseline;
   let parent_style = Arc::new(parent_style);
 
   let line_height = 20.0;
@@ -128,4 +128,3 @@ fn subgrid_virtual_items_do_not_disable_parent_baseline_alignment() {
     "expected baselines to align even with subgrid virtual items (a={baseline_a:.2}, b={baseline_b:.2})"
   );
 }
-
