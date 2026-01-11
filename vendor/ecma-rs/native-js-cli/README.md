@@ -327,6 +327,21 @@ error[NJS0009]: property access is not supported by native-js yet
   currently rejects many common JS/TS constructs (objects/arrays, property
   access, async/await, etc). See [`native-js/README.md`](../native-js/README.md)
   for the current list.
+- Even after `validate_strict_subset` passes, the current HIR→LLVM lowering is
+  still minimal and may fail later during codegen with `NJS01xx` diagnostics.
+
+#### HIR codegen subset (current)
+
+The current HIR-based code generator (used by `native-js`) is limited to a small
+smoke-test subset:
+
+- The entry file must export `main()` with a `return` expression.
+- Numeric literals must be **32-bit integers** (decimal/hex/binary/octal; `_`
+  separators allowed). Floats/`1e3`-style literals are rejected.
+- The return expression supports a small set of integer operators:
+  - unary: `+x`, `-x`
+  - binary: `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`
+- The returned `i32` value becomes the executable’s exit code (like C `main`).
 
 ## Tests
 
