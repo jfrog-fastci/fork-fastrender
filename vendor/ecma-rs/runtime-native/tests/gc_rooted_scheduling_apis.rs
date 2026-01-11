@@ -190,6 +190,34 @@ fn queue_microtask_handle_with_drop_stale_handle_is_noop() {
 }
 
 #[test]
+fn queue_microtask_handle_with_drop_cancel_all_invokes_drop_hook() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  runtime_native::rt_queue_microtask_handle_with_drop(record_ptr, h, record_drop);
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_async_cancel_all();
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+  assert!(runtime_native::rt_handle_load(h).is_null());
+
+  threading::unregister_current_thread();
+}
+
+#[test]
 fn set_timeout_handle_reloads_userdata_from_persistent_handle() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
@@ -282,6 +310,34 @@ fn set_timeout_handle_with_drop_stale_handle_is_noop() {
   assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
   assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
   assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+  assert!(runtime_native::rt_handle_load(h).is_null());
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn set_timeout_handle_with_drop_cancel_all_invokes_drop_hook() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  let _timer = runtime_native::rt_set_timeout_handle_with_drop(record_ptr, h, record_drop, 60_000);
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_async_cancel_all();
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
   assert!(runtime_native::rt_handle_load(h).is_null());
 
   threading::unregister_current_thread();
@@ -647,6 +703,47 @@ fn io_register_handle_with_drop_stale_handle_is_noop() {
 
   // Drain any wakeups triggered by unregistering.
   while runtime_native::rt_async_poll_legacy() {}
+
+  drop(rfd);
+  drop(wfd);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn io_register_handle_with_drop_cancel_all_invokes_drop_hook() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let (rfd, wfd) = pipe_nonblocking();
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+
+  let watcher = runtime_native::rt_io_register_handle_with_drop(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io,
+    h,
+    record_drop,
+  );
+  assert_ne!(watcher, 0);
+
+  simulate_relocation(obj1, obj2);
+
+  runtime_native::rt_async_cancel_all();
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+  assert!(runtime_native::rt_handle_load(h).is_null());
 
   drop(rfd);
   drop(wfd);
