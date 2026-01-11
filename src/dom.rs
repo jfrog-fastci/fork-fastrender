@@ -1765,17 +1765,17 @@ pub fn resolve_first_strong_direction(node: &DomNode) -> Option<TextDirection> {
         if skip {
           continue;
         }
-        for child in &current.children {
+        for child in current.children.iter().rev() {
           stack.push(child);
         }
       }
       DomNodeType::Slot { .. } => {
-        for child in &current.children {
+        for child in current.children.iter().rev() {
           stack.push(child);
         }
       }
       DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. } => {
-        for child in &current.children {
+        for child in current.children.iter().rev() {
           stack.push(child);
         }
       }
@@ -6697,6 +6697,17 @@ impl<'a> ElementRef<'a> {
   }
 
   fn dir_attribute(&self, node: &DomNode, resolve_root: &DomNode) -> Option<TextDirection> {
+    // `<bdi>` elements default to `dir="auto"` (HTML). This affects descendants too because
+    // directionality is inherited.
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("bdi"))
+      && node.get_attribute_ref("dir").is_none()
+      && node.get_attribute_ref("xml:dir").is_none()
+    {
+      return resolve_first_strong_direction(resolve_root);
+    }
+
     node
       .get_attribute_ref("dir")
       .or_else(|| node.get_attribute_ref("xml:dir"))
@@ -12900,6 +12911,23 @@ mod tests {
   }
 
   #[test]
+  fn dir_auto_uses_first_strong_in_tree_order() {
+    let root = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("dir".to_string(), "auto".to_string())],
+      },
+      children: vec![text("שלום"), text("hello")],
+    };
+    assert!(
+      matches(&root, &[], &PseudoClass::Dir(TextDirection::Rtl)),
+      "dir=auto should resolve directionality from the first strong character in tree order"
+    );
+    assert!(!matches(&root, &[], &PseudoClass::Dir(TextDirection::Ltr)));
+  }
+
+  #[test]
   fn dir_auto_on_input_uses_current_value() {
     let input = element_with_attrs(
       "input",
@@ -12982,6 +13010,24 @@ mod tests {
     assert_eq!(resolve_first_strong_direction(&root), None);
     assert!(matches(&root, &[], &PseudoClass::Dir(TextDirection::Ltr)));
     assert!(!matches(&root, &[], &PseudoClass::Dir(TextDirection::Rtl)));
+  }
+
+  #[test]
+  fn dir_bdi_defaults_to_auto() {
+    let bdi = element("bdi", vec![text("שלום")]);
+    assert!(matches(&bdi, &[], &PseudoClass::Dir(TextDirection::Rtl)));
+    assert!(!matches(&bdi, &[], &PseudoClass::Dir(TextDirection::Ltr)));
+  }
+
+  #[test]
+  fn dir_bdi_inherits_to_descendants() {
+    let bdi = element("bdi", vec![text("שלום"), element("span", vec![])]);
+    let root = element("div", vec![bdi]);
+    let ancestors: Vec<&DomNode> = vec![&root, &root.children[0]];
+    let node = &root.children[0].children[1];
+
+    assert!(matches(node, &ancestors, &PseudoClass::Dir(TextDirection::Rtl)));
+    assert!(!matches(node, &ancestors, &PseudoClass::Dir(TextDirection::Ltr)));
   }
 
   #[test]
