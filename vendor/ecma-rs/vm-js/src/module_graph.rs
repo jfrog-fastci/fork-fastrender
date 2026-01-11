@@ -6,9 +6,86 @@ use crate::module_record::ResolveExportResult;
 use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::{
-  cmp_utf16, GcObject, LoadedModuleRequest, ModuleRequest, RealmId, RootId, Scope, Value, Vm, VmError,
+  cmp_utf16, GcObject, LoadedModuleRequest, ModuleRequest, RealmId, RootId, Scope, StackFrame, Value, Vm,
+  VmError,
 };
 use crate::{Heap, VmHost, VmHostHooks};
+
+const MAX_REJECTION_STACK_FRAMES: usize = 32;
+const MAX_REJECTION_STACK_BYTES: usize = 16 * 1024;
+
+fn format_rejection_stack_trace_limited(frames: &[StackFrame]) -> String {
+  let slice = &frames[..frames.len().min(MAX_REJECTION_STACK_FRAMES)];
+  let mut out = crate::format_stack_trace(slice);
+  if out.len() <= MAX_REJECTION_STACK_BYTES {
+    return out;
+  }
+
+  let mut end = MAX_REJECTION_STACK_BYTES;
+  while end > 0 && !out.is_char_boundary(end) {
+    end -= 1;
+  }
+  out.truncate(end);
+  out.push_str("...");
+  out
+}
+
+fn attach_stack_property_for_promise_rejection(scope: &mut Scope<'_>, reason: Value, err: &VmError) {
+  let Some(frames) = err.thrown_stack() else {
+    return;
+  };
+  let Value::Object(obj) = reason else {
+    return;
+  };
+
+  let stack_trace = format_rejection_stack_trace_limited(frames);
+  if stack_trace.is_empty() {
+    return;
+  }
+
+  // Best-effort: failure to attach stack data should not alter spec-visible module evaluation
+  // semantics (the promise must still be rejected with the thrown value).
+  let mut scope = scope.reborrow();
+  if scope.push_root(Value::Object(obj)).is_err() {
+    return;
+  }
+
+  let Ok(key_s) = scope.alloc_string("stack") else {
+    return;
+  };
+  if scope.push_root(Value::String(key_s)).is_err() {
+    return;
+  }
+  let key = PropertyKey::from_string(key_s);
+
+  // Do not overwrite an existing own `stack` property; this mirrors browser behavior where
+  // `Error.stack` can be customized by user code.
+  match scope.heap().object_get_own_property(obj, &key) {
+    Ok(Some(_)) => return,
+    Ok(None) => {}
+    Err(_) => return,
+  }
+
+  let Ok(stack_s) = scope.alloc_string(&stack_trace) else {
+    return;
+  };
+  if scope.push_root(Value::String(stack_s)).is_err() {
+    return;
+  }
+
+  let _ = scope.define_property(
+    obj,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(stack_s),
+        writable: true,
+      },
+    },
+  );
+}
 
 /// Minimal in-memory module graph used to exercise ECMA-262 module record algorithms.
 ///
@@ -581,6 +658,7 @@ impl ModuleGraph {
               crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", &message)
                 .unwrap_or(Value::Undefined)
             };
+            attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
             eval_scope.push_root(cap.reject)?;
             eval_scope.push_root(reason)?;
             let _ = vm.call_with_host_and_hooks(
@@ -653,6 +731,7 @@ impl ModuleGraph {
             crate::new_error(&mut eval_scope, intr.error_prototype(), "Error", &message)
               .unwrap_or(Value::Undefined)
           };
+          attach_stack_property_for_promise_rejection(&mut eval_scope, reason, &err);
           eval_scope.push_root(cap.reject)?;
           eval_scope.push_root(reason)?;
           let _ = vm.call_with_host_and_hooks(

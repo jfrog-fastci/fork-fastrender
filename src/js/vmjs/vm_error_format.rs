@@ -6,6 +6,7 @@ const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
 const MAX_STACK_TRACE_FRAMES: usize = 32;
 const MAX_STACK_FRAME_TEXT_BYTES: usize = 256;
 const MAX_STACK_TRACE_BYTES: usize = 16 * 1024;
+const MAX_STACK_PROPERTY_CODE_UNITS: usize = MAX_STACK_TRACE_BYTES * 2;
 const MAX_THROWN_OBJECT_PROTOTYPE_CHAIN: usize = 16;
 const MAX_SYNTAX_DIAGNOSTICS: usize = 8;
 const MAX_SYNTAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 1024;
@@ -275,6 +276,54 @@ fn format_thrown_value(heap: &mut Heap, value: Value) -> Option<String> {
   }
 }
 
+fn get_thrown_stack_property(heap: &mut Heap, value: Value) -> Option<String> {
+  let obj = match value {
+    Value::Object(obj) => obj,
+    _ => return None,
+  };
+
+  let mut scope = heap.scope();
+  if scope.push_root(Value::Object(obj)).is_err() {
+    return None;
+  }
+
+  let key_s = scope.alloc_string("stack").ok()?;
+  scope.push_root(Value::String(key_s)).ok()?;
+  let key = PropertyKey::from_string(key_s);
+
+  let mut current = obj;
+  for _ in 0..MAX_THROWN_OBJECT_PROTOTYPE_CHAIN {
+    match scope.heap().object_get_own_data_property_value(current, &key) {
+      Ok(Some(Value::String(s))) => {
+        let js = scope.heap().get_string(s).ok()?;
+        if js.len_code_units() > MAX_STACK_PROPERTY_CODE_UNITS {
+          return Some("[stack trace exceeded limit]".to_string());
+        }
+        let mut stack = js.to_utf8_lossy();
+        if stack.len() > MAX_STACK_TRACE_BYTES {
+          let mut end = MAX_STACK_TRACE_BYTES;
+          while end > 0 && !stack.is_char_boundary(end) {
+            end -= 1;
+          }
+          stack.truncate(end);
+          stack.push_str("...");
+        }
+        return Some(stack);
+      }
+      Ok(Some(_)) => return None,
+      Ok(None) => {}
+      Err(_) => return None,
+    }
+
+    match scope.object_get_prototype(current) {
+      Ok(Some(proto)) => current = proto,
+      _ => return None,
+    }
+  }
+
+  None
+}
+
 /// Convert a `vm-js` [`VmError`] into a `fastrender` [`Error`], attempting to preserve thrown string
 /// values and captured stack traces while keeping host allocations bounded.
 pub(crate) fn vm_error_to_error(heap: &mut Heap, err: VmError) -> Error {
@@ -299,12 +348,15 @@ pub(crate) fn vm_error_to_string(heap: &mut Heap, err: VmError) -> String {
   if let Some(value) = err.thrown_value() {
     let mut msg = format_thrown_value(heap, value).unwrap_or_else(|| "uncaught exception".to_string());
 
-    if let Some(frames) = err.thrown_stack() {
-      let stack = format_stack_trace_limited(frames);
-      if !stack.is_empty() {
-        msg.push('\n');
-        msg.push_str(&stack);
-      }
+    let stack = err
+      .thrown_stack()
+      .map(format_stack_trace_limited)
+      .filter(|s| !s.is_empty())
+      .or_else(|| get_thrown_stack_property(heap, value).filter(|s| !s.is_empty()));
+
+    if let Some(stack) = stack {
+      msg.push('\n');
+      msg.push_str(&stack);
     }
 
     return msg;
@@ -332,8 +384,9 @@ pub(crate) fn vm_error_to_message_and_stack(heap: &mut Heap, err: VmError) -> (S
     let stack = err
       .thrown_stack()
       .map(format_stack_trace_limited)
-      .unwrap_or_default();
-    return (msg, (!stack.is_empty()).then_some(stack));
+      .filter(|s| !s.is_empty())
+      .or_else(|| get_thrown_stack_property(heap, value).filter(|s| !s.is_empty()));
+    return (msg, stack);
   }
 
   match err {
