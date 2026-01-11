@@ -1787,6 +1787,10 @@ impl BlockFormattingContext {
         || style.max_height.is_some_and(|l| l.has_percentage())
         || inset_has_percentage(&style.top)
         || inset_has_percentage(&style.bottom)
+        // CSS 2.1 §10.6.4: when `top` and `bottom` are specified and `height:auto`,
+        // the used height is derived from the constraint equation and depends on the
+        // containing block's *used* padding box height (even when all insets are lengths).
+        || (style.height.is_none() && !style.top.is_auto() && !style.bottom.is_auto())
     }
 
     fn has_abspos_descendant_needing_used_cb_height(root: &BoxNode) -> bool {
@@ -2704,9 +2708,11 @@ impl BlockFormattingContext {
           direction: style.direction,
         },
       );
-      // Positioned descendants are laid out in the block's content coordinate space; express the
-      // padding box (CSS 2.1 §10.1) in that same coordinate system (origin at the padding edge).
-      let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
+      // In-flow children were translated into this block's border-box coordinate space above, so
+      // position out-of-flow children in that same coordinate space. The containing block for
+      // absolute/fixed descendants is the padding box (CSS 2.1 §10.1), whose origin is the padding
+      // edge inside the border box.
+      let padding_origin = Point::new(computed_width.border_left, border_top);
       let padding_size = Size::new(
         computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
         height + padding_top + padding_bottom,
@@ -9914,10 +9920,11 @@ impl FormattingContext for BlockFormattingContext {
     // path in `layout_block_child`.
     let box_width = computed_width.border_box_width();
 
-    // Layout out-of-flow positioned children against this block's padding box.
-    // Out-of-flow positioned children are laid out before the final content→border translation, so
-    // express the padding box (their containing block) in content coordinates.
-    let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
+    // Layout out-of-flow positioned children against this block's padding box (CSS 2.1 §10.1).
+    //
+    // `child_fragments` have already been translated into the border-box coordinate space above, so
+    // keep the containing block in that same coordinate space (origin at the padding edge).
+    let padding_origin = Point::new(computed_width.border_left, border_top);
     let padding_size = Size::new(
       computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
       height + padding_top + padding_bottom,
@@ -15178,6 +15185,85 @@ mod tests {
       (abs_frag.bounds.y() - 60.0).abs() < 0.01,
       "expected top:50% to resolve against 100px content height + 20px padding (y=60); got {}",
       abs_frag.bounds.y()
+    );
+  }
+
+  #[test]
+  fn absolutely_positioned_descendant_auto_height_fills_used_containing_block_height() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    parent_style.position = Position::Relative;
+    parent_style.width = Some(Length::px(200.0));
+    parent_style.width_keyword = None;
+
+    let flow_child = BoxNode::new_block(
+      block_style_with_height(100.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = Display::Block;
+    abs_style.position = Position::Absolute;
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(0.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(0.0));
+    abs_style.bottom = crate::style::types::InsetValue::Length(Length::px(0.0));
+    abs_style.width = Some(Length::px(10.0));
+    abs_style.width_keyword = None;
+    abs_style.height = None;
+    abs_style.height_keyword = None;
+
+    let abs_id = 4243;
+    let mut abs_child =
+      BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    abs_child.id = abs_id;
+
+    let mut wrapper_style = ComputedStyle::default();
+    wrapper_style.display = Display::Block;
+    let wrapper = BoxNode::new_block(
+      Arc::new(wrapper_style),
+      FormattingContextType::Block,
+      vec![abs_child],
+    );
+
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![flow_child, wrapper],
+    );
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.width = Some(Length::px(300.0));
+    root_style.width_keyword = None;
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![parent],
+    );
+
+    fn find_fragment<'a>(node: &'a FragmentNode, id: usize) -> Option<&'a FragmentNode> {
+      if node.box_id() == Some(id) {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_fragment(child, id) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let fc = BlockFormattingContext::new();
+    let fragment = fc
+      .layout(&root, &LayoutConstraints::definite(300.0, 300.0))
+      .unwrap();
+    let abs_frag = find_fragment(&fragment, abs_id).expect("absolute fragment");
+
+    assert!(
+      (abs_frag.bounds.height() - 100.0).abs() < 0.01,
+      "expected abspos descendant with top/bottom and height:auto to fill the containing block's used height (100); got {}",
+      abs_frag.bounds.height()
     );
   }
 
