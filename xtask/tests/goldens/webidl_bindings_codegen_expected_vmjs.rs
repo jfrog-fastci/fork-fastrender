@@ -44,6 +44,274 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn bar_entries(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Bar",
+      IterableKind::Entries,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
+  }
+
+  #[allow(dead_code)]
+  fn bar_for_each(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+    let callback = rt.scope.push_root(callback)?;
+    let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+    let this_arg = rt.scope.push_root(this_arg)?;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Bar",
+      IterableKind::Entries,
+    )?;
+    for entry in snapshot {
+      let BindingValue::Sequence(mut pair) = entry else {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      };
+      if pair.len() != 2 {
+        return Err(rt.throw_type_error("iterable forEach: expected [key, value] pair"));
+      }
+      let mut iter = pair.into_iter();
+      let key = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let value = iter
+        .next()
+        .ok_or_else(|| rt.throw_type_error("iterable forEach: expected [key, value] pair"))?;
+      let key_js = rt.binding_value_to_js(key)?;
+      let key_js = rt.scope.push_root(key_js)?;
+      let value_js = rt.binding_value_to_js(value)?;
+      let value_js = rt.scope.push_root(value_js)?;
+      let _ = rt.vm.call_with_host_and_hooks(
+        _host,
+        &mut rt.scope,
+        hooks,
+        callback,
+        this_arg,
+        &[value_js, key_js, this],
+      )?;
+    }
+    Ok(Value::Undefined)
+  }
+
+  #[allow(dead_code)]
+  fn bar_keys(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Bar",
+      IterableKind::Keys,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
+  }
+
+  #[allow(dead_code)]
+  fn bar_values(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let _ = _args;
+    let bindings_host = host_from_hooks(hooks)?;
+    let snapshot = bindings_host.iterable_snapshot(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Bar",
+      IterableKind::Values,
+    )?;
+    let arr = rt.alloc_array(snapshot.len())?;
+    for (idx, item) in snapshot.into_iter().enumerate() {
+      let value = rt.binding_value_to_js(item)?;
+      let value = rt.scope.push_root(value)?;
+      let key_s = rt.scope.alloc_string(&idx.to_string())?;
+      rt.scope.push_root(Value::String(key_s))?;
+      let key = vm_js::PropertyKey::from_string(key_s);
+      rt.scope.create_data_property_or_throw(arr, key, value)?;
+    }
+    let intr = rt
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(intr.well_known_symbols().iterator);
+    let Some(method) = rt
+      .vm
+      .get_method_from_object(&mut rt.scope, arr, iterator_key)?
+    else {
+      return Err(rt.throw_type_error("iterable snapshot array is not iterable"));
+    };
+    rt.vm
+      .call_with_host_and_hooks(_host, &mut rt.scope, hooks, method, Value::Object(arr), &[])
+  }
+
+  #[allow(dead_code)]
+  fn bar_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn bar_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    _args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let slots = rt.scope.heap().get_function_native_slots(callee)?;
+    let proto_slot = slots.get(0).copied().unwrap_or(Value::Undefined);
+    let Value::Object(default_proto) = proto_slot else {
+      return Err(VmError::InvariantViolation(
+        "Bar constructor missing prototype slot",
+      ));
+    };
+    // Derive the wrapper object's prototype from `new.target` (subclassing semantics).
+    //
+    // This follows the spirit of `GetPrototypeFromConstructor` / `OrdinaryCreateFromConstructor`:
+    // - default to the interface prototype cached in native slots,
+    // - if `new_target` is an object and `new_target.prototype` is an object, use that instead.
+    rt.scope.push_root(Value::Object(default_proto))?;
+    rt.scope.push_root(new_target)?;
+    let mut wrapper_proto = default_proto;
+    if let Value::Object(new_target_obj) = new_target {
+      rt.scope.push_root(Value::Object(new_target_obj))?;
+      let proto_key = rt.property_key("prototype")?;
+      let candidate = rt.scope.ordinary_get_with_host_and_hooks(
+        &mut *rt.vm,
+        host,
+        hooks,
+        new_target_obj,
+        proto_key,
+        Value::Object(new_target_obj),
+      )?;
+      if let Value::Object(candidate_obj) = candidate {
+        rt.scope.push_root(Value::Object(candidate_obj))?;
+        wrapper_proto = candidate_obj;
+      }
+    }
+    let obj = rt.scope.alloc_object_with_prototype(Some(wrapper_proto))?;
+    rt.scope.push_root(Value::Object(obj))?;
+
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        Some(Value::Object(obj)),
+        "Bar",
+        "constructor",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Object(obj))
+    }
+  }
+
+  #[allow(dead_code)]
   fn foo_baz(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -615,8 +883,65 @@ pub mod window {
     let global_var_attrs = DataPropertyAttributes::new(true, false, true);
     let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
 
+    let proto_bar = rt.alloc_object()?;
     let proto_foo = rt.alloc_object()?;
 
+    let func = rt.alloc_native_function(bar_entries, None, "entries", 0)?;
+    rt.define_data_property_str(
+      proto_bar,
+      "entries",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(bar_for_each, None, "forEach", 1)?;
+    rt.define_data_property_str(
+      proto_bar,
+      "forEach",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(bar_keys, None, "keys", 0)?;
+    rt.define_data_property_str(
+      proto_bar,
+      "keys",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let func = rt.alloc_native_function(bar_values, None, "values", 0)?;
+    rt.define_data_property_str(
+      proto_bar,
+      "values",
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let iterator_key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().iterator);
+    rt.define_data_property(
+      proto_bar,
+      iterator_key,
+      Value::Object(func),
+      DataPropertyAttributes::METHOD,
+    )?;
+    let slots = [Value::Object(proto_bar)];
+    let ctor_bar = rt.alloc_native_function_with_slots(
+      bar_call_without_new,
+      Some(bar_construct),
+      "Bar",
+      0,
+      &slots,
+    )?;
+    rt.define_data_property_str(global, "Bar", Value::Object(ctor_bar), global_var_attrs)?;
+    rt.define_data_property_str(
+      ctor_bar,
+      "prototype",
+      Value::Object(proto_bar),
+      ctor_link_attrs,
+    )?;
+    rt.define_data_property_str(
+      proto_bar,
+      "constructor",
+      Value::Object(ctor_bar),
+      ctor_link_attrs,
+    )?;
     let func = rt.alloc_native_function(foo_baz, None, "baz", 1)?;
     rt.define_data_property_str(
       proto_foo,

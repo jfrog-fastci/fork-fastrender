@@ -569,7 +569,8 @@ mod tests {
 
   #[derive(Default)]
   struct ToyIterableHost {
-    objects: HashMap<WeakGcObject, ()>,
+    foo_objects: HashMap<WeakGcObject, ()>,
+    bar_objects: HashMap<WeakGcObject, ()>,
   }
 
   impl WebIdlBindingsHost for ToyIterableHost {
@@ -590,7 +591,16 @@ mod tests {
               "Foo constructor called without wrapper object receiver",
             ));
           };
-          self.objects.insert(WeakGcObject::from(obj), ());
+          self.foo_objects.insert(WeakGcObject::from(obj), ());
+          Ok(Value::Undefined)
+        }
+        ("Bar", "constructor") => {
+          let Some(Value::Object(obj)) = receiver else {
+            return Err(VmError::InvariantViolation(
+              "Bar constructor called without wrapper object receiver",
+            ));
+          };
+          self.bar_objects.insert(WeakGcObject::from(obj), ());
           Ok(Value::Undefined)
         }
         _ => Err(VmError::TypeError("unimplemented toy host operation")),
@@ -622,7 +632,7 @@ mod tests {
           let Some(Value::Object(obj)) = receiver else {
             return Err(VmError::TypeError("Illegal invocation"));
           };
-          if !self.objects.contains_key(&WeakGcObject::from(obj)) {
+          if !self.foo_objects.contains_key(&WeakGcObject::from(obj)) {
             return Err(VmError::TypeError("Illegal invocation"));
           }
 
@@ -642,6 +652,33 @@ mod tests {
               )),
               IterableKind::Keys => out.push(webidl_vm_js::bindings_runtime::BindingValue::RustString(k)),
               IterableKind::Values => out.push(webidl_vm_js::bindings_runtime::BindingValue::RustString(v)),
+            }
+          }
+          Ok(out)
+        }
+        "Bar" => {
+          let Some(Value::Object(obj)) = receiver else {
+            return Err(VmError::TypeError("Illegal invocation"));
+          };
+          if !self.bar_objects.contains_key(&WeakGcObject::from(obj)) {
+            return Err(VmError::TypeError("Illegal invocation"));
+          }
+
+          let values = vec!["x".to_string(), "y".to_string()];
+          let mut out: Vec<webidl_vm_js::bindings_runtime::BindingValue> =
+            Vec::with_capacity(values.len());
+          for v in values {
+            match kind {
+              // Like JS `Set`, `entries()` for a value iterable yields `[value, value]` pairs.
+              IterableKind::Entries => out.push(webidl_vm_js::bindings_runtime::BindingValue::Sequence(
+                vec![
+                  webidl_vm_js::bindings_runtime::BindingValue::RustString(v.clone()),
+                  webidl_vm_js::bindings_runtime::BindingValue::RustString(v),
+                ],
+              )),
+              IterableKind::Keys | IterableKind::Values => {
+                out.push(webidl_vm_js::bindings_runtime::BindingValue::RustString(v))
+              }
             }
           }
           Ok(out)
@@ -817,6 +854,204 @@ mod tests {
     assert_eq!(
       recorder.saw,
       vec![("1".to_string(), "a".to_string()), ("2".to_string(), "b".to_string())]
+    );
+    assert!(recorder.this_matches.iter().all(|v| *v));
+    assert!(recorder.receiver_matches.iter().all(|v| *v));
+    Ok(())
+  }
+
+  #[test]
+  fn generated_bindings_value_iterable_surface_works_for_toy_interface_vm_js() -> Result<(), VmError> {
+    use super::webidl_bindings_codegen_toy_generated_vmjs as toy_bindings_vmjs;
+
+    struct ForEachRecorder {
+      expected_this: Value,
+      expected_receiver: Value,
+      saw: Vec<(String, String)>,
+      this_matches: Vec<bool>,
+      receiver_matches: Vec<bool>,
+    }
+
+    impl Default for ForEachRecorder {
+      fn default() -> Self {
+        Self {
+          expected_this: Value::Undefined,
+          expected_receiver: Value::Undefined,
+          saw: Vec::new(),
+          this_matches: Vec::new(),
+          receiver_matches: Vec::new(),
+        }
+      }
+    }
+
+    fn for_each_callback(
+      _vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
+      _callee: GcObject,
+      this: Value,
+      args: &[Value],
+    ) -> Result<Value, VmError> {
+      let Some(rec) = host.as_any_mut().downcast_mut::<ForEachRecorder>() else {
+        return Err(VmError::InvariantViolation("missing ForEachRecorder host"));
+      };
+
+      let value_v = args.get(0).copied().unwrap_or(Value::Undefined);
+      let key_v = args.get(1).copied().unwrap_or(Value::Undefined);
+      let receiver_v = args.get(2).copied().unwrap_or(Value::Undefined);
+
+      rec.this_matches.push(this == rec.expected_this);
+      rec.receiver_matches.push(receiver_v == rec.expected_receiver);
+      rec.saw.push((
+        UrlSearchParamsHost::value_to_rust_string(scope, value_v)?,
+        UrlSearchParamsHost::value_to_rust_string(scope, key_v)?,
+      ));
+
+      Ok(Value::Undefined)
+    }
+
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    toy_bindings_vmjs::install_window_bindings_vm_js(&mut vm, &mut heap, &realm)?;
+
+    let mut host = ToyIterableHost::default();
+    let mut hooks = HostHooksWithBindingsHost::new(&mut host);
+
+    let result = (|| {
+      let mut scope = heap.scope();
+
+      let global = realm.global_object();
+      scope.push_root(Value::Object(global))?;
+      let ctor_key = alloc_key(&mut scope, "Bar")?;
+      let ctor = scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .expect("globalThis.Bar should be defined");
+      scope.push_root(ctor)?;
+
+      let obj = vm.construct_with_host(&mut scope, &mut hooks, ctor, &[], ctor)?;
+      scope.push_root(obj)?;
+      let Value::Object(obj_handle) = obj else {
+        panic!("Bar constructor should return an object");
+      };
+
+      // @@iterator should yield values (not [key, value] pairs).
+      let iter_sym = realm.well_known_symbols().iterator;
+      let iter_key = PropertyKey::from_symbol(iter_sym);
+      let iter_method = vm
+        .get_method(&mut scope, obj, iter_key)?
+        .ok_or(VmError::TypeError("missing Bar @@iterator"))?;
+      assert!(scope.heap().is_callable(iter_method)?);
+
+      let iter = vm.call_with_host(&mut scope, &mut hooks, iter_method, obj, &[])?;
+      scope.push_root(iter)?;
+      let Value::Object(iter_obj) = iter else {
+        return Err(VmError::TypeError("expected iterator object"));
+      };
+
+      let next_key = alloc_key(&mut scope, "next")?;
+      let done_key = alloc_key(&mut scope, "done")?;
+      let value_key = alloc_key(&mut scope, "value")?;
+      let next = vm.get(&mut scope, iter_obj, next_key)?;
+      scope.push_root(next)?;
+
+      let mut values: Vec<String> = Vec::new();
+      loop {
+        let result = vm.call_with_host(&mut scope, &mut hooks, next, iter, &[])?;
+        scope.push_root(result)?;
+        let Value::Object(result_obj) = result else {
+          return Err(VmError::TypeError("expected iterator result object"));
+        };
+        let done = vm.get(&mut scope, result_obj, done_key)?;
+        if matches!(done, Value::Bool(true)) {
+          break;
+        }
+        let v = vm.get(&mut scope, result_obj, value_key)?;
+        values.push(UrlSearchParamsHost::value_to_rust_string(&mut scope, v)?);
+      }
+      assert_eq!(values, vec!["x".to_string(), "y".to_string()]);
+
+      // `.entries()` yields `[value, value]` pairs (Set-like).
+      let entries_key = alloc_key(&mut scope, "entries")?;
+      let entries = vm.get(&mut scope, obj_handle, entries_key)?;
+      assert!(scope.heap().is_callable(entries)?);
+      let iter = vm.call_with_host(&mut scope, &mut hooks, entries, obj, &[])?;
+      scope.push_root(iter)?;
+      let Value::Object(iter_obj) = iter else {
+        return Err(VmError::TypeError("expected iterator object"));
+      };
+
+      let next_key = alloc_key(&mut scope, "next")?;
+      let done_key = alloc_key(&mut scope, "done")?;
+      let value_key = alloc_key(&mut scope, "value")?;
+      let k0 = alloc_key(&mut scope, "0")?;
+      let k1 = alloc_key(&mut scope, "1")?;
+
+      let next = vm.get(&mut scope, iter_obj, next_key)?;
+      scope.push_root(next)?;
+      let mut entries_out: Vec<(String, String)> = Vec::new();
+      loop {
+        let result = vm.call_with_host(&mut scope, &mut hooks, next, iter, &[])?;
+        scope.push_root(result)?;
+        let Value::Object(result_obj) = result else {
+          return Err(VmError::TypeError("expected iterator result object"));
+        };
+        let done = vm.get(&mut scope, result_obj, done_key)?;
+        if matches!(done, Value::Bool(true)) {
+          break;
+        }
+        let pair = vm.get(&mut scope, result_obj, value_key)?;
+        scope.push_root(pair)?;
+        let Value::Object(pair_obj) = pair else {
+          return Err(VmError::TypeError("expected [value, value] pair object"));
+        };
+        let v0 = vm.get(&mut scope, pair_obj, k0)?;
+        let v1 = vm.get(&mut scope, pair_obj, k1)?;
+        entries_out.push((
+          UrlSearchParamsHost::value_to_rust_string(&mut scope, v0)?,
+          UrlSearchParamsHost::value_to_rust_string(&mut scope, v1)?,
+        ));
+      }
+      assert_eq!(
+        entries_out,
+        vec![("x".to_string(), "x".to_string()), ("y".to_string(), "y".to_string())]
+      );
+
+      // And `forEach(callback[, thisArg])` invokes the callback with (value, key, this) where
+      // value==key for a value iterable.
+      let this_arg_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(this_arg_obj))?;
+      let this_arg = Value::Object(this_arg_obj);
+
+      let callback_name = scope.alloc_string("callback")?;
+      scope.push_root(Value::String(callback_name))?;
+      let callback_id = vm.register_native_call(for_each_callback)?;
+      let callback_fn = scope.alloc_native_function(callback_id, None, callback_name, 0)?;
+      scope.push_root(Value::Object(callback_fn))?;
+      let callback = Value::Object(callback_fn);
+
+      let for_each_key = alloc_key(&mut scope, "forEach")?;
+      let for_each = vm.get(&mut scope, obj_handle, for_each_key)?;
+      scope.push_root(for_each)?;
+      let mut recorder = ForEachRecorder {
+        expected_this: this_arg,
+        expected_receiver: obj,
+        ..Default::default()
+      };
+
+      vm.call_with_host_and_hooks(&mut recorder, &mut scope, &mut hooks, for_each, obj, &[callback, this_arg])?;
+      Ok(recorder)
+    })();
+
+    realm.teardown(&mut heap);
+    let recorder = result?;
+    assert_eq!(
+      recorder.saw,
+      vec![("x".to_string(), "x".to_string()), ("y".to_string(), "y".to_string())]
     );
     assert!(recorder.this_matches.iter().all(|v| *v));
     assert!(recorder.receiver_matches.iter().all(|v| *v));

@@ -32,6 +32,12 @@ fn assert_backend_matches_golden(backend: WebIdlBindingsBackend, expected: &str)
       iterable<DOMString, DOMString>;
     };
 
+    [Exposed=Window]
+    interface Bar {
+      constructor();
+      iterable<DOMString>;
+    };
+
     dictionary FooOptions {
       boolean capture;
     };
@@ -39,7 +45,7 @@ fn assert_backend_matches_golden(backend: WebIdlBindingsBackend, expected: &str)
 
   let config = WebIdlBindingsCodegenConfig {
     mode: WebIdlBindingsGenerationMode::AllMembers,
-    allow_interfaces: ["Foo".to_string()].into_iter().collect(),
+    allow_interfaces: ["Foo".to_string(), "Bar".to_string()].into_iter().collect(),
     interface_allowlist: BTreeMap::new(),
     prototype_chains: true,
   };
