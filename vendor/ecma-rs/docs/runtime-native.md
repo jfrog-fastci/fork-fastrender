@@ -224,6 +224,8 @@ pub fn rt_async_poll() -> bool;
 `rt_parallel_for` contract:
 - Executes `body(i, data)` for each `i` in `[start, end)`.
 - `data` must remain valid for the duration of the call.
+- The runtime may fall back to sequential execution for small ranges; tune the
+  minimum iterations-per-task threshold via `RT_PAR_FOR_MIN_GRAIN` (default: 1024).
 
 Parallel runtime configuration:
 - `ECMA_RS_RUNTIME_NATIVE_THREADS`: overrides the size of the global worker pool (must be a

@@ -3903,6 +3903,8 @@ pub fn rt_parallel_for(
   body: extern "C" fn(usize, *mut u8),
   data: *mut u8,
 );
+// `rt_parallel_for` uses adaptive chunking; tune minimum iterations per task via
+// `RT_PAR_FOR_MIN_GRAIN` (default: 1024).
 
 // Async
 // NOTE: GC is moving/compacting (Immix + opportunistic copying).
