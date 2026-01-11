@@ -189,3 +189,142 @@ fn abspos_inset_stretch_with_auto_height_and_in_flow_content_is_not_offset_by_pa
     overlay_fragment.bounds.y()
   );
 }
+
+#[test]
+fn abspos_child_origin_is_relative_to_padding_box_when_container_is_block_child() {
+  // `BlockFormattingContext::layout` uses a separate `layout_block_child` code path for nested
+  // blocks. Ensure absolute-positioned children still use the padding box of their nearest
+  // positioned ancestor in that nested path.
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(150.0));
+  container_style.padding_left = Length::px(32.0);
+  container_style.padding_top = Length::px(64.0);
+  container_style.padding_right = Length::px(16.0);
+  container_style.padding_bottom = Length::px(8.0);
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Block;
+  abs_style.position = Position::Absolute;
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Block,
+    vec![abs_child],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![container],
+  );
+
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fc = BlockFormattingContext::new();
+  let fragment = fc.layout(&root, &constraints).expect("layout should succeed");
+
+  let container_fragment = fragment
+    .children
+    .iter()
+    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Relative)))
+    .expect("container fragment present");
+  let abs_fragment = container_fragment
+    .children
+    .iter()
+    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .expect("absolute positioned fragment present");
+
+  assert!(
+    abs_fragment.bounds.x().abs() < 0.1,
+    "expected abspos child x to align with the padding edge (got x = {})",
+    abs_fragment.bounds.x()
+  );
+  assert!(
+    abs_fragment.bounds.y().abs() < 0.1,
+    "expected abspos child y to align with the padding edge (got y = {})",
+    abs_fragment.bounds.y()
+  );
+}
+
+#[test]
+fn viewport_fixed_children_do_not_inherit_padding_translation() {
+  // `position: fixed` descendants without a fixed-containing-block ancestor are laid out against
+  // the viewport and stored in absolute (viewport) coordinates. Ensure the block-child out-of-flow
+  // positioning path does not translate those fragments by the parent's padding, which would
+  // incorrectly offset fixed overlays.
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+
+  let mut spacer_style = ComputedStyle::default();
+  spacer_style.display = Display::Block;
+  spacer_style.height = Some(Length::px(100.0));
+  let spacer = BoxNode::new_block(Arc::new(spacer_style), FormattingContextType::Block, vec![]);
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(150.0));
+  container_style.padding_left = Length::px(32.0);
+  container_style.padding_top = Length::px(64.0);
+  container_style.padding_right = Length::px(16.0);
+  container_style.padding_bottom = Length::px(8.0);
+
+  let mut fixed_style = ComputedStyle::default();
+  fixed_style.display = Display::Block;
+  fixed_style.position = Position::Fixed;
+  fixed_style.left = InsetValue::Length(Length::px(0.0));
+  fixed_style.top = InsetValue::Length(Length::px(0.0));
+  fixed_style.width = Some(Length::px(10.0));
+  fixed_style.height = Some(Length::px(10.0));
+
+  let fixed_child =
+    BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Block,
+    vec![fixed_child],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![spacer, container],
+  );
+
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fc = BlockFormattingContext::new();
+  let fragment = fc.layout(&root, &constraints).expect("layout should succeed");
+
+  let container_fragment = fragment
+    .children
+    .iter()
+    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Relative)))
+    .expect("container fragment present");
+  let fixed_fragment = container_fragment
+    .children
+    .iter()
+    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Fixed)))
+    .expect("fixed positioned fragment present");
+
+  assert!(
+    fixed_fragment.bounds.x().abs() < 0.1,
+    "expected fixed child x to remain viewport-relative (got x = {})",
+    fixed_fragment.bounds.x()
+  );
+  assert!(
+    fixed_fragment.bounds.y().abs() < 0.1,
+    "expected fixed child y to remain viewport-relative (got y = {})",
+    fixed_fragment.bounds.y()
+  );
+}

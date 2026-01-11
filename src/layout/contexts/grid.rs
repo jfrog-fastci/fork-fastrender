@@ -13364,8 +13364,8 @@ impl FormattingContext for GridFormattingContext {
           FormattingContextType::Block
             | FormattingContextType::Flex
             | FormattingContextType::Grid
-            | FormattingContextType::Inline
-            | FormattingContextType::Table
+          | FormattingContextType::Inline
+          | FormattingContextType::Table
         );
         let anchor_query = crate::layout::anchor_positioning::AnchorQueryContext {
           query_parent_box_id: Some(root_box_id),

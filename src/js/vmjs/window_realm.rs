@@ -73,7 +73,6 @@ impl VmJsHostContext {
     self.current_script_state.as_ref()
   }
 }
-
 // Compile-time guard: `vm-js` must keep exposing the borrow-splitting accessor used by FastRender
 // embeddings (see `WindowRealm::new`).
 #[allow(dead_code)]
