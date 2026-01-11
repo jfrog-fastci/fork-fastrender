@@ -182,6 +182,9 @@ impl ArrayBuffer {
   /// Like [`Self::try_with_slice`], the callback is generic over the slice lifetime so the
   /// `&mut [u8]` cannot escape.
   ///
+  /// This additionally requires the backing store to be uniquely owned (no other [`BackingStore`]
+  /// handles exist). If the backing store is shared, this returns `BorrowError::NotUnique`.
+  ///
   /// ```compile_fail
   /// # use runtime_native::ArrayBuffer;
   /// let mut buf = ArrayBuffer::new_zeroed(1).unwrap();
