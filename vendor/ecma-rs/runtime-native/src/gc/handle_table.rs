@@ -297,26 +297,18 @@ impl<T> HandleTable<T> {
   ///
   /// When a stop-the-world pause is active, [`HandleTable::with_stw_update`] intentionally avoids
   /// the GC-aware lock's contended acquisition path (which waits for the world to resume) and
-  /// instead spins on `try_write()` until it can acquire the exclusive lock. Under a correct STW
-  /// pause there should be no running mutator that can hold the lock indefinitely.
+  /// instead acquires the underlying `parking_lot::RwLock` directly via
+  /// [`GcAwareRwLock::write_for_gc`]. Under a correct STW pause there should be no running mutator
+  /// that can hold the lock indefinitely.
   pub fn with_stw_update<R>(&self, f: impl FnOnce(&mut HandleTableStwGuard<'_, T>) -> R) -> R {
-    // IMPORTANT: When stop-the-world is active, do *not* call `GcAwareRwLock::write()` because its
-    // contended slow path intentionally waits for the world to be resumed before returning a guard.
-    // Root enumeration/relocation runs *during* STW, so waiting for resume would deadlock.
-    //
-    // Instead, spin on `try_write()` until we acquire the exclusive lock. Under a correct STW pause
-    // there should be no running mutator that can hold the lock indefinitely.
-    //
-    // Outside STW (e.g. unit tests), fall back to the GC-aware `write()` path so contended
-    // acquisition enters a GC-safe ("NativeSafe") region while blocked.
     let guard = if crate::threading::safepoint::current_epoch() & 1 == 1 {
-      loop {
-        if let Some(g) = self.inner.try_write() {
-          break g;
-        }
-        std::thread::yield_now();
-      }
+      // IMPORTANT: When stop-the-world is active, do *not* call `GcAwareRwLock::write()` because its
+      // contended slow path intentionally waits for the world to be resumed before returning a
+      // guard. Root enumeration/relocation runs *during* STW, so waiting for resume would deadlock.
+      self.inner.write_for_gc()
     } else {
+      // Outside STW, use the GC-aware `write()` path so contended acquisition enters a GC-safe
+      // ("NativeSafe") region while blocked.
       self.inner.write()
     };
     let mut guard = HandleTableStwGuard { guard };

@@ -26,6 +26,28 @@ impl<T> GcAwareRwLock<T> {
     }
   }
 
+  /// Acquire a shared/read lock without participating in GC-safe region transitions.
+  ///
+  /// This is intended for **stop-the-world GC coordinator** code that may need to
+  /// acquire a `GcAwareRwLock` while the global GC epoch is odd.
+  ///
+  /// Unlike [`Self::read`], this method:
+  /// - does **not** enter a GC-safe region while blocking, and
+  /// - does **not** retry/avoid returning while stop-the-world is active.
+  ///
+  /// Callers must ensure it is safe to block here (typically because the world is
+  /// already stopped and no mutator can hold the lock while parked at a safepoint).
+  pub fn read_for_gc(&self) -> RwLockReadGuard<'_, T> {
+    self.inner.read()
+  }
+
+  /// Acquire an exclusive/write lock without participating in GC-safe region transitions.
+  ///
+  /// See [`Self::read_for_gc`].
+  pub fn write_for_gc(&self) -> RwLockWriteGuard<'_, T> {
+    self.inner.write()
+  }
+
   pub fn into_inner(self) -> T {
     self.inner.into_inner()
   }
