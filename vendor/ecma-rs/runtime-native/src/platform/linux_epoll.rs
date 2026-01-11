@@ -94,8 +94,24 @@ impl EventFd {
 
   pub fn wake(&self) {
     let buf: u64 = 1;
-    // SAFETY: syscall. Ignore EAGAIN (counter saturated) and EINTR.
-    let _ = unsafe { libc::write(self.fd.as_raw_fd(), (&buf as *const u64).cast::<libc::c_void>(), 8) };
+    // SAFETY: syscall.
+    loop {
+      let rc = unsafe { libc::write(self.fd.as_raw_fd(), (&buf as *const u64).cast::<libc::c_void>(), 8) };
+      if rc == 8 {
+        return;
+      }
+      if rc < 0 {
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+          Some(libc::EINTR) => continue,
+          Some(libc::EAGAIN) => return,
+          _ => return,
+        }
+      }
+      // eventfd writes are expected to be atomic; treat any unexpected short
+      // write as a no-op.
+      return;
+    }
   }
 
   pub fn drain(&self) -> io::Result<()> {

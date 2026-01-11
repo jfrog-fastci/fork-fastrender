@@ -24,6 +24,7 @@ struct UnparkOnDrop;
 impl Drop for UnparkOnDrop {
   fn drop(&mut self) {
     crate::threading::set_parked(false);
+    crate::threading::safepoint_poll();
   }
 }
 

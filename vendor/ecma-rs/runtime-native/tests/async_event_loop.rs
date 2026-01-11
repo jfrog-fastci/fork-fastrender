@@ -1,9 +1,12 @@
 use runtime_native::async_rt::Interest;
 use runtime_native::async_rt::Task;
+use runtime_native::threading;
+use runtime_native::threading::ThreadKind;
 use runtime_native::test_util::TestRuntimeGuard;
 use std::os::fd::RawFd;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -149,4 +152,69 @@ fn idle_detection() {
     elapsed < Duration::from_millis(50),
     "rt_async_poll should return quickly when idle (elapsed={elapsed:?})"
   );
+}
+
+struct ResumeWorldOnDrop;
+
+impl Drop for ResumeWorldOnDrop {
+  fn drop(&mut self) {
+    runtime_native::rt_gc_resume_world();
+  }
+}
+
+#[test]
+fn parked_event_loop_thread_counts_as_quiescent_for_stop_the_world() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  // Keep the runtime non-idle so `rt_async_poll` blocks in epoll_wait.
+  let timer_fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+  let timer_id = runtime_native::async_rt::global().schedule_timer(
+    Instant::now() + Duration::from_secs(5),
+    Task::new(set_atomic_bool, timer_fired as *const AtomicBool as *mut u8),
+  );
+
+  let (tx_id, rx_id) = mpsc::channel();
+  let poll_thread = std::thread::spawn(move || {
+    let id = threading::register_current_thread(ThreadKind::Main);
+    tx_id.send(id).unwrap();
+
+    // This should block in epoll_wait.
+    runtime_native::rt_async_poll();
+
+    threading::unregister_current_thread();
+  });
+
+  let poll_thread_id = rx_id.recv().unwrap();
+
+  // Wait until the poll thread has parked itself.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    let parked = threading::all_threads()
+      .into_iter()
+      .find(|t| t.id() == poll_thread_id)
+      .map(|t| t.is_parked())
+      .unwrap_or(false);
+    if parked {
+      break;
+    }
+    assert!(Instant::now() < deadline, "poll thread did not park in time");
+    std::thread::yield_now();
+  }
+
+  runtime_native::rt_gc_request_stop_the_world();
+  let _resume = ResumeWorldOnDrop;
+  assert!(
+    runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_secs(1)),
+    "stop-the-world should treat parked event loop threads as quiescent"
+  );
+
+  runtime_native::rt_gc_resume_world();
+
+  // Wake the poll thread and allow it to return.
+  let _ = runtime_native::async_rt::global().cancel_timer(timer_id);
+  poll_thread.join().unwrap();
+
+  assert!(!timer_fired.load(Ordering::SeqCst));
+  threading::unregister_current_thread();
 }
