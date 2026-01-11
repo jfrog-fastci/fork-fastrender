@@ -141,3 +141,19 @@ pipe-based wake.
 - `wake()` writes a single byte; `EAGAIN`/`WouldBlock` is ignored (wake already pending).
 - When `poll()` observes `Token::WAKE`, it drains the pipe (read until `EAGAIN`) to re-arm
   `EV_CLEAR` edge semantics.
+
+## Testing kqueue backends
+
+Linux CI primarily exercises the `epoll` backend. To validate the kqueue implementation locally on
+macOS/BSD, run:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native --test reactor_kqueue
+```
+
+To force and test the pipe-based wake fallback even on platforms where `EVFILT_USER` is available:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native \
+  --test reactor_kqueue_pipe_wake --features force_pipe_wake
+```
