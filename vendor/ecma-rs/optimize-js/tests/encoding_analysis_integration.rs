@@ -1,42 +1,49 @@
-#[path = "common/mod.rs"]
-mod common;
-
-use common::compile_source;
 use optimize_js::analysis::encoding::analyze_cfg_encoding;
-use optimize_js::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
-use optimize_js::graph::Graph;
+use optimize_js::cfg::cfg::Cfg;
 use optimize_js::il::inst::{Arg, Const, InstTyp, StringEncoding};
-use optimize_js::util::debug::OptimizerDebugStep;
-use optimize_js::TopLevelMode;
+use optimize_js::{CompileCfgOptions, TopLevelMode};
 
-fn cfg_from_debug_step(step: &OptimizerDebugStep) -> Cfg {
-  let mut graph = Graph::<u32>::new();
-  for (&label, children) in step.cfg_children.iter() {
-    graph.ensure_node(&label);
-    for child in children {
-      graph.connect(&label, child);
-    }
-  }
-  for label in step.bblocks.keys() {
-    graph.ensure_node(label);
-  }
-
-  let graph = CfgGraph::from_graph(graph);
-  let mut bblocks = CfgBBlocks::default();
-  for (&label, insts) in step.bblocks.iter() {
-    bblocks.add(label, insts.clone());
-  }
-  Cfg {
-    graph,
-    bblocks,
-    entry: 0,
-  }
+fn cfg_labels_sorted(cfg: &Cfg) -> Vec<u32> {
+  let mut labels: Vec<u32> = cfg.bblocks.all().map(|(label, _)| label).collect();
+  labels.sort_unstable();
+  labels
 }
 
-fn find_const_str_var_assign(cfg: &Cfg, value: &str) -> (u32, u32) {
+fn find_def_label(cfg: &Cfg, var: u32) -> Option<u32> {
+  for label in cfg_labels_sorted(cfg) {
+    for inst in cfg.bblocks.get(label).iter() {
+      if inst.tgts.first() == Some(&var) {
+        return Some(label);
+      }
+    }
+  }
+  None
+}
+
+fn resolve_one_hop_copy(cfg: &Cfg, label: u32, var: u32) -> (u32, u32) {
+  // Some optimisation passes rewrite constant defs into `t = u` copies. When we
+  // locate a candidate temp, follow at most one `VarAssign(t, Var(u))` hop to
+  // reach the original defining temp.
+  for inst in cfg.bblocks.get(label).iter() {
+    if inst.t != InstTyp::VarAssign {
+      continue;
+    }
+    let (tgt, arg) = inst.as_var_assign();
+    if tgt == var && matches!(arg, Arg::Var(_)) {
+      let other = arg.to_var();
+      return (
+        find_def_label(cfg, other).unwrap_or(label),
+        other,
+      );
+    }
+  }
+  (label, var)
+}
+
+fn find_literal_def(cfg: &Cfg, value: &str) -> (u32, u32) {
   let mut matches = Vec::new();
-  for (label, block) in cfg.bblocks.all() {
-    for inst in block {
+  for label in cfg_labels_sorted(cfg) {
+    for inst in cfg.bblocks.get(label).iter() {
       if inst.t != InstTyp::VarAssign {
         continue;
       }
@@ -56,30 +63,26 @@ fn find_const_str_var_assign(cfg: &Cfg, value: &str) -> (u32, u32) {
   }
 }
 
-fn find_template_call(cfg: &Cfg, value: &str) -> (u32, u32) {
+fn find_template_def(cfg: &Cfg, value: &str) -> (u32, u32) {
   let mut matches = Vec::new();
-  for (label, block) in cfg.bblocks.all() {
-    for inst in block {
+  for label in cfg_labels_sorted(cfg) {
+    for inst in cfg.bblocks.get(label).iter() {
       if inst.t != InstTyp::Call {
         continue;
       }
-      let (tgt, callee, _this, args, spreads) = inst.as_call();
-      let Some(tgt) = tgt else {
+      let Some(&tgt) = inst.tgts.get(0) else {
         continue;
       };
-      if !spreads.is_empty() {
-        continue;
-      }
+      let (_call_tgt, callee, _this, args, spreads) = inst.as_call();
       if !matches!(callee, Arg::Builtin(path) if path == "__optimize_js_template") {
         continue;
       }
-      if args.len() != 1 {
+      if !spreads.is_empty() || args.len() != 1 {
         continue;
       }
-      if !matches!(&args[0], Arg::Const(Const::Str(s)) if s == value) {
-        continue;
+      if matches!(&args[0], Arg::Const(Const::Str(s)) if s == value) {
+        matches.push((label, tgt));
       }
-      matches.push((label, tgt));
     }
   }
   matches.sort_unstable();
@@ -92,46 +95,69 @@ fn find_template_call(cfg: &Cfg, value: &str) -> (u32, u32) {
   }
 }
 
+fn assert_var_encoding(
+  result: &optimize_js::analysis::encoding::EncodingResult,
+  label: u32,
+  var: u32,
+  expected: StringEncoding,
+) {
+  let actual = result.encoding_at_exit(label, var);
+  assert_eq!(
+    actual, expected,
+    "unexpected encoding for var {var} at exit of block {label}"
+  );
+}
+
 #[test]
-fn encoding_analysis_recognizes_template_lowering() {
-  let src = r#"
-    let a = "hello";
-    let b = `world`;
-    let c = `hé`;
-  "#;
+fn encoding_analysis_distinguishes_ascii_latin1_and_utf8() {
+  // Compile without optimisation passes so the lowering patterns we want to
+  // exercise remain visible (DCE would otherwise delete unused `let` bindings).
+  let options = CompileCfgOptions {
+    run_opt_passes: false,
+    ..CompileCfgOptions::default()
+  };
 
-  // Use the debug snapshots so we can assert over the real lowered CFG before
-  // DVN/copy propagation and dead-code elimination strip unused bindings from the
-  // final program body.
-  let program = compile_source(src, TopLevelMode::Module, true);
-  let dbg = program
-    .top_level
-    .debug
-    .as_ref()
-    .expect("debug output enabled");
-  let step = dbg
-    .steps()
-    .iter()
-    .find(|step| step.name == "ssa_rename_targets")
-    .expect("ssa_rename_targets debug step should exist");
-  let cfg = cfg_from_debug_step(step);
+  let program = optimize_js::compile_source_with_cfg_options(
+    r#"
+      let a = "hello";
+      let b = "ÿ";      // Latin1 (U+00FF)
+      let c = "π";      // Utf8 (U+03C0)
+      let t0 = `hello`;  // lowered as __optimize_js_template call
+      let t1 = `ÿ`;
+      let t2 = `π`;
+    "#,
+    TopLevelMode::Module,
+    false,
+    options,
+  )
+  .expect("compile source");
 
-  let result = analyze_cfg_encoding(&cfg);
+  let cfg = &program.top_level.body;
+  let result = analyze_cfg_encoding(cfg);
 
-  let (lbl_hello, tgt_hello) = find_const_str_var_assign(&cfg, "hello");
-  let (lbl_world, tgt_world) = find_template_call(&cfg, "world");
-  let (lbl_he, tgt_he) = find_template_call(&cfg, "hé");
+  // Direct string literals.
+  let (hello_label, hello_var) = find_literal_def(cfg, "hello");
+  let (y_label, y_var) = find_literal_def(cfg, "ÿ");
+  let (pi_label, pi_var) = find_literal_def(cfg, "π");
 
-  assert_eq!(
-    result.encoding_at_exit(lbl_hello, tgt_hello),
-    StringEncoding::Ascii
-  );
-  assert_eq!(
-    result.encoding_at_exit(lbl_world, tgt_world),
-    StringEncoding::Ascii
-  );
-  assert_eq!(
-    result.encoding_at_exit(lbl_he, tgt_he),
-    StringEncoding::Latin1
-  );
+  let (hello_label, hello_var) = resolve_one_hop_copy(cfg, hello_label, hello_var);
+  let (y_label, y_var) = resolve_one_hop_copy(cfg, y_label, y_var);
+  let (pi_label, pi_var) = resolve_one_hop_copy(cfg, pi_label, pi_var);
+
+  assert_var_encoding(&result, hello_label, hello_var, StringEncoding::Ascii);
+  assert_var_encoding(&result, y_label, y_var, StringEncoding::Latin1);
+  assert_var_encoding(&result, pi_label, pi_var, StringEncoding::Utf8);
+
+  // Template literals lowered as `__optimize_js_template("...")`.
+  let (t0_label, t0_var) = find_template_def(cfg, "hello");
+  let (t1_label, t1_var) = find_template_def(cfg, "ÿ");
+  let (t2_label, t2_var) = find_template_def(cfg, "π");
+
+  let (t0_label, t0_var) = resolve_one_hop_copy(cfg, t0_label, t0_var);
+  let (t1_label, t1_var) = resolve_one_hop_copy(cfg, t1_label, t1_var);
+  let (t2_label, t2_var) = resolve_one_hop_copy(cfg, t2_label, t2_var);
+
+  assert_var_encoding(&result, t0_label, t0_var, StringEncoding::Ascii);
+  assert_var_encoding(&result, t1_label, t1_var, StringEncoding::Latin1);
+  assert_var_encoding(&result, t2_label, t2_var, StringEncoding::Utf8);
 }
