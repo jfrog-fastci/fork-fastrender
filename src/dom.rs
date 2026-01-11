@@ -7658,12 +7658,9 @@ impl<'a> Element for ElementRef<'a> {
         })
       }
       PseudoClass::Root => {
-        matches!(self.node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
-          && self
-            .node
-            .tag_name()
-            .map(|t| t.eq_ignore_ascii_case("html"))
-            .unwrap_or(false)
+        self
+          .parent
+          .is_some_and(|parent| matches!(parent.node_type, DomNodeType::Document { .. }))
       }
       PseudoClass::Defined => {
         if _context.extra_data.treat_custom_elements_as_defined {
@@ -12357,27 +12354,22 @@ mod tests {
   }
 
   #[test]
-  fn root_matches_html_case_insensitive() {
-    let upper = DomNode {
-      node_type: DomNodeType::Element {
-        tag_name: "HTML".to_string(),
-        namespace: HTML_NAMESPACE.to_string(),
-        attributes: vec![],
-      },
-      children: vec![],
-    };
+  fn root_matches_document_element() {
+    let html_document = document(vec![element("HTML", vec![element("body", vec![])])]);
+    let html = &html_document.children[0];
+    let body = &html.children[0];
 
-    let svg_root = DomNode {
-      node_type: DomNodeType::Element {
-        tag_name: "svg".to_string(),
-        namespace: SVG_NAMESPACE.to_string(),
-        attributes: vec![],
-      },
-      children: vec![],
-    };
+    assert!(matches(html, &[&html_document], &PseudoClass::Root));
+    assert!(!matches(body, &[&html_document, html], &PseudoClass::Root));
 
-    assert!(matches(&upper, &[], &PseudoClass::Root));
-    assert!(!matches(&svg_root, &[], &PseudoClass::Root));
+    let mut svg_root = svg_element("svg");
+    svg_root.children.push(svg_element("g"));
+    let svg_document = document(vec![svg_root]);
+    let svg = &svg_document.children[0];
+    let g = &svg.children[0];
+
+    assert!(matches(svg, &[&svg_document], &PseudoClass::Root));
+    assert!(!matches(g, &[&svg_document, svg], &PseudoClass::Root));
   }
 
   #[test]
