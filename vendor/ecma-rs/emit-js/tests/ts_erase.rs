@@ -152,9 +152,31 @@ class Fields {
 
 #[test]
 fn reports_unsupported_ts_runtime_constructs() {
-  let source = "enum E { A }";
-  let mut parsed = parse_ts(source);
-  let diagnostics = emit_ecma_from_ts_top_level(FileId(0), SourceType::Module, &mut parsed, EmitOptions::minified())
-    .expect_err("expected enum to be rejected");
-  assert!(!diagnostics.is_empty(), "expected at least one diagnostic");
+  for (label, dialect, source) in [
+    ("enum", Dialect::Ts, "enum E { A }"),
+    ("decorators", Dialect::Ts, "@dec class C {}"),
+    ("jsx", Dialect::Tsx, "const el = <div>{x}</div>;"),
+  ] {
+    let mut parsed = parse_with_options(
+      source,
+      ParseOptions {
+        dialect,
+        source_type: SourceType::Module,
+      },
+    )
+    .unwrap_or_else(|err| panic!("parse {label}: {err:?}\nsource:\n{source}"));
+
+    let diagnostics = emit_ecma_from_ts_top_level(
+      FileId(0),
+      SourceType::Module,
+      &mut parsed,
+      EmitOptions::minified(),
+    )
+    .expect_err(&format!("expected {label} to be rejected"));
+
+    assert!(
+      diagnostics.iter().any(|diag| diag.code.as_str() == "MINIFYTS0001"),
+      "expected MINIFYTS0001 diagnostic for {label}, got: {diagnostics:?}"
+    );
+  }
 }
