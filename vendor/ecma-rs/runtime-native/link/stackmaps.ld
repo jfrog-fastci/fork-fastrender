@@ -1,16 +1,18 @@
 /* Linker script fragment (Linux/ELF) for retaining and exposing LLVM stack maps
  * in **PIE/DSO-style** builds (lld-oriented).
  *
- * Why a linker script at all?
- * - LLVM emits stackmap metadata into a `.llvm_stackmaps` section.
- * - GNU ld/LLD only auto-define `__start_<section>` / `__stop_<section>` for
- *   section names *without* a leading dot, so `.llvm_stackmaps` does not get
- *   usable start/stop symbols.
+ * - LLVM emits stackmap metadata into `.llvm_stackmaps` (and sometimes `.llvm_faultmaps`).
+ * - For PIE/DSO output we often rename those input sections to `.data.rel.ro.llvm_*` so the dynamic
+ *   loader can apply relocations without `DT_TEXTREL`.
+ * - GNU ld/LLD only auto-define `__start_<section>` / `__stop_<section>` for section names without
+ *   a leading dot, so `.llvm_stackmaps` does not get usable boundary symbols by default.
  *
- * This fragment keeps stackmaps under `--gc-sections` and defines stable
- * in-process boundary symbols:
- *   - `__start_llvm_stackmaps`
- *   - `__stop_llvm_stackmaps`
+ * This fragment:
+ * - Keeps stackmaps/faultmaps under `--gc-sections`, and
+ * - Defines stable in-process symbols:
+ *     __start_llvm_stackmaps / __stop_llvm_stackmaps
+ *     __stackmaps_start / __stackmaps_end (generic aliases)
+ *     __fastr_stackmaps_* / __llvm_stackmaps_* (legacy aliases)
  *
  * It also defines aliases:
  *   - `__stackmaps_{start,end}` (generic alias)
@@ -59,7 +61,6 @@ SECTIONS {
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
-
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))

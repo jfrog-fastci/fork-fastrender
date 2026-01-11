@@ -283,6 +283,8 @@ pub fn remset_drain_into(dst: &mut SimpleRememberedSet) {
 ///
 /// This exists so stop-the-world GC can scan old→young edges without allocating:
 /// the backing storage is a fixed-capacity global array used by the write barrier.
+/// It also includes per-thread remembered-set buffers maintained in the runtime
+/// thread registry.
 ///
 /// # Stop-the-world requirement
 /// This must only be used while mutators are stopped; otherwise the write barrier could mutate the
