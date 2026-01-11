@@ -13,7 +13,6 @@ mod response;
 pub use adapter::{execute_web_fetch, WebFetchExecutionContext};
 pub use body::Body;
 pub use headers::{Headers, HeadersGuard};
-pub(crate) use headers::cors_safelisted_request_header;
 pub use limits::WebFetchLimits;
 pub use request::{Request, RequestCredentials, RequestMode, RequestRedirect};
 pub use response::{Response, ResponseType};

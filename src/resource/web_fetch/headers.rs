@@ -738,10 +738,6 @@ pub(super) fn is_cors_safelisted_request_header(name: &HeaderName, value: &str) 
   }
 }
 
-pub(crate) fn cors_safelisted_request_header(name: &HeaderName, value: &str) -> bool {
-  is_cors_safelisted_request_header(name, value)
-}
-
 fn is_cors_unsafe_request_header_byte(byte: u8) -> bool {
   // https://fetch.spec.whatwg.org/#cors-unsafe-request-header-byte
   if byte < 0x20 && byte != 0x09 {

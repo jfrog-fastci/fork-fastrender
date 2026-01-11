@@ -13,7 +13,7 @@ pub mod window {
   use crate::js::webidl::DataPropertyAttributes;
   use webidl_ir::{
     DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
-    NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext,
+    NumericLiteral, NumericType, StringType, TypeContext,
   };
   use webidl_js_runtime::{
     convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg,
@@ -2064,11 +2064,10 @@ pub mod worker {
   use crate::js::webidl::DataPropertyAttributes;
   use webidl_ir::{
     DefaultValue, DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind,
-    NumericLiteral, NumericType, StringType, TypeAnnotation, TypeContext,
+    StringType, TypeContext,
   };
   use webidl_js_runtime::{
-    convert_arguments, resolve_overload, ArgumentSchema, ConvertedValue, Optionality, OverloadArg,
-    OverloadSig, WebIdlJsRuntime,
+    convert_arguments, ArgumentSchema, ConvertedValue, WebIdlJsRuntime,
   };
 
   type RtJsValue<Host, R> = <R as crate::js::webidl::WebIdlBindingsRuntime<Host>>::JsValue;
