@@ -172,11 +172,18 @@ impl Backend for VmJsBackend {
         try { g.__fastrender_wpt_report = __fastrender_wpt_report; } catch (_e4) {}
 
         // Legacy URL resolver used by curated tests and compatibility shims.
+        //
+        // Note: `base` is treated as a required argument once present (mirrors WebIDL where
+        // `base: USVString?` is *not* nullable). Curated tests assert that `base === null`
+        // throws a real TypeError.
         var __fastrender_resolve_url = function (input, base) {
-          if (base === null || base === undefined) {
-            return (new URL(input)).toString();
+          if (base === null) {
+            throw new TypeError("Invalid base URL");
           }
-          return (new URL(input, base)).toString();
+          if (base === undefined) {
+            return (new URL(input)).href;
+          }
+          return (new URL(input, base)).href;
         };
         try { g.__fastrender_resolve_url = __fastrender_resolve_url; } catch (_e5) {}
       })();
