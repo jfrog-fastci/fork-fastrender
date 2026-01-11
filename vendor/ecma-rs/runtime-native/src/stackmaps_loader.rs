@@ -40,6 +40,8 @@ mod linux {
     // - symbols absent (start=end=sentinel) -> fall back to other discovery
     // - symbols present but empty (start=end!=sentinel) -> return empty slice
     .weak __runtime_native_stackmaps_fallback
+    .weak __start_llvm_stackmaps
+    .weak __stop_llvm_stackmaps
     .weak __stackmaps_start
     .weak __stackmaps_end
     .weak __llvm_stackmaps_start
@@ -57,6 +59,8 @@ mod linux {
     .hidden __fastr_stackmaps_start
     .hidden __fastr_stackmaps_end
     __runtime_native_stackmaps_fallback:
+    __start_llvm_stackmaps:
+    __stop_llvm_stackmaps:
     __stackmaps_start:
     __stackmaps_end:
     __llvm_stackmaps_start:
@@ -71,6 +75,8 @@ mod linux {
 
   extern "C" {
     pub static __runtime_native_stackmaps_fallback: u8;
+    pub static __start_llvm_stackmaps: u8;
+    pub static __stop_llvm_stackmaps: u8;
     pub static __stackmaps_start: u8;
     pub static __stackmaps_end: u8;
     pub static __llvm_stackmaps_start: u8;
@@ -187,9 +193,15 @@ pub fn try_load_via_linker_symbols() -> Option<&'static [u8]> {
     };
 
     try_pair(
-      core::ptr::addr_of!(linux::__stackmaps_start),
-      core::ptr::addr_of!(linux::__stackmaps_end),
+      core::ptr::addr_of!(linux::__start_llvm_stackmaps),
+      core::ptr::addr_of!(linux::__stop_llvm_stackmaps),
     )
+    .or_else(|| {
+      try_pair(
+        core::ptr::addr_of!(linux::__stackmaps_start),
+        core::ptr::addr_of!(linux::__stackmaps_end),
+      )
+    })
     .or_else(|| {
       try_pair(
         core::ptr::addr_of!(linux::__llvm_stackmaps_start),
