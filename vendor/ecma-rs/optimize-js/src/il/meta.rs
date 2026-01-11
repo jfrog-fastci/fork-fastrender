@@ -387,6 +387,15 @@ pub struct InstMeta {
   pub type_summary: Option<ValueTypeSummary>,
   #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
   pub excludes_nullish: bool,
+  /// Preserve this instruction through copy-propagation passes.
+  ///
+  /// `optimize-js`'s SSA cleanup passes aggressively remove `VarAssign`
+  /// instructions (`%t = %x`) as redundant copies. In typed builds we sometimes
+  /// intentionally materialize such copies to attach per-expression type
+  /// metadata (e.g. identifier reads can be flow-narrowed and parameters have no
+  /// explicit defining instruction).
+  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+  pub preserve_var_assign: bool,
   #[cfg_attr(
     feature = "serde",
     serde(default, skip_serializing_if = "OwnershipState::is_default")
@@ -480,6 +489,7 @@ impl InstMeta {
       && self.hir_expr.is_none()
       && self.type_summary.is_none()
       && !self.excludes_nullish
+      && !self.preserve_var_assign
       && self.ownership.is_default()
       && is_default_arg_use_modes(&self.arg_use_modes)
       && self.in_place_hint.is_none()

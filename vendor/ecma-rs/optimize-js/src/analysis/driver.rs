@@ -168,11 +168,13 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
       let hir_expr = inst.meta.hir_expr;
       let type_summary = inst.meta.type_summary;
       let excludes_nullish = inst.meta.excludes_nullish;
+      let preserve_var_assign = inst.meta.preserve_var_assign;
       inst.meta = InstMeta::default();
       inst.meta.type_id = type_id;
       inst.meta.hir_expr = hir_expr;
       inst.meta.type_summary = type_summary;
       inst.meta.excludes_nullish = excludes_nullish;
+      inst.meta.preserve_var_assign = preserve_var_assign;
     }
   }
 }

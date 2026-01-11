@@ -165,7 +165,11 @@ impl<'p> HirSourceToInst<'p> {
         #[cfg(feature = "typed")]
         {
           let sym_tmp = self.symbol_to_temp(local);
-          self.temp_var_arg_for_expr(expr, |tgt| Inst::var_assign(tgt, Arg::Var(sym_tmp)))
+          self.temp_var_arg_for_expr(expr, |tgt| {
+            let mut inst = Inst::var_assign(tgt, Arg::Var(sym_tmp));
+            inst.meta.preserve_var_assign = true;
+            inst
+          })
         }
         #[cfg(not(feature = "typed"))]
         {

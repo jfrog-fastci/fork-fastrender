@@ -21,8 +21,11 @@ pub fn optpass_redundant_assigns(cfg: &mut Cfg) -> PassResult {
       if inst.t != InstTyp::VarAssign {
         continue;
       }
-      #[cfg(feature = "typed")]
-      if inst.meta.hir_expr.is_some() {
+      // Typed identifier reads materialize as `VarAssign` copies so they can carry
+      // per-expression type metadata (flow narrowing, parameter types, etc). Keep
+      // those around; they are not redundant from the perspective of downstream
+      // analyses.
+      if inst.meta.preserve_var_assign {
         continue;
       }
       let (tgt, value) = inst.as_var_assign();
@@ -67,4 +70,61 @@ pub fn optpass_redundant_assigns(cfg: &mut Cfg) -> PassResult {
     }
   }
   result
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::cfg::cfg::{CfgBBlocks, CfgGraph};
+  use crate::il::inst::{BinOp, Const, Inst};
+  use parse_js::num::JsNumber;
+
+  #[test]
+  fn preserves_marked_var_assigns() {
+    let mut graph = CfgGraph::default();
+    graph.ensure_label(0);
+    let mut bblocks = CfgBBlocks::default();
+    let mut preserved = Inst::var_assign(3, Arg::Var(0));
+    preserved.meta.preserve_var_assign = true;
+    bblocks.add(
+      0,
+      vec![
+        Inst::var_assign(1, Arg::Var(0)),
+        Inst::bin(
+          2,
+          Arg::Var(1),
+          BinOp::Add,
+          Arg::Const(Const::Num(JsNumber(1.0))),
+        ),
+        preserved,
+        Inst::bin(
+          4,
+          Arg::Var(3),
+          BinOp::Add,
+          Arg::Const(Const::Num(JsNumber(1.0))),
+        ),
+      ],
+    );
+    let mut cfg = Cfg {
+      graph,
+      bblocks,
+      entry: 0,
+    };
+
+    let result = optpass_redundant_assigns(&mut cfg);
+    assert!(result.changed);
+
+    let block = cfg.bblocks.get(0);
+    assert_eq!(block.len(), 3, "expected one redundant VarAssign to be removed");
+
+    let first_bin = &block[0];
+    assert_eq!(first_bin.args.get(0), Some(&Arg::Var(0)));
+
+    let preserved_assign = &block[1];
+    assert_eq!(preserved_assign.t, InstTyp::VarAssign);
+    assert!(preserved_assign.meta.preserve_var_assign);
+
+    let second_bin = &block[2];
+    assert_eq!(second_bin.args.get(0), Some(&Arg::Var(3)));
+  }
 }
