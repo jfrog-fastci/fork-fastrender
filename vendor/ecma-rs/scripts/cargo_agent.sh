@@ -54,32 +54,5 @@ for ((i = 0; i < ${#argv[@]}; i++)); do
   fi
 done
 
-# `runtime-native` relies on an FP-based stack walker for GC root enumeration.
-# Ensure frame pointers are enabled so `bash vendor/ecma-rs/scripts/cargo_agent.sh check -p runtime-native`
-# works out of the box (without requiring callers to manually set RUSTFLAGS or use `cargo_llvm.sh`).
-need_fp=0
-if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
-  need_fp=1
-fi
-if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=no"* ]]; then
-  need_fp=1
-fi
-if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=false"* ]]; then
-  need_fp=1
-fi
-if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=off"* ]]; then
-  need_fp=1
-fi
-if [[ "${RUSTFLAGS:-}" == *"force-frame-pointers=non-leaf"* ]]; then
-  need_fp=1
-fi
-if [[ "${need_fp}" -ne 0 ]]; then
-  if [[ -z "${RUSTFLAGS:-}" ]]; then
-    export RUSTFLAGS="-C force-frame-pointers=yes"
-  else
-    export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
-  fi
-fi
-
 cd "${ECMA_RS_ROOT}"
 exec bash "${MONOREPO_WRAPPER}" "${argv[@]}"

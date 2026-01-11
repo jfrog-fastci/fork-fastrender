@@ -230,7 +230,12 @@ fi
 # `-C force-frame-pointers=yes` via its build script. Keep common invocations like:
 #   bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native
 # working by automatically injecting the flag when the caller targets the package directly.
+#
+# Note: `runtime-native` also exposes an `allow_omit_frame_pointers` feature as an escape hatch for
+# experiments. Respect it: if the caller explicitly enables the feature, do not force-inject frame
+# pointers (they can still opt in by setting RUSTFLAGS themselves).
 needs_frame_pointers=0
+allow_omit_frame_pointers=0
 argv=("$@")
 for ((i = 0; i < ${#argv[@]}; i++)); do
   # Stop once we reach the argument delimiter. Anything after `--` is forwarded
@@ -243,34 +248,51 @@ for ((i = 0; i < ${#argv[@]}; i++)); do
     -p|--package)
       if [[ "${argv[$((i + 1))]:-}" == "runtime-native" ]]; then
         needs_frame_pointers=1
-        break
       fi
       ;;
     -p=runtime-native)
       needs_frame_pointers=1
-      break
       ;;
     --package=runtime-native)
       needs_frame_pointers=1
-      break
+      ;;
+    --features|-F)
+      features="${argv[$((i + 1))]:-}"
+      features="${features//[[:space:]]/}"
+      if [[ -n "${features}" && ",${features}," == *",allow_omit_frame_pointers,"* ]]; then
+        allow_omit_frame_pointers=1
+      fi
+      ;;
+    --features=*)
+      features="${argv[$i]#--features=}"
+      features="${features//[[:space:]]/}"
+      if [[ -n "${features}" && ",${features}," == *",allow_omit_frame_pointers,"* ]]; then
+        allow_omit_frame_pointers=1
+      fi
+      ;;
+    -F*)
+      # Cargo accepts `-F foo` and `-Ffoo` spellings.
+      features="${argv[$i]#-F}"
+      features="${features//[[:space:]]/}"
+      if [[ -n "${features}" && ",${features}," == *",allow_omit_frame_pointers,"* ]]; then
+        allow_omit_frame_pointers=1
+      fi
       ;;
     --manifest-path)
       # Allow direct invocation against the runtime-native crate manifest:
       #   bash vendor/ecma-rs/scripts/cargo_agent.sh test --manifest-path vendor/ecma-rs/runtime-native/Cargo.toml
       if [[ "${argv[$((i + 1))]:-}" == *"runtime-native/Cargo.toml" ]]; then
         needs_frame_pointers=1
-        break
       fi
       ;;
     --manifest-path=*)
       if [[ "${argv[$i]#--manifest-path=}" == *"runtime-native/Cargo.toml" ]]; then
         needs_frame_pointers=1
-        break
       fi
       ;;
   esac
 done
-if [[ "${needs_frame_pointers}" -eq 1 && "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+if [[ "${needs_frame_pointers}" -eq 1 && "${allow_omit_frame_pointers}" -eq 0 && "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
   if [[ -z "${RUSTFLAGS:-}" ]]; then
     export RUSTFLAGS="-C force-frame-pointers=yes"
   else
@@ -300,47 +322,6 @@ fi
 if [[ -z "${RUSTC_WRAPPER:-}" && -z "${CARGO_BUILD_RUSTC_WRAPPER:-}" ]]; then
   export RUSTC_WRAPPER="env"
   export CARGO_BUILD_RUSTC_WRAPPER="env"
-fi
-
-# `runtime-native` (in `vendor/ecma-rs/`) enforces a frame-pointer build to keep its FP-based stack
-# walker and GC root enumerator sound. The preferred way to build it is via
-# `vendor/ecma-rs/scripts/cargo_llvm.sh` (which also bumps the RAM limit), but many workflows call
-# into `scripts/cargo_agent.sh` directly with `--manifest-path`/`-p runtime-native`.
-#
-# Detect those invocations and automatically inject `-C force-frame-pointers=yes` if missing so the
-# build script doesn't fail with a confusing error.
-needs_frame_pointers=0
-argv=("$@")
-for ((i = 0; i < ${#argv[@]}; i++)); do
-  case "${argv[$i]}" in
-    -p|--package)
-      if [[ "${argv[$((i + 1))]:-}" == "runtime-native" ]]; then
-        needs_frame_pointers=1
-      fi
-      ;;
-    --package=runtime-native)
-      needs_frame_pointers=1
-      ;;
-    --manifest-path)
-      path="${argv[$((i + 1))]:-}"
-      if [[ "${path}" == *"/runtime-native/Cargo.toml" ]]; then
-        needs_frame_pointers=1
-      fi
-      ;;
-    --manifest-path=*)
-      path="${argv[$i]#--manifest-path=}"
-      if [[ "${path}" == *"/runtime-native/Cargo.toml" ]]; then
-        needs_frame_pointers=1
-      fi
-      ;;
-  esac
-done
-if [[ "${needs_frame_pointers}" == "1" && "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
-  if [[ -z "${RUSTFLAGS:-}" ]]; then
-    export RUSTFLAGS="-C force-frame-pointers=yes"
-  else
-    export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
-  fi
 fi
 
 nproc="${FASTR_CARGO_NPROC:-}"
