@@ -1148,15 +1148,16 @@ pub enum GenericFamily {
 /// exhaustive; it is a pragmatic compatibility layer to improve fidelity on pages that specify
 /// these names as primary fonts.
 pub(crate) fn named_family_aliases(name: &str) -> &'static [&'static str] {
-  if name.eq_ignore_ascii_case("Helvetica")
-    || name.eq_ignore_ascii_case("Helvetica Neue")
-    || name.eq_ignore_ascii_case("Arial")
-  {
+  if name.eq_ignore_ascii_case("Helvetica") || name.eq_ignore_ascii_case("Arial") {
     // `fc-match -s Helvetica` on typical Linux environments prefers Liberation Sans first, then
     // falls back through common sans-serif faces.
     // In bundled-only mode we don't ship Liberation Sans, so prefer Roboto Flex next: its metrics
     // are closer to common browser Linux fallbacks than the wider Noto Sans.
     &["Liberation Sans", "Roboto Flex", "Noto Sans", "DejaVu Sans"]
+  } else if name.eq_ignore_ascii_case("Helvetica Neue") {
+    // `fc-match -s "Helvetica Neue"` on typical Linux/fontconfig environments prefers Noto Sans
+    // (not Liberation Sans).
+    &["Noto Sans", "DejaVu Sans", "Liberation Sans", "Roboto Flex"]
   } else if name.eq_ignore_ascii_case("Times New Roman") || name.eq_ignore_ascii_case("Times") {
     &["Liberation Serif", "Noto Serif", "DejaVu Serif"]
   } else if name.eq_ignore_ascii_case("Courier New") || name.eq_ignore_ascii_case("Courier") {
@@ -2979,6 +2980,35 @@ mod tests {
       .expect("resolve sans-serif");
     let font = db.load_font(id).expect("load resolved sans-serif font");
     assert_eq!(font.family, "Noto Sans");
+  }
+
+  #[test]
+  fn helvetica_neue_aliases_follow_fontconfig_order() {
+    assert_eq!(
+      named_family_aliases("Helvetica Neue"),
+      &["Noto Sans", "DejaVu Sans", "Liberation Sans", "Roboto Flex"]
+    );
+  }
+
+  #[test]
+  fn helvetica_neue_alias_prefers_noto_sans_in_non_bundled_db() {
+    let noto = include_bytes!("../../tests/fixtures/fonts/NotoSans-subset.ttf");
+    let roboto = include_bytes!("../../tests/fonts/RobotoFlex-VF.ttf");
+
+    let mut db = FontDatabase::empty();
+    db.load_font_data(roboto.to_vec()).expect("load Roboto Flex");
+    db.load_font_data(noto.to_vec()).expect("load Noto Sans");
+    db.refresh_generic_fallbacks();
+
+    let ctx = crate::FontContext::with_database(std::sync::Arc::new(db));
+    let mut style = crate::ComputedStyle::default();
+    style.font_family = vec!["Helvetica Neue".to_string()].into();
+
+    let runs = crate::ShapingPipeline::new()
+      .shape("Hello", &style, &ctx)
+      .expect("shaping succeeds");
+    assert!(!runs.is_empty(), "expected shaped runs");
+    assert_eq!(runs[0].font.family, "Noto Sans");
   }
 
   #[test]
