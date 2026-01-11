@@ -216,8 +216,11 @@ let artifact = compile_program(&program, entry, &opts)?;
 println!(\"wrote {}\", artifact.path.display());
 ```
 
-> Note: the typechecked/HIR backend is still minimal and currently only lowers a
-> single exported `main()` entrypoint (no cross-module imports yet).
+> Note: the typechecked/HIR backend is still minimal, but it can now lower small
+> multi-file ES module programs: it codegens the entry file’s exported `main()`
+> plus transitive runtime `import` dependencies (running module initializers in
+> dependency order). Re-exports and many import/export forms are not supported
+> yet.
 > `native_js::codegen` currently contains:
 > - the minimal `parse-js`-driven emitter used by `compile_typescript_to_llvm_ir`, and
 > - an early HIR-driven backend used by the `native-js` CLI binary.
@@ -434,12 +437,17 @@ etc).
 
 ## Strict compilation subset (`native_js::validate`)
 
-The typechecked AOT pipeline (`native-js` binary) runs an additional validation
-pass after successful type checking and before LLVM IR generation:
+The typechecked AOT pipeline (`native-js` binary / `native_js::compile_program`)
+runs an additional validation pass after successful type checking and before LLVM
+IR generation:
 
 ```rust
 pub fn validate_strict_subset(program: &Program) -> Result<(), Vec<Diagnostic>>
 ```
+
+This is the **default** validator for the AOT pipeline. The older
+`native_js::strict::validate` module is a legacy *extra-strict* validator (some
+frontends expose it behind an opt-in flag like `native-js --extra-strict`).
 
 It emits stable `NJS####` codes:
 
@@ -473,6 +481,12 @@ matching the validator’s checks):
     `null`/`undefined`/`void`/`never` and their literal types
   - e.g. unions/intersections, object types, function types, nominal/reference
     types, `bigint`, `symbol`, template-literal types, etc.
+  - builtin intrinsics may provide exceptions:
+    - the `native-js` CLI injects a small `.d.ts` builtin library that declares
+      `print(value: number): void` (see `native-js-cli/src/builtins.rs`)
+    - callable/function types are otherwise rejected, but the strict subset
+      validator allows the `print(...)` identifier only when it is used as a
+      direct call callee
 
 > Note: TypeScript-only, runtime-inert expression wrappers such as `satisfies`,
 > type assertions (`as`), and non-null assertions (`!`) are allowed by this

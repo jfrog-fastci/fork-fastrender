@@ -12,8 +12,8 @@
 //! The HIR backend emits stable `NJS01xx` codes for codegen failures:
 //!
 //! - `NJS0100`: failed to access lowered HIR for entry file
-//! - `NJS0101`: failed to access lowered HIR for `main` body
-//! - `NJS0102`: missing function metadata for `main` body
+//! - `NJS0101`: failed to access lowered HIR for a function body / failed to locate `main` for codegen
+//! - `NJS0102`: missing function metadata
 //! - `NJS0103`: expression id out of bounds
 //! - `NJS0104`: numeric literal cannot be represented as a 32-bit integer
 //! - `NJS0105`: unsupported unary operator
@@ -21,15 +21,14 @@
 //! - `NJS0107`: unsupported expression in the current codegen subset
 //! - `NJS0112`: statement id out of bounds
 //! - `NJS0113`: unsupported statement / variable declaration kind in the current codegen subset
-//! - `NJS0114`: unknown identifier in codegen
-//! - `NJS0115`: not all control-flow paths in `main` return a value
-//! - `NJS0116`: `return` without a value is only supported when `main` returns `void`/`undefined`
-//! - `NJS0117`: unsupported pattern (expected identifier) / pattern id out of bounds
+//! - `NJS0114`: use of unknown/unbound identifier in the current codegen subset
+//! - `NJS0115`: not all control-flow paths return a value in the current codegen subset
+//! - `NJS0116`: `return;` is only supported when `main` returns `void`/`undefined`
 //! - `NJS0118`: variable declarations must have an initializer
 //! - `NJS0119`: unknown loop label for `break`
 //! - `NJS0120`: `break` is only supported inside loops
 //! - `NJS0121`: unknown loop label for `continue`
-//! - `NJS0122`: `continue` is only supported inside loops
+//! - `NJS0122`: `continue` is only supported inside loops (also used for unsupported binding patterns)
 //! - `NJS0123`: failed to resolve call signature for exported `main`
 //! - `NJS0124`: only labeled loops are supported in native-js codegen
 //! - `NJS0130`: failed to resolve identifier/callee during codegen
