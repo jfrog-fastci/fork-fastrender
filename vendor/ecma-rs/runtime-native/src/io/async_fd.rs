@@ -1,12 +1,17 @@
 use crate::abi::{RT_IO_ERROR, RT_IO_READABLE, RT_IO_WRITABLE};
 use crate::async_rt::{self, WatcherId};
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
+
+static NEXT_REGISTRY_KEY: AtomicUsize = AtomicUsize::new(1);
+static REGISTRY: Lazy<Mutex<HashMap<usize, Arc<State>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// A small, runtime-native reactor-backed wrapper for awaiting fd readiness.
 ///
@@ -190,7 +195,7 @@ struct State {
 
 struct StateInner {
   watcher_id: Option<WatcherId>,
-  watcher_data: Option<*const State>,
+  watcher_key: Option<usize>,
   interests: u32,
 
   next_waiter_id: u64,
@@ -206,7 +211,7 @@ impl State {
       fd,
       inner: Mutex::new(StateInner {
         watcher_id: None,
-        watcher_data: None,
+        watcher_key: None,
         interests: 0,
         next_waiter_id: 1,
         readable_gen: 0,
@@ -228,13 +233,13 @@ impl State {
 
     if desired == 0 {
       if let Some(id) = inner.watcher_id.take() {
-        let data = inner
-          .watcher_data
+        let key = inner
+          .watcher_key
           .take()
-          .expect("io watcher registered without watcher_data");
+          .expect("io watcher registered without watcher_key");
         inner.interests = 0;
         let _ = async_rt::global().deregister_fd(id);
-        schedule_drop_arc(data);
+        REGISTRY.lock().unwrap().remove(&key);
       }
       return Ok(());
     }
@@ -245,13 +250,13 @@ impl State {
           // If we fail to update the reactor registration, drop the existing
           // watcher so we don't leave a stale fd registration behind.
           let _ = async_rt::global().deregister_fd(id);
-          let data = inner
-            .watcher_data
+          let key = inner
+            .watcher_key
             .take()
-            .expect("io watcher registered without watcher_data");
+            .expect("io watcher registered without watcher_key");
           inner.watcher_id = None;
           inner.interests = 0;
-          schedule_drop_arc(data);
+          REGISTRY.lock().unwrap().remove(&key);
           return Err(io::Error::new(
             io::ErrorKind::Other,
             "failed to update reactor interest",
@@ -263,20 +268,18 @@ impl State {
     }
 
     crate::rt_ensure_init();
-    let data = Arc::into_raw(Arc::clone(arc));
-    let id = match async_rt::global().register_io(self.fd, desired, on_io_ready, data as *mut u8) {
+    let key = NEXT_REGISTRY_KEY.fetch_add(1, Ordering::Relaxed);
+    REGISTRY.lock().unwrap().insert(key, Arc::clone(arc));
+    let id = match async_rt::global().register_io(self.fd, desired, on_io_ready, key as *mut u8) {
       Ok(id) => id,
       Err(e) => {
-        // Undo the leaked strong count if registration fails.
-        unsafe {
-          drop(Arc::from_raw(data));
-        }
+        REGISTRY.lock().unwrap().remove(&key);
         return Err(e);
       }
     };
 
     inner.watcher_id = Some(id);
-    inner.watcher_data = Some(data);
+    inner.watcher_key = Some(key);
     inner.interests = desired;
     Ok(())
   }
@@ -284,20 +287,25 @@ impl State {
   fn force_deregister(&self) {
     let mut inner = self.inner.lock().unwrap();
     if let Some(id) = inner.watcher_id.take() {
-      let data = inner.watcher_data.take().expect("watcher_id without watcher_data");
+      let key = inner.watcher_key.take().expect("watcher_id without watcher_key");
       inner.interests = 0;
       inner.readable_waiters.clear();
       inner.writable_waiters.clear();
       let _ = async_rt::global().deregister_fd(id);
-      schedule_drop_arc(data);
+      REGISTRY.lock().unwrap().remove(&key);
     }
   }
 }
 
 extern "C" fn on_io_ready(events: u32, data: *mut u8) {
-  // Safety: `data` is an `Arc<State>` leaked via `Arc::into_raw` and released
-  // via `schedule_drop_arc` after deregistration.
-  let state = unsafe { &*(data as *const State) };
+  let key = data as usize;
+  let state = {
+    let reg = REGISTRY.lock().unwrap();
+    reg.get(&key).cloned()
+  };
+  let Some(state) = state else {
+    return;
+  };
 
   let mut wake: Vec<Waker> = Vec::new();
   {
@@ -315,23 +323,6 @@ extern "C" fn on_io_ready(events: u32, data: *mut u8) {
   for waker in wake {
     waker.wake();
   }
-}
-
-extern "C" fn drop_arc_task(data: *mut u8) {
-  let ptr = data as *const State;
-  unsafe {
-    drop(Arc::from_raw(ptr));
-  }
-}
-
-extern "C" fn noop_task(_data: *mut u8) {}
-
-fn schedule_drop_arc(ptr: *const State) {
-  async_rt::global().enqueue_microtask(async_rt::Task::new_with_drop(
-    noop_task,
-    ptr as *mut u8,
-    drop_arc_task,
-  ));
 }
 
 impl StateInner {
