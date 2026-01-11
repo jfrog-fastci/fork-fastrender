@@ -31,6 +31,7 @@ use crate::reactor::Interest;
 use crate::reactor::Reactor;
 use crate::reactor::Token;
 use crate::sync::GcAwareMutex;
+use crate::threading;
 use crate::time::TimerDriver;
 use crate::timer_wheel::TimerKey;
 
@@ -211,13 +212,21 @@ impl ReactorDriver {
     let timer_timeout = self.inner.timers.lock().time_until_next_deadline(now);
     let actual_timeout = min_timeout(timeout, timer_timeout);
 
-    let polling_guard = PollingGuard::new(&self.inner.is_polling, actual_timeout);
+    let mut polling_guard = PollingGuard::new(&self.inner.is_polling, actual_timeout);
     let mut events = Vec::new();
-    let _n = self
-      .inner
-      .reactor
-      .lock()
-      .poll(&mut events, actual_timeout)?;
+    let poll_res = if matches!(actual_timeout, Some(d) if d.is_zero()) {
+      self.inner.reactor.lock().poll(&mut events, actual_timeout)
+    } else {
+      // While blocked in the OS poll syscall (`epoll_wait`/`kevent`), treat this thread as parked so
+      // stop-the-world GC does not wait for it to reach a cooperative safepoint poll.
+      let parked = threading::ParkedGuard::new();
+      let res = self.inner.reactor.lock().poll(&mut events, actual_timeout);
+      // Clear the `is_polling` flag before potentially blocking while un-parking.
+      drop(polling_guard.take());
+      drop(parked);
+      res
+    };
+    let _n = poll_res?;
     drop(polling_guard);
 
     let mut io_events = 0usize;
