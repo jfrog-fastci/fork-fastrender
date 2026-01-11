@@ -2825,6 +2825,63 @@ fn multicol_columns_continue_across_pages() {
   assert!(find_text_position(second, "One", (0.0, 0.0)).is_none());
 }
 
+#[test]
+fn multicol_columns_align_to_page_boundary_when_offset_within_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .spacer { height: 120px; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { height: 20px; margin: 0; }
+          .break { break-after: column; }
+        </style>
+      </head>
+      <body>
+        <div class="spacer"></div>
+        <div class="multi">
+          <div class="blk break">One</div>
+          <div class="blk break">Two</div>
+          <div class="blk">Three</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "expected exactly two pages, got {}",
+    page_roots.len()
+  );
+
+  let first = page_roots[0];
+  let second = page_roots[1];
+
+  assert!(find_text_position(first, "One", (0.0, 0.0)).is_some());
+  assert!(find_text_position(first, "Two", (0.0, 0.0)).is_some());
+  assert!(find_text_position(first, "Three", (0.0, 0.0)).is_none());
+
+  assert!(find_text_position(second, "One", (0.0, 0.0)).is_none());
+  assert!(find_text_position(second, "Two", (0.0, 0.0)).is_none());
+  let pos_three = find_text_position(second, "Three", (0.0, 0.0)).expect("Three on page 2");
+  assert!(
+    pos_three.1 < 20.0,
+    "next column set should align to the top of the next page, got y={}",
+    pos_three.1
+  );
+}
+
 fn multicol_balance_html(column_fill: &str) -> String {
   let mut lines = String::new();
   for idx in 0..36 {
