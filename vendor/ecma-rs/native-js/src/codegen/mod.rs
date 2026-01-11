@@ -12,7 +12,7 @@ use inkwell::types::IntType;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 use inkwell::IntPredicate;
 use std::collections::HashMap;
-use typecheck_ts::{FileId, Program};
+use typecheck_ts::{DefId, FileId, Program, TypeKindSummary};
 
 pub struct CodegenOptions {
   pub module_name: String,
@@ -52,6 +52,7 @@ pub fn codegen<'ctx>(
   let i32_ty = context.i32_type();
 
   let ts_main = declare_ts_main(context, &module, i32_ty);
+  let allow_void_return = main_allows_void_return(program, entrypoint.main_def, entry_file)?;
   build_ts_main(
     context,
     i32_ty,
@@ -59,12 +60,34 @@ pub fn codegen<'ctx>(
     hir_body,
     lowered.names.as_ref(),
     entry_file,
+    allow_void_return,
   )?;
 
   let c_main = declare_c_main(context, &module, i32_ty);
   build_c_main(context, c_main, ts_main, i32_ty);
 
   Ok(module)
+}
+
+fn main_allows_void_return(
+  program: &Program,
+  main_def: DefId,
+  entry_file: FileId,
+) -> Result<bool, Vec<Diagnostic>> {
+  let func_ty = program.type_of_def_interned(main_def);
+  let sigs = program.call_signatures(func_ty);
+  let Some(sig) = sigs.first() else {
+    return Err(vec![Diagnostic::error(
+      "NJS0123",
+      "failed to resolve call signature for exported `main`",
+      Span::new(entry_file, TextRange::new(0, 0)),
+    )]);
+  };
+  let ret_kind = program.type_kind(sig.signature.ret);
+  Ok(matches!(
+    ret_kind,
+    TypeKindSummary::Void | TypeKindSummary::Undefined
+  ))
 }
 
 fn declare_ts_main<'ctx>(
@@ -101,6 +124,7 @@ fn build_ts_main<'ctx>(
   hir_body: &hir_js::Body,
   names: &hir_js::NameInterner,
   entry_file: FileId,
+  allow_void_return: bool,
 ) -> Result<(), Vec<Diagnostic>> {
   let builder = context.create_builder();
   let alloca_builder = context.create_builder();
@@ -120,6 +144,7 @@ fn build_ts_main<'ctx>(
     entry_file,
     locals: LocalEnv::new(),
     loop_stack: Vec::new(),
+    allow_void_return,
   };
 
   let Some(function_meta) = &hir_body.function else {
@@ -133,9 +158,12 @@ fn build_ts_main<'ctx>(
   match function_meta.body {
     hir_js::FunctionBody::Expr(expr) => {
       let value = cg.codegen_expr(expr)?;
-      cg.builder
-        .build_return(Some(&value))
-        .expect("failed to build return");
+      let ret = if cg.allow_void_return {
+        i32_ty.const_zero()
+      } else {
+        value
+      };
+      cg.builder.build_return(Some(&ret)).expect("failed to build return");
     }
     hir_js::FunctionBody::Block(ref stmts) => {
       let mut fallthrough = true;
@@ -146,12 +174,17 @@ fn build_ts_main<'ctx>(
         }
       }
 
-      if fallthrough {
+      if fallthrough && !cg.allow_void_return {
         return Err(vec![Diagnostic::error(
           "NJS0115",
           "not all control-flow paths in `main` return a value",
           Span::new(entry_file, hir_body.span),
         )]);
+      }
+      if fallthrough {
+        cg.builder
+          .build_return(Some(&i32_ty.const_zero()))
+          .expect("failed to build implicit return");
       }
     }
   }
@@ -239,6 +272,7 @@ struct HirCodegen<'ctx, 'a> {
   entry_file: FileId,
   locals: LocalEnv<'ctx>,
   loop_stack: Vec<LoopContext<'ctx>>,
+  allow_void_return: bool,
 }
 
 impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
@@ -296,17 +330,28 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       }
       StmtKind::Return(Some(expr)) => {
         let value = self.codegen_expr(expr)?;
+        let ret = if self.allow_void_return {
+          self.i32_ty.const_zero()
+        } else {
+          value
+        };
+        self.builder.build_return(Some(&ret)).expect("failed to build return");
+        Ok(false)
+      }
+      StmtKind::Return(None) => {
+        if !self.allow_void_return {
+          return Err(vec![Diagnostic::error(
+            "NJS0116",
+            "`return` without a value is not supported in `main` yet",
+            span,
+          )]);
+        }
         self
           .builder
-          .build_return(Some(&value))
+          .build_return(Some(&self.i32_ty.const_zero()))
           .expect("failed to build return");
         Ok(false)
       }
-      StmtKind::Return(None) => Err(vec![Diagnostic::error(
-        "NJS0116",
-        "`return` without a value is not supported in `main` yet",
-        span,
-      )]),
       StmtKind::Block(stmts) => {
         self.locals.push_scope();
         let mut fallthrough = true;

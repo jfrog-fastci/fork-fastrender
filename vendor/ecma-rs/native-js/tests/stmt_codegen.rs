@@ -215,3 +215,33 @@ fn continue_skips_for_iteration() {
   );
   assert_eq!(value, 8);
 }
+
+#[test]
+fn void_main_allows_fallthrough() {
+  let value = run_main(
+    r#"
+    export function main(): void {
+      let x = 0;
+      x = x + 1;
+    }
+    "#,
+  );
+  assert_eq!(value, 0);
+}
+
+#[test]
+fn void_main_allows_return_without_value() {
+  let value = run_main(
+    r#"
+    export function main(): void {
+      let x = 0;
+      if (1) {
+        x = x + 1;
+        return;
+      }
+      x = x + 100;
+    }
+    "#,
+  );
+  assert_eq!(value, 0);
+}
