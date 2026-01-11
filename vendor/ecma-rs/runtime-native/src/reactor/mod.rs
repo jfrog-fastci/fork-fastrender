@@ -550,17 +550,17 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
 ))]
   mod sys {
   use super::{Event, Interest, Token};
+  use crate::sync::GcAwareMutex;
   use std::collections::HashMap;
   use std::io;
   use std::mem::MaybeUninit;
   use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-  use std::sync::Mutex;
   use std::time::{Duration, Instant};
 
   pub(super) struct ReactorSys {
     kqueue: OwnedFd,
     wake_read: Option<OwnedFd>,
-    registrations: Mutex<HashMap<RawFd, Registration>>,
+    registrations: GcAwareMutex<HashMap<RawFd, Registration>>,
   }
 
   #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -627,7 +627,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
       let sys = ReactorSys {
         kqueue,
         wake_read,
-        registrations: Mutex::new(HashMap::new()),
+        registrations: GcAwareMutex::new(HashMap::new()),
       };
 
       let waker = super::Waker {
@@ -638,7 +638,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     }
 
     pub(super) fn register(&self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
-      let mut regs = self.registrations.lock().unwrap();
+      let mut regs = self.registrations.lock();
       if self.registration_if_fresh_locked(&mut regs, fd)?.is_some() {
         return Err(io::Error::from_raw_os_error(libc::EEXIST));
       }
@@ -659,7 +659,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     }
 
     pub(super) fn reregister(&self, fd: RawFd, token: Token, interest: Interest) -> io::Result<()> {
-      let mut regs = self.registrations.lock().unwrap();
+      let mut regs = self.registrations.lock();
       let Some(old) = self.registration_if_fresh_locked(&mut regs, fd)? else {
         return Err(io::Error::from_raw_os_error(libc::ENOENT));
       };
@@ -679,7 +679,7 @@ fn ensure_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
     }
 
     pub(super) fn deregister(&self, fd: RawFd) -> io::Result<()> {
-      let mut regs = self.registrations.lock().unwrap();
+      let mut regs = self.registrations.lock();
       let Some(old) = self.registration_if_fresh_locked(&mut regs, fd)? else {
         return Err(io::Error::from_raw_os_error(libc::ENOENT));
       };
