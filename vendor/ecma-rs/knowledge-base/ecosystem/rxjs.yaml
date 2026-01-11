@@ -5,7 +5,7 @@
 # - `rxjs.operators.*` for pipeable operators from `rxjs/operators`.
 
 - name: rxjs.Observable
-  aliases: []
+  aliases: [rxjs/Observable]
   semantics: ObservableConstructor
   since: "v0.1.0"
   purity:
@@ -246,7 +246,7 @@
     timer_based: true
 
 - name: rxjs.operators.distinctUntilChanged
-  aliases: []
+  aliases: [rxjs/operators.distinctUntilChanged, rxjs/operators/distinctUntilChanged]
   semantics: DistinctUntilChanged
   since: "v0.1.0"
   purity:
@@ -264,7 +264,7 @@
     operator_type: filtration
 
 - name: rxjs.operators.finalize
-  aliases: []
+  aliases: [rxjs/operators.finalize, rxjs/operators/finalize]
   semantics: Finalize
   since: "v0.1.0"
   purity:
@@ -282,7 +282,7 @@
     operator_type: side_effect
 
 - name: rxjs.operators.startWith
-  aliases: []
+  aliases: [rxjs/operators.startWith, rxjs/operators/startWith]
   semantics: StartWith
   since: "v0.1.0"
   purity:
@@ -300,7 +300,7 @@
     operator_type: combinator
 
 - name: rxjs.operators.withLatestFrom
-  aliases: []
+  aliases: [rxjs/operators.withLatestFrom, rxjs/operators/withLatestFrom]
   semantics: WithLatestFrom
   since: "v0.1.0"
   purity:
@@ -319,7 +319,7 @@
     depends_on_scheduling: true
 
 - name: rxjs.operators.delay
-  aliases: []
+  aliases: [rxjs/operators.delay, rxjs/operators/delay]
   semantics: Delay
   since: "v0.1.0"
   purity:
@@ -338,7 +338,7 @@
     timer_based: true
 
 - name: rxjs.Subject
-  aliases: []
+  aliases: [rxjs/Subject]
   semantics: SubjectConstructor
   since: "v0.1.0"
   purity:
@@ -356,7 +356,7 @@
     stateful: true
 
 - name: rxjs.BehaviorSubject
-  aliases: []
+  aliases: [rxjs/BehaviorSubject]
   semantics: BehaviorSubjectConstructor
   since: "v0.1.0"
   purity:
@@ -374,7 +374,7 @@
     stateful: true
 
 - name: rxjs.operators.scan
-  aliases: []
+  aliases: [rxjs/operators.scan, rxjs/operators/scan]
   semantics: Scan
   since: "v0.1.0"
   purity:
@@ -392,7 +392,7 @@
     operator_type: aggregation
 
 - name: rxjs.operators.takeUntil
-  aliases: []
+  aliases: [rxjs/operators.takeUntil, rxjs/operators/takeUntil]
   semantics: TakeUntil
   since: "v0.1.0"
   purity:
@@ -410,7 +410,7 @@
     operator_type: limiting
 
 - name: rxjs.operators.retry
-  aliases: []
+  aliases: [rxjs/operators.retry, rxjs/operators/retry]
   semantics: Retry
   since: "v0.1.0"
   purity:
@@ -429,7 +429,7 @@
     resubscribes: true
 
 - name: rxjs.operators.timeout
-  aliases: []
+  aliases: [rxjs/operators.timeout, rxjs/operators/timeout]
   semantics: Timeout
   since: "v0.1.0"
   purity:
@@ -448,7 +448,7 @@
     timer_based: true
 
 - name: rxjs.operators.throttleTime
-  aliases: []
+  aliases: [rxjs/operators.throttleTime, rxjs/operators/throttleTime]
   semantics: ThrottleTime
   since: "v0.1.0"
   purity:
@@ -467,7 +467,7 @@
     timer_based: true
 
 - name: rxjs.operators.shareReplay
-  aliases: []
+  aliases: [rxjs/operators.shareReplay, rxjs/operators/shareReplay]
   semantics: ShareReplay
   since: "v0.1.0"
   purity:
@@ -486,7 +486,7 @@
     stateful: true
 
 - name: rxjs.interval
-  aliases: []
+  aliases: [rxjs/interval]
   semantics: ObservableInterval
   since: "v0.1.0"
   purity:
@@ -504,7 +504,7 @@
     timer_based: true
 
 - name: rxjs.timer
-  aliases: []
+  aliases: [rxjs/timer]
   semantics: ObservableTimer
   since: "v0.1.0"
   purity:
@@ -522,7 +522,7 @@
     timer_based: true
 
 - name: rxjs.fromEvent
-  aliases: []
+  aliases: [rxjs/fromEvent]
   semantics: ObservableFromEvent
   since: "v0.1.0"
   purity:
@@ -540,7 +540,7 @@
     depends_on_external_events: true
 
 - name: rxjs.defer
-  aliases: []
+  aliases: [rxjs/defer]
   semantics: ObservableDefer
   since: "v0.1.0"
   purity:
@@ -557,7 +557,7 @@
     kind: observable_creation
 
 - name: rxjs.throwError
-  aliases: []
+  aliases: [rxjs/throwError]
   semantics: ObservableThrowError
   since: "v0.1.0"
   purity:
@@ -574,7 +574,7 @@
     kind: observable_creation
 
 - name: rxjs.operators.concatMap
-  aliases: []
+  aliases: [rxjs/operators.concatMap, rxjs/operators/concatMap]
   semantics: ConcatMap
   since: "v0.1.0"
   purity:
@@ -592,7 +592,7 @@
     operator_type: flattening
 
 - name: rxjs.operators.exhaustMap
-  aliases: []
+  aliases: [rxjs/operators.exhaustMap, rxjs/operators/exhaustMap]
   semantics: ExhaustMap
   since: "v0.1.0"
   purity:
@@ -610,7 +610,7 @@
     operator_type: flattening
 
 - name: rxjs.operators.takeWhile
-  aliases: []
+  aliases: [rxjs/operators.takeWhile, rxjs/operators/takeWhile]
   semantics: TakeWhile
   since: "v0.1.0"
   purity:
@@ -628,7 +628,7 @@
     operator_type: limiting
 
 - name: rxjs.operators.skip
-  aliases: []
+  aliases: [rxjs/operators.skip, rxjs/operators/skip]
   semantics: Skip
   since: "v0.1.0"
   purity:
@@ -646,7 +646,7 @@
     operator_type: limiting
 
 - name: rxjs.operators.skipWhile
-  aliases: []
+  aliases: [rxjs/operators.skipWhile, rxjs/operators/skipWhile]
   semantics: SkipWhile
   since: "v0.1.0"
   purity:
@@ -664,7 +664,7 @@
     operator_type: limiting
 
 - name: rxjs.operators.share
-  aliases: []
+  aliases: [rxjs/operators.share, rxjs/operators/share]
   semantics: Share
   since: "v0.1.0"
   purity:
@@ -683,7 +683,7 @@
     stateful: true
 
 - name: rxjs.forkJoin
-  aliases: []
+  aliases: [rxjs/forkJoin]
   semantics: ObservableForkJoin
   since: "v0.1.0"
   purity:
@@ -700,7 +700,7 @@
     kind: observable_combinator
 
 - name: rxjs.zip
-  aliases: []
+  aliases: [rxjs/zip]
   semantics: ObservableZip
   since: "v0.1.0"
   purity:
@@ -717,7 +717,7 @@
     kind: observable_combinator
 
 - name: rxjs.race
-  aliases: []
+  aliases: [rxjs/race]
   semantics: ObservableRace
   since: "v0.1.0"
   purity:
@@ -735,7 +735,7 @@
     depends_on_scheduling: true
 
 - name: rxjs.concat
-  aliases: []
+  aliases: [rxjs/concat]
   semantics: ObservableConcat
   since: "v0.1.0"
   purity:
@@ -752,7 +752,7 @@
     kind: observable_combinator
 
 - name: rxjs.EMPTY
-  aliases: []
+  aliases: [rxjs/EMPTY]
   semantics: ObservableEmpty
   since: "v0.1.0"
   purity:
@@ -769,7 +769,7 @@
     kind: observable_constant
 
 - name: rxjs.NEVER
-  aliases: []
+  aliases: [rxjs/NEVER]
   semantics: ObservableNever
   since: "v0.1.0"
   purity:
@@ -786,7 +786,7 @@
     kind: observable_constant
 
 - name: rxjs.operators.mapTo
-  aliases: []
+  aliases: [rxjs/operators.mapTo, rxjs/operators/mapTo]
   semantics: MapTo
   since: "v0.1.0"
   purity:
@@ -804,7 +804,7 @@
     operator_type: transformation
 
 - name: rxjs.operators.pluck
-  aliases: []
+  aliases: [rxjs/operators.pluck, rxjs/operators/pluck]
   semantics: Pluck
   since: "v0.1.0"
   purity:
@@ -822,7 +822,7 @@
     operator_type: transformation
 
 - name: rxjs.operators.pairwise
-  aliases: []
+  aliases: [rxjs/operators.pairwise, rxjs/operators/pairwise]
   semantics: Pairwise
   since: "v0.1.0"
   purity:
@@ -840,7 +840,7 @@
     operator_type: transformation
 
 - name: rxjs.operators.bufferCount
-  aliases: []
+  aliases: [rxjs/operators.bufferCount, rxjs/operators/bufferCount]
   semantics: BufferCount
   since: "v0.1.0"
   purity:
@@ -858,7 +858,7 @@
     operator_type: buffering
 
 - name: rxjs.operators.reduce
-  aliases: []
+  aliases: [rxjs/operators.reduce, rxjs/operators/reduce]
   semantics: Reduce
   since: "v0.1.0"
   purity:
@@ -876,7 +876,7 @@
     operator_type: aggregation
 
 - name: rxjs.operators.toArray
-  aliases: []
+  aliases: [rxjs/operators.toArray, rxjs/operators/toArray]
   semantics: ToArray
   since: "v0.1.0"
   purity:
@@ -911,7 +911,7 @@
     kind: observable_method
     starts_execution: true
 - name: rxjs.operators.mergeWith
-  aliases: []
+  aliases: [rxjs/operators.mergeWith, rxjs/operators/mergeWith]
   semantics: MergeWith
   since: "v0.1.0"
   purity:
@@ -929,7 +929,7 @@
     operator_type: combinator
 
 - name: rxjs.operators.concatWith
-  aliases: []
+  aliases: [rxjs/operators.concatWith, rxjs/operators/concatWith]
   semantics: ConcatWith
   since: "v0.1.0"
   purity:
@@ -947,7 +947,7 @@
     operator_type: combinator
 
 - name: rxjs.operators.combineLatestWith
-  aliases: []
+  aliases: [rxjs/operators.combineLatestWith, rxjs/operators/combineLatestWith]
   semantics: CombineLatestWith
   since: "v0.1.0"
   purity:
@@ -966,7 +966,7 @@
     depends_on_scheduling: true
 
 - name: rxjs.operators.zipWith
-  aliases: []
+  aliases: [rxjs/operators.zipWith, rxjs/operators/zipWith]
   semantics: ZipWith
   since: "v0.1.0"
   purity:
@@ -984,7 +984,7 @@
     operator_type: combinator
 
 - name: rxjs.operators.observeOn
-  aliases: []
+  aliases: [rxjs/operators.observeOn, rxjs/operators/observeOn]
   semantics: ObserveOn
   since: "v0.1.0"
   purity:
@@ -1003,7 +1003,7 @@
     depends_on_scheduling: true
 
 - name: rxjs.operators.subscribeOn
-  aliases: []
+  aliases: [rxjs/operators.subscribeOn, rxjs/operators/subscribeOn]
   semantics: SubscribeOn
   since: "v0.1.0"
   purity:
@@ -1022,7 +1022,7 @@
     depends_on_scheduling: true
 
 - name: rxjs.operators.auditTime
-  aliases: []
+  aliases: [rxjs/operators.auditTime, rxjs/operators/auditTime]
   semantics: AuditTime
   since: "v0.1.0"
   purity:
@@ -1041,7 +1041,7 @@
     timer_based: true
 
 - name: rxjs.operators.sampleTime
-  aliases: []
+  aliases: [rxjs/operators.sampleTime, rxjs/operators/sampleTime]
   semantics: SampleTime
   since: "v0.1.0"
   purity:
@@ -1060,7 +1060,7 @@
     timer_based: true
 
 - name: rxjs.operators.bufferTime
-  aliases: []
+  aliases: [rxjs/operators.bufferTime, rxjs/operators/bufferTime]
   semantics: BufferTime
   since: "v0.1.0"
   purity:
@@ -1079,7 +1079,7 @@
     timer_based: true
 
 - name: rxjs.operators.first
-  aliases: []
+  aliases: [rxjs/operators.first, rxjs/operators/first]
   semantics: First
   since: "v0.1.0"
   purity:
@@ -1097,7 +1097,7 @@
     operator_type: limiting
 
 - name: rxjs.operators.last
-  aliases: []
+  aliases: [rxjs/operators.last, rxjs/operators/last]
   semantics: Last
   since: "v0.1.0"
   purity:
@@ -1115,7 +1115,7 @@
     operator_type: limiting
 
 - name: rxjs.operators.mergeAll
-  aliases: []
+  aliases: [rxjs/operators.mergeAll, rxjs/operators/mergeAll]
   semantics: MergeAll
   since: "v0.1.0"
   purity:
@@ -1258,7 +1258,7 @@
     output: value
 
 - name: rxjs.firstValueFrom
-  aliases: []
+  aliases: [rxjs/firstValueFrom]
   semantics: FirstValueFrom
   since: "v0.1.0"
   purity:
@@ -1277,7 +1277,7 @@
     output: promise
 
 - name: rxjs.lastValueFrom
-  aliases: []
+  aliases: [rxjs/lastValueFrom]
   semantics: LastValueFrom
   since: "v0.1.0"
   purity:

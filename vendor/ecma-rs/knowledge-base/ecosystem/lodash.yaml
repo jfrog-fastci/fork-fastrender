@@ -171,7 +171,7 @@
     returns: function
 
 - name: lodash.get
-  aliases: [_.get]
+  aliases: [_.get, lodash/get, lodash-es.get, lodash-es/get]
   semantics: Get
   since: "v0.1.0"
   purity:
@@ -189,7 +189,7 @@
     reads_from_argument: 0
 
 - name: lodash.set
-  aliases: [_.set]
+  aliases: [_.set, lodash/set, lodash-es.set, lodash-es/set]
   semantics: Set
   since: "v0.1.0"
   purity:
@@ -208,7 +208,7 @@
     returns_argument: 0
 
 - name: lodash.isEqual
-  aliases: [_.isEqual]
+  aliases: [_.isEqual, lodash/isEqual, lodash.isequal, lodash-es.isEqual, lodash-es/isEqual]
   semantics: DeepEqual
   since: "v0.1.0"
   purity:
@@ -225,7 +225,7 @@
     kind: comparison
 
 - name: lodash.uniq
-  aliases: [_.uniq]
+  aliases: [_.uniq, lodash/uniq, lodash-es.uniq, lodash-es/uniq]
   semantics: Uniq
   since: "v0.1.0"
   purity:
@@ -244,7 +244,7 @@
     preserves_order: true
 
 - name: lodash.sortBy
-  aliases: [_.sortBy]
+  aliases: [_.sortBy, lodash/sortBy, lodash.sortby, lodash-es.sortBy, lodash-es/sortBy]
   semantics: SortBy
   since: "v0.1.0"
   purity:
@@ -264,7 +264,7 @@
     callback_optional: true
 
 - name: lodash.groupBy
-  aliases: [_.groupBy]
+  aliases: [_.groupBy, lodash/groupBy, lodash.groupby, lodash-es.groupBy, lodash-es/groupBy]
   semantics: GroupBy
   since: "v0.1.0"
   purity:
@@ -284,7 +284,7 @@
     callback_optional: true
 
 - name: lodash.keyBy
-  aliases: [_.keyBy]
+  aliases: [_.keyBy, lodash/keyBy, lodash.keyby, lodash-es.keyBy, lodash-es/keyBy]
   semantics: KeyBy
   since: "v0.1.0"
   purity:
@@ -304,7 +304,15 @@
     callback_optional: true
 
 - name: lodash.forEach
-  aliases: [_.forEach, _.each]
+  aliases:
+    - _.forEach
+    - _.each
+    - lodash/forEach
+    - lodash/each
+    - lodash-es.forEach
+    - lodash-es/forEach
+    - lodash-es.each
+    - lodash-es/each
   semantics: ForEach
   since: "v0.1.0"
   purity:
@@ -440,7 +448,7 @@
     preserves_order: true
 
 - name: lodash.pick
-  aliases: [_.pick]
+  aliases: [_.pick, lodash/pick, lodash-es.pick, lodash-es/pick]
   semantics: Pick
   since: "v0.1.0"
   purity:
@@ -458,7 +466,7 @@
     output: new_object
 
 - name: lodash.omit
-  aliases: [_.omit]
+  aliases: [_.omit, lodash/omit, lodash-es.omit, lodash-es/omit]
   semantics: Omit
   since: "v0.1.0"
   purity:
@@ -679,7 +687,7 @@
     preserves_order: true
 
 - name: lodash.uniqBy
-  aliases: [_.uniqBy]
+  aliases: [_.uniqBy, lodash/uniqBy, lodash.uniqby, lodash-es.uniqBy, lodash-es/uniqBy]
   semantics: UniqBy
   since: "v0.1.0"
   purity:
@@ -700,7 +708,12 @@
     callback_optional: true
 
 - name: lodash.differenceBy
-  aliases: [_.differenceBy]
+  aliases:
+    - _.differenceBy
+    - lodash/differenceBy
+    - lodash.differenceby
+    - lodash-es.differenceBy
+    - lodash-es/differenceBy
   semantics: DifferenceBy
   since: "v0.1.0"
   purity:
@@ -721,7 +734,7 @@
     callback_optional: true
 
 - name: lodash.unionBy
-  aliases: [_.unionBy]
+  aliases: [_.unionBy, lodash/unionBy, lodash.unionby, lodash-es.unionBy, lodash-es/unionBy]
   semantics: UnionBy
   since: "v0.1.0"
   purity:
@@ -743,7 +756,12 @@
     callback_variadic: true
 
 - name: lodash.intersectionBy
-  aliases: [_.intersectionBy]
+  aliases:
+    - _.intersectionBy
+    - lodash/intersectionBy
+    - lodash.intersectionby
+    - lodash-es.intersectionBy
+    - lodash-es/intersectionBy
   semantics: IntersectionBy
   since: "v0.1.0"
   purity:
@@ -765,7 +783,7 @@
     callback_variadic: true
 
 - name: lodash.orderBy
-  aliases: [_.orderBy]
+  aliases: [_.orderBy, lodash/orderBy, lodash.orderby, lodash-es.orderBy, lodash-es/orderBy]
   semantics: OrderBy
   since: "v0.1.0"
   purity:
@@ -785,7 +803,15 @@
     callback_optional: true
 
 - name: lodash.assign
-  aliases: [_.assign, _.extend]
+  aliases:
+    - _.assign
+    - _.extend
+    - lodash/assign
+    - lodash/extend
+    - lodash-es.assign
+    - lodash-es/assign
+    - lodash-es.extend
+    - lodash-es/extend
   semantics: Assign
   since: "v0.1.0"
   purity:
@@ -804,7 +830,7 @@
     returns_argument: 0
 
 - name: lodash.defaults
-  aliases: [_.defaults]
+  aliases: [_.defaults, lodash/defaults, lodash-es.defaults, lodash-es/defaults]
   semantics: Defaults
   since: "v0.1.0"
   purity:
@@ -823,7 +849,7 @@
     returns_argument: 0
 
 - name: lodash.pickBy
-  aliases: [_.pickBy]
+  aliases: [_.pickBy, lodash/pickBy, lodash.pickby, lodash-es.pickBy, lodash-es/pickBy]
   semantics: PickBy
   since: "v0.1.0"
   purity:
@@ -843,7 +869,7 @@
     callback_optional: true
 
 - name: lodash.omitBy
-  aliases: [_.omitBy]
+  aliases: [_.omitBy, lodash/omitBy, lodash.omitby, lodash-es.omitBy, lodash-es/omitBy]
   semantics: OmitBy
   since: "v0.1.0"
   purity:
