@@ -122,9 +122,12 @@ impl StackMap {
         )?);
       }
 
-      // NOTE: StackMap v3 places the live-out header directly after the locations
-      // array (no intermediate padding). Padding is only applied at the end of
-      // the record to restore 8-byte alignment.
+      // StackMap v3 aligns the live-out header to 8 bytes after the locations
+      // array. This means there may be padding between the last location and
+      // `num_live_outs` when `num_locations * sizeof(Location)` is not 8-byte
+      // aligned (e.g. odd number of 12-byte Location entries).
+      c.align_to(8)?;
+
       let num_live_outs = c.read_u16()? as usize;
       let _reserved = c.read_u16()?;
       let mut live_outs = Vec::with_capacity(num_live_outs);
@@ -586,6 +589,9 @@ mod tests {
     push_u16(&mut bytes, 0); // reserved2
     push_i32(&mut bytes, 16); // offset
 
+    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    align_to_8_with(&mut bytes, 0);
+
     // No liveouts.
     push_u16(&mut bytes, 0);
     push_u16(&mut bytes, 0);
@@ -658,6 +664,9 @@ mod tests {
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, 0);
 
+    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    align_to_8_with(&mut bytes, 0);
+
     push_u16(&mut bytes, 0); // liveouts
     push_u16(&mut bytes, 0);
     align_to_8_with(&mut bytes, 0);
@@ -697,6 +706,9 @@ mod tests {
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, 0);
 
+    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    align_to_8_with(&mut bytes, 0xAB);
+
     push_u16(&mut bytes, 1); // num_liveouts
     push_u16(&mut bytes, 0);
 
@@ -713,6 +725,7 @@ mod tests {
     push_u32(&mut bytes, 0x20);
     push_u16(&mut bytes, 0);
     push_u16(&mut bytes, 0); // no locations
+    align_to_8_with(&mut bytes, 0);
     push_u16(&mut bytes, 0); // no liveouts
     push_u16(&mut bytes, 0);
     align_to_8_with(&mut bytes, 0);
@@ -746,6 +759,9 @@ mod tests {
     push_u16(&mut bytes, 0);
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, 0);
+
+    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    align_to_8_with(&mut bytes, 0);
 
     push_u16(&mut bytes, 0);
     push_u16(&mut bytes, 0);
@@ -891,4 +907,3 @@ entry:
     assert!(seen_direct);
   }
 }
-
