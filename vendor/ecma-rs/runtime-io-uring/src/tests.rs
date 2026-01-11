@@ -50,6 +50,16 @@ mod linux {
     }
 
     #[test]
+    fn public_types_are_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send::<IoUringDriver>();
+        assert_send_sync::<crate::Driver>();
+        assert_send_sync::<crate::ProvidedBufPool>();
+    }
+
+    #[test]
     fn basic_read_write() -> io::Result<()> {
         let Some(mut driver) = try_driver()? else {
             return Ok(());
