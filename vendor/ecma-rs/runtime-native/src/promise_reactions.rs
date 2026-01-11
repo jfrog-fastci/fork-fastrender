@@ -60,7 +60,7 @@ extern "C" fn run_promise_reaction_job(data: *mut u8) {
 
 extern "C" fn drop_promise_reaction_job(data: *mut u8) {
   // Safety: `data` was allocated by `Box::into_raw(PromiseReactionJob)` in
-  // `enqueue_reaction_job`.
+  // `make_reaction_task`.
   let job = unsafe { Box::from_raw(data as *mut PromiseReactionJob) };
   let node = job.node;
   if node.is_null() {
@@ -73,14 +73,23 @@ extern "C" fn drop_promise_reaction_job(data: *mut u8) {
   ((unsafe { &*vtable }).drop)(node);
 }
 
+fn make_reaction_task(node: *mut PromiseReactionNode, promise: gc::Root) -> Task {
+  let job = Box::new(PromiseReactionJob { node, promise });
+  Task::new_with_drop(
+    run_promise_reaction_job,
+    Box::into_raw(job) as *mut u8,
+    drop_promise_reaction_job,
+  )
+}
+
 /// Enqueue `node` as a microtask to run for `promise`.
 ///
-/// This is the shared scheduling primitive used by both promise settlement and registrations that
-/// attach to an already-settled promise.
+/// This is used when registering a reaction against an already-settled promise.
 pub(crate) fn enqueue_reaction_job(promise: PromiseRef, node: *mut PromiseReactionNode) {
   if node.is_null() {
     return;
   }
+
   if promise.is_null() {
     // Treat null as "never settles": discard the node so it doesn't leak.
     let vtable = unsafe { (*node).vtable };
@@ -90,18 +99,14 @@ pub(crate) fn enqueue_reaction_job(promise: PromiseRef, node: *mut PromiseReacti
     ((unsafe { &*vtable }).drop)(node);
     return;
   }
-  let promise = unsafe { gc::Root::new_unchecked(promise.cast::<u8>()) };
-  let job = Box::new(PromiseReactionJob { node, promise });
-  async_global().enqueue_microtask(Task::new_with_drop(
-    run_promise_reaction_job,
-    Box::into_raw(job) as *mut u8,
-    drop_promise_reaction_job,
-  ));
+
+  let promise_root = unsafe { gc::Root::new_unchecked(promise.cast::<u8>()) };
+  async_global().enqueue_microtask(make_reaction_task(node, promise_root));
 }
 
-/// Enqueue a linked list of reactions as microtasks in a single queue operation.
+/// Enqueue a linked list of reaction nodes as microtasks in a single queue operation.
 ///
-/// This is intended for promise settlement paths that may enqueue many reactions at once (e.g. many
+/// This is used by promise settlement paths that may enqueue many reactions at once (e.g. many
 /// coroutines awaiting the same promise). Batching avoids a race where an event-loop thread wakes on
 /// the first enqueued microtask and drains the queue faster than another thread can enqueue the
 /// remaining reaction jobs.
@@ -138,15 +143,7 @@ pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseR
       (*head).next = null_mut();
     }
     let node = head;
-    let job = Box::new(PromiseReactionJob {
-      node,
-      promise: promise_root.clone(),
-    });
-    tasks.push(Task::new_with_drop(
-      run_promise_reaction_job,
-      Box::into_raw(job) as *mut u8,
-      drop_promise_reaction_job,
-    ));
+    tasks.push(make_reaction_task(node, promise_root.clone()));
     head = next;
   }
 

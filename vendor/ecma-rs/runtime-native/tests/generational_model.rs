@@ -602,7 +602,8 @@ fn remembered_set_and_card_table_survive_multiple_minors() {
   assert!(!heap.old_objects[plain].header().is_remembered());
   assert!(!heap.old_objects[carded].header().is_remembered());
 
-  // Reset process-global write-barrier configuration (young range + remset tracking).
+  // Reset process-global write-barrier configuration (young range + remset tracking) before dropping
+  // the model heap (avoids leaving dangling raw pointers in the global remembered-set list).
   runtime_native::clear_write_barrier_state_for_tests();
 }
 
@@ -708,7 +709,9 @@ proptest! {
     heap.minor_gc(&survivors);
     heap.assert_invariants();
 
-    // Reset process-global write-barrier configuration (young range + remset tracking).
+    // Reset process-global write-barrier configuration (young range + remset tracking) before
+    // dropping the model heap (avoids leaving dangling raw pointers in the global remembered-set
+    // list).
     runtime_native::clear_write_barrier_state_for_tests();
   }
 }

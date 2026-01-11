@@ -5,7 +5,7 @@ use runtime_native::stackwalk::StackBounds;
 use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 
 #[test]
-fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
+fn rsp_is_derived_from_callee_fp_for_rsp_based_locations() {
   // Minimal stackmap section containing one callsite record where GC root locations are reported
   // as Indirect [RSP + off]. This is the common case even when frame pointers are enabled.
   //
@@ -20,10 +20,13 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   // And a slot at -0x10(%rbp) is described as [RSP + 0] in the stackmap because:
   //   rsp_at_callsite = rbp + 8 - stack_size = rbp - 0x10
   //
-  // `walk_gc_roots_from_fp` derives the caller's callsite SP from the *callee* frame pointer:
-  //   caller_sp_callsite = callee_fp + 16
+  // NOTE: `walk_gc_roots_from_fp` does **not** use `stack_size` to recover the caller SP for
+  // SP-relative locations. `stack_size` is a fixed per-function frame size and does not capture
+  // per-callsite outgoing-argument stack adjustments.
   //
-  // so we must lay out our synthetic "runtime" (callee) frame pointer accordingly.
+  // Instead, with frame pointers enabled, the runtime derives the caller's SP at the callsite from
+  // the callee frame pointer:
+  //   caller_sp_callsite = callee_fp + 16
   let bytes = build_stackmaps_with_rsp_slots();
   let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
   let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");

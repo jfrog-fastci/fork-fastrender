@@ -1,6 +1,6 @@
 use runtime_native::async_abi::{
-  Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef, CORO_FLAG_RUNTIME_OWNS_FRAME,
-  RT_ASYNC_ABI_VERSION,
+  Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef,
+  CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::{AtomicUsize, Ordering};
