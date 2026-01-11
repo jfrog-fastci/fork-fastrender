@@ -349,6 +349,52 @@ fn rt_io_register_with_drop_invalid_fd_drops_data_and_reports_other_error() {
 }
 
 #[test]
+fn rt_io_register_with_drop_duplicate_fd_drops_data_and_reports_error() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *mut AtomicUsize = Box::into_raw(dropped);
+
+  let id2 = rt_io_register_with_drop(
+    rfd.as_raw_fd(),
+    RT_IO_READABLE,
+    noop_cb,
+    dropped_ptr.cast::<u8>(),
+    inc_drop_count,
+  );
+  assert_eq!(id2, 0, "expected duplicate fd registration to fail");
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    1,
+    "drop_data should have been invoked on duplicate registration"
+  );
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_ALREADY_REGISTERED,
+    "expected duplicate registration to be diagnosable"
+  );
+
+  rt_io_unregister(id1);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should succeed for the original watcher id"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+
+  unsafe {
+    drop(Box::from_raw(dropped_ptr));
+  }
+}
+
+#[test]
 fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
   let _rt = TestRuntimeGuard::new();
 
@@ -368,6 +414,52 @@ fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
 
   // If the rooted wrapper leaked its GC root on the failure path, the object would remain alive
   // indefinitely. It should become collectable once we run a major collection.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "GC object stayed alive after rooted I/O watcher registration failed (root leak?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_rooted_duplicate_fd_does_not_leak_gc_root() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let id1 = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_ne!(id1, 0, "expected initial registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let id2 = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
+  assert_eq!(id2, 0, "expected rooted registration to fail for duplicate fd");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_ALREADY_REGISTERED,
+    "expected duplicate registration to be diagnosable"
+  );
+
+  rt_io_unregister(id1);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should succeed for the original watcher id"
+  );
+
   let deadline = Instant::now() + Duration::from_secs(2);
   loop {
     collect_major(&mut heap);
