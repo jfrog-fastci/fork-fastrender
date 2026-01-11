@@ -1,4 +1,5 @@
 use vm_js::create_promise_resolve_thenable_job;
+use vm_js::new_promise_reaction_job;
 use vm_js::GcObject;
 use vm_js::Heap;
 use vm_js::HeapLimits;
@@ -16,7 +17,6 @@ use vm_js::VmHostHooks;
 use vm_js::VmJobContext;
 use vm_js::VmOptions;
 use vm_js::WeakGcObject;
-use vm_js::new_promise_reaction_job;
 
 fn noop(
   _vm: &mut Vm,
@@ -306,3 +306,4 @@ fn promise_reaction_job_error_still_releases_roots() -> Result<(), VmError> {
 
   Ok(())
 }
+
