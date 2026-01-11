@@ -16,6 +16,7 @@
 //! - Linux (ELF) or macOS (Mach-O)
 //! - On Linux, the final link step applies a linker script that defines
 //!   `__start_llvm_stackmaps` / `__stop_llvm_stackmaps` (see `runtime-native/link/stackmaps.ld`).
+//!   That script also defines aliases: `__stackmaps_*`, `__fastr_stackmaps_*`, `__llvm_stackmaps_*`.
 //! - On macOS, the stackmaps bytes are discovered via `getsectdatafromheader_64` in the main
 //!   image, using the segment/section `__LLVM_STACKMAPS,__llvm_stackmaps`.
 //! - `x86_64` or `aarch64`

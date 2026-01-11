@@ -9,8 +9,10 @@ use core::{ptr, slice};
 ///   The repo provides a ready-to-use script fragment at
 ///   `vendor/ecma-rs/runtime-native/link/stackmaps.ld` (preferred) or
 ///   `vendor/ecma-rs/runtime-native/stackmaps.ld` (compatibility shim). It also
-///   defines project-specific aliases (`__fastr_stackmaps_*`) and legacy aliases
-///   (`__llvm_stackmaps_*`).
+///   defines:
+///   - `__stackmaps_start` / `__stackmaps_end` (generic aliases)
+///   - `__fastr_stackmaps_*` (project-specific aliases)
+///   - `__llvm_stackmaps_*` (legacy aliases)
 /// - **macOS/Mach-O:** uses `getsectdatafromheader_64` to locate the stackmaps section in the
 ///   main image (`__LLVM_STACKMAPS,__llvm_stackmaps`).
 ///
