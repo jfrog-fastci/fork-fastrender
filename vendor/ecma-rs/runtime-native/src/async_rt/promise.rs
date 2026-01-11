@@ -9,7 +9,6 @@ use std::collections::HashSet;
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
 use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
-use crate::sync::GcAwareMutex;
 use crate::threading;
 
 use super::{gc as async_gc, global as async_global, Task};
