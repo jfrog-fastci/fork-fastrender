@@ -653,6 +653,13 @@ impl<'a> CallSite<'a> {
         .iter()
         .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
     if !looks_like_statepoint {
+      if self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+        debug_assert!(
+          false,
+          "stackmap record uses LLVM_STATEPOINT_PATCHPOINT_ID but does not have a statepoint header prefix: record={:?}",
+          self.record
+        );
+      }
       return RelocPairsIter::Empty;
     }
 
@@ -1504,6 +1511,85 @@ mod tests {
       callsite.gc_root_rbp_offsets_strict().unwrap(),
       vec![fp_to_entry_sp - 40]
     );
+  }
+
+  #[test]
+  fn reloc_pairs_accept_custom_patchpoint_id() {
+    let mut bytes: Vec<u8> = Vec::new();
+    build_header(&mut bytes, 1, 0, 1);
+
+    // Function record.
+    push_u64(&mut bytes, 0x1000); // addr
+    push_u64(&mut bytes, 40); // stack_size
+    push_u64(&mut bytes, 1); // record_count
+
+    // Record (statepoint-style, but with a non-default patchpoint_id).
+    push_u64(&mut bytes, 42); // patchpoint_id (custom "statepoint-id")
+    push_u32(&mut bytes, 0x10); // instruction_offset
+    push_u16(&mut bytes, 0); // reserved
+    push_u16(&mut bytes, 7); // num_locations = 3 header + 2 (base,derived) pairs
+
+    // Statepoint header constants (callconv, flags, deopt_count).
+    for _ in 0..3 {
+      push_u8(&mut bytes, 4); // kind = Constant
+      push_u8(&mut bytes, 0); // reserved
+      push_u16(&mut bytes, 8); // size
+      push_u16(&mut bytes, 0); // dwarf_reg
+      push_u16(&mut bytes, 0); // reserved
+      push_i32(&mut bytes, 0); // constant value
+    }
+
+    // Pair 0: base==derived at [RSP + 0]
+    for _ in 0..2 {
+      push_u8(&mut bytes, 3); // kind = Indirect
+      push_u8(&mut bytes, 0);
+      push_u16(&mut bytes, 8);
+      push_u16(&mut bytes, crate::stackwalk::DWARF_SP_REG);
+      push_u16(&mut bytes, 0);
+      push_i32(&mut bytes, 0);
+    }
+
+    // Pair 1: base=[RSP + 0], derived=[RSP + 8]
+    // base
+    push_u8(&mut bytes, 3);
+    push_u8(&mut bytes, 0);
+    push_u16(&mut bytes, 8);
+    push_u16(&mut bytes, crate::stackwalk::DWARF_SP_REG);
+    push_u16(&mut bytes, 0);
+    push_i32(&mut bytes, 0);
+    // derived
+    push_u8(&mut bytes, 3);
+    push_u8(&mut bytes, 0);
+    push_u16(&mut bytes, 8);
+    push_u16(&mut bytes, crate::stackwalk::DWARF_SP_REG);
+    push_u16(&mut bytes, 0);
+    push_i32(&mut bytes, 8);
+
+    // Align to live-out header.
+    align_to_8_with(&mut bytes, 0);
+    // No live-outs.
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0);
+
+    let sm = StackMaps::parse(&bytes).unwrap();
+    let callsite = sm.lookup(0x1010).unwrap();
+    assert_eq!(callsite.record.patchpoint_id, 42);
+
+    let pairs: Vec<_> = callsite.reloc_pairs().collect();
+    assert_eq!(pairs.len(), 2);
+
+    let mut saw_same = false;
+    let mut saw_derived = false;
+    for p in pairs {
+      if p.base == p.derived {
+        saw_same = true;
+      } else {
+        saw_derived = true;
+      }
+    }
+    assert!(saw_same, "expected a base==derived relocation pair");
+    assert!(saw_derived, "expected a base!=derived relocation pair");
   }
 
   #[test]

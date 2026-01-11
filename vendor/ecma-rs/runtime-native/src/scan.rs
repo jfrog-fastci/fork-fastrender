@@ -14,6 +14,7 @@
 //! `reg_value + offset`.
 
 use crate::stackmaps::{Location, StackMaps};
+use crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 use crate::statepoints::{StatepointError, StatepointRecord};
 use stackmap_context::{ThreadContext, DWARF_REG_IP};
 
@@ -129,11 +130,19 @@ pub fn scan_reloc_pairs(
     return Ok(Vec::new());
   }
 
-  let statepoint = StatepointRecord::new(callsite.record).map_err(|source| ScanError::InvalidStatepoint {
-    ip,
-    patchpoint_id: callsite.record.patchpoint_id,
-    source,
-  })?;
+  let statepoint = match StatepointRecord::new(callsite.record) {
+    Ok(sp) => sp,
+    Err(source) => {
+      if callsite.record.patchpoint_id == LLVM_STATEPOINT_PATCHPOINT_ID {
+        return Err(ScanError::InvalidStatepoint {
+          ip,
+          patchpoint_id: callsite.record.patchpoint_id,
+          source,
+        });
+      }
+      return Ok(Vec::new());
+    }
+  };
 
   let mut pairs: Vec<(*mut usize, *mut usize)> = Vec::with_capacity(statepoint.gc_pair_count());
   for pair in statepoint.gc_pairs() {
