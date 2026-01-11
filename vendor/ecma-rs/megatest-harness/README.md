@@ -17,6 +17,7 @@ For each `*.js` file under `vendor/ecma-rs/megatest/` (discovered + sorted deter
   - SHA256 of the serialized AST (`ast_sha256`)
 - **hir-js**
   - cheap arena/collection counts (`defs`, `bodies`, `exprs`, `stmts`, …)
+  - SHA256 of HIR ID allocation/mappings (`ids_sha256`)
 - **optimize-js**
   - either a deterministic error summary (sorted diagnostics), or for successful compiles:
     - function count, instruction count, dominance calculation count
@@ -53,4 +54,3 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh run -p megatest-harness -- --update-b
 
 Note: `--update-baselines` always regenerates the **full** baseline file (it ignores `MEGATEST_FILTER`)
 to avoid accidentally committing a partial baseline.
-

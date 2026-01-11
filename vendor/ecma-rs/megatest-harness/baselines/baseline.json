@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "files": {
     "arena_gc.js": {
       "source_sha256": "c48efd4d4bcde6c5b6428b1a590eeda5eb8a8ffa278efa5e5ca2b46ecc0815d5",
@@ -15,7 +15,8 @@
         "pats": 161,
         "type_exprs": 24,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "2bcecea9376baee6f063d2e4563aaa6bf94bf3cef7677b9e931c6dd57f27925e"
       },
       "optimize": {
         "result": "ok",
@@ -41,7 +42,8 @@
         "pats": 57,
         "type_exprs": 17,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "daa6fa034682054738442377206cc8b5d484a09004999df53b08de698304b245"
       },
       "optimize": {
         "result": "ok",
@@ -67,7 +69,8 @@
         "pats": 57,
         "type_exprs": 4,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "f59cdc42659872bef7426408296db139fc13825ccebca23219be7e1e69358188"
       },
       "optimize": {
         "result": "ok",
@@ -93,7 +96,8 @@
         "pats": 99,
         "type_exprs": 0,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "d41d747c5a9114f31bf0ca6061364fc915f5f86a5ebf7b1452d11eebdb4f2dd0"
       },
       "optimize": {
         "result": "ok",
@@ -119,7 +123,8 @@
         "pats": 73,
         "type_exprs": 9,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "3f7c03a10066114877ece7a133688e7575ca132f1f510e72f482c165fca68a33"
       },
       "optimize": {
         "result": "ok",
@@ -145,7 +150,8 @@
         "pats": 66,
         "type_exprs": 5,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "9a4904ba550b72eb794bc6273cf9e109bb6b98eefed2493271696df5d50e5f70"
       },
       "optimize": {
         "result": "ok",
@@ -171,7 +177,8 @@
         "pats": 137,
         "type_exprs": 21,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "2876fff5032c19488075b662516b49563ffa3b76a7de61fe87e97c36938c1a9d"
       },
       "optimize": {
         "result": "err",
@@ -199,7 +206,8 @@
         "pats": 238,
         "type_exprs": 3,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "70b189ded3cfa6cfb602a68593ecc8b6729c9d1a29a35a698076aaed78748186"
       },
       "optimize": {
         "result": "ok",
@@ -225,7 +233,8 @@
         "pats": 81,
         "type_exprs": 1,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "e22f55ec9fe7d736cdeabcaf0f07dfd3a8238c71c7d4c8e5646419d0090ec491"
       },
       "optimize": {
         "result": "err",
@@ -253,7 +262,8 @@
         "pats": 94,
         "type_exprs": 6,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "5c8d34bb20758c86a34a51450f33e2b445bc85c0880267cbb2c7a8f85cc1bd22"
       },
       "optimize": {
         "result": "err",
@@ -281,7 +291,8 @@
         "pats": 108,
         "type_exprs": 8,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "a16f281ca55f1a4f71ee0193cf9b5dcc749628dd2f0ee5e830d3b17d0dad4190"
       },
       "optimize": {
         "result": "err",
@@ -309,7 +320,8 @@
         "pats": 203,
         "type_exprs": 12,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "bc16f003d4c8db3d0c958b7e234f370d31ed6812f1f67ba545a5caec4be76f55"
       },
       "optimize": {
         "result": "ok",
@@ -335,7 +347,8 @@
         "pats": 110,
         "type_exprs": 0,
         "type_members": 0,
-        "type_params": 0
+        "type_params": 0,
+        "ids_sha256": "0589acc64a80833364704bf451d91c14c2b7b7102d2dba4c437f275a6f8c1f05"
       },
       "optimize": {
         "result": "err",

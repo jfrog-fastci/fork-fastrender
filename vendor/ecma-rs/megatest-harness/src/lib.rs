@@ -9,7 +9,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-pub const BASELINE_VERSION: u32 = 3;
+pub const BASELINE_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Baseline {
@@ -41,6 +41,11 @@ pub struct HirSummary {
   pub type_exprs: usize,
   pub type_members: usize,
   pub type_params: usize,
+  /// SHA256 of a deterministic summary of HIR ID allocation/mappings.
+  ///
+  /// This is primarily intended to catch non-deterministic `DefId`/`BodyId`
+  /// allocation when counts remain unchanged.
+  pub ids_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -230,9 +235,44 @@ pub fn parse_and_lower(source: &str) -> Result<(ParseSummary, HirSummary)> {
     type_exprs,
     type_members,
     type_params,
+    ids_sha256: hir_ids_sha256(&lowered),
   };
 
   Ok((parse_summary, hir_summary))
+}
+
+fn hir_ids_sha256(lowered: &hir_js::LowerResult) -> String {
+  let mut hasher = sha2::Sha256::new();
+  hasher.update(b"hir_ids_sha256_v1");
+
+  hasher.update(lowered.hir.root_body.0.to_le_bytes());
+  for def in lowered.hir.items.iter() {
+    hasher.update(def.0.to_le_bytes());
+  }
+  for body in lowered.hir.bodies.iter() {
+    hasher.update(body.0.to_le_bytes());
+  }
+  for (path, id) in lowered.hir.def_paths.iter() {
+    hasher.update(path.module.0.to_le_bytes());
+    hasher.update([path.parent.is_some() as u8]);
+    if let Some(parent) = path.parent {
+      hasher.update(parent.0.to_le_bytes());
+    }
+    hasher.update([path.kind as u8]);
+    hasher.update(path.name.0.to_le_bytes());
+    hasher.update(path.disambiguator.to_le_bytes());
+    hasher.update(id.0.to_le_bytes());
+  }
+  for (id, idx) in lowered.def_index.iter() {
+    hasher.update(id.0.to_le_bytes());
+    hasher.update((*idx as u64).to_le_bytes());
+  }
+  for (id, idx) in lowered.body_index.iter() {
+    hasher.update(id.0.to_le_bytes());
+    hasher.update((*idx as u64).to_le_bytes());
+  }
+
+  hex_encode(&hasher.finalize())
 }
 
 pub fn optimize(source: &str) -> Result<OptimizeOutcome> {
