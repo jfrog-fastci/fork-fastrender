@@ -124,6 +124,17 @@ fn reset_cfg_meta(cfg: &mut Cfg) {
   }
 }
 
+fn annotate_cfg_escape_states(cfg: &mut Cfg, escapes: &escape::EscapeResult) {
+  for (_label, insts) in cfg.bblocks.all_mut() {
+    for inst in insts {
+      let Some(&tgt) = inst.tgts.get(0) else {
+        continue;
+      };
+      inst.meta.result_escape = escapes.get(&tgt).copied();
+    }
+  }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct NullishComparison {
   tested_var: u32,
@@ -275,12 +286,10 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
 
   // 4) escape
   for &key in &keys {
-    analyses
-      .escape
-      .insert(
-        key,
-        escape::analyze_cfg_escapes_with_params(cfg_for_key(program, key), params_for_key(program, key)),
-      );
+    analyses.escape.insert(
+      key,
+      escape::analyze_cfg_escapes_with_params(cfg_for_key(program, key), params_for_key(program, key)),
+    );
   }
 
   // 5) ownership
@@ -368,12 +377,12 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
 
   // 4) escape
   for &key in &keys {
-    analyses
-      .escape
-      .insert(
-        key,
-        escape::analyze_cfg_escapes_with_params(cfg_for_key(program, key), params_for_key(program, key)),
-      );
+    let escapes = escape::analyze_cfg_escapes_with_params(
+      cfg_for_key(program, key),
+      params_for_key(program, key),
+    );
+    annotate_cfg_escape_states(cfg_for_key_mut(program, key), &escapes);
+    analyses.escape.insert(key, escapes);
   }
 
   // 5) ownership
