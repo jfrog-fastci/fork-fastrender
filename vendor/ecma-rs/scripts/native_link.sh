@@ -16,7 +16,8 @@ Environment:
 Notes:
   - `.llvm_stackmaps` has no inbound references; `--gc-sections` will drop it
     unless explicitly `KEEP`'d via the linker-script fragment we inject
-    (`runtime-native/link/stackmaps.ld` or `runtime-native/stackmaps.ld`).
+    (`runtime-native/link/stackmaps_nopie.ld`, `runtime-native/link/stackmaps.ld`,
+    or `runtime-native/stackmaps.ld`).
   - On Linux x86_64, PIE binaries require runtime relocations for stackmap
     FunctionAddress entries. If stackmaps/faultmaps are mapped read-only, GNU ld
     emits `DT_TEXTREL` and lld typically rejects the link. We avoid this by
@@ -58,6 +59,7 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ecma_root="$(cd "${script_dir}/.." && pwd)"
 stackmaps_ld_lld="${ecma_root}/runtime-native/link/stackmaps.ld"
+stackmaps_ld_nopie="${ecma_root}/runtime-native/link/stackmaps_nopie.ld"
 stackmaps_ld_gnuld="${ecma_root}/runtime-native/link/stackmaps_gnuld.ld"
 
 stackmaps_ld="${stackmaps_ld_lld}"
@@ -87,6 +89,12 @@ fi
 LINKER="${ECMA_RS_NATIVE_LINKER:-${default_linker}}"
 PIE="${ECMA_RS_NATIVE_PIE:-0}"
 GC_SECTIONS="${ECMA_RS_NATIVE_GC_SECTIONS:-1}"
+
+# Prefer the dedicated non-PIE fragment when available. This avoids lld's RELRO
+# contiguity constraints and does not require patching stackmap section flags.
+if [[ "${PIE}" != "1" && -f "${stackmaps_ld_nopie}" ]]; then
+  stackmaps_ld="${stackmaps_ld_nopie}"
+fi
 
 # GNU ld-specific script fragment for PIE mode (avoids RWX).
 if [[ "${LINKER}" == "ld" && "${PIE}" == "1" && -f "${stackmaps_ld_gnuld}" ]]; then
@@ -141,7 +149,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ "${PIE}" == "1" || "${LINKER}" == "lld" ]]; then
+if [[ "${PIE}" == "1" || ( "${LINKER}" == "lld" && "${stackmaps_ld}" != "${stackmaps_ld_nopie}" ) ]]; then
   objcopy=""
   for cand in llvm-objcopy-18 llvm-objcopy objcopy; do
     if command -v "${cand}" >/dev/null 2>&1; then

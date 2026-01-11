@@ -20,6 +20,11 @@ SECTIONS {
     __fastr_stackmaps_start = .;
     __stackmaps_start = .;
     __llvm_stackmaps_start = .;
+    /* Keep both the legacy `.llvm_*` section names and the hardened
+     * `.data.rel.ro.llvm_*` variants (the latter are used for PIE/DSO builds but
+     * may also appear in non-PIE artifacts depending on the producer). */
+    KEEP(*(.data.rel.ro.llvm_stackmaps))
+    KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
     . = ALIGN(8);
@@ -32,6 +37,8 @@ SECTIONS {
   .llvm_faultmaps : ALIGN(8) {
     . = ALIGN(8);
     __llvm_faultmaps_start = .;
+    KEEP(*(.data.rel.ro.llvm_faultmaps))
+    KEEP(*(.data.rel.ro.llvm_faultmaps.*))
     KEEP(*(.llvm_faultmaps))
     KEEP(*(.llvm_faultmaps.*))
     . = ALIGN(8);
