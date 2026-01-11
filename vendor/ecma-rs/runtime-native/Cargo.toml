@@ -59,6 +59,9 @@ conservative_roots = []
 #   cargo test -p runtime-native --features loom loom_
 loom = ["dep:loom"]
 
+# Internal/test-only: exported functions used by frame-pointer regression checks.
+fp_regression = []
+
 [dependencies]
 ahash = { workspace = true }
 anyhow = { workspace = true }

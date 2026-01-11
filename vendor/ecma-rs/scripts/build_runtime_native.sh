@@ -8,9 +8,10 @@ target_dir="${CARGO_TARGET_DIR:-${ecma_rs_root}/target}"
 
 echo "Building runtime-native (release)..." >&2
 cd "${ecma_rs_root}"
-# Use the agent-safe cargo wrapper (slot + RLIMIT_AS caps) to avoid cargo stampedes on multi-agent
-# hosts.
-bash scripts/cargo_agent.sh build --release -p runtime-native
+# Use the LLVM wrapper:
+# - raises the RLIMIT_AS cap (LLVM-heavy builds)
+# - forces frame pointers (required for stack walking / GC)
+bash scripts/cargo_llvm.sh build --release -p runtime-native
 
 lib_path="${target_dir}/release/libruntime_native.a"
 if [[ ! -f "${lib_path}" ]]; then

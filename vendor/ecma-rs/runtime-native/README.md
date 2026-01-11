@@ -11,6 +11,47 @@ See also:
 * `docs/safepoint_abi.md` — thread registration + parked/unparked safepoint protocol
 * `docs/write_barrier.md` — generational write barrier contract
 
+## Frame-pointer ABI contract
+
+The GC/stack map runtime walks the stack using a *frame-pointer chain* (e.g. `rbp`
+on x86_64). This is intentionally simple and fast, but it only works if both:
+
+1. **Rust runtime code** (`runtime-native`) is compiled with frame pointers.
+2. **LLVM-generated managed code** is compiled with frame pointers.
+
+### Enforcement (Rust / runtime-native)
+
+`runtime-native` must be compiled with:
+
+```bash
+-C force-frame-pointers=yes
+```
+
+This repo enforces that in two ways:
+
+- `scripts/cargo_llvm.sh` appends the required `RUSTFLAGS`.
+- `runtime-native/build.rs` fails the build if the flag is missing.
+
+### Enforcement (LLVM managed code)
+
+When invoking `llc` directly, **always** compile with:
+
+```bash
+--frame-pointer=all
+```
+
+This repo provides `scripts/llc_fp.sh`, a tiny wrapper that injects
+`--frame-pointer=all` unless already specified.
+
+If/when the pipeline switches to LLVM APIs (TargetMachine) instead of invoking
+`llc`, the equivalent requirement is: disable frame pointer elimination via
+TargetOptions / TargetMachine settings.
+
+### Regression tests
+
+`runtime-native/tests/frame_pointers.rs` builds optimized objects and asserts
+that the expected frame-pointer prologue exists (x86_64 host).
+
 ## Reactor contract (epoll + kqueue)
 
 The low-level cross-platform reactor contract is documented in `docs/reactor.md` and enforced by
@@ -27,7 +68,7 @@ Key guarantees include:
 From the `vendor/ecma-rs/` workspace root:
 
 ```bash
-bash scripts/cargo_agent.sh build --release -p runtime-native
+bash scripts/cargo_llvm.sh build --release -p runtime-native
 ```
 
 From the superproject repo root (or any cwd):

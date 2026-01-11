@@ -1224,3 +1224,30 @@ mod tests {
     }
   }
 }
+
+// Exported functions used by `tests/frame_pointers.rs` to validate the
+// frame-pointer ABI contract in optimized builds.
+//
+// Keep these behind a feature so they don't become part of the default ABI
+// surface.
+#[cfg(feature = "fp_regression")]
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rt_fp_test_leaf(x: u64) -> u64 {
+  x.wrapping_add(1)
+}
+
+#[cfg(feature = "fp_regression")]
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rt_fp_test_mid(x: u64) -> u64 {
+  // Ensure a real call so we get a distinct frame in the disassembly.
+  rt_fp_test_leaf(x).wrapping_mul(3)
+}
+
+#[cfg(feature = "fp_regression")]
+#[no_mangle]
+#[inline(never)]
+pub extern "C" fn rt_fp_test_entry(x: u64) -> u64 {
+  rt_fp_test_mid(x).wrapping_sub(7)
+}

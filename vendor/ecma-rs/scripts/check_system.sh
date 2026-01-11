@@ -56,6 +56,7 @@ check_cmd rustc "rustup (https://rustup.rs)"
 check_cmd cargo "rustup"
 check_cmd gcc "build-essential"
 check_cmd make "build-essential"
+check_cmd objdump "binutils"
 check_cmd git "git"
 
 echo ""

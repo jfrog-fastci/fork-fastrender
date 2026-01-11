@@ -10,6 +10,7 @@ set -euo pipefail
 # This sets:
 #   - Higher RAM limit (96GB default)
 #   - LLVM environment variables (if LLVM 18 is installed)
+#   - Frame pointers for native runtime + generated code stack walking
 #
 # Use for:
 #   - Building native-js (LLVM IR generation)
