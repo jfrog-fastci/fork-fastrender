@@ -227,6 +227,14 @@ bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- strict-n
   --json
 ```
 
+- Fixtures live under `typecheck-ts-harness/fixtures/strict-native` with stored
+  baselines under `typecheck-ts-harness/baselines/strict-native`.
+- Keep fixtures fast: every strict-native fixture should declare an explicit
+  `// @lib: ...` directive (typically `// @lib: es2015`). This avoids loading
+  the default `dom` lib, which can dominate runtime. Directive lines are treated
+  as metadata and stripped from the virtual source text, so spans/baselines
+  remain stable.
+
 # Allow small span drift (bytes)
 bash ../scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- difftsc --suite fixtures/difftsc --span-tolerance 2
 
