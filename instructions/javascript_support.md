@@ -4,19 +4,26 @@
 
 **STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
 
-AGENTS.md is the law. These rules are not suggestions. Violating them destroys host machines, wastes hours of compute, and blocks other agents. Non-compliance is unacceptable.
+### Assume every process can misbehave
+
+JavaScript is hostile input. **Any script can `while(true){}`, allocate unbounded arrays, or install signal handlers that block termination.** The JS engine, DOM bindings, and event loop are all attack surfaces. Conformance tests can trigger engine bugs.
+
+**Every command must have hard external limits:**
+- `timeout -k 10 <seconds>` — time limit with guaranteed SIGKILL (SIGTERM alone can be ignored by JS/native code)
+- `bash scripts/run_limited.sh --as 64G` — memory ceiling enforced by kernel
+- Scoped test runs (`-p <crate>`, `--test <name>`) — don't compile/run the universe
+
+If something exceeds limits, that's a **bug to investigate**, not a limit to raise.
 
 **MANDATORY (no exceptions):**
-- Use `bash scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
-- Use `bash scripts/run_limited.sh --as 64G` when executing ANY renderer binary
+- `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
+- `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- ...` for renderer binaries
 - Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
 
 **FORBIDDEN — will destroy the host:**
+- ANY command without `timeout -k` (can hang forever)
 - `cargo build` / `cargo test` / `cargo check` without wrapper scripts
-- `cargo test --all-features` or `cargo check --all-features --tests`
-- Unscoped `cargo test` (compiles 300+ test binaries and blows RAM)
-
-If you do not understand these rules, re-read AGENTS.md. There are no exceptions. Ignorance is not an excuse.
+- `cargo test --all-features` or unscoped `cargo test`
 
 ---
 
@@ -223,8 +230,8 @@ Quickstart:
 ```bash
 git submodule update --init vendor/ecma-rs/test262-semantic/data
 
-# Use the mandatory cargo wrapper (AGENTS.md):
-bash scripts/cargo_agent.sh xtask js test262
+# Use the mandatory cargo wrapper (AGENTS.md) with timeout:
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask js test262
 ```
 
 The point of tests is to prevent regressions, not to build heavy harness infrastructure.

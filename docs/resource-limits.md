@@ -1,14 +1,66 @@
 # Resource limits (RAM / time) for agents
 
+## The threat model: your code is the enemy
+
+FastRender processes hostile inputs (arbitrary web pages, malformed HTML/CSS, fuzzed data). But **the code itself is also suspect** — bugs, regressions, degenerate algorithm cases, and incomplete implementations can all produce pathological behavior:
+
+- **Infinite loops / livelocks**: A while-loop with a broken termination condition. A layout algorithm that oscillates forever. A retry loop that never backs off.
+- **Memory explosions**: Quadratic string building. Unbounded caches. Cloning deep trees. Decoding a malicious image to a 100GB bitmap.
+- **Hangs**: Deadlocks. Blocking on I/O that never completes. Waiting for a lock held by a crashed thread.
+- **Signal-resistant processes**: Code that installs signal handlers, catches SIGTERM, or is stuck in uninterruptible syscalls.
+
+**Assume any process you spawn can exhibit any of these behaviors.** This isn't paranoia — agents have been stuck for 24+ hours on hanging tests. Limits must be **external and unkillable by the code being limited**.
+
+## Defense in depth: layered limits
+
+Every command needs multiple independent safety layers:
+
+| Layer | What it stops | How |
+|-------|--------------|-----|
+| **Time limit** (`timeout -k`) | Infinite loops, hangs, livelocks | SIGTERM → SIGKILL (cannot be caught) |
+| **Memory limit** (`run_limited.sh`) | Memory explosions, OOM cascades | RLIMIT_AS (kernel-enforced) |
+| **Scope limit** (test filters, `-p`) | Combinatorial blowup | Don't compile/run everything |
+
+```bash
+# CORRECT — all three layers:
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh test -p fastrender --lib
+
+# WRONG — no time limit (can hang forever):
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh test -p fastrender --lib
+
+# WRONG — no memory limit (can OOM the host):
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --lib
+
+# WRONG — no scope limit (compiles 100+ binaries, spawns thousands of processes):
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh test
+```
+
+## Why `-k` is non-negotiable
+
+`timeout 600 <cmd>` sends SIGTERM after 600 seconds. But:
+- SIGTERM is a **request** to terminate — processes can catch, block, or ignore it
+- A process stuck in certain syscalls won't receive signals until the syscall returns
+- A buggy signal handler can loop forever or block
+
+`timeout -k 10 600 <cmd>` sends SIGTERM at 600s, then **SIGKILL at 610s** if still alive. SIGKILL:
+- Cannot be caught, blocked, or ignored
+- Terminates the process unconditionally at the kernel level
+- Is the only reliable way to kill misbehaving code
+
+**Never use `timeout` without `-k` for any command that runs FastRender code.**
+
+---
+
 This repo assumes we run on a single standard host:
 - **Linux**, ~**192 vCPU** (96c/192t)
 - ~**1.5TB RAM**
 - ~**100TB NVMe** (16× RAID0)
 
-FastRender work involves hostile inputs (real pages) and complex algorithms. **Any run can go pathological**.
-Defaults are set to:
+Defaults are tuned to:
 - **Maximize CPU utilization** (no CPU limiting by default)
 - **Always enforce RAM ceilings** (avoid system freezes; fail fast and diagnose)
+- **Always enforce time limits** (avoid stuck agents; pathological code can hang forever)
 - **Avoid cargo stampedes** (coordination, not disk, is the typical bottleneck)
 
 This doc describes a two-layer strategy:
@@ -23,14 +75,14 @@ This doc describes a two-layer strategy:
 Use the repo helper which prefers `prlimit` and falls back to `ulimit`:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh bench --bench selector_bloom_bench
 ```
 
 If your checkout lost executable bits, invoke the wrapper explicitly with bash:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh --version
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh --version
 ```
 
 If `cargo` itself fails early with an `out of memory` message, bump `--as` (the Rust toolchain can
@@ -42,7 +94,8 @@ link):
 
 ```bash
 # Ensure cargo_agent doesn't attempt to raise RLIMIT_AS above the outer cap.
-CARGO_PROFILE_TEST_DEBUG=0 FASTR_CARGO_LIMIT_AS=12G \
+timeout -k 10 600 \
+  CARGO_PROFILE_TEST_DEBUG=0 FASTR_CARGO_LIMIT_AS=12G \
   bash scripts/run_limited.sh --as 12G --cpu 60 -- \
   bash scripts/cargo_agent.sh test -j 1 --quiet -p fastrender --lib
 ```
@@ -50,7 +103,7 @@ CARGO_PROFILE_TEST_DEBUG=0 FASTR_CARGO_LIMIT_AS=12G \
 You can also set defaults via environment variables:
 
 ```bash
-LIMIT_AS=64G bash scripts/run_limited.sh -- \
+timeout -k 10 600 LIMIT_AS=64G bash scripts/run_limited.sh -- \
   bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
@@ -60,7 +113,9 @@ If `prlimit` is available (usually via `util-linux`), it can cap address-space:
 
 ```bash
 # Note: `prlimit` expects raw byte counts; size suffixes (e.g. 64G) are not universally supported.
-prlimit --as=$((64 * 1024 * 1024 * 1024)) --rss=$((64 * 1024 * 1024 * 1024)) -- \
+# Always wrap with timeout -k for time limits:
+timeout -k 10 600 \
+  prlimit --as=$((64 * 1024 * 1024 * 1024)) --rss=$((64 * 1024 * 1024 * 1024)) -- \
   bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
@@ -87,7 +142,11 @@ Then run your command in the same shell.
 If systemd is available:
 
 ```bash
-systemd-run --user -p MemoryMax=64G -- \
+# systemd-run with RuntimeMaxSec for time limits:
+systemd-run --user -p MemoryMax=64G -p RuntimeMaxSec=600 -- \
+  bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
+# Or wrap with timeout -k:
+timeout -k 10 600 systemd-run --user -p MemoryMax=64G -- \
   bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
@@ -123,7 +182,8 @@ Examples:
 ```bash
 # 64 GiB hard ceiling via RLIMIT_AS, abort render stages that grow beyond 8 GiB RSS,
 # and abort if any single stage allocates > 512 MiB through guarded pixmap/buffer paths.
-bash scripts/run_limited.sh --as 64G -- \
+# Always wrap with timeout -k for time limits:
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run \
   --mem-limit-mb 65536 \
   --stage-mem-budget-mb 8192 \
@@ -168,15 +228,15 @@ Use the repo wrapper `bash scripts/cargo_agent.sh`, which:
 To override the xtask limit (for Chrome workflows like `page-loop --chrome` / `fixture-chrome-diff`):
 
 ```bash
-FASTR_XTASK_LIMIT_AS=128G bash scripts/cargo_agent.sh xtask fixture-chrome-diff
-FASTR_XTASK_LIMIT_AS=unlimited bash scripts/cargo_agent.sh xtask page-loop --fixture bbc.co.uk --chrome
+timeout -k 10 900 FASTR_XTASK_LIMIT_AS=128G bash scripts/cargo_agent.sh xtask fixture-chrome-diff
+timeout -k 10 900 FASTR_XTASK_LIMIT_AS=unlimited bash scripts/cargo_agent.sh xtask page-loop --fixture bbc.co.uk --chrome
 ```
 
 Example:
 
 ```bash
-bash scripts/cargo_agent.sh build --release
-bash scripts/cargo_agent.sh test --lib
+timeout -k 10 600 bash scripts/cargo_agent.sh build --release
+timeout -k 10 600 bash scripts/cargo_agent.sh test --lib
 ```
 
 (`bash scripts/cargo_agent.sh ...` also works if the executable bit isn't set.)
@@ -216,6 +276,6 @@ In-process caps prevent accidental runaway allocations, but the most reliable pr
 an OS-enforced ceiling. Prefer:
 
 ```bash
-FASTR_BENCH_VERBOSE=1 bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 FASTR_BENCH_VERBOSE=1 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh bench --bench selector_bloom_bench -- --noplot
 ```

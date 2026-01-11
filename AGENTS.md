@@ -36,14 +36,25 @@ A change counts if it lands at least one of:
 
 ## System resources (RAM / time / disk) — mandatory safety
 
-FastRender runs on hostile inputs. Any run can go pathological. **Always enforce RAM ceilings** so one bad case can’t freeze the host.
+### The cardinal rule: assume everything can misbehave
+
+FastRender processes hostile inputs (arbitrary web pages, user content, fuzzed data). **Any code path can go pathological**: infinite loops, exponential blowups, memory explosions, deadlocks, livelocks, signal-ignoring hangs.
+
+This isn't paranoia — it's operational reality. A test with a subtle bug can spin forever. A layout algorithm can hit a degenerate case. A network request can hang on a broken server. Code under development is especially suspect.
+
+**Every command you run must have hard external limits that cannot be bypassed by the code being run:**
+- **Time limits**: `timeout -k` (not just `timeout` — the `-k` sends SIGKILL after a grace period because misbehaving code can ignore SIGTERM)
+- **Memory limits**: `run_limited.sh` / `prlimit` / cgroups (misbehaving code can't allocate its way out)
+- **Scope limits**: never run unbounded test suites or builds
+
+If a process exceeds limits, treat it as a bug to investigate — not a limit to raise.
 
 ### Running renderer binaries (always cap memory)
 
 For anything that executes the renderer (pages, fixtures, benches, fuzz, etc.), run under OS caps:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- <args...>
 ```
 
@@ -73,19 +84,36 @@ See: `docs/resource-limits.md`
   - Note: `scripts/cargo_agent.sh test` also caps `RUST_TEST_THREADS` on very large hosts to avoid
     spawning hundreds of concurrent test threads. Override with `FASTR_RUST_TEST_THREADS` /
     `RUST_TEST_THREADS` if needed.
+- **Always use a timeout for test commands** — tests can hang indefinitely (infinite loops, livelocks,
+  waiting on resources). Wrap with `timeout -k` to prevent stuck agents:
 
 ```bash
-# CORRECT:
-bash scripts/cargo_agent.sh build --release
+# CORRECT — always use `timeout -k <grace> <limit>`:
+#   -k 10 = send SIGKILL 10s after SIGTERM if process ignores SIGTERM
+timeout -k 10 600 bash scripts/cargo_agent.sh build --release
+timeout -k 10 600 bash scripts/cargo_agent.sh test --quiet --lib
+timeout -k 10 600 bash scripts/cargo_agent.sh test --test layout_tests
+timeout -k 10 600 bash scripts/cargo_agent.sh check -p fastrender
+
+# WRONG — no SIGKILL fallback (process can ignore SIGTERM forever):
+timeout 600 bash scripts/cargo_agent.sh test --quiet --lib
+
+# WRONG — CAN HANG FOREVER:
 bash scripts/cargo_agent.sh test --quiet --lib
 bash scripts/cargo_agent.sh test --test layout_tests
-bash scripts/cargo_agent.sh check -p fastrender
 
 # WRONG — WILL DESTROY HOST:
 cargo test
 cargo build --all-targets
 cargo check --all-features --tests
 ```
+
+**Timeout guidelines:**
+- **Always use `-k 10`** (SIGKILL after 10s grace period) — pathological code can ignore SIGTERM
+- Default: `timeout -k 10 600` (10 minutes) for most test/build commands
+- For single focused tests: `timeout -k 10 120` (2 minutes) is usually sufficient
+- For full harness runs: `timeout -k 10 900` (15 minutes) if needed
+- If a test times out, **do not retry indefinitely** — investigate why it's slow/hanging
 
 ### Listing tests (avoid broken pipes)
 

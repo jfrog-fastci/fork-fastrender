@@ -1,5 +1,34 @@
 # Testing
 
+## Assume tests can misbehave
+
+Tests exercise code paths that process hostile inputs and implement complex algorithms. **Any test can hang, explode memory, or refuse to terminate:**
+
+- A layout test might trigger an infinite loop in a new algorithm
+- A parsing test might cause exponential backtracking
+- A resource test might block forever on a network mock
+- A regression test might expose a livelock under specific conditions
+
+**All test commands need hard external limits:**
+
+```bash
+# CORRECT — time limit (with SIGKILL fallback) + memory limit + scoped:
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh test -p fastrender --lib
+
+# WRONG — no time limit (test can hang forever, ignoring SIGTERM):
+bash scripts/cargo_agent.sh test -p fastrender --lib
+
+# WRONG — timeout without -k (misbehaving code can ignore SIGTERM):
+timeout 600 bash scripts/cargo_agent.sh test -p fastrender --lib
+```
+
+`-k 10` means: send SIGTERM at timeout, then SIGKILL 10 seconds later if still running. SIGKILL cannot be caught or ignored — it's the only guarantee against pathological code.
+
+**If a test times out, that's a bug to investigate — not a timeout to extend.**
+
+---
+
 FastRender's test suite is primarily Rust unit/integration tests plus a small set of visual fixture tests.
 
 ## Test organization

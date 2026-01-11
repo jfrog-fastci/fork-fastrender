@@ -4,19 +4,26 @@
 
 **STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
 
-AGENTS.md is the law. These rules are not suggestions. Violating them destroys host machines, wastes hours of compute, and blocks other agents. Non-compliance is unacceptable.
+### Assume every process can misbehave
+
+The browser hosts an interactive renderer processing arbitrary URLs. **Any page load can hang, explode memory, or spin forever.** Event loops can deadlock. User interactions can trigger pathological layout. Navigations can block on broken servers.
+
+**Every command must have hard external limits:**
+- `timeout -k 10 <seconds>` — time limit with guaranteed SIGKILL (SIGTERM alone can be ignored)
+- `bash scripts/run_limited.sh --as 64G` — memory ceiling enforced by kernel
+- Scoped test runs (`-p <crate>`, `--test <name>`) — don't compile/run the universe
+
+If something exceeds limits, that's a **bug to investigate**, not a limit to raise.
 
 **MANDATORY (no exceptions):**
-- Use `bash scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
-- Use `bash scripts/run_limited.sh --as 64G` when executing ANY renderer binary
+- `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
+- `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- ...` for renderer binaries
 - Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
 
 **FORBIDDEN — will destroy the host:**
+- ANY command without `timeout -k` (can hang forever)
 - `cargo build` / `cargo test` / `cargo check` without wrapper scripts
-- `cargo test --all-features` or `cargo check --all-features --tests`
-- Unscoped `cargo test` (compiles 300+ test binaries and blows RAM)
-
-If you do not understand these rules, re-read AGENTS.md. There are no exceptions. Ignorance is not an excuse.
+- `cargo test --all-features` or unscoped `cargo test`
 
 ---
 
@@ -61,7 +68,7 @@ Note: keep UI dependencies behind a feature gate so the core renderer stays lean
 Run it with:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 ```
 
@@ -69,14 +76,14 @@ Or (recommended), use the xtask wrapper which always applies the required `cargo
 `run_limited.sh` safety guardrails:
 
 ```bash
-bash scripts/cargo_agent.sh xtask browser
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser
 ```
 
 You can optionally provide a start URL (like the address bar). Supported schemes are:
 `http`, `https`, `file`, and `about` (default is `about:newtab`):
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
   https://example.com/
 ```
@@ -84,7 +91,7 @@ bash scripts/run_limited.sh --as 64G -- \
 xtask form:
 
 ```bash
-bash scripts/cargo_agent.sh xtask browser https://example.com/
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser https://example.com/
 ```
 
 ### 2) UI framework choice

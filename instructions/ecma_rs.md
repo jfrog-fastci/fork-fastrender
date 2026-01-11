@@ -4,21 +4,27 @@
 
 **STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
 
-AGENTS.md is the law. These rules are not suggestions. Violating them destroys host machines, wastes hours of compute, and blocks other agents. Non-compliance is unacceptable.
+### Assume every process can misbehave
+
+`ecma-rs` parses and executes JavaScript — a Turing-complete language designed to run untrusted code. **Any test can trigger infinite loops, exponential parsing, or unbounded allocations.** Parser bugs can cause hangs. Conformance tests (test262) exercise edge cases that stress the engine.
+
+**Every command must have hard external limits:**
+- `timeout -k 10 <seconds>` — time limit with guaranteed SIGKILL (SIGTERM alone can be ignored)
+- `bash scripts/run_limited.sh --as 64G` — memory ceiling enforced by kernel
+- Scoped test runs (`-p <crate>`, `--test <name>`) — don't compile/run the universe
+
+If something exceeds limits, that's a **bug to investigate**, not a limit to raise.
 
 **MANDATORY (no exceptions):**
-- Use `bash scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
-  - For `vendor/ecma-rs/` workspace builds/tests: prefer `bash vendor/ecma-rs/scripts/cargo_agent.sh ...`
-    (it `cd`s into `vendor/ecma-rs/` and delegates to the top-level wrapper).
-- Use `bash scripts/run_limited.sh --as 64G` when executing ANY renderer binary
+- `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
+- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh ...` for ecma-rs workspace
+- `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- ...` for renderer binaries
 - Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
 
 **FORBIDDEN — will destroy the host:**
+- ANY command without `timeout -k` (can hang forever)
 - `cargo build` / `cargo test` / `cargo check` without wrapper scripts
-- `cargo test --all-features` or `cargo check --all-features --tests`
-- Unscoped `cargo test` (compiles 300+ test binaries and blows RAM)
-
-If you do not understand these rules, re-read AGENTS.md. There are no exceptions. Ignorance is not an excuse.
+- `cargo test --all-features` or unscoped `cargo test`
 
 ---
 
@@ -92,7 +98,7 @@ When updating `vendor/ecma-rs`, sync any relevant upstream changes into `crates/
 validate with:
 
 ```bash
-bash scripts/cargo_agent.sh test -p webidl-vm-js
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p webidl-vm-js
 ```
 
 ## Common integration gotcha: `vm-js` Promise job / microtask GC safety (FastRender requirement)
@@ -120,24 +126,28 @@ FastRender encodes this expectation via:
 
 ## Running `ecma-rs` commands safely (resource limits)
 
-JS conformance workloads can be pathological. Use OS caps from the FastRender repo when running
+JS conformance workloads can be pathological. **Always use OS caps AND time limits** when running
 Cargo commands for ecma-rs crates.
 
 Example pattern:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- bash vendor/ecma-rs/scripts/cargo_agent.sh test -p parse-js
+# Always wrap with timeout -k (SIGKILL fallback) + run_limited.sh (RAM cap)
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash vendor/ecma-rs/scripts/cargo_agent.sh test -p parse-js
 ```
 
 For LLVM-heavy crates (e.g. `native-js`, `runtime-native`, once they exist) prefer the LLVM wrapper (higher RAM cap + LLVM env):
 
 ```bash
 # If wrapping with run_limited.sh, set --as >= the LLVM wrapper's limit (defaults to 96G).
-bash scripts/run_limited.sh --as 96G -- bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
+timeout -k 10 900 bash scripts/run_limited.sh --as 96G -- \
+  bash vendor/ecma-rs/scripts/cargo_llvm.sh test -p native-js --lib
 ```
 
 For builds/tests, avoid multi-agent cargo stampedes (same principle as FastRender):
 
+- **Always use `timeout -k 10 <seconds>`** — pathological code can ignore SIGTERM
 - Don't run unscoped `cargo test` across the entire workspace unless necessary.
 - Prefer scoping: `-p <crate>`, `--test <name>`, `--example <name>`.
 
