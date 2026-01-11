@@ -225,8 +225,8 @@ pub fn snapshot() -> RtGcStatsSnapshot {
   snap
 }
 
-#[cfg(all(test, feature = "gc_stats"))]
-mod tests {
+#[cfg(test)]
+mod tls_registration_tests {
   use super::*;
   use crate::threading;
   use crate::threading::ThreadKind;
@@ -235,7 +235,7 @@ mod tests {
   use std::time::Instant;
 
   #[test]
-  fn gc_stats_registry_lock_is_gc_aware() {
+  fn gc_stats_registry_lock_tls_registration_is_gc_aware() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
     const TIMEOUT: Duration = Duration::from_secs(2);
@@ -367,7 +367,7 @@ mod tests {
   use std::time::Instant;
 
   #[test]
-  fn gc_stats_registry_lock_is_gc_aware() {
+  fn gc_stats_registry_lock_snapshot_is_gc_aware() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
     const TIMEOUT: Duration = Duration::from_secs(2);
 
