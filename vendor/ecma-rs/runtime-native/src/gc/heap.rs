@@ -1,27 +1,25 @@
-use std::alloc::alloc_zeroed;
-use std::alloc::dealloc;
 use std::alloc::handle_alloc_error;
 use std::alloc::Layout;
 use std::mem;
 use std::ptr;
-use std::ptr::NonNull;
 
-use super::align_up;
 use super::ObjHeader;
 use super::TypeDescriptor;
 use super::weak::WeakHandle;
 use super::weak::WeakHandles;
+use crate::immix;
+use crate::immix::ImmixSpace;
 use crate::los::LargeObjectSpace;
 use crate::nursery;
 use crate::nursery::ThreadNursery;
 
 /// Immix block size in bytes.
-pub const IMMIX_BLOCK_SIZE: usize = 32 * 1024;
+pub const IMMIX_BLOCK_SIZE: usize = immix::BLOCK_SIZE;
 
 /// Immix line size in bytes.
-pub const IMMIX_LINE_SIZE: usize = 256;
+pub const IMMIX_LINE_SIZE: usize = immix::LINE_SIZE;
 
-pub const IMMIX_LINES_PER_BLOCK: usize = IMMIX_BLOCK_SIZE / IMMIX_LINE_SIZE;
+pub const IMMIX_LINES_PER_BLOCK: usize = immix::LINES_PER_BLOCK;
 
 /// Maximum object size that is eligible for Immix allocation.
 pub const IMMIX_MAX_OBJECT_SIZE: usize = IMMIX_BLOCK_SIZE / 2;
@@ -34,204 +32,6 @@ pub struct GcStats {
   pub major_collections: usize,
   pub bytes_allocated_young: usize,
   pub bytes_allocated_old: usize,
-}
-
-struct RawMemory {
-  ptr: NonNull<u8>,
-  layout: Layout,
-}
-
-impl RawMemory {
-  fn new_zeroed(size: usize, align: usize) -> Self {
-    let layout = Layout::from_size_align(size, align).expect("invalid allocation layout");
-    // SAFETY: `layout` is valid.
-    let ptr = unsafe { alloc_zeroed(layout) };
-    let ptr = match NonNull::new(ptr) {
-      Some(p) => p,
-      None => handle_alloc_error(layout),
-    };
-    Self { ptr, layout }
-  }
-
-  #[inline]
-  fn as_ptr(&self) -> *mut u8 {
-    self.ptr.as_ptr()
-  }
-}
-
-impl Drop for RawMemory {
-  fn drop(&mut self) {
-    // SAFETY: The pointer was allocated with this `layout`.
-    unsafe {
-      dealloc(self.ptr.as_ptr(), self.layout);
-    }
-  }
-}
-
-struct ImmixBlock {
-  mem: RawMemory,
-  line_mark: [u8; IMMIX_LINES_PER_BLOCK],
-  free_ranges: Vec<(usize, usize)>,
-}
-
-impl ImmixBlock {
-  fn new() -> Self {
-    Self {
-      mem: RawMemory::new_zeroed(IMMIX_BLOCK_SIZE, IMMIX_LINE_SIZE),
-      line_mark: [0; IMMIX_LINES_PER_BLOCK],
-      free_ranges: vec![(0, IMMIX_BLOCK_SIZE)],
-    }
-  }
-
-  #[inline]
-  fn base(&self) -> usize {
-    self.mem.as_ptr() as usize
-  }
-
-  fn contains(&self, ptr: *mut u8) -> bool {
-    let p = ptr as usize;
-    let base = self.base();
-    p >= base && p < base + IMMIX_BLOCK_SIZE
-  }
-
-  fn alloc(&mut self, size: usize, align: usize) -> Option<*mut u8> {
-    debug_assert!(size <= IMMIX_BLOCK_SIZE);
-    let base = self.base();
-
-    for idx in 0..self.free_ranges.len() {
-      let (range_start, range_end) = self.free_ranges[idx];
-
-      let abs_start = base + range_start;
-      let abs_alloc_start = align_up(abs_start, align);
-      let alloc_start = abs_alloc_start - base;
-      let alloc_end = alloc_start.checked_add(size)?;
-
-      if alloc_end <= range_end {
-        let mut replacement = Vec::new();
-        if range_start < alloc_start {
-          replacement.push((range_start, alloc_start));
-        }
-        if alloc_end < range_end {
-          replacement.push((alloc_end, range_end));
-        }
-
-        self.free_ranges.splice(idx..=idx, replacement);
-        return Some((base + alloc_start) as *mut u8);
-      }
-    }
-
-    None
-  }
-
-  fn clear_line_marks(&mut self) {
-    self.line_mark.fill(0);
-  }
-
-  fn set_lines_for_live_object(&mut self, obj: *mut u8, size: usize) {
-    let start = (obj as usize).wrapping_sub(self.base());
-    let end = start + size;
-    debug_assert!(end <= IMMIX_BLOCK_SIZE);
-
-    let start_line = start / IMMIX_LINE_SIZE;
-    let end_line = (end - 1) / IMMIX_LINE_SIZE;
-
-    for line in start_line..=end_line {
-      self.line_mark[line] = 1;
-    }
-  }
-
-  fn rebuild_free_ranges_from_marks(&mut self) {
-    self.free_ranges.clear();
-
-    let mut run_start: Option<usize> = None;
-    for line in 0..IMMIX_LINES_PER_BLOCK {
-      let is_free = self.line_mark[line] == 0;
-      match (run_start, is_free) {
-        (None, true) => run_start = Some(line),
-        (Some(_), true) => {}
-        (Some(start), false) => {
-          self
-            .free_ranges
-            .push((start * IMMIX_LINE_SIZE, line * IMMIX_LINE_SIZE));
-          run_start = None;
-        }
-        (None, false) => {}
-      }
-    }
-
-    if let Some(start) = run_start {
-      self.free_ranges.push((start * IMMIX_LINE_SIZE, IMMIX_BLOCK_SIZE));
-    }
-  }
-
-  fn free_bytes(&self) -> usize {
-    self
-      .free_ranges
-      .iter()
-      .map(|(start, end)| end - start)
-      .sum()
-  }
-}
-
-pub(crate) struct ImmixSpace {
-  blocks: Vec<ImmixBlock>,
-}
-
-impl ImmixSpace {
-  fn new() -> Self {
-    Self { blocks: Vec::new() }
-  }
-
-  fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
-    debug_assert!(size <= IMMIX_MAX_OBJECT_SIZE);
-
-    for block in &mut self.blocks {
-      if let Some(ptr) = block.alloc(size, align) {
-        return ptr;
-      }
-    }
-
-    let mut block = ImmixBlock::new();
-    let ptr = block
-      .alloc(size, align)
-      .expect("fresh Immix block must have enough space");
-    self.blocks.push(block);
-    ptr
-  }
-
-  fn contains(&self, ptr: *mut u8) -> bool {
-    self.blocks.iter().any(|b| b.contains(ptr))
-  }
-
-  pub(crate) fn clear_line_marks(&mut self) {
-    for block in &mut self.blocks {
-      block.clear_line_marks();
-    }
-  }
-
-  pub(crate) fn set_lines_for_live_object(&mut self, obj: *mut u8, size: usize) {
-    for block in &mut self.blocks {
-      if block.contains(obj) {
-        block.set_lines_for_live_object(obj, size);
-        return;
-      }
-    }
-    debug_assert!(false, "object not in ImmixSpace");
-  }
-
-  pub(crate) fn finalize_after_marking(&mut self) {
-    for block in &mut self.blocks {
-      block.rebuild_free_ranges_from_marks();
-    }
-  }
-
-  fn block_count(&self) -> usize {
-    self.blocks.len()
-  }
-
-  fn free_bytes(&self) -> usize {
-    self.blocks.iter().map(|b| b.free_bytes()).sum()
-  }
 }
 
 pub struct GcHeap {
@@ -442,7 +242,10 @@ impl GcHeap {
     let obj = if size > IMMIX_MAX_OBJECT_SIZE {
       self.los.alloc(size, align)
     } else {
-      self.immix.alloc(size, align)
+      self
+        .immix
+        .alloc_old(size, align)
+        .unwrap_or_else(|| handle_alloc_error(Layout::from_size_align(size, align).unwrap()))
     };
 
     self.stats.bytes_allocated_old += size;

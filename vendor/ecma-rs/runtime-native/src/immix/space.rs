@@ -53,8 +53,33 @@ impl ImmixSpace {
     self.free_blocks.len()
   }
 
+  pub fn contains(&self, ptr: *mut u8) -> bool {
+    if ptr.is_null() {
+      return false;
+    }
+
+    let addr = ptr as usize;
+    let block_base = addr & !(BLOCK_SIZE - 1);
+    self
+      .block_by_start
+      .get(&block_base)
+      .is_some_and(|&block_id| self.blocks[block_id].contains_addr(addr))
+  }
+
+  pub fn free_bytes(&self) -> usize {
+    self
+      .blocks
+      .iter()
+      .map(|block| bitmap::free_lines(&block.line_map) * LINE_SIZE)
+      .sum()
+  }
+
   pub fn block_metrics(&self, block_id: usize) -> Option<crate::immix::BlockMetrics> {
     self.blocks.get(block_id).map(|block| block.metrics())
+  }
+
+  pub(crate) fn clear_line_marks(&mut self) {
+    self.clear_all_line_maps();
   }
 
   pub fn alloc_old(&mut self, size: usize, align: usize) -> Option<*mut u8> {
