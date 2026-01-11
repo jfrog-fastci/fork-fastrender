@@ -497,8 +497,7 @@ fn container_query_matches(
 
   let result = match query {
     ContainerQuery::Size(size_query) => {
-      if !(container.container_type.supports_size() || container.container_type.supports_inline_size())
-      {
+      if !container.container_type.supports_size_queries() {
         QueryResult::False
       } else {
         match size_query {
@@ -901,8 +900,7 @@ fn evaluate_container_size_feature(
   line_height: f32,
 ) -> QueryResult {
   let inline_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
-  let supports_inline =
-    container.container_type.supports_size() || container.container_type.supports_inline_size();
+  let supports_inline = container.container_type.supports_size_queries();
   let supports_block = container.container_type.supports_size();
 
   let clamp = |value: f32| {
@@ -924,17 +922,17 @@ fn evaluate_container_size_feature(
     0.0
   };
 
-  let cqw_base = if container.container_type.supports_size()
-    || (container.container_type.supports_inline_size() && inline_horizontal)
-  {
+  let cqw_base = if container.container_type.supports_size() {
+    clamp(container.width)
+  } else if container.container_type.supports_inline_size() && inline_horizontal {
     clamp(container.width)
   } else {
     0.0
   };
 
-  let cqh_base = if container.container_type.supports_size()
-    || (container.container_type.supports_inline_size() && !inline_horizontal)
-  {
+  let cqh_base = if container.container_type.supports_size() {
+    clamp(container.height)
+  } else if container.container_type.supports_inline_size() && !inline_horizontal {
     clamp(container.height)
   } else {
     0.0
@@ -3855,8 +3853,7 @@ fn resolve_length_for_query(
 
 fn style_query_container_unit_bases(container: &ContainerQueryInfo) -> (f32, f32, f32, f32) {
   let inline_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
-  let supports_inline =
-    container.container_type.supports_size() || container.container_type.supports_inline_size();
+  let supports_inline = container.container_type.supports_size_queries();
   let supports_block = container.container_type.supports_size();
 
   let clamp = |value: f32| {
@@ -37511,8 +37508,7 @@ fn container_query_unit_bases(
       continue;
     };
 
-    let supports_inline =
-      info.container_type.supports_size() || info.container_type.supports_inline_size();
+    let supports_inline = info.container_type.supports_size_queries();
     let supports_block = info.container_type.supports_size();
 
     let container_inline_horizontal =

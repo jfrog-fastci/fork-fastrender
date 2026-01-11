@@ -899,7 +899,7 @@ pub fn creates_stacking_context(
   }
 
   // 18. container-type: size/inline-size creates a stacking context.
-  if style.container_type.supports_size() || style.container_type.supports_inline_size() {
+  if style.container_type.creates_stacking_context() {
     return true;
   }
 
@@ -1001,7 +1001,7 @@ pub fn get_stacking_context_reason(
     }
   }
 
-  if style.container_type.supports_size() || style.container_type.supports_inline_size() {
+  if style.container_type.creates_stacking_context() {
     return Some(StackingContextReason::ContainerType);
   }
 

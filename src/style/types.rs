@@ -194,6 +194,12 @@ impl ContainerType {
     matches!(self, Self::InlineSize | Self::InlineSizeScrollState)
   }
 
+  /// Returns true when this element establishes either kind of size query container.
+  #[inline]
+  pub fn supports_size_queries(self) -> bool {
+    self.supports_size() || self.supports_inline_size()
+  }
+
   /// Returns true when this element establishes a scroll-state query container.
   #[inline]
   pub fn supports_scroll_state(self) -> bool {
@@ -201,6 +207,16 @@ impl ContainerType {
       self,
       Self::ScrollState | Self::SizeScrollState | Self::InlineSizeScrollState
     )
+  }
+
+  /// Returns true if this container type should create a stacking context.
+  ///
+  /// FastRender uses the `container-type` property as a stacking-context trigger for size
+  /// containers (aligning with browser behavior for size queries). Scroll-state-only containers
+  /// do not create stacking contexts.
+  #[inline]
+  pub fn creates_stacking_context(self) -> bool {
+    self.supports_size_queries()
   }
 
   /// Parse a `container-type` value.
@@ -218,14 +234,17 @@ impl ContainerType {
     let mut saw_size = false;
     let mut saw_inline_size = false;
     let mut saw_scroll_state = false;
+    let mut saw_any = false;
 
     while let Ok(token) = parser.next_including_whitespace_and_comments() {
       match token {
         Token::WhiteSpace(_) | Token::Comment(_) => continue,
         Token::Ident(ident) => {
+          saw_any = true;
           let ident = ident.as_ref();
 
           if ident.eq_ignore_ascii_case("normal") {
+            // `normal` cannot be combined with other keywords, and duplicates are invalid.
             if saw_normal || saw_size || saw_inline_size || saw_scroll_state {
               return None;
             }
@@ -234,7 +253,8 @@ impl ContainerType {
           }
 
           if ident.eq_ignore_ascii_case("size") {
-            if saw_normal || saw_size || saw_inline_size {
+            // `size` and `inline-size` are mutually exclusive, and duplicates are invalid.
+            if saw_size || saw_normal || saw_inline_size {
               return None;
             }
             saw_size = true;
@@ -242,7 +262,7 @@ impl ContainerType {
           }
 
           if ident.eq_ignore_ascii_case("inline-size") {
-            if saw_normal || saw_inline_size || saw_size {
+            if saw_inline_size || saw_normal || saw_size {
               return None;
             }
             saw_inline_size = true;
@@ -250,7 +270,7 @@ impl ContainerType {
           }
 
           if ident.eq_ignore_ascii_case("scroll-state") {
-            if saw_normal || saw_scroll_state {
+            if saw_scroll_state || saw_normal {
               return None;
             }
             saw_scroll_state = true;
@@ -263,16 +283,17 @@ impl ContainerType {
       }
     }
 
-    if saw_normal {
-      return Some(Self::Normal);
+    if !saw_any {
+      return None;
     }
 
-    match (saw_size, saw_inline_size, saw_scroll_state) {
-      (true, false, true) => Some(Self::SizeScrollState),
-      (true, false, false) => Some(Self::Size),
-      (false, true, true) => Some(Self::InlineSizeScrollState),
-      (false, true, false) => Some(Self::InlineSize),
-      (false, false, true) => Some(Self::ScrollState),
+    match (saw_normal, saw_size, saw_inline_size, saw_scroll_state) {
+      (true, false, false, false) => Some(Self::Normal),
+      (false, true, false, false) => Some(Self::Size),
+      (false, false, true, false) => Some(Self::InlineSize),
+      (false, false, false, true) => Some(Self::ScrollState),
+      (false, true, false, true) => Some(Self::SizeScrollState),
+      (false, false, true, true) => Some(Self::InlineSizeScrollState),
       _ => None,
     }
   }

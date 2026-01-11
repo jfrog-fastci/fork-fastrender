@@ -353,6 +353,19 @@ mod tests {
   fn supports_container_type_keywords_only() {
     assert!(supports_declaration("container-type", "inline-size"));
     assert!(supports_declaration("container-type", "scroll-state"));
+    assert!(supports_declaration("container-type", "size scroll-state"));
+    assert!(supports_declaration("container-type", "scroll-state size"));
+    assert!(supports_declaration("container-type", "inline-size scroll-state"));
+    assert!(supports_declaration("container-type", "scroll-state inline-size"));
+
+    assert!(!supports_declaration("container-type", "size size"));
+    assert!(!supports_declaration("container-type", "scroll-state scroll-state"));
+    assert!(!supports_declaration("container-type", "size inline-size"));
+    assert!(!supports_declaration("container-type", "normal size"));
+
+    // Ensure comment/escape tokenization matches the computed-style parser.
+    assert!(supports_declaration("container-type", "size/*comment*/"));
+    assert!(supports_declaration("container-type", "s\\69ze"));
   }
 
   #[test]

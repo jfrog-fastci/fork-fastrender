@@ -800,8 +800,8 @@ impl PendingContainer {
   }
 
   fn finalize(self) -> ScrollSnapContainer {
-    let mut targets_x = self.targets_x;
-    let mut targets_y = self.targets_y;
+    let targets_x = self.targets_x;
+    let targets_y = self.targets_y;
 
     let mut min_x = self.content_bounds.min_x();
     let mut max_x = self.content_bounds.max_x();
@@ -845,20 +845,12 @@ impl PendingContainer {
       }
     }
 
-    let mut scroll_bounds = Rect::from_xywh(
+    let scroll_bounds = Rect::from_xywh(
       min_x,
       min_y,
       (max_x - min_x).max(0.0),
       (max_y - min_y).max(0.0),
-    )
-    .translate(self.origin);
-
-    for target in &mut targets_x {
-      target.position += self.origin.x;
-    }
-    for target in &mut targets_y {
-      target.position += self.origin.y;
-    }
+    );
 
     ScrollSnapContainer {
       box_id: self.box_id,
@@ -1094,6 +1086,13 @@ pub(crate) fn build_scroll_metadata(tree: &mut FragmentTree) -> ScrollMetadata {
       // root snap container using viewport scroll offsets when it is itself a snap container.
       if depth == 0 && is_snap_container(node) {
         found = Some(box_id);
+        break;
+      }
+      // `ScrollState.viewport` corresponds to the fragment tree root (the viewport scroll container).
+      // Only descend into synthetic roots (e.g. paged-media page boxes with `box_id=None`) to find
+      // the real document root. Avoid promoting arbitrary descendant element scrollers that happen
+      // to be the first child of `<body>` etc.
+      if fragment_box_id(node).is_some() {
         break;
       }
       current = node.children.iter().next();

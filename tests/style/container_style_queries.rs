@@ -3664,8 +3664,10 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
       .base { container-type: inline-size; }
       .invalid-style { container-type: style; }
       .invalid-none { container-type: none; }
-      .invalid-mix-size-inline-size { container-type: size inline-size; }
-      .invalid-mix-normal-scroll-state { container-type: normal scroll-state; }
+      .invalid-dup-size { container-type: size size; }
+      .invalid-mixed-size { container-type: size inline-size; }
+      .invalid-mixed-normal { container-type: normal scroll-state; }
+      .invalid-dup-scroll-state { container-type: scroll-state scroll-state; }
       .scroll-state { container-type: scroll-state; }
       .scroll-state-and-size { container-type: scroll-state size; }
       .commented-size { container-type: size/*comment*/; }
@@ -3680,8 +3682,10 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
     </style>
     <div id="invalid-style" class="base invalid-style"></div>
     <div id="invalid-none" class="base invalid-none"></div>
-    <div id="invalid-mix-size-inline-size" class="base invalid-mix-size-inline-size"></div>
-    <div id="invalid-mix-normal-scroll-state" class="base invalid-mix-normal-scroll-state"></div>
+    <div id="invalid-dup-size" class="base invalid-dup-size"></div>
+    <div id="invalid-mixed-size" class="base invalid-mixed-size"></div>
+    <div id="invalid-mixed-normal" class="base invalid-mixed-normal"></div>
+    <div id="invalid-dup-scroll-state" class="base invalid-dup-scroll-state"></div>
     <div id="scroll-state" class="base scroll-state"></div>
     <div id="scroll-state-and-size" class="base scroll-state-and-size"></div>
     <div id="commented-size" class="base commented-size"></div>
@@ -3703,17 +3707,21 @@ fn container_type_accepts_scroll_state_but_rejects_none_and_style_keywords() {
   let invalid_none = find_by_id(&styled, "invalid-none").expect("invalid-none element");
   assert_eq!(invalid_none.styles.container_type, ContainerType::InlineSize);
 
-  let invalid_mix_size_inline_size =
-    find_by_id(&styled, "invalid-mix-size-inline-size").expect("invalid-mix-size-inline-size");
-  assert_eq!(
-    invalid_mix_size_inline_size.styles.container_type,
-    ContainerType::InlineSize
-  );
+  let invalid_dup_size = find_by_id(&styled, "invalid-dup-size").expect("invalid-dup-size element");
+  assert_eq!(invalid_dup_size.styles.container_type, ContainerType::InlineSize);
 
-  let invalid_mix_normal_scroll_state = find_by_id(&styled, "invalid-mix-normal-scroll-state")
-    .expect("invalid-mix-normal-scroll-state element");
+  let invalid_mixed_size =
+    find_by_id(&styled, "invalid-mixed-size").expect("invalid-mixed-size element");
+  assert_eq!(invalid_mixed_size.styles.container_type, ContainerType::InlineSize);
+
+  let invalid_mixed_normal =
+    find_by_id(&styled, "invalid-mixed-normal").expect("invalid-mixed-normal element");
+  assert_eq!(invalid_mixed_normal.styles.container_type, ContainerType::InlineSize);
+
+  let invalid_dup_scroll_state = find_by_id(&styled, "invalid-dup-scroll-state")
+    .expect("invalid-dup-scroll-state element");
   assert_eq!(
-    invalid_mix_normal_scroll_state.styles.container_type,
+    invalid_dup_scroll_state.styles.container_type,
     ContainerType::InlineSize
   );
 

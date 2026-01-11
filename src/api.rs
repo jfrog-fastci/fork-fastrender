@@ -19232,8 +19232,7 @@ fn build_pre_layout_container_query_context(
       .filter(|v| v.is_finite())
       .unwrap_or(parent_content_width);
 
-    if include_style_containers || matches!(style.container_type, ContainerType::Size | ContainerType::InlineSize)
-    {
+    if include_style_containers || style.container_type.supports_size_queries() {
       if include_style_containers {
         containers.entry(node.node_id).or_insert_with(|| ContainerQueryInfo {
           box_id: None,
@@ -19253,7 +19252,7 @@ fn build_pre_layout_container_query_context(
         });
       }
 
-      if matches!(style.container_type, ContainerType::Size | ContainerType::InlineSize) {
+      if style.container_type.supports_size_queries() {
         if style.writing_mode == WritingMode::HorizontalTb && content_width.is_finite() {
           let entry = containers.entry(node.node_id).or_insert_with(|| ContainerQueryInfo {
             box_id: None,
@@ -19333,16 +19332,16 @@ fn build_container_query_context(
     collect_fragment_sizes(extra, &mut sizes, &mut scrollbar_reservations);
   }
 
-  let mut snapped_scroll_state: Option<ScrollState> = None;
-  let scroll_state = if include_scroll_state {
+  let (snapped_scroll_state, snapped_scroll_metadata) = if include_scroll_state {
     // Ensure scroll snap is reflected in scroll-state container queries during layout/cascade,
     // matching the paint pipeline which applies scroll snap before evaluating scroll-driven state.
     let mut tree = fragments.clone();
-    snapped_scroll_state = Some(crate::scroll::apply_scroll_snap(&mut tree, scroll_state).state);
-    snapped_scroll_state.as_ref().unwrap()
+    let snapped = crate::scroll::apply_scroll_snap(&mut tree, scroll_state);
+    (Some(snapped.state), tree.scroll_metadata.clone())
   } else {
-    scroll_state
+    (None, None)
   };
+  let scroll_state = snapped_scroll_state.as_ref().unwrap_or(scroll_state);
 
   let mut scroll_bounds_by_box_id: HashMap<usize, crate::scroll::ScrollBounds> = HashMap::new();
   if include_scroll_state {
@@ -19741,17 +19740,25 @@ fn build_container_query_context(
       percentage_base
     };
 
-    let scroll_bounds = include_scroll_state
+    let is_scroll_state_container = include_scroll_state && style.container_type.supports_scroll_state();
+    let is_size_container = style.container_type.supports_size_queries();
+
+    // Only scroll-state containers receive scroll/stuck metadata.
+    //
+    // Note: Elements can opt into `container-type: scroll-state` without actually being scroll
+    // containers; in that case `scroll_bounds` stays `None` and scroll-state queries evaluate as
+    // "not scrollable"/"not stuck".
+    //
+    // For size-only containers we keep these fields stable (None/0) so container-pass fingerprints
+    // don't churn on irrelevant scroll offsets.
+    let scroll_bounds = is_scroll_state_container
       .then(|| scroll_bounds_by_box_id.get(&node.id).copied())
       .flatten();
-    let stuck_mask = if include_scroll_state {
+    let stuck_mask = if is_scroll_state_container {
       stuck_by_box_id.get(&node.id).copied().unwrap_or(0)
     } else {
       0
     };
-    let is_scroll_state_container = include_scroll_state && style.container_type.supports_scroll_state();
-    let is_size_container =
-      style.container_type.supports_size() || style.container_type.supports_inline_size();
 
     if has_layout_size && (is_size_container || is_scroll_state_container) {
       if let Some(styled_id) = styled_id {
@@ -19775,7 +19782,7 @@ fn build_container_query_context(
           );
         }
 
-        let scroll_offset = if include_scroll_state {
+        let scroll_offset = if is_scroll_state_container {
           if node.id == viewport_scroll_box_id {
             scroll_state.viewport
           } else {
@@ -19784,7 +19791,7 @@ fn build_container_query_context(
         } else {
           Point::ZERO
         };
-        let scrolled_delta = if include_scroll_state {
+        let scrolled_delta = if is_scroll_state_container {
           if node.id == viewport_scroll_box_id {
             scroll_state.viewport_delta
           } else {
@@ -19888,7 +19895,10 @@ fn build_container_query_context(
   );
 
   if include_scroll_state {
-    if let Some(metadata) = fragments.scroll_metadata.as_ref() {
+    let metadata = snapped_scroll_metadata
+      .as_ref()
+      .or_else(|| fragments.scroll_metadata.as_ref());
+    if let Some(metadata) = metadata {
       let eps = 1e-3;
       for container in metadata.containers.iter() {
         let scroll_offset = if container.uses_viewport_scroll {

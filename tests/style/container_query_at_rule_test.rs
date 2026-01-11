@@ -268,7 +268,14 @@ fn container_query_or_with_scroll_state_requires_scroll_state_container() {
       .target { display: inline; }
     }
   "#;
-  let styled = cascade_with_container(css, 500.0, vec![]);
+  let styled = cascade_with_custom_container(
+    css,
+    500.0,
+    300.0,
+    WritingMode::HorizontalTb,
+    ContainerType::InlineSizeScrollState,
+    vec![],
+  );
 
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
 }
