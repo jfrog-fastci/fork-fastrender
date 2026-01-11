@@ -15,6 +15,7 @@
 //! isolated RNG stream.
 
 use crate::js::window_realm::WindowRealmUserData;
+use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use vm_js::{
   new_promise_capability_with_host_and_hooks, new_type_error_object, GcObject, Heap, PromiseCapability,
@@ -301,6 +302,7 @@ fn subtle_digest_native(
   };
 
   enum DigestAlg {
+    Sha1,
     Sha256,
     Sha384,
     Sha512,
@@ -308,7 +310,9 @@ fn subtle_digest_native(
 
   let digest_alg: Option<DigestAlg> = algorithm_name.as_deref().and_then(|name| {
     let name = name.trim();
-    if name.eq_ignore_ascii_case("SHA-256") || name.eq_ignore_ascii_case("SHA256") {
+    if name.eq_ignore_ascii_case("SHA-1") || name.eq_ignore_ascii_case("SHA1") {
+      Some(DigestAlg::Sha1)
+    } else if name.eq_ignore_ascii_case("SHA-256") || name.eq_ignore_ascii_case("SHA256") {
       Some(DigestAlg::Sha256)
     } else if name.eq_ignore_ascii_case("SHA-384") || name.eq_ignore_ascii_case("SHA384") {
       Some(DigestAlg::Sha384)
@@ -337,6 +341,7 @@ fn subtle_digest_native(
   let result: Result<Vec<u8>, Value> = match (algorithm_name.as_deref(), digest_alg, data_bytes) {
     (Some(_name), Some(alg), Some(data)) => {
       let digest = match alg {
+        DigestAlg::Sha1 => Sha1::digest(&data).to_vec(),
         DigestAlg::Sha256 => Sha256::digest(&data).to_vec(),
         DigestAlg::Sha384 => Sha384::digest(&data).to_vec(),
         DigestAlg::Sha512 => Sha512::digest(&data).to_vec(),
