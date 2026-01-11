@@ -373,7 +373,9 @@ error[NJS0009]: property access is not supported by native-js yet
   access, async/await, etc). See [`native-js/README.md`](../native-js/README.md)
   for the current list.
 - Even after `validate_strict_subset` passes, the current HIR→LLVM lowering is
-  still minimal and may fail later during codegen with `NJS01xx` diagnostics.
+  still minimal and may fail later during codegen with `NJS01xx` diagnostics
+  (`NJS0100..NJS0122`; see
+  [`native-js/src/codegen/mod.rs`](../native-js/src/codegen/mod.rs)).
 
 #### HIR codegen subset (current)
 

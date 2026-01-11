@@ -461,6 +461,16 @@ matching the validator’s checks):
 Even if the strict subset validator passes, note that the current HIR-based
 backend is still minimal; some programs may still fail later during codegen.
 
+## HIR codegen diagnostics (`native_js::codegen`)
+
+The experimental HIR-driven backend (used by the `native-js` binary in
+`native-js-cli`) emits additional `NJS01xx` diagnostics when lowering HIR to LLVM
+fails (e.g. missing/invalid `main` body, unsupported operators or syntax in the
+HIR backend, unknown identifiers, etc.).
+
+For the current list of codes, see the module-level docs in
+[`native-js/src/codegen/mod.rs`](./src/codegen/mod.rs).
+
 ## Legacy strict validator (`native_js::strict`)
 
 `typecheck-ts` implements TypeScript’s semantics (including unsafe escape hatches
