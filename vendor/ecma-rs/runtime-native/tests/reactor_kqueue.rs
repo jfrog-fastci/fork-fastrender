@@ -6,13 +6,15 @@
 //! Run locally (macOS/BSD):
 //!
 //! ```bash
-//! bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native --test reactor_kqueue
+//! RUSTFLAGS="-C force-frame-pointers=yes" \
+//!   bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native --test reactor_kqueue
 //! ```
 //!
 //! Pipe-based wake fallback coverage lives in `reactor_kqueue_pipe_wake.rs`:
 //!
 //! ```bash
-//! bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native \
+//! RUSTFLAGS="-C force-frame-pointers=yes" \
+//!   bash vendor/ecma-rs/scripts/cargo_agent.sh test -p runtime-native \
 //!   --test reactor_kqueue_pipe_wake --features force_pipe_wake
 //! ```
 #![cfg(any(
@@ -314,4 +316,3 @@ fn waker_no_loss_stress() {
     ack_rx.recv_timeout(Duration::from_secs(1)).unwrap();
   }
 }
-
