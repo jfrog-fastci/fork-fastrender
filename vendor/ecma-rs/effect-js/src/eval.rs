@@ -324,4 +324,13 @@ mod tests {
     assert_eq!(sem.purity, Purity::Pure);
     assert_eq!(sem.effects, EffectSet::MAY_THROW);
   }
+
+  #[test]
+  fn string_repeat_is_allocating() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("String.prototype.repeat").unwrap();
+    let sem = eval_api_call(api, &CallSiteInfo::default());
+    assert_eq!(sem.purity, Purity::Allocating);
+    assert!(sem.effects.contains(EffectSet::ALLOCATES));
+  }
 }

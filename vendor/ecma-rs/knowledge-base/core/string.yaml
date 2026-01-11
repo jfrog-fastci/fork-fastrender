@@ -121,6 +121,90 @@
     nondeterministic: false
   purity: Pure
 
+- name: String.prototype.indexOf
+  semantics: IndexOf
+  signature: "(searchString, position?) => number"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: String.prototype.lastIndexOf
+  semantics: LastIndexOf
+  signature: "(searchString, position?) => number"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: false
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: String.prototype.repeat
+  semantics: Repeat
+  signature: "(count) => string"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: String.prototype.padStart
+  semantics: PadStart
+  signature: "(maxLength, fillString?) => string"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: String.prototype.padEnd
+  semantics: PadEnd
+  signature: "(maxLength, fillString?) => string"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: String.prototype.trimStart
+  semantics: TrimStart
+  signature: "() => string"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: String.prototype.trimEnd
+  semantics: TrimEnd
+  signature: "() => string"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
 - name: String.prototype.split
   semantics: Split
   signature: "(separator) => string[]"
