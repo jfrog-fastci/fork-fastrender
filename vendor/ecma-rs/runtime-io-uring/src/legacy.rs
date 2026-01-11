@@ -1085,18 +1085,17 @@ mod linux {
                 return;
             }
 
-            // If any ops are still in-flight, leaking the inner state is the only safe option:
-            // dropping would unmap the ring and free op-owned buffers/metadata while the kernel may
-            // still reference them.
-            let in_flight_len = {
-                let guard = match self.inner.lock() {
+            // Best-effort: process any already-ready CQEs so completed ops don't force a leak/panic.
+            let (ops_len, multishots_len) = {
+                let mut guard = match self.inner.lock() {
                     Ok(g) => g,
                     Err(e) => e.into_inner(),
                 };
-                guard.ops.len()
+                guard.poll_completions();
+                (guard.ops.len(), guard.multishots.len())
             };
 
-            if in_flight_len == 0 {
+            if ops_len == 0 && multishots_len == 0 {
                 return;
             }
 
@@ -1106,8 +1105,10 @@ mod linux {
             if (cfg!(debug_assertions) || cfg!(feature = "debug_stability"))
                 && !std::thread::panicking()
             {
+                let total = ops_len + multishots_len;
                 panic!(
-                    "runtime-io-uring: dropping legacy Driver with {in_flight_len} in-flight ops; \
+                    "runtime-io-uring: dropping legacy Driver with {total} in-flight ops \
+                     ({ops_len} single-shot, {multishots_len} multishot); \
                      drive to completion (and/or cancel) before drop"
                 );
             }

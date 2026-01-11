@@ -20,9 +20,10 @@ pointers.
 
 ### Per-operation handle drop
 
-Dropping an operation handle (`OpHandle`) **does not free** any SQE-referenced memory. Instead the
-op is marked as **detached**, and the driver retains ownership of the op state until the CQE is
-observed. Cleanup is **CQE-driven** and happens exactly once in the completion path.
+Dropping an operation handle (e.g. `IoOp` / `MultiShotHandle`) **does not free** any SQE-referenced
+memory. Instead the op is marked as **detached**, and the driver retains ownership of the op state
+until the CQE is observed (or the final CQE for multi-shot). Cleanup is **CQE-driven** and happens
+exactly once in the completion path.
 
 ### Driver drop (policy B)
 
