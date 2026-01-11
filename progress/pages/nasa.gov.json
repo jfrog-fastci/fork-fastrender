@@ -17,28 +17,28 @@
   "notes": "Fix flex column cross-size auto width to use shrink-to-fit when not stretched (prevents card overlay title overflow). Plumb a definite block percentage base through LayoutConstraints so % heights inside definite flex items resolve correctly (instead of falling back to viewport).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 145061,
-    "diff_percent": 11.2485,
-    "perceptual": 0.1792,
+    "diff_pixels": 40588,
+    "diff_percent": 4.2279,
+    "perceptual": 0.0282,
     "first_mismatch": {
-      "x": 974,
-      "y": 30,
-      "rendered_rgba": [
-        65,
-        18,
-        15,
-        255
-      ],
+      "x": 592,
+      "y": 18,
       "baseline_rgba": [
         0,
         0,
         0,
         255
+      ],
+      "rendered_rgba": [
+        0,
+        1,
+        2,
+        255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a52abcc808174268af1bdd57a4f75a0eb5853ae9"
+    "computed_at_commit": "7f0de99f5592c239faf39227dbc1c5ede86d8121"
   },
   "hotspot": "cascade",
   "failure_stage": null,
