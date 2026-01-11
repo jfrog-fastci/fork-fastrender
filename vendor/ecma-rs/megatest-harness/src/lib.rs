@@ -9,7 +9,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-pub const BASELINE_VERSION: u32 = 2;
+pub const BASELINE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Baseline {
@@ -28,6 +28,7 @@ pub struct BaselineEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ParseSummary {
   pub top_level_stmts: usize,
+  pub ast_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -191,8 +192,10 @@ pub fn parse_and_lower(source: &str) -> Result<(ParseSummary, HirSummary)> {
   )
   .map_err(|err| anyhow!("{err:?}"))?;
 
+  let ast_json = serde_json::to_vec(&parsed).context("serialize parse-js AST")?;
   let parse_summary = ParseSummary {
     top_level_stmts: parsed.stx.body.len(),
+    ast_sha256: bytes_sha256(&ast_json),
   };
 
   let lowered = hir_js::lower_file(FileId(0), HirFileKind::Js, &parsed);

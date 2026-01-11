@@ -1,10 +1,11 @@
 {
-  "version": 2,
+  "version": 3,
   "files": {
     "arena_gc.js": {
       "source_sha256": "c48efd4d4bcde6c5b6428b1a590eeda5eb8a8ffa278efa5e5ca2b46ecc0815d5",
       "parse": {
-        "top_level_stmts": 19
+        "top_level_stmts": 19,
+        "ast_sha256": "822bd2fca0558d984552b2bc8220e18cbbe0885bfb4a7ad90b5d7e9cbc89e344"
       },
       "hir": {
         "defs": 162,
@@ -29,7 +30,8 @@
     "business_0.js": {
       "source_sha256": "5b0bbcf539f2fce3ad1a4d189a26234f1aa1399aa950d25b485935c23d28f13a",
       "parse": {
-        "top_level_stmts": 6
+        "top_level_stmts": 6,
+        "ast_sha256": "0f868584032e79a0e588c29ad79a5dc8a2b22513504c620f78b2343bff3dd1ea"
       },
       "hir": {
         "defs": 70,
@@ -54,7 +56,8 @@
     "business_1.js": {
       "source_sha256": "db8ee8c46dcd692c13566488830b880646a811949688e8325104b1bc5f16eaad",
       "parse": {
-        "top_level_stmts": 8
+        "top_level_stmts": 8,
+        "ast_sha256": "d0784d29addc0b60797584997614f3c177e2a59acfa23fa47d8634f8d46c05ac"
       },
       "hir": {
         "defs": 65,
@@ -79,7 +82,8 @@
     "business_2.js": {
       "source_sha256": "0bbe817ff16e1bb5f8ed44b0a8754ec5940e91ea5646b09618860dd123f623c0",
       "parse": {
-        "top_level_stmts": 16
+        "top_level_stmts": 16,
+        "ast_sha256": "87c56d2429abb67ced48406c24aec6ad19e862c4dd3f111ed34431f47655a041"
       },
       "hir": {
         "defs": 101,
@@ -104,7 +108,8 @@
     "optimizable_0.js": {
       "source_sha256": "9a384076fed3baa4e84ec4d973caaa2322733beae7f68ca46ecc9c118d8ff40a",
       "parse": {
-        "top_level_stmts": 8
+        "top_level_stmts": 8,
+        "ast_sha256": "6f24ec4c333f5427a6d56ba70ae6b50df5c4b1f4eff3cb6d248ecd5e39e567b4"
       },
       "hir": {
         "defs": 80,
@@ -129,7 +134,8 @@
     "optimizable_1.js": {
       "source_sha256": "a6e2f4bd5e1e53c01a41a9e43ae40fce87df5e7118e69f245fb58796da85d97e",
       "parse": {
-        "top_level_stmts": 13
+        "top_level_stmts": 13,
+        "ast_sha256": "8bdaca169386150853a4f81021a314f46d55dc1cda0152a90611a0749a596b5f"
       },
       "hir": {
         "defs": 68,
@@ -154,7 +160,8 @@
     "reactive_pipeline.js": {
       "source_sha256": "97ff22b3e39728044d6463924c3c9cf1bf295871c3db0573df47265c9ed88810",
       "parse": {
-        "top_level_stmts": 10
+        "top_level_stmts": 10,
+        "ast_sha256": "72ac8b80f4c49c9a006a0b648538417ff3e9954ff7b8b100021be637138792bc"
       },
       "hir": {
         "defs": 144,
@@ -181,7 +188,8 @@
     "scientific_computing.js": {
       "source_sha256": "684e609bb6a7c31dab9a9b825e6d73eea3de9d397add6d2bd34acd339994332c",
       "parse": {
-        "top_level_stmts": 6
+        "top_level_stmts": 6,
+        "ast_sha256": "269731ef73564be8880b684af5b9a0a2197d708d7dd94f9ebdff468d184e31a0"
       },
       "hir": {
         "defs": 202,
@@ -206,7 +214,8 @@
     "static_analysis.js": {
       "source_sha256": "ce7ba4f970316a47e6525ed6a42bce12a87ddb7ab29e829ad93730ad231bce28",
       "parse": {
-        "top_level_stmts": 18
+        "top_level_stmts": 18,
+        "ast_sha256": "7895f0a0e477bf0858f2a936166d8c2738827892d8739a6598724e6198892593"
       },
       "hir": {
         "defs": 106,
@@ -233,7 +242,8 @@
     "stream_processing.js": {
       "source_sha256": "cb3d11976f52c9edcb34145c50e8c1e13eeafc9a7b5d5030f1e95ec527399f62",
       "parse": {
-        "top_level_stmts": 7
+        "top_level_stmts": 7,
+        "ast_sha256": "1b6ff42b195871389d4b5a00851b53142082423063ebc8a52ea6370039d13b89"
       },
       "hir": {
         "defs": 113,
@@ -260,7 +270,8 @@
     "task_scheduler.js": {
       "source_sha256": "7b851b4f8e762bb43de4eb18da21cf3a539b4713b226b6140808059f1353a7ca",
       "parse": {
-        "top_level_stmts": 16
+        "top_level_stmts": 16,
+        "ast_sha256": "c6e087c819e016b056bf7a4dc5121d7cd0c0a1e243dfde66431ebd360a511df2"
       },
       "hir": {
         "defs": 127,
@@ -287,7 +298,8 @@
     "vdom.js": {
       "source_sha256": "07a5369495da83598d760eae59ae52f1e66a8814a6a3c50f95e6ee97b0ea6937",
       "parse": {
-        "top_level_stmts": 12
+        "top_level_stmts": 12,
+        "ast_sha256": "ef1ec221cbdba464c5613322d9046658c94bbaeb2d533458d8e524449b2971be"
       },
       "hir": {
         "defs": 204,
@@ -312,7 +324,8 @@
     "weird.js": {
       "source_sha256": "cf9914f03b544f2f4522b35ebdc85ea9f0d42398d83f1e964b0b3a6d100de821",
       "parse": {
-        "top_level_stmts": 20
+        "top_level_stmts": 20,
+        "ast_sha256": "e836afd719820c27adf515d9bf4e7674f4300aa37373f610f5824e246c6631a0"
       },
       "hir": {
         "defs": 120,

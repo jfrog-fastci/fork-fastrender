@@ -27,7 +27,11 @@ struct Args {
 
 fn main() -> Result<()> {
   let args = Args::parse();
-  let filter = args.filter.clone().or_else(megatest_filter);
+  let filter = if args.update_baselines {
+    None
+  } else {
+    args.filter.clone().or_else(megatest_filter)
+  };
   let fixtures = filter_fixtures(discover_fixtures()?, filter.as_deref());
 
   if args.update_baselines {
@@ -48,6 +52,7 @@ fn main() -> Result<()> {
   }
 
   let baseline = load_baseline()?;
+  let total = fixtures.len();
   for fixture in fixtures {
     let expected = baseline
       .files
@@ -86,9 +91,8 @@ fn main() -> Result<()> {
 
   println!(
     "OK ({} file(s)){}",
-    baseline.files.len(),
+    total,
     if args.optimize { " including optimize-js" } else { "" }
   );
   Ok(())
 }
-
