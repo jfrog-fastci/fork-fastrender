@@ -93,12 +93,12 @@ impl Default for LinkOpts {
   }
 }
 
-/// Linker script fragment injected into the default linker script (via `INSERT AFTER`) so we
-/// don't have to replace the entire default script.
+/// Linker script fragment injected into the default linker script (via the GNU ld/LLD `INSERT`
+/// mechanism) so we don't have to replace the entire default script.
 ///
-/// We insert after `.text` (instead of the more intuitive `.rodata`) because lld does not create an
-/// empty `.rodata` output section, and will error if an `INSERT AFTER .rodata` fragment is used
-/// when the input objects don't contribute any `.rodata` (common in minimal binaries/tests).
+/// The default fragment anchors at `INSERT AFTER .text;` because `.text` is guaranteed to exist in
+/// any non-empty link, while `.data`/`.rodata` may be absent in minimal executables (lld errors if
+/// an `INSERT` anchor does not exist).
 ///
 /// Keep this in sync with `runtime-native/link/stackmaps*.ld`.
 const LLVM_STACKMAPS_LD_FRAGMENT: &str = include_str!("../../runtime-native/link/stackmaps.ld");
@@ -106,10 +106,10 @@ const LLVM_STACKMAPS_LD_GNULD_FRAGMENT: &str =
   include_str!("../../runtime-native/link/stackmaps_gnuld.ld");
 
 fn stackmaps_linker_script_fragment(opts: LinkOpts) -> &'static str {
-  // GNU ld: when linking PIE, inserting `.data.rel.ro.llvm_stackmaps` "after .text"
-  // can land the section in the same LOAD segment as `.text`, producing an RWX
-  // segment once the dynamic loader needs the section to be writable for
-  // relocations. Prefer the GNU ld-specific fragment in that configuration.
+  // GNU ld + PIE: stackmaps often need to be writable for dynamic relocations.
+  // Inserting a writable `.data.rel.ro.*` section immediately after `.text` can
+  // result in an RWX segment on GNU ld. Prefer a `.dynamic`-anchored fragment in
+  // that configuration.
   if cfg!(target_os = "linux") && opts.pie && matches!(opts.linker, LinkerFlavor::System) {
     LLVM_STACKMAPS_LD_GNULD_FRAGMENT
   } else {

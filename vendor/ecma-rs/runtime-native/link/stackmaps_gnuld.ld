@@ -8,9 +8,10 @@
  * - GNU ld can merge the inserted, writable stackmaps section into the executable
  *   text PT_LOAD under PIE, producing an RWX segment once relocations require the
  *   segment to be writable.
- * - This fragment anchors at `INSERT BEFORE .dynamic;` to keep writable stackmaps
- *   in the RELRO/data region for dynamically-linked binaries. (`scripts/native_link.sh`
- *   selects this fragment automatically for GNU ld PIE builds.)
+ * - This fragment anchors at `INSERT BEFORE .dynamic;` to keep writable
+ *   stackmaps/faultmaps in the RELRO/data region for dynamically-linked binaries.
+ *   (`scripts/native_link.sh` selects this fragment automatically for GNU ld PIE
+ *   builds.)
  *
  * Note: `.dynamic` must exist for this fragment to be usable. This is true for
  * the dynamically-linked PIE/non-PIE binaries produced by our toolchain.
