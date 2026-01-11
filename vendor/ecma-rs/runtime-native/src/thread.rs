@@ -151,29 +151,6 @@ pub(crate) fn current_stack_bounds() -> (usize, usize) {
   (lo.min(hi), lo.max(hi))
 }
 
-#[cfg(target_os = "linux")]
-fn stack_bounds_pthread() -> Option<(usize, usize)> {
-  unsafe {
-    let mut attr: libc::pthread_attr_t = std::mem::zeroed();
-    if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) != 0 {
-      return None;
-    }
-
-    let mut stackaddr: *mut libc::c_void = std::ptr::null_mut();
-    let mut stacksize: usize = 0;
-    let rc = libc::pthread_attr_getstack(&attr, &mut stackaddr, &mut stacksize);
-    libc::pthread_attr_destroy(&mut attr);
-
-    if rc != 0 || stackaddr.is_null() || stacksize == 0 {
-      return None;
-    }
-
-    let lo = stackaddr as usize;
-    let hi = lo.saturating_add(stacksize);
-    Some((lo.min(hi), lo.max(hi)))
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
