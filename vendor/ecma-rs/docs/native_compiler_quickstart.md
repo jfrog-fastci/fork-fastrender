@@ -256,7 +256,7 @@ Today the harness test suite primarily asserts that fixtures:
 - successfully erase to JS, and
 - execute successfully in the oracle runtime.
 
-It does **not** currently run the TypeScript checker in strict-native mode; run `typecheck-ts-cli --strict-native`
+It does **not** currently run the TypeScript checker in strict-native mode; run `typecheck-ts-cli --native-strict` (or legacy `--strict-native`)
 as a separate step when you want strict-native enforcement.
 
 Native execution + result comparison is expected to be layered in as the native pipeline matures.
