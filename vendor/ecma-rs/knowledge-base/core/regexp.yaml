@@ -1,0 +1,13 @@
+- name: RegExp
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Pure
+
+- name: RegExp.prototype.test
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Impure

@@ -1,0 +1,21 @@
+- name: Number.isFinite
+  effects: Pure
+  purity: Pure
+
+- name: Number.isNaN
+  effects: Pure
+  purity: Pure
+
+- name: parseInt
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure
+
+- name: parseFloat
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure

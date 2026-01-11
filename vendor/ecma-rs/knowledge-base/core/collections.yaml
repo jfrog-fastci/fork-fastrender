@@ -1,0 +1,138 @@
+- name: Map.prototype.get
+  effects: Pure
+  purity: Pure
+
+- name: Map.prototype.set
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Impure
+
+- name: Map.prototype.has
+  effects: Pure
+  purity: Pure
+
+- name: Map.prototype.delete
+  effects: Pure
+  purity: Impure
+
+- name: Map.prototype.clear
+  effects: Pure
+  purity: Impure
+
+- name: Map.prototype.keys
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
+- name: Map.prototype.values
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
+- name: Map.prototype.entries
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
+- name: Map.prototype.forEach
+  effects: DependsOnCallback
+  purity: DependsOnCallback
+- name: Set.prototype.add
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Impure
+
+- name: Set.prototype.has
+  effects: Pure
+  purity: Pure
+
+- name: Set.prototype.delete
+  effects: Pure
+  purity: Impure
+
+- name: Set.prototype.clear
+  effects: Pure
+  purity: Impure
+
+- name: Set.prototype.keys
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
+- name: Set.prototype.values
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
+- name: Set.prototype.entries
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Never
+  purity: Pure
+
+- name: Set.prototype.forEach
+  effects: DependsOnCallback
+  purity: DependsOnCallback
+- name: WeakMap.prototype.get
+  effects:
+    Custom:
+      flags: NONDETERMINISTIC
+      throws: Never
+  purity: ReadOnly
+
+- name: WeakMap.prototype.set
+  effects:
+    Custom:
+      flags: ALLOCATES | NONDETERMINISTIC
+      throws: Maybe
+  purity: Impure
+
+- name: WeakMap.prototype.has
+  effects:
+    Custom:
+      flags: NONDETERMINISTIC
+      throws: Never
+  purity: ReadOnly
+
+- name: WeakMap.prototype.delete
+  effects:
+    Custom:
+      flags: NONDETERMINISTIC
+      throws: Never
+  purity: Impure
+
+- name: WeakSet.prototype.add
+  effects:
+    Custom:
+      flags: ALLOCATES | NONDETERMINISTIC
+      throws: Maybe
+  purity: Impure
+
+- name: WeakSet.prototype.has
+  effects:
+    Custom:
+      flags: NONDETERMINISTIC
+      throws: Never
+  purity: ReadOnly
+
+- name: WeakSet.prototype.delete
+  effects:
+    Custom:
+      flags: NONDETERMINISTIC
+      throws: Never
+  purity: Impure

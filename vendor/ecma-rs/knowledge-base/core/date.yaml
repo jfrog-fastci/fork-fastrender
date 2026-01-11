@@ -1,0 +1,20 @@
+- name: Date.now
+  effects:
+    Custom:
+      flags: NONDETERMINISTIC
+      throws: Never
+  purity: ReadOnly
+
+- name: Date.parse
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Pure
+
+- name: Date.prototype.toISOString
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: Pure
