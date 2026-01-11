@@ -37,6 +37,8 @@ use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::block::BlockFormattingContext;
 use crate::layout::contexts::factory::FormattingContextFactory;
 use crate::layout::contexts::flex_cache::ShardedFlexCache;
+use crate::layout::contexts::positioned::compute_relative_offset as compute_relative_offset_for_relative;
+use crate::layout::contexts::positioned::ContainingBlock;
 use crate::layout::engine::LayoutParallelism;
 use crate::layout::formatting_context::fragmentainer_axes_hint;
 use crate::layout::formatting_context::fragmentainer_block_offset_hint;
@@ -4692,7 +4694,7 @@ impl GridFormattingContext {
     };
 
     let mut placement = if let Some(raw_str) = raw {
-      parse_grid_line_placement_raw(raw_str)
+      parse_grid_line_placement_raw(raw_str, None)
     } else {
       Line {
         start: if start == 0 {
@@ -5732,6 +5734,62 @@ impl GridFormattingContext {
           fragment.grid_fragmentation = Some(Arc::new(GridFragmentationInfo { items }));
         }
       }
+
+      // Apply `position: relative` offsets for grid items (CSS 2.1 §9.4.3).
+      //
+      // Unlike block/flex formatting contexts, grid item placement is computed by Taffy. After
+      // obtaining the normal-flow grid position, we must apply relative offsets as a post-pass so
+      // they do not affect track sizing.
+      let percentage_base = constraints
+        .width()
+        .or(constraints.inline_percentage_base)
+        .filter(|base| base.is_finite())
+        .unwrap_or(fragment.bounds.width().max(0.0));
+      let (
+        padding_left,
+        padding_right,
+        padding_top,
+        padding_bottom,
+        border_left,
+        border_right,
+        border_top,
+        border_bottom,
+      ) = self.resolved_padding_border_for_measure(&box_node.style, percentage_base);
+      let cb_width =
+        (fragment.bounds.width() - padding_left - padding_right - border_left - border_right)
+          .max(0.0);
+      let cb_height =
+        (fragment.bounds.height() - padding_top - padding_bottom - border_top - border_bottom)
+          .max(0.0);
+      let block_base = box_node.style.height.is_some().then_some(cb_height);
+      let relative_cb = ContainingBlock::with_viewport_and_bases(
+        Rect::new(Point::ZERO, Size::new(cb_width, cb_height)),
+        self.viewport_size,
+        Some(cb_width),
+        block_base,
+      );
+
+      for (child_node, child_fragment) in in_flow_children
+        .iter()
+        .zip(fragment.children_mut().iter_mut())
+      {
+        if !child_node.style.position.is_relative() {
+          continue;
+        }
+        let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
+          &child_node.style,
+          &relative_cb,
+          self.viewport_size,
+          &self.font_context,
+        );
+        let offset =
+          compute_relative_offset_for_relative(&positioned_style, &relative_cb, &self.font_context);
+        if offset.x != 0.0 || offset.y != 0.0 {
+          child_fragment.bounds = child_fragment.bounds.translate(offset);
+          child_fragment.logical_override =
+            child_fragment.logical_override.map(|logical| logical.translate(offset));
+        }
+      }
     }
 
     Some(Ok(fragment))
@@ -6003,6 +6061,71 @@ impl GridFormattingContext {
               if items.len() == children.len() {
                 fragment.grid_fragmentation = Some(Arc::new(GridFragmentationInfo { items }));
               }
+            }
+          }
+
+          // Apply `position: relative` offsets for grid items (CSS 2.1 §9.4.3).
+          //
+          // Grid item positions are computed by Taffy. Relative positioning is a post-process that
+          // shifts the item's border box without influencing grid track sizing.
+          let percentage_base = constraints
+            .width()
+            .or(constraints.inline_percentage_base)
+            .filter(|base| base.is_finite())
+            .unwrap_or(fragment.bounds.width().max(0.0));
+          let (
+            padding_left,
+            padding_right,
+            padding_top,
+            padding_bottom,
+            border_left,
+            border_right,
+            border_top,
+            border_bottom,
+          ) = self.resolved_padding_border_for_measure(&box_node.style, percentage_base);
+          let cb_width = (fragment.bounds.width()
+            - padding_left
+            - padding_right
+            - border_left
+            - border_right)
+            .max(0.0);
+          let cb_height = (fragment.bounds.height()
+            - padding_top
+            - padding_bottom
+            - border_top
+            - border_bottom)
+            .max(0.0);
+          let block_base = box_node.style.height.is_some().then_some(cb_height);
+          let relative_cb = ContainingBlock::with_viewport_and_bases(
+            Rect::new(Point::ZERO, Size::new(cb_width, cb_height)),
+            self.viewport_size,
+            Some(cb_width),
+            block_base,
+          );
+          for (&child_id, child_fragment) in children.iter().zip(fragment.children_mut().iter_mut())
+          {
+            let Some(&child_ptr) = taffy.get_node_context(child_id) else {
+              continue;
+            };
+            let child_node = unsafe { &*child_ptr };
+            if !child_node.style.position.is_relative() {
+              continue;
+            }
+            let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
+              &child_node.style,
+              &relative_cb,
+              self.viewport_size,
+              &self.font_context,
+            );
+            let offset = compute_relative_offset_for_relative(
+              &positioned_style,
+              &relative_cb,
+              &self.font_context,
+            );
+            if offset.x != 0.0 || offset.y != 0.0 {
+              child_fragment.bounds = child_fragment.bounds.translate(offset);
+              child_fragment.logical_override =
+                child_fragment.logical_override.map(|logical| logical.translate(offset));
             }
           }
         }
@@ -10541,7 +10664,7 @@ fn resolve_grid_line_range_from_style(
 ) -> Option<(u16, u16)> {
   let parsed = raw
     .filter(|_| start == 0 || end == 0)
-    .map(parse_grid_line_placement_raw);
+    .map(|raw| parse_grid_line_placement_raw(raw, line_names));
 
   let start_component: ResolvedGridPlacementComponent<'_> = if start != 0 {
     ResolvedGridPlacementComponent::Line(start)
@@ -10709,13 +10832,91 @@ fn split_css_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
     .filter(|part| !part.is_empty())
 }
 
-fn parse_grid_line_placement_raw(raw: &str) -> Line<TaffyGridPlacement<String>> {
+fn parse_grid_line_placement_raw(
+  raw: &str,
+  line_names: Option<&[Vec<String>]>,
+) -> Line<TaffyGridPlacement<String>> {
+  // The `grid-row`/`grid-column` shorthands have a special case: when the second component is
+  // omitted and the first component is a `<custom-ident>`, the end component is set to the same
+  // `<custom-ident>` instead of `auto`.
+  //
+  // Spec: https://www.w3.org/TR/css-grid-2/#placement-shorthands
+  fn custom_ident_component(token: &str) -> Option<&str> {
+    let token = trim_css_ascii_whitespace(token);
+    if token.is_empty() || token.eq_ignore_ascii_case("auto") {
+      return None;
+    }
+    // Shorthand expansion only applies to a single `<custom-ident>` token. Anything with whitespace
+    // (e.g. `span 2`, `foo 2`) uses the normal grid-line grammar.
+    if token.chars().any(is_css_ascii_whitespace) {
+      return None;
+    }
+    // Numeric line references should keep the default `/ auto` behaviour.
+    if token.parse::<i32>().is_ok() {
+      return None;
+    }
+    // `span` is reserved by the `<grid-line>` grammar.
+    if token.eq_ignore_ascii_case("span") {
+      return None;
+    }
+    Some(token)
+  }
+
+  fn line_names_contain(line_names: &[Vec<String>], name: &str) -> bool {
+    line_names.iter().any(|names| names.iter().any(|n| n == name))
+  }
+
+  fn maybe_resolve_named_area_edge(
+    token: &str,
+    edge_suffix: &str,
+    line_names: Option<&[Vec<String>]>,
+  ) -> String {
+    let Some(ident) = custom_ident_component(token) else {
+      return token.to_string();
+    };
+    let Some(line_names) = line_names else {
+      return ident.to_string();
+    };
+
+    // `<grid-line>` values specified as a bare `<custom-ident>` first attempt to match the
+    // corresponding edge of a named grid area by looking for implicit line names of the form
+    // `foo-start`/`foo-end`.
+    //
+    // Spec: https://www.w3.org/TR/css-grid-2/#grid-placement-slot
+    let candidate = format!("{ident}-{edge_suffix}");
+    if line_names_contain(line_names, &candidate) {
+      candidate
+    } else {
+      ident.to_string()
+    }
+  }
+
+  let raw = trim_css_ascii_whitespace(raw);
+  if raw.is_empty() {
+    return Line {
+      start: TaffyGridPlacement::Auto,
+      end: TaffyGridPlacement::Auto,
+    };
+  }
+
   let mut parts = raw.splitn(2, '/').map(trim_css_ascii_whitespace);
   let start_str = parts.next().unwrap_or("auto");
-  let end_str = parts.next().unwrap_or("auto");
+  let end_part = parts.next();
+
+  let end_str = end_part.unwrap_or_else(|| {
+    if custom_ident_component(start_str).is_some() {
+      start_str
+    } else {
+      "auto"
+    }
+  });
+
+  let start = maybe_resolve_named_area_edge(start_str, "start", line_names);
+  let end = maybe_resolve_named_area_edge(end_str, "end", line_names);
+
   Line {
-    start: parse_grid_line_component(start_str),
-    end: parse_grid_line_component(end_str),
+    start: parse_grid_line_component(&start),
+    end: parse_grid_line_component(&end),
   }
 }
 
@@ -12437,7 +12638,7 @@ impl FormattingContext for GridFormattingContext {
             return Some((start as u16, end as u16));
           }
           let raw = raw?;
-          let placement = parse_grid_line_placement_raw(raw);
+          let placement = parse_grid_line_placement_raw(raw, None);
           let TaffyGridPlacement::Line(start_line) = placement.start else {
             return None;
           };
@@ -18224,7 +18425,7 @@ mod tests {
 
   #[test]
   fn parses_named_line_with_integer_in_any_order() {
-    let placement = parse_grid_line_placement_raw("foo 2");
+    let placement = parse_grid_line_placement_raw("foo 2", None);
     match placement.start {
       TaffyGridPlacement::NamedLine(name, idx) => {
         assert_eq!(name, "foo");
@@ -18233,7 +18434,7 @@ mod tests {
       other => panic!("expected named line, got {:?}", other),
     }
 
-    let placement_rev = parse_grid_line_placement_raw("2 foo");
+    let placement_rev = parse_grid_line_placement_raw("2 foo", None);
     match placement_rev.start {
       TaffyGridPlacement::NamedLine(name, idx) => {
         assert_eq!(name, "foo");
@@ -18244,9 +18445,81 @@ mod tests {
   }
 
   #[test]
+  fn parses_named_area_shorthand_expands_to_start_end_lines() {
+    let line_names: &[Vec<String>] = &[
+      vec!["content-start".to_string()],
+      vec![],
+      vec!["content-end".to_string()],
+      vec![],
+    ];
+    let placement = parse_grid_line_placement_raw("content", Some(line_names));
+    match placement.start {
+      TaffyGridPlacement::NamedLine(name, idx) => {
+        assert_eq!(name, "content-start");
+        assert_eq!(idx, 1);
+      }
+      other => panic!("expected named line, got {:?}", other),
+    }
+    match placement.end {
+      TaffyGridPlacement::NamedLine(name, idx) => {
+        assert_eq!(name, "content-end");
+        assert_eq!(idx, 1);
+      }
+      other => panic!("expected named line, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn grid_column_named_area_shorthand_spans_start_end_lines() {
+    let fc = GridFormattingContext::new();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = CssDisplay::Grid;
+    container_style.grid_template_columns = vec![
+      GridTrack::Length(Length::px(100.0)),
+      GridTrack::Length(Length::px(200.0)),
+      GridTrack::Length(Length::px(50.0)),
+    ];
+    container_style.grid_template_rows = vec![GridTrack::Auto];
+    // `grid-template-columns: [content-start] 100px 200px [content-end] 50px`
+    container_style.grid_column_line_names = vec![
+      vec!["content-start".to_string()],
+      vec![],
+      vec!["content-end".to_string()],
+      vec![],
+    ];
+    container_style.grid_row_line_names = vec![vec![], vec![]];
+    let container_style = Arc::new(container_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.grid_column_raw = Some("content".to_string());
+    let item_style = Arc::new(item_style);
+    let item_id = 4242usize;
+    let mut item = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+    item.id = item_id;
+
+    let grid = BoxNode::new_block(container_style, FormattingContextType::Grid, vec![item]);
+
+    let constraints = LayoutConstraints::definite(350.0, 200.0);
+    let fragment = fc.layout(&grid, &constraints).unwrap();
+    let placed = find_block_fragment(&fragment, item_id);
+
+    assert!(
+      (placed.bounds.x() - 0.0).abs() < 0.5,
+      "expected x=0, got {:.2}",
+      placed.bounds.x()
+    );
+    assert!(
+      (placed.bounds.width() - 300.0).abs() < 0.5,
+      "expected to span first two tracks (100+200=300), got {:.2}",
+      placed.bounds.width()
+    );
+  }
+
+  #[test]
   fn parses_grid_line_does_not_trim_non_ascii_whitespace() {
     let nbsp = "\u{00A0}";
-    let placement = parse_grid_line_placement_raw(&format!("{nbsp}auto"));
+    let placement = parse_grid_line_placement_raw(&format!("{nbsp}auto"), None);
     match placement.start {
       TaffyGridPlacement::NamedLine(name, idx) => {
         assert_eq!(name, format!("{nbsp}auto"));
@@ -18258,13 +18531,13 @@ mod tests {
 
   #[test]
   fn parses_span_with_integer_in_any_order() {
-    let placement = parse_grid_line_placement_raw("2 span");
+    let placement = parse_grid_line_placement_raw("2 span", None);
     match placement.start {
       TaffyGridPlacement::Span(count) => assert_eq!(count, 2),
       other => panic!("expected span, got {:?}", other),
     }
 
-    let placement_rev = parse_grid_line_placement_raw("span 2");
+    let placement_rev = parse_grid_line_placement_raw("span 2", None);
     match placement_rev.start {
       TaffyGridPlacement::Span(count) => assert_eq!(count, 2),
       other => panic!("expected span, got {:?}", other),
@@ -18273,7 +18546,7 @@ mod tests {
 
   #[test]
   fn parses_named_span_in_any_order() {
-    let placement = parse_grid_line_placement_raw("span foo 3");
+    let placement = parse_grid_line_placement_raw("span foo 3", None);
     match placement.start {
       TaffyGridPlacement::NamedSpan(name, count) => {
         assert_eq!(name, "foo");
@@ -18282,7 +18555,7 @@ mod tests {
       other => panic!("expected named span, got {:?}", other),
     }
 
-    let placement_rev = parse_grid_line_placement_raw("span 3 foo");
+    let placement_rev = parse_grid_line_placement_raw("span 3 foo", None);
     match placement_rev.start {
       TaffyGridPlacement::NamedSpan(name, count) => {
         assert_eq!(name, "foo");
@@ -18291,7 +18564,7 @@ mod tests {
       other => panic!("expected named span, got {:?}", other),
     }
 
-    let placement = parse_grid_line_placement_raw("foo span");
+    let placement = parse_grid_line_placement_raw("foo span", None);
     match placement.start {
       TaffyGridPlacement::NamedSpan(name, count) => {
         assert_eq!(name, "foo");
@@ -18300,7 +18573,7 @@ mod tests {
       other => panic!("expected named span, got {:?}", other),
     }
 
-    let placement = parse_grid_line_placement_raw("foo 3 span");
+    let placement = parse_grid_line_placement_raw("foo 3 span", None);
     match placement.start {
       TaffyGridPlacement::NamedSpan(name, count) => {
         assert_eq!(name, "foo");
@@ -18309,7 +18582,7 @@ mod tests {
       other => panic!("expected named span, got {:?}", other),
     }
 
-    let placement_rev = parse_grid_line_placement_raw("3 foo span");
+    let placement_rev = parse_grid_line_placement_raw("3 foo span", None);
     match placement_rev.start {
       TaffyGridPlacement::NamedSpan(name, count) => {
         assert_eq!(name, "foo");

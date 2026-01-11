@@ -343,3 +343,56 @@ fn abspos_percent_height_in_inline_flow_uses_block_containing_block_not_inline_w
     .join()
     .unwrap();
 }
+
+#[test]
+fn abspos_percent_height_resolves_against_used_height_of_auto_sized_containing_block() {
+  // CSS 2.1 §10.5/§10.6.4: percentage heights (and vertical inset percentages) on absolutely
+  // positioned elements resolve against the *used* height of the containing block, even when the
+  // containing block itself is `height:auto`.
+  //
+  // Regression test: when the containing block establishes the abs CB but has auto height, block
+  // layout originally propagated a 0px-tall containing block to descendants while in-flow layout
+  // was still determining the used height. Absolutely positioned descendants nested inside inline
+  // flow would then resolve `height:100%` against 0 and collapse.
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = fastrender::FastRender::new().expect("renderer");
+      let html = r#"
+        <style>
+          body { margin: 0; background: white; }
+          .cb { position: relative; width: 100px; background: white; }
+          .content { height: 40px; background: rgb(0, 255, 0); }
+          .wrap { font-size: 0; line-height: 0; }
+          .abs {
+            position: absolute;
+            display: block;
+            top: 0;
+            right: 0;
+            width: 10px;
+            height: 100%;
+            background: rgb(255, 0, 0);
+          }
+        </style>
+        <div class="cb">
+          <div class="content"></div>
+          <span class="wrap"><span class="abs"></span></span>
+        </div>
+      "#;
+
+      let pixmap = renderer.render_html(html, 120, 60).expect("render");
+      assert_eq!(
+        pixel(&pixmap, 95, 20),
+        [255, 0, 0, 255],
+        "expected abspos 100% height to fill the used containing block height"
+      );
+      assert_eq!(
+        pixel(&pixmap, 95, 45),
+        [255, 255, 255, 255],
+        "expected abspos 100% height not to extend beyond the used containing block height"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}

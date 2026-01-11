@@ -262,8 +262,23 @@ impl AbsoluteLayout {
     let cb_width = containing_block.width();
     let cb_height = containing_block.height();
     let viewport = containing_block.viewport_size();
-    let inline_base = containing_block.inline_percentage_base();
-    let block_base = containing_block.block_percentage_base();
+    // For in-flow layout, percentage block sizes resolve to `auto` when the containing block's
+    // block size is indefinite (CSS 2.1 §10.5). We model that by letting callers pass
+    // `block_percentage_base: None` in [`ContainingBlock`].
+    //
+    // However, CSS 2.1 explicitly *exempts* absolutely positioned boxes from that rule: percentage
+    // heights and vertical inset percentages resolve against the containing block's **used**
+    // height, even when that height is auto/content-sized.
+    //
+    // Use the containing block's used size as a fallback percentage base so `height: 100%` works on
+    // absolutely positioned descendants of auto-height positioned ancestors (common in real-world
+    // headers).
+    let inline_base = containing_block
+      .inline_percentage_base()
+      .or_else(|| cb_width.is_finite().then_some(cb_width));
+    let block_base = containing_block
+      .block_percentage_base()
+      .or_else(|| cb_height.is_finite().then_some(cb_height));
 
     // Resolve horizontal position and width
     let (mut x, mut width, margin_left, margin_right, min_width, max_width) = self.compute_horizontal(
@@ -1966,6 +1981,59 @@ impl AbsoluteLayout {
     assert_eq!(result.position.y, 80.0);
     assert_eq!(result.size.width, 250.0);
     assert_eq!(result.size.height, 100.0);
+  }
+
+  #[test]
+  fn layout_absolute_percentage_height_resolves_against_used_containing_block_when_base_indefinite()
+  {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.top = LengthOrAuto::px(0.0);
+    style.right = LengthOrAuto::px(20.0);
+    style.width = LengthOrAuto::px(60.0);
+    style.height = LengthOrAuto::percent(100.0);
+
+    let input = AbsoluteLayoutInput::new(style, Size::new(0.0, 36.0), Point::ZERO);
+    let rect = Rect::from_xywh(0.0, 0.0, 200.0, 100.0);
+    let cb = ContainingBlock::with_viewport_and_bases(rect, rect.size, Some(200.0), None);
+
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert!(
+      (result.size.height - 100.0).abs() < 0.001,
+      "expected height: 100% to resolve against used CB height"
+    );
+    assert!(
+      (result.position.x - 120.0).abs() < 0.001,
+      "expected right inset to position box at x=120, got {}",
+      result.position.x
+    );
+  }
+
+  #[test]
+  fn layout_absolute_percentage_insets_resolve_against_used_containing_block_when_base_indefinite()
+  {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.top = LengthOrAuto::percent(10.0);
+    style.height = LengthOrAuto::percent(50.0);
+
+    let input = AbsoluteLayoutInput::new(style, Size::new(0.0, 36.0), Point::ZERO);
+    let rect = Rect::from_xywh(0.0, 0.0, 200.0, 100.0);
+    let cb = ContainingBlock::with_viewport_and_bases(rect, rect.size, Some(200.0), None);
+
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert!(
+      (result.position.y - 10.0).abs() < 0.001,
+      "expected top: 10% to resolve against used CB height"
+    );
+    assert!(
+      (result.size.height - 50.0).abs() < 0.001,
+      "expected height: 50% to resolve against used CB height"
+    );
   }
 
   #[test]

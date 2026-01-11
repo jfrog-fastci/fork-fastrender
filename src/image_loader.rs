@@ -5788,6 +5788,13 @@ impl ImageCache {
     resource: &FetchedResource,
     crossorigin: CrossOriginAttribute,
   ) -> Result<Arc<CachedImage>> {
+    // Offline fixtures substitute missing images with a deterministic 1×1 transparent PNG so layout
+    // and paint can proceed without hard failures. Treat that payload as the same placeholder image
+    // used for `about:` URLs so callers can detect it (e.g. painters may want to render a "broken
+    // image" UI for `<img>` while keeping CSS background images transparent).
+    if resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes() {
+      return Ok(self.cache_placeholder_image(cache_key));
+    }
     if resource.bytes.is_empty() {
       return Ok(self.cache_placeholder_image(cache_key));
     }
@@ -10224,6 +10231,31 @@ mod tests {
     assert_eq!(
       meta.intrinsic_ratio(OrientationTransform::IDENTITY),
       Some(1.0)
+    );
+  }
+
+  #[test]
+  fn image_cache_load_offline_placeholder_probe_bytes_returns_placeholder_image() {
+    #[derive(Clone)]
+    struct OfflinePlaceholderFetcher;
+
+    impl ResourceFetcher for OfflinePlaceholderFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        Ok(FetchedResource::with_final_url(
+          crate::resource::offline_placeholder_png_bytes().to_vec(),
+          Some("image/png".to_string()),
+          Some(url.to_string()),
+        ))
+      }
+    }
+
+    let cache = ImageCache::with_fetcher(Arc::new(OfflinePlaceholderFetcher));
+    let url = "https://example.com/offline-placeholder.png";
+    let _ = cache.probe(url).expect("probe succeeds");
+    let image = cache.load(url).expect("load succeeds");
+    assert!(
+      cache.is_placeholder_image(&image),
+      "expected offline placeholder probe bytes to load as the shared placeholder image"
     );
   }
 

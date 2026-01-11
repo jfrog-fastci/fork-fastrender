@@ -20830,7 +20830,7 @@ mod tests {
       .create_inline_items_for_text(&node, text, false)
       .expect("inline items");
     let strut = ifc.compute_strut_metrics(style.as_ref());
-      let lines = ifc
+    let lines = ifc
       .layout_segment_lines(
         items,
         true,

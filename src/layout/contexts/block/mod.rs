@@ -1685,6 +1685,59 @@ impl BlockFormattingContext {
       }
     }
 
+    fn abspos_depends_on_cb_block_size(style: &crate::style::ComputedStyle) -> bool {
+      let inset_has_percentage = |value: &crate::style::types::InsetValue| match value {
+        crate::style::types::InsetValue::Length(length) => length.has_percentage(),
+        crate::style::types::InsetValue::Auto | crate::style::types::InsetValue::Anchor(_) => false,
+      };
+
+      style.height.is_some_and(|l| l.has_percentage())
+        || style.min_height.is_some_and(|l| l.has_percentage())
+        || style.max_height.is_some_and(|l| l.has_percentage())
+        || inset_has_percentage(&style.top)
+        || inset_has_percentage(&style.bottom)
+    }
+
+    fn has_abspos_descendant_needing_used_cb_height(root: &BoxNode) -> bool {
+      fn walk(node: &BoxNode, under_inner_cb: bool, depth: usize) -> bool {
+        let style = node.style.as_ref();
+        let establishes_cb = style.establishes_abs_containing_block();
+
+        if matches!(style.position, Position::Absolute)
+          && !under_inner_cb
+          && abspos_depends_on_cb_block_size(style)
+        {
+          // Block-level abspos children are collected by the block formatting context and laid out
+          // after the containing block's used height is known, so they do not require relayout here.
+          let is_direct_block_level_child = depth == 1 && !style.display.is_inline_level();
+          if !is_direct_block_level_child {
+            return true;
+          }
+        }
+
+        // Once we're inside another abs containing block, descendants will resolve percentages
+        // against that inner block instead of the current one, so the current block doesn't need
+        // to rerun layout for them.
+        if under_inner_cb || establishes_cb {
+          return false;
+        }
+
+        for child in &node.children {
+          if walk(child, false, depth + 1) {
+            return true;
+          }
+        }
+        false
+      }
+
+      for child in &root.children {
+        if walk(child, false, 1) {
+          return true;
+        }
+      }
+      false
+    }
+
     // If this block establishes a new containing block for absolute/fixed descendants (via
     // positioning, transforms, filters, containment, etc.), propagate that updated containing
     // block into the descendant layout call. Otherwise absolutely-positioned descendants inside
@@ -1704,6 +1757,10 @@ impl BlockFormattingContext {
     );
     let cb_block_base = child_block_size_base.map(|h| h + padding_top + padding_bottom);
     let mut box_y = box_y;
+    let should_relayout_abspos_descendants_for_cb_height = establishes_positioned_cb
+      && cb_block_base.is_none()
+      && has_abspos_descendant_needing_used_cb_height(child);
+    let mut external_float_ctx = external_float_ctx;
     // CSS 2.1 §9.5.1: boxes that establish a new block formatting context must not overlap the
     // margin boxes of floats in the same formatting context. Real pages use this for clearfix
     // patterns (`overflow:hidden`, `display: table`, etc.). Without applying float avoidance here,
@@ -1794,7 +1851,7 @@ impl BlockFormattingContext {
       nearest_fixed_cb.translate(child_cb_delta)
     };
 
-    let descendant_nearest_positioned_cb = if establishes_positioned_cb {
+    let mut descendant_nearest_positioned_cb = if establishes_positioned_cb {
       ContainingBlock::with_viewport_and_bases(
         Rect::new(padding_origin, padding_size),
         self.viewport_size,
@@ -1804,7 +1861,7 @@ impl BlockFormattingContext {
     } else {
       inherited_positioned_cb
     };
-    let descendant_nearest_fixed_cb = if establishes_fixed_cb {
+    let mut descendant_nearest_fixed_cb = if establishes_fixed_cb {
       ContainingBlock::with_viewport_and_bases(
         Rect::new(padding_origin, padding_size),
         self.viewport_size,
@@ -2049,7 +2106,13 @@ impl BlockFormattingContext {
       }
     }
 
-    let (mut child_fragments, mut content_height, positioned_children, column_info) =
+    let mut float_ctx_snapshot = if should_relayout_abspos_descendants_for_cb_height {
+      external_float_ctx.as_deref().cloned()
+    } else {
+      None
+    };
+
+    let (mut child_fragments, mut content_height, mut positioned_children, mut column_info) =
       if skip_contents {
         (Vec::new(), 0.0, Vec::new(), None)
       } else if use_columns {
@@ -2069,7 +2132,7 @@ impl BlockFormattingContext {
           &descendant_nearest_positioned_cb,
           &descendant_nearest_fixed_cb,
           child_viewport,
-          external_float_ctx,
+          external_float_ctx.as_deref_mut(),
           external_float_base_x + child_content_origin.x,
           external_float_base_y + child_content_origin.y,
         )?;
@@ -2414,6 +2477,104 @@ impl BlockFormattingContext {
       max_height
     };
     let height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
+
+    if should_relayout_abspos_descendants_for_cb_height && !skip_contents {
+      // Absolutely positioned descendants can use percentage block-sizes/insets that resolve
+      // against the *used* padding box height of their containing block (CSS 2.1 §10.5/§10.6.4),
+      // even when the containing block itself is `height:auto`. The used height isn't known until
+      // after in-flow layout, but inline formatting contexts lay out their positioned descendants
+      // during the main flow pass. Re-run child layout with an updated containing block height so
+      // nested abspos descendants see the correct percentage basis.
+
+      // Restore the external float context snapshot so floats placed during the first pass do not
+      // get duplicated when we run the second pass.
+      if let (Some(snapshot), Some(ctx)) = (float_ctx_snapshot.take(), external_float_ctx.as_deref_mut()) {
+        *ctx = snapshot;
+      }
+
+      let used_padding_size = Size::new(padding_size.width, height + padding_top + padding_bottom);
+      let used_cb_block_base = Some(used_padding_size.height);
+      if establishes_positioned_cb {
+        descendant_nearest_positioned_cb = ContainingBlock::with_viewport_and_bases(
+          Rect::new(padding_origin, used_padding_size),
+          self.viewport_size,
+          Some(used_padding_size.width),
+          used_cb_block_base,
+        );
+      }
+      if establishes_fixed_cb {
+        descendant_nearest_fixed_cb = ContainingBlock::with_viewport_and_bases(
+          Rect::new(padding_origin, used_padding_size),
+          self.viewport_size,
+          Some(used_padding_size.width),
+          used_cb_block_base,
+        );
+      }
+
+      let (frags, relayout_height, positioned, info) = if use_columns {
+        let (frags, height, positioned, info) = self.layout_multicolumn(
+          child,
+          &child_constraints,
+          &descendant_nearest_positioned_cb,
+          &descendant_nearest_fixed_cb,
+          computed_width.content_width,
+          child_viewport,
+        )?;
+        (frags, height, positioned, info)
+      } else {
+        let (frags, height, positioned) = self.layout_children_with_external_floats(
+          child,
+          &child_constraints,
+          &descendant_nearest_positioned_cb,
+          &descendant_nearest_fixed_cb,
+          child_viewport,
+          external_float_ctx.as_deref_mut(),
+          external_float_base_x + child_content_origin.x,
+          external_float_base_y + child_content_origin.y,
+        )?;
+        (frags, height, positioned, None)
+      };
+
+      child_fragments = frags;
+      content_height = relayout_height;
+      positioned_children = positioned;
+      column_info = info;
+
+      if style.containment.size {
+        let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+        let axis = if axis_is_width {
+          style.contain_intrinsic_width
+        } else {
+          style.contain_intrinsic_height
+        };
+        let remembered = axis
+          .auto
+          .then(|| {
+            remembered_size_cache_lookup(child).map(|size| {
+              if axis_is_width {
+                size.width
+              } else {
+                size.height
+              }
+            })
+          })
+          .flatten();
+        content_height = crate::layout::utils::resolve_contain_intrinsic_size_axis(
+          axis,
+          remembered,
+          containing_height,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+        );
+      }
+
+      if content_origin.x != 0.0 || content_origin.y != 0.0 {
+        for fragment in child_fragments.iter_mut() {
+          fragment.translate_root_in_place(content_origin);
+        }
+      }
+    }
 
     // Create the fragment
     let box_height = border_top + padding_top + height + padding_bottom + border_bottom;

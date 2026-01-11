@@ -6,6 +6,7 @@ use image::{ColorType, ImageEncoder, RgbaImage};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::tempdir;
+use tiny_skia::Pixmap;
 use url::Url;
 
 fn encode_single_pixel_png(rgba: [u8; 4]) -> Vec<u8> {
@@ -16,6 +17,21 @@ fn encode_single_pixel_png(rgba: [u8; 4]) -> Vec<u8> {
     .write_image(pixels.as_raw(), 1, 1, ColorType::Rgba8.into())
     .expect("encode png");
   png
+}
+
+fn count_red(pixmap: &Pixmap, x0: u32, y0: u32, x1: u32, y1: u32) -> usize {
+  let mut total = 0usize;
+  for y in y0..y1 {
+    for x in x0..x1 {
+      let Some(px) = pixmap.pixel(x, y) else {
+        continue;
+      };
+      if px.alpha() > 200 && px.red() > 200 && px.green() < 100 && px.blue() < 100 {
+        total += 1;
+      }
+    }
+  }
+  total
 }
 
 #[derive(Clone)]
@@ -78,13 +94,56 @@ fn display_list_img_empty_bytes_renders_ua_placeholder() {
   let mut renderer = FastRender::with_config(config).expect("create renderer");
   let pixmap = renderer.render_html(&html, 24, 24).expect("render");
 
-  // The placeholder fill should cover the image content box instead of leaving the black page
-  // background visible. Sample a pixel well inside the 1px stroke.
-  let inside = pixmap.pixel(2, 2).expect("pixel in bounds");
+  // Chrome's broken-image placeholder keeps the image box transparent (so author-provided
+  // backgrounds show through) but draws a small icon in the top-left.
+  let icon_px = pixmap.pixel(4, 4).expect("icon pixel in bounds");
   assert!(
-    inside.red() > 150 && inside.green() > 150 && inside.blue() > 150 && inside.alpha() == 255,
-    "expected a light UA placeholder fill for missing image, got {:?}",
-    (inside.red(), inside.green(), inside.blue(), inside.alpha())
+    icon_px.red() > 100 && icon_px.green() > 100 && icon_px.blue() > 100 && icon_px.alpha() == 255,
+    "expected broken-image icon to paint a light pixel, got {:?}",
+    (icon_px.red(), icon_px.green(), icon_px.blue(), icon_px.alpha())
+  );
+
+  let interior_px = pixmap.pixel(15, 15).expect("interior pixel in bounds");
+  assert_eq!(
+    (interior_px.red(), interior_px.green(), interior_px.blue(), interior_px.alpha()),
+    (0, 0, 0, 255),
+    "expected placeholder interior to remain transparent over black background",
+  );
+}
+
+#[test]
+fn display_list_img_alt_text_wraps_within_replaced_box() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+
+  let tmp = tempdir().expect("tempdir");
+  let empty_path = tmp.path().join("empty.bin");
+  std::fs::write(&empty_path, []).expect("write empty image");
+  let empty_url = Url::from_file_path(&empty_path).expect("file URL");
+
+  let html = format!(
+    "<!doctype html>\
+     <style>\
+       html, body {{ margin: 0; background: rgb(0, 0, 0); }}\
+       img {{ display: block; width: 60px; height: 60px; font-size: 16px; line-height: 16px; color: rgb(255, 0, 0); }}\
+     </style>\
+     <img src=\"{empty_url}\" alt=\"a a a a a a a a a a a a a a a a a a a a a a a a\">"
+  );
+
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  let pixmap = renderer.render_html(&html, 60, 60).expect("render");
+
+  // If the alt text is wrapped into multiple lines, we should see red glyph pixels both near the
+  // top of the replaced box and further down.
+  let top_red = count_red(&pixmap, 0, 0, 60, 20);
+  let bottom_red = count_red(&pixmap, 0, 30, 60, 60);
+  assert!(top_red > 0, "expected red alt text pixels near top (got {top_red})");
+  assert!(
+    bottom_red > 0,
+    "expected wrapped alt text to reach bottom half (got {bottom_red})"
   );
 }
 
