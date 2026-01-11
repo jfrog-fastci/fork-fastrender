@@ -1,9 +1,10 @@
 use crate::arch::SafepointContext;
+use crate::gc::global_remset::ThreadRemsetBuffer;
 use crate::safepoint::FrameCursor;
 use crate::gc::shadow_stack::ShadowStack;
 use crate::threading::safepoint;
 use std::collections::HashMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicU8;
@@ -128,6 +129,13 @@ pub struct ThreadState {
   /// This is intentionally stored in the `ThreadState` so the GC can enumerate
   /// these roots while the world is stopped.
   handle_stack: Mutex<HandleStack>,
+
+  /// Per-thread old-to-young remembered-set buffer used by the write barrier.
+  ///
+  /// Mutator threads append remembered object base pointers here in the
+  /// `NoGC` write barrier fast path. The stop-the-world GC drains these buffers
+  /// to discover old objects that need to be rescanned during minor collection.
+  remset: ThreadRemsetBuffer,
 }
 
 impl ThreadState {
@@ -281,6 +289,28 @@ impl ThreadState {
       idx += 1;
     }
   }
+
+  // --- Remembered set helpers used by the generational write barrier ----------------------------
+
+  #[inline]
+  pub(crate) fn remset_record(&self, obj: *mut u8) {
+    self.remset.insert(obj);
+  }
+
+  #[inline]
+  pub(crate) fn remset_drain_raw(&self, f: impl FnMut(*mut u8)) {
+    self.remset.drain_raw(f);
+  }
+
+  #[inline]
+  pub(crate) fn remset_clear_for_tests(&self) {
+    self.remset.clear();
+  }
+
+  #[inline]
+  pub(crate) fn remset_len_for_tests(&self) -> usize {
+    self.remset.len_for_tests()
+  }
 }
 
 /// Snapshot counts of threads by kind.
@@ -352,6 +382,7 @@ impl ThreadRegistry {
       stack_lo,
       stack_hi,
       handle_stack: Mutex::new(HandleStack::default()),
+      remset: ThreadRemsetBuffer::new(),
     });
 
     {
@@ -423,6 +454,7 @@ fn registry() -> &'static ThreadRegistry {
 
 thread_local! {
   static TLS_THREAD_REGISTRATION: RefCell<Option<ThreadRegistration>> = RefCell::new(None);
+  static TLS_THREAD_STATE_PTR: Cell<*const ThreadState> = const { Cell::new(std::ptr::null()) };
 }
 
 struct ThreadRegistration {
@@ -431,6 +463,11 @@ struct ThreadRegistration {
 
 impl Drop for ThreadRegistration {
   fn drop(&mut self) {
+    // Preserve remembered-set entries created by this thread. If the thread exits
+    // without unregistering (dropping TLS), the global thread registry intentionally
+    // forgets about it to avoid deadlocks; we must still retain old→young edges
+    // it recorded.
+    crate::gc::global_remset::remset_flush_thread_to_global(self.state.as_ref());
     self.state.detached.store(true, Ordering::Release);
     registry().unregister_thread(self.state.id);
     safepoint::notify_state_change();
@@ -438,6 +475,8 @@ impl Drop for ThreadRegistration {
 }
 
 fn set_tls_thread_registration(reg: ThreadRegistration) {
+  let ptr = Arc::as_ptr(&reg.state);
+  TLS_THREAD_STATE_PTR.with(|cell| cell.set(ptr));
   TLS_THREAD_REGISTRATION.with(|cell| {
     // Important: drop the previous registration *after* releasing the RefCell borrow.
     // Dropping while the RefCell is mutably borrowed makes it easy to accidentally
@@ -447,6 +486,7 @@ fn set_tls_thread_registration(reg: ThreadRegistration) {
 }
 
 fn clear_tls_thread_registration() {
+  TLS_THREAD_STATE_PTR.with(|cell| cell.set(std::ptr::null()));
   TLS_THREAD_REGISTRATION.with(|cell| {
     // See comment in `set_tls_thread_registration`: drop outside the borrow.
     drop(cell.replace(None));
@@ -461,6 +501,14 @@ pub fn current_thread_state() -> Option<Arc<ThreadState>> {
       .as_ref()
       .map(|reg| reg.state.clone())
   })
+}
+
+/// Fast-path access to the current thread's [`ThreadState`] without cloning an
+/// `Arc` or borrowing the TLS RefCell.
+///
+/// Returns null if the current thread is not registered.
+pub(crate) fn current_thread_state_ptr() -> *const ThreadState {
+  TLS_THREAD_STATE_PTR.with(|cell| cell.get())
 }
 
 /// Return this thread's registered [`ThreadId`], if any.
