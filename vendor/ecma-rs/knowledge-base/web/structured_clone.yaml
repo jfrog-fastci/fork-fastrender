@@ -1,0 +1,21 @@
+# Web structured cloning.
+
+- name: structuredClone
+  kind: function
+  aliases:
+    - structuredClone
+    - window.structuredClone
+    - globalThis.structuredClone
+  since: "baseline"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

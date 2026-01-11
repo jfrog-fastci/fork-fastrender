@@ -1,0 +1,102 @@
+# Web platform timers + task scheduling.
+
+- name: setTimeout
+  kind: function
+  aliases:
+    - setTimeout
+    - window.setTimeout
+    - globalThis.setTimeout
+  # Keep metadata aligned with `node:timers.setTimeout` to avoid alias conflicts
+  # (Node and browsers both expose global `setTimeout`).
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  # Schedules a task.
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: clearTimeout
+  kind: function
+  aliases:
+    - clearTimeout
+    - window.clearTimeout
+    - globalThis.clearTimeout
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
+
+- name: setInterval
+  kind: function
+  aliases:
+    - setInterval
+    - window.setInterval
+    - globalThis.setInterval
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: clearInterval
+  kind: function
+  aliases:
+    - clearInterval
+    - window.clearInterval
+    - globalThis.clearInterval
+  since: "v0.1.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
+
+- name: queueMicrotask
+  kind: function
+  aliases:
+    - queueMicrotask
+    - window.queueMicrotask
+    - globalThis.queueMicrotask
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: requestAnimationFrame
+  kind: function
+  aliases:
+    - requestAnimationFrame
+    - window.requestAnimationFrame
+    - globalThis.requestAnimationFrame
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: cancelAnimationFrame
+  kind: function
+  aliases:
+    - cancelAnimationFrame
+    - window.cancelAnimationFrame
+    - globalThis.cancelAnimationFrame
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
