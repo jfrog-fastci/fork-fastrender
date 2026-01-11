@@ -108,7 +108,10 @@ Each API entry supports (at minimum):
 - `purity`: effect-model `PurityTemplate` (or a structured object, see below).
 - `semantics`: optional short tag like `Map`, `Fetch`, `JsonParse`.
 - `signature`: optional documentation-only signature hint.
-- `since` / `until`: optional versioning placeholders.
+- `since` / `until`: optional version constraints used by `ApiDatabase::api_for_target`.
+  - Parsed as lenient semver bounds (e.g. `v20.0.0`, `>=18`, `<22`).
+  - `since: "baseline"` is treated as “no constraint” (common in web modules).
+  - Unparseable values only match under `TargetEnv::Unknown` (conservative fallback).
 - `properties`: `map<string, any>` (stored as `serde_json::Value`).
 
 ### Effects & purity forms
