@@ -7152,17 +7152,17 @@ impl DisplayListRenderer {
             // from this snapped rect, the straight edges land exactly on pixel boundaries so
             // anti-aliasing only affects the curved corners.
             //
-            // Use the same pixel-center rule as Canvas's opaque fill snapping: a pixel at integer
-            // coordinate `i` is covered if its center `i + 0.5` lies inside the rect (inclusive on
-            // the min edge, exclusive on the max edge).
+            // Use the same pixel-center rule as Canvas's opaque fill snapping. Chrome/Skia's
+            // axis-aligned, non-AA fills treat pixel centers on the min edge as outside, and pixel
+            // centers on the max edge as inside (`open min / closed max`).
             let dx0 = rect.min_x();
             let dx1 = rect.max_x();
             let dy0 = rect.min_y();
             let dy1 = rect.max_y();
-            let start_x = (dx0.min(dx1) - 0.5).ceil();
-            let end_x = (dx0.max(dx1) - 0.5).ceil();
-            let start_y = (dy0.min(dy1) - 0.5).ceil();
-            let end_y = (dy0.max(dy1) - 0.5).ceil();
+            let start_x = (dx0.min(dx1) + 0.5).floor();
+            let end_x = (dx0.max(dx1) + 0.5).floor();
+            let start_y = (dy0.min(dy1) + 0.5).floor();
+            let end_y = (dy0.max(dy1) + 0.5).floor();
             let snapped = Rect::from_xywh(start_x, start_y, end_x - start_x, end_y - start_y);
             if snapped.width() > 0.0 && snapped.height() > 0.0 {
               ring_rect = snapped;

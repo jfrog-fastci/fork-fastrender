@@ -244,6 +244,48 @@ fn opaque_axis_aligned_rect_fills_do_not_overpaint_adjacent_fractional_strips() 
 }
 
 #[test]
+fn opaque_axis_aligned_rect_fills_snap_half_pixel_edges_like_chrome() {
+  // Regression: many layouts yield `.5` device pixel boundaries (e.g. `0.75rem` padding at an 18px
+  // root font size -> 13.5px). Chrome/Skia's opaque axis-aligned fills treat pixel centers on the
+  // min edge as outside and pixel centers on the max edge as inside (`open min / closed max`).
+  //
+  // This matters for crisp 1px borders/background edges: a rect ending at `2.5px` should include
+  // pixel `2` (center at `2.5`), while a rect starting at `2.5px` should start at pixel `3` (center
+  // at `3.5`).
+  let bg = Rgba::rgb(255, 102, 0);
+  let fill = Rgba::rgb(0, 255, 0);
+  let mut canvas = Canvas::new(6, 4, bg).unwrap();
+  canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 2.5, 2.0), fill);
+  canvas.draw_rect(Rect::from_xywh(2.5, 2.0, 2.5, 2.0), fill);
+
+  let p2_top = canvas.pixmap().pixel(2, 1).unwrap();
+  assert_eq!(
+    (p2_top.red(), p2_top.green(), p2_top.blue(), p2_top.alpha()),
+    (0, 255, 0, 255),
+    "expected max edge at 2.5px to include pixel 2"
+  );
+  let p3_top = canvas.pixmap().pixel(3, 1).unwrap();
+  assert_eq!(
+    (p3_top.red(), p3_top.green(), p3_top.blue(), p3_top.alpha()),
+    (255, 102, 0, 255),
+    "expected max edge at 2.5px to exclude pixel 3"
+  );
+
+  let p2_bottom = canvas.pixmap().pixel(2, 3).unwrap();
+  assert_eq!(
+    (p2_bottom.red(), p2_bottom.green(), p2_bottom.blue(), p2_bottom.alpha()),
+    (255, 102, 0, 255),
+    "expected min edge at 2.5px to exclude pixel 2"
+  );
+  let p3_bottom = canvas.pixmap().pixel(3, 3).unwrap();
+  assert_eq!(
+    (p3_bottom.red(), p3_bottom.green(), p3_bottom.blue(), p3_bottom.alpha()),
+    (0, 255, 0, 255),
+    "expected min edge at 2.5px to include pixel 3"
+  );
+}
+
+#[test]
 fn near_opaque_axis_aligned_rect_fills_are_pixel_snapped() {
   let mut canvas = Canvas::new(10, 60, Rgba::WHITE).unwrap();
 

@@ -1934,10 +1934,10 @@ impl Canvas {
     // (e.g. tile-based rendering).
     //
     // We intentionally do *not* require that the rect edges are already near integer pixels. Chrome
-    // / Skia fill axis-aligned opaque rectangles without anti-aliasing, so pixels are covered based
-    // on their centers (inclusive on the min edge, exclusive on the max edge). Using the same
-    // pixel-center rule avoids blended seams/border "bleed" when layout produces fractional edges
-    // like `left: 2.8px` or `height: 51.6px`.
+    // / Skia fill axis-aligned opaque rectangles without anti-aliasing, so pixels are covered
+    // based on their centers using an "open min / closed max" rule. Using the same pixel-center
+    // rule avoids blended seams/border "bleed" when layout produces fractional edges like
+    // `left: 2.8px` or `height: 51.6px`.
     let x0 = rect.min_x();
     let x1 = rect.max_x();
     let y0 = rect.min_y();
@@ -1953,12 +1953,19 @@ impl Canvas {
       return None;
     }
 
-    // A pixel at integer coordinate `i` is filled if its center `i + 0.5` is inside the rect:
-    // `dx0 <= i + 0.5 < dx1`. Solve this for `i` to obtain an integer device-space bounding box.
-    let start_x = (dx0.min(dx1) - 0.5).ceil();
-    let end_x = (dx0.max(dx1) - 0.5).ceil();
-    let start_y = (dy0.min(dy1) - 0.5).ceil();
-    let end_y = (dy0.max(dy1) - 0.5).ceil();
+    // A pixel at integer coordinate `i` is filled if its center `i + 0.5` is inside the rect.
+    //
+    // Chrome/Skia's axis-aligned, non-AA fills treat pixel centers on the *minimum* edge as
+    // outside, and pixel centers on the *maximum* edge as inside:
+    // `dx0 < i + 0.5 <= dx1`.
+    //
+    // This "open min / closed max" convention avoids double-filling at shared edges while also
+    // matching Chrome's border/background pixel snapping on half-integer coordinates (e.g. 13.5px
+    // padding from `0.75rem` at an 18px root font size).
+    let start_x = (dx0.min(dx1) + 0.5).floor();
+    let end_x = (dx0.max(dx1) + 0.5).floor();
+    let start_y = (dy0.min(dy1) + 0.5).floor();
+    let end_y = (dy0.max(dy1) + 0.5).floor();
 
     Some(Rect::from_xywh(start_x, start_y, end_x - start_x, end_y - start_y))
   }
