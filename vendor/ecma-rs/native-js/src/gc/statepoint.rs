@@ -99,15 +99,14 @@ impl StatepointEmitter {
     let callee_ret_ty = LLVMGetReturnType(callee_fn_ty);
     let callee_ret_kind = LLVMGetTypeKind(callee_ret_ty);
 
-    // `gc.statepoint` argument layout:
+    // `gc.statepoint` argument layout (LLVM 18 opaque pointers):
     //   (id, patch_bytes, callee, num_call_args, flags,
     //    call_args...,
-    //    num_deopt_args, deopt_args...,
-    //    num_gc_args, gc_args...)
+    //    num_transition_args, transition_args...,
+    //    num_deopt_args, deopt_args...)
     //
-    // In the PoC we emit no deopt args and carry live pointers via the
-    // `"gc-live"` operand bundle, so `num_gc_args` is always 0 and `gc_args` is
-    // empty.
+    // In the PoC we emit no transition/deopt args and carry live pointers via
+    // the `"gc-live"` operand bundle.
     let mut sp_args = Vec::with_capacity(5 + call_args.len() + 2);
     sp_args.push(LLVMConstInt(self.i64_ty, 0, 0));
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0));
@@ -115,8 +114,8 @@ impl StatepointEmitter {
     sp_args.push(LLVMConstInt(self.i32_ty, call_args.len() as u64, 0));
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0)); // flags
     sp_args.extend_from_slice(call_args);
+    sp_args.push(LLVMConstInt(self.i32_ty, 0, 0)); // num_transition_args
     sp_args.push(LLVMConstInt(self.i32_ty, 0, 0)); // num_deopt_args
-    sp_args.push(LLVMConstInt(self.i32_ty, 0, 0)); // num_gc_args
 
     // Attach `elementtype(...)` to the callee operand (required under opaque pointers).
     let elementtype_attr = LLVMCreateTypeAttribute(self.ctx, self.elementtype_attr_kind, callee_fn_ty);
@@ -189,6 +188,27 @@ impl StatepointEmitter {
       result,
       relocated,
     }
+  }
+
+  /// Convenience wrapper for the common case where the callee is `void`.
+  ///
+  /// Returns the relocated GC pointers (one per `gc_live` input) and does not
+  /// attempt to emit a `gc.result`.
+  pub unsafe fn emit_statepoint_call_void(
+    &mut self,
+    builder: LLVMBuilderRef,
+    callee: LLVMValueRef,
+    call_args: &[LLVMValueRef],
+    gc_live: &[LLVMValueRef],
+  ) -> Vec<LLVMValueRef> {
+    let StatepointCall {
+      result, relocated, ..
+    } = self.emit_statepoint_call(builder, callee, call_args, gc_live);
+    debug_assert!(
+      result.is_none(),
+      "emit_statepoint_call_void used with non-void callee"
+    );
+    relocated
   }
 }
 
