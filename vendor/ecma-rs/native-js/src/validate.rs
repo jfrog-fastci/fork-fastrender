@@ -6,6 +6,12 @@
 //!
 //! This validator is intentionally conservative: if something is not explicitly
 //! supported, it is rejected.
+//!
+//! ## Diagnostic codes
+//!
+//! Codes emitted by this validator are stable:
+//! - `NJS0009`: unsupported syntax in the native-js strict subset
+//! - `NJS0010`: unsupported type in the native-js strict subset
 
 use crate::codes;
 use diagnostics::{Diagnostic, Span};
@@ -334,4 +340,3 @@ fn callee_is_ident(body: &Body, lowered: &hir_js::LowerResult, expr: hir_js::Exp
     _ => false,
   }
 }
-

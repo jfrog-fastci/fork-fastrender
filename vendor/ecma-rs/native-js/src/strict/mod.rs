@@ -5,6 +5,22 @@
 //! compiler uses a stricter dialect, so we run an additional validation pass on
 //! the checked HIR and type tables and emit hard errors for forbidden
 //! constructs.
+//!
+//! ## Diagnostic codes
+//!
+//! This module emits stable `NJS####` diagnostic codes:
+//! - `NJS0001`: `any` type (explicit or inferred)
+//! - `NJS0002`: type assertions (`x as T`, `<T>x`)
+//! - `NJS0003`: non-null assertions (`x!`)
+//! - `NJS0004`: `eval()`
+//! - `NJS0005`: `Function()` / `new Function()`
+//! - `NJS0006`: `with` statements
+//! - `NJS0007`: computed property access with non-literal keys
+//! - `NJS0008`: use of the `arguments` identifier/object
+//! - `NJS0108`: entry file must export a `main` function
+//! - `NJS0109`: exported `main` must be defined in the entry file (no re-exports)
+//! - `NJS0110`: exported `main` must be a function with a body
+//! - `NJS0111`: exported `main` must have a supported signature (no params, not async/generator)
 
 use diagnostics::{Diagnostic, Span, TextRange};
 use hir_js::{
