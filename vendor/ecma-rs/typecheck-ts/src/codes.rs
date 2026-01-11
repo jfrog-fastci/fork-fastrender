@@ -764,9 +764,11 @@ pub const NATIVE_STRICT_ANY: Code = Code::new(
   &[],
 );
 
-/// TC4001: Direct `eval` calls are forbidden when `native_strict` is enabled.
+/// TC4001: Dynamic `eval` usage is forbidden when `native_strict` is enabled.
 ///
-/// - Primary span: the `eval` identifier used as the call callee.
+/// - Primary span: the `eval` identifier (or derived callee) that triggers the
+///   forbidden dynamic evaluation (e.g. `eval(...)`, `eval.call(...)`,
+///   `Reflect.apply(eval, ...)`, `globalThis.eval`, etc).
 /// - Labels: primary only.
 /// - Notes: none.
 pub const NATIVE_STRICT_EVAL: Code = Code::new(
@@ -777,9 +779,11 @@ pub const NATIVE_STRICT_EVAL: Code = Code::new(
   &[],
 );
 
-/// TC4002: `Function` constructor is forbidden when `native_strict` is enabled.
+/// TC4002: `Function` constructor usage is forbidden when `native_strict` is enabled.
 ///
-/// - Primary span: the `Function` identifier used as the call/new callee.
+/// - Primary span: the `Function` identifier (or derived callee) that triggers
+///   dynamic function construction (e.g. `new Function(...)`, `Function(...)`,
+///   `Function.call(...)`, `Reflect.construct(Function, ...)`, etc).
 /// - Labels: primary only.
 /// - Notes: none.
 pub const NATIVE_STRICT_NEW_FUNCTION: Code = Code::new(
@@ -857,9 +861,11 @@ pub const NATIVE_STRICT_COMPUTED_PROPERTY_KEY: Code = Code::new(
   &[],
 );
 
-/// TC4008: `Proxy` is forbidden when `native_strict` is enabled.
+/// TC4008: `Proxy` usage is forbidden when `native_strict` is enabled.
 ///
-/// - Primary span: the `Proxy` identifier used as the constructor call/new callee.
+/// - Primary span: the `Proxy` identifier (or derived callee) that triggers
+///   proxy construction (e.g. `new Proxy(...)`, `Proxy.revocable(...)`,
+///   `Proxy.revocable.call(...)`, `Reflect.construct(Proxy, ...)`, etc).
 /// - Labels: primary only.
 /// - Notes: none.
 pub const NATIVE_STRICT_PROXY: Code = Code::new(
