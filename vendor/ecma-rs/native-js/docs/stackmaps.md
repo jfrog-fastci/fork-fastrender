@@ -4,11 +4,16 @@ LLVM emits stackmap metadata for statepoints/patchpoints into the ELF section:
 
 > `.llvm_stackmaps` (StackMap v3)
 
-The `native-js` link pipeline preserves this section and exports two global symbols that delimit the
-in-memory byte range:
+The `native-js` link pipeline preserves this data and exports global symbols that delimit the
+in-memory byte range (see `native-js/src/link.rs` and `runtime-native/link/stackmaps.ld`):
 
-- `__fastr_stackmaps_start`
-- `__fastr_stackmaps_end`
+- Canonical:
+  - `__start_llvm_stackmaps`
+  - `__stop_llvm_stackmaps`
+- Aliases (legacy / tooling convenience):
+  - `__stackmaps_start` / `__stackmaps_end`
+  - `__fastr_stackmaps_start` / `__fastr_stackmaps_end`
+  - `__llvm_stackmaps_start` / `__llvm_stackmaps_end`
 
 The native runtime (`runtime-native`) reads that byte range to locate safepoints and enumerate GC
 roots.
@@ -85,16 +90,16 @@ typically merges the stackmaps into a **single** StackMap v3 table:
 ## Runtime requirement: parse blobs until end
 
 Because both layouts exist in practice, the runtime stackmap decoder MUST treat
-`__fastr_stackmaps_start..__fastr_stackmaps_end` as a byte range that may contain **one or more**
-StackMap v3 blobs.
+`__start_llvm_stackmaps..__stop_llvm_stackmaps` (or any of its aliases) as a byte range that may
+contain **one or more** StackMap v3 blobs.
 
 The format is self-describing: each blob begins with a fixed-size header that includes the counts
 needed to skip to the end of the blob. A robust decoder should:
 
-1. Start at `__fastr_stackmaps_start`.
+1. Start at `__start_llvm_stackmaps`.
 2. Parse one StackMap v3 blob.
 3. Advance by the parsed blob length.
-4. Repeat until reaching `__fastr_stackmaps_end`.
+4. Repeat until reaching `__stop_llvm_stackmaps`.
 
 Linux regression tests covering both modes live in:
 
