@@ -103,6 +103,14 @@ pub fn validate_cors_allow_origin(
     ));
   }
 
+  // `null` is a special-case sentinel value defined as a literal token in Fetch/CORS.
+  // Treat only the exact lowercase spelling as valid; other casings are invalid.
+  if raw != "null" && raw.eq_ignore_ascii_case("null") {
+    return Err(format!(
+      "blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"
+    ));
+  }
+
   if raw != serialized_request_origin {
     return Err(format!(
       "blocked by CORS: Access-Control-Allow-Origin {raw} does not match request origin {serialized_request_origin}"
@@ -165,6 +173,30 @@ mod tests {
       FetchCredentialsMode::SameOrigin,
     )
     .expect("null origin should be accepted for anonymous file origins");
+  }
+
+  #[test]
+  fn rejects_mis_cased_null_allow_origin() {
+    let doc_origin = origin_from_url("file:///fixture.html").expect("origin");
+    let url = "https://example.com/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("Null".to_string());
+
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect_err("expected mis-cased null ACAO to be rejected");
+    assert!(
+      err.contains("invalid Access-Control-Allow-Origin"),
+      "unexpected error: {err}"
+    );
   }
 
   #[test]
