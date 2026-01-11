@@ -276,6 +276,47 @@ if [[ -z "${RUSTC_WRAPPER:-}" && -z "${CARGO_BUILD_RUSTC_WRAPPER:-}" ]]; then
   export CARGO_BUILD_RUSTC_WRAPPER="env"
 fi
 
+# `runtime-native` (in `vendor/ecma-rs/`) enforces a frame-pointer build to keep its FP-based stack
+# walker and GC root enumerator sound. The preferred way to build it is via
+# `vendor/ecma-rs/scripts/cargo_llvm.sh` (which also bumps the RAM limit), but many workflows call
+# into `scripts/cargo_agent.sh` directly with `--manifest-path`/`-p runtime-native`.
+#
+# Detect those invocations and automatically inject `-C force-frame-pointers=yes` if missing so the
+# build script doesn't fail with a confusing error.
+needs_frame_pointers=0
+argv=("$@")
+for ((i = 0; i < ${#argv[@]}; i++)); do
+  case "${argv[$i]}" in
+    -p|--package)
+      if [[ "${argv[$((i + 1))]:-}" == "runtime-native" ]]; then
+        needs_frame_pointers=1
+      fi
+      ;;
+    --package=runtime-native)
+      needs_frame_pointers=1
+      ;;
+    --manifest-path)
+      path="${argv[$((i + 1))]:-}"
+      if [[ "${path}" == *"/runtime-native/Cargo.toml" ]]; then
+        needs_frame_pointers=1
+      fi
+      ;;
+    --manifest-path=*)
+      path="${argv[$i]#--manifest-path=}"
+      if [[ "${path}" == *"/runtime-native/Cargo.toml" ]]; then
+        needs_frame_pointers=1
+      fi
+      ;;
+  esac
+done
+if [[ "${needs_frame_pointers}" == "1" && "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+  if [[ -z "${RUSTFLAGS:-}" ]]; then
+    export RUSTFLAGS="-C force-frame-pointers=yes"
+  else
+    export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"
+  fi
+fi
+
 nproc="${FASTR_CARGO_NPROC:-}"
 if [[ -z "${nproc}" ]]; then
   if command -v nproc >/dev/null 2>&1; then
