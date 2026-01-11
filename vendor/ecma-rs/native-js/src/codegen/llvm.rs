@@ -8,7 +8,7 @@ use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stx::TopLevel;
 use parse_js::ast::type_expr::TypeExpr;
 use parse_js::operator::OperatorName;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::builtins::{recognize_builtin, BuiltinCall};
 use super::CodegenError;
@@ -40,6 +40,14 @@ impl Value {
 
 fn f64_to_llvm_const(value: f64) -> String {
   format!("0x{:016X}", value.to_bits())
+}
+
+/// Signature information for a user-defined function that can be called from generated code.
+#[derive(Clone, Debug)]
+pub(crate) struct UserFunctionSig {
+  /// LLVM symbol name (including the leading `@`).
+  pub llvm_name: String,
+  pub param_count: usize,
 }
 
 #[derive(Default)]
@@ -90,6 +98,7 @@ struct Codegen {
   opts: CompileOptions,
   strings: StringPool,
   function_sigs: HashMap<String, FunctionSig>,
+  function_llvm_names: HashMap<String, String>,
   function_defs: Vec<String>,
   tmp_counter: usize,
   block_counter: usize,
@@ -107,6 +116,7 @@ impl Codegen {
       opts,
       strings: StringPool::default(),
       function_sigs: HashMap::new(),
+      function_llvm_names: HashMap::new(),
       function_defs: Vec::new(),
       tmp_counter: 0,
       block_counter: 0,
@@ -1052,6 +1062,11 @@ impl Codegen {
           let sig = self.function_sigs.get(callee).cloned().ok_or_else(|| {
             CodegenError::TypeError(format!("call to unknown function `{callee}`"))
           })?;
+          let llvm_name = self
+            .function_llvm_names
+            .get(callee)
+            .cloned()
+            .expect("collected function LLVM names earlier");
 
           if sig.params.len() != call.stx.arguments.len() {
             return Err(CodegenError::TypeError(format!(
@@ -1084,13 +1099,13 @@ impl Codegen {
 
           let ret_ty = sig.ret;
           if ret_ty == Ty::Void {
-            self.emit(format!("  call void @{callee}({})", arg_irs.join(", ")));
+            self.emit(format!("  call void {llvm_name}({})", arg_irs.join(", ")));
             Ok(Value::void())
           } else {
             let out = self.tmp();
             let llvm_ret = Self::llvm_type_of(ret_ty);
             self.emit(format!(
-              "  {out} = call {llvm_ret} @{callee}({})",
+              "  {out} = call {llvm_ret} {llvm_name}({})",
               arg_irs.join(", ")
             ));
             Ok(Value {
@@ -1279,6 +1294,9 @@ impl Codegen {
         params.push(param_ty);
       }
 
+      self
+        .function_llvm_names
+        .insert(name.clone(), format!("@{name}"));
       self.function_sigs.insert(name, FunctionSig { ret, params });
     }
     Ok(())
@@ -1374,9 +1392,13 @@ impl Codegen {
       }
     }
 
+    let llvm_name = self
+      .function_llvm_names
+      .get(&name)
+      .expect("collected function LLVM names earlier");
     let mut def = String::new();
     def.push_str(&format!(
-      "define {} @{name}({}) #0 {{\n",
+      "define {} {llvm_name}({}) #0 {{\n",
       Self::llvm_type_of(sig.ret),
       param_decls.join(", ")
     ));
@@ -1389,5 +1411,143 @@ impl Codegen {
 
     self.restore_fn_ctx(saved);
     Ok(())
+  }
+}
+
+pub(crate) struct LlvmModuleBuilder {
+  cg: Codegen,
+}
+
+impl LlvmModuleBuilder {
+  pub(crate) fn new(opts: CompileOptions) -> Self {
+    Self { cg: Codegen::new(opts) }
+  }
+
+  fn with_call_targets<T>(
+    &mut self,
+    call_targets: &BTreeMap<String, UserFunctionSig>,
+    f: impl FnOnce(&mut Codegen) -> Result<T, CodegenError>,
+  ) -> Result<T, CodegenError> {
+    let saved_sigs = std::mem::take(&mut self.cg.function_sigs);
+    let saved_names = std::mem::take(&mut self.cg.function_llvm_names);
+
+    for (local, sig) in call_targets {
+      self.cg.function_sigs.insert(
+        local.clone(),
+        FunctionSig {
+          ret: Ty::Number,
+          params: vec![Ty::Number; sig.param_count],
+        },
+      );
+      self
+        .cg
+        .function_llvm_names
+        .insert(local.clone(), sig.llvm_name.clone());
+    }
+
+    let out = f(&mut self.cg);
+
+    self.cg.function_sigs = saved_sigs;
+    self.cg.function_llvm_names = saved_names;
+
+    out
+  }
+
+  pub(crate) fn add_init_function(
+    &mut self,
+    llvm_name: &str,
+    stmts: &[&Node<Stmt>],
+    call_targets: &BTreeMap<String, UserFunctionSig>,
+  ) -> Result<(), CodegenError> {
+    self.with_call_targets(call_targets, |cg| {
+      let saved = cg.take_fn_ctx();
+      cg.reset_fn_ctx(Some(Ty::Void));
+      cg.emit("entry:");
+      for stmt in stmts {
+        cg.compile_stmt(stmt)?;
+      }
+      if !cg.block_terminated {
+        cg.emit("  ret void".to_string());
+      }
+
+      let mut def = String::new();
+      def.push_str(&format!("define void {llvm_name}() #0 {{\n"));
+      for line in &cg.body {
+        def.push_str(line);
+        def.push('\n');
+      }
+      def.push_str("}\n");
+      cg.function_defs.push(def);
+
+      cg.restore_fn_ctx(saved);
+      Ok(())
+    })
+  }
+
+  pub(crate) fn add_ts_function(
+    &mut self,
+    _llvm_name: &str,
+    decl: &Node<FuncDecl>,
+    call_targets: &BTreeMap<String, UserFunctionSig>,
+  ) -> Result<(), CodegenError> {
+    self.with_call_targets(call_targets, |cg| cg.compile_function_decl(decl))
+  }
+
+  pub(crate) fn add_main(
+    &mut self,
+    init_symbols: &[String],
+    entry_call: Option<&UserFunctionSig>,
+  ) -> Result<(), CodegenError> {
+    self.cg.reset_fn_ctx(None);
+    self.cg.emit("entry:");
+    for init in init_symbols {
+      self.cg.emit(format!("  call void {init}()"));
+    }
+    if let Some(entry) = entry_call {
+      self.cg.emit(format!("  call double {}()", entry.llvm_name));
+    }
+    self.cg.emit("  ret i32 0");
+    Ok(())
+  }
+
+  pub(crate) fn finish(self) -> String {
+    let mut out = String::new();
+    out.push_str("; ModuleID = 'native-js'\n");
+    out.push_str("source_filename = \"native-js\"\n\n");
+
+    for def in &self.cg.strings.defs {
+      out.push_str(def);
+      out.push('\n');
+    }
+    if !self.cg.strings.defs.is_empty() {
+      out.push('\n');
+    }
+
+    out.push_str("declare i32 @puts(ptr)\n");
+    out.push_str("declare i32 @printf(ptr, ...)\n");
+    out.push_str("declare i32 @fflush(ptr)\n");
+    out.push_str("declare i32 @strcmp(ptr, ptr)\n");
+    out.push_str("declare void @abort()\n");
+    out.push_str("declare void @llvm.trap()\n\n");
+
+    for func in &self.cg.function_defs {
+      out.push_str(func);
+      out.push('\n');
+    }
+
+    // Stack-walkability invariants for precise GC:
+    // - Keep frame pointers so the runtime can walk the frame chain.
+    // - Disable tail calls so frames are not elided.
+    //
+    // See `native-js/docs/gc_stack_walking.md`.
+    out.push_str("define i32 @main() #0 {\n");
+    for line in &self.cg.body {
+      out.push_str(line);
+      out.push('\n');
+    }
+    out.push_str("}\n");
+    out.push_str("\nattributes #0 = { \"frame-pointer\"=\"all\" \"disable-tail-calls\"=\"true\" }\n");
+
+    out
   }
 }

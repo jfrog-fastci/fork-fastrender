@@ -61,7 +61,10 @@ pub mod strict;
 pub mod validate;
 pub mod eval;
 
+mod project;
 mod stack_walking;
+
+pub use project::compile_project_to_llvm_ir;
 pub use stack_walking::CodeGen;
 
 use diagnostics::{Diagnostic, Severity};
@@ -192,6 +195,26 @@ pub enum NativeJsError {
 
   #[error("required tool not found in PATH: {0}")]
   ToolNotFound(&'static str),
+
+  #[error("failed to load source for {file}: {reason}")]
+  FileText { file: String, reason: String },
+
+  #[error("missing HIR lowering for {file} (did you call `Program::check()`?)")]
+  MissingHirLowering { file: String },
+
+  #[error("module resolution failed: {from} -> {specifier}")]
+  UnresolvedImport { from: String, specifier: String },
+
+  #[error("missing export `{export}` in {file}")]
+  MissingExport { file: String, export: String },
+
+  #[error(
+    "export `{export}` in {file} has no local definition (re-exports/default exports are not supported)"
+  )]
+  UnsupportedExport { file: String, export: String },
+
+  #[error("cyclic module dependency detected: {cycle}")]
+  ModuleCycle { cycle: String },
 
   #[error("native-js codegen is not implemented yet")]
   Unimplemented,

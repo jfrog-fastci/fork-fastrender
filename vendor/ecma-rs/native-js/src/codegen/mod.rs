@@ -453,8 +453,8 @@ fn parse_i32_const<'ctx>(i32_ty: IntType<'ctx>, raw: &str) -> Option<IntValue<'c
 }
 
 mod builtins;
-mod llvm;
 pub mod safepoint;
+pub(crate) mod llvm;
 
 use crate::CompileOptions;
 use parse_js::ast::node::Node;
