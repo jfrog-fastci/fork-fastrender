@@ -8,7 +8,7 @@ mod linux {
     use std::net::SocketAddr;
     use std::os::unix::io::RawFd;
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, Weak};
     use std::time::Duration;
 
     use io_uring::{opcode, squeue, types, IoUring};
@@ -335,6 +335,24 @@ mod linux {
         inner: Arc<Mutex<Inner>>,
     }
 
+    /// A non-owning reference to a [`Driver`].
+    ///
+    /// This is primarily used to avoid reference cycles between:
+    /// `Driver -> ops map -> PreparedOp -> ProvidedBufPool -> Driver`.
+    #[derive(Clone)]
+    pub struct WeakDriver {
+        inner: Weak<Mutex<Inner>>,
+    }
+
+    impl WeakDriver {
+        /// Attempt to upgrade this weak reference to a strong [`Driver`].
+        pub fn upgrade(&self) -> Option<Driver> {
+            Some(Driver {
+                inner: self.inner.upgrade()?,
+            })
+        }
+    }
+
     impl Driver {
         fn submission_queue_full() -> io::Error {
             io::Error::new(io::ErrorKind::Other, "io_uring submission queue is full")
@@ -349,6 +367,13 @@ mod linux {
                     ready: VecDeque::new(),
                 })),
             })
+        }
+
+        /// Create a weak reference to this driver.
+        pub fn downgrade(&self) -> WeakDriver {
+            WeakDriver {
+                inner: Arc::downgrade(&self.inner),
+            }
         }
 
         fn alloc_id(inner: &mut Inner) -> OpId {
@@ -692,12 +717,25 @@ mod non_linux {
 
     pub struct Driver;
 
+    #[derive(Clone, Debug)]
+    pub struct WeakDriver;
+
+    impl WeakDriver {
+        pub fn upgrade(&self) -> Option<Driver> {
+            None
+        }
+    }
+
     impl Driver {
         pub fn new(_entries: u32) -> io::Result<Self> {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "io_uring is only supported on Linux",
             ))
+        }
+
+        pub fn downgrade(&self) -> WeakDriver {
+            WeakDriver
         }
 
         pub fn submit(&mut self, _op: PreparedOp) -> io::Result<OpId> {

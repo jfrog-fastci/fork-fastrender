@@ -4,7 +4,7 @@ mod linux {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use crate::Driver;
+    use crate::{Driver, WeakDriver};
 
     /// Statistics for a [`ProvidedBufPool`].
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -21,7 +21,7 @@ mod linux {
     }
 
     struct Inner {
-        driver: Driver,
+        driver: WeakDriver,
         buf_group: u16,
         buf_size: usize,
         nbufs: u16,
@@ -83,7 +83,7 @@ mod linux {
 
             let pool = Self {
                 inner: Arc::new(Inner {
-                    driver: driver.clone(),
+                    driver: driver.downgrade(),
                     buf_group,
                     buf_size,
                     nbufs,
@@ -96,7 +96,7 @@ mod linux {
             };
 
             // Provide the full, contiguous buffer slab in one operation.
-            pool.inner.driver.submit_provide_buffers(
+            driver.submit_provide_buffers(
                 pool.inner.storage.as_ptr() as *mut u8,
                 buf_size,
                 nbufs,
@@ -181,13 +181,21 @@ mod linux {
         }
 
         fn return_to_kernel(&self, buf_id: u16) -> io::Result<()> {
-            let res = self.inner.driver.submit_provide_buffers(
-                self.buf_ptr(buf_id),
-                self.inner.buf_size,
-                1,
-                self.inner.buf_group,
-                buf_id,
-            );
+            let (res, did_submit) = match self.inner.driver.upgrade() {
+                Some(driver) => (
+                    driver.submit_provide_buffers(
+                        self.buf_ptr(buf_id),
+                        self.inner.buf_size,
+                        1,
+                        self.inner.buf_group,
+                        buf_id,
+                    ),
+                    true,
+                ),
+                // Driver already dropped; treat as best-effort success, but don't update
+                // `in_kernel`/`reprovided` since nothing was submitted to the kernel.
+                None => (Ok(()), false),
+            };
 
             {
                 let mut leased_map = self
@@ -199,7 +207,7 @@ mod linux {
             }
 
             self.inner.leased.fetch_sub(1, Ordering::Relaxed);
-            if res.is_ok() {
+            if did_submit && res.is_ok() {
                 self.inner.in_kernel.fetch_add(1, Ordering::Relaxed);
                 self.inner.reprovided.fetch_add(1, Ordering::Relaxed);
             }
@@ -293,4 +301,3 @@ mod non_linux {
 
 #[cfg(not(target_os = "linux"))]
 pub use non_linux::*;
-
