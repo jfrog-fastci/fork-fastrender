@@ -52,17 +52,23 @@ fn build_rt_thread_tls() {
 }
 
 fn enforce_force_frame_pointers() {
+  let flags = rustflags();
+  let has_force_frame_pointers = force_frame_pointers_setting(&flags) == Some(true);
+
   // Escape hatch for experiments / debugging.
   if env::var_os("CARGO_FEATURE_ALLOW_OMIT_FRAME_POINTERS").is_some() {
-    println!(
-      "cargo:warning=runtime-native: building with `allow_omit_frame_pointers`; \
-       the FP-based stack walker / GC root enumerator may crash or return incorrect results"
-    );
+    // `--all-features` enables this escape hatch by default. Only warn when frame pointers are
+    // actually omitted, otherwise it is just noise.
+    if !has_force_frame_pointers {
+      println!(
+        "cargo:warning=runtime-native: building with `allow_omit_frame_pointers`; \
+         the FP-based stack walker / GC root enumerator may crash or return incorrect results"
+      );
+    }
     return;
   }
 
-  let flags = rustflags();
-  if force_frame_pointers_setting(&flags) == Some(true) {
+  if has_force_frame_pointers {
     return;
   }
 
