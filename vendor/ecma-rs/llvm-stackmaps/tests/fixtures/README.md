@@ -30,3 +30,10 @@ Requirements:
 
 `fixtures/llvm18_stackmaps/*.stackmaps.bin` are separate fixtures extracted from a *linked* ELF
 produced by LLVM 18 (function addresses resolved), used by callsite-PC mapping tests.
+
+To regenerate them (overwriting the committed binaries):
+
+```bash
+bash vendor/ecma-rs/llvm-stackmaps/tests/fixtures/llvm18_stackmaps/gen.sh
+git diff
+```
