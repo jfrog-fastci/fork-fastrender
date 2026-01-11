@@ -237,11 +237,12 @@ inkwell-generated functions/modules.
 See [`docs/llvm_gc_strategy.md`](./docs/llvm_gc_strategy.md) for the rationale
 and how to change it.
 
-> Note: `native_js::CodeGen` (and the inkwell-based backends) mark functions
-> with the LLVM GC strategy attribute (`gc "coreclr"`). The minimal string-based
-> emitter (`compile_typescript_to_llvm_ir`) does **not** set a GC strategy, but
-> it does emit the stack-walking-related attributes
-> (`frame-pointer="all"`, `disable-tail-calls="true"`).
+> Note: `native_js::CodeGen` marks functions with the LLVM GC strategy attribute
+> (`gc "coreclr"`). Other inkwell-based codegen should explicitly call
+> `native_js::llvm::gc::set_default_gc_strategy` when statepoint rewriting is
+> desired. The minimal string-based emitter (`compile_typescript_to_llvm_ir`)
+> does **not** set a GC strategy, but it does emit the stack-walking-related
+> attributes (`frame-pointer="all"`, `disable-tail-calls="true"`).
 
 ### LLVM GC statepoints (LLVM 18)
 
