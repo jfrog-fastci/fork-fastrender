@@ -69,6 +69,10 @@ use crate::llvm::gc::GC_ADDR_SPACE;
 #[derive(Debug, Clone, Copy)]
 pub struct StatepointConfig {
   /// The statepoint ID (becomes the StackMap record's patchpoint ID).
+  ///
+  /// See `vendor/ecma-rs/docs/gc_statepoints.md` for the stackmap ABI and ID semantics, and
+  /// `vendor/ecma-rs/docs/llvm_statepoint_directives.md` for the `"statepoint-id"` directive when
+  /// using `rewrite-statepoints-for-gc`.
   pub id: u64,
   /// Reserved for patchable callsites.
   ///
