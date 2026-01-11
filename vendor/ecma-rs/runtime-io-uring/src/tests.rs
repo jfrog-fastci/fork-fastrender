@@ -8,6 +8,7 @@ fn io_uring_tests_skipped_non_linux() {
 mod linux {
     use std::io;
     use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::os::fd::AsRawFd;
     use std::os::fd::RawFd;
     use std::os::unix::net::UnixStream;
@@ -417,6 +418,101 @@ mod linux {
         assert_eq!(gc.pin_drops(handle), 1);
         assert_eq!(gc.root_count(handle), 0);
         assert_eq!(gc.pin_count(handle), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn accept_timeout_cancels_target() -> io::Result<()> {
+        let Some(mut driver) = try_driver()? else {
+            return Ok(());
+        };
+
+        let link_timeout_supported = match driver.is_link_timeout_supported() {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!("skipping accept timeout test: failed to probe io_uring ops: {err}");
+                return Ok(());
+            }
+        };
+        if !link_timeout_supported {
+            eprintln!("skipping accept timeout test: IORING_OP_LINK_TIMEOUT not supported by kernel");
+            return Ok(());
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let (accept_op, timeout_op) =
+            driver.submit_accept_with_timeout(listener.as_raw_fd(), 0, Duration::from_millis(100))?;
+
+        while !(accept_op.is_completed() && timeout_op.is_completed()) {
+            driver.wait_for_cqe()?;
+        }
+
+        let accept_c = accept_op.try_take_completion().expect("accept completed");
+        let timeout_c = timeout_op.try_take_completion().expect("timeout completed");
+
+        // Old kernels may not support certain opcodes; treat as a skip.
+        if accept_c.result == -(libc::EINVAL as i32) || accept_c.result == -(libc::EOPNOTSUPP as i32) {
+            eprintln!("skipping accept timeout test: accept not supported (res={})", accept_c.result);
+            return Ok(());
+        }
+
+        assert_eq!(timeout_c.resource, accept_c.id);
+        assert_eq!(timeout_c.result, -(libc::ETIME as i32));
+        assert_eq!(accept_c.result, -(libc::ECANCELED as i32));
+        assert_eq!(accept_c.resource, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn connect_completes_before_timeout() -> io::Result<()> {
+        let Some(mut driver) = try_driver()? else {
+            return Ok(());
+        };
+
+        let link_timeout_supported = match driver.is_link_timeout_supported() {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!("skipping connect timeout test: failed to probe io_uring ops: {err}");
+                return Ok(());
+            }
+        };
+        if !link_timeout_supported {
+            eprintln!("skipping connect timeout test: IORING_OP_LINK_TIMEOUT not supported by kernel");
+            return Ok(());
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _fd_guard = Fd(fd);
+
+        let (connect_op, timeout_op) =
+            driver.submit_connect_with_timeout(fd, addr, Duration::from_secs(2))?;
+
+        while !(connect_op.is_completed() && timeout_op.is_completed()) {
+            driver.wait_for_cqe()?;
+        }
+
+        let connect_c = connect_op.try_take_completion().expect("connect completed");
+        let timeout_c = timeout_op.try_take_completion().expect("timeout completed");
+
+        if connect_c.result == -(libc::EINVAL as i32) || connect_c.result == -(libc::EOPNOTSUPP as i32) {
+            eprintln!(
+                "skipping connect timeout test: connect not supported (res={})",
+                connect_c.result
+            );
+            return Ok(());
+        }
+
+        assert_eq!(timeout_c.resource, connect_c.id);
+        assert_eq!(connect_c.result, 0);
+        assert_eq!(timeout_c.result, -(libc::ECANCELED as i32));
 
         Ok(())
     }
