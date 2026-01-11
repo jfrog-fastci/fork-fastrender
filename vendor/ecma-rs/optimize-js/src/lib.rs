@@ -656,24 +656,13 @@ pub(crate) fn build_program_function_with_options(
     }
   }
 
-  // Preserve an SSA-form CFG annotated with escape/ownership metadata for downstream consumers
-  // (e.g. native codegen backends). We intentionally do not propagate this metadata onto the
-  // deconstructed CFG; consumers should use `ProgramFunction::analyzed_cfg()` when they need
-  // ownership/escape results.
-  let mut ssa_cfg = cfg.clone();
-  let escapes = analysis::escape::analyze_cfg_escapes_with_params(&ssa_cfg, &params);
-  let ownership =
-    analysis::ownership::analyze_cfg_ownership_with_escapes_and_params(&ssa_cfg, &params, &escapes);
-  analysis::ownership::annotate_cfg_ownership(&mut ssa_cfg, &ownership);
-  analysis::consume::annotate_cfg_consumption(&mut ssa_cfg, &ownership);
-  for (_label, insts) in ssa_cfg.bblocks.all_mut() {
-    for inst in insts {
-      let Some(tgt) = inst.tgts.get(0).copied() else {
-        continue;
-      };
-      inst.meta.result_escape = escapes.get(&tgt).copied();
-    }
-  }
+  // Preserve an SSA-form CFG for downstream consumers (e.g. native codegen backends). We
+  // intentionally do not propagate escape/ownership metadata onto the deconstructed CFG; consumers
+  // should use `ProgramFunction::analyzed_cfg()` when they need ownership/escape results.
+  //
+  // Escape/ownership metadata is annotated at the end of compilation using whole-program
+  // interprocedural summaries so direct `Arg::Fn` calls can be handled precisely.
+  let ssa_cfg = cfg.clone();
 
   if !options.keep_ssa {
     // It's safe to calculate liveliness before removing Phi insts; after deconstructing, they
@@ -689,6 +678,43 @@ pub(crate) fn build_program_function_with_options(
     params,
     ssa_body: Some(ssa_cfg),
     stats,
+  }
+}
+
+fn annotate_ssa_cfg_escape_and_ownership(
+  cfg: &mut Cfg,
+  params: &[u32],
+  summaries: &analysis::interproc_escape::ProgramEscapeSummaries,
+) {
+  let escapes = analysis::escape::analyze_cfg_escapes_with_params_and_summaries(
+    cfg,
+    params,
+    Some(summaries),
+  );
+  let ownership =
+    analysis::ownership::analyze_cfg_ownership_with_escapes_and_params(cfg, params, &escapes);
+  analysis::ownership::annotate_cfg_ownership(cfg, &ownership);
+  analysis::consume::annotate_cfg_consumption(cfg, &ownership);
+  for (_label, insts) in cfg.bblocks.all_mut() {
+    for inst in insts {
+      let Some(tgt) = inst.tgts.get(0).copied() else {
+        continue;
+      };
+      inst.meta.result_escape = escapes.get(&tgt).copied();
+    }
+  }
+}
+
+fn annotate_program_ssa_metadata(program: &mut Program) {
+  let summaries = analysis::interproc_escape::compute_program_escape_summaries(program);
+
+  if let Some(cfg) = program.top_level.ssa_body.as_mut() {
+    annotate_ssa_cfg_escape_and_ownership(cfg, &program.top_level.params, &summaries);
+  }
+  for func in program.functions.iter_mut() {
+    if let Some(cfg) = func.ssa_body.as_mut() {
+      annotate_ssa_cfg_escape_and_ownership(cfg, &func.params, &summaries);
+    }
   }
 }
 
@@ -1094,12 +1120,19 @@ impl Program {
       None
     };
 
-    Ok(Self {
+    let mut program = Self {
       functions,
       top_level,
       top_level_mode,
       symbols,
-    })
+    };
+
+    // Annotate `ssa_body` CFGs with interprocedural escape/ownership metadata. This lets downstream
+    // consumers (e.g. native backends) rely on `ProgramFunction::analyzed_cfg()` without separately
+    // running the program-wide analysis driver.
+    annotate_program_ssa_metadata(&mut program);
+
+    Ok(program)
   }
 
   pub fn compile(

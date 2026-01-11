@@ -390,7 +390,7 @@ pub fn compute_program_escape_summaries(program: &Program) -> ProgramEscapeSumma
     let mut changed = false;
 
     let new_top =
-      compute_cfg_escape_summary(&program.top_level.body, &program.top_level.params, &prev);
+      compute_cfg_escape_summary(program.top_level.analyzed_cfg(), &program.top_level.params, &prev);
     if new_top != prev.top_level {
       summaries.top_level = new_top;
       changed = true;
@@ -398,7 +398,7 @@ pub fn compute_program_escape_summaries(program: &Program) -> ProgramEscapeSumma
 
     for id in 0..program.functions.len() {
       let func = &program.functions[id];
-      let new_summary = compute_cfg_escape_summary(&func.body, &func.params, &prev);
+      let new_summary = compute_cfg_escape_summary(func.analyzed_cfg(), &func.params, &prev);
       if new_summary != prev.functions[id] {
         summaries.functions[id] = new_summary;
         changed = true;
