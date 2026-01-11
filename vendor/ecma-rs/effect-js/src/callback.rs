@@ -144,10 +144,21 @@ fn infer_associative_inline_callback(
   let ExprKind::Binary { op, left, right } = &cb_body_data.exprs.get(expr.0 as usize)?.kind else {
     return None;
   };
-  if !matches!(cb_body_data.exprs.get(left.0 as usize)?.kind, ExprKind::Ident(n) if n == name_a) {
-    return None;
-  }
-  if !matches!(cb_body_data.exprs.get(right.0 as usize)?.kind, ExprKind::Ident(n) if n == name_b) {
+
+  let left_name = match cb_body_data.exprs.get(left.0 as usize)?.kind {
+    ExprKind::Ident(n) => n,
+    _ => return None,
+  };
+  let right_name = match cb_body_data.exprs.get(right.0 as usize)?.kind {
+    ExprKind::Ident(n) => n,
+    _ => return None,
+  };
+
+  // For commutative operations, accept either operand order. This matters for
+  // `reduce` callbacks that use `(acc, cur) => cur | acc` etc.
+  if !((left_name == name_a && right_name == name_b)
+    || (is_commutative_op(ty_a, *op) && left_name == name_b && right_name == name_a))
+  {
     return None;
   }
 
@@ -173,6 +184,15 @@ fn is_associative_op(ty: AssocType, op: BinaryOp) -> bool {
     (AssocType::BigInt, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor) => true,
     (AssocType::Number, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor) => true,
     (AssocType::String, BinaryOp::Add) => true,
+    _ => false,
+  }
+}
+
+fn is_commutative_op(ty: AssocType, op: BinaryOp) -> bool {
+  match (ty, op) {
+    (AssocType::BigInt, BinaryOp::Add | BinaryOp::Multiply) => true,
+    (AssocType::BigInt, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor) => true,
+    (AssocType::Number, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor) => true,
     _ => false,
   }
 }
@@ -1123,6 +1143,21 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Ts,
       "arr.reduce((a: number, b: number) => a | b);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let info = callsite_info_for_args(&lowered, body, call_expr, &kb);
+
+    assert_eq!(info.callback_is_pure, Some(true));
+    assert_eq!(info.callback_is_associative, Some(true));
+  }
+
+  #[test]
+  fn infers_associative_reduce_callback_for_number_bitwise_or_swapped_operands() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Ts,
+      "arr.reduce((a: number, b: number) => b | a);",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
