@@ -48,8 +48,6 @@ pub struct PromiseHeader {
   ///
   /// Stored values:
   /// - `0`: no waiters/reactions registered yet.
-  /// - [`PromiseHeader::WAITERS_CLOSED`]: reserved sentinel for a closed list (not currently used by
-  ///   the runtime).
   /// - otherwise: a raw pointer to the head waiter node, cast to `usize`.
   ///
   /// The runtime currently uses this field to register await/then callbacks as an intrusive
@@ -64,16 +62,6 @@ impl PromiseHeader {
   pub const PENDING: PromiseState = 0;
   pub const FULFILLED: PromiseState = 1;
   pub const REJECTED: PromiseState = 2;
-
-  /// Sentinel value stored in [`PromiseHeader::waiters`] once the promise has settled and will no
-  /// longer accept waiter registrations.
-  ///
-  /// Note: the current runtime does not yet use this sentinel; it is reserved for a future lock-free
-  /// protocol that closes the waiter list after settlement.
-  ///
-  /// This value must never alias a valid pointer. `1` is chosen because waiter nodes are at least
-  /// pointer-aligned (and therefore cannot have an odd address).
-  pub const WAITERS_CLOSED: usize = 1;
 
   #[inline]
   pub fn load_state(&self) -> PromiseState {

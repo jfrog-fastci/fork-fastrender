@@ -35,6 +35,25 @@ pub struct PromiseReactionNode {
   pub vtable: *const PromiseReactionVTable,
 }
 
+/// Decode a raw `PromiseHeader.waiters` value into a reaction-node pointer.
+///
+/// `PromiseHeader.waiters` is specified to contain either:
+/// - `0`, or
+/// - a valid, aligned `PromiseReactionNode*` cast to `usize`.
+///
+/// Any other value is treated as ABI misuse / memory corruption and terminates the process with
+/// `abort()` to avoid dereferencing an invalid pointer (UB).
+#[inline]
+pub(crate) fn decode_waiters_ptr(head_val: usize) -> *mut PromiseReactionNode {
+  if head_val == 0 {
+    return null_mut();
+  }
+  if head_val % core::mem::align_of::<PromiseReactionNode>() != 0 {
+    std::process::abort();
+  }
+  head_val as *mut PromiseReactionNode
+}
+
 #[repr(C)]
 struct PromiseReactionJob {
   node: *mut PromiseReactionNode,

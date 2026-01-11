@@ -13,7 +13,7 @@
 
 use crate::async_abi::{PromiseHeader, PromiseRef};
 use crate::async_rt::{global as async_global, Task};
-use crate::promise_reactions::{reverse_list, PromiseReactionNode, PromiseReactionVTable};
+use crate::promise_reactions::{decode_waiters_ptr, reverse_list, PromiseReactionNode, PromiseReactionVTable};
 use crate::sync::GcAwareMutex;
 use once_cell::sync::Lazy;
 use std::any::Any;
@@ -204,11 +204,8 @@ impl<T> Drop for Promise<T> {
     }
 
     // Drop any reaction nodes that never ran (e.g. if the promise was dropped while pending).
-    let mut head_val = self.header.waiters.swap(0, Ordering::AcqRel);
-    if head_val == PromiseHeader::WAITERS_CLOSED {
-      head_val = 0;
-    }
-    let mut head = head_val as *mut PromiseReactionNode;
+    let head_val = self.header.waiters.swap(0, Ordering::AcqRel);
+    let mut head = decode_waiters_ptr(head_val);
     while !head.is_null() {
       let next = unsafe { (*head).next };
       let vtable = unsafe { (*head).vtable };
@@ -515,16 +512,7 @@ where
     let waiters = &self.header.waiters;
     loop {
       let head_val = waiters.load(Ordering::Acquire);
-      if head_val == PromiseHeader::WAITERS_CLOSED {
-        // The list is closed (reserved for future async ABI); schedule directly.
-        unsafe {
-          (*node).next = null_mut();
-        }
-        let promise_ptr: PromiseRef = Arc::as_ptr(self).cast::<PromiseHeader>() as *mut PromiseHeader;
-        enqueue_reaction_job(self.clone(), promise_ptr, node);
-        return;
-      }
-      let head = head_val as *mut PromiseReactionNode;
+      let head = decode_waiters_ptr(head_val);
       unsafe {
         (*node).next = head;
       }
@@ -545,10 +533,10 @@ where
 
   fn drain_reactions(self: &Arc<Self>) {
     let head_val = self.header.waiters.swap(0, Ordering::AcqRel);
-    if head_val == 0 || head_val == PromiseHeader::WAITERS_CLOSED {
+    let mut head = decode_waiters_ptr(head_val);
+    if head.is_null() {
       return;
     }
-    let mut head = head_val as *mut PromiseReactionNode;
 
     // Reactions are pushed in LIFO order; reverse to preserve FIFO registration order.
     head = unsafe { reverse_list(head) };

@@ -8,7 +8,9 @@ use once_cell::sync::Lazy;
 use std::collections::HashSet;
 use crate::async_runtime::PromiseLayout;
 use crate::gc::HandleId;
-use crate::promise_reactions::{enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable};
+use crate::promise_reactions::{
+  decode_waiters_ptr, enqueue_reaction_jobs, reverse_list, PromiseReactionNode, PromiseReactionVTable,
+};
 use crate::threading;
 
 use super::{gc as async_gc, global as async_global, Task};
@@ -361,12 +363,13 @@ fn alloc_callback_reaction(
 fn push_reaction(ptr: *mut RtPromise, node: *mut PromiseReactionNode) {
   let reactions = unsafe { &(*ptr).header.waiters };
   loop {
-    let head = reactions.load(Ordering::Acquire) as *mut PromiseReactionNode;
+    let head_val = reactions.load(Ordering::Acquire);
+    let head = decode_waiters_ptr(head_val);
     unsafe {
       (*node).next = head;
     }
     if reactions
-      .compare_exchange(head as usize, node as usize, Ordering::AcqRel, Ordering::Acquire)
+      .compare_exchange(head_val, node as usize, Ordering::AcqRel, Ordering::Acquire)
       .is_ok()
     {
       break;
@@ -376,7 +379,8 @@ fn push_reaction(ptr: *mut RtPromise, node: *mut PromiseReactionNode) {
 
 fn drain_reactions(ptr: *mut RtPromise) {
   let reactions = unsafe { &(*ptr).header.waiters };
-  let mut head = reactions.swap(0, Ordering::AcqRel) as *mut PromiseReactionNode;
+  let head_val = reactions.swap(0, Ordering::AcqRel);
+  let mut head = decode_waiters_ptr(head_val);
   if head.is_null() {
     // No more reactions; ensure we don't retain the promise in the tracking set.
     untrack_pending_reactions(ptr);
