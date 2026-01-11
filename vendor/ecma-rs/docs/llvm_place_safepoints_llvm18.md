@@ -118,6 +118,15 @@ If the input module predeclares `@gc.safepoint_poll()` then
 `LLVMRunPasses(..., \"place-safepoints\", ...)` also works, matching the `opt-18`
 workaround.
 
+### Rust wrapper (native-js)
+
+`native-js` includes a small Rust helper that runs the safepoint pipeline via
+`LLVMRunPasses` and applies the `@gc.safepoint_poll()` predeclaration workaround:
+
+- `native-js/src/llvm_passes.rs`:
+  - `ensure_gc_safepoint_poll_decl`
+  - `run_place_safepoints_and_rewrite_statepoints_for_gc`
+
 ## Legacy pass manager routes
 
 - `opt-18` (LLVM 18) does not expose a legacy `-place-safepoints` style flag; it

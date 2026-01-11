@@ -46,6 +46,7 @@ pub mod link;
 pub mod llvm;
 pub mod runtime_abi;
 pub mod strict;
+pub mod llvm_passes;
 
 mod stack_walking;
 pub use stack_walking::CodeGen;
