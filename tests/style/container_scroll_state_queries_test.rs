@@ -103,7 +103,7 @@ fn container_scroll_state_queries_require_container_type_scroll_state_opt_in() {
   assert_eq!(
     target.styles.color,
     Rgba::rgb(0, 0, 255),
-    "expected scroll-state queries to require container-type opt-in"
+    "expected scroll-state queries to require container-type opt-in",
   );
 }
 

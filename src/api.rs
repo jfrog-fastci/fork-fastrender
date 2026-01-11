@@ -19360,6 +19360,10 @@ fn build_container_query_context(
     // matching the paint pipeline which applies scroll snap before evaluating scroll-driven state.
     let mut tree = fragments.clone();
     let snapped = crate::scroll::apply_scroll_snap(&mut tree, scroll_state);
+    // `apply_scroll_snap` computes and stores scroll metadata on the (cloned) fragment tree, but
+    // `fragments` is an immutable reference so it may not have metadata pre-populated. Container
+    // query "snapped" evaluation needs access to the snap target list, so carry the computed
+    // metadata forward for the marking pass below.
     (Some(snapped.state), tree.scroll_metadata.clone())
   } else {
     (None, None)

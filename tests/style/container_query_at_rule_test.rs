@@ -261,7 +261,7 @@ fn not_container_query_parses_and_evaluates() {
 }
 
 #[test]
-fn container_query_or_with_scroll_state_requires_scroll_state_container() {
+fn container_query_or_allows_known_clause_when_other_clause_is_unknown() {
   let css = r#"
     .target { display: block; }
     @container (min-width: 400px) or scroll-state(snapped: top) {
@@ -277,7 +277,7 @@ fn container_query_or_with_scroll_state_requires_scroll_state_container() {
     vec![],
   );
 
-  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
 }
 
 #[test]
