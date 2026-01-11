@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 const FALLBACK_DEFAULT_BUDGET_MS: u64 = 5000;
@@ -228,8 +228,22 @@ fn run_perf_smoke(
   output: &Path,
   _tempdir: &TempDir,
 ) -> Result<()> {
+  let mut cmd = build_perf_smoke_command(args, output);
+
+  let status = cmd
+    .status()
+    .context("failed to invoke perf_smoke via cargo_agent")?;
+  if !status.success() {
+    bail!("perf_smoke failed with status {status}");
+  }
+  Ok(())
+}
+
+fn build_perf_smoke_command(args: &UpdatePagesetGuardrailsBudgetsArgs, output: &Path) -> Command {
+  let repo_root = crate::repo_root();
+
   // Keep renders deterministic across machines.
-  let mut cmd = xtask::cmd::cargo_agent_command(&crate::repo_root());
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   // Ensure we always exercise the same manifest, even if the caller has env vars set.
   cmd.env(
@@ -242,6 +256,11 @@ fn run_perf_smoke(
     .arg("--release")
     .args(["--bin", "perf_smoke", "--"])
     .args(["--suite", "pageset-guardrails"])
+    // When updating budgets, treat any fixture failures or subresource fetch errors as fatal.
+    // Otherwise, perf_smoke will happily emit total_ms=0 and we would write bogus budgets into the
+    // manifest.
+    .arg("--fail-on-failure")
+    .arg("--fail-on-fetch-errors")
     .arg("--output")
     .arg(output);
 
@@ -255,13 +274,7 @@ fn run_perf_smoke(
   cmd.stderr(Stdio::inherit());
   cmd.current_dir(crate::repo_root());
 
-  let status = cmd
-    .status()
-    .context("failed to invoke perf_smoke via cargo_agent")?;
-  if !status.success() {
-    bail!("perf_smoke failed with status {status}");
-  }
-  Ok(())
+  cmd
 }
 
 fn sync_guardrails_manifests(manifest_path: &Path, json: &str) -> Result<()> {
@@ -435,6 +448,7 @@ fn round_up_to_increment(value_ms: u64, increment_ms: u64) -> u64 {
 mod tests {
   use super::*;
   use serde_json::json;
+  use std::path::PathBuf;
 
   fn policy() -> BudgetPolicy {
     BudgetPolicy {
@@ -526,5 +540,92 @@ mod tests {
       .to_string();
     assert!(err.contains("refusing to increase budgets"), "got: {err}");
     assert!(err.contains("example:"), "got: {err}");
+  }
+
+  fn base_args() -> UpdatePagesetGuardrailsBudgetsArgs {
+    UpdatePagesetGuardrailsBudgetsArgs {
+      manifest: PathBuf::from("tests/pages/pageset_guardrails.json"),
+      multiplier: DEFAULT_BUDGET_MULTIPLIER,
+      min_budget_ms: None,
+      max_budget_ms: DEFAULT_MAX_BUDGET_MS,
+      round_to_ms: DEFAULT_ROUND_TO_MS,
+      max_budget_increase_percent: DEFAULT_MAX_BUDGET_INCREASE_PERCENT,
+      allow_budget_increase: false,
+      isolate: false,
+      dry_run: true,
+      write: false,
+    }
+  }
+
+  #[test]
+  fn perf_smoke_command_includes_safety_flags_and_no_isolate_by_default() {
+    let args = base_args();
+    let cmd = build_perf_smoke_command(&args, Path::new("out.json"));
+
+    let argv: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().into_owned())
+      .collect();
+
+    assert!(
+      argv.iter().any(|arg| arg == "--fail-on-failure"),
+      "expected perf_smoke command to pass --fail-on-failure; got {argv:?}"
+    );
+    assert!(
+      argv.iter().any(|arg| arg == "--fail-on-fetch-errors"),
+      "expected perf_smoke command to pass --fail-on-fetch-errors; got {argv:?}"
+    );
+    assert!(
+      argv.windows(2).any(|w| w == ["--suite", "pageset-guardrails"]),
+      "expected perf_smoke command to select the pageset-guardrails suite; got {argv:?}"
+    );
+    assert!(
+      argv.iter().any(|arg| arg == "--no-isolate"),
+      "expected perf_smoke command to pass --no-isolate by default; got {argv:?}"
+    );
+
+    let envs: Vec<(String, Option<String>)> = cmd
+      .get_envs()
+      .map(|(k, v)| {
+        (
+          k.to_string_lossy().into_owned(),
+          v.map(|v| v.to_string_lossy().into_owned()),
+        )
+      })
+      .collect();
+
+    assert!(
+      envs
+        .iter()
+        .any(|(k, v)| k == "FASTR_USE_BUNDLED_FONTS" && v.as_deref() == Some("1")),
+      "expected perf_smoke command to force bundled fonts; got {envs:?}"
+    );
+    assert!(
+      envs.iter().any(|(k, _)| k == "FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST"),
+      "expected perf_smoke command to set FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST; got {envs:?}"
+    );
+    assert!(
+      envs
+        .iter()
+        .any(|(k, v)| k == "FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST" && v.is_some()),
+      "expected perf_smoke command to set legacy FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST; got {envs:?}"
+    );
+  }
+
+  #[test]
+  fn perf_smoke_command_omits_no_isolate_when_isolate_is_requested() {
+    let mut args = base_args();
+    args.isolate = true;
+
+    let cmd = build_perf_smoke_command(&args, Path::new("out.json"));
+    let argv: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().into_owned())
+      .collect();
+
+    assert!(
+      !argv.iter().any(|arg| arg == "--no-isolate"),
+      "expected perf_smoke command to omit --no-isolate when isolate=true; got {argv:?}"
+    );
   }
 }
