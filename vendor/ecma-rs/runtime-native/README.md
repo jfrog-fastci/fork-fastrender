@@ -70,6 +70,30 @@ Current behavior: `rt_parallel_spawn` enqueues work onto a global FIFO queue ser
 worker pool (default: one worker per CPU). `rt_parallel_join` waits for completion and may
 opportunistically execute queued tasks on the joining thread to reduce idle time.
 
+## Blocking thread pool ABI (`rt_spawn_blocking`)
+
+Many host APIs are inherently blocking (filesystem, DNS, crypto, etc.). To preserve async semantics
+without blocking the event loop, `runtime-native` exposes a dedicated blocking thread pool.
+
+`rt_spawn_blocking` runs `task(data, promise)` on the blocking pool and returns the allocated
+`PromiseRef`:
+
+```c
+PromiseRef rt_spawn_blocking(void (*task)(uint8_t* data, PromiseRef promise), uint8_t* data);
+```
+
+Contract:
+
+- The runtime allocates a new pending promise and passes it to the task.
+- The task must settle the promise via `rt_promise_resolve` / `rt_promise_reject`.
+- `data` must remain valid for the duration of the task and must be safe to access from a blocking
+  worker thread.
+
+Pool sizing:
+
+- Default: `min(std::thread::available_parallelism(), 32)`
+- Override: set `RT_BLOCKING_THREADS` to a positive integer before first use.
+
 ## Coroutine ABI
 
 Generated coroutine frames are `#[repr(C)]` structs whose **first field** (prefix) is
