@@ -1,38 +1,51 @@
 //! Test harness for comparing native execution against the `vm-js` oracle.
 //!
-//! This crate is intentionally small. Its primary job is to:
-//! - Load TypeScript fixtures.
-//! - Erase TypeScript-only syntax to JavaScript (TS→JS "erasure").
-//! - Execute the erased JavaScript in the oracle runtime.
+//! The main responsibilities of this crate are:
+//! - TS→JS erasure (TypeScript-only syntax removed/lowered into runnable JavaScript), and
+//! - running the erased JavaScript under `vm-js` as a deterministic oracle.
 //!
-//! The TS→JS step uses the shared `ts-erase` lowering pipeline. When erasure
-//! encounters unsupported syntax, consumers can enable the
-//! `optimize-js-fallback` feature to fall back to the heavier `optimize-js`
-//! compile+decompile path.
+//! ## Promise-aware execution (`run_fixture*`)
 //!
-//! ## Promise-aware execution
-//!
-//! Fixtures can return either:
+//! [`run_fixture`] / [`run_fixture_with_options`] execute `*.ts` and `*.js` fixture files and
+//! expect the **script completion value** to be either:
 //! - a JavaScript string, or
 //! - a `Promise<string>`.
 //!
-//! When a fixture returns a Promise, the harness performs microtask checkpoints
-//! (draining the VM's microtask queue) until the Promise settles, with explicit
-//! caps to ensure the harness never hangs.
+//! When a fixture returns a Promise, the harness performs microtask checkpoints (draining the VM's
+//! microtask queue) until the Promise settles, with explicit caps to ensure the harness never
+//! hangs.
+//!
+//! ## Global observation protocol (`run_fixture_ts*`)
+//!
+//! For deterministic value-comparison fixtures, [`run_fixture_ts`] runs TypeScript source and
+//! returns `String(globalThis.__native_result)` after a microtask checkpoint.
 
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+use diagnostics::{Diagnostic, FileId, Span, TextRange};
 use emit_js::{emit_top_level_diagnostic, EmitOptions};
-use parse_js::{Dialect, ParseOptions, SourceType};
-use vm_js::{format_termination, Heap, HeapLimits, JsRuntime, MicrotaskQueue, PromiseState, SourceText, Value, Vm, VmError, VmOptions};
+use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
+use vm_js::{
+  format_stack_trace, format_termination, Budget, Heap, HeapLimits, JsRuntime, MicrotaskQueue,
+  PromiseState, SourceText, Value, Vm, VmError, VmOptions,
+};
+
+const OBSERVE_SCRIPT: &str = "String(globalThis.__native_result)";
+const OBSERVE_SOURCE_NAME: &str = "<native-oracle-observe>";
+
+const HEAP_MAX_BYTES: usize = 8 * 1024 * 1024;
+const HEAP_GC_THRESHOLD_BYTES: usize = 4 * 1024 * 1024;
+
+// A deterministic guardrail for accidental infinite loops in fixtures.
+const VM_FUEL: u64 = 1_000_000;
 
 #[derive(Debug)]
 pub enum TsToJsError {
   Parse(parse_js::error::SyntaxError),
-  Erase(Vec<diagnostics::Diagnostic>),
-  Emit(diagnostics::Diagnostic),
+  Erase(Vec<Diagnostic>),
+  Emit(Diagnostic),
   #[cfg(feature = "optimize-js-fallback")]
   Optimize(Vec<optimize_js::Diagnostic>),
   #[cfg(feature = "optimize-js-fallback")]
@@ -43,25 +56,35 @@ impl std::fmt::Display for TsToJsError {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       TsToJsError::Parse(err) => write!(f, "{err}"),
-      TsToJsError::Erase(diagnostics) => write!(
-        f,
-        "ts-erase TS→JS erasure failed with {} diagnostic(s)",
-        diagnostics.len()
-      ),
-      TsToJsError::Emit(diag) => write!(
-        f,
-        "emit-js TS→JS emission failed ({}): {}",
-        diag.code, diag.message
-      ),
+      TsToJsError::Erase(diagnostics) => {
+        write!(
+          f,
+          "ts-erase TS→JS erasure failed with {} diagnostic(s)",
+          diagnostics.len()
+        )?;
+        if let Some(first) = diagnostics.first() {
+          write!(f, ": {}: {}", first.code, first.message)?;
+        }
+        Ok(())
+      }
+      TsToJsError::Emit(diag) => {
+        write!(f, "emit-js TS→JS emission failed: {}: {}", diag.code, diag.message)
+      }
       #[cfg(feature = "optimize-js-fallback")]
-      TsToJsError::Optimize(diagnostics) => write!(
-        f,
-        "optimize-js TS→JS fallback failed with {} diagnostic(s)",
-        diagnostics.len()
-      ),
+      TsToJsError::Optimize(diagnostics) => {
+        write!(
+          f,
+          "optimize-js TS→JS fallback failed with {} diagnostic(s)",
+          diagnostics.len()
+        )?;
+        if let Some(first) = diagnostics.first() {
+          write!(f, ": {}: {}", first.code, first.message)?;
+        }
+        Ok(())
+      }
       #[cfg(feature = "optimize-js-fallback")]
       TsToJsError::OptimizeEmit(err) => {
-        write!(f, "optimize-js TS→JS fallback emit failed: {err:?}")
+        write!(f, "optimize-js TS→JS fallback emit failed: {err}")
       }
     }
   }
@@ -69,31 +92,45 @@ impl std::fmt::Display for TsToJsError {
 
 impl std::error::Error for TsToJsError {}
 
-/// Erase TypeScript-only syntax from `source`, returning JavaScript that can be
-/// executed by the oracle VM.
+/// Erase TypeScript-only syntax from `source`, returning JavaScript that can be executed by the
+/// oracle VM.
 ///
 /// This is intentionally a best-effort API:
-/// - It first attempts to parse TS, erase it via `ts-erase` (strict subset), and
-///   emit JS via `emit-js`.
-/// - If erasure/emission fails and the `optimize-js-fallback` feature is
-///   enabled, it falls back to `optimize-js`'s decompiler, which supports a
-///   wider range of syntax (but is significantly heavier).
+/// - It first attempts to parse TS/TSX, erase it via `ts-erase` (`StrictNative` mode), and emit JS
+///   via `emit-js`.
+/// - If erasure/emission fails and the `optimize-js-fallback` feature is enabled, it falls back to
+///   `optimize-js`'s decompiler, which supports a wider range of syntax (but is significantly
+///   heavier).
 pub fn erase_typescript_to_js(source: &str) -> Result<String, TsToJsError> {
-  let file = diagnostics::FileId(0);
-  let mut ast = parse_js::parse_with_options(
-    source,
-    ParseOptions {
-      dialect: Dialect::Ts,
-      source_type: SourceType::Script,
-    },
-  )
-  .map_err(TsToJsError::Parse)?;
+  let file = FileId(0);
 
-  if let Err(diags) = ts_erase::erase_types_strict_native(file, SourceType::Script, &mut ast) {
+  // Prefer TS parsing; fall back to TSX for JSX-heavy inputs.
+  let mut last_error = None;
+  let mut parsed = None;
+  for dialect in [Dialect::Ts, Dialect::Tsx] {
+    let opts = ParseOptions {
+      dialect,
+      source_type: SourceType::Script,
+    };
+    match parse_with_options(source, opts) {
+      Ok(ast) => {
+        parsed = Some(ast);
+        break;
+      }
+      Err(err) => last_error = Some(err),
+    }
+  }
+
+  let mut top_level = match parsed {
+    Some(ast) => ast,
+    None => return Err(TsToJsError::Parse(last_error.expect("parse attempted"))),
+  };
+
+  if let Err(diags) = ts_erase::erase_types_strict_native(file, SourceType::Script, &mut top_level) {
     return erase_with_optimize_js_fallback(source, TsToJsError::Erase(diags));
   }
 
-  match emit_top_level_diagnostic(file, &ast, EmitOptions::minified()) {
+  match emit_top_level_diagnostic(file, &top_level, EmitOptions::minified()) {
     Ok(output) => Ok(output),
     Err(diag) => erase_with_optimize_js_fallback(source, TsToJsError::Emit(diag)),
   }
@@ -189,7 +226,7 @@ pub fn run_fixture_with_options(
     .into();
   let source_text = fs::read_to_string(path)?;
   let ext = path.extension().and_then(|ext| ext.to_str());
-  if ext == Some("ts") {
+  if matches!(ext, Some("ts") | Some("tsx")) {
     run_typescript_source_with_options(source_name, &source_text, options)
   } else {
     // JS fixtures bypass the TS→JS pipeline; this keeps the promise/microtask
@@ -351,11 +388,7 @@ fn map_vm_error(rt: &mut JsRuntime, err: VmError) -> OracleHarnessError {
       let mut msg = stringify_value(rt, value, 0);
       if !stack.is_empty() {
         msg.push('\n');
-        for frame in stack {
-          msg.push_str(&format!("{frame}\n"));
-        }
-        // Remove the trailing newline for cleaner output.
-        msg.truncate(msg.trim_end_matches('\n').len());
+        msg.push_str(&format_stack_trace(&stack));
       }
       OracleHarnessError::UncaughtException { message: msg }
     }
@@ -389,9 +422,168 @@ fn stringify_value(rt: &mut JsRuntime, value: Value, depth: usize) -> String {
       .get_string(s)
       .map(|js| js.to_utf8_lossy())
       .unwrap_or_else(|_| "<invalid string>".to_string()),
-    Err(VmError::Throw(v) | VmError::ThrowWithStack { value: v, .. }) => stringify_value(rt, v, depth + 1),
+    Err(VmError::Throw(v) | VmError::ThrowWithStack { value: v, .. }) => {
+      stringify_value(rt, v, depth + 1)
+    }
     Err(_) => format!("{value:?}"),
   }
+}
+
+fn empty_span() -> Span {
+  Span::new(FileId(0), TextRange::new(0, 0))
+}
+
+fn harness_error(message: impl Into<String>) -> Diagnostic {
+  Diagnostic::error("ORACLE0001", message, empty_span())
+}
+
+fn diagnostics_to_one(mut diags: Vec<Diagnostic>) -> Diagnostic {
+  if diags.is_empty() {
+    return harness_error("operation returned no diagnostics");
+  }
+  let mut first = diags.remove(0);
+  if !diags.is_empty() {
+    first.push_note(format!("and {} more diagnostics", diags.len()));
+    for diag in diags {
+      first.push_note(format!("{}: {}", diag.code, diag.message));
+    }
+  }
+  first
+}
+
+fn ts_to_js(ts: &str) -> Result<String, Diagnostic> {
+  let file = FileId(0);
+  erase_typescript_to_js(ts).map_err(|err| match err {
+    TsToJsError::Parse(err) => err.to_diagnostic(file),
+    TsToJsError::Erase(diags) => diagnostics_to_one(diags),
+    TsToJsError::Emit(diag) => diag,
+    #[cfg(feature = "optimize-js-fallback")]
+    TsToJsError::Optimize(diags) => diagnostics_to_one(diags),
+    #[cfg(feature = "optimize-js-fallback")]
+    TsToJsError::OptimizeEmit(err) => harness_error(format!("optimize-js TS→JS fallback failed: {err}")),
+  })
+}
+
+fn new_runtime() -> Result<JsRuntime, VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(HEAP_MAX_BYTES, HEAP_GC_THRESHOLD_BYTES));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  rt.vm.set_budget(Budget {
+    fuel: Some(VM_FUEL),
+    deadline: None,
+    check_time_every: 100,
+  });
+  Ok(rt)
+}
+
+fn value_to_string(rt: &JsRuntime, value: Value) -> String {
+  match value {
+    Value::Undefined => "undefined".to_string(),
+    Value::Null => "null".to_string(),
+    Value::Bool(b) => b.to_string(),
+    Value::Number(n) => n.to_string(),
+    Value::BigInt(b) => b.to_decimal_string(),
+    Value::String(s) => rt
+      .heap()
+      .get_string(s)
+      .map(|s| s.to_utf8_lossy())
+      .unwrap_or_else(|_| "<invalid string>".to_string()),
+    Value::Symbol(sym) => format!("<symbol {sym:?}>"),
+    Value::Object(obj) => format!("<object {obj:?}>"),
+  }
+}
+
+fn vm_error_to_diagnostic(rt: &JsRuntime, err: VmError) -> Diagnostic {
+  match err {
+    VmError::Syntax(diags) => diagnostics_to_one(diags),
+    VmError::ThrowWithStack { value, stack } => {
+      let mut diag = harness_error(format!("uncaught exception: {}", value_to_string(rt, value)));
+      if !stack.is_empty() {
+        diag.push_note(format_stack_trace(&stack));
+      }
+      diag
+    }
+    VmError::Throw(value) => {
+      harness_error(format!("uncaught exception: {}", value_to_string(rt, value)))
+    }
+    VmError::Termination(term) => harness_error(format_termination(&term)),
+    other => harness_error(other.to_string()),
+  }
+}
+
+/// Future boundary for a native TS→native backend.
+///
+/// The oracle harness can run TS through the `vm-js` reference engine today; once `native-js`
+/// exists, it can implement this trait so the same fixtures can be compared against native output.
+pub trait NativeRunner {
+  fn compile_and_run(&self, ts: &str) -> Result<String, Diagnostic>;
+}
+
+/// A runner that uses the `vm-js` interpreter as a JavaScript oracle.
+pub struct VmJsOracleRunner;
+
+impl VmJsOracleRunner {
+  pub fn new() -> Self {
+    Self
+  }
+}
+
+impl Default for VmJsOracleRunner {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl NativeRunner for VmJsOracleRunner {
+  fn compile_and_run(&self, ts: &str) -> Result<String, Diagnostic> {
+    run_fixture_ts(ts)
+  }
+}
+
+/// Run a TypeScript fixture and return the deterministic observation string.
+///
+/// Protocol:
+/// 1) The TS source is parsed with `parse-js`, erased to JS with `ts-erase`, and emitted as
+///    JavaScript via `emit-js`.
+/// 2) The emitted JS is executed with `vm-js`.
+/// 3) A microtask checkpoint is performed so `.then(...)` callbacks can run.
+/// 4) The harness evaluates `String(globalThis.__native_result)` and returns it.
+pub fn run_fixture_ts(source: &str) -> Result<String, Diagnostic> {
+  run_fixture_ts_with_name("<fixture>", source)
+}
+
+/// Like [`run_fixture_ts`] but uses a custom source name for VM error reporting.
+pub fn run_fixture_ts_with_name(name: &str, source: &str) -> Result<String, Diagnostic> {
+  let js = ts_to_js(source)?;
+
+  let mut rt = new_runtime().map_err(|err| harness_error(format!("failed to init vm-js: {err}")))?;
+
+  let fixture_source = Arc::new(SourceText::new(name, js));
+  rt.exec_script_source(fixture_source)
+    .map_err(|err| vm_error_to_diagnostic(&rt, err))?;
+
+  rt.vm
+    .perform_microtask_checkpoint(&mut rt.heap)
+    .map_err(|err| vm_error_to_diagnostic(&rt, err))?;
+
+  let value = rt
+    .exec_script_source(Arc::new(SourceText::new(
+      OBSERVE_SOURCE_NAME,
+      OBSERVE_SCRIPT,
+    )))
+    .map_err(|err| vm_error_to_diagnostic(&rt, err))?;
+
+  let Value::String(s) = value else {
+    return Err(harness_error(format!(
+      "observe script returned non-string value: {value:?}"
+    )));
+  };
+
+  Ok(rt
+    .heap()
+    .get_string(s)
+    .map_err(|err| harness_error(format!("invalid string handle: {err}")))?
+    .to_utf8_lossy())
 }
 
 #[cfg(test)]

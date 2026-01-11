@@ -1,3 +1,3 @@
+// EXPECT: 1
 var fn = (x) => x;
-fn?.<string>(1);
-
+globalThis.__native_result = fn?.<string>(1);

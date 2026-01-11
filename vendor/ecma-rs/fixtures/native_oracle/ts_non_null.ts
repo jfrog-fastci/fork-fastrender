@@ -1,3 +1,3 @@
+// EXPECT: 1
 var x = 1!;
-Object(x);
-
+globalThis.__native_result = x;
