@@ -4,9 +4,11 @@
 //! - A stable C ABI surface that LLVM-generated code can link against.
 //! - A stop-the-world generational GC implementation (`gc::GcHeap`) used by tests and future ABI wiring.
 //!
-//! Note: the current exported allocation/collection entrypoints (`rt_alloc`, `rt_gc_collect`) are
-//! still backed by `malloc` / stubs; the exported write barrier is implemented and performs
-//! young-range checks + remembered-set tracking (see `docs/write_barrier.md`).
+//! Note:
+//! - `rt_alloc*` is backed by the GC heap (nursery TLAB fast path + Immix/LOS slow paths).
+//! - `rt_gc_collect` is still a stop-the-world handshake stub (it does not yet run a full GC).
+//! - The exported write barrier is implemented and performs young-range checks + sets the per-object
+//!   remembered bit (see `docs/write_barrier.md`).
 //!
 //! ## Pinned allocations
 //!
@@ -110,6 +112,7 @@ mod parallel_integration;
 mod interner;
 mod native_async;
 mod platform;
+mod rt_alloc;
 mod rt_trace;
 mod string;
 mod trap;

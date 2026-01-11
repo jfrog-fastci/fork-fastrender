@@ -21,7 +21,7 @@ use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
 use crate::gc::YOUNG_SPACE;
 use crate::BackingStoreAllocator;
-use crate::shape_table;
+use crate::rt_alloc as rt_alloc_mod;
 use crate::threading;
 use crate::threading::registry;
 use crate::trap;
@@ -245,28 +245,8 @@ fn ensure_current_thread_registered() {
 pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_alloc(size);
-
   // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| {
-    let desc = shape_table::lookup_rt_descriptor(shape);
-    if size != desc.size as usize {
-      crate::trap::rt_trap_invalid_arg("rt_alloc: size does not match registered shape descriptor");
-    }
-
-    let align = desc.align as usize;
-    let obj = alloc::alloc_bytes(size, align, "rt_alloc");
-
-    // Ensure pointer slots start out as null so tracing never sees uninitialized garbage.
-    // SAFETY: `obj` is valid for `size` bytes.
-    unsafe {
-      std::ptr::write_bytes(obj, 0, size);
-      let header = &mut *(obj as *mut ObjHeader);
-      header.type_desc = shape_table::lookup_type_descriptor(shape) as *const _;
-      header.meta.store(0, Ordering::Relaxed);
-    }
-
-    obj
-  }));
+  let res = catch_unwind(AssertUnwindSafe(|| rt_alloc_mod::alloc(size, shape)));
 
   match res {
     Ok(ptr) => ptr,
@@ -283,28 +263,7 @@ pub extern "C" fn rt_alloc(size: usize, shape: RtShapeId) -> crate::roots::GcPtr
 #[inline(never)]
 pub extern "C" fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> crate::roots::GcPtr {
   // Don't let panics unwind across the extern "C" boundary.
-  let res = catch_unwind(AssertUnwindSafe(|| {
-    let desc = shape_table::lookup_rt_descriptor(shape);
-    if size != desc.size as usize {
-      crate::trap::rt_trap_invalid_arg(
-        "rt_alloc_pinned: size does not match registered shape descriptor",
-      );
-    }
-
-    let align = desc.align as usize;
-    let obj = alloc::alloc_bytes(size, align, "rt_alloc_pinned");
-
-    // SAFETY: `obj` is valid for `size` bytes.
-    unsafe {
-      std::ptr::write_bytes(obj, 0, size);
-      let header = &mut *(obj as *mut ObjHeader);
-      header.type_desc = shape_table::lookup_type_descriptor(shape) as *const _;
-      header.meta.store(0, Ordering::Relaxed);
-      header.set_pinned(true);
-    }
-
-    obj
-  }));
+  let res = catch_unwind(AssertUnwindSafe(|| rt_alloc_mod::alloc_pinned(size, shape)));
 
   match res {
     Ok(ptr) => ptr,
@@ -1847,7 +1806,7 @@ pub extern "C" fn rt_clear_timer(id: TimerId) {
 }
 
 // -----------------------------------------------------------------------------
-// Minimal promise ABI (used by async/await lowering)
+// Legacy promise/coroutine ABI (used by current async_rt tests)
 // -----------------------------------------------------------------------------
 
 #[no_mangle]

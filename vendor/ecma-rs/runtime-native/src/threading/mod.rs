@@ -11,8 +11,6 @@ mod parked;
 
 pub use registry::all_threads;
 pub use registry::thread_counts;
-pub use registry::register_current_thread;
-pub use registry::unregister_current_thread;
 pub use registry::ThreadCounts;
 pub use registry::ThreadId;
 pub use registry::ThreadKind;
@@ -89,4 +87,23 @@ pub fn set_parked(parked: bool) {
 #[inline(always)]
 pub fn safepoint_poll() {
   safepoint::rt_gc_safepoint();
+}
+
+/// Register the current OS thread with the runtime's thread registry.
+///
+/// This wrapper also initializes thread-local allocator state used by `rt_alloc`.
+pub fn register_current_thread(kind: ThreadKind) -> ThreadId {
+  let id = registry::register_current_thread(kind);
+  crate::rt_alloc::on_thread_registered(id);
+  id
+}
+
+/// Unregister the current OS thread from the runtime's thread registry.
+///
+/// This wrapper also tears down thread-local allocator bookkeeping used by `rt_alloc`.
+pub fn unregister_current_thread() {
+  if let Some(id) = registry::current_thread_id() {
+    crate::rt_alloc::on_thread_unregistered(id);
+  }
+  registry::unregister_current_thread();
 }

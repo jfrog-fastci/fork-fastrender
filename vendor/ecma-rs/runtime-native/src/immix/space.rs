@@ -163,6 +163,61 @@ impl ImmixSpace {
     )
   }
 
+  /// Reserve an Immix hole for thread-local bump allocation.
+  ///
+  /// This is the multithreaded "refill" path used by the runtime allocator:
+  /// - The selected hole (or entire block) is **claimed** by marking its lines in the block's line
+  ///   map, so other threads won't allocate from it.
+  /// - The caller is expected to perform bump allocation within the returned `start..limit`
+  ///   range **without** mutating Immix metadata on the hot path.
+  ///
+  /// The reserved range is line-aligned and may be larger than `min_lines`.
+  pub fn reserve_hole(&mut self, min_lines: usize) -> Option<(*mut u8, *mut u8)> {
+    if min_lines == 0 || min_lines > super::LINES_PER_BLOCK {
+      return None;
+    }
+
+    // Prefer fully free blocks (largest_hole_lines == LINES_PER_BLOCK), then fall back to any block
+    // with a large-enough hole. We keep `available_by_hole` up-to-date by removing the block from
+    // its old bucket and reinserting it under its new `largest_hole_lines` after claiming.
+    for hole_lines in (min_lines..=super::LINES_PER_BLOCK).rev() {
+      while let Some(block_id) = self.available_by_hole[hole_lines].pop() {
+        let block = &self.blocks[block_id];
+        if let Some((hole_start, hole_end)) = bitmap::find_hole(&block.line_map, 0, min_lines) {
+          let start = block.start_addr() + (hole_start * LINE_SIZE);
+          let limit = block.start_addr() + (hole_end * LINE_SIZE);
+
+          let block = &mut self.blocks[block_id];
+          block.mark_addr_range(start, limit);
+
+          let largest = bitmap::largest_hole_lines(&block.line_map);
+          if largest > 0 {
+            self.available_by_hole[largest].push(block_id);
+          }
+
+          return Some((start as *mut u8, limit as *mut u8));
+        }
+
+        // Stale bucket entry (should be rare): recompute and reinsert if the block still has space.
+        let largest = bitmap::largest_hole_lines(&block.line_map);
+        if largest > 0 {
+          self.available_by_hole[largest].push(block_id);
+        }
+      }
+    }
+
+    // No holes: allocate a new block.
+    let block_id = self.blocks.len();
+    let mut block = Block::new(block_id)?;
+    let start = block.start_addr();
+    debug_assert_eq!(start % BLOCK_SIZE, 0);
+    let limit = start + BLOCK_SIZE;
+    block.mark_addr_range(start, limit);
+    self.block_by_start.insert(start, block_id);
+    self.blocks.push(block);
+    Some((start as *mut u8, limit as *mut u8))
+  }
+
   /// Clear all line maps in preparation for a full-heap marking pass.
   pub fn clear_all_line_maps(&mut self) {
     for block in &mut self.blocks {

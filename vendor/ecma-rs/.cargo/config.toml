@@ -5,6 +5,12 @@
 # without switching toolchains.
 RUSTC_BOOTSTRAP = "1"
 
+# runtime-native relies on an FP-based stack walker / root enumerator for tests and
+# stop-the-world GC plumbing. Ensure all crates in this workspace are built with
+# frame pointers so stack walking is reliable.
+[build]
+rustflags = ["-Cforce-frame-pointers=yes"]
+
 # The parent repository configures `clang` as the linker driver on Linux and
 # intentionally avoids pinning a specific `-fuse-ld=...` implementation (which
 # can break in minimal CI images).

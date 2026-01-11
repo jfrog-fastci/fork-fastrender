@@ -31,6 +31,8 @@ pub use weak::WeakHandles;
 pub use young::YoungSpace;
 
 pub(crate) use young::YOUNG_SPACE;
+#[cfg(any(debug_assertions, feature = "gc_debug"))]
+pub(crate) use verify::register_type_descriptor_ptr;
 
 /// Align `value` up to the next multiple of `align` (power-of-two).
 ///

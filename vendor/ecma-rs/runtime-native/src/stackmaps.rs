@@ -590,11 +590,9 @@ impl<'a> CallSite<'a> {
       }
     }
 
-    // Detect LLVM `gc.statepoint` record layout by structure, not by `patchpoint_id`.
-    //
-    // LLVM allows overriding `patchpoint_id` (via `"statepoint-id"`), and it is not contractually
-    // guaranteed to match any fixed constant. Misclassifying a statepoint as a generic patchpoint
-    // would cause us to treat deopt operands as roots or skip relocation pairs entirely.
+    // `gc.relocate` pairing is only meaningful for LLVM statepoints. Detect statepoints by their
+    // structural prefix, not by `patchpoint_id`: LLVM allows overriding the id (via `"statepoint-id"`)
+    // and does not guarantee a fixed constant.
     let looks_like_statepoint = self.record.locations.len()
       >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
       && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]

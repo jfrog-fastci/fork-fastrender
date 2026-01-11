@@ -43,7 +43,7 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   //
   // With `stack_size = 24`, `caller_sp_callsite = caller_fp + 8 - stack_size = caller_fp - 16`, so
   // `callee_fp = caller_fp - 32`.
-  let start_fp = caller_fp - 0x20;
+  let start_fp = caller_fp - (callsite.stack_size as usize) - 8;
   assert!(caller_fp > start_fp);
 
   let slot0 = caller_fp - 0x10;

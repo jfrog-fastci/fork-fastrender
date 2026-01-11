@@ -55,10 +55,13 @@ unsafe extern "C" fn counter_destroy(coro: CoroutineRef) {
   if coro.is_null() {
     return;
   }
+  if unsafe { (*coro).flags } & CORO_FLAG_RUNTIME_OWNS_FRAME == 0 {
+    return;
+  }
   // Safety: CounterCoro is #[repr(C)] and Coroutine is its first field. For runtime-owned
   // coroutines, the test passes a `Box::into_raw` pointer to the runtime, and the runtime
   // calls `destroy` exactly once on completion/cancellation.
-  unsafe { drop(Box::from_raw(coro as *mut CounterCoro)) };
+  drop(Box::from_raw(coro as *mut CounterCoro));
 }
 
 static COUNTER_VTABLE: CoroutineVTable = CoroutineVTable {
@@ -158,10 +161,13 @@ unsafe extern "C" fn yield_once_destroy(coro: CoroutineRef) {
   if coro.is_null() {
     return;
   }
+  if unsafe { (*coro).flags } & CORO_FLAG_RUNTIME_OWNS_FRAME == 0 {
+    return;
+  }
   // Safety: YieldOnceCoro is #[repr(C)] and Coroutine is its first field. For runtime-owned
   // coroutines, the test passes a `Box::into_raw` pointer to the runtime, and the runtime
   // calls `destroy` exactly once on completion/cancellation.
-  unsafe { drop(Box::from_raw(coro as *mut YieldOnceCoro)) };
+  drop(Box::from_raw(coro as *mut YieldOnceCoro));
 }
 
 static YIELD_ONCE_VTABLE: CoroutineVTable = CoroutineVTable {

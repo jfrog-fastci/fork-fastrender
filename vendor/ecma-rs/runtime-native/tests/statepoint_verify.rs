@@ -74,6 +74,8 @@ fn verifier_rejects_register_locations() {
   assert!(msg.contains("location[3]"));
   assert!(msg.contains("kind=Register"));
   assert!(msg.contains("dwarf_reg=7"));
+  // We zero out the old Indirect offset field above so the verifier's error message is
+  // deterministic. Keep asserting the offset is surfaced for debugging.
   assert!(msg.contains("offset=0"));
 }
 

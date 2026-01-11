@@ -16,9 +16,13 @@ static KNOWN_TYPE_DESCRIPTORS: Lazy<Mutex<AHashSet<usize>>> =
   Lazy::new(|| Mutex::new(AHashSet::new()));
 
 pub(crate) fn register_type_descriptor(desc: &'static TypeDescriptor) {
+  register_type_descriptor_ptr(desc as *const TypeDescriptor);
+}
+
+pub(crate) fn register_type_descriptor_ptr(desc: *const TypeDescriptor) {
   KNOWN_TYPE_DESCRIPTORS
     .lock()
-    .insert(desc as *const TypeDescriptor as usize);
+    .insert(desc as usize);
 }
 
 pub(crate) fn is_known_type_descriptor(desc: *const TypeDescriptor) -> bool {
