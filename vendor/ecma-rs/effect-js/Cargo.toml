@@ -20,6 +20,7 @@ effect-model = { workspace = true }
 knowledge-base = { workspace = true }
 hir-js = { workspace = true }
 smallvec = { workspace = true }
+serde_json = { workspace = true }
 
 typecheck-ts = { workspace = true, optional = true }
 types-ts-interned = { workspace = true, optional = true }

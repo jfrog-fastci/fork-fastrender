@@ -1015,9 +1015,13 @@ struct PurityDetailsRaw {
 }
 
 fn normalize_api(raw: ApiRaw) -> ApiSemantics {
-  let (effects, effect_summary) = normalize_effects(raw.effects, raw.throws.as_deref());
-  let purity = normalize_purity(raw.purity);
+  let (effects, effect_summary, effects_base, effects_depends_on_args) =
+    normalize_effects(raw.effects, raw.throws.as_deref());
+  let (purity, purity_kind) = normalize_purity(raw.purity);
   let name = raw.name;
+  let mut properties = raw.properties;
+  store_effect_metadata(&mut properties, effects_base, effects_depends_on_args);
+  store_purity_kind(&mut properties, purity_kind);
   ApiSemantics {
     id: ApiId::from_name(&name),
     name,
@@ -1034,13 +1038,17 @@ fn normalize_api(raw: ApiRaw) -> ApiSemantics {
     since: raw.since,
     until: raw.until,
     kind: raw.kind,
-    properties: raw.properties,
+    properties,
   }
 }
 
 fn normalize_api_from_body(name: String, raw: ApiBodyRaw) -> ApiSemantics {
-  let (effects, effect_summary) = normalize_effects(raw.effects, raw.throws.as_deref());
-  let purity = normalize_purity(raw.purity);
+  let (effects, effect_summary, effects_base, effects_depends_on_args) =
+    normalize_effects(raw.effects, raw.throws.as_deref());
+  let (purity, purity_kind) = normalize_purity(raw.purity);
+  let mut properties = raw.properties;
+  store_effect_metadata(&mut properties, effects_base, effects_depends_on_args);
+  store_purity_kind(&mut properties, purity_kind);
   ApiSemantics {
     id: ApiId::from_name(&name),
     name,
@@ -1057,17 +1065,52 @@ fn normalize_api_from_body(name: String, raw: ApiBodyRaw) -> ApiSemantics {
     since: raw.since,
     until: raw.until,
     kind: raw.kind,
-    properties: raw.properties,
+    properties,
   }
 }
 
-fn normalize_purity(raw: PurityRaw) -> PurityTemplate {
+fn store_purity_kind(properties: &mut BTreeMap<String, JsonValue>, kind: Option<String>) {
+  let Some(kind) = kind else {
+    return;
+  };
+  properties.insert("purity.kind".to_string(), JsonValue::String(kind));
+}
+
+fn store_effect_metadata(
+  properties: &mut BTreeMap<String, JsonValue>,
+  base: Vec<String>,
+  depends_on_args: Vec<usize>,
+) {
+  if !base.is_empty() {
+    properties.insert(
+      "effects.base".to_string(),
+      JsonValue::Array(base.into_iter().map(JsonValue::String).collect()),
+    );
+  }
+
+  if !depends_on_args.is_empty() {
+    properties.insert(
+      "effects.depends_on_args".to_string(),
+      JsonValue::Array(
+        depends_on_args
+          .into_iter()
+          .map(|idx| JsonValue::from(i64::try_from(idx).unwrap_or(i64::MAX)))
+          .collect(),
+      ),
+    );
+  }
+}
+
+fn normalize_purity(raw: PurityRaw) -> (PurityTemplate, Option<String>) {
   match raw {
-    PurityRaw::Template(t) => t,
-    PurityRaw::Details(details) => match details.template.or(details.kind) {
-      Some(template) => parse_purity_template(&template),
-      None => PurityTemplate::Unknown,
-    },
+    PurityRaw::Template(t) => (t, None),
+    PurityRaw::Details(details) => {
+      let template = match details.template.as_deref().or(details.kind.as_deref()) {
+        Some(template) => parse_purity_template(template),
+        None => PurityTemplate::Unknown,
+      };
+      (template, details.kind)
+    }
   }
 }
 
@@ -1086,11 +1129,14 @@ fn parse_purity_template(raw: &str) -> PurityTemplate {
   }
 }
 
-fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, EffectSummary) {
+fn normalize_effects(
+  raw: EffectsRaw,
+  throws: Option<&str>,
+) -> (EffectTemplate, EffectSummary, Vec<String>, Vec<usize>) {
   match raw {
     EffectsRaw::Template(t) => {
       let summary = effect_template_to_summary(&t);
-      (t, summary)
+      (t, summary, Vec::new(), Vec::new())
     }
     EffectsRaw::Details(details) => {
       let template = details
@@ -1186,12 +1232,17 @@ fn normalize_effects(raw: EffectsRaw, throws: Option<&str>) -> (EffectTemplate, 
         EffectTemplate::Custom(base)
       };
 
+      let base_tokens = details.base;
+      let depends_on_args = details.depends_on_args;
+
       (
         effect_template,
         EffectSummary {
           flags,
           throws: throw_behavior,
         },
+        base_tokens,
+        depends_on_args,
       )
     }
   }
@@ -1474,7 +1525,31 @@ fn semantics_match(a: &ApiSemantics, b: &ApiSemantics) -> bool {
     && a.since == b.since
     && a.until == b.until
     && a.kind == b.kind
-    && a.properties == b.properties
+    && properties_match(&a.properties, &b.properties)
+}
+
+fn properties_match(a: &BTreeMap<String, JsonValue>, b: &BTreeMap<String, JsonValue>) -> bool {
+  fn is_ignored_key(key: &str) -> bool {
+    matches!(key, "effects.base" | "effects.depends_on_args" | "purity.kind")
+  }
+
+  for (key, value) in a {
+    if is_ignored_key(key) {
+      continue;
+    }
+    if b.get(key) != Some(value) {
+      return false;
+    }
+  }
+  for (key, value) in b {
+    if is_ignored_key(key) {
+      continue;
+    }
+    if a.get(key) != Some(value) {
+      return false;
+    }
+  }
+  true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use effect_model::{EffectSet, EffectSummary, EffectTemplate, PurityTemplate};
-use knowledge_base::{ApiDatabase, ApiSemantics};
+use effect_model::{EffectSet, EffectSummary, EffectTemplate, PurityTemplate, ThrowBehavior};
+use knowledge_base::{ApiDatabase, ApiSemantics, JsonValue};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
@@ -74,7 +74,74 @@ fn semantics_match(a: &ApiSemantics, b: &ApiSemantics) -> bool {
     && a.since == b.since
     && a.until == b.until
     && a.kind == b.kind
-    && a.properties == b.properties
+    && properties_match(&a.properties, &b.properties)
+}
+
+fn properties_match(a: &BTreeMap<String, JsonValue>, b: &BTreeMap<String, JsonValue>) -> bool {
+  fn is_ignored_key(key: &str) -> bool {
+    matches!(key, "effects.base" | "effects.depends_on_args" | "purity.kind")
+  }
+
+  for (key, value) in a {
+    if is_ignored_key(key) {
+      continue;
+    }
+    if b.get(key) != Some(value) {
+      return false;
+    }
+  }
+  for (key, value) in b {
+    if is_ignored_key(key) {
+      continue;
+    }
+    if a.get(key) != Some(value) {
+      return false;
+    }
+  }
+  true
+}
+
+fn normalize_ident(raw: &str) -> String {
+  raw
+    .trim()
+    .to_ascii_lowercase()
+    .replace(['-', ' '], "_")
+}
+
+fn effect_set_to_summary(effects: EffectSet) -> EffectSummary {
+  EffectSummary {
+    flags: effects & !EffectSet::MAY_THROW,
+    throws: if effects.contains(EffectSet::MAY_THROW) {
+      ThrowBehavior::Maybe
+    } else {
+      ThrowBehavior::Never
+    },
+  }
+}
+
+fn parse_usize_list(raw: &JsonValue) -> Result<Vec<usize>, ()> {
+  if let Some(arr) = raw.as_array() {
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+      if let Some(n) = item.as_u64() {
+        out.push(usize::try_from(n).map_err(|_| ())?);
+      } else if let Some(n) = item.as_i64() {
+        out.push(usize::try_from(n).map_err(|_| ())?);
+      } else {
+        return Err(());
+      }
+    }
+    return Ok(out);
+  }
+
+  if let Some(n) = raw.as_u64() {
+    return Ok(vec![usize::try_from(n).map_err(|_| ())?]);
+  }
+  if let Some(n) = raw.as_i64() {
+    return Ok(vec![usize::try_from(n).map_err(|_| ())?]);
+  }
+
+  Err(())
 }
 
 fn validate_encoding_enum(
@@ -129,21 +196,24 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
         }
       }
 
-      if let Some(prev) = alias_map.insert(alias.to_string(), api.name.clone()) {
+      if let Some(prev) = alias_map.get(alias) {
         // Allow duplicate alias spellings when they resolve to the same canonical API name.
         //
         // This happens in practice for Node APIs where the knowledge-base explicitly lists
         // aliases like `fs.readFile` alongside `node:fs.readFile`, while `effect-js` also
         // synthesizes the `node:`-stripped spelling as an implicit alias.
-        if prev == api.name {
+        if prev == &api.name {
           continue;
         }
         errors.push(ValidationError::DuplicateApiName {
           name: alias.to_string(),
-          first: prev,
+          first: prev.clone(),
           second: api.name.clone(),
         });
+        continue;
       }
+
+      alias_map.insert(alias.to_string(), api.name.clone());
     }
   }
 
@@ -210,17 +280,31 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 
     // Validate argument-dependence templates (e.g. callback-dependent APIs).
     let mut depends_on_args = BTreeSet::<usize>::new();
-    let mut saw_depends_template = false;
+    let mut saw_depends = false;
     if let EffectTemplate::DependsOnArgs { args, .. } = &api.effects {
-      saw_depends_template = true;
+      saw_depends = true;
       depends_on_args.extend(args.iter().copied());
     }
     if let PurityTemplate::DependsOnArgs { args, .. } = &api.purity {
-      saw_depends_template = true;
+      saw_depends = true;
       depends_on_args.extend(args.iter().copied());
     }
 
-    if saw_depends_template {
+    if let Some(raw) = api.properties.get("effects.depends_on_args") {
+      match parse_usize_list(raw) {
+        Ok(list) => {
+          saw_depends = true;
+          depends_on_args.extend(list);
+        }
+        Err(_) => errors.push(ValidationError::UnknownEnumString {
+          api: api.name.clone(),
+          field: "effects.depends_on_args".to_string(),
+          value: raw.to_string(),
+        }),
+      }
+    }
+
+    if saw_depends {
       if depends_on_args.is_empty() {
         errors.push(ValidationError::EmptyDependsOnArgs {
           api: api.name.clone(),
@@ -234,6 +318,64 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
             index,
           });
         }
+      }
+    }
+
+    let mut base_effects = EffectSet::empty();
+    if let Some(raw) = api.properties.get("effects.base") {
+      if let Some(arr) = raw.as_array() {
+        for token in arr {
+          let Some(token) = token.as_str() else {
+            errors.push(ValidationError::UnknownEnumString {
+              api: api.name.clone(),
+              field: "effects.base".to_string(),
+              value: token.to_string(),
+            });
+            continue;
+          };
+
+          match normalize_ident(token).as_str() {
+            "alloc" | "allocates" => base_effects |= EffectSet::ALLOCATES,
+            "io" => base_effects |= EffectSet::IO,
+            "network" => base_effects |= EffectSet::NETWORK,
+            "nondeterministic" | "non_deterministic" => base_effects |= EffectSet::NONDETERMINISTIC,
+            "may_throw" | "throws" => base_effects |= EffectSet::MAY_THROW,
+            "unknown" => base_effects |= EffectSet::UNKNOWN,
+            // Informational-only tags (no effect flags).
+            "async" | "depends_on_callback" | "depends_on_args" => {}
+            other => errors.push(ValidationError::UnknownEnumString {
+              api: api.name.clone(),
+              field: "effects.base".to_string(),
+              value: other.to_string(),
+            }),
+          }
+        }
+      } else {
+        errors.push(ValidationError::UnknownEnumString {
+          api: api.name.clone(),
+          field: "effects.base".to_string(),
+          value: raw.to_string(),
+        });
+      }
+    }
+
+    if let Some(raw_kind) = api.properties.get("purity.kind") {
+      if let Some(kind) = raw_kind.as_str() {
+        if normalize_ident(kind) == "pure"
+          && base_effects.intersects(EffectSet::IO | EffectSet::NETWORK)
+        {
+          errors.push(ValidationError::InconsistentPurityEffects {
+            api: api.name.clone(),
+            purity: PurityTemplate::Pure,
+            effects: effect_set_to_summary(base_effects),
+          });
+        }
+      } else {
+        errors.push(ValidationError::UnknownEnumString {
+          api: api.name.clone(),
+          field: "purity.kind".to_string(),
+          value: raw_kind.to_string(),
+        });
       }
     }
 
