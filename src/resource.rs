@@ -8363,6 +8363,14 @@ impl ResourceFetcher for HttpFetcher {
     // actual request header values (including browser-like `Origin`/`Referer` handling).
     let normalized = normalize_http_url_for_fetch(req.url);
     let url = normalized.as_deref().unwrap_or(req.url);
+
+    if header_name.eq_ignore_ascii_case("cookie") {
+      if !cookies_allowed_for_request(req.credentials_mode, url, req.client_origin) {
+        return Some(String::new());
+      }
+      return self.cookie_header_value(url).or(Some(String::new()));
+    }
+
     let headers = build_http_header_pairs(
       url,
       &self.user_agent,
@@ -8398,8 +8406,8 @@ impl ResourceFetcher for HttpFetcher {
       return Some(String::new());
     }
 
-    // We cannot reliably determine the value for other headers (e.g. `Cookie` supplied by the
-    // backend cookie jar). Treat such `Vary` responses as uncacheable to avoid poisoning.
+    // We cannot reliably determine the value for other headers. Treat such `Vary` responses as
+    // uncacheable to avoid poisoning.
     None
   }
 
@@ -8657,6 +8665,10 @@ fn allow_unhandled_vary_env() -> bool {
   runtime::runtime_toggles().truthy_with_default("FASTR_CACHE_ALLOW_VARY_UNHANDLED", false)
 }
 
+fn allow_vary_cookie_env() -> bool {
+  runtime::runtime_toggles().truthy_with_default("FASTR_CACHE_ALLOW_VARY_COOKIE", false)
+}
+
 fn vary_contains_star(vary: &str) -> bool {
   vary
     .split(',')
@@ -8700,6 +8712,11 @@ fn vary_is_cacheable(vary: &str, _kind: FetchContextKind, _origin_key: Option<&s
       // `Origin` is also safe because we include it in the computed `Vary` key (or treat the
       // response as uncacheable if we cannot determine the `Origin` request header value).
       "origin" => {}
+      "cookie" => {
+        if !allow_vary_cookie_env() {
+          return false;
+        }
+      }
       _ => return false,
     }
   }
@@ -9315,8 +9332,18 @@ fn reserve_policy_bytes(policy: &Option<ResourcePolicy>, resource: &FetchedResou
 const VARY_KEY_EMPTY: &str = "";
 // Conservative header set used to avoid single-flight de-duplication across requests that may
 // produce different `Vary` variants before we know the server-provided `Vary` list.
-const INFLIGHT_VARY_SIGNATURE_HEADERS: &str =
+const INFLIGHT_VARY_SIGNATURE_HEADERS_BASE: &str =
   "accept-encoding, accept-language, origin, referer, user-agent";
+const INFLIGHT_VARY_SIGNATURE_HEADERS_WITH_COOKIE: &str =
+  "accept-encoding, accept-language, cookie, origin, referer, user-agent";
+
+fn inflight_vary_signature_headers() -> &'static str {
+  if allow_vary_cookie_env() {
+    INFLIGHT_VARY_SIGNATURE_HEADERS_WITH_COOKIE
+  } else {
+    INFLIGHT_VARY_SIGNATURE_HEADERS_BASE
+  }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum VaryKeyFields {
@@ -9380,7 +9407,7 @@ fn inflight_signature_for_request<F: ResourceFetcher>(
   fetcher: &F,
   request: FetchRequest<'_>,
 ) -> String {
-  compute_vary_key_for_request(fetcher, request, Some(INFLIGHT_VARY_SIGNATURE_HEADERS))
+  compute_vary_key_for_request(fetcher, request, Some(inflight_vary_signature_headers()))
     .unwrap_or_else(|| {
       format!(
         "fallback:{:?}:{:?}",
@@ -10716,15 +10743,14 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             .unwrap_or(false);
 
           if self.config.cache_errors && !has_bucket {
-            if let Some(vary_key) = compute_vary_key_for_request(
-              &self.inner,
-              request,
-              Some(INFLIGHT_VARY_SIGNATURE_HEADERS),
-            ) {
+            let inflight_vary = inflight_vary_signature_headers();
+            if let Some(vary_key) =
+              compute_vary_key_for_request(&self.inner, request, Some(inflight_vary))
+            {
               let _ = self.cache_entry(
                 &key,
                 request,
-                Some(INFLIGHT_VARY_SIGNATURE_HEADERS.to_string()),
+                Some(inflight_vary.to_string()),
                 vary_key,
                 CacheEntry {
                   value: CacheValue::Error(err.clone()),
@@ -11013,13 +11039,14 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             .unwrap_or(false);
 
           if self.config.cache_errors && !has_bucket {
+            let inflight_vary = inflight_vary_signature_headers();
             if let Some(vary_key) =
-              compute_vary_key_for_request(&self.inner, req, Some(INFLIGHT_VARY_SIGNATURE_HEADERS))
+              compute_vary_key_for_request(&self.inner, req, Some(inflight_vary))
             {
               let _ = self.cache_entry(
                 &key,
                 req,
-                Some(INFLIGHT_VARY_SIGNATURE_HEADERS.to_string()),
+                Some(inflight_vary.to_string()),
                 vary_key,
                 CacheEntry {
                   value: CacheValue::Error(err.clone()),
@@ -16483,6 +16510,126 @@ mod tests {
     assert_eq!(
       parse_vary_headers(&headers).as_deref(),
       Some("accept-encoding, origin, user-agent")
+    );
+  }
+
+  #[test]
+  fn vary_is_cacheable_rejects_cookie_by_default_and_allows_with_toggle() {
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::new())),
+      || {
+        assert!(
+          !vary_is_cacheable("cookie", FetchContextKind::Other, None),
+          "expected cookie to be rejected when FASTR_CACHE_ALLOW_VARY_COOKIE is unset"
+        );
+      },
+    );
+
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_CACHE_ALLOW_VARY_COOKIE".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        assert!(
+          vary_is_cacheable("cookie", FetchContextKind::Other, None),
+          "expected cookie to be cacheable when FASTR_CACHE_ALLOW_VARY_COOKIE=1"
+        );
+      },
+    );
+  }
+
+  #[test]
+  fn http_fetcher_request_header_value_cookie_matches_cookie_jar_and_credentials_mode() {
+    let fetcher = HttpFetcher::new();
+    fetcher.store_cookie_from_document("https://example.com/", "a=b");
+
+    let origin = origin_from_url("https://example.com").expect("origin");
+    let req = FetchRequest::new("https://example.com/res", FetchDestination::Other)
+      .with_credentials_mode(FetchCredentialsMode::SameOrigin)
+      .with_client_origin(&origin);
+    assert_eq!(
+      fetcher
+        .request_header_value(req, "cookie")
+        .expect("cookie header"),
+      "a=b"
+    );
+
+    let other_origin = origin_from_url("https://other.example").expect("origin");
+    let req_other = FetchRequest::new("https://example.com/res", FetchDestination::Other)
+      .with_credentials_mode(FetchCredentialsMode::SameOrigin)
+      .with_client_origin(&other_origin);
+    assert_eq!(
+      fetcher
+        .request_header_value(req_other, "cookie")
+        .expect("cookie header"),
+      ""
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_caches_vary_cookie_variants_when_enabled() {
+    #[derive(Clone)]
+    struct CookieVaryFetcher {
+      calls: Arc<AtomicUsize>,
+      cookie: Arc<Mutex<String>>,
+    }
+
+    impl ResourceFetcher for CookieVaryFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected request-aware fetch");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let cookie = self.cookie.lock().unwrap().clone();
+        let mut res = FetchedResource::new(cookie.into_bytes(), Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        res.vary = Some("cookie".to_string());
+        Ok(res)
+      }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("cookie") {
+          return Some(self.cookie.lock().unwrap().clone());
+        }
+        None
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cookie = Arc::new(Mutex::new("a=b".to_string()));
+    let fetcher = CachingFetcher::new(CookieVaryFetcher {
+      calls: Arc::clone(&calls),
+      cookie: Arc::clone(&cookie),
+    });
+
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_CACHE_ALLOW_VARY_COOKIE".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        let url = "https://example.com/vary-cookie";
+
+        let first = fetcher.fetch(url).expect("first fetch");
+        assert_eq!(first.bytes, b"a=b".to_vec());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        *cookie.lock().unwrap() = "c=d".to_string();
+        let second = fetcher.fetch(url).expect("second fetch");
+        assert_eq!(second.bytes, b"c=d".to_vec());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        *cookie.lock().unwrap() = "a=b".to_string();
+        let third = fetcher.fetch(url).expect("third fetch");
+        assert_eq!(third.bytes, b"a=b".to_vec());
+        assert_eq!(
+          calls.load(Ordering::SeqCst),
+          2,
+          "expected cookie variant to be served from cache"
+        );
+      },
     );
   }
 
