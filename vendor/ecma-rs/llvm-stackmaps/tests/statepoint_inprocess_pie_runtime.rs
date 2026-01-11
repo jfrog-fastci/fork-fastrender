@@ -115,7 +115,7 @@ fn inprocess_loader_finds_statepoint_callsite_in_pie_binary() -> io::Result<()> 
 
     // 3) Build a tiny Rust binary that links the object file and, at runtime:
     //    - captures the caller return address inside `allocate`
-    //    - parses in-process stackmaps via `__stackmaps_start/end`
+    //    - parses in-process stackmaps via `__start_llvm_stackmaps/__stop_llvm_stackmaps`
     //    - looks up the record by the captured return address
     let project_dir = dir.join("project");
     fs::create_dir_all(project_dir.join("src"))?;

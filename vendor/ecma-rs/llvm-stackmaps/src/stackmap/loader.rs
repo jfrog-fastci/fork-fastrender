@@ -4,8 +4,8 @@ use core::{ptr, slice};
 ///
 /// Platform behavior:
 /// - **Linux/ELF:** uses linker-script-defined range symbols:
-///   - `__stackmaps_start`
-///   - `__stackmaps_end`
+///   - `__start_llvm_stackmaps`
+///   - `__stop_llvm_stackmaps`
 ///   The repo provides a ready-to-use script fragment at
 ///   `vendor/ecma-rs/runtime-native/link/stackmaps.ld` (preferred) or
 ///   `vendor/ecma-rs/runtime-native/stackmaps.ld` (compatibility shim). It also
@@ -17,25 +17,25 @@ use core::{ptr, slice};
 /// # Panics / Safety
 /// This function assumes the section is present and mapped into memory. If the
 /// final binary was linked without applying a linker script that defines these
-/// symbols, linking will fail due to missing `__stackmaps_*` symbols.
+/// symbols, linking will fail due to missing `__start_llvm_stackmaps`/`__stop_llvm_stackmaps`.
 #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub fn stackmaps_bytes() -> &'static [u8] {
     // SAFETY:
-    // - The linker script defines `__stackmaps_*` as byte pointers.
+    // - The linker script defines `__start_llvm_stackmaps`/`__stop_llvm_stackmaps` as byte pointers.
     // - The section is mapped read-only into the process.
     unsafe {
         extern "C" {
-            static __stackmaps_start: u8;
-            static __stackmaps_end: u8;
+            static __start_llvm_stackmaps: u8;
+            static __stop_llvm_stackmaps: u8;
         }
 
-        let start = ptr::addr_of!(__stackmaps_start);
-        let end = ptr::addr_of!(__stackmaps_end);
+        let start = ptr::addr_of!(__start_llvm_stackmaps);
+        let end = ptr::addr_of!(__stop_llvm_stackmaps);
         let start_addr = start as usize;
         let end_addr = end as usize;
         assert!(
             end_addr >= start_addr,
-            "invalid .llvm_stackmaps range: __stackmaps_end ({end_addr:#x}) < __stackmaps_start ({start_addr:#x})"
+            "invalid .llvm_stackmaps range: __stop_llvm_stackmaps ({end_addr:#x}) < __start_llvm_stackmaps ({start_addr:#x})"
         );
 
         let len = end_addr - start_addr;
@@ -136,18 +136,18 @@ pub fn stackmaps_bytes() -> &'static [u8] {
 mod tests {
     use super::stackmaps_bytes;
 
-    // Define a tiny `.llvm_stackmaps` section plus `__stackmaps_{start,end}`
+    // Define a tiny `.llvm_stackmaps` section plus `__{start,stop}_llvm_stackmaps`
     // so we can exercise the loader without needing to involve a custom linker
     // script in unit tests.
     core::arch::global_asm!(
         r#"
         .section .llvm_stackmaps,"a",@progbits
         .p2align 3
-        .globl __stackmaps_start
-        __stackmaps_start:
+        .globl __start_llvm_stackmaps
+        __start_llvm_stackmaps:
         .byte 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE
-        .globl __stackmaps_end
-        __stackmaps_end:
+        .globl __stop_llvm_stackmaps
+        __stop_llvm_stackmaps:
         .text
         "#
     );
