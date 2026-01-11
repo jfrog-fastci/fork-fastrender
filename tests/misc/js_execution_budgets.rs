@@ -7,7 +7,20 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
-use vm_js::{PropertyKey, TerminationReason, Value, VmError};
+use vm_js::{Job, PropertyKey, RealmId, TerminationReason, Value, VmError, VmHostHooks};
+
+#[derive(Default)]
+struct NoopHostHooks;
+
+impl VmHostHooks for NoopHostHooks {
+  fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+}
+
+fn exec_script(realm: &mut WindowRealm, source: &str) -> std::result::Result<Value, VmError> {
+  let mut host_ctx = ();
+  let mut hooks = NoopHostHooks::default();
+  realm.exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, source)
+}
 
 fn with_interrupt_watchdog<R>(timeout: Duration, f: impl FnOnce() -> R) -> (R, bool) {
   let _lock = super::global_test_lock();
@@ -92,9 +105,7 @@ fn vm_js_infinite_loop_in_classic_script_is_bounded() {
   .expect("create realm");
 
   let (err, watchdog_fired) = with_interrupt_watchdog(Duration::from_secs(2), || {
-    realm
-      .exec_script("while (true) {}")
-      .expect_err("expected infinite loop to terminate")
+    exec_script(&mut realm, "while (true) {}").expect_err("expected infinite loop to terminate")
   });
   assert!(
     !watchdog_fired,
@@ -380,7 +391,7 @@ fn vm_js_heap_limit_is_enforced() {
   // in debug builds (parsing a multi-megabyte string literal can itself dominate runtime).
   let script = "new ArrayBuffer(8 * 1024 * 1024);";
   let (err, watchdog_fired) = with_interrupt_watchdog(Duration::from_secs(2), || {
-    realm.exec_script(&script).expect_err("expected allocation to OOM")
+    exec_script(&mut realm, script).expect_err("expected allocation to OOM")
   });
   assert!(
     !watchdog_fired,

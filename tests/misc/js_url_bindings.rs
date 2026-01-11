@@ -2,9 +2,22 @@ use fastrender::js::{
   install_url_bindings, install_url_bindings_with_limits, webidl::legacy::VmJsRuntime, UrlLimits,
   WindowRealm, WindowRealmConfig,
 };
-use vm_js::{PropertyKey, Value, VmError};
+use vm_js::{Job, PropertyKey, RealmId, Value, VmError, VmHostHooks};
 use webidl_js_runtime::runtime::JsPropertyKind;
 use webidl_js_runtime::JsRuntime as _;
+
+#[derive(Default)]
+struct NoopHostHooks;
+
+impl VmHostHooks for NoopHostHooks {
+  fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+}
+
+fn exec_script(realm: &mut WindowRealm, source: &str) -> std::result::Result<Value, VmError> {
+  let mut host_ctx = ();
+  let mut hooks = NoopHostHooks::default();
+  realm.exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, source)
+}
 
 fn key(rt: &mut VmJsRuntime, name: &str) -> PropertyKey {
   let v = rt.alloc_string_value(name).unwrap();
@@ -271,8 +284,7 @@ fn vm_js_error_debug(realm: &mut WindowRealm, err: VmError) -> String {
 fn window_realm_exec_script_url_constructor_smoke() {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/")).unwrap();
 
-  let href = realm
-    .exec_script(r#"new URL("https://example.com/path?x=1#y").href"#)
+  let href = exec_script(&mut realm, r#"new URL("https://example.com/path?x=1#y").href"#)
     .unwrap_or_else(|err| panic!("exec_script failed:\n{}", vm_js_error_debug(&mut realm, err)));
   assert_eq!(
     as_vm_js_heap_string(realm.heap(), href),
@@ -280,14 +292,14 @@ fn window_realm_exec_script_url_constructor_smoke() {
   );
 
   // Base resolution with a URL object exercises object-to-string coercion fallback logic.
-  let resolved = realm
-    .exec_script(
-      r#"
+  let resolved = exec_script(
+    &mut realm,
+    r#"
         var base = new URL("https://example.com/dir/");
         new URL("a", base).href
       "#,
-    )
-    .unwrap();
+  )
+  .unwrap();
   assert_eq!(
     as_vm_js_heap_string(realm.heap(), resolved),
     "https://example.com/dir/a"
@@ -298,17 +310,16 @@ fn window_realm_exec_script_url_constructor_smoke() {
 fn window_realm_exec_script_url_constructors_require_new() {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/")).unwrap();
 
-  let typeof_url = realm.exec_script(r#"typeof URL === "function""#).unwrap();
+  let typeof_url = exec_script(&mut realm, r#"typeof URL === "function""#).unwrap();
   assert_eq!(typeof_url, Value::Bool(true));
 
-  let url_proto = realm
-    .exec_script(r#"URL.prototype !== null && typeof URL.prototype === "object""#)
-    .unwrap();
+  let url_proto =
+    exec_script(&mut realm, r#"URL.prototype !== null && typeof URL.prototype === "object""#).unwrap();
   assert_eq!(url_proto, Value::Bool(true));
 
-  let url_call_throws = realm
-    .exec_script(
-      r#"
+  let url_call_throws = exec_script(
+    &mut realm,
+    r#"
         (function () {
           try {
             URL("https://example.com");
@@ -318,35 +329,35 @@ fn window_realm_exec_script_url_constructors_require_new() {
           }
         })()
       "#,
-    )
-    .unwrap();
+  )
+  .unwrap();
   assert_eq!(url_call_throws, Value::Bool(true));
 
-  let url_new_works = realm
-    .exec_script(
-      r#"
+  let url_new_works = exec_script(
+    &mut realm,
+    r#"
         (function () {
           const u = new URL("https://example.com");
           return typeof u === "object" && u !== null;
         })()
       "#,
-    )
-    .unwrap();
+  )
+  .unwrap();
   assert_eq!(url_new_works, Value::Bool(true));
 
-  let typeof_sp = realm
-    .exec_script(r#"typeof URLSearchParams === "function""#)
-    .unwrap();
+  let typeof_sp = exec_script(&mut realm, r#"typeof URLSearchParams === "function""#).unwrap();
   assert_eq!(typeof_sp, Value::Bool(true));
 
-  let sp_proto = realm
-    .exec_script(r#"URLSearchParams.prototype !== null && typeof URLSearchParams.prototype === "object""#)
-    .unwrap();
+  let sp_proto = exec_script(
+    &mut realm,
+    r#"URLSearchParams.prototype !== null && typeof URLSearchParams.prototype === "object""#,
+  )
+  .unwrap();
   assert_eq!(sp_proto, Value::Bool(true));
 
-  let sp_call_throws = realm
-    .exec_script(
-      r#"
+  let sp_call_throws = exec_script(
+    &mut realm,
+    r#"
         (function () {
           try {
             URLSearchParams("a=b");
@@ -356,20 +367,20 @@ fn window_realm_exec_script_url_constructors_require_new() {
           }
         })()
       "#,
-    )
-    .unwrap();
+  )
+  .unwrap();
   assert_eq!(sp_call_throws, Value::Bool(true));
 
-  let sp_new_works = realm
-    .exec_script(
-      r#"
+  let sp_new_works = exec_script(
+    &mut realm,
+    r#"
         (function () {
           const p = new URLSearchParams("a=b");
           return typeof p === "object" && p !== null;
         })()
       "#,
-    )
-    .unwrap();
+  )
+  .unwrap();
   assert_eq!(sp_new_works, Value::Bool(true));
 }
 
@@ -377,27 +388,23 @@ fn window_realm_exec_script_url_constructors_require_new() {
 fn window_realm_exec_script_url_searchparams_is_live_and_cached() {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/")).unwrap();
 
-  let href = realm
-    .exec_script(
-      r#"
+  let href = exec_script(
+    &mut realm,
+    r#"
         globalThis.u = new URL("https://example.com/?a=b%20~");
         globalThis.u.searchParams.append("c", "d");
         globalThis.u.href
       "#,
-    )
-    .unwrap();
+  )
+  .unwrap();
   assert_eq!(
     as_vm_js_heap_string(realm.heap(), href),
     "https://example.com/?a=b+%7E&c=d"
   );
 
-  let cached = realm
-    .exec_script(r#"globalThis.u.searchParams === globalThis.u.searchParams"#)
-    .unwrap();
+  let cached = exec_script(&mut realm, r#"globalThis.u.searchParams === globalThis.u.searchParams"#).unwrap();
   assert_eq!(cached, Value::Bool(true));
 
-  let params = realm
-    .exec_script(r#"globalThis.u.searchParams.toString()"#)
-    .unwrap();
+  let params = exec_script(&mut realm, r#"globalThis.u.searchParams.toString()"#).unwrap();
   assert_eq!(as_vm_js_heap_string(realm.heap(), params), "a=b+%7E&c=d");
 }

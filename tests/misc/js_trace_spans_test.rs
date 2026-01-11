@@ -7,6 +7,7 @@ use fastrender::js::{
   CurrentScriptStateHandle, EventLoop, JsExecutionOptions, ScriptElementSpec, TaskSource, WindowRealm, WindowRealmConfig,
   WindowRealmHost, RunLimits,
 };
+use std::collections::HashSet;
 
 struct ExecutorWithWindow<E> {
   inner: E,
@@ -108,7 +109,9 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
   let html = r#"<!doctype html>
   <html>
     <head>
+      <script type="importmap">{"imports":{}}</script>
       <script>queueMicrotask</script>
+      <script type="module">queueTask</script>
       <script async src="https://example.com/ext.js"></script>
     </head>
   </html>"#;
@@ -145,7 +148,15 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
     }
   }
 
-  let mut tab = BrowserTab::from_html(html, options, ExecutorWithWindow::new(DummyExecutor)).expect("create tab");
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut tab = BrowserTab::from_html_with_js_execution_options(
+    html,
+    options,
+    ExecutorWithWindow::new(DummyExecutor),
+    js_options,
+  )
+  .expect("create tab");
   tab.register_script_source("https://example.com/ext.js", "queueTask");
   let _ = tab
     .run_event_loop_until_idle(RunLimits::unbounded())
@@ -160,7 +171,7 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
     .expect("traceEvents array");
 
   let mut names: Vec<&str> = Vec::new();
-  let mut script_execute_type = None;
+  let mut script_execute_types: HashSet<String> = HashSet::new();
   let mut script_fetch_type = None;
   let mut script_fetch_destination = None;
   let mut script_fetch_credentials_mode = None;
@@ -168,11 +179,13 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
     if let Some(name) = event.get("name").and_then(|v| v.as_str()) {
       names.push(name);
       if name == "js.script.execute" {
-        script_execute_type = event
+        if let Some(ty) = event
           .get("args")
           .and_then(|args| args.get("script_type"))
           .and_then(|v| v.as_str())
-          .or(script_execute_type);
+        {
+          script_execute_types.insert(ty.to_string());
+        }
       }
       if name == "js.script.fetch" {
         script_fetch_destination = event
@@ -226,9 +239,16 @@ fn js_tracing_emits_basic_spans_for_scripts_and_tasks() {
     Some("include"),
     "expected js.script.fetch span to include args.credentials_mode=include"
   );
-  assert_eq!(
-    script_execute_type,
-    Some("classic"),
-    "expected js.script.execute span to include args.script_type=classic"
+  assert!(
+    script_execute_types.contains("classic"),
+    "expected js.script.execute spans to include classic script execution; got {script_execute_types:?}"
+  );
+  assert!(
+    script_execute_types.contains("module"),
+    "expected js.script.execute spans to include module script execution; got {script_execute_types:?}"
+  );
+  assert!(
+    script_execute_types.contains("importmap"),
+    "expected js.script.execute spans to include importmap execution; got {script_execute_types:?}"
   );
 }

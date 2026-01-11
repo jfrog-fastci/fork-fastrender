@@ -5,6 +5,20 @@ use fastrender::js::window_realm::{WindowRealm, WindowRealmConfig};
 use fastrender::js::RunLimits;
 use selectors::context::QuirksMode;
 use std::time::Duration;
+use vm_js::{Job, RealmId, VmError, VmHostHooks};
+
+#[derive(Default)]
+struct NoopHostHooks;
+
+impl VmHostHooks for NoopHostHooks {
+  fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+}
+
+fn exec_script(realm: &mut WindowRealm, source: &str) -> std::result::Result<vm_js::Value, VmError> {
+  let mut host_ctx = ();
+  let mut hooks = NoopHostHooks::default();
+  realm.exec_script_with_host_and_hooks(&mut host_ctx, &mut hooks, source)
+}
 
 #[test]
 fn exec_script_infinite_loop_is_terminated_by_instruction_budget() -> fastrender::Result<()> {
@@ -53,7 +67,7 @@ fn window_realm_exec_script_infinite_loop_is_terminated_by_instruction_budget() 
   )
   .expect("create WindowRealm");
 
-  let err = realm.exec_script("for(;;){}").expect_err("expected script to terminate");
+  let err = exec_script(&mut realm, "for(;;){}").expect_err("expected script to terminate");
   let msg = err.to_string().to_ascii_lowercase();
   assert!(
     msg.contains("out of fuel"),
@@ -72,7 +86,7 @@ fn window_realm_exec_script_deadline_budget_can_terminate_immediately() {
   )
   .expect("create WindowRealm");
 
-  let err = realm.exec_script("for(;;){}").expect_err("expected deadline termination");
+  let err = exec_script(&mut realm, "for(;;){}").expect_err("expected deadline termination");
   let msg = err.to_string().to_ascii_lowercase();
   assert!(
     msg.contains("deadline exceeded"),
