@@ -1,0 +1,29 @@
+- name: node:net.createServer
+  aliases:
+    - net.createServer
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:net.connect
+  aliases:
+    - net.connect
+    - net.createConnection
+    - node:net.createConnection
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false

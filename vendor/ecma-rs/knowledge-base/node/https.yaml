@@ -1,0 +1,41 @@
+- name: node:https.request
+  aliases:
+    - https.request
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:https.get
+  aliases:
+    - https.get
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:https.createServer
+  aliases:
+    - https.createServer
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NETWORK
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false

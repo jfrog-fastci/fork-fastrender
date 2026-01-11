@@ -1,0 +1,89 @@
+- name: node:os.platform
+  kind: function
+  aliases:
+    - os.platform
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:os.arch
+  kind: function
+  aliases:
+    - os.arch
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:os.homedir
+  kind: function
+  aliases:
+    - os.homedir
+  since: "v2.3.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:os.tmpdir
+  kind: function
+  aliases:
+    - os.tmpdir
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:os.hostname
+  kind: function
+  aliases:
+    - os.hostname
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL | ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:os.uptime
+  kind: function
+  aliases:
+    - os.uptime
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false

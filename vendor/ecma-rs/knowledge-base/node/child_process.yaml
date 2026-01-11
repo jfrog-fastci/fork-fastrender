@@ -1,0 +1,74 @@
+- name: node:child_process.exec
+  kind: function
+  aliases:
+    - child_process.exec
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NONDETERMINISTIC
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:child_process.execSync
+  kind: function
+  aliases:
+    - child_process.execSync
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NONDETERMINISTIC
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:child_process.spawn
+  kind: function
+  aliases:
+    - child_process.spawn
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NONDETERMINISTIC
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:child_process.spawnSync
+  kind: function
+  aliases:
+    - child_process.spawnSync
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO | NONDETERMINISTIC
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:child_process.fork
+  kind: function
+  aliases:
+    - child_process.fork
+  since: "v0.5.0"
+  effects:
+    Custom:
+      flags: IO | NONDETERMINISTIC
+      throws: Maybe
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
