@@ -97,11 +97,13 @@ impl Default for LinkOpts {
 /// mechanism) so we don't have to replace the entire default script.
 ///
 /// We use different fragments depending on the link mode:
-/// - non-PIE: `stackmaps_nopie.ld`, anchored after `.text` (always present) and emitting a
+/// - non-PIE (lld): `stackmaps_nopie.ld`, anchored after `.text` (always present) and emitting a
 ///   dedicated `.llvm_stackmaps` output section.
+/// - non-PIE (system/GNU ld): `stackmaps_gnuld.ld` (safer with GNU ld if stackmaps sections are
+///   writable).
 /// - PIE (lld): `stackmaps.ld` keeps `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps`
-///   in dedicated output sections inserted before `.bss` (outside the RELRO range) to avoid lld's
-///   RELRO contiguity checks for custom `.data.rel.ro.*` output sections.
+///   in dedicated output sections inserted just before `.bss` (outside the RELRO range) to avoid
+///   lld's RELRO contiguity checks for custom `.data.rel.ro.*` output sections.
 /// - PIE (GNU ld): `stackmaps_gnuld.ld`, to avoid producing an RWX LOAD segment when placing
 ///   writable stackmaps/faultmaps.
 ///
@@ -114,6 +116,13 @@ const LLVM_STACKMAPS_LD_GNULD_FRAGMENT: &str =
 
 fn stackmaps_linker_script_fragment(opts: LinkOpts) -> &'static str {
   if cfg!(target_os = "linux") && !opts.pie {
+    // GNU ld can merge a writable stackmaps section into the text PT_LOAD when a script fragment
+    // inserts it immediately after `.text` (RWX). Prefer the GNU ld fragment in System mode so
+    // non-PIE links are robust even if the producer already emits writable `.data.rel.ro.llvm_*`
+    // sections.
+    if matches!(opts.linker, LinkerFlavor::System) {
+      return LLVM_STACKMAPS_LD_GNULD_FRAGMENT;
+    }
     return LLVM_STACKMAPS_LD_NOPIE_FRAGMENT;
   }
   // GNU ld + PIE: stackmaps often need to be writable for dynamic relocations.

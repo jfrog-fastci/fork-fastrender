@@ -9,7 +9,8 @@
  * - GNU ld differs in how it assigns output sections to PT_LOAD segments. For GNU ld we keep
  *   stackmaps/faultmaps in dedicated `.data.rel.ro.llvm_*` output sections and insert before
  *   `.dynamic` so the payload stays in the data/RELRO region (anchoring a writable `.data.rel.ro.*`
- *   section after `.text` can cause GNU ld to create RWX segments).
+ *   section after `.text` can cause GNU ld to create RWX segments). `scripts/native_link.sh`
+ *   selects this fragment whenever `ECMA_RS_NATIVE_LINKER=ld` (PIE or non-PIE).
  *
  * Note: `.dynamic` must exist for this fragment to be usable. This is true for
  * the dynamically-linked PIE/non-PIE binaries produced by our toolchain.

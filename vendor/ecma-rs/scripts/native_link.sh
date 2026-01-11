@@ -90,15 +90,18 @@ LINKER="${ECMA_RS_NATIVE_LINKER:-${default_linker}}"
 PIE="${ECMA_RS_NATIVE_PIE:-0}"
 GC_SECTIONS="${ECMA_RS_NATIVE_GC_SECTIONS:-1}"
 
-# Prefer the dedicated non-PIE fragment when available. This avoids lld's RELRO
-# contiguity constraints and does not require patching stackmap section flags.
-if [[ "${PIE}" != "1" && -f "${stackmaps_ld_nopie}" ]]; then
-  stackmaps_ld="${stackmaps_ld_nopie}"
-fi
-
-# GNU ld-specific script fragment for PIE mode (avoids RWX).
-if [[ "${LINKER}" == "ld" && "${PIE}" == "1" && -f "${stackmaps_ld_gnuld}" ]]; then
+# GNU ld has a known pitfall: inserting a writable stackmaps section immediately
+# after `.text` (as in `stackmaps_nopie.ld`) can cause GNU ld to merge it into the
+# text PT_LOAD, producing an RWX segment. Prefer the GNU ld fragment whenever the
+# selected linker is `ld` so both PIE and non-PIE links avoid this hazard even if
+# the input objects already contain writable `.data.rel.ro.llvm_*` sections.
+if [[ "${LINKER}" == "ld" && -f "${stackmaps_ld_gnuld}" ]]; then
   stackmaps_ld="${stackmaps_ld_gnuld}"
+# Otherwise, prefer the dedicated non-PIE fragment when available. This avoids
+# lld's RELRO contiguity constraints and does not require patching stackmap
+# section flags.
+elif [[ "${PIE}" != "1" && -f "${stackmaps_ld_nopie}" ]]; then
+  stackmaps_ld="${stackmaps_ld_nopie}"
 fi
 
 link_args=()
