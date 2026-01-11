@@ -78,12 +78,25 @@ fn current_thread_stack_bounds_impl() -> Result<StackBounds, Error> {
     let mut stack_size: usize = 0;
     let rc = libc::pthread_attr_getstack(&attr, &mut stack_addr, &mut stack_size);
 
+    // On Linux/Android, pthread stacks typically have a guard region at the low
+    // end of the allocation that is mapped as PROT_NONE. Excluding it from the
+    // returned bounds prevents stack walkers from accidentally reading into the
+    // guard page (e.g. if the FP chain is corrupted).
+    let mut guard_size: usize = 0;
+    let rc_guard = libc::pthread_attr_getguardsize(&attr, &mut guard_size);
+
     // Always destroy the attr to avoid leaking resources, even if getstack failed.
     let rc_destroy = libc::pthread_attr_destroy(&mut attr);
     if rc != 0 {
       return Err(Error::Pthread {
         func: "pthread_attr_getstack",
         code: rc,
+      });
+    }
+    if rc_guard != 0 {
+      return Err(Error::Pthread {
+        func: "pthread_attr_getguardsize",
+        code: rc_guard,
       });
     }
     if rc_destroy != 0 {
@@ -93,13 +106,22 @@ fn current_thread_stack_bounds_impl() -> Result<StackBounds, Error> {
       });
     }
 
-    let low = stack_addr as usize;
+    let mut low = stack_addr as usize;
     let high = low
       .checked_add(stack_size)
       .ok_or(Error::StackBoundsOverflow {
         low,
         size: stack_size,
       })?;
+
+    if guard_size != 0 {
+      low = low
+        .checked_add(guard_size)
+        .ok_or(Error::StackBoundsOverflow {
+          low,
+          size: guard_size,
+        })?;
+    }
 
     StackBounds::new(low, high)
   }
@@ -130,4 +152,3 @@ fn current_thread_stack_bounds_impl() -> Result<StackBounds, Error> {
     arch: std::env::consts::ARCH,
   })
 }
-
