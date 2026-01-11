@@ -38,6 +38,20 @@ fn runtime_wrappers_use_addrspacecasts() {
     ir.contains("addrspacecast ptr addrspace(1)"),
     "missing addrspacecast from addrspace(1) in rt_write_barrier_gc:\n{ir}"
   );
+
+  // Parallel scheduler entrypoints are raw ABI (no GC pointer wrapper needed).
+  assert!(
+    ir.contains("declare i64 @rt_parallel_spawn"),
+    "missing rt_parallel_spawn declaration:\n{ir}"
+  );
+  assert!(
+    ir.contains("declare void @rt_parallel_join"),
+    "missing rt_parallel_join declaration:\n{ir}"
+  );
+  assert!(
+    ir.contains("declare void @rt_parallel_for"),
+    "missing rt_parallel_for declaration:\n{ir}"
+  );
 }
 
 fn find_clang() -> Option<&'static str> {
