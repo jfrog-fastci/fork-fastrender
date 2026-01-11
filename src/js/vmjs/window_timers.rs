@@ -463,12 +463,8 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           return Ok(());
         };
 
-        let mut host_ctx = host.vm_js_host_context();
-        let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
-        if let Some(bindings_host) = host.webidl_bindings_host() {
-          hooks.any.webidl_bindings_host_slot_mut().set(bindings_host);
-        }
-        let window_realm = host.window_realm();
+        let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+        let (vm_host, window_realm) = host.vm_host_and_window_realm();
         window_realm.reset_interrupt();
 
         let result: crate::error::Result<()> = with_event_loop(event_loop, || {
@@ -479,13 +475,13 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 
           let job_result = match tick_result {
             Ok(()) => {
-              let mut ctx = WindowRealmJobContext::new(&mut vm, heap, &mut host_ctx, realm);
+              let mut ctx = WindowRealmJobContext::new(&mut vm, heap, vm_host, realm);
               job.run(&mut ctx, &mut hooks)
             }
             Err(err) => {
               // If the VM is already out of budget (deadline exceeded, interrupted, out of fuel),
               // we must still discard the job so any persistent roots it owns are cleaned up.
-              let mut ctx = WindowRealmJobContext::new(&mut vm, heap, &mut host_ctx, realm);
+              let mut ctx = WindowRealmJobContext::new(&mut vm, heap, vm_host, realm);
               job.discard(&mut ctx);
               Err(err)
             }
@@ -630,12 +626,8 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
 
   // `event_loop.queue_task` is fallible (queue limits); ensure the root is removed on failure.
   let queue_result = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-    let mut host_ctx = host.vm_js_host_context();
-    let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
-    if let Some(bindings_host) = host.webidl_bindings_host() {
-      hooks.any.webidl_bindings_host_slot_mut().set(bindings_host);
-    }
-    let window_realm = host.window_realm();
+    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+    let (vm_host, window_realm) = host.vm_host_and_window_realm();
     window_realm.reset_interrupt();
     let global_obj = window_realm.global_object();
     let budget = window_realm.vm_budget_now();
@@ -694,7 +686,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
           if scope.heap().is_callable(promise_rejection_ctor).unwrap_or(false) {
             (
               vm.call_with_host_and_hooks(
-                &mut host_ctx,
+                vm_host,
                 &mut scope,
                 &mut hooks,
                 promise_rejection_ctor,
@@ -709,7 +701,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
             scope.push_root(event_ctor)?;
             (
               vm.call_with_host_and_hooks(
-                &mut host_ctx,
+                vm_host,
                 &mut scope,
                 &mut hooks,
                 event_ctor,
@@ -743,7 +735,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
         let dispatch = vm.get(&mut scope, global_obj, dispatch_key)?;
         let _ = vm.call_with_host_and_hooks(
-          &mut host_ctx,
+          vm_host,
           &mut scope,
           &mut hooks,
           dispatch,
@@ -911,12 +903,8 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   let id = event_loop
     .set_timeout(delay, move |host, event_loop| {
       let id = id_cell_for_cb.get();
-      let mut host_ctx = host.vm_js_host_context();
-      let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
-      if let Some(bindings_host) = host.webidl_bindings_host() {
-        hooks.any.webidl_bindings_host_slot_mut().set(bindings_host);
-      }
-      let window_realm = host.window_realm();
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -928,7 +916,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
         let call_result = tick_result.and_then(|_| {
           let mut scope = heap.scope();
           vm.call_with_host_and_hooks(
-            &mut host_ctx,
+            vm_host,
             &mut scope,
             &mut hooks,
             callback,
@@ -1054,12 +1042,8 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   let id = event_loop
     .set_interval(interval, move |host, event_loop| {
       let id = id_cell_for_cb.get();
-      let mut host_ctx = host.vm_js_host_context();
-      let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
-      if let Some(bindings_host) = host.webidl_bindings_host() {
-        hooks.any.webidl_bindings_host_slot_mut().set(bindings_host);
-      }
-      let window_realm = host.window_realm();
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -1071,7 +1055,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
         let call_result = tick_result.and_then(|_| {
           let mut scope = heap.scope();
           vm.call_with_host_and_hooks(
-            &mut host_ctx,
+            vm_host,
             &mut scope,
             &mut hooks,
             callback,
@@ -1185,12 +1169,8 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   let root = scope.heap_mut().add_root(callback)?;
   event_loop
     .queue_microtask(move |host, event_loop| {
-      let mut host_ctx = host.vm_js_host_context();
-      let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
-      if let Some(bindings_host) = host.webidl_bindings_host() {
-        hooks.any.webidl_bindings_host_slot_mut().set(bindings_host);
-      }
-      let window_realm = host.window_realm();
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -1206,7 +1186,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
             // HTML `queueMicrotask` invokes callbacks with an `undefined` callback-this value.
             vm
               .call_with_host_and_hooks(
-                &mut host_ctx,
+                vm_host,
                 &mut scope,
                 &mut hooks,
                 callback,

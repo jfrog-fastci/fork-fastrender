@@ -189,12 +189,8 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
         ));
       };
 
-      let mut host_ctx = host.vm_js_host_context();
-      let mut hooks = VmJsEventLoopHooks::<Host>::new(&mut host_ctx);
-      if let Some(bindings_host) = host.webidl_bindings_host() {
-        hooks.set_webidl_bindings_host(bindings_host);
-      }
-      let window_realm = host.window_realm();
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm();
       window_realm.reset_interrupt();
       let budget = window_realm.vm_budget_now();
       let (vm, heap) = window_realm.vm_and_heap_mut();
@@ -217,7 +213,7 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
             };
             // The callback is invoked with the global object as `this` and the timestamp argument.
             let _ = vm.call_with_host_and_hooks(
-              &mut host_ctx,
+              vm_host,
               &mut scope,
               &mut hooks,
               callback_value,
