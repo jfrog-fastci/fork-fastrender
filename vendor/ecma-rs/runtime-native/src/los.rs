@@ -83,6 +83,14 @@ impl LargeObjectSpace {
       if hdr.is_marked(current_epoch) {
         true
       } else {
+        let card_table = hdr.card_table_ptr();
+        if !card_table.is_null() {
+          // Clear the header pointer before unmapping the object so other GC
+          // bookkeeping (e.g. the card table registry) can't accidentally try
+          // to free it twice.
+          (&mut *(entry.obj_base.as_ptr() as *mut ObjHeader)).set_card_table_ptr(core::ptr::null_mut());
+          crate::gc::free_card_table(card_table, entry.obj_size);
+        }
         os_free(entry.map_base.as_ptr(), entry.mmap_size);
         freed += entry.mmap_size;
         false

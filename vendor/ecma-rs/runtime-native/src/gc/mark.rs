@@ -35,6 +35,12 @@ impl GcHeap {
     roots: &mut dyn RootSet,
     remembered: &mut dyn RememberedSet,
   ) -> Result<(), AllocError> {
+    if !super::gc_in_progress() {
+      // Major GC begins with a minor GC which may install per-object card tables
+      // for promoted large pointer arrays. Ensure the registry has enough spare
+      // capacity before entering the GC-in-progress state.
+      self.reserve_card_table_objects_for_minor_gc();
+    }
     let _gc_guard = super::GcInProgressGuard::new();
     self.collect_minor(roots, remembered)?;
     self.stats.major_collections += 1;
@@ -179,6 +185,7 @@ impl GcHeap {
     process_global_weak_handles_major(self, epoch);
     run_weak_cleanups(self);
     self.process_finalizers_major(epoch);
+    self.sweep_card_table_objects_major(epoch);
     self.stats.last_major_live_bytes = self.immix.line_map_used_bytes() + self.los.live_bytes(epoch);
     self.immix.finalize_after_marking();
     self.los.sweep(epoch);

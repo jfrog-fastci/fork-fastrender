@@ -117,6 +117,7 @@ pub struct GcHeap {
   backing_store_alloc: Box<GlobalBackingStoreAllocator>,
   external_bytes: usize,
   finalizers: Vec<FinalizerEntry>,
+  pub(crate) card_table_objects: Vec<*mut u8>,
 
   /// Current mark epoch (toggled on every major GC).
   pub(crate) mark_epoch: u8,
@@ -233,6 +234,7 @@ impl GcHeap {
       backing_store_alloc: Box::new(backing_store_alloc),
       external_bytes: 0,
       finalizers: Vec::new(),
+      card_table_objects: Vec::new(),
       mark_epoch: 0,
       major_compaction: MajorCompactionConfig::default(),
       stats: GcStats::default(),
@@ -728,7 +730,7 @@ impl GcHeap {
   /// Install a zeroed per-object card table for `obj` (if one is not already installed).
   ///
   /// `obj_size` must be the total object size in bytes (including the header).
-  fn install_card_table_for_obj(&mut self, header: &mut ObjHeader, obj_size: usize) {
+  pub(crate) fn install_card_table_for_obj(&mut self, header: &mut ObjHeader, obj_size: usize) {
     if !header.card_table_ptr().is_null() {
       return;
     }
@@ -741,6 +743,93 @@ impl GcHeap {
     // `ObjHeader` can store it in `meta` (low flag bits clear).
     unsafe {
       header.set_card_table_ptr(card_table);
+    }
+
+    let obj = header as *mut ObjHeader as *mut u8;
+    if super::gc_in_progress() && self.card_table_objects.len() == self.card_table_objects.capacity() {
+      // Card table installation can occur during GC (e.g. promotion); growing
+      // this registry would call the global allocator, which is forbidden.
+      trap::rt_trap_oom(
+        self.card_table_objects.len().saturating_mul(core::mem::size_of::<*mut u8>()),
+        "card table registry",
+      );
+    }
+    self.card_table_objects.push(obj);
+  }
+
+  pub(super) fn reserve_card_table_objects_for_minor_gc(&mut self) {
+    // Card tables can be installed during minor GC when promoting large pointer
+    // arrays. Ensure the registry has enough capacity up-front so promotion
+    // remains "no global allocator".
+    let min_obj_size = array::RT_ARRAY_DATA_OFFSET.saturating_add(super::CARD_TABLE_MIN_BYTES).max(1);
+    let max_new = self.config.nursery_size_bytes.div_ceil(min_obj_size);
+    self.card_table_objects.reserve(max_new.saturating_add(1));
+  }
+
+  pub(super) fn sweep_card_table_objects_major(&mut self, epoch: u8) {
+    let mut i = 0usize;
+    while i < self.card_table_objects.len() {
+      let mut obj = self.card_table_objects[i];
+      if obj.is_null() {
+        self.card_table_objects.swap_remove(i);
+        continue;
+      }
+
+      // Major GC should not see nursery pointers (it runs a minor GC first), but
+      // handle them defensively: follow forwarding pointers, otherwise treat
+      // them as dead/stale.
+      if self.nursery.contains(obj) {
+        // SAFETY: `obj` points into nursery memory.
+        unsafe {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            obj = header.forwarding_ptr();
+          } else {
+            self.card_table_objects.swap_remove(i);
+            continue;
+          }
+        }
+      }
+
+      // If the object isn't in this heap anymore (e.g. swept large object),
+      // drop the entry so we don't dereference stale pointers.
+      if !self.immix.contains(obj) && !self.los.contains(obj) {
+        self.card_table_objects.swap_remove(i);
+        continue;
+      }
+
+      // Follow forwarding pointers (major compaction) and update the registry.
+      unsafe {
+        loop {
+          let header = &*(obj as *const ObjHeader);
+          if header.is_forwarded() {
+            obj = header.forwarding_ptr();
+          } else {
+            break;
+          }
+        }
+      }
+      self.card_table_objects[i] = obj;
+
+      // SAFETY: `obj` points to a heap object header.
+      let marked = unsafe { (&*(obj as *const ObjHeader)).is_marked(epoch) };
+      if marked {
+        i += 1;
+        continue;
+      }
+
+      // Dead object: reclaim its per-object card table (if any).
+      unsafe {
+        let header = &mut *(obj as *mut ObjHeader);
+        let card_table = header.card_table_ptr();
+        if !card_table.is_null() {
+          let size = super::obj_size(obj);
+          header.set_card_table_ptr(ptr::null_mut());
+          super::free_card_table(card_table, size);
+        }
+      }
+
+      self.card_table_objects.swap_remove(i);
     }
   }
 

@@ -24,6 +24,9 @@ impl GcHeap {
     roots: &mut dyn RootSet,
     remembered: &mut dyn RememberedSet,
   ) -> Result<(), AllocError> {
+    if !super::gc_in_progress() {
+      self.reserve_card_table_objects_for_minor_gc();
+    }
     let _gc_guard = super::GcInProgressGuard::new();
     let start = Instant::now();
     self.stats.minor_collections += 1;

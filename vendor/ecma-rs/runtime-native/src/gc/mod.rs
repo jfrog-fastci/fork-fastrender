@@ -170,21 +170,82 @@ const META_FLAGS_MASK: usize = META_FORWARDED | META_MARK_MASK | META_REMEMBERED
 pub(crate) const CARD_TABLE_PTR_ALIGN: usize = META_FLAGS_MASK + 1;
 const _: () = assert!(CARD_TABLE_PTR_ALIGN.is_power_of_two());
 
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "gc_stats"))]
+static CARD_TABLE_BYTES_ALLOCATED: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "gc_stats"))]
+static CARD_TABLE_BYTES_FREED: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "gc_stats"))]
+#[doc(hidden)]
+pub fn card_table_bytes_allocated_for_tests() -> u64 {
+  CARD_TABLE_BYTES_ALLOCATED.load(Ordering::Relaxed)
+}
+
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "gc_stats"))]
+#[doc(hidden)]
+pub fn card_table_bytes_freed_for_tests() -> u64 {
+  CARD_TABLE_BYTES_FREED.load(Ordering::Relaxed)
+}
+
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "gc_stats"))]
+#[doc(hidden)]
+pub fn reset_card_table_counters_for_tests() {
+  CARD_TABLE_BYTES_ALLOCATED.store(0, Ordering::Relaxed);
+  CARD_TABLE_BYTES_FREED.store(0, Ordering::Relaxed);
+}
+
+#[cfg(unix)]
+#[inline]
+fn page_size() -> usize {
+  // SAFETY: sysconf is thread-safe.
+  let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+  if ps <= 0 { 4096 } else { ps as usize }
+}
+
+#[cfg(unix)]
+#[inline]
+fn round_up_to_page_size(bytes: usize) -> usize {
+  align_up(bytes, page_size())
+}
+
+#[inline]
+fn card_table_alloc_bytes_unrounded(obj_size: usize) -> usize {
+  let word_count = card_table_word_count(obj_size);
+  if word_count == 0 {
+    return 0;
+  }
+  word_count
+    .checked_mul(mem::size_of::<AtomicU64>())
+    .unwrap_or_else(|| trap::rt_trap_invalid_arg("card table size overflow"))
+}
+
+#[inline]
+fn card_table_alloc_bytes(obj_size: usize) -> usize {
+  let bytes = card_table_alloc_bytes_unrounded(obj_size);
+  if bytes == 0 {
+    return 0;
+  }
+  #[cfg(unix)]
+  {
+    return round_up_to_page_size(bytes);
+  }
+  #[cfg(not(unix))]
+  {
+    bytes
+  }
+}
+
 #[inline]
 pub(crate) fn alloc_card_table(obj_size: usize) -> *mut AtomicU64 {
   let word_count = card_table_word_count(obj_size);
   if word_count == 0 {
     return core::ptr::null_mut();
   }
-  let bytes = word_count
-    .checked_mul(mem::size_of::<AtomicU64>())
-    .unwrap_or_else(|| trap::rt_trap_invalid_arg("card table size overflow"));
+  let bytes = card_table_alloc_bytes(obj_size);
 
-  // Card tables must outlive their owning objects. Today we leak these mappings
-  // rather than wiring reclamation into sweeping.
-  //
-  // We use `mmap` on Unix so installing card tables during GC (e.g. promotion)
-  // does not rely on the Rust global allocator.
+  // Card tables are reclaimed when their owning objects are swept (major GC and
+  // LOS sweep). We use `mmap` on Unix so installing card tables during GC (e.g.
+  // promotion) does not rely on the Rust global allocator.
   #[cfg(unix)]
   let raw = unsafe {
     loop {
@@ -246,7 +307,61 @@ pub(crate) fn alloc_card_table(obj_size: usize) -> *mut AtomicU64 {
     }
   }
 
+  #[cfg(any(debug_assertions, feature = "gc_debug", feature = "gc_stats"))]
+  CARD_TABLE_BYTES_ALLOCATED.fetch_add(bytes as u64, Ordering::Relaxed);
+
   ptr
+}
+
+/// Free a per-object card table previously allocated by [`alloc_card_table`].
+///
+/// # Safety
+/// - `card_table_ptr` must be null or a pointer previously returned by
+///   `alloc_card_table(obj_size)` for the given `obj_size`.
+/// - The caller must ensure the card table is not concurrently accessed.
+pub(crate) unsafe fn free_card_table(card_table_ptr: *mut AtomicU64, obj_size: usize) {
+  if card_table_ptr.is_null() {
+    return;
+  }
+  let bytes = card_table_alloc_bytes(obj_size);
+  if bytes == 0 {
+    return;
+  }
+
+  #[cfg(unix)]
+  {
+    loop {
+      let rc = libc::munmap(card_table_ptr.cast(), bytes);
+      if rc == 0 {
+        break;
+      }
+      let err = std::io::Error::last_os_error();
+      if err.kind() == std::io::ErrorKind::Interrupted {
+        continue;
+      }
+      // This is a runtime bug (wrong pointer/length). Avoid unwinding across
+      // arbitrary runtime code and fail fast.
+      if cfg!(debug_assertions) {
+        eprintln!("runtime-native: munmap(card table) failed: {err}");
+      }
+      std::process::abort();
+    }
+  }
+
+  #[cfg(not(unix))]
+  {
+    let bytes_unrounded = card_table_alloc_bytes_unrounded(obj_size);
+    if bytes_unrounded == 0 {
+      return;
+    }
+    let align = CARD_TABLE_PTR_ALIGN.max(mem::align_of::<AtomicU64>());
+    let layout = std::alloc::Layout::from_size_align(bytes_unrounded, align)
+      .unwrap_or_else(|_| trap::rt_trap_invalid_arg("invalid card table layout"));
+    std::alloc::dealloc(card_table_ptr.cast(), layout);
+  }
+
+  #[cfg(any(debug_assertions, feature = "gc_debug", feature = "gc_stats"))]
+  CARD_TABLE_BYTES_FREED.fetch_add(bytes as u64, Ordering::Relaxed);
 }
 
 impl ObjHeader {

@@ -315,25 +315,23 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   let epoch = current_mark_epoch(global);
 
   if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
-    let obj = with_heap_lock_mutator(|heap| heap.los.alloc(size, align));
-    unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
-    unsafe {
-      let arr = &mut *(obj as *mut array::RtArrayHeader);
-      arr.len = len;
-      arr.elem_size = spec.elem_size as u32;
-      arr.elem_flags = spec.elem_flags;
-    }
-    if should_install_card_table {
-      let card_table = crate::gc::alloc_card_table(size);
-      if !card_table.is_null() {
-        // SAFETY: `card_table` was allocated with `alloc_card_table`, which
-        // guarantees the alignment + length required by `ObjHeader`.
+    return with_heap_lock_mutator(|heap| {
+      let obj = heap.los.alloc(size, align);
+      unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+      unsafe {
+        let arr = &mut *(obj as *mut array::RtArrayHeader);
+        arr.len = len;
+        arr.elem_size = spec.elem_size as u32;
+        arr.elem_flags = spec.elem_flags;
+      }
+      if should_install_card_table {
+        // SAFETY: `obj` points at a heap allocation initialized by `init_object`.
         unsafe {
-          (&mut *(obj as *mut ObjHeader)).set_card_table_ptr(card_table);
+          heap.install_card_table_for_obj(&mut *(obj as *mut ObjHeader), size);
         }
       }
-    }
-    return obj;
+      obj
+    });
   }
 
   if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe {
@@ -349,22 +347,51 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
     return obj;
   }
 
+  if should_install_card_table {
+    // Installing a card table requires registering the owning object with the
+    // heap so it can be reclaimed during major GC. Do the entire old-gen
+    // allocation while holding the heap lock to avoid safepoint polls after the
+    // object is allocated but before it is registered.
+    return with_heap_lock_mutator(|heap| {
+      // Fast path: bump within the current thread-local Immix hole.
+      let obj = if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe { (*alloc.get()).immix.alloc_fast(size, align) }) {
+        obj
+      } else {
+        // Slow path: reserve a new hole from the global Immix space.
+        let min_lines = size.div_ceil(LINE_SIZE);
+        let (start, limit) = heap
+          .immix
+          .reserve_hole(min_lines)
+          .unwrap_or_else(|| crate::trap::rt_trap_oom(size, "rt_alloc_array: Immix out of space"));
+        let obj = TLS_ALLOC.with(|alloc| unsafe {
+          (*alloc.get()).immix.cursor = start;
+          (*alloc.get()).immix.limit = limit;
+          (*alloc.get()).immix.alloc_fast(size, align)
+        });
+        obj.unwrap_or_else(|| crate::trap::rt_trap_oom(size, "rt_alloc_array: Immix hole too small"))
+      };
+
+      unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+      unsafe {
+        let arr = &mut *(obj as *mut array::RtArrayHeader);
+        arr.len = len;
+        arr.elem_size = spec.elem_size as u32;
+        arr.elem_flags = spec.elem_flags;
+      }
+
+      unsafe {
+        heap.install_card_table_for_obj(&mut *(obj as *mut ObjHeader), size);
+      }
+      obj
+    });
+  }
+
   let obj = alloc_old(size, align, &array::RT_ARRAY_TYPE_DESC, epoch);
   unsafe {
     let arr = &mut *(obj as *mut array::RtArrayHeader);
     arr.len = len;
     arr.elem_size = spec.elem_size as u32;
     arr.elem_flags = spec.elem_flags;
-  }
-  if should_install_card_table {
-    let card_table = crate::gc::alloc_card_table(size);
-    if !card_table.is_null() {
-      // SAFETY: `card_table` was allocated with `alloc_card_table`, which
-      // guarantees the alignment + length required by `ObjHeader`.
-      unsafe {
-        (&mut *(obj as *mut ObjHeader)).set_card_table_ptr(card_table);
-      }
-    }
   }
   obj
 }
