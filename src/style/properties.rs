@@ -38029,7 +38029,8 @@ pub fn apply_content_visibility_implied_containment(styles: &mut ComputedStyle) 
 ///
 /// Per CSS Conditional Rules Level 5, `container-type:size` implies style containment plus size
 /// containment, while `container-type:inline-size` implies style containment plus inline-size
-/// containment. `scroll-state` does not imply containment.
+/// containment. `scroll-state` does not imply containment, but may be combined with size /
+/// inline-size; those combinations imply the same containment as their size-bearing component.
 ///
 /// FastRender stores containment as a single bitfield on `ComputedStyle`, so we fold these implied
 /// flags into the final computed style after cascade. This must OR flags so explicit `contain:`

@@ -493,6 +493,26 @@ pub(crate) fn is_valid_shadow_host_name(local_name: &str) -> bool {
   )
 }
 
+#[cfg(test)]
+mod custom_element_name_tests {
+  use super::is_valid_custom_element_name;
+
+  #[test]
+  fn is_valid_custom_element_name_matches_basic_spec_rules() {
+    assert!(is_valid_custom_element_name("my-element"));
+    assert!(is_valid_custom_element_name("a-b"));
+
+    assert!(!is_valid_custom_element_name(""));
+    assert!(!is_valid_custom_element_name("myelement"));
+    assert!(!is_valid_custom_element_name("My-element"));
+    assert!(!is_valid_custom_element_name("my-Element"));
+    assert!(!is_valid_custom_element_name("annotation-xml"));
+    assert!(!is_valid_custom_element_name("my element"));
+    assert!(!is_valid_custom_element_name("a/b-c"));
+    assert!(!is_valid_custom_element_name("a>b-c"));
+  }
+}
+
 const SELECTOR_BLOOM_ASCII_LOWERCASE_STACK_BUF: usize = 64;
 
 #[inline]

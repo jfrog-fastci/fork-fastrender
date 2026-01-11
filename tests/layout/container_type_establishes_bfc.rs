@@ -79,7 +79,12 @@ fn container_type_size_and_inline_size_establish_bfc() {
     "expected collapsed margin to affect the parent's position among siblings",
   );
 
-  for container_type in [ContainerType::Size, ContainerType::InlineSize] {
+  for container_type in [
+    ContainerType::Size,
+    ContainerType::InlineSize,
+    ContainerType::SizeScrollState,
+    ContainerType::InlineSizeScrollState,
+  ] {
     let (child_y, outer_gap) = layout_parent_with_container_type(container_type);
     assert_approx(
       child_y,
@@ -93,4 +98,3 @@ fn container_type_size_and_inline_size_establish_bfc() {
     );
   }
 }
-
