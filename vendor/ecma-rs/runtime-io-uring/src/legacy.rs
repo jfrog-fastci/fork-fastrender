@@ -5,6 +5,7 @@ mod linux {
     use std::ffi::CString;
     use std::io;
     use std::mem::MaybeUninit;
+    use std::net::SocketAddr;
     use std::os::unix::io::RawFd;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
@@ -13,6 +14,7 @@ mod linux {
     use io_uring::{opcode, squeue, types, IoUring};
 
     use crate::driver::OpId;
+    use crate::op_connect_accept::{AcceptAddr, ConnectAddr};
     use crate::pool::{LeasedBuf, ProvidedBufPool};
     use crate::timeout::duration_to_timespec;
 
@@ -42,6 +44,19 @@ mod linux {
         Read {
             fd: RawFd,
             buf: Vec<u8>,
+            /// Extra resources to keep alive for the op's lifetime.
+            keep_alive: Option<Box<dyn Any + Send + Sync>>,
+        },
+        Connect {
+            fd: RawFd,
+            addr: ConnectAddr,
+            /// Extra resources to keep alive for the op's lifetime.
+            keep_alive: Option<Box<dyn Any + Send + Sync>>,
+        },
+        Accept {
+            listener_fd: RawFd,
+            flags: i32,
+            addr: AcceptAddr,
             /// Extra resources to keep alive for the op's lifetime.
             keep_alive: Option<Box<dyn Any + Send + Sync>>,
         },
@@ -91,6 +106,55 @@ mod linux {
                 fd,
                 buf,
                 keep_alive: Some(Box::new(keep_alive)),
+            }
+        }
+
+        pub fn connect(fd: RawFd, addr: SocketAddr) -> Self {
+            Self::Connect {
+                fd,
+                addr: ConnectAddr::new(addr),
+                keep_alive: None,
+            }
+        }
+
+        pub fn connect_with_keep_alive(
+            fd: RawFd,
+            addr: SocketAddr,
+            keep_alive: impl Any + Send + Sync,
+        ) -> Self {
+            Self::Connect {
+                fd,
+                addr: ConnectAddr::new(addr),
+                keep_alive: Some(Box::new(keep_alive)),
+            }
+        }
+
+        pub fn accept(listener_fd: RawFd, flags: i32) -> Self {
+            Self::Accept {
+                listener_fd,
+                flags,
+                addr: AcceptAddr::new(),
+                keep_alive: None,
+            }
+        }
+
+        pub fn accept_with_keep_alive(
+            listener_fd: RawFd,
+            flags: i32,
+            keep_alive: impl Any + Send + Sync,
+        ) -> Self {
+            Self::Accept {
+                listener_fd,
+                flags,
+                addr: AcceptAddr::new(),
+                keep_alive: Some(Box::new(keep_alive)),
+            }
+        }
+
+        pub fn accept_peer_addr(&self) -> Option<SocketAddr> {
+            match self {
+                PreparedOp::Accept { addr, .. } => addr.peer_addr(),
+                _ => None,
             }
         }
 
@@ -182,6 +246,21 @@ mod linux {
                 PreparedOp::Read { fd, buf, .. } => {
                     opcode::Read::new(types::Fd(*fd), buf.as_mut_ptr(), buf.len() as _).build()
                 }
+                PreparedOp::Connect { fd, addr, .. } => {
+                    opcode::Connect::new(types::Fd(*fd), addr.addr_ptr(), addr.addr_len()).build()
+                }
+                PreparedOp::Accept {
+                    listener_fd,
+                    flags,
+                    addr,
+                    ..
+                } => opcode::Accept::new(
+                    types::Fd(*listener_fd),
+                    addr.addr_ptr(),
+                    addr.addr_len_ptr(),
+                )
+                .flags(*flags)
+                .build(),
                 PreparedOp::RecvWithBufSelect { fd, pool } => opcode::Recv::new(
                     types::Fd(*fd),
                     std::ptr::null_mut(),
@@ -373,6 +452,14 @@ mod linux {
             self.submit(PreparedOp::statx(dirfd, path, flags, mask)?)
         }
 
+        pub fn submit_connect(&mut self, fd: RawFd, addr: SocketAddr) -> io::Result<OpId> {
+            self.submit(PreparedOp::connect(fd, addr))
+        }
+
+        pub fn submit_accept(&mut self, listener_fd: RawFd, flags: i32) -> io::Result<OpId> {
+            self.submit(PreparedOp::accept(listener_fd, flags))
+        }
+
         /// Submit `op` with a per-operation timeout.
         ///
         /// This uses `IOSQE_IO_LINK` + `IORING_OP_LINK_TIMEOUT`:
@@ -550,6 +637,26 @@ mod linux {
         Ok(probe.is_supported(opcode::AsyncCancel::CODE))
     }
 
+    pub fn is_accept_supported(driver: &Driver) -> io::Result<bool> {
+        let mut probe = io_uring::Probe::new();
+        let inner = driver
+            .inner
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+        inner.ring.submitter().register_probe(&mut probe)?;
+        Ok(probe.is_supported(opcode::Accept::CODE))
+    }
+
+    pub fn is_connect_supported(driver: &Driver) -> io::Result<bool> {
+        let mut probe = io_uring::Probe::new();
+        let inner = driver
+            .inner
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "io_uring mutex poisoned"))?;
+        inner.ring.submitter().register_probe(&mut probe)?;
+        Ok(probe.is_supported(opcode::Connect::CODE))
+    }
+
     pub fn is_provide_buffers_supported(driver: &Driver) -> io::Result<bool> {
         let mut probe = io_uring::Probe::new();
         let inner = driver
@@ -631,6 +738,14 @@ mod non_linux {
     }
 
     pub fn is_async_cancel_supported(_driver: &Driver) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn is_accept_supported(_driver: &Driver) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn is_connect_supported(_driver: &Driver) -> io::Result<bool> {
         Ok(false)
     }
 

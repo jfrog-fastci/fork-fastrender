@@ -25,6 +25,7 @@ members = [
   "effect-js-cli",
   "emit-js",
   "runtime-native",
+  "runtime-io-uring",
   "vm-js",
   "runtime-io-uring",
   "runtime-js",

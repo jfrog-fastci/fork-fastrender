@@ -108,11 +108,13 @@ impl<R> IoOp<R> {
 mod imp {
     use super::*;
     use std::mem;
+    use std::net::SocketAddr;
     use std::os::fd::RawFd;
     use std::sync::Weak;
 
     use io_uring::{opcode, types, IoUring};
 
+    use crate::op_connect_accept::{AcceptAddr, ConnectAddr};
     use crate::op_readv_writev::{build_readv_iovecs, build_writev_iovecs};
     use crate::op_sendmsg_recvmsg::{
         build_recvmsg_iovecs, build_sendmsg_iovecs, copy_sockaddr_storage, RecvMsg, RecvMsgResource,
@@ -531,6 +533,68 @@ mod imp {
             Ok(IoOp { id, shared })
         }
 
+        pub fn submit_connect(&mut self, fd: RawFd, addr: SocketAddr) -> io::Result<IoOp<()>> {
+            let id = self.alloc_id();
+            let shared = Arc::new(OpShared::new(id));
+            let weak: Weak<OpShared<()>> = Arc::downgrade(&shared);
+
+            // Heap-owned sockaddr buffer; must remain valid until the connect CQE.
+            let addr = ConnectAddr::new(addr);
+            let entry = opcode::Connect::new(types::Fd(fd), addr.addr_ptr(), addr.addr_len())
+                .build()
+                .user_data(id.0);
+
+            self.push_entry(&entry)?;
+
+            self.in_flight().insert(
+                id.0,
+                Box::new(move |result| {
+                    // Keep the address buffer alive until the target CQE.
+                    let _addr = addr;
+                    if let Some(shared) = weak.upgrade() {
+                        shared.complete(result, ());
+                    }
+                }),
+            );
+
+            self.submit_sqes()?;
+
+            Ok(IoOp { id, shared })
+        }
+
+        pub fn submit_accept(
+            &mut self,
+            listener_fd: RawFd,
+            flags: i32,
+        ) -> io::Result<IoOp<Option<SocketAddr>>> {
+            let id = self.alloc_id();
+            let shared = Arc::new(OpShared::new(id));
+            let weak: Weak<OpShared<Option<SocketAddr>>> = Arc::downgrade(&shared);
+
+            // Heap-owned sockaddr + socklen buffers; must remain valid until the accept CQE.
+            let mut addr = AcceptAddr::new();
+            let entry = opcode::Accept::new(types::Fd(listener_fd), addr.addr_ptr(), addr.addr_len_ptr())
+                .flags(flags)
+                .build()
+                .user_data(id.0);
+
+            self.push_entry(&entry)?;
+
+            self.in_flight().insert(
+                id.0,
+                Box::new(move |result| {
+                    let peer = addr.peer_addr();
+                    if let Some(shared) = weak.upgrade() {
+                        shared.complete(result, peer);
+                    }
+                }),
+            );
+
+            self.submit_sqes()?;
+
+            Ok(IoOp { id, shared })
+        }
+
         /// Best-effort cancellation of an in-flight op by `user_data`/[`OpId`].
         ///
         /// Correctness: cancelling never drives resource release for the target op; resources are
@@ -668,6 +732,28 @@ impl IoUringDriver {
         _buf: B,
         _offset: u64,
     ) -> io::Result<IoOp<B>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "io_uring is only supported on Linux",
+        ))
+    }
+
+    pub fn submit_connect(
+        &mut self,
+        _fd: i32,
+        _addr: std::net::SocketAddr,
+    ) -> io::Result<IoOp<()>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "io_uring is only supported on Linux",
+        ))
+    }
+
+    pub fn submit_accept(
+        &mut self,
+        _listener_fd: i32,
+        _flags: i32,
+    ) -> io::Result<IoOp<Option<std::net::SocketAddr>>> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "io_uring is only supported on Linux",
