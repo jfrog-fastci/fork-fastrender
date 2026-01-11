@@ -382,7 +382,9 @@ impl IoRuntime {
       Ok(_) => Ok(promise),
       Err(e) => {
         // Best-effort cleanup: if the thread wasn't spawned, remove the op from the registry.
-        let _ = self.inner.registry.lock().remove(id);
+        // Drop outside the registry lock: dropping an op record can unregister GC root pins.
+        let removed = self.inner.registry.lock().remove(id);
+        drop(removed);
         Err(io::Error::new(io::ErrorKind::Other, e))
       }
     }
