@@ -495,13 +495,19 @@ pub fn remembered_set_contains(obj: *mut u8) -> bool {
   unsafe { (&*(obj as *const ObjHeader)).is_remembered() }
 }
 
-/// Debug/test helper: rebuild the global remembered set in-place.
+/// Debug/test helper: rebuild remembered-set tracking after a simulated minor GC.
 ///
-/// Retains only objects for which `object_has_young_refs` returns `true`,
-/// clearing the per-object `REMEMBERED` bit for removed objects.
+/// Model-based generational GC tests (`runtime-native/tests/generational_model.rs`) simulate a
+/// semispace nursery where young objects can survive multiple minor collections. The exported write
+/// barrier sets the per-object `REMEMBERED` header bit and records newly-remembered objects in a
+/// small process-global list ([`REMEMBERED_SET`]).
 ///
-/// This is used by model-based generational GC tests that simulate minor GC
-/// scanning and want to validate the sticky remembered-set rebuild logic.
+/// This helper performs a **sticky rebuild** by:
+/// - retaining only objects for which `object_has_young_refs` returns `true`
+/// - clearing the per-object `REMEMBERED` bit for removed objects
+///
+/// The `objs` argument is currently unused; it exists so tests can pass their known set of old
+/// objects and to keep the function signature flexible while the exported GC ABI is still evolving.
 #[doc(hidden)]
 pub fn remembered_set_scan_and_rebuild_for_tests(
   objs: &[*mut u8],

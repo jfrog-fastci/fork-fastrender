@@ -78,7 +78,18 @@ fn main() {
   )
   .expect("write main.rs");
 
-  let target_dir = project_dir.join("target");
+  let workspace_root = crate_dir
+    .parent()
+    .expect("runtime-native should be nested under the vendor/ecma-rs workspace");
+  let mut target_dir = std::env::var_os("CARGO_TARGET_DIR")
+    .map(PathBuf::from)
+    .unwrap_or_else(|| workspace_root.join("target"));
+  if target_dir.is_relative() {
+    target_dir = workspace_root.join(target_dir);
+  }
+  // Avoid deadlocking on Cargo's target-dir lock: use a separate target dir from the outer
+  // `cargo test` process, but keep it stable so repeat runs can reuse build artifacts.
+  let target_dir = target_dir.join("runtime_native_stackmaps_lld_test_target");
 
   // Force clang+lld for the final link and explicitly pass the linker script
   // fragment that defines `__stackmaps_start` / `__stackmaps_end`.

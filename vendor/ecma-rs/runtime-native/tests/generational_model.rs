@@ -331,6 +331,7 @@ impl OldObject {
 struct ModelHeap {
   nursery: Nursery,
   old_objects: Vec<OldObject>,
+  old_ptrs: Vec<*mut u8>,
 }
 
 impl ModelHeap {
@@ -338,13 +339,16 @@ impl ModelHeap {
     Self {
       nursery: Nursery::new(512),
       old_objects: Vec::new(),
+      old_ptrs: Vec::new(),
     }
   }
 
   fn alloc_old_object(&mut self, num_ptr_slots: usize, has_card_table: bool) -> usize {
     let obj = OldObject::alloc(num_ptr_slots, has_card_table);
+    let ptr = obj.obj_ptr();
     let idx = self.old_objects.len();
     self.old_objects.push(obj);
+    self.old_ptrs.push(ptr);
     idx
   }
 
@@ -460,8 +464,9 @@ impl ModelHeap {
       }
     }
 
-    let objs: Vec<*mut u8> = self.old_objects.iter().map(|old| old.obj_ptr()).collect();
-    runtime_native::remembered_set_scan_and_rebuild_for_tests(&objs, |obj| keep.contains(&(obj as usize)));
+    runtime_native::remembered_set_scan_and_rebuild_for_tests(&self.old_ptrs, |obj| {
+      keep.contains(&(obj as usize))
+    });
   }
 
   fn assert_invariants(&self) {
@@ -606,7 +611,7 @@ fn remembered_set_and_card_table_survive_multiple_minors() {
   assert!(!heap.old_objects[plain].header().is_remembered());
   assert!(!heap.old_objects[carded].header().is_remembered());
 
-  // IMPORTANT: clear global remset before we drop old objects (it contains raw pointers).
+  // Reset process-global write-barrier configuration (young range + remset tracking).
   runtime_native::clear_write_barrier_state_for_tests();
 }
 
@@ -709,7 +714,7 @@ proptest! {
     heap.minor_gc(&survivors);
     heap.assert_invariants();
 
-    // IMPORTANT: clear global remset before we drop old objects (it contains raw pointers).
+    // Reset process-global write-barrier configuration (young range + remset tracking).
     runtime_native::clear_write_barrier_state_for_tests();
   }
 }
