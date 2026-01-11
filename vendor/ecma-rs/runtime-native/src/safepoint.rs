@@ -71,7 +71,13 @@ pub fn visit_reloc_pairs_from_safepoint_context_with_bounds(
     return Ok(());
   };
 
-  let bounds = bounds.or_else(|| crate::stackwalk::StackBounds::current_thread().ok());
+  let bounds = bounds
+    .or_else(|| {
+      crate::thread_stack::current_thread_stack_bounds()
+        .ok()
+        .and_then(|b| StackBounds::new(b.low as u64, b.high as u64).ok())
+    })
+    .or_else(|| crate::stackwalk::StackBounds::current_thread().ok());
 
   // Safety: stackmap-driven root enumeration inherently walks raw pointers into thread stacks.
   unsafe {
