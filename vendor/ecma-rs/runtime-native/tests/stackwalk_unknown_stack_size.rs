@@ -1,5 +1,6 @@
 use runtime_native::{
-  walk_gc_root_pairs_from_fp, walk_gc_root_pairs_from_safepoint_context, StackMaps, WalkError,
+  walk_gc_root_pairs_from_fp, walk_gc_root_pairs_from_safepoint_context, walk_gc_roots_from_fp, StackMaps,
+  WalkError,
 };
 use runtime_native::arch::SafepointContext;
 use runtime_native::stackwalk::StackBounds;
@@ -21,6 +22,11 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
   //   caller_sp_callsite = callee_fp + 16
   let caller_sp_callsite = start_fp + 16;
 
+  // Model one statepoint `(base, derived)` pair, where `derived` is an interior pointer derived from
+  // `base` at a constant offset.
+  let base_val = Box::into_raw(Box::new([0u8; 16])) as *mut u8 as u64;
+  let derived_val = base_val + 8;
+
   unsafe {
     // runtime frame -> managed caller
     write_u64(start_fp + 0, caller_fp as u64);
@@ -31,8 +37,8 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
     write_u64(caller_fp + 8, 0);
 
     // base = [SP + 0], derived = [SP + 8]
-    write_u64(caller_sp_callsite + 0, Box::into_raw(Box::new(0u8)) as u64);
-    write_u64(caller_sp_callsite + 8, Box::into_raw(Box::new(0u8)) as u64);
+    write_u64(caller_sp_callsite + 0, base_val);
+    write_u64(caller_sp_callsite + 8, derived_val);
   }
 
   let expected = vec![(caller_sp_callsite + 0, caller_sp_callsite + 8)];
@@ -49,6 +55,19 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
   }
   visited.sort_unstable();
   assert_eq!(visited, expected);
+
+  // 1b) `walk_gc_roots_from_fp` must also work: it derives callsite SP from the callee FP and does
+  // not consult `stack_size` (even if the stackmap function record reports it as unknown).
+  let mut visited_base = Vec::<usize>::new();
+  unsafe {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
+      visited_base.push(slot as usize);
+    })
+    .expect("walk roots from fp");
+  }
+  visited_base.sort_unstable();
+  visited_base.dedup();
+  assert_eq!(visited_base, vec![caller_sp_callsite + 0]);
 
   // 2) `walk_gc_root_pairs_from_safepoint_context` must work when a stackmap-semantics SP is
   // provided in the context, even if `stack_size` is unknown.
@@ -71,6 +90,18 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
   visited_ctx.sort_unstable();
   assert_eq!(visited_ctx, expected);
 
+  // 2b) Same for the base-slot walker.
+  let mut visited_base_ctx = Vec::<usize>::new();
+  unsafe {
+    runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |slot| {
+      visited_base_ctx.push(slot as usize);
+    })
+    .expect("walk roots from ctx with sp");
+  }
+  visited_base_ctx.sort_unstable();
+  visited_base_ctx.dedup();
+  assert_eq!(visited_base_ctx, vec![caller_sp_callsite + 0]);
+
   // 3) If `ctx.sp == 0`, the walker falls back to `stack_size` for the top frame. A sentinel
   // `u64::MAX` stack size must surface as an explicit error.
   let ctx_missing_sp = SafepointContext {
@@ -81,6 +112,14 @@ fn unknown_stack_size_is_not_required_for_pair_walking() {
   };
   let res = unsafe {
     walk_gc_root_pairs_from_safepoint_context(&ctx_missing_sp, Some(bounds), &stackmaps, |_ra, _pairs| {})
+  };
+  assert!(matches!(
+    res,
+    Err(WalkError::UnknownStackSize { return_addr }) if return_addr == callsite_ra
+  ));
+
+  let res = unsafe {
+    runtime_native::stackwalk_fp::walk_gc_roots_from_safepoint_context(&ctx_missing_sp, Some(bounds), &stackmaps, |_| {})
   };
   assert!(matches!(
     res,
