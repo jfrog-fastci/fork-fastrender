@@ -9,7 +9,7 @@ use xtask::webidl_bindings_codegen::{
 fn webidl_bindings_snapshots_are_up_to_date() {
   let mk_args = |backend: WebIdlBindingsBackend, out: &str| WebIdlBindingsCodegenArgs {
     backend,
-    out: PathBuf::from(out),
+    out: Some(PathBuf::from(out)),
     window_allowlist: PathBuf::from("tools/webidl/window_bindings_allowlist.toml"),
     dom_allowlist: PathBuf::from("tools/webidl/bindings_allowlist.toml"),
     dom_out: PathBuf::from("src/js/legacy/dom_generated.rs"),
