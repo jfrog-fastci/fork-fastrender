@@ -9,7 +9,7 @@ use runtime_native::stackmaps_loader::try_load_stackmaps_from_self_linux_phdr;
 pub extern "C" fn stackmap_target() {}
 
 // Embed a minimal, valid StackMap v3 blob into a stackmap section without using
-// `runtime-native/stackmaps.ld`.
+// the repo's linker-script fragment (`runtime-native/link/stackmaps.ld`).
 //
 // The function address field is relocated to `stackmap_target`, so the runtime can validate the
 // candidate blob by checking that function addresses point into executable PT_LOAD segments.

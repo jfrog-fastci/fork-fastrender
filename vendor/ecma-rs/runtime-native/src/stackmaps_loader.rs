@@ -2,7 +2,7 @@
 //!
 //! On Linux/ELF we support three strategies:
 //! 1) **Fast path (zero I/O):** use linker-defined start/stop symbols emitted by
-//!    `runtime-native/stackmaps.ld`.
+//!    `runtime-native/link/stackmaps.ld` (preferred) / `runtime-native/stackmaps.ld` (compat).
 //! 2) **Fallback (zero I/O):** scan mapped PT_LOAD segments via `dl_iterate_phdr`
 //!    and look for StackMap v3 blobs.
 //! 3) **Fallback (I/O):** parse `/proc/self/exe` to locate the section in the ELF
@@ -27,7 +27,8 @@ mod linux {
   // We intentionally define *non-absolute* symbols (in `.bss`) so referencing them is valid even
   // when building `cdylib` artifacts (absolute symbols can trigger disallowed relocations).
   //
-  // When `runtime-native/stackmaps.ld` defines the real range symbols, those strong
+  // When `runtime-native/link/stackmaps.ld` (or the compat `runtime-native/stackmaps.ld`) defines
+  // the real range symbols, those strong
   // definitions override these weak fallbacks.
   global_asm!(
     r#"
@@ -88,7 +89,8 @@ static STACKMAPS_SECTION: OnceLock<&'static [u8]> = OnceLock::new();
 /// Return the bytes of the current process's `.llvm_stackmaps` section.
 ///
 /// - On Linux, this prefers linker-defined start/stop symbols when available,
-///   and falls back to parsing `/proc/self/exe`.
+///   and falls back to in-memory scanning (`dl_iterate_phdr`), and finally
+///   parsing `/proc/self/exe`.
 /// - On macOS, we use `getsectdatafromheader_64`.
 pub fn stackmaps_section() -> &'static [u8] {
   *STACKMAPS_SECTION.get_or_init(|| {
