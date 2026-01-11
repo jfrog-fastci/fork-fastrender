@@ -405,24 +405,9 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use effect_model::{Purity, ThrowBehavior};
+  use effect_model::Purity;
   use knowledge_base::ApiKind;
   use knowledge_base::JsonValue;
-
-  fn effect_set_to_summary(effects: EffectSet) -> EffectSummary {
-    EffectSummary {
-      flags: effects & !EffectSet::MAY_THROW,
-      throws: if effects.contains(EffectSet::MAY_THROW) {
-        ThrowBehavior::Maybe
-      } else {
-        ThrowBehavior::Never
-      },
-    }
-  }
-
-  fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
-    effect_set_to_summary(template.base_effects())
-  }
 
   fn api(
     name: &str,
@@ -430,7 +415,7 @@ mod tests {
     purity: PurityTemplate,
     properties: &[(&str, JsonValue)],
   ) -> ApiSemantics {
-    let effect_summary = effect_template_to_summary(&effects);
+    let effect_summary = effects.base_effects().to_effect_summary();
     ApiSemantics {
       id: knowledge_base::ApiId::from_name(name),
       name: name.to_string(),

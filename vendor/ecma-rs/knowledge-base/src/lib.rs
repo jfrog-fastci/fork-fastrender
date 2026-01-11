@@ -189,18 +189,7 @@ impl<'de> Deserialize<'de> for ApiSemantics {
 }
 
 fn effect_template_to_summary(template: &EffectTemplate) -> EffectSummary {
-  effect_set_to_summary(template.base_effects())
-}
-
-fn effect_set_to_summary(effects: EffectSet) -> EffectSummary {
-  EffectSummary {
-    flags: effects & !EffectSet::MAY_THROW,
-    throws: if effects.contains(EffectSet::MAY_THROW) {
-      ThrowBehavior::Maybe
-    } else {
-      ThrowBehavior::Never
-    },
-  }
+  template.base_effects().to_effect_summary()
 }
 
 impl ApiSemantics {

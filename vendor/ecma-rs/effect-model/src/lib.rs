@@ -101,6 +101,21 @@ impl EffectSet {
   pub const UNKNOWN_CALL: Self =
     Self::from_bits_truncate(Self::UNKNOWN.bits() | Self::MAY_THROW.bits());
 
+  /// Convert this bitset into an [`EffectSummary`].
+  ///
+  /// Note: this conversion is lossy; [`EffectSet`] only encodes a boolean
+  /// `MAY_THROW` flag, so the resulting [`ThrowBehavior`] is at most `Maybe`.
+  pub fn to_effect_summary(self) -> EffectSummary {
+    EffectSummary {
+      flags: self & !EffectSet::MAY_THROW,
+      throws: if self.contains(EffectSet::MAY_THROW) {
+        ThrowBehavior::Maybe
+      } else {
+        ThrowBehavior::Never
+      },
+    }
+  }
+
   /// Infer a coarse purity classification from effect flags.
   ///
   /// This is intentionally conservative and ignores `MAY_THROW`, which is
@@ -310,6 +325,18 @@ impl EffectSummary {
     }
     Purity::Impure
   }
+
+  /// Convert this summary into an [`EffectSet`].
+  ///
+  /// Note: this conversion is lossy; [`ThrowBehavior::Always`] and
+  /// [`ThrowBehavior::Maybe`] are both mapped to [`EffectSet::MAY_THROW`].
+  pub fn to_effect_set(self) -> EffectSet {
+    let mut out = self.flags & !EffectSet::MAY_THROW;
+    if !matches!(self.throws, ThrowBehavior::Never) {
+      out |= EffectSet::MAY_THROW;
+    }
+    out
+  }
 }
 
 impl EffectSummary {
@@ -319,7 +346,9 @@ impl EffectSummary {
   };
 
   pub const UNKNOWN: Self = Self {
-    flags: EffectFlags::all(),
+    flags: EffectFlags::from_bits_truncate(
+      EffectFlags::all().bits() & !EffectSet::MAY_THROW.bits(),
+    ),
     throws: ThrowBehavior::Maybe,
   };
 }
@@ -537,6 +566,11 @@ mod tests {
     assert_eq!(
       EffectSet::UNKNOWN_CALL,
       EffectSet::UNKNOWN | EffectSet::MAY_THROW
+    );
+
+    assert_eq!(
+      EffectSet::UNKNOWN_CALL.to_effect_summary().to_effect_set(),
+      EffectSet::UNKNOWN_CALL
     );
   }
 }

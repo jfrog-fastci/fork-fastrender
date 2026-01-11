@@ -713,8 +713,8 @@ fn annotate_ssa_cfg_escape_and_ownership(
 }
 
 fn annotate_program_ssa_metadata(program: &mut Program) {
-  let summaries = analysis::interproc_escape::compute_program_escape_summaries(program);
   let call_summaries = analysis::call_summary::summarize_program(program);
+  let summaries = analysis::interproc_escape::compute_program_escape_summaries(program);
 
   if let Some(cfg) = program.top_level.ssa_body.as_mut() {
     annotate_ssa_cfg_escape_and_ownership(
