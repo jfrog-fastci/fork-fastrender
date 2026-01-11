@@ -123,10 +123,11 @@ export name isn’t `main`).
 After initializing the module graph (executing top-level statements in dependency
 order), call an **exported** function from the entry module.
 
-If omitted, only top-level module initializers are executed.
+By default, if the entry module exports `main()` (with zero parameters), it is
+invoked automatically after module initialization. Use `--entry-fn` to call a
+different exported function.
 
-The entry function must currently take **zero** parameters; its return value is
-ignored.
+The entry function must take **zero** parameters; its return value is ignored.
 
 ### `--emit-llvm <path>`
 
@@ -222,7 +223,7 @@ future typechecked/HIR-based backend yet). Supported today:
     - direct calls to user-defined functions by identifier:
       - exact arity (no varargs)
       - no optional chaining / spread arguments
-      - arguments are checked against the callee’s assumed signature (currently all `number`)
+      - arguments are checked against the callee’s declared parameter types
 
 - ES module subset (multi-file projects):
   - `export function foo(...) { ... }`
@@ -232,17 +233,14 @@ future typechecked/HIR-based backend yet). Supported today:
 Limitations:
 
 - Default exports, namespace imports, and re-exports are not supported.
-- User-defined functions are currently assumed to have `number` parameters and a
-  `number` return type for signature checking; type annotations are parsed but
-  ignored for this purpose.
 - `tsconfig.json` is not loaded (so `baseUrl`/`paths` are ignored); module resolution
   uses a Node-style resolver for the supported import forms.
 
 Type annotations in function declarations (current):
 
-- Type annotations are currently ignored by `native-js-cli` for user-defined
-  function signatures. All user-defined function parameters/returns are treated
-  as `number`.
+- Supported: `number`, `boolean`, `string`, `void`, `null`, `undefined`
+- If omitted, parameters and return types default to `number`
+  (this is a convenience for the minimal emitter; it is not TypeScript semantics)
 
 All other statements/expressions/operators currently fail compilation with a
 simple error (e.g. `unsupported statement`, `unsupported expression`, or

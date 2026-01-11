@@ -344,9 +344,16 @@ emitter with a small multi-file ES module subset (see
 [`native-js-cli/README.md`](../native-js-cli/README.md)).
 
 Note: the current multi-file project emitter is intentionally conservative and
-still incomplete. In particular, it currently assumes user-defined functions have
-`number` parameters and a `number` return type for signature checking; type
-annotations are parsed but ignored for this purpose.
+still incomplete. It:
+
+- runs module initializers in dependency order (runtime imports only), and then
+  optionally calls an exported entry function
+  - if `entry_export` is `None`, it will auto-call an exported `main()` when
+    present and it takes zero parameters
+- supports only primitive type annotations on function parameters/returns
+  (`number`, `boolean`, `string`, `void`, `null`, `undefined`)
+  - if omitted, parameters and return types default to `number`
+    (this is a convenience for the minimal emitter; it is not TypeScript semantics)
 
 The input is always parsed as a **TypeScript module**:
 
