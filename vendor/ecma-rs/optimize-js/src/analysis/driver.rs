@@ -415,8 +415,12 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
 
 /// Compute all analyses for `program`, annotating per-instruction metadata.
 ///
-/// This resets all existing [`InstMeta`] on the program and rewrites it from
-/// scratch, so it is safe to call repeatedly.
+/// This resets all existing [`InstMeta`] on each function's analyzed CFG
+/// ([`crate::ProgramFunction::analyzed_cfg`], which prefers `ssa_body` when present) and rewrites
+/// it from scratch, so it is safe to call repeatedly.
+///
+/// Note that [`crate::ProgramFunction::body`] is typically SSA-deconstructed by default, and may
+/// not receive these annotations when an SSA CFG is available.
 pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
   let keys = function_keys(program);
   let call_summaries = call_summary::summarize_program(program);

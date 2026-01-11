@@ -20,8 +20,10 @@ fn escape_and_ownership_metadata_is_attached() {
 
   let mut program = compile_source(src, TopLevelMode::Module, false);
   annotate_program(&mut program);
-  
+
   let func = program.functions.get(0).expect("expected one nested function");
+  // `annotate_program` attaches ownership/escape + consumption metadata to the analyzed CFG (SSA
+  // form when available), not necessarily to the SSA-deconstructed `body`.
   let cfg = func.analyzed_cfg();
 
   let mut alloc_escape = None;

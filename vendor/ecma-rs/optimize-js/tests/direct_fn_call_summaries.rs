@@ -8,6 +8,9 @@ use optimize_js::il::inst::{Arg, InstTyp, OwnershipState};
 use optimize_js::TopLevelMode;
 
 fn find_direct_fn_call<'a>(program: &'a optimize_js::Program, fn_id: usize) -> &'a optimize_js::il::inst::Inst {
+  // `annotate_program` writes analysis-derived instruction metadata (ownership/escape/etc) to the
+  // CFG returned by `ProgramFunction::analyzed_cfg()` (SSA form when available), not necessarily
+  // to `ProgramFunction::body` (which is SSA-deconstructed by default).
   program
     .top_level
     .analyzed_cfg()
