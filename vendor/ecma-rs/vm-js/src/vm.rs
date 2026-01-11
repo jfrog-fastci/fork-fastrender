@@ -1,28 +1,30 @@
 use crate::error::Termination;
 use crate::error::TerminationReason;
 use crate::error::VmError;
+use crate::exec::{AsyncContinuation, RuntimeEnv};
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
 use crate::execution_context::ScriptOrModule;
-use crate::exec::RuntimeEnv;
-use crate::function::{CallHandler, ConstructHandler, EcmaFunctionId, NativeConstructId, NativeFunctionId, ThisMode};
-use crate::GcObject;
-use crate::Heap;
+use crate::function::{
+  CallHandler, ConstructHandler, EcmaFunctionId, NativeConstructId, NativeFunctionId, ThisMode,
+};
 use crate::import_meta::create_import_meta_object;
 use crate::import_meta::VmImportMetaHostHooks;
 use crate::interrupt::InterruptHandle;
 use crate::interrupt::InterruptToken;
-use crate::jobs::VmJobContext;
 use crate::jobs::VmHost;
 use crate::jobs::VmHostHooks;
+use crate::jobs::VmJobContext;
 use crate::microtasks::MicrotaskQueue;
 use crate::module_graph::ModuleGraph;
-use crate::RootId;
-use crate::source::StackFrame;
 use crate::source::SourceText;
+use crate::source::StackFrame;
+use crate::GcObject;
+use crate::Heap;
 use crate::Intrinsics;
 use crate::PropertyKey;
 use crate::RealmId;
+use crate::RootId;
 use crate::Scope;
 use crate::Value;
 use diagnostics::FileId;
@@ -59,7 +61,9 @@ fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmErro
     VmError::NotCallable => crate::throw_type_error(scope, intr, "value is not callable"),
     VmError::NotConstructable => crate::throw_type_error(scope, intr, "value is not a constructor"),
     VmError::PrototypeCycle => crate::throw_type_error(scope, intr, "prototype cycle"),
-    VmError::PrototypeChainTooDeep => crate::throw_type_error(scope, intr, "prototype chain too deep"),
+    VmError::PrototypeChainTooDeep => {
+      crate::throw_type_error(scope, intr, "prototype chain too deep")
+    }
     VmError::InvalidPropertyDescriptorPatch => crate::throw_type_error(
       scope,
       intr,
@@ -70,16 +74,15 @@ fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmErro
 }
 
 /// A native (host-implemented) function call handler.
-pub type NativeCall =
-  for<'a> fn(
-    &mut Vm,
-    &mut Scope<'a>,
-    host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    callee: GcObject,
-    this: Value,
-    args: &[Value],
-  ) -> Result<Value, VmError>;
+pub type NativeCall = for<'a> fn(
+  &mut Vm,
+  &mut Scope<'a>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError>;
 
 /// A native (host-implemented) function constructor handler.
 pub type NativeConstruct = for<'a> fn(
@@ -244,6 +247,9 @@ pub struct Vm {
   ecma_functions: Vec<EcmaFunctionCode>,
   ecma_function_cache: HashMap<EcmaFunctionKey, EcmaFunctionId>,
   import_meta_cache: HashMap<ModuleId, RootId>,
+  async_resume_call: Option<NativeFunctionId>,
+  next_async_continuation_id: u32,
+  async_continuations: HashMap<u32, AsyncContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
   ///
   /// This enables dynamic `import()` expressions evaluated from the AST interpreter (`exec.rs`) to
@@ -283,6 +289,7 @@ impl std::fmt::Debug for Vm {
     ds.field("ecma_functions", &self.ecma_functions.len());
     ds.field("ecma_function_cache", &self.ecma_function_cache.len());
     ds.field("import_meta_cache", &self.import_meta_cache.len());
+    ds.field("async_continuations", &self.async_continuations.len());
     ds.field("module_graph", &self.module_graph.is_some());
     ds.field("intrinsics", &self.intrinsics);
     #[cfg(test)]
@@ -343,7 +350,11 @@ impl<'vm> ExecutionContextGuard<'vm> {
   fn new(vm: &'vm mut Vm, ctx: ExecutionContext) -> Self {
     vm.push_execution_context(ctx);
     let expected_len = vm.execution_context_stack.len();
-    Self { vm, ctx, expected_len }
+    Self {
+      vm,
+      ctx,
+      expected_len,
+    }
   }
 }
 
@@ -429,9 +440,7 @@ impl Drop for VmFrameGuard<'_> {
 }
 
 impl Vm {
-  fn erase_host_hooks_lifetime(
-    host: &mut dyn VmHostHooks,
-  ) -> *mut (dyn VmHostHooks + 'static) {
+  fn erase_host_hooks_lifetime(host: &mut dyn VmHostHooks) -> *mut (dyn VmHostHooks + 'static) {
     let ptr: *mut (dyn VmHostHooks + '_) = host;
     // SAFETY: We only use this pointer while the embedder-provided `host` reference is alive.
     unsafe { mem::transmute::<*mut (dyn VmHostHooks + '_), *mut (dyn VmHostHooks + 'static)>(ptr) }
@@ -443,7 +452,8 @@ impl Vm {
       None => Arc::new(AtomicBool::new(false)),
     };
     let external = options.external_interrupt_flag.clone();
-    let (interrupt, interrupt_handle) = InterruptToken::from_internal_and_external_flags(internal, external);
+    let (interrupt, interrupt_handle) =
+      InterruptToken::from_internal_and_external_flags(internal, external);
     let check_time_every = options.check_time_every;
     let mut vm = Self {
       options,
@@ -461,6 +471,9 @@ impl Vm {
       ecma_functions: Vec::new(),
       ecma_function_cache: HashMap::new(),
       import_meta_cache: HashMap::new(),
+      async_resume_call: None,
+      next_async_continuation_id: 0,
+      async_continuations: HashMap::new(),
       module_graph: None,
       intrinsics: None,
       #[cfg(test)]
@@ -484,6 +497,54 @@ impl Vm {
   #[inline]
   pub fn microtask_queue_mut(&mut self) -> &mut MicrotaskQueue {
     &mut self.microtasks
+  }
+
+  pub(crate) fn reserve_async_continuations(&mut self, additional: usize) -> Result<(), VmError> {
+    self
+      .async_continuations
+      .try_reserve(additional)
+      .map_err(|_| VmError::OutOfMemory)
+  }
+
+  pub(crate) fn async_resume_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_resume_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::exec::async_resume_call)?;
+    self.async_resume_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn insert_async_continuation(
+    &mut self,
+    cont: AsyncContinuation,
+  ) -> Result<u32, VmError> {
+    self
+      .async_continuations
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    let id = self.next_async_continuation_id;
+    self.next_async_continuation_id = self.next_async_continuation_id.wrapping_add(1);
+    self.async_continuations.insert(id, cont);
+    Ok(id)
+  }
+
+  pub(crate) fn take_async_continuation(&mut self, id: u32) -> Option<AsyncContinuation> {
+    self.async_continuations.remove(&id)
+  }
+
+  pub(crate) fn replace_async_continuation(
+    &mut self,
+    id: u32,
+    cont: AsyncContinuation,
+  ) -> Result<(), VmError> {
+    self
+      .async_continuations
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self.async_continuations.insert(id, cont);
+    Ok(())
   }
 
   /// Temporarily override the host hook implementation used by [`Vm::call`] / [`Vm::construct`].
@@ -565,7 +626,9 @@ impl Vm {
         args: &[Value],
       ) -> Result<Value, VmError> {
         let mut scope = self.heap.scope();
-        self.vm.call_with_host_and_hooks(&mut *self.host, &mut scope, hooks, callee, this, args)
+        self
+          .vm
+          .call_with_host_and_hooks(&mut *self.host, &mut scope, hooks, callee, this, args)
       }
 
       fn construct(
@@ -967,7 +1030,12 @@ impl Vm {
       if let Some(parsed) = &code.parsed {
         return Ok(parsed.clone());
       }
-      (code.source.clone(), code.span_start, code.span_end, code.kind)
+      (
+        code.source.clone(),
+        code.span_start,
+        code.span_end,
+        code.kind,
+      )
     };
 
     let text: &str = &source.text;
@@ -976,11 +1044,13 @@ impl Vm {
     start = start.min(text.len());
     end = end.min(text.len());
     if start > end {
-      return Err(VmError::Unimplemented("invalid ECMAScript function source span"));
+      return Err(VmError::Unimplemented(
+        "invalid ECMAScript function source span",
+      ));
     }
-    let snippet = text
-      .get(start..end)
-      .ok_or(VmError::Unimplemented("invalid ECMAScript function source slice"))?;
+    let snippet = text.get(start..end).ok_or(VmError::Unimplemented(
+      "invalid ECMAScript function source slice",
+    ))?;
 
     // `vm-js` reparses function snippets on-demand by slicing the original source text using spans
     // recorded during the initial parse.
@@ -995,10 +1065,7 @@ impl Vm {
     let mut snippet = snippet;
     if kind == EcmaFunctionKind::Expr {
       let trimmed = snippet.trim_end();
-      snippet = trimmed
-        .strip_suffix(';')
-        .unwrap_or(trimmed)
-        .trim_end();
+      snippet = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
     }
 
     let script_opts = ParseOptions {
@@ -1022,27 +1089,30 @@ impl Vm {
       // In that case, parsing as a script will fail with a SyntaxError; retry parsing as a module.
       EcmaFunctionKind::Decl => match self.parse_top_level_with_budget(snippet, script_opts) {
         Ok(top) => top,
-        Err(err @ VmError::Syntax(_)) => match self.parse_top_level_with_budget(snippet, module_opts) {
-          Ok(top) => top,
-          Err(_) => return Err(err),
-        },
+        Err(err @ VmError::Syntax(_)) => {
+          match self.parse_top_level_with_budget(snippet, module_opts) {
+            Ok(top) => top,
+            Err(_) => return Err(err),
+          }
+        }
         Err(err) => return Err(err),
       },
       EcmaFunctionKind::ObjectMember => {
-        let capacity = snippet
-          .len()
-          .checked_add(4)
-          .ok_or(VmError::OutOfMemory)?;
-        wrapped.try_reserve(capacity).map_err(|_| VmError::OutOfMemory)?;
+        let capacity = snippet.len().checked_add(4).ok_or(VmError::OutOfMemory)?;
+        wrapped
+          .try_reserve(capacity)
+          .map_err(|_| VmError::OutOfMemory)?;
         wrapped.push_str("({");
         wrapped.push_str(snippet);
         wrapped.push_str("})");
         match self.parse_top_level_with_budget(&wrapped, script_opts) {
           Ok(top) => top,
-          Err(err @ VmError::Syntax(_)) => match self.parse_top_level_with_budget(&wrapped, module_opts) {
-            Ok(top) => top,
-            Err(_) => return Err(err),
-          },
+          Err(err @ VmError::Syntax(_)) => {
+            match self.parse_top_level_with_budget(&wrapped, module_opts) {
+              Ok(top) => top,
+              Err(_) => return Err(err),
+            }
+          }
           Err(err) => return Err(err),
         }
       }
@@ -1050,11 +1120,10 @@ impl Vm {
         let mut attempt: usize = 0;
         loop {
           wrapped.clear();
-          let capacity = snippet
-            .len()
-            .checked_add(2)
-            .ok_or(VmError::OutOfMemory)?;
-          wrapped.try_reserve(capacity).map_err(|_| VmError::OutOfMemory)?;
+          let capacity = snippet.len().checked_add(2).ok_or(VmError::OutOfMemory)?;
+          wrapped
+            .try_reserve(capacity)
+            .map_err(|_| VmError::OutOfMemory)?;
           wrapped.push('(');
           wrapped.push_str(snippet);
           wrapped.push(')');
@@ -1118,9 +1187,9 @@ impl Vm {
       ));
     }
 
-    let stmt = body
-      .pop()
-      .ok_or(VmError::Unimplemented("missing statement in parsed function snippet"))?;
+    let stmt = body.pop().ok_or(VmError::Unimplemented(
+      "missing statement in parsed function snippet",
+    ))?;
 
     let func = match kind {
       EcmaFunctionKind::Decl => match *stmt.stx {
@@ -1155,14 +1224,15 @@ impl Vm {
           let expr = expr_stmt.stx.expr;
           match *expr.stx {
             AstExpr::LitObj(obj_expr) => {
-              let member = obj_expr
-                .stx
-                .members
-                .into_iter()
-                .next()
-                .ok_or(VmError::Unimplemented(
-                  "ECMAScript object member snippet did not contain any members",
-                ))?;
+              let member =
+                obj_expr
+                  .stx
+                  .members
+                  .into_iter()
+                  .next()
+                  .ok_or(VmError::Unimplemented(
+                    "ECMAScript object member snippet did not contain any members",
+                  ))?;
               let ObjMember { typ } = *member.stx;
               match typ {
                 ObjMemberType::Valued { val, .. } => match val {
@@ -1362,7 +1432,9 @@ impl Vm {
         import_meta: GcObject,
         module: ModuleId,
       ) -> Result<(), VmError> {
-        self.0.host_finalize_import_meta(vm, scope, import_meta, module)
+        self
+          .0
+          .host_finalize_import_meta(vm, scope, import_meta, module)
       }
     }
 
@@ -1580,7 +1652,9 @@ impl Vm {
   ) -> Result<(), VmError> {
     let mut start = 0;
     while start < values.len() {
-      let end = values.len().min(start.saturating_add(ARG_HANDLING_CHUNK_SIZE));
+      let end = values
+        .len()
+        .min(start.saturating_add(ARG_HANDLING_CHUNK_SIZE));
       let chunk = &values[start..end];
       let remaining = &values[end..];
       scope.push_roots_with_extra_roots(chunk, remaining, &[])?;
@@ -1599,7 +1673,9 @@ impl Vm {
   ) -> Result<(), VmError> {
     let mut start = 0;
     while start < values.len() {
-      let end = values.len().min(start.saturating_add(ARG_HANDLING_CHUNK_SIZE));
+      let end = values
+        .len()
+        .min(start.saturating_add(ARG_HANDLING_CHUNK_SIZE));
       out.extend_from_slice(&values[start..end]);
       start = end;
       if start < values.len() {
@@ -1655,7 +1731,11 @@ impl Vm {
         let roots = [callee, this];
         scope.push_roots_with_extra_roots(&roots, args, &[])?;
         self.push_roots_with_ticks(&mut scope, args)?;
-        return Err(coerce_error_to_throw(self, &mut scope, VmError::NotCallable));
+        return Err(coerce_error_to_throw(
+          self,
+          &mut scope,
+          VmError::NotCallable,
+        ));
       }
     };
     let call_handler = match scope.heap().get_function_call_handler(callee_obj) {
@@ -1689,7 +1769,12 @@ impl Vm {
       },
       CallHandler::User(_) => (Arc::<str>::from("<user>"), 0, 0),
     };
-    let frame = StackFrame { function: function_name, source, line, col };
+    let frame = StackFrame {
+      function: function_name,
+      source,
+      line,
+      col,
+    };
 
     let mut vm = self.enter_frame(frame)?;
     vm.tick()?;
@@ -2034,7 +2119,11 @@ impl Vm {
         let roots = [callee, new_target];
         scope.push_roots_with_extra_roots(&roots, args, &[])?;
         self.push_roots_with_ticks(&mut scope, args)?;
-        return Err(coerce_error_to_throw(self, &mut scope, VmError::NotConstructable));
+        return Err(coerce_error_to_throw(
+          self,
+          &mut scope,
+          VmError::NotConstructable,
+        ));
       }
     };
     let construct_handler = match scope.heap().get_function_construct_handler(callee_obj) {
@@ -2044,7 +2133,11 @@ impl Vm {
         let roots = [callee, new_target];
         scope.push_roots_with_extra_roots(&roots, args, &[])?;
         self.push_roots_with_ticks(&mut scope, args)?;
-        return Err(coerce_error_to_throw(self, &mut scope, VmError::NotConstructable));
+        return Err(coerce_error_to_throw(
+          self,
+          &mut scope,
+          VmError::NotConstructable,
+        ));
       }
       Err(e) => {
         self.tick()?;
@@ -2074,7 +2167,12 @@ impl Vm {
         None => (Arc::<str>::from("<call>"), 0, 0),
       },
     };
-    let frame = StackFrame { function: function_name, source, line, col };
+    let frame = StackFrame {
+      function: function_name,
+      source,
+      line,
+      col,
+    };
 
     let mut vm = self.enter_frame(frame)?;
     vm.tick()?;
@@ -2133,13 +2231,7 @@ impl Vm {
         new_target,
       ),
       ConstructHandler::Ecma(code_id) => vm.construct_ecma_function(
-        &mut scope,
-        host,
-        hooks,
-        code_id,
-        callee_obj,
-        args,
-        new_target,
+        &mut scope, host, hooks, code_id, callee_obj, args, new_target,
       ),
     };
 
@@ -2181,11 +2273,9 @@ impl Vm {
     };
 
     let this = match this_mode {
-      ThisMode::Lexical => {
-        bound_this.ok_or(VmError::Unimplemented(
-          "arrow function missing captured lexical this",
-        ))?
-      }
+      ThisMode::Lexical => bound_this.ok_or(VmError::Unimplemented(
+        "arrow function missing captured lexical this",
+      ))?,
       ThisMode::Strict => this,
       ThisMode::Global => match this {
         Value::Undefined | Value::Null => match realm {
@@ -2203,8 +2293,9 @@ impl Vm {
       ThisMode::Strict | ThisMode::Global => Value::Undefined,
     };
 
-    let global_object =
-      realm.ok_or(VmError::Unimplemented("ECMAScript function missing [[Realm]]"))?;
+    let global_object = realm.ok_or(VmError::Unimplemented(
+      "ECMAScript function missing [[Realm]]",
+    ))?;
 
     let func_ast = self.ecma_function_ast(code_id)?;
     let code_meta = self
@@ -2213,8 +2304,10 @@ impl Vm {
       .ok_or_else(|| VmError::invalid_handle())?;
 
     let func_env = scope.env_create(outer)?;
-    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+    let mut env =
+      RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
 
+    let is_async = func_ast.stx.async_;
     let result = crate::exec::run_ecma_function(
       self,
       scope,
@@ -2227,11 +2320,13 @@ impl Vm {
       is_strict,
       this,
       new_target,
-      func_ast.as_ref(),
+      func_ast.clone(),
       args,
     );
 
-    env.teardown(scope.heap_mut());
+    if !is_async {
+      env.teardown(scope.heap_mut());
+    }
     result
   }
 
@@ -2249,8 +2344,9 @@ impl Vm {
       let f = scope.heap().get_function(callee)?;
       (
         f.is_strict,
-        f.realm
-          .ok_or(VmError::Unimplemented("ECMAScript function missing [[Realm]]"))?,
+        f.realm.ok_or(VmError::Unimplemented(
+          "ECMAScript function missing [[Realm]]",
+        ))?,
         f.closure_env,
       )
     };
@@ -2267,8 +2363,14 @@ impl Vm {
         let key_s = proto_scope.alloc_string("prototype")?;
         proto_scope.push_root(Value::String(key_s))?;
         let key = PropertyKey::from_string(key_s);
-        let value =
-          proto_scope.ordinary_get_with_host_and_hooks(self, host, hooks, nt, key, Value::Object(nt))?;
+        let value = proto_scope.ordinary_get_with_host_and_hooks(
+          self,
+          host,
+          hooks,
+          nt,
+          key,
+          Value::Object(nt),
+        )?;
         match value {
           Value::Object(o) => o,
           _ => default_proto,
@@ -2282,7 +2384,8 @@ impl Vm {
     this_scope.push_root(Value::Object(this_obj))?;
 
     let func_env = this_scope.env_create(outer)?;
-    let mut env = RuntimeEnv::new_with_var_env(this_scope.heap_mut(), global_object, func_env, func_env)?;
+    let mut env =
+      RuntimeEnv::new_with_var_env(this_scope.heap_mut(), global_object, func_env, func_env)?;
 
     let func_ast = self.ecma_function_ast(code_id)?;
     let code_meta = self
@@ -2302,7 +2405,7 @@ impl Vm {
       is_strict,
       Value::Object(this_obj),
       new_target,
-      func_ast.as_ref(),
+      func_ast.clone(),
       args,
     );
 

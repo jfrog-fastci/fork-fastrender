@@ -2,7 +2,5 @@
 //
 // This is equivalent to:
 //   (async () => await Promise.resolve("ok"))()
-// but avoids `async`/`await` syntax (not implemented by `vm-js`'s interpreter yet).
-Promise.resolve("ok").then(function (v) {
-  return v;
-})
+// and ensures the oracle VM supports `async`/`await` syntax.
+(async () => await Promise.resolve("ok"))()

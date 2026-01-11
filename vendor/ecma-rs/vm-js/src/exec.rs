@@ -4,9 +4,9 @@ use crate::iterator;
 use crate::ops::{abstract_equality, to_number};
 use crate::{
   EnvRootId, ExecutionContext, GcEnv, GcObject, GcString, Heap, JsBigInt, ModuleGraph, ModuleId,
-  PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm, RealmId, RootId,
-  Scope, ScriptOrModule, SourceText, StackFrame, Value, Vm, VmError, NativeCall, VmHost, VmHostHooks,
-  VmJobContext,
+  NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind, Realm,
+  RealmId, RootId, Scope, ScriptOrModule, SourceText, StackFrame, Value, Vm, VmError, VmHost,
+  VmHostHooks, VmJobContext,
 };
 use diagnostics::{Diagnostic, FileId};
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
@@ -147,12 +147,8 @@ fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmE
   let intr = vm
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-  let value = crate::error_object::new_error(
-    scope,
-    intr.type_error_prototype(),
-    "TypeError",
-    message,
-  )?;
+  let value =
+    crate::error_object::new_error(scope, intr.type_error_prototype(), "TypeError", message)?;
   Ok(VmError::Throw(value))
 }
 
@@ -160,16 +156,16 @@ fn throw_range_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<Vm
   let intr = vm
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-  let value = crate::error_object::new_error(
-    scope,
-    intr.range_error_prototype(),
-    "RangeError",
-    message,
-  )?;
+  let value =
+    crate::error_object::new_error(scope, intr.range_error_prototype(), "RangeError", message)?;
   Ok(VmError::Throw(value))
 }
 
-fn throw_reference_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
+fn throw_reference_error(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  message: &str,
+) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
@@ -186,14 +182,14 @@ fn syntax_error(loc: parse_js::loc::Loc, message: impl Into<String>) -> VmError 
   let span = loc.to_diagnostics_span(FileId(0));
   VmError::Syntax(vec![Diagnostic::error("VMJS0002", message, span)])
 }
- 
+
 #[derive(Clone, Copy, Debug)]
 enum VarEnv {
   GlobalObject,
   Env(GcEnv),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct RuntimeEnv {
   global_object: GcObject,
   lexical_env: GcEnv,
@@ -205,10 +201,7 @@ pub(crate) struct RuntimeEnv {
 }
 
 impl RuntimeEnv {
-  fn new(
-    heap: &mut Heap,
-    global_object: GcObject,
-  ) -> Result<Self, VmError> {
+  fn new(heap: &mut Heap, global_object: GcObject) -> Result<Self, VmError> {
     // Root the global object across env allocation in case it triggers GC.
     let mut scope = heap.scope();
     scope.push_root(Value::Object(global_object))?;
@@ -261,7 +254,12 @@ impl RuntimeEnv {
     heap.set_env_root(self.lexical_root, env);
   }
 
-  pub(crate) fn set_source_info(&mut self, source: Arc<SourceText>, base_offset: u32, prefix_len: u32) {
+  pub(crate) fn set_source_info(
+    &mut self,
+    source: Arc<SourceText>,
+    base_offset: u32,
+    prefix_len: u32,
+  ) {
     self.source = source;
     self.base_offset = base_offset;
     self.prefix_len = prefix_len;
@@ -316,7 +314,11 @@ impl RuntimeEnv {
           return Ok(());
         }
 
-        key_scope.define_property(global_object, key, global_var_binding_desc(Value::Undefined))?;
+        key_scope.define_property(
+          global_object,
+          key,
+          global_var_binding_desc(Value::Undefined),
+        )?;
         Ok(())
       }
       VarEnv::Env(env) => {
@@ -367,7 +369,14 @@ impl RuntimeEnv {
     }
 
     let receiver = Value::Object(global_object);
-    Ok(Some(key_scope.ordinary_get_with_host_and_hooks(vm, host, hooks, global_object, key, receiver)?))
+    Ok(Some(key_scope.ordinary_get_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      global_object,
+      key,
+      receiver,
+    )?))
   }
 
   pub(crate) fn set(
@@ -393,7 +402,11 @@ impl RuntimeEnv {
         }
         // `const` assignment sentinel from `Heap::env_set_mutable_binding`.
         Err(VmError::Throw(Value::Undefined)) => {
-          return Err(throw_type_error(vm, scope, "Assignment to constant variable.")?);
+          return Err(throw_type_error(
+            vm,
+            scope,
+            "Assignment to constant variable.",
+          )?);
         }
         Err(err) => return Err(err),
       }
@@ -407,7 +420,8 @@ impl RuntimeEnv {
     key_scope.push_root(value)?;
     let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
 
-    let has_binding = key_scope.ordinary_has_property_with_tick(global_object, key, || vm.tick())?;
+    let has_binding =
+      key_scope.ordinary_has_property_with_tick(global_object, key, || vm.tick())?;
     if !has_binding {
       if strict {
         let msg = format!("{name} is not defined");
@@ -419,9 +433,10 @@ impl RuntimeEnv {
       return Ok(());
     }
 
-    if let Some(desc) = key_scope
-      .heap()
-      .object_get_own_property_with_tick(global_object, &key, || vm.tick())?
+    if let Some(desc) =
+      key_scope
+        .heap()
+        .object_get_own_property_with_tick(global_object, &key, || vm.tick())?
     {
       match desc.kind {
         PropertyKind::Data { writable: true, .. } => {
@@ -430,21 +445,31 @@ impl RuntimeEnv {
             .object_set_existing_data_property_value(global_object, &key, value)?;
           return Ok(());
         }
-        PropertyKind::Data { writable: false, .. } => {
+        PropertyKind::Data {
+          writable: false, ..
+        } => {
           if strict {
             let msg = format!("Cannot assign to read only property '{name}'");
             return Err(throw_type_error(vm, &mut key_scope, &msg)?);
           }
           return Ok(());
         }
-         PropertyKind::Accessor { .. } => {
-           let receiver = Value::Object(global_object);
-           let ok = key_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, global_object, key, value, receiver)?;
-           if ok {
-             return Ok(());
-           }
-           if strict {
-             let msg = format!("Cannot assign to read only property '{name}'");
+        PropertyKind::Accessor { .. } => {
+          let receiver = Value::Object(global_object);
+          let ok = key_scope.ordinary_set_with_host_and_hooks(
+            vm,
+            host,
+            hooks,
+            global_object,
+            key,
+            value,
+            receiver,
+          )?;
+          if ok {
+            return Ok(());
+          }
+          if strict {
+            let msg = format!("Cannot assign to read only property '{name}'");
             return Err(throw_type_error(vm, &mut key_scope, &msg)?);
           }
           return Ok(());
@@ -481,9 +506,10 @@ impl RuntimeEnv {
         key_scope.push_root(value)?;
         let key = PropertyKey::from_string(key_scope.alloc_string(name)?);
 
-        if let Some(desc) = key_scope
-          .heap()
-          .object_get_own_property_with_tick(global_object, &key, || vm.tick())?
+        if let Some(desc) =
+          key_scope
+            .heap()
+            .object_get_own_property_with_tick(global_object, &key, || vm.tick())?
         {
           match desc.kind {
             PropertyKind::Data { writable: true, .. } => {
@@ -492,19 +518,29 @@ impl RuntimeEnv {
                 .object_set_existing_data_property_value(global_object, &key, value)?;
               return Ok(());
             }
-            PropertyKind::Data { writable: false, .. } => {
+            PropertyKind::Data {
+              writable: false, ..
+            } => {
               return Err(VmError::Unimplemented(
                 "assignment to non-writable global property",
               ));
             }
-             PropertyKind::Accessor { .. } => {
-               let receiver = Value::Object(global_object);
-               let ok = key_scope.ordinary_set_with_host_and_hooks(vm, host, hooks, global_object, key, value, receiver)?;
-               if ok {
-                 return Ok(());
-               }
-               return Err(VmError::Unimplemented(
-                 "assignment to non-writable global property",
+            PropertyKind::Accessor { .. } => {
+              let receiver = Value::Object(global_object);
+              let ok = key_scope.ordinary_set_with_host_and_hooks(
+                vm,
+                host,
+                hooks,
+                global_object,
+                key,
+                value,
+                receiver,
+              )?;
+              if ok {
+                return Ok(());
+              }
+              return Err(VmError::Unimplemented(
+                "assignment to non-writable global property",
               ));
             }
           }
@@ -667,7 +703,11 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    self.exec_script_source_with_host_and_hooks(host, hooks, Arc::new(SourceText::new("<inline>", source)))
+    self.exec_script_source_with_host_and_hooks(
+      host,
+      hooks,
+      Arc::new(SourceText::new("<inline>", source)),
+    )
   }
 
   /// Parse and execute a classic script, using a custom host hook implementation.
@@ -971,7 +1011,10 @@ enum Reference<'a> {
   /// Note: per ECMA-262, the reference stores the *base value* (which may be a primitive). Property
   /// access/assignment performs `ToObject(base)` for the actual `[[Get]]`/`[[Set]]` operation but
   /// uses the original base value as the `receiver` / call `this` binding.
-  Property { base: Value, key: PropertyKey },
+  Property {
+    base: Value,
+    key: PropertyKey,
+  },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1069,7 +1112,11 @@ impl<'a> Evaluator<'a> {
     Ok(len)
   }
 
-  fn instantiate_script(&mut self, scope: &mut Scope<'_>, stmts: &[Node<Stmt>]) -> Result<(), VmError> {
+  fn instantiate_script(
+    &mut self,
+    scope: &mut Scope<'_>,
+    stmts: &[Node<Stmt>],
+  ) -> Result<(), VmError> {
     self.instantiate_stmt_list(scope, stmts)
   }
 
@@ -1101,7 +1148,11 @@ impl<'a> Evaluator<'a> {
     // We do not implement mapped arguments objects yet.
     //
     // `arguments` must be created before default parameter initializers run so defaults can read it.
-    if !func.stx.arrow && !scope.heap().env_has_binding(self.env.lexical_env, "arguments")? {
+    if !func.stx.arrow
+      && !scope
+        .heap()
+        .env_has_binding(self.env.lexical_env, "arguments")?
+    {
       let intr = self
         .vm
         .intrinsics()
@@ -1140,9 +1191,11 @@ impl<'a> Evaluator<'a> {
       }
 
       scope.env_create_mutable_binding(self.env.lexical_env, "arguments")?;
-      scope
-        .heap_mut()
-        .env_initialize_binding(self.env.lexical_env, "arguments", Value::Object(args_obj))?;
+      scope.heap_mut().env_initialize_binding(
+        self.env.lexical_env,
+        "arguments",
+        Value::Object(args_obj),
+      )?;
     }
 
     // Bind parameters in order, evaluating default initializers as needed.
@@ -1299,7 +1352,10 @@ impl<'a> Evaluator<'a> {
       // while checking each name against the var-scoped set.
       self.tick()?;
       if var_names.contains(name) {
-        return Err(syntax_error(*loc, format!("Identifier '{name}' has already been declared")));
+        return Err(syntax_error(
+          *loc,
+          format!("Identifier '{name}' has already been declared"),
+        ));
       }
     }
 
@@ -1356,7 +1412,9 @@ impl<'a> Evaluator<'a> {
     self.tick()?;
     match stmt {
       Stmt::FunctionDecl(decl) => self.instantiate_function_decl(scope, decl),
-      Stmt::Block(block) => self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &block.stx.body),
+      Stmt::Block(block) => {
+        self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &block.stx.body)
+      }
       Stmt::If(stmt) => {
         self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.consequent.stx)?;
         if let Some(alt) = &stmt.stx.alternate {
@@ -1365,7 +1423,8 @@ impl<'a> Evaluator<'a> {
         Ok(())
       }
       Stmt::Try(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.wrapped.stx.body)?;
+        self
+          .instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.wrapped.stx.body)?;
         if let Some(catch) = &stmt.stx.catch {
           self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &catch.stx.body)?;
         }
@@ -1374,12 +1433,24 @@ impl<'a> Evaluator<'a> {
         }
         Ok(())
       }
-      Stmt::While(stmt) => self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx),
-      Stmt::DoWhile(stmt) => self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx),
-      Stmt::ForTriple(stmt) => self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.body.stx.body),
-      Stmt::ForIn(stmt) => self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.body.stx.body),
-      Stmt::ForOf(stmt) => self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.body.stx.body),
-      Stmt::Label(stmt) => self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx),
+      Stmt::While(stmt) => {
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx)
+      }
+      Stmt::DoWhile(stmt) => {
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx)
+      }
+      Stmt::ForTriple(stmt) => {
+        self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.body.stx.body)
+      }
+      Stmt::ForIn(stmt) => {
+        self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.body.stx.body)
+      }
+      Stmt::ForOf(stmt) => {
+        self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.body.stx.body)
+      }
+      Stmt::Label(stmt) => {
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx)
+      }
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
@@ -1557,8 +1628,12 @@ impl<'a> Evaluator<'a> {
     use crate::vm::EcmaFunctionKind;
 
     let func = &decl.stx.function.stx;
-    if func.async_ || func.generator {
-      return Err(VmError::Unimplemented("async/generator functions"));
+    if func.generator {
+      return Err(VmError::Unimplemented(if func.async_ {
+        "async generator functions"
+      } else {
+        "generator functions"
+      }));
     }
     let is_strict = self.strict
       || match &func.body {
@@ -1583,13 +1658,15 @@ impl<'a> Evaluator<'a> {
     let span_start = self.env.base_offset().saturating_add(rel_start);
     let span_end = self.env.base_offset().saturating_add(rel_end);
 
-    let code_id =
-      self
-        .vm
-        .register_ecma_function(self.env.source(), span_start, span_end, EcmaFunctionKind::Decl)?;
+    let code_id = self.vm.register_ecma_function(
+      self.env.source(),
+      span_start,
+      span_end,
+      EcmaFunctionKind::Decl,
+    )?;
     let func_obj = scope.alloc_ecma_function(
       code_id,
-      true,
+      /* is_constructable */ !func.async_,
       name_s,
       length,
       this_mode,
@@ -1637,7 +1714,9 @@ impl<'a> Evaluator<'a> {
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
     if let Some(realm) = self.vm.current_realm() {
-      init_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+      init_scope
+        .heap_mut()
+        .set_function_job_realm(func_obj, realm)?;
     }
     Ok(func_obj)
   }
@@ -1658,7 +1737,9 @@ impl<'a> Evaluator<'a> {
       // large `O(N)` early-error work without any budget checks.
       self.tick()?;
       match &*stmt.stx {
-        Stmt::VarDecl(var) if var.stx.mode == VarDeclMode::Let || var.stx.mode == VarDeclMode::Const => {
+        Stmt::VarDecl(var)
+          if var.stx.mode == VarDeclMode::Let || var.stx.mode == VarDeclMode::Const =>
+        {
           for declarator in &var.stx.declarators {
             self.tick()?;
             // Reuse lexical declaration collection logic to detect duplicates across complex patterns.
@@ -1834,7 +1915,13 @@ impl<'a> Evaluator<'a> {
       Pat::Obj(obj) => {
         for prop in &obj.stx.properties {
           self.tick()?;
-          self.instantiate_lexical_names_from_pat(scope, env, &prop.stx.target.stx, loc, mutable)?;
+          self.instantiate_lexical_names_from_pat(
+            scope,
+            env,
+            &prop.stx.target.stx,
+            loc,
+            mutable,
+          )?;
         }
         if let Some(rest) = &obj.stx.rest {
           self.tick()?;
@@ -1855,7 +1942,9 @@ impl<'a> Evaluator<'a> {
         }
         Ok(())
       }
-      Pat::AssignTarget(_) => Err(VmError::Unimplemented("lexical declaration assignment targets")),
+      Pat::AssignTarget(_) => Err(VmError::Unimplemented(
+        "lexical declaration assignment targets",
+      )),
     }
   }
 
@@ -1968,7 +2057,11 @@ impl<'a> Evaluator<'a> {
     self.collect_var_names_from_pat(&pat_decl.pat.stx, out)
   }
 
-  fn collect_var_names_from_pat(&mut self, pat: &Pat, out: &mut HashSet<String>) -> Result<(), VmError> {
+  fn collect_var_names_from_pat(
+    &mut self,
+    pat: &Pat,
+    out: &mut HashSet<String>,
+  ) -> Result<(), VmError> {
     match pat {
       Pat::Id(id) => {
         out.insert(id.stx.name.clone());
@@ -2070,11 +2163,7 @@ impl<'a> Evaluator<'a> {
     result
   }
 
-  fn eval_stmt(
-    &mut self,
-    scope: &mut Scope<'_>,
-    stmt: &Node<Stmt>,
-  ) -> Result<Completion, VmError> {
+  fn eval_stmt(&mut self, scope: &mut Scope<'_>, stmt: &Node<Stmt>) -> Result<Completion, VmError> {
     self.eval_stmt_labelled(scope, stmt, &[])
   }
 
@@ -2106,7 +2195,10 @@ impl<'a> Evaluator<'a> {
       Stmt::ExportDefaultExpr(stmt) => {
         let value = self.eval_expr(scope, &stmt.stx.expression)?;
         let binding_name = "*default*";
-        if !scope.heap().env_has_binding(self.env.lexical_env, binding_name)? {
+        if !scope
+          .heap()
+          .env_has_binding(self.env.lexical_env, binding_name)?
+        {
           return Err(VmError::InvariantViolation(
             "export default expression missing *default* binding",
           ));
@@ -2284,7 +2376,9 @@ impl<'a> Evaluator<'a> {
             self.tick()?;
             // Destructuring declarations require an initializer (early error in real JS).
             if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
-              return Err(VmError::Unimplemented("destructuring var without initializer"));
+              return Err(VmError::Unimplemented(
+                "destructuring var without initializer",
+              ));
             }
             continue;
           };
@@ -2308,7 +2402,9 @@ impl<'a> Evaluator<'a> {
         for declarator in &decl.declarators {
           let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
             let Some(init) = &declarator.initializer else {
-              return Err(VmError::Unimplemented("destructuring let without initializer"));
+              return Err(VmError::Unimplemented(
+                "destructuring let without initializer",
+              ));
             };
             let value = self.eval_expr(scope, init)?;
             bind_pattern(
@@ -2427,16 +2523,21 @@ impl<'a> Evaluator<'a> {
 
     let func_obj = self.create_class_constructor_object(scope, func_name)?;
 
-    if !scope.heap().env_has_binding(self.env.lexical_env, binding_name)? {
+    if !scope
+      .heap()
+      .env_has_binding(self.env.lexical_env, binding_name)?
+    {
       // Non-block statement contexts may not have performed lexical hoisting yet.
       scope.env_create_mutable_binding(self.env.lexical_env, binding_name)?;
     }
 
     let mut init_scope = scope.reborrow();
     init_scope.push_root(Value::Object(func_obj))?;
-    init_scope
-      .heap_mut()
-      .env_initialize_binding(self.env.lexical_env, binding_name, Value::Object(func_obj))?;
+    init_scope.heap_mut().env_initialize_binding(
+      self.env.lexical_env,
+      binding_name,
+      Value::Object(func_obj),
+    )?;
     Ok(Completion::empty())
   }
 
@@ -2451,7 +2552,11 @@ impl<'a> Evaluator<'a> {
     }
   }
 
-  fn eval_throw(&mut self, scope: &mut Scope<'_>, stmt: &Node<ThrowStmt>) -> Result<Completion, VmError> {
+  fn eval_throw(
+    &mut self,
+    scope: &mut Scope<'_>,
+    stmt: &Node<ThrowStmt>,
+  ) -> Result<Completion, VmError> {
     let value = self.eval_expr(scope, &stmt.stx.value)?;
 
     // Capture a stack trace at the throw site.
@@ -3018,8 +3123,7 @@ impl<'a> Evaluator<'a> {
         &mut *self.hooks,
         &mut iter_scope,
         &mut iterator_record,
-      )
-      {
+      ) {
         Ok(v) => v,
         Err(err) => {
           let _ = iterator::iterator_close(
@@ -3183,7 +3287,9 @@ impl<'a> Evaluator<'a> {
     // `switch` creates a new lexical environment for the entire case block.
     let outer = self.env.lexical_env;
     let switch_env = switch_scope.env_create(Some(outer))?;
-    self.env.set_lexical_env(switch_scope.heap_mut(), switch_env);
+    self
+      .env
+      .set_lexical_env(switch_scope.heap_mut(), switch_env);
 
     let result = (|| -> Result<Completion, VmError> {
       const BRANCH_TICK_EVERY: usize = 32;
@@ -3200,7 +3306,11 @@ impl<'a> Evaluator<'a> {
         if default_idx.is_none() && branch.stx.case.is_none() {
           default_idx = Some(i);
         }
-        self.instantiate_block_decls_in_stmt_list(&mut switch_scope, switch_env, &branch.stx.body)?;
+        self.instantiate_block_decls_in_stmt_list(
+          &mut switch_scope,
+          switch_env,
+          &branch.stx.body,
+        )?;
       }
 
       // ECMA-262 `CaseBlockEvaluation`: `V` starts as `undefined` and is never ~empty~ for normal
@@ -3425,7 +3535,10 @@ impl<'a> Evaluator<'a> {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
     let key_s = key_scope.alloc_string(&expr.right)?;
-    let reference = Reference::Property { base, key: PropertyKey::from_string(key_s) };
+    let reference = Reference::Property {
+      base,
+      key: PropertyKey::from_string(key_s),
+    };
     self.get_value_from_reference(&mut key_scope, &reference)
   }
 
@@ -3504,7 +3617,11 @@ impl<'a> Evaluator<'a> {
     }
   }
 
-  fn root_reference(&self, scope: &mut Scope<'_>, reference: &Reference<'_>) -> Result<(), VmError> {
+  fn root_reference(
+    &self,
+    scope: &mut Scope<'_>,
+    reference: &Reference<'_>,
+  ) -> Result<(), VmError> {
     let Reference::Property { base, key } = *reference else {
       return Ok(());
     };
@@ -3527,20 +3644,23 @@ impl<'a> Evaluator<'a> {
     reference: &Reference<'_>,
   ) -> Result<Value, VmError> {
     match *reference {
-      Reference::Binding(name) => match self.env.get(self.vm, self.host, self.hooks, scope, name)? {
-        Some(v) => Ok(v),
-        None => {
-          let msg = format!("{name} is not defined");
-          Err(throw_reference_error(self.vm, scope, &msg)?)
+      Reference::Binding(name) => {
+        match self.env.get(self.vm, self.host, self.hooks, scope, name)? {
+          Some(v) => Ok(v),
+          None => {
+            let msg = format!("{name} is not defined");
+            Err(throw_reference_error(self.vm, scope, &msg)?)
+          }
         }
-      },
+      }
       Reference::Property { base, key } => {
         let mut get_scope = scope.reborrow();
         self.root_reference(&mut get_scope, reference)?;
         let object = self.to_object_operator(&mut get_scope, base)?;
         // Root the boxed object so host hooks/accessors can allocate freely.
         get_scope.push_root(Value::Object(object))?;
-        get_scope.ordinary_get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, base)
+        get_scope
+          .ordinary_get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, base)
       }
     }
   }
@@ -3552,7 +3672,15 @@ impl<'a> Evaluator<'a> {
     value: Value,
   ) -> Result<(), VmError> {
     match *reference {
-      Reference::Binding(name) => self.env.set(self.vm, self.host, self.hooks, scope, name, value, self.strict),
+      Reference::Binding(name) => self.env.set(
+        self.vm,
+        self.host,
+        self.hooks,
+        scope,
+        name,
+        value,
+        self.strict,
+      ),
       Reference::Property { base, key } => {
         let mut set_scope = scope.reborrow();
         self.root_reference(&mut set_scope, reference)?;
@@ -3560,7 +3688,9 @@ impl<'a> Evaluator<'a> {
         set_scope.push_root(value)?;
         let object = self.to_object_operator(&mut set_scope, base)?;
         set_scope.push_root(Value::Object(object))?;
-        let ok = set_scope.ordinary_set_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, value, base)?;
+        let ok = set_scope.ordinary_set_with_host_and_hooks(
+          self.vm, self.host, self.hooks, object, key, value, base,
+        )?;
         if ok {
           Ok(())
         } else if self.strict {
@@ -3577,9 +3707,19 @@ impl<'a> Evaluator<'a> {
     }
   }
 
-  fn eval_func_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<FuncExpr>) -> Result<Value, VmError> {
+  fn eval_func_expr(
+    &mut self,
+    scope: &mut Scope<'_>,
+    expr: &Node<FuncExpr>,
+  ) -> Result<Value, VmError> {
     let name = expr.stx.name.as_ref().map(|n| n.stx.name.as_str());
-    self.instantiate_function_expr(scope, expr.loc.start_u32(), expr.loc.end_u32(), name, &expr.stx.func.stx)
+    self.instantiate_function_expr(
+      scope,
+      expr.loc.start_u32(),
+      expr.loc.end_u32(),
+      name,
+      &expr.stx.func.stx,
+    )
   }
 
   fn eval_arrow_func_expr(
@@ -3587,7 +3727,12 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     expr: &Node<ArrowFuncExpr>,
   ) -> Result<Value, VmError> {
-    self.instantiate_arrow_function_expr(scope, expr.loc.start_u32(), expr.loc.end_u32(), &expr.stx.func.stx)
+    self.instantiate_arrow_function_expr(
+      scope,
+      expr.loc.start_u32(),
+      expr.loc.end_u32(),
+      &expr.stx.func.stx,
+    )
   }
 
   fn instantiate_function_expr(
@@ -3601,8 +3746,12 @@ impl<'a> Evaluator<'a> {
     use crate::function::ThisMode;
     use crate::vm::EcmaFunctionKind;
 
-    if func.async_ || func.generator {
-      return Err(VmError::Unimplemented("async/generator functions"));
+    if func.generator {
+      return Err(VmError::Unimplemented(if func.async_ {
+        "async generator functions"
+      } else {
+        "generator functions"
+      }));
     }
     let is_strict = self.strict
       || match &func.body {
@@ -3629,13 +3778,15 @@ impl<'a> Evaluator<'a> {
     let span_start = self.env.base_offset().saturating_add(rel_start);
     let span_end = self.env.base_offset().saturating_add(rel_end);
 
-    let code_id =
-      self
-        .vm
-        .register_ecma_function(self.env.source(), span_start, span_end, EcmaFunctionKind::Expr)?;
+    let code_id = self.vm.register_ecma_function(
+      self.env.source(),
+      span_start,
+      span_end,
+      EcmaFunctionKind::Expr,
+    )?;
     let func_obj = scope.alloc_ecma_function(
       code_id,
-      true,
+      /* is_constructable */ !func.async_,
       name_s,
       length,
       this_mode,
@@ -3656,7 +3807,9 @@ impl<'a> Evaluator<'a> {
       scope.heap_mut().set_function_job_realm(func_obj, realm)?;
     }
     if func.arrow {
-      scope.heap_mut().set_function_bound_this(func_obj, self.this)?;
+      scope
+        .heap_mut()
+        .set_function_bound_this(func_obj, self.this)?;
       scope
         .heap_mut()
         .set_function_bound_new_target(func_obj, self.new_target)?;
@@ -3674,8 +3827,12 @@ impl<'a> Evaluator<'a> {
     use crate::function::ThisMode;
     use crate::vm::EcmaFunctionKind;
 
-    if func.async_ || func.generator {
-      return Err(VmError::Unimplemented("async/generator functions"));
+    if func.generator {
+      return Err(VmError::Unimplemented(if func.async_ {
+        "async generator functions"
+      } else {
+        "generator functions"
+      }));
     }
     let is_strict = self.strict
       || match &func.body {
@@ -3691,10 +3848,12 @@ impl<'a> Evaluator<'a> {
     let span_start = self.env.base_offset().saturating_add(rel_start);
     let span_end = self.env.base_offset().saturating_add(rel_end);
 
-    let code_id =
-      self
-        .vm
-        .register_ecma_function(self.env.source(), span_start, span_end, EcmaFunctionKind::Expr)?;
+    let code_id = self.vm.register_ecma_function(
+      self.env.source(),
+      span_start,
+      span_end,
+      EcmaFunctionKind::Expr,
+    )?;
     let mut alloc_scope = scope.reborrow();
     // Root captured lexical bindings across allocation in case it triggers GC.
     let roots = [self.this, self.new_target];
@@ -3722,7 +3881,9 @@ impl<'a> Evaluator<'a> {
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
     if let Some(realm) = self.vm.current_realm() {
-      alloc_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+      alloc_scope
+        .heap_mut()
+        .set_function_job_realm(func_obj, realm)?;
     }
     alloc_scope
       .heap_mut()
@@ -3769,9 +3930,7 @@ impl<'a> Evaluator<'a> {
       match part {
         LitTemplatePart::String(s) => {
           let len = s.encode_utf16().count();
-          units
-            .try_reserve(len)
-            .map_err(|_| VmError::OutOfMemory)?;
+          units.try_reserve(len).map_err(|_| VmError::OutOfMemory)?;
           units.extend(s.encode_utf16());
         }
         LitTemplatePart::Substitution(expr) => {
@@ -3811,7 +3970,10 @@ impl<'a> Evaluator<'a> {
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
-        let reference = Reference::Property { base, key: PropertyKey::from_string(key_s) };
+        let reference = Reference::Property {
+          base,
+          key: PropertyKey::from_string(key_s),
+        };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, base)
       }
@@ -4119,7 +4281,10 @@ impl<'a> Evaluator<'a> {
               let length = self.function_length(&func_node.stx)?;
 
               let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
-              let rel_end = func_node.loc.end_u32().saturating_sub(self.env.prefix_len());
+              let rel_end = func_node
+                .loc
+                .end_u32()
+                .saturating_sub(self.env.prefix_len());
               let span_start = self.env.base_offset().saturating_add(rel_start);
               let span_end = self.env.base_offset().saturating_add(rel_end);
               let code = self.vm.register_ecma_function(
@@ -4129,12 +4294,14 @@ impl<'a> Evaluator<'a> {
                 EcmaFunctionKind::ObjectMember,
               )?;
 
-                let is_strict = self.strict
-                  || match &func_node.stx.body {
-                    Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
-                    Some(FuncBody::Expression(_)) => false,
-                    None => return Err(VmError::Unimplemented("method without body")),
-                  };
+              let is_strict = self.strict
+                || match &func_node.stx.body {
+                  Some(FuncBody::Block(stmts)) => {
+                    detect_use_strict_directive(stmts, || self.tick())?
+                  }
+                  Some(FuncBody::Expression(_)) => false,
+                  None => return Err(VmError::Unimplemented("method without body")),
+                };
 
               let this_mode = if func_node.stx.arrow {
                 ThisMode::Lexical
@@ -4205,7 +4372,10 @@ impl<'a> Evaluator<'a> {
               let length = self.function_length(&func_node.stx)?;
 
               let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
-              let rel_end = func_node.loc.end_u32().saturating_sub(self.env.prefix_len());
+              let rel_end = func_node
+                .loc
+                .end_u32()
+                .saturating_sub(self.env.prefix_len());
               let span_start = self.env.base_offset().saturating_add(rel_start);
               let span_end = self.env.base_offset().saturating_add(rel_end);
               let code = self.vm.register_ecma_function(
@@ -4215,12 +4385,14 @@ impl<'a> Evaluator<'a> {
                 EcmaFunctionKind::ObjectMember,
               )?;
 
-                let is_strict = self.strict
-                  || match &func_node.stx.body {
-                    Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
-                    Some(FuncBody::Expression(_)) => false,
-                    None => return Err(VmError::Unimplemented("getter without body")),
-                  };
+              let is_strict = self.strict
+                || match &func_node.stx.body {
+                  Some(FuncBody::Block(stmts)) => {
+                    detect_use_strict_directive(stmts, || self.tick())?
+                  }
+                  Some(FuncBody::Expression(_)) => false,
+                  None => return Err(VmError::Unimplemented("getter without body")),
+                };
 
               let this_mode = if func_node.stx.arrow {
                 ThisMode::Lexical
@@ -4266,7 +4438,12 @@ impl<'a> Evaluator<'a> {
                   .set_function_bound_new_target(func_obj, self.new_target)?;
               }
               member_scope.push_root(Value::Object(func_obj))?;
-              crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
+              crate::function_properties::set_function_name(
+                &mut member_scope,
+                func_obj,
+                key,
+                Some("get"),
+              )?;
 
               let ok = member_scope.define_own_property(
                 obj,
@@ -4287,7 +4464,10 @@ impl<'a> Evaluator<'a> {
               let length = self.function_length(&func_node.stx)?;
 
               let rel_start = key_loc_start.saturating_sub(self.env.prefix_len());
-              let rel_end = func_node.loc.end_u32().saturating_sub(self.env.prefix_len());
+              let rel_end = func_node
+                .loc
+                .end_u32()
+                .saturating_sub(self.env.prefix_len());
               let span_start = self.env.base_offset().saturating_add(rel_start);
               let span_end = self.env.base_offset().saturating_add(rel_end);
               let code = self.vm.register_ecma_function(
@@ -4297,12 +4477,14 @@ impl<'a> Evaluator<'a> {
                 EcmaFunctionKind::ObjectMember,
               )?;
 
-                let is_strict = self.strict
-                  || match &func_node.stx.body {
-                    Some(FuncBody::Block(stmts)) => detect_use_strict_directive(stmts, || self.tick())?,
-                    Some(FuncBody::Expression(_)) => false,
-                    None => return Err(VmError::Unimplemented("setter without body")),
-                  };
+              let is_strict = self.strict
+                || match &func_node.stx.body {
+                  Some(FuncBody::Block(stmts)) => {
+                    detect_use_strict_directive(stmts, || self.tick())?
+                  }
+                  Some(FuncBody::Expression(_)) => false,
+                  None => return Err(VmError::Unimplemented("setter without body")),
+                };
 
               let this_mode = if func_node.stx.arrow {
                 ThisMode::Lexical
@@ -4348,7 +4530,12 @@ impl<'a> Evaluator<'a> {
                   .set_function_bound_new_target(func_obj, self.new_target)?;
               }
               member_scope.push_root(Value::Object(func_obj))?;
-              crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
+              crate::function_properties::set_function_name(
+                &mut member_scope,
+                func_obj,
+                key,
+                Some("set"),
+              )?;
 
               let ok = member_scope.define_own_property(
                 obj,
@@ -4413,8 +4600,14 @@ impl<'a> Evaluator<'a> {
               continue;
             }
 
-            let value =
-              key_scope.ordinary_get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, src_obj, key, Value::Object(src_obj))?;
+            let value = key_scope.ordinary_get_with_host_and_hooks(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              src_obj,
+              key,
+              Value::Object(src_obj),
+            )?;
             key_scope.push_root(value)?;
             let ok = key_scope.create_data_property(obj, key, value)?;
             if !ok {
@@ -4432,12 +4625,20 @@ impl<'a> Evaluator<'a> {
     let Some(ScriptOrModule::Module(module)) = self.vm.get_active_script_or_module() else {
       return Err(VmError::Unimplemented("import.meta outside of modules"));
     };
-    let obj = self.vm.get_or_create_import_meta_object(scope, self.hooks, module)?;
+    let obj = self
+      .vm
+      .get_or_create_import_meta_object(scope, self.hooks, module)?;
     Ok(Value::Object(obj))
   }
 
   fn eval_id(&mut self, scope: &mut Scope<'_>, expr: &IdExpr) -> Result<Value, VmError> {
-    match self.env.get(self.vm, &mut *self.host, &mut *self.hooks, scope, &expr.name)? {
+    match self.env.get(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      scope,
+      &expr.name,
+    )? {
       Some(v) => Ok(v),
       None => {
         let msg = format!("{name} is not defined", name = expr.name);
@@ -4447,7 +4648,13 @@ impl<'a> Evaluator<'a> {
   }
 
   fn eval_id_pat(&mut self, scope: &mut Scope<'_>, expr: &IdPat) -> Result<Value, VmError> {
-    match self.env.get(self.vm, &mut *self.host, &mut *self.hooks, scope, &expr.name)? {
+    match self.env.get(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      scope,
+      &expr.name,
+    )? {
       Some(v) => Ok(v),
       None => {
         let msg = format!("{name} is not defined", name = expr.name);
@@ -4460,8 +4667,12 @@ impl<'a> Evaluator<'a> {
     match expr.operator {
       OperatorName::PrefixIncrement => self.eval_update_expression(scope, &expr.argument, 1, true),
       OperatorName::PrefixDecrement => self.eval_update_expression(scope, &expr.argument, -1, true),
-      OperatorName::PostfixIncrement => self.eval_update_expression(scope, &expr.argument, 1, false),
-      OperatorName::PostfixDecrement => self.eval_update_expression(scope, &expr.argument, -1, false),
+      OperatorName::PostfixIncrement => {
+        self.eval_update_expression(scope, &expr.argument, 1, false)
+      }
+      OperatorName::PostfixDecrement => {
+        self.eval_update_expression(scope, &expr.argument, -1, false)
+      }
       OperatorName::Delete => match &*expr.argument.stx {
         Expr::Id(id) => {
           if self.strict {
@@ -4602,14 +4813,26 @@ impl<'a> Evaluator<'a> {
             self.tick()?;
             self
               .env
-              .get(self.vm, &mut *self.host, &mut *self.hooks, scope, &id.stx.name)?
+              .get(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                scope,
+                &id.stx.name,
+              )?
               .unwrap_or(Value::Undefined)
           }
           Expr::IdPat(id) => {
             self.tick()?;
             self
               .env
-              .get(self.vm, &mut *self.host, &mut *self.hooks, scope, &id.stx.name)?
+              .get(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                scope,
+                &id.stx.name,
+              )?
               .unwrap_or(Value::Undefined)
           }
           _ => self.eval_expr(scope, &expr.argument)?,
@@ -4650,16 +4873,20 @@ impl<'a> Evaluator<'a> {
               new_scope.push_root(iter.iterator)?;
               new_scope.push_root(iter.next_method)?;
 
-               while let Some(value) =
-                 iterator::iterator_step_value(self.vm, &mut *self.host, &mut *self.hooks, &mut new_scope, &mut iter)?
-               {
-                 self.tick()?;
-                 new_scope.push_root(value)?;
-                 args.push(value);
-               }
-             } else {
-               let value = self.eval_expr(&mut new_scope, &arg.stx.value)?;
+              while let Some(value) = iterator::iterator_step_value(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                &mut new_scope,
+                &mut iter,
+              )? {
+                self.tick()?;
                 new_scope.push_root(value)?;
+                args.push(value);
+              }
+            } else {
+              let value = self.eval_expr(&mut new_scope, &arg.stx.value)?;
+              new_scope.push_root(value)?;
               args.push(value);
             }
           }
@@ -4686,8 +4913,12 @@ impl<'a> Evaluator<'a> {
     expr: &UnaryPostfixExpr,
   ) -> Result<Value, VmError> {
     match expr.operator {
-      OperatorName::PostfixIncrement => self.eval_update_expression(scope, &expr.argument, 1, false),
-      OperatorName::PostfixDecrement => self.eval_update_expression(scope, &expr.argument, -1, false),
+      OperatorName::PostfixIncrement => {
+        self.eval_update_expression(scope, &expr.argument, 1, false)
+      }
+      OperatorName::PostfixDecrement => {
+        self.eval_update_expression(scope, &expr.argument, -1, false)
+      }
       _ => Err(VmError::Unimplemented("postfix unary operator")),
     }
   }
@@ -4720,7 +4951,9 @@ impl<'a> Evaluator<'a> {
       }
       NumericValue::BigInt(b) => {
         let Some(out) = b.checked_add(delta_bigint) else {
-          return Err(VmError::Unimplemented("BigInt increment/decrement overflow"));
+          return Err(VmError::Unimplemented(
+            "BigInt increment/decrement overflow",
+          ));
         };
         (Value::BigInt(b), Value::BigInt(out))
       }
@@ -4766,7 +4999,10 @@ impl<'a> Evaluator<'a> {
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
-        let reference = Reference::Property { base, key: PropertyKey::from_string(key_s) };
+        let reference = Reference::Property {
+          base,
+          key: PropertyKey::from_string(key_s),
+        };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, base)
       }
@@ -4832,9 +5068,13 @@ impl<'a> Evaluator<'a> {
         )?;
         call_scope.push_roots(&[iter.iterator, iter.next_method])?;
 
-        while let Some(value) =
-          iterator::iterator_step_value(self.vm, &mut *self.host, &mut *self.hooks, &mut call_scope, &mut iter)?
-        {
+        while let Some(value) = iterator::iterator_step_value(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut call_scope,
+          &mut iter,
+        )? {
           self.tick()?;
           call_scope.push_root(value)?;
           args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
@@ -4877,9 +5117,13 @@ impl<'a> Evaluator<'a> {
         )?;
         call_scope.push_roots(&[iter.iterator, iter.next_method])?;
 
-        while let Some(value) =
-          iterator::iterator_step_value(self.vm, &mut *self.host, &mut *self.hooks, &mut call_scope, &mut iter)?
-        {
+        while let Some(value) = iterator::iterator_step_value(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut call_scope,
+          &mut iter,
+        )? {
           self.tick()?;
           call_scope.push_root(value)?;
           args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
@@ -4904,10 +5148,7 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     source_string: GcString,
   ) -> Result<Value, VmError> {
-    let source = scope
-      .heap()
-      .get_string(source_string)?
-      .to_utf8_lossy();
+    let source = scope.heap().get_string(source_string)?.to_utf8_lossy();
 
     let source = Arc::new(SourceText::new("<eval>", source));
     let opts = ParseOptions {
@@ -5061,7 +5302,11 @@ impl<'a> Evaluator<'a> {
         let mut rhs_scope = scope.reborrow();
         rhs_scope.push_root(left)?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        Ok(Value::Bool(abstract_equality(rhs_scope.heap_mut(), left, right)?))
+        Ok(Value::Bool(abstract_equality(
+          rhs_scope.heap_mut(),
+          left,
+          right,
+        )?))
       }
       OperatorName::Inequality => {
         let left = self.eval_expr(scope, &expr.left)?;
@@ -5092,9 +5337,11 @@ impl<'a> Evaluator<'a> {
         // Root the RHS object across `ToPropertyKey`, which may allocate and trigger GC.
         rhs_scope.push_root(Value::Object(obj))?;
         let key = self.to_property_key_operator(&mut rhs_scope, left)?;
-        Ok(Value::Bool(
-          rhs_scope.ordinary_has_property_with_tick(obj, key, || self.tick())?,
-        ))
+        Ok(Value::Bool(rhs_scope.ordinary_has_property_with_tick(
+          obj,
+          key,
+          || self.tick(),
+        )?))
       }
       OperatorName::Instanceof => {
         let left = self.eval_expr(scope, &expr.left)?;
@@ -5103,7 +5350,11 @@ impl<'a> Evaluator<'a> {
         rhs_scope.push_root(left)?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
         rhs_scope.push_root(right)?;
-        Ok(Value::Bool(self.instanceof_operator(&mut rhs_scope, left, right)?))
+        Ok(Value::Bool(self.instanceof_operator(
+          &mut rhs_scope,
+          left,
+          right,
+        )?))
       }
       OperatorName::Addition => {
         let left = self.eval_expr(scope, &expr.left)?;
@@ -5285,8 +5536,17 @@ impl<'a> Evaluator<'a> {
             _ => unreachable!(),
           }),
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            if b.is_zero() && matches!(expr.operator, OperatorName::Division | OperatorName::Remainder) {
-              return Err(throw_range_error(self.vm, &mut rhs_scope, "Division by zero")?);
+            if b.is_zero()
+              && matches!(
+                expr.operator,
+                OperatorName::Division | OperatorName::Remainder
+              )
+            {
+              return Err(throw_range_error(
+                self.vm,
+                &mut rhs_scope,
+                "Division by zero",
+              )?);
             }
 
             let out = match expr.operator {
@@ -5296,9 +5556,9 @@ impl<'a> Evaluator<'a> {
               OperatorName::Division => a
                 .checked_div(b)
                 .ok_or(VmError::InvariantViolation("BigInt division returned None"))?,
-              OperatorName::Remainder => a
-                .checked_rem(b)
-                .ok_or(VmError::InvariantViolation("BigInt remainder returned None"))?,
+              OperatorName::Remainder => a.checked_rem(b).ok_or(VmError::InvariantViolation(
+                "BigInt remainder returned None",
+              ))?,
               _ => unreachable!(),
             };
             Ok(Value::BigInt(out))
@@ -5404,7 +5664,12 @@ impl<'a> Evaluator<'a> {
     };
 
     if let Some(method) = method {
-      let result = self.call(&mut scope, method, Value::Object(constructor_obj), &[object])?;
+      let result = self.call(
+        &mut scope,
+        method,
+        Value::Object(constructor_obj),
+        &[object],
+      )?;
       return Ok(to_boolean(scope.heap(), result)?);
     }
 
@@ -5503,17 +5768,32 @@ impl<'a> Evaluator<'a> {
       .well_known_symbols()
       .to_primitive;
     let to_prim_key = PropertyKey::from_symbol(to_prim_sym);
-    let exotic =
-      prim_scope.ordinary_get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, to_prim_key, Value::Object(obj))?;
+    let exotic = prim_scope.ordinary_get_with_host_and_hooks(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      obj,
+      to_prim_key,
+      Value::Object(obj),
+    )?;
 
     if !matches!(exotic, Value::Undefined | Value::Null) {
       if !prim_scope.heap().is_callable(exotic)? {
-        return Err(throw_type_error(self.vm, &mut prim_scope, "@@toPrimitive is not callable")?);
+        return Err(throw_type_error(
+          self.vm,
+          &mut prim_scope,
+          "@@toPrimitive is not callable",
+        )?);
       }
 
       let hint_s = prim_scope.alloc_string(hint.as_str())?;
       prim_scope.push_root(Value::String(hint_s))?;
-      let out = self.call(&mut prim_scope, exotic, Value::Object(obj), &[Value::String(hint_s)])?;
+      let out = self.call(
+        &mut prim_scope,
+        exotic,
+        Value::Object(obj),
+        &[Value::String(hint_s)],
+      )?;
       if self.is_primitive_value(out) {
         return Ok(out);
       }
@@ -5547,8 +5827,14 @@ impl<'a> Evaluator<'a> {
       let key_s = scope.alloc_string(name)?;
       scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
-      let method =
-        scope.ordinary_get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, Value::Object(obj))?;
+      let method = scope.ordinary_get_with_host_and_hooks(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        obj,
+        key,
+        Value::Object(obj),
+      )?;
 
       if matches!(method, Value::Undefined | Value::Null) {
         continue;
@@ -5594,7 +5880,10 @@ impl<'a> Evaluator<'a> {
     string_scope.push_root(value)?;
     let prim = self.to_primitive(&mut string_scope, value, ToPrimitiveHint::String)?;
     string_scope.push_root(prim)?;
-    debug_assert!(self.is_primitive_value(prim), "to_primitive returned object");
+    debug_assert!(
+      self.is_primitive_value(prim),
+      "to_primitive returned object"
+    );
 
     match string_scope.heap_mut().to_string(prim) {
       Ok(s) => Ok(s),
@@ -5650,7 +5939,10 @@ impl<'a> Evaluator<'a> {
     key_scope.push_root(value)?;
     let prim = self.to_primitive(&mut key_scope, value, ToPrimitiveHint::String)?;
     key_scope.push_root(prim)?;
-    debug_assert!(self.is_primitive_value(prim), "to_primitive returned object");
+    debug_assert!(
+      self.is_primitive_value(prim),
+      "to_primitive returned object"
+    );
 
     match prim {
       Value::Symbol(sym) => Ok(PropertyKey::Symbol(sym)),
@@ -5713,7 +6005,13 @@ impl<'a> Evaluator<'a> {
           };
           Value::BigInt(out)
         }
-        _ => return Err(throw_type_error(self.vm, &mut add_scope, "Cannot mix BigInt and other types")?),
+        _ => {
+          return Err(throw_type_error(
+            self.vm,
+            &mut add_scope,
+            "Cannot mix BigInt and other types",
+          )?)
+        }
       })
     }
   }
@@ -5744,6 +6042,405 @@ fn alloc_string_from_lit_str(
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AsyncResumeKind {
+  Continue { next_stmt_index: usize },
+  Return,
+}
+
+#[derive(Debug)]
+pub(crate) struct AsyncContinuation {
+  env: RuntimeEnv,
+  func: Arc<Node<Func>>,
+  strict: bool,
+  this_root: RootId,
+  new_target_root: RootId,
+  promise_root: RootId,
+  resolve_root: RootId,
+  reject_root: RootId,
+  awaited_promise_root: Option<RootId>,
+  resume: AsyncResumeKind,
+}
+
+fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: AsyncContinuation) {
+  cont.env.teardown(scope.heap_mut());
+  scope.heap_mut().remove_root(cont.this_root);
+  scope.heap_mut().remove_root(cont.new_target_root);
+  scope.heap_mut().remove_root(cont.promise_root);
+  scope.heap_mut().remove_root(cont.resolve_root);
+  scope.heap_mut().remove_root(cont.reject_root);
+  if let Some(root) = cont.awaited_promise_root.take() {
+    scope.heap_mut().remove_root(root);
+  }
+}
+
+pub(crate) fn async_resume_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let id = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Number(n) => n as u32,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "async resume callback missing continuation id",
+      ))
+    }
+  };
+  let is_reject = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Bool(b) => b,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "async resume callback missing reject flag",
+      ))
+    }
+  };
+
+  let Some(mut cont) = vm.take_async_continuation(id) else {
+    return Err(VmError::InvariantViolation("async continuation not found"));
+  };
+
+  // The awaited promise has settled; it no longer needs to be rooted by the continuation.
+  if let Some(root) = cont.awaited_promise_root.take() {
+    scope.heap_mut().remove_root(root);
+  }
+
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let resolve = scope
+    .heap()
+    .get_root(cont.resolve_root)
+    .ok_or(VmError::InvariantViolation(
+      "async continuation missing resolve root",
+    ))?;
+  let reject = scope
+    .heap()
+    .get_root(cont.reject_root)
+    .ok_or(VmError::InvariantViolation(
+      "async continuation missing reject root",
+    ))?;
+
+  if is_reject {
+    // Reject outer promise and clean up.
+    let mut call_scope = scope.reborrow();
+    if let Err(err) = call_scope.push_roots(&[reject, arg0]) {
+      async_teardown_continuation(&mut call_scope, cont);
+      return Err(err);
+    }
+    let res = vm.call_with_host_and_hooks(
+      host,
+      &mut call_scope,
+      hooks,
+      reject,
+      Value::Undefined,
+      &[arg0],
+    );
+    async_teardown_continuation(&mut call_scope, cont);
+    return res.map(|_| Value::Undefined);
+  }
+
+  match cont.resume {
+    AsyncResumeKind::Return => {
+      let mut call_scope = scope.reborrow();
+      if let Err(err) = call_scope.push_roots(&[resolve, arg0]) {
+        async_teardown_continuation(&mut call_scope, cont);
+        return Err(err);
+      }
+      let res = vm.call_with_host_and_hooks(
+        host,
+        &mut call_scope,
+        hooks,
+        resolve,
+        Value::Undefined,
+        &[arg0],
+      );
+      async_teardown_continuation(&mut call_scope, cont);
+      res.map(|_| Value::Undefined)
+    }
+    AsyncResumeKind::Continue { next_stmt_index } => {
+      let this = scope
+        .heap()
+        .get_root(cont.this_root)
+        .ok_or(VmError::InvariantViolation(
+          "async continuation missing this root",
+        ))?;
+      let new_target =
+        scope
+          .heap()
+          .get_root(cont.new_target_root)
+          .ok_or(VmError::InvariantViolation(
+            "async continuation missing new.target root",
+          ))?;
+      let global_object = cont.env.global_object();
+
+      let result = {
+        let mut evaluator = Evaluator {
+          vm,
+          host,
+          hooks,
+          env: &mut cont.env,
+          strict: cont.strict,
+          this,
+          new_target,
+        };
+        run_async_body(&mut evaluator, scope, &cont.func, next_stmt_index)
+      };
+
+      match result {
+        Ok(AsyncBodyResult::CompleteOk(v)) => {
+          let mut call_scope = scope.reborrow();
+          if let Err(err) = call_scope.push_roots(&[resolve, v]) {
+            async_teardown_continuation(&mut call_scope, cont);
+            return Err(err);
+          }
+          let res = vm.call_with_host_and_hooks(
+            host,
+            &mut call_scope,
+            hooks,
+            resolve,
+            Value::Undefined,
+            &[v],
+          );
+          async_teardown_continuation(&mut call_scope, cont);
+          res.map(|_| Value::Undefined)
+        }
+        Ok(AsyncBodyResult::CompleteThrow(reason)) => {
+          let mut call_scope = scope.reborrow();
+          if let Err(err) = call_scope.push_roots(&[reject, reason]) {
+            async_teardown_continuation(&mut call_scope, cont);
+            return Err(err);
+          }
+          let res = vm.call_with_host_and_hooks(
+            host,
+            &mut call_scope,
+            hooks,
+            reject,
+            Value::Undefined,
+            &[reason],
+          );
+          async_teardown_continuation(&mut call_scope, cont);
+          res.map(|_| Value::Undefined)
+        }
+        Ok(AsyncBodyResult::Await {
+          await_value,
+          resume,
+        }) => {
+          // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
+          cont.resume = resume;
+
+          let mut await_scope = scope.reborrow();
+          if let Err(err) = await_scope.push_roots(&[await_value]) {
+            async_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+          let awaited_promise_res = crate::promise_ops::promise_resolve_with_host_and_hooks(
+            vm,
+            &mut await_scope,
+            host,
+            hooks,
+            await_value,
+          );
+          let awaited_promise = match awaited_promise_res {
+            Ok(p) => p,
+            Err(e) => {
+              async_teardown_continuation(&mut await_scope, cont);
+              return Err(e);
+            }
+          };
+          if let Err(err) = await_scope.push_root(awaited_promise) {
+            async_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+
+          let awaited_root = match await_scope.heap_mut().add_root(awaited_promise) {
+            Ok(root) => root,
+            Err(e) => {
+              async_teardown_continuation(&mut await_scope, cont);
+              return Err(e);
+            }
+          };
+          cont.awaited_promise_root = Some(awaited_root);
+
+          // Reinsert continuation before scheduling any resumption callbacks.
+          if let Err(err) = vm.reserve_async_continuations(1) {
+            async_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+          vm.replace_async_continuation(id, cont)?;
+
+          let then_res = (|| -> Result<(), VmError> {
+            let call_id = vm.async_resume_call_id()?;
+            let intr = vm
+              .intrinsics()
+              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+            let job_realm = vm.current_realm();
+
+            let name = await_scope.alloc_string("")?;
+            let slots_fulfill = [Value::Number(id as f64), Value::Bool(false)];
+            let on_fulfilled = await_scope.alloc_native_function_with_slots(
+              call_id,
+              None,
+              name,
+              1,
+              &slots_fulfill,
+            )?;
+            await_scope.push_root(Value::Object(on_fulfilled))?;
+
+            let name = await_scope.alloc_string("")?;
+            let slots_reject = [Value::Number(id as f64), Value::Bool(true)];
+            let on_rejected = await_scope.alloc_native_function_with_slots(
+              call_id,
+              None,
+              name,
+              1,
+              &slots_reject,
+            )?;
+            await_scope.push_root(Value::Object(on_rejected))?;
+
+            for cb in [on_fulfilled, on_rejected] {
+              await_scope
+                .heap_mut()
+                .object_set_prototype(cb, Some(intr.function_prototype()))?;
+              await_scope
+                .heap_mut()
+                .set_function_realm(cb, global_object)?;
+              if let Some(realm) = job_realm {
+                await_scope.heap_mut().set_function_job_realm(cb, realm)?;
+              }
+            }
+
+            let _ = crate::promise_ops::perform_promise_then_with_host_and_hooks(
+              vm,
+              &mut await_scope,
+              host,
+              hooks,
+              awaited_promise,
+              Some(Value::Object(on_fulfilled)),
+              Some(Value::Object(on_rejected)),
+            )?;
+            Ok(())
+          })();
+
+          if let Err(err) = then_res {
+            if let Some(cont) = vm.take_async_continuation(id) {
+              async_teardown_continuation(&mut await_scope, cont);
+            }
+            return Err(err);
+          }
+
+          Ok(Value::Undefined)
+        }
+        Err(err) => {
+          // Fatal error during resumption: clean up roots/env to avoid leaks.
+          async_teardown_continuation(scope, cont);
+          Err(err)
+        }
+      }
+    }
+  }
+}
+
+enum AsyncBodyResult {
+  CompleteOk(Value),
+  CompleteThrow(Value),
+  Await {
+    await_value: Value,
+    resume: AsyncResumeKind,
+  },
+}
+
+fn run_async_body(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  func: &Arc<Node<Func>>,
+  start_stmt_index: usize,
+) -> Result<AsyncBodyResult, VmError> {
+  let Some(body) = &func.stx.body else {
+    return Err(VmError::Unimplemented("function without body"));
+  };
+
+  match body {
+    FuncBody::Expression(expr) => {
+      if start_stmt_index != 0 {
+        return Err(VmError::InvariantViolation(
+          "async expression-body function resumed at non-zero statement index",
+        ));
+      }
+      // Only support top-level `await` for async expression bodies.
+      if let Expr::Unary(unary) = &*expr.stx {
+        if unary.stx.operator == OperatorName::Await {
+          evaluator.tick()?;
+          let v = evaluator.eval_expr(scope, &unary.stx.argument)?;
+          return Ok(AsyncBodyResult::Await {
+            await_value: v,
+            resume: AsyncResumeKind::Return,
+          });
+        }
+      }
+      match evaluator.eval_expr(scope, expr) {
+        Ok(v) => Ok(AsyncBodyResult::CompleteOk(v)),
+        Err(VmError::Throw(value) | VmError::ThrowWithStack { value, .. }) => {
+          Ok(AsyncBodyResult::CompleteThrow(value))
+        }
+        Err(err) => Err(err),
+      }
+    }
+    FuncBody::Block(stmts) => {
+      for (idx, stmt) in stmts.iter().enumerate().skip(start_stmt_index) {
+        // Top-level `await` expression statement: `await expr;`
+        if let Stmt::Expr(expr_stmt) = &*stmt.stx {
+          if let Expr::Unary(unary) = &*expr_stmt.stx.expr.stx {
+            if unary.stx.operator == OperatorName::Await {
+              evaluator.tick()?;
+              let v = evaluator.eval_expr(scope, &unary.stx.argument)?;
+              return Ok(AsyncBodyResult::Await {
+                await_value: v,
+                resume: AsyncResumeKind::Continue {
+                  next_stmt_index: idx + 1,
+                },
+              });
+            }
+          }
+        }
+
+        // Top-level `return await expr;`
+        if let Stmt::Return(ret) = &*stmt.stx {
+          if let Some(value_expr) = &ret.stx.value {
+            if let Expr::Unary(unary) = &*value_expr.stx {
+              if unary.stx.operator == OperatorName::Await {
+                evaluator.tick()?;
+                let v = evaluator.eval_expr(scope, &unary.stx.argument)?;
+                return Ok(AsyncBodyResult::Await {
+                  await_value: v,
+                  resume: AsyncResumeKind::Return,
+                });
+              }
+            }
+          }
+        }
+
+        let completion = evaluator.eval_stmt(scope, stmt)?;
+        match completion {
+          Completion::Normal(_) => {}
+          Completion::Return(v) => return Ok(AsyncBodyResult::CompleteOk(v)),
+          Completion::Throw(thrown) => return Ok(AsyncBodyResult::CompleteThrow(thrown.value)),
+          Completion::Break(..) => return Err(VmError::Unimplemented("break outside of loop")),
+          Completion::Continue(..) => {
+            return Err(VmError::Unimplemented("continue outside of loop"))
+          }
+        }
+      }
+
+      Ok(AsyncBodyResult::CompleteOk(Value::Undefined))
+    }
+  }
+}
+
 pub(crate) fn run_ecma_function(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -5756,11 +6453,15 @@ pub(crate) fn run_ecma_function(
   strict: bool,
   this: Value,
   new_target: Value,
-  func: &Node<Func>,
+  func: Arc<Node<Func>>,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  if func.stx.async_ || func.stx.generator {
-    return Err(VmError::Unimplemented("async/generator functions"));
+  if func.stx.generator {
+    return Err(VmError::Unimplemented(if func.stx.async_ {
+      "async generator functions"
+    } else {
+      "generator functions"
+    }));
   }
   env.set_source_info(source, base_offset, prefix_len);
 
@@ -5777,7 +6478,215 @@ pub(crate) fn run_ecma_function(
     this,
     new_target,
   };
-  evaluator.instantiate_function(scope, func, args)?;
+  evaluator.instantiate_function(scope, func.as_ref(), args)?;
+
+  if func.stx.async_ {
+    // Async function invocation returns a Promise and executes the body until the first `await`.
+    //
+    // This implementation is intentionally minimal: it supports `await` as a top-level expression
+    // statement and as a top-level expression in expression-bodied async arrow functions.
+    let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+      evaluator.vm,
+      scope,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+    )?;
+    let promise = cap.promise;
+
+    let body_result = run_async_body(&mut evaluator, scope, &func, 0);
+
+    return match body_result {
+      Ok(AsyncBodyResult::CompleteOk(v)) => {
+        let mut call_scope = scope.reborrow();
+        if let Err(err) = call_scope.push_roots(&[cap.resolve, v]) {
+          evaluator.env.teardown(call_scope.heap_mut());
+          return Err(err);
+        }
+        let res = evaluator.vm.call_with_host_and_hooks(
+          &mut *evaluator.host,
+          &mut call_scope,
+          &mut *evaluator.hooks,
+          cap.resolve,
+          Value::Undefined,
+          &[v],
+        );
+        evaluator.env.teardown(call_scope.heap_mut());
+        res.map(|_| promise)
+      }
+      Ok(AsyncBodyResult::CompleteThrow(reason)) => {
+        let mut call_scope = scope.reborrow();
+        if let Err(err) = call_scope.push_roots(&[cap.reject, reason]) {
+          evaluator.env.teardown(call_scope.heap_mut());
+          return Err(err);
+        }
+        let res = evaluator.vm.call_with_host_and_hooks(
+          &mut *evaluator.host,
+          &mut call_scope,
+          &mut *evaluator.hooks,
+          cap.reject,
+          Value::Undefined,
+          &[reason],
+        );
+        evaluator.env.teardown(call_scope.heap_mut());
+        res.map(|_| promise)
+      }
+      Ok(AsyncBodyResult::Await {
+        await_value,
+        resume,
+      }) => {
+        // Root all GC-managed values while we create persistent roots and schedule the resumption.
+        let mut root_scope = scope.reborrow();
+        if let Err(err) = root_scope.push_roots(&[
+          promise,
+          cap.resolve,
+          cap.reject,
+          this,
+          new_target,
+          await_value,
+        ]) {
+          evaluator.env.teardown(root_scope.heap_mut());
+          return Err(err);
+        }
+
+        let awaited_promise = match crate::promise_ops::promise_resolve_with_host_and_hooks(
+          evaluator.vm,
+          &mut root_scope,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          await_value,
+        ) {
+          Ok(p) => p,
+          Err(e) => {
+            evaluator.env.teardown(root_scope.heap_mut());
+            return Err(e);
+          }
+        };
+
+        if let Err(err) = root_scope.push_root(awaited_promise) {
+          evaluator.env.teardown(root_scope.heap_mut());
+          return Err(err);
+        }
+
+        // Create persistent roots for the async continuation.
+        let values = [
+          this,
+          new_target,
+          promise,
+          cap.resolve,
+          cap.reject,
+          awaited_promise,
+        ];
+        let mut roots: Vec<RootId> = Vec::new();
+        roots
+          .try_reserve_exact(values.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        for &value in &values {
+          match root_scope.heap_mut().add_root(value) {
+            Ok(id) => roots.push(id),
+            Err(e) => {
+              for id in roots.drain(..) {
+                root_scope.heap_mut().remove_root(id);
+              }
+              evaluator.env.teardown(root_scope.heap_mut());
+              return Err(e);
+            }
+          }
+        }
+
+        let this_root = roots[0];
+        let new_target_root = roots[1];
+        let promise_root = roots[2];
+        let resolve_root = roots[3];
+        let reject_root = roots[4];
+        let awaited_root = roots[5];
+
+        let cont = AsyncContinuation {
+          env: evaluator.env.clone(),
+          func: func.clone(),
+          strict,
+          this_root,
+          new_target_root,
+          promise_root,
+          resolve_root,
+          reject_root,
+          awaited_promise_root: Some(awaited_root),
+          resume,
+        };
+
+        let id = match evaluator.vm.insert_async_continuation(cont) {
+          Ok(id) => id,
+          Err(e) => {
+            for id in roots.drain(..) {
+              root_scope.heap_mut().remove_root(id);
+            }
+            evaluator.env.teardown(root_scope.heap_mut());
+            return Err(e);
+          }
+        };
+
+        let schedule_res = (|| -> Result<(), VmError> {
+          let call_id = evaluator.vm.async_resume_call_id()?;
+          let intr = evaluator
+            .vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let global_object = evaluator.env.global_object();
+          let job_realm = evaluator.vm.current_realm();
+
+          let name = root_scope.alloc_string("")?;
+          let slots_fulfill = [Value::Number(id as f64), Value::Bool(false)];
+          let on_fulfilled =
+            root_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_fulfill)?;
+          root_scope.push_root(Value::Object(on_fulfilled))?;
+
+          let name = root_scope.alloc_string("")?;
+          let slots_reject = [Value::Number(id as f64), Value::Bool(true)];
+          let on_rejected =
+            root_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_reject)?;
+          root_scope.push_root(Value::Object(on_rejected))?;
+
+          for cb in [on_fulfilled, on_rejected] {
+            root_scope
+              .heap_mut()
+              .object_set_prototype(cb, Some(intr.function_prototype()))?;
+            root_scope
+              .heap_mut()
+              .set_function_realm(cb, global_object)?;
+            if let Some(realm) = job_realm {
+              root_scope.heap_mut().set_function_job_realm(cb, realm)?;
+            }
+          }
+
+          let _ = crate::promise_ops::perform_promise_then_with_host_and_hooks(
+            evaluator.vm,
+            &mut root_scope,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            awaited_promise,
+            Some(Value::Object(on_fulfilled)),
+            Some(Value::Object(on_rejected)),
+          )?;
+
+          Ok(())
+        })();
+
+        if let Err(err) = schedule_res {
+          let _ = evaluator.vm.take_async_continuation(id);
+          for id in roots.drain(..) {
+            root_scope.heap_mut().remove_root(id);
+          }
+          evaluator.env.teardown(root_scope.heap_mut());
+          return Err(err);
+        }
+
+        Ok(promise)
+      }
+      Err(err) => {
+        evaluator.env.teardown(scope.heap_mut());
+        Err(err)
+      }
+    };
+  }
 
   match body {
     FuncBody::Expression(expr) => match evaluator.eval_expr(scope, expr) {
@@ -5786,7 +6695,10 @@ pub(crate) fn run_ecma_function(
         // Capture stack + annotate the top frame with the expression start location. Expression-body
         // arrow functions do not go through `eval_stmt`, so this is the best central capture point.
         let source = evaluator.env.source();
-        let rel_start = expr.loc.start_u32().saturating_sub(evaluator.env.prefix_len());
+        let rel_start = expr
+          .loc
+          .start_u32()
+          .saturating_sub(evaluator.env.prefix_len());
         let abs_offset = evaluator.env.base_offset().saturating_add(rel_start);
         let (line, col) = source.line_col(abs_offset);
 
@@ -5832,7 +6744,8 @@ pub(crate) fn instantiate_module_decls(
   source: Arc<SourceText>,
   stmts: &[Node<Stmt>],
 ) -> Result<(), VmError> {
-  let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+  let mut env =
+    RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
   env.set_source_info(source, 0, 0);
 
   // Module instantiation does not execute code, but reuses the evaluator's hoisting/instantiation
@@ -5921,7 +6834,10 @@ pub(crate) fn run_module(
 
   let popped = vm.pop_execution_context();
   debug_assert_eq!(popped, Some(exec_ctx));
-  debug_assert!(popped.is_some(), "module execution popped no execution context");
+  debug_assert!(
+    popped.is_some(),
+    "module execution popped no execution context"
+  );
   result
 }
 
@@ -6044,7 +6960,10 @@ mod tests {
       .unwrap_err();
     match err {
       VmError::ThrowWithStack { stack, .. } => {
-        assert!(!stack.is_empty(), "ThrowWithStack must include at least one frame");
+        assert!(
+          !stack.is_empty(),
+          "ThrowWithStack must include at least one frame"
+        );
         assert_eq!(stack[0].line, 3);
         assert_eq!(stack[0].col, 1);
       }
