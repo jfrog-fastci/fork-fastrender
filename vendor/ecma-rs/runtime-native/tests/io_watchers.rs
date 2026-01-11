@@ -326,6 +326,68 @@ mod linux {
   }
 
   #[test]
+  fn write_readiness_after_register_socketpair() {
+    let _rt = TestRuntimeGuard::new();
+
+    let (a, b) = socketpair();
+
+    // Fill `a`'s send buffer so it transitions from not-writable -> writable once we drain `b`.
+    fill_write_buffer(a);
+
+    struct State {
+      fired: AtomicBool,
+      events: AtomicU32,
+    }
+
+    extern "C" fn record_events(events: u32, data: *mut u8) {
+      let state = unsafe { &*(data as *const State) };
+      state.events.fetch_or(events, Ordering::SeqCst);
+      state.fired.store(true, Ordering::SeqCst);
+    }
+
+    let state = Box::new(State {
+      fired: AtomicBool::new(false),
+      events: AtomicU32::new(0),
+    });
+    let state_ptr = state.as_ref() as *const State as *mut u8;
+
+    let id = rt_io_register(a, RT_IO_WRITABLE, record_events, state_ptr);
+    assert_ne!(id, 0);
+
+    // Drain `b` to free space in `a`'s send buffer, producing a WRITABLE edge on `a`.
+    drain_read(b);
+
+    // Fail-safe timer so the test can't hang if the writable edge is missed.
+    let timed_out = Box::new(AtomicBool::new(false));
+    let timed_out_ptr = timed_out.as_ref() as *const AtomicBool as *mut u8;
+    let timer_id = runtime_native::async_rt::global().schedule_timer(
+      Instant::now() + Duration::from_secs(1),
+      runtime_native::async_rt::Task::new(set_timeout_flag, timed_out_ptr),
+    );
+
+    while !state.fired.load(Ordering::SeqCst) && !timed_out.load(Ordering::SeqCst) {
+      rt_async_poll();
+    }
+
+    let _ = runtime_native::async_rt::global().cancel_timer(timer_id);
+
+    assert!(
+      !timed_out.load(Ordering::SeqCst),
+      "timed out waiting for writable readiness"
+    );
+    let events = state.events.load(Ordering::SeqCst);
+    assert_ne!(
+      events & RT_IO_WRITABLE,
+      0,
+      "expected RT_IO_WRITABLE, got events=0x{events:x}"
+    );
+
+    rt_io_unregister(id);
+    close(a);
+    close(b);
+  }
+
+  #[test]
   fn thread_safe_register_unregister_wakes_poll() {
     let _rt = TestRuntimeGuard::new();
     // Block the event loop thread in `rt_async_poll` by registering a pipe read end that isn't
@@ -647,6 +709,68 @@ mod kqueue {
       events & RT_IO_WRITABLE,
       0,
       "expected RT_IO_WRITABLE after rt_io_update, got events=0x{events:x}"
+    );
+
+    rt_io_unregister(id);
+    close(a);
+    close(b);
+  }
+
+  #[test]
+  fn write_readiness_after_register_socketpair() {
+    let _rt = runtime_native::test_util::TestRuntimeGuard::new();
+
+    let (a, b) = socketpair();
+
+    // Fill `a`'s send buffer so it transitions from not-writable -> writable once we drain `b`.
+    fill_write_buffer(a);
+
+    struct State {
+      fired: AtomicBool,
+      events: AtomicU32,
+    }
+
+    extern "C" fn record_events(events: u32, data: *mut u8) {
+      let state = unsafe { &*(data as *const State) };
+      state.events.fetch_or(events, Ordering::SeqCst);
+      state.fired.store(true, Ordering::SeqCst);
+    }
+
+    let state = Box::new(State {
+      fired: AtomicBool::new(false),
+      events: AtomicU32::new(0),
+    });
+    let state_ptr = state.as_ref() as *const State as *mut u8;
+
+    let id = rt_io_register(a, RT_IO_WRITABLE, record_events, state_ptr);
+    assert_ne!(id, 0);
+
+    // Drain `b` to free space in `a`'s send buffer, producing a WRITABLE edge on `a`.
+    drain_read(b);
+
+    // Fail-safe timer so the test can't hang if the writable edge is missed.
+    let timed_out = Box::new(AtomicBool::new(false));
+    let timed_out_ptr = timed_out.as_ref() as *const AtomicBool as *mut u8;
+    let timer_id = runtime_native::async_rt::global().schedule_timer(
+      Instant::now() + Duration::from_secs(1),
+      runtime_native::async_rt::Task::new(set_timeout_flag, timed_out_ptr),
+    );
+
+    while !state.fired.load(Ordering::SeqCst) && !timed_out.load(Ordering::SeqCst) {
+      rt_async_poll();
+    }
+
+    let _ = runtime_native::async_rt::global().cancel_timer(timer_id);
+
+    assert!(
+      !timed_out.load(Ordering::SeqCst),
+      "timed out waiting for writable readiness"
+    );
+    let events = state.events.load(Ordering::SeqCst);
+    assert_ne!(
+      events & RT_IO_WRITABLE,
+      0,
+      "expected RT_IO_WRITABLE, got events=0x{events:x}"
     );
 
     rt_io_unregister(id);
