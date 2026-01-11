@@ -145,7 +145,11 @@ pub(crate) fn enqueue_reaction_jobs(promise: PromiseRef, mut head: *mut PromiseR
       if vtable.is_null() {
         std::process::abort();
       }
-      ((unsafe { &*vtable }).drop)(head);
+      crate::ffi::abort_on_callback_panic(|| unsafe {
+        let drop_fn: extern "C-unwind" fn(*mut PromiseReactionNode) =
+          std::mem::transmute((&*vtable).drop);
+        drop_fn(head);
+      });
       head = next;
     }
     return;

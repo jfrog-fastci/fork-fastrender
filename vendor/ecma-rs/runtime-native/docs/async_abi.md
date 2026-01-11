@@ -381,6 +381,21 @@ microtask loops (e.g. a microtask that keeps re-queueing itself). The runtime en
 maximum number of microtasks per checkpoint (see `src/async_rt/event_loop.rs`). Exceeding this limit
 aborts the process with a diagnostic rather than livelocking forever.
 
+In addition, the runtime exposes configurable *soft* limits for embedders that want to stop execution
+without aborting:
+
+- `rt_async_set_limits(max_ready_steps_per_poll, max_ready_queue_len)`
+  - If either limit is exceeded, the runtime enters an **error state** and stops making forward
+    progress.
+  - The error message can be retrieved with `rt_async_take_last_error()` (which clears the error
+    flag).
+
+If the runtime hits a runaway/error condition and you need to abandon the event loop early (or you
+plan to drop any host data that may be referenced by queued jobs), call `rt_async_cancel_all()` to
+discard pending work and run discard drop hooks. Note: `rt_async_cancel_all()` clears the last-error
+state as part of resetting the runtime for reuse, so call `rt_async_take_last_error()` first if you
+need the diagnostic.
+
 ### Mapping `queueMicrotask(cb)` to the ABI
 
 Bindings should implement `queueMicrotask(cb)` by:
