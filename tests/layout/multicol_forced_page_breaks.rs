@@ -37,6 +37,20 @@ fn find_text<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNod
   None
 }
 
+fn find_text_eq<'a>(node: &'a FragmentNode, needle: &str) -> Option<&'a FragmentNode> {
+  if let FragmentContent::Text { text, .. } = &node.content {
+    if text.as_ref() == needle {
+      return Some(node);
+    }
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_text_eq(child, needle) {
+      return Some(found);
+    }
+  }
+  None
+}
+
 fn find_text_position(node: &FragmentNode, needle: &str, origin: (f32, f32)) -> Option<(f32, f32)> {
   let current = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
   if let FragmentContent::Text { text, .. } = &node.content {
@@ -89,9 +103,9 @@ fn multicol_break_before_page_promotes_to_next_column_set() {
 
   let content1 = page_content(page1);
   let content2 = page_content(page2);
-  assert!(find_text(content1, "A").is_some());
-  assert!(find_text(content1, "B").is_none());
-  assert!(find_text(content2, "B").is_some());
+  assert!(find_text_eq(content1, "A").is_some());
+  assert!(find_text_eq(content1, "B").is_none());
+  assert!(find_text_eq(content2, "B").is_some());
 
   let pos_b = find_text_position(page2, "B", (0.0, 0.0)).expect("B on page 2");
   assert!(
@@ -139,8 +153,8 @@ fn multicol_break_before_left_on_first_child_sets_first_page_side_ltr() {
   assert!(find_text(page, "LEFT").is_some());
   assert!(find_text(page, "RIGHT").is_none());
   let content = page_content(page);
-  assert!(find_text(content, "A").is_some());
-  assert!(find_text(content, "B").is_some());
+  assert!(find_text_eq(content, "A").is_some());
+  assert!(find_text_eq(content, "B").is_some());
 }
 
 #[test]
@@ -181,15 +195,15 @@ fn multicol_break_after_recto_inserts_blank_page_rtl_progression() {
   let page3 = page_roots[2];
 
   let page1_content = page_content(page1);
-  assert!(find_text(page1_content, "A").is_some());
-  assert!(find_text(page1_content, "B").is_none());
+  assert!(find_text_eq(page1_content, "A").is_some());
+  assert!(find_text_eq(page1_content, "B").is_none());
 
   assert!(find_text(blank_page, "Blank").is_some());
-  assert!(find_text(page_content(blank_page), "A").is_none());
-  assert!(find_text(page_content(blank_page), "B").is_none());
+  assert!(find_text_eq(blank_page, "A").is_none());
+  assert!(find_text_eq(blank_page, "B").is_none());
 
   let page3_content = page_content(page3);
-  assert!(find_text(page3_content, "B").is_some());
+  assert!(find_text_eq(page3_content, "B").is_some());
   let pos_b = find_text_position(page3, "B", (0.0, 0.0)).expect("B on page 3");
   assert!(
     pos_b.1 <= page_content_start_y(page3) + 1.0,
@@ -237,8 +251,8 @@ fn multicol_break_before_right_on_first_child_sets_first_page_side_rtl() {
   assert!(find_text(page, "RIGHT").is_some());
   assert!(find_text(page, "LEFT").is_none());
   let content = page_content(page);
-  assert!(find_text(content, "A").is_some());
-  assert!(find_text(content, "B").is_some());
+  assert!(find_text_eq(content, "A").is_some());
+  assert!(find_text_eq(content, "B").is_some());
 }
 
 #[test]
@@ -286,4 +300,3 @@ fn multicol_break_after_always_does_not_force_page_break() {
     "expected B to appear in the second column (A={a_pos:?}, B={b_pos:?})",
   );
 }
-
