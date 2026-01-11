@@ -74,6 +74,32 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
   Ok(())
 }
 
+fn set_blocking(fd: RawFd) -> io::Result<()> {
+  let flags = loop {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags != -1 {
+      break flags;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  };
+  loop {
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+    if rc != -1 {
+      break;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  }
+  Ok(())
+}
+
 fn write_byte(fd: RawFd) {
   let byte: u8 = 1;
   let rc = unsafe { libc::write(fd, &byte as *const u8 as *const libc::c_void, 1) };
@@ -212,6 +238,80 @@ fn rt_io_register_rejects_duplicate_fd_and_reports_error() {
 
   let pending = poll_once_with_immediate_timer();
   assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
+fn rt_io_update_rejects_empty_interests_and_reports_error() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let id = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_ne!(id, 0, "expected registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  rt_io_update(id, 0);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_INVALID_INTERESTS,
+    "expected rt_io_update(0) to be diagnosable"
+  );
+
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should succeed after a failed update"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
+fn rt_io_update_detects_nonblocking_contract_violation() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let id = rt_io_register(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, std::ptr::null_mut());
+  assert_ne!(id, 0, "expected registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  // Flip the fd back to blocking: the reactor contract requires fds remain O_NONBLOCK.
+  set_blocking(rfd.as_raw_fd()).unwrap();
+
+  rt_io_update(id, RT_IO_READABLE);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UPDATE_FAILED,
+    "expected rt_io_update to fail for a now-blocking fd"
+  );
+
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should still succeed after the fd becomes blocking"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
+fn rt_io_unregister_invalid_id_reports_error() {
+  let _rt = TestRuntimeGuard::new();
+
+  rt_io_unregister(0);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_UNREGISTER_FAILED,
+    "expected rt_io_unregister(0) to be diagnosable"
+  );
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_debug_take_last_error should clear the last error"
+  );
 }
 
 #[test]
