@@ -7,7 +7,7 @@ use inkwell::OptimizationLevel;
 use native_js::llvm::gc;
 use native_js::llvm::passes;
 use object::{Object, ObjectSection};
-use runtime_native::stackmaps::StackMaps;
+use runtime_native::stackmaps::{parse_all_stackmaps, StackMaps};
 use runtime_native::statepoint_verify::{
   verify_statepoint_stackmap, DwarfArch, VerifyMode, VerifyStatepointOptions,
 };
@@ -368,6 +368,13 @@ fn object_link_concatenates_multiple_stackmap_blobs() {
     "expected two concatenated StackMap blobs when linking separate objects; got {}\nblobs={blobs:#?}",
     blobs.len()
   );
+  let parsed =
+    parse_all_stackmaps(&stackmaps).expect("runtime parser should parse concatenated blobs");
+  assert_eq!(
+    parsed.len(),
+    blobs.len(),
+    "runtime parser should agree with blob scanner about blob count"
+  );
 
   assert_eq!(
     blobs[0].offset, 0,
@@ -458,6 +465,12 @@ fn lto_link_merges_stackmap_blobs_into_one_table() {
     1,
     "expected a single merged StackMap blob under LTO; got {}\nblobs={blobs:#?}",
     blobs.len()
+  );
+  let parsed = parse_all_stackmaps(&stackmaps).expect("runtime parser should parse stackmaps");
+  assert_eq!(
+    parsed.len(),
+    blobs.len(),
+    "runtime parser should agree with blob scanner about blob count"
   );
 
   let blob = &blobs[0];
@@ -639,9 +652,17 @@ entry:
   let Some(second_off) = found_second else {
     panic!(
       "failed to find a second StackMap v3 header in output stackmaps section in the expected range \
-[size_a, size_a+7] = [{expected_min}, {expected_max}] (size_a={size_a}, expected_start={expected_start}, out_len={})",
+ [size_a, size_a+7] = [{expected_min}, {expected_max}] (size_a={size_a}, expected_start={expected_start}, out_len={})",
       stackmaps.len()
     );
   };
   let _ = second_off;
+
+  // Also ensure the runtime parser can decode the concatenated section.
+  let parsed = parse_all_stackmaps(&stackmaps).expect("runtime parser should parse stackmaps");
+  assert!(
+    parsed.len() >= 2,
+    "expected runtime parser to find at least 2 concatenated stackmap blobs; got {}",
+    parsed.len()
+  );
 }
