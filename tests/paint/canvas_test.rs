@@ -305,6 +305,20 @@ fn source_over_trunc_rounded_rect_fill_near_integer_translation_uses_truncation(
 }
 
 #[test]
+fn semi_transparent_source_over_rect_fills_match_chrome_blending() {
+  // Regression for large translucent overlays (e.g. `tests/pages/fixtures/figma.com`), where a
+  // ±1 LSB mismatch in `source-over` compositing can flip the entire viewport in pixel diffs.
+  let mut canvas = Canvas::new(4, 4, Rgba::WHITE).unwrap();
+  canvas.draw_rect(
+    Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+    Rgba::BLACK.with_alpha(0.3),
+  );
+
+  let p = canvas.pixmap().pixel(0, 0).unwrap();
+  assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (178, 178, 178, 255));
+}
+
+#[test]
 fn test_draw_multiple_rects() {
   let mut canvas = Canvas::new(100, 100, Rgba::WHITE).unwrap();
 
