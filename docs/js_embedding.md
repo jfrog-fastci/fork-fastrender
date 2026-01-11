@@ -197,12 +197,11 @@ Concretely, this means host-side script execution entry points (e.g. `WindowHost
 event-loop’s Promise job runner) should eventually call `vm-js` with the same host context object
 instead of the hook-only `exec_script_*_with_hooks(...)` path.
 
-> **Why not TLS?** FastRender historically used thread-local registries/stacks to smuggle embedding
-> state into native bindings (e.g. `DOM_SOURCES` in `src/js/vmjs/window_realm.rs` and
-> `EVENT_LOOP_STACK` in `src/js/vmjs/runtime.rs`). These were pragmatic stopgaps while `vm-js` lacked
-> an ergonomic way to
-> pass embedding state into both script and job execution. The long-term goal is to delete these
-> TLS workarounds and rely on explicit `VmHost` plumbing.
+> **Why not TLS?** FastRender historically used thread-local stacks to smuggle embedding state into
+> native bindings (e.g. `EVENT_LOOP_STACK` in `src/js/vmjs/runtime.rs`). These were pragmatic
+> stopgaps while `vm-js` lacked an ergonomic way to pass embedding state into both script and job
+> execution. The long-term goal is to delete remaining TLS workarounds and rely on explicit
+> `VmHost` plumbing.
 
 This keeps Promise jobs and `queueMicrotask(...)` in the same FIFO-ordered microtask queue, and
 ensures Promise jobs enqueued by other Promise jobs run in the same microtask checkpoint.

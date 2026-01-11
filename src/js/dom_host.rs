@@ -1,4 +1,5 @@
 use crate::dom2::{DomError, Document, NodeId};
+use vm_js::VmHost;
 
 /// Abstraction over a live `dom2::Document` that allows DOM mutation while keeping renderer cache
 /// invalidation coalesced in the host.
@@ -28,9 +29,11 @@ pub trait DomHost {
 /// Object-safe DOM host operations needed by `vm-js` DOM shims.
 ///
 /// `DomHost` intentionally uses generic closures to support returning arbitrary values from
-/// `with_dom`/`mutate_dom`, but that also makes it **not** dyn-compatible. The `vm-js` embedding needs
-/// to store host pointers in a thread-local registry (keyed by `dom_source_id`) and therefore needs
-/// a dyn-compatible surface.
+/// `with_dom`/`mutate_dom`, but that also makes it **not** dyn-compatible.
+///
+/// The `vm-js` embedding routes DOM mutations through a dyn-compatible surface by downcasting the
+/// active [`vm_js::VmHost`] context to a host type that implements [`DomHost`], then coercing it to
+/// `&mut dyn DomHostVmJs`.
 ///
 /// This trait provides that surface by exposing only the concrete DOM operations used by the shims
 /// (dataset/classList/style, plus node-id decoding).
@@ -55,6 +58,33 @@ pub trait DomHostVmJs {
 
   fn style_get_property_value(&self, element: NodeId, name: &str) -> String;
   fn style_set_property(&mut self, element: NodeId, name: &str, value: &str) -> Result<bool, DomError>;
+}
+
+/// Downcast a `vm-js` [`VmHost`] into a dyn-compatible [`DomHostVmJs`] implementation.
+///
+/// DOM shims use this helper instead of storing raw pointers or integer handles inside JS objects.
+pub fn dom_host_vmjs(host: &mut dyn VmHost) -> Option<&mut dyn DomHostVmJs> {
+  use std::any::TypeId;
+
+  let any = host.as_any_mut();
+  let ty = any.type_id();
+  let ptr = any as *mut dyn std::any::Any;
+
+  // SAFETY: we only cast the erased `Any` pointer back to a concrete type after checking its
+  // runtime `TypeId`.
+  unsafe {
+    if ty == TypeId::of::<crate::js::host_document::DocumentHostState>() {
+      let host = &mut *(ptr as *mut crate::js::host_document::DocumentHostState);
+      return Some(host as &mut dyn DomHostVmJs);
+    }
+
+    if ty == TypeId::of::<crate::api::BrowserDocumentDom2>() {
+      let host = &mut *(ptr as *mut crate::api::BrowserDocumentDom2);
+      return Some(host as &mut dyn DomHostVmJs);
+    }
+  }
+
+  None
 }
 
 impl<T> DomHostVmJs for T

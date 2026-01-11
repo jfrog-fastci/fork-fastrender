@@ -6,8 +6,7 @@ use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use crate::js::window_realm::{
-  register_dom_host_source, register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig,
-  WindowRealmHost,
+  WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
@@ -18,7 +17,6 @@ use crate::js::{
 use crate::js::{Clock, RealClock};
 use crate::js::vm_error_format;
 use crate::resource::{origin_from_url, HttpFetcher, ResourceFetcher};
-use std::ptr::NonNull;
 use std::sync::Arc;
 
 /// Host-owned "window" state for executing scripts against a single DOM document.
@@ -244,9 +242,8 @@ pub struct WindowHostState {
   import_map_state: ImportMapState,
   import_map_warnings: Vec<ImportMapWarning>,
   import_map_errors: Vec<ImportMapError>,
-  dom_source_id: Option<u64>,
   /// Host-owned document state used as the `vm-js` [`vm_js::VmHost`] context.
-  document: Box<DocumentHostState>,
+  document: DocumentHostState,
   window: WindowRealm,
   fetcher: Arc<dyn ResourceFetcher>,
   _fetch_bindings: WindowFetchBindings,
@@ -314,32 +311,18 @@ impl WindowHostState {
   ) -> Result<Self> {
     let document_url = document_url.into();
     let host_fetcher = fetcher.clone();
-    // The JS bindings store a `dom_source_id` that resolves to a raw pointer in a thread-local
-    // registry. That pointer must remain stable for the lifetime of this host, so keep the
-    // `DocumentHostState` on the heap.
-    let mut document = Box::new(DocumentHostState::new(dom));
-    let dom_source_id = register_dom_source(NonNull::from(document.dom_mut()));
-    register_dom_host_source(
-      dom_source_id,
-      NonNull::from(document.as_mut() as &mut dyn crate::js::DomHostVmJs),
-    );
-    let mut window = match WindowRealm::new_with_js_execution_options(
+    let document = DocumentHostState::new(dom);
+    let mut window = WindowRealm::new_with_js_execution_options(
       WindowRealmConfig::new(document_url.clone())
-        .with_dom_source_id(dom_source_id)
+        .with_current_script_state(document.current_script_state().clone())
         .with_clock(clock),
       js_execution_options,
-    ) {
-      Ok(window) => window,
-      Err(err) => {
-        unregister_dom_source(dom_source_id);
-        return Err(Error::Other(err.to_string()));
-      }
-    };
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
     window.set_cookie_fetcher(fetcher.clone());
     if js_execution_options.supports_module_scripts {
       let document_origin = origin_from_url(&document_url);
       if let Err(err) = window.enable_module_loader(fetcher.clone(), document_origin) {
-        unregister_dom_source(dom_source_id);
         return Err(Error::Other(err.to_string()));
       }
     }
@@ -349,12 +332,10 @@ impl WindowHostState {
     let (fetch_bindings, xhr_bindings) = {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       if let Err(err) = install_window_timers_bindings::<WindowHostState>(vm, realm, heap) {
-        unregister_dom_source(dom_source_id);
         return Err(Error::Other(err.to_string()));
       }
       if let Err(err) = install_window_animation_frame_bindings::<WindowHostState>(vm, realm, heap)
       {
-        unregister_dom_source(dom_source_id);
         return Err(Error::Other(err.to_string()));
       }
       let fetch_bindings = match install_window_fetch_bindings_with_guard::<WindowHostState>(
@@ -365,7 +346,6 @@ impl WindowHostState {
       ) {
         Ok(bindings) => bindings,
         Err(err) => {
-          unregister_dom_source(dom_source_id);
           return Err(Error::Other(err.to_string()));
         }
       };
@@ -378,7 +358,6 @@ impl WindowHostState {
       ) {
         Ok(bindings) => bindings,
         Err(err) => {
-          unregister_dom_source(dom_source_id);
           return Err(Error::Other(err.to_string()));
         }
       };
@@ -394,7 +373,6 @@ impl WindowHostState {
       import_map_state: ImportMapState::new_empty(),
       import_map_warnings: Vec::new(),
       import_map_errors: Vec::new(),
-      dom_source_id: Some(dom_source_id),
       document,
       window,
       fetcher: host_fetcher,
@@ -650,14 +628,6 @@ impl WindowHostState {
   }
 }
 
-impl Drop for WindowHostState {
-  fn drop(&mut self) {
-    if let Some(id) = self.dom_source_id.take() {
-      unregister_dom_source(id);
-    }
-  }
-}
-
 impl DomHost for WindowHostState {
   fn with_dom<R, F>(&self, f: F) -> R
   where
@@ -682,7 +652,7 @@ impl CurrentScriptHost for WindowHostState {
 
 impl WindowRealmHost for WindowHostState {
   fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-    (&mut *self.document, &mut self.window)
+    (&mut self.document, &mut self.window)
   }
 
   fn webidl_bindings_host(&mut self) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
@@ -2270,47 +2240,28 @@ mod tests {
     // `queue_mutation_observer_microtask` should fall back to this when the internal key is absent.
 
     struct NoTimersHostState {
-      dom_source_id: Option<u64>,
-      document: Box<DocumentHostState>,
+      document: DocumentHostState,
       window: WindowRealm,
-    }
-
-    impl Drop for NoTimersHostState {
-      fn drop(&mut self) {
-        if let Some(id) = self.dom_source_id.take() {
-          unregister_dom_source(id);
-        }
-      }
     }
 
     impl WindowRealmHost for NoTimersHostState {
       fn vm_host_and_window_realm(&mut self) -> (&mut dyn vm_js::VmHost, &mut WindowRealm) {
-        (&mut *self.document, &mut self.window)
+        (&mut self.document, &mut self.window)
       }
     }
 
     impl NoTimersHostState {
       fn new(dom: dom2::Document, document_url: &str) -> Result<Self> {
         let clock: Arc<dyn Clock> = Arc::new(RealClock::default());
-        let mut document = Box::new(DocumentHostState::new(dom));
-        let dom_source_id = register_dom_source(NonNull::from(document.dom_mut()));
-        register_dom_host_source(
-          dom_source_id,
-          NonNull::from(document.as_mut() as &mut dyn crate::js::DomHostVmJs),
-        );
-
+        let document = DocumentHostState::new(dom);
         let window = WindowRealm::new(
           WindowRealmConfig::new(document_url)
-            .with_dom_source_id(dom_source_id)
+            .with_current_script_state(document.current_script_state().clone())
             .with_clock(clock),
         )
-        .map_err(|err| {
-          unregister_dom_source(dom_source_id);
-          Error::Other(err.to_string())
-        })?;
+        .map_err(|err| Error::Other(err.to_string()))?;
 
         Ok(Self {
-          dom_source_id: Some(dom_source_id),
           document,
           window,
         })

@@ -4570,13 +4570,11 @@ mod tests {
   use crate::api::FastRender;
   use crate::js::runtime::with_event_loop;
   use crate::js::window_timers::VmJsEventLoopHooks;
-  use crate::js::window_realm::{register_dom_source, unregister_dom_source};
   use crate::js::{WindowRealm, WindowRealmConfig};
   use crate::resource::{FetchedResource, ResourceFetcher};
 
-  use std::cell::{Cell, RefCell};
+  use std::cell::RefCell;
   use std::collections::HashMap;
-  use std::ptr::NonNull;
   use std::rc::Rc;
   use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex, OnceLock};
@@ -6738,16 +6736,6 @@ mod tests {
     Ok(())
   }
 
-  struct DomSourceGuard {
-    id: u64,
-  }
-
-  impl Drop for DomSourceGuard {
-    fn drop(&mut self) {
-      unregister_dom_source(self.id);
-    }
-  }
-
   fn value_to_string(realm: &WindowRealm, value: Value) -> String {
     let Value::String(s) = value else {
       panic!("expected string, got {value:?}");
@@ -7032,15 +7020,13 @@ mod tests {
 
   #[derive(Default)]
   struct VmJsLifecycleExecutor {
-    dom_source_id: Rc<Cell<Option<u64>>>,
     microtask_hook_id: u64,
     realm: Option<WindowRealm>,
   }
 
   impl VmJsLifecycleExecutor {
-    fn new(dom_source_id: Rc<Cell<Option<u64>>>, microtask_hook_id: u64) -> Self {
+    fn new(microtask_hook_id: u64) -> Self {
       Self {
-        dom_source_id,
         microtask_hook_id,
         realm: None,
       }
@@ -7050,12 +7036,8 @@ mod tests {
       if self.realm.is_some() {
         return Ok(());
       }
-      let dom_source_id = self
-        .dom_source_id
-        .get()
-        .expect("dom_source_id should be registered before script execution");
       let mut realm = WindowRealm::new(
-        WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+        WindowRealmConfig::new("https://example.com/"),
       )
       .map_err(|err| Error::Other(err.to_string()))?;
       install_queue_microtask_test_global(&mut realm, self.microtask_hook_id)
@@ -7071,13 +7053,22 @@ mod tests {
       script_text: &str,
       _spec: &ScriptElementSpec,
       _current_script: Option<NodeId>,
-      _document: &mut BrowserDocumentDom2,
+      document: &mut BrowserDocumentDom2,
       event_loop: &mut EventLoop<BrowserTabHost>,
     ) -> Result<()> {
       self.ensure_realm()?;
       let realm = self.realm.as_mut().expect("realm should be initialized");
-      with_event_loop(event_loop, || realm.exec_script(script_text))
-        .map_err(|err| Error::Other(err.to_string()))?;
+      with_event_loop(event_loop, || {
+        let host_ctx: &mut dyn VmHost = document;
+        let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
+        realm
+          .exec_script_with_host_and_hooks(host_ctx, &mut hooks, script_text)
+          .map_err(|err| Error::Other(err.to_string()))?;
+        if let Some(err) = hooks.finish(realm.heap_mut()) {
+          return Err(err);
+        }
+        Ok(())
+      })?;
       Ok(())
     }
 
@@ -7099,7 +7090,7 @@ mod tests {
       &mut self,
       target: EventTargetId,
       event: &Event,
-      _document: &mut BrowserDocumentDom2,
+      document: &mut BrowserDocumentDom2,
     ) -> Result<()> {
       self.ensure_realm()?;
       let realm = self.realm.as_mut().expect("realm should be initialized");
@@ -7121,9 +7112,14 @@ mod tests {
         "(function(){{const e=new Event({type_lit},{init_lit});{dispatch_expr}}})();",
       );
 
+      let host_ctx: &mut dyn VmHost = document;
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
       realm
-        .exec_script(&source)
+        .exec_script_with_host_and_hooks(host_ctx, &mut hooks, &source)
         .map_err(|err| Error::Other(err.to_string()))?;
+      if let Some(err) = hooks.finish(realm.heap_mut()) {
+        return Err(err);
+      }
       Ok(())
     }
   }
@@ -7138,42 +7134,55 @@ mod tests {
       JsExecutionOptions::default(),
     )?;
     let mut event_loop = EventLoop::<BrowserTabHost>::new();
-
-    let dom_source_id = register_dom_source(NonNull::from(host.dom_mut()));
-    let _guard = DomSourceGuard { id: dom_source_id };
-
-    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id))
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
       .map_err(|err| Error::Other(err.to_string()))?;
 
-    let ready_state = realm
-      .exec_script("document.readyState")
-      .map_err(|err| Error::Other(err.to_string()))?;
-    assert_eq!(value_to_string(&realm, ready_state), "loading");
+    let mut eval_ready_state = |host: &mut BrowserTabHost,
+                               event_loop: &mut EventLoop<BrowserTabHost>,
+                               realm: &mut WindowRealm|
+     -> Result<String> {
+      let value = with_event_loop(event_loop, || {
+        let host_ctx: &mut dyn VmHost = host.document.as_mut();
+        let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
+        let value = realm
+          .exec_script_with_host_and_hooks(host_ctx, &mut hooks, "document.readyState")
+          .map_err(|err| Error::Other(err.to_string()))?;
+        if let Some(err) = hooks.finish(realm.heap_mut()) {
+          return Err(err);
+        }
+        Ok(value)
+      })?;
+      Ok(value_to_string(realm, value))
+    };
+
+    assert_eq!(
+      eval_ready_state(&mut host, &mut event_loop, &mut realm)?,
+      "loading"
+    );
 
     host.notify_parsing_completed(&mut event_loop)?;
-
-    let ready_state = realm
-      .exec_script("document.readyState")
-      .map_err(|err| Error::Other(err.to_string()))?;
-    assert_eq!(value_to_string(&realm, ready_state), "interactive");
-
-    assert!(event_loop.run_next_task(&mut host)?);
-    let ready_state = realm
-      .exec_script("document.readyState")
-      .map_err(|err| Error::Other(err.to_string()))?;
-    assert_eq!(value_to_string(&realm, ready_state), "interactive");
+    assert_eq!(
+      eval_ready_state(&mut host, &mut event_loop, &mut realm)?,
+      "interactive"
+    );
 
     assert!(event_loop.run_next_task(&mut host)?);
-    let ready_state = realm
-      .exec_script("document.readyState")
-      .map_err(|err| Error::Other(err.to_string()))?;
-    assert_eq!(value_to_string(&realm, ready_state), "interactive");
+    assert_eq!(
+      eval_ready_state(&mut host, &mut event_loop, &mut realm)?,
+      "interactive"
+    );
 
     assert!(event_loop.run_next_task(&mut host)?);
-    let ready_state = realm
-      .exec_script("document.readyState")
-      .map_err(|err| Error::Other(err.to_string()))?;
-    assert_eq!(value_to_string(&realm, ready_state), "complete");
+    assert_eq!(
+      eval_ready_state(&mut host, &mut event_loop, &mut realm)?,
+      "interactive"
+    );
+
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(
+      eval_ready_state(&mut host, &mut event_loop, &mut realm)?,
+      "complete"
+    );
     Ok(())
   }
 
@@ -7189,9 +7198,8 @@ mod tests {
       id: microtask_hook_id,
     };
 
-    let dom_source_id_cell = Rc::new(Cell::new(None));
     let document = BrowserDocumentDom2::from_html("<!doctype html><html></html>", RenderOptions::default())?;
-    let executor = VmJsLifecycleExecutor::new(Rc::clone(&dom_source_id_cell), microtask_hook_id);
+    let executor = VmJsLifecycleExecutor::new(microtask_hook_id);
     let mut host = BrowserTabHost::new(
       document,
       Box::new(executor),
@@ -7199,10 +7207,6 @@ mod tests {
       JsExecutionOptions::default(),
     )?;
     let mut event_loop = EventLoop::<BrowserTabHost>::new();
-
-    let dom_source_id = register_dom_source(NonNull::from(host.dom_mut()));
-    let _guard = DomSourceGuard { id: dom_source_id };
-    dom_source_id_cell.set(Some(dom_source_id));
 
     // Register a JS listener that queues a microtask via the test-only native helper.
     let setup_script = "document.addEventListener('readystatechange', () => { __queueMicrotaskTest(); });";
@@ -7506,117 +7510,25 @@ html, body { margin: 0; padding: 0; }
     Ok(())
   }
 
-  struct VmJsExecutor {
-    dom_source_id: Rc<Cell<Option<u64>>>,
-    result: Rc<RefCell<Option<Value>>>,
-    realm: Option<WindowRealm>,
-  }
+  fn exec_vm_js_dom_script(tab: &mut BrowserTab, source: &str) -> Result<()> {
+    // Execute DOM shim script with the real `BrowserDocumentDom2` as the active `VmHost` context so
+    // native bindings mutate the host DOM and route invalidations through `DomHost::mutate_dom`.
+    let mut realm =
+      WindowRealm::new(WindowRealmConfig::new("https://example.com/")).map_err(|err| Error::Other(err.to_string()))?;
 
-  impl VmJsExecutor {
-    fn new(dom_source_id: Rc<Cell<Option<u64>>>, result: Rc<RefCell<Option<Value>>>) -> Self {
-      Self {
-        dom_source_id,
-        result,
-        realm: None,
-      }
-    }
-  }
-
-  impl BrowserTabJsExecutor for VmJsExecutor {
-    fn execute_classic_script(
-      &mut self,
-      script_text: &str,
-      _spec: &ScriptElementSpec,
-      _current_script: Option<NodeId>,
-      _document: &mut BrowserDocumentDom2,
-      _event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-      if self.realm.is_none() {
-        let dom_source_id = self
-          .dom_source_id
-          .get()
-          .expect("dom_source_id should be registered before script execution");
-        let realm = WindowRealm::new(
-          WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
-        )
+    let (host, event_loop) = (&mut tab.host, &mut tab.event_loop);
+    with_event_loop(event_loop, || {
+      let host_ctx: &mut dyn VmHost = host.document.as_mut();
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new(host_ctx);
+      realm
+        .exec_script_with_host_and_hooks(host_ctx, &mut hooks, source)
         .map_err(|err| Error::Other(err.to_string()))?;
-        self.realm = Some(realm);
+      if let Some(err) = hooks.finish(realm.heap_mut()) {
+        return Err(err);
       }
-
-      let realm = self.realm.as_mut().expect("initialized realm");
-      let value = realm
-        .exec_script(script_text)
-        .map_err(|err| Error::Other(err.to_string()))?;
-      *self.result.borrow_mut() = Some(value);
       Ok(())
-    }
-
-    fn execute_module_script(
-      &mut self,
-      script_text: &str,
-      spec: &ScriptElementSpec,
-      current_script: Option<NodeId>,
-      document: &mut BrowserDocumentDom2,
-      event_loop: &mut EventLoop<BrowserTabHost>,
-    ) -> Result<()> {
-      self.execute_classic_script(script_text, spec, current_script, document, event_loop)
-    }
-  }
-
-  #[test]
-  fn dom2_document_address_is_stable_across_tab_move_for_vm_js_shims() -> Result<()> {
-    let dom_source_id_cell = Rc::new(Cell::new(None));
-    let script_result = Rc::new(RefCell::new(None));
-
-    let executor = VmJsExecutor::new(Rc::clone(&dom_source_id_cell), Rc::clone(&script_result));
-
-    let html = "<!doctype html><html><body><div id=target></div>\
-      <script src=\"https://example.com/app.js\" defer></script>\
-      </body></html>";
-    let mut tab = BrowserTab::from_html(html, RenderOptions::default(), executor)?;
-    tab.register_script_source(
-      "https://example.com/app.js",
-      "(() => {\n\
-        const el = document.getElementById('target');\n\
-        return el && el.id === 'target';\n\
-      })()",
-    );
-
-    let dom_ptr = tab.host.document.dom_non_null();
-    let dom_ptr_addr = dom_ptr.as_ptr() as usize;
-    let dom_source_id = register_dom_source(dom_ptr);
-    let _guard = DomSourceGuard { id: dom_source_id };
-    dom_source_id_cell.set(Some(dom_source_id));
-
-    let mut tabs = Vec::new();
-    tabs.push(tab);
-
-    // The DOM pointer registered in TLS must remain stable even when the entire `BrowserTab` is
-    // moved (e.g. into a `Vec`), because vm-js DOM shims dereference it.
-    let ptr_in_vec = tabs[0].host.document.dom() as *const crate::dom2::Document as usize;
-    assert_eq!(dom_ptr_addr, ptr_in_vec, "dom2::Document moved in memory");
-
-    tabs[0].run_event_loop_until_idle(RunLimits::unbounded())?;
-
-    assert_eq!(*script_result.borrow(), Some(Value::Bool(true)));
+    })?;
     Ok(())
-  }
-
-  fn exec_vm_js_dom_script(tab: &mut BrowserTab, source: &str) {
-    // The vm-js DOM shims store a `dom_source_id` that resolves to a pointer in a thread-local
-    // registry. Use BrowserDocumentDom2's registration helper so DOM mutations route through its
-    // `DomHost::mutate_dom` implementation (which coalesces invalidation and skips no-op renders).
-    let dom_source_id = tab.host.document.ensure_dom_source_registered();
-    assert!(
-      crate::js::window_realm::is_dom_host_source_registered(dom_source_id),
-      "expected BrowserDocumentDom2 to register a DomHost source for vm-js DOM shims"
-    );
-
-    let mut realm = WindowRealm::new(
-      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
-    )
-    .expect("WindowRealm");
-    realm.exec_script(source).expect("exec_script");
   }
 
   #[test]
@@ -7640,13 +7552,13 @@ html, body { margin: 0; padding: 0; }
         el.dataset.foo = '1';\n\
         el.style.display = 'block';\n\
       })();",
-    );
+    )?;
     assert!(
       tab.render_if_needed()?.is_none(),
       "expected no-op reflected attribute writes to avoid invalidation"
     );
 
-    exec_vm_js_dom_script(&mut tab, "document.documentElement.className = 'x';");
+    exec_vm_js_dom_script(&mut tab, "document.documentElement.className = 'x';")?;
 
     // `run_until_stable` must observe that the document is dirty (via the mutation generation) and
     // render a frame before reporting stability.
@@ -7671,7 +7583,7 @@ html, body { margin: 0; padding: 0; }
     exec_vm_js_dom_script(
       &mut tab,
       "document.body.innerHTML = '<p id=changed>changed</p>';",
-    );
+    )?;
 
     assert!(
       tab.render_if_needed()?.is_some(),
@@ -7682,7 +7594,7 @@ html, body { margin: 0; padding: 0; }
     // Exercise a mutation that removes children without inserting any replacement nodes (empty
     // `textContent`). This previously bypassed generation tracking for raw-pointer shims because it
     // edited `Node.children` directly without calling higher-level mutation APIs.
-    exec_vm_js_dom_script(&mut tab, "document.body.textContent = '';");
+    exec_vm_js_dom_script(&mut tab, "document.body.textContent = '';")?;
     assert!(
       tab.render_if_needed()?.is_some(),
       "expected BrowserTab::render_if_needed to produce a new frame after JS DOM mutation (textContent clear)"

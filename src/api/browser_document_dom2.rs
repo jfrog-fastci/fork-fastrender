@@ -41,7 +41,6 @@ pub struct BrowserDocumentDom2InvalidationCounters {
 pub struct BrowserDocumentDom2 {
   renderer: super::FastRender,
   dom: Box<crate::dom2::Document>,
-  dom_source_id: Option<u64>,
   active_events: ActiveEventStack,
   /// Host-side `Document.currentScript` bookkeeping shared with JS bindings.
   ///
@@ -94,7 +93,6 @@ impl BrowserDocumentDom2 {
     Ok(Self {
       renderer,
       dom,
-      dom_source_id: None,
       active_events: ActiveEventStack::default(),
       current_script: CurrentScriptStateHandle::default(),
       options,
@@ -230,29 +228,8 @@ impl BrowserDocumentDom2 {
     &self.options
   }
 
-  pub(crate) fn ensure_dom_source_registered(&mut self) -> u64 {
-    if let Some(id) = self.dom_source_id {
-      return id;
-    }
-    let id = crate::js::window_realm::register_dom_source(self.dom_non_null());
-    crate::js::window_realm::register_dom_host_source(
-      id,
-      NonNull::from(self as &mut dyn crate::js::DomHostVmJs),
-    );
-    self.dom_source_id = Some(id);
-    id
-  }
-
-  #[inline]
-  fn unregister_dom_source_if_needed(&mut self) {
-    if let Some(id) = self.dom_source_id.take() {
-      crate::js::window_realm::unregister_dom_source(id);
-    }
-  }
-
   /// Replaces the live DOM and clears any cached preparation state.
   pub fn reset_with_dom(&mut self, dom: crate::dom2::Document, options: RenderOptions) {
-    self.unregister_dom_source_if_needed();
     self.current_script.reset();
     self.last_seen_dom_mutation_generation = dom.mutation_generation();
     let dom = Box::new(dom);
@@ -273,7 +250,6 @@ impl BrowserDocumentDom2 {
   /// The next `render_if_needed` call will paint using the prepared layout without re-running
   /// cascade/layout.
   pub fn reset_with_prepared(&mut self, prepared: PreparedDocument, options: RenderOptions) {
-    self.unregister_dom_source_if_needed();
     self.current_script.reset();
     let dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
     self.last_seen_dom_mutation_generation = dom.mutation_generation();
@@ -314,9 +290,6 @@ impl BrowserDocumentDom2 {
   ///
   /// The returned pointer is stable even when the `BrowserDocumentDom2` is moved, because the live
   /// DOM is stored on the heap.
-  ///
-  /// This is intended for registering DOM pointers in `WindowRealm` via
-  /// `register_dom_source(NonNull<Document>)`.
   pub fn dom_non_null(&mut self) -> NonNull<crate::dom2::Document> {
     NonNull::from(self.dom.as_mut())
   }
@@ -1018,9 +991,34 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
   }
 }
 
-impl Drop for BrowserDocumentDom2 {
-  fn drop(&mut self) {
-    self.unregister_dom_source_if_needed();
+impl webidl_vm_js::WebIdlBindingsHost for BrowserDocumentDom2 {
+  fn call_operation(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _receiver: Option<vm_js::Value>,
+    _interface: &'static str,
+    _operation: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "BrowserDocumentDom2 does not implement WebIDL binding dispatch",
+    ))
+  }
+
+  fn call_constructor(
+    &mut self,
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _interface: &'static str,
+    _overload: usize,
+    _args: &[vm_js::Value],
+    _new_target: vm_js::Value,
+  ) -> std::result::Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "BrowserDocumentDom2 does not implement WebIDL binding dispatch",
+    ))
   }
 }
 
@@ -1201,12 +1199,6 @@ mod tests {
     let ptr2 = doc.dom() as *const crate::dom2::Document;
     assert_eq!(ptr1, ptr2);
 
-    // Register with the vm-js DOM source registry and ensure it is cleaned up across resets.
-    let dom_source_id = doc.ensure_dom_source_registered();
-    assert!(crate::js::window_realm::is_dom_source_registered(
-      dom_source_id
-    ));
-
     let before_reset = doc.dom() as *const crate::dom2::Document;
     doc.reset_with_dom(
       crate::dom2::Document::new(QuirksMode::NoQuirks),
@@ -1214,32 +1206,7 @@ mod tests {
     );
     let after_reset = doc.dom() as *const crate::dom2::Document;
     assert_ne!(before_reset, after_reset);
-    assert!(
-      !crate::js::window_realm::is_dom_source_registered(dom_source_id),
-      "expected dom_source_id to be unregistered when the document is replaced"
-    );
 
-    Ok(())
-  }
-
-  #[test]
-  fn dom_source_id_is_unregistered_on_drop() -> Result<()> {
-    let dom_source_id = {
-      let renderer = renderer_for_tests();
-      let mut doc = BrowserDocumentDom2::new(
-        renderer,
-        "<!doctype html><html><body></body></html>",
-        RenderOptions::default(),
-      )?;
-      let id = doc.ensure_dom_source_registered();
-      assert!(crate::js::window_realm::is_dom_source_registered(id));
-      id
-    };
-
-    assert!(
-      !crate::js::window_realm::is_dom_source_registered(dom_source_id),
-      "expected dom_source_id to be unregistered when BrowserDocumentDom2 is dropped"
-    );
     Ok(())
   }
 

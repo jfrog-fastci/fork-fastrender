@@ -50,7 +50,6 @@ pub struct DomWrapperMeta {
   pub node_id: NodeId,
   pub primary_interface: DomInterface,
   pub realm_id: RealmId,
-  pub dom_source_id: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -74,7 +73,6 @@ struct DomPrototypes {
 /// be rooted explicitly.
 pub struct DomPlatform {
   realm_id: RealmId,
-  dom_source_id: u64,
   prototypes: DomPrototypes,
   prototype_roots: Vec<RootId>,
   wrappers_by_node: HashMap<NodeId, WeakGcObject>,
@@ -83,7 +81,7 @@ pub struct DomPlatform {
 }
 
 impl DomPlatform {
-  pub fn new(scope: &mut Scope<'_>, realm: &Realm, dom_source_id: u64) -> Result<Self, VmError> {
+  pub fn new(scope: &mut Scope<'_>, realm: &Realm) -> Result<Self, VmError> {
     let realm_id = realm.id();
 
     // Root prototypes: `DomPlatform` lives on the host side and is not traced by GC.
@@ -135,7 +133,6 @@ impl DomPlatform {
 
     Ok(Self {
       realm_id,
-      dom_source_id,
       prototypes: DomPrototypes {
         event_target: proto_event_target,
         node: proto_node,
@@ -155,10 +152,6 @@ impl DomPlatform {
     for root in self.prototype_roots.drain(..) {
       heap.remove_root(root);
     }
-  }
-
-  pub fn dom_source_id(&self) -> u64 {
-    self.dom_source_id
   }
 
   pub fn realm_id(&self) -> RealmId {
@@ -207,7 +200,6 @@ impl DomPlatform {
         node_id,
         primary_interface,
         realm_id: self.realm_id,
-        dom_source_id: self.dom_source_id,
       },
     );
   }
@@ -333,7 +325,7 @@ mod tests {
     let mut runtime = make_runtime()?;
     let (realm, heap) = split_runtime_realm(&mut runtime);
     let mut scope = heap.scope();
-    let mut platform = DomPlatform::new(&mut scope, realm, /* dom_source_id */ 1)?;
+    let mut platform = DomPlatform::new(&mut scope, realm)?;
 
     let node_id = NodeId::from_index(1);
     let wrapper1 = platform.get_or_create_wrapper(&mut scope, node_id, DomInterface::Element)?;
@@ -351,7 +343,7 @@ mod tests {
     let mut runtime = make_runtime()?;
     let (realm, heap) = split_runtime_realm(&mut runtime);
     let mut scope = heap.scope();
-    let mut platform = DomPlatform::new(&mut scope, realm, /* dom_source_id */ 1)?;
+    let mut platform = DomPlatform::new(&mut scope, realm)?;
 
     let node_id = NodeId::from_index(1);
     let wrapper = platform.get_or_create_wrapper(&mut scope, node_id, DomInterface::Element)?;
@@ -374,7 +366,7 @@ mod tests {
     let mut runtime = make_runtime()?;
     let (realm, heap) = split_runtime_realm(&mut runtime);
     let mut scope = heap.scope();
-    let mut platform = DomPlatform::new(&mut scope, realm, /* dom_source_id */ 1)?;
+    let mut platform = DomPlatform::new(&mut scope, realm)?;
 
     let node_id = NodeId::from_index(1);
     let wrapper = platform.get_or_create_wrapper(&mut scope, node_id, DomInterface::Element)?;

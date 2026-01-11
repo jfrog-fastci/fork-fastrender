@@ -30,8 +30,8 @@ use super::{BrowserTabHost, BrowserTabJsExecutor, ConsoleMessageLevel, SharedRen
 /// `vm-js`-backed [`BrowserTabJsExecutor`] that provides a minimal `window`/`document` environment.
 ///
 /// Navigation creates a fresh JS realm for each document (matching browser semantics). The realm
-/// receives a `dom_source_id` that resolves to a stable `NonNull<dom2::Document>` pointer for the
-/// lifetime of the currently committed document.
+/// executes JS with the real `BrowserDocumentDom2` as the active `vm-js` host context, so DOM shims
+/// can access the live `dom2::Document` by downcasting `&mut dyn vm_js::VmHost`.
 pub struct VmJsBrowserTabExecutor {
   realm: Option<WindowRealm>,
   fetch_bindings: Option<WindowFetchBindings>,
@@ -89,7 +89,7 @@ impl Default for VmJsBrowserTabExecutor {
 
 impl Drop for VmJsBrowserTabExecutor {
   fn drop(&mut self) {
-    // Drop the realm first so any remaining JS globals stop referencing the DOM source id.
+    // Drop the realm first so any remaining JS globals stop referencing the document host.
     self.fetch_bindings = None;
     self.xhr_bindings = None;
     self.realm = None;
@@ -145,8 +145,6 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     self.js_execution_options = js_execution_options;
     self.inline_module_id_counter = 0;
 
-    let dom_source_id = document.ensure_dom_source_registered();
-
     let url = document_url.unwrap_or("about:blank");
     self.document_url = url.to_string();
     let options = document.options();
@@ -164,7 +162,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
 
     let mut config = WindowRealmConfig::new(url)
       .with_media_context(media)
-      .with_dom_source_id(dom_source_id);
+      .with_current_script_state(current_script.clone());
 
     if let Some(diag) = self.diagnostics.clone() {
       let sink: crate::js::ConsoleSink = Arc::new(move |level, heap, args| {

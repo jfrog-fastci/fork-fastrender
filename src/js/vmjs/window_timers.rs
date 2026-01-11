@@ -837,7 +837,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     receiver: vm_js::Value,
   ) -> Result<Option<vm_js::Value>, VmError> {
     let _ = receiver;
-    dataset_exotic_get(scope, obj, key)
+    dataset_exotic_get(scope, self.any.vm_host_mut(), obj, key)
   }
 
   fn host_exotic_set(
@@ -849,7 +849,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     receiver: vm_js::Value,
   ) -> Result<Option<bool>, VmError> {
     let _ = receiver;
-    dataset_exotic_set(scope, obj, key, value)
+    dataset_exotic_set(scope, self.any.vm_host_mut(), obj, key, value)
   }
 
   fn host_exotic_delete(
@@ -858,7 +858,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     obj: vm_js::GcObject,
     key: vm_js::PropertyKey,
   ) -> Result<Option<bool>, VmError> {
-    dataset_exotic_delete(scope, obj, key)
+    dataset_exotic_delete(scope, self.any.vm_host_mut(), obj, key)
   }
 
   fn host_call_job_callback(
