@@ -52,7 +52,8 @@ pub struct LinkOpts {
   /// it directly) is incompatible with PIE unless the linker is allowed to emit text relocations.
   ///
   /// We therefore default to `pie: false` and use `-no-pie` unless the caller explicitly opts into
-  /// PIE.
+  /// PIE. On Linux, `pie: true` passes `-pie` explicitly so the link mode is reproducible across
+  /// toolchains.
   pub pie: bool,
 }
 
@@ -163,14 +164,17 @@ pub fn link_elf_executable_with_options(
     }
   }
 
-  if opts.pie {
-    if matches!(opts.linker, LinkerFlavor::Lld) {
-      // Allow text relocations for experimentation. Safe PIE support requires relocation-aware
-      // stackmap parsing; see module docs.
-      cmd.arg("-Wl,-z,notext");
+  if cfg!(target_os = "linux") {
+    if opts.pie {
+      cmd.arg("-pie");
+      if matches!(opts.linker, LinkerFlavor::Lld) {
+        // Allow text relocations for experimentation. Safe PIE support requires relocation-aware
+        // stackmap parsing; see module docs.
+        cmd.arg("-Wl,-z,notext");
+      }
+    } else {
+      cmd.arg("-no-pie");
     }
-  } else {
-    cmd.arg("-no-pie");
   }
 
   if opts.gc_sections {
@@ -239,12 +243,15 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
   let mut cmd = Command::new(clang);
   cmd.arg("-flto");
 
-  if opts.pie {
-    if matches!(opts.linker, LinkerFlavor::Lld) {
-      cmd.arg("-Wl,-z,notext");
+  if cfg!(target_os = "linux") {
+    if opts.pie {
+      cmd.arg("-pie");
+      if matches!(opts.linker, LinkerFlavor::Lld) {
+        cmd.arg("-Wl,-z,notext");
+      }
+    } else {
+      cmd.arg("-no-pie");
     }
-  } else {
-    cmd.arg("-no-pie");
   }
 
   match opts.linker {
@@ -313,12 +320,15 @@ pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) ->
   let mut cmd = Command::new(clang);
   cmd.arg("-flto=full");
 
-  if opts.pie {
-    if matches!(opts.linker, LinkerFlavor::Lld) {
-      cmd.arg("-Wl,-z,notext");
+  if cfg!(target_os = "linux") {
+    if opts.pie {
+      cmd.arg("-pie");
+      if matches!(opts.linker, LinkerFlavor::Lld) {
+        cmd.arg("-Wl,-z,notext");
+      }
+    } else {
+      cmd.arg("-no-pie");
     }
-  } else {
-    cmd.arg("-no-pie");
   }
 
   match opts.linker {
