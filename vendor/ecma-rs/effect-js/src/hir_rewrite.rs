@@ -158,6 +158,7 @@ fn static_callee_path(lower: &hir_js::LowerResult, body: &Body, expr_id: ExprId)
   }
 }
 
+#[cfg(feature = "typed")]
 fn resolve_typed_receiver_api(
   lower: &hir_js::LowerResult,
   body_id: BodyId,
@@ -177,24 +178,30 @@ fn resolve_typed_receiver_api(
   };
   let prop = lower.names.resolve(prop)?;
 
-  #[cfg(feature = "typed")]
-  {
-    let types = types?;
-    let api_name = match prop {
-      "map" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.map"),
-      "filter" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.filter"),
-      "reduce" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.reduce"),
-      "find" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.find"),
-      "every" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.every"),
-      "some" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.some"),
-      "toLowerCase" if types.expr_is_string(body_id, mem.object) => Some("String.prototype.toLowerCase"),
-      _ => None,
-    }?;
+  let types = types?;
+  let api_name = match prop {
+    "map" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.map"),
+    "filter" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.filter"),
+    "reduce" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.reduce"),
+    "find" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.find"),
+    "every" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.every"),
+    "some" if types.expr_is_array(body_id, mem.object) => Some("Array.prototype.some"),
+    "toLowerCase" if types.expr_is_string(body_id, mem.object) => Some("String.prototype.toLowerCase"),
+    _ => None,
+  }?;
 
-    return db.id_of(api_name).map(hir_api_id_from_kb);
-  }
+  db.id_of(api_name).map(hir_api_id_from_kb)
+}
 
-  let _ = (types, prop, body_id, db);
+#[cfg(not(feature = "typed"))]
+fn resolve_typed_receiver_api(
+  _lower: &hir_js::LowerResult,
+  _body_id: BodyId,
+  _body: &Body,
+  _callee: ExprId,
+  _db: &ApiDatabase,
+  _types: Option<&dyn TypeProvider>,
+) -> Option<hir_js::ApiId> {
   None
 }
 
