@@ -17,7 +17,14 @@ pub struct TimerDriver {
 
 impl TimerDriver {
   pub fn new() -> Self {
-    Self { wheel: TimerWheel::new(), len: 0 }
+    Self::new_at(Instant::now())
+  }
+
+  pub fn new_at(base: Instant) -> Self {
+    Self {
+      wheel: TimerWheel::new_at(base),
+      len: 0,
+    }
   }
 
   pub fn insert(&mut self, deadline: Instant, waker: Waker) -> TimerKey {

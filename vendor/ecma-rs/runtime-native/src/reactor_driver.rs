@@ -24,13 +24,30 @@ use std::sync::Arc;
 use std::task::Waker;
 use std::time::{Duration, Instant};
 
-use crate::sync::GcAwareMutex;
+use arc_swap::ArcSwap;
 
+use crate::clock::{Clock, RealClock};
 use crate::reactor::Interest;
 use crate::reactor::Reactor;
 use crate::reactor::Token;
+use crate::sync::GcAwareMutex;
 use crate::time::TimerDriver;
 use crate::timer_wheel::TimerKey;
+
+struct ClockState {
+  clock: Arc<dyn Clock>,
+  base: Instant,
+}
+
+impl ClockState {
+  #[inline]
+  fn now_std(&self) -> Instant {
+    self
+      .base
+      .checked_add(self.clock.now())
+      .unwrap_or_else(Instant::now)
+  }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PollOutcome {
@@ -54,6 +71,7 @@ struct Inner {
   reactor_waker: crate::reactor::Waker,
   io_wakers: GcAwareMutex<HashMap<Token, Waker>>,
   timers: GcAwareMutex<TimerDriver>,
+  clock: ArcSwap<ClockState>,
 
   // Only one thread should block in `poll()` at a time. This avoids surprising
   // interactions where multiple pollers race to consume readiness and timers.
@@ -67,6 +85,18 @@ struct Inner {
 
 impl ReactorDriver {
   pub fn new() -> io::Result<Self> {
+    let base = Instant::now();
+    let clock: Arc<dyn Clock> = Arc::new(RealClock::with_start(base));
+    Self::new_inner(clock, base)
+  }
+
+  pub fn new_with_clock(clock: Arc<dyn Clock>) -> io::Result<Self> {
+    let now = Instant::now();
+    let base = now.checked_sub(clock.now()).unwrap_or(now);
+    Self::new_inner(clock, base)
+  }
+
+  fn new_inner(clock: Arc<dyn Clock>, base: Instant) -> io::Result<Self> {
     let reactor = Reactor::new()?;
     let reactor_waker = reactor.waker();
     Ok(Self {
@@ -74,7 +104,8 @@ impl ReactorDriver {
         reactor: GcAwareMutex::new(reactor),
         reactor_waker,
         io_wakers: GcAwareMutex::new(HashMap::new()),
-        timers: GcAwareMutex::new(TimerDriver::new()),
+        timers: GcAwareMutex::new(TimerDriver::new_at(base)),
+        clock: ArcSwap::from_pointee(ClockState { clock, base }),
         poll_guard: GcAwareMutex::new(()),
         is_polling: AtomicBool::new(false),
       }),
@@ -86,6 +117,10 @@ impl ReactorDriver {
   /// This intentionally ignores the internal cross-thread wakeup mechanism.
   pub fn has_external_sources(&self) -> bool {
     !self.inner.io_wakers.lock().is_empty() || !self.inner.timers.lock().is_empty()
+  }
+
+  pub fn now(&self) -> Instant {
+    self.inner.clock.load().now_std()
   }
 
   pub fn notify(&self) -> io::Result<()> {
@@ -172,7 +207,7 @@ impl ReactorDriver {
     // Ensure a single poller at a time.
     let _poll_guard = self.inner.poll_guard.lock();
 
-    let now = Instant::now();
+    let now = self.now();
     let timer_timeout = self.inner.timers.lock().time_until_next_deadline(now);
     let actual_timeout = min_timeout(timeout, timer_timeout);
 
@@ -201,7 +236,7 @@ impl ReactorDriver {
       }
     }
 
-    let expired = self.inner.timers.lock().poll_expired(Instant::now());
+    let expired = self.inner.timers.lock().poll_expired(self.now());
     let timers_fired = expired.len();
     for w in expired {
       w.wake();

@@ -11,6 +11,7 @@ use std::task::Waker;
 use std::time::Duration;
 use std::time::Instant;
 
+use runtime_native::clock::VirtualClock;
 use runtime_native::reactor::Interest;
 use runtime_native::ReactorDriver;
 
@@ -58,6 +59,20 @@ fn timer_wakes_exactly_once() {
   // Poll again; the timer should not fire twice.
   let out = driver.poll(Some(Duration::ZERO)).unwrap();
   assert_eq!(out.timers_fired, 0);
+  assert_eq!(fired.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn virtual_time_allows_long_timeouts_without_wall_clock_waiting() {
+  let clock = Arc::new(VirtualClock::new());
+  let driver = ReactorDriver::new_with_clock(clock.clone()).unwrap();
+
+  let fired = Arc::new(AtomicUsize::new(0));
+  driver.register_timer(driver.now() + Duration::from_secs(30), counting_waker(fired.clone()));
+  clock.advance(Duration::from_secs(30));
+
+  let out = driver.poll(Some(Duration::from_millis(250))).unwrap();
+  assert_eq!(out.timers_fired, 1);
   assert_eq!(fired.load(Ordering::SeqCst), 1);
 }
 
