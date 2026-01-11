@@ -2,9 +2,9 @@ use runtime_native::abi::{Microtask, PromiseRef, RtCoroStatus, RtCoroutineHeader
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
-use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::test_util::{new_promise_header_pending, TestRuntimeGuard};
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Once;
@@ -258,11 +258,7 @@ fn block_on_wakes_on_native_promise_settlement_without_payload() {
   // Allocate a promise that is *only* a `PromiseHeader` (no extra payload). This
   // models the native async ABI contract: promise payload begins immediately
   // after the header and may be empty.
-  let header = Box::new(PromiseHeader {
-    state: AtomicU8::new(PromiseHeader::PENDING),
-    waiters: AtomicUsize::new(0),
-    flags: AtomicU8::new(0),
-  });
+  let header = Box::new(new_promise_header_pending());
   let p = PromiseRef(Box::into_raw(header).cast());
 
   // Initialize to a clean pending state.
@@ -374,11 +370,7 @@ fn block_on_returns_when_executor_is_in_error_state() {
 
   // Allocate a promise that is only a header. `rt_async_block_on` should return immediately when
   // the executor has an error, rather than spinning or blocking forever.
-  let header = Box::new(PromiseHeader {
-    state: AtomicU8::new(PromiseHeader::PENDING),
-    waiters: AtomicUsize::new(0),
-    flags: AtomicU8::new(0),
-  });
+  let header = Box::new(new_promise_header_pending());
   let p = PromiseRef(Box::into_raw(header).cast());
   unsafe {
     runtime_native::rt_promise_init(p);

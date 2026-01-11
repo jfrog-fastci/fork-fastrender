@@ -2,7 +2,7 @@ use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, RtShapeDe
 use runtime_native::async_abi::PromiseHeader;
 use runtime_native::gc::ObjHeader;
 use runtime_native::shape_table;
-use runtime_native::test_util::{PromiseRejectionEvent, TestRuntimeGuard};
+use runtime_native::test_util::{new_promise_header_pending, PromiseRejectionEvent, TestRuntimeGuard};
 use std::mem;
 use std::sync::Once;
 
@@ -136,11 +136,7 @@ fn awaiting_after_unhandled_rejection_reports_rejectionhandled() {
 fn native_promise_rejection_is_reported_as_unhandled() {
   let _rt = TestRuntimeGuard::new();
 
-  let mut promise_header = Box::new(PromiseHeader {
-    state: core::sync::atomic::AtomicU8::new(0),
-    waiters: core::sync::atomic::AtomicUsize::new(0),
-    flags: core::sync::atomic::AtomicU8::new(0),
-  });
+  let mut promise_header = Box::new(new_promise_header_pending());
   let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());
 
   unsafe {
@@ -160,11 +156,7 @@ fn native_promise_rejection_is_reported_as_unhandled() {
 fn native_promise_mark_handled_before_checkpoint_suppresses_unhandled() {
   let _rt = TestRuntimeGuard::new();
 
-  let mut promise_header = Box::new(PromiseHeader {
-    state: core::sync::atomic::AtomicU8::new(0),
-    waiters: core::sync::atomic::AtomicUsize::new(0),
-    flags: core::sync::atomic::AtomicU8::new(0),
-  });
+  let mut promise_header = Box::new(new_promise_header_pending());
   let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());
 
   unsafe {
@@ -184,11 +176,7 @@ fn native_promise_mark_handled_before_checkpoint_suppresses_unhandled() {
 fn native_promise_mark_handled_after_unhandled_reports_rejectionhandled() {
   let _rt = TestRuntimeGuard::new();
 
-  let mut promise_header = Box::new(PromiseHeader {
-    state: core::sync::atomic::AtomicU8::new(0),
-    waiters: core::sync::atomic::AtomicUsize::new(0),
-    flags: core::sync::atomic::AtomicU8::new(0),
-  });
+  let mut promise_header = Box::new(new_promise_header_pending());
   let p = PromiseRef((&mut *promise_header as *mut PromiseHeader).cast());
 
   unsafe {
@@ -221,7 +209,6 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
     RT_ASYNC_ABI_VERSION,
   };
   use runtime_native::CoroutineId;
-  use std::sync::atomic::{AtomicU8, AtomicUsize};
 
   #[repr(C)]
   struct AwaitOnceCoro {
@@ -271,11 +258,7 @@ fn native_promise_rejection_reports_unhandled_and_rejectionhandled_when_awaited_
   let _rt = TestRuntimeGuard::new();
 
   // Allocate a native PromiseHeader directly and reject it with no handlers.
-  let mut p = Box::new(PromiseHeader {
-    state: AtomicU8::new(PromiseHeader::PENDING),
-    waiters: AtomicUsize::new(0),
-    flags: AtomicU8::new(0),
-  });
+  let mut p = Box::new(new_promise_header_pending());
   let p_ref = PromiseRef((&mut *p as *mut PromiseHeader).cast());
   unsafe {
     runtime_native::rt_promise_init(p_ref);

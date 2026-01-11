@@ -4,11 +4,11 @@ use runtime_native::async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader,
   CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
-use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::test_util::{new_promise_header_pending, TestRuntimeGuard};
 use runtime_native::CoroutineId;
 use runtime_native::PromiseRef as AbiPromiseRef;
 use runtime_native::RtShapeId;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
 struct TestPromise {
@@ -19,11 +19,7 @@ struct TestPromise {
 impl TestPromise {
   fn new_pending() -> Self {
     Self {
-      header: PromiseHeader {
-        state: AtomicU8::new(PromiseHeader::PENDING),
-        waiters: AtomicUsize::new(0),
-        flags: AtomicU8::new(0),
-      },
+      header: new_promise_header_pending(),
       _padding: AtomicUsize::new(0),
     }
   }

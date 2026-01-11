@@ -385,12 +385,19 @@ fn parallel_spawn_promise_wakes_blocked_async_poll() {
     tx.send(()).unwrap();
   });
 
-  // The CPU task sleeps; `rt_async_poll_legacy` should block in `epoll_wait` and must not return
-  // immediately.
-  assert!(
-    rx.recv_timeout(Duration::from_millis(50)).is_err(),
-    "rt_async_poll_legacy returned before the parallel task completed"
-  );
+  // Wait for the event loop to actually block in `epoll_wait` (not just spin or return early).
+  // This avoids timing flakes when the test thread is descheduled between spawning and waiting.
+  let start = Instant::now();
+  while !runtime_native::async_rt::debug_in_epoll_wait() {
+    if rx.try_recv().is_ok() {
+      panic!("rt_async_poll_legacy returned before blocking in epoll_wait");
+    }
+    assert!(
+      start.elapsed() < Duration::from_secs(2),
+      "timeout waiting for rt_async_poll_legacy to block in epoll_wait"
+    );
+    std::thread::yield_now();
+  }
 
   rx.recv_timeout(Duration::from_secs(5))
     .expect("rt_async_poll_legacy did not wake after the parallel task completed");

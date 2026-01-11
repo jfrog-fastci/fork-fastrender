@@ -4,11 +4,10 @@ use runtime_native::async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef,
   CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
-use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::CoroutineId;
+use runtime_native::test_util::{new_promise_header_pending, TestRuntimeGuard};
 use runtime_native::PromiseRef as AbiPromiseRef;
 use runtime_native::RtShapeId;
-use std::sync::atomic::{AtomicU8, AtomicUsize};
 use std::sync::Mutex;
 
 fn abi_promise_from_header(p: *mut PromiseHeader) -> AbiPromiseRef {
@@ -63,11 +62,7 @@ fn native_async_promise_waiters_resume_in_fifo_order() {
   let log: &'static Mutex<Vec<u32>> = Box::leak(Box::new(Mutex::new(Vec::new())));
 
   // Standalone awaited promise header (pending initially).
-  let awaited = Box::new(PromiseHeader {
-    state: AtomicU8::new(PromiseHeader::PENDING),
-    waiters: AtomicUsize::new(0),
-    flags: AtomicU8::new(0),
-  });
+  let awaited = Box::new(new_promise_header_pending());
   let awaited_ptr: PromiseRef = Box::into_raw(awaited);
   unsafe {
     runtime_native::rt_promise_init(abi_promise_from_header(awaited_ptr));
@@ -168,11 +163,7 @@ fn native_async_strict_await_yields_on_already_settled_promise() {
   let _rt = TestRuntimeGuard::new();
   runtime_native::rt_async_set_strict_await_yields(true);
 
-  let awaited = Box::new(PromiseHeader {
-    state: AtomicU8::new(PromiseHeader::PENDING),
-    waiters: AtomicUsize::new(0),
-    flags: AtomicU8::new(0),
-  });
+  let awaited = Box::new(new_promise_header_pending());
   let awaited_ptr: PromiseRef = Box::into_raw(awaited);
   unsafe {
     runtime_native::rt_promise_init(abi_promise_from_header(awaited_ptr));
@@ -220,11 +211,7 @@ fn native_async_non_strict_await_resumes_synchronously_on_already_settled_promis
   let _rt = TestRuntimeGuard::new();
   runtime_native::rt_async_set_strict_await_yields(false);
 
-  let awaited = Box::new(PromiseHeader {
-    state: AtomicU8::new(PromiseHeader::PENDING),
-    waiters: AtomicUsize::new(0),
-    flags: AtomicU8::new(0),
-  });
+  let awaited = Box::new(new_promise_header_pending());
   let awaited_ptr: PromiseRef = Box::into_raw(awaited);
   unsafe {
     runtime_native::rt_promise_init(abi_promise_from_header(awaited_ptr));

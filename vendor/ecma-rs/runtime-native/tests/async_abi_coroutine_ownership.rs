@@ -2,8 +2,8 @@ use runtime_native::async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef,
   CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
-use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::CoroutineId;
+use runtime_native::test_util::{new_promise_header_pending, TestRuntimeGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
@@ -170,11 +170,7 @@ fn cancel_all_prevents_stale_resume_after_awaited_promise_settles() {
   let destroyed = AtomicUsize::new(0);
 
   // Allocate a standalone awaited promise header.
-  let awaited = Box::new(PromiseHeader {
-    state: core::sync::atomic::AtomicU8::new(PromiseHeader::PENDING),
-    waiters: core::sync::atomic::AtomicUsize::new(0),
-    flags: core::sync::atomic::AtomicU8::new(0),
-  });
+  let awaited = Box::new(new_promise_header_pending());
   let awaited_hdr: PromiseRef = Box::into_raw(awaited);
 
   let coro = Box::new(TestCoro {

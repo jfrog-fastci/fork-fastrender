@@ -1,9 +1,9 @@
 use core::ptr::null_mut;
 use runtime_native::async_abi::{PromiseHeader, PromiseRef as PromiseHeaderRef};
 use runtime_native::promise_reactions::{PromiseReactionNode, PromiseReactionVTable};
-use runtime_native::test_util::TestRuntimeGuard;
+use runtime_native::test_util::{new_promise_header_pending, TestRuntimeGuard};
 use runtime_native::PromiseRef as AbiPromiseRef;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
@@ -117,11 +117,7 @@ fn alloc_log_reaction(log: *const Mutex<Vec<usize>>, idx: usize) -> *mut Promise
 fn promise_reactions_drain_in_fifo_registration_order() {
   let _rt = TestRuntimeGuard::new();
 
-  let mut promise = Box::new(PromiseHeader {
-    state: AtomicU8::new(0),
-    waiters: AtomicUsize::new(0),
-    flags: AtomicU8::new(0),
-  });
+  let mut promise = Box::new(new_promise_header_pending());
   let p_hdr: PromiseHeaderRef = &mut *promise;
   let p = AbiPromiseRef(p_hdr.cast());
   unsafe { runtime_native::rt_promise_init(p) };
@@ -151,11 +147,7 @@ fn promise_settle_is_first_wins_and_wakes_reactions_once() {
   const SETTLERS: usize = 16;
 
   for _ in 0..ITERS {
-    let mut promise = Box::new(PromiseHeader {
-      state: AtomicU8::new(0),
-      waiters: AtomicUsize::new(0),
-      flags: AtomicU8::new(0),
-    });
+    let mut promise = Box::new(new_promise_header_pending());
     let p_hdr: PromiseHeaderRef = &mut *promise;
     let p = AbiPromiseRef(p_hdr.cast());
     unsafe { runtime_native::rt_promise_init(p) };

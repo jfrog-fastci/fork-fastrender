@@ -11,11 +11,11 @@
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::abi::PromiseRef;
-use crate::abi::ValueRef;
+use crate::abi::{PromiseRef, ValueRef};
+use crate::async_abi::PromiseHeader;
 use crate::async_rt;
 use crate::gc::YOUNG_SPACE;
 use crate::gc::GcHeap;
@@ -186,6 +186,14 @@ pub fn set_microtask_checkpoint_end_hook(hook: Option<Box<dyn FnMut() + Send + '
 }
 
 // --- Promise waiter test hooks ------------------------------------------------------------------
+
+pub fn new_promise_header_pending() -> PromiseHeader {
+  PromiseHeader {
+    state: AtomicU8::new(PromiseHeader::PENDING),
+    waiters: AtomicUsize::new(0),
+    flags: AtomicU8::new(0),
+  }
+}
 
 /// RAII guard that enables a deterministic promise waiter race hook.
 ///
