@@ -622,16 +622,39 @@ fn is_intrinsic_function(val: llvm_sys::prelude::LLVMValueRef) -> bool {
   }
 }
 
-/// Enforce the "all TS calls are statepoints" invariant.
+fn is_gc_leaf_function(val: llvm_sys::prelude::LLVMValueRef) -> bool {
+  unsafe {
+    if LLVMIsAFunction(val).is_null() {
+      return false;
+    }
+
+    // Attribute keys in the C API are length-delimited, but must be NUL-terminated.
+    const KEY: &[u8] = b"gc-leaf-function\0";
+    let attr = LLVMGetStringAttributeAtIndex(
+      val,
+      llvm_sys::LLVMAttributeFunctionIndex,
+      KEY.as_ptr().cast(),
+      (KEY.len() - 1) as u32,
+    );
+    !attr.is_null()
+  }
+}
+
+/// Enforce the "TS-generated callsites are GC-correct" invariant.
 ///
 /// Why this exists:
 /// - During GC, only the *top* frame is guaranteed to be stopped at a safepoint instruction.
 /// - Older frames are suspended at their *callsite return addresses*.
-/// - If a TS-generated function contains a plain call (not a statepoint), that return address will
-///   not correspond to a stackmap record, making precise stack scanning unsound.
+/// - If a TS-generated function contains a plain call (not a statepoint) to a callee that may
+///   trigger GC, that return address will not correspond to a stackmap record, making precise stack
+///   scanning unsound.
+///
+/// Exception: calls to callees annotated `"gc-leaf-function"` are allowed to remain plain calls
+/// because such callees must not allocate/safepoint/GC, so the caller's return address cannot be a
+/// GC trigger point.
 ///
 /// This verifier runs **after** `rewrite-statepoints-for-gc` (see above pass pipelines) and rejects
-/// any remaining non-intrinsic `call`/`invoke` in TS-generated functions.
+/// any remaining non-intrinsic, non-leaf `call`/`invoke` in TS-generated functions.
 fn verify_no_stray_calls_in_ts_generated_functions(
   module: &Module<'_>,
 ) -> Result<(), CallsiteInvariantError> {
@@ -746,20 +769,6 @@ unsafe fn verify_no_stray_calls_in_gc_functions_raw(
   }
 
   Ok(())
-}
-
-fn is_gc_leaf_function(func: llvm_sys::prelude::LLVMValueRef) -> bool {
-  unsafe {
-    // Attribute keys in the C API are length-delimited, but must be NUL-terminated.
-    const KEY: &[u8] = b"gc-leaf-function\0";
-    let attr = LLVMGetStringAttributeAtIndex(
-      func,
-      llvm_sys::LLVMAttributeFunctionIndex,
-      KEY.as_ptr().cast(),
-      (KEY.len() - 1) as u32,
-    );
-    !attr.is_null()
-  }
 }
 
 fn run_pass_pipeline(

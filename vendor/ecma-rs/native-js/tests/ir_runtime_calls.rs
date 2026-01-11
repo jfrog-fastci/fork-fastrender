@@ -42,9 +42,15 @@ fn build_test_ir() -> String {
 
   let gc_ptr = gc::gc_ptr_type(&context);
 
-  // define ptr addrspace(1) @test(ptr addrspace(1), ptr addrspace(1)) gc "coreclr"
+  // Use a TS-generated function name so the post-rewrite verifier
+  // (`verify_no_stray_calls_in_ts_generated_functions`) runs on this function.
+  //
+  // This test relies on leaf runtime calls (write barrier) remaining plain calls,
+  // so the verifier must allow calls to `"gc-leaf-function"` callees.
+  //
+  // define ptr addrspace(1) @__nativejs_def_0000000000000000_test_runtime_calls(ptr addrspace(1), ptr addrspace(1)) gc "coreclr"
   let fn_ty = gc_ptr.fn_type(&[gc_ptr.into(), gc_ptr.into()], false);
-  let func = module.add_function("test_runtime_calls", fn_ty, None);
+  let func = module.add_function("__nativejs_def_0000000000000000_test_runtime_calls", fn_ty, None);
   gc::set_default_gc_strategy(&func).expect("set gc strategy");
 
   let entry = context.append_basic_block(func, "entry");
