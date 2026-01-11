@@ -60,6 +60,23 @@ fn pie_stackmaps_are_in_gnu_relro_and_no_load_segment_is_rwx() {
     }
   }
 
+  // This test relies on GNU ld semantics for RELRO and section placement. If
+  // the toolchain is configured to use lld by default, skip rather than failing
+  // on a linker-script compatibility mismatch.
+  let linker_version_out = Command::new("gcc")
+    .args(["-Wl,--version"])
+    .output()
+    .unwrap_or_else(|e| panic!("failed to query linker version via gcc: {e}"));
+  let linker_version = format!(
+    "{}{}",
+    String::from_utf8_lossy(&linker_version_out.stdout),
+    String::from_utf8_lossy(&linker_version_out.stderr),
+  );
+  if linker_version.to_ascii_lowercase().contains("lld") {
+    eprintln!("skipping: gcc appears to be using lld; GNU ld is required for this RELRO placement test");
+    return;
+  }
+
   let tmp = tempfile::tempdir().expect("tempdir");
   let dir = tmp.path();
 

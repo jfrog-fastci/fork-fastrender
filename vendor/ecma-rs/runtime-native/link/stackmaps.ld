@@ -32,9 +32,9 @@
  *   Inserting a writable stackmaps section immediately after `.text` can be unsafe
  *   with GNU ld under PIE: the linker may merge it into the executable text
  *   PT_LOAD, producing an RWX segment once relocations require the segment to be
- *   writable. When using lld, the flags change forces a new PT_LOAD segment, so
- *   this anchor is safe. For GNU ld + PIE, use the repo's `stackmaps_gnuld.ld`
- *   fragment anchored in the RELRO/data region.
+ *   writable. When using lld, the flag change forces a new PT_LOAD segment, so
+ *   this anchor is safe. For GNU ld + PIE, use `runtime-native/link/stackmaps_gnuld.ld`
+ *   (or `scripts/native_link.sh`, which selects the appropriate fragment).
  *
  * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
  * small section definition without replacing the entire default linker script.

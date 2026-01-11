@@ -38,9 +38,9 @@ SECTIONS {
     KEEP(*(.llvm_faultmaps.*))
     __llvm_faultmaps_end = .;
   }
-/* Anchor at `.text` for lld compatibility (lld may omit empty `.data` output
- * sections in minimal links).
+/* Anchor at `.text` for lld compatibility: lld may omit empty `.rodata`/`.data`
+ * output sections in minimal links.
  *
  * Note: GNU ld PIE builds should prefer `runtime-native/link/stackmaps_gnuld.ld`
- * to avoid RWX LOAD segments. */
+ * to avoid RWX LOAD segments when stackmaps are made writable. */
 } INSERT AFTER .text;
