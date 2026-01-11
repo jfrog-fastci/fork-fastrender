@@ -7,6 +7,16 @@ fn array_map_purity_depends_on_callback() {
     .get("Array.prototype.map")
     .expect("Array.prototype.map entry present");
 
+  let effects = map.effects_for_call(&[EffectSet::empty()]);
+  assert!(
+    effects.contains(EffectSet::ALLOCATES),
+    "expected Array.prototype.map to allocate, got {effects:?}"
+  );
+  assert!(
+    effects.contains(EffectSet::MAY_THROW),
+    "expected Array.prototype.map to include MAY_THROW, got {effects:?}"
+  );
+
   assert_eq!(
     map.purity_for_call(&[Purity::Pure]),
     Purity::Allocating,
@@ -36,4 +46,3 @@ fn promise_all_has_throw_effect_and_non_pure_purity() {
     "expected Promise.all to be at least ReadOnly/Allocating, got {purity:?}",
   );
 }
-
