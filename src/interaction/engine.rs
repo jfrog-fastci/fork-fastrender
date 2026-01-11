@@ -1440,27 +1440,6 @@ fn caret_index_for_text_control_point(
   None
 }
 
-fn style_for_styled_node_id(tree: &BoxTree, node_id: usize) -> Option<&ComputedStyle> {
-  fn walk<'a>(node: &'a BoxNode, node_id: usize) -> Option<&'a ComputedStyle> {
-    if node.styled_node_id == Some(node_id) {
-      return Some(node.style.as_ref());
-    }
-    for child in &node.children {
-      if let Some(found) = walk(child, node_id) {
-        return Some(found);
-      }
-    }
-    if let Some(body) = node.footnote_body.as_deref() {
-      if let Some(found) = walk(body, node_id) {
-        return Some(found);
-      }
-    }
-    None
-  }
-
-  walk(&tree.root, node_id)
-}
-
 fn inferred_text_direction_from_dom(
   index: &DomIndexMut,
   mut node_id: usize,
