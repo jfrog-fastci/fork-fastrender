@@ -10,3 +10,10 @@
 # tools and downstream scripts can observe the override).
 set(AOM_TARGET_CPU "generic")
 set(AOM_TARGET_CPU "generic" CACHE STRING "" FORCE)
+
+# Some libaom build configurations still probe for an assembler even when the target CPU is set to
+# `generic`. Be explicit about disabling assembler backends so agent/CI environments without
+# yasm/nasm can build deterministically.
+set(ENABLE_NASM 0 CACHE BOOL "" FORCE)
+set(ENABLE_YASM 0 CACHE BOOL "" FORCE)
+set(ENABLE_ASM 0 CACHE BOOL "" FORCE)
