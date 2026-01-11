@@ -8956,6 +8956,9 @@ impl FlexFormattingContext {
     scroll_sensitive: &FxHashSet<*const BoxNode>,
     positioned_sensitive: &FxHashSet<*const BoxNode>,
   ) -> Result<FragmentNode, LayoutError> {
+    // Use a small epsilon to treat near-zero border-box sizes as collapsed. This is only used for
+    // root rect sanitisation/corrections (when Taffy returns 0/NaN) and should not meaningfully
+    // affect normal layout.
     let rect_eps = 0.01;
 
     // Get layout from Taffy
@@ -8969,17 +8972,14 @@ impl FlexFormattingContext {
       Size::new(layout.size.width, layout.size.height),
     );
     if taffy_node == root_id {
-      let rect_eps = 0.01;
       // Root size corrections are handled by rerunning Taffy in Phase 2 so child positions stay
       // consistent. Avoid mutating the size here, aside from last-resort sanitisation.
-      let rect_eps = 0.01;
       if !rect.size.width.is_finite() || rect.size.width < 0.0 {
         rect.size.width = 0.0;
       }
       if !rect.size.height.is_finite() || rect.size.height < 0.0 {
         rect.size.height = 0.0;
       }
-      let rect_eps = 0.01;
       let width_base_for_vertical_edges = constraints
         .width()
         .or(constraints.inline_percentage_base)
@@ -8991,7 +8991,6 @@ impl FlexFormattingContext {
           }
         })
         .max(0.0);
-      let rect_eps = 0.01;
       let resolved_definite_height = || {
         // If the parent layout mode provided an explicit used border-box height override, that's
         // the authoritative border-box height for this formatting context (including `0px`).
