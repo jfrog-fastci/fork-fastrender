@@ -2887,13 +2887,18 @@ fn collect_line_baselines(
 ) {
   // When computing an inline-block's baseline (CSS 2.1 §10.8.1), we must consider only the last
   // *in-flow* line box. Out-of-flow positioned descendants (e.g. dropdown menus that are
-  // `position: absolute`) must not contribute; including them can cause inline-block baselines to
-  // clamp to the bottom edge, inflating line box heights.
+  // `position: absolute`) and floats must not contribute. In-flow elements exclude both positioned
+  // and floating boxes (CSS 2.1 §9.3.1), so including their line boxes can change inline-block
+  // baseline selection (e.g. a floated child becomes the "last line box", preventing the inline-
+  // block from falling back to the bottom margin edge).
   if let Some(style) = fragment.style.as_deref() {
     if matches!(
       style.position,
       crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
     ) {
+      return;
+    }
+    if !matches!(style.float, crate::Float::None) || style.running_position.is_some() {
       return;
     }
   }
