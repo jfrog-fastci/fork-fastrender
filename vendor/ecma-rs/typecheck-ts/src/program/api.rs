@@ -33,6 +33,114 @@ use super::{
   ProgramTypeExpander, TypeDisplay,
 };
 
+#[cfg(feature = "serde")]
+mod serde_call_signatures {
+  use std::fmt;
+
+  use serde::de::{Error, MapAccess, SeqAccess, Visitor};
+  use serde::{Deserializer, Serialize, Serializer};
+
+  use types_ts_interned::SignatureId;
+
+  #[derive(Serialize)]
+  struct SparseCallSignatures {
+    len: usize,
+    entries: Vec<(u32, SignatureId)>,
+  }
+
+  pub fn serialize<S>(value: &Vec<Option<SignatureId>>, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    let mut entries = Vec::new();
+    for (idx, sig) in value.iter().enumerate() {
+      if let Some(sig) = sig {
+        let Ok(idx) = u32::try_from(idx) else {
+          continue;
+        };
+        entries.push((idx, *sig));
+      }
+    }
+
+    SparseCallSignatures {
+      len: value.len(),
+      entries,
+    }
+    .serialize(serializer)
+  }
+
+  pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Option<SignatureId>>, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    struct CallSignaturesVisitor;
+
+    impl<'de> Visitor<'de> for CallSignaturesVisitor {
+      type Value = Vec<Option<SignatureId>>;
+
+      fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("call signature list or sparse call signature table")
+      }
+
+      fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+      where
+        A: SeqAccess<'de>,
+      {
+        let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(value) = seq.next_element::<Option<SignatureId>>()? {
+          out.push(value);
+        }
+        Ok(out)
+      }
+
+      fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+      where
+        A: MapAccess<'de>,
+      {
+        let mut len: Option<usize> = None;
+        let mut entries: Option<Vec<(u32, SignatureId)>> = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+          match key.as_str() {
+            "len" => {
+              if len.is_some() {
+                return Err(A::Error::duplicate_field("len"));
+              }
+              len = Some(map.next_value()?);
+            }
+            "entries" => {
+              if entries.is_some() {
+                return Err(A::Error::duplicate_field("entries"));
+              }
+              entries = Some(map.next_value()?);
+            }
+            _ => {
+              let _ = map.next_value::<serde::de::IgnoredAny>()?;
+            }
+          }
+        }
+
+        let len = len.ok_or_else(|| A::Error::missing_field("len"))?;
+        let entries = entries.unwrap_or_default();
+
+        let mut out = vec![None; len];
+        for (idx, sig) in entries {
+          let idx = idx as usize;
+          if idx >= len {
+            return Err(A::Error::custom(format!(
+              "call signature index {idx} out of bounds for len {len}"
+            )));
+          }
+          out[idx] = Some(sig);
+        }
+        Ok(out)
+      }
+    }
+
+    deserializer.deserialize_any(CallSignaturesVisitor)
+  }
+}
+
 /// Environment provider for [`Program`].
 pub trait Host: Send + Sync + 'static {
   /// Return the full text for a file.
@@ -63,7 +171,10 @@ pub trait Host: Send + Sync + 'static {
 pub struct BodyCheckResult {
   pub(crate) body: BodyId,
   pub(crate) expr_types: Vec<TypeId>,
-  #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+  #[cfg_attr(
+    feature = "serde",
+    serde(default, skip_serializing_if = "Vec::is_empty", with = "serde_call_signatures")
+  )]
   pub(crate) call_signatures: Vec<Option<tti::SignatureId>>,
   pub(crate) expr_spans: Vec<TextRange>,
   pub(crate) pat_types: Vec<TypeId>,
