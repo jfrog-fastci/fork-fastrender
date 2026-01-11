@@ -4,6 +4,10 @@ This repo is a Rust workspace (toolchain pinned via [`rust-toolchain.toml`](../r
 
 If you only want to build and run the core crates/CLIs, you **do not** need Node or submodules.
 
+> Note: the native backend crates (`native-js`, `runtime-native`) require LLVM 18
+> to be installed. See [`native-js/README.md`](../native-js/README.md) (and
+> `scripts/check_system.sh`) for setup instructions.
+
 ## One-command bootstrap (recommended)
 
 If you're setting up a checkout for TypeScript conformance / differential testing and you have [`just`](https://github.com/casey/just) + Node.js installed:
