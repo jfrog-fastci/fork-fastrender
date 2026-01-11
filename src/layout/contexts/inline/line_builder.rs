@@ -102,8 +102,8 @@ const LINE_DEFAULT_ITEM_CAPACITY: usize = 8;
 const LINE_FIT_EPSILON: f32 = 0.01;
 // Some layout code paths effectively snap to whole pixels (e.g. flex/grid intrinsic sizing probes),
 // while inline content (text shaping, inline-block contents) retains subpixel advances. Allow a
-// half-pixel tolerance so a <0.5px overflow doesn't spuriously flip a wrap decision.
-const LINE_HALF_PIXEL_FIT_EPSILON: f32 = 0.5;
+// one-pixel tolerance so accumulated rounding doesn't spuriously flip wrap decisions.
+const LINE_PIXEL_FIT_EPSILON: f32 = 1.0;
 
 fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
   if let Err(RenderError::Timeout { elapsed, .. }) =
@@ -1826,28 +1826,33 @@ impl TextItem {
 
   /// Finds the best break point that fits within max_width
   pub fn find_break_point(&self, max_width: f32) -> Option<BreakOpportunity> {
+    let max_width_with_epsilon = max_width + LINE_PIXEL_FIT_EPSILON;
+
     if let Some(mandatory) = self.first_mandatory_break {
-      if self.advance_at_offset(mandatory.byte_offset) <= max_width {
+      if self.advance_at_offset(mandatory.byte_offset) <= max_width_with_epsilon {
         return Some(mandatory);
       }
     }
 
-    let fitting_offset = self.offset_for_width(max_width);
-    let mut best_break = fitting_offset
-      .and_then(|offset| {
-        self.allowed_break_at_or_before_with_kind(
-          offset,
-          crate::text::line_break::BreakOpportunityKind::Normal,
-        )
-      })
-      .or_else(|| {
-        fitting_offset.and_then(|offset| {
-          self.allowed_break_at_or_before_with_kind(
-            offset,
-            crate::text::line_break::BreakOpportunityKind::Emergency,
-          )
-        })
-      });
+    // Scan all known break opportunities and keep the *latest* break that fits. We cannot rely on
+    // `offset_for_width(max_width)` because that uses raw advances, which include trailing spaces.
+    // Collapsible spaces are trimmed at line breaks, so a break that appears to overflow by the
+    // width of a single space may still fit once that space is removed.
+    let mut normal_allowed_break: Option<BreakOpportunity> = None;
+    let mut emergency_allowed_break: Option<BreakOpportunity> = None;
+    for brk in &self.break_opportunities {
+      if !matches!(brk.break_type, BreakType::Allowed) || brk.byte_offset == 0 {
+        continue;
+      }
+      if self.effective_advance_at_break(brk) <= max_width_with_epsilon {
+        match brk.kind {
+          BreakOpportunityKind::Normal => normal_allowed_break = Some(*brk),
+          BreakOpportunityKind::Emergency => emergency_allowed_break = Some(*brk),
+        }
+      }
+    }
+
+    let mut best_break = normal_allowed_break.or(emergency_allowed_break);
     if best_break.is_some() || !allows_soft_wrap(self.style.as_ref()) {
       return best_break;
     }
@@ -1879,11 +1884,34 @@ impl TextItem {
     best_break
   }
 
+  fn effective_advance_at_break(&self, brk: &BreakOpportunity) -> f32 {
+    let mut offset = brk.byte_offset.min(self.text.len());
+    offset = Self::previous_char_boundary_in_text(&self.text, offset);
+
+    // Soft line breaks discard trailing collapsible spaces (CSS Text 3 §4.1.1). When choosing a
+    // break opportunity, measure the width *after* that trimming so we don't wrap earlier than
+    // necessary.
+    if matches!(brk.break_type, BreakType::Allowed)
+      && matches!(
+        self.style.white_space,
+        WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+      )
+    {
+      if let Some(prefix) = self.text.get(..offset) {
+        let trimmed_len = prefix.trim_end_matches(' ').len();
+        return self.advance_at_offset(trimmed_len);
+      }
+    }
+
+    self.advance_at_offset(offset)
+  }
+
   fn offset_for_width(&self, max_width: f32) -> Option<usize> {
     if self.cluster_advances.is_empty() {
       return None;
     }
 
+    let max_width = max_width + LINE_PIXEL_FIT_EPSILON;
     let idx = self
       .cluster_advances
       .partition_point(|b| b.advance <= max_width);
@@ -3600,7 +3628,7 @@ impl<'a> LineBuilder<'a> {
           resolved,
           InlineItem::InlineBlock(_) | InlineItem::Ruby(_) | InlineItem::Replaced(_)
         ) {
-        LINE_HALF_PIXEL_FIT_EPSILON
+        LINE_PIXEL_FIT_EPSILON
       } else {
         0.0
       };
@@ -3983,6 +4011,20 @@ impl<'a> LineBuilder<'a> {
             return Ok(());
           }
 
+          // Inline boxes (e.g. `<span>`, `<a>`) participate in line breaking just like text. When an
+          // inline box overflows the remaining line width, we must allow it to be fragmented such
+          // that some of its contents can appear on the current line, with the remainder continuing
+          // on the next line.
+          //
+          // Previously we forced a break *before* the inline box whenever it didn't fit entirely.
+          // That left the current line underfull and could increase the total number of lines,
+          // diverging from browser behavior (and from CSS2.1's greedy line breaking model).
+          //
+          // If there is no remaining width at all, fragmenting would overflow the line anyway, so
+          // prefer starting a new line first.
+          if remaining_width <= LINE_PIXEL_FIT_EPSILON && !self.current_line.is_empty() {
+            self.finish_line()?;
+          }
           self.add_fragmented_inline_box(inline_box)?;
           return Ok(());
         }
@@ -4058,11 +4100,12 @@ impl<'a> LineBuilder<'a> {
           let start_x = box_start_x + margin_left + start_edge + used_width;
           let (next, next_width) = next.resolve_width_at(start_x);
 
-          let fit_epsilon = match &next {
-            InlineItem::InlineBlock(_) | InlineItem::Replaced(_) | InlineItem::Ruby(_) => {
-              LINE_HALF_PIXEL_FIT_EPSILON
-            }
-            _ => LINE_FIT_EPSILON,
+          let fit_epsilon = if next.is_breakable()
+            || matches!(&next, InlineItem::InlineBlock(_) | InlineItem::Replaced(_) | InlineItem::Ruby(_))
+          {
+            LINE_PIXEL_FIT_EPSILON
+          } else {
+            LINE_FIT_EPSILON
           };
           if used_width + next_width <= available_children_width + fit_epsilon {
             fragment_has_in_flow_children |=
@@ -4184,7 +4227,7 @@ impl<'a> LineBuilder<'a> {
 
                         if !drop_before
                           && before.advance_for_layout > 0.0
-                          && before.advance_for_layout <= remaining_width + LINE_FIT_EPSILON
+                          && before.advance_for_layout <= remaining_width + LINE_PIXEL_FIT_EPSILON
                         {
                           break_opportunity = Some(candidate);
                         }
@@ -4398,7 +4441,7 @@ impl<'a> LineBuilder<'a> {
               }
 
               let min_width = self.min_required_width_for_inline_box_item(&child_box);
-              if min_width > remaining_width + LINE_FIT_EPSILON {
+              if min_width > remaining_width + LINE_PIXEL_FIT_EPSILON {
                 if fragment_has_in_flow_children {
                   remaining.push_front(InlineItem::InlineBox(child_box));
                   break;
@@ -6636,7 +6679,7 @@ mod tests {
     // (si.edu header) to wrap unexpectedly.
     let mut builder = make_builder(100.0);
     builder
-      .add_item(InlineItem::Text(make_text_item("My Visit", 100.5)))
+      .add_item(InlineItem::Text(make_text_item("My Visit", 100.9)))
       .unwrap();
 
     let lines = builder.finish().unwrap().lines;
@@ -6926,8 +6969,11 @@ mod tests {
     let mut emergency_allowed_break: Option<BreakOpportunity> = None;
 
     for brk in &item.break_opportunities {
-      let width_at_break = item.advance_at_offset(brk.byte_offset);
-      if width_at_break <= max_width {
+      let width_at_break = match brk.break_type {
+        BreakType::Mandatory => item.advance_at_offset(brk.byte_offset),
+        BreakType::Allowed => item.effective_advance_at_break(brk),
+      };
+      if width_at_break <= max_width + LINE_PIXEL_FIT_EPSILON {
         match brk.break_type {
           BreakType::Mandatory => {
             if mandatory_break.is_none() {
@@ -6939,8 +6985,6 @@ mod tests {
             BreakOpportunityKind::Emergency => emergency_allowed_break = Some(*brk),
           },
         }
-      } else {
-        break;
       }
     }
 
@@ -6963,7 +7007,7 @@ mod tests {
     if can_overflow_break_word || can_overflow_break_by_wrap {
       for (idx, _) in item.text.char_indices().skip(1) {
         let width_at_break = item.advance_at_offset(idx);
-        if width_at_break <= max_width {
+        if width_at_break <= max_width + LINE_PIXEL_FIT_EPSILON {
           best_break = Some(BreakOpportunity::emergency(idx));
         } else {
           break;
@@ -7617,6 +7661,29 @@ mod tests {
     let brk = item.find_break_point(7.0).expect("break point");
     assert_eq!(brk.byte_offset, 6);
     assert_eq!(brk.kind, BreakOpportunityKind::Normal);
+  }
+
+  #[test]
+  fn find_break_point_allows_fitting_breaks_after_trimming_trailing_spaces() {
+    // Regression test for CSS Text whitespace trimming:
+    //
+    // When a soft wrap occurs at an allowed break opportunity, trailing collapsible spaces are
+    // trimmed from the line. Break selection must account for this trimming; otherwise we can wrap
+    // earlier than necessary because we treated the trailing space width as "real".
+    //
+    // This mirrors the `si.edu` "at all locations" / "except" wrap: the space between "locations"
+    // and "except" can be trimmed at the line end, allowing "locations" to fit.
+    let mut item = make_text_item("foo bar baz", 11.0);
+    item.break_opportunities = vec![BreakOpportunity::allowed(4), BreakOpportunity::allowed(8)];
+    item.first_mandatory_break = TextItem::first_mandatory_break(&item.break_opportunities);
+
+    // With our synthetic metrics each byte is 1px wide, so:
+    // - raw width at offset 8 ("foo bar ") is 8px
+    // - trimmed width (dropping the trailing space) is 7px
+    //
+    // Choose a max width that only fits after trimming.
+    let brk = item.find_break_point(7.4).expect("break point");
+    assert_eq!(brk.byte_offset, 8);
   }
 
   fn synthesize_breaks(

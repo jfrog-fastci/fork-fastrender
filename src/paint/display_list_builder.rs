@@ -5245,28 +5245,27 @@ impl DisplayListBuilder {
           }
           (None, None) => {
             if let (Some(w), Some(h)) = (natural_w, natural_h) {
-              return (w, h);
-            }
-            if let Some(ratio) = ratio {
+              (w, h)
+            } else if let Some(ratio) = ratio {
               if let Some(w) = natural_w {
-                return (w, (w / ratio).max(0.0));
-              }
-              if let Some(h) = natural_h {
-                return ((h * ratio).max(0.0), h);
-              }
-              // Per CSS Backgrounds and Borders: when `background-size: auto auto` is used and the
-              // image provides an intrinsic ratio but no intrinsic size, size the image as if
-              // `contain` were specified.
-              let area_w = area_w.max(0.0);
-              let area_h = area_h.max(0.0);
-              if area_w <= 0.0 || area_h <= 0.0 {
-                return (area_w, area_h);
-              }
-              let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
-              if area_ratio > ratio {
-                (area_h * ratio, area_h)
+                (w, (w / ratio).max(0.0))
+              } else if let Some(h) = natural_h {
+                ((h * ratio).max(0.0), h)
               } else {
-                (area_w, area_w / ratio)
+                // CSS Backgrounds 3: if an image has an intrinsic ratio but no intrinsic dimensions,
+                // `background-size: auto` behaves like `contain`.
+                let area_w = area_w.max(0.0);
+                let area_h = area_h.max(0.0);
+                if area_w <= 0.0 || area_h <= 0.0 {
+                  (area_w, area_h)
+                } else {
+                  let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+                  if area_ratio > ratio {
+                    (area_h * ratio, area_h)
+                  } else {
+                    (area_w, area_w / ratio)
+                  }
+                }
               }
             } else if let Some(w) = natural_w {
               (w, area_h.max(0.0))
@@ -13644,18 +13643,19 @@ impl DisplayListBuilder {
     }
 
     let decode_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-    let (css_w, css_h) = match image.css_dimensions(
-      orientation,
-      &image_resolution,
-      self.device_pixel_ratio,
-      None,
-    ) {
-      Some(dimensions) => dimensions,
-      None => {
-        if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
-          breakdown.record_image_decode(start.elapsed());
+    let (css_w, css_h) = if decorative {
+      let (w, h) =
+        image.css_natural_dimensions(orientation, &image_resolution, self.device_pixel_ratio, None);
+      (w.unwrap_or(0.0), h.unwrap_or(0.0))
+    } else {
+      match image.css_dimensions(orientation, &image_resolution, self.device_pixel_ratio, None) {
+        Some(dimensions) => dimensions,
+        None => {
+          if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
+            breakdown.record_image_decode(start.elapsed());
+          }
+          return None;
         }
-        return None;
       }
     };
 
@@ -14256,6 +14256,17 @@ mod tests {
     );
     assert!((w - 20.0).abs() < 1e-6);
     assert!((h - 10.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn background_size_auto_without_intrinsic_dimensions_uses_contain_when_ratio_present() {
+    let layer = BackgroundLayer::default();
+    // No intrinsic dimensions (img_w/img_h=0) but an intrinsic ratio. `auto auto` sizing should act
+    // like `contain` and preserve the ratio within the positioning area.
+    let (w, h) =
+      DisplayListBuilder::compute_background_size(&layer, 16.0, 16.0, None, 200.0, 100.0, 0.0, 0.0, Some(1.0));
+    assert!((w - 100.0).abs() < 1e-6);
+    assert!((h - 100.0).abs() < 1e-6);
   }
 
   #[test]
@@ -17169,6 +17180,22 @@ mod tests {
     let pixels = img.image.pixels.as_ref();
     assert_eq!(pixels.len(), 4);
     assert_eq!(pixels, &[255, 0, 0, 255]);
+  }
+
+  #[test]
+  fn decode_image_viewbox_only_svg_has_no_css_natural_size_when_decorative() {
+    let builder = DisplayListBuilder::new();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="black"/></svg>"#;
+    let decoded = builder
+      .decode_image(svg, None, true, CrossOriginAttribute::None, None, false)
+      .expect("decoded viewBox-only svg");
+
+    assert_eq!(decoded.css_width, 0.0);
+    assert_eq!(decoded.css_height, 0.0);
+    assert!(
+      decoded.has_intrinsic_ratio,
+      "viewBox-only SVGs still have an intrinsic ratio"
+    );
   }
 
   #[test]

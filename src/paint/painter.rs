@@ -4258,13 +4258,10 @@ impl Painter {
             };
             let orientation = style.image_orientation.resolve(image.orientation, true);
             intrinsic_ratio = image.intrinsic_ratio(orientation);
-            let Some((w, h)) =
-              image.css_dimensions(orientation, &style.image_resolution, self.scale, None)
-            else {
-              continue;
-            };
-            img_w = w;
-            img_h = h;
+            let (w, h) =
+              image.css_natural_dimensions(orientation, &style.image_resolution, self.scale, None);
+            img_w = w.unwrap_or(0.0);
+            img_h = h.unwrap_or(0.0);
 
             resolved_mode = match layer.mode {
               MaskMode::MatchSource => {
@@ -5505,36 +5502,19 @@ impl Painter {
 
         let orientation = style.image_orientation.resolve(image.orientation, true);
         let (img_w_raw, img_h_raw) = image.oriented_dimensions(orientation);
-        let Some((mut img_w, mut img_h)) =
-          image.css_dimensions(orientation, &style.image_resolution, self.scale, None)
-        else {
-          return;
-        };
+        let (img_w_opt, img_h_opt) =
+          image.css_natural_dimensions(orientation, &style.image_resolution, self.scale, None);
+        let img_w = img_w_opt.unwrap_or(0.0);
+        let img_h = img_h_opt.unwrap_or(0.0);
         let intrinsic_ratio = image.intrinsic_ratio(orientation);
-
-        // SVGs that omit `width`/`height` (or specify them as percentages) have no intrinsic size.
-        // For CSS backgrounds, browsers treat this as “missing natural size”, so
-        // `background-size: auto` falls back to the background positioning area instead of the
-        // 300×150 default object size used for replaced elements. This matters for inline SVG data
-        // URLs used as icons/logos.
-        if image.is_vector {
-          if let Some(svg) = image.svg_content.as_deref() {
-            if let Some(intrinsic) =
-              crate::svg::svg_root_intrinsic_dimensions(svg, style.font_size, style.root_font_size)
-            {
-              if intrinsic.width.is_none() && intrinsic.height.is_none() {
-                img_w = 0.0;
-                img_h = 0.0;
-              }
-            }
-          }
-        }
 
         if img_w_raw == 0 || img_h_raw == 0 {
           return;
         }
-        if !image.is_vector && (img_w <= 0.0 || img_h <= 0.0) {
-          return;
+        if !image.is_vector {
+          if img_w_opt.is_none() || img_h_opt.is_none() || img_w <= 0.0 || img_h <= 0.0 {
+            return;
+          }
         }
         let (mut tile_w, mut tile_h) = compute_background_size(
           layer,
@@ -17760,6 +17740,21 @@ fn compute_background_size(
         (None, None) => {
           if let (Some(w), Some(h)) = (natural_w, natural_h) {
             (w, h)
+          } else if let Some(ratio) = ratio {
+            // CSS Backgrounds 3: if an image has an intrinsic ratio but no intrinsic dimensions,
+            // `background-size: auto` behaves like `contain`.
+            let area_w = area_w.max(0.0);
+            let area_h = area_h.max(0.0);
+            if area_w <= 0.0 || area_h <= 0.0 {
+              (area_w, area_h)
+            } else {
+              let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+              if area_ratio > ratio {
+                (area_h * ratio, area_h)
+              } else {
+                (area_w, area_w / ratio)
+              }
+            }
           } else {
             (area_w.max(0.0), area_h.max(0.0))
           }

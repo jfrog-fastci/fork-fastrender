@@ -9180,7 +9180,7 @@ impl GridFormattingContext {
       })
     };
 
-    let drop_available_height = drop_definite_available_height_for_measure(
+    let mut drop_available_height = drop_definite_available_height_for_measure(
       box_node,
       fc_type,
       known_dimensions.height,
@@ -9216,7 +9216,33 @@ impl GridFormattingContext {
       )
       && physical_height_is_auto(style)
       && !node_or_in_flow_children_depend_on_available_height(box_node);
-    let drop_available_height = drop_available_height || drop_intrinsic_height_probe;
+    if drop_intrinsic_height_probe {
+      drop_available_height = true;
+    }
+    if !drop_available_height
+      && !allow_stretch_block_size_override
+      && known_dimensions.height.is_none()
+      && matches!(
+        available_space.height,
+        taffy::style::AvailableSpace::Definite(h) if h > 1.0
+      )
+      && (style.height_keyword.is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
+        || style
+          .min_height_keyword
+          .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
+        || style
+          .max_height_keyword
+          .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. })))
+    {
+      // Taffy can pass arbitrary definite heights while it is still sizing content-based grid
+      // tracks. `fit-content` sizing keywords treat the available size as a clamp *only* when that
+      // size is actually definite in CSS; on implicit/auto rows the available block size is
+      // indefinite, so `fit-content` should behave like `max-content`. Drop these definite probes so
+      // `fit-content` grid items contribute their intrinsic height instead of clamping to an
+      // intermediate guess (si.edu: two-column intro sections collapsing and pulling subsequent
+      // content upward).
+      drop_available_height = true;
+    }
     let (key, known_dimensions, available_space) = MeasureKey::new_with_snapped_sizes(
       box_node,
       known_dimensions,
@@ -9549,17 +9575,22 @@ impl GridFormattingContext {
         };
 
         let available_border_box = match avail_dim {
-          taffy::style::AvailableSpace::Definite(v) => (v + axis_inset).max(0.0),
-          taffy::style::AvailableSpace::MinContent => min_intrinsic,
-          taffy::style::AvailableSpace::MaxContent => max_intrinsic,
+          // A definite `AvailableSpace` value of 0px/1px is a sentinel used throughout the grid
+          // integration to represent an "effectively indefinite" probe (see `constraints_from_taffy`
+          // and `MeasureAvailKey::Indefinite`). Treat these as indefinite here as well so
+          // `fit-content` resolves to max-content instead of clamping to 0px.
+          taffy::style::AvailableSpace::Definite(v) if v > 1.0 => Some((v + axis_inset).max(0.0)),
+          taffy::style::AvailableSpace::Definite(_) => None,
+          taffy::style::AvailableSpace::MinContent => Some(min_intrinsic),
+          taffy::style::AvailableSpace::MaxContent => Some(max_intrinsic),
         };
 
         let preferred_border_box = match limit {
           None => None,
           Some(arg) => {
             let base_content = match avail_dim {
-              taffy::style::AvailableSpace::Definite(v) => v.max(0.0),
-              _ => (available_border_box - axis_inset).max(0.0),
+              taffy::style::AvailableSpace::Definite(v) if v > 1.0 => v.max(0.0),
+              _ => (available_border_box.unwrap_or(max_intrinsic) - axis_inset).max(0.0),
             };
             let resolved = self
               .resolve_length_for_width(arg, base_content, style)
@@ -9573,7 +9604,7 @@ impl GridFormattingContext {
         };
         let mut border_box =
           crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
-            Some(available_border_box),
+            available_border_box,
             preferred_border_box,
             min_intrinsic,
             max_intrinsic,
@@ -9606,7 +9637,7 @@ impl GridFormattingContext {
           }
         };
         let percentage_base_opt = match avail_dim {
-          taffy::style::AvailableSpace::Definite(v) => Some(v.max(0.0)),
+          taffy::style::AvailableSpace::Definite(v) if v > 1.0 => Some(v.max(0.0)),
           _ => None,
         };
         let resolve_length_px = |len: Length| -> Option<f32> {
@@ -9660,15 +9691,27 @@ impl GridFormattingContext {
       }
 
       if let Some(limit) = fit_height_limit {
-        match compute_fit_border_box(Axis::Vertical, limit, available_space.height) {
-          Ok(border_box) if border_box.is_finite() => {
-            let border_box = border_box.max(0.0);
-            fit_border_box_height = Some(border_box);
-            constraints.used_border_box_height = Some(border_box);
+        let can_use_available_height = matches!(
+          available_space.height,
+          taffy::style::AvailableSpace::Definite(h) if h > 1.0
+        );
+        if limit.is_none() && !can_use_available_height {
+          // `height: fit-content` without an explicit limit falls back to max-content when the
+          // available block size is indefinite. In that case, the keyword behaves like `auto` for
+          // typical grid items: let nested layout determine its natural height instead of forcing a
+          // precomputed border-box size based on intrinsic probes (which can ignore the actual
+          // column width and collapse content).
+        } else {
+          match compute_fit_border_box(Axis::Vertical, limit, available_space.height) {
+            Ok(border_box) if border_box.is_finite() => {
+              let border_box = border_box.max(0.0);
+              fit_border_box_height = Some(border_box);
+              constraints.used_border_box_height = Some(border_box);
+            }
+            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+            Err(_) => {}
+            _ => {}
           }
-          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-          Err(_) => {}
-          _ => {}
         }
       }
 
@@ -10150,7 +10193,31 @@ impl GridFormattingContext {
     }
 
     record_measure_layout_call();
-    let mut fragment = match fc.layout(box_node, &constraints) {
+    let clear_fit_content_height_keyword = matches!(
+      style.height_keyword,
+      Some(IntrinsicSizeKeyword::FitContent { limit: None })
+    ) && !matches!(constraints.available_height, CrateAvailableSpace::Definite(_));
+    let mut fragment = match if clear_fit_content_height_keyword {
+      // When the block-axis available size is indefinite, `height: fit-content` behaves like
+      // max-content. For typical grid items this is equivalent to `auto`, so clear the keyword to
+      // avoid nested formatting contexts (notably flex) resolving the keyword using intrinsic probes
+      // that ignore the actual column width.
+      let mut override_style: ComputedStyle = (*style).clone();
+      override_style.height = None;
+      override_style.height_keyword = None;
+      let override_style = Arc::new(override_style);
+      if box_node.id != 0 {
+        crate::layout::style_override::with_style_override(box_node.id, override_style, || {
+          fc.layout(box_node, &constraints)
+        })
+      } else {
+        let mut cloned = box_node.clone();
+        cloned.style = override_style;
+        fc.layout(&cloned, &constraints)
+      }
+    } else {
+      fc.layout(box_node, &constraints)
+    } {
       Ok(fragment) => fragment,
       Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
       Err(_) => return taffy::tree::MeasureOutput::ZERO,

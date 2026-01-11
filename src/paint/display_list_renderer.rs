@@ -8278,9 +8278,27 @@ impl DisplayListRenderer {
         continue;
       }
 
-      let (img_w, img_h) = match &layer.image {
-        ResolvedMaskImage::Raster(image) => (image.css_width, image.css_height),
-        ResolvedMaskImage::Generated(_) => (0.0, 0.0),
+      let (img_w, img_h, intrinsic_ratio) = match &layer.image {
+        ResolvedMaskImage::Raster(image) => {
+          let img_w = image.css_width;
+          let img_h = image.css_height;
+          let ratio = if image.has_intrinsic_ratio {
+            if img_w > 0.0 && img_h > 0.0 {
+              Some(img_w / img_h)
+            } else if image.width > 0 && image.height > 0 {
+              // When an image has an intrinsic ratio but no intrinsic size (e.g. viewBox-only SVG),
+              // we keep `css_width/css_height` at 0 but can still recover the ratio from the raster
+              // buffer which preserves that aspect ratio.
+              Some(image.width as f32 / image.height as f32)
+            } else {
+              None
+            }
+          } else {
+            None
+          };
+          (img_w, img_h, ratio.filter(|r| r.is_finite() && *r > 0.0))
+        }
+        ResolvedMaskImage::Generated(_) => (0.0, 0.0, None),
       };
       let (mut tile_w, mut tile_h) = compute_background_size_from_value(
         &layer.size,
@@ -8291,6 +8309,7 @@ impl DisplayListRenderer {
         origin_rect_css.height(),
         img_w,
         img_h,
+        intrinsic_ratio,
       );
       if tile_w <= 0.0 || tile_h <= 0.0 {
         continue;
@@ -8312,11 +8331,13 @@ impl DisplayListRenderer {
           BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto)
         )
       {
-        let aspect = if img_w > 0.0 && img_h > 0.0 {
-          img_w / img_h
-        } else {
-          1.0
-        };
+        let aspect = intrinsic_ratio.unwrap_or_else(|| {
+          if img_w > 0.0 && img_h > 0.0 {
+            img_w / img_h
+          } else {
+            1.0
+          }
+        });
         if rounded_x {
           tile_h = tile_w / aspect;
         } else {
@@ -14884,10 +14905,42 @@ impl DisplayListRenderer {
         return;
       }
       const NEAR_INTEGER_EPSILON_PX: f32 = 1e-3;
-      let rect = if inline_vertical {
-        tiny_skia::Rect::from_xywh(center - thickness * 0.5, start, thickness, len)
+
+      // Snap solid decoration strokes to integer device pixels when possible so 1px underlines
+      // don't get anti-aliased across two device rows/columns (noticeable on pages like si.edu).
+      //
+      // Only do this for axis-aligned items (no rotation/shear/scale) and integer stroke
+      // thicknesses.
+      let cross_start = center - thickness * 0.5;
+      let snapped_cross_start = if thickness.is_finite()
+        && Self::is_near_integer(thickness)
+        && cross_start.is_finite()
+        && transform.sx.is_finite()
+        && transform.sy.is_finite()
+        && transform.kx.is_finite()
+        && transform.ky.is_finite()
+        && transform.tx.is_finite()
+        && transform.ty.is_finite()
+        && (transform.sx - 1.0).abs() < 1e-6
+        && (transform.sy - 1.0).abs() < 1e-6
+        && transform.kx.abs() < 1e-6
+        && transform.ky.abs() < 1e-6
+      {
+        let cross_translation = if inline_vertical {
+          transform.tx
+        } else {
+          transform.ty
+        };
+        // Snap in device space to handle pure translation transforms (e.g. layer origins).
+        let device_cross_start = cross_start + cross_translation;
+        (device_cross_start.round()) - cross_translation
       } else {
-        tiny_skia::Rect::from_xywh(start, center - thickness * 0.5, len, thickness)
+        cross_start
+      };
+      let rect = if inline_vertical {
+        tiny_skia::Rect::from_xywh(snapped_cross_start, start, thickness, len)
+      } else {
+        tiny_skia::Rect::from_xywh(start, snapped_cross_start, len, thickness)
       };
       if let Some(rect) = rect {
         let translation_only = (transform.sx - 1.0).abs() <= 1e-6
@@ -18592,30 +18645,45 @@ fn compute_background_size_from_value(
   area_h: f32,
   img_w: f32,
   img_h: f32,
+  intrinsic_ratio: Option<f32>,
 ) -> (f32, f32) {
   let natural_w = if img_w > 0.0 { Some(img_w) } else { None };
   let natural_h = if img_h > 0.0 { Some(img_h) } else { None };
-  let ratio = if img_w > 0.0 && img_h > 0.0 {
-    Some(img_w / img_h)
-  } else {
-    None
-  };
+  let ratio = intrinsic_ratio.filter(|r| r.is_finite() && *r > 0.0);
 
   match size {
     BackgroundSize::Keyword(BackgroundSizeKeyword::Cover) => {
-      if let (Some(w), Some(h)) = (natural_w, natural_h) {
-        let scale = (area_w / w).max(area_h / h);
-        (w * scale, h * scale)
+      let area_w = area_w.max(0.0);
+      let area_h = area_h.max(0.0);
+      if let Some(ratio) = ratio {
+        if area_w <= 0.0 || area_h <= 0.0 {
+          return (area_w, area_h);
+        }
+        let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+        if area_ratio > ratio {
+          (area_w, area_w / ratio)
+        } else {
+          (area_h * ratio, area_h)
+        }
       } else {
-        (area_w.max(0.0), area_h.max(0.0))
+        (area_w, area_h)
       }
     }
     BackgroundSize::Keyword(BackgroundSizeKeyword::Contain) => {
-      if let (Some(w), Some(h)) = (natural_w, natural_h) {
-        let scale = (area_w / w).min(area_h / h);
-        (w * scale, h * scale)
+      let area_w = area_w.max(0.0);
+      let area_h = area_h.max(0.0);
+      if let Some(ratio) = ratio {
+        if area_w <= 0.0 || area_h <= 0.0 {
+          return (area_w, area_h);
+        }
+        let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+        if area_ratio > ratio {
+          (area_h * ratio, area_h)
+        } else {
+          (area_w, area_w / ratio)
+        }
       } else {
-        (area_w.max(0.0), area_h.max(0.0))
+        (area_w, area_h)
       }
     }
     BackgroundSize::Explicit(x, y) => {
@@ -18654,6 +18722,21 @@ fn compute_background_size_from_value(
         (None, None) => {
           if let (Some(w), Some(h)) = (natural_w, natural_h) {
             (w, h)
+          } else if let Some(ratio) = ratio {
+            // CSS Backgrounds 3: if an image has an intrinsic ratio but no intrinsic dimensions,
+            // `*-size: auto` behaves like `contain`.
+            let area_w = area_w.max(0.0);
+            let area_h = area_h.max(0.0);
+            if area_w <= 0.0 || area_h <= 0.0 {
+              (area_w, area_h)
+            } else {
+              let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+              if area_ratio > ratio {
+                (area_h * ratio, area_h)
+              } else {
+                (area_w, area_w / ratio)
+              }
+            }
           } else {
             (area_w.max(0.0), area_h.max(0.0))
           }
@@ -24088,6 +24171,43 @@ mod tests {
   }
 
   #[test]
+  fn solid_text_decoration_snaps_to_device_pixels_to_avoid_blurred_1px_lines() {
+    // `TextDecorationItem` stroke centers come from font metrics and commonly land on fractional
+    // device pixel boundaries (e.g. `*.692` in si.edu), which causes a 1px underline to be
+    // anti-aliased across two rows. When there is no transform and the thickness is an integer
+    // device pixel count, the renderer should snap the stroke origin to the device pixel grid so
+    // the underline paints crisply on a single row.
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::TextDecoration(TextDecorationItem {
+      bounds: Rect::from_xywh(0.0, 0.0, 10.0, 2.0),
+      line_start: 0.0,
+      line_width: 10.0,
+      inline_vertical: false,
+      decorations: vec![DecorationPaint {
+        style: TextDecorationStyle::Solid,
+        color: Rgba::from_rgba8(255, 0, 0, 255),
+        underline: Some(DecorationStroke {
+          center: 0.692,
+          thickness: 1.0,
+          segments: None,
+        }),
+        overline: None,
+        line_through: None,
+      }],
+    }));
+
+    let pixmap = DisplayListRenderer::new(10, 2, Rgba::WHITE, FontContext::new())
+      .expect("renderer")
+      .render(&list)
+      .expect("rendered");
+
+    for x in 0..10 {
+      assert_eq!(pixel(&pixmap, x, 0), (255, 0, 0, 255));
+      assert_eq!(pixel(&pixmap, x, 1), (255, 255, 255, 255));
+    }
+  }
+
+  #[test]
   fn text_decoration_segments_respect_gaps() {
     let mut list = DisplayList::new();
     list.push(DisplayItem::TextDecoration(TextDecorationItem {
@@ -26922,6 +27042,24 @@ mod tests {
     assert_eq!(rendered.origin, (50, 60));
     assert_eq!(rendered.mask.width(), 10);
     assert_eq!(rendered.mask.height(), 10);
+  }
+
+  #[test]
+  fn mask_size_auto_without_intrinsic_dimensions_uses_contain_when_ratio_present() {
+    let size = BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto);
+    let (w, h) = compute_background_size_from_value(
+      &size,
+      16.0,
+      16.0,
+      (200.0, 100.0),
+      200.0,
+      100.0,
+      0.0,
+      0.0,
+      Some(1.0),
+    );
+    assert!((w - 100.0).abs() < 1e-6);
+    assert!((h - 100.0).abs() < 1e-6);
   }
 
   #[test]

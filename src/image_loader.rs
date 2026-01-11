@@ -3278,6 +3278,20 @@ pub struct CachedImage {
   pub aspect_ratio_none: bool,
   /// Raw SVG markup when the image originated from a vector source.
   pub svg_content: Option<Arc<str>>,
+  /// For SVG images, whether the root element specified an absolute width or height, giving the
+  /// image an intrinsic size in CSS px.
+  ///
+  /// SVG images that only provide a `viewBox` have an intrinsic *ratio* but no intrinsic *size*.
+  /// Browsers treat them differently depending on the context:
+  /// - replaced elements (e.g. `<img>`) fall back to a default object size (300×150) constrained by
+  ///   the intrinsic ratio
+  /// - CSS images (`background-image`, `mask-image`) treat the natural size as missing (so
+  ///   `*-size: auto` behaves like `contain` when only an intrinsic ratio is present)
+  ///
+  /// FastRender stores a synthesized raster size for vector sources so they can be decoded into a
+  /// `DynamicImage`, but this flag allows callers to distinguish "real" intrinsic sizes from that
+  /// fallback when implementing CSS image sizing algorithms.
+  pub svg_has_intrinsic_size: bool,
 }
 
 impl CachedImage {
@@ -3318,6 +3332,32 @@ impl CachedImage {
       return None;
     }
     Some((w as f32 / used, h as f32 / used))
+  }
+
+  /// Natural image size for CSS images (backgrounds/masks).
+  ///
+  /// Unlike `css_dimensions`, this returns `None` for SVGs that do not specify an intrinsic size
+  /// (e.g. viewBox-only SVGs). Those images still have an intrinsic ratio, so callers should pair
+  /// this with [`Self::intrinsic_ratio`] when resolving `*-size: auto`.
+  pub fn css_natural_dimensions(
+    &self,
+    transform: OrientationTransform,
+    resolution: &ImageResolution,
+    device_pixel_ratio: f32,
+    override_resolution: Option<f32>,
+  ) -> (Option<f32>, Option<f32>) {
+    if self.is_vector && !self.svg_has_intrinsic_size {
+      return (None, None);
+    }
+    match self.css_dimensions(
+      transform,
+      resolution,
+      device_pixel_ratio,
+      override_resolution,
+    ) {
+      Some((w, h)) => (Some(w), Some(h)),
+      None => (None, None),
+    }
   }
 
   /// Intrinsic aspect ratio, adjusted for EXIF orientation when present.
@@ -3563,6 +3603,7 @@ fn about_url_placeholder_image() -> Arc<CachedImage> {
       intrinsic_ratio: None,
       aspect_ratio_none: false,
       svg_content: None,
+      svg_has_intrinsic_size: true,
     })
   }))
 }
@@ -5762,6 +5803,7 @@ impl ImageCache {
       intrinsic_ratio,
       aspect_ratio_none,
       svg_content,
+      svg_has_intrinsic_size,
     ) = match {
         // Image decoding can be triggered deep inside nested deadline budgets (e.g. display-list
         // builder time slices). Those scoped budgets are meant to bound renderer algorithm choice
@@ -5791,6 +5833,7 @@ impl ImageCache {
       intrinsic_ratio,
       aspect_ratio_none,
       svg_content,
+      svg_has_intrinsic_size,
     });
 
     self.insert_cached_image(cache_key, Arc::clone(&img_arc));
@@ -5875,6 +5918,7 @@ impl ImageCache {
       intrinsic_ratio,
       aspect_ratio_none,
       svg_content,
+      svg_has_intrinsic_size,
     ) = {
         // See `fetch_and_decode` for why we temporarily switch to the root deadline for decoding.
         let deadline = render_control::root_deadline();
@@ -5895,6 +5939,7 @@ impl ImageCache {
       intrinsic_ratio,
       aspect_ratio_none,
       svg_content,
+      svg_has_intrinsic_size,
     });
 
     self.insert_cached_image(cache_key, Arc::clone(&img_arc));
@@ -6263,7 +6308,8 @@ impl ImageCache {
     }
     record_image_cache_miss();
     let decode_timer = Instant::now();
-    let (img, intrinsic_ratio, aspect_ratio_none) = self.render_svg_to_image(svg_content)?;
+    let (img, intrinsic_ratio, aspect_ratio_none, svg_has_intrinsic_size) =
+      self.render_svg_to_image_with_url(svg_content, "inline-svg")?;
     let svg_content = Arc::<str>::from(svg_content);
     record_image_decode_ms(decode_timer.elapsed().as_secs_f64() * 1000.0);
     let cached = Arc::new(CachedImage {
@@ -6275,6 +6321,7 @@ impl ImageCache {
       intrinsic_ratio,
       aspect_ratio_none,
       svg_content: Some(svg_content),
+      svg_has_intrinsic_size,
     });
     self.insert_cached_image(&cache_key, Arc::clone(&cached));
     Ok(cached)
@@ -6586,6 +6633,7 @@ impl ImageCache {
     Option<f32>,
     bool,
     Option<Arc<str>>,
+    bool,
   )> {
     let bytes = &resource.bytes;
     let content_type = resource.content_type.as_deref();
@@ -6601,6 +6649,7 @@ impl ImageCache {
         None,
         false,
         None,
+        true,
       ));
     }
 
@@ -6621,18 +6670,38 @@ impl ImageCache {
     if let Ok(content) = std::str::from_utf8(bytes) {
       if mime_is_svg || svg_text_looks_like_markup(content) {
         let svg_content: Arc<str> = Arc::from(content);
-        let (img, ratio, aspect_none) =
+        let (img, ratio, aspect_none, svg_has_intrinsic_size) =
           self.render_svg_to_image_with_url(&svg_content, url_hint_str)?;
-        return Ok((img, true, None, None, true, ratio, aspect_none, Some(svg_content)));
+        return Ok((
+          img,
+          true,
+          None,
+          None,
+          true,
+          ratio,
+          aspect_none,
+          Some(svg_content),
+          svg_has_intrinsic_size,
+        ));
       }
     } else if url_is_svgz || mime_is_svg {
       if let Some(decompressed) = self.maybe_decompress_svgz(bytes, url)? {
         if let Ok(content) = std::str::from_utf8(&decompressed) {
           if mime_is_svg || svg_text_looks_like_markup(content) {
             let svg_content: Arc<str> = Arc::from(content);
-            let (img, ratio, aspect_none) =
+            let (img, ratio, aspect_none, svg_has_intrinsic_size) =
               self.render_svg_to_image_with_url(&svg_content, url_hint_str)?;
-            return Ok((img, true, None, None, true, ratio, aspect_none, Some(svg_content)));
+            return Ok((
+              img,
+              true,
+              None,
+              None,
+              true,
+              ratio,
+              aspect_none,
+              Some(svg_content),
+              svg_has_intrinsic_size,
+            ));
           }
 
           // Decompressed to UTF-8 but doesn't look like SVG markup; treat as a (possibly mislabelled)
@@ -6640,14 +6709,14 @@ impl ImageCache {
           let (orientation, resolution) = Self::exif_metadata(&decompressed);
           return self
             .decode_bitmap(&decompressed, content_type, url)
-            .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None));
+            .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None, true));
         }
 
         // Not valid UTF-8 after decompression; treat as a (possibly mislabelled) bitmap.
         let (orientation, resolution) = Self::exif_metadata(&decompressed);
         return self
           .decode_bitmap(&decompressed, content_type, url)
-          .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None));
+          .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None, true));
       }
     }
 
@@ -6655,7 +6724,7 @@ impl ImageCache {
     let (orientation, resolution) = Self::exif_metadata(bytes);
     self
       .decode_bitmap(bytes, content_type, url)
-      .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None))
+      .map(|(img, has_alpha)| (img, has_alpha, orientation, resolution, false, None, false, None, true))
   }
 
   fn probe_resource(&self, resource: &FetchedResource, url: &str) -> Result<CachedImageMetadata> {
@@ -8630,14 +8699,16 @@ impl ImageCache {
     &self,
     svg_content: &str,
   ) -> Result<(DynamicImage, Option<f32>, bool)> {
-    self.render_svg_to_image_with_url(svg_content, "SVG content")
+    let (image, ratio, aspect_none, _has_size) =
+      self.render_svg_to_image_with_url(svg_content, "SVG content")?;
+    Ok((image, ratio, aspect_none))
   }
 
   fn render_svg_to_image_with_url(
     &self,
     svg_content: &str,
     url: &str,
-  ) -> Result<(DynamicImage, Option<f32>, bool)> {
+  ) -> Result<(DynamicImage, Option<f32>, bool, bool)> {
     use resvg::usvg;
 
     check_root(RenderStage::Paint).map_err(Error::Render)?;
@@ -8662,6 +8733,8 @@ impl ImageCache {
     let svg_content = svg_fragment_applied.as_ref();
     let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
       svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
+    let svg_has_intrinsic_size = meta_width.filter(|w| *w > 0.0).is_some()
+      || meta_height.filter(|h| *h > 0.0).is_some();
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       usvg::Tree::from_str(svg_content, &options)
     })) {
@@ -8785,6 +8858,7 @@ impl ImageCache {
       image::DynamicImage::ImageRgba8(img),
       ratio,
       aspect_ratio_none,
+      svg_has_intrinsic_size,
     ))
   }
 }
@@ -8808,10 +8882,20 @@ fn svg_intrinsic_target_dimensions(
     (Some(w), None, None) => (w, DEFAULT_HEIGHT),
     (None, Some(h), None) => (DEFAULT_WIDTH, h),
     // When the SVG root doesn't specify an absolute intrinsic size (missing or percentage
-    // widths/heights), HTML/CSS replaced elements default to 300x150 regardless of viewBox ratio.
-    // Keep the ratio separately (see `intrinsic_ratio`) so layout can still infer the correct
-    // aspect ratio.
-    (None, None, _) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
+    // widths/heights), use the default object size (300x150) but preserve the intrinsic ratio by
+    // applying a "contain" constraint inside that box.
+    //
+    // This matches Blink/WebKit behavior for SVG images with only a viewBox (no width/height):
+    // a 1:1 SVG ends up with an intrinsic size of 150x150, not 300x150.
+    (None, None, Some(r)) => {
+      let default_ratio = DEFAULT_WIDTH / DEFAULT_HEIGHT;
+      if r >= default_ratio {
+        (DEFAULT_WIDTH, (DEFAULT_WIDTH / r).max(1.0))
+      } else {
+        ((DEFAULT_HEIGHT * r).max(1.0), DEFAULT_HEIGHT)
+      }
+    }
+    (None, None, None) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
   }
 }
 
@@ -11841,6 +11925,7 @@ mod tests {
       intrinsic_ratio: None,
       aspect_ratio_none: false,
       svg_content: None,
+      svg_has_intrinsic_size: true,
     };
 
     assert_eq!(img.intrinsic_ratio(OrientationTransform::IDENTITY), Some(0.5));
@@ -11909,45 +11994,44 @@ mod tests {
   }
 
   #[test]
-  fn svg_viewbox_square_defaults_to_300x150_in_probe() {
+  fn svg_viewbox_square_defaults_to_150x150_in_probe() {
     let cache = ImageCache::new();
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>"#;
 
     let meta = cache
       .probe_svg_content(svg, "inline viewBox-only svg")
       .expect("probe svg");
-    assert_eq!(meta.width, 300);
+    assert_eq!(meta.width, 150);
     assert_eq!(meta.height, 150);
     assert_eq!(meta.intrinsic_ratio, Some(1.0));
     assert!(!meta.aspect_ratio_none);
   }
 
   #[test]
-  fn svg_viewbox_square_defaults_to_300x150_in_render_svg_to_image() {
+  fn svg_viewbox_square_defaults_to_150x150_in_render_svg_to_image() {
     let cache = ImageCache::new();
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>"#;
 
     let (image, ratio, aspect_none) = cache.render_svg_to_image(svg).expect("render svg");
-    assert_eq!((image.width(), image.height()), (300, 150));
+    assert_eq!((image.width(), image.height()), (150, 150));
     assert_eq!(ratio, Some(1.0));
     assert!(!aspect_none);
   }
 
   #[test]
-  fn render_svg_to_image_viewbox_only_defaults_to_300x150() {
+  fn render_svg_to_image_viewbox_only_defaults_to_150x150() {
     let cache = ImageCache::new();
     let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='red'/></svg>";
     let (image, _, _) = cache.render_svg_to_image(svg).expect("render svg");
 
-    assert_eq!((image.width(), image.height()), (300, 150));
+    assert_eq!((image.width(), image.height()), (150, 150));
 
     let rgba = image.to_rgba8();
-    assert_eq!(rgba.get_pixel(150, 75).0, [255, 0, 0, 255]);
-    assert_eq!(rgba.get_pixel(10, 75).0[3], 0, "left padding should be transparent");
+    assert_eq!(rgba.get_pixel(75, 75).0, [255, 0, 0, 255]);
     assert_eq!(
-      rgba.get_pixel(290, 75).0[3],
-      0,
-      "right padding should be transparent"
+      rgba.get_pixel(10, 75).0,
+      [255, 0, 0, 255],
+      "viewBox-only SVG should not introduce padding when the intrinsic ratio matches the target"
     );
   }
 
@@ -11972,16 +12056,48 @@ mod tests {
   }
 
   #[test]
-  fn probe_svg_content_viewbox_only_defaults_to_300x150() {
+  fn probe_svg_content_viewbox_only_defaults_to_150x150() {
     let cache = ImageCache::new();
     let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='red'/></svg>";
 
     let meta = cache
       .probe_svg_content(svg, "test://svg")
       .expect("probe svg content");
-    assert_eq!(meta.width, 300);
+    assert_eq!(meta.width, 150);
     assert_eq!(meta.height, 150);
     assert_eq!(meta.intrinsic_ratio, Some(1.0));
+  }
+
+  #[test]
+  fn svg_viewbox_only_reports_no_css_natural_dimensions() {
+    let cache = ImageCache::new();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>"#;
+    let image = cache.render_svg(svg).expect("rendered");
+
+    let (w, h) = image.css_natural_dimensions(
+      OrientationTransform::IDENTITY,
+      &crate::style::types::ImageResolution::default(),
+      1.0,
+      None,
+    );
+    assert_eq!(w, None);
+    assert_eq!(h, None);
+  }
+
+  #[test]
+  fn svg_with_explicit_size_reports_css_natural_dimensions() {
+    let cache = ImageCache::new();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20"></svg>"#;
+    let image = cache.render_svg(svg).expect("rendered");
+
+    let (w, h) = image.css_natural_dimensions(
+      OrientationTransform::IDENTITY,
+      &crate::style::types::ImageResolution::default(),
+      1.0,
+      None,
+    );
+    assert_eq!(w, Some(40.0));
+    assert_eq!(h, Some(20.0));
   }
 
   #[test]

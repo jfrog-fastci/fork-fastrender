@@ -5,7 +5,7 @@ use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::{
   BackgroundImage, BackgroundPosition, BackgroundRepeatKeyword, BackgroundSize,
-  BackgroundSizeKeyword, MaskClip, MaskComposite, MaskOrigin,
+  BackgroundSizeComponent, BackgroundSizeKeyword, MaskClip, MaskComposite, MaskOrigin,
 };
 use fastrender::style::values::Length;
 
@@ -122,4 +122,27 @@ fn mask_layers_repeat_longhands_to_match_images() {
     assert_eq!(layer.repeat.x, BackgroundRepeatKeyword::Repeat);
     assert_eq!(layer.repeat.y, BackgroundRepeatKeyword::NoRepeat);
   }
+}
+
+#[test]
+fn mask_shorthand_resets_mask_size_when_omitted() {
+  let dom = dom::parse_html(r#"<div class="icon icon--heart"></div>"#).unwrap();
+  let stylesheet = parse_stylesheet(
+    r#"
+      .icon { mask-size: cover; }
+      .icon--heart { mask: url(a) no-repeat center; }
+    "#,
+  )
+  .unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let layer = &find_first(&styled, "div").expect("div").styles.mask_layers[0];
+  assert_eq!(
+    layer.size,
+    BackgroundSize::Explicit(
+      BackgroundSizeComponent::Auto,
+      BackgroundSizeComponent::Auto
+    ),
+    "mask shorthand without an explicit size should reset mask-size to its initial value"
+  );
 }
