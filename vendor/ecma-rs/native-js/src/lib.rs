@@ -356,6 +356,7 @@ mod tests {
   #[test]
   fn compile_single_root_program() {
     use crate::{compile, CompilerOptions, EmitKind};
+    use crate::llvm_symbol_for_def;
     use typecheck_ts::{FileKey, MemoryHost, Program};
 
     let mut host = MemoryHost::new();
@@ -370,13 +371,19 @@ export function main() {
     );
 
     let program = Program::new(host, vec![key.clone()]);
+    let diags = program.check();
+    assert!(
+      diags.iter().all(|d| d.severity != super::Severity::Error),
+      "expected sample to typecheck cleanly, got: {diags:#?}"
+    );
+
     let file = program.file_id(&key).expect("file id");
     let def = program
       .exports_of(file)
       .get("main")
       .and_then(|e| e.def)
       .expect("exported def for `main`");
-    let expected_symbol = crate::llvm_symbol_for_def(&program, def);
+    let expected_symbol = llvm_symbol_for_def(&program, def);
 
     let tmp = tempfile::tempdir().expect("create tempdir");
     let out_path = tmp.path().join("out.ll");
@@ -389,9 +396,11 @@ export function main() {
     assert_eq!(out.artifact, out_path);
 
     let ir = out.llvm_ir.expect("llvm_ir");
+    let needle = format!("@{expected_symbol}(");
     assert!(
-      ir.contains(&expected_symbol),
-      "expected generated IR to mention `{expected_symbol}`, got:\n{ir}"
+      ir.lines()
+        .any(|line| line.trim_start().starts_with("define") && line.contains(&needle)),
+      "expected generated IR to define the TS entrypoint `{expected_symbol}`, got:\n{ir}"
     );
     assert!(
       ir.contains("__nativejs_file_init_"),
@@ -402,8 +411,8 @@ export function main() {
       "expected generated IR to define a C ABI main() shim, got:\n{ir}"
     );
     assert!(
-      ir.contains("call i32 @__nativejs_def_"),
-      "expected main() shim to call the lowered TS main(), got:\n{ir}"
+      ir.contains(&format!("call i32 @{expected_symbol}")),
+      "expected main() shim to call the lowered TS main() `{expected_symbol}`, got:\n{ir}"
     );
   }
 }
