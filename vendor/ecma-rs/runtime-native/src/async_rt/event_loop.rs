@@ -213,8 +213,15 @@ impl EventLoop {
       // treated as quiescent by stop-the-world GC (no untracked GC pointers are expected on the
       // stack at this point).
       threading::set_parked(true);
+      struct UnparkOnDrop;
+      impl Drop for UnparkOnDrop {
+        fn drop(&mut self) {
+          threading::set_parked(false);
+        }
+      }
+      let unpark = UnparkOnDrop;
       let ready = self.reactor.wait(timeout_ms).expect("epoll_wait failed");
-      threading::set_parked(false);
+      drop(unpark);
       threading::safepoint_poll();
       if !ready.is_empty() {
         self.macrotasks.lock().unwrap().extend(ready);
@@ -233,4 +240,3 @@ impl EventLoop {
     let _ = self.reactor.drain_wake();
   }
 }
-

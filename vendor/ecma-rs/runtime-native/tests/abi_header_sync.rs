@@ -6,6 +6,10 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
   for sym in [
     "rt_write_barrier(",
     "rt_write_barrier_range(",
+    "rt_gc_register_root_slot(",
+    "rt_gc_unregister_root_slot(",
+    "rt_gc_pin(",
+    "rt_gc_unpin(",
     "rt_gc_set_young_range(",
     "rt_gc_get_young_range(",
     "rt_thread_init(",
@@ -44,6 +48,12 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _write_barrier_range: unsafe extern "C" fn(*mut u8, *mut u8, usize) =
     runtime_native::rt_write_barrier_range;
 
+  // Global root registration.
+  let _register_root_slot: extern "C" fn(*mut *mut u8) -> u32 = runtime_native::rt_gc_register_root_slot;
+  let _unregister_root_slot: extern "C" fn(u32) = runtime_native::rt_gc_unregister_root_slot;
+  let _pin: extern "C" fn(*mut u8) -> u32 = runtime_native::rt_gc_pin;
+  let _unpin: extern "C" fn(u32) = runtime_native::rt_gc_unpin;
+
   #[cfg(feature = "gc_stats")]
   {
     let _stats_snapshot: unsafe extern "C" fn(*mut runtime_native::abi::RtGcStatsSnapshot) =
@@ -57,5 +67,9 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _thread_deinit,
     _write_barrier,
     _write_barrier_range,
+    _register_root_slot,
+    _unregister_root_slot,
+    _pin,
+    _unpin,
   );
 }

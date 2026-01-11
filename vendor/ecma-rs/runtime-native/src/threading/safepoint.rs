@@ -292,3 +292,103 @@ pub fn rt_gc_resume_world() -> u64 {
 pub fn threads_waiting_at_safepoint() -> usize {
   coordinator().threads_waiting.load(Ordering::Acquire)
 }
+
+// -----------------------------------------------------------------------------
+// Stop-the-world helper + root enumeration
+// -----------------------------------------------------------------------------
+
+/// Run `f` with the world stopped at a GC safepoint.
+///
+/// This is a convenience wrapper around:
+/// - [`rt_gc_request_stop_the_world`]
+/// - [`rt_gc_wait_for_world_stopped`]
+/// - [`rt_gc_resume_world`]
+pub fn with_world_stopped<T>(f: impl FnOnce(u64) -> T) -> T {
+  let stop_epoch = rt_gc_request_stop_the_world();
+  rt_gc_wait_for_world_stopped();
+
+  struct ResumeOnDrop;
+  impl Drop for ResumeOnDrop {
+    fn drop(&mut self) {
+      // Always resume, even if `f` panics (tests) to avoid deadlocking other
+      // threads.
+      rt_gc_resume_world();
+    }
+  }
+  let _guard = ResumeOnDrop;
+
+  f(stop_epoch)
+}
+
+fn stackmaps_for_self() -> Option<&'static crate::StackMaps> {
+  static STACKMAPS: OnceLock<Option<crate::StackMaps>> = OnceLock::new();
+  STACKMAPS
+    .get_or_init(|| {
+      let bytes = crate::stackmaps_loader::load_stackmaps_from_self();
+      if bytes.is_empty() {
+        return None;
+      }
+      Some(crate::StackMaps::parse(bytes).expect("failed to parse .llvm_stackmaps"))
+    })
+    .as_ref()
+}
+
+/// Enumerate all GC root slots while the world is stopped.
+///
+/// Root sources (in order):
+/// 1) Per-thread root scopes (runtime-native handle stack).
+/// 2) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`.
+/// 3) Stack roots described by LLVM statepoint stackmaps for each stopped mutator thread.
+///
+/// # Panics
+/// Panics if `stop_epoch` is not an odd (stop-the-world) epoch.
+pub fn for_each_root_slot_world_stopped(
+  stop_epoch: u64,
+  mut f: impl FnMut(*mut *mut u8),
+) -> Result<(), crate::WalkError> {
+  assert_eq!(
+    stop_epoch & 1,
+    1,
+    "for_each_root_slot_world_stopped called with non-stop epoch {stop_epoch}"
+  );
+
+  // 1) Thread-local handle stacks.
+  for thread in registry::all_threads() {
+    thread.for_each_handle_slot(|slot| f(slot));
+  }
+
+  // 2) Global roots.
+  crate::roots::global_root_registry().for_each_root_slot(|slot| f(slot));
+
+  // 3) Stack roots from stackmaps.
+  let Some(stackmaps) = stackmaps_for_self() else {
+    return Ok(());
+  };
+
+  let coordinator_id = registry::current_thread_id();
+  for thread in registry::all_threads() {
+    if Some(thread.id()) == coordinator_id {
+      continue;
+    }
+    if thread.is_parked() || thread.is_native_safe() {
+      continue;
+    }
+    if thread.safepoint_epoch_observed() != stop_epoch {
+      continue;
+    }
+
+    let ctx = thread
+      .safepoint_context()
+      .expect("stopped thread must have a published safepoint context");
+
+    // SAFETY: The caller guarantees the world is stopped and the thread's stack
+    // is stable to read.
+    unsafe {
+      crate::walk_gc_roots_from_fp(ctx.fp as u64, stackmaps, |slot_addr| {
+        f(slot_addr as *mut *mut u8);
+      })?;
+    }
+  }
+
+  Ok(())
+}

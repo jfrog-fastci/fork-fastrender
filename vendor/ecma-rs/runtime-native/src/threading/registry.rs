@@ -10,6 +10,14 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
+#[derive(Debug, Default, Clone)]
+struct HandleStack(Vec<*mut *mut u8>);
+
+// SAFETY: The handle stack is only mutated by the owning thread, and is only
+// read by the GC while the world is stopped. The raw pointers are treated as
+// opaque addresses; correct usage requires higher-level synchronization.
+unsafe impl Send for HandleStack {}
+
 /// Runtime-assigned thread id (stable for the lifetime of a registered thread).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ThreadId(u64);
@@ -69,6 +77,13 @@ pub struct ThreadState {
   safepoint_context: Mutex<Option<SafepointContext>>,
 
   stack_bounds: Mutex<Option<StackBounds>>,
+
+  /// Per-thread handle stack for temporary roots created by runtime-native Rust
+  /// code (not covered by LLVM stackmaps).
+  ///
+  /// This is intentionally stored in the `ThreadState` so the GC can enumerate
+  /// these roots while the world is stopped.
+  handle_stack: Mutex<HandleStack>,
 }
 
 impl ThreadState {
@@ -102,6 +117,27 @@ impl ThreadState {
 
   pub fn safepoint_context(&self) -> Option<SafepointContext> {
     *self.safepoint_context.lock().unwrap()
+  }
+
+  pub(crate) fn handle_stack_len(&self) -> usize {
+    self.handle_stack.lock().unwrap().0.len()
+  }
+
+  pub(crate) fn handle_stack_push(&self, slot: *mut *mut u8) {
+    self.handle_stack.lock().unwrap().0.push(slot);
+  }
+
+  pub(crate) fn handle_stack_truncate(&self, len: usize) {
+    self.handle_stack.lock().unwrap().0.truncate(len);
+  }
+
+  pub(crate) fn for_each_handle_slot(&self, mut f: impl FnMut(*mut *mut u8)) {
+    // Snapshot to avoid holding the mutex while the callback potentially mutates
+    // slots (the GC may update them in-place during evacuation).
+    let slots = self.handle_stack.lock().unwrap().0.clone();
+    for slot in slots {
+      f(slot);
+    }
   }
 }
 
@@ -153,6 +189,7 @@ impl ThreadRegistry {
       safepoint_epoch_observed: AtomicU64::new(initial_observed),
       safepoint_context: Mutex::new(None),
       stack_bounds: Mutex::new(current_stack_bounds()),
+      handle_stack: Mutex::new(HandleStack::default()),
     });
 
     {

@@ -145,6 +145,21 @@ void rt_write_barrier(uint8_t* obj, uint8_t* slot);
 void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);
 void rt_gc_collect(void);
 
+// -----------------------------------------------------------------------------
+// GC roots / handles (non-stack roots)
+// -----------------------------------------------------------------------------
+// LLVM stackmaps cover mutator stack/register roots, but the runtime must also
+// track global/static roots and long-lived handles.
+//
+// Register an addressable root slot. `slot` must remain valid and writable
+// until unregistered.
+uint32_t rt_gc_register_root_slot(uint8_t** slot);
+void rt_gc_unregister_root_slot(uint32_t handle);
+// Convenience: allocate an internal slot initialized to `ptr` and register it
+// as a root. The returned handle must later be passed to `rt_gc_unpin`.
+uint32_t rt_gc_pin(uint8_t* ptr);
+void rt_gc_unpin(uint32_t handle);
+
 // Update the active nursery (young generation) address range used by the write barrier.
 // Must be called by the GC at initialization and after each nursery flip/resize.
 void rt_gc_set_young_range(uint8_t* start, uint8_t* end);

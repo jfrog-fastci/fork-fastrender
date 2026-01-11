@@ -223,6 +223,40 @@ pub extern "C" fn rt_gc_collect() {
   crate::gc_stats::record_gc_collect();
 }
 
+// -----------------------------------------------------------------------------
+// Global roots / handles (non-stack roots)
+// -----------------------------------------------------------------------------
+
+/// Register an addressable root slot with the runtime.
+///
+/// `slot` must point to a writable `*mut u8` and must remain valid until the
+/// returned handle is passed to [`rt_gc_unregister_root_slot`].
+#[no_mangle]
+pub extern "C" fn rt_gc_register_root_slot(slot: *mut *mut u8) -> u32 {
+  crate::roots::global_root_registry().register_root_slot(slot)
+}
+
+/// Unregister a previously registered root slot handle.
+#[no_mangle]
+pub extern "C" fn rt_gc_unregister_root_slot(handle: u32) {
+  crate::roots::global_root_registry().unregister(handle);
+}
+
+/// Convenience API: create an internal root slot initialized to `ptr`.
+///
+/// This is primarily intended for FFI/host embeddings that want a persistent
+/// handle without managing slot storage themselves.
+#[no_mangle]
+pub extern "C" fn rt_gc_pin(ptr: *mut u8) -> u32 {
+  crate::roots::global_root_registry().pin(ptr)
+}
+
+/// Destroy a handle created by [`rt_gc_pin`].
+#[no_mangle]
+pub extern "C" fn rt_gc_unpin(handle: u32) {
+  crate::roots::global_root_registry().unregister(handle);
+}
+
 #[cfg(feature = "gc_stats")]
 #[no_mangle]
 pub unsafe extern "C" fn rt_gc_stats_snapshot(out: *mut crate::abi::RtGcStatsSnapshot) {

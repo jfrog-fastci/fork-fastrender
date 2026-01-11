@@ -39,6 +39,7 @@ pub mod gc;
 pub mod immix;
 pub mod los;
 pub mod nursery;
+pub mod roots;
 pub mod stackmap;
 pub mod parallel;
 pub mod sync;
