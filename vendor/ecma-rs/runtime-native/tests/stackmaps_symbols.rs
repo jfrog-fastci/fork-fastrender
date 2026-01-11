@@ -1,6 +1,7 @@
 #![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 
 use core::arch::global_asm;
+use runtime_native::stackmaps::STACKMAP_VERSION;
 
 // Define a tiny but valid StackMap v3 blob (0 functions / 1 constant / 0 records).
 //
@@ -38,10 +39,13 @@ fn stackmaps_discovered_via_exported_symbols() {
   // Linkers may insert alignment padding before the first blob. The runtime helper should tolerate
   // that, so check the first non-zero byte is the stackmap version.
   let version = bytes.iter().copied().find(|&b| b != 0).unwrap_or(0);
-  assert_eq!(version, runtime_native::stackmaps::STACKMAP_VERSION);
-  // The output section may contain multiple concatenated StackMap v3 blobs. Assert that our
-  // injected blob is present somewhere in that byte range (and therefore that the exported
-  // start/end symbols really delimit the `.llvm_stackmaps` output section).
+  assert_eq!(version, STACKMAP_VERSION);
+
+  // `runtime-native`'s test build links an additional `.llvm_stackmaps` object (see `build.rs`) so
+  // the symbol range may contain multiple concatenated StackMap v3 blobs.
+  //
+  // Assert that our tiny fixture is present somewhere in that byte range (and therefore that the
+  // exported start/end symbols really delimit the `.llvm_stackmaps` output section).
   let needle = MAGIC_CONST.to_le_bytes();
   assert!(
     bytes.windows(needle.len()).any(|w| w == needle),
@@ -56,13 +60,14 @@ fn stackmaps_discovered_via_exported_symbols() {
   assert_eq!(bytes, via_loader);
 
   let sm = runtime_native::stackmaps_symbols::stackmaps_from_exe().expect("parse stackmaps");
-  assert_eq!(sm.raw().version, runtime_native::stackmaps::STACKMAP_VERSION);
   assert!(
-    sm.raws().iter().any(|raw| {
-      raw.functions.is_empty()
-        && raw.records.is_empty()
-        && raw.constants.as_slice() == &[MAGIC_CONST]
-    }),
+    sm.raws().iter().all(|raw| raw.version == STACKMAP_VERSION),
+    "expected all parsed stackmap blobs to be v{STACKMAP_VERSION}"
+  );
+  assert!(
+    sm.raws()
+      .iter()
+      .any(|raw| raw.functions.is_empty() && raw.records.is_empty() && raw.constants.as_slice() == &[MAGIC_CONST]),
     "expected parsed stackmaps to include the injected blob"
   );
 }

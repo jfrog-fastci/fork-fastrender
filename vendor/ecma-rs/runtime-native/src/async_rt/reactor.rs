@@ -102,29 +102,96 @@ enum WatcherKind {
 
 struct IoWatcher {
   interests: u32,
-  cb: extern "C" fn(u32, *mut u8),
-  data: *mut u8,
-  drop: Option<TaskDropFn>,
-  active: Arc<AtomicBool>,
+  shared: Arc<IoWatcherShared>,
 }
 
 // Safety: opaque pointers are never dereferenced by the reactor. They are passed back to the
 // callback on the single-threaded event loop.
 unsafe impl Send for IoWatcher {}
 
-struct IoTask {
+struct IoWatcherShared {
   cb: extern "C" fn(u32, *mut u8),
   data: *mut u8,
+  drop: Option<TaskDropFn>,
+  active: AtomicBool,
+  in_flight: AtomicUsize,
+  /// Drop hook state machine:
+  /// - 0: not requested
+  /// - 1: drop requested, pending safe point (no in-flight callbacks)
+  /// - 2: dropped (drop hook executed)
+  drop_state: AtomicUsize,
+}
+
+// Safety: `data` is an opaque pointer owned by the caller. The runtime never dereferences it and
+// only passes it back to the callback/drop hook. This mirrors the safety contract of `IoWatcher`.
+unsafe impl Send for IoWatcherShared {}
+unsafe impl Sync for IoWatcherShared {}
+
+impl IoWatcherShared {
+  const DROP_NONE: usize = 0;
+  const DROP_PENDING: usize = 1;
+  const DROP_DONE: usize = 2;
+
+  fn request_drop(&self) {
+    if self.drop.is_none() {
+      return;
+    }
+
+    // Only the first caller transitions NONE -> PENDING. Subsequent calls are no-ops (they must
+    // not re-arm dropping after the hook has already run).
+    let _ = self.drop_state.compare_exchange(
+      Self::DROP_NONE,
+      Self::DROP_PENDING,
+      Ordering::AcqRel,
+      Ordering::Acquire,
+    );
+    self.try_run_drop();
+  }
+
+  fn try_run_drop(&self) {
+    if self.drop.is_none() {
+      return;
+    }
+    if self.in_flight.load(Ordering::Acquire) != 0 {
+      return;
+    }
+
+    // Only one thread (typically the event-loop thread) may execute the drop hook.
+    if self
+      .drop_state
+      .compare_exchange(
+        Self::DROP_PENDING,
+        Self::DROP_DONE,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+      )
+      .is_err()
+    {
+      return;
+    }
+
+    if let Some(drop) = self.drop {
+      drop(self.data);
+    }
+  }
+}
+
+struct IoTask {
   events: u32,
-  active: Arc<AtomicBool>,
+  shared: Arc<IoWatcherShared>,
 }
 
 extern "C" fn run_io_task(data: *mut u8) {
   // Safety: `data` is allocated via `Box::into_raw(IoTask)` in `wait` and freed by the task drop
   // hook.
   let task = unsafe { &*(data as *const IoTask) };
-  if task.active.load(Ordering::Acquire) {
-    (task.cb)(task.events, task.data);
+  task.shared.in_flight.fetch_add(1, Ordering::AcqRel);
+  if task.shared.active.load(Ordering::Acquire) {
+    (task.shared.cb)(task.events, task.shared.data);
+  }
+  let prev = task.shared.in_flight.fetch_sub(1, Ordering::AcqRel);
+  if prev == 1 {
+    task.shared.try_run_drop();
   }
 }
 
@@ -244,6 +311,14 @@ impl Reactor {
       watcher_id_to_token(id),
       interest.to_reactor_interest(),
     )?;
+    let shared = Arc::new(IoWatcherShared {
+      cb,
+      data,
+      drop,
+      active: AtomicBool::new(true),
+      in_flight: AtomicUsize::new(0),
+      drop_state: AtomicUsize::new(IoWatcherShared::DROP_NONE),
+    });
     watchers.insert(
       id,
       Watcher {
@@ -251,10 +326,7 @@ impl Reactor {
         interest,
         kind: WatcherKind::Io(IoWatcher {
           interests,
-          cb,
-          data,
-          drop,
-          active: Arc::new(AtomicBool::new(true)),
+          shared,
         }),
       },
     );
@@ -317,32 +389,8 @@ impl Reactor {
     };
     let Some(watcher) = watcher else { return false };
     if let WatcherKind::Io(io) = watcher.kind {
-      io.active.store(false, Ordering::Release);
-      if let Some(drop) = io.drop {
-        // Defer dropping callback state until the event loop observes the deregistration. This
-        // avoids freeing `data` while an already-queued readiness task is still executing.
-        struct DropCtx {
-          drop: TaskDropFn,
-          data: *mut u8,
-        }
-
-        extern "C" fn noop_drop_task(_data: *mut u8) {}
-
-        extern "C" fn drop_drop_task(data: *mut u8) {
-          // Safety: allocated by `Box::into_raw` in `deregister`.
-          unsafe {
-            let ctx = Box::from_raw(data as *mut DropCtx);
-            (ctx.drop)(ctx.data);
-          }
-        }
-
-        let ctx = Box::new(DropCtx { drop, data: io.data });
-        super::global().enqueue_microtask(Task::new_with_drop(
-          noop_drop_task,
-          Box::into_raw(ctx) as *mut u8,
-          drop_drop_task,
-        ));
-      }
+      io.shared.active.store(false, Ordering::Release);
+      io.shared.request_drop();
     }
     self.wake();
     true
@@ -371,10 +419,8 @@ impl Reactor {
 
     for (_id, watcher) in drained {
       if let WatcherKind::Io(io) = &watcher.kind {
-        io.active.store(false, Ordering::Release);
-        if let Some(drop) = io.drop {
-          drop(io.data);
-        }
+        io.shared.active.store(false, Ordering::Release);
+        io.shared.request_drop();
       }
     }
     self.wake();
@@ -433,10 +479,8 @@ impl Reactor {
             continue;
           }
           let task = Box::new(IoTask {
-            cb: io.cb,
-            data: io.data,
             events: delivered,
-            active: io.active.clone(),
+            shared: io.shared.clone(),
           });
           tasks.push(Task::new_with_drop(
             run_io_task,
