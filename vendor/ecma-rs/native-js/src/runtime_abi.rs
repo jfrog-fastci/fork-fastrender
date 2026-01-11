@@ -315,10 +315,8 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       let raw = self.rt_gc_collect_raw();
       let entry = self.context.append_basic_block(func, "entry");
       self.builder.position_at_end(entry);
-      let _ = self
-        .builder
-        .build_call(raw, &[], "")
-        .expect("call rt_gc_collect");
+      let call = self.builder.build_call(raw, &[], "").expect("call rt_gc_collect");
+      crate::stack_walking::mark_call_notail(call);
       self.builder.build_return(None).expect("return void");
     })
   }
@@ -469,12 +467,12 @@ pub fn emit_runtime_call<'ctx>(
     });
   }
 
-  builder
-    .build_call(callee, args, name)
-    .map_err(|e| RuntimeCallError::BuildCall {
-      name: spec.name,
-      message: e.to_string(),
-    })
+  let call = builder.build_call(callee, args, name).map_err(|e| RuntimeCallError::BuildCall {
+    name: spec.name,
+    message: e.to_string(),
+  })?;
+  crate::stack_walking::mark_call_notail(call);
+  Ok(call)
 }
 
 impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {

@@ -43,12 +43,13 @@ use llvm_sys::core::{
   LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildLoad2, LLVMBuildStore, LLVMCreateBuilderInContext,
   LLVMDisposeBuilder, LLVMGetFirstInstruction, LLVMGetPointerAddressSpace, LLVMGetReturnType,
   LLVMGetStringAttributeAtIndex, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIsAFunction,
-  LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMTypeOf,
-  LLVMVoidTypeInContext,
+  LLVMSetTailCallKind, LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore,
+  LLVMTypeOf, LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{
   LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMTypeRef, LLVMValueRef,
 };
+use llvm_sys::LLVMTailCallKind;
 use llvm_sys::LLVMTypeKind;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -396,6 +397,9 @@ impl GcFrame {
           call_args.len() as u32,
           call_name,
         );
+        // Even for leaf calls (no statepoint), forbid tail-call formation: our stack scanning
+        // uses frame return addresses to look up stackmaps, so collapsing frames is unsafe.
+        LLVMSetTailCallKind(call, LLVMTailCallKind::LLVMTailCallKindNoTail);
         if is_void {
           None
         } else {
