@@ -41,26 +41,6 @@ pub struct EventLoop {
   clock: ArcSwap<ClockState>,
 }
 
-struct ParkedGuard(bool);
-
-impl ParkedGuard {
-  #[inline]
-  fn new(parked: bool) -> Self {
-    if parked {
-      threading::set_parked(true);
-    }
-    Self(parked)
-  }
-}
-
-impl Drop for ParkedGuard {
-  fn drop(&mut self) {
-    if self.0 {
-      threading::set_parked(false);
-    }
-  }
-}
-
 /// Maximum number of microtasks allowed to run in a single microtask checkpoint.
 ///
 /// This prevents pathological promise chains from livelocking the event loop forever. The limit is
@@ -478,7 +458,11 @@ impl EventLoop {
         //
         // Keep the thread marked as parked until after the post-wait safepoint poll, so we don't
         // resume mutator work without first observing any in-progress GC epoch.
-        let _parked = ParkedGuard::new(timeout_ms != 0);
+        let _parked = if timeout_ms != 0 {
+          Some(threading::ParkedGuard::new())
+        } else {
+          None
+        };
         let ready = self.reactor.wait(timeout_ms).expect("reactor wait failed");
         threading::safepoint_poll();
         ready
@@ -540,7 +524,7 @@ impl EventLoop {
 
       threading::safepoint_poll();
       let parked = if timeout_ms != 0 {
-        Some(ParkedGuard::new(true))
+        Some(threading::ParkedGuard::new())
       } else {
         None
       };
