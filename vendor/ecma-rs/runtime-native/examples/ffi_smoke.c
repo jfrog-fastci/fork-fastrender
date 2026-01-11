@@ -66,6 +66,21 @@ static void microtask_check_root(uint8_t* data) {
   rooted_microtask_ran = (data == expected_root) ? 1 : 2;
 }
 
+static GcPtr handle_microtask_seen = NULL;
+static int handle_microtask_ran = 0;
+static GcPtr handle_microtask_dropped = NULL;
+static int handle_microtask_drop_count = 0;
+
+static void handle_microtask_record(GcPtr data) {
+  handle_microtask_ran = 1;
+  handle_microtask_seen = data;
+}
+
+static void handle_microtask_drop(GcPtr data) {
+  handle_microtask_drop_count += 1;
+  handle_microtask_dropped = data;
+}
+
 static void par_for_body(size_t i, uint8_t* data) {
   uint32_t* out = (uint32_t*)data;
   out[i] = (uint32_t)(i * 3u + 1u);
@@ -279,6 +294,37 @@ int main(void) {
   if (check(drop_ctx.dropped == 0)) { rc = 17; goto done; }
   if (check(rooted_microtask_ran == 1)) { rc = 19; goto done; }
 
+  // Handle-based microtasks: the runtime consumes a `HandleId` and frees it when the work item is
+  // torn down (after execution or cancellation).
+  GcPtr handle_obj = rt_alloc_pinned(16, shape);
+  if (check(handle_obj != NULL)) { rc = 38; goto done; }
+  HandleId handle_id = rt_handle_alloc(handle_obj);
+  handle_microtask_ran = 0;
+  handle_microtask_seen = NULL;
+  rt_queue_microtask_handle(handle_microtask_record, handle_id);
+  if (check(handle_microtask_ran == 0)) { rc = 39; goto done; }
+  rt_drain_microtasks();
+  if (check(handle_microtask_ran == 1)) { rc = 40; goto done; }
+  if (check(handle_microtask_seen == handle_obj)) { rc = 41; goto done; }
+  if (check(rt_handle_load(handle_id) == NULL)) { rc = 42; goto done; }
+
+  GcPtr handle_obj2 = rt_alloc_pinned(16, shape);
+  if (check(handle_obj2 != NULL)) { rc = 43; goto done; }
+  HandleId handle_id2 = rt_handle_alloc(handle_obj2);
+  handle_microtask_ran = 0;
+  handle_microtask_seen = NULL;
+  handle_microtask_drop_count = 0;
+  handle_microtask_dropped = NULL;
+  rt_queue_microtask_handle_with_drop(handle_microtask_record, handle_id2, handle_microtask_drop);
+  if (check(handle_microtask_ran == 0)) { rc = 44; goto done; }
+  if (check(handle_microtask_drop_count == 0)) { rc = 45; goto done; }
+  rt_drain_microtasks();
+  if (check(handle_microtask_ran == 1)) { rc = 46; goto done; }
+  if (check(handle_microtask_seen == handle_obj2)) { rc = 47; goto done; }
+  if (check(handle_microtask_drop_count == 1)) { rc = 48; goto done; }
+  if (check(handle_microtask_dropped == handle_obj2)) { rc = 49; goto done; }
+  if (check(rt_handle_load(handle_id2) == NULL)) { rc = 50; goto done; }
+
   // Cross-thread enqueue should wake an event loop thread blocked in `rt_async_wait`.
   int wake_microtask_ran = 0;
   if (pthread_create(&wake_thread, NULL, enqueue_microtask_from_thread, &wake_microtask_ran) != 0) {
@@ -310,9 +356,25 @@ int main(void) {
   rt_queue_microtask_with_drop(microtask_mark_ran, (uint8_t*)&cancel_ctx, microtask_mark_dropped);
   if (check(cancel_ctx.ran == 0)) { rc = 30; goto done; }
   if (check(cancel_ctx.dropped == 0)) { rc = 31; goto done; }
+
+  GcPtr cancel_handle_obj = rt_alloc_pinned(16, shape);
+  if (check(cancel_handle_obj != NULL)) { rc = 34; goto done; }
+  HandleId cancel_handle = rt_handle_alloc(cancel_handle_obj);
+  handle_microtask_ran = 0;
+  handle_microtask_drop_count = 0;
+  handle_microtask_seen = NULL;
+  handle_microtask_dropped = NULL;
+  rt_queue_microtask_handle_with_drop(handle_microtask_record, cancel_handle, handle_microtask_drop);
+  if (check(handle_microtask_ran == 0)) { rc = 35; goto done; }
+  if (check(handle_microtask_drop_count == 0)) { rc = 36; goto done; }
+
   rt_async_cancel_all();
   if (check(cancel_ctx.ran == 0)) { rc = 32; goto done; }
   if (check(cancel_ctx.dropped == 1)) { rc = 33; goto done; }
+  if (check(handle_microtask_ran == 0)) { rc = 37; goto done; }
+  if (check(handle_microtask_drop_count == 1)) { rc = 38; goto done; }
+  if (check(handle_microtask_dropped == cancel_handle_obj)) { rc = 39; goto done; }
+  if (check(rt_handle_load(cancel_handle) == NULL)) { rc = 40; goto done; }
 
 done:
   if (wake_thread_started) {
