@@ -60,9 +60,10 @@ fn pie_stackmaps_are_in_gnu_relro_and_no_load_segment_is_rwx() {
     }
   }
 
-  // This test relies on GNU ld semantics for RELRO and section placement. If
-  // the toolchain is configured to use lld by default, skip rather than failing
-  // on a linker-script compatibility mismatch.
+  // This test uses `gcc` to drive the system linker. The correct stackmaps linker-script fragment
+  // depends on whether that linker is GNU ld or lld:
+  // - GNU ld: use `link/stackmaps_gnuld.ld` (inserting after `.text` can produce an RWX PT_LOAD).
+  // - lld: use `link/stackmaps.ld` (lld keeps `.data.rel.ro.*` out of the executable segment).
   let linker_version_out = Command::new("gcc")
     .args(["-Wl,--version"])
     .output()
@@ -72,10 +73,7 @@ fn pie_stackmaps_are_in_gnu_relro_and_no_load_segment_is_rwx() {
     String::from_utf8_lossy(&linker_version_out.stdout),
     String::from_utf8_lossy(&linker_version_out.stderr),
   );
-  if linker_version.to_ascii_lowercase().contains("lld") {
-    eprintln!("skipping: gcc appears to be using lld; GNU ld is required for this RELRO placement test");
-    return;
-  }
+  let gcc_uses_lld = linker_version.to_ascii_lowercase().contains("lld");
 
   let tmp = tempfile::tempdir().expect("tempdir");
   let dir = tmp.path();
@@ -127,11 +125,9 @@ entry:
     rename_script.exists(),
     "missing helper script at {rename_script:?}"
   );
-  // This test links with GNU ld via `gcc`. For PIE builds, GNU ld may merge
-  // writable `.data.rel.ro.*` output sections into the same PT_LOAD as `.text`
-  // if they are inserted "after .text", producing an RWX segment. Use the
-  // GNU ld-specific fragment that inserts into the RELRO/data region instead.
-  let linker_script = manifest_dir.join("link/stackmaps_gnuld.ld");
+  let lld_script = manifest_dir.join("link/stackmaps.ld");
+  let gnuld_script = manifest_dir.join("link/stackmaps_gnuld.ld");
+  let linker_script = if gcc_uses_lld { lld_script } else { gnuld_script };
   assert!(
     linker_script.exists(),
     "missing linker script at {linker_script:?}"
