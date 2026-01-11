@@ -108,12 +108,12 @@ impl<T> StoredPtr<T> {
     Self(ptr.as_ptr())
   }
 
-  /// # Safety
-  ///
-  /// The stored pointer must be non-null.
   #[inline]
-  unsafe fn as_nonnull(&self) -> NonNull<T> {
-    NonNull::new_unchecked(self.0)
+  fn as_nonnull(&self) -> NonNull<T> {
+    // All live slots must contain non-null pointers. If this is violated (e.g. a buggy relocating GC
+    // writes a null pointer during `with_stw_update`) abort rather than allowing safe code to
+    // trigger UB.
+    NonNull::new(self.0).unwrap_or_else(|| std::process::abort())
   }
 }
 
@@ -215,8 +215,7 @@ impl<T> HandleTable<T> {
     let slot = inner.slots.get(id.index() as usize)?;
     match slot {
       Slot::Live { ptr, generation } if *generation == id.generation() => {
-        // Safety: all live slots are stored as non-null pointers.
-        Some(unsafe { ptr.as_nonnull() })
+        Some(ptr.as_nonnull())
       }
       _ => None,
     }
@@ -255,8 +254,7 @@ impl<T> HandleTable<T> {
 
     match slot {
       Slot::Live { ptr, generation } if *generation == id.generation() => {
-        // Safety: all live slots are stored as non-null pointers.
-        let old_ptr = unsafe { ptr.as_nonnull() };
+        let old_ptr = ptr.as_nonnull();
 
         // Bump generation to invalidate stale IDs.
         let mut new_generation = generation.wrapping_add(1);
