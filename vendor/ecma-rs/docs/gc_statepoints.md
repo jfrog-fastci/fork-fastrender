@@ -372,16 +372,19 @@ ld.lld: error: relocation R_X86_64_64 cannot be used against symbol '...'; recom
   - ❌ Enables relocations in read-only segments (“text relocs”), which is undesirable for hardening
     and can be rejected by some build policies.
 
-- **Option C (default): PIE without text relocs**
+- **Option C (recommended PIE mode): PIE without text relocs**
   - ✅ Keeps PIE/ASLR.
   - ✅ Avoids `-z notext` text relocations.
   - ✅ Works with lld by making `.llvm_stackmaps` **writable in the object file**, so relocations are
     applied to RW memory (normal dynamic relocations).
   - ❌ Requires an extra `llvm-objcopy` step in the link driver.
 
-### Chosen default (Option C)
+### Policy (default + PIE mode)
 
-On Linux, native-js AOT output should be linked as **PIE** and must:
+- **Default (today):** link non-PIE (`-no-pie`) to avoid runtime relocations entirely.
+- **If PIE is required:** use Option C (rewrite `.llvm_stackmaps` to be writable) to avoid `DT_TEXTREL`.
+
+When producing a PIE, native-js AOT output must:
 
 1. Rewrite any input object containing `.llvm_stackmaps` to make the section writable:
 
@@ -400,13 +403,32 @@ On Linux, native-js AOT output should be linked as **PIE** and must:
 
 3. Use `--gc-sections` in release builds (safe because stackmaps are explicitly kept).
 
-We provide a reference link wrapper:
+We provide a reference PIE link wrapper:
 
 - `vendor/ecma-rs/scripts/native_js_link_linux.sh`
 
 ## Example link commands
 
-### Debug (no section GC)
+### Default (non-PIE): debug (no section GC)
+
+```bash
+clang-18 -fuse-ld=lld -no-pie \
+  -Wl,--script=vendor/ecma-rs/runtime-native/stackmaps.ld \
+  -o app_debug \
+  main.o codegen.o
+```
+
+### Default (non-PIE): release (`--gc-sections`)
+
+```bash
+clang-18 -fuse-ld=lld -no-pie \
+  -Wl,--gc-sections \
+  -Wl,--script=vendor/ecma-rs/runtime-native/stackmaps.ld \
+  -o app_release \
+  main.o codegen.o
+```
+
+### PIE (Option C): debug (no section GC)
 
 ```bash
 # (Optional) make stackmaps writable if present:
@@ -418,7 +440,7 @@ clang-18 -fuse-ld=lld -pie \
   main.o codegen.o
 ```
 
-### Release (`--gc-sections`)
+### PIE (Option C): release (`--gc-sections`)
 
 ```bash
 llvm-objcopy-18 --set-section-flags .llvm_stackmaps=alloc,load,contents,data codegen.o

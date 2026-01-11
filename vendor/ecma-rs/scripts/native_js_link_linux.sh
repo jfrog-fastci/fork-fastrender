@@ -8,7 +8,7 @@ set -euo pipefail
 # - The section contains absolute code addresses, producing `R_X86_64_64` relocations.
 # - Linking into a PIE with lld fails by default if those relocations live in a read-only section.
 #
-# Our default policy is PIE *without* text relocations:
+# Our recommended PIE policy is PIE *without* text relocations:
 # - Rewrite `.llvm_stackmaps` to be writable in the object file (so relocations are applied to RW
 #   memory), using `llvm-objcopy-18`.
 # - Link with a tiny linker-script fragment that `KEEP`s the section (so `--gc-sections` can't drop
