@@ -6,8 +6,9 @@ It is intended to compile a **strict subset of TypeScript** into **LLVM IR**
 (and, eventually, object files / binaries) as part of the native
 TypeScript→LLVM pipeline.
 
-This crate is still early. The high-level `Compiler` entrypoint is not wired up
-yet (`Compiler::compile` returns `NativeJsError::Unimplemented`), but the crate
+This crate is still early. The high-level AOT entrypoints are not wired up yet
+(`native_js::compile` returns `NativeJsError::UnsupportedFeature` and
+`Compiler::compile` returns `NativeJsError::Unimplemented`), but the crate
 already contains:
 
 - a minimal `parse-js`-driven **textual** LLVM IR emitter (`compile_typescript_to_llvm_ir`)
@@ -150,14 +151,19 @@ The API is intentionally small and currently consists of:
 - `compile_typescript_to_llvm_ir(&str, CompileOptions) -> Result<String, NativeJsError>`:
   compile a single TypeScript module to textual LLVM IR (very small subset; used
   by `native-js-cli`).
+- `compile(&Program, &CompilerOptions) -> Result<CompilationOutput, NativeJsError>`:
+  AOT compilation entrypoint for a fully typechecked `typecheck-ts` `Program`.
+  (Currently returns `NativeJsError::UnsupportedFeature`.)
+- `CompilerOptions` / `CompilationOutput`: options/output types for `compile(...)`.
 - `Compiler`: entry point (configured with `CompileOptions`)
 - `Compiler::compile() -> Result<(), NativeJsError>`: compilation entrypoint
   (currently unimplemented)
 - `CompileOptions`: codegen configuration
 - `OptLevel`: optimization level (`O0`/`O1`/`O2`/`O3`/`Os`/`Oz`)
-- `EmitKind`: artifact kind (`LlvmIr`, `Object`, `Assembly`)
-- `NativeJsError`: error type (includes parse errors, codegen errors, and
-  `Unimplemented` for the not-yet-implemented typechecked backend)
+- `EmitKind`: artifact kind (`LlvmIr`, `Object`, `Assembly`, `Executable`)
+- `NativeJsError`: shared error type for the native pipeline (parse errors,
+  codegen errors, typecheck diagnostics, missing toolchain/IO errors, and
+  unimplemented/unsupported features)
 
 Example (API shape):
 
@@ -174,7 +180,7 @@ let compiler = Compiler::new(opts);
 compiler.compile()?;
 ```
 
-> Note: the long-term typechecked/HIR backend is not implemented yet.
+> Note: the long-term typechecked/HIR backend is still under construction.
 > `native_js::codegen` currently contains:
 > - the minimal `parse-js`-driven emitter used by `compile_typescript_to_llvm_ir`, and
 > - an early HIR-driven backend used by the `native-js` CLI binary.
