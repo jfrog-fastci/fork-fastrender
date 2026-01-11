@@ -30,6 +30,24 @@
 //! address until completion. Under a moving GC this means `ArrayBuffer`/`TypedArray` data must live
 //! outside the GC heap. The [`buffer`] module provides a non-moving backing store allocator along
 //! with movable header structs (`ArrayBuffer`, `Uint8Array`).
+//! ## GC-safe host queues (persistent roots)
+//!
+//! Host-owned work queues (async tasks, I/O watchers, OS event loop userdata, etc.) are **not**
+//! automatically traced by the GC. Any queued work that captures GC-managed objects must keep those
+//! objects alive explicitly.
+//!
+//! This crate provides [`gc::HandleTable`], a generational handle table intended to act like a
+//! *persistent root set*:
+//!
+//! - Hosts store a stable [`gc::HandleId`] (convertible to/from `u64`) in their queues or OS
+//!   userdata.
+//! - The table stores a relocatable [`core::ptr::NonNull`] pointer.
+//! - During relocation/compaction the GC updates pointers in-place via
+//!   [`gc::HandleTable::update`] / [`gc::HandleTable::iter_live_mut`] under a stop-the-world (STW)
+//!   pause.
+//!
+//! The GC-managed objects themselves remain movable; only the handle IDs and handle table slots are
+//! stable.
 //!
 //! See:
 //! - `docs/write_barrier.md` for the generational GC write barrier contract.
@@ -97,6 +115,7 @@ pub use exports::*;
 pub use async_abi::*;
 pub use async_runtime::{rt_async_run_until_idle, rt_drain_microtasks};
 pub use gc::GcHeap;
+pub use gc::{HandleId, HandleTable, PersistentHandle};
 pub use gc::RememberedSet;
 pub use gc::RootHandle;
 pub use gc::RootSet;

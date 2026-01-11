@@ -7,12 +7,14 @@ use crate::trap;
 mod young;
 pub mod heap;
 pub mod roots;
+pub mod handle_table;
 pub mod weak;
 
 mod evacuate;
 mod mark;
 
 pub use heap::GcHeap;
+pub use handle_table::{HandleId, HandleTable, PersistentHandle};
 pub use roots::RememberedSet;
 pub use roots::RootHandle;
 pub use roots::RootSet;

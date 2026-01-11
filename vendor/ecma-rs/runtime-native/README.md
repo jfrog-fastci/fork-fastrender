@@ -296,3 +296,22 @@ let snap = runtime_native::rt_debug_snapshot_counters();
 ```
 
 When `rt-trace` is not enabled, all values are always `0`.
+
+## GC-safe host queues (persistent roots)
+
+Host-owned work queues (async tasks, I/O watchers, OS event loop userdata, etc.) are **not**
+automatically traced by the GC. Any queued work that captures GC-managed objects must keep those
+objects alive explicitly, and must be able to discard queued work without leaking roots.
+
+This crate provides [`gc::HandleTable`], a generational handle table intended to act like a
+*persistent root set*:
+
+- Hosts store a stable [`gc::HandleId`] (convertible to/from `u64`) in their queues or OS userdata.
+- The table stores a relocatable `NonNull<T>` pointer.
+- During relocation/compaction the GC updates pointers in-place via
+  [`gc::HandleTable::update`] / [`gc::HandleTable::iter_live_mut`] under a stop-the-world (STW)
+  pause.
+- When host work is canceled/dropped, callers must `free` the handle to allow collection.
+
+The GC-managed objects themselves remain movable; only the handle IDs and handle table slots are
+stable.

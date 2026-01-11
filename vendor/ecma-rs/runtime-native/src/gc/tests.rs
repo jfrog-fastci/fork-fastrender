@@ -176,3 +176,77 @@ impl RememberedSet for EmptyRememberedSet {
 
   fn on_promoted_object(&mut self, _obj: *mut u8, _has_young_refs: bool) {}
 }
+
+use super::handle_table::{HandleId, HandleTable};
+use core::ptr::NonNull;
+
+#[test]
+fn alloc_get_free_lifecycle() {
+  let mut table = HandleTable::<u8>::new();
+  let mut value = Box::new(123u8);
+  let ptr = NonNull::from(value.as_mut());
+
+  let id = table.alloc(ptr);
+  assert_eq!(table.get(id), Some(ptr));
+
+  assert!(table.free(id));
+  assert_eq!(table.get(id), None);
+}
+
+#[test]
+fn stale_generation_detection() {
+  let mut table = HandleTable::<u8>::new();
+
+  let mut v1 = Box::new(1u8);
+  let id1 = table.alloc(NonNull::from(v1.as_mut()));
+  assert!(table.free(id1));
+
+  let mut v2 = Box::new(2u8);
+  let id2 = table.alloc(NonNull::from(v2.as_mut()));
+
+  // The old handle must not "resurrect" a new allocation in the reused slot.
+  assert_eq!(table.get(id1), None);
+  assert_eq!(table.get(id2), Some(NonNull::from(v2.as_mut())));
+}
+
+#[test]
+fn slot_reuse_changes_generation() {
+  let mut table = HandleTable::<u8>::new();
+
+  let mut v1 = Box::new(1u8);
+  let id1 = table.alloc(NonNull::from(v1.as_mut()));
+  assert!(table.free(id1));
+
+  let mut v2 = Box::new(2u8);
+  let id2 = table.alloc(NonNull::from(v2.as_mut()));
+
+  assert_eq!(id2.index(), id1.index());
+  assert_ne!(id2.generation(), id1.generation());
+}
+
+#[test]
+fn relocation_update_changes_get_result() {
+  let mut table = HandleTable::<u8>::new();
+
+  let mut v1 = Box::new(1u8);
+  let mut v2 = Box::new(2u8);
+  let ptr1 = NonNull::from(v1.as_mut());
+  let ptr2 = NonNull::from(v2.as_mut());
+
+  let id = table.alloc(ptr1);
+  assert_eq!(table.get(id), Some(ptr1));
+
+  assert!(table.update(id, ptr2));
+  assert_eq!(table.get(id), Some(ptr2));
+}
+
+#[test]
+fn handle_id_round_trip_u64() {
+  let id = HandleId::from_parts(123, 456);
+  let raw: u64 = id.into();
+  let id2 = HandleId::from(raw);
+
+  assert_eq!(id, id2);
+  assert_eq!(id.index(), 123);
+  assert_eq!(id.generation(), 456);
+}

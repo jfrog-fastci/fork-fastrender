@@ -27,8 +27,8 @@ fn parses_register_location() {
     _ => panic!("expected Register location, got {loc:?}"),
   };
 
-  let slot = eval_location(loc, &MapRegs(Default::default())).unwrap();
-  assert_eq!(slot, LocationValue::Slot(RootSlot::Reg { dwarf_reg }));
+  let value = eval_location(loc, &MapRegs(Default::default())).unwrap();
+  assert_eq!(value, LocationValue::Slot(RootSlot::Reg { dwarf_reg }));
 }
 
 #[test]
@@ -54,8 +54,8 @@ fn parses_direct_location() {
   };
 
   let regs = MapRegs([(dwarf_reg, 0x1000)].into_iter().collect());
-  let slot = eval_location(loc, &regs).unwrap();
+  let value = eval_location(loc, &regs).unwrap();
 
   let expected = (0x1000i128 + offset as i128) as u64;
-  assert_eq!(slot, LocationValue::Const { value: expected });
+  assert_eq!(value, LocationValue::Const { value: expected });
 }
