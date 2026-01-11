@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use native_js::link::{FASTR_STACKMAPS_END_SYM, FASTR_STACKMAPS_START_SYM};
+use native_js::link::{LLVM_STACKMAPS_START_SYM, LLVM_STACKMAPS_STOP_SYM};
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SymbolScope};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -85,17 +85,18 @@ fn exported_stackmap_symbols_match_section_bounds() {
   let file = object::File::parse(&*data).unwrap();
 
   let section = file
-    .section_by_name(".llvm_stackmaps")
-    .expect("missing .llvm_stackmaps section (was it GC'd?)");
+    .section_by_name(".data.rel.ro.llvm_stackmaps")
+    .or_else(|| file.section_by_name(".llvm_stackmaps"))
+    .expect("missing stackmaps section (was it GC'd?)");
 
   let section_addr = section.address();
   let section_size = section.size();
-  assert!(section_size > 0, "expected non-empty .llvm_stackmaps");
+  assert!(section_size > 0, "expected non-empty stackmaps section");
 
   let (start, start_scope) =
-    find_symbol(&file, FASTR_STACKMAPS_START_SYM).expect("missing __fastr_stackmaps_start symbol");
+    find_symbol(&file, LLVM_STACKMAPS_START_SYM).expect("missing __start_llvm_stackmaps symbol");
   let (end, end_scope) =
-    find_symbol(&file, FASTR_STACKMAPS_END_SYM).expect("missing __fastr_stackmaps_end symbol");
+    find_symbol(&file, LLVM_STACKMAPS_STOP_SYM).expect("missing __stop_llvm_stackmaps symbol");
 
   // Generic aliases used by tooling that doesn't want project-specific symbol names.
   let (alias_start, alias_start_scope) =
@@ -106,12 +107,12 @@ fn exported_stackmap_symbols_match_section_bounds() {
   assert_ne!(
     start_scope,
     SymbolScope::Compilation,
-    "{FASTR_STACKMAPS_START_SYM} must be globally linkable (not a local symbol)"
+    "{LLVM_STACKMAPS_START_SYM} must be globally linkable (not a local symbol)"
   );
   assert_ne!(
     end_scope,
     SymbolScope::Compilation,
-    "{FASTR_STACKMAPS_END_SYM} must be globally linkable (not a local symbol)"
+    "{LLVM_STACKMAPS_STOP_SYM} must be globally linkable (not a local symbol)"
   );
   assert_ne!(
     alias_start_scope,
@@ -126,12 +127,12 @@ fn exported_stackmap_symbols_match_section_bounds() {
 
   assert_eq!(
     start, section_addr,
-    "start symbol must equal the .llvm_stackmaps section virtual address"
+    "start symbol must equal the stackmaps section virtual address"
   );
   assert_eq!(
     end.checked_sub(start).unwrap(),
     section_size,
-    "end-start must equal the .llvm_stackmaps section size"
+    "end-start must equal the stackmaps section size"
   );
   assert_eq!(alias_start, start, "__stackmaps_start must match __fastr_stackmaps_start");
   assert_eq!(alias_end, end, "__stackmaps_end must match __fastr_stackmaps_end");
@@ -151,6 +152,6 @@ fn exported_stackmap_symbols_match_section_bounds() {
   }
   assert!(
     in_readable_segment,
-    ".llvm_stackmaps not in a readable segment"
+    "stackmaps section not in a readable segment"
   );
 }

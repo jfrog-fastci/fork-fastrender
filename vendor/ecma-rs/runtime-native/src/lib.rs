@@ -267,7 +267,16 @@ pub fn rt_gc_resume_world() -> u64 {
 
 // Unit tests need a `.llvm_stackmaps` section to validate the linker-script
 // based loader without requiring LLVM statepoints in the Rust code.
-#[cfg(all(test, target_os = "linux"))]
+//
+// When the build script can generate and link `stackmap_test.o`, we already have
+// a real `.llvm_stackmaps` section and must not add a dummy one (the format is
+// not concatenation-friendly). Otherwise, add a minimal, valid StackMap v3
+// header so `stackmaps_section()` can find something to parse.
+#[cfg(all(
+  test,
+  target_os = "linux",
+  runtime_native_no_stackmap_test_artifact
+))]
 #[link_section = ".llvm_stackmaps"]
 #[no_mangle]
 pub static __RUNTIME_NATIVE_DUMMY_STACKMAPS: [u8; 16] = [
@@ -685,7 +694,7 @@ mod tests {
       "expected .llvm_stackmaps to be linked in (test includes a dummy section)"
     );
     if bytes.is_empty() {
-      // Non-Linux builds don't have the linker-script based loader yet.
+      // No stackmaps were linked into this binary.
       return;
     }
 

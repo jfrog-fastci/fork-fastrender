@@ -3,7 +3,7 @@
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::OptimizationLevel;
-use native_js::link::{LinkOpts, FASTR_STACKMAPS_END_SYM, FASTR_STACKMAPS_START_SYM};
+use native_js::link::{LLVM_STACKMAPS_START_SYM, LLVM_STACKMAPS_STOP_SYM, LinkOpts};
 use native_js::llvm::{gc, passes};
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SymbolScope};
 use std::process::Command;
@@ -42,37 +42,38 @@ fn segment_is_readable(flags: object::SegmentFlags) -> bool {
 fn assert_stackmaps_present(exe: &[u8]) {
   let file = object::File::parse(exe).expect("parse ELF");
   let section = file
-    .section_by_name(".llvm_stackmaps")
-    .expect("missing .llvm_stackmaps section (was it GC'd?)");
+    .section_by_name(".data.rel.ro.llvm_stackmaps")
+    .or_else(|| file.section_by_name(".llvm_stackmaps"))
+    .expect("missing stackmaps section (was it GC'd?)");
 
   let section_addr = section.address();
   let section_size = section.size();
-  assert!(section_size > 0, "expected non-empty .llvm_stackmaps");
+  assert!(section_size > 0, "expected non-empty stackmaps section");
 
   let (start, start_scope) =
-    find_symbol(&file, FASTR_STACKMAPS_START_SYM).expect("missing __fastr_stackmaps_start symbol");
+    find_symbol(&file, LLVM_STACKMAPS_START_SYM).expect("missing __start_llvm_stackmaps symbol");
   let (end, end_scope) =
-    find_symbol(&file, FASTR_STACKMAPS_END_SYM).expect("missing __fastr_stackmaps_end symbol");
+    find_symbol(&file, LLVM_STACKMAPS_STOP_SYM).expect("missing __stop_llvm_stackmaps symbol");
 
   assert_ne!(
     start_scope,
     SymbolScope::Compilation,
-    "{FASTR_STACKMAPS_START_SYM} must be globally linkable (not a local symbol)"
+    "{LLVM_STACKMAPS_START_SYM} must be globally linkable (not a local symbol)"
   );
   assert_ne!(
     end_scope,
     SymbolScope::Compilation,
-    "{FASTR_STACKMAPS_END_SYM} must be globally linkable (not a local symbol)"
+    "{LLVM_STACKMAPS_STOP_SYM} must be globally linkable (not a local symbol)"
   );
 
   assert_eq!(
     start, section_addr,
-    "start symbol must equal the .llvm_stackmaps section virtual address"
+    "start symbol must equal the stackmaps section virtual address"
   );
   assert_eq!(
     end.checked_sub(start).unwrap(),
     section_size,
-    "end-start must equal the .llvm_stackmaps section size"
+    "end-start must equal the stackmaps section size"
   );
 
   // Optional: ensure the section is backed by a readable load segment so the runtime can read the
@@ -90,7 +91,7 @@ fn assert_stackmaps_present(exe: &[u8]) {
   }
   assert!(
     in_readable_segment,
-    ".llvm_stackmaps not in a readable segment"
+    "stackmaps section not in a readable segment"
   );
 }
 

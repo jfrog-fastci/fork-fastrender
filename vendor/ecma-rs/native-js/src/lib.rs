@@ -23,19 +23,19 @@
 //! The native-js link pipeline therefore exports two **global** symbols that delimit the in-memory
 //! stackmap blob:
 //!
-//! - [`link::FASTR_STACKMAPS_START_SYM`]
-//! - [`link::FASTR_STACKMAPS_END_SYM`]
+//! - [`link::LLVM_STACKMAPS_START_SYM`]
+//! - [`link::LLVM_STACKMAPS_STOP_SYM`]
 //!
 //! Runtime usage (Rust):
 //!
 //! ```ignore
 //! extern "C" {
-//!   static __fastr_stackmaps_start: u8;
-//!   static __fastr_stackmaps_end: u8;
+//!   static __start_llvm_stackmaps: u8;
+//!   static __stop_llvm_stackmaps: u8;
 //! }
 //!
-//! let ptr = unsafe { &__fastr_stackmaps_start as *const u8 };
-//! let len = unsafe { (&__fastr_stackmaps_end as *const u8).offset_from(ptr) as usize };
+//! let ptr = unsafe { &__start_llvm_stackmaps as *const u8 };
+//! let len = unsafe { (&__stop_llvm_stackmaps as *const u8).offset_from(ptr) as usize };
 //! let stackmaps = unsafe { std::slice::from_raw_parts(ptr, len) };
 //! ```
 //!

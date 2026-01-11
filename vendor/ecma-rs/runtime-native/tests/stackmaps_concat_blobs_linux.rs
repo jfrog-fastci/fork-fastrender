@@ -81,11 +81,12 @@ fn llvm_stackmaps_section(exe: &Path) -> Vec<u8> {
   let bytes = fs::read(exe).expect("read linked executable");
   let file = object::File::parse(&*bytes).expect("parse linked executable");
   let section = file
-    .section_by_name(".llvm_stackmaps")
-    .expect("missing .llvm_stackmaps section (linker GC?)");
+    .section_by_name(".data.rel.ro.llvm_stackmaps")
+    .or_else(|| file.section_by_name(".llvm_stackmaps"))
+    .expect("missing stackmaps section (linker GC?)");
   section
     .data()
-    .expect("read .llvm_stackmaps section bytes")
+    .expect("read stackmaps section bytes")
     .to_vec()
 }
 
@@ -168,13 +169,13 @@ fn parses_linker_concatenated_stackmap_blobs_and_indexes_all_callsites() {
   link_exe(clang, &exe, &[a_o, b_o]);
 
   let stackmaps_bytes = llvm_stackmaps_section(&exe);
-  assert!(!stackmaps_bytes.is_empty(), "expected non-empty .llvm_stackmaps");
+  assert!(!stackmaps_bytes.is_empty(), "expected non-empty stackmaps section");
 
   let blobs = parse_all_stackmaps(&stackmaps_bytes).expect("parse concatenated stackmap blobs");
   assert_eq!(
     blobs.len(),
     2,
-    "expected 2 concatenated StackMap blobs in final .llvm_stackmaps section"
+    "expected 2 concatenated StackMap blobs in final stackmaps section"
   );
 
   let mut expected_callsites: Vec<(u64, u64)> = Vec::new();

@@ -54,9 +54,9 @@ Example (from the workspace root):
 ```bash
 cc -std=c99 \
   -I runtime-native/include \
+  -Wl,-T,runtime-native/link/stackmaps.ld \
   /path/to/program.c \
   target/release/libruntime_native.a \
-  -Wl,-T,runtime-native/stackmaps.ld \
   -o program
 ```
 
@@ -65,9 +65,9 @@ If you want to force LLVM lld explicitly:
 ```bash
 clang-18 -fuse-ld=lld-18 \
   -I runtime-native/include \
+  -Wl,-T,runtime-native/link/stackmaps.ld \
   /path/to/program.c \
   target/release/libruntime_native.a \
-  -Wl,-T,runtime-native/stackmaps.ld \
   -o program
 ```
 
@@ -75,14 +75,18 @@ If your program uses LLVM statepoints / stackmaps (i.e. it contains an
 in-memory `.llvm_stackmaps` section) and you want the runtime to be able to
 locate it for stack walking, you must also export the boundary symbols:
 
-- `__fastr_stackmaps_start`
-- `__fastr_stackmaps_end`
+- `__start_llvm_stackmaps`
+- `__stop_llvm_stackmaps`
 
-The `runtime-native/stackmaps.ld` linker script fragment defines these symbols
-(and also defines `__stackmaps_{start,end}` as a generic alias, legacy
-`__llvm_stackmaps_{start,end}` aliases, plus conventional `__start_llvm_stackmaps`
-/ `__stop_llvm_stackmaps`). When the section is absent, the symbols still define
-an empty range (`start == end`).
+The `runtime-native/link/stackmaps.ld` linker script fragment defines these symbols and also
+provides aliases:
+
+- `__stackmaps_{start,end}` (generic alias)
+- `__fastr_stackmaps_{start,end}` and `__llvm_stackmaps_{start,end}` (legacy aliases)
+
+`runtime-native/stackmaps.ld` is kept for backwards compatibility with older build scripts.
+
+When the section is absent, the symbols still define an empty range (`start == stop`).
 
 Note: lld does not auto-define GNU ld-style `__start_<section>` / `__stop_<section>`
 symbols, so the linker script (or an equivalent mechanism) is required.
@@ -90,7 +94,7 @@ symbols, so the linker script (or an equivalent mechanism) is required.
 When linking from C/clang, pass it explicitly:
 
 ```bash
-cc ... -Wl,-T,runtime-native/stackmaps.ld ...
+cc ... -Wl,-T,runtime-native/link/stackmaps.ld ...
 ```
 
 When linking from Rust, you still need to pass the script to the final link step
@@ -100,9 +104,19 @@ When linking from Rust, you still need to pass the script to the final link step
 RUSTFLAGS="\
   -C linker=clang-18 \
   -C link-arg=-fuse-ld=lld \
-  -C link-arg=-Wl,-T,$PWD/runtime-native/stackmaps.ld" \
+  -C link-arg=-Wl,-T,$PWD/runtime-native/link/stackmaps.ld" \
   bash scripts/cargo_agent.sh build
 ```
+
+For `rustc`/Cargo consumers that don't use the feature-based build script hook, the equivalent is:
+
+```bash
+# Example:
+#   RUSTFLAGS="-C link-arg=-Wl,-T,/abs/path/to/runtime-native/link/stackmaps.ld" cargo build ...
+```
+
+PIE note: current LLVM 18 experiments may emit `TEXTREL` warnings due to relocations in
+`.llvm_stackmaps`. Linking with `-no-pie` avoids this in a minimal setup.
 
 Note: if you use `-L ... -lruntime_native` instead of passing the `.a` file directly,
 ensure the search path points at `target/release`.

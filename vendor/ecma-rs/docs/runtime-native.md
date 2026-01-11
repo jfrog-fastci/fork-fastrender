@@ -394,21 +394,23 @@ Therefore the runtime must not rely on LLVM’s local symbol; it must locate the
 stackmap bytes some other way.
 
 ### 5.3 Locating stackmaps at runtime (Linux/ELF)
-Instead of parsing `/proc/self/exe`, the `native-js` link step exports two
-**global** symbols that delimit the in-memory `.llvm_stackmaps` blob:
+Instead of parsing `/proc/self/exe`, the final link step can export two **global**
+symbols that delimit the in-memory `.llvm_stackmaps` blob:
 
-- `__fastr_stackmaps_start`
-- `__fastr_stackmaps_end`
+- `__start_llvm_stackmaps`
+- `__stop_llvm_stackmaps`
 
-They are defined by a small linker-script fragment injected during the final
-link (the `KEEP` is important so `--gc-sections` does not discard stackmaps):
+They are defined by a small linker-script fragment (the `KEEP` is important so
+`--gc-sections` does not discard stackmaps). See:
+
+- `runtime-native/link/stackmaps.ld`
 
 ```ld
 SECTIONS {
-  .llvm_stackmaps : {
-    __fastr_stackmaps_start = .;
+  .llvm_stackmaps : ALIGN(8) {
+    __start_llvm_stackmaps = .;
     KEEP(*(.llvm_stackmaps .llvm_stackmaps.*))
-    __fastr_stackmaps_end = .;
+    __stop_llvm_stackmaps = .;
   }
 } INSERT AFTER .text;
 ```
@@ -422,12 +424,12 @@ directly from memory using pointer arithmetic; no ELF parsing and no
 
 ```rust
 extern "C" {
-  static __fastr_stackmaps_start: u8;
-  static __fastr_stackmaps_end: u8;
+  static __start_llvm_stackmaps: u8;
+  static __stop_llvm_stackmaps: u8;
 }
 
-let start = unsafe { &__fastr_stackmaps_start as *const u8 };
-let end = unsafe { &__fastr_stackmaps_end as *const u8 };
+let start = unsafe { &__start_llvm_stackmaps as *const u8 };
+let end = unsafe { &__stop_llvm_stackmaps as *const u8 };
 let len = unsafe { end.offset_from(start) as usize };
 let stackmaps = unsafe { std::slice::from_raw_parts(start, len) };
 ```
@@ -435,11 +437,11 @@ let stackmaps = unsafe { std::slice::from_raw_parts(start, len) };
 #### Runtime usage (C)
 
 ```c
-extern const unsigned char __fastr_stackmaps_start;
-extern const unsigned char __fastr_stackmaps_end;
+extern const unsigned char __start_llvm_stackmaps;
+extern const unsigned char __stop_llvm_stackmaps;
 
-const uint8_t* start = &__fastr_stackmaps_start;
-const uint8_t* end = &__fastr_stackmaps_end;
+const uint8_t* start = &__start_llvm_stackmaps;
+const uint8_t* end = &__stop_llvm_stackmaps;
 size_t len = (size_t)(end - start);
 ```
 

@@ -170,13 +170,15 @@ int main(void) {
 
   let include_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
   // On Linux/ELF, `runtime-native` expects the final binary to export symbols
-  // delimiting the (possibly empty) in-memory `.llvm_stackmaps` section:
-  // - `__fastr_stackmaps_start` / `__fastr_stackmaps_end`
-  // - legacy aliases: `__llvm_stackmaps_start` / `__llvm_stackmaps_end`
+  // delimiting the (possibly empty) in-memory `.llvm_stackmaps` section
+  // (`__start_llvm_stackmaps` / `__stop_llvm_stackmaps`, plus legacy aliases).
   //
-  // When linking from C directly (bypassing Cargo/rustc), pass the same linker script.
+  // When linking from C directly (bypassing Cargo/rustc), we must pass the same
+  // script to the linker.
   let stackmaps_ld = if cfg!(target_os = "linux") {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("stackmaps.ld");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("link")
+      .join("stackmaps.ld");
     assert!(
       path.exists(),
       "missing stackmaps linker script at {}",

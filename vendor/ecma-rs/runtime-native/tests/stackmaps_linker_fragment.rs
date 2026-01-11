@@ -77,23 +77,24 @@ fn segment_is_readable(flags: object::SegmentFlags) -> bool {
 
 #[test]
 fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
-  const START_SYM: &str = "__fastr_stackmaps_start";
-  const END_SYM: &str = "__fastr_stackmaps_end";
-  // Legacy aliases that some tooling used before we standardized on the
-  // `__fastr_stackmaps_*` naming.
+  const START_SYM: &str = "__start_llvm_stackmaps";
+  const STOP_SYM: &str = "__stop_llvm_stackmaps";
+  // Generic alias.
+  const GENERIC_START_SYM: &str = "__stackmaps_start";
+  const GENERIC_END_SYM: &str = "__stackmaps_end";
+  // Legacy aliases (kept for compatibility with older tooling).
   const LEGACY_START_SYM: &str = "__llvm_stackmaps_start";
   const LEGACY_END_SYM: &str = "__llvm_stackmaps_end";
-  // Conventional GNU ld/lld section boundary symbols (not always provided
-  // automatically for `.llvm_stackmaps`, but `stackmaps.ld` defines them via
-  // `PROVIDE` for compatibility).
-  const START_STOP_START_SYM: &str = "__start_llvm_stackmaps";
-  const START_STOP_END_SYM: &str = "__stop_llvm_stackmaps";
+  const LEGACY_FASTR_START_SYM: &str = "__fastr_stackmaps_start";
+  const LEGACY_FASTR_END_SYM: &str = "__fastr_stackmaps_end";
 
   let td = tempfile::tempdir().unwrap();
   let obj = compile_obj(td.path());
 
   let exe = td.path().join("a.out");
-  let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("stackmaps.ld");
+  let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("link")
+    .join("stackmaps.ld");
 
   // Link a minimal binary (no stdlib/CRT) using our linker script fragment.
   let status = Command::new(find_clang())
@@ -122,17 +123,19 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let section_size = section.size();
   assert!(section_size > 0, "expected non-empty .data.rel.ro.llvm_stackmaps");
 
-  let (start, start_scope) = find_symbol(&file, START_SYM).expect("missing __fastr_stackmaps_start");
-  let (end, end_scope) = find_symbol(&file, END_SYM).expect("missing __fastr_stackmaps_end");
-
+  let (start, start_scope) = find_symbol(&file, START_SYM).expect("missing __start_llvm_stackmaps");
+  let (stop, stop_scope) = find_symbol(&file, STOP_SYM).expect("missing __stop_llvm_stackmaps");
+  let (generic_start, generic_start_scope) =
+    find_symbol(&file, GENERIC_START_SYM).expect("missing __stackmaps_start");
+  let (generic_end, generic_end_scope) = find_symbol(&file, GENERIC_END_SYM).expect("missing __stackmaps_end");
   let (legacy_start, legacy_start_scope) =
     find_symbol(&file, LEGACY_START_SYM).expect("missing __llvm_stackmaps_start");
   let (legacy_end, legacy_end_scope) =
     find_symbol(&file, LEGACY_END_SYM).expect("missing __llvm_stackmaps_end");
-  let (start_stop_start, start_stop_start_scope) =
-    find_symbol(&file, START_STOP_START_SYM).expect("missing __start_llvm_stackmaps");
-  let (start_stop_end, start_stop_end_scope) =
-    find_symbol(&file, START_STOP_END_SYM).expect("missing __stop_llvm_stackmaps");
+  let (fastr_start, fastr_start_scope) =
+    find_symbol(&file, LEGACY_FASTR_START_SYM).expect("missing __fastr_stackmaps_start");
+  let (fastr_end, fastr_end_scope) =
+    find_symbol(&file, LEGACY_FASTR_END_SYM).expect("missing __fastr_stackmaps_end");
 
   assert_ne!(
     start_scope,
@@ -140,9 +143,19 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     "{START_SYM} must be globally linkable (not a local symbol)"
   );
   assert_ne!(
-    end_scope,
+    stop_scope,
     SymbolScope::Compilation,
-    "{END_SYM} must be globally linkable (not a local symbol)"
+    "{STOP_SYM} must be globally linkable (not a local symbol)"
+  );
+  assert_ne!(
+    generic_start_scope,
+    SymbolScope::Compilation,
+    "{GENERIC_START_SYM} must be globally linkable (not a local symbol)"
+  );
+  assert_ne!(
+    generic_end_scope,
+    SymbolScope::Compilation,
+    "{GENERIC_END_SYM} must be globally linkable (not a local symbol)"
   );
   assert_ne!(
     legacy_start_scope,
@@ -155,14 +168,14 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     "{LEGACY_END_SYM} must be globally linkable (not a local symbol)"
   );
   assert_ne!(
-    start_stop_start_scope,
+    fastr_start_scope,
     SymbolScope::Compilation,
-    "{START_STOP_START_SYM} must be globally linkable (not a local symbol)"
+    "{LEGACY_FASTR_START_SYM} must be globally linkable (not a local symbol)"
   );
   assert_ne!(
-    start_stop_end_scope,
+    fastr_end_scope,
     SymbolScope::Compilation,
-    "{START_STOP_END_SYM} must be globally linkable (not a local symbol)"
+    "{LEGACY_FASTR_END_SYM} must be globally linkable (not a local symbol)"
   );
 
   assert_eq!(
@@ -170,15 +183,17 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     "start symbol must equal the .data.rel.ro.llvm_stackmaps section virtual address"
   );
   assert_eq!(
-    end.checked_sub(start).unwrap(),
+    stop.checked_sub(start).unwrap(),
     section_size,
-    "end-start must equal the .data.rel.ro.llvm_stackmaps section size"
+    "stop-start must equal the .data.rel.ro.llvm_stackmaps section size"
   );
 
+  assert_eq!(generic_start, start, "generic start symbol must match");
+  assert_eq!(generic_end, stop, "generic end symbol must match");
   assert_eq!(legacy_start, start, "legacy start symbol must match");
-  assert_eq!(legacy_end, end, "legacy end symbol must match");
-  assert_eq!(start_stop_start, start, "start/stop start symbol must match");
-  assert_eq!(start_stop_end, end, "start/stop end symbol must match");
+  assert_eq!(legacy_end, stop, "legacy end symbol must match");
+  assert_eq!(fastr_start, start, "fastr start symbol must match");
+  assert_eq!(fastr_end, stop, "fastr end symbol must match");
 
   // Ensure the section is backed by a readable load segment so the runtime can
   // read the bytes directly from memory.

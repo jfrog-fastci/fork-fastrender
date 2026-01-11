@@ -9,8 +9,8 @@ fn main() {
   println!("cargo::rustc-check-cfg=cfg(runtime_native_no_stackmap_test_artifact)");
 
   // Linker script (optional): expose `.llvm_stackmaps` as a loaded in-memory byte slice via
-  // linker-defined start/end symbols (see `stackmaps.ld`).
-  println!("cargo:rerun-if-changed=stackmaps.ld");
+  // linker-defined start/stop symbols (see `link/stackmaps.ld`).
+  println!("cargo:rerun-if-changed=link/stackmaps.ld");
   maybe_enable_stackmaps_linker_symbols();
 
   // Integration test artifact (x86_64 only): compile a tiny statepoint module and extract the
@@ -31,7 +31,13 @@ fn maybe_enable_stackmaps_linker_symbols() {
   }
 
   let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-  let script = manifest_dir.join("stackmaps.ld");
+  let script = manifest_dir.join("link").join("stackmaps.ld");
+
+  // Allow `.llvm_stackmaps` relocations in PIE binaries when using lld.
+  //
+  // LLVM 18 emits absolute relocations in `.llvm_stackmaps` that can otherwise
+  // trigger "TEXTREL" style link failures under `-pie`. See `docs/runtime-native.md`.
+  println!("cargo:rustc-link-arg=-Wl,-z,notext");
 
   // Pass an *absolute* path so the linker can always find it, regardless of the current working
   // directory Cargo uses for the link step.

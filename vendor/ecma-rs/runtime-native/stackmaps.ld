@@ -1,54 +1,34 @@
 /* Linker script fragment (Linux/ELF) for retaining and exposing LLVM stack maps.
  *
- * This is inserted into the linker's default script to avoid re-specifying the
- * whole layout.
+ * NOTE: Prefer `runtime-native/link/stackmaps.ld`. This file is kept for
+ * backwards compatibility with older build scripts and external link commands.
  *
- * We:
- *  - keep LLVM stackmaps even under `--gc-sections`
- *  - define start/end symbols over the *loaded* section bytes
- *  - inject the section into the default linker script via `INSERT AFTER`
- *
- * We insert after `.text` (instead of the more intuitive `.rodata`) because
- * lld does not create an empty `.rodata` output section, and will error if an
- * `INSERT AFTER .rodata` fragment is used when the input objects don't
- * contribute any `.rodata` (common in minimal binaries/tests).
- *
- * Note: placing this output section "inside" the default RELRO block (e.g.
- * `INSERT BEFORE .dynamic`) would be more intuitive, but lld will error with:
- *
- *   section: .dynamic is not contiguous with other relro sections
- *
- * if we inject a custom output section between its built-in RELRO sections.
+ * See `link/stackmaps.ld` for detailed rationale and documentation.
  */
 
-SECTIONS
-{
+SECTIONS {
   /* Hardened location: writable during relocation, then protected by RELRO. */
-  .data.rel.ro.llvm_stackmaps : ALIGN(8)
-  {
-    /* Preferred symbol names (shared with native-js). */
+  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
+    __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;
-    /* Backwards compatible aliases (older runtime-native prototypes / generic tooling). */
     __stackmaps_start = .;
     __llvm_stackmaps_start = .;
-    __start_llvm_stackmaps = .;
-    /* Conventional GNU ld/lld section boundary symbol names. */
     KEEP(*(.data.rel.ro.llvm_stackmaps))
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     /* Legacy: older LLVM/object files may still emit `.llvm_stackmaps`. */
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
+
+    __stop_llvm_stackmaps = .;
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
-    __stop_llvm_stackmaps = .;
   }
 
   /* Faultmaps are emitted by some patchpoint configurations. Keep them for
    * parity with `.llvm_stackmaps` and to avoid accidental removal under
    * `--gc-sections`. */
-  .data.rel.ro.llvm_faultmaps : ALIGN(8)
-  {
+  .data.rel.ro.llvm_faultmaps : ALIGN(8) {
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))
@@ -57,6 +37,4 @@ SECTIONS
     KEEP(*(.llvm_faultmaps.*))
     __llvm_faultmaps_end = .;
   }
-}
-
-INSERT AFTER .text;
+} INSERT AFTER .text;

@@ -862,23 +862,23 @@ impl StackMaps {
     &self.raws
   }
 
-  /// Parse the in-memory `.llvm_stackmaps` section using native-js exported
+  /// Parse the in-memory `.llvm_stackmaps` section using linker-defined
   /// boundary symbols.
   ///
   /// This requires the final linked binary to contain a `.llvm_stackmaps`
   /// section and define:
-  /// - `__fastr_stackmaps_start`
-  /// - `__fastr_stackmaps_end`
+  /// - `__start_llvm_stackmaps`
+  /// - `__stop_llvm_stackmaps`
   ///
-  /// These symbols are provided by a small linker script fragment in the
-  /// native-js link pipeline (and `KEEP`ed so `--gc-sections` does not discard
-  /// them).
+  /// These symbols are provided by `runtime-native/link/stackmaps.ld` (and
+  /// `KEEP`ed so `--gc-sections` does not discard them).
   ///
-  /// Fallback options (not implemented here):
-  /// - Parse `/proc/self/exe` to find `.llvm_stackmaps` on disk and read it from mapped memory.
+  /// For a higher-level API that falls back to ELF parsing when the linker
+  /// symbols are not available, see [`crate::stackmaps_loader::stackmaps_section`].
   #[cfg(all(target_os = "linux", feature = "llvm_stackmaps_linker"))]
   pub fn parse_from_linker_symbols() -> Result<Self, StackMapError> {
-    Self::parse(crate::stackmaps_section())
+    let bytes = crate::stackmaps_loader::load_llvm_stackmaps_via_symbols().unwrap_or(&[]);
+    Self::parse(bytes)
   }
 
   /// Load the `.llvm_stackmaps` section for the current process (Linux x86_64).
@@ -894,13 +894,13 @@ impl StackMaps {
 
     let elf = object::File::parse(&*exe_bytes).context("parse ELF")?;
     let section = elf
-      .section_by_name(".llvm_stackmaps")
-      .ok_or_else(|| anyhow::anyhow!("main executable is missing .llvm_stackmaps section"))?;
+      .section_by_name(".data.rel.ro.llvm_stackmaps")
+      .or_else(|| elf.section_by_name(".llvm_stackmaps"))
+      .ok_or_else(|| anyhow::anyhow!("main executable is missing a stackmaps section"))?;
 
     let sh_addr = section.address();
     let sh_size = section.size();
-    let sh_size_usize =
-      usize::try_from(sh_size).context(".llvm_stackmaps section size overflows usize")?;
+    let sh_size_usize = usize::try_from(sh_size).context("stackmaps section size overflows usize")?;
 
     let base = main_executable_base_addr().context("find main executable base address")?;
     let mapped_addr_u64 = (base as u64).checked_add(sh_addr).ok_or_else(|| {
@@ -908,10 +908,10 @@ impl StackMaps {
     })?;
     let mapped_addr = usize::try_from(mapped_addr_u64).context("mapped address overflows")?;
 
-    // SAFETY: We trust the ELF metadata for `.llvm_stackmaps` and assume it is mapped as a
+    // SAFETY: We trust the ELF metadata for the stackmaps section and assume it is mapped as a
     // readable segment in the current process.
     let bytes = unsafe { std::slice::from_raw_parts(mapped_addr as *const u8, sh_size_usize) };
-    Ok(Self::parse(bytes).context("parse .llvm_stackmaps")?)
+    Ok(Self::parse(bytes).context("parse stackmaps section")?)
   }
 
   #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]

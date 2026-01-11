@@ -163,11 +163,12 @@ fn llvm_stackmaps_section(elf: &Path) -> Vec<u8> {
   let data = fs::read(elf).unwrap();
   let file = object::File::parse(&*data).unwrap();
   let section = file
-    .section_by_name(".llvm_stackmaps")
-    .expect("missing .llvm_stackmaps section (was it GC'd?)");
+    .section_by_name(".data.rel.ro.llvm_stackmaps")
+    .or_else(|| file.section_by_name(".llvm_stackmaps"))
+    .expect("missing stackmaps section (was it GC'd?)");
   section
     .data()
-    .unwrap_or_else(|err| panic!("failed to read .llvm_stackmaps contents: {err}"))
+    .unwrap_or_else(|err| panic!("failed to read stackmaps section contents: {err}"))
     .to_vec()
 }
 
@@ -356,7 +357,7 @@ fn object_link_concatenates_multiple_stackmap_blobs() {
   let elf = td.path().join("a.out");
   native_js::link::link_elf_executable(&elf, &[obj_a, obj_b]).unwrap();
   let stackmaps = llvm_stackmaps_section(&elf);
-  assert!(!stackmaps.is_empty(), "expected non-empty .llvm_stackmaps");
+  assert!(!stackmaps.is_empty(), "expected non-empty stackmaps section");
 
   let blobs = parse_stackmap_blobs(&stackmaps);
   assert_eq!(
@@ -431,7 +432,7 @@ fn lto_link_merges_stackmap_blobs_into_one_table() {
   let elf = td.path().join("a.out");
   native_js::link::link_elf_executable_lto(&elf, &[bc_a, bc_b]).unwrap();
   let stackmaps = llvm_stackmaps_section(&elf);
-  assert!(!stackmaps.is_empty(), "expected non-empty .llvm_stackmaps");
+  assert!(!stackmaps.is_empty(), "expected non-empty stackmaps section");
 
   let blobs = parse_stackmap_blobs(&stackmaps);
   assert_eq!(

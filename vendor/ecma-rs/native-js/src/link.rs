@@ -32,9 +32,9 @@ use std::process::Command;
 use std::process::Stdio;
 
 /// Symbol exported by the final ELF that points at the first byte of `.llvm_stackmaps`.
-pub const FASTR_STACKMAPS_START_SYM: &str = "__fastr_stackmaps_start";
+pub const LLVM_STACKMAPS_START_SYM: &str = "__start_llvm_stackmaps";
 /// Symbol exported by the final ELF that points one byte past the end of `.llvm_stackmaps`.
-pub const FASTR_STACKMAPS_END_SYM: &str = "__fastr_stackmaps_end";
+pub const LLVM_STACKMAPS_STOP_SYM: &str = "__stop_llvm_stackmaps";
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum LinkerFlavor {
@@ -91,21 +91,8 @@ impl Default for LinkOpts {
 /// We insert after `.text` (instead of the more intuitive `.rodata`) because lld does not create an
 /// empty `.rodata` output section, and will error if an `INSERT AFTER .rodata` fragment is used
 /// when the input objects don't contribute any `.rodata` (common in minimal binaries/tests).
-///
-/// `KEEP` ensures `.llvm_stackmaps` isn't discarded by `--gc-sections`.
-const LLVM_STACKMAPS_LD_FRAGMENT: &str = r#"
-SECTIONS {
-  .llvm_stackmaps : {
-    __fastr_stackmaps_start = .;
-    __stackmaps_start = .;
-    __llvm_stackmaps_start = .;
-    KEEP(*(.llvm_stackmaps .llvm_stackmaps.*))
-    __fastr_stackmaps_end = .;
-    __stackmaps_end = .;
-    __llvm_stackmaps_end = .;
-  }
-} INSERT AFTER .text;
-"#;
+/// Keep this in sync with `runtime-native/link/stackmaps.ld`.
+const LLVM_STACKMAPS_LD_FRAGMENT: &str = include_str!("../../runtime-native/link/stackmaps.ld");
 
 fn write_stackmaps_linker_script(path: &Path) -> anyhow::Result<()> {
   fs::write(path, LLVM_STACKMAPS_LD_FRAGMENT).with_context(|| {
@@ -169,7 +156,7 @@ fn find_llvm_objcopy() -> Option<&'static str> {
 
 /// Link one or more object files into an ELF executable.
 ///
-/// The resulting binary will export [`FASTR_STACKMAPS_START_SYM`] and [`FASTR_STACKMAPS_END_SYM`]
+/// The resulting binary will export [`LLVM_STACKMAPS_START_SYM`] and [`LLVM_STACKMAPS_STOP_SYM`]
 /// that delimit the `.llvm_stackmaps` section in memory.
 pub fn link_elf_executable(output_path: &Path, object_files: &[PathBuf]) -> anyhow::Result<()> {
   link_elf_executable_with_options(output_path, object_files, LinkOpts::default())
@@ -188,7 +175,7 @@ pub fn link_elf_executable_with_options(
   fs::create_dir_all(out_dir)
     .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
 
-  let script_path = out_dir.join("fastr_stackmaps.ld");
+  let script_path = out_dir.join("llvm_stackmaps.ld");
   write_stackmaps_linker_script(&script_path)?;
 
   // If producing a PIE, ensure `.llvm_stackmaps` is writable in the input objects so lld can apply
@@ -307,7 +294,7 @@ pub fn link_bitcode_to_exe(bitcode: &[u8], opts: LinkOpts) -> anyhow::Result<Vec
   let td = tempfile::tempdir().context("failed to create tempdir for LTO link")?;
   let bc_path = td.path().join("module.bc");
   let exe_path = td.path().join("a.out");
-  let script_path = td.path().join("fastr_stackmaps.ld");
+  let script_path = td.path().join("llvm_stackmaps.ld");
 
   fs::write(&bc_path, bitcode)
     .with_context(|| format!("failed to write bitcode to {}", bc_path.display()))?;
@@ -378,11 +365,12 @@ pub fn link_bitcode_to_exe(_bitcode: &[u8], _opts: LinkOpts) -> anyhow::Result<V
 /// modules are linked under `-flto` (LLVM tends to emit a single merged StackMaps blob in this
 /// mode, rather than concatenated per-object blobs).
 ///
-/// The resulting binary will export [`FASTR_STACKMAPS_START_SYM`] and [`FASTR_STACKMAPS_END_SYM`]
+/// The resulting binary will export [`LLVM_STACKMAPS_START_SYM`] and [`LLVM_STACKMAPS_STOP_SYM`]
 /// that delimit the `.llvm_stackmaps` section in memory.
 pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) -> anyhow::Result<()> {
   let opts = LinkOpts::default();
-  let clang = find_clang_18().context("unable to locate clang-18 (required for LLVM 18 LTO bitcode)")?;
+  let clang =
+    find_clang_18().context("unable to locate clang-18 (required for LLVM 18 LTO bitcode)")?;
   let out_dir = output_path
     .parent()
     .context("output_path must have a parent directory")?;
@@ -390,7 +378,7 @@ pub fn link_elf_executable_lto(output_path: &Path, bitcode_files: &[PathBuf]) ->
   fs::create_dir_all(out_dir)
     .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
 
-  let script_path = out_dir.join("fastr_stackmaps.ld");
+  let script_path = out_dir.join("llvm_stackmaps.ld");
   write_stackmaps_linker_script(&script_path)?;
 
   let mut cmd = Command::new(clang);

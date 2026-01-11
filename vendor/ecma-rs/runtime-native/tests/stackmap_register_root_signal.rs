@@ -123,11 +123,12 @@ fn stackmaps_section_bytes_from_loaded_elf(path: &Path, base_addr: usize) -> &'s
   let bytes = fs::read(path).expect("read shared library");
   let obj = object::File::parse(&*bytes).expect("parse shared library");
   let section = obj
-    .section_by_name(".llvm_stackmaps")
-    .expect("shared library should contain .llvm_stackmaps section");
+    .section_by_name(".data.rel.ro.llvm_stackmaps")
+    .or_else(|| obj.section_by_name(".llvm_stackmaps"))
+    .expect("shared library should contain a stackmaps section");
   let addr = section.address() as usize;
   let size = section.size() as usize;
-  assert!(size > 0, ".llvm_stackmaps section is empty");
+  assert!(size > 0, "stackmaps section is empty");
 
   unsafe { core::slice::from_raw_parts((base_addr + addr) as *const u8, size) }
 }
@@ -193,7 +194,7 @@ entry:
     let base = dl_base_addr(sym);
 
     let stackmap_bytes = stackmaps_section_bytes_from_loaded_elf(&so, base);
-    let stackmaps = StackMaps::parse(stackmap_bytes).expect("parse relocated .llvm_stackmaps section");
+    let stackmaps = StackMaps::parse(stackmap_bytes).expect("parse relocated stackmaps section");
     STACKMAPS.set(stackmaps).ok().expect("STACKMAPS initialized once");
 
     // Install SIGILL handler with SA_SIGINFO so we can modify the ucontext.

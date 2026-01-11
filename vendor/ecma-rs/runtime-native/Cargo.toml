@@ -11,16 +11,21 @@ build = "build.rs"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
-# Enables parsing the in-memory `.llvm_stackmaps` section via the `native-js`
-# exported boundary symbols:
-# - `__fastr_stackmaps_start`
-# - `__fastr_stackmaps_end`
+# Enables parsing the in-memory `.llvm_stackmaps` section via linker-defined
+# boundary symbols.
 #
-# The linker script fragment (`stackmaps.ld`) defines these symbols on Linux/ELF.
-# It also defines `__stackmaps_start` / `__stackmaps_end` as a generic alias.
+# Preferred names (shared with `native-js`):
+# - `__start_llvm_stackmaps`
+# - `__stop_llvm_stackmaps`
 #
-# Keep this feature opt-in: test binaries and non-AOT tools don't always link a
-# `.llvm_stackmaps` section, and missing symbols would otherwise fail the link.
+# `runtime-native/link/stackmaps.ld` defines these on Linux/ELF and also provides
+# legacy/generic aliases:
+# - `__fastr_stackmaps_{start,end}`
+# - `__llvm_stackmaps_{start,end}`
+# - `__stackmaps_{start,end}`
+#
+# Keep this feature opt-in: some binaries don't link stackmaps, and missing
+# symbols would otherwise fail the link.
 llvm_stackmaps_linker = []
 
 # Always-on statepoint verification can be enabled by consumers that want a hard failure in
@@ -108,3 +113,8 @@ harness = false
 [[bench]]
 name = "microtasks"
 harness = false
+
+[[test]]
+name = "stackmaps_symbols_runtime"
+path = "tests/bin/stackmaps_symbols_runtime.rs"
+required-features = ["llvm_stackmaps_linker"]
