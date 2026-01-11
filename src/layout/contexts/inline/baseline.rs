@@ -205,9 +205,12 @@ pub struct LineBaselineAccumulator {
 
   /// Whether any inline-level items have contributed to this line.
   ///
-  /// The CSS2.1 line box algorithm determines line height from the inline-level boxes
-  /// on that line. The "strut" (root inline box metrics) only applies when the line is
-  /// effectively empty (e.g. a line produced by `<br>`).
+  /// The CSS2.1 line box algorithm determines line height from the inline-level boxes on that
+  /// line, including the "strut" (root inline box metrics) which acts as a minimum ascent/descent
+  /// even when the line contains other items.
+  ///
+  /// This flag is only used to detect truly empty lines (e.g. a line produced by `<br>` with no
+  /// fragments) so we can size the line box from the strut alone.
   pub has_items: bool,
 }
 
@@ -222,12 +225,14 @@ impl LineBaselineAccumulator {
     let strut_descent = strut_metrics.descent + half_leading;
 
     Self {
-      // Seed with 0 and only fall back to the strut when the line has no inline-level items.
+      // Seed baseline metrics with the "strut" (CSS 2.1 §10.8). This ensures inline content like
+      // baseline-aligned replaced elements (`<img>`) still reserves the font's descender/leading,
+      // matching browser behavior (the classic "inline images have a small gap underneath").
       //
-      // This matches browser behavior for lines that contain only replaced elements:
-      // a line with `<img height=10>` should be 10px tall rather than the parent's line-height.
-      max_ascent: 0.0,
-      max_descent: 0.0,
+      // The strut does **not** affect the baseline when a taller box is present (e.g. an image);
+      // it only contributes when its ascent/descent exceed the line's existing extrema.
+      max_ascent: strut_ascent,
+      max_descent: strut_descent,
       top_aligned_height: 0.0,
       bottom_aligned_height: 0.0,
       strut_ascent,
@@ -242,14 +247,16 @@ impl LineBaselineAccumulator {
     let ascent = font_size * 0.8;
     let descent = font_size * 0.2;
     let half_leading = (line_height - font_size) / 2.0;
+    let strut_ascent = ascent + half_leading;
+    let strut_descent = descent + half_leading;
 
     Self {
-      max_ascent: 0.0,
-      max_descent: 0.0,
+      max_ascent: strut_ascent,
+      max_descent: strut_descent,
       top_aligned_height: 0.0,
       bottom_aligned_height: 0.0,
-      strut_ascent: ascent + half_leading,
-      strut_descent: descent + half_leading,
+      strut_ascent,
+      strut_descent,
       has_items: false,
     }
   }
@@ -805,8 +812,9 @@ mod tests {
     let shift = acc.add_baseline_relative(&item, VerticalAlign::Baseline, None);
 
     assert_eq!(shift, 0.0);
-    // The line box height/baseline is determined by the items on the line; the strut only
-    // applies when the line is otherwise empty.
+    // The line box height/baseline is determined by the items on the line, but the strut still
+    // acts as a minimum ascent/descent (notably preserving the font's descender under inline
+    // replaced elements).
   }
 
   #[test]
