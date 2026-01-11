@@ -8891,6 +8891,24 @@ mod tests {
     assert_eq!(img.dimensions(), (1, 1));
   }
 
+  #[test]
+  fn probe_svg_content_handles_doctype_with_px_intrinsic_size() {
+    let cache = ImageCache::new();
+    let svg = r#"<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns="http://www.w3.org/2000/svg" width="863.5px" height="700.17px" viewBox="0 0 863.5 700.17"></svg>
+"#;
+
+    let meta = cache
+      .probe_svg_content(svg, "https://doc.test/doctype.svg")
+      .expect("probe_svg_content should succeed");
+
+    // SVG intrinsic sizing follows HTML replaced element defaults: explicit px widths/heights are
+    // taken verbatim (rounded to device pixels during decode).
+    assert_eq!(meta.width, 864);
+    assert_eq!(meta.height, 700);
+  }
+
   fn svg_policy_cache_same_origin_only(doc_url: &str) -> ImageCache {
     let doc_origin = origin_from_url(doc_url).expect("document origin");
     let mut cache = ImageCache::new();

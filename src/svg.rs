@@ -1,6 +1,6 @@
 use roxmltree::Document;
-use tiny_skia::Transform;
 use std::borrow::Cow;
+use tiny_skia::Transform;
 
 fn is_svg_whitespace(c: char) -> bool {
   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000D}' | ' ')

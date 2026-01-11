@@ -28,6 +28,7 @@
 
 use crate::style::position::Position;
 use crate::style::{block_axis_is_horizontal, block_axis_positive, PhysicalSide};
+use crate::style::display::Display;
 use crate::style::ComputedStyle;
 
 fn block_axis_sides(style: &ComputedStyle) -> (PhysicalSide, PhysicalSide) {
@@ -350,6 +351,11 @@ pub fn collapse_margins(margin1: f32, margin2: f32) -> f32 {
 /// - height is auto or zero
 /// - No padding or border
 pub fn is_margin_collapsible_through(style: &ComputedStyle) -> bool {
+  // Table boxes never have collapsing margins (CSS 2.1 §8.3.1), so they cannot be treated as
+  // collapsible-through even when otherwise empty.
+  if matches!(style.display, Display::Table | Display::InlineTable) {
+    return false;
+  }
   // CSS 2.1 defines an "empty" block as having no in-flow content, no block-axis padding/border,
   // and `height:auto`/`min-height:0`, which in that spec implies a used height of 0.
   //

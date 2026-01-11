@@ -1749,7 +1749,11 @@ impl BlockFormattingContext {
       computed_width.border_left + computed_width.padding_left,
       border_top + padding_top,
     );
-    let padding_origin = Point::new(computed_width.border_left, border_top);
+    // Child fragments are produced in the block's *content* coordinate space (0,0 at the content
+    // edge). Represent this block's padding box (the containing block for abs/fixed descendants)
+    // in that same coordinate space: the padding edge is offset from the content edge by the
+    // negative padding amounts.
+    let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
     let content_height_base = child_block_size_base.unwrap_or(0.0);
     let padding_size = Size::new(
       computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
@@ -2602,7 +2606,9 @@ impl BlockFormattingContext {
           direction: style.direction,
         },
       );
-      let padding_origin = Point::new(computed_width.border_left, border_top);
+      // Positioned descendants are laid out in the block's content coordinate space; express the
+      // padding box (CSS 2.1 §10.1) in that same coordinate system (origin at the padding edge).
+      let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
       let padding_size = Size::new(
         computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
         height + padding_top + padding_bottom,
@@ -4170,6 +4176,30 @@ impl BlockFormattingContext {
         || child.style.float.is_floating()
     };
 
+    let subtree_contains_in_flow_float = |root: &BoxNode| -> bool {
+      if establishes_bfc(&root.style) {
+        return false;
+      }
+      let mut stack: Vec<&BoxNode> = vec![root];
+      while let Some(node) = stack.pop() {
+        if node.style.running_position.is_some()
+          || matches!(node.style.position, Position::Absolute | Position::Fixed)
+        {
+          continue;
+        }
+        if node.style.float.is_floating() {
+          return true;
+        }
+        if establishes_bfc(&node.style) {
+          continue;
+        }
+        for child in &node.children {
+          stack.push(child);
+        }
+      }
+      false
+    };
+
     let inline_subtree_generates_line_boxes = |root: &BoxNode| -> bool {
       let mut stack = vec![root];
       while let Some(node) = stack.pop() {
@@ -4402,6 +4432,9 @@ impl BlockFormattingContext {
           if !child_margins.collapsible_through {
             has_in_flow_content = true;
             break;
+          }
+          if subtree_contains_in_flow_float(child) {
+            seen_float = true;
           }
           continue;
         }
@@ -4904,6 +4937,18 @@ impl BlockFormattingContext {
           );
         }
         let pending_margin = margin_ctx.pending_collapsible_margin();
+        if !trace_boxes.is_empty() && trace_boxes.contains(&child.id) {
+          eprintln!(
+            "[trace-box-margins] id={} pending={} child_top={} child_bottom={} collapsible_through={} at_start={} collapse_with_parent_top={}",
+            child.id,
+            pending_margin,
+            child_margins.top,
+            child_margins.bottom,
+            child_margins.collapsible_through,
+            margin_ctx.is_at_start(),
+            collapse_with_parent_top
+          );
+        }
         let margin_edge_y = current_y + pending_margin.resolve();
         let clear_side =
           resolve_clear_side(child.style.clear, parent.style.writing_mode, parent.style.direction);
@@ -8975,7 +9020,11 @@ impl FormattingContext for BlockFormattingContext {
       computed_width.border_left + computed_width.padding_left,
       border_top + padding_top,
     );
-    let padding_origin = Point::new(computed_width.border_left, border_top);
+    // Like `layout_block_child`, `BlockFormattingContext::layout` runs layout in the block's
+    // content coordinate space (0,0 at the content edge) and translates fragments into border-box
+    // coordinates before returning. Containing blocks for positioned descendants must therefore be
+    // expressed in content coordinates as well: the padding edge is at (-padding_start, -padding_block_start).
+    let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
     let content_height_base = resolved_height.unwrap_or(0.0).max(0.0);
     let padding_size = Size::new(
       computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
@@ -9567,7 +9616,9 @@ impl FormattingContext for BlockFormattingContext {
     let box_width = computed_width.border_box_width();
 
     // Layout out-of-flow positioned children against this block's padding box.
-    let padding_origin = Point::new(computed_width.border_left, border_top);
+    // Out-of-flow positioned children are laid out before the final content→border translation, so
+    // express the padding box (their containing block) in content coordinates.
+    let padding_origin = Point::new(-computed_width.padding_left, -padding_top);
     let padding_size = Size::new(
       computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
       height + padding_top + padding_bottom,

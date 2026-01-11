@@ -1222,6 +1222,91 @@ fn clear_none_does_not_break_sibling_margin_collapse_in_nested_block() {
 }
 
 #[test]
+fn clear_with_descendant_float_prevents_collapse_through() {
+  let prev = block_with_height_and_margins(100.0, 0.0, 0.0);
+
+  let mut float_style = block_style_with_height(Some(50.0));
+  float_style.width = Some(Length::px(10.0));
+  float_style.width_keyword = None;
+  float_style.float = Float::Left;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let float_wrapper = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![float_box],
+  );
+  let float_container = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![float_wrapper],
+  );
+
+  let mut clear_style = block_style_with_height(None);
+  clear_style.clear = Clear::Both;
+  let clear_box = BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]);
+
+  let mut container_style = block_style_with_height(None);
+  container_style.margin_top = Some(Length::px(-20.0));
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Block,
+    vec![float_container, clear_box],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![prev, container],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let prev_fragment = &fragment.children[0];
+  let container_fragment = &fragment.children[1];
+  assert_approx(
+    container_fragment.bounds.y() - prev_fragment.bounds.max_y(),
+    -20.0,
+    "expected margin-top to apply instead of collapsing through a container that gains height from clearing descendant floats",
+  );
+}
+
+#[test]
+fn empty_table_is_not_collapsible_through() {
+  let prev = block_with_height_and_margins(100.0, 0.0, 0.0);
+
+  let mut table_style = block_style_with_height(None);
+  table_style.display = Display::Table;
+  table_style.width = Some(Length::px(10.0));
+  table_style.width_keyword = None;
+  table_style.margin_top = Some(Length::px(-20.0));
+  let table = BoxNode::new_block(Arc::new(table_style), FormattingContextType::Table, vec![]);
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![prev, table],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let prev_fragment = &fragment.children[0];
+  let table_fragment = &fragment.children[1];
+  assert_approx(
+    table_fragment.bounds.y() - prev_fragment.bounds.max_y(),
+    -20.0,
+    "expected tables to not be treated as collapsible-through for margin collapsing",
+  );
+}
+
+#[test]
 fn float_does_not_break_sibling_margin_collapse() {
   let a = block_with_height_and_margins(10.0, 0.0, 10.0);
 
