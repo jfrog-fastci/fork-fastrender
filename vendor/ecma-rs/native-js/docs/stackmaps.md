@@ -44,22 +44,27 @@ Important: for `native-js` and `runtime-native`, the **callsite return address**
 identifier used for stackmap lookup during stack walking. The patchpoint/statepoint ID is *not*
 used for lookup.
 
-However, the runtime's debug verifier (`runtime_native::statepoint_verify`) uses `patchpoint_id` as
-a *cheap discriminator* to decide which stackmap records follow the **statepoint layout**
-(3 constant header entries + (base,derived) pairs):
+`runtime-native` does not rely on `patchpoint_id` for statepoint detection: LLVM supports overriding
+the statepoint ID via the `"statepoint-id"` callsite attribute when using
+`rewrite-statepoints-for-gc`.
 
-- LLVM 18's `rewrite-statepoints-for-gc` uses the fixed default `0xABCDEF00` when a callsite does
-  not specify an explicit `"statepoint-id"` directive.
-- `native-js` adopts the same convention for **all manually emitted** statepoints: every
-  `gc.statepoint` uses `id = 0xABCDEF00` (decimal `2882400000`).
+Instead, `runtime-native` identifies statepoints by the (LLVM 18, empirically stable) **record
+layout**:
 
-This keeps runtime verification simple and prevents debug builds from silently skipping most
-statepoints due to mismatched IDs.
+- the first 3 locations are constant header entries (`callconv`, `flags`, `deopt_count`), followed by
+- `deopt_count` deopt operand locations (if any), followed by
+- `(base, derived)` relocation pairs (two locations per `gc.relocate`).
 
-**Escape hatch:** when using `rewrite-statepoints-for-gc`, `native-js` can assign deterministic
-per-callsite IDs via `"statepoint-id"` directives (see `native-js/src/llvm/statepoint_directives.rs`
-and the `statepoint-directives` feature). When doing so, update verification to treat those records
-as statepoints (e.g. `VerifyMode::AllRecords`) or keep using the canonical ID.
+The default `rewrite-statepoints-for-gc` ID is still useful for debugging:
+
+- LLVM 18 uses `0xABCDEF00` (decimal `2882400000`) when a callsite does not specify an explicit
+  `"statepoint-id"` directive.
+- `native-js` adopts the same convention for any manually emitted `gc.statepoint`.
+
+When using `"statepoint-id"` directives, stack walking and verification continue to work because
+they key off the callsite return address + record layout, not the ID.
+
+See also: `vendor/ecma-rs/docs/llvm_statepoint_directives.md`.
 
 ## Two observed composition modes
 
