@@ -593,3 +593,227 @@
     nondeterministic: false
   properties:
     kind: aggregation
+
+- name: lodash.chunk
+  aliases: [_.chunk]
+  semantics: Chunk
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+
+- name: lodash.compact
+  aliases: [_.compact]
+  semantics: Compact
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.concat
+  aliases: [_.concat]
+  semantics: Concat
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.uniqBy
+  aliases: [_.uniqBy]
+  semantics: UniqBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.differenceBy
+  aliases: [_.differenceBy]
+  semantics: DifferenceBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.unionBy
+  aliases: [_.unionBy]
+  semantics: UnionBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.intersectionBy
+  aliases: [_.intersectionBy]
+  semantics: IntersectionBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+    preserves_order: "true"
+
+- name: lodash.orderBy
+  aliases: [_.orderBy]
+  semantics: OrderBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: collection_operator
+    output: new_array
+
+- name: lodash.assign
+  aliases: [_.assign, _.extend]
+  semantics: Assign
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_mutation
+    mutates_argument: "0"
+    returns_argument: "0"
+
+- name: lodash.defaults
+  aliases: [_.defaults]
+  semantics: Defaults
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: false
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_mutation
+    mutates_argument: "0"
+    returns_argument: "0"
+
+- name: lodash.pickBy
+  aliases: [_.pickBy]
+  semantics: PickBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_operator
+    output: new_object
+
+- name: lodash.omitBy
+  aliases: [_.omitBy]
+  semantics: OmitBy
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: object_operator
+    output: new_object

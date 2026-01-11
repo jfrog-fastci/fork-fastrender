@@ -484,3 +484,200 @@
     kind: operator
     operator_type: multicasting
     stateful: "true"
+
+- name: rxjs.interval
+  aliases: []
+  semantics: ObservableInterval
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: observable_creation
+    timer_based: "true"
+
+- name: rxjs.timer
+  aliases: []
+  semantics: ObservableTimer
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: observable_creation
+    timer_based: "true"
+
+- name: rxjs.fromEvent
+  aliases: []
+  semantics: ObservableFromEvent
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: observable_creation
+    depends_on_external_events: "true"
+
+- name: rxjs.defer
+  aliases: []
+  semantics: ObservableDefer
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: observable_creation
+
+- name: rxjs.throwError
+  aliases: []
+  semantics: ObservableThrowError
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: observable_creation
+
+- name: rxjs.operators.concatMap
+  aliases: []
+  semantics: ConcatMap
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: flattening
+
+- name: rxjs.operators.exhaustMap
+  aliases: []
+  semantics: ExhaustMap
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: true
+  properties:
+    kind: operator
+    operator_type: flattening
+
+- name: rxjs.operators.takeWhile
+  aliases: []
+  semantics: TakeWhile
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: limiting
+
+- name: rxjs.operators.skip
+  aliases: []
+  semantics: Skip
+  since: "v0.1.0"
+  purity:
+    template: pure
+  throws: maybe
+  effects:
+    template: pure
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: limiting
+
+- name: rxjs.operators.skipWhile
+  aliases: []
+  semantics: SkipWhile
+  since: "v0.1.0"
+  purity:
+    template: depends_on_callback
+  throws: maybe
+  effects:
+    template: depends_on_callback
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: limiting
+
+- name: rxjs.operators.share
+  aliases: []
+  semantics: Share
+  since: "v0.1.0"
+  purity:
+    template: impure
+  throws: maybe
+  effects:
+    template: unknown
+    allocates: true
+    io: false
+    network: false
+    may_throw: true
+    nondeterministic: false
+  properties:
+    kind: operator
+    operator_type: multicasting
+    stateful: "true"
