@@ -17,6 +17,9 @@ impl StackMapLocation {
   ///
   /// - [`StackMapLocation::Register`] returns the register *value*.
   /// - [`StackMapLocation::Indirect`] returns the computed *address* (`base + offset`).
+  ///
+  /// Returns `None` if the base register is unsupported/missing or the address computation
+  /// overflows/underflows `u64`.
   pub fn evaluate(&self, ctx: &ThreadContext) -> Option<u64> {
     match *self {
       StackMapLocation::Register(regno) => ctx.get_dwarf_reg_u64(regno),
