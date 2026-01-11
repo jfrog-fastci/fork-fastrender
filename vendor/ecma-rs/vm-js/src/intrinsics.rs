@@ -465,6 +465,7 @@ impl Intrinsics {
     let string_prototype_char_code_at =
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
     let string_prototype_char_at = vm.register_native_call(builtins::string_prototype_char_at)?;
+    let string_from_char_code = vm.register_native_call(builtins::string_from_char_code)?;
     let string_prototype_trim = vm.register_native_call(builtins::string_prototype_trim)?;
     let string_prototype_trim_start = vm.register_native_call(builtins::string_prototype_trim_start)?;
     let string_prototype_trim_end = vm.register_native_call(builtins::string_prototype_trim_end)?;
@@ -1079,6 +1080,23 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(string_constructor), true, false, true),
     )?;
+
+      // String.fromCharCode
+      {
+        let from_char_code_s = scope.alloc_string("fromCharCode")?;
+        scope.push_root(Value::String(from_char_code_s))?;
+        let key = PropertyKey::from_string(from_char_code_s);
+        let func = scope.alloc_native_function(string_from_char_code, None, from_char_code_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_constructor,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
 
       // String.prototype.toString
       {

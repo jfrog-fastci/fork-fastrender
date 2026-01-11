@@ -16,6 +16,16 @@ fn await_promise_resolve_returns_ok() {
 }
 
 #[test]
+fn await_promise_reject_is_catchable() {
+  let out = run_fixture_with_options(
+    fixture_path("await_promise_reject_catch.js"),
+    &OracleHarnessOptions::default(),
+  )
+  .expect("fixture should run");
+  assert_eq!(out, "caught:boom");
+}
+
+#[test]
 fn promise_all_preserves_input_order() {
   let out = run_fixture_with_options(fixture_path("promise_all_order.js"), &OracleHarnessOptions::default())
     .expect("fixture should run");

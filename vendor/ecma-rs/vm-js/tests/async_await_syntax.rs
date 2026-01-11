@@ -334,3 +334,144 @@ fn await_operand_throw_rejects_promise() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, value), "ReferenceError");
   Ok(())
 }
+
+#[test]
+fn await_rejection_is_catchable_with_try_catch() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        try {
+          await Promise.reject("boom");
+          return "bad";
+        } catch (e) {
+          return "caught:" + e;
+        }
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "caught:boom");
+  Ok(())
+}
+
+#[test]
+fn await_rejection_runs_finally() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var finally_ran = "";
+      async function f() {
+        try {
+          await Promise.reject("boom");
+        } finally {
+          finally_ran = "yes";
+        }
+      }
+      f().then(
+        function () { out = "bad"; },
+        function (e) { out = finally_ran + ":" + e; }
+      );
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "yes:boom");
+  Ok(())
+}
+
+#[test]
+fn await_in_call_args_and_binary_ops() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        const a = 1 + await Promise.resolve(2);
+        const b = String.fromCharCode(await Promise.resolve(97));
+        return "" + a + b;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "3a");
+  Ok(())
+}
+
+#[test]
+fn multiple_awaits_in_one_function() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        const a = await Promise.resolve("a");
+        const b = await Promise.resolve("b");
+        return a + b;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ab");
+  Ok(())
+}
+
+#[test]
+fn await_in_while_loop_preserves_microtask_order() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var log = [];
+      async function f() {
+        log.push("start");
+        var i = 0;
+        while (i < 2) {
+          log.push("b" + i);
+          Promise.resolve().then(function () { log.push("m" + i); });
+          await 0;
+          log.push("a" + i);
+          i++;
+        }
+        log.push("end");
+      }
+      f();
+      log.join("")
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "startb0");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("log.join(\"\")")?;
+  assert_eq!(value_to_string(&rt, value), "startb0m0a0b1m1a1end");
+  Ok(())
+}

@@ -6072,6 +6072,46 @@ pub fn string_constructor_construct(
   Ok(Value::Object(obj))
 }
 
+/// `String.fromCharCode(...codeUnits)` (ECMA-262) (minimal).
+pub fn string_from_char_code(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // ToUint16(ToNumber(arg)) for each argument, then construct a string from the resulting UTF-16
+  // code units.
+  //
+  // This is intentionally minimal: it covers the common case (`String.fromCharCode(97) === "a"`)
+  // and is sufficient for exercising async `await` in call arguments.
+  let mut units: Vec<u16> = Vec::new();
+  units
+    .try_reserve_exact(args.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for &arg in args {
+    let n = scope.to_number(vm, host, hooks, arg)?;
+    let unit = if !n.is_finite() || n == 0.0 {
+      0
+    } else {
+      let int = n.trunc();
+      const TWO_16: f64 = 65_536.0;
+      let mut v = int % TWO_16;
+      if v < 0.0 {
+        v += TWO_16;
+      }
+      v as u16
+    };
+    units.push(unit);
+  }
+
+  let s = scope.alloc_string_from_u16_vec(units)?;
+  Ok(Value::String(s))
+}
+
 /// `String.prototype.toString` (minimal).
 pub fn string_prototype_to_string(
   _vm: &mut Vm,
