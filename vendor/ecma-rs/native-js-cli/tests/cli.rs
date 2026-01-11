@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
 use std::process::Command as StdCommand;
@@ -417,4 +418,23 @@ fn tsconfig_types_are_loaded_from_type_roots() {
 
   let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
   assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn print_builtin_writes_stdout() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { print(1 + 2); return 0; }\n",
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("3\n"));
 }

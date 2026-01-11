@@ -61,7 +61,7 @@ fn validate_body(
   };
 
   validate_body_syntax(file, body_data, lowered, out);
-  validate_body_types(program, file, body, body_data, out);
+  validate_body_types(program, file, body, body_data, lowered, out);
 }
 
 fn validate_body_syntax(file: typecheck_ts::FileId, body: &Body, lowered: &hir_js::LowerResult, out: &mut Vec<Diagnostic>) {
@@ -254,12 +254,31 @@ fn validate_body_types(
   file: typecheck_ts::FileId,
   body: BodyId,
   hir: &Body,
+  lowered: &hir_js::LowerResult,
   out: &mut Vec<Diagnostic>,
 ) {
   let result = program.check_body(body);
 
+  // Intrinsics like `print(...)` are declared in host-provided `.d.ts` libs. Their identifiers have
+  // callable types, which are otherwise rejected by the strict subset validator. Allow these
+  // identifiers only when they are used as a direct call callee.
+  let mut skip_expr_type_check = vec![false; result.expr_types().len()];
+  for expr in hir.exprs.iter() {
+    if let ExprKind::Call(call) = &expr.kind {
+      if callee_is_ident(hir, lowered, call.callee, "print") {
+        let idx = call.callee.0 as usize;
+        if idx < skip_expr_type_check.len() {
+          skip_expr_type_check[idx] = true;
+        }
+      }
+    }
+  }
+
   for (idx, ty) in result.expr_types().iter().copied().enumerate() {
     let Some(expr) = hir.exprs.get(idx) else { continue };
+    if skip_expr_type_check.get(idx).copied().unwrap_or(false) {
+      continue;
+    }
     validate_type_kind(program, Span::new(file, expr.span), ty, out);
   }
 

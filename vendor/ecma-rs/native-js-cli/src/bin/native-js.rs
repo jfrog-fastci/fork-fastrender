@@ -20,6 +20,9 @@ mod output;
 #[path = "../tsconfig.rs"]
 mod tsconfig;
 
+#[path = "../builtins.rs"]
+mod builtins;
+
 #[path = "../type_libs.rs"]
 mod type_libs;
 
@@ -418,6 +421,8 @@ fn load_program(cli: &Cli, entry: &Path) -> Result<(Program, FileId), String> {
     }
     None => (Vec::new(), Vec::new()),
   };
+  let mut extra_libs = extra_libs;
+  extra_libs.push(builtins::native_js_builtins_lib());
   let resolve_options = ResolveOptions {
     node_modules: true,
     package_imports: true,

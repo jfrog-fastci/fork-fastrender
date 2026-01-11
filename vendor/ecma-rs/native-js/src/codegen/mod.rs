@@ -45,6 +45,7 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::IntType;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
+use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 use std::collections::HashMap;
 use typecheck_ts::{DefId, FileId, Program, TypeKindSummary};
@@ -90,6 +91,7 @@ pub fn codegen<'ctx>(
   let allow_void_return = main_allows_void_return(program, entrypoint.main_def, entry_file)?;
   build_ts_main(
     context,
+    &module,
     i32_ty,
     ts_main,
     hir_body,
@@ -154,6 +156,7 @@ fn declare_c_main<'ctx>(
 
 fn build_ts_main<'ctx>(
   context: &'ctx Context,
+  module: &Module<'ctx>,
   i32_ty: IntType<'ctx>,
   func: FunctionValue<'ctx>,
   hir_body: &hir_js::Body,
@@ -163,6 +166,7 @@ fn build_ts_main<'ctx>(
 ) -> Result<(), Vec<Diagnostic>> {
   let builder = context.create_builder();
   let alloca_builder = context.create_builder();
+  let printf = declare_printf(context, module);
 
   let entry_bb = context.append_basic_block(func, "entry");
   builder.position_at_end(entry_bb);
@@ -174,6 +178,7 @@ fn build_ts_main<'ctx>(
     func,
     i32_ty,
     bool_ty: context.bool_type(),
+    printf,
     body: hir_body,
     names,
     entry_file,
@@ -304,6 +309,7 @@ struct HirCodegen<'ctx, 'a> {
   func: FunctionValue<'ctx>,
   i32_ty: IntType<'ctx>,
   bool_ty: IntType<'ctx>,
+  printf: FunctionValue<'ctx>,
   body: &'a hir_js::Body,
   names: &'a hir_js::NameInterner,
   entry_file: FileId,
@@ -362,6 +368,9 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     match kind {
       StmtKind::Empty | StmtKind::Debugger => Ok(true),
       StmtKind::Expr(expr) => {
+        if self.codegen_print_stmt(expr)? {
+          return Ok(true);
+        }
         let _ = self.codegen_expr(expr)?;
         Ok(true)
       }
@@ -454,6 +463,62 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     }
   }
 
+  fn codegen_print_stmt(&mut self, expr: ExprId) -> Result<bool, Vec<Diagnostic>> {
+    let expr = self.expr(expr)?;
+    let ExprKind::Call(call) = &expr.kind else {
+      return Ok(false);
+    };
+    if call.optional || call.is_new {
+      return Ok(false);
+    }
+    if call.args.len() != 1 {
+      return Ok(false);
+    }
+    let Some(arg) = call.args.first() else {
+      return Ok(false);
+    };
+    if arg.spread {
+      return Ok(false);
+    }
+
+    if !self.callee_is_global_intrinsic(call.callee, "print") {
+      return Ok(false);
+    }
+
+    let value = self.codegen_expr(arg.expr)?;
+    self.emit_print_i32(value);
+    Ok(true)
+  }
+
+  fn callee_is_global_intrinsic(&self, expr: ExprId, name: &str) -> bool {
+    let Ok(expr) = self.expr(expr) else {
+      return false;
+    };
+    let ExprKind::Ident(ident) = &expr.kind else {
+      return false;
+    };
+    if self.names.resolve(*ident) != Some(name) {
+      return false;
+    }
+    // Don't treat a shadowed local binding as an intrinsic.
+    self.locals.lookup(*ident).is_none()
+  }
+
+  fn emit_print_i32(&self, value: IntValue<'ctx>) {
+    let fmt = self
+      .builder
+      .build_global_string_ptr("%d\n", "native_js_print_fmt")
+      .expect("failed to create printf format string");
+    self
+      .builder
+      .build_call(
+        self.printf,
+        &[fmt.as_pointer_value().into(), value.into()],
+        "native_js_print",
+      )
+      .expect("failed to build printf call");
+  }
+
   fn codegen_break(&mut self, label: Option<NameId>, span: Span) -> Result<bool, Vec<Diagnostic>> {
     let target = if let Some(label) = label {
       self
@@ -484,7 +549,11 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
     Ok(false)
   }
 
-  fn codegen_continue(&mut self, label: Option<NameId>, span: Span) -> Result<bool, Vec<Diagnostic>> {
+  fn codegen_continue(
+    &mut self,
+    label: Option<NameId>,
+    span: Span,
+  ) -> Result<bool, Vec<Diagnostic>> {
     let target = if let Some(label) = label {
       self
         .loop_stack
@@ -1126,6 +1195,15 @@ fn parse_i32_const<'ctx>(i32_ty: IntType<'ctx>, raw: &str) -> Option<IntValue<'c
   let value = i64::from_str_radix(digits, radix).ok()?;
   let value = i32::try_from(value).ok()?;
   Some(i32_ty.const_int(value as u64, true))
+}
+
+fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+  if let Some(existing) = module.get_function("printf") {
+    return existing;
+  }
+  let i32_ty = context.i32_type();
+  let ptr_ty = context.ptr_type(AddressSpace::default());
+  module.add_function("printf", i32_ty.fn_type(&[ptr_ty.into()], true), None)
 }
 
 mod builtins;
