@@ -1526,6 +1526,8 @@ fn fetch_http_request_header_forbidden(name: &str, value: &str) -> bool {
   match name.as_str() {
     "accept-charset"
     | "accept-encoding"
+    | "access-control-request-headers"
+    | "access-control-request-method"
     | "connection"
     | "content-length"
     | "cookie"
@@ -5549,22 +5551,39 @@ impl HttpFetcher {
 
     // Determine which user-specified headers are CORS-unsafe and would therefore need to be
     // included in `Access-Control-Request-Headers`.
+    //
+    // Note: this uses Fetch's "CORS-unsafe request-header names" algorithm, which accounts for
+    // each header list entry (preserving duplicates) and applies a 1024-byte cap over the total
+    // size of CORS-safelisted header values.
     let mut sanitized_user_headers: Vec<(String, String)> = Vec::new();
     merge_user_request_headers(url, &mut sanitized_user_headers, user_headers)?;
 
-    let mut unsafe_header_names: HashSet<String> = HashSet::new();
+    let mut unsafe_names: Vec<String> = Vec::new();
+    let mut potentially_unsafe_names: Vec<String> = Vec::new();
+    let mut safelist_value_size: usize = 0;
     for (name, value) in &sanitized_user_headers {
       let Ok(parsed_name) = http::header::HeaderName::from_bytes(name.as_bytes()) else {
         // `merge_user_request_headers` should have already validated names; treat as unsafe.
-        unsafe_header_names.insert(name.to_ascii_lowercase());
+        unsafe_names.push(name.to_ascii_lowercase());
         continue;
       };
       let canonical = parsed_name.as_str();
       if !is_cors_safelisted_request_header(canonical, value) {
-        unsafe_header_names.insert(canonical.to_string());
+        unsafe_names.push(canonical.to_string());
+      } else {
+        potentially_unsafe_names.push(canonical.to_string());
+        safelist_value_size = safelist_value_size.saturating_add(value.as_bytes().len());
       }
     }
 
+    if safelist_value_size > 1024 {
+      unsafe_names.extend(potentially_unsafe_names);
+    }
+
+    let mut unsafe_header_names: HashSet<String> = HashSet::new();
+    for name in unsafe_names {
+      unsafe_header_names.insert(name.to_ascii_lowercase());
+    }
     let mut unsafe_header_names: Vec<String> = unsafe_header_names.into_iter().collect();
     unsafe_header_names.sort();
 
@@ -5637,6 +5656,10 @@ impl HttpFetcher {
       referrer_url,
       referrer_policy,
     );
+    // Fetch's CORS-preflight fetch always uses `Accept: */*`, even when the destination would
+    // normally produce a more specific Accept value (e.g. stylesheets).
+    headers.retain(|(name, _)| !name.eq_ignore_ascii_case("accept"));
+    headers.push(("Accept".to_string(), "*/*".to_string()));
     headers.push((
       "Access-Control-Request-Method".to_string(),
       method.to_string(),
@@ -5644,7 +5667,7 @@ impl HttpFetcher {
     if !unsafe_header_names.is_empty() {
       headers.push((
         "Access-Control-Request-Headers".to_string(),
-        unsafe_header_names.join(", "),
+        unsafe_header_names.join(","),
       ));
     }
 
