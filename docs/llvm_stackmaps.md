@@ -436,3 +436,29 @@ Bytes (tail of record showing live-outs):
 00 00 02 00                                   ; Reserved2/padding=0, NumLiveOuts=2
 00 00 00 08  07 00 00 08                      ; LiveOut[0]=rax, LiveOut[1]=rsp
 ```
+
+### Note: patchpoints + XMM registers (LLVM 18.1.8 crash)
+
+While trying to get an example where the `LiveOuts[]` list includes vector/float
+registers (e.g. XMM regs), we observed that **Ubuntu LLVM 18.1.8 `llc-18`
+segfaults** when compiling a `llvm.experimental.patchpoint.*` in a function that
+uses floating-point values.
+
+Minimal repro (crashes `llc-18 -O2`):
+
+```llvm
+declare void @callee()
+declare void @llvm.experimental.patchpoint.void(i64, i32, ptr, i32, ...)
+
+define double @foo(double %x) {
+entry:
+  %y = fadd double %x, 1.0
+  call void (i64, i32, ptr, i32, ...) @llvm.experimental.patchpoint.void(i64 48, i32 16, ptr @callee, i32 0)
+  %z = fadd double %y, 2.0
+  ret double %z
+}
+```
+
+The crash stack (trimmed) consistently points at
+`llvm::StackMaps::parseRegisterLiveOutMask`, suggesting a bug in patchpoint
+stackmap emission when XMM registers are involved.
