@@ -119,6 +119,17 @@ fn typed_resolves_instance_apis_and_gates_patterns() {
           let recv_name = lowered.names.resolve(name)?;
           (recv_name == recv_expected).then_some(ExprId(idx as u32))
         }
+        // When `hir-js` semantic-ops lowering is enabled, certain array prototype
+        // calls are represented as dedicated nodes instead of `Call(Member(...))`.
+        #[cfg(feature = "hir-semantic-ops")]
+        ExprKind::ArrayMap { array, .. } if prop_expected == "map" => {
+          let recv = body.exprs.get(array.0 as usize)?;
+          let ExprKind::Ident(name) = recv.kind else {
+            return None;
+          };
+          let recv_name = lowered.names.resolve(name)?;
+          (recv_name == recv_expected).then_some(ExprId(idx as u32))
+        }
         _ => None,
       })
       .unwrap_or_else(|| panic!("found {recv_expected}.{prop_expected} call"))

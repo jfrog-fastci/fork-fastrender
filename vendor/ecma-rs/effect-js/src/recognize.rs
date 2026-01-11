@@ -556,6 +556,38 @@ fn call_chain(lowered: &LowerResult, body: BodyId, call_expr: ExprId) -> Option<
   }
 }
 
+#[cfg(feature = "hir-semantic-ops")]
+fn find_array_map_call_semantic(body: &hir_js::Body, array: ExprId, callback: ExprId) -> Option<ExprId> {
+  body
+    .exprs
+    .iter()
+    .enumerate()
+    .find_map(|(idx, expr)| match &expr.kind {
+      ExprKind::ArrayMap { array: a, callback: cb } if *a == array && *cb == callback => {
+        Some(ExprId(idx as u32))
+      }
+      _ => None,
+    })
+}
+
+#[cfg(feature = "hir-semantic-ops")]
+fn find_array_chain_call_semantic(
+  body: &hir_js::Body,
+  array: ExprId,
+  expected_ops: &[hir_js::ArrayChainOp],
+) -> Option<ExprId> {
+  body
+    .exprs
+    .iter()
+    .enumerate()
+    .find_map(|(idx, expr)| match &expr.kind {
+      ExprKind::ArrayChain { array: a, ops } if *a == array && ops.as_slice() == expected_ops => {
+        Some(ExprId(idx as u32))
+      }
+      _ => None,
+    })
+}
+
 /// Like [`recognize_patterns_untyped`], but includes additional best-effort
 /// patterns that can be inferred without type information.
 pub fn recognize_patterns_best_effort_untyped(
@@ -678,6 +710,31 @@ pub fn recognize_patterns_best_effort_untyped(
     let expr_id = ExprId(idx as u32);
 
     // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
+    #[cfg(feature = "hir-semantic-ops")]
+    if let ExprKind::ArrayChain { array, ops } = &expr.kind {
+      if let [
+        hir_js::ArrayChainOp::Map(map_callback),
+        hir_js::ArrayChainOp::Filter(filter_callback),
+        hir_js::ArrayChainOp::Reduce(..),
+      ] = ops.as_slice()
+      {
+        let filter_ops = [
+          hir_js::ArrayChainOp::Map(*map_callback),
+          hir_js::ArrayChainOp::Filter(*filter_callback),
+        ];
+        if let (Some(map_call), Some(filter_call)) = (
+          find_array_map_call_semantic(body_ref, *array, *map_callback),
+          find_array_chain_call_semantic(body_ref, *array, &filter_ops),
+        ) {
+          patterns.push(RecognizedPattern::MapFilterReduce {
+            base: *array,
+            map_call,
+            filter_call,
+            reduce_call: expr_id,
+          });
+        }
+      }
+    }
     if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
       if chain.len() == 3
         && chain[2].1 == "reduce"
@@ -826,6 +883,7 @@ fn promise_all_fetch_match_untyped(
 ) -> Option<PromiseAllFetchMatch> {
   let body_ref = lowered.body(body)?;
   let call = body_ref.exprs.get(call_expr.0 as usize)?;
+
   #[cfg(feature = "hir-semantic-ops")]
   if let ExprKind::PromiseAll { promises } = &call.kind {
     let fetch_call_count = promises
@@ -928,17 +986,17 @@ fn promise_all_fetch_match_untyped(
             _ => None,
           }?;
 
-           let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
-           let fetch_call_count =
-             if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
-               1
-             } else if let Some(expr) = unwrap_await_value(cb_body, ret_expr) {
-               let expr = strip_transparent_wrappers(cb_body, expr);
-               if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
-                 1
-               } else {
-                 return None;
-               }
+          let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
+          let fetch_call_count =
+            if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+              1
+            } else if let Some(expr) = unwrap_await_value(cb_body, ret_expr) {
+              let expr = strip_transparent_wrappers(cb_body, expr);
+              if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
+                1
+              } else {
+                return None;
+              }
             } else {
               return None;
             };
@@ -981,17 +1039,17 @@ fn promise_all_fetch_match_untyped(
             _ => None,
           }?;
 
-           let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
-           let fetch_call_count =
-             if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
-               1
-             } else if let Some(expr) = unwrap_await_value(cb_body, ret_expr) {
-               let expr = strip_transparent_wrappers(cb_body, expr);
-               if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
-                 1
-               } else {
-                 return None;
-               }
+          let ret_expr = strip_transparent_wrappers(cb_body, ret_expr);
+          let fetch_call_count =
+            if resolve_api_call_untyped(lowered, cb_body_id, ret_expr) == Some(ApiId::Fetch) {
+              1
+            } else if let Some(expr) = unwrap_await_value(cb_body, ret_expr) {
+              let expr = strip_transparent_wrappers(cb_body, expr);
+              if resolve_api_call_untyped(lowered, cb_body_id, expr) == Some(ApiId::Fetch) {
+                1
+              } else {
+                return None;
+              }
             } else {
               return None;
             };
@@ -1357,14 +1415,40 @@ pub fn recognize_patterns_typed(
   // 1) Canonical call sites, using types to gate prototype/instance methods.
   for (idx, expr) in body_ref.exprs.iter().enumerate() {
     let expr_id = ExprId(idx as u32);
-    if !matches!(expr.kind, ExprKind::Call(_)) {
+    if matches!(expr.kind, ExprKind::Call(_)) {
+      if let Some(api) = resolve_api_call_typed(lowered, body, expr_id, types) {
+        patterns.push(RecognizedPattern::CanonicalCall {
+          call: expr_id,
+          api,
+        });
+      }
       continue;
     }
-    if let Some(api) = resolve_api_call_typed(lowered, body, expr_id, types) {
-      patterns.push(RecognizedPattern::CanonicalCall {
-        call: expr_id,
-        api,
-      });
+
+    // When `hir-js` semantic-ops lowering is enabled, some high-value prototype
+    // calls are represented as dedicated nodes instead of `Call(Member(...))`.
+    // Treat those as canonical call sites as well, gated by types.
+    #[cfg(feature = "hir-semantic-ops")]
+    match &expr.kind {
+      ExprKind::ArrayMap { array, .. } if types.expr_is_array(body, *array) => {
+        patterns.push(RecognizedPattern::CanonicalCall {
+          call: expr_id,
+          api: ApiId::ArrayPrototypeMap,
+        });
+      }
+      ExprKind::ArrayFilter { array, .. } if types.expr_is_array(body, *array) => {
+        patterns.push(RecognizedPattern::CanonicalCall {
+          call: expr_id,
+          api: ApiId::ArrayPrototypeFilter,
+        });
+      }
+      ExprKind::ArrayReduce { array, .. } if types.expr_is_array(body, *array) => {
+        patterns.push(RecognizedPattern::CanonicalCall {
+          call: expr_id,
+          api: ApiId::ArrayPrototypeReduce,
+        });
+      }
+      _ => {}
     }
   }
 
@@ -1442,6 +1526,33 @@ pub fn recognize_patterns_typed(
     }
 
     // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
+    #[cfg(feature = "hir-semantic-ops")]
+    if let ExprKind::ArrayChain { array, ops } = &expr.kind {
+      if let [
+        hir_js::ArrayChainOp::Map(map_callback),
+        hir_js::ArrayChainOp::Filter(filter_callback),
+        hir_js::ArrayChainOp::Reduce(..),
+      ] = ops.as_slice()
+      {
+        if types.expr_is_array(body, *array) {
+          let filter_ops = [
+            hir_js::ArrayChainOp::Map(*map_callback),
+            hir_js::ArrayChainOp::Filter(*filter_callback),
+          ];
+          if let (Some(map_call), Some(filter_call)) = (
+            find_array_map_call_semantic(body_ref, *array, *map_callback),
+            find_array_chain_call_semantic(body_ref, *array, &filter_ops),
+          ) {
+            patterns.push(RecognizedPattern::MapFilterReduce {
+              base: *array,
+              map_call,
+              filter_call,
+              reduce_call: expr_id,
+            });
+          }
+        }
+      }
+    }
     if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
       if chain.len() == 3
         && chain[2].1 == "reduce"

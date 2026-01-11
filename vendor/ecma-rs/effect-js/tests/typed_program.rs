@@ -69,6 +69,10 @@ fn typed_program_can_query_expr_types() {
         }
         (member.object == nums_recv).then_some(ExprId(idx as u32))
       }
+      // When `hir-js` semantic-ops lowering is enabled, the `.map(...)` call is
+      // represented directly as an `ArrayMap` node.
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayMap { array, .. } => (*array == nums_recv).then_some(ExprId(idx as u32)),
       _ => None,
     })
     .expect("found nums.map(...) call");
@@ -79,4 +83,3 @@ fn typed_program_can_query_expr_types() {
   assert!(types.expr_type(body_id, nums_recv).is_some());
   assert!(types.expr_type(body_id, map_call).is_some());
 }
-

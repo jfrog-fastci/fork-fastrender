@@ -249,33 +249,33 @@ Promise.all([t]);
 
   // Promise.all(...)
   let promise_all_call = find_expr(root_body, |_, kind| {
-    #[cfg(feature = "hir-semantic-ops")]
-    if matches!(kind, ExprKind::PromiseAll { .. }) {
-      return true;
+    match kind {
+      ExprKind::Call(call) => {
+        if call.is_new {
+          return false;
+        }
+        let Some(callee) = root_body.exprs.get(call.callee.0 as usize) else {
+          return false;
+        };
+        let ExprKind::Member(member) = &callee.kind else {
+          return false;
+        };
+        let Some(obj) = root_body.exprs.get(member.object.0 as usize) else {
+          return false;
+        };
+        let ExprKind::Ident(obj_name) = &obj.kind else {
+          return false;
+        };
+        let ObjectKey::Ident(prop_name) = &member.property else {
+          return false;
+        };
+        lowered.names.resolve(*obj_name) == Some("Promise")
+          && lowered.names.resolve(*prop_name) == Some("all")
+      }
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::PromiseAll { .. } => true,
+      _ => false,
     }
-    let ExprKind::Call(call) = kind else {
-      return false;
-    };
-    if call.is_new {
-      return false;
-    }
-    let Some(callee) = root_body.exprs.get(call.callee.0 as usize) else {
-      return false;
-    };
-    let ExprKind::Member(member) = &callee.kind else {
-      return false;
-    };
-    let Some(obj) = root_body.exprs.get(member.object.0 as usize) else {
-      return false;
-    };
-    let ExprKind::Ident(obj_name) = &obj.kind else {
-      return false;
-    };
-    let ObjectKey::Ident(prop_name) = &member.property else {
-      return false;
-    };
-    lowered.names.resolve(*obj_name) == Some("Promise")
-      && lowered.names.resolve(*prop_name) == Some("all")
   });
   assert!(
     root_signals
