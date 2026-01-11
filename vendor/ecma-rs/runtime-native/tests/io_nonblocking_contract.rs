@@ -280,6 +280,75 @@ fn rt_io_register_with_drop_calls_drop_on_registration_failure() {
 }
 
 #[test]
+fn rt_io_register_with_drop_rejects_empty_interests_and_drops_data() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *mut AtomicUsize = Box::into_raw(dropped);
+
+  let id = rt_io_register_with_drop(
+    rfd.as_raw_fd(),
+    0,
+    noop_cb,
+    dropped_ptr.cast::<u8>(),
+    inc_drop_count,
+  );
+  assert_eq!(id, 0, "expected rt_io_register_with_drop to fail for empty interests");
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    1,
+    "drop_data should have been invoked on invalid-interest registration"
+  );
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_INVALID_INTERESTS,
+    "expected invalid-interest registration to be diagnosable"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+
+  unsafe {
+    drop(Box::from_raw(dropped_ptr));
+  }
+}
+
+#[test]
+fn rt_io_register_with_drop_invalid_fd_drops_data_and_reports_other_error() {
+  let _rt = TestRuntimeGuard::new();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *mut AtomicUsize = Box::into_raw(dropped);
+
+  let id = rt_io_register_with_drop(
+    -1,
+    RT_IO_READABLE,
+    noop_cb,
+    dropped_ptr.cast::<u8>(),
+    inc_drop_count,
+  );
+  assert_eq!(id, 0, "expected rt_io_register_with_drop to fail for invalid fd");
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    1,
+    "drop_data should have been invoked on invalid-fd registration"
+  );
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_OTHER,
+    "invalid fd should not be misclassified as a nonblocking contract violation"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+
+  unsafe {
+    drop(Box::from_raw(dropped_ptr));
+  }
+}
+
+#[test]
 fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
   let _rt = TestRuntimeGuard::new();
 
@@ -299,6 +368,40 @@ fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
 
   // If the rooted wrapper leaked its GC root on the failure path, the object would remain alive
   // indefinitely. It should become collectable once we run a major collection.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "GC object stayed alive after rooted I/O watcher registration failed (root leak?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_rooted_invalid_fd_does_not_leak_gc_root() {
+  let _rt = TestRuntimeGuard::new();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let id = rt_io_register_rooted(-1, RT_IO_READABLE, noop_cb, obj);
+  assert_eq!(id, 0, "expected rt_io_register_rooted to fail for invalid fd");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::ERR_OTHER,
+    "invalid fd should not be misclassified as a nonblocking contract violation"
+  );
+
   let deadline = Instant::now() + Duration::from_secs(2);
   loop {
     collect_major(&mut heap);
