@@ -151,6 +151,7 @@ pub use buffer::typed_array::Uint8Array;
 pub use timer_wheel::{TimerKey, TimerWheel};
 pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section};
 pub use safepoint::{visit_reloc_pairs, with_world_stopped};
+pub use stackmap_loader::{build_global_stackmap_index, load_all_llvm_stackmaps, StackMapIndex};
 pub use runtime::{AttachError, DetachError, Runtime, StopTheWorldGuard, ThreadGuard};
 pub use thread::{
   current_thread, current_thread_mut, current_thread_ptr, current_thread_state, Thread, ThreadState, RT_THREAD,

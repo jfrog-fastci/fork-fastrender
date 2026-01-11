@@ -1,3 +1,5 @@
+use crate::stackmaps::{CallSite, StackMaps};
+use anyhow::Context;
 use object::{Object, ObjectSection, ObjectSymbol};
 use std::ops::Range;
 
@@ -215,8 +217,7 @@ fn find_range_via_start_stop_symbols(
   start_sym: &str,
   stop_sym: &str,
 ) -> Result<Option<Range<u64>>, object::Error> {
-  let Some((start_addr, start_sec)) = find_symbol_addr_and_section(obj, start_sym)?
-  else {
+  let Some((start_addr, start_sec)) = find_symbol_addr_and_section(obj, start_sym)? else {
     return Ok(None);
   };
   let Some((stop_addr, stop_sec)) = find_symbol_addr_and_section(obj, stop_sym)? else {
@@ -315,4 +316,362 @@ impl<'a> Cursor<'a> {
     self.offset = end;
     Ok(slice.try_into().expect("slice length already checked"))
   }
+}
+
+/// Collect all in-memory `.llvm_stackmaps` sections across all loaded ELF images
+/// (main executable + DSOs).
+///
+/// This is primarily intended for environments where compiled code (and thus
+/// stackmaps) can live in shared libraries loaded via `dlopen`.
+///
+/// ## Refreshing after `dlopen`
+/// `dl_iterate_phdr` enumerates **currently loaded** images. Call this again
+/// after `dlopen` if you need stackmaps from newly loaded DSOs.
+pub fn load_all_llvm_stackmaps() -> anyhow::Result<Vec<&'static [u8]>> {
+  #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+  {
+    use std::ffi::{CStr, OsStr};
+    use std::os::raw::c_int;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    struct Ctx {
+      out: Vec<&'static [u8]>,
+      err: Option<anyhow::Error>,
+    }
+
+    unsafe extern "C" fn cb(
+      info: *mut libc::dl_phdr_info,
+      _size: libc::size_t,
+      data: *mut libc::c_void,
+    ) -> c_int {
+      let ctx = &mut *(data as *mut Ctx);
+      if ctx.err.is_some() {
+        return 1;
+      }
+
+      let info = &*info;
+
+      let base: u64 = info.dlpi_addr as u64;
+      let name_bytes = if info.dlpi_name.is_null() {
+        &b""[..]
+      } else {
+        CStr::from_ptr(info.dlpi_name).to_bytes()
+      };
+
+      let is_main_exe = name_bytes.is_empty();
+      let path: &Path = if is_main_exe {
+        Path::new("/proc/self/exe")
+      } else {
+        Path::new(OsStr::from_bytes(name_bytes))
+      };
+
+      let file = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(err) => {
+          // Some images (e.g. linux-vdso) do not have an on-disk file.
+          if is_main_exe {
+            ctx.err = Some(anyhow::anyhow!(
+              "failed to read {} for stackmap discovery: {err}",
+              path.display()
+            ));
+            return 1;
+          }
+          return 0;
+        }
+      };
+
+      let elf = match object::File::parse(&*file) {
+        Ok(o) => o,
+        Err(err) => {
+          if is_main_exe {
+            ctx.err = Some(anyhow::Error::new(err).context("parse main executable"));
+            return 1;
+          }
+          return 0;
+        }
+      };
+
+      let section = match find_stackmap_section_vaddr_and_size(&elf) {
+        Ok(Some(v)) => v,
+        Ok(None) => return 0,
+        Err(err) => {
+          if is_main_exe {
+            ctx.err = Some(anyhow::Error::new(err).context("locate .llvm_stackmaps in main executable"));
+            return 1;
+          }
+          return 0;
+        }
+      };
+
+      if section.size == 0 {
+        return 0;
+      }
+
+      let Some(start) = base.checked_add(section.vaddr) else {
+        if is_main_exe {
+          ctx.err = Some(anyhow::anyhow!(
+            "address overflow computing stackmaps start: base={base:#x} vaddr={vaddr:#x}",
+            vaddr = section.vaddr
+          ));
+          return 1;
+        }
+        return 0;
+      };
+      let Some(end) = start.checked_add(section.size) else {
+        if is_main_exe {
+          ctx.err = Some(anyhow::anyhow!(
+            "address overflow computing stackmaps end: start={start:#x} size={size:#x}",
+            size = section.size
+          ));
+          return 1;
+        }
+        return 0;
+      };
+
+      // Stack maps are metadata; if this is enormous something went very wrong
+      // (e.g. we mis-parsed the ELF or are looking at the wrong section).
+      const MAX_STACKMAP_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
+      if section.size > MAX_STACKMAP_BYTES {
+        if is_main_exe {
+          ctx.err = Some(anyhow::anyhow!(
+            "invalid stackmaps section size: {size} bytes (max {MAX_STACKMAP_BYTES})",
+            size = section.size
+          ));
+          return 1;
+        }
+        return 0;
+      }
+
+      // Ensure the computed range is within a readable PT_LOAD segment.
+      if !range_in_readable_load_segment(info, base, start, end) {
+        if is_main_exe {
+          ctx.err = Some(anyhow::anyhow!(
+            "stackmaps section range [{start:#x},{end:#x}) is not covered by a readable PT_LOAD segment"
+          ));
+          return 1;
+        }
+        return 0;
+      }
+
+      let len = match usize::try_from(section.size) {
+        Ok(l) => l,
+        Err(_) => {
+          if is_main_exe {
+            ctx.err = Some(anyhow::anyhow!(
+              "stackmaps section size does not fit usize: {size}",
+              size = section.size
+            ));
+            return 1;
+          }
+          return 0;
+        }
+      };
+
+      // Safety: stackmaps section is expected to be mapped as a readable segment
+      // for the lifetime of the loaded image.
+      let bytes: &'static [u8] = std::slice::from_raw_parts(start as *const u8, len);
+      ctx.out.push(bytes);
+
+      0
+    }
+
+    let mut ctx = Ctx {
+      out: Vec::new(),
+      err: None,
+    };
+
+    unsafe {
+      libc::dl_iterate_phdr(Some(cb), (&mut ctx as *mut Ctx).cast());
+    }
+
+    if let Some(err) = ctx.err {
+      return Err(err);
+    }
+
+    Ok(ctx.out)
+  }
+
+  #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+  {
+    anyhow::bail!("load_all_llvm_stackmaps is only supported on Linux x86_64");
+  }
+}
+
+/// Global stackmap index keyed by absolute callsite PC (return address).
+///
+/// This is a merged view across all stackmap blobs discovered via
+/// [`load_all_llvm_stackmaps`].
+#[derive(Debug)]
+pub struct StackMapIndex {
+  blobs: Vec<StackMaps>,
+  callsites: Vec<GlobalCallsiteEntry>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GlobalCallsiteEntry {
+  pc: u64,
+  stack_size: u64,
+  blob_index: usize,
+  stackmap_index: usize,
+  record_index: usize,
+}
+
+impl StackMapIndex {
+  fn new(blobs: Vec<StackMaps>) -> anyhow::Result<Self> {
+    let mut callsites: Vec<GlobalCallsiteEntry> = Vec::new();
+    for (blob_index, blob) in blobs.iter().enumerate() {
+      for entry in blob.callsites() {
+        callsites.push(GlobalCallsiteEntry {
+          pc: entry.pc,
+          stack_size: entry.stack_size,
+          blob_index,
+          stackmap_index: entry.stackmap_index,
+          record_index: entry.record_index,
+        });
+      }
+    }
+
+    callsites.sort_by_key(|e| e.pc);
+
+    for win in callsites.windows(2) {
+      let [a, b] = win else { continue };
+      if a.pc == b.pc {
+        anyhow::bail!("duplicate stackmap callsite pc found: {pc:#x}", pc = a.pc);
+      }
+    }
+
+    Ok(Self { blobs, callsites })
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.callsites.is_empty()
+  }
+
+  pub fn len(&self) -> usize {
+    self.callsites.len()
+  }
+
+  pub fn lookup(&self, callsite_return_addr: u64) -> Option<CallSite<'_>> {
+    let idx = self
+      .callsites
+      .binary_search_by_key(&callsite_return_addr, |e| e.pc)
+      .ok()?;
+    let entry = &self.callsites[idx];
+    let blob = &self.blobs[entry.blob_index];
+    let raw = blob.raws().get(entry.stackmap_index)?;
+    Some(CallSite {
+      stack_size: entry.stack_size,
+      record: raw.records.get(entry.record_index)?,
+    })
+  }
+
+  pub fn iter(&self) -> impl Iterator<Item = (u64, CallSite<'_>)> + '_ {
+    self.callsites.iter().map(|entry| {
+      let blob = &self.blobs[entry.blob_index];
+      let raw = &blob.raws()[entry.stackmap_index];
+      (
+        entry.pc,
+        CallSite {
+          stack_size: entry.stack_size,
+          record: &raw.records[entry.record_index],
+        },
+      )
+    })
+  }
+}
+
+/// Build a unified [`StackMapIndex`] from all stackmap sections found in
+/// currently loaded ELF images.
+///
+/// Call this again after `dlopen` if you need to refresh the index with newly
+/// loaded DSOs.
+pub fn build_global_stackmap_index() -> anyhow::Result<StackMapIndex> {
+  let sections = load_all_llvm_stackmaps()?;
+
+  let mut blobs: Vec<StackMaps> = Vec::with_capacity(sections.len());
+  for section in sections {
+    blobs.push(StackMaps::parse(section).with_context(|| "failed to parse stackmaps section")?);
+  }
+
+  StackMapIndex::new(blobs)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[derive(Debug, Clone, Copy)]
+struct ElfSectionVaddr {
+  vaddr: u64,
+  size: u64,
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn find_stackmap_section_vaddr_and_size(
+  obj: &object::File<'_>,
+) -> Result<Option<ElfSectionVaddr>, object::Error> {
+  for name in STACKMAP_SECTION_NAMES {
+    if let Some(section) = obj.section_by_name(name) {
+      return Ok(Some(ElfSectionVaddr {
+        vaddr: section.address(),
+        size: section.size(),
+      }));
+    }
+  }
+
+  for (start_sym, stop_sym) in STACKMAP_SYMBOL_RANGES {
+    let Some((start_addr, start_sec)) = find_symbol_addr_and_section(obj, start_sym)? else {
+      continue;
+    };
+    let Some((stop_addr, stop_sec)) = find_symbol_addr_and_section(obj, stop_sym)? else {
+      continue;
+    };
+    if start_sec != stop_sec {
+      continue;
+    }
+    let Some(size) = stop_addr.checked_sub(start_addr) else {
+      continue;
+    };
+    return Ok(Some(ElfSectionVaddr {
+      vaddr: start_addr,
+      size,
+    }));
+  }
+
+  Ok(None)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn range_in_readable_load_segment(
+  info: &libc::dl_phdr_info,
+  base: u64,
+  start: u64,
+  end: u64,
+) -> bool {
+  const PT_LOAD: u32 = 1;
+  const PF_R: u32 = 4;
+
+  if info.dlpi_phdr.is_null() {
+    return false;
+  }
+
+  let phnum = info.dlpi_phnum as usize;
+  let phdrs = info.dlpi_phdr as *const libc::Elf64_Phdr;
+  for i in 0..phnum {
+    // Safety: `dlpi_phdr` points to an array of `dlpi_phnum` program headers.
+    let ph = unsafe { &*phdrs.add(i) };
+    if ph.p_type != PT_LOAD || (ph.p_flags & PF_R) == 0 {
+      continue;
+    }
+
+    let Some(seg_start) = base.checked_add(ph.p_vaddr) else {
+      continue;
+    };
+    let Some(seg_end) = seg_start.checked_add(ph.p_memsz) else {
+      continue;
+    };
+    if seg_start <= start && end <= seg_end {
+      return true;
+    }
+  }
+
+  false
 }

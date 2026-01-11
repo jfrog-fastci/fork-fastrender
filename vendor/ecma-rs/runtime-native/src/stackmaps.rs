@@ -214,7 +214,6 @@ impl StackMap {
     }
 
     let len = c.off;
-
     Ok((
       Self {
         version,
@@ -980,6 +979,46 @@ mod tests {
       err,
       StackMapError::DerivedPointerNotSupported { .. }
     ));
+  }
+
+  #[test]
+  fn parse_all_supports_concatenated_stackmap_blobs() {
+    fn minimal_blob(function_addr: u64, patchpoint_id: u64, instruction_offset: u32) -> Vec<u8> {
+      let mut bytes: Vec<u8> = Vec::new();
+      build_header(&mut bytes, 1, 0, 1);
+
+      // Function record.
+      push_u64(&mut bytes, function_addr);
+      push_u64(&mut bytes, 32);
+      push_u64(&mut bytes, 1);
+
+      // Record (no locations / no liveouts).
+      push_u64(&mut bytes, patchpoint_id);
+      push_u32(&mut bytes, instruction_offset);
+      push_u16(&mut bytes, 0);
+      push_u16(&mut bytes, 0);
+      align_to_8_with(&mut bytes, 0);
+      push_u16(&mut bytes, 0);
+      push_u16(&mut bytes, 0);
+      align_to_8_with(&mut bytes, 0);
+
+      bytes
+    }
+
+    let blob_a = minimal_blob(0x1000, 1, 0x10);
+    let blob_b = minimal_blob(0x2000, 2, 0x20);
+    let mut concat = blob_a.clone();
+    concat.extend_from_slice(&blob_b);
+
+    let sm = StackMaps::parse(&concat).unwrap();
+    assert_eq!(sm.raws().len(), 2);
+
+    assert_eq!(sm.raws()[0].records[0].patchpoint_id, 1);
+    assert_eq!(sm.raws()[1].records[0].patchpoint_id, 2);
+
+    // Ensure the per-blob callsite indexes are still correct.
+    assert!(sm.lookup(0x1010).is_some());
+    assert!(sm.lookup(0x2020).is_some());
   }
 
   #[test]
