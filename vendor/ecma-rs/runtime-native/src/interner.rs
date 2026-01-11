@@ -15,6 +15,16 @@ use crate::gc::ObjHeader;
 use crate::gc::TypeDescriptor;
 use crate::sync::GcAwareMutex;
 
+#[inline]
+fn align_up_usize(value: usize, align: usize) -> usize {
+  debug_assert!(align.is_power_of_two());
+  // `align` is power-of-two, so this rounds up by masking.
+  value
+    .checked_add(align - 1)
+    .map(|v| v & !(align - 1))
+    .expect("alignment overflow")
+}
+
 /// Interned strings are represented by stable [`InternedId`]s.
 ///
 /// # ID lifetime
@@ -78,7 +88,10 @@ fn interned_object_size_for_len(len: usize) -> usize {
     len.next_power_of_two().max(16)
   };
 
-  align_up(INTERNED_PREFIX_SIZE + cap, std::mem::align_of::<ObjHeader>())
+  let size = INTERNED_PREFIX_SIZE
+    .checked_add(cap)
+    .unwrap_or_else(|| crate::trap::rt_trap_invalid_arg("interned string size overflow"));
+  align_up(size, std::mem::align_of::<ObjHeader>())
 }
 
 static INTERNED_DESC_CACHE: Lazy<GcAwareMutex<AHashMap<usize, &'static TypeDescriptor>>> =

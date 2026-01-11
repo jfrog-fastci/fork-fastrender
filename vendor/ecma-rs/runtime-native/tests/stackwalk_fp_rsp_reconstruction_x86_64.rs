@@ -1,6 +1,7 @@
 #![cfg(target_arch = "x86_64")]
 
 use runtime_native::{walk_gc_roots_from_fp, StackMaps};
+use runtime_native::stackwalk::StackBounds;
 
 #[test]
 fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
@@ -55,8 +56,9 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   }
 
   let mut visited: Vec<usize> = Vec::new();
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
   unsafe {
-    walk_gc_roots_from_fp(start_fp as u64, &stackmaps, |slot| {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
       visited.push(slot as usize);
     })
     .expect("walk");
@@ -144,4 +146,3 @@ fn align_up(v: usize, align: usize) -> usize {
 unsafe fn write_u64(addr: usize, val: u64) {
   (addr as *mut u64).write_unaligned(val);
 }
-
