@@ -10,6 +10,9 @@ pub struct InternedId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TaskId(pub u64);
 
+/// Identifier for a timer returned by `rt_set_timeout` / `rt_set_interval`.
+pub type TimerId = u64;
+
 /// Opaque value reference.
 ///
 /// The full JS value/GC story is not implemented yet; compiled code can treat this as a pointer

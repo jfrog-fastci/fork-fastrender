@@ -48,6 +48,7 @@ typedef struct RtShapeDescriptor {
 
 typedef uint32_t InternedId;
 typedef uint64_t TaskId;
+typedef uint64_t TimerId;
 
 // runtime-native does not yet implement a full JS value representation/GC.
 // For now, values are passed as opaque pointers.
@@ -231,6 +232,16 @@ bool rt_async_poll(void);
 
 // Resolve a promise after `delay_ms` milliseconds.
 PromiseRef rt_async_sleep(uint64_t delay_ms);
+// Enqueue a microtask to run during the next microtask checkpoint (end of the current macrotask,
+// or during `rt_async_poll` when the event loop is otherwise idle).
+void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);
+
+// Timers. Timer callbacks are macrotasks; after each timer callback, `rt_async_poll` runs a
+// microtask checkpoint. This is a minimal API surface; HTML-specific clamping (e.g. nested 4ms
+// clamp) is handled at higher layers.
+TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);
+TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);
+void rt_clear_timer(TimerId id);
 
 // Suspend the coroutine on an awaited promise.
 // Registers a continuation and sets `coro->state = next_state`.

@@ -16,7 +16,7 @@ build = "build.rs"
 # Keep this feature opt-in: test binaries and non-AOT tools don't always link a
 # `.llvm_stackmaps` section, and missing symbols would otherwise fail the link.
 llvm_stackmaps_linker = []
-#
+
 # Always-on statepoint verification can be enabled by consumers that want a hard failure in
 # release builds too. In debug builds we verify unconditionally.
 verify-statepoints = []

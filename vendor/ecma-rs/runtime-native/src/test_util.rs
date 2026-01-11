@@ -23,6 +23,7 @@ static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 /// it only clears per-process queues and registrations so each test starts from a blank slate.
 pub fn reset_runtime_state() {
   async_rt::clear_state_for_tests();
+  crate::exports::clear_web_timers_for_tests();
 }
 
 /// A per-test guard that serializes access to the global runtime singleton.

@@ -2,6 +2,7 @@ use crate::abi::PromiseRef;
 use crate::abi::RtCoroutineHeader;
 use crate::abi::RtShapeId;
 use crate::abi::TaskId;
+use crate::abi::TimerId;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
 use crate::alloc;
@@ -14,7 +15,13 @@ use crate::threading;
 use crate::Runtime;
 use crate::Thread;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
 #[inline(always)]
 fn ensure_event_loop_thread_registered() {
@@ -370,6 +377,155 @@ pub extern "C" fn rt_io_update(id: IoWatcherId, interests: u32) {
 pub extern "C" fn rt_io_unregister(id: IoWatcherId) {
   let _ = crate::rt_ensure_init();
   let _ = async_rt::global().deregister_fd(WatcherId::from_raw(id));
+}
+
+// -----------------------------------------------------------------------------
+// Microtasks + timers (queueMicrotask/setTimeout/setInterval)
+// -----------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebTimerKind {
+  Timeout,
+  Interval,
+}
+
+#[derive(Clone, Copy)]
+struct WebTimerState {
+  kind: WebTimerKind,
+  cb: async_rt::TaskFn,
+  data: *mut u8,
+  interval: Duration,
+  internal_id: async_rt::TimerId,
+}
+
+// Safety: `WebTimerState` is stored behind a mutex in a process-global map and contains only opaque
+// pointers + Copy types. The runtime never dereferences `data`; it is passed back to user callbacks
+// on the event-loop thread. Allowing it to cross thread boundaries is therefore safe as far as the
+// runtime is concerned (FFI callers are responsible for ensuring their pointers remain valid).
+unsafe impl Send for WebTimerState {}
+
+static NEXT_WEB_TIMER_ID: AtomicU64 = AtomicU64::new(1);
+static WEB_TIMERS: Lazy<Mutex<HashMap<TimerId, WebTimerState>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+pub(crate) fn clear_web_timers_for_tests() {
+  WEB_TIMERS.lock().clear();
+}
+
+fn alloc_web_timer_id() -> TimerId {
+  loop {
+    let id = NEXT_WEB_TIMER_ID.fetch_add(1, Ordering::Relaxed);
+    if id != 0 {
+      return id;
+    }
+  }
+}
+
+fn timer_id_to_ptr(id: TimerId) -> *mut u8 {
+  id as usize as *mut u8
+}
+
+fn timer_id_from_ptr(data: *mut u8) -> TimerId {
+  data as usize as TimerId
+}
+
+extern "C" fn web_timer_fire(data: *mut u8) {
+  let id = timer_id_from_ptr(data);
+
+  let (kind, cb, cb_data, interval) = {
+    let mut timers = WEB_TIMERS.lock();
+    let Some(st) = timers.get(&id).copied() else {
+      return;
+    };
+
+    match st.kind {
+      WebTimerKind::Timeout => {
+        let st = timers.remove(&id).expect("timer entry disappeared");
+        (WebTimerKind::Timeout, st.cb, st.data, Duration::ZERO)
+      }
+      WebTimerKind::Interval => (WebTimerKind::Interval, st.cb, st.data, st.interval),
+    }
+  };
+
+  (cb)(cb_data);
+
+  if kind != WebTimerKind::Interval {
+    return;
+  }
+
+  // Reschedule interval if it is still active after the callback.
+  let mut timers = WEB_TIMERS.lock();
+  let Some(st) = timers.get_mut(&id) else {
+    return;
+  };
+  if st.kind != WebTimerKind::Interval {
+    return;
+  }
+
+  // HTML clamps nested timers to >= 4ms after a nesting depth of 5. The native runtime does not
+  // currently track nesting; higher layers can implement clamping policy if needed.
+  let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
+  let task = async_rt::Task::new(web_timer_fire, data);
+  let internal_id = async_rt::global().schedule_timer(deadline, task);
+  st.internal_id = internal_id;
+}
+
+#[no_mangle]
+pub extern "C" fn rt_queue_microtask(cb: extern "C" fn(*mut u8), data: *mut u8) {
+  async_rt::enqueue_microtask(cb, data);
+}
+
+#[no_mangle]
+pub extern "C" fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, delay_ms: u64) -> TimerId {
+  let id = alloc_web_timer_id();
+  let delay = Duration::from_millis(delay_ms);
+  let deadline = Instant::now().checked_add(delay).unwrap_or_else(Instant::now);
+  let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+  let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+  WEB_TIMERS.lock().insert(
+    id,
+    WebTimerState {
+      kind: WebTimerKind::Timeout,
+      cb,
+      data,
+      interval: Duration::ZERO,
+      internal_id,
+    },
+  );
+  id
+}
+
+#[no_mangle]
+pub extern "C" fn rt_set_interval(
+  cb: extern "C" fn(*mut u8),
+  data: *mut u8,
+  interval_ms: u64,
+) -> TimerId {
+  let id = alloc_web_timer_id();
+  let interval = Duration::from_millis(interval_ms);
+  let deadline = Instant::now().checked_add(interval).unwrap_or_else(Instant::now);
+  let task = async_rt::Task::new(web_timer_fire, timer_id_to_ptr(id));
+  let internal_id = async_rt::global().schedule_timer(deadline, task);
+
+  WEB_TIMERS.lock().insert(
+    id,
+    WebTimerState {
+      kind: WebTimerKind::Interval,
+      cb,
+      data,
+      interval,
+      internal_id,
+    },
+  );
+  id
+}
+
+#[no_mangle]
+pub extern "C" fn rt_clear_timer(id: TimerId) {
+  let Some(st) = WEB_TIMERS.lock().remove(&id) else {
+    return;
+  };
+  let _ = async_rt::global().cancel_timer(st.internal_id);
 }
 
 // -----------------------------------------------------------------------------

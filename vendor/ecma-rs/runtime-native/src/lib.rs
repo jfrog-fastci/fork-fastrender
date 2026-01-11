@@ -362,6 +362,10 @@ mod tests {
       "PromiseRef rt_async_spawn(RtCoroutineHeader* coro);",
       "bool rt_async_poll(void);",
       "PromiseRef rt_async_sleep(uint64_t delay_ms);",
+      "void rt_queue_microtask(void (*cb)(uint8_t*), uint8_t* data);",
+      "TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);",
+      "TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);",
+      "void rt_clear_timer(TimerId id);",
       "PromiseRef rt_promise_new(void);",
       "void rt_promise_resolve(PromiseRef p, ValueRef value);",
       "void rt_promise_reject(PromiseRef p, ValueRef err);",
@@ -414,6 +418,10 @@ mod tests {
     let _async_spawn: extern "C" fn(*mut abi::RtCoroutineHeader) -> abi::PromiseRef = rt_async_spawn;
     let _async_poll: extern "C" fn() -> bool = rt_async_poll;
     let _async_sleep: extern "C" fn(u64) -> abi::PromiseRef = rt_async_sleep;
+    let _queue_microtask: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = rt_queue_microtask;
+    let _set_timeout: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_timeout;
+    let _set_interval: extern "C" fn(extern "C" fn(*mut u8), *mut u8, u64) -> abi::TimerId = rt_set_interval;
+    let _clear_timer: extern "C" fn(abi::TimerId) = rt_clear_timer;
     let _promise_new: extern "C" fn() -> abi::PromiseRef = rt_promise_new;
     let _promise_resolve: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve;
     let _promise_reject: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject;
@@ -454,6 +462,10 @@ mod tests {
       _async_spawn,
       _async_poll,
       _async_sleep,
+      _queue_microtask,
+      _set_timeout,
+      _set_interval,
+      _clear_timer,
       _promise_new,
       _promise_resolve,
       _promise_reject,

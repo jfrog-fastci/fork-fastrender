@@ -57,7 +57,12 @@ impl EventLoop {
     existed
   }
 
-  pub fn register_fd(&self, fd: RawFd, interest: Interest, task: Task) -> std::io::Result<WatcherId> {
+  pub fn register_fd(
+    &self,
+    fd: RawFd,
+    interest: Interest,
+    task: Task,
+  ) -> std::io::Result<WatcherId> {
     self.reactor.register(fd, interest, task)
   }
 
@@ -204,3 +209,4 @@ impl EventLoop {
     let _ = self.reactor.drain_wake();
   }
 }
+
