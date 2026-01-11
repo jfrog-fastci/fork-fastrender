@@ -218,18 +218,20 @@ pub fn validate_native_strict_body(
             .copied()
             .unwrap_or(callee.span);
 
-          if !call.is_new {
-            let direct_eval =
-              matches!(&callee.kind, ExprKind::Ident(name) if *name == eval_name);
-            let global_eval = match &callee.kind {
-              ExprKind::Member(mem) => {
-                let prop_is_eval = matches!(&mem.property, ObjectKey::Ident(name) if *name == eval_name)
-                  || matches!(&mem.property, ObjectKey::String(name) if name == "eval");
-                let obj_is_global_this = matches!(
-                  body.exprs.get(mem.object.0 as usize).map(|e| &e.kind),
-                  Some(ExprKind::Ident(name)) if *name == global_this_name
-                );
-                prop_is_eval && obj_is_global_this
+            if !call.is_new {
+              let direct_eval =
+                matches!(&callee.kind, ExprKind::Ident(name) if *name == eval_name);
+              let global_eval = match &callee.kind {
+                ExprKind::Member(mem) => {
+                  let prop_is_eval =
+                    object_key_is_ident(&mem.property, eval_name)
+                      || object_key_is_string(&mem.property, "eval")
+                      || object_key_is_literal_string(body, &mem.property, "eval");
+                  let obj_is_global_this = matches!(
+                    body.exprs.get(mem.object.0 as usize).map(|e| &e.kind),
+                    Some(ExprKind::Ident(name)) if *name == global_this_name
+                  );
+                  prop_is_eval && obj_is_global_this
               }
               _ => false,
             };
@@ -264,7 +266,8 @@ pub fn validate_native_strict_body(
 
             if matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == proxy_name)
               && (object_key_is_ident(&member.property, revocable_name)
-                || object_key_is_string(&member.property, "revocable"))
+                || object_key_is_string(&member.property, "revocable")
+                || object_key_is_literal_string(body, &member.property, "revocable"))
             {
               diagnostics.push(codes::NATIVE_STRICT_PROXY.error(
                 "`Proxy` is forbidden when `native_strict` is enabled",
@@ -274,7 +277,8 @@ pub fn validate_native_strict_body(
 
             if matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == object_name || *name == reflect_name)
               && (object_key_is_ident(&member.property, set_prototype_of_name)
-                || object_key_is_string(&member.property, "setPrototypeOf"))
+                || object_key_is_string(&member.property, "setPrototypeOf")
+                || object_key_is_literal_string(body, &member.property, "setPrototypeOf"))
             {
               let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
               diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
@@ -287,13 +291,17 @@ pub fn validate_native_strict_body(
               let is_object_define = matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == object_name)
                 && (object_key_is_ident(&member.property, define_property_name)
                   || object_key_is_string(&member.property, "defineProperty")
+                  || object_key_is_literal_string(body, &member.property, "defineProperty")
                   || object_key_is_ident(&member.property, define_properties_name)
                   || object_key_is_string(&member.property, "defineProperties")
+                  || object_key_is_literal_string(body, &member.property, "defineProperties")
                   || object_key_is_ident(&member.property, assign_name)
-                  || object_key_is_string(&member.property, "assign"));
+                  || object_key_is_string(&member.property, "assign")
+                  || object_key_is_literal_string(body, &member.property, "assign"));
               let is_reflect_define = matches!(obj_is_ident, Some(ExprKind::Ident(name)) if *name == reflect_name)
                 && (object_key_is_ident(&member.property, define_property_name)
-                  || object_key_is_string(&member.property, "defineProperty"));
+                  || object_key_is_string(&member.property, "defineProperty")
+                  || object_key_is_literal_string(body, &member.property, "defineProperty"));
               if (is_object_define || is_reflect_define)
                 && expr_chain_contains_proto_mutation(body, first_arg, prototype_name, proto_name)
               {
