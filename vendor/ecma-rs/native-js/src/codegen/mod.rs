@@ -165,6 +165,9 @@ fn codegen_expr<'ctx>(
   let span = Span::new(entry_file, expr_data.span);
 
   match &expr_data.kind {
+    ExprKind::TypeAssertion { expr, .. } => codegen_expr(builder, i32_ty, body, entry_file, *expr),
+    ExprKind::NonNull { expr } => codegen_expr(builder, i32_ty, body, entry_file, *expr),
+    ExprKind::Satisfies { expr, .. } => codegen_expr(builder, i32_ty, body, entry_file, *expr),
     ExprKind::Literal(Literal::Number(raw)) => parse_i32_const(i32_ty, raw).ok_or_else(|| {
       vec![Diagnostic::error(
         "NJS0104",
@@ -300,4 +303,3 @@ pub enum CodegenError {
 pub fn emit_llvm_module(ast: &Node<TopLevel>, opts: CompileOptions) -> Result<String, CodegenError> {
   llvm::emit_llvm_module(ast, opts)
 }
-

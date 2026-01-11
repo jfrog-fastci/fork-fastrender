@@ -145,6 +145,30 @@ fn tsconfig_paths_are_resolved() {
 }
 
 #[test]
+fn ts_runtime_inert_wrappers_do_not_block_codegen() {
+  let tmp = TempDir::new().unwrap();
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "export function main(): number { return ((1 satisfies number) as number)!; }\n",
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(1));
+}
+
+#[test]
 fn tsconfig_types_are_loaded_from_type_roots() {
   let tmp = TempDir::new().unwrap();
 
