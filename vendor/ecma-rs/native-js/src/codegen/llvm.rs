@@ -364,6 +364,14 @@ impl Codegen {
     Ok(())
   }
 
+  fn emit_strcmp_eq(&mut self, left: &str, right: &str) -> Result<String, CodegenError> {
+    let cmp = self.tmp();
+    self.emit(format!("  {cmp} = call i32 @strcmp(ptr {left}, ptr {right})"));
+    let out = self.tmp();
+    self.emit(format!("  {out} = icmp eq i32 {cmp}, 0"));
+    Ok(out)
+  }
+
   fn emit_print_log_call(&mut self, args: &[Node<CallArg>]) -> Result<(), CodegenError> {
     if args.is_empty() {
       let empty = self.emit_string_ptr(b"");
@@ -570,6 +578,60 @@ impl Codegen {
               ir: out,
             })
           }
+          OperatorName::Subtraction => {
+            let left = self.compile_expr(&bin.stx.left)?;
+            let right = self.compile_expr(&bin.stx.right)?;
+            if left.ty != Ty::Number || right.ty != Ty::Number {
+              return Err(CodegenError::TypeError(
+                "binary `-` currently only supports numbers".to_string(),
+              ));
+            }
+            let out = self.tmp();
+            self.emit(format!(
+              "  {out} = fsub double {}, {}",
+              left.ir, right.ir
+            ));
+            Ok(Value {
+              ty: Ty::Number,
+              ir: out,
+            })
+          }
+          OperatorName::Multiplication => {
+            let left = self.compile_expr(&bin.stx.left)?;
+            let right = self.compile_expr(&bin.stx.right)?;
+            if left.ty != Ty::Number || right.ty != Ty::Number {
+              return Err(CodegenError::TypeError(
+                "binary `*` currently only supports numbers".to_string(),
+              ));
+            }
+            let out = self.tmp();
+            self.emit(format!(
+              "  {out} = fmul double {}, {}",
+              left.ir, right.ir
+            ));
+            Ok(Value {
+              ty: Ty::Number,
+              ir: out,
+            })
+          }
+          OperatorName::Division => {
+            let left = self.compile_expr(&bin.stx.left)?;
+            let right = self.compile_expr(&bin.stx.right)?;
+            if left.ty != Ty::Number || right.ty != Ty::Number {
+              return Err(CodegenError::TypeError(
+                "binary `/` currently only supports numbers".to_string(),
+              ));
+            }
+            let out = self.tmp();
+            self.emit(format!(
+              "  {out} = fdiv double {}, {}",
+              left.ir, right.ir
+            ));
+            Ok(Value {
+              ty: Ty::Number,
+              ir: out,
+            })
+          }
           OperatorName::StrictEquality => {
             let left = self.compile_expr(&bin.stx.left)?;
             let right = self.compile_expr(&bin.stx.right)?;
@@ -592,6 +654,10 @@ impl Codegen {
                   left.ir, right.ir
                 ));
               }
+              Ty::String => {
+                let eq = self.emit_strcmp_eq(&left.ir, &right.ir)?;
+                return Ok(Value { ty: Ty::Bool, ir: eq });
+              }
               Ty::Null | Ty::Undefined => {
                 // `null === null` and `undefined === undefined`.
                 return Ok(Value {
@@ -601,10 +667,101 @@ impl Codegen {
               }
               _ => {
                 return Err(CodegenError::TypeError(
-                  "`===` currently only supports numbers, booleans, null, and undefined".to_string(),
+                  "`===` currently only supports numbers, booleans, strings, null, and undefined"
+                    .to_string(),
                 ));
               }
             }
+            Ok(Value { ty: Ty::Bool, ir: out })
+          }
+          OperatorName::StrictInequality => {
+            let left = self.compile_expr(&bin.stx.left)?;
+            let right = self.compile_expr(&bin.stx.right)?;
+            if left.ty != right.ty {
+              // JS semantics: different types are always strictly not equal.
+              return Ok(Value {
+                ty: Ty::Bool,
+                ir: "1".to_string(),
+              });
+            }
+
+            match left.ty {
+              Ty::Number => {
+                let eq = self.tmp();
+                self.emit(format!(
+                  "  {eq} = fcmp oeq double {}, {}",
+                  left.ir, right.ir
+                ));
+                let out = self.tmp();
+                self.emit(format!("  {out} = xor i1 {eq}, true"));
+                Ok(Value { ty: Ty::Bool, ir: out })
+              }
+              Ty::Bool => {
+                let eq = self.tmp();
+                self.emit(format!(
+                  "  {eq} = icmp eq i1 {}, {}",
+                  left.ir, right.ir
+                ));
+                let out = self.tmp();
+                self.emit(format!("  {out} = xor i1 {eq}, true"));
+                Ok(Value { ty: Ty::Bool, ir: out })
+              }
+              Ty::String => {
+                let eq = self.emit_strcmp_eq(&left.ir, &right.ir)?;
+                let out = self.tmp();
+                self.emit(format!("  {out} = xor i1 {eq}, true"));
+                Ok(Value { ty: Ty::Bool, ir: out })
+              }
+              Ty::Null | Ty::Undefined => Ok(Value {
+                ty: Ty::Bool,
+                ir: "0".to_string(),
+              }),
+              _ => Err(CodegenError::TypeError(
+                "`!==` currently only supports numbers, booleans, strings, null, and undefined"
+                  .to_string(),
+              )),
+            }
+          }
+          OperatorName::LessThan
+          | OperatorName::LessThanOrEqual
+          | OperatorName::GreaterThan
+          | OperatorName::GreaterThanOrEqual => {
+            let left = self.compile_expr(&bin.stx.left)?;
+            let right = self.compile_expr(&bin.stx.right)?;
+            if left.ty != Ty::Number || right.ty != Ty::Number {
+              return Err(CodegenError::TypeError(
+                "numeric comparison currently only supports numbers".to_string(),
+              ));
+            }
+            let out = self.tmp();
+            let pred = match bin.stx.operator {
+              OperatorName::LessThan => "olt",
+              OperatorName::LessThanOrEqual => "ole",
+              OperatorName::GreaterThan => "ogt",
+              OperatorName::GreaterThanOrEqual => "oge",
+              _ => unreachable!(),
+            };
+            self.emit(format!(
+              "  {out} = fcmp {pred} double {}, {}",
+              left.ir, right.ir
+            ));
+            Ok(Value { ty: Ty::Bool, ir: out })
+          }
+          OperatorName::LogicalAnd | OperatorName::LogicalOr => {
+            let left = self.compile_expr(&bin.stx.left)?;
+            let right = self.compile_expr(&bin.stx.right)?;
+            if left.ty != Ty::Bool || right.ty != Ty::Bool {
+              return Err(CodegenError::TypeError(
+                "logical operators currently only support booleans".to_string(),
+              ));
+            }
+            let out = self.tmp();
+            let op = match bin.stx.operator {
+              OperatorName::LogicalAnd => "and",
+              OperatorName::LogicalOr => "or",
+              _ => unreachable!(),
+            };
+            self.emit(format!("  {out} = {op} i1 {}, {}", left.ir, right.ir));
             Ok(Value { ty: Ty::Bool, ir: out })
           }
           other => Err(CodegenError::UnsupportedOperator(other)),
@@ -755,6 +912,7 @@ pub(super) fn emit_llvm_module(
   out.push_str("declare i32 @puts(ptr)\n");
   out.push_str("declare i32 @printf(ptr, ...)\n");
   out.push_str("declare i32 @fflush(ptr)\n");
+  out.push_str("declare i32 @strcmp(ptr, ptr)\n");
   out.push_str("declare void @abort()\n");
   out.push_str("declare void @llvm.trap()\n\n");
 

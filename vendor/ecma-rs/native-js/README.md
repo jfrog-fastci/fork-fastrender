@@ -218,11 +218,14 @@ fields are reserved for the eventual LLVM-backed backend.
   - unary operators:
     - `-` / `+` (numbers only)
     - `!` (booleans only)
-  - numeric `+` (numbers only)
+  - numeric `+` / `-` / `*` / `/` (numbers only)
+  - numeric comparisons: `<` / `<=` / `>` / `>=` (numbers only)
+  - logical `&&` / `||` (booleans only; currently eager evaluation, not short-circuit)
   - assignment:
     - `x = expr` (identifier targets only; allows changing the binding type in the minimal emitter)
     - `x += expr` (number variables only)
-  - `===` (numbers / booleans / `null` / `undefined`; both sides must be the same type)
+  - `===` (numbers / booleans / strings / `null` / `undefined`; both sides must be the same type)
+  - `!==` (same types as `===`; additionally, different types return `true` like JS)
   - builtin calls (when `CompileOptions { builtins: true, .. }`):
     - `console.log(...)` / `print(...)`
     - `assert(cond, msg?)`

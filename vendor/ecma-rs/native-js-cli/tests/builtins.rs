@@ -171,6 +171,48 @@ fn assert_passes() {
 }
 
 #[test]
+fn assert_supports_numeric_comparisons_and_logical_ops() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "assert(1 < 2 && 2 > 1 && 2 >= 2 && 1 <= 1);\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success()
+    .stdout(predicate::eq(""));
+}
+
+#[test]
+fn assert_supports_strict_inequality_and_string_equality() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "assert(NaN !== NaN);\nassert(\"a\" === \"a\");\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success()
+    .stdout(predicate::eq(""));
+}
+
+#[test]
+fn strict_inequality_between_null_and_undefined_is_true() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "assert(null !== undefined);\n").unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success()
+    .stdout(predicate::eq(""));
+}
+
+#[test]
 fn assert_failure_prints_message_and_exits_non_zero() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");
