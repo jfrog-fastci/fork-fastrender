@@ -1,0 +1,40 @@
+# Core ECMAScript Object APIs.
+
+- name: Object.keys
+  semantics: ObjectKeys
+  signature: "(value) => string[]"
+  since: "baseline"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: Object.values
+  semantics: ObjectValues
+  signature: "(value) => any[]"
+  since: "baseline"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure
+
+- name: Object.entries
+  semantics: ObjectEntries
+  signature: "(value) => [string, any][]"
+  since: "baseline"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity: Pure

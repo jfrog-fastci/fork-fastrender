@@ -279,4 +279,13 @@ mod tests {
     assert!(sem.effects.contains(EffectSet::READS_GLOBAL));
     assert!(sem.effects.contains(EffectSet::WRITES_GLOBAL));
   }
+
+  #[test]
+  fn object_keys_allocates() {
+    let kb = crate::load_default_api_database();
+    let api = kb.get("Object.keys").unwrap();
+    let sem = eval_api_call(api, &CallSiteInfo::default());
+    assert_eq!(sem.purity, Purity::Allocating);
+    assert!(sem.effects.contains(EffectSet::ALLOCATES));
+  }
 }
