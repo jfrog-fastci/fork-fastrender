@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "diagnostics": [
+    {
+      "engine": "rust",
+      "code": "TC4009",
+      "file": "/define_property_prototype.ts",
+      "start": 131,
+      "end": 176,
+      "severity": "error",
+      "message": "prototype mutation is forbidden when `native_strict` is enabled"
+    }
+  ]
+}
