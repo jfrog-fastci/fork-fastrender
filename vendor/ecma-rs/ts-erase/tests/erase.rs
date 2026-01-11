@@ -466,3 +466,18 @@ fn erases_abstract_class_members() {
   let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
   assert_eq!(output, "class A{}");
 }
+
+#[test]
+fn erases_abstract_members_but_keeps_concrete_members_in_abstract_classes() {
+  let src = r#"
+    abstract class A {
+      abstract x: number;
+      y: number;
+      foo(): void;
+      bar() {}
+    }
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert_eq!(output, "class A{y;bar(){}}");
+}
