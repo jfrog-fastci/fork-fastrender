@@ -18,6 +18,8 @@ use typecheck_ts::{FileId, FileKey, Host, HostError, Program};
 const BUILTINS_D_TS: &str = r#"
 type __NativeJsPrintable = string | number | boolean | null | undefined;
 
+declare const console: { log(...values: __NativeJsPrintable[]): void };
+
 declare function print(...values: __NativeJsPrintable[]): void;
 declare function assert(cond: __NativeJsPrintable, msg?: __NativeJsPrintable): void;
 declare function panic(msg?: __NativeJsPrintable): void;
