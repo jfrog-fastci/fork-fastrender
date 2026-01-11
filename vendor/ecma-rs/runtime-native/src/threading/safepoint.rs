@@ -1,6 +1,7 @@
 use crate::arch::SafepointContext;
 use crate::gc::RootSet;
 use crate::gc_roots::RelocPair;
+use crate::sync::GcAwareMutex;
 use crate::threading::registry;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
@@ -167,14 +168,14 @@ impl SafepointCoordinator {
 }
 
 static COORDINATOR: OnceLock<SafepointCoordinator> = OnceLock::new();
-static GC_WAKERS: OnceLock<Mutex<Vec<fn()>>> = OnceLock::new();
+static GC_WAKERS: OnceLock<GcAwareMutex<Vec<fn()>>> = OnceLock::new();
 
 fn coordinator() -> &'static SafepointCoordinator {
   COORDINATOR.get_or_init(SafepointCoordinator::new)
 }
 
-fn gc_wakers() -> &'static Mutex<Vec<fn()>> {
-  GC_WAKERS.get_or_init(|| Mutex::new(Vec::new()))
+fn gc_wakers() -> &'static GcAwareMutex<Vec<fn()>> {
+  GC_WAKERS.get_or_init(|| GcAwareMutex::new(Vec::new()))
 }
 
 /// Register a callback that should be invoked whenever the GC requests a
@@ -186,7 +187,7 @@ pub fn register_gc_waker(waker: fn()) {
   // `gc_wakers` protects a best-effort list of wake callbacks; poisoning is not meaningful here
   // (a panic while registering wakers shouldn't permanently prevent GC coordination from waking
   // blocked threads).
-  let mut wakers = gc_wakers().lock().unwrap_or_else(|e| e.into_inner());
+  let mut wakers = gc_wakers().lock();
   if wakers.iter().any(|&w| w as usize == waker as usize) {
     return;
   }
@@ -197,11 +198,7 @@ fn wake_all_gc_wakers() {
   // Avoid allocating during GC coordination; copy out one function pointer at a time.
   let mut idx = 0usize;
   loop {
-    let Some(waker) = gc_wakers()
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .get(idx)
-      .copied()
+    let Some(waker) = gc_wakers().lock_for_gc().get(idx).copied()
     else {
       break;
     };
