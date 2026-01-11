@@ -1313,6 +1313,31 @@ pub extern "C" fn rt_parallel_for(
   })
 }
 
+/// Like [`rt_parallel_for`], but treats `data` as a GC-managed object that the runtime will keep
+/// alive (and relocatable) for the duration of the call.
+///
+/// This is required when `body` captures a GC-managed environment object and the runtime chooses to
+/// parallelize the loop: the userdata pointer is stored in Rust-owned scheduler state that is not
+/// visible to stackmap-based GC scanning.
+///
+/// Contract:
+/// - `data` must be a pointer to the base of a GC-managed object (start of `ObjHeader`).
+/// - The runtime registers a strong GC root for `data` until the `rt_parallel_for_rooted` call
+///   returns.
+/// - The `body` callback receives the current relocated pointer after any GC relocation.
+#[no_mangle]
+pub extern "C" fn rt_parallel_for_rooted(
+  start: usize,
+  end: usize,
+  body: extern "C" fn(usize, *mut u8),
+  data: *mut u8,
+) {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    crate::rt_parallel().parallel_for_rooted(start, end, body, data)
+  })
+}
+
 /// Spawn CPU-bound work on the work-stealing pool, returning a promise that can be awaited by the
 /// async runtime.
 ///
@@ -2617,6 +2642,11 @@ pub extern "C" fn rt_queue_microtask_with_drop(
   abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     ensure_current_thread_registered();
+    // Function pointers are non-null by construction in Rust, but this is a C ABI entrypoint and
+    // may be called with null pointers from foreign code.
+    if (cb as usize) == 0 || (drop_data as usize) == 0 {
+      std::process::abort();
+    }
     enqueue_microtask_with_optional_drop(cb, data, Some(drop_data));
   })
 }

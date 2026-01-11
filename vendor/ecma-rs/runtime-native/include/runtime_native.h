@@ -611,6 +611,14 @@ void rt_parallel_join(const TaskId* tasks, size_t count);
 // - target chunks: workers * 4
 // - minimum iterations per task: RT_PAR_FOR_MIN_GRAIN (default: 1024)
 void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);
+// Like `rt_parallel_for`, but `data` is a GC-managed object that the runtime will keep alive (and
+// relocatable) until the call returns.
+//
+// Contract:
+// - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
+// - The runtime registers a strong GC root for `data` until `rt_parallel_for_rooted` returns.
+// - The callback receives the current relocated pointer.
+void rt_parallel_for_rooted(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);
 
 // Spawn CPU-bound work on the parallel worker pool and return a promise that can
 // be awaited by the async runtime.
@@ -883,6 +891,8 @@ PromiseRef rt_async_sleep(uint64_t delay_ms);
 // Microtasks are executed FIFO in the same queue as promise reaction jobs (e.g. async/await
 // coroutine wakeups).
 void rt_queue_microtask(Microtask task);
+// Like `rt_queue_microtask`, but provides a `drop_data` hook that runs only if the microtask is
+// discarded without executing (e.g. `rt_async_cancel_all`).
 void rt_queue_microtask_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*));
 // Like `rt_queue_microtask`, but `data` is a GC-managed object that the runtime
 // will keep alive until `cb` runs.

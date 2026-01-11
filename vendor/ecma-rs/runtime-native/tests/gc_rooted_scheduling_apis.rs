@@ -16,6 +16,7 @@ use runtime_native::GcHeap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::atomic::AtomicU64;
+use std::time::{Duration, Instant};
 
 static OBSERVED: AtomicUsize = AtomicUsize::new(0);
 static DROPPED: AtomicUsize = AtomicUsize::new(0);
@@ -46,6 +47,10 @@ extern "C" fn record_ptr_and_clear_timer(data: *mut u8) {
   record_ptr(data);
   let id = TIMER_ID.load(Ordering::SeqCst);
   runtime_native::rt_clear_timer(id);
+}
+
+extern "C" fn record_ptr_par(_i: usize, data: *mut u8) {
+  record_ptr(data);
 }
 
 #[repr(C)]
@@ -1121,6 +1126,63 @@ fn io_register_handle_with_drop_can_unregister_inside_callback() {
 
   drop(rfd);
   drop(wfd);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn parallel_for_rooted_reloads_userdata_from_persistent_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+  // Raw pointers are `!Send` by default; pass them across threads as addresses.
+  let obj1_addr = obj1 as usize;
+  let obj2_addr = obj2 as usize;
+
+  // Ensure the global persistent handle table starts empty so `simulate_relocation` is unambiguous.
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    0
+  );
+
+  // Spawn a helper thread that waits until `rt_parallel_for_rooted` allocates its persistent handle,
+  // then performs a synthetic relocation by mutating the handle-table slot under stop-the-world.
+  let reloc = std::thread::spawn(move || {
+    threading::register_current_thread(ThreadKind::External);
+
+    const TIMEOUT: Duration = Duration::from_secs(2);
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+      if runtime_native::roots::global_persistent_handle_table().live_count() != 0 {
+        break;
+      }
+      assert!(
+        Instant::now() < deadline,
+        "timed out waiting for rt_parallel_for_rooted to allocate a persistent handle"
+      );
+      std::thread::yield_now();
+    }
+
+    simulate_relocation(obj1_addr as *mut u8, obj2_addr as *mut u8);
+    threading::unregister_current_thread();
+  });
+
+  OBSERVED.store(0, Ordering::SeqCst);
+
+  // Use a large range so the relocation helper has time to run while the parallel loop is active.
+  runtime_native::rt_parallel_for_rooted(0, 1_000_000, record_ptr_par, obj1);
+
+  reloc.join().unwrap();
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(
+    runtime_native::roots::global_persistent_handle_table().live_count(),
+    0,
+    "rt_parallel_for_rooted must release its persistent handle after returning"
+  );
 
   threading::unregister_current_thread();
 }

@@ -41,6 +41,57 @@ fn microtask_with_drop_runs_drop_on_discard() {
 }
 
 #[test]
+fn microtask_with_drop_does_not_run_drop_after_execution() {
+  let _rt = TestRuntimeGuard::new();
+
+  #[repr(C)]
+  struct Ctx {
+    ran: Arc<AtomicUsize>,
+    drops: Arc<AtomicUsize>,
+  }
+
+  impl Drop for Ctx {
+    fn drop(&mut self) {
+      self.drops.fetch_add(1, Ordering::AcqRel);
+    }
+  }
+
+  extern "C" fn mark_ran(data: *mut u8) {
+    let ctx = unsafe { &*(data as *const Ctx) };
+    ctx.ran.store(1, Ordering::Release);
+  }
+
+  extern "C" fn drop_ctx(data: *mut u8) {
+    // Safety: allocated as `Box<Ctx>` in the test setup.
+    unsafe {
+      drop(Box::from_raw(data as *mut Ctx));
+    }
+  }
+
+  let ran = Arc::new(AtomicUsize::new(0));
+  let drops = Arc::new(AtomicUsize::new(0));
+  let data = Box::new(Ctx {
+    ran: ran.clone(),
+    drops: drops.clone(),
+  });
+  let data_ptr = Box::into_raw(data) as *mut u8;
+
+  runtime_native::rt_queue_microtask_with_drop(mark_ran, data_ptr, drop_ctx);
+  assert_eq!(ran.load(Ordering::Acquire), 0);
+  assert_eq!(drops.load(Ordering::Acquire), 0);
+
+  assert!(runtime_native::rt_drain_microtasks());
+  assert_eq!(ran.load(Ordering::Acquire), 1);
+  assert_eq!(drops.load(Ordering::Acquire), 0);
+
+  // The microtask drop hook is discard-only: after normal execution the caller still owns `data`.
+  unsafe {
+    drop(Box::from_raw(data_ptr as *mut Ctx));
+  }
+  assert_eq!(drops.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn timeout_with_drop_runs_drop_on_clear() {
   let _rt = TestRuntimeGuard::new();
 
@@ -113,4 +164,3 @@ fn interval_with_drop_can_clear_itself_without_dropping_while_running() {
   assert_eq!(fired.load(Ordering::Acquire), 1);
   assert_eq!(drops.load(Ordering::Acquire), 1);
 }
-

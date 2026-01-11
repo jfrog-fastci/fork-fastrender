@@ -76,6 +76,7 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_keep_alive_gc_ref(",
     "rt_parallel_spawn_rooted(",
     "rt_parallel_spawn_rooted_h(",
+    "rt_parallel_for_rooted(",
     "rt_parallel_spawn_promise_rooted(",
     "rt_parallel_spawn_promise_rooted_h(",
     "rt_queue_microtask_rooted(",
@@ -281,6 +282,18 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     runtime_native::rt_parallel_spawn_rooted;
   let _parallel_spawn_rooted_h: unsafe extern "C" fn(extern "C" fn(*mut u8), runtime_native::roots::GcHandle) -> runtime_native::abi::TaskId =
     runtime_native::rt_parallel_spawn_rooted_h;
+  let _parallel_for: extern "C" fn(
+    usize,
+    usize,
+    runtime_native::abi::RtParallelForBodyFn,
+    *mut u8,
+  ) = runtime_native::rt_parallel_for;
+  let _parallel_for_rooted: extern "C" fn(
+    usize,
+    usize,
+    runtime_native::abi::RtParallelForBodyFn,
+    *mut u8,
+  ) = runtime_native::rt_parallel_for_rooted;
   let _queue_microtask_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) = runtime_native::rt_queue_microtask_rooted;
   let _parallel_spawn_promise_rooted: extern "C" fn(
     extern "C" fn(*mut u8, runtime_native::abi::PromiseRef),
@@ -449,6 +462,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _root_pop,
     _parallel_spawn_rooted,
     _parallel_spawn_rooted_h,
+    _parallel_for,
+    _parallel_for_rooted,
     _queue_microtask_rooted,
     _queue_microtask_rooted_h,
     _parallel_spawn_promise_rooted,

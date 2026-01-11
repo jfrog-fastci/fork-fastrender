@@ -243,6 +243,16 @@ impl ParallelRuntime {
     self.parallel_for_with_chunking(start, end, body, data, Chunking::Auto);
   }
 
+  pub(crate) fn parallel_for_rooted(
+    &self,
+    start: usize,
+    end: usize,
+    body: extern "C" fn(usize, *mut u8),
+    data: *mut u8,
+  ) {
+    self.parallel_for_rooted_with_chunking(start, end, body, data, Chunking::Auto);
+  }
+
   pub(crate) fn parallel_for_with_chunking(
     &self,
     start: usize,
@@ -252,6 +262,17 @@ impl ParallelRuntime {
     chunking: Chunking,
   ) {
     parallel_for_impl::parallel_for(self, start, end, body, data, chunking);
+  }
+
+  pub(crate) fn parallel_for_rooted_with_chunking(
+    &self,
+    start: usize,
+    end: usize,
+    body: extern "C" fn(usize, *mut u8),
+    data: *mut u8,
+    chunking: Chunking,
+  ) {
+    parallel_for_impl::parallel_for_rooted(self, start, end, body, data, chunking);
   }
 
   pub(crate) fn worker_count(&self) -> usize {

@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 
 use crate::abi::TaskId;
+use crate::gc::HandleId;
 use crate::threading::{self, ThreadKind};
 
 use super::Chunking;
@@ -32,6 +33,16 @@ fn call_body(body: ParForBody, i: usize, data: *mut u8) {
   crate::ffi::invoke_cb2_usize(body, i, data);
 }
 
+fn call_body_rooted(body: ParForBody, i: usize, data: HandleId) {
+  // Poll before resolving the pointer so we never pass a stale pre-GC pointer
+  // into the callback.
+  threading::safepoint_poll();
+  let data = crate::roots::global_persistent_handle_table()
+    .get(data)
+    .unwrap_or_else(|| std::process::abort());
+  crate::ffi::invoke_cb2_usize(body, i, data);
+}
+
 #[repr(C)]
 struct ParForChunk {
   start: usize,
@@ -44,6 +55,21 @@ extern "C" fn par_for_task(data: *mut u8) {
   let chunk = unsafe { Box::from_raw(data as *mut ParForChunk) };
   for i in chunk.start..chunk.end {
     call_body(chunk.body, i, chunk.data);
+  }
+}
+
+#[repr(C)]
+struct ParForChunkRooted {
+  start: usize,
+  end: usize,
+  body: ParForBody,
+  data: HandleId,
+}
+
+extern "C" fn par_for_task_rooted(data: *mut u8) {
+  let chunk = unsafe { Box::from_raw(data as *mut ParForChunkRooted) };
+  for i in chunk.start..chunk.end {
+    call_body_rooted(chunk.body, i, chunk.data);
   }
 }
 
@@ -108,6 +134,86 @@ pub(crate) fn parallel_for(
       data,
     });
     let id = rt.spawn(par_for_task, Box::into_raw(chunk) as *mut u8);
+    tasks.push(id);
+    chunk_start = chunk_end;
+  }
+
+  rt.join(tasks.as_ptr(), tasks.len());
+}
+
+pub(crate) fn parallel_for_rooted(
+  rt: &ParallelRuntime,
+  start: usize,
+  end: usize,
+  body: ParForBody,
+  data: *mut u8,
+  chunking: Chunking,
+) {
+  // Ensure the caller is registered for safepoint coordination even if we fall
+  // back to sequential execution.
+  threading::register_current_thread(ThreadKind::External);
+
+  if end <= start {
+    return;
+  }
+
+  // Root the userdata for the duration of the parallel_for call. This keeps it
+  // alive while worker tasks are queued in Rust-owned scheduler state and
+  // provides a stable indirection that the moving GC can update during
+  // relocation.
+  let handle = crate::roots::global_persistent_handle_table().alloc(data);
+  struct HandleGuard(HandleId);
+  impl Drop for HandleGuard {
+    fn drop(&mut self) {
+      let _ = crate::roots::global_persistent_handle_table().free(self.0);
+    }
+  }
+  let _handle_guard = HandleGuard(handle);
+
+  let len = end - start;
+  let min_grain = min_grain();
+
+  let estimate = WorkEstimate {
+    items: len,
+    cost: len as u64,
+  };
+  if !super::should_parallelize(estimate) || rt.worker_count() <= 1 {
+    for i in start..end {
+      call_body_rooted(body, i, handle);
+    }
+    return;
+  }
+
+  let chunk_size = match chunking {
+    Chunking::Fixed(size) => size.max(1),
+    Chunking::Auto => {
+      let target_chunks = rt.worker_count().saturating_mul(4).max(1);
+      let mut chunk_size = len.div_ceil(target_chunks).max(min_grain);
+      if chunk_size == 0 {
+        chunk_size = 1;
+      }
+      chunk_size
+    }
+  };
+
+  if chunk_size >= len {
+    for i in start..end {
+      call_body_rooted(body, i, handle);
+    }
+    return;
+  }
+
+  let mut tasks: Vec<TaskId> = Vec::new();
+  let mut chunk_start = start;
+  while chunk_start < end {
+    let chunk_end = end.min(chunk_start.saturating_add(chunk_size));
+    let chunk = Box::new(ParForChunkRooted {
+      start: chunk_start,
+      end: chunk_end,
+      body,
+      data: handle,
+    });
+    let id = rt.spawn(par_for_task_rooted, Box::into_raw(chunk) as *mut u8);
     tasks.push(id);
     chunk_start = chunk_end;
   }
