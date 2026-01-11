@@ -198,6 +198,10 @@ pub fn rt_async_poll() -> bool;
 - `data` must remain valid until the returned `TaskId` is passed to `rt_parallel_join`.
 - Each `TaskId` must be joined exactly once.
 
+Parallel runtime configuration:
+- `ECMA_RS_RUNTIME_NATIVE_THREADS`: overrides the size of the global worker pool (must be a
+  positive integer). Defaults to the platform-reported CPU parallelism.
+
 #### 3.1.3 GC classification for codegen (Milestone 1)
 
 Even if the Milestone 1 runtime stubs GC, `native-js` codegen must classify

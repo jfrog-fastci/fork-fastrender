@@ -124,6 +124,7 @@ pub static __RUNTIME_NATIVE_DUMMY_STACKMAPS: [u8; 16] = [
 mod tests {
   use super::*;
   use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::time::{Duration, Instant};
 
   #[test]
   fn interning_is_deduplicated() {
@@ -448,5 +449,60 @@ mod tests {
   #[test]
   fn parallel_join_empty_is_noop() {
     rt_parallel_join(std::ptr::null(), 0);
+  }
+
+  fn effective_worker_count() -> usize {
+    std::env::var("ECMA_RS_RUNTIME_NATIVE_THREADS")
+      .ok()
+      .and_then(|v| v.parse::<usize>().ok())
+      .filter(|&n| n > 0)
+      .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
+  }
+
+  #[repr(C)]
+  struct ConcurrencyData {
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+  }
+
+  extern "C" fn concurrency_probe(data: *mut u8) {
+    let data = unsafe { &*(data as *const ConcurrencyData) };
+
+    let active = data.active.fetch_add(1, Ordering::SeqCst) + 1;
+    data.max_active.fetch_max(active, Ordering::SeqCst);
+
+    // Give another worker a generous window to overlap execution.
+    if active == 1 {
+      let start = Instant::now();
+      while data.active.load(Ordering::SeqCst) < 2 && start.elapsed() < Duration::from_secs(1) {
+        std::thread::yield_now();
+      }
+    }
+
+    data.active.fetch_sub(1, Ordering::SeqCst);
+  }
+
+  #[test]
+  fn parallel_spawn_can_execute_concurrently() {
+    // This test is a best-effort concurrency probe: if the pool only has 1 worker, we can't
+    // reliably assert overlap across OS threads.
+    let workers = effective_worker_count();
+    if workers < 2 {
+      return;
+    }
+
+    let data = Box::new(ConcurrencyData {
+      active: AtomicUsize::new(0),
+      max_active: AtomicUsize::new(0),
+    });
+    let data_ptr = (&*data as *const ConcurrencyData).cast_mut().cast::<u8>();
+
+    let tasks = [rt_parallel_spawn(concurrency_probe, data_ptr), rt_parallel_spawn(concurrency_probe, data_ptr)];
+    rt_parallel_join(tasks.as_ptr(), tasks.len());
+
+    assert!(
+      data.max_active.load(Ordering::SeqCst) >= 2,
+      "expected at least two tasks to overlap; worker_count={workers}"
+    );
   }
 }

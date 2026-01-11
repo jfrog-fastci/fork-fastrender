@@ -93,16 +93,21 @@ impl ParallelRuntime {
           .done_lock
           .lock()
           .unwrap_or_else(|_| std::process::abort());
+        // Avoid deadlocking stop-the-world GC: treat this thread as GC-safe while blocked on the
+        // task completion condition variable.
+        //
+        // Note: keep the GC-safe guard alive for the whole wait loop, and drop it *after* dropping
+        // the mutex guard. Dropping `GcSafeGuard` may block if a stop-the-world is active; we must
+        // not hold `done_lock` while doing so or we could deadlock the completing worker.
+        let gc_safe = threading::enter_gc_safe_region();
         while !task.done.load(Ordering::Acquire) {
-          // Avoid deadlocking stop-the-world GC: treat this thread as GC-safe while blocked on the
-          // task completion condition variable.
-          let gc_safe = threading::enter_gc_safe_region();
           guard = task
             .done_cv
             .wait(guard)
             .unwrap_or_else(|_| std::process::abort());
-          drop(gc_safe);
         }
+        drop(guard);
+        drop(gc_safe);
       }
     }
   }

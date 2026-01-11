@@ -139,6 +139,9 @@ InternedId rt_string_intern(const uint8_t* s, size_t len);
 // -----------------------------------------------------------------------------
 // Parallel
 // -----------------------------------------------------------------------------
+// The runtime maintains a process-global worker pool. By default the pool size matches the
+// available CPU parallelism; override it by setting `ECMA_RS_RUNTIME_NATIVE_THREADS` to a positive
+// integer before first use.
 // Schedule `task(data)` onto the runtime's global worker pool.
 //
 // Contract:
