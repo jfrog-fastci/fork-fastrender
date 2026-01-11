@@ -12,6 +12,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 errors=0
 warnings=0
 
@@ -54,6 +56,14 @@ check_cmd cargo "rustup"
 check_cmd gcc "build-essential"
 check_cmd make "build-essential"
 check_cmd git "git"
+
+echo ""
+echo "--- Workspace Sanity ---"
+if bash "${SCRIPT_DIR}/check_workspace_members.sh"; then
+  :
+else
+  errors=$((errors + 1))
+fi
 
 echo ""
 echo "--- Resource Limiting (required for multi-agent) ---"
