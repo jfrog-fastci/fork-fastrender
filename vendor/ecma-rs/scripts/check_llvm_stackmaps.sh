@@ -137,6 +137,62 @@ must_have_stackmaps() {
   fi
 }
 
+must_have_stackmaps_symbols() {
+  local bin="$1"
+
+  # The linker script fragment is expected to define stable boundary symbols for
+  # in-process discovery (used by runtime-native's fast path).
+  local start_hex stop_hex
+  start_hex="$(
+    "${READELF}" -W -s "${bin}" | awk '$8=="__start_llvm_stackmaps" {print $2; exit}'
+  )"
+  stop_hex="$(
+    "${READELF}" -W -s "${bin}" | awk '$8=="__stop_llvm_stackmaps" {print $2; exit}'
+  )"
+  if [[ -z "${start_hex}" || -z "${stop_hex}" ]]; then
+    echo "expected __start_llvm_stackmaps/__stop_llvm_stackmaps in: ${bin}" >&2
+    "${READELF}" -W -s "${bin}" >&2 || true
+    exit 1
+  fi
+
+  local line
+  line="$(
+    "${READELF}" -W -S "${bin}" \
+      | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" {print $0}' \
+      | head -n 1
+  )"
+  if [[ -z "${line}" ]]; then
+    echo "expected stackmaps section for symbol range check in: ${bin}" >&2
+    "${READELF}" -W -S "${bin}" >&2 || true
+    exit 1
+  fi
+
+  # readelf columns: [Nr] Name Type Address Off Size ES Flags Link Info Align
+  local sec_addr_hex sec_size_hex
+  sec_addr_hex="$(awk '{print $4}' <<<"${line}")"
+  sec_size_hex="$(awk '{print $6}' <<<"${line}")"
+
+  local start_dec=$((16#${start_hex}))
+  local stop_dec=$((16#${stop_hex}))
+  local sec_addr_dec=$((16#${sec_addr_hex}))
+  local sec_size_dec=$((16#${sec_size_hex}))
+
+  if [[ "${stop_dec}" -le "${start_dec}" ]]; then
+    echo "invalid stackmaps symbol range in: ${bin} (start=0x${start_hex} stop=0x${stop_hex})" >&2
+    exit 1
+  fi
+
+  local expected_stop=$((sec_addr_dec + sec_size_dec))
+  if [[ "${start_dec}" -ne "${sec_addr_dec}" || "${stop_dec}" -ne "${expected_stop}" ]]; then
+    echo "stackmaps symbol range mismatch in: ${bin}" >&2
+    echo "  section_addr=0x${sec_addr_hex} section_size=0x${sec_size_hex}" >&2
+    echo "  __start_llvm_stackmaps=0x${start_hex} __stop_llvm_stackmaps=0x${stop_hex}" >&2
+    "${READELF}" -W -S "${bin}" >&2 || true
+    "${READELF}" -W -s "${bin}" >&2 || true
+    exit 1
+  fi
+}
+
 must_not_have_stackmaps() {
   local bin="$1"
   if "${READELF}" -W -S "${bin}" | awk '$2==".data.rel.ro.llvm_stackmaps" || $2==".llvm_stackmaps" {found=1} END {exit !found}'; then
@@ -207,14 +263,17 @@ echo "[stackmaps] link: ld (no-pie, --gc-sections + stackmaps.ld KEEP)"
 "${CLANG}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
   -o "${tmp}/a_ld_policy" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_ld_policy"
+must_have_stackmaps_symbols "${tmp}/a_ld_policy"
 
 echo "[stackmaps] link: native_link.sh (no-pie, --gc-sections + KEEP)"
 "${script_dir}/native_link.sh" -o "${tmp}/a_policy" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy"
+must_have_stackmaps_symbols "${tmp}/a_policy"
 
 echo "[stackmaps] link: native_link.sh (ld explicit)"
 ECMA_RS_NATIVE_LINKER=ld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy_ld"
+must_have_stackmaps_symbols "${tmp}/a_policy_ld"
 
 echo "[stackmaps] link: native_link.sh (ld + PIE; stackmaps patched via objcopy)"
 ECMA_RS_NATIVE_LINKER=ld ECMA_RS_NATIVE_PIE=1 "${script_dir}/native_link.sh" -o "${tmp}/a_policy_ld_pie" "${objs[@]}"
@@ -247,15 +306,18 @@ if [[ -n "${LLD_FUSE}" ]]; then
   "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
     -o "${tmp}/a_lld_policy" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_lld_policy"
+  must_have_stackmaps_symbols "${tmp}/a_lld_policy"
 
   echo "[stackmaps] link: native_link.sh (lld explicit)"
   ECMA_RS_NATIVE_LINKER=lld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_policy_lld"
+  must_have_stackmaps_symbols "${tmp}/a_policy_lld"
 
   if [[ -n "${LLVM_OBJCOPY}" ]]; then
     echo "[stackmaps] link: native_link.sh (lld + PIE; stackmaps patched via llvm-objcopy)"
     ECMA_RS_NATIVE_LINKER=lld ECMA_RS_NATIVE_PIE=1 "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld_pie" "${objs[@]}"
     must_have_stackmaps "${tmp}/a_policy_lld_pie"
+    must_have_stackmaps_symbols "${tmp}/a_policy_lld_pie"
     must_not_have_textrel "${tmp}/a_policy_lld_pie"
   else
     echo "[stackmaps] note: llvm-objcopy not found; skipping PIE+lld policy link"
