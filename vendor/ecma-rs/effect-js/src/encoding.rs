@@ -43,10 +43,9 @@ fn analyze_string_encodings_impl<O: TypeOracle + Copy>(
   for (body_id, idx) in result.body_index.iter() {
     let body = &result.bodies[*idx];
     let mut analyzer = BodyAnalyzer {
-      file: &result.hir,
+      lowered: result,
       body_id: *body_id,
       body,
-      names: &result.names,
       kb,
       oracle,
       cache: vec![None; body.exprs.len()],
@@ -142,10 +141,9 @@ fn type_is_number(types: &dyn crate::types::TypeProvider, body: BodyId, expr: Ex
 }
 
 struct BodyAnalyzer<'a, O> {
-  file: &'a hir_js::HirFile,
+  lowered: &'a hir_js::LowerResult,
   body_id: BodyId,
   body: &'a hir_js::Body,
-  names: &'a hir_js::NameInterner,
   kb: &'a KnowledgeBase,
   oracle: O,
   cache: Vec<Option<StringEncoding>>,
@@ -226,7 +224,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
     // to Unknown.
 
     if let Some(resolved) =
-      resolve_api_use(self.file, self.body, expr_id, self.names, self.kb)
+      resolve_api_use(&self.lowered.hir, self.body, expr_id, &self.lowered.names, self.kb)
     {
       if matches!(resolved.kind, ApiUseKind::Call | ApiUseKind::Construct) {
         let input = call
@@ -248,7 +246,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
       return self.encoding_of_kb_free_call(call);
     };
 
-    let Some(prop_name) = object_key_to_str(self.names, &member.property) else {
+    let Some(prop_name) = object_key_to_str(&self.lowered.names, &member.property) else {
       return StringEncoding::Unknown;
     };
 
@@ -302,7 +300,7 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
     let ExprKind::Ident(name) = &callee_expr.kind else {
       return StringEncoding::Unknown;
     };
-    let Some(name_str) = self.names.resolve(*name) else {
+    let Some(name_str) = self.lowered.names.resolve(*name) else {
       return StringEncoding::Unknown;
     };
 
@@ -318,7 +316,9 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
   }
 
   fn encoding_of_member(&mut self, expr_id: ExprId) -> StringEncoding {
-    if let Some(resolved) = resolve_api_use(self.file, self.body, expr_id, self.names, self.kb) {
+    if let Some(resolved) =
+      resolve_api_use(&self.lowered.hir, self.body, expr_id, &self.lowered.names, self.kb)
+    {
       if resolved.kind != ApiUseKind::Get {
         return StringEncoding::Unknown;
       }
@@ -333,7 +333,9 @@ impl<O: TypeOracle> BodyAnalyzer<'_, O> {
     #[cfg(feature = "typed")]
     {
       if let Some(types) = self.oracle.type_provider() {
-        if let Some(resolved) = crate::resolve::resolve_member(self.lowered, self.body_id, expr_id, types) {
+        if let Some(resolved) =
+          crate::resolve::resolve_member(self.lowered, self.body_id, expr_id, types)
+        {
           return self
             .encoding_via_kb(resolved.api.as_str(), StringEncoding::Unknown)
             .unwrap_or(StringEncoding::Unknown);
