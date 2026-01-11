@@ -6,6 +6,8 @@ use std::time::Duration;
 
 extern "C" {
   fn rt_gc_safepoint_slow(epoch: u64);
+  #[link_name = "gc.safepoint_poll"]
+  fn gc_safepoint_poll();
 }
 
 #[inline(never)]
@@ -13,6 +15,14 @@ fn enter_safepoint_slow(epoch: u64) {
   // Safety: `rt_gc_safepoint_slow` is a runtime-native entrypoint that follows the C ABI.
   unsafe {
     rt_gc_safepoint_slow(epoch);
+  }
+}
+
+#[inline(never)]
+fn enter_safepoint_poll() {
+  // Safety: `gc.safepoint_poll` is a runtime-native entrypoint that follows the C ABI.
+  unsafe {
+    gc_safepoint_poll();
   }
 }
 
@@ -113,6 +123,106 @@ fn captures_mutator_ip_and_stack_pointer() {
     assert!(
       ctx.ip >= base && ctx.ip < base + 0x10_000,
       "expected ip {:#x} to fall within enter_safepoint_slow [{:#x}, {:#x})",
+      ctx.ip,
+      base,
+      base + 0x10_000
+    );
+  }
+
+  runtime_native::rt_gc_resume_world();
+
+  handle.join().unwrap();
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn captures_mutator_ip_and_stack_pointer_via_gc_safepoint_poll() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let (tx_id, rx_id) = mpsc::channel();
+  let (tx_go, rx_go) = mpsc::channel();
+
+  let handle = std::thread::spawn(move || {
+    let id = threading::register_current_thread(ThreadKind::Worker);
+    tx_id.send(id.get()).unwrap();
+
+    rx_go.recv().unwrap();
+    enter_safepoint_poll();
+
+    threading::unregister_current_thread();
+  });
+
+  let worker_id = rx_id.recv().unwrap();
+
+  let _stop_epoch = runtime_native::rt_gc_request_stop_the_world();
+  tx_go.send(()).unwrap();
+
+  assert!(
+    runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_secs(2)),
+    "worker did not reach safepoint in time"
+  );
+
+  let worker = threading::all_threads()
+    .into_iter()
+    .find(|t| t.id().get() == worker_id)
+    .expect("worker thread state");
+
+  let ctx = worker
+    .safepoint_context()
+    .expect("worker should have published a safepoint context");
+
+  // `ctx.sp` is the *stackmap* SP (post-call). It should be at least word-aligned.
+  assert_eq!(
+    ctx.sp % runtime_native::arch::WORD_SIZE,
+    0,
+    "sp is not word-aligned"
+  );
+
+  // Sanity check the arch-specific SP semantics we depend on for stackmap walking.
+  #[cfg(target_arch = "x86_64")]
+  assert_eq!(
+    ctx.sp,
+    ctx.sp_entry + runtime_native::arch::WORD_SIZE,
+    "x86_64 call pushes return address; expected sp=sp_entry+8"
+  );
+  #[cfg(target_arch = "aarch64")]
+  assert_eq!(
+    ctx.sp, ctx.sp_entry,
+    "AArch64 bl does not push return address; expected sp=sp_entry"
+  );
+
+  let bounds = worker
+    .stack_bounds()
+    .expect("worker thread should have stack bounds recorded");
+  assert!(
+    ctx.sp >= bounds.lo && ctx.sp < bounds.hi,
+    "sp {:#x} is outside stack bounds [{:#x}, {:#x})",
+    ctx.sp,
+    bounds.lo,
+    bounds.hi
+  );
+
+  // The poll stub must capture the *managed caller* return address (into the caller of
+  // `gc.safepoint_poll`), not an internal runtime callsite. For this test we call it directly from
+  // `enter_safepoint_poll`, so the recorded ip should resolve there.
+  //
+  // Use `ip - 1` to bias into the calling instruction for symbol lookup.
+  let ip_for_lookup = ctx.ip.saturating_sub(1);
+  if let Some(sym) = resolve_symbol_name(ip_for_lookup).filter(|s| !s.is_empty()) {
+    assert!(
+      sym.contains("enter_safepoint_poll"),
+      "expected ip {:#x} to resolve to enter_safepoint_poll, got symbol: {sym:?}",
+      ctx.ip
+    );
+  } else {
+    // Release builds for this workspace strip symbols, so backtrace resolution can legitimately
+    // fail. Fall back to a coarse range check: the return address should still fall within the
+    // helper function's code range.
+    let base = enter_safepoint_poll as usize;
+    assert!(
+      ctx.ip >= base && ctx.ip < base + 0x10_000,
+      "expected ip {:#x} to fall within enter_safepoint_poll [{:#x}, {:#x})",
       ctx.ip,
       base,
       base + 0x10_000
