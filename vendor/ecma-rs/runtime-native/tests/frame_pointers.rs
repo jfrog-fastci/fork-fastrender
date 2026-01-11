@@ -1,3 +1,5 @@
+#![cfg(target_arch = "x86_64")]
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};

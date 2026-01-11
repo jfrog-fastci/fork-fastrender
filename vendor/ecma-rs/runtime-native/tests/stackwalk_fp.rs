@@ -787,6 +787,7 @@ unsafe fn write_u64(addr: usize, val: u64) {
   (addr as *mut u64).write_unaligned(val);
 }
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn read_u64(addr: usize) -> u64 {
   (addr as *const u64).read_unaligned()
 }
