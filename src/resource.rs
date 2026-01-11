@@ -5338,11 +5338,7 @@ impl HttpFetcher {
     preflight_resource.access_control_allow_origin = access_control_allow_origin;
     preflight_resource.access_control_allow_credentials = access_control_allow_credentials;
     let mut response_headers: Vec<(String, String)> = Vec::new();
-    for name in [
-      "access-control-allow-methods",
-      "access-control-allow-headers",
-      "access-control-max-age",
-    ] {
+    for name in ["access-control-allow-methods", "access-control-allow-headers"] {
       for value in headers.get_all(name) {
         let value = value.to_str().map_err(|_| {
           Error::Resource(
@@ -5352,6 +5348,13 @@ impl HttpFetcher {
           )
         })?;
         response_headers.push((name.to_string(), value.to_string()));
+      }
+    }
+    // Fetch: invalid/malformed `Access-Control-Max-Age` values are treated as a default max-age
+    // (5 seconds), so we ignore invalid bytes rather than failing the preflight.
+    for value in headers.get_all("access-control-max-age") {
+      if let Ok(value) = value.to_str() {
+        response_headers.push(("access-control-max-age".to_string(), value.to_string()));
       }
     }
     preflight_resource.response_headers = Some(response_headers);

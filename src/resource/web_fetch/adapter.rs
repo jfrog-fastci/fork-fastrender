@@ -2113,6 +2113,126 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_cache_wildcard_header_entry_does_not_match_authorization() {
+    if skip_if_curl_backend_missing(
+      "cors_preflight_cache_wildcard_header_entry_does_not_match_authorization",
+    ) {
+      return;
+    }
+    let Some(listener) = try_bind_localhost(
+      "cors_preflight_cache_wildcard_header_entry_does_not_match_authorization",
+    ) else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let options_count = Arc::new(AtomicUsize::new(0));
+    let options_count_req = Arc::clone(&options_count);
+    let handle = thread::spawn(move || {
+      listener.set_nonblocking(true).unwrap();
+      let start = Instant::now();
+      let mut last_connection: Option<Instant> = None;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            last_connection = Some(Instant::now());
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let (headers, _body) = read_http_request(&mut stream);
+            let line = headers.lines().next().unwrap_or_default();
+            let method = line.split_whitespace().next().unwrap_or_default();
+            if method.eq_ignore_ascii_case("OPTIONS") {
+              options_count_req.fetch_add(1, Ordering::SeqCst);
+
+              let header_lower = headers.to_ascii_lowercase();
+              let req_headers = header_lower
+                .lines()
+                .find(|line| line.starts_with("access-control-request-headers:"))
+                .map(|line| line["access-control-request-headers:".len()..].trim())
+                .unwrap_or("");
+              let wants_authorization = req_headers
+                .split(',')
+                .map(|token| token.trim())
+                .any(|token| token == "authorization");
+
+              let response = if wants_authorization {
+                concat!(
+                  "HTTP/1.1 204 No Content\r\n",
+                  "Access-Control-Allow-Origin: https://client.example\r\n",
+                  "Access-Control-Allow-Methods: PUT\r\n",
+                  "Access-Control-Allow-Headers: authorization\r\n",
+                  "Access-Control-Max-Age: 60\r\n",
+                  "Content-Length: 0\r\n",
+                  "Connection: close\r\n",
+                  "\r\n"
+                )
+              } else {
+                concat!(
+                  "HTTP/1.1 204 No Content\r\n",
+                  "Access-Control-Allow-Origin: https://client.example\r\n",
+                  "Access-Control-Allow-Methods: PUT\r\n",
+                  "Access-Control-Allow-Headers: *\r\n",
+                  "Access-Control-Max-Age: 60\r\n",
+                  "Content-Length: 0\r\n",
+                  "Connection: close\r\n",
+                  "\r\n"
+                )
+              };
+              stream.write_all(response.as_bytes()).unwrap();
+            } else {
+              let body = b"ok";
+              let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              stream.write_all(response.as_bytes()).unwrap();
+              stream.write_all(body).unwrap();
+            }
+          }
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            if last_connection.is_some_and(|last| last.elapsed() > Duration::from_millis(200)) {
+              break;
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/cors");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    // First request caches `Access-Control-Allow-Headers: *`.
+    let mut request = Request::new("PUT", &url);
+    request.headers.append("X-Test", "hello").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    // Second request includes Authorization, which must not match a wildcard header cache entry.
+    let mut request = Request::new("PUT", &url);
+    request.headers.append("Authorization", "Bearer test").unwrap();
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle.join().unwrap();
+    assert_eq!(
+      options_count.load(Ordering::SeqCst),
+      2,
+      "expected Authorization request to trigger a second preflight (wildcard cache entry must not match)"
+    );
+  }
+
+  #[test]
   fn redirect_follow_follows() {
     if skip_if_curl_backend_missing("redirect_follow_follows") {
       return;
