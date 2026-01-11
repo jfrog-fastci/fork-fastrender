@@ -42,7 +42,6 @@ repo-wide policy and registry):
 - `NJS####`: `native-js` native compilation / codegen pipeline (LLVM)
 - `RTN####`: `runtime-native` native runtime
 - `KB####`: `knowledge-base` tooling
-- `VMJS####`: `vm-js` JavaScript interpreter
 - `CONF####`: parser conformance tooling
 - `T262####`: test262 tooling
 - `HOST####`: Host/environment failures
