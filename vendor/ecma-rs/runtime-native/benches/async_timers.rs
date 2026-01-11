@@ -12,7 +12,7 @@ extern "C" fn set_flag(data: *mut u8) {
 }
 
 fn bench_async_timers(c: &mut Criterion) {
-  let mut group = c.benchmark_group("timer_heap");
+  let mut group = c.benchmark_group("timer_wheel");
   group.measurement_time(Duration::from_secs(1));
   group.warm_up_time(Duration::from_millis(200));
 
