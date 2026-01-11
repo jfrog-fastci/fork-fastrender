@@ -318,6 +318,38 @@ impl OpRegistry {
 
 #[cfg(unix)]
 fn cancel_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+  // Prefer `pipe2` when available so `O_NONBLOCK` + `O_CLOEXEC` are set atomically, avoiding races
+  // with `execve` in embedders that spawn subprocesses.
+  #[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+  ))]
+  {
+    loop {
+      let mut fds = [-1i32; 2];
+      let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) };
+      if rc == 0 {
+        // SAFETY: `pipe2` returns new, owned file descriptors.
+        return Ok((
+          unsafe { OwnedFd::from_raw_fd(fds[0]) },
+          unsafe { OwnedFd::from_raw_fd(fds[1]) },
+        ));
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      if err.raw_os_error() != Some(libc::ENOSYS) {
+        return Err(err);
+      }
+      break;
+    }
+  }
+
   let (read_fd, write_fd) = loop {
     let mut fds = [-1i32; 2];
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
