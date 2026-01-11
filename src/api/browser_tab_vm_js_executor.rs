@@ -657,17 +657,15 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         ensure_promise_fulfilled(scope.heap(), load_promise)?;
 
         // Link + evaluate the entry module.
-        let eval_promise = module_graph.evaluate(
+        module_graph.evaluate_sync_with_scope(
           &mut vm,
-          scope.heap_mut(),
+          &mut scope,
           realm_ref.global_object(),
           realm_ref.id(),
           entry_module,
           document,
           &mut hooks,
         )?;
-        scope.push_root(eval_promise)?;
-        ensure_promise_fulfilled(scope.heap(), eval_promise)?;
 
         Ok(())
       })();

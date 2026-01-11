@@ -187,3 +187,101 @@ fn browser_tab_js_exception_stack_includes_external_script_url() -> fastrender::
   );
   Ok(())
 }
+
+#[test]
+fn browser_tab_module_script_exception_stack_includes_inline_module_url() -> fastrender::Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <body>
+        <script type="module">throw new Error("boom")</script>
+      </body>
+    </html>"#;
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let mut js_options = fastrender::js::JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_js_execution_options(
+    html,
+    "https://example.com/doc.html",
+    options,
+    js_options,
+  )?;
+  // Module scripts are deferred until parsing completes; drain tasks so the module executes.
+  tab.run_event_loop_until_idle(fastrender::js::RunLimits::unbounded())?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert_eq!(
+    diagnostics.js_exceptions.len(),
+    1,
+    "expected one exception; got {:?}",
+    diagnostics.js_exceptions
+  );
+  let exception = &diagnostics.js_exceptions[0];
+  assert!(
+    exception.message.contains("boom"),
+    "unexpected exception message: {:?}",
+    exception.message
+  );
+  let stack = exception
+    .stack
+    .as_deref()
+    .expect("expected stack trace to be captured for Error throws");
+  assert!(
+    stack.contains("https://example.com/doc.html#inline-module-"),
+    "expected stack trace to include synthesized inline module URL; got {stack:?}"
+  );
+  Ok(())
+}
+
+#[test]
+fn browser_tab_module_script_exception_stack_includes_external_module_url() -> fastrender::Result<()> {
+  let url = "https://example.com/a.js";
+
+  let options = RenderOptions::new()
+    .with_viewport(32, 32)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let mut js_options = fastrender::js::JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut tab = BrowserTab::from_html_with_vmjs_and_js_execution_options("", options.clone(), js_options)?;
+  tab.register_script_source(url, r#"throw new Error("boom");"#);
+
+  let html = format!(
+    r#"<!doctype html>
+    <html>
+      <body>
+        <script type="module" src="{url}"></script>
+      </body>
+    </html>"#
+  );
+  tab.navigate_to_html(&html, options)?;
+  tab.run_event_loop_until_idle(fastrender::js::RunLimits::unbounded())?;
+
+  let diagnostics = tab
+    .diagnostics_snapshot()
+    .expect("expected diagnostics to be enabled");
+  assert_eq!(
+    diagnostics.js_exceptions.len(),
+    1,
+    "expected one exception; got {:?}",
+    diagnostics.js_exceptions
+  );
+  let exception = &diagnostics.js_exceptions[0];
+  assert!(
+    exception.message.contains("boom"),
+    "unexpected exception message: {:?}",
+    exception.message
+  );
+  let stack = exception
+    .stack
+    .as_deref()
+    .expect("expected stack trace to be captured for Error throws");
+  assert!(
+    stack.contains(url),
+    "expected stack trace to include module URL {url:?}; got {stack:?}"
+  );
+  Ok(())
+}

@@ -580,6 +580,67 @@ impl ModuleGraph {
     result
   }
 
+  /// Evaluates a module synchronously and returns its completion as a direct `Result`.
+  ///
+  /// This is a host convenience API for embeddings that:
+  /// - do not need the spec-visible "evaluation promise", and
+  /// - currently do not support top-level await (TLA).
+  ///
+  /// If the module (or one of its dependencies) throws, the returned [`VmError`] preserves the
+  /// captured stack trace (`VmError::ThrowWithStack`), unlike [`ModuleGraph::evaluate_with_scope`],
+  /// which settles a Promise with only the thrown value (per ECMA-262).
+  pub fn evaluate_sync_with_scope(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    global_object: GcObject,
+    realm_id: RealmId,
+    module: ModuleId,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+  ) -> Result<(), VmError> {
+    // Ensure dynamic `import()` expressions executed during module evaluation can resolve the active
+    // module graph even when the embedding uses the low-level `ModuleGraph::{link,evaluate}` APIs
+    // directly (without constructing a `JsRuntime`, which sets this pointer at runtime creation).
+    let prev_graph = vm.module_graph_ptr();
+    vm.set_module_graph(self);
+
+    let result = (|| -> Result<(), VmError> {
+      self.link_with_scope(vm, scope, global_object, module)?;
+
+      if self.modules[module_index(module)].has_tla {
+        return Err(VmError::Unimplemented("top-level await"));
+      }
+
+      self.eval_inner(vm, scope, global_object, realm_id, module, host, hooks)
+    })();
+
+    // Restore any previous module graph pointer.
+    match prev_graph {
+      Some(ptr) => unsafe {
+        vm.set_module_graph(&mut *ptr);
+      },
+      None => vm.clear_module_graph(),
+    }
+
+    result
+  }
+
+  /// Convenience wrapper around [`ModuleGraph::evaluate_sync_with_scope`] that creates a new scope.
+  pub fn evaluate_sync(
+    &mut self,
+    vm: &mut Vm,
+    heap: &mut Heap,
+    global_object: GcObject,
+    realm_id: RealmId,
+    module: ModuleId,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+  ) -> Result<(), VmError> {
+    let mut scope = heap.scope();
+    self.evaluate_sync_with_scope(vm, &mut scope, global_object, realm_id, module, host, hooks)
+  }
+
   pub fn evaluate(
     &mut self,
     vm: &mut Vm,
