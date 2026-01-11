@@ -264,8 +264,7 @@ fn check_hir_body(
         ));
       }
       ExprKind::Call(call) => {
-        let callee_name = ident_name(body_data, lowered, call.callee);
-        if !call.is_new && callee_name == Some("eval") {
+        if !call.is_new && callee_matches_name(body_data, lowered, call.callee, "eval") {
           let span = span_of_expr(body_data, file, call.callee).unwrap_or(Span::new(file, expr.span));
           out.push(Diagnostic::error(
             CODE_EVAL,
@@ -273,11 +272,15 @@ fn check_hir_body(
             span,
           ));
         }
-        if call.is_new && callee_name == Some("Function") {
+        if callee_matches_name(body_data, lowered, call.callee, "Function") {
           let span = span_of_expr(body_data, file, call.callee).unwrap_or(Span::new(file, expr.span));
           out.push(Diagnostic::error(
             CODE_NEW_FUNCTION,
-            "`new Function()` is not allowed in native-js strict mode",
+            if call.is_new {
+              "`new Function()` is not allowed in native-js strict mode"
+            } else {
+              "`Function()` is not allowed in native-js strict mode"
+            },
             span,
           ));
         }
@@ -389,15 +392,36 @@ fn check_any_in_exported_defs(
   }
 }
 
-fn ident_name<'a>(
-  body: &'a hir_js::Body,
-  lowered: &'a hir_js::LowerResult,
+fn callee_matches_name(
+  body: &hir_js::Body,
+  lowered: &hir_js::LowerResult,
   expr: ExprId,
-) -> Option<&'a str> {
-  let kind = body.exprs.get(expr.0 as usize).map(|e| &e.kind)?;
+  target: &str,
+) -> bool {
+  let Some(kind) = body.exprs.get(expr.0 as usize).map(|e| &e.kind) else {
+    return false;
+  };
   match kind {
-    ExprKind::Ident(name) => lowered.names.resolve(*name),
-    _ => None,
+    ExprKind::Ident(name) => lowered.names.resolve(*name) == Some(target),
+    ExprKind::Member(member) => member_property_matches_name(body, lowered, &member.property, target),
+    _ => false,
+  }
+}
+
+fn member_property_matches_name(
+  body: &hir_js::Body,
+  lowered: &hir_js::LowerResult,
+  property: &ObjectKey,
+  target: &str,
+) -> bool {
+  match property {
+    ObjectKey::Ident(name) => lowered.names.resolve(*name) == Some(target),
+    ObjectKey::String(s) => s == target,
+    ObjectKey::Computed(expr) => match body.exprs.get(expr.0 as usize).map(|e| &e.kind) {
+      Some(ExprKind::Literal(Literal::String(lit))) => lit.lossy == target,
+      _ => false,
+    },
+    _ => false,
   }
 }
 
