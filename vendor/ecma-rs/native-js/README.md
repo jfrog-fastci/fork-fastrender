@@ -465,12 +465,14 @@ etc).
 ## Typechecked pipeline intrinsics (`native_js::builtins`)
 
 The typechecked AOT pipeline (HIR-backed) implements a small set of global
-intrinsics. Frontends should inject `native_js::builtins::native_js_builtins_lib()`
-into `typecheck-ts` via `Host::lib_files()` so these globals have stable,
-well-typed signatures.
+intrinsics. Frontends should inject `native_js::builtins::checked_builtins_lib()`
+(or the convenience alias `native_js::builtins::native_js_builtins_lib()`) into
+`typecheck-ts` via `Host::lib_files()` so these globals have stable, well-typed
+signatures.
 
-The `.d.ts` file key is stable (`native-js:builtins.d.ts`) to keep module graphs
-and diagnostics deterministic.
+The `.d.ts` file key is stable (`native-js:builtins.checked.d.ts`; see
+`builtins::CHECKED_BUILTINS_FILE_KEY`) to keep module graphs and diagnostics
+deterministic.
 
 Currently supported intrinsics:
 
