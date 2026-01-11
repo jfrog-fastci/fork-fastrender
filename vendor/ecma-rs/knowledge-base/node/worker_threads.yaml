@@ -1,0 +1,56 @@
+- name: node:worker_threads.Worker
+  kind: constructor
+  aliases:
+    - worker_threads.Worker
+  since: "v10.5.0"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:worker_threads.isMainThread
+  kind: value
+  aliases:
+    - worker_threads.isMainThread
+  since: "v10.5.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:worker_threads.parentPort
+  kind: value
+  aliases:
+    - worker_threads.parentPort
+  since: "v10.5.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:worker_threads.threadId
+  kind: value
+  aliases:
+    - worker_threads.threadId
+  since: "v10.5.0"
+  effects:
+    Custom:
+      flags: READS_GLOBAL
+      throws: Never
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false

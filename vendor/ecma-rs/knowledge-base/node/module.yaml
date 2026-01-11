@@ -1,0 +1,28 @@
+- name: node:module.createRequire
+  kind: function
+  aliases:
+    - module.createRequire
+  since: "v12.2.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:module.isBuiltin
+  kind: function
+  aliases:
+    - module.isBuiltin
+  since: "v16.0.0"
+  effects:
+    template: pure
+    may_throw: false
+  purity: Pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

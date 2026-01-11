@@ -1,0 +1,29 @@
+- name: node:readline.createInterface
+  kind: function
+  aliases:
+    - readline.createInterface
+  since: "v0.1.0"
+  effects:
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:readline/promises.createInterface
+  kind: function
+  aliases:
+    - readline/promises.createInterface
+  since: "v17.0.0"
+  effects:
+    Custom:
+      flags: IO
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
