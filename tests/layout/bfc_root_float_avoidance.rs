@@ -162,3 +162,75 @@ fn bfc_root_negative_margins_do_not_get_clamped_when_no_floats_overlap() {
     child.bounds.x()
   );
 }
+
+#[test]
+fn bfc_root_float_avoidance_accounts_for_offset_containing_block_in_shared_float_context() {
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+
+  // Create a nested block that does **not** establish a new BFC, but is horizontally offset.
+  // Because it does not establish a BFC, it reuses the ancestor float context; its containing
+  // block left edge inside that shared float context is non-zero.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.margin_left = Some(Length::px(8.0));
+
+  let mut float_style = ComputedStyle::default();
+  float_style.display = Display::InlineBlock;
+  float_style.float = Float::Left;
+  float_style.width = Some(Length::px(50.0));
+  float_style.height = Some(Length::px(20.0));
+  let float_node =
+    BoxNode::new_inline_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  // `display: table` establishes a new BFC, so its border box must avoid overlap with float
+  // margin boxes in the same (shared) float context.
+  let mut bfc_style = ComputedStyle::default();
+  bfc_style.display = Display::Table;
+  bfc_style.width = Some(Length::px(60.0));
+  bfc_style.height = Some(Length::px(10.0));
+  let bfc_node = BoxNode::new_block(Arc::new(bfc_style), FormattingContextType::Table, vec![]);
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Block,
+    vec![float_node, bfc_node],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![container],
+  );
+
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = bfc.layout(&root, &constraints).expect("layout should succeed");
+
+  assert_eq!(
+    fragment.children.len(),
+    1,
+    "expected a single container child fragment, got {}",
+    fragment.children.len()
+  );
+  let container_frag = &fragment.children[0];
+
+  let bfc_frags: Vec<_> = container_frag
+    .children
+    .iter()
+    .filter(|child| {
+      (child.bounds.width() - 60.0).abs() < 0.01 && (child.bounds.height() - 10.0).abs() < 0.01
+    })
+    .collect();
+  assert_eq!(
+    bfc_frags.len(),
+    1,
+    "expected a single BFC root fragment inside the container; got {} children",
+    container_frag.children.len()
+  );
+  let bfc_frag = bfc_frags[0];
+  assert!(
+    (bfc_frag.bounds.x() - 50.0).abs() < 0.01,
+    "expected BFC root to start at x=50 (float width) relative to the container, got x={:.2}",
+    bfc_frag.bounds.x()
+  );
+}

@@ -4869,6 +4869,50 @@ fn resolve_font_for_char_with_preferences(
     }
 
     let mut seen_ids = SeenFontIds::new();
+    // Generic families can resolve to a configured platform default family name. Fixture harnesses
+    // often provide those defaults via `@font-face` (e.g. mapping Times New Roman to a bundled
+    // font) to keep Chrome baselines deterministic. Try the generic's named fallback list for web
+    // fonts so `font-family: serif` can pick those aliased faces.
+    if let FamilyEntry::Generic(generic) = entry {
+      if generic.prefers_named_fallbacks_first() {
+        for name in generic.fallback_families() {
+          if let Some(font) = font_context.match_web_font_for_char(
+            name,
+            weight,
+            style,
+            stretch,
+            oblique_angle,
+            ch,
+          ) {
+            let font = Arc::new(font);
+            if picker.prefer_emoji || picker.avoid_emoji {
+              let is_emoji_font = font_is_emoji_font(db, None, font.as_ref());
+              let idx = picker.bump_order();
+              picker.record_any(&font, is_emoji_font, idx);
+              if font_supports_all_chars(font.as_ref(), &[ch]) {
+                if let Some(font) = picker.consider(font, is_emoji_font, idx) {
+                  return Some(font);
+                }
+              }
+            } else {
+              return Some(font);
+            }
+          }
+          if let Some(font) =
+            font_context.match_web_font_for_family(name, weight, style, stretch, oblique_angle)
+          {
+            let font = Arc::new(font);
+            let is_emoji_font = if picker.prefer_emoji || picker.avoid_emoji {
+              font_is_emoji_font(db, None, font.as_ref())
+            } else {
+              false
+            };
+            let idx = picker.bump_order();
+            picker.record_any(&font, is_emoji_font, idx);
+          }
+        }
+      }
+    }
 
     let try_generic_named_fallbacks =
       |generic: crate::text::font_db::GenericFamily,
@@ -4876,6 +4920,11 @@ fn resolve_font_for_char_with_preferences(
        picker: &mut FontPreferencePicker|
        -> Option<Arc<LoadedFont>> {
       for name in generic.fallback_families() {
+        // Web fonts shadow local fonts for the same family name; if the family is declared, do not
+        // fall back to local lookup (CSS Fonts 4 §5.2).
+        if font_context.is_web_family_declared(name) {
+          continue;
+        }
         let mut seen_fallback_ids = SeenFontIds::new();
         for weight_choice in weight_preferences {
           for slope in slope_preferences {
@@ -4923,7 +4972,6 @@ fn resolve_font_for_char_with_preferences(
         }
       }
     }
-
     for stretch_choice in stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in weight_preferences {
@@ -5173,6 +5221,35 @@ fn resolve_font_for_cluster_with_preferences(
     }
 
     let mut seen_ids = SeenFontIds::new();
+    // See `resolve_font_for_char_with_preferences`: generic families can map to platform default
+    // family names which fixtures provide via `@font-face`. Try the generic's fallback names for
+    // web fonts before consulting local generics.
+    if let FamilyEntry::Generic(generic) = entry {
+      if generic.prefers_named_fallbacks_first() {
+        for name in generic.fallback_families() {
+          let web_font = font_context
+            .match_web_font_for_char(name, weight, style, stretch, oblique_angle, base_char)
+            .or_else(|| {
+              font_context.match_web_font_for_family(name, weight, style, stretch, oblique_angle)
+            });
+          if let Some(font) = web_font {
+            let font = Arc::new(font);
+            let is_emoji_font = if picker.prefer_emoji || picker.avoid_emoji {
+              font_is_emoji_font(db, None, font.as_ref())
+            } else {
+              false
+            };
+            let idx = picker.bump_order();
+            picker.record_any(&font, is_emoji_font, idx);
+            if font_supports_all_chars(font.as_ref(), coverage_chars) {
+              if let Some(font) = picker.consider(font, is_emoji_font, idx) {
+                return Some(font);
+              }
+            }
+          }
+        }
+      }
+    }
 
     let try_generic_named_fallbacks =
       |generic: crate::text::font_db::GenericFamily,
@@ -5180,6 +5257,9 @@ fn resolve_font_for_cluster_with_preferences(
        picker: &mut FontPreferencePicker|
        -> Option<Arc<LoadedFont>> {
       for name in generic.fallback_families() {
+        if font_context.is_web_family_declared(name) {
+          continue;
+        }
         let mut seen_fallback_ids = SeenFontIds::new();
         for weight_choice in weight_preferences {
           for slope in slope_preferences {
@@ -5231,7 +5311,6 @@ fn resolve_font_for_cluster_with_preferences(
         }
       }
     }
-
     for stretch_choice in stretch_preferences {
       for slope in slope_preferences {
         for weight_choice in weight_preferences {
@@ -9336,6 +9415,44 @@ mod tests {
         .iter()
         .any(|run| run.glyphs.iter().any(|glyph| glyph.glyph_id == 0)),
       "missing codepoint should be shaped into `.notdef` glyphs, not a hard error"
+    );
+  }
+
+  #[test]
+  fn generic_family_fallbacks_can_resolve_web_font_aliases() {
+    // The Chrome baseline harness aliases common serif families (e.g. Times New Roman) via
+    // `@font-face` to keep fixture renders deterministic. When content requests the generic family
+    // (`font-family: serif`), browsers can end up selecting the configured serif fallback and then
+    // using the aliased web font. Ensure the shaping pipeline considers the generic fallback names
+    // for web font resolution too.
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let font_path = manifest_dir.join("tests/fixtures/fonts/STIXTwoMath-Regular.otf");
+    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    let font_url = Url::from_file_path(&font_path)
+      .expect("font path is absolute")
+      .to_string();
+
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let face = FontFaceRule {
+      family: Some("Times New Roman".to_string()),
+      sources: vec![FontFaceSource::url(font_url)],
+      weight: (100, 1000),
+      ..Default::default()
+    };
+    ctx.load_web_fonts(&[face], None, None)
+      .expect("load web font alias");
+    assert!(
+      ctx.wait_for_pending_web_fonts(Duration::from_secs(1)),
+      "web font load should settle"
+    );
+
+    let pipeline = ShapingPipeline::new();
+    let style = ComputedStyle::default(); // `font-family: serif` by default.
+    let runs = pipeline.shape("Hello", &style, &ctx).expect("shape");
+    assert!(!runs.is_empty());
+    assert!(
+      runs.iter().all(|run| run.font.family == "Times New Roman"),
+      "expected generic serif to resolve to aliased web font"
     );
   }
 

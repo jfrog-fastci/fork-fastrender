@@ -5498,52 +5498,6 @@ impl BlockFormattingContext {
         Ok((fragment, next_y))
       };
 
-    let apply_float_avoidance_for_block = |child: &BoxNode,
-                                          fragment: &mut FragmentNode,
-                                          float_ctx_ref: &FloatContext|
-     -> Result<(), LayoutError> {
-      // Floats shorten inline line boxes, but block-level boxes that establish a new BFC (tables,
-      // overflow:hidden/scroll/auto, etc) should also avoid overlap with float margin boxes in the
-      // same BFC.
-      //
-      // Restrict this to BFC-establishing children for now so we can safely translate the
-      // fragment subtree after layout without having to update the shared float context entries
-      // (floats inside a new BFC are local and cannot affect siblings).
-      if float_ctx_ref.is_empty() || !establishes_bfc(&child.style) {
-        return Ok(());
-      }
-
-      let mut y_start = float_base_y + fragment.bounds.y();
-      if !y_start.is_finite() {
-        y_start = float_base_y;
-      }
-      let height = fragment.bounds.height().max(0.01);
-      let y_end = y_start + height;
-
-      let (left_edge, available_width) = float_ctx_ref.available_width_in_range(y_start, y_end);
-      if !left_edge.is_finite() || !available_width.is_finite() || available_width <= 0.0 {
-        return Ok(());
-      }
-      let right_edge = left_edge + available_width;
-      let box_width = fragment.bounds.width();
-      if !box_width.is_finite() || box_width <= 0.0 || box_width > available_width + 0.01 {
-        return Ok(());
-      }
-
-      let current_x = fragment.bounds.x();
-      let mut target_x = current_x;
-      if target_x < left_edge {
-        target_x = left_edge;
-      }
-      if target_x + box_width > right_edge {
-        target_x = (right_edge - box_width).max(left_edge);
-      }
-      if (target_x - current_x).abs() > 0.01 {
-        fragment.translate_root_in_place(Point::new(target_x - current_x, 0.0));
-      }
-      Ok(())
-    };
-
     // Flushes buffered inline-level siblings by creating an inline formatting context wrapper.
     //
     // Returns the Y position (in this BFC's local coordinate space) of the *last* line box top, if
@@ -6950,7 +6904,6 @@ impl BlockFormattingContext {
         content_height = content_height.max(next_y);
         current_y = next_y;
         let mut fragment = fragment;
-        apply_float_avoidance_for_block(child, &mut fragment, float_ctx)?;
         if child.style.position.is_relative() {
           let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
             &child.style,
@@ -6985,7 +6938,6 @@ impl BlockFormattingContext {
            content_height = content_height.max(next_y);
            current_y = next_y;
            let mut fragment = fragment;
-           apply_float_avoidance_for_block(child, &mut fragment, float_ctx)?;
            if child.style.position.is_relative() {
              let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
                &child.style,

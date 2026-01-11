@@ -1220,10 +1220,12 @@ impl FontContext {
       for stretch_choice in &stretches {
         for slope in slopes {
           for weight_choice in &weights {
-            if let Some(id) = self
-              .db
-              .query_full(family, FontWeight::new(*weight_choice), *slope, *stretch_choice)
-            {
+            if let Some(id) = self.db.query_full(
+              family,
+              FontWeight::new(*weight_choice),
+              *slope,
+              *stretch_choice,
+            ) {
               if let Some(font) = self.db.load_font(id) {
                 return Some(font);
               }
@@ -4111,6 +4113,52 @@ mod tests {
         .is_some(),
       "expected PostScript local() to resolve"
     );
+  }
+
+  #[test]
+  fn generic_family_fallbacks_can_resolve_web_font_aliases() {
+    // `@font-face` can define a family name that matches the platform's configured serif/sans-serif
+    // default. When content requests the generic family, browsers can end up selecting that
+    // aliased face. FastRender's font selection should consider the common fallback family names
+    // for core generics so fixture harnesses that alias e.g. "Times New Roman" can affect
+    // `font-family: serif` rendering.
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let font_path = manifest_dir.join("tests/fixtures/fonts/STIXTwoMath-Regular.otf");
+    assert!(font_path.is_file(), "missing test font at {}", font_path.display());
+    let font_url = url::Url::from_file_path(&font_path)
+      .expect("font path is absolute")
+      .to_string();
+
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let face = FontFaceRule {
+      family: Some("Times New Roman".to_string()),
+      sources: vec![FontFaceSource::url(font_url)],
+      display: Some(FontDisplay::Block),
+      weight: (100, 1000),
+      stretch: (100.0, 100.0),
+      ..Default::default()
+    };
+
+    ctx
+      .load_web_fonts_with_policy(
+        &[face],
+        None,
+        None,
+        WebFontPolicy::BlockUntilLoaded {
+          timeout: Duration::from_secs(1),
+        },
+      )
+      .expect("load web font alias");
+
+    let font = ctx
+      .get_font_full(
+        &[String::from("serif")],
+        400,
+        FontStyle::Normal,
+        FontStretch::Normal,
+      )
+      .expect("expected generic serif to resolve to the aliased web font");
+    assert_eq!(font.family, "Times New Roman");
   }
 
   #[test]

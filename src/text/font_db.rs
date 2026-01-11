@@ -2893,6 +2893,50 @@ mod tests {
   }
 
   #[test]
+  fn generic_serif_fallback_order_prefers_liberation_first() {
+    let families = GenericFamily::Serif.fallback_families();
+    let liberation = families
+      .iter()
+      .position(|&name| name == "Liberation Serif")
+      .expect("Liberation Serif present in Serif fallback list");
+    let noto = families
+      .iter()
+      .position(|&name| name == "Noto Serif")
+      .expect("Noto Serif present in Serif fallback list");
+    let dejavu = families
+      .iter()
+      .position(|&name| name == "DejaVu Serif")
+      .expect("DejaVu Serif present in Serif fallback list");
+
+    assert!(
+      liberation < noto && liberation < dejavu,
+      "expected Liberation Serif to precede other common Linux serif fallbacks"
+    );
+  }
+
+  #[test]
+  fn generic_sans_serif_fallback_order_prefers_liberation_first() {
+    let families = GenericFamily::SansSerif.fallback_families();
+    let liberation = families
+      .iter()
+      .position(|&name| name == "Liberation Sans")
+      .expect("Liberation Sans present in SansSerif fallback list");
+    let noto = families
+      .iter()
+      .position(|&name| name == "Noto Sans")
+      .expect("Noto Sans present in SansSerif fallback list");
+    let dejavu = families
+      .iter()
+      .position(|&name| name == "DejaVu Sans")
+      .expect("DejaVu Sans present in SansSerif fallback list");
+
+    assert!(
+      liberation < noto && liberation < dejavu,
+      "expected Liberation Sans to precede other common Linux sans-serif fallbacks"
+    );
+  }
+
+  #[test]
   fn font_metrics_respect_use_typo_metrics_bit() {
     // The fixture font explicitly sets different OS/2 typographic metrics vs hhea metrics while
     // leaving USE_TYPO_METRICS unset. We should follow the same selection logic as browsers /
