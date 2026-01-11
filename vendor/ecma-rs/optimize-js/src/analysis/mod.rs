@@ -8,6 +8,7 @@ pub mod interference;
 pub mod alias;
 pub mod liveness;
 pub mod loop_info;
+pub mod nullability;
 pub mod registers;
 pub mod single_use_insts;
 

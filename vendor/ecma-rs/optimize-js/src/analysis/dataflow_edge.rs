@@ -151,3 +151,79 @@ pub fn run_forward_edge_dataflow<A: ForwardEdgeDataFlowAnalysis>(
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
+  use crate::il::inst::{Arg, Const, Inst};
+  use std::collections::BTreeSet;
+
+  #[derive(Default)]
+  struct CollectLabels;
+
+  fn union_sets(states: &[(u32, &BTreeSet<u32>)]) -> BTreeSet<u32> {
+    states
+      .iter()
+      .flat_map(|(_, set)| set.iter().copied())
+      .collect()
+  }
+
+  impl ForwardEdgeDataFlowAnalysis for CollectLabels {
+    type State = BTreeSet<u32>;
+
+    fn bottom(&self, _cfg: &Cfg) -> Self::State {
+      BTreeSet::new()
+    }
+
+    fn meet(&mut self, inputs: &[(u32, &Self::State)]) -> Self::State {
+      union_sets(inputs)
+    }
+
+    fn apply_to_instruction(
+      &mut self,
+      _label: u32,
+      _inst_idx: usize,
+      _inst: &Inst,
+      _state: &mut Self::State,
+    ) {
+    }
+
+    fn apply_to_block(&mut self, label: u32, _block: &[Inst], state: &Self::State) -> Self::State {
+      let mut next = state.clone();
+      next.insert(label);
+      next
+    }
+  }
+
+  fn cfg(blocks: &[(u32, Vec<Inst>)], edges: &[(u32, u32)]) -> Cfg {
+    let mut graph = CfgGraph::default();
+    for &(from, to) in edges {
+      graph.connect(from, to);
+    }
+    let mut bblocks = CfgBBlocks::default();
+    for (label, insts) in blocks {
+      bblocks.add(*label, insts.clone());
+    }
+    Cfg {
+      graph,
+      bblocks,
+      entry: 0,
+    }
+  }
+
+  #[test]
+  fn deterministic_across_edge_ordering() {
+    let blocks = &[
+      (0, vec![Inst::cond_goto(Arg::Const(Const::Bool(true)), 1, 2)]),
+      (1, vec![]),
+      (2, vec![]),
+    ];
+    let cfg1 = cfg(blocks, &[(0, 1), (0, 2)]);
+    let cfg2 = cfg(blocks, &[(0, 2), (0, 1)]);
+
+    let r1 = CollectLabels::default().analyze(&cfg1, 0);
+    let r2 = CollectLabels::default().analyze(&cfg2, 0);
+    assert_eq!(r1, r2);
+  }
+}
+
