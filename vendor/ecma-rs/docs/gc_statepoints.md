@@ -316,6 +316,9 @@ LLVM supports relocating derived (interior) pointers by rooting **both** the bas
 Runtime contract:
 
 - Both `base` and `derived` locations must be **addressable spill slots** (`Location::Indirect`).
+- The `Location::Indirect` base register must be either the caller-frame **SP** or **FP**:
+  - x86_64: DWARF reg 7 (`RSP`) or 6 (`RBP`)
+  - AArch64: DWARF reg 31 (`SP`) or 29 (`X29`)
 - The runtime treats the **base slot** as the GC root (for tracing + moving); the derived slot is *not* a root.
 - If `base_slot != derived_slot`, the runtime preserves the interior offset and updates the derived slot in-place after relocating the base slot:
 
@@ -324,8 +327,15 @@ Runtime contract:
   derived_new = base_new + delta
   ```
 
-  Null convention:
-  - if `base_old == 0` or `derived_old == 0`, `derived_new` is forced to `0` (null is preserved).
+  Notes:
+  - The runtime must read both `base_old` and `derived_old` before overwriting the base slot (or use equivalent per-frame fixup logic).
+  - LLVM can emit duplicate relocation pairs; the runtime dedups repeated base slots / derived fixups within the same frame.
+  - Null convention: if `base_old == 0` or `derived_old == 0`, `derived_new` is forced to `0` (null is preserved).
+
+This behavior is locked down by tests:
+
+- [`runtime-native/tests/stackwalk_fp.rs`](../runtime-native/tests/stackwalk_fp.rs) (`derived_pointers_are_relocated_from_base`)
+- [`runtime-native/tests/scan_reloc_pairs.rs`](../runtime-native/tests/scan_reloc_pairs.rs) (fixture containing `base != derived`)
 
 If the derived pointer is a pure function of the base pointer (for example: a constant-field offset or an index value that is still available after the safepoint), it's usually better to:
 
@@ -495,21 +505,31 @@ Current runtime contract (v1):
 
 - Root locations must be **addressable spill slots**:
   - stackmap location kind must be `Location::Indirect`
-  - base register must be the caller-frame stack pointer (SP): x86_64 DWARF reg 7 (`RSP`), AArch64 DWARF reg 31 (`SP`)
+  - base register must be either the caller-frame stack pointer (SP) or frame pointer (FP):
+    - x86_64: DWARF reg 7 (`RSP`) or 6 (`RBP`)
+    - AArch64: DWARF reg 31 (`SP`) or 29 (`X29`)
   - slot size must be pointer-sized (8 bytes on our supported 64-bit targets)
 - Root locations in registers (`Location::Register`) or non-addressable expressions (`Location::Direct`) are currently **rejected**.
-- Derived pointers (where the `(base, derived)` locations differ) are supported:
+- Derived pointers (where the `(base, derived)` locations differ) are supported when both locations satisfy the spill-slot rules above:
   - The **base** slot is the GC root (traced/relocated).
   - The derived slot is updated after the base is relocated by preserving the interior offset:
     `derived_new = base_new + (derived_old - base_old)`.
-  - If `base_old == 0` or `derived_old == 0`, the derived slot is forced to `0` (null).
+  - Null convention: if `base_old == 0` or `derived_old == 0` (or if the GC writes `0` into the relocated base slot), the derived slot is forced to `0` (null).
+  - LLVM can emit duplicate relocation pairs, so the runtime dedups repeated base slots / derived fixups within the same frame.
 
-Operationally, for each `(base, derived)` pair:
+Operationally, within a frame:
 
-- Evaluate the stack slots for both locations (`base_slot`, `derived_slot`).
-- Treat `base_slot` as a GC root slot (the GC relocates it in-place).
-- If `base_slot != derived_slot`, update the derived slot after base relocation:
-  - `derived_new = relocated_base + (derived_old - base_old)`
+- For each `(base, derived)` pair:
+  - Evaluate the stack slots for both locations (`base_slot`, `derived_slot`).
+  - Treat `base_slot` as a GC root slot to visit (deduped within the frame).
+  - If `base_slot != derived_slot`, read both slot values before relocating anything:
+    - If `base_old == 0` or `derived_old == 0`, record a fixup that forces the derived slot to `0`.
+    - Otherwise, record `delta = derived_old - base_old` for this `(base_slot, derived_slot)` fixup.
+- Then, in deterministic order for each unique `base_slot`:
+  - Let the GC relocate the base slot in-place.
+  - Apply any recorded derived fixups for that base:
+    - if the fixup forces null (or `relocated_base == 0`): write `0` to the derived slot
+    - else: `derived_new = relocated_base + delta` (written back to the derived slot in-place)
 
 ---
 
