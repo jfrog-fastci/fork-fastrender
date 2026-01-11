@@ -181,15 +181,15 @@ fn main() {
         .unwrap_or_else(|| panic!("expected stackmap record for captured return address 0x{ra:x}"));
     assert_eq!(rec.callsite_pc, ra);
 
-     let sp = maps
-         .lookup_statepoint(ra)
-         .expect("expected record to match statepoint layout");
-     assert_eq!(sp.call_conv, 0);
-     assert_eq!(sp.flags, 1);
-     assert_eq!(sp.deopt_args.len(), 2);
-     assert_eq!(sp.deopt_args[0].as_u64(), Some(1));
-     assert_eq!(sp.deopt_args[1].as_u64(), Some(2));
-     assert_eq!(sp.num_gc_roots(), 1);
+    let sp = maps
+        .lookup_statepoint(ra)
+        .expect("expected record to match statepoint layout");
+    assert_eq!(sp.call_conv, 0);
+    assert_eq!(sp.flags, 1);
+    assert_eq!(sp.deopt_args.len(), 2);
+    assert_eq!(sp.deopt_args[0].as_u64(), Some(1));
+    assert_eq!(sp.deopt_args[1].as_u64(), Some(2));
+    assert_eq!(sp.num_gc_roots(), 1);
 }
 "##,
     )?;
