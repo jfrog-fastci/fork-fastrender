@@ -657,16 +657,7 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
             continue;
           }
 
-          // Spread calls make argument position mapping ambiguous. Stay conservative by treating
-          // them as unknown calls (i.e. any passed allocation may escape).
-          if !spreads.is_empty() {
-            for arg in inst.args.iter() {
-              for alloc in allocs_for_arg(&var_allocs, arg) {
-                join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
-              }
-            }
-            continue;
-          }
+          let first_spread_arg = spreads.iter().copied().min().map(|idx| idx.saturating_sub(2));
 
           // If we have interprocedural summaries for direct `Arg::Fn` calls, use them to avoid
           // conservatively forcing `GlobalEscape` for all passed allocations.
@@ -692,6 +683,16 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
                 continue;
               }
 
+              // When a call site contains spreads, argument indexing is ambiguous after the first
+              // spread. Only trust per-parameter summaries for arguments that appear before the
+              // first spread; conservatively treat the rest as escaping via an unknown call.
+              if first_spread_arg.is_some_and(|first| k >= first) {
+                for alloc in allocs {
+                  join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
+                }
+                continue;
+              }
+
               let callee_state = callee_summary
                 .param_escape
                 .get(k)
@@ -709,6 +710,11 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
                 }
                 EscapeState::GlobalEscape | EscapeState::Unknown => callee_state,
                 EscapeState::ArgEscape(j) => {
+                  // If the receiver parameter index is past the first spread, we cannot map it to a
+                  // concrete argument. Stay conservative.
+                  if first_spread_arg.is_some_and(|first| j >= first) {
+                    EscapeState::GlobalEscape
+                  } else {
                   match args.get(j) {
                     Some(receiver_arg) => {
                       let receiver_ext = ext_for_arg(&var_ext, receiver_arg);
@@ -728,6 +734,7 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
                       }
                     }
                     None => EscapeState::GlobalEscape,
+                  }
                   }
                 }
               };

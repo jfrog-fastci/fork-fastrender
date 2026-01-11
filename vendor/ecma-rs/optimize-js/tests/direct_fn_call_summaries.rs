@@ -186,10 +186,10 @@ fn direct_fn_call_param_escape_is_propagated() {
 #[test]
 fn direct_fn_call_param_no_escape_is_respected() {
   let src = r#"
-    const f = (a) => { a; };
-    const o = {};
-    f(o);
-  "#;
+     const f = (a) => { a; };
+     const o = {};
+     f(o);
+   "#;
 
   let mut program = compile_source(src, TopLevelMode::Module, false);
   let analyses = annotate_program(&mut program);
@@ -204,5 +204,30 @@ fn direct_fn_call_param_no_escape_is_respected() {
     escape.get(&alloc),
     Some(&EscapeState::NoEscape),
     "expected allocation to remain local when callee param does not escape"
+  );
+}
+
+#[test]
+fn direct_fn_call_param_no_escape_is_respected_with_spread_args() {
+  let src = r#"
+    const f = (a, b) => { a; b; };
+    const o = {};
+    const args = [];
+    f(o, ...args);
+  "#;
+
+  let mut program = compile_source(src, TopLevelMode::Module, false);
+  let analyses = annotate_program(&mut program);
+
+  let alloc = find_top_level_object_alloc(&program);
+  let escape = analyses
+    .escape
+    .get(&FunctionKey::TopLevel)
+    .expect("escape results for top-level");
+
+  assert_eq!(
+    escape.get(&alloc),
+    Some(&EscapeState::NoEscape),
+    "expected allocation to remain local when callee param does not escape (even with spread args)"
   );
 }
