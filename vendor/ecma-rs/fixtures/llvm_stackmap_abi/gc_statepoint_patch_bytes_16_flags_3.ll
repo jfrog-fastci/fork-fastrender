@@ -1,7 +1,7 @@
 ; This fixture is compiled by `scripts/test_statepoint_flags_patchbytes.sh`.
 ; It exercises the `gc.statepoint` lowering where:
 ; - `patch_bytes > 0` reserves a patchable region (NOP sled on x86_64).
-; - `flags != 0` must remain visible in the generated stackmap record.
+; - `flags = 3` (both currently-valid bits) must remain visible in the generated stackmap record.
 
 target triple = "x86_64-pc-linux-gnu"
 

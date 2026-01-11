@@ -74,6 +74,8 @@ struct StkMapRecord {
                                // `gc.statepoint` with `patch_bytes=0`, it points at the instruction
                                // *after* the call. For `patch_bytes>0` (patchable callsites), it
                                // points at the end of the reserved patch region (x86_64: NOP sled).
+                               // In other words, the reserved patch region begins at
+                               // `(InstructionOffset - patch_bytes)` and ends at `InstructionOffset`.
                                // See `docs/llvm_statepoint_stackmap_abi.md`.
   uint16_t Reserved;            // = 0
   uint16_t NumLocations;
