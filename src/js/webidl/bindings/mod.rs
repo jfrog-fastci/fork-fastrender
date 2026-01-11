@@ -1855,8 +1855,8 @@ mod tests {
           };
 
           let mut init = args.into_iter().next().unwrap_or(BindingValue::Undefined);
-          // Generated bindings preserve the selected union member type. This host only needs the
-          // underlying value.
+          // Generated bindings preserve union member selection by wrapping the converted argument in
+          // `BindingValue::Union`. For this test host we only care about the resolved value.
           while let BindingValue::Union { value, .. } = init {
             init = *value;
           }

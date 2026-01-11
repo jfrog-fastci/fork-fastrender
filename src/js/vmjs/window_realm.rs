@@ -10384,9 +10384,11 @@ fn current_base_url_for_dynamic_scripts(vm: &Vm) -> Option<String> {
 // document (`BrowserDocumentDom2`), not the owning `BrowserTabHost`. This means we cannot directly
 // call the tab's script scheduler synchronously from the binding layer.
 //
-// HTML requires that dynamically inserted scripts do not execute synchronously inside the DOM
-// mutation call stack (they run as tasks on the "script" task source). We therefore try to enqueue
-// script work onto the currently-installed event loop:
+// HTML script processing for dynamically inserted `<script>` elements:
+// - Inline classic scripts execute synchronously during the DOM insertion/children-changed steps.
+// - External scripts and module scripts are asynchronous and execute via the event loop.
+//
+// We therefore try to enqueue *asynchronous* script work onto the currently-installed event loop:
 // - When running inside `BrowserTabHost`, forward to the tab so it can schedule via its pipeline.
 // - When running inside `WindowHostState` (unit tests), queue a task that fetches/executes the
 //   classic script.
@@ -10523,28 +10525,14 @@ fn schedule_dynamic_script_via_browser_tab_host(script: NodeId, spec: crate::js:
 
 fn prepare_dynamic_script_element(
   vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _document_obj: GcObject,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  document_obj: GcObject,
   mut dom_ptr: NonNull<dom2::Document>,
   script: NodeId,
 ) -> Result<(), VmError> {
   let base_url = current_base_url_for_dynamic_scripts(vm);
-
-  // `WindowHost` drives JS via `EventLoop<WindowHostState>`. For this embedding we keep DOM mutation
-  // steps non-reentrant by queueing script execution as tasks on that event loop (and handling
-  // external fetching/decoding/SRI in the queued task).
-  //
-  // Other embeddings (notably `BrowserTabHost` and test harnesses) either schedule scripts via their
-  // own orchestrator or execute inline scripts synchronously, so only take the task-queueing path
-  // when the matching event loop is installed.
-  if runtime::current_event_loop_mut::<WindowHostState>().is_some() {
-    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-    // lifetime of the associated host document.
-    let dom = unsafe { dom_ptr.as_mut() };
-    return prepare_dynamic_script(dom, script, &base_url);
-  }
 
   let spec = {
     // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
@@ -10592,6 +10580,44 @@ fn prepare_dynamic_script_element(
     return Ok(());
   }
 
+  // Inline classic dynamic scripts execute synchronously during insertion steps (observable by JS,
+  // including `document.currentScript`).
+  if spec.script_type == ScriptType::Classic && !spec.src_attr_present {
+    // `nomodule` classic scripts must be suppressed when module scripts are supported.
+    let supports_module_scripts = vm
+      .user_data::<WindowRealmUserData>()
+      .map(|data| data.module_graph.is_some())
+      .unwrap_or(false);
+    if supports_module_scripts && spec.nomodule_attr {
+      // Still mark "already started" so later mutations do not cause execution.
+      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+      // lifetime of the associated host document.
+      let dom = unsafe { dom_ptr.as_mut() };
+      let _ = dom.set_script_already_started(script, true);
+      return Ok(());
+    }
+
+    // Mark started before executing to avoid re-entrancy.
+    // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+    // lifetime of the associated host document.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if dom.set_script_already_started(script, true).is_err() {
+      return Ok(());
+    }
+
+    execute_dynamic_inline_script(
+      vm,
+      scope,
+      host,
+      hooks,
+      document_obj,
+      dom_ptr,
+      script,
+      spec.inline_text,
+    )?;
+    return Ok(());
+  }
+
   // Prefer scheduling via the BrowserTabHost pipeline when available.
   if runtime::current_event_loop_mut::<crate::api::BrowserTabHost>().is_some() {
     if schedule_dynamic_script_via_browser_tab_host(script, spec) {
@@ -10605,48 +10631,64 @@ fn prepare_dynamic_script_element(
   }
 
   // When running inside the standalone `WindowHostState` harness, queue classic scripts as tasks.
-  // Module scripts/import maps are currently ignored by this path.
-  if runtime::current_event_loop_mut::<WindowHostState>().is_none() {
-    return Ok(());
-  }
-  if spec.script_type != ScriptType::Classic {
-    return Ok(());
-  }
+  // Module scripts/import maps are currently ignored by this path (leave eligible for later support).
+  if runtime::current_event_loop_mut::<WindowHostState>().is_some() {
+    let crate::js::ScriptElementSpec {
+      src,
+      src_attr_present,
+      inline_text,
+      nomodule_attr,
+      crossorigin,
+      referrer_policy,
+      integrity_attr_present,
+      integrity,
+      script_type,
+      ..
+    } = spec;
 
-  // Invalid integrity metadata: do not execute, and keep the script eligible for later mutations.
-  if spec.integrity_attr_present && spec.integrity.is_none() {
-    return Ok(());
-  }
-
-  if spec.src_attr_present {
-    let Some(url) = spec.src else {
+    if script_type != ScriptType::Classic {
       return Ok(());
-    };
-    let destination = if spec.crossorigin.is_some() {
-      FetchDestination::ScriptCors
+    }
+
+    // Invalid integrity metadata: do not execute, and keep the script eligible for later mutations.
+    if integrity_attr_present && integrity.is_none() {
+      return Ok(());
+    }
+
+    let scheduled = if src_attr_present {
+      let Some(url) = src else {
+        return Ok(());
+      };
+      let destination = if crossorigin.is_some() {
+        FetchDestination::ScriptCors
+      } else {
+        FetchDestination::Script
+      };
+      queue_dynamic_script_task_external(
+        script,
+        url,
+        destination,
+        nomodule_attr,
+        crossorigin,
+        referrer_policy,
+        integrity_attr_present,
+        integrity,
+      )
+      .is_ok()
     } else {
-      FetchDestination::Script
+      let source_name = format!("<script {}>", script.index());
+      queue_dynamic_script_task_inline(script, source_name, inline_text, nomodule_attr).is_ok()
     };
-    queue_dynamic_script_task_external(
-      script,
-      url,
-      destination,
-      spec.nomodule_attr,
-      spec.crossorigin,
-      spec.referrer_policy,
-      spec.integrity_attr_present,
-      spec.integrity,
-    )?;
-  } else {
-    let source_name = format!("<script {}>", script.index());
-    queue_dynamic_script_task_inline(script, source_name, spec.inline_text, spec.nomodule_attr)?;
+
+    if scheduled {
+      // Mark started only if we successfully queued the script task.
+      // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+      // lifetime of the associated host document.
+      let dom = unsafe { dom_ptr.as_mut() };
+      let _ = dom.set_script_already_started(script, true);
+    }
   }
 
-  // Mark started only if we successfully queued the script task.
-  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
-  // lifetime of the associated host document.
-  let dom = unsafe { dom_ptr.as_mut() };
-  let _ = dom.set_script_already_started(script, true);
   Ok(())
 }
 
