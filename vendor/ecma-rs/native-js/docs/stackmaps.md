@@ -87,6 +87,33 @@ they key off the callsite return address + record layout, not the ID.
 
 See also: `vendor/ecma-rs/docs/llvm_statepoint_directives.md`.
 
+## Derived / interior pointer relocation pairs
+
+LLVM encodes statepoint GC roots as a sequence of `(base, derived)` **relocation pairs** in the
+stackmap record.
+
+- For a normal GC root (a base object pointer), `base == derived`:
+  - the `gc.relocate(token, idx, idx)` uses the same `"gc-live"` index for both operands, and
+  - the stackmap record contains two identical `Location`s that refer to the same spill slot.
+- For an interior pointer (a derived pointer into an object), `base != derived`:
+  - `gc.relocate(token, base_idx, derived_idx)` uses two different `"gc-live"` indices, and
+  - the stackmap record contains **two distinct spill slots** (typically `Location::Indirect` with
+    different `offset`s).
+
+Runtime relocation must treat derived pointers as dependent on their base:
+
+```
+delta = old_derived - old_base
+new_derived = new_base + delta
+```
+
+The regression test `vendor/ecma-rs/native-js/tests/stackmaps_derived_pairs.rs` locks down the
+end-to-end contract:
+
+- `native-js` emits a real `base != derived` relocation pair that survives codegen into
+  `.llvm_stackmaps`.
+- `runtime-native::relocate_derived_pairs` preserves the interior-pointer delta when updating slots.
+
 ## Two observed composition modes
 
 When linking multiple compilation units, `.llvm_stackmaps` is **not guaranteed** to be a single
