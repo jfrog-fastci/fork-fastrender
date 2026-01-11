@@ -83,7 +83,6 @@ pub(crate) mod script_fallback;
 pub(crate) mod bidi_controls;
 pub mod caret;
 pub mod cluster;
-pub mod caret;
 pub mod emoji;
 pub(crate) mod emoji_presentation;
 mod emoji_tables;
