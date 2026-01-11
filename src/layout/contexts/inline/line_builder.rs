@@ -4266,69 +4266,77 @@ impl<'a> LineBuilder<'a> {
               break;
             }
             InlineItem::InlineBox(child_box) => {
-              if !fragment_has_in_flow_children {
-                let remaining_width = (available_children_width - used_width).max(0.0);
-                let split = self.split_inline_box_for_line(
-                  child_box,
-                  start_x,
-                  remaining_width,
-                  allow_emergency_breaks,
-                )?;
-                let (fragment, remainder, child_hard_break, child_force_break) = match split {
-                  SplitInlineBoxForLineResult::Split {
-                    fragment,
-                    remainder,
-                    ends_with_hard_break,
-                    force_break,
-                  } => (fragment, remainder, ends_with_hard_break, force_break),
-                  SplitInlineBoxForLineResult::BreakBefore {
-                    inline_box: child_box,
-                  } => {
-                    remaining.push_front(InlineItem::InlineBox(child_box));
-                    let remaining_children: Vec<InlineItem> = remaining.into();
-                    let metrics = super::compute_inline_box_metrics(
-                      &remaining_children,
-                      content_offset_y,
-                      bottom_inset,
-                      strut_metrics,
-                    );
-                    let mut inline_box = InlineBoxItem::new(
-                      start_edge,
-                      end_edge,
-                      content_offset_y,
-                      metrics,
-                      style.clone(),
-                      box_index,
-                      direction,
-                      unicode_bidi,
-                    );
-                    inline_box.box_id = box_id;
-                    inline_box.border_left = border_left;
-                    inline_box.border_right = border_right;
-                    inline_box.border_top = border_top;
-                    inline_box.border_bottom = border_bottom;
-                    inline_box.bottom_inset = bottom_inset;
-                    inline_box.strut_metrics = strut_metrics;
-                    inline_box.vertical_align = vertical_align;
-                    inline_box.children = remaining_children;
-                    return Ok(SplitInlineBoxForLineResult::BreakBefore { inline_box });
-                  }
-                };
-                fragment_children.push(InlineItem::InlineBox(fragment));
-                if let Some(remainder) = remainder {
-                  remaining.push_front(InlineItem::InlineBox(remainder));
-                }
-                if child_hard_break {
-                  ends_with_hard_break = true;
-                }
-                if child_force_break {
-                  force_break = true;
-                }
-                break;
-              }
+              let remaining_width = (available_children_width - used_width).max(0.0);
+              // Emergency breaks are only desirable when there's *nothing* before the inline box on
+              // the line. If the parent inline box already placed content, prefer breaking before
+              // this child box rather than splitting inside it at an arbitrary character boundary.
+              let child_allow_emergency_breaks =
+                allow_emergency_breaks && !fragment_has_in_flow_children;
+              let split = self.split_inline_box_for_line(
+                child_box,
+                start_x,
+                remaining_width,
+                child_allow_emergency_breaks,
+              )?;
 
-              remaining.push_front(InlineItem::InlineBox(child_box));
-              break;
+              match split {
+                SplitInlineBoxForLineResult::Split {
+                  fragment,
+                  remainder,
+                  ends_with_hard_break: child_hard_break,
+                  force_break: child_force_break,
+                } => {
+                  fragment_has_in_flow_children = true;
+                  fragment_children.push(InlineItem::InlineBox(fragment));
+                  if let Some(remainder) = remainder {
+                    remaining.push_front(InlineItem::InlineBox(remainder));
+                  }
+                  if child_hard_break {
+                    ends_with_hard_break = true;
+                  }
+                  if child_force_break {
+                    force_break = true;
+                  }
+                  break;
+                }
+                SplitInlineBoxForLineResult::BreakBefore { inline_box: child_box } => {
+                  // If we've already produced in-flow content for this line, keep it and push the
+                  // child box to the next line.
+                  if fragment_has_in_flow_children {
+                    remaining.push_front(InlineItem::InlineBox(child_box));
+                    break;
+                  }
+
+                  remaining.push_front(InlineItem::InlineBox(child_box));
+                  let remaining_children: Vec<InlineItem> = remaining.into();
+                  let metrics = super::compute_inline_box_metrics(
+                    &remaining_children,
+                    content_offset_y,
+                    bottom_inset,
+                    strut_metrics,
+                  );
+                  let mut inline_box = InlineBoxItem::new(
+                    start_edge,
+                    end_edge,
+                    content_offset_y,
+                    metrics,
+                    style.clone(),
+                    box_index,
+                    direction,
+                    unicode_bidi,
+                  );
+                  inline_box.box_id = box_id;
+                  inline_box.border_left = border_left;
+                  inline_box.border_right = border_right;
+                  inline_box.border_top = border_top;
+                  inline_box.border_bottom = border_bottom;
+                  inline_box.bottom_inset = bottom_inset;
+                  inline_box.strut_metrics = strut_metrics;
+                  inline_box.vertical_align = vertical_align;
+                  inline_box.children = remaining_children;
+                  return Ok(SplitInlineBoxForLineResult::BreakBefore { inline_box });
+                }
+              };
             }
             other if !fragment_has_in_flow_children => {
               fragment_children.push(other);
@@ -6156,6 +6164,69 @@ mod tests {
       .collect();
     assert_eq!(line0_text, "foo");
     assert_eq!(line1_text, "bar");
+  }
+
+  #[test]
+  fn nested_inline_boxes_can_split_after_prior_siblings() {
+    let mut builder = make_builder(200.0);
+
+    // Outer inline box with a short prefix and a nested inline box containing long, wrappable text.
+    // The nested inline box should be able to fragment to fill the remaining width on the current
+    // line (instead of always starting on a new line).
+    let mut outer = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    outer.add_child(InlineItem::Text(make_text_item("Related:", 60.0)));
+
+    let mut inner = InlineBoxItem::new(
+      3.0, // mimic padding-left, like the ABC News "Related:" span
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    inner.add_child(InlineItem::Text(make_text_item(
+      "Sheriff releases dash cam video that may show missing 19-year-old girl",
+      190.0,
+    )));
+    outer.add_child(InlineItem::InlineBox(inner));
+
+    builder.add_item(InlineItem::InlineBox(outer)).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert!(lines.len() >= 2, "expected content to wrap to multiple lines");
+
+    let line0_text: String = lines[0]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    assert!(line0_text.starts_with("Related:"));
+    assert_ne!(line0_text, "Related:");
+    assert!(
+      line0_text.contains("Sheriff"),
+      "expected nested inline box text to share first line"
+    );
+
+    let line1_text: String = lines[1]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    assert!(
+      !line1_text.starts_with("Related:"),
+      "prefix should not repeat in continuation fragments"
+    );
   }
 
   fn old_find_break_point(item: &TextItem, max_width: f32) -> Option<BreakOpportunity> {

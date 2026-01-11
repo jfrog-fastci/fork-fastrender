@@ -1364,6 +1364,7 @@ mod tests {
       src_attr_present: false,
       inline_text: String::new(),
       async_attr: false,
+      force_async: false,
       defer_attr: false,
       nomodule_attr: false,
       crossorigin: None,
@@ -1371,7 +1372,6 @@ mod tests {
       integrity: None,
       referrer_policy: None,
       parser_inserted: true,
-      force_async: false,
       node_id: None,
       script_type: ScriptType::Classic,
     }
