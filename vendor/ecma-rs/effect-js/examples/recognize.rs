@@ -1,9 +1,11 @@
 use effect_js::{recognize_patterns_best_effort_untyped, ApiDatabase, RecognizedPattern};
-use hir_js::{ExprId, ExprKind};
-use typecheck_ts::{FileKey, MemoryHost, Program};
+use hir_js::{BodyId, ExprId, ExprKind};
+use std::collections::BTreeSet;
 
 #[cfg(feature = "typed")]
 use effect_js::{recognize_patterns_typed, typed::TypecheckProgram};
+#[cfg(feature = "typed")]
+use typecheck_ts::{FileKey, MemoryHost, Program};
 
 const INDEX_TS: &str = r#"
 declare function require(spec: string): any;
@@ -94,28 +96,12 @@ fn format_pattern(db: &ApiDatabase, pat: &RecognizedPattern) -> String {
   }
 }
 
-fn main() {
-  let index_key = FileKey::new("index.ts");
-  let mut host = MemoryHost::new();
-  host.insert(index_key.clone(), INDEX_TS);
-
-  let program = Program::new(host, vec![index_key.clone()]);
-  let diagnostics = program.check();
-  if !diagnostics.is_empty() {
-    eprintln!("typecheck diagnostics: {diagnostics:#?}");
-    std::process::exit(1);
-  }
-
-  let file = program.file_id(&index_key).expect("index.ts is loaded");
-  let lowered = program.hir_lowered(file).expect("HIR lowered");
-
-  let db = ApiDatabase::from_embedded().expect("embedded knowledge base loads");
-  db.validate().expect("knowledge base validates");
-
-  #[cfg(feature = "typed")]
-  let types = TypecheckProgram::new(&program);
-
-  let mut seen = std::collections::BTreeSet::<&'static str>::new();
+fn run(
+  lowered: &hir_js::LowerResult,
+  db: &ApiDatabase,
+  recognize: impl Fn(BodyId) -> Vec<RecognizedPattern>,
+) {
+  let mut seen = BTreeSet::<&'static str>::new();
 
   for (body_idx, body_id) in lowered.hir.bodies.iter().copied().enumerate() {
     let Some(body) = lowered.body(body_id) else {
@@ -141,31 +127,18 @@ fn main() {
         continue;
       }
       let expr_id = ExprId(idx as u32);
-      if let Some(api) = effect_js::resolve_api_call(&db, &lowered, body_id, expr_id) {
+      if let Some(api) = effect_js::resolve_api_call(db, lowered, body_id, expr_id) {
         any_resolved = true;
-        println!("  - call {} -> {} ({})", expr_id.0, api, format_kb_semantics(&db, api));
+        println!("  - call {} -> {} ({})", expr_id.0, api, format_kb_semantics(db, api));
       }
     }
     if !any_resolved {
       println!("  (none)");
     }
 
-    // 2) Recognize higher-level patterns (optionally typed).
+    // 2) Recognize higher-level patterns (typed when available, plus best-effort untyped patterns).
     println!("recognized_patterns:");
-    #[cfg(feature = "typed")]
-    let patterns = {
-      // Prefer the type-gated recognizer, but also include best-effort untyped
-      // patterns that are not (yet) modeled in the typed pass.
-      let mut patterns = recognize_patterns_typed(&lowered, body_id, &types);
-      patterns.extend(
-        recognize_patterns_best_effort_untyped(&lowered, body_id)
-          .into_iter()
-          .filter(|pat| matches!(pat, RecognizedPattern::PromiseAllFetch { .. })),
-      );
-      patterns
-    };
-    #[cfg(not(feature = "typed"))]
-    let patterns = recognize_patterns_best_effort_untyped(&lowered, body_id);
+    let patterns = recognize(body_id);
 
     if patterns.is_empty() {
       println!("  (none)");
@@ -178,7 +151,7 @@ fn main() {
           RecognizedPattern::PromiseAllFetch { .. } => seen.insert("PromiseAllFetch"),
           RecognizedPattern::JsonParseTyped { .. } => seen.insert("JsonParseTyped"),
         };
-        println!("  - {}", format_pattern(&db, pat));
+        println!("  - {}", format_pattern(db, pat));
       }
     }
 
@@ -210,4 +183,45 @@ fn main() {
       "expected example to produce `MapGetOrDefault` pattern"
     );
   }
+}
+
+#[cfg(feature = "typed")]
+fn main() {
+  let index_key = FileKey::new("index.ts");
+  let mut host = MemoryHost::new();
+  host.insert(index_key.clone(), INDEX_TS);
+
+  let program = Program::new(host, vec![index_key.clone()]);
+  let diagnostics = program.check();
+  if !diagnostics.is_empty() {
+    eprintln!("typecheck diagnostics: {diagnostics:#?}");
+    std::process::exit(1);
+  }
+
+  let file = program.file_id(&index_key).expect("index.ts is loaded");
+  let lowered = program.hir_lowered(file).expect("HIR lowered");
+
+  let db = ApiDatabase::from_embedded().expect("embedded knowledge base loads");
+  db.validate().expect("knowledge base validates");
+
+  let types = TypecheckProgram::new(&program);
+  run(&lowered, &db, |body_id| {
+    let mut patterns = recognize_patterns_typed(&lowered, body_id, &types);
+    patterns.extend(
+      recognize_patterns_best_effort_untyped(&lowered, body_id)
+        .into_iter()
+        .filter(|pat| matches!(pat, RecognizedPattern::PromiseAllFetch { .. })),
+    );
+    patterns
+  });
+}
+
+#[cfg(not(feature = "typed"))]
+fn main() {
+  let lowered = hir_js::lower_from_source_with_kind(hir_js::FileKind::Ts, INDEX_TS).unwrap();
+
+  let db = ApiDatabase::from_embedded().expect("embedded knowledge base loads");
+  db.validate().expect("knowledge base validates");
+
+  run(&lowered, &db, |body_id| recognize_patterns_best_effort_untyped(&lowered, body_id));
 }
