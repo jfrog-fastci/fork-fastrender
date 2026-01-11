@@ -32,9 +32,9 @@ fn ssa_cfg_is_annotated_with_escape_metadata() {
   );
 
   let func = &program.functions[0];
-  assert!(func.ssa_body.is_some(), "expected SSA body to be preserved");
+  assert!(func.cfg_ssa().is_some(), "expected SSA body to be preserved");
 
-  let ssa_cfg = func.ssa_body.as_ref().unwrap();
+  let ssa_cfg = func.cfg_ssa().unwrap();
   let alloc = find_object_alloc(ssa_cfg).expect("object allocation call should exist in SSA cfg");
   assert_eq!(
     alloc.meta.result_escape,
@@ -44,7 +44,7 @@ fn ssa_cfg_is_annotated_with_escape_metadata() {
 
   // Policy: deconstructed CFG is not annotated; metadata lives on `ssa_body`.
   let body_alloc =
-    find_object_alloc(&func.body).expect("object allocation call should exist in body");
+    find_object_alloc(func.cfg_deconstructed()).expect("object allocation call should exist in body");
   assert_eq!(
     body_alloc.meta.result_escape,
     None,

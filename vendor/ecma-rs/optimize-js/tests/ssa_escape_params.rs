@@ -33,7 +33,7 @@ fn ssa_escape_uses_canonical_param_order_for_arg_escape() {
 
   assert_eq!(program.functions.len(), 1, "expected exactly one nested function");
   let func = &program.functions[0];
-  let ssa_cfg = func.ssa_body.as_ref().expect("expected SSA cfg to be preserved");
+  let ssa_cfg = func.cfg_ssa().expect("expected SSA cfg to be preserved");
 
   let alloc = find_object_alloc(ssa_cfg).expect("object allocation call should exist in SSA cfg");
   assert_eq!(
@@ -65,7 +65,7 @@ fn ssa_escape_first_param_is_arg_escape_zero() {
 
   assert_eq!(program.functions.len(), 1, "expected exactly one nested function");
   let func = &program.functions[0];
-  let ssa_cfg = func.ssa_body.as_ref().expect("expected SSA cfg to be preserved");
+  let ssa_cfg = func.cfg_ssa().expect("expected SSA cfg to be preserved");
 
   let alloc = find_object_alloc(ssa_cfg).expect("object allocation call should exist in SSA cfg");
   assert_eq!(
@@ -74,4 +74,3 @@ fn ssa_escape_first_param_is_arg_escape_zero() {
     "expected allocation stored into first parameter to be ArgEscape(0)"
   );
 }
-

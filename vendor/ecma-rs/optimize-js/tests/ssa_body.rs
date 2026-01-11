@@ -68,11 +68,11 @@ fn preserves_ssa_cfg_with_phis_alongside_deconstructed_cfg() {
 
   let mut found_phi = false;
   for func in std::iter::once(&program.top_level).chain(program.functions.iter()) {
-    let ssa_cfg = func.ssa_body.as_ref().expect("ssa_body should be populated");
+    let ssa_cfg = func.cfg_ssa().expect("ssa_body should be populated");
     found_phi |= cfg_contains_phi(ssa_cfg);
 
     assert!(
-      !cfg_contains_phi(&func.body),
+      !cfg_contains_phi(func.cfg_deconstructed()),
       "deconstructed CFG should not contain Phi nodes"
     );
   }
@@ -103,11 +103,11 @@ fn ssa_body_is_deterministic_across_compiles() {
 
   let first_snaps: Vec<_> = std::iter::once(&first.top_level)
     .chain(first.functions.iter())
-    .map(|func| snapshot_cfg(func.ssa_body.as_ref().expect("ssa_body should be populated")))
+    .map(|func| snapshot_cfg(func.cfg_ssa().expect("ssa_body should be populated")))
     .collect();
   let second_snaps: Vec<_> = std::iter::once(&second.top_level)
     .chain(second.functions.iter())
-    .map(|func| snapshot_cfg(func.ssa_body.as_ref().expect("ssa_body should be populated")))
+    .map(|func| snapshot_cfg(func.cfg_ssa().expect("ssa_body should be populated")))
     .collect();
 
   assert_eq!(
