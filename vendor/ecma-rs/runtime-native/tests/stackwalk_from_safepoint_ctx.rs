@@ -39,8 +39,8 @@ mod x86_64 {
     let caller_sp = (caller_fp as u64) - (callsite.stack_size - 8);
 
     let mut expected_slots: Vec<usize> = Vec::new();
-    for (base, derived) in statepoint.gc_pairs() {
-      for loc in [base, derived] {
+    for pair in statepoint.gc_pairs() {
+      for loc in [&pair.base, &pair.derived] {
         match loc {
           Location::Indirect { dwarf_reg, offset, .. } => {
             assert_eq!(
@@ -130,8 +130,8 @@ mod aarch64 {
     let caller_sp = (caller_fp as u64) - (callsite.stack_size - 16);
 
     let mut expected_slots: Vec<usize> = Vec::new();
-    for (base, derived) in statepoint.gc_pairs() {
-      for loc in [base, derived] {
+    for pair in statepoint.gc_pairs() {
+      for loc in [&pair.base, &pair.derived] {
         match loc {
           Location::Indirect { dwarf_reg, offset, .. } => {
             assert_eq!(

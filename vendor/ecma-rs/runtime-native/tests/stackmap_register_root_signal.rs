@@ -3,7 +3,7 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use runtime_native::stackmaps::Location;
-use runtime_native::statepoints::{eval_location, LocationValue};
+use runtime_native::statepoints::{eval_location, RootSlot};
 use runtime_native::StackMaps;
 use stackmap_context::{ThreadContext, DWARF_REG_IP};
 use std::ffi::CString;
@@ -67,8 +67,9 @@ unsafe extern "C" fn sigill_handler(_sig: libc::c_int, _info: *mut libc::siginfo
     "expected root location to be Register, got {loc:?}"
   );
 
-  let LocationValue::Slot(slot) = eval_location(loc, &ctx).expect("eval register location") else {
-    panic!("expected LocationValue::Slot for Register location");
+  let slot = eval_location(loc, &ctx).expect("eval register location");
+  let RootSlot::Reg { .. } = slot else {
+    panic!("expected RootSlot::Reg for Register location");
   };
 
   let old = slot.read_u64(&ctx);

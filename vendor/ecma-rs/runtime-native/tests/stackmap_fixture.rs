@@ -39,8 +39,8 @@ fn stackmap_sp_offsets_from_obj(obj_bytes: &[u8]) -> Vec<i32> {
   let statepoint = StatepointRecord::new(callsite.record).expect("failed to decode statepoint record");
 
   let mut offsets = Vec::with_capacity(statepoint.gc_pair_count() * 2);
-  for (base, derived) in statepoint.gc_pairs() {
-    for loc in [base, derived] {
+  for pair in statepoint.gc_pairs() {
+    for loc in [&pair.base, &pair.derived] {
       match loc {
         Location::Indirect {
           dwarf_reg: 7, // x86_64 DWARF register number for RSP

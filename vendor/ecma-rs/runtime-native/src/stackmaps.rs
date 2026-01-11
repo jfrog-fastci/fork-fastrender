@@ -644,7 +644,9 @@ impl<'a> CallSite<'a> {
 
     if looks_like_statepoint {
       let statepoint = crate::statepoints::StatepointRecord::new(self.record)?;
-      for (base, derived) in statepoint.gc_pairs() {
+      for pair in statepoint.gc_pairs() {
+        let base = &pair.base;
+        let derived = &pair.derived;
         if base != derived {
           return Err(StackMapError::DerivedPointerNotSupported {
             base: base.clone(),

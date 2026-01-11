@@ -68,8 +68,8 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
     let statepoint = StatepointRecord::new(callsite.record).expect("decode statepoint layout");
 
     let mut slots: Vec<usize> = Vec::new();
-    for (base, derived) in statepoint.gc_pairs() {
-      for loc in [base, derived] {
+    for pair in statepoint.gc_pairs() {
+      for loc in [&pair.base, &pair.derived] {
         match loc {
           Location::Indirect { dwarf_reg, offset, .. } => {
             assert_eq!(*dwarf_reg, 7, "fixture roots must be [SP + off]");
@@ -303,8 +303,8 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
   let mut expected: BTreeMap<usize, usize> = BTreeMap::new();
 
   let mut slots: Vec<usize> = Vec::new();
-  for (base, derived) in statepoint.gc_pairs() {
-    for loc in [base, derived] {
+  for pair in statepoint.gc_pairs() {
+    for loc in [&pair.base, &pair.derived] {
       match loc {
         Location::Indirect { dwarf_reg, offset, .. } => {
           assert_eq!(*dwarf_reg, 31, "fixture roots must be [SP + off]");

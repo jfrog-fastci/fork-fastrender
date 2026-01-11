@@ -1,6 +1,6 @@
 use runtime_native::stackmaps::{Location, StackMap, StackMapRecord};
 use runtime_native::statepoints::{
-  eval_location, LocationValue, RegFile, RootSlot, StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP,
+  eval_location, RegFile, RootSlot, StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP,
   LLVM18_STATEPOINT_HEADER_CONSTANTS, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP,
 };
 
@@ -41,8 +41,8 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
     let sp = StatepointRecord::new(rec).unwrap();
 
     // Remaining entries: SP-relative Indirect locations (LLVM 18 observed output).
-    for (pair_idx, (base, derived)) in sp.gc_pairs().enumerate() {
-      for (loc_idx, loc) in [(0, base), (1, derived)] {
+    for (pair_idx, pair) in sp.gc_pairs().iter().enumerate() {
+      for (loc_idx, loc) in [(0, &pair.base), (1, &pair.derived)] {
         match loc {
           Location::Indirect {
             size,
@@ -74,7 +74,7 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
   // Evaluate one location with a fake regfile (SP=0x1000).
   let rec = &sm.records[0];
   let sp = StatepointRecord::new(rec).unwrap();
-  let first_base = sp.gc_pairs().next().unwrap().0;
+  let first_base = &sp.gc_pairs().first().unwrap().base;
   let offset = match first_base {
     Location::Indirect { offset, .. } => *offset,
     _ => unreachable!("fixtures should only use Indirect locations"),
@@ -85,7 +85,7 @@ fn assert_statepoint_fixture(bytes: &[u8], sp_reg: u16) {
   };
   let slot = eval_location(first_base, &regs).unwrap();
   match slot {
-    LocationValue::Slot(RootSlot::StackAddr(addr)) => {
+    RootSlot::StackAddr(addr) => {
       let expected = (0x1000i128 + offset as i128) as u64;
       assert_eq!(addr as usize as u64, expected);
     }
@@ -121,7 +121,7 @@ fn eval_direct_location_is_immediate_value() {
     regs: [(X86_64_DWARF_REG_FP, 0x1000)].into_iter().collect(),
   };
   let slot = eval_location(&loc, &regs).unwrap();
-  assert_eq!(slot, LocationValue::Const { value: 0x0ff8 });
+  assert_eq!(slot, RootSlot::Const { value: 0x0ff8 });
 }
 
 #[test]
@@ -209,9 +209,9 @@ fn statepoint_decoder_accepts_nonzero_flags() {
   let sp = StatepointRecord::new(&rec).unwrap();
   assert_eq!(sp.header().flags, 2);
   assert_eq!(sp.gc_pair_count(), 1);
-  let (base, derived) = sp.gc_pairs().next().unwrap();
-  assert_eq!(base, &rec.locations[3]);
-  assert_eq!(derived, &rec.locations[4]);
+  let pair = sp.gc_pairs().first().unwrap();
+  assert_eq!(&pair.base, &rec.locations[3]);
+  assert_eq!(&pair.derived, &rec.locations[4]);
 }
 
 #[test]
@@ -250,9 +250,9 @@ fn statepoint_decoder_skips_deopt_operands() {
   assert_eq!(sp.gc_pairs_start(), 4);
   assert_eq!(sp.gc_pair_count(), 1);
 
-  let (base, derived) = sp.gc_pairs().next().unwrap();
-  assert_eq!(base, &rec.locations[4]);
-  assert_eq!(derived, &rec.locations[5]);
+  let pair = sp.gc_pairs().first().unwrap();
+  assert_eq!(&pair.base, &rec.locations[4]);
+  assert_eq!(&pair.derived, &rec.locations[5]);
 }
 
 #[test]

@@ -496,7 +496,9 @@ fn enumerate_roots_for_frame(
   // callback.
   let mut base_slots: Vec<u64> = Vec::with_capacity(statepoint.gc_pair_count());
   let mut derived_fixups: Vec<(u64, u64, i64)> = Vec::new(); // (base_slot, derived_slot, delta)
-  for (base, derived) in statepoint.gc_pairs() {
+  for pair in statepoint.gc_pairs() {
+    let base = &pair.base;
+    let derived = &pair.derived;
     let base_slot = eval_root_location(caller_fp, caller_sp, caller_ra, base)?;
     let derived_slot = eval_root_location(caller_fp, caller_sp, caller_ra, derived)?;
     validate_root_slot(base_slot, bounds, caller_ra)?;

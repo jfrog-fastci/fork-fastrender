@@ -50,6 +50,19 @@ pub struct StatepointHeader {
   pub deopt_count: u64,
 }
 
+/// A `(base, derived)` pair for a single `gc-live` value in a statepoint stackmap record.
+///
+/// This type is a view into the `StackMapRecord.locations` backing storage: the runtime layout is
+/// `[..., header_consts..., deopt_operands..., base0, derived0, base1, derived1, ...]`. For
+/// performance, [`StatepointRecord::gc_pairs`] reinterprets the tail `&[Location]` slice as
+/// `&[GcLocationPair]` without allocation.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GcLocationPair {
+  pub base: Location,
+  pub derived: Location,
+}
+
 /// A view of a [`StackMapRecord`] interpreted as an LLVM `gc.statepoint`
 /// safepoint.
 pub struct StatepointRecord<'a> {
@@ -94,15 +107,22 @@ impl<'a> StatepointRecord<'a> {
 
   #[inline]
   pub fn gc_pair_count(&self) -> usize {
-    (self.record.locations.len() - self.gc_pairs_start) / 2
+    self.gc_pairs().len()
   }
 
-  pub fn gc_pairs(&self) -> impl ExactSizeIterator<Item = (&'a Location, &'a Location)> {
+  pub fn gc_pairs(&self) -> &'a [GcLocationPair] {
     let locs = &self.record.locations[self.gc_pairs_start..];
     debug_assert_eq!(locs.len() % 2, 0);
-    locs
-      .chunks_exact(2)
-      .map(|pair| (&pair[0], &pair[1]))
+    debug_assert_eq!(core::mem::align_of::<GcLocationPair>(), core::mem::align_of::<Location>());
+    debug_assert_eq!(
+      core::mem::size_of::<GcLocationPair>(),
+      2 * core::mem::size_of::<Location>()
+    );
+    // SAFETY:
+    // - `GcLocationPair` is `#[repr(C)]` and consists of exactly two adjacent `Location` fields.
+    // - `locs` is a `[Location]` slice of even length, so it contains an integral number of pairs.
+    // - `Location` has no destructor and `GcLocationPair`'s alignment matches `Location`.
+    unsafe { core::slice::from_raw_parts(locs.as_ptr().cast::<GcLocationPair>(), locs.len() / 2) }
   }
 
   pub fn record(&self) -> &'a StackMapRecord {
@@ -171,6 +191,10 @@ pub enum RootSlot {
   StackAddr(*mut u8),
   /// The pointer value lives in a register.
   Reg { dwarf_reg: u16 },
+  /// An immediate value (`Constant`, `ConstIndex`, or `Direct`).
+  ///
+  /// This is not an addressable root slot and cannot be mutated in-place.
+  Const { value: u64 },
 }
 
 impl RootSlot {
@@ -180,6 +204,7 @@ impl RootSlot {
       RootSlot::Reg { dwarf_reg } => ctx.get_dwarf_reg_u64(dwarf_reg).unwrap_or_else(|| {
         panic!("missing DWARF register {dwarf_reg} in ThreadContext when reading RootSlot")
       }),
+      RootSlot::Const { value } => value,
     }
   }
 
@@ -190,17 +215,12 @@ impl RootSlot {
         ctx.set_dwarf_reg_u64(dwarf_reg, val)
           .unwrap_or_else(|err| panic!("failed to write DWARF register {dwarf_reg}: {err}"))
       }
+      RootSlot::Const { .. } => panic!("attempted to write to RootSlot::Const"),
     }
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocationValue {
-  Slot(RootSlot),
-  Const { value: u64 },
-}
-
-pub fn eval_location(loc: &Location, regs: &impl RegFile) -> Result<LocationValue, StatepointError> {
+pub fn eval_location(loc: &Location, regs: &impl RegFile) -> Result<RootSlot, StatepointError> {
   match *loc {
     Location::Indirect {
       dwarf_reg, offset, ..
@@ -215,13 +235,13 @@ pub fn eval_location(loc: &Location, regs: &impl RegFile) -> Result<LocationValu
       // pointer value lives). A `Direct` value is not an addressable root slot, so we surface it as
       // an immediate value.
       let value = eval_reg_plus_offset(dwarf_reg, offset, regs)?;
-      Ok(LocationValue::Const { value })
+      Ok(RootSlot::Const { value })
     }
 
-    Location::Register { dwarf_reg, .. } => Ok(LocationValue::Slot(RootSlot::Reg { dwarf_reg })),
+    Location::Register { dwarf_reg, .. } => Ok(RootSlot::Reg { dwarf_reg }),
 
-    Location::Constant { value, .. } => Ok(LocationValue::Const { value }),
-    Location::ConstIndex { value, .. } => Ok(LocationValue::Const { value }),
+    Location::Constant { value, .. } => Ok(RootSlot::Const { value }),
+    Location::ConstIndex { value, .. } => Ok(RootSlot::Const { value }),
   }
 }
 
@@ -229,9 +249,9 @@ fn eval_stack_indirect(
   dwarf_reg: u16,
   offset: i32,
   regs: &impl RegFile,
-) -> Result<LocationValue, StatepointError> {
+) -> Result<RootSlot, StatepointError> {
   let addr = eval_reg_plus_offset(dwarf_reg, offset, regs)?;
-  Ok(LocationValue::Slot(RootSlot::StackAddr(addr as *mut u8)))
+  Ok(RootSlot::StackAddr(addr as *mut u8))
 }
 
 fn eval_reg_plus_offset(
@@ -281,5 +301,12 @@ mod tests {
       ctx.get_dwarf_reg_u64(0).unwrap(),
       0x0fed_cba9_8765_4321
     );
+  }
+
+  #[test]
+  fn root_slot_const_read_u64() {
+    let ctx = ThreadContext::default();
+    let root = RootSlot::Const { value: 1234 };
+    assert_eq!(root.read_u64(&ctx), 1234);
   }
 }

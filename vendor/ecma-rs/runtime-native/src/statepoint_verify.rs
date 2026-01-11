@@ -489,8 +489,10 @@ fn verify_statepoint_record(
   }
 
   let start = sp.gc_pairs_start();
-  for (pair_idx, (base, derived)) in sp.gc_pairs().enumerate() {
+  for (pair_idx, pair) in sp.gc_pairs().iter().enumerate() {
     let base_idx = start + pair_idx * 2;
+    let base = &pair.base;
+    let derived = &pair.derived;
     verify_indirect_sp_slot(
       callsite,
       rec.patchpoint_id,

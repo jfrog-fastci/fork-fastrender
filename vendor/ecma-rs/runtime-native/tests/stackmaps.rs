@@ -48,7 +48,9 @@ fn statepoint_stackmap_x86_64_has_two_gc_live_pointers() {
 
     let sp = StatepointRecord::new(record).unwrap();
     assert_eq!(sp.gc_pair_count(), 2);
-    for (base, derived) in sp.gc_pairs() {
+    for pair in sp.gc_pairs() {
+      let base = &pair.base;
+      let derived = &pair.derived;
       match base {
         Location::Indirect {
           size, dwarf_reg, ..
@@ -76,7 +78,9 @@ fn statepoint_stackmap_aarch64_has_two_gc_live_pointers() {
 
     let sp = StatepointRecord::new(record).unwrap();
     assert_eq!(sp.gc_pair_count(), 2);
-    for (base, derived) in sp.gc_pairs() {
+    for pair in sp.gc_pairs() {
+      let base = &pair.base;
+      let derived = &pair.derived;
       match base {
         Location::Indirect {
           size, dwarf_reg, ..
