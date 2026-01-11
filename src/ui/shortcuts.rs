@@ -58,6 +58,8 @@ pub enum Key {
   D,
   K,
   L,
+  OpenBracket,
+  CloseBracket,
   Minus,
   Num0,
   T,
@@ -180,10 +182,21 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     (Key::PageDown, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::NextTab),
 
     // Navigation.
-    (Key::Left, Modifiers { alt: true, ctrl: false, meta: false, .. }) => {
+    // On macOS, most browsers use Cmd+[ / Cmd+] for back/forward.
+    (Key::OpenBracket, Modifiers { shift: false, .. }) if cmd && matches!(platform, Platform::Mac) => {
       Some(ShortcutAction::Back)
     }
-    (Key::Right, Modifiers { alt: true, ctrl: false, meta: false, .. }) => {
+    (Key::CloseBracket, Modifiers { shift: false, .. }) if cmd && matches!(platform, Platform::Mac) => {
+      Some(ShortcutAction::Forward)
+    }
+    (Key::Left, Modifiers { alt: true, ctrl: false, meta: false, .. })
+      if matches!(platform, Platform::Other) =>
+    {
+      Some(ShortcutAction::Back)
+    }
+    (Key::Right, Modifiers { alt: true, ctrl: false, meta: false, .. })
+      if matches!(platform, Platform::Other) =>
+    {
       Some(ShortcutAction::Forward)
     }
     (Key::R, _) if cmd => Some(ShortcutAction::Reload),
@@ -503,6 +516,40 @@ mod tests {
       map_shortcut_with_platform(
         KeyEvent::new(Key::Right, Modifiers::new(false, false, true, false)),
         Platform::Other
+      ),
+      Some(ShortcutAction::Forward)
+    );
+    // On macOS, avoid using Alt+Left/Right for history navigation (Option+Arrow is commonly used for
+    // word-wise movement in text controls).
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Left, Modifiers::new(false, false, true, false)),
+        Platform::Mac
+      ),
+      None
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Right, Modifiers::new(false, false, true, false)),
+        Platform::Mac
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn mac_cmd_brackets_navigate_history() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::OpenBracket, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::Back)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::CloseBracket, Modifiers::new(false, false, false, true)),
+        Platform::Mac
       ),
       Some(ShortcutAction::Forward)
     );

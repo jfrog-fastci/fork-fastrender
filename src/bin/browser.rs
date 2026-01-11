@@ -2741,6 +2741,23 @@ error: {err}",
             use fastrender::ui::shortcuts::ShortcutAction;
 
             match action {
+              ShortcutAction::Back | ShortcutAction::Forward => {
+                // On macOS, egui does not expose bracket keys as `egui::Key` variants, so chrome
+                // cannot observe Cmd+[ / Cmd+] via `ui::chrome_ui`. Handle these shortcuts at the
+                // winit layer instead.
+                if cfg!(target_os = "macos")
+                  && matches!(key, VirtualKeyCode::LBracket | VirtualKeyCode::RBracket)
+                {
+                  use fastrender::ui::ChromeAction;
+                  self.handle_chrome_actions(vec![if matches!(action, ShortcutAction::Back) {
+                    ChromeAction::Back
+                  } else {
+                    ChromeAction::Forward
+                  }]);
+                }
+                return;
+              }
+
               // Chrome-level shortcuts are evaluated inside the egui frame (`ui::chrome_ui`) so we
               // can respect its editing focus rules. Ensure they never reach page input.
               ShortcutAction::FocusAddressBar
@@ -2749,8 +2766,6 @@ error: {err}",
               | ShortcutAction::ReopenClosedTab
               | ShortcutAction::NextTab
               | ShortcutAction::PrevTab
-              | ShortcutAction::Back
-              | ShortcutAction::Forward
               | ShortcutAction::Reload
               | ShortcutAction::ActivateTabNumber(_)
               | ShortcutAction::ZoomIn
@@ -2847,7 +2862,12 @@ error: {err}",
         // Guard against AltGr (often encoded as Ctrl+Alt).
         let alt_only = self.modifiers.alt() && !(self.modifiers.ctrl() || self.modifiers.logo());
         if alt_only && matches!(key, VirtualKeyCode::Left | VirtualKeyCode::Right) {
-          return;
+          // On macOS, the Option/Alt key is commonly used for word-wise text navigation. Since we
+          // prefer Cmd+[ / Cmd+] for history navigation on mac, allow Alt+Left/Right through to the
+          // page so focused form controls can handle it.
+          if !cfg!(target_os = "macos") {
+            return;
+          }
         }
         if !self.page_has_focus {
           return;
@@ -3619,6 +3639,8 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::D => ShortcutKey::D,
     VirtualKeyCode::K => ShortcutKey::K,
     VirtualKeyCode::L => ShortcutKey::L,
+    VirtualKeyCode::LBracket => ShortcutKey::OpenBracket,
+    VirtualKeyCode::RBracket => ShortcutKey::CloseBracket,
     VirtualKeyCode::R => ShortcutKey::R,
     VirtualKeyCode::T => ShortcutKey::T,
     VirtualKeyCode::V => ShortcutKey::V,

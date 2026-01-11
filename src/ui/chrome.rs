@@ -108,7 +108,17 @@ pub fn chrome_ui(
   // Ctrl/Cmd+L should not steal focus from other egui text fields (e.g. devtools inputs), but we
   // still want it to re-select the URL when the address bar is already focused.
   let allow_focus_address_bar = !ctx.wants_keyboard_input() || app.chrome.address_bar_has_focus;
-  let allow_history_navigation = !ctx.wants_keyboard_input() && !app.chrome.address_bar_has_focus;
+  let allow_history_navigation = if cfg!(target_os = "macos") {
+    // On macOS, the canonical back/forward shortcuts are Cmd+[ / Cmd+]. These do not interfere with
+    // word-wise cursor movement in text fields, so allow history navigation even while the address
+    // bar is focused.
+    !ctx.wants_keyboard_input() || app.chrome.address_bar_has_focus
+  } else {
+    // On other platforms, back/forward is typically Alt+Left/Right, which is also used for
+    // word-wise cursor movement in some text fields. Suppress history navigation while the address
+    // bar is focused to avoid stealing those editing gestures.
+    !ctx.wants_keyboard_input() && !app.chrome.address_bar_has_focus
+  };
   let (
     focus_address_bar,
     new_tab,
