@@ -2,7 +2,6 @@
   kind: constructor
   aliases:
     - URL
-  kind: constructor
   since: "baseline"
   effects:
     base: [alloc, may_throw]
@@ -86,7 +85,6 @@
 
 # Treat getters as pure reads.
 - name: URL.prototype.href
-  kind: property
   aliases:
     - URL.prototype.href
   kind: getter
@@ -102,7 +100,6 @@
     encoding.output: ascii
 
 - name: URL.prototype.pathname
-  kind: property
   aliases:
     - URL.prototype.pathname
   kind: getter
@@ -202,7 +199,6 @@
     encoding.output: ascii
 
 - name: URL.prototype.searchParams
-  kind: property
   aliases:
     - URL.prototype.searchParams
   kind: getter

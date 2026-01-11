@@ -295,9 +295,10 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 }
 
 #[cfg(test)]
-mod tests {
+  mod tests {
   use super::*;
   use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
+  use knowledge_base::ApiKind;
   use serde_json::Value as JsonValue;
   use std::collections::BTreeMap;
 
@@ -323,7 +324,7 @@ mod tests {
       signature: None,
       since: None,
       until: None,
-      kind: None,
+      kind: ApiKind::Function,
       properties: properties
         .iter()
         .map(|(k, v)| (k.to_string(), v.clone()))

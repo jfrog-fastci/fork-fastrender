@@ -279,6 +279,13 @@ fn resolve_ident_base(
   in_member: bool,
   names: &NameInterner,
 ) -> Option<Vec<String>> {
+  // If this body declares `name` (including `let`/`const` in TDZ), treat it as a
+  // local binding and do not resolve to imports or globals. Only handle the
+  // subset of locals that are `require()` bindings we can model.
+  if is_name_declared_in_body(body, name) {
+    return resolve_require_binding(body, name, use_start, names);
+  }
+
   // ES `import` or TS `import =` bindings.
   for import in &file.imports {
     match &import.kind {
@@ -291,7 +298,7 @@ fn resolve_ident_base(
         }
         if let Some(default) = &es.default {
           if default.local == name {
-            return Some(vec![spec, "default".to_string()]);
+            return Some(vec![spec]);
           }
         }
         for named in &es.named {
@@ -321,10 +328,6 @@ fn resolve_ident_base(
 
   if let Some(segs) = resolve_require_binding(body, name, use_start, names) {
     return Some(segs);
-  }
-
-  if is_name_declared_in_body(body, name) {
-    return None;
   }
 
   let name_str = names.resolve(name)?.to_string();
@@ -751,6 +754,42 @@ fn is_allowed_global_member_root(name: &str) -> bool {
   fn resolves_require_namespace_call() {
     let source = r#"
 const fs = require("node:fs");
+fs.readFile("x", () => {});
+"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let call_expr = find_expr(body, |kind| match kind {
+      ExprKind::Call(call) => {
+        !call.is_new
+          && matches!(
+            body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::Member(member))
+              if matches!(
+                &member.property,
+                ObjectKey::Ident(id) if names.resolve(*id) == Some("readFile")
+              )
+          )
+      }
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, call_expr, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("node:fs.readFile"),
+        kind: ApiUseKind::Call,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_default_import_namespace_call() {
+    let source = r#"
+import fs from "node:fs";
 fs.readFile("x", () => {});
 "#;
     let lowered = hir_js::lower_from_source(source).expect("lower");
