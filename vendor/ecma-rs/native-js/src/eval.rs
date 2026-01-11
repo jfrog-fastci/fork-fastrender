@@ -111,6 +111,65 @@ impl<'p> Evaluator<'p> {
       },
     );
 
+    // Evaluate module dependencies (imports + runtime re-exports) in source order.
+    //
+    // This mirrors ECMAScript's evaluation ordering rules: traverse module requests
+    // in source order, evaluating dependencies before the module itself.
+    #[derive(Clone, Copy)]
+    struct ModuleRequest<'a> {
+      span: diagnostics::TextRange,
+      specifier: &'a str,
+    }
+    let mut module_requests: Vec<ModuleRequest<'_>> = Vec::new();
+    for import in &lowered.hir.imports {
+      let ImportKind::Es(es) = &import.kind else {
+        return Err(EvalError::new("unsupported import kind"));
+      };
+      if es.is_type_only {
+        continue;
+      }
+      module_requests.push(ModuleRequest {
+        span: import.span,
+        specifier: es.specifier.value.as_str(),
+      });
+    }
+    for export in &lowered.hir.exports {
+      match &export.kind {
+        hir_js::ExportKind::Named(named) => {
+          let Some(source) = named.source.as_ref() else {
+            continue;
+          };
+          if named.is_type_only {
+            continue;
+          }
+          let has_value_specifiers = named.specifiers.iter().any(|s| !s.is_type_only);
+          let is_side_effect_export = named.specifiers.is_empty();
+          if !has_value_specifiers && !is_side_effect_export {
+            continue;
+          }
+          module_requests.push(ModuleRequest {
+            span: export.span,
+            specifier: source.value.as_str(),
+          });
+        }
+        hir_js::ExportKind::ExportAll(all) => {
+          if all.is_type_only {
+            continue;
+          }
+          module_requests.push(ModuleRequest {
+            span: export.span,
+            specifier: all.source.value.as_str(),
+          });
+        }
+        _ => {}
+      }
+    }
+    module_requests.sort_by_key(|req| (req.span.start, req.span.end));
+    for req in module_requests {
+      let dep_file = self.resolve_module_specifier(file, req.specifier)?;
+      self.eval_module(dep_file)?;
+    }
+
     // Evaluate imports.
     let imports = lowered.hir.imports.clone();
     for import in imports {
