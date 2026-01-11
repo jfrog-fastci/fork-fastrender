@@ -146,10 +146,10 @@ fn build_var_defs(
         if tgt.is_none() {
           continue;
         }
-        if !spreads.is_empty() {
-          VarDef::Unknown
-        } else if is_alloc_builtin(callee) {
+        if is_alloc_builtin(callee) {
           VarDef::FreshAlloc
+        } else if !spreads.is_empty() {
+          VarDef::Unknown
         } else if let Arg::Fn(id) = callee {
           // If callee isn't in-bounds, treat as unknown.
           if *id < callee_summaries.len() {
