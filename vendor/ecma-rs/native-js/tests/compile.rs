@@ -87,8 +87,12 @@ fn compile_emits_executable_and_runs() {
     .read_to_string(&mut stderr)
     .unwrap();
 
-  assert!(status.success(), "expected success, got {status:?} stderr={stderr}");
-  assert_eq!(stdout, "3\n");
+  assert_eq!(
+    status.code(),
+    Some(3),
+    "unexpected exit status {status:?} stdout={stdout:?} stderr={stderr:?}"
+  );
+  assert_eq!(stdout, "");
 
   let _ = std::fs::remove_file(&artifact.path);
 }
