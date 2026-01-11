@@ -71,6 +71,7 @@ include = [
   "rt_promise_init",
   "rt_promise_fulfill",
   "rt_promise_reject",
+  "rt_promise_mark_handled",
   "rt_async_spawn",
   "rt_async_spawn_deferred",
   "rt_async_cancel_all",
