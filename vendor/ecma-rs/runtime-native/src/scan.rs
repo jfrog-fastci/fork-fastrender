@@ -6,7 +6,7 @@
 //!
 //! Moving GCs must not treat the derived pointer as an independent root. Instead, relocate the
 //! base pointer and recompute the derived pointer relative to it (see
-//! [`crate::reloc::relocate_derived_pair`]).
+//! [`crate::relocate_derived_pairs`]).
 //!
 //! The key observation (LLVM 18, empirically) is that GC pointers are typically described as
 //! `Indirect [DWARF_REG + offset]` locations, where the base DWARF register is the caller-frame SP
@@ -62,8 +62,8 @@ pub trait RootVisitor {
   ///
   /// # Important
   ///
-  /// Moving GCs must process this pair using [`crate::reloc::relocate_derived_pair`] (or equivalent
-  /// logic) and must not treat the derived slot as an independent root.
+  /// Moving GCs must process these pairs in a batch using [`crate::relocate_derived_pairs`] (or
+  /// equivalent logic) and must not treat the derived slot as an independent root.
   fn visit_derived_pair(&mut self, base_slot: *mut usize, derived_slot: *mut usize);
 }
 
