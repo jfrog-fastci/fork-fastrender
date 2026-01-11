@@ -16060,9 +16060,19 @@ impl DisplayListRenderer {
                 diag.record_miss();
               }
               let timer = diag.map(|_| Instant::now());
+              const SUBPIXEL_SNAP_EPS: f32 = 0.1;
+              let sample_rect = if (device_rect.x() - origin_x).abs() <= SUBPIXEL_SNAP_EPS
+                && (device_rect.y() - origin_y).abs() <= SUBPIXEL_SNAP_EPS
+                && (device_rect.width() - out_w as f32).abs() <= SUBPIXEL_SNAP_EPS
+                && (device_rect.height() - out_h as f32).abs() <= SUBPIXEL_SNAP_EPS
+              {
+                Rect::from_xywh(origin_x, origin_y, out_w as f32, out_h as f32)
+              } else {
+                device_rect
+              };
               let Some(pixmap) = image_data_to_scaled_pixmap_with_phase_inner(
                 &item.image,
-                device_rect,
+                sample_rect,
                 out_w,
                 out_h,
                 origin_x,
@@ -24218,6 +24228,43 @@ mod tests {
     assert_eq!(pixel(&pixmap1, 1, 0), (48, 0, 0, 255));
     assert_eq!(pixel(&pixmap1, 2, 0), (112, 0, 0, 255));
     assert_eq!(pixel(&pixmap1, 3, 0), (176, 0, 0, 255));
+  }
+
+  #[test]
+  fn scaled_image_resampling_snaps_near_integer_dest_rect() {
+    let mut pixels = Vec::new();
+    for y in 0..8u8 {
+      for x in 0..8u8 {
+        pixels.extend_from_slice(&[x * 32, y * 32, 0, 255]);
+      }
+    }
+    let image = Arc::new(ImageData::new_pixels(8, 8, pixels));
+
+    let mut list0 = DisplayList::new();
+    list0.push(DisplayItem::Image(ImageItem {
+      dest_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+      image: image.clone(),
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: None,
+    }));
+    let pixmap0 = DisplayListRenderer::new(5, 5, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list0)
+      .unwrap();
+
+    let mut list1 = DisplayList::new();
+    list1.push(DisplayItem::Image(ImageItem {
+      dest_rect: Rect::from_xywh(0.05, 0.07, 3.98, 3.96),
+      image,
+      filter_quality: ImageFilterQuality::Linear,
+      src_rect: None,
+    }));
+    let pixmap1 = DisplayListRenderer::new(5, 5, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .render(&list1)
+      .unwrap();
+
+    assert_eq!(pixmap0.data(), pixmap1.data());
   }
 
   #[test]
