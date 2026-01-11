@@ -91,6 +91,7 @@ stackmap = { path = "stackmap", version = "0.1.0" }
 
 # Shared third-party dependencies.
 ahash = "0.8.7"
+arc-swap = "1.7.1"
 aho-corasick = "1.1"
 anyhow = "1.0"
 assert_cmd = "2.0"

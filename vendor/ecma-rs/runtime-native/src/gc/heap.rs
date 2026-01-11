@@ -47,6 +47,12 @@ pub struct GcHeap {
   pub(crate) stats: GcStats,
 }
 
+// SAFETY: `GcHeap` is not safe for concurrent access, but it is safe to move between threads as
+// long as callers provide external synchronization (e.g. stop-the-world GC coordination or a
+// mutex). This enables using a heap behind a lock in process-wide singletons (like the string
+// interner) without requiring every internal pointer type to be `Send`.
+unsafe impl Send for GcHeap {}
+
 impl Default for GcHeap {
   fn default() -> Self {
     Self::new()

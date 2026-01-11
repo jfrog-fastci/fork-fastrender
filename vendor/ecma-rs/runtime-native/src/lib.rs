@@ -149,16 +149,20 @@ mod tests {
 
   #[test]
   fn interning_is_deduplicated() {
-    let id1 = rt_string_intern(b"hello".as_ptr(), b"hello".len());
-    let id2 = rt_string_intern(b"hello".as_ptr(), b"hello".len());
-    assert_eq!(id1, id2);
+    crate::interner::with_test_lock(|| {
+      let id1 = rt_string_intern(b"hello".as_ptr(), b"hello".len());
+      let id2 = rt_string_intern(b"hello".as_ptr(), b"hello".len());
+      assert_eq!(id1, id2);
+    });
   }
 
   #[test]
   fn interning_distinguishes_bytes() {
-    let id1 = rt_string_intern(b"hello".as_ptr(), b"hello".len());
-    let id2 = rt_string_intern(b"world".as_ptr(), b"world".len());
-    assert_ne!(id1, id2);
+    crate::interner::with_test_lock(|| {
+      let id1 = rt_string_intern(b"hello".as_ptr(), b"hello".len());
+      let id2 = rt_string_intern(b"world".as_ptr(), b"world".len());
+      assert_ne!(id1, id2);
+    });
   }
 
   #[test]
@@ -186,11 +190,70 @@ mod tests {
 
   #[test]
   fn interned_lookup_roundtrip() {
-    let id = rt_string_intern(b"zap".as_ptr(), b"zap".len());
-    let out = crate::interner::lookup(id);
-    // Safety: `lookup` returns a valid byte slice for the returned length.
-    let bytes = unsafe { std::slice::from_raw_parts(out.ptr, out.len) };
-    assert_eq!(bytes, b"zap");
+    crate::interner::with_test_lock(|| {
+      let id = rt_string_intern(b"zap".as_ptr(), b"zap".len());
+      let out = crate::interner::lookup(id).expect("interned string should be present");
+      // Safety: `lookup` returns a valid byte slice for the returned length.
+      let bytes = unsafe { std::slice::from_raw_parts(out.ptr, out.len) };
+      assert_eq!(bytes, b"zap");
+    });
+  }
+
+  #[test]
+  fn interning_is_thread_safe() {
+    crate::interner::with_test_lock(|| {
+      const THREADS: usize = 8;
+      const ITERS: usize = 1000;
+
+      let mut handles = Vec::new();
+      for _ in 0..THREADS {
+        handles.push(std::thread::spawn(|| {
+          let mut last = None;
+          for _ in 0..ITERS {
+            let id = rt_string_intern(b"concurrent".as_ptr(), b"concurrent".len());
+            if let Some(prev) = last {
+              assert_eq!(prev, id);
+            }
+            last = Some(id);
+          }
+          last.unwrap()
+        }));
+      }
+
+      let ids: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+      for &id in &ids[1..] {
+        assert_eq!(ids[0], id);
+      }
+    });
+  }
+
+  #[test]
+  fn interner_prunes_unpinned_strings_but_keeps_pinned() {
+    crate::interner::with_test_lock(|| {
+      let id_unpinned = rt_string_intern(b"temp".as_ptr(), b"temp".len());
+      let id_pinned = rt_string_intern(b"perm".as_ptr(), b"perm".len());
+
+      crate::interner::pin_interned(id_pinned);
+
+      // Force a GC sweep of the interner's backing heap. Since the interner keeps only weak
+      // references to non-pinned entries, they should be collected and pruned.
+      crate::interner::collect_garbage_for_tests();
+
+      assert!(crate::interner::lookup(id_unpinned).is_none());
+
+      let out = crate::interner::lookup(id_pinned).expect("pinned interned string should remain");
+      // Safety: `lookup` returns a valid byte slice for the returned length.
+      let bytes = unsafe { std::slice::from_raw_parts(out.ptr, out.len) };
+      assert_eq!(bytes, b"perm");
+
+      // Re-interning a collected string yields a new ID (IDs are never reused).
+      let id_unpinned_2 = rt_string_intern(b"temp".as_ptr(), b"temp".len());
+      assert_ne!(id_unpinned, id_unpinned_2);
+
+      // Pinned strings remain stable.
+      let id_pinned_2 = rt_string_intern(b"perm".as_ptr(), b"perm".len());
+      assert_eq!(id_pinned, id_pinned_2);
+    });
   }
 
   #[test]

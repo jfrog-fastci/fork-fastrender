@@ -30,6 +30,7 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 ahash = { workspace = true }
+arc-swap = { workspace = true }
 bitflags = { workspace = true }
 crossbeam-deque = { workspace = true }
 crossbeam-utils = { workspace = true }
