@@ -26,9 +26,11 @@ To keep stackmaps while still using `--gc-sections`, pass a linker-script shim
 that uses `KEEP(*(.llvm_stackmaps ...))`:
 
 ```bash
--Wl,--gc-sections -Wl,-T,vendor/ecma-rs/scripts/keep_llvm_stackmaps.ld
+-Wl,--gc-sections -Wl,-T,vendor/ecma-rs/runtime-native/stackmaps.ld
 ```
 
+This works with both **GNU ld** and **lld**, and also defines stable boundary symbols
+for runtime discovery (see below).
 The repository’s wrapper does this for you:
 
 ```bash
@@ -81,7 +83,7 @@ The more general `scripts/native_link.sh` uses `llvm-objcopy --set-section-flags
 to place `.llvm_stackmaps` in a writable/RELRO output section.
 
 Current default policy in `native-js` and `native_link.sh`: **non-PIE** (`-no-pie`) unless the
-caller opts into PIE explicitly.
+caller opts into PIE explicitly (note: non-PIE disables main-executable ASLR on Linux).
 
 ## Stripping
 

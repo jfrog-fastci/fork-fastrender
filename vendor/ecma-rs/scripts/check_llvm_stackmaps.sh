@@ -188,6 +188,11 @@ echo "[stackmaps] link: ld (no-pie, --gc-sections) => EXPECTED DROP"
 "${CLANG}" -no-pie -Wl,--gc-sections -o "${tmp}/a_ld_gc" "${objs[@]}"
 must_not_have_stackmaps "${tmp}/a_ld_gc"
 
+echo "[stackmaps] link: ld (no-pie, --gc-sections + stackmaps.ld KEEP)"
+"${CLANG}" -no-pie -Wl,--gc-sections -Wl,-T,"${script_dir}/../runtime-native/stackmaps.ld" \
+  -o "${tmp}/a_ld_policy" "${objs[@]}"
+must_have_stackmaps "${tmp}/a_ld_policy"
+
 echo "[stackmaps] link: native_link.sh (no-pie, --gc-sections + KEEP)"
 "${script_dir}/native_link.sh" -o "${tmp}/a_policy" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_policy"
@@ -212,6 +217,11 @@ if [[ -n "${LLD_FUSE}" ]]; then
   echo "[stackmaps] link: lld (no-pie, --gc-sections) => EXPECTED DROP"
   "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -o "${tmp}/a_lld_gc" "${objs[@]}"
   must_not_have_stackmaps "${tmp}/a_lld_gc"
+
+  echo "[stackmaps] link: lld (no-pie, --gc-sections + stackmaps.ld KEEP)"
+  "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -Wl,-T,"${script_dir}/../runtime-native/stackmaps.ld" \
+    -o "${tmp}/a_lld_policy" "${objs[@]}"
+  must_have_stackmaps "${tmp}/a_lld_policy"
 
   echo "[stackmaps] link: native_link.sh (lld explicit)"
   ECMA_RS_NATIVE_LINKER=lld "${script_dir}/native_link.sh" -o "${tmp}/a_policy_lld" "${objs[@]}"

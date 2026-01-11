@@ -15,11 +15,13 @@ Environment:
 
 Notes:
   - `.llvm_stackmaps` has no inbound references; `--gc-sections` will drop it
-    unless explicitly `KEEP`'d (we inject `keep_llvm_stackmaps.ld`).
+    unless explicitly `KEEP`'d via the linker-script fragment we inject
+    (`runtime-native/link/stackmaps.ld` or `runtime-native/stackmaps.ld`).
   - On Linux x86_64, PIE binaries require runtime relocations for stackmap
-    FunctionAddress entries. If `.llvm_stackmaps` is read-only, GNU ld emits
-    `DT_TEXTREL` and lld typically rejects the link. We avoid this by rewriting
-    input objects so the stackmap sections are writable during relocation.
+    FunctionAddress entries. If stackmaps/faultmaps are mapped read-only, GNU ld
+    emits `DT_TEXTREL` and lld typically rejects the link. We avoid this by
+    rewriting input objects so the stackmap sections are writable during
+    relocation.
 EOF
 }
 
@@ -45,6 +47,23 @@ done
 
 if [[ -z "${out}" || ${#objs[@]} -eq 0 ]]; then
   usage
+  exit 2
+fi
+
+if [[ "${OSTYPE:-}" != linux* ]]; then
+  echo "native_link.sh: Linux-only (ELF)" >&2
+  exit 2
+fi
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ecma_root="$(cd "${script_dir}/.." && pwd)"
+stackmaps_ld="${ecma_root}/runtime-native/link/stackmaps.ld"
+if [[ ! -f "${stackmaps_ld}" ]]; then
+  # Compatibility path for older docs/build scripts.
+  stackmaps_ld="${ecma_root}/runtime-native/stackmaps.ld"
+fi
+if [[ ! -f "${stackmaps_ld}" ]]; then
+  echo "native_link.sh: missing linker script fragment at ${stackmaps_ld}" >&2
   exit 2
 fi
 
@@ -91,19 +110,16 @@ case "${LINKER}" in
     ;;
 esac
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-stackmaps_script="${script_dir}/keep_llvm_stackmaps.ld"
-
 if [[ "${GC_SECTIONS}" == "1" ]]; then
   link_args+=("-Wl,--gc-sections")
 fi
 
 # Always inject the script so the binary exports stackmap boundary symbols and
 # stackmap sections are never dropped under `--gc-sections`.
-link_args+=("-Wl,-T,${stackmaps_script}")
+link_args+=("-Wl,-T,${stackmaps_ld}")
 
-# PIE (Linux/ELF): ensure `.llvm_stackmaps` relocations are allowed by making the
-# section writable in the *input* objects (see native-js/src/link.rs for details).
+# PIE (Linux/ELF): ensure `.llvm_stackmaps` / `.llvm_faultmaps` relocations are
+# allowed by making the sections writable in the *input* objects.
 patched_dir=""
 cleanup() {
   if [[ -n "${patched_dir}" ]]; then
@@ -112,7 +128,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ "${PIE}" == "1" && "${OSTYPE:-}" == linux* ]]; then
+if [[ "${PIE}" == "1" ]]; then
   objcopy=""
   for cand in llvm-objcopy-18 llvm-objcopy objcopy; do
     if command -v "${cand}" >/dev/null 2>&1; then
@@ -143,4 +159,4 @@ if [[ "${PIE}" == "1" && "${OSTYPE:-}" == linux* ]]; then
   objs=("${patched_objs[@]}")
 fi
 
-"${CLANG}" "${link_args[@]}" -o "${out}" "${objs[@]}"
+exec "${CLANG}" "${link_args[@]}" -o "${out}" "${objs[@]}"
