@@ -1,0 +1,112 @@
+# FormData APIs (used for multipart/form submissions and fetch bodies).
+
+- name: FormData
+  kind: constructor
+  aliases:
+    - FormData
+    - window.FormData
+    - globalThis.FormData
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: FormData.prototype.append
+  kind: function
+  aliases:
+    - FormData.prototype.append
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+
+- name: FormData.prototype.set
+  kind: function
+  aliases:
+    - FormData.prototype.set
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Impure
+
+- name: FormData.prototype.delete
+  kind: function
+  aliases:
+    - FormData.prototype.delete
+  since: "baseline"
+  effects:
+    allocates: false
+    may_throw: false
+  purity: Impure
+
+- name: FormData.prototype.get
+  kind: function
+  aliases:
+    - FormData.prototype.get
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.getAll
+  kind: function
+  aliases:
+    - FormData.prototype.getAll
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.has
+  kind: function
+  aliases:
+    - FormData.prototype.has
+  since: "baseline"
+  effects: Pure
+  purity: Pure
+
+- name: FormData.prototype.entries
+  kind: function
+  aliases:
+    - FormData.prototype.entries
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.keys
+  kind: function
+  aliases:
+    - FormData.prototype.keys
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.values
+  kind: function
+  aliases:
+    - FormData.prototype.values
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: FormData.prototype.forEach
+  kind: function
+  aliases:
+    - FormData.prototype.forEach
+  since: "baseline"
+  effects:
+    depends_on_args:
+      base: MAY_THROW
+      args: [0]
+  purity: Impure

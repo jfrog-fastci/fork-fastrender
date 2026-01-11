@@ -1,0 +1,101 @@
+# Blob/File APIs.
+
+- name: Blob
+  kind: constructor
+  aliases:
+    - Blob
+    - window.Blob
+    - globalThis.Blob
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: Blob.prototype.arrayBuffer
+  kind: function
+  aliases:
+    - Blob.prototype.arrayBuffer
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: Blob.prototype.text
+  kind: function
+  aliases:
+    - Blob.prototype.text
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: Blob.prototype.slice
+  kind: function
+  aliases:
+    - Blob.prototype.slice
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: Blob.prototype.size
+  kind: getter
+  aliases:
+    - Blob.prototype.size
+  since: "baseline"
+  effects: Pure
+  purity: Pure
+
+- name: Blob.prototype.type
+  kind: getter
+  aliases:
+    - Blob.prototype.type
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+  properties:
+    encoding.output: ascii
+
+- name: File
+  kind: constructor
+  aliases:
+    - File
+    - window.File
+    - globalThis.File
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Pure
+
+- name: File.prototype.name
+  kind: getter
+  aliases:
+    - File.prototype.name
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Pure
+
+- name: File.prototype.lastModified
+  kind: getter
+  aliases:
+    - File.prototype.lastModified
+  since: "baseline"
+  effects: Pure
+  purity: Pure
