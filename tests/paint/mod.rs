@@ -166,6 +166,7 @@ mod scene_tree_test;
 mod select_listbox_paint;
 mod shadow_dom_slotted_paint;
 mod linear_gradient_pattern_transform_scale_y;
+mod linear_gradient_dither_phase;
 mod stacking_context_outline_bounds;
 mod stacking_test;
 mod stacking_context_blend_isolation_descendant_shadow_bounds;
