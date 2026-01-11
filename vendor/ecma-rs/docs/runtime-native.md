@@ -473,13 +473,18 @@ LLVM/LLD typically emit a symbol named `__LLVM_StackMaps`, but it is marked with
 Therefore the runtime must not rely on LLVM’s local symbol; it must locate the
 stackmap bytes some other way.
 
-### 5.3 Locating stackmaps at runtime (Linux/ELF)
-Instead of parsing `/proc/self/exe`, the final link step can export two **global**
-symbols that delimit the in-memory stackmaps byte range (which may include
-multiple concatenated StackMap v3 blobs):
+### 5.3 Linker-symbol based discovery (preferred)
+Instead of parsing `/proc/self/exe`, the `native-js` link step exports two
+**global** symbols that delimit the in-memory `.llvm_stackmaps` byte range
+(which may include multiple concatenated StackMap v3 blobs):
 
-- `__start_llvm_stackmaps`
-- `__stop_llvm_stackmaps`
+- `__fastr_stackmaps_start`
+- `__fastr_stackmaps_end`
+
+For compatibility, the linker script also defines aliases:
+
+- `__start_llvm_stackmaps` / `__stop_llvm_stackmaps`
+- `__llvm_stackmaps_start` / `__llvm_stackmaps_end`
 
 They are defined by a small linker-script fragment (the `KEEP` is important so
 `--gc-sections` does not discard stackmaps). See:
@@ -518,29 +523,33 @@ directly from memory using pointer arithmetic; no ELF parsing and no
 
 ```rust
 extern "C" {
-  static __start_llvm_stackmaps: u8;
-  static __stop_llvm_stackmaps: u8;
+  static __fastr_stackmaps_start: u8;
+  static __fastr_stackmaps_end: u8;
 }
 
-let start = unsafe { &__start_llvm_stackmaps as *const u8 };
-let end = unsafe { &__stop_llvm_stackmaps as *const u8 };
+let start = unsafe { &__fastr_stackmaps_start as *const u8 };
+let end = unsafe { &__fastr_stackmaps_end as *const u8 };
 let len = unsafe { end.offset_from(start) as usize };
-let stackmaps = unsafe { std::slice::from_raw_parts(start, len) };
+let stackmaps = unsafe { core::slice::from_raw_parts(start, len) };
 ```
 
 #### Runtime usage (C)
 
 ```c
-extern const unsigned char __start_llvm_stackmaps;
-extern const unsigned char __stop_llvm_stackmaps;
+extern const unsigned char __fastr_stackmaps_start;
+extern const unsigned char __fastr_stackmaps_end;
 
-const uint8_t* start = &__start_llvm_stackmaps;
-const uint8_t* end = &__stop_llvm_stackmaps;
+const uint8_t* start = &__fastr_stackmaps_start;
+const uint8_t* end = &__fastr_stackmaps_end;
 size_t len = (size_t)(end - start);
 ```
 
 `len == 0` means no stackmaps were linked in (e.g. the program contains no
 statepoints); treat that as “stackmaps unavailable”.
+
+Note: some toolchains will warn about `TEXTREL` when producing PIE binaries if
+`.llvm_stackmaps` ends up requiring runtime relocations; using `-no-pie` avoids
+this in a minimal LLVM 18 experiment.
 
 ### 5.4 Stackmap binary format (LLVM StackMap v3)
 The runtime must parse the `.llvm_stackmaps` section to map an instruction

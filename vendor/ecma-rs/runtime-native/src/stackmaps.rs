@@ -196,16 +196,7 @@ impl StackMap {
         )?);
       }
 
-      // StackMap v3 aligns the *live-out header* to an 8-byte boundary after the
-      // locations array.
-      //
-      // The live-out header itself is:
-      //   u16 Padding;
-      //   u16 NumLiveOuts;
-      //
-      // This means there may be padding between the last location and the header
-      // when `num_locations * sizeof(Location)` is not 8-byte aligned (e.g. odd
-      // number of 12-byte Location entries).
+      // StackMap v3 pads so the live-out header begins on an 8-byte boundary.
       c.align_to(8)?;
 
       let _padding = c.read_u16()?;
@@ -1333,7 +1324,7 @@ mod tests {
     push_u16(&mut bytes, 0); // reserved2
     push_i32(&mut bytes, 16); // offset
 
-    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    // StackMap v3 pads so the live-out header begins on an 8-byte boundary.
     align_to_8_with(&mut bytes, 0);
 
     // No liveouts.
@@ -1571,7 +1562,7 @@ mod tests {
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, 0);
 
-    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    // StackMap v3 pads so the live-out header begins on an 8-byte boundary.
     align_to_8_with(&mut bytes, 0);
 
     push_u16(&mut bytes, 0); // padding
@@ -1653,9 +1644,9 @@ mod tests {
     push_u64(&mut bytes, 100);
     push_u32(&mut bytes, 0x10);
     push_u16(&mut bytes, 0);
-    push_u16(&mut bytes, 1);
+    push_u16(&mut bytes, 1); // num_locations
 
-    // Location: Register.
+    // Register location.
     push_u8(&mut bytes, 1);
     push_u8(&mut bytes, 0);
     push_u16(&mut bytes, 8);
@@ -1663,8 +1654,8 @@ mod tests {
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, 0);
 
-    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
-    // Fill the padding with non-zero bytes to validate the parser skips it.
+    // Pad so the live-out header begins 8-byte aligned.
+    // Fill with non-zero bytes to validate the parser skips it.
     align_to_8_with(&mut bytes, 0xAB);
 
     // Live-out header:
@@ -1675,7 +1666,7 @@ mod tests {
     push_u16(&mut bytes, 0xABAB); // padding (ignored)
     push_u16(&mut bytes, 2); // num_liveouts
 
-    // LiveOut[0]: reg=0,reserved=0,size=8.
+    // LiveOut: reg=0,reserved=0,size=8.
     push_u16(&mut bytes, 0);
     push_u8(&mut bytes, 0);
     push_u8(&mut bytes, 8);
@@ -1688,7 +1679,7 @@ mod tests {
     // Pad with non-zero to validate we skip, not validate content.
     align_to_8_with(&mut bytes, 0xCD);
 
-    // Record 1.
+    // Record 1: no locations, no liveouts.
     push_u64(&mut bytes, 200);
     push_u32(&mut bytes, 0x20);
     push_u16(&mut bytes, 0);
@@ -1704,6 +1695,7 @@ mod tests {
     assert_eq!(sm.records[1].patchpoint_id, 200);
     assert_eq!(sm.records[0].live_outs.len(), 2);
     assert_eq!(sm.records[0].live_outs[0].size, 8);
+    assert_eq!(sm.records[0].live_outs[1].size, 8);
   }
 
   #[test]
@@ -1728,7 +1720,7 @@ mod tests {
     push_u16(&mut bytes, 0);
     push_i32(&mut bytes, 0);
 
-    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    // StackMap v3 pads so the live-out header begins on an 8-byte boundary.
     align_to_8_with(&mut bytes, 0);
 
     push_u16(&mut bytes, 0); // padding

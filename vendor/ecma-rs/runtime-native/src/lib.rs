@@ -77,6 +77,8 @@ pub mod stackmaps;
 pub mod stackmaps_validate;
 pub mod stackmaps_loader;
 pub mod stackmap_loader;
+#[doc(hidden)]
+pub mod stackmaps_symbols;
 pub mod statepoints;
 pub mod scan;
 pub mod reloc;
