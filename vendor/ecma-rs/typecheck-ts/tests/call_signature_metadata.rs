@@ -137,17 +137,12 @@ export function f(x: string | number) {
     let sig_id = program
       .call_signature_at(file, call_offset)
       .expect("call signature recorded");
-    let callee_ty = program
-      .type_at(file, call_start)
-      .expect("callee identifier type");
     let sig = program
-      .call_signatures(callee_ty)
-      .into_iter()
-      .find(|info| info.id == sig_id)
+      .signature(sig_id)
       .unwrap_or_else(|| panic!("missing signature info for {sig_id:?}"));
     (
       sig_id,
-      program.display_type(sig.signature.params[0].ty).to_string(),
+      program.display_type(sig.params[0].ty).to_string(),
     )
   };
 
@@ -157,6 +152,54 @@ export function f(x: string | number) {
   assert_ne!(sig_then, sig_else, "expected branch calls to pick distinct overloads");
   assert_eq!(param_then, "string");
   assert_eq!(param_else, "number");
+}
+
+#[test]
+fn generic_call_records_instantiated_signature() {
+  let source = r#"
+export function id<T>(value: T): T { return value; }
+
+const n: number = 1;
+const s: string = "hi";
+
+export const num = id(n);
+export const str = id(s);
+"#;
+  let mut host = MemoryHost::new();
+  let key = FileKey::new("entry.ts");
+  host.insert(key.clone(), source);
+  let program = Program::new(host, vec![key.clone()]);
+  let diagnostics = program.check();
+  assert!(
+    diagnostics.is_empty(),
+    "unexpected diagnostics: {diagnostics:?}"
+  );
+
+  let file = program.file_id(&key).expect("entry.ts file id");
+  let call_sites: Vec<u32> = source
+    .match_indices("id(")
+    .map(|(idx, _)| idx as u32)
+    .collect();
+  assert_eq!(call_sites.len(), 2, "expected 2 id(...) call sites");
+
+  let sig_for = |call_start: u32| -> Signature {
+    let call_offset = call_start + 2; // points at `(` in `id(...)`
+    let sig_id = program
+      .call_signature_at(file, call_offset)
+      .expect("call signature recorded");
+    program.signature(sig_id).expect("signature in store")
+  };
+
+  let sig_num = sig_for(call_sites[0]);
+  let sig_str = sig_for(call_sites[1]);
+
+  assert_eq!(sig_num.params.len(), 1);
+  assert_eq!(program.display_type(sig_num.params[0].ty).to_string(), "number");
+  assert_eq!(program.display_type(sig_num.ret).to_string(), "number");
+
+  assert_eq!(sig_str.params.len(), 1);
+  assert_eq!(program.display_type(sig_str.params[0].ty).to_string(), "string");
+  assert_eq!(program.display_type(sig_str.ret).to_string(), "string");
 }
 
 #[test]

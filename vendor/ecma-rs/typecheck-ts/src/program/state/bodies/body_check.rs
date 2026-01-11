@@ -825,7 +825,7 @@ impl ProgramState {
           flow_hooks,
           caches.relation.clone(),
         );
-        let flow_result = check::hir_body::check_body_with_env_with_bindings_strict_native(
+        let flow_result = check::hir_body::check_body_with_env_tables_with_bindings(
           body_id,
           body,
           &lowered.names,
@@ -896,11 +896,12 @@ impl ProgramState {
             }
           }
         }
-        if flow_result.call_signatures.len() == result.call_signatures.len() {
-          for (idx, sig) in flow_result.call_signatures.iter().enumerate() {
-            if matches!(body.exprs[idx].kind, hir_js::ExprKind::Call(_)) {
-              result.call_signatures[idx] = *sig;
-            }
+        for (expr_id, sig) in flow_result.call_signatures.iter() {
+          let idx = expr_id.0 as usize;
+          if idx < result.call_signatures.len()
+            && matches!(body.exprs[idx].kind, hir_js::ExprKind::Call(_))
+          {
+            result.call_signatures[idx] = *sig;
           }
         }
         if flow_result.pat_types.len() == result.pat_types.len() {

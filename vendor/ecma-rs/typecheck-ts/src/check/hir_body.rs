@@ -7520,6 +7520,49 @@ pub fn check_body_with_env_with_bindings_strict_native(
   checker.into_result()
 }
 
+pub(crate) struct FlowBodyCheckTables {
+  pub(crate) expr_types: Vec<TypeId>,
+  pub(crate) pat_types: Vec<TypeId>,
+  pub(crate) return_types: Vec<TypeId>,
+  pub(crate) diagnostics: Vec<Diagnostic>,
+  /// Call/construct expressions evaluated by the flow checker, along with the
+  /// final resolved signature (if any).
+  ///
+  /// Expressions not present in this list were not evaluated by the flow checker
+  /// (e.g. unreachable blocks) and should not overwrite the base checker output.
+  pub(crate) call_signatures: Vec<(ExprId, Option<SignatureId>)>,
+}
+
+pub(crate) fn check_body_with_env_tables_with_bindings(
+  body_id: BodyId,
+  body: &Body,
+  names: &NameInterner,
+  file: FileId,
+  _source: &str,
+  store: Arc<TypeStore>,
+  initial: &HashMap<NameId, TypeId>,
+  flow_bindings: Option<&FlowBindings>,
+  relate: RelateCtx,
+  ref_expander: Option<&dyn types_ts_interned::RelateTypeExpander>,
+  strict_native: bool,
+) -> FlowBodyCheckTables {
+  let mut checker = FlowBodyChecker::new(
+    body_id,
+    body,
+    names,
+    Arc::clone(&store),
+    file,
+    initial,
+    flow_bindings,
+    relate,
+    ref_expander,
+    strict_native,
+  );
+  checker.run();
+  codes::normalize_diagnostics(&mut checker.diagnostics);
+  checker.into_tables()
+}
+
 enum Reference {
   Ident {
     name: FlowBindingId,
@@ -7565,8 +7608,7 @@ struct FlowBodyChecker<'a> {
   relate: RelateCtx<'a>,
   instantiation_cache: InstantiationCache,
   expr_types: Vec<TypeId>,
-  call_signatures: Vec<Option<SignatureId>>,
-  call_signature_conflicts: Vec<bool>,
+  call_signatures: HashMap<ExprId, CallSignatureState>,
   optional_chain_exec_types: Vec<Option<TypeId>>,
   pat_types: Vec<TypeId>,
   expr_spans: Vec<TextRange>,
@@ -7581,6 +7623,17 @@ struct FlowBodyChecker<'a> {
   initial: HashMap<FlowBindingId, TypeId>,
   param_bindings: HashSet<BindingKey>,
   bindings: BindingTable,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CallSignatureState {
+  /// No signature has been recorded yet.
+  Unresolved,
+  /// A single signature was selected for all evaluated paths so far.
+  Resolved(SignatureId),
+  /// Multiple distinct signatures were observed; treat the call-site signature
+  /// as unknown and do not record a specific overload.
+  Conflict,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -8272,8 +8325,7 @@ impl<'a> FlowBodyChecker<'a> {
   ) -> Self {
     let prim = store.primitive_ids();
     let expr_types = vec![prim.unknown; body.exprs.len()];
-    let call_signatures = vec![None; body.exprs.len()];
-    let call_signature_conflicts = vec![false; body.exprs.len()];
+    let call_signatures = HashMap::new();
     let optional_chain_exec_types = vec![None; body.exprs.len()];
     let mut bindings = BindingCollector::collect(body, flow_bindings);
     let mut pat_types = vec![prim.unknown; body.pats.len()];
@@ -8330,7 +8382,6 @@ impl<'a> FlowBodyChecker<'a> {
       instantiation_cache: InstantiationCache::default(),
       expr_types,
       call_signatures,
-      call_signature_conflicts,
       optional_chain_exec_types,
       pat_types,
       expr_spans,
@@ -8349,15 +8400,44 @@ impl<'a> FlowBodyChecker<'a> {
   }
 
   fn into_result(self) -> BodyCheckResult {
+    let mut call_signatures = vec![None; self.body.exprs.len()];
+    for (expr, state) in self.call_signatures.into_iter() {
+      if let CallSignatureState::Resolved(sig) = state {
+        if let Some(slot) = call_signatures.get_mut(expr.0 as usize) {
+          *slot = Some(sig);
+        }
+      }
+    }
     BodyCheckResult {
       body: self.body_id,
       expr_types: self.expr_types,
-      call_signatures: self.call_signatures,
+      call_signatures,
       pat_types: self.pat_types,
       expr_spans: self.expr_spans,
       pat_spans: self.pat_spans,
       diagnostics: self.diagnostics,
       return_types: self.return_types,
+    }
+  }
+
+  fn into_tables(self) -> FlowBodyCheckTables {
+    let call_signatures = self
+      .call_signatures
+      .into_iter()
+      .map(|(expr, state)| {
+        let sig = match state {
+          CallSignatureState::Resolved(sig) => Some(sig),
+          CallSignatureState::Unresolved | CallSignatureState::Conflict => None,
+        };
+        (expr, sig)
+      })
+      .collect();
+    FlowBodyCheckTables {
+      expr_types: self.expr_types,
+      pat_types: self.pat_types,
+      return_types: self.return_types,
+      diagnostics: self.diagnostics,
+      call_signatures,
     }
   }
 
@@ -9915,20 +9995,26 @@ impl<'a> FlowBodyChecker<'a> {
     }
 
     if let Some(sig_id) = resolution.signature.or(resolution.contextual_signature) {
-      let idx = expr_id.0 as usize;
-      if idx < self.call_signatures.len() && !self.call_signature_conflicts[idx] {
-        match &mut self.call_signatures[idx] {
-          None => {
-            self.call_signatures[idx] = Some(sig_id);
-          }
-          Some(existing) => {
-            if *existing != sig_id {
-              self.call_signatures[idx] = None;
-              self.call_signature_conflicts[idx] = true;
-            }
+      let entry = self
+        .call_signatures
+        .entry(expr_id)
+        .or_insert(CallSignatureState::Unresolved);
+      match entry {
+        CallSignatureState::Unresolved => {
+          *entry = CallSignatureState::Resolved(sig_id);
+        }
+        CallSignatureState::Resolved(existing) => {
+          if *existing != sig_id {
+            *entry = CallSignatureState::Conflict;
           }
         }
+        CallSignatureState::Conflict => {}
       }
+    } else {
+      self
+        .call_signatures
+        .entry(expr_id)
+        .or_insert(CallSignatureState::Unresolved);
     }
 
     let mut ret_ty = resolution.return_type;

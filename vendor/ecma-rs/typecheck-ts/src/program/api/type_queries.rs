@@ -322,6 +322,24 @@ impl Program {
     }
   }
 
+  /// Lookup an interned signature by [`types_ts_interned::SignatureId`].
+  pub fn signature(&self, sig: tti::SignatureId) -> Option<tti::Signature> {
+    match self.signature_fallible(sig) {
+      Ok(sig) => sig,
+      Err(fatal) => {
+        self.record_fatal(fatal);
+        None
+      }
+    }
+  }
+
+  pub fn signature_fallible(&self, sig: tti::SignatureId) -> Result<Option<tti::Signature>, FatalError> {
+    self.with_interned_state(|state| {
+      let store = Arc::clone(&state.store);
+      Ok(store.contains_signature_id(sig).then(|| store.signature(sig)))
+    })
+  }
+
   pub fn call_signatures_fallible(&self, ty: TypeId) -> Result<Vec<SignatureInfo>, FatalError> {
     self.with_interned_state(|state| {
       let store = Arc::clone(&state.store);

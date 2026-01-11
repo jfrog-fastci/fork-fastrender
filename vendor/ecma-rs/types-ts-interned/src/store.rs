@@ -519,6 +519,10 @@ impl TypeStore {
       .expect("SignatureId not interned")
   }
 
+  pub fn contains_signature_id(&self, id: SignatureId) -> bool {
+    self.signatures.contains_key(&id)
+  }
+
   pub fn intern_signature(&self, signature: Signature) -> SignatureId {
     let mut signature = signature;
     for param in signature.params.iter_mut() {

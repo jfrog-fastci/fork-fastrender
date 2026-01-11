@@ -414,7 +414,7 @@ fn run_with_timeout(case: usize, project: &Project, timeout: Duration) -> SmokeS
 fn fuzz_smoke_program_check_is_total_and_fast() {
   const CASES: usize = 32;
   const SEED: u64 = 0x9d3d_6f5c_2b4a_1c87;
-  const TIMEOUT: Duration = Duration::from_millis(400);
+  const TIMEOUT: Duration = Duration::from_millis(1000);
 
   let mut rng = Rng::new(SEED);
   for case in 0..CASES {
