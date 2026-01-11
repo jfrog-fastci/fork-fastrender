@@ -1,5 +1,6 @@
 use runtime_native::buffer::{global_backing_store_allocator, ArrayBuffer, ArrayBufferError, BackingStoreAllocator};
 use runtime_native::io::{IoLimitError, IoLimits, IoLimiter, IoOp, IoVecRange, PinnedIoVec};
+use runtime_native::Uint8Array;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
@@ -223,6 +224,47 @@ fn pin_iovecs_charges_deduped_alloc_len_per_backing_store() {
   let iovecs = PinnedIoVec::try_from_ranges(&ranges).unwrap();
   let op = IoOp::pin_iovecs(&limiter, iovecs).unwrap();
   assert_eq!(limiter.counters().pinned_bytes_current, 8);
+  drop(op);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
+}
+
+#[test]
+fn pin_uint8_array_range_converts_view_relative_range_and_charges_alloc_len() {
+  let limiter = Arc::new(IoLimiter::new(IoLimits {
+    max_pinned_bytes: 2048,
+    max_inflight_ops: 8,
+    max_pinned_bytes_per_op: None,
+  }));
+
+  // Adopt an aligned Vec with capacity > len so `alloc_len()` differs from `byte_len()`.
+  let bytes = {
+    let mut chosen = None;
+    for _ in 0..64 {
+      let mut v = Vec::with_capacity(1024);
+      v.extend_from_slice(&[0u8; 16]);
+      if (v.as_ptr() as usize) % runtime_native::buffer::BACKING_STORE_MIN_ALIGN == 0 {
+        chosen = Some(v);
+        break;
+      }
+    }
+    chosen.expect("failed to allocate a Vec<u8> with min backing store alignment")
+  };
+
+  let buf = ArrayBuffer::from_bytes(bytes).unwrap();
+  assert_eq!(buf.byte_len(), 16);
+  let alloc_len = buf.backing_store_handle().unwrap().alloc_len();
+  assert_eq!(alloc_len, 1024);
+
+  let view = Uint8Array::view(&buf, 4, 8).unwrap();
+  let op = IoOp::pin_uint8_array_range(&limiter, &view, 2..6).unwrap();
+
+  assert_eq!(limiter.counters().pinned_bytes_current, alloc_len);
+  assert_eq!(op.bufs().len(), 1);
+  assert_eq!(op.bufs()[0].len(), 4);
+
+  let expected_ptr = unsafe { buf.data_ptr().unwrap().add(4 + 2) } as *const u8;
+  assert_eq!(op.bufs()[0].as_ptr(), expected_ptr);
+
   drop(op);
   assert_eq!(limiter.counters().pinned_bytes_current, 0);
 }
