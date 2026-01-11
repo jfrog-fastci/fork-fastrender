@@ -203,16 +203,20 @@ pub fn simplify_phis(cfg: &mut Cfg) -> bool {
       if inst.labels.is_empty() {
         let tgt = inst.tgts[0];
         if *use_counts.get(&tgt).unwrap_or(&0) > 0 {
-          let mut assign = Inst::var_assign(tgt, Arg::Const(Const::Undefined));
-          assign.meta = inst.meta.clone();
-          lowered.push(assign);
+          let mut lowered_inst = Inst::var_assign(tgt, Arg::Const(Const::Undefined));
+          lowered_inst
+            .meta
+            .copy_result_var_metadata_from(&inst.meta);
+          lowered.push(lowered_inst);
         }
         changed = true;
       } else if inst.labels.len() == 1 {
         let tgt = inst.tgts[0];
-        let mut assign = Inst::var_assign(tgt, inst.args.pop().unwrap());
-        assign.meta = inst.meta.clone();
-        lowered.push(assign);
+        let mut lowered_inst = Inst::var_assign(tgt, inst.args.pop().unwrap());
+        lowered_inst
+          .meta
+          .copy_result_var_metadata_from(&inst.meta);
+        lowered.push(lowered_inst);
         changed = true;
       } else {
         if inst.labels.len() != original_labels_len || inst.args.len() != original_args_len {

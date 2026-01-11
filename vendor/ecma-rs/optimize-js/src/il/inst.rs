@@ -257,6 +257,37 @@ pub struct InstMeta {
 }
 
 impl InstMeta {
+  /// Clears metadata that describes the instruction's *result value* (i.e. the
+  /// value stored in `Inst::tgts[0]`).
+  ///
+  /// This is useful when an optimization keeps an instruction for its effects
+  /// (e.g. a `Call`) but removes its target variable. In that case we must
+  /// reset any result-value annotations to avoid leaving stale type/ownership
+  /// data attached to an instruction that no longer defines a value.
+  pub fn clear_result_var_metadata(&mut self) {
+    self.result_type = TypeInfo::default();
+    self.type_id = None;
+    self.hir_expr = None;
+    self.type_summary = None;
+    self.excludes_nullish = false;
+    self.ownership = OwnershipState::Unknown;
+    self.result_escape = None;
+  }
+
+  /// Copies metadata that describes a result value from another instruction.
+  ///
+  /// This is intended for SSA/CFG rewrites that replace one value-defining
+  /// instruction with another (e.g. Phi lowering).
+  pub fn copy_result_var_metadata_from(&mut self, src: &Self) {
+    self.result_type = src.result_type.clone();
+    self.type_id = src.type_id;
+    self.hir_expr = src.hir_expr;
+    self.type_summary = src.type_summary;
+    self.excludes_nullish = src.excludes_nullish;
+    self.ownership = src.ownership;
+    self.result_escape = src.result_escape;
+  }
+
   pub fn set_type_id(&mut self, type_id: Option<TypeId>) {
     self.type_id = type_id;
   }

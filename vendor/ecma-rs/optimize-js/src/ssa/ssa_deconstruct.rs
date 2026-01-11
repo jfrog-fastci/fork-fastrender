@@ -19,10 +19,15 @@ pub fn deconstruct_ssa(cfg: &mut Cfg, c_label: &mut Counter) {
     let bblock = cfg.bblocks.get_mut(label);
     let mut new_bblocks_by_parent = BTreeMap::<u32, NewBblock>::new();
     while bblock.first().is_some_and(|i| i.t == InstTyp::Phi) {
-      let removed_phi_inst = bblock.remove(0);
-      let tgt = removed_phi_inst.tgts[0];
-      let phi_meta = removed_phi_inst.meta.clone();
-      for (parent, value) in zip(removed_phi_inst.labels, removed_phi_inst.args) {
+      let Inst {
+        tgts,
+        labels,
+        args,
+        meta,
+        ..
+      } = bblock.remove(0);
+      let tgt = tgts[0];
+      for (parent, value) in zip(labels, args) {
         new_bblocks_by_parent
           .entry(parent)
           .or_insert_with(|| NewBblock {
@@ -33,9 +38,9 @@ pub fn deconstruct_ssa(cfg: &mut Cfg, c_label: &mut Counter) {
           })
           .insts
           .push({
-            let mut assign = Inst::var_assign(tgt, value);
-            assign.meta = phi_meta.clone();
-            assign
+            let mut inst = Inst::var_assign(tgt, value);
+            inst.meta.copy_result_var_metadata_from(&meta);
+            inst
           });
       }
     }
