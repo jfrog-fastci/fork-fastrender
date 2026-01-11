@@ -659,18 +659,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       }
       typecheck_ts::DefKind::Import(import) => match import.target {
         typecheck_ts::ImportTarget::File(target_file) => {
-          let Some(target) = self
-            .program
-            .exports_of(target_file)
-            .get(import.original.as_str())
-            .and_then(|entry| entry.def)
-          else {
-            return Err(vec![Diagnostic::error(
-              "NJS0141",
-              format!("failed to resolve imported binding `{}`", import.original),
-              span,
-            )]);
-          };
+          let target = self.resolve_export_def(target_file, import.original.as_str(), span)?;
           self.ensure_global_var(target, span)
         }
         _ => Err(vec![Diagnostic::error(
@@ -685,6 +674,30 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
         span,
       )]),
     }
+  }
+
+  fn resolve_export_def(&self, file: FileId, name: &str, span: Span) -> Result<DefId, Vec<Diagnostic>> {
+    let (symbol, local_def) = {
+      let exports = self.program.exports_of(file);
+      let Some(entry) = exports.get(name) else {
+        return Err(vec![Diagnostic::error(
+          "NJS0141",
+          format!("failed to resolve imported binding `{name}`"),
+          span,
+        )]);
+      };
+      (entry.symbol, entry.def)
+    };
+
+    local_def
+      .or_else(|| self.program.symbol_info(symbol).and_then(|info| info.def))
+      .ok_or_else(|| {
+        vec![Diagnostic::error(
+          "NJS0141",
+          format!("failed to resolve imported binding `{name}`"),
+          span,
+        )]
+      })
   }
 
   fn resolve_import_def(&self, def: DefId, span: Span) -> Result<DefId, Vec<Diagnostic>> {
@@ -713,19 +726,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
       match import.target {
         typecheck_ts::ImportTarget::File(target_file) => {
-          let Some(target) = self
-            .program
-            .exports_of(target_file)
-            .get(import.original.as_str())
-            .and_then(|entry| entry.def)
-          else {
-            return Err(vec![Diagnostic::error(
-              "NJS0141",
-              format!("failed to resolve imported binding `{}`", import.original),
-              span,
-            )]);
-          };
-          cur = target;
+          cur = self.resolve_export_def(target_file, import.original.as_str(), span)?;
         }
         _ => {
           return Err(vec![Diagnostic::error(

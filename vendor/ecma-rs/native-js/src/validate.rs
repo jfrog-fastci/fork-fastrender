@@ -607,10 +607,12 @@ fn resolve_import_def(program: &Program, def: typecheck_ts::DefId) -> Option<typ
     };
     match import.target {
       typecheck_ts::ImportTarget::File(target_file) => {
-        cur = program
-          .exports_of(target_file)
-          .get(import.original.as_str())
-          .and_then(|entry| entry.def)?;
+        let (symbol, local_def) = {
+          let exports = program.exports_of(target_file);
+          let entry = exports.get(import.original.as_str())?;
+          (entry.symbol, entry.def)
+        };
+        cur = local_def.or_else(|| program.symbol_info(symbol).and_then(|info| info.def))?;
       }
       _ => return None,
     }
