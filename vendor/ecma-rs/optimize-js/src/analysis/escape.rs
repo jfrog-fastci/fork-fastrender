@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Escape classification for allocations local to a function.
 ///
-/// This analysis is intraprocedural and conservative. It focuses on allocations created by the
-/// internal literal builtins (`__optimize_js_array`, `__optimize_js_object`, `__optimize_js_regex`)
-/// and determines whether they remain local to the function or may become reachable outside it.
+/// This analysis is intraprocedural and conservative. It focuses on allocations created by a small
+/// set of internal marker builtins (e.g. `__optimize_js_object`) and determines whether they remain
+/// local to the function or may become reachable outside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -45,14 +45,7 @@ impl EscapeState {
           Unknown
         }
       }
-      (ArgEscape(_), NoEscape) | (NoEscape, ArgEscape(_)) => {
-        if self == NoEscape {
-          other
-        } else {
-          self
-        }
-      }
-      (NoEscape, NoEscape) => NoEscape,
+      (NoEscape, x) | (x, NoEscape) => x,
     }
   }
 
@@ -63,9 +56,35 @@ impl EscapeState {
 
 /// Escape results keyed by SSA/temp variable ID.
 ///
-/// For this initial pass we primarily populate entries for allocation-defining temps and any temps
-/// that may alias an escaping allocation.
+/// This is the (legacy) API used by other intraprocedural analyses. It contains entries for all
+/// allocation-defining temps, plus any temps that may alias an escaping allocation.
 pub type EscapeResult = BTreeMap<u32, EscapeState>;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EscapeResults {
+  alloc_states: BTreeMap<u32, EscapeState>,
+}
+
+impl EscapeResults {
+  pub fn escape_state(&self, alloc: u32) -> Option<EscapeState> {
+    self.alloc_states.get(&alloc).copied()
+  }
+
+  pub fn iter(&self) -> impl Iterator<Item = (u32, EscapeState)> + '_ {
+    self
+      .alloc_states
+      .iter()
+      .map(|(&alloc, &state)| (alloc, state))
+  }
+
+  pub fn len(&self) -> usize {
+    self.alloc_states.len()
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.alloc_states.is_empty()
+  }
+}
 
 fn cfg_labels_sorted(cfg: &Cfg) -> Vec<u32> {
   let mut labels = cfg.graph.labels_sorted();
@@ -75,13 +94,33 @@ fn cfg_labels_sorted(cfg: &Cfg) -> Vec<u32> {
   labels
 }
 
-fn is_internal_alloc_builder(callee: &Arg) -> bool {
-  let Arg::Builtin(name) = callee else {
-    return false;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkerCall {
+  Object,
+  Array,
+  Regex,
+  Template,
+  New,
+}
+
+fn marker_call(callee: &Arg) -> Option<MarkerCall> {
+  let Arg::Builtin(path) = callee else {
+    return None;
   };
+  Some(match path.as_str() {
+    "__optimize_js_object" => MarkerCall::Object,
+    "__optimize_js_array" => MarkerCall::Array,
+    "__optimize_js_regex" => MarkerCall::Regex,
+    "__optimize_js_template" => MarkerCall::Template,
+    "__optimize_js_new" => MarkerCall::New,
+    _ => return None,
+  })
+}
+
+fn marker_call_is_safe(callee: &Arg) -> bool {
   matches!(
-    name.as_str(),
-    "__optimize_js_array" | "__optimize_js_object" | "__optimize_js_regex"
+    marker_call(callee),
+    Some(MarkerCall::Object | MarkerCall::Array | MarkerCall::Regex | MarkerCall::Template)
   )
 }
 
@@ -106,6 +145,46 @@ fn collect_param_vars(cfg: &Cfg) -> BTreeSet<u32> {
   uses.into_iter().filter(|v| !defs.contains(v)).collect()
 }
 
+fn array_alloc_init_values(args: &[Arg], spreads: &[usize]) -> Vec<Arg> {
+  let mut out = Vec::new();
+  for (idx, arg) in args.iter().enumerate() {
+    if matches!(arg, Arg::Builtin(path) if path == "__optimize_js_array_hole") {
+      continue;
+    }
+    // Conservatively treat spreads as storing the spread source into the container. This
+    // over-approximates reachability, but ensures that values reachable from the spread source are
+    // also considered reachable from the new container (e.g. `[...a]` may copy references stored
+    // inside `a`).
+    let _is_spread = spreads.contains(&(idx + 2));
+    out.push(arg.clone());
+  }
+  out
+}
+
+fn object_alloc_init_values(args: &[Arg]) -> Vec<Arg> {
+  let mut out = Vec::new();
+  for chunk in args.chunks(3) {
+    if chunk.len() != 3 {
+      continue;
+    }
+    let Arg::Builtin(marker) = &chunk[0] else {
+      continue;
+    };
+    match marker.as_str() {
+      "__optimize_js_object_prop" | "__optimize_js_object_prop_computed" => {
+        out.push(chunk[2].clone());
+      }
+      "__optimize_js_object_spread" => {
+        // Conservatively treat object spread as storing the spread source into the container so
+        // that values reachable from the source are treated as reachable from the result.
+        out.push(chunk[1].clone());
+      }
+      _ => {}
+    }
+  }
+  out
+}
+
 #[derive(Default)]
 struct LocalAllocFlowFacts {
   /// Allocation-defining SSA temps (allocation id = temp).
@@ -120,9 +199,7 @@ struct LocalAllocFlowFacts {
   var_assigns: Vec<(u32, Arg)>,
   /// `tgt = phi(args...)`
   phis: Vec<(u32, Vec<Arg>)>,
-  /// `tgt = __optimize_js_array/object/regex(...args)`
-  ///
-  /// The args are treated as values stored into the newly allocated container.
+  /// Values stored into the newly allocated container at allocation time.
   alloc_inits: Vec<(u32, Vec<Arg>)>,
   /// `obj[prop] = val` (prop ignored; field-insensitive)
   prop_assigns: Vec<(Arg, Arg)>,
@@ -140,16 +217,30 @@ fn collect_local_alloc_flow_facts(cfg: &Cfg) -> LocalAllocFlowFacts {
     for inst in block.iter() {
       match inst.t {
         InstTyp::Call => {
-          let (tgt, callee, _this, args, _spreads) = inst.as_call();
+          let (tgt, callee, _this, args, spreads) = inst.as_call();
           let Some(tgt) = tgt else {
             continue;
           };
-          if !is_internal_alloc_builder(callee) {
+          let Some(marker) = marker_call(callee) else {
             facts.external_defs.insert(tgt);
             continue;
-          }
+          };
           facts.alloc_vars.insert(tgt);
-          facts.alloc_inits.push((tgt, args.to_vec()));
+          match marker {
+            MarkerCall::Object => {
+              let init = object_alloc_init_values(args);
+              if !init.is_empty() {
+                facts.alloc_inits.push((tgt, init));
+              }
+            }
+            MarkerCall::Array => {
+              let init = array_alloc_init_values(args, spreads);
+              if !init.is_empty() {
+                facts.alloc_inits.push((tgt, init));
+              }
+            }
+            MarkerCall::Regex | MarkerCall::Template | MarkerCall::New => {}
+          }
         }
         InstTyp::VarAssign => {
           let (tgt, arg) = inst.as_var_assign();
@@ -301,7 +392,7 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
       }
     }
 
-    // Container initialization: treat internal literal builder args as stored into the result.
+    // Container initialization: treat internal literal builder values as stored into the result.
     for (container, args) in facts.alloc_inits.iter() {
       let entry = stored_into.entry(*container).or_default();
       let before = entry.len();
@@ -382,7 +473,7 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
         }
         InstTyp::Call => {
           let (_tgt, callee, _this, _args, _spreads) = inst.as_call();
-          if is_internal_alloc_builder(callee) {
+          if marker_call_is_safe(callee) {
             continue;
           }
           // Unknown/impure call: conservatively treat any allocation passed as escaping.
@@ -448,7 +539,7 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
     out.insert(
       alloc,
       alloc_states.get(&alloc).copied().unwrap_or(EscapeState::NoEscape),
-      );
+    );
   }
 
   for (&var, allocs) in var_allocs.iter() {
@@ -471,11 +562,29 @@ pub fn analyze_cfg_escapes_with_params(cfg: &Cfg, params: &[u32]) -> EscapeResul
   out
 }
 
+/// Allocation-only escape analysis results.
+///
+/// This is a stable public entry point that returns the escape state for each allocation-defining
+/// temp (as opposed to all temps that may alias an allocation).
+pub fn analyze_escape(cfg: &Cfg) -> EscapeResults {
+  let facts = collect_local_alloc_flow_facts(cfg);
+  let all = analyze_cfg_escapes(cfg);
+
+  let mut alloc_states = BTreeMap::new();
+  for alloc in facts.alloc_vars.iter() {
+    alloc_states.insert(
+      *alloc,
+      all.get(alloc).copied().unwrap_or(EscapeState::NoEscape),
+    );
+  }
+  EscapeResults { alloc_states }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
-  use crate::il::inst::{BinOp, Const, Inst};
+  use crate::il::inst::{Const, Inst};
   use crate::symbol::semantics::SymbolId;
   use parse_js::num::JsNumber;
 
@@ -487,6 +596,7 @@ mod tests {
     }
     for &label in &labels {
       if !graph.contains(label) {
+        // Ensure the node exists even if it has no edges.
         graph.connect(label, label);
         graph.disconnect(label, label);
       }
