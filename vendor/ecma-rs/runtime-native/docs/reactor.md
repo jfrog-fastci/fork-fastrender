@@ -85,6 +85,10 @@ This identity is validated on every `register`/`reregister`/`deregister`. If the
 identity differs (or `fstat` fails with `EBADF`), the entry is treated as stale and removed, and the
 operation proceeds as if the fd was never registered.
 
+Note: this identity is best-effort. It is expected to uniquely identify the typical evented
+descriptors used with the reactor (pipes, sockets, etc.), but it may not distinguish different opens
+of the same inode (e.g. reopening a regular file with the same access mode) on all platforms.
+
 ## Trigger mode: edge-triggered
 
 The reactor is **edge-triggered** on all platforms:
