@@ -46,7 +46,7 @@ bash scripts/cargo_agent.sh install cargo-fuzz
 bash scripts/cargo_agent.sh fuzz run type_graph
 ```
 
-This repo pins a stable toolchain, but the `cargo fuzz` subcommand requires
+This repo pins a stable toolchain, but the `cargo-fuzz` subcommand requires
 nightly-only compiler flags for sanitizer coverage. The workspace config opts
 into `RUSTC_BOOTSTRAP=1` so `bash scripts/cargo_agent.sh fuzz …` works out of
 the box.
