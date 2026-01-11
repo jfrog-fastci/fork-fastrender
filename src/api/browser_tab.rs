@@ -1023,6 +1023,7 @@ impl BrowserTabHost {
       Finished,
       AbortedForNavigation,
       BudgetExhausted,
+      YieldedForAsyncScriptInterleaving,
     }
  
     let outcome = (|| -> Result<Outcome> {
@@ -1249,10 +1250,14 @@ impl BrowserTabHost {
 
             // In real browsers, async external scripts can execute before later parser-inserted
             // scripts when they load quickly (e.g. from cache). FastRender does not have true
-            // background network concurrency, so we give the event loop a chance to service the
-            // async fetch + execution task before resuming parsing. This keeps deterministic
-            // fixtures (especially `file://` tests) aligned with web semantics.
-            let should_spin_for_async = spec.script_type == ScriptType::Classic
+            // background network concurrency, so we yield back to the event loop so the async
+            // fetch + execution tasks can run before we resume parsing.
+            //
+            // Avoid yielding for scripts whose sources are not immediately available. Many tests
+            // register in-memory script sources *after* construction (before running the event
+            // loop), so yielding here would not help interleaving and would instead stall parsing
+            // on a script fetch that is guaranteed to fail.
+            let should_yield_for_async = spec.script_type == ScriptType::Classic
               && spec.src_attr_present
               && spec.async_attr
               && spec
@@ -1262,7 +1267,7 @@ impl BrowserTabHost {
                 .is_some_and(|src| {
                   // Avoid eager network fetches during parsing when the script source is not
                   // immediately available. Many tests register in-memory script sources *after*
-                  // construction (before running the event loop), so only spin for "fast" sources.
+                  // construction (before running the event loop), so only yield for "fast" sources.
                   self
                     .external_script_sources
                     .lock()
@@ -1274,18 +1279,9 @@ impl BrowserTabHost {
                 });
             let base_url_at_discovery = spec.base_url.clone();
 
-            let script_id = with_active_streaming_parser(&state.parser, || {
+            let _script_id = with_active_streaming_parser(&state.parser, || {
               self.register_and_schedule_script(script, spec, base_url_at_discovery, event_loop)
             })?;
-
-            if should_spin_for_async {
-              // Stop spinning if the script has executed or a navigation request was issued.
-              let _ = with_active_streaming_parser(&state.parser, || {
-                event_loop.spin_until(self, self.js_execution_options.event_loop_run_limits, |host| {
-                  host.pending_navigation.is_none() && !host.executed.contains(&script_id)
-                })
-              })?;
-            }
 
             if self.pending_navigation.is_some() {
               // Abort the current parse/execution; the caller will commit the navigation.
@@ -1307,6 +1303,12 @@ impl BrowserTabHost {
             // Sync any DOM mutations from the executed script back into the streaming parser's live
             // DOM before resuming parsing.
             self.sync_host_dom_to_streaming_parser(&mut state)?;
+
+            if should_yield_for_async {
+              // Yield back to the event loop so the async script tasks can run before we parse more
+              // HTML (and potentially discover later parser-inserted scripts).
+              return Ok(Outcome::YieldedForAsyncScriptInterleaving);
+            }
 
             // Note: when parsing is initiated outside the event loop (e.g. HTML-string entry points),
             // we intentionally avoid running pending networking tasks here. This keeps construction
@@ -1359,6 +1361,12 @@ impl BrowserTabHost {
         // Budget exhausted: snapshot parser DOM into the host so other tasks observe the most recent
         // parsed DOM state, then yield back to the event loop.
         self.commit_streaming_parser_dom_snapshot_to_host(&mut state)?;
+        self.streaming_parse = Some(state);
+        Ok(true)
+      }
+      Ok(Outcome::YieldedForAsyncScriptInterleaving) => {
+        // We already committed a DOM snapshot at the `</script>` boundary above; just stash the
+        // parser state and yield so queued async script tasks can run.
         self.streaming_parse = Some(state);
         Ok(true)
       }
@@ -6017,6 +6025,45 @@ mod tests {
     assert!(
       dom_parse_checks.load(Ordering::Relaxed) >= 6,
       "expected cancel callback to be polled during streaming dom parse"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn streaming_parser_yields_for_fast_async_external_scripts_so_they_can_run_before_later_scripts(
+  ) -> Result<()> {
+    // If an async external script is effectively "instant" (file:// or a pre-registered in-memory
+    // source), allow it to run before later parser-inserted scripts even when the HTML would
+    // otherwise parse to completion in a single parse slice. This keeps deterministic fixtures
+    // aligned with browser behavior (async scripts can execute mid-parse when they load quickly).
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = TestExecutor { log: Rc::clone(&log) };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+
+    tab.host.reset_scripting_state(None, ReferrerPolicy::default())?;
+    tab.register_script_source("https://example.com/a.js", "A");
+
+    let html = "<!doctype html><html><body>\
+      <script async src=\"https://example.com/a.js\"></script>\
+      <script>B</script>\
+      </body></html>";
+    let _ = tab.parse_html_streaming_and_schedule_scripts(html, Some("https://example.com/"), &RenderOptions::default())?;
+
+    assert!(
+      log.borrow().is_empty(),
+      "expected streaming parse to yield (not run the event loop) when scheduling fast async scripts"
+    );
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        "script:A".to_string(),
+        "microtask:A".to_string(),
+        "script:B".to_string(),
+        "microtask:B".to_string()
+      ]
     );
     Ok(())
   }
