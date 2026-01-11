@@ -1123,6 +1123,40 @@ mod tests {
     assert!(matches!(err, StackMapError::InvalidConstIndex { .. }));
   }
 
+  #[test]
+  fn invalid_location_kind_errors() {
+    let mut bytes: Vec<u8> = Vec::new();
+    build_header(&mut bytes, 1, 0, 1);
+
+    // Function record.
+    push_u64(&mut bytes, 0x5000); // addr
+    push_u64(&mut bytes, 0); // stack_size
+    push_u64(&mut bytes, 1); // record_count
+
+    // Record.
+    push_u64(&mut bytes, 1); // patchpoint_id
+    push_u32(&mut bytes, 0); // instruction_offset
+    push_u16(&mut bytes, 0); // reserved
+    push_u16(&mut bytes, 1); // num_locations
+
+    // Invalid kind byte.
+    push_u8(&mut bytes, 0xFF);
+    push_u8(&mut bytes, 0);
+    push_u16(&mut bytes, 8);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_i32(&mut bytes, 0);
+
+    // LLVM stackmap v3 aligns the live-out header to 8 bytes after the locations array.
+    align_to_8_with(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    align_to_8_with(&mut bytes, 0);
+
+    let err = StackMap::parse(&bytes).unwrap_err();
+    assert!(matches!(err, StackMapError::InvalidLocationKind(0xFF)));
+  }
+
   fn read_elf64_le_section<'a>(file: &'a [u8], name: &str) -> Option<&'a [u8]> {
     if file.len() < 0x40 {
       return None;
