@@ -7,6 +7,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LtoMode {
+  None,
+  Thin,
+  Full,
+}
+
+impl LtoMode {
+  fn suffix(self) -> &'static str {
+    match self {
+      Self::None => "",
+      Self::Thin => ".thinlto",
+      Self::Full => ".lto",
+    }
+  }
+
+  fn clang_flag(self) -> Option<&'static str> {
+    match self {
+      Self::None => None,
+      Self::Thin => Some("-flto=thin"),
+      Self::Full => Some("-flto=full"),
+    }
+  }
+}
+
 fn command_works(cmd: &str) -> bool {
   Command::new(cmd)
     .arg("--version")
@@ -46,11 +71,11 @@ fn write_file(path: &Path, contents: &str) {
   fs::write(path, contents).unwrap();
 }
 
-fn compile_ir(clang: &str, out_dir: &Path, name: &str, ir: &str, thin_lto: bool) -> PathBuf {
+fn compile_ir(clang: &str, out_dir: &Path, name: &str, ir: &str, lto: LtoMode) -> PathBuf {
   let ll_path = out_dir.join(format!("{name}.ll"));
   write_file(&ll_path, ir);
 
-  let obj_path = out_dir.join(format!("{name}{}.o", if thin_lto { ".thinlto" } else { "" }));
+  let obj_path = out_dir.join(format!("{name}{}.o", lto.suffix()));
   let mut cmd = Command::new(clang);
   cmd.arg("-c")
     .arg("-O2")
@@ -58,19 +83,19 @@ fn compile_ir(clang: &str, out_dir: &Path, name: &str, ir: &str, thin_lto: bool)
     .arg(&ll_path)
     .arg("-o")
     .arg(&obj_path);
-  if thin_lto {
-    cmd.arg("-flto=thin");
+  if let Some(flag) = lto.clang_flag() {
+    cmd.arg(flag);
   }
   run_ok(cmd, &format!("compile {name}.ll"));
   assert!(obj_path.exists(), "missing output object {}", obj_path.display());
   obj_path
 }
 
-fn compile_c(clang: &str, out_dir: &Path, name: &str, c: &str, thin_lto: bool) -> PathBuf {
+fn compile_c(clang: &str, out_dir: &Path, name: &str, c: &str, lto: LtoMode) -> PathBuf {
   let c_path = out_dir.join(format!("{name}.c"));
   write_file(&c_path, c);
 
-  let obj_path = out_dir.join(format!("{name}{}.o", if thin_lto { ".thinlto" } else { "" }));
+  let obj_path = out_dir.join(format!("{name}{}.o", lto.suffix()));
   let mut cmd = Command::new(clang);
   cmd.arg("-c")
     .arg("-O2")
@@ -78,8 +103,8 @@ fn compile_c(clang: &str, out_dir: &Path, name: &str, c: &str, thin_lto: bool) -
     .arg(&c_path)
     .arg("-o")
     .arg(&obj_path);
-  if thin_lto {
-    cmd.arg("-flto=thin");
+  if let Some(flag) = lto.clang_flag() {
+    cmd.arg(flag);
   }
   run_ok(cmd, &format!("compile {name}.c"));
   assert!(obj_path.exists(), "missing output object {}", obj_path.display());
@@ -267,14 +292,14 @@ int main(void) {
 #[derive(Debug, Clone, Copy)]
 struct LinkConfig {
   name: &'static str,
-  thin_lto: bool,
+  lto: LtoMode,
   gc_sections: bool,
   keep_stackmaps: bool,
   icf_all: bool,
 }
 
 #[test]
-fn stackmaps_survive_thinlto_gc_sections_and_icf() {
+fn stackmaps_survive_lto_gc_sections_and_icf() {
   let Some(clang) = find_clang() else {
     eprintln!("skipping: clang-18 not found in PATH");
     return;
@@ -285,58 +310,81 @@ fn stackmaps_survive_thinlto_gc_sections_and_icf() {
   let cfgs: &[LinkConfig] = &[
     LinkConfig {
       name: "baseline",
-      thin_lto: false,
+      lto: LtoMode::None,
       gc_sections: false,
       keep_stackmaps: false,
       icf_all: false,
     },
     LinkConfig {
       name: "gc_keep",
-      thin_lto: false,
+      lto: LtoMode::None,
       gc_sections: true,
       keep_stackmaps: true,
       icf_all: false,
     },
     LinkConfig {
       name: "thinlto_keep",
-      thin_lto: true,
+      lto: LtoMode::Thin,
       gc_sections: false,
       keep_stackmaps: true,
       icf_all: false,
     },
     LinkConfig {
       name: "thinlto_gc_keep",
-      thin_lto: true,
+      lto: LtoMode::Thin,
       gc_sections: true,
       keep_stackmaps: true,
       icf_all: false,
     },
     LinkConfig {
       name: "thinlto_gc_keep_icf",
-      thin_lto: true,
+      lto: LtoMode::Thin,
       gc_sections: true,
       keep_stackmaps: true,
       icf_all: true,
+    },
+    LinkConfig {
+      name: "fulllto_keep",
+      lto: LtoMode::Full,
+      gc_sections: false,
+      keep_stackmaps: true,
+      icf_all: false,
+    },
+    // Note: `--icf=all` under lld 18 + full LTO can produce duplicate callsite PCs in
+    // `.llvm_stackmaps` (two records with the same `function_address + instruction_offset`).
+    //
+    // That is currently rejected by `StackMaps::parse` to avoid ambiguous GC root enumeration.
+    // We therefore only validate ICF under ThinLTO (the production configuration).
+    LinkConfig {
+      name: "fulllto_gc_keep",
+      lto: LtoMode::Full,
+      gc_sections: true,
+      keep_stackmaps: true,
+      icf_all: false,
     },
   ];
 
   let td = tempfile::tempdir().expect("create tempdir");
   let out_dir = td.path();
 
-  let a_o = compile_ir(clang, out_dir, "a", MOD_A, false);
-  let b_o = compile_ir(clang, out_dir, "b", MOD_B, false);
-  let main_o = compile_c(clang, out_dir, "main", MAIN_C, false);
+  let a_o = compile_ir(clang, out_dir, "a", MOD_A, LtoMode::None);
+  let b_o = compile_ir(clang, out_dir, "b", MOD_B, LtoMode::None);
+  let main_o = compile_c(clang, out_dir, "main", MAIN_C, LtoMode::None);
 
-  let a_lto_o = compile_ir(clang, out_dir, "a", MOD_A, true);
-  let b_lto_o = compile_ir(clang, out_dir, "b", MOD_B, true);
-  let main_lto_o = compile_c(clang, out_dir, "main", MAIN_C, true);
+  let a_thin_o = compile_ir(clang, out_dir, "a", MOD_A, LtoMode::Thin);
+  let b_thin_o = compile_ir(clang, out_dir, "b", MOD_B, LtoMode::Thin);
+  let main_thin_o = compile_c(clang, out_dir, "main", MAIN_C, LtoMode::Thin);
+
+  let a_full_o = compile_ir(clang, out_dir, "a", MOD_A, LtoMode::Full);
+  let b_full_o = compile_ir(clang, out_dir, "b", MOD_B, LtoMode::Full);
+  let main_full_o = compile_c(clang, out_dir, "main", MAIN_C, LtoMode::Full);
 
   let script = Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("link")
     .join("stackmaps.ld");
 
   for cfg in cfgs {
-    if (cfg.thin_lto || cfg.icf_all) && !lld {
+    if (cfg.lto != LtoMode::None || cfg.icf_all) && !lld {
       eprintln!("skipping {}: lld not found in PATH", cfg.name);
       continue;
     }
@@ -345,13 +393,13 @@ fn stackmaps_survive_thinlto_gc_sections_and_icf() {
     let mut cmd = Command::new(clang);
     cmd.arg("-no-pie");
 
-    // Match production (clang + lld) when available. ThinLTO/ICF require lld.
-    if lld && (cfg.thin_lto || cfg.keep_stackmaps || cfg.gc_sections || cfg.icf_all) {
+    // Match production (clang + lld) when available. LTO/ICF require lld.
+    if lld && (cfg.lto != LtoMode::None || cfg.keep_stackmaps || cfg.gc_sections || cfg.icf_all) {
       cmd.arg("-fuse-ld=lld");
     }
 
-    if cfg.thin_lto {
-      cmd.arg("-flto=thin");
+    if let Some(flag) = cfg.lto.clang_flag() {
+      cmd.arg(flag);
     }
     if cfg.gc_sections {
       cmd.arg("-Wl,--gc-sections");
@@ -365,11 +413,17 @@ fn stackmaps_survive_thinlto_gc_sections_and_icf() {
 
     cmd.arg("-o").arg(&exe);
 
-    if cfg.thin_lto {
-      cmd.arg(&main_lto_o).arg(&a_lto_o).arg(&b_lto_o);
-    } else {
-      cmd.arg(&main_o).arg(&a_o).arg(&b_o);
-    }
+    match cfg.lto {
+      LtoMode::None => {
+        cmd.arg(&main_o).arg(&a_o).arg(&b_o);
+      }
+      LtoMode::Thin => {
+        cmd.arg(&main_thin_o).arg(&a_thin_o).arg(&b_thin_o);
+      }
+      LtoMode::Full => {
+        cmd.arg(&main_full_o).arg(&a_full_o).arg(&b_full_o);
+      }
+    };
 
     run_ok(cmd, &format!("link {}", cfg.name));
     assert!(exe.exists(), "missing output executable {}", exe.display());
@@ -377,4 +431,3 @@ fn stackmaps_survive_thinlto_gc_sections_and_icf() {
     validate_exe(&exe, cfg.keep_stackmaps);
   }
 }
-
