@@ -393,6 +393,142 @@ fn bigint_builtin_matches_to_bigint_semantics() {
 }
 
 #[test]
+fn bigint_asintn_and_asuintn_match_node_semantics() {
+  let eval_bigint2 = |func: &str, bits: optimize_js::il::inst::Const, value: optimize_js::il::inst::Const| {
+    match maybe_eval_const_builtin_call(func, &[bits, value]) {
+      Some(ConstBigInt(v)) => v,
+      other => panic!("unexpected eval result for {func}: {other:?}"),
+    }
+  };
+
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asUintN",
+      ConstNum(JN(8.0)),
+      ConstBigInt(BigInt::from(257))
+    ),
+    BigInt::from(1)
+  );
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asUintN",
+      ConstStr("8".into()),
+      ConstBigInt(BigInt::from(257))
+    ),
+    BigInt::from(1)
+  );
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asUintN",
+      ConstNum(JN(1.5)),
+      ConstBigInt(BigInt::from(257))
+    ),
+    BigInt::from(1)
+  );
+
+  // Negative fractional bits coerce to -0 => 0.
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asUintN",
+      ConstNum(JN(-0.1)),
+      ConstBigInt(BigInt::from(1))
+    ),
+    BigInt::from(0)
+  );
+
+  // RangeError / TypeError cases should not be folded.
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt.asUintN", &[ConstNum(JN(-1.0)), ConstBigInt(BigInt::from(1))]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt.asUintN", &[ConstBigInt(BigInt::from(8)), ConstBigInt(BigInt::from(1))]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt.asUintN", &[ConstNum(JN(8.0)), ConstNum(JN(1.0))]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt.asUintN", &[ConstNum(JN(8.0)), optimize_js::il::inst::Const::Null]),
+    None
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt.asUintN", &[ConstNum(JN(9007199254740992.0)), ConstBigInt(BigInt::from(1))]),
+    None
+  );
+
+  // Value coercion uses `ToBigInt` (string/bool ok, number/nullish not).
+  assert_eq!(
+    eval_bigint2("BigInt.asUintN", ConstNum(JN(8.0)), ConstStr("1".into())),
+    BigInt::from(1)
+  );
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asUintN",
+      ConstNum(JN(8.0)),
+      optimize_js::il::inst::Const::Bool(true)
+    ),
+    BigInt::from(1)
+  );
+
+  // Avoid compile-time blowups: huge `bits` values fold only when result is the input value.
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asUintN",
+      ConstNum(JN(1e9)),
+      ConstBigInt(BigInt::from(1))
+    ),
+    BigInt::from(1)
+  );
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asIntN",
+      ConstNum(JN(1e9)),
+      ConstBigInt(BigInt::from(-3))
+    ),
+    BigInt::from(-3)
+  );
+  assert_eq!(
+    maybe_eval_const_builtin_call("BigInt.asUintN", &[ConstNum(JN(1e9)), ConstBigInt(BigInt::from(-1))]),
+    None
+  );
+
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asIntN",
+      ConstNum(JN(8.0)),
+      ConstBigInt(BigInt::from(255))
+    ),
+    BigInt::from(-1)
+  );
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asIntN",
+      ConstNum(JN(8.0)),
+      ConstBigInt(BigInt::from(128))
+    ),
+    BigInt::from(-128)
+  );
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asIntN",
+      ConstNum(JN(8.0)),
+      ConstBigInt(BigInt::from(129))
+    ),
+    BigInt::from(-127)
+  );
+  assert_eq!(
+    eval_bigint2(
+      "BigInt.asIntN",
+      ConstNum(JN(8.0)),
+      ConstBigInt(BigInt::from(-1))
+    ),
+    BigInt::from(-1)
+  );
+}
+
+#[test]
 fn string_concatenation_uses_js_to_string_for_numbers() {
   let empty = ConstStr(String::new());
 

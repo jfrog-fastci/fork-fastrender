@@ -113,6 +113,115 @@ fn bigint_is_odd(value: &BigInt) -> bool {
   bytes.first().is_some_and(|b| (b & 1) == 1)
 }
 
+fn coerce_to_index(v: &Const) -> Option<u64> {
+  // https://tc39.es/ecma262/multipage/abstract-operations.html#sec-toindex
+  //
+  // `ToIndex` is basically `ToIntegerOrInfinity(ToNumber(x))`, clamped to:
+  //   0 <= n <= 2^53 - 1
+  // and throwing on ±∞ or out-of-range values.
+  if matches!(v, BigInt(_)) {
+    // `ToNumber(1n)` throws a TypeError.
+    return None;
+  }
+  let n = coerce_to_num(v);
+  if n.is_nan() {
+    return Some(0);
+  }
+  if !n.is_finite() {
+    return None;
+  }
+  let int = n.trunc();
+  if int == 0.0 {
+    // Covers both +0 and -0 (and negative fractional values in (-1, 0)).
+    return Some(0);
+  }
+  if int < 0.0 {
+    return None;
+  }
+  // `ToIndex` rejects values larger than `Number.MAX_SAFE_INTEGER`.
+  if int > 9007199254740991.0 {
+    return None;
+  }
+  Some(int as u64)
+}
+
+fn coerce_to_bigint_for_bigint_bitop(v: &Const) -> Option<BigInt> {
+  // `BigInt.asIntN` / `BigInt.asUintN` use `ToBigInt`, which *does not* accept numbers.
+  match v {
+    BigInt(v) => Some(v.clone()),
+    Bool(v) => Some(BigInt::from(*v as u8)),
+    Str(v) => parse_bigint(v),
+    _ => None,
+  }
+}
+
+fn bigint_fits_signed_bits(value: &BigInt, bits: u64) -> bool {
+  if bits == 0 {
+    return value.is_zero();
+  }
+  if value.is_zero() {
+    return true;
+  }
+
+  let boundary = bits - 1;
+  if value.sign() != Sign::Minus {
+    let (bit_len, _) = bigint_abs_bit_info(value);
+    return (bit_len as u64) <= boundary;
+  }
+
+  let (abs_bit_len, pow2_log2) = bigint_abs_bit_info(value);
+  if (abs_bit_len as u64) <= boundary {
+    return true;
+  }
+  pow2_log2.is_some_and(|k| k as u64 == boundary)
+}
+
+fn bigint_as_uint_n(bits: u64, value: &BigInt) -> Option<BigInt> {
+  if bits == 0 {
+    return Some(BigInt::from(0));
+  }
+
+  // Fast path: if the number is non-negative and already fits in `bits`, the result is itself.
+  if value.sign() != Sign::Minus {
+    let (bit_len, _) = bigint_abs_bit_info(value);
+    if bits >= bit_len as u64 {
+      return Some(value.clone());
+    }
+  }
+
+  // Otherwise we'd need to materialize a `2^bits - 1` mask. Avoid huge allocations.
+  if bits > BIGINT_MAX_RESULT_BITS as u64 {
+    return None;
+  }
+  let bits = bits as usize;
+  let mask = (BigInt::from(1) << bits) - 1;
+  Some(value & mask)
+}
+
+fn bigint_as_int_n(bits: u64, value: &BigInt) -> Option<BigInt> {
+  if bits == 0 {
+    return Some(BigInt::from(0));
+  }
+
+  // Fast path: if the value already fits the signed `bits` range, the conversion is a no-op.
+  if bigint_fits_signed_bits(value, bits) {
+    return Some(value.clone());
+  }
+
+  if bits > BIGINT_MAX_RESULT_BITS as u64 {
+    return None;
+  }
+  let bits = bits as usize;
+  let mask = (BigInt::from(1) << bits) - 1;
+  let unsigned = value & &mask;
+  let sign_bit = BigInt::from(1) << (bits - 1);
+  if unsigned >= sign_bit {
+    Some(unsigned - (BigInt::from(1) << bits))
+  } else {
+    Some(unsigned)
+  }
+}
+
 fn parse_int_digits_to_bigint(digits: &str, radix: u32) -> Option<BigInt> {
   if digits.is_empty() || digits.contains('_') {
     return None;
@@ -751,6 +860,19 @@ pub fn maybe_eval_const_builtin_call(func: &str, args: &[Const]) -> Option<Const
       ("Math.trunc", a) => Num(JN(coerce_to_num(a).trunc())),
       ("Number", BigInt(_)) => return None,
       ("Number", a) => Num(JN(coerce_to_num(a))),
+      _ => return None,
+    }
+    2 => match (func, &args[0], &args[1]) {
+      ("BigInt.asIntN", bits, value) => {
+        let bits = coerce_to_index(bits)?;
+        let value = coerce_to_bigint_for_bigint_bitop(value)?;
+        BigInt(bigint_as_int_n(bits, &value)?)
+      }
+      ("BigInt.asUintN", bits, value) => {
+        let bits = coerce_to_index(bits)?;
+        let value = coerce_to_bigint_for_bigint_bitop(value)?;
+        BigInt(bigint_as_uint_n(bits, &value)?)
+      }
       _ => return None,
     }
     _ => return None,
