@@ -126,8 +126,17 @@ int main(void) {
     fprintf(stderr, "empty .llvm_stackmaps (likely GC'd by the linker)\n");
     return 1;
   }
-
-  unsigned version = (unsigned)__llvm_stackmaps_start[0];
+ 
+  // Linkers may insert alignment padding before the first blob, so don't assume the
+  // first byte in the range is the StackMap header.
+  unsigned version = 0;
+  for (size_t i = 0; i < size; i++) {
+    unsigned b = (unsigned)__llvm_stackmaps_start[i];
+    if (b != 0) {
+      version = b;
+      break;
+    }
+  }
   if (version != 3) {
     fprintf(stderr, "unexpected stackmap version: %u\n", version);
     return 2;
