@@ -40,13 +40,15 @@ declare const Proxy: {
   revocable: (target: object, handler: object) => { proxy: object };
 };
 
-declare const globalThis: {
+interface GlobalThis {
   eval: typeof eval;
   Function: typeof Function;
   Object: typeof Object;
   Reflect: typeof Reflect;
   Proxy: typeof Proxy;
+  globalThis: GlobalThis;
 };
+declare const globalThis: GlobalThis;
 "#;
 
 fn check(source: &str, native_strict: bool) -> (Vec<typecheck_ts::Diagnostic>, FileId) {
@@ -442,6 +444,23 @@ fn native_strict_bans_global_eval_template_literal_computed_property() {
   let source = "globalThis[`eval`](\"1\");";
   let (diagnostics, file_id) = check(source, true);
   let needle = "globalThis[`eval`]";
+  let start = source.find(needle).expect("callee") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_global_eval_via_globalthis_chain() {
+  let source = "globalThis.globalThis[\"eval\"](\"1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "globalThis.globalThis[\"eval\"]";
   let start = source.find(needle).expect("callee") as u32;
   let span = TextRange::new(start, start + needle.len() as u32);
   assert!(

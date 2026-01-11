@@ -105,6 +105,28 @@ pub fn validate_native_strict_body(
     false
   }
 
+  fn expr_is_global_this(
+    body: &Body,
+    expr_id: hir_js::ExprId,
+    global_this_name: hir_js::NameId,
+  ) -> bool {
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return false;
+    };
+    match &expr.kind {
+      ExprKind::Ident(name) => *name == global_this_name,
+      ExprKind::Member(mem) => {
+        if !expr_is_global_this(body, mem.object, global_this_name) {
+          return false;
+        }
+        object_key_is_ident(&mem.property, global_this_name)
+          || object_key_is_string(&mem.property, "globalThis")
+          || object_key_is_literal_string(body, &mem.property, "globalThis")
+      }
+      _ => false,
+    }
+  }
+
   fn expr_is_ident_or_global_this_member(
     body: &Body,
     expr_id: hir_js::ExprId,
@@ -118,10 +140,7 @@ pub fn validate_native_strict_body(
     match &expr.kind {
       ExprKind::Ident(name) => *name == target_name,
       ExprKind::Member(mem) => {
-        let obj_is_global_this = matches!(
-          body.exprs.get(mem.object.0 as usize).map(|e| &e.kind),
-          Some(ExprKind::Ident(name)) if *name == global_this_name
-        );
+        let obj_is_global_this = expr_is_global_this(body, mem.object, global_this_name);
         obj_is_global_this
           && (object_key_is_ident(&mem.property, target_name)
             || object_key_is_string(&mem.property, target_str)
@@ -318,10 +337,8 @@ pub fn validate_native_strict_body(
                     object_key_is_ident(&mem.property, eval_name)
                       || object_key_is_string(&mem.property, "eval")
                       || object_key_is_literal_string(body, &mem.property, "eval");
-                  let obj_is_global_this = matches!(
-                    body.exprs.get(mem.object.0 as usize).map(|e| &e.kind),
-                    Some(ExprKind::Ident(name)) if *name == global_this_name
-                  );
+                  let obj_is_global_this =
+                    expr_is_global_this(body, mem.object, global_this_name);
                   prop_is_eval && obj_is_global_this
               }
               _ => false,
