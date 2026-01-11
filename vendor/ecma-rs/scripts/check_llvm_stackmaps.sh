@@ -3,13 +3,26 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-## GC strategy note
+# Guardrail: this repo standardizes on LLVM's production GC strategy name (`coreclr`).
+# LLVM's demo/reference GC strategy ("statepoint-" + "example") is intentionally *not* checked in
+# to avoid drift between modules and to keep fixture expectations stable.
 #
-# The native toolchain uses LLVM's production GC strategy name: `gc "coreclr"`.
-# This script's minimal IR fixtures use `coreclr` on purpose, but the wider repo
-# may also contain the LLVM reference strategy name (`statepoint-` + `example`) in
-# tests/experiments. That is not a stackmaps retention concern, so we do not
-# enforce a repository-wide policy here.
+# Keep this check in the lightweight CI path (it runs before any LLVM work below).
+gc_demo_strategy="statepoint-"
+gc_demo_strategy="${gc_demo_strategy}example"
+if grep -r --line-number \
+  --exclude='*.md' \
+  --exclude-dir='target' \
+  --exclude-dir='test262' \
+  --exclude-dir='test262-semantic' \
+  --exclude-dir='TypeScript' \
+  --exclude-dir='.git' \
+  --binary-files=without-match \
+  "${gc_demo_strategy}" "${script_dir}/.."; then
+  echo "error: found disallowed LLVM GC strategy name \"${gc_demo_strategy}\" in non-markdown files under vendor/ecma-rs" >&2
+  echo "note: this repo standardizes on gc \"coreclr\"; see vendor/ecma-rs/native-js/docs/llvm_gc_strategy.md" >&2
+  exit 1
+fi
 
 pick_cmd() {
   for c in "$@"; do
