@@ -1,5 +1,6 @@
-use crate::sync::GcAwareMutex;
 use std::sync::Arc;
+
+use crate::sync::GcAwareMutex;
 
 /// Errors produced while attempting to pin buffers for I/O.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -150,5 +151,123 @@ impl Drop for IoPermit {
     debug_assert!(state.inflight_ops_current >= self.inflight_ops);
     state.pinned_bytes_current = state.pinned_bytes_current.saturating_sub(self.pinned_bytes);
     state.inflight_ops_current = state.inflight_ops_current.saturating_sub(self.inflight_ops);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::threading;
+  use crate::threading::ThreadKind;
+  use std::sync::mpsc;
+  use std::time::Duration;
+  use std::time::Instant;
+
+  #[test]
+  fn io_limiter_lock_is_gc_aware() {
+    let _rt = crate::test_util::TestRuntimeGuard::new();
+
+    const TIMEOUT: Duration = Duration::from_secs(2);
+    let limiter = Arc::new(IoLimiter::new(IoLimits::default()));
+
+    std::thread::scope(|scope| {
+      // Thread A holds the limiter state lock.
+      let (a_locked_tx, a_locked_rx) = mpsc::channel::<()>();
+      let (a_release_tx, a_release_rx) = mpsc::channel::<()>();
+
+      // Thread C attempts to read counters while the lock is held.
+      let (c_registered_tx, c_registered_rx) = mpsc::channel::<threading::ThreadId>();
+      let (c_start_tx, c_start_rx) = mpsc::channel::<()>();
+      let (c_done_tx, c_done_rx) = mpsc::channel::<IoCounters>();
+
+      let limiter_a = Arc::clone(&limiter);
+      scope.spawn(move || {
+        threading::register_current_thread(ThreadKind::Worker);
+        let guard = limiter_a.state.lock();
+        a_locked_tx.send(()).unwrap();
+        a_release_rx.recv().unwrap();
+        drop(guard);
+
+        // Cooperatively stop at the safepoint request.
+        crate::rt_gc_safepoint();
+        threading::unregister_current_thread();
+      });
+
+      a_locked_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread A should acquire the limiter lock");
+
+      let limiter_c = Arc::clone(&limiter);
+      scope.spawn(move || {
+        let id = threading::register_current_thread(ThreadKind::Worker);
+        c_registered_tx.send(id).unwrap();
+        c_start_rx.recv().unwrap();
+
+        let counters = limiter_c.counters();
+        c_done_tx.send(counters).unwrap();
+
+        threading::unregister_current_thread();
+      });
+
+      let c_id = c_registered_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should register with the thread registry");
+
+      // Ensure thread C is actively contending on the limiter lock before starting STW.
+      c_start_tx.send(()).unwrap();
+
+      // Wait until thread C is marked NativeSafe (this is what prevents STW deadlocks).
+      let start = Instant::now();
+      loop {
+        let mut native_safe = false;
+        threading::registry::for_each_thread(|t| {
+          if t.id() == c_id {
+            native_safe = t.is_native_safe();
+          }
+        });
+
+        if native_safe {
+          break;
+        }
+        if start.elapsed() > TIMEOUT {
+          panic!("thread C did not enter a GC-safe region while blocked on the limiter lock");
+        }
+        std::thread::yield_now();
+      }
+
+      // Request a stop-the-world GC and ensure it can complete even though thread C is blocked.
+      let stop_epoch = crate::threading::safepoint::rt_gc_try_request_stop_the_world()
+        .expect("stop-the-world should not already be active");
+      assert_eq!(stop_epoch & 1, 1, "stop-the-world epoch must be odd");
+      struct ResumeOnDrop;
+      impl Drop for ResumeOnDrop {
+        fn drop(&mut self) {
+          crate::threading::safepoint::rt_gc_resume_world();
+        }
+      }
+      let _resume = ResumeOnDrop;
+
+      // Let thread A release the lock and reach the safepoint.
+      a_release_tx.send(()).unwrap();
+
+      assert!(
+        crate::threading::safepoint::rt_gc_wait_for_world_stopped_timeout(TIMEOUT),
+        "world failed to stop within timeout; limiter lock contention must not block STW"
+      );
+
+      // Resume the world so the contending lock acquisition can complete.
+      crate::threading::safepoint::rt_gc_resume_world();
+
+      let counters = c_done_rx
+        .recv_timeout(TIMEOUT)
+        .expect("thread C should finish after world is resumed");
+      assert_eq!(
+        counters,
+        IoCounters {
+          pinned_bytes_current: 0,
+          inflight_ops_current: 0,
+        }
+      );
+    });
   }
 }
