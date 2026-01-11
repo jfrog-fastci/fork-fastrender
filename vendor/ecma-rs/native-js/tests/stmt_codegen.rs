@@ -177,3 +177,41 @@ fn shadowing_in_nested_blocks() {
   );
   assert_eq!(value, 31);
 }
+
+#[test]
+fn break_exits_while_loop() {
+  let value = run_main(
+    r#"
+    export function main(): number {
+      let x = 0;
+      while (1) {
+        if (x == 3) {
+          break;
+        }
+        x = x + 1;
+      }
+      return x;
+    }
+    "#,
+  );
+  assert_eq!(value, 3);
+}
+
+#[test]
+fn continue_skips_for_iteration() {
+  let value = run_main(
+    r#"
+    export function main(): number {
+      let sum = 0;
+      for (let i = 0; i < 5; i = i + 1) {
+        if (i == 2) {
+          continue;
+        }
+        sum = sum + i;
+      }
+      return sum;
+    }
+    "#,
+  );
+  assert_eq!(value, 8);
+}

@@ -4,6 +4,7 @@ use hir_js::{
   AssignOp, BinaryOp, ExprId, ExprKind, ForInit, Literal, NameId, PatId, PatKind, StmtId, StmtKind,
   UnaryOp, UpdateOp, VarDecl, VarDeclKind,
 };
+use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
@@ -118,6 +119,7 @@ fn build_ts_main<'ctx>(
     names,
     entry_file,
     locals: LocalEnv::new(),
+    loop_stack: Vec::new(),
   };
 
   let Some(function_meta) = &hir_body.function else {
@@ -219,6 +221,12 @@ impl<'ctx> LocalEnv<'ctx> {
   }
 }
 
+#[derive(Clone, Copy)]
+struct LoopContext<'ctx> {
+  break_bb: BasicBlock<'ctx>,
+  continue_bb: BasicBlock<'ctx>,
+}
+
 struct HirCodegen<'ctx, 'a> {
   context: &'ctx Context,
   builder: Builder<'ctx>,
@@ -230,6 +238,7 @@ struct HirCodegen<'ctx, 'a> {
   names: &'a hir_js::NameInterner,
   entry_file: FileId,
   locals: LocalEnv<'ctx>,
+  loop_stack: Vec<LoopContext<'ctx>>,
 }
 
 impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
@@ -327,9 +336,13 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
         self.codegen_var_decl(&decl, span)?;
         Ok(true)
       }
-      StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Labeled { .. } => Err(vec![
-        Diagnostic::error("NJS0113", "break/continue/labels are not supported yet", span),
-      ]),
+      StmtKind::Break(label) => self.codegen_break(label, span),
+      StmtKind::Continue(label) => self.codegen_continue(label, span),
+      StmtKind::Labeled { .. } => Err(vec![Diagnostic::error(
+        "NJS0113",
+        "labeled statements are not supported yet",
+        span,
+      )]),
       StmtKind::Switch { .. } => Err(vec![Diagnostic::error(
         "NJS0113",
         "`switch` statements are not supported yet",
@@ -361,6 +374,52 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
         span,
       )]),
     }
+  }
+
+  fn codegen_break(&mut self, label: Option<NameId>, span: Span) -> Result<bool, Vec<Diagnostic>> {
+    if let Some(label) = label {
+      let lbl = self.names.resolve(label).unwrap_or("<label>");
+      return Err(vec![Diagnostic::error(
+        "NJS0119",
+        format!("labeled `break` is not supported yet (`break {lbl};`)"),
+        span,
+      )]);
+    }
+    let Some(ctx) = self.loop_stack.last().copied() else {
+      return Err(vec![Diagnostic::error(
+        "NJS0120",
+        "`break` is only supported inside loops",
+        span,
+      )]);
+    };
+    self
+      .builder
+      .build_unconditional_branch(ctx.break_bb)
+      .expect("failed to build break branch");
+    Ok(false)
+  }
+
+  fn codegen_continue(&mut self, label: Option<NameId>, span: Span) -> Result<bool, Vec<Diagnostic>> {
+    if let Some(label) = label {
+      let lbl = self.names.resolve(label).unwrap_or("<label>");
+      return Err(vec![Diagnostic::error(
+        "NJS0121",
+        format!("labeled `continue` is not supported yet (`continue {lbl};`)"),
+        span,
+      )]);
+    }
+    let Some(ctx) = self.loop_stack.last().copied() else {
+      return Err(vec![Diagnostic::error(
+        "NJS0122",
+        "`continue` is only supported inside loops",
+        span,
+      )]);
+    };
+    self
+      .builder
+      .build_unconditional_branch(ctx.continue_bb)
+      .expect("failed to build continue branch");
+    Ok(false)
   }
 
   fn ensure_entry_alloca(&mut self, name: NameId) -> PointerValue<'ctx> {
@@ -484,6 +543,39 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       .expect("failed to build conditional branch");
 
     self.builder.position_at_end(body_bb);
+    self.loop_stack.push(LoopContext {
+      break_bb: end_bb,
+      continue_bb: cond_bb,
+    });
+    let body_fallthrough = self.codegen_stmt(body)?;
+    if body_fallthrough {
+      self
+        .builder
+        .build_unconditional_branch(cond_bb)
+        .expect("failed to build branch");
+    }
+    self.loop_stack.pop();
+
+    self.builder.position_at_end(end_bb);
+    Ok(true)
+  }
+
+  fn codegen_do_while(&mut self, test: ExprId, body: StmtId) -> Result<bool, Vec<Diagnostic>> {
+    let body_bb = self.context.append_basic_block(self.func, "do.body");
+    let cond_bb = self.context.append_basic_block(self.func, "do.cond");
+    let end_bb = self.context.append_basic_block(self.func, "do.end");
+
+    self
+      .builder
+      .build_unconditional_branch(body_bb)
+      .expect("failed to build branch");
+
+    self.loop_stack.push(LoopContext {
+      break_bb: end_bb,
+      continue_bb: cond_bb,
+    });
+
+    self.builder.position_at_end(body_bb);
     let body_fallthrough = self.codegen_stmt(body)?;
     if body_fallthrough {
       self
@@ -492,30 +584,6 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
         .expect("failed to build branch");
     }
 
-    self.builder.position_at_end(end_bb);
-    Ok(true)
-  }
-
-  fn codegen_do_while(&mut self, test: ExprId, body: StmtId) -> Result<bool, Vec<Diagnostic>> {
-    let body_bb = self.context.append_basic_block(self.func, "do.body");
-    self
-      .builder
-      .build_unconditional_branch(body_bb)
-      .expect("failed to build branch");
-
-    self.builder.position_at_end(body_bb);
-    let body_fallthrough = self.codegen_stmt(body)?;
-    if !body_fallthrough {
-      return Ok(false);
-    }
-
-    let cond_bb = self.context.append_basic_block(self.func, "do.cond");
-    let end_bb = self.context.append_basic_block(self.func, "do.end");
-    self
-      .builder
-      .build_unconditional_branch(cond_bb)
-      .expect("failed to build branch");
-
     self.builder.position_at_end(cond_bb);
     let cond_val = self.codegen_expr(test)?;
     let cond_i1 = self.is_truthy_i1(cond_val);
@@ -523,6 +591,8 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       .builder
       .build_conditional_branch(cond_i1, body_bb, end_bb)
       .expect("failed to build conditional branch");
+
+    self.loop_stack.pop();
 
     self.builder.position_at_end(end_bb);
     Ok(true)
@@ -573,6 +643,10 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
       .expect("failed to build conditional branch");
 
     self.builder.position_at_end(body_bb);
+    self.loop_stack.push(LoopContext {
+      break_bb: end_bb,
+      continue_bb: update_bb,
+    });
     let body_fallthrough = self.codegen_stmt(body)?;
     if body_fallthrough {
       self
@@ -580,6 +654,7 @@ impl<'ctx, 'a> HirCodegen<'ctx, 'a> {
         .build_unconditional_branch(update_bb)
         .expect("failed to build branch");
     }
+    self.loop_stack.pop();
 
     self.builder.position_at_end(update_bb);
     if let Some(update) = update {
