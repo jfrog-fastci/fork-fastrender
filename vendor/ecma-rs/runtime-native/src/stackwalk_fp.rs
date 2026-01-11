@@ -214,6 +214,9 @@ fn conservative_scan_frame_words(
 ///
 ///   `derived_new = relocated_base + (derived_old - base_old)`
 ///
+///   Null convention: if either `base_old` or `derived_old` is `0` (or if the GC
+///   relocates `base` to `0`), the derived slot is written as `0`.
+/// 
 /// ## Statepoint-oriented walking
 ///
 /// This walker is statepoint-oriented: the return address stored in the current
@@ -487,7 +490,14 @@ fn enumerate_roots_for_frame(
   // the base value and update it after the base has been relocated by the
   // callback.
   let mut base_slots: Vec<u64> = Vec::with_capacity(statepoint.gc_pair_count());
-  let mut derived_fixups: Vec<(u64, u64, i64)> = Vec::new(); // (base_slot, derived_slot, delta)
+  // (base_slot, derived_slot, delta, force_null)
+  //
+  // `force_null` is used to preserve `null` derived values:
+  // - `derived_old == 0` must remain `0` after relocation (not `new_base + (0 - old_base)`),
+  // - `base_old == 0` implies the derived pointer is meaningless (treat as null),
+  // - if the GC writes `0` into the relocated base slot (should not happen, but stay safe), derived
+  //   becomes null too.
+  let mut derived_fixups: Vec<(u64, u64, i64, bool)> = Vec::new();
   for pair in statepoint.gc_pairs() {
     let base = &pair.base;
     let derived = &pair.derived;
@@ -500,21 +510,25 @@ fn enumerate_roots_for_frame(
     if base_slot != derived_slot {
       let base_val = unsafe { read_u64(base_slot) };
       let derived_val = unsafe { read_u64(derived_slot) };
-      let delta_i128 = (derived_val as i128) - (base_val as i128);
-      let delta = i64::try_from(delta_i128).map_err(|_| WalkError::DerivedPointerDeltaOverflow {
-        return_addr: caller_ra,
-        base_val,
-        derived_val,
-      })?;
-      derived_fixups.push((base_slot, derived_slot, delta));
+      if base_val == 0 || derived_val == 0 {
+        derived_fixups.push((base_slot, derived_slot, 0, true));
+      } else {
+        let delta_i128 = (derived_val as i128) - (base_val as i128);
+        let delta = i64::try_from(delta_i128).map_err(|_| WalkError::DerivedPointerDeltaOverflow {
+          return_addr: caller_ra,
+          base_val,
+          derived_val,
+        })?;
+        derived_fixups.push((base_slot, derived_slot, delta, false));
+      }
     }
   }
   base_slots.sort_unstable();
   base_slots.dedup();
 
   // Deterministic ordering + avoid double-updating the same derived slot.
-  derived_fixups.sort_unstable_by_key(|(base, derived, _)| (*base, *derived));
-  derived_fixups.dedup_by_key(|(base, derived, _)| (*base, *derived));
+  derived_fixups.sort_unstable_by_key(|(base, derived, _, _)| (*base, *derived));
+  derived_fixups.dedup_by_key(|(base, derived, _, _)| (*base, *derived));
 
   let mut fixup_idx = 0usize;
   for base_slot in base_slots {
@@ -530,14 +544,18 @@ fn enumerate_roots_for_frame(
 
     let relocated_base_val = unsafe { read_u64(base_slot) };
     while fixup_idx < derived_fixups.len() && derived_fixups[fixup_idx].0 == base_slot {
-      let (_base_slot, derived_slot, delta) = derived_fixups[fixup_idx];
-      let new_derived =
-        add_signed_u64_i64(relocated_base_val, delta).ok_or(WalkError::DerivedPointerRelocationOverflow {
-          return_addr: caller_ra,
-          base_val: relocated_base_val,
-          delta,
-        })?;
-      unsafe { write_u64(derived_slot, new_derived) };
+      let (_base_slot, derived_slot, delta, force_null) = derived_fixups[fixup_idx];
+      if force_null || relocated_base_val == 0 {
+        unsafe { write_u64(derived_slot, 0) };
+      } else {
+        let new_derived = add_signed_u64_i64(relocated_base_val, delta)
+          .ok_or(WalkError::DerivedPointerRelocationOverflow {
+            return_addr: caller_ra,
+            base_val: relocated_base_val,
+            delta,
+          })?;
+        unsafe { write_u64(derived_slot, new_derived) };
+      }
       fixup_idx += 1;
     }
   }

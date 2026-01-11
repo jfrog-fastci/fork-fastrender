@@ -178,6 +178,74 @@ fn derived_pointers_are_relocated_from_base() {
   assert_eq!(derived_after, (base_val + 0x1000) + delta);
 }
 
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn null_derived_pointers_remain_null_after_base_relocation() {
+  use std::collections::BTreeSet;
+
+  let bytes = build_stackmaps_with_derived_pointer();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+
+  let (callsite_ra, callsite) = stackmaps.iter().next().expect("callsite");
+  let stack_size = callsite.stack_size;
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  // x86_64 FP_RECORD_SIZE=8.
+  let fp_delta = (stack_size - 8) as usize;
+  let caller_sp = align_up(base + 256, 16);
+  let caller_fp = caller_sp + fp_delta;
+  let start_fp = align_up(base + 128, 16);
+
+  unsafe {
+    write_u64(start_fp + 0, caller_fp as u64);
+    write_u64(start_fp + 8, callsite_ra);
+
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+
+  // Stackmap uses:
+  //   base    = [SP + 0]
+  //   derived = [SP + 8]
+  //
+  // Derived is intentionally null; it must remain null after base relocation.
+  let base_val = Box::into_raw(Box::new(0u8)) as u64;
+  unsafe {
+    write_u64(caller_sp + 0, base_val);
+    write_u64(caller_sp + 8, 0);
+  }
+
+  let mut visited = BTreeSet::<usize>::new();
+  unsafe {
+    walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
+      visited.insert(slot as usize);
+
+      // Relocate the base slot in-place.
+      let slot_ptr = slot as *mut *mut u8;
+      let old = slot_ptr.read() as u64;
+      let new = old + 0x1000;
+      slot_ptr.write(new as *mut u8);
+    })
+    .expect("walk");
+  }
+
+  assert_eq!(visited.len(), 1, "expected to visit only the base root slot");
+  assert!(
+    visited.contains(&(caller_sp + 0)),
+    "expected to visit base slot [SP+0]={:#x}, visited={visited:?}",
+    caller_sp
+  );
+
+  let base_after = unsafe { read_u64(caller_sp + 0) };
+  let derived_after = unsafe { read_u64(caller_sp + 8) };
+  assert_eq!(base_after, base_val + 0x1000);
+  assert_eq!(derived_after, 0, "null derived pointer must remain null");
+}
+
 fn align_up(v: usize, align: usize) -> usize {
   (v + (align - 1)) & !(align - 1)
 }
