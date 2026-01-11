@@ -237,6 +237,8 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
     let id = self.alloc_script_id();
     let mut actions: Vec<HtmlScriptSchedulerAction<NodeId>> = Vec::new();
 
+    // HTML: If there is no `src` attribute and the source text is empty, "prepare a script" returns
+    // early.
     if !element.src_attr_present && element.inline_text.is_empty() {
       return Ok(HtmlDiscoveredScript { id, actions });
     }
@@ -259,17 +261,6 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
       return Ok(HtmlDiscoveredScript { id, actions });
     }
 
-    // If module scripts are not supported, treat module/importmap scripts as unknown and ignore
-    // them entirely.
-    if !self.modules_supported {
-      match element.script_type {
-        ScriptType::Module | ScriptType::ImportMap => {
-          return Ok(HtmlDiscoveredScript { id, actions });
-        }
-        _ => {}
-      }
-    }
-
     match element.script_type {
       ScriptType::Unknown => {}
       ScriptType::ImportMap => {
@@ -284,14 +275,27 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
         }
 
         let base_url = base_url_at_discovery.clone().or_else(|| element.base_url.clone());
-        actions.push(HtmlScriptSchedulerAction::ExecuteNow {
-          script_id: id,
-          node_id,
-          work: HtmlScriptWork::ImportMap {
-            source_text: element.inline_text,
-            base_url,
-          },
-        });
+        let work = HtmlScriptWork::ImportMap {
+          source_text: element.inline_text,
+          base_url,
+        };
+
+        // HTML: parser-inserted import maps are processed synchronously. For dynamically inserted
+        // import maps, queue a task (mirroring the legacy scheduler's behavior and keeping script
+        // execution out of the current JS stack).
+        if element.parser_inserted {
+          actions.push(HtmlScriptSchedulerAction::ExecuteNow {
+            script_id: id,
+            node_id,
+            work,
+          });
+        } else {
+          actions.push(HtmlScriptSchedulerAction::QueueTask {
+            script_id: id,
+            node_id,
+            work,
+          });
+        }
         return Ok(HtmlDiscoveredScript { id, actions });
       }
       ScriptType::Classic => {

@@ -12,10 +12,12 @@ use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DocumentLifecycle, DocumentLifecycleHost,
   DocumentReadyState, DocumentWriteState, DomHost, EventLoop, JsDomEvents, JsExecutionOptions,
   LoadBlockerKind, LocationNavigationRequest, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome,
-  RunUntilIdleStopReason, ScriptBlockExecutor, ScriptBlockingStyleSheetSet, ScriptElementSpec, ScriptId,
-  ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
+  RunUntilIdleStopReason, ScriptBlockExecutor, ScriptBlockingStyleSheetSet, ScriptElementSpec,
+  HtmlScriptId, HtmlScriptScheduler, HtmlScriptSchedulerAction, HtmlScriptWork, ScriptOrchestrator,
+  ScriptType, TaskSource,
 };
 use crate::js::runtime::with_event_loop;
+use crate::js::html_script_scheduler::ScriptEventKind;
 use crate::js::script_encoding::decode_classic_script_bytes;
 use crate::css::encoding::decode_css_bytes_cow;
 use crate::css::parser::parse_stylesheet_with_media;
@@ -249,7 +251,7 @@ impl crate::web::events::EventListenerInvoker for NoopEventInvoker {
 
 #[derive(Debug, Clone)]
 struct PendingParserBlockingScript {
-  script_id: ScriptId,
+  script_id: HtmlScriptId,
   source_text: String,
 }
 
@@ -379,13 +381,13 @@ pub struct BrowserTabHost {
   js_events: JsDomEvents,
   current_script: CurrentScriptStateHandle,
   orchestrator: ScriptOrchestrator,
-  scheduler: ScriptScheduler<NodeId>,
-  scripts: HashMap<ScriptId, ScriptEntry>,
+  scheduler: HtmlScriptScheduler<NodeId>,
+  scripts: HashMap<HtmlScriptId, ScriptEntry>,
   scheduled_script_nodes: HashSet<NodeId>,
-  deferred_scripts: HashSet<ScriptId>,
-  executed: HashSet<ScriptId>,
-  pending_script_load_blockers: HashSet<ScriptId>,
-  parser_blocked_on: Option<ScriptId>,
+  deferred_scripts: HashSet<HtmlScriptId>,
+  executed: HashSet<HtmlScriptId>,
+  pending_script_load_blockers: HashSet<HtmlScriptId>,
+  parser_blocked_on: Option<HtmlScriptId>,
   document_url: Option<String>,
   /// Current document base URL used for resolving *JS-visible* relative URLs.
   ///
@@ -451,6 +453,8 @@ impl BrowserTabHost {
     let current_script = CurrentScriptStateHandle::default();
     let mut document_write_state = DocumentWriteState::default();
     document_write_state.update_limits(js_execution_options);
+    let mut scheduler = HtmlScriptScheduler::new();
+    scheduler.set_options(js_execution_options);
     Ok(Self {
       trace,
       document: Box::new(document),
@@ -459,7 +463,7 @@ impl BrowserTabHost {
       js_events: JsDomEvents::new()?,
       current_script,
       orchestrator: ScriptOrchestrator::new(),
-      scheduler: ScriptScheduler::with_options(js_execution_options),
+      scheduler,
       scripts: HashMap::new(),
       scheduled_script_nodes: HashSet::new(),
       deferred_scripts: HashSet::new(),
@@ -600,7 +604,11 @@ impl BrowserTabHost {
   ) -> Result<()> {
     self.current_script.reset();
     self.orchestrator = ScriptOrchestrator::new();
-    self.scheduler = ScriptScheduler::with_options(self.js_execution_options);
+    self.scheduler = {
+      let mut scheduler = HtmlScriptScheduler::new();
+      scheduler.set_options(self.js_execution_options);
+      scheduler
+    };
     self.scripts.clear();
     self.scheduled_script_nodes.clear();
     self.deferred_scripts.clear();
@@ -784,7 +792,7 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn should_delay_parser_blocking_script(&self, script_id: ScriptId) -> bool {
+  fn should_delay_parser_blocking_script(&self, script_id: HtmlScriptId) -> bool {
     let Some(entry) = self.scripts.get(&script_id) else {
       return false;
     };
@@ -1411,21 +1419,10 @@ impl BrowserTabHost {
   }
   fn fail_external_script_fetch(
     &mut self,
-    script_id: ScriptId,
-    script_node: NodeId,
+    script_id: HtmlScriptId,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
-    // HTML: external script fetch failure should dispatch an `error` event and the script should not
-    // execute.
-    self.dispatch_script_event_in_event_loop(script_node, "error", event_loop)?;
-    // Mark the element as already-started so future scheduling attempts short-circuit.
-    self
-      .mutate_dom(|dom| (dom.set_script_already_started(script_node, true), false))
-      .map_err(|err| Error::Other(err.to_string()))?;
-
-    let actions = self.scheduler.fetch_failed(script_id)?;
-    // Treat the script as "done" for parser blocking + deferred-script lifecycle gates.
-    self.finish_script_execution(script_id, event_loop)?;
+    let actions = self.scheduler.classic_fetch_failed(script_id)?;
     self.apply_scheduler_actions(actions, event_loop)?;
     Ok(())
   }
@@ -1674,7 +1671,7 @@ impl BrowserTabHost {
     mut spec: ScriptElementSpec,
     base_url_at_discovery: Option<String>,
     event_loop: &mut EventLoop<Self>,
-  ) -> Result<ScriptId> {
+  ) -> Result<HtmlScriptId> {
     // HTML `</script>` handling performs a microtask checkpoint *before* preparing the script, but
     // only when the JS execution context stack is empty.
     //
@@ -1865,7 +1862,7 @@ impl BrowserTabHost {
     spec: ScriptElementSpec,
     base_url_at_discovery: Option<String>,
     event_loop: &mut EventLoop<Self>,
-  ) -> Result<ScriptId> {
+  ) -> Result<HtmlScriptId> {
     let mut spec = spec;
     let spec_for_table = spec.clone();
     let integrity_invalid =
@@ -1924,7 +1921,7 @@ impl BrowserTabHost {
 
   fn apply_scheduler_actions(
     &mut self,
-    actions: Vec<ScriptSchedulerAction<NodeId>>,
+    actions: Vec<HtmlScriptSchedulerAction<NodeId>>,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     for action in actions {
@@ -1932,7 +1929,7 @@ impl BrowserTabHost {
         break;
       }
       match action {
-        ScriptSchedulerAction::StartFetch {
+        HtmlScriptSchedulerAction::StartClassicFetch {
           script_id,
           url,
           destination,
@@ -1940,7 +1937,7 @@ impl BrowserTabHost {
         } => {
           if !self.pending_script_load_blockers.insert(script_id) {
             return Err(Error::Other(format!(
-              "ScriptScheduler requested StartFetch more than once for script_id={}",
+              "HtmlScriptScheduler requested StartClassicFetch more than once for script_id={}",
               script_id.as_u64()
             )));
           }
@@ -1949,10 +1946,11 @@ impl BrowserTabHost {
             .register_pending_load_blocker(LoadBlockerKind::Script);
           self.start_fetch(script_id, url, destination, event_loop)?;
         }
-        ScriptSchedulerAction::StartModuleGraphFetch { script_id, .. } => {
+        HtmlScriptSchedulerAction::StartModuleGraphFetch { script_id, .. }
+        | HtmlScriptSchedulerAction::StartInlineModuleGraphFetch { script_id, .. } => {
           if !self.pending_script_load_blockers.insert(script_id) {
             return Err(Error::Other(format!(
-              "ScriptScheduler requested StartModuleGraphFetch more than once for script_id={}",
+              "HtmlScriptScheduler requested StartModuleGraphFetch more than once for script_id={}",
               script_id.as_u64()
             )));
           }
@@ -1961,7 +1959,7 @@ impl BrowserTabHost {
             .register_pending_load_blocker(LoadBlockerKind::Script);
           self.start_module_graph_fetch(script_id, event_loop)?;
         }
-        ScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
+        HtmlScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
           if self.executed.contains(&script_id) {
             continue;
           }
@@ -1970,21 +1968,47 @@ impl BrowserTabHost {
             .is_some_and(|existing| existing != script_id)
           {
             return Err(Error::Other(
-              "ScriptScheduler requested multiple simultaneous parser blocks".to_string(),
+              "HtmlScriptScheduler requested multiple simultaneous parser blocks".to_string(),
             ));
           }
           self.parser_blocked_on = Some(script_id);
         }
-        ScriptSchedulerAction::ExecuteNow {
+        HtmlScriptSchedulerAction::ExecuteNow {
           script_id,
           node_id,
-          source_text,
+          work,
           ..
         } => {
           let entry = self.scripts.get(&script_id).cloned();
-          let should_checkpoint = entry
-            .as_ref()
-            .is_some_and(|entry| matches!(entry.spec.script_type, ScriptType::Classic | ScriptType::Module));
+
+          let should_checkpoint = matches!(work, HtmlScriptWork::Classic { .. } | HtmlScriptWork::Module { .. });
+
+          let source_text = match work {
+            HtmlScriptWork::Classic { source_text } => {
+              let Some(source_text) = source_text else {
+                self.dispatch_script_error_event_in_event_loop(node_id, event_loop)?;
+                self
+                  .mutate_dom(|dom| (dom.set_script_already_started(node_id, true), false))
+                  .map_err(|err| Error::Other(err.to_string()))?;
+                self.finish_script_execution(script_id, event_loop)?;
+                continue;
+              };
+              source_text
+            }
+            HtmlScriptWork::Module { source_text } => {
+              let Some(source_text) = source_text else {
+                self.dispatch_script_error_event_in_event_loop(node_id, event_loop)?;
+                self
+                  .mutate_dom(|dom| (dom.set_script_already_started(node_id, true), false))
+                  .map_err(|err| Error::Other(err.to_string()))?;
+                self.finish_script_execution(script_id, event_loop)?;
+                continue;
+              };
+              source_text
+            }
+            HtmlScriptWork::ImportMap { source_text, .. } => source_text,
+          };
+
           if let Some(csp) = self.csp.as_ref() {
             let is_inline_classic = entry.as_ref().is_some_and(|entry| {
               entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present
@@ -2107,12 +2131,38 @@ impl BrowserTabHost {
             self.discover_dynamic_scripts(event_loop)?;
           }
         }
-        ScriptSchedulerAction::QueueTask {
+        HtmlScriptSchedulerAction::QueueTask {
           script_id,
           node_id,
-          source_text,
+          work,
           ..
         } => {
+          let source_text = match work {
+            HtmlScriptWork::Classic { source_text } => {
+              let Some(source_text) = source_text else {
+                self.dispatch_script_error_event_in_event_loop(node_id, event_loop)?;
+                self
+                  .mutate_dom(|dom| (dom.set_script_already_started(node_id, true), false))
+                  .map_err(|err| Error::Other(err.to_string()))?;
+                self.finish_script_execution(script_id, event_loop)?;
+                continue;
+              };
+              source_text
+            }
+            HtmlScriptWork::Module { source_text } => {
+              let Some(source_text) = source_text else {
+                self.dispatch_script_error_event_in_event_loop(node_id, event_loop)?;
+                self
+                  .mutate_dom(|dom| (dom.set_script_already_started(node_id, true), false))
+                  .map_err(|err| Error::Other(err.to_string()))?;
+                self.finish_script_execution(script_id, event_loop)?;
+                continue;
+              };
+              source_text
+            }
+            HtmlScriptWork::ImportMap { source_text, .. } => source_text,
+          };
+
           if let Some(csp) = self.csp.as_ref() {
             let is_inline_classic = self.scripts.get(&script_id).is_some_and(|entry| {
               entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present
@@ -2209,8 +2259,11 @@ impl BrowserTabHost {
             Ok(())
           })?;
         }
-        ScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
-          let type_str = event.as_type_str();
+        HtmlScriptSchedulerAction::QueueScriptEventTask { node_id, event, .. } => {
+          let type_str = match event {
+            ScriptEventKind::Load => "load",
+            ScriptEventKind::Error => "error",
+          };
           event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
             let mut ev = Event::new(type_str, EventInit::default());
             ev.is_trusted = true;
@@ -2225,7 +2278,7 @@ impl BrowserTabHost {
 
   fn finish_script_execution(
     &mut self,
-    script_id: ScriptId,
+    script_id: HtmlScriptId,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     let newly_executed = self.executed.insert(script_id);
@@ -2245,7 +2298,7 @@ impl BrowserTabHost {
 
   fn execute_script(
     &mut self,
-    script_id: ScriptId,
+    script_id: HtmlScriptId,
     source_text: &str,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
@@ -2264,7 +2317,7 @@ impl BrowserTabHost {
     let script_type = entry.spec.script_type;
 
     struct Adapter<'a> {
-      script_id: ScriptId,
+      script_id: HtmlScriptId,
       source_text: &'a str,
       spec: &'a ScriptElementSpec,
       event_loop: &'a mut EventLoop<BrowserTabHost>,
@@ -2360,7 +2413,7 @@ impl BrowserTabHost {
 
   fn start_module_graph_fetch(
     &mut self,
-    script_id: ScriptId,
+    script_id: HtmlScriptId,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     let Some(entry) = self.scripts.get(&script_id).cloned() else {
@@ -2376,7 +2429,6 @@ impl BrowserTabHost {
         script_id.as_u64()
       )));
     }
-    let script_node_id = entry.node_id;
 
     use crate::resource::FetchedResource;
     use std::collections::HashMap;
@@ -2529,28 +2581,35 @@ impl BrowserTabHost {
         // request destination classification).
         let source_text = if spec.src_attr_present {
           let Some(url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
-            // Mirror the scheduler's invalid-src behavior (error event + no execution).
-            host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
-            host.mutate_dom(|dom| {
-              dom.node_mut(script_node_id).script_already_started = true;
-              ((), false)
-            });
             let actions = host.scheduler.module_graph_failed(script_id)?;
-            host.finish_script_execution(script_id, event_loop)?;
+            let needs_manual_error = actions.is_empty();
             host.apply_scheduler_actions(actions, event_loop)?;
+            if needs_manual_error {
+              let node_id = host
+                .scripts
+                .get(&script_id)
+                .map(|entry| entry.node_id)
+                .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
+              host.dispatch_script_event_in_event_loop(node_id, "error", event_loop)?;
+              host.finish_script_execution(script_id, event_loop)?;
+            }
             return Ok(());
           };
           match host.fetch_script_source(script_id, url, FetchDestination::ScriptCors) {
             Ok(source_text) => source_text,
             Err(err) => {
-              host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
-              host.mutate_dom(|dom| {
-                dom.node_mut(script_node_id).script_already_started = true;
-                ((), false)
-              });
               let actions = host.scheduler.module_graph_failed(script_id)?;
-              host.finish_script_execution(script_id, event_loop)?;
+              let needs_manual_error = actions.is_empty();
               host.apply_scheduler_actions(actions, event_loop)?;
+              if needs_manual_error {
+                let node_id = host
+                  .scripts
+                  .get(&script_id)
+                  .map(|entry| entry.node_id)
+                  .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
+                host.dispatch_script_event_in_event_loop(node_id, "error", event_loop)?;
+                host.finish_script_execution(script_id, event_loop)?;
+              }
               if matches!(err, Error::Render(_)) {
                 return Err(err);
               }
@@ -2561,7 +2620,9 @@ impl BrowserTabHost {
           std::mem::take(&mut spec.inline_text)
         };
 
-        let actions = host.scheduler.module_graph_ready(script_id, source_text)?;
+        let actions = host
+          .scheduler
+          .module_graph_completed(script_id, source_text)?;
         host.apply_scheduler_actions(actions, event_loop)?;
         return Ok(());
       }
@@ -2572,21 +2633,24 @@ impl BrowserTabHost {
       };
       match result {
         Ok(()) => {
-          let actions = host.scheduler.module_graph_ready(script_id, String::new())?;
+          let actions = host
+            .scheduler
+            .module_graph_completed(script_id, String::new())?;
           host.apply_scheduler_actions(actions, event_loop)?;
         }
         Err(err) => {
-          // Module graph failures dispatch an `error` event and must not execute.
-          host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
-          host.mutate_dom(|dom| {
-            dom.node_mut(script_node_id).script_already_started = true;
-            ((), false)
-          });
- 
           let actions = host.scheduler.module_graph_failed(script_id)?;
-          // Treat the script as "done" for deferred-script lifecycle gates.
-          host.finish_script_execution(script_id, event_loop)?;
+          let needs_manual_error = actions.is_empty();
           host.apply_scheduler_actions(actions, event_loop)?;
+          if needs_manual_error {
+            let node_id = host
+              .scripts
+              .get(&script_id)
+              .map(|entry| entry.node_id)
+              .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
+            host.dispatch_script_event_in_event_loop(node_id, "error", event_loop)?;
+            host.finish_script_execution(script_id, event_loop)?;
+          }
  
           // Uncaught module graph errors should not abort parsing/task scheduling (browser
           // behavior). Still propagate host-level render timeouts/cancellation.
@@ -2602,7 +2666,7 @@ impl BrowserTabHost {
 
   fn start_fetch(
     &mut self,
-    script_id: ScriptId,
+    script_id: HtmlScriptId,
     url: String,
     destination: FetchDestination,
     event_loop: &mut EventLoop<Self>,
@@ -2642,12 +2706,7 @@ impl BrowserTabHost {
         csp.allows_script_url(doc_origin.as_ref(), nonce_attr.as_deref(), parsed)
       });
       if !allowed {
-        let script_node = self
-          .scripts
-          .get(&script_id)
-          .map(|entry| entry.node_id)
-          .ok_or_else(|| Error::Other("internal error: missing script entry".to_string()))?;
-        return self.fail_external_script_fetch(script_id, script_node, event_loop);
+        return self.fail_external_script_fetch(script_id, event_loop);
       }
     }
 
@@ -2663,7 +2722,7 @@ impl BrowserTabHost {
       });
 
     if is_blocking {
-      let script_node_id = self
+      let _script_node_id = self
         .scripts
         .get(&script_id)
         .map(|entry| entry.node_id)
@@ -2675,11 +2734,55 @@ impl BrowserTabHost {
         })?;
       match self.fetch_script_source(script_id, &url, destination) {
         Ok(source) => {
-          let actions = self.scheduler.fetch_completed(script_id, source)?;
+          let actions = self.scheduler.classic_fetch_completed(script_id, source)?;
           self.apply_scheduler_actions(actions, event_loop)?;
         }
         Err(err) => {
-          self.fail_external_script_fetch(script_id, script_node_id, event_loop)?;
+          self.fail_external_script_fetch(script_id, event_loop)?;
+          if matches!(err, Error::Render(_)) {
+            return Err(err);
+          }
+        }
+      }
+      return Ok(());
+    }
+
+    let is_fast_async = self
+      .scripts
+      .get(&script_id)
+      .is_some_and(|entry| {
+        if !self.streaming_parse_active {
+          return false;
+        }
+        let spec = &entry.spec;
+        if spec.script_type != ScriptType::Classic || !spec.src_attr_present {
+          return false;
+        }
+        if !(spec.async_attr || spec.force_async) {
+          return false;
+        }
+        // In-memory sources and `file:` URLs are effectively instantaneous. Fetch them synchronously
+        // so the queued execution task observes a lower global event-loop sequence number than the
+        // parse-resume task scheduled after yielding at the script boundary.
+        if self
+          .external_script_sources
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .contains_key(&url)
+        {
+          return true;
+        }
+        Url::parse(&url).ok().is_some_and(|parsed| parsed.scheme() == "file")
+      });
+
+    if is_fast_async {
+      match self.fetch_script_source(script_id, &url, destination) {
+        Ok(source) => {
+          let actions = self.scheduler.classic_fetch_completed(script_id, source)?;
+          self.apply_scheduler_actions(actions, event_loop)?;
+        }
+        Err(err) => {
+          self.fail_external_script_fetch(script_id, event_loop)?;
           if matches!(err, Error::Render(_)) {
             return Err(err);
           }
@@ -2692,21 +2795,11 @@ impl BrowserTabHost {
     event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
       match host.fetch_script_source(script_id, &url, destination) {
         Ok(source) => {
-          let actions = host.scheduler.fetch_completed(script_id, source)?;
+          let actions = host.scheduler.classic_fetch_completed(script_id, source)?;
           host.apply_scheduler_actions(actions, event_loop)?;
         }
         Err(err) => {
-          let script_node_id = host
-            .scripts
-            .get(&script_id)
-            .map(|entry| entry.node_id)
-            .ok_or_else(|| {
-              Error::Other(format!(
-                "ScriptScheduler requested fetch for unknown script_id={}",
-                script_id.as_u64()
-              ))
-            })?;
-          host.fail_external_script_fetch(script_id, script_node_id, event_loop)?;
+          host.fail_external_script_fetch(script_id, event_loop)?;
           if matches!(err, Error::Render(_)) {
             return Err(err);
           }
@@ -2719,7 +2812,7 @@ impl BrowserTabHost {
 
   fn fetch_script_source(
     &self,
-    script_id: ScriptId,
+    script_id: HtmlScriptId,
     url: &str,
     destination: FetchDestination,
   ) -> Result<String> {
@@ -3308,9 +3401,15 @@ impl BrowserTab {
       ParseUntilBlockedResult::Continue(ParseUntilBlockedContinueReason::AsyncScriptInterleaving)
     ) && document_url.is_some()
     {
-      // When navigation parsing is initiated outside the event loop (as a synchronous call to
-      // `navigate_to_url`), we still want "fast" async scripts to be able to execute before we
-      // enqueue the parse-resume task.
+      let _deadline_guard = self
+        .host
+        .streaming_parse
+        .as_ref()
+        .and_then(|state| state.deadline.as_ref())
+        .map(|deadline| DeadlineGuard::install(Some(deadline)));
+      // When navigation parsing is initiated outside the event loop (document URL is provided), we
+      // still want "fast" async scripts to be able to execute before we enqueue the parse-resume
+      // task.
       //
       // The async script's execution task is queued *after* its fetch task runs. If we scheduled the
       // parse-resume task immediately, it could receive a lower task sequence number than the async
@@ -3325,6 +3424,8 @@ impl BrowserTab {
         self.host.js_execution_options.event_loop_run_limits,
         /*render_between_turns=*/ false,
         move |err| {
+          // Match `run_event_loop_until_idle`: report uncaught task errors but keep going. This
+          // one-off interleaving spin is still part of the navigation's JS execution.
           let message = err.to_string();
           if let Some(diag) = &diagnostics {
             diag.record_js_exception(message.clone(), None);
@@ -4493,7 +4594,7 @@ impl BrowserTab {
     node_id: NodeId,
     spec: ScriptElementSpec,
     base_url_at_discovery: Option<String>,
-  ) -> Result<ScriptId> {
+  ) -> Result<HtmlScriptId> {
     self.host.register_and_schedule_script(
       node_id,
       spec,
@@ -5117,13 +5218,13 @@ mod tests {
     // scheduler treats them as in-order-asap scripts and would execute A before B.
     let actions_b = host
       .scheduler
-      .fetch_completed(id_b, "B".to_string())
-      .expect("fetch_completed for B");
+      .classic_fetch_completed(id_b, "B".to_string())
+      .expect("classic_fetch_completed for B");
     host.apply_scheduler_actions(actions_b, &mut event_loop)?;
     let actions_a = host
       .scheduler
-      .fetch_completed(id_a, "A".to_string())
-      .expect("fetch_completed for A");
+      .classic_fetch_completed(id_a, "A".to_string())
+      .expect("classic_fetch_completed for A");
     host.apply_scheduler_actions(actions_a, &mut event_loop)?;
 
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -6774,9 +6875,15 @@ mod tests {
 
     // Complete fetch for B first. Because A is async-like (force_async=true), it is not part of the
     // in-order-asap list; therefore B can execute immediately on fetch completion, before A.
-    let actions_b = tab.host.scheduler.fetch_completed(id_b, "B".to_string())?;
+    let actions_b = tab
+      .host
+      .scheduler
+      .classic_fetch_completed(id_b, "B".to_string())?;
     tab.host.apply_scheduler_actions(actions_b, &mut tab.event_loop)?;
-    let actions_a = tab.host.scheduler.fetch_completed(id_a, "A".to_string())?;
+    let actions_a = tab
+      .host
+      .scheduler
+      .classic_fetch_completed(id_a, "A".to_string())?;
     tab.host.apply_scheduler_actions(actions_a, &mut tab.event_loop)?;
 
     tab
