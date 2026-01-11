@@ -285,14 +285,64 @@ impl StringRef {
   }
 }
 
-/// Opaque coroutine state allocated/owned by generated code.
-///
-/// The full coroutine frame layout is owned by the compiler; the runtime treats
-/// this as an opaque handle at the ABI boundary.
+// -----------------------------------------------------------------------------
+// Native coroutine ABI (async/await lowering)
+// -----------------------------------------------------------------------------
+
+/// Discriminant for [`CoroutineStep`].
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum CoroutineStepTag {
+  RT_CORO_STEP_AWAIT = 0,
+  RT_CORO_STEP_COMPLETE = 1,
+}
+
+/// Result of a single coroutine resume step.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CoroutineStep {
+  pub tag: CoroutineStepTag,
+  /// For [`CoroutineStepTag::RT_CORO_STEP_AWAIT`], the promise being awaited.
+  ///
+  /// For [`CoroutineStepTag::RT_CORO_STEP_COMPLETE`], this must be null.
+  pub await_promise: PromiseRef,
+}
+
+/// Resume function pointer for a coroutine frame.
+pub type CoroutineResumeFn = unsafe extern "C" fn(*mut Coroutine) -> CoroutineStep;
+
+/// Destroy (drop + deallocate) a coroutine frame.
+pub type CoroutineDestroyFn = unsafe extern "C" fn(*mut Coroutine);
+
+/// VTable describing a generated coroutine type.
+#[repr(C)]
+pub struct CoroutineVTable {
+  pub resume: CoroutineResumeFn,
+  pub destroy: CoroutineDestroyFn,
+  pub promise_size: u32,
+  pub promise_align: u32,
+  pub promise_shape_id: RtShapeId,
+  /// Must equal [`RT_ASYNC_ABI_VERSION`].
+  pub abi_version: u32,
+  /// Reserved for future ABI extensions; must be zeroed by generated code.
+  pub reserved: [usize; 4],
+}
+
+/// Header embedded at offset 0 of every generated coroutine frame.
 #[repr(C)]
 pub struct Coroutine {
-  _private: [u8; 0],
+  pub vtable: *const CoroutineVTable,
+  /// Result promise for this coroutine; written by `rt_async_spawn` before first resume.
+  pub promise: PromiseRef,
+  /// Intrusive list pointer used by the runtime while the coroutine is suspended.
+  pub next_waiter: *mut Coroutine,
+  /// `Coroutine.flags` bitfield.
+  pub flags: u32,
 }
+
+/// Opaque pointer to a coroutine frame (and therefore the start of a generated coroutine).
+pub type CoroutineRef = *mut Coroutine;
 
 /// Legacy promise placeholder (used by older runtime-native tests/utilities).
 #[repr(C)]
@@ -669,6 +719,30 @@ mod tests {
     assert!(size_of::<RtCoroutineHeader>() == 40);
     assert!(align_of::<RtCoroutineHeader>() == 8);
 
+    assert!(size_of::<CoroutineStepTag>() == 4);
+    assert!(align_of::<CoroutineStepTag>() == 4);
+    assert!(size_of::<CoroutineStep>() == 16);
+    assert!(align_of::<CoroutineStep>() == 8);
+    assert!(core::mem::offset_of!(CoroutineStep, tag) == 0);
+    assert!(core::mem::offset_of!(CoroutineStep, await_promise) == 8);
+
+    assert!(size_of::<CoroutineVTable>() == 64);
+    assert!(align_of::<CoroutineVTable>() == 8);
+    assert!(core::mem::offset_of!(CoroutineVTable, resume) == 0);
+    assert!(core::mem::offset_of!(CoroutineVTable, destroy) == 8);
+    assert!(core::mem::offset_of!(CoroutineVTable, promise_size) == 16);
+    assert!(core::mem::offset_of!(CoroutineVTable, promise_align) == 20);
+    assert!(core::mem::offset_of!(CoroutineVTable, promise_shape_id) == 24);
+    assert!(core::mem::offset_of!(CoroutineVTable, abi_version) == 28);
+    assert!(core::mem::offset_of!(CoroutineVTable, reserved) == 32);
+
+    assert!(size_of::<Coroutine>() == 32);
+    assert!(align_of::<Coroutine>() == 8);
+    assert!(core::mem::offset_of!(Coroutine, vtable) == 0);
+    assert!(core::mem::offset_of!(Coroutine, promise) == 8);
+    assert!(core::mem::offset_of!(Coroutine, next_waiter) == 16);
+    assert!(core::mem::offset_of!(Coroutine, flags) == 24);
+
     assert!(size_of::<RtShapeDescriptor>() == 24);
     assert!(align_of::<RtShapeDescriptor>() == 8);
 
@@ -702,6 +776,8 @@ mod tests {
       "RT_CORO_DONE",
       "RT_CORO_PENDING",
       "RT_CORO_YIELD",
+      "RT_CORO_STEP_AWAIT",
+      "RT_CORO_STEP_COMPLETE",
       "RT_ASYNC_ABI_VERSION",
       "CORO_FLAG_RUNTIME_OWNS_FRAME",
     ] {
@@ -733,6 +809,12 @@ mod tests {
       "PromiseResolveInput",
       "RtCoroStatus",
       "RtCoroutineHeader",
+      "CoroutineRef",
+      "CoroutineStepTag",
+      "CoroutineStep",
+      "CoroutineResumeFn",
+      "CoroutineDestroyFn",
+      "CoroutineVTable",
       "GcPtr",
       "GcHandle",
       "RtArrayHeader",
@@ -740,8 +822,8 @@ mod tests {
       assert!(header.contains(ty), "missing type `{ty}` in generated header");
     }
     assert!(
-      header.contains("typedef struct Coroutine Coroutine;") || header.contains("struct Coroutine;"),
-      "missing Coroutine forward declaration"
+      header.contains("typedef struct Coroutine {") || header.contains("struct Coroutine {"),
+      "missing Coroutine definition"
     );
     assert!(
       header.contains("typedef struct Runtime Runtime;") || header.contains("struct Runtime;"),

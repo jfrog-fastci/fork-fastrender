@@ -93,7 +93,7 @@ fn main() {
   }
   // cbindgen emits opaque structs as a 0-length byte array field, which is a non-standard C
   // extension. Replace those with true forward declarations for maximum compatibility.
-  for name in ["Coroutine", "Runtime", "Thread", "RtPromise"] {
+  for name in ["Runtime", "Thread", "RtPromise"] {
     let start_pat = format!("typedef struct {name} {{");
     if let Some(start) = header.find(&start_pat) {
       let end_pat = format!("}} {name};");
