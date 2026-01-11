@@ -37,4 +37,7 @@ SECTIONS {
     KEEP(*(.llvm_faultmaps.*))
     __llvm_faultmaps_end = .;
   }
-} INSERT AFTER .text;
+/* Anchor at `.data` so the writable `.data.rel.ro.*` output sections don't end
+ * up merged into the executable text PT_LOAD (which would create an RWX
+ * segment). */
+} INSERT BEFORE .data;

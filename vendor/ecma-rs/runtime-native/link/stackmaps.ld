@@ -22,20 +22,20 @@
  * loader can relocate it for PIE binaries (writable during relocation, then
  * protected by RELRO).
  *
- * We insert after `.text` (instead of `.rodata`) because lld does not create an
- * empty `.rodata` output section, and will error if an `INSERT AFTER .rodata`
- * fragment is used when the input objects don't contribute any `.rodata`
- * (common in minimal binaries/tests).
+ * Placement:
+ * - This output section is writable (to allow dynamic relocations under PIE/DSO).
+ *   Inserting it immediately after `.text` is unsafe: some linkers may merge it
+ *   into the executable text PT_LOAD, forcing that segment to become RWX.
+ * - We anchor the fragment at `INSERT BEFORE .data;` instead. `.data` is a
+ *   stable output-section name across linkers (and is present even in minimal
+ *   dynamic links), and inserting before it keeps `.data.rel.ro.llvm_stackmaps`
+ *   in the RELRO-covered data region (`PT_GNU_RELRO`) rather than the text
+ *   segment. This is also more robust than anchoring on `.rodata`, which may be
+ *   absent in minimal links (lld errors if an `INSERT` anchor does not exist).
  *
- * This fragment relies on the GNU ld/LLD `INSERT AFTER` mechanism so we can
- * inject a small section definition without replacing the entire default linker
- * script. If your linker does not support `INSERT`, switch to GNU ld or lld.
- *
- * Note: GNU ld assigns an `INSERT AFTER .text` output section to the same LOAD
- * segment as `.text` by default. If stackmaps are made writable to avoid
- * `DT_TEXTREL` in PIE mode, that can produce an RWX segment. For GNU ld PIE
- * builds, prefer `runtime-native/link/stackmaps_gnuld.ld` (or use
- * `scripts/native_link.sh`, which selects the appropriate fragment).
+ * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
+ * small section definition without replacing the entire default linker script.
+ * If your linker does not support `INSERT`, switch to GNU ld or lld.
  */
 
 SECTIONS {
@@ -66,4 +66,4 @@ SECTIONS {
     KEEP(*(.llvm_faultmaps.*))
     __llvm_faultmaps_end = .;
   }
-} INSERT AFTER .text;
+} INSERT BEFORE .data;
