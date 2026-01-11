@@ -278,16 +278,33 @@ fn supports_importing_from_renamed_reexports() {
 }
 
 #[test]
+fn auto_calls_reexported_main() {
+  let dir = tempdir().unwrap();
+  let impl_file = dir.path().join("impl.ts");
+  let entry = dir.path().join("entry.ts");
+
+  fs::write(
+    &impl_file,
+    "console.log(\"dep\");\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+  fs::write(&entry, "export { main } from './impl';\n").unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg(entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("dep\nmain\n"));
+}
+
+#[test]
 fn type_only_import_does_not_execute_module() {
   let dir = tempdir().unwrap();
   let dep = dir.path().join("dep.ts");
   let main = dir.path().join("main.ts");
 
-  fs::write(
-    &dep,
-    "export type T = number;\nconsole.log(\"dep\");\n",
-  )
-  .unwrap();
+  fs::write(&dep, "export type T = number;\nconsole.log(\"dep\");\n").unwrap();
   fs::write(
     &main,
     "import { type T } from './dep';\nexport function main(){console.log(\"main\");}\n",
@@ -310,11 +327,7 @@ fn type_only_reexport_does_not_execute_module() {
   let dep = dir.path().join("dep.ts");
   let main = dir.path().join("main.ts");
 
-  fs::write(
-    &dep,
-    "export type T = number;\nconsole.log(\"dep\");\n",
-  )
-  .unwrap();
+  fs::write(&dep, "export type T = number;\nconsole.log(\"dep\");\n").unwrap();
   fs::write(
     &main,
     "export { type T } from './dep';\nexport function main(){console.log(\"main\");}\n",

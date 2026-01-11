@@ -61,7 +61,7 @@ pub enum NativeJsError {
   MissingExport { file: String, export: String },
 
   #[error(
-    "export `{export}` in {file} has no local definition (re-exports/default exports are not supported)"
+    "export `{export}` in {file} is not supported by native-js right now"
   )]
   UnsupportedExport { file: String, export: String },
 

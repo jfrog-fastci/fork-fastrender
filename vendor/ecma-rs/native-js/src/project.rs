@@ -88,6 +88,43 @@ fn resolve_import_def(program: &Program, file: FileId, span: TextRange) -> Optio
   program.symbol_info(sym)?.def
 }
 
+fn resolve_export_def(program: &Program, file: FileId, export_name: &str) -> Option<DefId> {
+  let (symbol, local_def) = {
+    let exports = program.exports_of(file);
+    let entry = exports.get(export_name)?;
+    (entry.symbol, entry.def)
+  };
+  let mut cur = program
+    .symbol_info(symbol)
+    .and_then(|info| info.def)
+    .or(local_def)?;
+
+  let mut seen = BTreeSet::<DefId>::new();
+  loop {
+    if !seen.insert(cur) {
+      return None;
+    }
+    let kind = program.def_kind(cur)?;
+    let DefKind::Import(import) = kind else {
+      return Some(cur);
+    };
+    match import.target {
+      ImportTarget::File(target_file) => {
+        let (symbol, local_def) = {
+          let exports = program.exports_of(target_file);
+          let entry = exports.get(import.original.as_str())?;
+          (entry.symbol, entry.def)
+        };
+        cur = program
+          .symbol_info(symbol)
+          .and_then(|info| info.def)
+          .or(local_def)?;
+      }
+      _ => return None,
+    }
+  }
+}
+
 fn collect_module_info(program: &Program, file: FileId) -> Result<ModuleInfo, NativeJsError> {
   let lowered = program.hir_lowered(file).ok_or_else(|| NativeJsError::MissingHirLowering {
     file: file_label(program, file),
@@ -514,26 +551,14 @@ pub fn compile_project_to_llvm_ir(
   // This keeps `native-js-cli` ergonomics close to "run my project" while staying conservative:
   // we only auto-call when the export resolves to a local function declaration with a body.
   let entry_export = entry_export.or_else(|| {
-    let export_map = program.exports_of(entry_file);
-    let Some(entry) = export_map.get("main") else {
-      return None;
-    };
-    let def = entry.def?;
+    let def = resolve_export_def(program, entry_file, "main")?;
     let local = program.def_name(def)?;
-    let (params, _ret) = local_fn_sigs
-      .get(&entry_file)
-      .and_then(|m| m.get(&local))?;
+    let (params, _ret) = local_fn_sigs.get(&def.file()).and_then(|m| m.get(&local))?;
     params.is_empty().then_some("main")
   });
 
-  // Compute which exports must be materialized for runtime imports + the configured entrypoint.
+  // Compute which exports must be materialized for runtime imports.
   let mut used_exports: BTreeMap<FileId, BTreeSet<String>> = BTreeMap::new();
-  if let Some(entry_export) = entry_export {
-    used_exports
-      .entry(entry_file)
-      .or_default()
-      .insert(entry_export.to_string());
-  }
   for file in all_files.iter().copied() {
     let Some(info) = modules.get(&file) else {
       continue;
@@ -621,29 +646,40 @@ pub fn compile_project_to_llvm_ir(
 
   // If an entry function was requested, resolve it to a concrete LLVM symbol.
   let entry_call: Option<UserFunctionSig> = if let Some(entry_export) = entry_export {
-    let local = export_locals
-      .get(&entry_file)
-      .and_then(|m| m.get(entry_export))
-      .ok_or_else(|| NativeJsError::MissingExport {
-        file: file_label(program, entry_file),
-        export: entry_export.to_string(),
-      })?;
-    let (params, ret) = local_fn_sigs
-      .get(&entry_file)
-      .and_then(|m| m.get(local))
-      .cloned()
-      .ok_or_else(|| NativeJsError::UnsupportedExport {
-        file: file_label(program, entry_file),
-        export: entry_export.to_string(),
-      })?;
-    if !params.is_empty() {
-      return Err(NativeJsError::UnsupportedExport {
+    let export_map = program.exports_of(entry_file);
+    if !export_map.contains_key(entry_export) {
+      return Err(NativeJsError::MissingExport {
         file: file_label(program, entry_file),
         export: entry_export.to_string(),
       });
     }
+
+    let def = resolve_export_def(program, entry_file, entry_export).ok_or_else(|| {
+      NativeJsError::UnsupportedExport {
+        file: file_label(program, entry_file),
+        export: entry_export.to_string(),
+      }
+    })?;
+    let local = program.def_name(def).ok_or_else(|| NativeJsError::UnsupportedExport {
+      file: file_label(program, def.file()),
+      export: entry_export.to_string(),
+    })?;
+    let (params, ret) = local_fn_sigs
+      .get(&def.file())
+      .and_then(|m| m.get(&local))
+      .cloned()
+      .ok_or_else(|| NativeJsError::UnsupportedExport {
+        file: file_label(program, def.file()),
+        export: entry_export.to_string(),
+      })?;
+    if !params.is_empty() {
+      return Err(NativeJsError::UnsupportedExport {
+        file: file_label(program, def.file()),
+        export: entry_export.to_string(),
+      });
+    }
     Some(UserFunctionSig {
-      llvm_name: llvm_fn_symbol(entry_file, local),
+      llvm_name: llvm_fn_symbol(def.file(), &local),
       ret,
       params,
     })
