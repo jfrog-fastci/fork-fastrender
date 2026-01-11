@@ -170,8 +170,8 @@ fn run(
         match pat {
           RecognizedPattern::CanonicalCall { .. } => seen.insert("CanonicalCall"),
           RecognizedPattern::MapFilterReduce { .. } => seen.insert("MapFilterReduce"),
-          RecognizedPattern::PromiseAllFetch { .. } => seen.insert("PromiseAllFetch"),
           RecognizedPattern::MapGetOrDefault { .. } => seen.insert("MapGetOrDefault"),
+          RecognizedPattern::PromiseAllFetch { .. } => seen.insert("PromiseAllFetch"),
           RecognizedPattern::JsonParseTyped { .. } => seen.insert("JsonParseTyped"),
           RecognizedPattern::StringTemplate { .. } => seen.insert("StringTemplate"),
           RecognizedPattern::ObjectSpread { .. } => seen.insert("ObjectSpread"),
