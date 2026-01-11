@@ -201,6 +201,7 @@ jobs:
           cargo test -p runtime-native --test reactor_conformance --features force_pipe_wake --locked
           cargo test -p runtime-native --test reactor_kqueue_pipe_wake --features force_pipe_wake --locked
           cargo test -p runtime-native --test kqueue_reactor --features force_pipe_wake --locked
+          cargo test -p runtime-native --test io_watchers --features force_pipe_wake --locked
           cargo test -p runtime-native --test async_event_loop --features force_pipe_wake --locked
           cargo test -p runtime-native --test async_fd --features force_pipe_wake --locked
           cargo test -p runtime-native --test async_rt_reactor_adapter --features force_pipe_wake --locked

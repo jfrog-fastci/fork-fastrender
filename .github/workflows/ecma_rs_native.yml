@@ -252,6 +252,7 @@ jobs:
             --test reactor_conformance \
             --test reactor_kqueue \
             --test kqueue_reactor \
+            --test io_watchers \
             --test async_event_loop \
             --test async_fd \
             --test async_rt_reactor_adapter
@@ -261,6 +262,7 @@ jobs:
             --test reactor_conformance \
             --test reactor_kqueue_pipe_wake \
             --test kqueue_reactor \
+            --test io_watchers \
             --test async_event_loop \
             --test async_fd \
             --test async_rt_reactor_adapter
