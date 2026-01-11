@@ -50,13 +50,30 @@ fn emit_obj(llc: &str, ir_path: &Path, obj_path: &Path) {
 }
 
 fn link_exe(clang: &str, out: &Path, objs: &[PathBuf]) {
-  let mut cmd = Command::new(clang);
-  cmd.arg("-no-pie");
-  for obj in objs {
-    cmd.arg(obj);
+  let mk = |use_lld: bool| {
+    let mut cmd = Command::new(clang);
+    if use_lld {
+      cmd.arg("-fuse-ld=lld");
+    }
+    cmd.arg("-no-pie");
+    for obj in objs {
+      cmd.arg(obj);
+    }
+    cmd.arg("-o").arg(out);
+    cmd
+  };
+
+  // Prefer lld to match production builds (`clang -fuse-ld=lld`). If lld isn't
+  // installed, fall back to the system default linker so the test still runs.
+  let mut cmd = mk(true);
+  let status = cmd
+    .status()
+    .unwrap_or_else(|err| panic!("failed to run {cmd:?}: {err}"));
+  if !status.success() {
+    eprintln!("warning: {cmd:?} failed; retrying without -fuse-ld=lld");
+    let mut cmd = mk(false);
+    run(&mut cmd);
   }
-  cmd.arg("-o").arg(out);
-  run(&mut cmd);
   assert!(out.exists(), "missing output executable {}", out.display());
 }
 
@@ -182,4 +199,3 @@ fn parses_linker_concatenated_stackmap_blobs_and_indexes_all_callsites() {
     );
   }
 }
-
