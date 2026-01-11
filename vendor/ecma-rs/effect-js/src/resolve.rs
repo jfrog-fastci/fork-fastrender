@@ -167,10 +167,28 @@ pub fn resolve_api_call_typed(
   }
 }
 
+
+fn strip_transparent_wrappers(body: &Body, mut expr: ExprId) -> ExprId {
+  loop {
+    let Some(node) = body.exprs.get(expr.0 as usize) else {
+      return expr;
+    };
+    match &node.kind {
+      ExprKind::TypeAssertion { expr: inner, .. }
+      | ExprKind::NonNull { expr: inner }
+      | ExprKind::Satisfies { expr: inner, .. } => expr = *inner,
+      _ => return expr,
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCall {
   pub call: ExprId,
-  pub api: ApiId,
+  /// Canonical knowledge-base API name (e.g. `JSON.parse`, `node:fs.readFile`).
+  pub api: String,
+  /// Stable identifier for a small curated subset of high-value APIs.
+  pub api_id: Option<ApiId>,
   pub receiver: Option<ExprId>,
   pub args: Vec<ExprId>,
 }
@@ -193,20 +211,44 @@ pub fn resolve_call(
     return None;
   }
 
-  match body.exprs.get(call.callee.0 as usize).map(|e| &e.kind) {
+  let callee = strip_transparent_wrappers(body, call.callee);
+
+  match body.exprs.get(callee.0 as usize).map(|e| &e.kind) {
     Some(ExprKind::Ident(name)) => {
       let name = lower.names.resolve(*name)?;
+
       // Rule A: static global function identifier.
-      if db.get(name).is_none() {
-        return None;
+      if let Some(api) = db.get(name) {
+        return Some(ResolvedCall {
+          call: call_expr,
+          api: api.name.clone(),
+          api_id: ApiId::from_kb_name(&api.name),
+          receiver: None,
+          args: call.args.iter().map(|arg| arg.expr).collect(),
+        });
       }
-      let api = ApiId::from_kb_name(name)?;
-      Some(ResolvedCall {
-        call: call_expr,
-        api,
-        receiver: None,
-        args: call.args.iter().map(|arg| arg.expr).collect(),
-      })
+
+      // Rule C: imported bindings (typed only).
+      #[cfg(feature = "typed")]
+      {
+        let Some(typed) = types.and_then(|types| types.as_typed_program()) else {
+          return None;
+        };
+        let api = resolve_imported_ident_call(db, typed, body_id, callee)?;
+        return Some(ResolvedCall {
+          call: call_expr,
+          api_id: ApiId::from_kb_name(&api),
+          api,
+          receiver: None,
+          args: call.args.iter().map(|arg| arg.expr).collect(),
+        });
+      }
+
+      #[cfg(not(feature = "typed"))]
+      {
+        let _ = (types, body_id);
+        None
+      }
     }
     Some(ExprKind::Member(member)) => {
       if member.optional {
@@ -217,22 +259,34 @@ pub fn resolve_call(
       }
 
       // Rule A: fully-static member path like `JSON.parse` or `Promise.all`.
-      if let Some((path, receiver)) = static_member_path(lower, body, call.callee) {
-        if db.get(&path).is_some() {
-          if let Some(api) = ApiId::from_kb_name(&path) {
+      if let Some((path, receiver)) = static_member_path(lower, body, callee) {
+        if let Some(api) = db.get(&path) {
+          return Some(ResolvedCall {
+            call: call_expr,
+            api: api.name.clone(),
+            api_id: ApiId::from_kb_name(&api.name),
+            receiver: Some(receiver),
+            args: call.args.iter().map(|arg| arg.expr).collect(),
+          });
+        }
+      }
+
+      #[cfg(feature = "typed")]
+      {
+        // Rule C: imported namespace/default/named-object bindings.
+        if let Some(typed) = types.and_then(|types| types.as_typed_program()) {
+          if let Some(api) = resolve_imported_member_call(db, typed, lower, body, body_id, callee) {
             return Some(ResolvedCall {
               call: call_expr,
+              api_id: ApiId::from_kb_name(&api),
               api,
-              receiver: Some(receiver),
+              receiver: Some(member.object),
               args: call.args.iter().map(|arg| arg.expr).collect(),
             });
           }
         }
-      }
 
-      // Rule B: receiver-type-based prototype method calls (typed only).
-      #[cfg(feature = "typed")]
-      {
+        // Rule B: receiver-type-based prototype method calls.
         let Some(types) = types else {
           return None;
         };
@@ -240,17 +294,18 @@ pub fn resolve_call(
         let prop = static_object_key_name(lower, &member.property)?;
 
         if types.expr_is_array(body_id, member.object) {
-          if let Some(api) = match prop {
+          if let Some(api_id) = match prop {
             "map" => Some(ApiId::ArrayPrototypeMap),
             "filter" => Some(ApiId::ArrayPrototypeFilter),
             "reduce" => Some(ApiId::ArrayPrototypeReduce),
             "forEach" => Some(ApiId::ArrayPrototypeForEach),
             _ => None,
           } {
-            if db.get(api.as_str()).is_some() {
+            if let Some(api) = db.get(api_id.as_str()) {
               return Some(ResolvedCall {
                 call: call_expr,
-                api,
+                api: api.name.clone(),
+                api_id: Some(api_id),
                 receiver: Some(member.object),
                 args: call.args.iter().map(|arg| arg.expr).collect(),
               });
@@ -259,32 +314,157 @@ pub fn resolve_call(
         }
 
         if types.expr_is_string(body_id, member.object) {
-          if let Some(api) = match prop {
+          if let Some(api_id) = match prop {
             "toLowerCase" => Some(ApiId::StringPrototypeToLowerCase),
             "split" => Some(ApiId::StringPrototypeSplit),
             _ => None,
           } {
-            if db.get(api.as_str()).is_some() {
+            if let Some(api) = db.get(api_id.as_str()) {
               return Some(ResolvedCall {
                 call: call_expr,
-                api,
+                api: api.name.clone(),
+                api_id: Some(api_id),
                 receiver: Some(member.object),
                 args: call.args.iter().map(|arg| arg.expr).collect(),
               });
             }
           }
         }
+
+        None
       }
 
       #[cfg(not(feature = "typed"))]
       {
         let _ = (types, body_id);
+        None
       }
-
-      None
     }
     _ => None,
   }
+}
+
+#[cfg(feature = "typed")]
+fn join_api(module: &str, path: &[String]) -> String {
+  if path.is_empty() {
+    module.to_string()
+  } else {
+    format!("{module}.{}", path.join("."))
+  }
+}
+
+#[cfg(feature = "typed")]
+fn lookup_api(db: &ApiDatabase, module: &str, path: &[String]) -> Option<String> {
+  if module.starts_with("node:") {
+    let canonical = join_api(module, path);
+    return db.get(&canonical).map(|api| api.name.clone());
+  }
+
+  let canonical_node = join_api(&format!("node:{module}"), path);
+  if let Some(api) = db.get(&canonical_node) {
+    return Some(api.name.clone());
+  }
+
+  let canonical = join_api(module, path);
+  db.get(&canonical).map(|api| api.name.clone())
+}
+
+#[cfg(feature = "typed")]
+fn resolve_imported_ident_call(
+  db: &ApiDatabase,
+  types: &crate::typed::TypedProgram,
+  body_id: BodyId,
+  callee: ExprId,
+) -> Option<String> {
+  let symbol = types.symbol_at_expr(body_id, callee)?;
+  let info = types.program().symbol_info(symbol)?;
+  let def = info.def?;
+
+  if let Some(typecheck_ts::DefKind::Import(import)) = types.def_kind(def) {
+    let typecheck_ts::ImportTarget::File(file_id) = import.target else {
+      return None;
+    };
+    let module_key = types.file_key(file_id)?;
+    return lookup_api(db, module_key.as_str(), &[import.original]);
+  }
+
+  // `symbol_at` may resolve directly to the imported definition (rather than the
+  // local import binding). When that happens, fall back to using the definition's
+  // file key as the module prefix.
+  let body_file = types.file_for_body(body_id)?;
+  let def_file = info
+    .file
+    .or_else(|| types.program().span_of_def(def).map(|span| span.file))?;
+  if def_file == body_file {
+    return None;
+  }
+  let module_key = types.file_key(def_file)?;
+  let export_name = info.name.or_else(|| types.program().def_name(def))?;
+  lookup_api(db, module_key.as_str(), &[export_name])
+}
+
+#[cfg(feature = "typed")]
+fn flatten_member_chain(
+  lower: &LowerResult,
+  body: &Body,
+  expr: ExprId,
+) -> Option<(ExprId, Vec<String>)> {
+  let mut cur = strip_transparent_wrappers(body, expr);
+  let mut props = Vec::<String>::new();
+
+  loop {
+    cur = strip_transparent_wrappers(body, cur);
+    match body.exprs.get(cur.0 as usize).map(|e| &e.kind) {
+      Some(ExprKind::Member(member)) => {
+        if member.optional {
+          return None;
+        }
+        if matches!(member.property, ObjectKey::Computed(_)) {
+          return None;
+        }
+        let prop = static_object_key_name(lower, &member.property)?;
+        props.push(prop.to_string());
+        cur = member.object;
+      }
+      _ => break,
+    }
+  }
+
+  props.reverse();
+  Some((strip_transparent_wrappers(body, cur), props))
+}
+
+#[cfg(feature = "typed")]
+fn resolve_imported_member_call(
+  db: &ApiDatabase,
+  types: &crate::typed::TypedProgram,
+  lower: &LowerResult,
+  body: &Body,
+  body_id: BodyId,
+  callee: ExprId,
+) -> Option<String> {
+  let (base, mut member_path) = flatten_member_chain(lower, body, callee)?;
+  let ExprKind::Ident(_) = body.exprs.get(base.0 as usize)?.kind else {
+    return None;
+  };
+
+  let symbol = types.symbol_at_expr(body_id, base)?;
+  let info = types.program().symbol_info(symbol)?;
+  let def = info.def?;
+  let Some(typecheck_ts::DefKind::Import(import)) = types.def_kind(def) else {
+    return None;
+  };
+  let typecheck_ts::ImportTarget::File(file_id) = import.target else {
+    return None;
+  };
+
+  // Namespace/default imports refer to the module value directly.
+  if import.original != "*" && import.original != "default" {
+    member_path.insert(0, import.original);
+  }
+
+  let module_key = types.file_key(file_id)?;
+  lookup_api(db, module_key.as_str(), &member_path)
 }
 
 fn static_object_key_name<'a>(lower: &'a LowerResult, key: &'a ObjectKey) -> Option<&'a str> {
@@ -300,10 +480,11 @@ fn static_object_key_name<'a>(lower: &'a LowerResult, key: &'a ObjectKey) -> Opt
 /// dotted path plus the call receiver expression.
 fn static_member_path(lower: &LowerResult, body: &Body, expr: ExprId) -> Option<(String, ExprId)> {
   let mut props: SmallVec<[&str; 4]> = SmallVec::new();
-  let mut cur = expr;
+  let mut cur = strip_transparent_wrappers(body, expr);
   let mut receiver: Option<ExprId> = None;
 
   loop {
+    cur = strip_transparent_wrappers(body, cur);
     match body.exprs.get(cur.0 as usize).map(|e| &e.kind) {
       Some(ExprKind::Member(member)) => {
         if member.optional {

@@ -27,6 +27,12 @@ pub trait TypeProvider {
     None
   }
 
+  /// Downcast hook for typed-only resolvers that need `typecheck-ts` semantic APIs.
+  #[cfg(feature = "typed")]
+  fn as_typed_program(&self) -> Option<&crate::typed::TypedProgram> {
+    None
+  }
+
   /// Returns `true` when the expression is a known array/readonly-array/tuple.
   #[cfg(feature = "typed")]
   fn expr_is_array(&self, body: BodyId, expr: ExprId) -> bool {
@@ -53,4 +59,3 @@ pub trait TypeProvider {
     )
   }
 }
-

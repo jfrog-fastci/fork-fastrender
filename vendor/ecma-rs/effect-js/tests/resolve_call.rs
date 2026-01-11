@@ -30,14 +30,16 @@ fn resolves_static_known_calls() {
   let json_call_span = range_of(source, "JSON.parse(\"x\")");
   let json_call = find_call_expr(body, json_call_span);
   let resolved = resolve_call(&lower, body_id, body, json_call, &db, None).expect("resolve JSON");
-  assert_eq!(resolved.api, ApiId::JsonParse);
+  assert_eq!(resolved.api, "JSON.parse");
+  assert_eq!(resolved.api_id, Some(ApiId::JsonParse));
   assert_eq!(resolved.args.len(), 1);
 
   let promise_call_span = range_of(source, "Promise.all([])");
   let promise_call = find_call_expr(body, promise_call_span);
   let resolved =
     resolve_call(&lower, body_id, body, promise_call, &db, None).expect("resolve Promise");
-  assert_eq!(resolved.api, ApiId::PromiseAll);
+  assert_eq!(resolved.api, "Promise.all");
+  assert_eq!(resolved.api_id, Some(ApiId::PromiseAll));
   assert_eq!(resolved.args.len(), 1);
 }
 
@@ -71,5 +73,6 @@ fn resolves_typed_array_prototype_methods() {
   let call_expr = find_call_expr(body, call_span);
   let resolved =
     resolve_call(lower, body_id, body, call_expr, &db, Some(&types)).expect("resolve map");
-  assert_eq!(resolved.api, ApiId::ArrayPrototypeMap);
+  assert_eq!(resolved.api, "Array.prototype.map");
+  assert_eq!(resolved.api_id, Some(ApiId::ArrayPrototypeMap));
 }
