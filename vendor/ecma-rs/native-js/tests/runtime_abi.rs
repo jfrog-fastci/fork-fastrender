@@ -116,11 +116,39 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
   assert_eq!(alloc_params.len(), 2);
   assert_eq!(alloc_params[0].into_int_type().get_bit_width(), 64);
   assert_eq!(alloc_params[1].into_int_type().get_bit_width(), 32);
+  let alloc_ret = fns
+    .rt_alloc
+    .get_type()
+    .get_return_type()
+    .expect("rt_alloc returns ptr");
+  assert!(
+    alloc_ret.is_pointer_type(),
+    "rt_alloc return type must be a pointer, got {alloc_ret:?}"
+  );
+  assert_eq!(
+    alloc_ret.into_pointer_type().get_address_space(),
+    AddressSpace::default(),
+    "rt_alloc must return an addrspace(0) pointer in the stable ABI"
+  );
 
   let alloc_pinned_params = fns.rt_alloc_pinned.get_type().get_param_types();
   assert_eq!(alloc_pinned_params.len(), 2);
   assert_eq!(alloc_pinned_params[0].into_int_type().get_bit_width(), 64);
   assert_eq!(alloc_pinned_params[1].into_int_type().get_bit_width(), 32);
+  let alloc_pinned_ret = fns
+    .rt_alloc_pinned
+    .get_type()
+    .get_return_type()
+    .expect("rt_alloc_pinned returns ptr");
+  assert!(
+    alloc_pinned_ret.is_pointer_type(),
+    "rt_alloc_pinned return type must be a pointer, got {alloc_pinned_ret:?}"
+  );
+  assert_eq!(
+    alloc_pinned_ret.into_pointer_type().get_address_space(),
+    AddressSpace::default(),
+    "rt_alloc_pinned must return an addrspace(0) pointer in the stable ABI"
+  );
 
   // These are MayGC runtime functions and must not have `_gc` wrapper functions.
   assert!(
@@ -148,6 +176,29 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     !ir.contains("rt_gc_safepoint_relocate_h_gc"),
     "unexpected rt_gc_safepoint_relocate_h_gc wrapper function in IR:\n{ir}"
   );
+  // `rt_gc_safepoint_relocate_h` uses the handle ABI: it must accept a raw (addrspace(0)) pointer to
+  // a caller-owned root slot, and return a raw (addrspace(0)) pointer in the stable ABI.
+  let relocate_params = fns.rt_gc_safepoint_relocate_h.get_type().get_param_types();
+  assert_eq!(relocate_params.len(), 1);
+  assert!(
+    relocate_params[0].is_pointer_type(),
+    "rt_gc_safepoint_relocate_h arg must be a pointer, got {relocate_params:?}"
+  );
+  assert_eq!(
+    relocate_params[0].into_pointer_type().get_address_space(),
+    AddressSpace::default(),
+    "rt_gc_safepoint_relocate_h handle arg must be addrspace(0) (GcHandle ABI)"
+  );
+  let relocate_ret = fns
+    .rt_gc_safepoint_relocate_h
+    .get_type()
+    .get_return_type()
+    .expect("rt_gc_safepoint_relocate_h returns ptr");
+  assert_eq!(
+    relocate_ret.into_pointer_type().get_address_space(),
+    AddressSpace::default(),
+    "rt_gc_safepoint_relocate_h must return an addrspace(0) pointer in the stable ABI"
+  );
 
   // NoGC runtime entrypoints should be marked as GC leaf functions so that LLVM does not rewrite
   // calls to them into statepoints.
@@ -159,13 +210,51 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     has_gc_leaf_attr(fns.rt_write_barrier),
     "expected rt_write_barrier to be marked gc-leaf-function"
   );
+  // Raw runtime ABI entrypoints should use addrspace(0) pointers.
+  let wb_params = fns.rt_write_barrier.get_type().get_param_types();
+  assert_eq!(wb_params.len(), 2);
+  for (i, ty) in wb_params.iter().enumerate() {
+    assert!(
+      ty.is_pointer_type(),
+      "rt_write_barrier param {i} must be a pointer, got {ty:?}"
+    );
+    assert_eq!(
+      ty.into_pointer_type().get_address_space(),
+      AddressSpace::default(),
+      "rt_write_barrier param {i} must be addrspace(0) in the stable ABI"
+    );
+  }
   assert!(
     has_gc_leaf_attr(fns.rt_write_barrier_range),
     "expected rt_write_barrier_range to be marked gc-leaf-function"
   );
+  let wbr_params = fns.rt_write_barrier_range.get_type().get_param_types();
+  assert_eq!(wbr_params.len(), 3);
+  for (i, ty) in wbr_params.iter().enumerate().take(2) {
+    assert!(
+      ty.is_pointer_type(),
+      "rt_write_barrier_range param {i} must be a pointer, got {ty:?}"
+    );
+    assert_eq!(
+      ty.into_pointer_type().get_address_space(),
+      AddressSpace::default(),
+      "rt_write_barrier_range param {i} must be addrspace(0) in the stable ABI"
+    );
+  }
   assert!(
     has_gc_leaf_attr(fns.rt_keep_alive_gc_ref),
     "expected rt_keep_alive_gc_ref to be marked gc-leaf-function"
+  );
+  let keep_alive_raw_params = fns.rt_keep_alive_gc_ref.get_type().get_param_types();
+  assert_eq!(keep_alive_raw_params.len(), 1);
+  assert!(
+    keep_alive_raw_params[0].is_pointer_type(),
+    "rt_keep_alive_gc_ref arg must be a pointer, got {keep_alive_raw_params:?}"
+  );
+  assert_eq!(
+    keep_alive_raw_params[0].into_pointer_type().get_address_space(),
+    AddressSpace::default(),
+    "rt_keep_alive_gc_ref arg must be addrspace(0) in the stable ABI"
   );
 
   // MayGC runtime entrypoints must remain eligible for statepoint rewriting, so they must not be
@@ -205,6 +294,20 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     wb.contains("store ptr @rt_write_barrier"),
     "expected rt_write_barrier_gc to indirect-call @rt_write_barrier:\n{wb}"
   );
+  // The wrapper uses addrspace(1) pointer types to participate in GC liveness/relocation analysis.
+  let wb_gc_params = fns.rt_write_barrier_gc.get_type().get_param_types();
+  assert_eq!(wb_gc_params.len(), 2);
+  for (i, ty) in wb_gc_params.iter().enumerate() {
+    assert!(
+      ty.is_pointer_type(),
+      "rt_write_barrier_gc param {i} must be a pointer, got {ty:?}"
+    );
+    assert_eq!(
+      ty.into_pointer_type().get_address_space(),
+      gc::gc_address_space(),
+      "rt_write_barrier_gc param {i} must be addrspace(1)"
+    );
+  }
   assert!(
     !wb.contains("addrspacecast"),
     "rt_write_barrier_gc must not addrspacecast GC pointers out of addrspace(1):\n{wb}"
@@ -227,6 +330,19 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
     wbr.contains("store ptr @rt_write_barrier_range"),
     "expected rt_write_barrier_range_gc to indirect-call @rt_write_barrier_range:\n{wbr}"
   );
+  let wbr_gc_params = fns.rt_write_barrier_range_gc.get_type().get_param_types();
+  assert_eq!(wbr_gc_params.len(), 3);
+  for (i, ty) in wbr_gc_params.iter().enumerate().take(2) {
+    assert!(
+      ty.is_pointer_type(),
+      "rt_write_barrier_range_gc param {i} must be a pointer, got {ty:?}"
+    );
+    assert_eq!(
+      ty.into_pointer_type().get_address_space(),
+      gc::gc_address_space(),
+      "rt_write_barrier_range_gc param {i} must be addrspace(1)"
+    );
+  }
   assert!(
     !wbr.contains("addrspacecast"),
     "rt_write_barrier_range_gc must not addrspacecast GC pointers out of addrspace(1):\n{wbr}"
@@ -256,6 +372,17 @@ fn runtime_abi_declares_raw_symbols_and_no_may_gc_wrappers() {
   assert!(
     keep_alive.contains("store ptr @rt_keep_alive_gc_ref"),
     "expected rt_keep_alive_gc_ref_gc to indirect-call @rt_keep_alive_gc_ref:\n{keep_alive}"
+  );
+  let keep_alive_gc_params = fns.rt_keep_alive_gc_ref_gc.get_type().get_param_types();
+  assert_eq!(keep_alive_gc_params.len(), 1);
+  assert!(
+    keep_alive_gc_params[0].is_pointer_type(),
+    "rt_keep_alive_gc_ref_gc arg must be a pointer, got {keep_alive_gc_params:?}"
+  );
+  assert_eq!(
+    keep_alive_gc_params[0].into_pointer_type().get_address_space(),
+    gc::gc_address_space(),
+    "rt_keep_alive_gc_ref_gc arg must be addrspace(1)"
   );
   assert!(
     !keep_alive.contains("addrspacecast"),
