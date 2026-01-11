@@ -59,6 +59,8 @@ use llvm_sys::prelude::{LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef
 use llvm_sys::LLVMCallConv;
 use llvm_sys::LLVMTypeKind;
 
+use crate::llvm::gc::GC_ADDR_SPACE;
+
 /// A (base, derived) GC pointer pair live across a safepoint.
 ///
 /// For non-interior pointers, `base == derived`.
@@ -313,7 +315,7 @@ impl<'ctx> StatepointIntrinsics<'ctx> {
         let v = arg.as_value_ref();
         let ty = LLVMTypeOf(v);
         if LLVMGetTypeKind(ty) == LLVMTypeKind::LLVMPointerTypeKind
-          && LLVMGetPointerAddressSpace(ty) == 1
+          && LLVMGetPointerAddressSpace(ty) == GC_ADDR_SPACE
         {
           let idx = intern_gc_live(v);
           if !relocated_derived.contains_key(&v) {

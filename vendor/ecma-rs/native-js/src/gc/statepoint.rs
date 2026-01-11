@@ -12,6 +12,8 @@ use llvm_sys::{LLVMCallConv, LLVMTypeKind};
 use std::collections::HashMap;
 use std::ffi::CString;
 
+use crate::llvm::gc::GC_ADDR_SPACE;
+
 /// Default `gc.statepoint` patchpoint ID (`patchpoint_id` in `.llvm_stackmaps`).
 ///
 /// LLVM's `rewrite-statepoints-for-gc` pass uses this fixed ID by default. `runtime-native` uses it
@@ -283,7 +285,7 @@ impl StatepointEmitter {
     for &arg in call_args {
       let ty = LLVMTypeOf(arg);
       if LLVMGetTypeKind(ty) == LLVMTypeKind::LLVMPointerTypeKind
-        && LLVMGetPointerAddressSpace(ty) == 1
+        && LLVMGetPointerAddressSpace(ty) == GC_ADDR_SPACE
       {
         if gc_live_index.contains_key(&arg) {
           continue;

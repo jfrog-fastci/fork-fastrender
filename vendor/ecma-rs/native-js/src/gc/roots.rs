@@ -38,6 +38,7 @@
 
 use crate::gc::statepoint::StatepointEmitter;
 use crate::runtime_fn::GcEffect;
+use crate::llvm::gc::GC_ADDR_SPACE;
 use llvm_sys::core::{
   LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildLoad2, LLVMBuildStore, LLVMCreateBuilderInContext,
   LLVMDisposeBuilder, LLVMGetFirstInstruction, LLVMGetPointerAddressSpace, LLVMGetReturnType,
@@ -130,7 +131,7 @@ impl GcFrame {
       LLVMPositionBuilderBefore(alloca_builder, first);
     }
 
-    let gc_ptr_ty = LLVMPointerType(LLVMVoidTypeInContext(ctx), 1);
+    let gc_ptr_ty = LLVMPointerType(LLVMVoidTypeInContext(ctx), GC_ADDR_SPACE);
 
     Self {
       gc_ptr_ty,
@@ -289,7 +290,7 @@ impl GcFrame {
     for &arg in call_args {
       let ty = LLVMTypeOf(arg);
       if LLVMGetTypeKind(ty) == LLVMTypeKind::LLVMPointerTypeKind
-        && LLVMGetPointerAddressSpace(ty) == 1
+        && LLVMGetPointerAddressSpace(ty) == GC_ADDR_SPACE
       {
         let derived_idx = live_vals.len() as u32;
         live_vals.push(arg);
