@@ -38,7 +38,7 @@ fn find_call_expr(body: &hir_js::Body, span: TextRange) -> ExprId {
 
 #[test]
 fn resolves_static_known_calls() {
-  let source = "const a = JSON.parse(\"x\");\nconst b = Promise.all([]);\nconst c = Promise.race([]);";
+  let source = "const a = JSON.parse(\"x\");\nconst b = Promise.all([]);\nconst c = Promise.race([]);\nconst d = JSON[\"parse\"](\"x\");\nconst e = globalThis[\"fetch\"](\"x\");";
   let lower = hir_js::lower_from_source_with_kind(FileKind::Ts, source).unwrap();
   let body_id = lower.root_body();
   let body = lower.body(body_id).unwrap();
@@ -65,6 +65,22 @@ fn resolves_static_known_calls() {
     resolve_call(&lower, body_id, body, promise_race, &db, None).expect("resolve Promise.race");
   assert_eq!(resolved.api, "Promise.race");
   assert_eq!(resolved.api_id, None);
+  assert_eq!(resolved.args.len(), 1);
+
+  let json_parse_computed_span = range_of(source, "JSON[\"parse\"](\"x\")");
+  let json_parse_computed = find_call_expr(body, json_parse_computed_span);
+  let resolved =
+    resolve_call(&lower, body_id, body, json_parse_computed, &db, None).expect("resolve JSON[\"parse\"]");
+  assert_eq!(resolved.api, "JSON.parse");
+  assert_eq!(resolved.api_id, Some(ApiId::JsonParse));
+  assert_eq!(resolved.args.len(), 1);
+
+  let fetch_computed_span = range_of(source, "globalThis[\"fetch\"](\"x\")");
+  let fetch_computed = find_call_expr(body, fetch_computed_span);
+  let resolved =
+    resolve_call(&lower, body_id, body, fetch_computed, &db, None).expect("resolve globalThis[\"fetch\"]");
+  assert_eq!(resolved.api, "fetch");
+  assert_eq!(resolved.api_id, Some(ApiId::Fetch));
   assert_eq!(resolved.args.len(), 1);
 }
 
@@ -125,7 +141,7 @@ fn resolves_typed_array_prototype_methods() {
   use std::sync::Arc;
   use typecheck_ts::{FileKey, MemoryHost, Program};
 
-  let source = "const xs: number[] = [1];\nxs.map(x => x + 1);";
+  let source = "const xs: number[] = [1];\nxs.map(x => x + 1);\nxs[\"map\"](x => x + 1);";
   let file = FileKey::new("file0.ts");
   let mut host = MemoryHost::new();
   host.insert(file.clone(), source);
@@ -150,6 +166,13 @@ fn resolves_typed_array_prototype_methods() {
     resolve_call(lower, body_id, body, call_expr, &db, Some(&types)).expect("resolve map");
   assert_eq!(resolved.api, "Array.prototype.map");
   assert_eq!(resolved.api_id, Some(ApiId::ArrayPrototypeMap));
+
+  let computed_call_span = range_of(source, "xs[\"map\"](x => x + 1)");
+  let computed_call_expr = find_call_expr(body, computed_call_span);
+  let resolved = resolve_call(lower, body_id, body, computed_call_expr, &db, Some(&types))
+    .expect("resolve xs[\"map\"]");
+  assert_eq!(resolved.api, "Array.prototype.map");
+  assert_eq!(resolved.api_id, Some(ApiId::ArrayPrototypeMap));
 }
 
 #[cfg(feature = "typed")]
@@ -161,9 +184,10 @@ fn resolves_typed_map_and_promise_instance_methods() {
 
   let source = r#"
 const m: Map<string, number> = new Map();
-m.has("a");
-m.get("a");
-m.set("a", 1);
+ m.has("a");
+ m["has"]("a");
+ m.get("a");
+ m.set("a", 1);
 
 const s: string = "ABC";
 s.trim();
@@ -171,9 +195,10 @@ s.trim();
 const xs: number[] = [1];
 xs.find(x => x === 1);
 
-const p: Promise<number> = Promise.resolve(1);
-p.then(x => x + 1);
-"#;
+ const p: Promise<number> = Promise.resolve(1);
+ p.then(x => x + 1);
+ p["then"](x => x + 1);
+ "#;
   let file = FileKey::new("file0.ts");
   let mut host = MemoryHost::new();
   host.insert(file.clone(), source);
@@ -196,6 +221,13 @@ p.then(x => x + 1);
   let map_has = find_call_expr(body, map_has_span);
   let resolved =
     resolve_call(lower, body_id, body, map_has, &db, Some(&types)).expect("resolve Map.has");
+  assert_eq!(resolved.api, "Map.prototype.has");
+  assert_eq!(resolved.api_id, Some(ApiId::MapPrototypeHas));
+
+  let map_has_computed_span = range_of(source, "m[\"has\"](\"a\")");
+  let map_has_computed = find_call_expr(body, map_has_computed_span);
+  let resolved = resolve_call(lower, body_id, body, map_has_computed, &db, Some(&types))
+    .expect("resolve m[\"has\"]");
   assert_eq!(resolved.api, "Map.prototype.has");
   assert_eq!(resolved.api_id, Some(ApiId::MapPrototypeHas));
 
@@ -231,6 +263,13 @@ p.then(x => x + 1);
   let promise_then = find_call_expr(body, promise_then_span);
   let resolved = resolve_call(lower, body_id, body, promise_then, &db, Some(&types))
     .expect("resolve Promise.then");
+  assert_eq!(resolved.api, "Promise.prototype.then");
+  assert_eq!(resolved.api_id, Some(ApiId::PromisePrototypeThen));
+
+  let promise_then_computed_span = range_of(source, "p[\"then\"](x => x + 1)");
+  let promise_then_computed = find_call_expr(body, promise_then_computed_span);
+  let resolved = resolve_call(lower, body_id, body, promise_then_computed, &db, Some(&types))
+    .expect("resolve p[\"then\"]");
   assert_eq!(resolved.api, "Promise.prototype.then");
   assert_eq!(resolved.api_id, Some(ApiId::PromisePrototypeThen));
 }

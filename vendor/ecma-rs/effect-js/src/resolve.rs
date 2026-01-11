@@ -43,10 +43,7 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
         return None;
       }
 
-      let ObjectKey::Ident(prop) = member.property else {
-        return None;
-      };
-      let prop = ident_name(lowered, prop)?;
+      let prop = static_object_key_name(lowered, body_ref, &member.property)?;
 
       // globalThis.fetch(...) / window.fetch(...)
       if prop == "fetch" {
@@ -74,10 +71,8 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
             if inner.optional {
               return None;
             }
-            let ObjectKey::Ident(obj_name) = &inner.property else {
-              return None;
-            };
-            if ident_name(lowered, *obj_name) != Some("Promise") {
+            let obj_name = static_object_key_name(lowered, body_ref, &inner.property)?;
+            if obj_name != "Promise" {
               return None;
             }
             let base = expr(lowered, body, inner.object)?;
@@ -107,10 +102,8 @@ pub fn resolve_api_call_untyped(lowered: &LowerResult, body: BodyId, call_expr: 
             if inner.optional {
               return None;
             }
-            let ObjectKey::Ident(obj_name) = &inner.property else {
-              return None;
-            };
-            if ident_name(lowered, *obj_name) != Some("JSON") {
+            let obj_name = static_object_key_name(lowered, body_ref, &inner.property)?;
+            if obj_name != "JSON" {
               return None;
             }
             let base = expr(lowered, body, inner.object)?;
@@ -173,10 +166,7 @@ pub fn resolve_api_call_best_effort_untyped(
     return None;
   }
 
-  let ObjectKey::Ident(prop) = member.property else {
-    return None;
-  };
-  let prop = ident_name(lowered, prop)?;
+  let prop = static_object_key_name(lowered, body_ref, &member.property)?;
 
   match prop {
     "map" => Some(ApiId::ArrayPrototypeMap),
@@ -277,10 +267,7 @@ pub fn resolve_api_call_typed(
     return None;
   }
 
-  let ObjectKey::Ident(prop) = member.property else {
-    return None;
-  };
-  let prop = ident_name(lowered, prop)?;
+  let prop = static_object_key_name(lowered, body_ref, &member.property)?;
 
   match prop {
     "map" if receiver_is_array_method_receiver(lowered, body, member.object, types) => {
@@ -550,9 +537,6 @@ pub fn resolve_call(
       if member.optional {
         return None;
       }
-      if matches!(member.property, ObjectKey::Computed(_)) {
-        return None;
-      }
 
       // Rule A: fully-static member path like `JSON.parse` or `Promise.all`.
       if let Some((path, receiver)) = static_member_path(lower, body, callee) {
@@ -588,7 +572,7 @@ pub fn resolve_call(
           return None;
         };
 
-        let prop = static_object_key_name(lower, &member.property)?;
+        let prop = static_object_key_name(lower, body, &member.property)?;
 
         // Rule B: receiver-type-based prototype method calls. Once the receiver
         // is proven, resolve any known prototype method name present in the KB.
@@ -834,10 +818,7 @@ fn flatten_member_chain(
         if member.optional {
           return None;
         }
-        if matches!(member.property, ObjectKey::Computed(_)) {
-          return None;
-        }
-        let prop = static_object_key_name(lower, &member.property)?;
+        let prop = static_object_key_name(lower, body, &member.property)?;
         props.push(prop.to_string());
         cur = member.object;
       }
@@ -879,11 +860,25 @@ fn resolve_imported_member_call(
   lookup_api(db, &module, &member_path)
 }
 
-fn static_object_key_name<'a>(lower: &'a LowerResult, key: &'a ObjectKey) -> Option<&'a str> {
+fn static_object_key_name<'a>(
+  lower: &'a LowerResult,
+  body: &'a Body,
+  key: &'a ObjectKey,
+) -> Option<&'a str> {
   match key {
     ObjectKey::Ident(name) => lower.names.resolve(*name),
     ObjectKey::String(s) => Some(s.as_str()),
-    ObjectKey::Number(_) | ObjectKey::Computed(_) => None,
+    ObjectKey::Number(n) => Some(n.as_str()),
+    ObjectKey::Computed(expr) => {
+      let expr = strip_transparent_wrappers(body, *expr);
+      let expr = body.exprs.get(expr.0 as usize)?;
+      match &expr.kind {
+        ExprKind::Literal(hir_js::Literal::String(s)) => Some(s.lossy.as_str()),
+        ExprKind::Literal(hir_js::Literal::Number(n)) => Some(n.as_str()),
+        ExprKind::Literal(hir_js::Literal::BigInt(n)) => Some(n.as_str()),
+        _ => None,
+      }
+    }
   }
 }
 
@@ -924,7 +919,7 @@ fn static_member_path(lower: &LowerResult, body: &Body, expr: ExprId) -> Option<
         if receiver.is_none() {
           receiver = Some(member.object);
         }
-        let prop = static_object_key_name(lower, &member.property)?;
+        let prop = static_object_key_name(lower, body, &member.property)?;
         props.push(prop);
         cur = member.object;
       }

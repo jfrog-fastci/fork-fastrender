@@ -79,6 +79,13 @@ fn resolves_namespace_import_call() {
 }
 
 #[test]
+fn resolves_namespace_import_call_via_computed_key() {
+  let (_program, _file, api) =
+    resolve_single_call(r#"import * as fs from "node:fs"; fs["readFile"]("x");"#, true);
+  assert_eq!(api, "node:fs.readFile");
+}
+
+#[test]
 fn resolves_import_call_when_module_unresolved() {
   let (program, file, api) = resolve_single_call(
     r#"import { readFile } from "node:fs"; (readFile as any)("x");"#,
