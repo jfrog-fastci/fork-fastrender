@@ -111,6 +111,20 @@ llc-18 -O0 -filetype=obj \
 llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/statepoint_x86_64.bin" \
   "${TMP}/statepoint_x86_64.o"
 
+# statepoint_dynamic_alloca (rewrite-statepoints-for-gc + dynamic alloca => unknown stack_size)
+opt-18 -mtriple=x86_64-unknown-linux-gnu -passes=rewrite-statepoints-for-gc -S \
+  "${IR_DIR}/statepoint_dynamic_alloca.ll" \
+  -o "${TMP}/statepoint_dynamic_alloca_x86_64_rewritten.ll"
+
+llc-18 -O0 -filetype=obj \
+  -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64 \
+  -frame-pointer=all \
+  "${TMP}/statepoint_dynamic_alloca_x86_64_rewritten.ll" \
+  -o "${TMP}/statepoint_dynamic_alloca_x86_64.o"
+
+llvm-objcopy-18 --dump-section ".llvm_stackmaps=${BIN_DIR}/statepoint_dynamic_alloca_x86_64.bin" \
+  "${TMP}/statepoint_dynamic_alloca_x86_64.o"
+
 opt-18 -mtriple=aarch64-unknown-linux-gnu -passes=rewrite-statepoints-for-gc -S \
   "${IR_DIR}/statepoint_gcroot2.ll" \
   -o "${TMP}/statepoint_aarch64_rewritten.ll"

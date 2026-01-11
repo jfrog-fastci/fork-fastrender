@@ -29,10 +29,11 @@ use thiserror::Error;
 pub const STACKMAP_VERSION: u8 = 3;
 const STACKMAP_HEADER_SIZE: usize = 16;
 
-/// Stack size from the stackmap function record.
+/// Stack frame size reported by LLVM in a stackmap function record.
 ///
-/// LLVM may report `stack_size = -1` (`u64::MAX`) when the function has dynamic stack adjustments
-/// (e.g. variable-size `alloca` or stack realignment).
+/// LLVM may report `stack_size = u64::MAX` (i.e. `-1`) as a sentinel for "unknown"
+/// when the function has dynamic stack adjustments (e.g. variable-size `alloca` or
+/// stack realignment).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackSize {
   Known(u64),
@@ -40,10 +41,23 @@ pub enum StackSize {
 }
 
 impl StackSize {
+  /// LLVM stackmaps sentinel value for unknown stack size.
+  pub const UNKNOWN_SENTINEL: u64 = u64::MAX;
+
+  #[inline]
+  pub fn from_raw(stack_size: u64) -> Self {
+    if stack_size == Self::UNKNOWN_SENTINEL {
+      Self::Unknown
+    } else {
+      Self::Known(stack_size)
+    }
+  }
+
+  #[inline]
   pub fn as_u64(self) -> Option<u64> {
     match self {
-      StackSize::Known(v) => Some(v),
-      StackSize::Unknown => None,
+      Self::Known(v) => Some(v),
+      Self::Unknown => None,
     }
   }
 }
@@ -180,12 +194,7 @@ impl StackMap {
     let mut functions = Vec::with_capacity(num_functions);
     for _ in 0..num_functions {
       let address = c.read_u64()?;
-      let raw_stack_size = c.read_u64()?;
-      let stack_size = if raw_stack_size == u64::MAX {
-        StackSize::Unknown
-      } else {
-        StackSize::Known(raw_stack_size)
-      };
+      let stack_size = StackSize::from_raw(c.read_u64()?);
       let record_count = c.read_u64()?;
       functions.push(StackSizeRecord {
         address,
@@ -1411,8 +1420,8 @@ mod tests {
   use super::Location;
   use super::StackMap;
   use super::StackMapError;
-  use super::StackSize;
   use super::StackMaps;
+  use super::StackSize;
   fn push_u8(buf: &mut Vec<u8>, v: u8) {
     buf.push(v);
   }

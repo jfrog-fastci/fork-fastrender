@@ -92,7 +92,7 @@ pub enum WalkError {
     fp_record_size: u64,
   },
   #[error(
-    "stackmap function record for return address {return_addr:#x} reports unknown stack_size (u64::MAX; dynamic alloca / stack realignment), and an SP-relative root required SP"
+    "stackmap function record reports unknown stack_size for return address {return_addr:#x} (u64::MAX; dynamic alloca / stack realignment)"
   )]
   UnknownStackSize { return_addr: u64 },
   #[error("caller stack pointer {caller_sp:#x} is outside stack bounds [{lo:#x}, {hi:#x})")]
@@ -723,6 +723,11 @@ fn caller_sp_from_stack_size(
   caller_ra: u64,
   stack_size: StackSize,
 ) -> Result<u64, WalkError> {
+  let StackSize::Known(stack_size) = stack_size else {
+    return Err(WalkError::UnknownStackSize {
+      return_addr: caller_ra,
+    });
+  };
   // NOTE: This uses the stackmap function record's fixed `stack_size` to relate `FP` and `SP`.
   // That is only valid when the caller's `SP` at the callsite matches the function's fixed frame
   // size (i.e. no outgoing-argument pushes/stack adjustments at that specific callsite).
@@ -730,11 +735,6 @@ fn caller_sp_from_stack_size(
   // It is kept only as a fallback for the top frame when the safepoint context does not provide a
   // stackmap-semantics `SP` (`ctx.sp == 0`). Non-top frames must derive callsite `SP` from the
   // callee frame pointer (see `caller_sp_callsite_from_callee_fp`).
-  let StackSize::Known(stack_size) = stack_size else {
-    return Err(WalkError::UnknownStackSize {
-      return_addr: caller_ra,
-    });
-  };
 
   if stack_size < arch::FP_RECORD_SIZE {
     return Err(WalkError::InvalidStackSize {

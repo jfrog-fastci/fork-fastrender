@@ -13,7 +13,9 @@
 //! at the statepoint return address. This means the address of the spill slot is simply
 //! `reg_value + offset`.
 
-use crate::stackmaps::{Location, StackMaps};
+use crate::stackmaps::{Location, StackMaps, StackSize};
+#[cfg(target_arch = "x86_64")]
+use crate::stackmaps::{X86_64_DWARF_REG_RBP, X86_64_DWARF_REG_RSP};
 use crate::statepoints::StatepointRecord;
 use stackmap_context::{ThreadContext, DWARF_REG_IP};
 
@@ -31,6 +33,12 @@ pub enum ScanError {
     base: u64,
     offset: i32,
   },
+
+  #[error("failed to reconstruct RSP from FP for a non-top frame: fp=0x{fp:x} stack_size={stack_size}")]
+  RspReconstructionFailed { fp: u64, stack_size: u64 },
+
+  #[error("stackmap function stack_size is unknown, cannot evaluate RSP-based location {loc:?} in a non-top frame")]
+  UnknownStackSizeForRspBasedLocation { loc: Location },
 
   #[error("unsupported relocation location (expected Indirect spill slot), got {loc:?}")]
   UnsupportedLocation { loc: Location },
@@ -80,6 +88,78 @@ pub fn scan_roots(
     }
   }
   Ok(())
+}
+
+/// Evaluate an `Indirect [base_reg + offset]` location for a single x86_64 frame.
+///
+/// This helper exists for stack walking when we only have a frame pointer (RBP)
+/// for older frames:
+/// - FP-based locations (`[RBP + off]`) can always be evaluated.
+/// - SP-based locations (`[RSP + off]`) require either:
+///   - the *captured* top-frame register context (`top_regs.rsp`), or
+///   - a known fixed frame size (`stack_size`) so we can reconstruct callsite RSP as
+///     `rsp = fp + 8 - stack_size` (LLVM 18 convention).
+#[cfg(target_arch = "x86_64")]
+pub fn slot_addr_x86_64(
+  fp: u64,
+  stack_size: StackSize,
+  is_top_frame: bool,
+  top_regs: Option<&ThreadContext>,
+  loc: &Location,
+) -> Result<*mut usize, ScanError> {
+  let Location::Indirect {
+    dwarf_reg, offset, ..
+  } = *loc
+  else {
+    return Err(ScanError::UnsupportedLocation { loc: loc.clone() });
+  };
+
+  let base = match dwarf_reg {
+    X86_64_DWARF_REG_RBP => fp,
+    X86_64_DWARF_REG_RSP => {
+      if is_top_frame {
+        let regs = top_regs.ok_or(ScanError::MissingRegister {
+          dwarf_reg,
+          loc: loc.clone(),
+        })?;
+        regs.get_dwarf_reg_u64(dwarf_reg).ok_or(ScanError::MissingRegister {
+          dwarf_reg,
+          loc: loc.clone(),
+        })?
+      } else {
+        let StackSize::Known(stack_size) = stack_size else {
+          return Err(ScanError::UnknownStackSizeForRspBasedLocation { loc: loc.clone() });
+        };
+        fp.checked_add(8)
+          .and_then(|v| v.checked_sub(stack_size))
+          .ok_or(ScanError::RspReconstructionFailed { fp, stack_size })?
+      }
+    }
+    other => {
+      return Err(ScanError::MissingRegister {
+        dwarf_reg: other,
+        loc: loc.clone(),
+      });
+    }
+  };
+
+  let addr = add_i32(base, offset).ok_or(ScanError::AddressOverflow {
+    kind: "Indirect",
+    base,
+    offset,
+  })?;
+  Ok(addr as usize as *mut usize)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn slot_addr_x86_64(
+  _fp: u64,
+  _stack_size: StackSize,
+  _is_top_frame: bool,
+  _top_regs: Option<&ThreadContext>,
+  loc: &Location,
+) -> Result<*mut usize, ScanError> {
+  Err(ScanError::UnsupportedLocation { loc: loc.clone() })
 }
 
 /// Enumerate `(base_slot, derived_slot)` relocation pairs at the current callsite.

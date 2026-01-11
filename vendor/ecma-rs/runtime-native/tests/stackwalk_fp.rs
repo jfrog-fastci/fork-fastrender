@@ -8,6 +8,7 @@ use runtime_native::stackmaps::StackSize;
 use runtime_native::{walk_gc_roots_from_fp, StackMaps};
 
 use runtime_native::stackwalk::StackBounds;
+#[cfg(target_arch = "x86_64")]
 
 #[cfg(target_arch = "x86_64")]
 #[test]

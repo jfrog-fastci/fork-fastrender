@@ -16,7 +16,7 @@ use crate::stackmaps::{
   STACKMAP_VERSION,
 };
 use crate::statepoints::{
-  StatepointError, StatepointRecord, AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_FP,
+  AARCH64_DWARF_REG_FP, AARCH64_DWARF_REG_SP, StatepointError, StatepointRecord, X86_64_DWARF_REG_FP,
   X86_64_DWARF_REG_SP,
 };
 use std::error::Error;

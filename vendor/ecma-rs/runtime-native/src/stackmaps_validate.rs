@@ -1,4 +1,4 @@
-use crate::stackmaps::{Location, StackMaps, STACKMAP_VERSION};
+use crate::stackmaps::{Location, StackMaps, StackSize, STACKMAP_VERSION};
 use crate::statepoints::StatepointRecord;
 
 #[cfg(target_arch = "aarch64")]
@@ -55,6 +55,17 @@ pub enum ValidationError {
     location_index: usize,
     dwarf_reg: u16,
     allowed: &'static [u16],
+  },
+
+  #[error(
+    "callsite pc=0x{pc:x} patchpoint_id={patchpoint_id} instruction_offset={instruction_offset}: function stack_size is unknown, but pointer location #{location_index} is SP-based (dwarf_reg={dwarf_reg})"
+  )]
+  UnknownStackSizeSpBasedLocation {
+    pc: u64,
+    patchpoint_id: u64,
+    instruction_offset: u32,
+    location_index: usize,
+    dwarf_reg: u16,
   },
 
   #[error(
@@ -196,6 +207,30 @@ pub fn validate_stackmaps(maps: &StackMaps) -> Result<(), ValidationError> {
           location_index,
           dwarf_reg,
           allowed: allowed_base_regs,
+        });
+      }
+
+      // LLVM can report `stack_size = u64::MAX` (unknown) for dynamically-sized stack frames (e.g.
+      // variable-sized `alloca`). In that case, the runtime cannot reconstruct SP for non-top frames
+      // and therefore must not rely on SP-based locations when walking older frames.
+      //
+      // The runtime can still scan FP-based locations (and can use the *captured* SP for the top
+      // frame), but this validator is intentionally conservative and rejects any SP-based pointer
+      // location when `stack_size` is unknown.
+      #[cfg(target_arch = "x86_64")]
+      let is_sp_reg = dwarf_reg == X86_64_DWARF_REG_RSP;
+      #[cfg(target_arch = "aarch64")]
+      let is_sp_reg = dwarf_reg == AARCH64_DWARF_REG_SP;
+      #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+      let is_sp_reg = false;
+
+      if callsite.stack_size == StackSize::Unknown && is_sp_reg {
+        return Err(ValidationError::UnknownStackSizeSpBasedLocation {
+          pc,
+          patchpoint_id,
+          instruction_offset,
+          location_index,
+          dwarf_reg,
         });
       }
 
