@@ -150,9 +150,13 @@ if [[ "${PIE}" == "1" ]]; then
     if [[ "${objcopy}" == *llvm-objcopy* ]]; then
       "${objcopy}" --set-section-flags=.llvm_stackmaps=alloc,load,contents,data "${dst}"
       "${objcopy}" --set-section-flags=.llvm_faultmaps=alloc,load,contents,data "${dst}"
+      "${objcopy}" --set-section-flags=.data.rel.ro.llvm_stackmaps=alloc,load,contents,data "${dst}"
+      "${objcopy}" --set-section-flags=.data.rel.ro.llvm_faultmaps=alloc,load,contents,data "${dst}"
     else
       "${objcopy}" --set-section-flags .llvm_stackmaps=alloc,load,contents,data "${dst}"
       "${objcopy}" --set-section-flags .llvm_faultmaps=alloc,load,contents,data "${dst}"
+      "${objcopy}" --set-section-flags .data.rel.ro.llvm_stackmaps=alloc,load,contents,data "${dst}"
+      "${objcopy}" --set-section-flags .data.rel.ro.llvm_faultmaps=alloc,load,contents,data "${dst}"
     fi
     patched_objs+=("${dst}")
   done

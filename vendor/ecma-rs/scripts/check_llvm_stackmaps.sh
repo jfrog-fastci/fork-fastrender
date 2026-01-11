@@ -29,6 +29,16 @@ LLVM_STRIP="$(command -v llvm-strip || true)"
 LLVM_READOBJ="$(command -v llvm-readobj-18 || command -v llvm-readobj || true)"
 LLVM_OBJCOPY="$(command -v llvm-objcopy-18 || command -v llvm-objcopy || true)"
 
+stackmaps_ld="${script_dir}/../runtime-native/link/stackmaps.ld"
+if [[ ! -f "${stackmaps_ld}" ]]; then
+  # Compatibility path for older docs/build scripts.
+  stackmaps_ld="${script_dir}/../runtime-native/stackmaps.ld"
+fi
+if [[ ! -f "${stackmaps_ld}" ]]; then
+  echo "error: missing stackmaps linker script fragment at ${stackmaps_ld}" >&2
+  exit 1
+fi
+
 LLD_FUSE=""
 if command -v ld.lld-18 >/dev/null 2>&1; then
   LLD_FUSE="lld-18"
@@ -185,7 +195,7 @@ echo "[stackmaps] link: ld (no-pie, --gc-sections) => EXPECTED DROP"
 must_not_have_stackmaps "${tmp}/a_ld_gc"
 
 echo "[stackmaps] link: ld (no-pie, --gc-sections + stackmaps.ld KEEP)"
-"${CLANG}" -no-pie -Wl,--gc-sections -Wl,-T,"${script_dir}/../runtime-native/stackmaps.ld" \
+"${CLANG}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
   -o "${tmp}/a_ld_policy" "${objs[@]}"
 must_have_stackmaps "${tmp}/a_ld_policy"
 
@@ -219,7 +229,7 @@ if [[ -n "${LLD_FUSE}" ]]; then
   must_not_have_stackmaps "${tmp}/a_lld_gc"
 
   echo "[stackmaps] link: lld (no-pie, --gc-sections + stackmaps.ld KEEP)"
-  "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -Wl,-T,"${script_dir}/../runtime-native/stackmaps.ld" \
+  "${CLANG}" -fuse-ld="${LLD_FUSE}" -no-pie -Wl,--gc-sections -Wl,-T,"${stackmaps_ld}" \
     -o "${tmp}/a_lld_policy" "${objs[@]}"
   must_have_stackmaps "${tmp}/a_lld_policy"
 
