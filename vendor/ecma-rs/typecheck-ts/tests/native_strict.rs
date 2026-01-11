@@ -192,8 +192,40 @@ fn native_strict_bans_eval_via_function_prototype_apply_call() {
 }
 
 #[test]
+fn native_strict_bans_eval_via_function_prototype_call_bind_then_call() {
+  let source = "Function.prototype.call.bind(eval)(null, \"1\");";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_eval_via_reflect_apply() {
   let source = "Reflect.apply(eval, null, [\"1\"]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("eval").expect("eval") as u32;
+  let span = TextRange::new(start, start + 4);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_EVAL.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict eval diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_eval_via_reflect_apply_bind() {
+  let source = "Reflect.apply.bind(Reflect, eval, null, [\"1\"])();";
   let (diagnostics, file_id) = check(source, true);
   let start = source.find("eval").expect("eval") as u32;
   let span = TextRange::new(start, start + 4);
@@ -388,6 +420,22 @@ fn native_strict_bans_function_via_reflect_construct_call() {
 fn native_strict_bans_function_via_reflect_construct_apply() {
   let source =
     "Reflect.construct.apply(Reflect, [Function, [\"return 1\"]]);";
+  let (diagnostics, file_id) = check(source, true);
+  let start = source.find("Function").expect("Function") as u32;
+  let span = TextRange::new(start, start + "Function".len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_NEW_FUNCTION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected native_strict Function diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_function_via_reflect_construct_bind() {
+  let source = "Reflect.construct.bind(Reflect, Function, [\"return 1\"])();";
   let (diagnostics, file_id) = check(source, true);
   let start = source.find("Function").expect("Function") as u32;
   let span = TextRange::new(start, start + "Function".len() as u32);
@@ -913,6 +961,40 @@ fn native_strict_bans_define_property_of_prototype_key_via_function_prototype_ca
   let (diagnostics, file_id) = check(source, true);
   let needle =
     "Function.prototype.call.call(Object.defineProperty.bind(Object), Object, Foo, \"prototype\", {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_define_property_of_prototype_key_via_function_prototype_call_bind() {
+  let source = "declare const Foo: { prototype: object };\nFunction.prototype.call.bind(Object.defineProperty, Object, Foo, \"prototype\", {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Function.prototype.call.bind(Object.defineProperty, Object, Foo, \"prototype\", {})";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_define_property_of_prototype_key_via_reflect_apply_bind() {
+  let source = "declare const Foo: { prototype: object };\nReflect.apply.bind(Reflect, Object.defineProperty, Object, [Foo, \"prototype\", {}])();";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Reflect.apply.bind(Reflect, Object.defineProperty, Object, [Foo, \"prototype\", {}])";
   let start = source.find(needle).expect("call") as u32;
   let span = TextRange::new(start, start + needle.len() as u32);
   assert!(
@@ -1562,6 +1644,23 @@ fn native_strict_bans_set_prototype_of_via_function_prototype_call_call() {
 }
 
 #[test]
+fn native_strict_bans_set_prototype_of_via_function_prototype_call_bind_then_call() {
+  let source = "const value: object = {};\nFunction.prototype.call.bind(Object.setPrototypeOf, Object)(value, {});";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Function.prototype.call.bind(Object.setPrototypeOf, Object)";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_set_prototype_of_bind() {
   let source = "const value: object = {};\nObject.setPrototypeOf.bind(Object, value, {});";
   let (diagnostics, file_id) = check(source, true);
@@ -1601,6 +1700,23 @@ fn native_strict_bans_set_prototype_of_via_reflect_apply() {
   let source = "const value: object = {};\nReflect.apply(Object.setPrototypeOf, Object, [value, {}]);";
   let (diagnostics, file_id) = check(source, true);
   let needle = "Reflect.apply(Object.setPrototypeOf, Object, [value, {}])";
+  let start = source.find(needle).expect("call") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
+fn native_strict_bans_set_prototype_of_via_reflect_apply_bind() {
+  let source = "const value: object = {};\nReflect.apply.bind(Reflect, Object.setPrototypeOf, Object, [value, {}])();";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "Reflect.apply.bind(Reflect, Object.setPrototypeOf, Object, [value, {}])";
   let start = source.find(needle).expect("call") as u32;
   let span = TextRange::new(start, start + needle.len() as u32);
   assert!(
