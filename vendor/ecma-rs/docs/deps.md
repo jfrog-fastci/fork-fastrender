@@ -75,13 +75,16 @@ graph TD
     native_js --> runtime_native
     native_js --> typecheck_ts
     native_js --> types_ts_interned
+    native_js --> vm_js
     native_js_cli --> diagnostics
     native_js_cli --> native_js
     native_js_cli --> typecheck_ts
+    native_oracle_harness --> diagnostics
     native_oracle_harness --> emit_js
     native_oracle_harness --> optimize_js
     native_oracle_harness --> parse_js
     native_oracle_harness --> runtime_js
+    native_oracle_harness --> ts_erase
     native_oracle_harness --> vm_js
     optimize_js --> diagnostics
     optimize_js --> effect_model
