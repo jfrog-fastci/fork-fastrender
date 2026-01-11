@@ -1,6 +1,6 @@
-use runtime_native::stackmaps::{Location, StackMap};
+use runtime_native::stackmaps::{Location, StackMap, StackMapRecord};
 use runtime_native::statepoints::{
-  eval_location, RegFile, RootSlot, StatepointRecord, AARCH64_DWARF_REG_SP,
+  eval_location, RegFile, RootSlot, StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP,
   LLVM18_STATEPOINT_HEADER_CONSTANTS, X86_64_DWARF_REG_FP, X86_64_DWARF_REG_SP,
 };
 
@@ -119,4 +119,95 @@ fn eval_direct_location_is_immediate_value() {
   };
   let slot = eval_location(&loc, &regs).unwrap();
   assert_eq!(slot, RootSlot::Const { value: 0x0ff8 });
+}
+
+#[test]
+fn statepoint_record_rejects_odd_tail_len() {
+  let rec = StackMapRecord {
+    patchpoint_id: 0,
+    instruction_offset: 0,
+    locations: vec![
+      Location::Constant { size: 8, value: 0 },
+      Location::Constant { size: 8, value: 0 },
+      Location::Constant { size: 8, value: 0 },
+      // Odd tail length (should be base+derived pairs).
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 0,
+      },
+    ],
+    live_outs: vec![],
+  };
+
+  assert!(matches!(
+    StatepointRecord::new(&rec),
+    Err(StatepointError::InvalidLayout { .. })
+  ));
+}
+
+#[test]
+fn statepoint_record_rejects_nonconstant_header() {
+  let rec = StackMapRecord {
+    patchpoint_id: 0,
+    instruction_offset: 0,
+    locations: vec![
+      Location::Register {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+      },
+      Location::Constant { size: 8, value: 0 },
+      Location::Constant { size: 8, value: 0 },
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 0,
+      },
+      Location::Indirect {
+        size: 8,
+        dwarf_reg: X86_64_DWARF_REG_SP,
+        offset: 0,
+      },
+    ],
+    live_outs: vec![],
+  };
+
+  assert!(matches!(
+    StatepointRecord::new(&rec),
+    Err(StatepointError::NonConstantHeader { index: 0 })
+  ));
+}
+
+#[test]
+fn eval_indirect_missing_reg_errors() {
+  let loc = Location::Indirect {
+    size: 8,
+    dwarf_reg: X86_64_DWARF_REG_SP,
+    offset: 0,
+  };
+  let regs = FakeRegs {
+    regs: Default::default(),
+  };
+  assert!(matches!(
+    eval_location(&loc, &regs),
+    Err(StatepointError::MissingRegister {
+      dwarf_reg: X86_64_DWARF_REG_SP
+    })
+  ));
+}
+
+#[test]
+fn eval_indirect_overflow_errors() {
+  let loc = Location::Indirect {
+    size: 8,
+    dwarf_reg: X86_64_DWARF_REG_SP,
+    offset: 1,
+  };
+  let regs = FakeRegs {
+    regs: [(X86_64_DWARF_REG_SP, u64::MAX)].into_iter().collect(),
+  };
+  assert!(matches!(
+    eval_location(&loc, &regs),
+    Err(StatepointError::AddressOverflow { .. })
+  ));
 }
