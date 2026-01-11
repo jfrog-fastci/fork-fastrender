@@ -90,6 +90,7 @@ const DEFAULT_COLOR_GLYPH_CACHE_ITEMS: usize = 2048;
 const DEFAULT_COLOR_GLYPH_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const ENV_COLOR_GLYPH_CACHE_ITEMS: &str = "FASTR_COLOR_GLYPH_CACHE_ITEMS";
 const ENV_COLOR_GLYPH_CACHE_BYTES: &str = "FASTR_COLOR_GLYPH_CACHE_BYTES";
+const ENV_TEXT_SUBPIXEL_AA_GAMMA: &str = "FASTR_TEXT_SUBPIXEL_AA_GAMMA";
 const SCALE_QUANTIZATION: f32 = 512.0;
 const DEADLINE_STRIDE: usize = 256;
 const SUBPIXEL_AA_SCALE_X: u32 = 3;
@@ -123,6 +124,37 @@ impl SubpixelAAScratch {
       .expect("pixmap should exist after allocation");
     pixmap.data_mut().fill(0);
     Ok(pixmap)
+  }
+}
+
+struct SubpixelAAGammaLut {
+  gamma: f32,
+  table: [u8; 256],
+}
+
+impl std::fmt::Debug for SubpixelAAGammaLut {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("SubpixelAAGammaLut")
+      .field("gamma", &self.gamma)
+      .finish()
+  }
+}
+
+impl SubpixelAAGammaLut {
+  fn new(gamma: f32) -> Self {
+    // Interpret `gamma` like a standard gamma value (>1 darkens edge coverage, <1 lightens).
+    let exponent = if gamma.is_finite() && gamma > 0.0 {
+      1.0 / gamma
+    } else {
+      1.0
+    };
+    let mut table = [0u8; 256];
+    for (idx, entry) in table.iter_mut().enumerate() {
+      let a = idx as f32 / 255.0;
+      let corrected = a.powf(exponent);
+      *entry = (corrected * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    Self { gamma, table }
   }
 }
 
@@ -949,6 +981,7 @@ pub struct TextRasterizer {
   color_renderer: ColorFontRenderer,
   hinting_enabled: bool,
   subpixel_aa_enabled: bool,
+  subpixel_aa_gamma: Option<SubpixelAAGammaLut>,
   subpixel_scratch: SubpixelAAScratch,
 }
 
@@ -1006,14 +1039,28 @@ impl TextRasterizer {
     color_renderer: ColorFontRenderer,
     color_cache: Arc<Mutex<ColorGlyphCache>>,
   ) -> Self {
-    let hinting_enabled = runtime::runtime_toggles().truthy("FASTR_TEXT_HINTING");
-    let subpixel_aa_enabled = runtime::runtime_toggles().truthy("FASTR_TEXT_SUBPIXEL_AA");
+    let toggles = runtime::runtime_toggles();
+    let hinting_enabled = toggles.truthy("FASTR_TEXT_HINTING");
+    let subpixel_aa_enabled = toggles.truthy("FASTR_TEXT_SUBPIXEL_AA");
+    let subpixel_aa_gamma = if subpixel_aa_enabled {
+      toggles.f64(ENV_TEXT_SUBPIXEL_AA_GAMMA).and_then(|gamma| {
+        let gamma = gamma as f32;
+        if gamma.is_finite() && gamma > 0.0 && (gamma - 1.0).abs() > 1e-6 {
+          Some(SubpixelAAGammaLut::new(gamma))
+        } else {
+          None
+        }
+      })
+    } else {
+      None
+    };
     Self {
       cache,
       color_cache,
       color_renderer,
       hinting_enabled,
       subpixel_aa_enabled,
+      subpixel_aa_gamma,
       subpixel_scratch: SubpixelAAScratch::default(),
     }
   }
@@ -1186,6 +1233,12 @@ impl TextRasterizer {
           cov_r = ((u16::from(cov_r) * u16::from(clip_alpha) + 127) / 255) as u8;
           cov_g = ((u16::from(cov_g) * u16::from(clip_alpha) + 127) / 255) as u8;
           cov_b = ((u16::from(cov_b) * u16::from(clip_alpha) + 127) / 255) as u8;
+        }
+
+        if let Some(gamma) = self.subpixel_aa_gamma.as_ref() {
+          cov_r = gamma.table[cov_r as usize];
+          cov_g = gamma.table[cov_g as usize];
+          cov_b = gamma.table[cov_b as usize];
         }
 
         if cov_r == 0 && cov_g == 0 && cov_b == 0 {

@@ -110,13 +110,13 @@ pub fn build_render_fixtures_command(
     // be redirected via `@font-face` aliases. Enable system font discovery on the FastRender side so
     // chrome diffs aren't dominated by generic font metric mismatches.
     cmd.arg("--system-fonts");
-     // Chrome baselines are captured with `--virtual-time-budget=5000ms`, which advances animated
-     // images (e.g. GIFs) even though CSS animations/transitions are disabled by the baseline patch.
-     // Sample at the timestamp that matches Chrome's screenshot output.
-     cmd
-       .arg("--animation-time-ms")
-       .arg(CHROME_BASELINE_ANIMATION_TIME_MS);
-   }
+    // Chrome baselines are captured with `--virtual-time-budget=5000ms`, which advances animated
+    // images (e.g. GIFs) even though CSS animations/transitions are disabled by the baseline patch.
+    // Sample at the timestamp that matches Chrome's screenshot output.
+    cmd
+      .arg("--animation-time-ms")
+      .arg(CHROME_BASELINE_ANIMATION_TIME_MS);
+  }
   if write_snapshot {
     cmd.arg("--write-snapshot");
   }
@@ -158,6 +158,15 @@ pub fn build_inspect_frag_command(
     let default_wait_ms = if args.patch_html_for_chrome_baseline { "0" } else { "500" };
     cmd.env("FASTR_WEB_FONT_WAIT_MS", default_wait_ms);
   }
+  if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_TEXT_SUBPIXEL_AA").is_none() {
+    // Keep inspect overlays aligned with `render_fixtures` fixture-chrome mode defaults.
+    cmd.env("FASTR_TEXT_SUBPIXEL_AA", "1");
+  }
+  if args.patch_html_for_chrome_baseline
+    && std::env::var_os("FASTR_TEXT_SUBPIXEL_AA_GAMMA").is_none()
+  {
+    cmd.env("FASTR_TEXT_SUBPIXEL_AA_GAMMA", "1.4");
+  }
   if args.patch_html_for_chrome_baseline && std::env::var_os("FASTR_HIDE_SCROLLBARS").is_none() {
     // Match `render_fixtures --patch-html-for-chrome-baseline` / Chrome baseline harness behavior
     // (no reserved scrollbar gutters).
@@ -169,14 +178,14 @@ pub fn build_inspect_frag_command(
   // URLs that should have been bundled into the fixture directory.
   cmd.arg("--deny-network");
   if args.patch_html_for_chrome_baseline {
-     cmd.arg("--patch-html-for-chrome-baseline");
-     // Keep inspect output aligned with the `render_fixtures` step when diffing against Chrome:
-     // generic font families in fixtures resolve via the host's system font database in Chrome.
-     cmd.arg("--system-fonts");
-     cmd
-       .arg("--animation-time-ms")
-       .arg(CHROME_BASELINE_ANIMATION_TIME_MS);
-   }
+    cmd.arg("--patch-html-for-chrome-baseline");
+    // Keep inspect output aligned with the `render_fixtures` step when diffing against Chrome:
+    // generic font families in fixtures resolve via the host's system font database in Chrome.
+    cmd.arg("--system-fonts");
+    cmd
+      .arg("--animation-time-ms")
+      .arg(CHROME_BASELINE_ANIMATION_TIME_MS);
+  }
   if let Some(overlay) = args.overlay_png.as_ref() {
     cmd.arg("--render-overlay").arg(overlay);
   }

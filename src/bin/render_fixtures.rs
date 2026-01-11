@@ -404,6 +404,11 @@ fn fixture_runtime_toggles_from_env_map(
   raw
     .entry("FASTR_TEXT_SUBPIXEL_AA".to_string())
     .or_insert_with(|| "1".to_string());
+  // Skia applies gamma correction when converting LCD mask coverage into device pixels; without
+  // it, subpixel AA tends to look too light compared to Chrome's headless output.
+  raw
+    .entry("FASTR_TEXT_SUBPIXEL_AA_GAMMA".to_string())
+    .or_insert_with(|| "1.4".to_string());
   // `xtask chrome-baseline-fixtures` renders fixtures via headless Chrome with `--hide-scrollbars`.
   // In this mode Chrome does *not* reserve classic scrollbar gutters, so pages paint to the right
   // edge (and `scrollbar-gutter: stable` has no effect).
