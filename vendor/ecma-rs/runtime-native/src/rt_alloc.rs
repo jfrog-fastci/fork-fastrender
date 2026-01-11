@@ -276,27 +276,25 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   let epoch = current_mark_epoch(global);
 
   if size > IMMIX_MAX_OBJECT_SIZE || align > IMMIX_BLOCK_SIZE {
-    return with_heap_lock_mutator(|heap| {
-      let obj = heap.los.alloc(size, align);
-      unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
-      unsafe {
-        let arr = &mut *(obj as *mut array::RtArrayHeader);
-        arr.len = len;
-        arr.elem_size = spec.elem_size as u32;
-        arr.elem_flags = spec.elem_flags;
-      }
-      if should_install_card_table {
-        let card_table = crate::gc::alloc_card_table(size);
-        if !card_table.is_null() {
-          // SAFETY: `card_table` was allocated with `alloc_card_table`, which
-          // guarantees the alignment + length required by `ObjHeader`.
-          unsafe {
-            (&mut *(obj as *mut ObjHeader)).set_card_table_ptr(card_table);
-          }
+    let obj = with_heap_lock_mutator(|heap| heap.los.alloc(size, align));
+    unsafe { init_object(obj, size, &array::RT_ARRAY_TYPE_DESC, epoch, false) };
+    unsafe {
+      let arr = &mut *(obj as *mut array::RtArrayHeader);
+      arr.len = len;
+      arr.elem_size = spec.elem_size as u32;
+      arr.elem_flags = spec.elem_flags;
+    }
+    if should_install_card_table {
+      let card_table = crate::gc::alloc_card_table(size);
+      if !card_table.is_null() {
+        // SAFETY: `card_table` was allocated with `alloc_card_table`, which
+        // guarantees the alignment + length required by `ObjHeader`.
+        unsafe {
+          (&mut *(obj as *mut ObjHeader)).set_card_table_ptr(card_table);
         }
       }
-      obj
-    });
+    }
+    return obj;
   }
 
   if let Some(obj) = TLS_ALLOC.with(|alloc| unsafe {

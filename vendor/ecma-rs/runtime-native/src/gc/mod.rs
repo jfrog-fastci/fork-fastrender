@@ -140,7 +140,7 @@ const META_FLAGS_MASK: usize = META_FORWARDED | META_MARK_MASK | META_REMEMBERED
 /// Card table pointers are stored in the high bits of `meta`; the low [`META_FLAGS_MASK`] bits are
 /// reserved for flags. Requiring `ptr & META_FLAGS_MASK == 0` is equivalent to requiring
 /// `ptr` be aligned to `META_FLAGS_MASK + 1` bytes.
-const CARD_TABLE_PTR_ALIGN: usize = META_FLAGS_MASK + 1;
+pub(crate) const CARD_TABLE_PTR_ALIGN: usize = META_FLAGS_MASK + 1;
 const _: () = assert!(CARD_TABLE_PTR_ALIGN.is_power_of_two());
 
 #[inline]

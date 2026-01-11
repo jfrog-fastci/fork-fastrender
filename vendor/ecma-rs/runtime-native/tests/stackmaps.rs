@@ -1,5 +1,4 @@
 use runtime_native::stackmaps::{Location, StackMap};
-use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 use runtime_native::statepoints::{StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP};
 use runtime_native::test_util::TestRuntimeGuard;
 

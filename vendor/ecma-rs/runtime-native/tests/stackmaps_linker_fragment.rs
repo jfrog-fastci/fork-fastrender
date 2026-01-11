@@ -46,11 +46,9 @@ fn compile_obj(clang: &str, out_dir: &Path) -> PathBuf {
   // `.dynamic`) rather than a minimal static binary.
   let asm = r#"
  .text
- .globl _start
- _start:
-   mov $60, %rax
-   xor %rdi, %rdi
-   syscall
+ .globl f
+ f:
+   ret
 
  .section .llvm_stackmaps,"a",@progbits
    .byte 1,2,3,4
