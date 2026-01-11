@@ -429,3 +429,133 @@ fn runtime_native_c_header_declares_all_exported_rt_symbols() {
     );
   }
 }
+
+#[test]
+fn runtime_native_staticlib_exports_expected_global_symbols() {
+  let _rt = TestRuntimeGuard::new();
+  if !cfg!(target_os = "linux") {
+    eprintln!("skipping: global symbol export check is only supported on Linux");
+    return;
+  }
+
+  // These symbols are part of the stable codegen/runtime ABI, but they're not `rt_*` functions:
+  // - `RT_GC_EPOCH`: safepoint epoch polled directly by generated code.
+  // - `RT_THREAD`:   TLS pointer to the current per-thread runtime record.
+  const EXPECTED_GLOBALS: &[&str] = &["RT_GC_EPOCH", "RT_THREAD"];
+
+  // `nm` is part of the standard toolchain on Ubuntu; still skip gracefully if absent.
+  if Command::new("nm")
+    .arg("--version")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .is_err()
+  {
+    eprintln!("skipping: `nm` not available");
+    return;
+  }
+
+  let header = include_str!("../include/runtime_native.h");
+  for sym in EXPECTED_GLOBALS {
+    assert!(
+      header.contains(sym),
+      "`runtime_native.h` is missing expected exported global symbol declaration: {sym}"
+    );
+  }
+
+  let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+  let staticlib = find_staticlib(&target_dir(), profile);
+
+  let out = Command::new("nm")
+    .arg("-g")
+    .arg("--defined-only")
+    .arg(&staticlib)
+    .output()
+    .expect("run nm");
+  assert!(
+    out.status.success(),
+    "nm failed for {}: status={:?} stderr={}",
+    staticlib.display(),
+    out.status,
+    String::from_utf8_lossy(&out.stderr)
+  );
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  let mut exported: std::collections::HashSet<&str> = std::collections::HashSet::new();
+  for line in stdout.lines() {
+    let line = line.trim();
+    if line.is_empty() || line.ends_with(':') {
+      continue;
+    }
+    if let Some(name) = line.split_whitespace().last() {
+      exported.insert(name);
+    }
+  }
+  for &sym in EXPECTED_GLOBALS {
+    assert!(
+      exported.contains(sym),
+      "expected {sym} to be defined in {}, but it was not present in `nm -g --defined-only` output",
+      staticlib.display()
+    );
+  }
+
+  // Best-effort: verify that RT_THREAD is actually emitted as a TLS symbol (not a plain global).
+  // This requires `readelf` (binutils); skip if unavailable.
+  if Command::new("readelf")
+    .arg("--version")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .is_err()
+  {
+    eprintln!("skipping: `readelf` not available; cannot verify RT_THREAD TLS symbol type");
+    return;
+  }
+
+  let out = Command::new("readelf")
+    .arg("-s")
+    .arg(&staticlib)
+    .output()
+    .expect("run readelf");
+  assert!(
+    out.status.success(),
+    "readelf failed for {}: status={:?} stderr={}",
+    staticlib.display(),
+    out.status,
+    String::from_utf8_lossy(&out.stderr)
+  );
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  let mut saw_tls_rt_thread = false;
+  let mut saw_defined_gc_epoch = false;
+  for line in stdout.lines() {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.len() < 8 {
+      continue;
+    }
+    let name = tokens[tokens.len() - 1];
+    if name == "RT_THREAD" {
+      // readelf columns (typical):
+      //   Num: Value Size Type Bind Vis Ndx Name
+      // We want: Type=TLS and Ndx != UND.
+      let ty = tokens.get(3).copied().unwrap_or_default();
+      let ndx = tokens.get(6).copied().unwrap_or_default();
+      if ty == "TLS" && ndx != "UND" {
+        saw_tls_rt_thread = true;
+      }
+    } else if name == "RT_GC_EPOCH" {
+      let ndx = tokens.get(6).copied().unwrap_or_default();
+      if ndx != "UND" {
+        saw_defined_gc_epoch = true;
+      }
+    }
+  }
+  assert!(
+    saw_tls_rt_thread,
+    "expected RT_THREAD to be a defined TLS symbol in {} (via `readelf -s`), but it was not found",
+    staticlib.display()
+  );
+  assert!(
+    saw_defined_gc_epoch,
+    "expected RT_GC_EPOCH to be defined in {} (via `readelf -s`), but it was not found",
+    staticlib.display()
+  );
+}
