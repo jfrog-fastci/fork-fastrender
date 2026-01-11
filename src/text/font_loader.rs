@@ -83,6 +83,7 @@ use std::sync::Mutex;
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 use std::time::Instant;
+use std::cell::RefCell;
 use url::Url;
 use wuff::decompress_woff1;
 use wuff::decompress_woff2;
@@ -367,6 +368,57 @@ impl Drop for PendingTask {
     }
     cvar.notify_all();
   }
+}
+
+thread_local! {
+  /// When set, web-font registration is gated on a per-thread basis.
+  ///
+  /// `load_web_fonts_with_options` uses this to start non-blocking `@font-face` loads immediately,
+  /// but delay the point at which they can become visible to font resolution until after blocking
+  /// faces have been activated. This keeps `font-display` semantics deterministic while still
+  /// letting swap fonts make progress during the blocking window.
+  static WEB_FONT_REGISTRATION_GATE: RefCell<Option<Arc<(Mutex<bool>, Condvar)>>> = const { RefCell::new(None) };
+}
+
+struct WebFontRegistrationGateGuard {
+  previous: Option<Arc<(Mutex<bool>, Condvar)>>,
+}
+
+impl WebFontRegistrationGateGuard {
+  fn install(gate: Arc<(Mutex<bool>, Condvar)>) -> Self {
+    let previous = WEB_FONT_REGISTRATION_GATE.with(|cell| {
+      let mut slot = cell.borrow_mut();
+      std::mem::replace(&mut *slot, Some(gate))
+    });
+    Self { previous }
+  }
+}
+
+impl Drop for WebFontRegistrationGateGuard {
+  fn drop(&mut self) {
+    let previous = self.previous.take();
+    WEB_FONT_REGISTRATION_GATE.with(|cell| {
+      let mut slot = cell.borrow_mut();
+      *slot = previous;
+    });
+  }
+}
+
+fn wait_for_web_font_registration_gate() -> Result<()> {
+  let gate = WEB_FONT_REGISTRATION_GATE.with(|cell| (*cell.borrow()).clone());
+  let Some(gate) = gate else {
+    return Ok(());
+  };
+  let (lock, cvar) = &*gate;
+  let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+  while !*guard {
+    render_control::check_active(RenderStage::Css)?;
+    let (g, _result) = cvar
+      .wait_timeout(guard, Duration::from_millis(10))
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard = g;
+  }
+  Ok(())
 }
 
 /// Font context for text operations
@@ -1436,17 +1488,14 @@ impl FontContext {
     let mut started_count = 0usize;
     let (block_tx, block_rx) = mpsc::channel::<usize>();
     let mut blocking_jobs: Vec<(usize, Instant, String, FontDisplay)> = Vec::new();
-    // `font-display: swap` faces should not be able to affect layout for the initial render
-    // unless the caller explicitly waits for them (e.g. via `wait_for_pending_web_fonts`).
+    // Non-blocking faces (`font-display: swap`, or any display when the render policy disables
+    // blocking) must not affect layout for the initial render unless the caller explicitly waits
+    // for them (e.g. via `wait_for_pending_web_fonts`).
     //
-    // Previously we spawned swap loads alongside blocking faces and then called
-    // `activate_loaded_web_fonts` after blocking jobs completed. When the swap face finished
-    // quickly (especially under concurrent fixture renders), it could register before the
-    // activation step and become "active" for layout nondeterministically.
-    //
-    // To keep `font-display` semantics deterministic, we defer non-blocking faces until after we
-    // have activated any blocking fonts.
-    let mut deferred_faces: Vec<(usize, String, FontFaceRule, Option<String>)> = Vec::new();
+    // We still want their fetch/decode work to overlap with blocking faces so the deferred fonts
+    // have the best chance of completing within the caller's wait window. Start them immediately,
+    // but gate registration into the web-font set until after blocking faces have been activated.
+    let registration_gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
     let events: Arc<Mutex<Vec<FontLoadEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let expired_jobs: Arc<Mutex<HashSet<usize>>> = Arc::new(Mutex::new(HashSet::new()));
     let render_deadline = render_control::active_deadline().filter(|d| d.is_enabled());
@@ -1583,12 +1632,37 @@ impl FontContext {
           let _ = done_tx.send(job_id);
         });
       } else {
-        deferred_faces.push((
-          order,
-          family.clone(),
-          face.clone(),
-          base_url.map(|b| b.to_string()),
-        ));
+        let face_clone = face.clone();
+        let family_clone = family.clone();
+        let base = base_url.map(|b| b.to_string());
+        let guard = PendingTask::new(self.pending_async.clone());
+        let ctx = self.clone();
+        let events = Arc::clone(&events);
+        let render_deadline = render_deadline.clone();
+        let registration_gate = Arc::clone(&registration_gate);
+        std::thread::spawn(move || {
+          let display = face_clone.display.unwrap_or(FontDisplay::Auto);
+          let _pending = guard;
+          let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
+          let _gate_guard = WebFontRegistrationGateGuard::install(registration_gate);
+          if render_control::check_active(RenderStage::Css).is_err() {
+            record_font_event(
+              &events,
+              FontLoadEvent::skipped(&family_clone, None, display, "render cancelled"),
+            );
+            return;
+          }
+          let start = Instant::now();
+          let event = ctx.load_face_sources_with_report(
+            &family_clone,
+            &face_clone,
+            base.as_deref(),
+            order,
+            start,
+            allow_remote,
+          );
+          record_font_event(&events, event);
+        });
       }
     }
     drop(block_tx);
@@ -1600,36 +1674,11 @@ impl FontContext {
       render_deadline.as_ref(),
     );
     self.activate_loaded_web_fonts();
-
-    // Start non-blocking faces after activation so they cannot be observed as active for this
-    // render until an explicit wait/activation step is performed.
-    for (order, family, face, base) in deferred_faces {
-      let guard = PendingTask::new(self.pending_async.clone());
-      let ctx = self.clone();
-      let events = Arc::clone(&events);
-      let render_deadline = render_deadline.clone();
-      std::thread::spawn(move || {
-        let display = face.display.unwrap_or(FontDisplay::Auto);
-        let _pending = guard;
-        let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
-        if render_control::check_active(RenderStage::Css).is_err() {
-          record_font_event(
-            &events,
-            FontLoadEvent::skipped(&family, None, display, "render cancelled"),
-          );
-          return;
-        }
-        let start = Instant::now();
-        let event = ctx.load_face_sources_with_report(
-          &family,
-          &face,
-          base.as_deref(),
-          order,
-          start,
-          allow_remote,
-        );
-        record_font_event(&events, event);
-      });
+    {
+      let (lock, cvar) = &*registration_gate;
+      let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      *guard = true;
+      cvar.notify_all();
     }
     let events = match Arc::try_unwrap(events) {
       Ok(mutex) => mutex.into_inner().unwrap_or_default(),
@@ -2111,6 +2160,7 @@ impl FontContext {
     if let Some(id) = id {
       if let Some(font) = self.db.load_font(id) {
         render_control::check_active(RenderStage::Css)?;
+        wait_for_web_font_registration_gate()?;
         if display_allows_use(face.display.unwrap_or(FontDisplay::Auto), start.elapsed()) {
           self.register_web_font(
             family.to_string(),
@@ -2240,6 +2290,7 @@ impl FontContext {
       }
     };
     render_control::check_active(RenderStage::Css)?;
+    wait_for_web_font_registration_gate()?;
     if !display_allows_use(face.display.unwrap_or(FontDisplay::Auto), start.elapsed()) {
       return Ok(LoadOutcome::Skipped);
     }
@@ -4553,7 +4604,14 @@ mod tests {
     let expected_ascent = effective_font_size * 0.9309;
     let expected_descent = effective_font_size * 0.2539;
     let expected_line_gap = 0.0;
-    let expected_line_height = expected_ascent + expected_descent + expected_line_gap;
+    // The font loader snaps `line-height: normal` to whole CSS pixels when metric overrides are
+    // active to avoid accumulating subpixel drift across long documents.
+    let raw_line_height = expected_ascent + expected_descent + expected_line_gap;
+    let mut expected_line_height = raw_line_height.round();
+    let min_line_height = (expected_ascent + expected_descent).ceil();
+    if expected_line_height < min_line_height {
+      expected_line_height = min_line_height;
+    }
     assert!(
       (scaled.ascent - expected_ascent).abs() < 1e-3,
       "expected ascent {}, got {}",
@@ -4961,6 +5019,48 @@ mod tests {
         )
         .is_none(),
       "cancelled render must not produce an active web font match"
+    );
+  }
+
+  #[test]
+  fn non_blocking_faces_begin_loading_before_blocking_faces_finish() {
+    let font_bytes = include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec();
+    let block_url = "https://example.com/block.ttf".to_string();
+    let swap_url = "https://example.com/swap.ttf".to_string();
+    let fetcher = Arc::new(DelayedRecordingFetcher::new(vec![
+      (block_url.clone(), font_bytes.clone(), Duration::from_millis(150)),
+      (swap_url.clone(), font_bytes, Duration::from_millis(250)),
+    ]));
+    let ctx = FontContext::with_database_and_fetcher(Arc::new(FontDatabase::empty()), fetcher);
+
+    let block_face = FontFaceRule {
+      family: Some("BlockFace".to_string()),
+      sources: vec![FontFaceSource::url(block_url)],
+      display: Some(FontDisplay::Block),
+      ..Default::default()
+    };
+    let swap_face = FontFaceRule {
+      family: Some("SwapFace".to_string()),
+      sources: vec![FontFaceSource::url(swap_url)],
+      display: Some(FontDisplay::Swap),
+      ..Default::default()
+    };
+
+    // The swap face takes longer than the explicit wait window, so if its load does not start until
+    // after we finish blocking on `BlockFace`, it will not become active in time.
+    ctx
+      .load_web_fonts(&[block_face, swap_face], None, None)
+      .expect("schedule web fonts");
+
+    assert!(
+      ctx.wait_for_pending_web_fonts(Duration::from_millis(200)),
+      "expected swap web font to settle within the wait window when loading overlaps the blocking period"
+    );
+    assert!(
+      ctx
+        .get_font_simple("SwapFace", 400, FontStyle::Normal)
+        .is_some(),
+      "expected swap web font to be active after the wait"
     );
   }
 
