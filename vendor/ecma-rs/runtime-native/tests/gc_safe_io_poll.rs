@@ -25,8 +25,8 @@ fn stop_the_world_completes_while_io_worker_blocked_in_poll() {
   let (rfd, wfd) = pipe();
 
   // Large enough to overflow the pipe buffer so the worker thread blocks in poll().
-  let buf = ArrayBuffer::new_zeroed(1024 * 1024).unwrap();
-  let view = Uint8Array::view(&buf, 0, buf.byte_len()).unwrap();
+  let buffer = ArrayBuffer::new_zeroed(1024 * 1024).expect("ArrayBuffer alloc failed");
+  let view = Uint8Array::view(&buffer, 0, buffer.byte_len()).expect("Uint8Array view failed");
 
   let _promise = io_rt
     .write(wfd, &view, 0..view.length())

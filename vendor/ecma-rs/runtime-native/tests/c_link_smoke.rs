@@ -166,7 +166,7 @@ int main(void) {
   // test isn't flaky under contention.
   int timer_fired = 0;
   TimerId t = rt_set_timeout(set_int, (uint8_t*)&timer_fired, 2000);
-
+ 
   int settled = 0;
   LegacyPromiseRef p = rt_spawn_blocking(blocking_task, (uint8_t*)0);
   rt_promise_then_legacy(p, set_int, (uint8_t*)&settled);
@@ -177,7 +177,9 @@ int main(void) {
   // link smoke test, not a latency test.
   for (int i = 0; i < 5000 && !settled; i++) {
     rt_async_poll_legacy();
-    sleep_us(1000);
+    if (!settled) {
+      sleep_us(1000);
+    }
   }
   rt_clear_timer(t);
   if (!settled) {
