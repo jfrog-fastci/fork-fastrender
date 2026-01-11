@@ -153,7 +153,7 @@ pub(crate) fn promise_outcome(p: PromiseRef) -> PromiseOutcome {
       if let Some(h) = decode_root_handle(h) {
         let value = crate::roots::global_persistent_handle_table()
           .get(h)
-          .unwrap_or(core::ptr::null_mut());
+          .unwrap_or_else(|| std::process::abort());
         PromiseOutcome::Fulfilled(value.cast())
       } else {
         PromiseOutcome::Fulfilled(unsafe { &*ptr }.value.load(Ordering::Acquire) as ValueRef)
@@ -164,7 +164,7 @@ pub(crate) fn promise_outcome(p: PromiseRef) -> PromiseOutcome {
       if let Some(h) = decode_root_handle(h) {
         let err = crate::roots::global_persistent_handle_table()
           .get(h)
-          .unwrap_or(core::ptr::null_mut());
+          .unwrap_or_else(|| std::process::abort());
         PromiseOutcome::Rejected(err.cast())
       } else {
         PromiseOutcome::Rejected(unsafe { &*ptr }.error.load(Ordering::Acquire) as ValueRef)

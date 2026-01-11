@@ -389,8 +389,8 @@ impl Task {
   /// be kept alive until the task runs.
   ///
   /// # Safety
-  /// `data` must be a valid pointer to a GC-managed object for the eventual GC
-  /// implementation.
+  /// `data` must be a valid pointer to a GC-managed **object base pointer** (start of `ObjHeader`),
+  /// not an interior pointer into an object payload.
   pub unsafe fn new_gc_rooted(callback: TaskFn, data: *mut u8) -> Self {
     Self {
       callback,
