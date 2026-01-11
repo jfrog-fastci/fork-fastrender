@@ -92,11 +92,21 @@ pub fn debug_poll_lock_is_held() -> bool {
 // Single-driver guard for driving entrypoints.
 // -----------------------------------------------------------------------------
 
-/// Thread id (best-effort OS thread id / stable hash) of the currently-active async driver.
+/// Thread id of the currently-active async driver.
 ///
 /// - `0` means "no active driver"
 /// - non-zero means "thread X is currently driving"
 static DRIVER_THREAD_ID: AtomicU64 = AtomicU64::new(0);
+
+// We need a collision-free identifier for "this thread" to enforce single-driver semantics.
+//
+// - On Linux/Android we use `gettid()` (u64), which is unique per thread.
+// - Elsewhere, we use the address of a thread-local token (unique per live thread) rather than
+//   hashing `std::thread::ThreadId` (which could theoretically collide).
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+thread_local! {
+  static DRIVER_GUARD_THREAD_TOKEN: u8 = 0;
+}
 
 fn current_thread_id_u64() -> u64 {
   #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -107,14 +117,10 @@ fn current_thread_id_u64() -> u64 {
 
   #[cfg(not(any(target_os = "linux", target_os = "android")))]
   {
-    use std::hash::Hash;
-    use std::hash::Hasher;
-
-    let tid = std::thread::current().id();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    tid.hash(&mut hasher);
-    let hashed = hasher.finish();
-    if hashed != 0 { hashed } else { 1 }
+    DRIVER_GUARD_THREAD_TOKEN.with(|token| {
+      let id = token as *const u8 as usize as u64;
+      if id != 0 { id } else { 1 }
+    })
   }
 }
 
