@@ -133,6 +133,137 @@ fn trim_css_whitespace(value: &str) -> &str {
   value.trim_matches(is_css_whitespace_char)
 }
 
+fn value_has_unbalanced_delimiters(value: &str) -> bool {
+  // `cssparser` will often treat EOF as implicitly closing open blocks/functions. Browsers do not
+  // apply var()/if()/attr() substitution when the authored value contains unterminated blocks (e.g.
+  // `fill: var(--c;`), so we reject such values up-front to match CSS syntax validity.
+  //
+  // This scan ignores delimiters inside comments/strings and honors CSS escape sequences so
+  // `\\(` does not start a parenthesis block.
+  let bytes = value.as_bytes();
+  let mut i = 0usize;
+  let mut in_comment = false;
+  let mut in_string: Option<u8> = None;
+  let mut string_escape = false;
+  let mut parens = 0usize;
+  let mut brackets = 0usize;
+  let mut braces = 0usize;
+
+  fn is_css_ascii_whitespace_byte(b: u8) -> bool {
+    matches!(b, b'\t' | b'\n' | 0x0C | b'\r' | b' ')
+  }
+
+  while i < bytes.len() {
+    let b = bytes[i];
+
+    if in_comment {
+      if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+        in_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+
+    if let Some(quote) = in_string {
+      if string_escape {
+        string_escape = false;
+        i += 1;
+        continue;
+      }
+      if b == b'\\' {
+        string_escape = true;
+        i += 1;
+        continue;
+      }
+      if b == quote {
+        in_string = None;
+        i += 1;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+
+    // Not inside a string/comment.
+    if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+      in_comment = true;
+      i += 2;
+      continue;
+    }
+
+    if b == b'"' || b == b'\'' {
+      in_string = Some(b);
+      i += 1;
+      continue;
+    }
+
+    // Consume CSS escapes so escaped delimiters don't affect the balance.
+    if b == b'\\' {
+      i += 1;
+      if i >= bytes.len() {
+        // Trailing backslash => invalid escape => invalid syntax.
+        return true;
+      }
+
+      let next = bytes[i];
+      // Escaped newline is removed.
+      if next == b'\n' {
+        i += 1;
+        continue;
+      }
+
+      if next.is_ascii_hexdigit() {
+        // Consume up to 6 hex digits.
+        let mut consumed = 0usize;
+        while i < bytes.len() && bytes[i].is_ascii_hexdigit() && consumed < 6 {
+          i += 1;
+          consumed += 1;
+        }
+        // Optional whitespace after hex escape.
+        if i < bytes.len() && is_css_ascii_whitespace_byte(bytes[i]) {
+          i += 1;
+        }
+        continue;
+      }
+
+      // Escape the next codepoint.
+      i += 1;
+      continue;
+    }
+
+    match b {
+      b'(' => parens += 1,
+      b')' => {
+        if parens == 0 {
+          return true;
+        }
+        parens -= 1;
+      }
+      b'[' => brackets += 1,
+      b']' => {
+        if brackets == 0 {
+          return true;
+        }
+        brackets -= 1;
+      }
+      b'{' => braces += 1,
+      b'}' => {
+        if braces == 0 {
+          return true;
+        }
+        braces -= 1;
+      }
+      _ => {}
+    }
+
+    i += 1;
+  }
+
+  in_comment || in_string.is_some() || parens > 0 || brackets > 0 || braces > 0
+}
+
 /// Returns true when the token stream starts with a CSS-wide keyword and contains additional
 /// non-whitespace/comment tokens.
 ///
@@ -850,6 +981,10 @@ where
 {
   if depth >= MAX_RECURSION_DEPTH {
     return Err(VarResolutionResult::RecursionLimitExceeded);
+  }
+
+  if value_has_unbalanced_delimiters(value) {
+    return Err(VarResolutionResult::InvalidSyntax(value.to_string()));
   }
 
   let mut input = ParserInput::new(value);

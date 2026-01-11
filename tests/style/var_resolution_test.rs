@@ -518,6 +518,18 @@ fn test_var_with_whitespace() {
 }
 
 #[test]
+fn unterminated_var_function_is_invalid_syntax_even_if_variable_exists() {
+  let props = make_props(&[("--color", "red")]);
+  let value = PropertyValue::Keyword("var(--color".to_string());
+
+  let resolved = resolve_var_for_property(&value, &props, "color");
+  assert!(
+    matches!(resolved, VarResolutionResult::InvalidSyntax(_)),
+    "expected invalid syntax result, got {resolved:?}"
+  );
+}
+
+#[test]
 fn test_non_var_value_unchanged() {
   let props = make_props(&[("--unused", "value")]);
   let value = PropertyValue::Length(Length::px(42.0));

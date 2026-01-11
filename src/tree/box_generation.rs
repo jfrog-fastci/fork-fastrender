@@ -1146,10 +1146,109 @@ fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
   if trim_ascii_whitespace(extra).is_empty() {
     return;
   }
+  fn style_value_has_unterminated_blocks(value: &str) -> bool {
+    // NOTE: We can't rely on `cssparser` for this check because its error recovery can differ from
+    // what SVG rasterizers (usvg/resvg) accept. We're looking specifically for author style strings
+    // that would swallow any extra declarations we append (e.g. `fill: var(--c;`), so a cheap
+    // balanced-delimiter scan is sufficient and keeps the logic independent of parser quirks.
+    let bytes = value.as_bytes();
+    let mut i = 0usize;
+    let mut in_comment = false;
+    let mut in_string: Option<u8> = None;
+    let mut string_escape = false;
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
+
+    while i < bytes.len() {
+      let b = bytes[i];
+
+      if in_comment {
+        if b == b'*' && bytes.get(i + 1) == Some(&b'/') {
+          in_comment = false;
+          i += 2;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+
+      if let Some(quote) = in_string {
+        if string_escape {
+          string_escape = false;
+          i += 1;
+          continue;
+        }
+        if b == b'\\' {
+          string_escape = true;
+          i += 1;
+          continue;
+        }
+        if b == quote {
+          in_string = None;
+          i += 1;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+
+      if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+        in_comment = true;
+        i += 2;
+        continue;
+      }
+
+      if b == b'"' || b == b'\'' {
+        in_string = Some(b);
+        i += 1;
+        continue;
+      }
+
+      match b {
+        b'(' => parens += 1,
+        b')' => {
+          if parens == 0 {
+            return true;
+          }
+          parens -= 1;
+        }
+        b'[' => brackets += 1,
+        b']' => {
+          if brackets == 0 {
+            return true;
+          }
+          brackets -= 1;
+        }
+        b'{' => braces += 1,
+        b'}' => {
+          if braces == 0 {
+            return true;
+          }
+          braces -= 1;
+        }
+        _ => {}
+      }
+
+      i += 1;
+    }
+
+    in_comment || in_string.is_some() || parens > 0 || brackets > 0 || braces > 0
+  }
   if let Some((_, value)) = attrs
     .iter_mut()
     .find(|(name, _)| name.eq_ignore_ascii_case("style"))
   {
+    // Inline SVG serialization appends computed CSS declarations after the authored `style`
+    // attribute. Malformed authored style values (e.g. unterminated `var(`/`url(`) can cause
+    // resvg/usvg to treat the rest of the attribute as part of the broken declaration, swallowing
+    // the injected computed declarations and producing major paint diffs.
+    //
+    // If the authored style value contains unterminated blocks, drop it entirely so the injected
+    // computed declarations remain parseable.
+    if !value.is_empty() && style_value_has_unterminated_blocks(value) {
+      value.clear();
+    }
     if !trim_ascii_whitespace_end(value).ends_with(';') && !trim_ascii_whitespace(value).is_empty()
     {
       value.push(';');

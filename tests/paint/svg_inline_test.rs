@@ -192,6 +192,48 @@ fn inline_svg_use_inherits_fill_from_host_svg_element() {
 }
 
 #[test]
+fn inline_svg_malformed_style_attribute_does_not_break_inlined_presentation_styles() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <g fill="none" stroke="none" style="fill: var(--c;">
+          <rect width="20" height="20"></rect>
+        </g>
+      </svg>
+      "#;
+
+      let content = serialized_inline_svg(html, 30.0, 30.0).expect("svg content");
+      assert!(
+        !content.svg.contains("var(--c"),
+        "serialized SVG should drop malformed authored style before appending computed declarations; got: {}",
+        content.svg
+      );
+      assert!(
+        content.svg.contains("fill: none"),
+        "serialized SVG should include computed fill: none; got: {}",
+        content.svg
+      );
+
+      let mut renderer = FastRender::new().expect("renderer");
+      let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 10, 10),
+        [255, 255, 255, 255],
+        "malformed style attribute should not swallow injected fill: none"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_use_renders_when_host_svg_has_only_css_size() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
