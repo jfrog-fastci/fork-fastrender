@@ -187,12 +187,12 @@ fn fixture_stack_enumerates_root_pairs_from_stackmaps_with_callsite_sp_adjustmen
   // Regression guard: ensure our synthetic frame pointers model a callsite with extra SP adjustment
   // (e.g. outgoing stack args) such that reconstructing SP from `stack_size` would be wrong for
   // non-top frames.
-  let stack_size = callsites[1].1.stack_size;
-  assert_ne!(
-    stack_size,
-    u64::MAX,
-    "fixture must not use stack_size=u64::MAX for this regression"
-  );
+  let stack_size = match callsites[1].1.stack_size {
+    runtime_native::stackmaps::StackSize::Known(v) => v,
+    runtime_native::stackmaps::StackSize::Unknown => {
+      panic!("fixture must not use stack_size=Unknown for this regression");
+    }
+  };
   let old_locals = stack_size.checked_sub(8).expect("stack_size < FP_RECORD_SIZE");
   let old_sp = (caller2_fp as u64)
     .checked_sub(old_locals)
