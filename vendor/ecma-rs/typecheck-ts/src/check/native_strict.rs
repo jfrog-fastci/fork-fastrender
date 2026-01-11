@@ -179,6 +179,50 @@ pub fn validate_native_strict_body(
     }
   }
 
+  fn pat_contains_proto_mutation(
+    body: &Body,
+    pat: hir_js::PatId,
+    prototype_name: hir_js::NameId,
+    proto_name: hir_js::NameId,
+  ) -> bool {
+    let Some(pat) = body.pats.get(pat.0 as usize) else {
+      return false;
+    };
+    match &pat.kind {
+      PatKind::AssignTarget(expr) => {
+        expr_chain_contains_proto_mutation(body, *expr, prototype_name, proto_name)
+      }
+      PatKind::Assign { target, .. } => {
+        pat_contains_proto_mutation(body, *target, prototype_name, proto_name)
+      }
+      PatKind::Rest(inner) => pat_contains_proto_mutation(body, **inner, prototype_name, proto_name),
+      PatKind::Array(arr) => {
+        for elem in &arr.elements {
+          let Some(elem) = elem else {
+            continue;
+          };
+          if pat_contains_proto_mutation(body, elem.pat, prototype_name, proto_name) {
+            return true;
+          }
+        }
+        arr
+          .rest
+          .is_some_and(|rest| pat_contains_proto_mutation(body, rest, prototype_name, proto_name))
+      }
+      PatKind::Object(obj) => {
+        for prop in &obj.props {
+          if pat_contains_proto_mutation(body, prop.value, prototype_name, proto_name) {
+            return true;
+          }
+        }
+        obj
+          .rest
+          .is_some_and(|rest| pat_contains_proto_mutation(body, rest, prototype_name, proto_name))
+      }
+      PatKind::Ident(_) => false,
+    }
+  }
+
   fn is_effective_any(store: &TypeStore, relate: &RelateCtx, ty: TypeId) -> bool {
     let ty = store.canon(ty);
     match store.type_kind(ty) {
@@ -490,13 +534,7 @@ pub fn validate_native_strict_body(
         }
       }
       ExprKind::Assignment { target, .. } => {
-        let Some(target_pat) = body.pats.get(target.0 as usize) else {
-          continue;
-        };
-        let PatKind::AssignTarget(target_expr) = &target_pat.kind else {
-          continue;
-        };
-        if expr_chain_contains_proto_mutation(body, *target_expr, prototype_name, proto_name) {
+        if pat_contains_proto_mutation(body, *target, prototype_name, proto_name) {
           let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
           diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
             "prototype mutation is forbidden when `native_strict` is enabled",

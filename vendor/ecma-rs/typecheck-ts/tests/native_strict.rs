@@ -336,6 +336,24 @@ fn native_strict_bans_update_on_prototype() {
 }
 
 #[test]
+fn native_strict_bans_destructuring_assign_to_prototype() {
+  let source =
+    "declare const Foo: { prototype: object };\n({ x: Foo.prototype } = { x: {} });";
+  let (diagnostics, file_id) = check(source, true);
+  let needle = "{ x: Foo.prototype } = { x: {} }";
+  let start = source.find(needle).expect("expr") as u32;
+  let span = TextRange::new(start, start + needle.len() as u32);
+  assert!(
+    diagnostics.iter().any(|diag| {
+      diag.code.as_str() == codes::NATIVE_STRICT_PROTOTYPE_MUTATION.as_str()
+        && diag.primary.file == file_id
+        && diag.primary.range == span
+    }),
+    "expected prototype mutation diagnostic at {span:?}, got {diagnostics:?}"
+  );
+}
+
+#[test]
 fn native_strict_bans_delete_on_prototype() {
   let source = "declare const Foo: { prototype: { x: number } };\ndelete Foo.prototype.x;";
   let (diagnostics, file_id) = check(source, true);
