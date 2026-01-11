@@ -229,3 +229,115 @@
   parallelizable: true
   idempotent: true
   deterministic: true
+
+- name: node:path.sep
+  kind: value
+  aliases:
+    - path.sep
+  since: "v0.1.0"
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:path.delimiter
+  kind: value
+  aliases:
+    - path.delimiter
+  since: "v0.1.0"
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:path.posix.sep
+  kind: value
+  aliases:
+    - path.posix.sep
+  since: "v0.1.0"
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:path.posix.delimiter
+  kind: value
+  aliases:
+    - path.posix.delimiter
+  since: "v0.1.0"
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:path.win32.sep
+  kind: value
+  aliases:
+    - path.win32.sep
+  since: "v0.1.0"
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:path.win32.delimiter
+  kind: value
+  aliases:
+    - path.win32.delimiter
+  since: "v0.1.0"
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:path.toNamespacedPath
+  kind: function
+  aliases:
+    - path.toNamespacedPath
+  since: "v0.1.0"
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

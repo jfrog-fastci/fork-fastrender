@@ -591,3 +591,399 @@
   parallelizable: false
   idempotent: false
   deterministic: false
+
+- name: node:fs.appendFile
+  kind: function
+  aliases:
+    - fs.appendFile
+  since: "v0.1.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.appendFileSync
+  kind: function
+  aliases:
+    - fs.appendFileSync
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.promises.appendFile
+  kind: function
+  aliases:
+    - fs.promises.appendFile
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs/promises.appendFile
+  kind: function
+  aliases:
+    - fs/promises.appendFile
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.rename
+  kind: function
+  aliases:
+    - fs.rename
+  since: "v0.1.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.renameSync
+  kind: function
+  aliases:
+    - fs.renameSync
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.promises.rename
+  kind: function
+  aliases:
+    - fs.promises.rename
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs/promises.rename
+  kind: function
+  aliases:
+    - fs/promises.rename
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.realpath
+  kind: function
+  aliases:
+    - fs.realpath
+  since: "v0.1.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.realpathSync
+  kind: function
+  aliases:
+    - fs.realpathSync
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.promises.realpath
+  kind: function
+  aliases:
+    - fs.promises.realpath
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs/promises.realpath
+  kind: function
+  aliases:
+    - fs/promises.realpath
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.lstat
+  kind: function
+  aliases:
+    - fs.lstat
+  since: "v0.1.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.lstatSync
+  kind: function
+  aliases:
+    - fs.lstatSync
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.promises.lstat
+  kind: function
+  aliases:
+    - fs.promises.lstat
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs/promises.lstat
+  kind: function
+  aliases:
+    - fs/promises.lstat
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.readlink
+  kind: function
+  aliases:
+    - fs.readlink
+  since: "v0.1.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.readlinkSync
+  kind: function
+  aliases:
+    - fs.readlinkSync
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.promises.readlink
+  kind: function
+  aliases:
+    - fs.promises.readlink
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs/promises.readlink
+  kind: function
+  aliases:
+    - fs/promises.readlink
+  since: "v10.0.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: read_only
+    template: read_only
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.createReadStream
+  kind: function
+  aliases:
+    - fs.createReadStream
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: node:fs.createWriteStream
+  kind: function
+  aliases:
+    - fs.createWriteStream
+  since: "v0.1.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0]
+    io: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false

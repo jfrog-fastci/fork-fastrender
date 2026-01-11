@@ -53,3 +53,71 @@
   deterministic: false
   properties:
     encoding.output: ascii
+
+- name: node:crypto.randomFill
+  kind: function
+  aliases:
+    - crypto.randomFill
+  since: "v7.10.0"
+  effects:
+    base: [async, nondeterministic, may_throw]
+    nondeterministic: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:crypto.randomFillSync
+  kind: function
+  aliases:
+    - crypto.randomFillSync
+  since: "v7.10.0"
+  effects:
+    base: [nondeterministic, may_throw]
+    nondeterministic: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: node:crypto.createHmac
+  kind: function
+  aliases:
+    - crypto.createHmac
+  since: "v0.1.0"
+  effects:
+    base: [alloc, may_throw]
+    allocates: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:crypto.timingSafeEqual
+  kind: function
+  aliases:
+    - crypto.timingSafeEqual
+  since: "v6.6.0"
+  effects:
+    base: [may_throw]
+    template: pure
+    may_throw: true
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

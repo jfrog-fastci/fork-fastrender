@@ -69,3 +69,59 @@
   parallelizable: true
   idempotent: true
   deterministic: true
+
+- name: node:buffer.Buffer.concat
+  kind: function
+  aliases:
+    - buffer.Buffer.concat
+    - Buffer.concat
+  since: "v0.1.0"
+  effects:
+    base: [alloc, may_throw]
+    depends_on_args: [0]
+    allocates: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:buffer.Buffer.compare
+  kind: function
+  aliases:
+    - buffer.Buffer.compare
+    - Buffer.compare
+  since: "v0.1.0"
+  effects:
+    base: []
+    template: pure
+  purity:
+    kind: pure
+    template: pure
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:buffer.Buffer.allocUnsafe
+  kind: function
+  aliases:
+    - buffer.Buffer.allocUnsafe
+    - Buffer.allocUnsafe
+  since: "v0.1.0"
+  effects:
+    base: [alloc, nondeterministic, may_throw]
+    depends_on_args: [0]
+    allocates: true
+    nondeterministic: true
+    may_throw: true
+  purity:
+    kind: impure
+    template: impure
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: false

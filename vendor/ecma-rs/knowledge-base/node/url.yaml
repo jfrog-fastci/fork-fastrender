@@ -1,0 +1,35 @@
+- name: node:url.fileURLToPath
+  kind: function
+  aliases:
+    - url.fileURLToPath
+  since: "v10.12.0"
+  effects:
+    base: [alloc, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity:
+    kind: allocating
+    template: allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:url.pathToFileURL
+  kind: function
+  aliases:
+    - url.pathToFileURL
+  since: "v10.12.0"
+  effects:
+    base: [alloc, may_throw]
+    template: pure
+    allocates: true
+    may_throw: true
+  purity:
+    kind: allocating
+    template: allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
