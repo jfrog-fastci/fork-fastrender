@@ -470,24 +470,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
   fn u_r_l_set_attribute_href<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1027,39 +1009,6 @@ pub mod window {
         converted_args,
       )?;
       Ok(rt.js_undefined())
-    }
-  }
-
-  #[allow(dead_code)]
-  fn window_alert<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    let argcount = std::cmp::min(args.len(), 1);
-    match argcount {
-      0 => {
-        {
-          let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-          let result = host.call_operation(rt, None, "Window", "alert", 0, converted_args)?;
-          binding_value_to_js::<Host, R>(rt, result)
-        }
-      },
-      1 => {
-        {
-          let mut converted_args: Vec<BindingValue<R::JsValue>> = Vec::new();
-          let v0 = if args.len() > 0 { args[0] } else { rt.js_undefined() };
-          converted_args.push({ let s = rt.to_string(v0)?; BindingValue::String(rt.js_string_to_rust_string(s)?) });
-          let result = host.call_operation(rt, None, "Window", "alert", 1, converted_args)?;
-          binding_value_to_js::<Host, R>(rt, result)
-        }
-      },
-      _ => Err(rt.throw_type_error(&format!("No matching overload for Window.alert with {} arguments.\nCandidates:\n  - Window.alert()\n  - Window.alert(DOMString)", args.len()))),
     }
   }
 
@@ -1959,24 +1908,6 @@ pub mod worker {
       return Err(rt.throw_type_error("Illegal invocation"));
     }
     let result = host.get_attribute(rt, Some(this), "URL", "href")?;
-    binding_value_to_js::<Host, R>(rt, result)
-  }
-
-  #[allow(dead_code)]
-  fn u_r_l_get_attribute_origin<Host, R>(
-    rt: &mut R,
-    host: &mut Host,
-    this: R::JsValue,
-    _args: &[R::JsValue],
-  ) -> Result<R::JsValue, R::Error>
-  where
-    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
-    Host: WebHostBindings<R>,
-  {
-    if !rt.is_object(this) {
-      return Err(rt.throw_type_error("Illegal invocation"));
-    }
-    let result = host.get_attribute(rt, Some(this), "URL", "origin")?;
     binding_value_to_js::<Host, R>(rt, result)
   }
 
