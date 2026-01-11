@@ -3,8 +3,8 @@
 //! This code is intentionally small and self-contained:
 //! - It models the lock-free protocol using a Treiber stack of waiter nodes.
 //! - It is compiled in two modes:
-//!   - default: `std::sync` atomics + Arc/Mutex
-//!   - `--features loom`: `loom::sync` atomics + Arc/Mutex
+//!   - default: `std::sync` atomics + Mutex
+//!   - `--features loom`: `loom::sync` atomics + Mutex
 //!
 //! The integration tests in `tests/loom_promise_waiters.rs` run under Loom and
 //! assert no lost wakeups / no double wakes under all interleavings.
@@ -64,8 +64,8 @@ impl Coroutine {
   }
 
   fn wake(&self) {
-    // SAFETY: `ready_queue` points to the `Mutex` inside an `Arc`; the tests
-    // keep that `Arc` alive for at least as long as any coroutine can be woken.
+    // SAFETY: `ready_queue` points to the `ReadyQueue` value; the Loom tests keep
+    // that value alive for at least as long as any waiter can be woken.
     unsafe {
       (&*self.ready_queue)
         .lock()
