@@ -13,6 +13,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::time::Duration;
 
+use crate::abi::PromiseRef;
 use crate::async_rt;
 use crate::time;
 
@@ -79,4 +80,36 @@ pub fn schedule_timer(delay: Duration, func: async_rt::TaskFn, data: *mut u8) ->
 
 pub fn set_microtask_checkpoint_end_hook(hook: Option<Box<dyn FnMut() + Send + 'static>>) {
   crate::async_runtime::set_microtask_checkpoint_end_hook(hook);
+}
+
+// --- Promise waiter test hooks ------------------------------------------------------------------
+
+/// RAII guard that enables a deterministic promise waiter race hook.
+///
+/// This is used by concurrency regression tests to force the interleaving:
+/// 1) coroutine observes the promise as pending,
+/// 2) another thread resolves the promise and drains its reaction list while it is still empty,
+/// 3) coroutine registers its await reaction and must *not* miss being scheduled.
+pub struct PromiseWaiterRaceGuard {
+  _hook: &'static async_rt::promise::PromiseWaiterRaceHook,
+}
+
+impl PromiseWaiterRaceGuard {
+  pub fn enable() -> Self {
+    let hook: &'static async_rt::promise::PromiseWaiterRaceHook =
+      Box::leak(Box::new(async_rt::promise::PromiseWaiterRaceHook::new()));
+    async_rt::promise::debug_set_waiter_race_hook(Some(hook));
+    Self { _hook: hook }
+  }
+}
+
+impl Drop for PromiseWaiterRaceGuard {
+  fn drop(&mut self) {
+    async_rt::promise::debug_set_waiter_race_hook(None);
+  }
+}
+
+/// Debug/test helper: is the promise's reaction list currently empty?
+pub fn promise_waiters_is_empty(p: PromiseRef) -> bool {
+  async_rt::promise::debug_waiters_is_empty(p)
 }

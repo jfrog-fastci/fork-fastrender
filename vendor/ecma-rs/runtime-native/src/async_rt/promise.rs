@@ -1,9 +1,10 @@
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use crate::abi::{PromiseRef, ValueRef};
 use crate::async_abi::PromiseHeader;
 use crate::promise_reactions::{enqueue_reaction_job, reverse_list, PromiseReactionNode, PromiseReactionVTable};
+use std::sync::{Condvar, Mutex};
 
 /// Internal promise state used while a promise is being settled.
 ///
@@ -174,6 +175,16 @@ pub(crate) fn promise_register_reaction(p: PromiseRef, node: *mut PromiseReactio
     return;
   }
 
+  // Test-only deterministic race hook: allow a resolver thread to settle/drain while this
+  // registration is paused before linking into `reactions`.
+  if let Some(hook) = debug_waiter_race_hook() {
+    let state = unsafe { &(*ptr).header.state }.load(Ordering::Acquire);
+    if state == PromiseHeader::PENDING {
+      hook.notify_waiter_checked_pending();
+      hook.wait_for_resolved();
+    }
+  }
+
   // Mark "handled" as soon as someone attaches a reaction (await/then). This is a placeholder for
   // future unhandled rejection tracking.
   unsafe { &(*ptr).header.flags }.fetch_or(0x1, Ordering::Release);
@@ -202,6 +213,11 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
     return;
   }
 
+  let hook = debug_waiter_race_hook();
+  if let Some(hook) = hook {
+    hook.wait_for_waiter_checked_pending();
+  }
+
   let state = unsafe { &(*ptr).header.state };
   if state
     .compare_exchange(
@@ -212,6 +228,9 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
     )
     .is_err()
   {
+    if let Some(hook) = hook {
+      hook.notify_resolved();
+    }
     return;
   }
 
@@ -221,12 +240,21 @@ pub(crate) fn promise_resolve(p: PromiseRef, value: ValueRef) {
   state.store(PromiseHeader::FULFILLED, Ordering::Release);
 
   drain_reactions(ptr);
+
+  if let Some(hook) = hook {
+    hook.notify_resolved();
+  }
 }
 
 pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
   let ptr = promise_ptr(p);
   if ptr.is_null() {
     return;
+  }
+
+  let hook = debug_waiter_race_hook();
+  if let Some(hook) = hook {
+    hook.wait_for_waiter_checked_pending();
   }
 
   let state = unsafe { &(*ptr).header.state };
@@ -239,6 +267,9 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
     )
     .is_err()
   {
+    if let Some(hook) = hook {
+      hook.notify_resolved();
+    }
     return;
   }
 
@@ -247,10 +278,99 @@ pub(crate) fn promise_reject(p: PromiseRef, err: ValueRef) {
   state.store(PromiseHeader::REJECTED, Ordering::Release);
 
   drain_reactions(ptr);
+
+  if let Some(hook) = hook {
+    hook.notify_resolved();
+  }
 }
 
 /// Debug/test-only helper: expose the raw header pointer for a promise handle.
 #[allow(dead_code)]
 pub(crate) fn promise_header(p: PromiseRef) -> crate::async_abi::PromiseRef {
   promise_header_ref(p)
+}
+
+// -----------------------------------------------------------------------------
+// Test hooks / debug helpers (not stable API)
+// -----------------------------------------------------------------------------
+
+pub(crate) struct PromiseWaiterRaceHook {
+  stage: Mutex<u8>,
+  cv: Condvar,
+}
+
+impl PromiseWaiterRaceHook {
+  pub(crate) fn new() -> Self {
+    Self {
+      stage: Mutex::new(0),
+      cv: Condvar::new(),
+    }
+  }
+
+  fn notify_waiter_checked_pending(&self) {
+    let mut stage = self.stage.lock().unwrap();
+    *stage = 1;
+    self.cv.notify_all();
+  }
+
+  fn wait_for_resolved(&self) {
+    let mut stage = self.stage.lock().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while *stage < 2 {
+      let now = std::time::Instant::now();
+      if now >= deadline {
+        panic!("timed out waiting for promise to be resolved during race hook");
+      }
+      let timeout = deadline - now;
+      let (guard, _) = self.cv.wait_timeout(stage, timeout).unwrap();
+      stage = guard;
+    }
+  }
+
+  fn wait_for_waiter_checked_pending(&self) {
+    let mut stage = self.stage.lock().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while *stage < 1 {
+      let now = std::time::Instant::now();
+      if now >= deadline {
+        panic!("timed out waiting for waiter registration during race hook");
+      }
+      let timeout = deadline - now;
+      let (guard, _) = self.cv.wait_timeout(stage, timeout).unwrap();
+      stage = guard;
+    }
+  }
+
+  fn notify_resolved(&self) {
+    let mut stage = self.stage.lock().unwrap();
+    *stage = 2;
+    self.cv.notify_all();
+  }
+}
+
+static DEBUG_WAITER_RACE_HOOK: AtomicPtr<PromiseWaiterRaceHook> = AtomicPtr::new(core::ptr::null_mut());
+
+pub(crate) fn debug_set_waiter_race_hook(hook: Option<&'static PromiseWaiterRaceHook>) {
+  let ptr = hook
+    .map(|h| h as *const PromiseWaiterRaceHook as *mut PromiseWaiterRaceHook)
+    .unwrap_or(core::ptr::null_mut());
+  DEBUG_WAITER_RACE_HOOK.store(ptr, Ordering::Release);
+}
+
+fn debug_waiter_race_hook() -> Option<&'static PromiseWaiterRaceHook> {
+  let ptr = DEBUG_WAITER_RACE_HOOK.load(Ordering::Acquire);
+  if ptr.is_null() {
+    None
+  } else {
+    // Safety: the hook is set only from tests and is expected to live for the duration of the test.
+    Some(unsafe { &*ptr })
+  }
+}
+
+pub(crate) fn debug_waiters_is_empty(p: PromiseRef) -> bool {
+  let ptr = promise_ptr(p);
+  if ptr.is_null() {
+    return true;
+  }
+  unsafe { &(*ptr).header.reactions }.load(Ordering::Acquire) == 0
 }
