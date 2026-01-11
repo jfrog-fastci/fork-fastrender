@@ -74,8 +74,10 @@ fn main() {
 
     let target_dir = project_dir.join("target");
 
+    // Speed up the nested build: we only care about the final link result (symbols + section
+    // retention), not debug info.
     let rustflags = format!(
-        "-C linker=clang-18 -C link-arg=-fuse-ld=lld -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
+        "-C debuginfo=0 -C linker=clang-18 -C link-arg=-fuse-ld=lld-18 -C link-arg=-Wl,-T,{} -C link-arg=-Wl,--gc-sections",
         stackmaps_ld.display()
     );
 
