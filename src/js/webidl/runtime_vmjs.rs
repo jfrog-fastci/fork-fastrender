@@ -498,6 +498,33 @@ impl<'a, Host> VmJsWebIdlBindingsCx<'a, Host> {
     }
   }
 
+  unsafe fn from_native_call_unchecked(
+    vm: &'a mut Vm,
+    scope: &'a mut Scope<'_>,
+    host: &mut Host,
+    hooks: &mut dyn VmHostHooks,
+    state: &'a VmJsWebIdlBindingsState<Host>,
+  ) -> Self
+  where
+    Host: 'static,
+  {
+    let cx = webidl_vm_js::VmJsWebIdlCx::from_native_call_unchecked(
+      vm,
+      scope,
+      host,
+      hooks,
+      state.limits,
+      state.hooks.as_ref(),
+    );
+    Self {
+      state,
+      cx,
+      cached_next_key: None,
+      cached_done_key: None,
+      cached_value_key: None,
+    }
+  }
+
   fn intrinsics(&self) -> Result<Intrinsics, VmError> {
     self.cx.vm.intrinsics().ok_or(VmError::InvariantViolation(
       "vm-js intrinsics not installed; expected an initialized Realm",
@@ -613,23 +640,16 @@ fn dispatch_native_call<Host: 'static>(
   // We also need to pass the host context to the host function body as `&mut Host`.
   //
   // `vm-js` native handlers give us `&mut dyn VmHost`; we downcast it to `&mut Host`. Building a
-  // WebIDL conversion context also wants a `&mut dyn VmHost`, but Rust cannot express "reborrow this
-  // same host for nested JS calls" while also passing `&mut Host` into the host function body.
-  // Capture raw pointers first so we can rehydrate the trait objects for the conversion context.
-  let host_ptr: *mut dyn VmHost = host;
-  let hooks_ptr: *mut dyn VmHostHooks = hooks;
-
+  // WebIDL conversion context also needs to be able to call back into JS using the same host
+  // context + hooks. Use the `*_unchecked` constructor so we can store raw pointers without
+  // borrowing `host`/`hooks` for the entire lifetime of `rt` (the host function callback needs
+  // `&mut Host`).
   let host = host_from_vm_host::<Host>(host)?;
-  // SAFETY: `host_ptr`/`hooks_ptr` came from the `&mut` parameters passed to this native handler.
-  // The returned `VmJsWebIdlBindingsCx` may call back into JS while the host function body is
-  // executing, and those nested calls must observe the same embedder host + hooks.
-  let mut rt = VmJsWebIdlBindingsCx::from_native_call(
-    vm,
-    scope,
-    unsafe { &mut *host_ptr },
-    unsafe { &mut *hooks_ptr },
-    state,
-  );
+  // SAFETY: The WebIDL conversion context stores raw pointers to `host`/`hooks`. Nested JS calls
+  // made by conversions (e.g. `ToPrimitive`/`ToNumber`) reborrow `host` and `hooks` via those
+  // pointers, and the host function body is suspended while that JS runs (no concurrent mutable
+  // access).
+  let mut rt = unsafe { VmJsWebIdlBindingsCx::from_native_call_unchecked(vm, scope, host, hooks, state) };
 
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
@@ -670,9 +690,6 @@ fn dispatch_native_construct<Host: 'static>(
     ));
   }
 
-  // See `dispatch_native_call` for why we capture raw pointers here.
-  let host_ptr: *mut dyn VmHost = host;
-  let hooks_ptr: *mut dyn VmHostHooks = hooks;
   let default_proto = state
     .constructor_default_protos
     .borrow()
@@ -695,14 +712,11 @@ fn dispatch_native_construct<Host: 'static>(
   let obj = scope.alloc_object_with_prototype(Some(proto))?;
   scope.push_root(Value::Object(obj))?;
 
+  // See `dispatch_native_call` for why we use the `*_unchecked` constructor here.
   let host = host_from_vm_host::<Host>(host)?;
-  let mut rt = VmJsWebIdlBindingsCx::from_native_call(
-    vm,
-    scope,
-    unsafe { &mut *host_ptr },
-    unsafe { &mut *hooks_ptr },
-    state,
-  );
+  // SAFETY: see `dispatch_native_call`.
+  let mut rt =
+    unsafe { VmJsWebIdlBindingsCx::from_native_call_unchecked(vm, scope, host, hooks, state) };
 
   // SAFETY: function pointer lifetimes are erased; we rehydrate it at the call site.
   let f: NativeHostFunction<VmJsWebIdlBindingsCx<'_, Host>, Host> =
