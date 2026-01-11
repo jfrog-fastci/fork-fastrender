@@ -117,7 +117,7 @@ fn parse_statepoint_stackmap_v3_and_index_by_return_address() -> Result<()> {
 
       declare void @callee(i64)
 
-      define void @foo(ptr addrspace(1) %p) gc "statepoint-example" {
+      define void @foo(ptr addrspace(1) %p) gc "coreclr" {
       entry:
         call void @callee(i64 1) ["gc-live"(ptr addrspace(1) %p)]
         ret void
