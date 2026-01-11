@@ -582,6 +582,74 @@ fn void_call_emits_no_gc_result() {
 }
 
 #[test]
+fn void_call_with_live_gc_pointer_emits_relocate_but_no_gc_result() {
+  let before = r#"
+  declare void @bar()
+
+  define void @test(ptr addrspace(1) %obj) gc "coreclr" {
+  entry:
+    call void @bar()
+    %isnull = icmp eq ptr addrspace(1) %obj, null
+    ret void
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void ()) @bar"))
+    .unwrap_or_else(|| panic!("missing @bar statepoint call in function:\n{func}"));
+  assert!(
+    statepoint_line.contains("call token") && statepoint_line.contains("@llvm.experimental.gc.statepoint"),
+    "expected @bar call to be rewritten into a `call token` gc.statepoint call, got:\n{statepoint_line}\n\n{func}"
+  );
+  let statepoint_token = assigned_ssa(statepoint_line)
+    .unwrap_or_else(|| panic!("unexpected statepoint line (not an assignment): {statepoint_line}"));
+
+  assert!(
+    !func.contains("call void @bar"),
+    "expected no direct call void @bar after rewrite:\n{func}"
+  );
+  assert!(
+    !func.contains("@llvm.experimental.gc.result"),
+    "void statepoint must not emit any gc.result intrinsic calls:\n{func}"
+  );
+
+  let gc_live_vars = parse_gc_live_vars(statepoint_line);
+  assert_eq!(
+    gc_live_vars,
+    vec!["%obj".to_string()],
+    "expected gc-live to contain only %obj, got {gc_live_vars:?}\n\n{func}"
+  );
+
+  let reloc_line = expect_relocate_line(&func, "%obj", "%obj");
+  let relocated_obj =
+    assigned_ssa(reloc_line).unwrap_or_else(|| panic!("expected relocate assignment: {reloc_line}"));
+  assert!(
+    reloc_line.contains(&format!("token {statepoint_token}")),
+    "expected gc.relocate to reference statepoint token {statepoint_token}, got:\n{reloc_line}\n\n{func}"
+  );
+  let (base_idx, derived_idx) =
+    parse_relocate_indices(reloc_line).unwrap_or_else(|| panic!("failed to parse relocate indices: {reloc_line}"));
+  assert_eq!(
+    (base_idx, derived_idx),
+    (0, 0),
+    "expected base/derived indices (0,0) for %obj relocation, got ({base_idx},{derived_idx})\n\n{func}"
+  );
+
+  assert!(
+    func.contains(&format!("icmp eq ptr addrspace(1) {relocated_obj}, null")),
+    "expected %obj use after safepoint to be rewritten to relocated value {relocated_obj}:\n{func}"
+  );
+  assert!(
+    func.lines().any(|l| l.trim() == "ret void"),
+    "expected function to still return void:\n{func}"
+  );
+}
+
+#[test]
 fn invoke_scalar_return_uses_gc_result() {
   // Exception edges matter in real runtimes (e.g. when compiling with unwind
   // tables or using language-level exceptions). Ensure `invoke` is rewritten and
