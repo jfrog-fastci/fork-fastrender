@@ -349,6 +349,56 @@ fn rt_io_register_with_drop_invalid_fd_drops_data_and_reports_other_error() {
 }
 
 #[test]
+fn rt_io_register_with_drop_drops_data_on_unregister() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let dropped = Box::new(AtomicUsize::new(0));
+  let dropped_ptr: *mut AtomicUsize = Box::into_raw(dropped);
+
+  let id = rt_io_register_with_drop(
+    rfd.as_raw_fd(),
+    RT_IO_READABLE,
+    noop_cb,
+    dropped_ptr.cast::<u8>(),
+    inc_drop_count,
+  );
+  assert_ne!(id, 0, "expected rt_io_register_with_drop to succeed");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "successful registration should clear the last error"
+  );
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    0,
+    "drop_data must not be invoked until unregister"
+  );
+
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should succeed"
+  );
+
+  // Drop hooks may be deferred until a safe point; drive the runtime to ensure it runs.
+  runtime_native::rt_async_run_until_idle();
+  assert_eq!(
+    unsafe { &*dropped_ptr }.load(Ordering::SeqCst),
+    1,
+    "drop_data must run when the watcher is unregistered"
+  );
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+
+  unsafe {
+    drop(Box::from_raw(dropped_ptr));
+  }
+}
+
+#[test]
 fn rt_io_register_with_drop_duplicate_fd_drops_data_and_reports_error() {
   let _rt = TestRuntimeGuard::new();
   let (rfd, _wfd) = pipe_nonblocking().unwrap();
@@ -429,6 +479,57 @@ fn rt_io_register_rooted_failure_does_not_leak_gc_root() {
 
   let pending = poll_once_with_immediate_timer();
   assert!(!pending, "runtime should be idle if no watcher leaked");
+}
+
+#[test]
+fn rt_io_register_rooted_keeps_gc_object_alive_until_unregistered() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, _wfd) = pipe_nonblocking().unwrap();
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, noop_cb, obj);
+  assert_ne!(id, 0, "expected rooted registration to succeed");
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "successful rooted registration should clear the last error"
+  );
+
+  // With the watcher still registered, the rooted context must keep the object alive across GC.
+  collect_major(&mut heap);
+  assert!(
+    !runtime_native::rt_weak_get(weak).is_null(),
+    "object should remain alive while rooted watcher is registered"
+  );
+
+  rt_io_unregister(id);
+  assert_eq!(
+    rt_io_debug_take_last_error(),
+    rt_io_debug::OK,
+    "rt_io_unregister should succeed"
+  );
+  runtime_native::rt_async_run_until_idle();
+
+  // Once unregistered, the rooted context must be released.
+  let deadline = Instant::now() + Duration::from_secs(2);
+  loop {
+    collect_major(&mut heap);
+    if runtime_native::rt_weak_get(weak).is_null() {
+      break;
+    }
+    assert!(
+      Instant::now() < deadline,
+      "object stayed alive after rooted watcher was unregistered (root not released?)"
+    );
+    std::thread::yield_now();
+  }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
 }
 
 #[test]
