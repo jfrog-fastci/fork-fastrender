@@ -666,6 +666,14 @@ pub fn active_stage_heartbeat() -> Option<StageHeartbeat> {
   ACTIVE_HEARTBEAT.with(|active| active.get())
 }
 
+/// Returns the currently installed stage heartbeat marker for this thread, if any.
+///
+/// This is an alias for [`active_stage_heartbeat`] and exists for callers that treat the heartbeat
+/// as the primary stage identifier (e.g. allocation budget attribution).
+pub fn active_heartbeat() -> Option<StageHeartbeat> {
+  active_stage_heartbeat()
+}
+
 // -----------------------------------------------------------------------------
 // Per-stage allocation budgets (best-effort)
 // -----------------------------------------------------------------------------
@@ -774,7 +782,6 @@ pub(crate) fn reserve_allocation(bytes: u64, context: &str) -> Result<(), Render
     Ok(())
   })
 }
-
 /// Check against any active deadline stored for the current thread.
 pub fn check_active(stage: RenderStage) -> Result<(), RenderError> {
   DEADLINE_STACK.with(|stack| {
@@ -1022,5 +1029,42 @@ mod tests {
       observed.lock().unwrap().clone(),
       vec![Some(RenderStage::Paint)]
     );
+  }
+
+  #[test]
+  fn record_stage_sets_active_heartbeat() {
+    // The Rust test harness reuses worker threads, so ensure TLS is clean even if a previous test
+    // left a stage/heartbeat installed.
+    record_stage(StageHeartbeat::Done);
+    assert_eq!(active_heartbeat(), Some(StageHeartbeat::Done));
+    record_stage(StageHeartbeat::PaintRasterize);
+    assert_eq!(active_heartbeat(), Some(StageHeartbeat::PaintRasterize));
+    record_stage(StageHeartbeat::Done);
+    assert_eq!(active_heartbeat(), Some(StageHeartbeat::Done));
+  }
+
+  #[test]
+  fn stage_heartbeat_guard_restores_previous() {
+    record_stage(StageHeartbeat::Done);
+    assert_eq!(active_heartbeat(), Some(StageHeartbeat::Done));
+
+    record_stage(StageHeartbeat::PaintRasterize);
+    assert_eq!(active_heartbeat(), Some(StageHeartbeat::PaintRasterize));
+
+    {
+      let _guard = StageHeartbeatGuard::install(Some(StageHeartbeat::PaintBuild));
+      assert_eq!(active_heartbeat(), Some(StageHeartbeat::PaintBuild));
+
+      {
+        let _inner_guard = StageHeartbeatGuard::install(None);
+        assert_eq!(active_heartbeat(), None);
+      }
+
+      assert_eq!(active_heartbeat(), Some(StageHeartbeat::PaintBuild));
+    }
+
+    assert_eq!(active_heartbeat(), Some(StageHeartbeat::PaintRasterize));
+    record_stage(StageHeartbeat::Done);
+    assert_eq!(active_heartbeat(), Some(StageHeartbeat::Done));
   }
 }

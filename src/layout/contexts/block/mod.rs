@@ -68,7 +68,8 @@ use crate::layout::utils::resolve_length_with_percentage_metrics;
 use crate::layout::utils::resolve_length_with_percentage_metrics_and_root_font_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::render_control::{
-  active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
+  active_deadline, active_heartbeat, active_stage, check_active, check_active_periodic, with_deadline,
+  StageGuard, StageHeartbeatGuard,
 };
 use crate::style::block_axis_is_horizontal;
 use crate::style::block_axis_positive;
@@ -3869,12 +3870,14 @@ impl BlockFormattingContext {
     }
     let deadline = active_deadline();
     let stage = active_stage();
+    let heartbeat = active_heartbeat();
     let child_layout_ctx = self.clone();
     let parallel_results = child_indices
       .par_iter()
       .map(|idx| {
         let child = &parent.children[*idx];
         with_deadline(deadline.as_ref(), || {
+          let _hb_guard = StageHeartbeatGuard::install(heartbeat);
           let _stage_guard = StageGuard::install(stage);
           child_layout_ctx.factory.debug_record_parallel_work();
           let fragment = child_layout_ctx.layout_block_child(

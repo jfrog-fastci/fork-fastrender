@@ -77,7 +77,8 @@ use crate::layout::utils::resolve_length_with_percentage_metrics;
 use crate::layout::utils::resolve_length_with_percentage_metrics_and_root_font_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::render_control::{
-  active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
+  active_deadline, active_heartbeat, active_stage, check_active, check_active_periodic, with_deadline,
+  StageGuard, StageHeartbeatGuard,
 };
 use crate::style::display::Display as CssDisplay;
 use crate::style::display::FormattingContextType;
@@ -5601,12 +5602,14 @@ impl GridFormattingContext {
 
     let deadline = active_deadline();
     let stage = active_stage();
+    let heartbeat = active_heartbeat();
     let should_parallelize_children = self.parallelism.should_parallelize(indices_to_layout.len());
     let child_results = if should_parallelize_children {
       indices_to_layout
         .par_iter()
         .map(|&idx| {
           with_deadline(deadline.as_ref(), || {
+            let _hb_guard = StageHeartbeatGuard::install(heartbeat);
             let _stage_guard = StageGuard::install(stage);
             factory.debug_record_parallel_work();
 

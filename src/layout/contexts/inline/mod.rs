@@ -69,7 +69,8 @@ use crate::layout::profile::LayoutKind;
 use crate::layout::utils::compute_replaced_size;
 use crate::layout::utils::resolve_length_with_percentage_metrics_and_root_font_metrics;
 use crate::render_control::{
-  active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
+  active_deadline, active_heartbeat, active_stage, check_active, check_active_periodic, with_deadline,
+  StageGuard, StageHeartbeatGuard,
 };
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
@@ -14307,12 +14308,14 @@ impl InlineFormattingContext {
       {
         let deadline = active_deadline();
         let stage = active_stage();
+        let heartbeat = active_heartbeat();
         // Rayon collects indexed parallel iterators in-order, but we explicitly stage the results
         // so we can append positioned fragments in document order even when work is parallelized.
         let positioned_results = positioned_children
           .par_iter()
           .map(|child| {
             with_deadline(deadline.as_ref(), || {
+              let _hb_guard = StageHeartbeatGuard::install(heartbeat);
               let _stage_guard = StageGuard::install(stage);
               self.factory.debug_record_parallel_work();
               layout_positioned_child(child)

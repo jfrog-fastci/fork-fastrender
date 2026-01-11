@@ -85,8 +85,9 @@ use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::TableCollapsedBorders;
 use crate::tree::table_fixup::TableStructureFixer;
 use crate::{
-  render_control::active_deadline, render_control::active_stage,
+  render_control::active_deadline, render_control::active_heartbeat, render_control::active_stage,
   render_control::check_active_periodic, render_control::with_deadline, render_control::StageGuard,
+  render_control::StageHeartbeatGuard,
 };
 use rayon::prelude::*;
 use std::borrow::Cow;
@@ -5535,6 +5536,7 @@ impl TableFormattingContext {
       if measure_cells_in_parallel {
         let deadline = active_deadline();
         let stage = active_stage();
+        let heartbeat = active_heartbeat();
         let measure = || {
           structure
             .cells
@@ -5542,6 +5544,7 @@ impl TableFormattingContext {
             .enumerate()
             .map(|(idx, cell)| {
               with_deadline(deadline.as_ref(), || {
+                let _hb_guard = StageHeartbeatGuard::install(heartbeat);
                 let _stage_guard = StageGuard::install(stage);
                 let Some(row) = source_rows.get(cell.source_row) else {
                   return Ok((idx, None));
@@ -7641,6 +7644,7 @@ impl FormattingContext for TableFormattingContext {
     let outcomes: Vec<CellOutcome> = if should_parallelize_cells {
       let deadline = active_deadline();
       let stage = active_stage();
+      let heartbeat = active_heartbeat();
       let record_parallel_work = self.parallelism.is_active();
       let layout_cells = || {
         structure
@@ -7648,6 +7652,7 @@ impl FormattingContext for TableFormattingContext {
           .par_iter()
           .map(|cell| {
             with_deadline(deadline.as_ref(), || {
+              let _hb_guard = StageHeartbeatGuard::install(heartbeat);
               let _stage_guard = StageGuard::install(stage);
               if record_parallel_work {
                 self.factory.debug_record_parallel_work();

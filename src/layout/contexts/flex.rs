@@ -79,7 +79,8 @@ use crate::layout::utils::resolve_length_with_percentage_metrics;
 use crate::layout::utils::resolve_length_with_percentage_metrics_and_root_font_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::render_control::{
-  active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
+  active_deadline, active_heartbeat, active_stage, check_active, check_active_periodic, with_deadline,
+  StageGuard, StageHeartbeatGuard,
 };
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
@@ -5500,6 +5501,7 @@ impl FormattingContext for FlexFormattingContext {
     let contributions = if self.parallelism.should_parallelize(box_node.children.len()) {
       let deadline = active_deadline();
       let stage = active_stage();
+      let heartbeat = active_heartbeat();
       let mut child_results = box_node
         .children
         .par_iter()
@@ -5508,6 +5510,7 @@ impl FormattingContext for FlexFormattingContext {
           || 0usize,
           |deadline_counter, (idx, child)| {
             with_deadline(deadline.as_ref(), || {
+              let _hb_guard = StageHeartbeatGuard::install(heartbeat);
               let _stage_guard = StageGuard::install(stage);
               self.factory.debug_record_parallel_work();
               check_layout_deadline(deadline_counter)?;
@@ -10594,12 +10597,14 @@ impl FlexFormattingContext {
 
       let outputs = if should_parallel_layout {
         let stage = active_stage();
+        let heartbeat = active_heartbeat();
         layout_work
           .par_iter()
           .map_init(
             || 0usize,
             |thread_deadline_counter, work| {
               with_deadline(deadline.as_ref(), || {
+                let _hb_guard = StageHeartbeatGuard::install(heartbeat);
                 let _stage_guard = StageGuard::install(stage);
                 self.factory.debug_record_parallel_work();
                 run_layout(thread_deadline_counter, work)

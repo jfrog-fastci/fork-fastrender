@@ -23387,9 +23387,11 @@ mod tests {
       }));
     }
 
-    let cancel: Arc<CancelCallback> = Arc::new(|| {
+    let expected_heartbeat = Some(crate::render_control::StageHeartbeat::PaintRasterize);
+    let cancel: Arc<CancelCallback> = Arc::new(move || {
       rayon::current_thread_index().is_some()
-        && crate::render_control::active_stage() != Some(RenderStage::Paint)
+        && (crate::render_control::active_stage() != Some(RenderStage::Paint)
+          || crate::render_control::active_heartbeat() != expected_heartbeat)
     });
     let deadline = RenderDeadline::new(None, Some(cancel));
 
@@ -23405,6 +23407,9 @@ mod tests {
     let report = one_thread.install(|| {
       crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&toggles), || {
         let _stage_guard = StageGuard::install(Some(RenderStage::Paint));
+        let _heartbeat_guard = crate::render_control::StageHeartbeatGuard::install(
+          Some(crate::render_control::StageHeartbeat::PaintRasterize),
+        );
         with_deadline(Some(&deadline), || {
           let mut parallelism = PaintParallelism::adaptive();
           parallelism.tile_size = 128;
