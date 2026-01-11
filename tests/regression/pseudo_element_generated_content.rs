@@ -193,3 +193,66 @@ fn near_fit_text_does_not_wrap_due_to_subpixel_rounding() {
     "expected near-fit text to stay on one line; fragments={text_fragments:?} measured_width={measured_width:.3} near_fit_width={near_fit_width:.3}"
   );
 }
+
+#[test]
+fn pseudo_element_content_attr_generates_text() {
+  let html = r#"<!doctype html>
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+  .box { font-size: 20px; }
+  .box::before { content: attr(data-content); }
+</style>
+<div class="box" data-content="X"></div>
+"#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let dom = renderer.parse_html(html).expect("parse html");
+  let fragment = renderer.layout_document(&dom, 200, 50).expect("layout");
+
+  let texts = fragment
+    .iter_fragments()
+    .filter_map(|frag| match &frag.content {
+      FragmentContent::Text { text, .. } => Some(text.to_string()),
+      _ => None,
+    })
+    .collect::<Vec<_>>()
+    .join(" ");
+
+  assert!(
+    texts.contains('X'),
+    "expected attr() generated content text; got: {texts:?}"
+  );
+}
+
+#[test]
+fn pseudo_element_content_attr_survives_var_resolution() {
+  // `attr()` is part of the `content` property grammar, not an arbitrary-substitution function
+  // like CSS Values 5 typed `attr()`. Ensure var() resolution doesn't eagerly resolve or drop it.
+  let html = r#"<!doctype html>
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+  :root { --label: attr(data-content); }
+  .box { font-size: 20px; }
+  .box::before { content: var(--label); }
+</style>
+<div class="box" data-content="Y"></div>
+"#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let dom = renderer.parse_html(html).expect("parse html");
+  let fragment = renderer.layout_document(&dom, 200, 50).expect("layout");
+
+  let texts = fragment
+    .iter_fragments()
+    .filter_map(|frag| match &frag.content {
+      FragmentContent::Text { text, .. } => Some(text.to_string()),
+      _ => None,
+    })
+    .collect::<Vec<_>>()
+    .join(" ");
+
+  assert!(
+    texts.contains('Y'),
+    "expected var()-expanded attr() generated content text; got: {texts:?}"
+  );
+}

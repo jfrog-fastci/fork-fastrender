@@ -403,6 +403,7 @@ fn try_resolve_var_calls_without_tokenizer<'a>(
   raw: &'a str,
   custom_properties: &'a CustomPropertyStore,
   depth: usize,
+  property_name: &str,
 ) -> Option<Result<String, VarResolutionResult<'a>>> {
   if depth >= MAX_RECURSION_DEPTH {
     return Some(Err(VarResolutionResult::RecursionLimitExceeded));
@@ -589,6 +590,7 @@ fn try_resolve_var_calls_without_tokenizer<'a>(
         custom_properties,
         &mut stack,
         depth,
+        property_name,
       ) {
         Ok(resolved) => push_css_with_token_splice_boundary(&mut output, resolved.as_ref()),
         Err(err) => return Some(Err(err)),
@@ -741,6 +743,7 @@ pub fn resolve_var_for_property<'a>(
             custom_properties,
             &mut stack,
             0,
+            property_name,
           ) {
             Ok(resolved) => match parse_value_after_resolution(resolved.as_ref(), property_name) {
               Some(parsed) => {
@@ -755,7 +758,9 @@ pub fn resolve_var_for_property<'a>(
           }
         }
 
-        if let Some(result) = try_resolve_var_calls_without_tokenizer(raw, custom_properties, 0) {
+        if let Some(result) =
+          try_resolve_var_calls_without_tokenizer(raw, custom_properties, 0, property_name)
+        {
           match result {
             Ok(resolved) => match parse_value_after_resolution(&resolved, property_name) {
               Some(parsed) => {
@@ -821,7 +826,7 @@ fn resolve_from_string<'a>(
   property_name: &str,
 ) -> VarResolutionResult<'a> {
   let mut stack = Vec::new();
-  match resolve_value_tokens(raw, custom_properties, &mut stack, depth) {
+  match resolve_value_tokens(raw, custom_properties, &mut stack, depth, property_name) {
     Ok(resolved) => match parse_value_after_resolution(&resolved, property_name) {
       Some(value) => VarResolutionResult::Resolved {
         value: ResolvedPropertyValue::Owned(value),
@@ -838,6 +843,7 @@ fn resolve_value_tokens<'a, 'i>(
   custom_properties: &'a CustomPropertyStore,
   stack: &mut Vec<String>,
   depth: usize,
+  property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
 where
   'a: 'i,
@@ -848,7 +854,7 @@ where
 
   let mut input = ParserInput::new(value);
   let mut parser = Parser::new(&mut input);
-  resolve_tokens_from_parser(&mut parser, custom_properties, stack, depth)
+  resolve_tokens_from_parser(&mut parser, custom_properties, stack, depth, property_name)
 }
 
 fn resolve_tokens_from_parser<'a, 'i, 't>(
@@ -856,6 +862,7 @@ fn resolve_tokens_from_parser<'a, 'i, 't>(
   custom_properties: &'a CustomPropertyStore,
   stack: &mut Vec<String>,
   depth: usize,
+  property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
 where
   'a: 'i,
@@ -869,7 +876,7 @@ where
     match token {
       Token::Function(name) if name.eq_ignore_ascii_case("var") => {
         let nested = parser.parse_nested_block(|nested| {
-          parse_var_function(nested, custom_properties, stack, depth)
+          parse_var_function(nested, custom_properties, stack, depth, property_name)
             .map_err(|err| nested.new_custom_error(err))
         });
         let resolved = map_nested_result(nested, "var")?;
@@ -877,25 +884,43 @@ where
       }
       Token::Function(name) if name.eq_ignore_ascii_case("if") => {
         let nested = parser.parse_nested_block(|nested| {
-          parse_if_function(nested, custom_properties, stack, depth)
+          parse_if_function(nested, custom_properties, stack, depth, property_name)
             .map_err(|err| nested.new_custom_error(err))
         });
         let resolved = map_nested_result(nested, "if")?;
         push_css_with_token_splice_boundary(&mut output, resolved.as_str());
       }
       Token::Function(name) if name.eq_ignore_ascii_case("attr") => {
-        let nested = parser.parse_nested_block(|nested| {
-          parse_attr_function(nested, custom_properties, stack, depth)
-            .map_err(|err| nested.new_custom_error(err))
-        });
-        let resolved = map_nested_result(nested, "attr")?;
-        push_css_with_token_splice_boundary(&mut output, resolved.as_str());
+        // Typed `attr()` (CSS Values 5) is an "arbitrary substitution function" that resolves at
+        // computed-value time, but `content: attr(...)` (CSS Generated Content) is part of the
+        // property grammar and is resolved later during pseudo-element generation.
+        //
+        // Preserve `attr(...)` when parsing the `content` property so downstream `ContentValue`
+        // parsing can see it.
+        if property_name.eq_ignore_ascii_case("content") {
+          push_css_with_token_splice_boundary(&mut output, name.as_ref());
+          output.push('(');
+          let nested = parser.parse_nested_block(|nested| {
+            resolve_tokens_from_parser(nested, custom_properties, stack, depth, property_name)
+              .map_err(|err| nested.new_custom_error(err))
+          });
+          let resolved = map_nested_result(nested, "attr")?;
+          output.push_str(&resolved);
+          output.push(')');
+        } else {
+          let nested = parser.parse_nested_block(|nested| {
+            parse_attr_function(nested, custom_properties, stack, depth, property_name)
+              .map_err(|err| nested.new_custom_error(err))
+          });
+          let resolved = map_nested_result(nested, "attr")?;
+          push_css_with_token_splice_boundary(&mut output, resolved.as_str());
+        }
       }
       Token::Function(name) => {
         push_css_with_token_splice_boundary(&mut output, name.as_ref());
         output.push('(');
         let nested = parser.parse_nested_block(|nested| {
-          resolve_tokens_from_parser(nested, custom_properties, stack, depth)
+          resolve_tokens_from_parser(nested, custom_properties, stack, depth, property_name)
             .map_err(|err| nested.new_custom_error(err))
         });
         // Avoid keeping `name` (which borrows from the parser input) live across the nested parse.
@@ -907,7 +932,7 @@ where
       Token::ParenthesisBlock => {
         push_css_with_token_splice_boundary(&mut output, "(");
         let nested = parser.parse_nested_block(|nested| {
-          resolve_tokens_from_parser(nested, custom_properties, stack, depth)
+          resolve_tokens_from_parser(nested, custom_properties, stack, depth, property_name)
             .map_err(|err| nested.new_custom_error(err))
         });
         let resolved = map_nested_result(nested, "()")?;
@@ -917,7 +942,7 @@ where
       Token::SquareBracketBlock => {
         push_css_with_token_splice_boundary(&mut output, "[");
         let nested = parser.parse_nested_block(|nested| {
-          resolve_tokens_from_parser(nested, custom_properties, stack, depth)
+          resolve_tokens_from_parser(nested, custom_properties, stack, depth, property_name)
             .map_err(|err| nested.new_custom_error(err))
         });
         let resolved = map_nested_result(nested, "[]")?;
@@ -927,7 +952,7 @@ where
       Token::CurlyBracketBlock => {
         push_css_with_token_splice_boundary(&mut output, "{");
         let nested = parser.parse_nested_block(|nested| {
-          resolve_tokens_from_parser(nested, custom_properties, stack, depth)
+          resolve_tokens_from_parser(nested, custom_properties, stack, depth, property_name)
             .map_err(|err| nested.new_custom_error(err))
         });
         let resolved = map_nested_result(nested, "{}")?;
@@ -959,6 +984,7 @@ fn parse_var_function<'a, 'i, 't>(
   custom_properties: &'a CustomPropertyStore,
   stack: &mut Vec<String>,
   depth: usize,
+  property_name: &str,
 ) -> Result<Cow<'a, str>, VarResolutionResult<'a>>
 where
   'a: 'i,
@@ -970,6 +996,7 @@ where
     custom_properties,
     stack,
     depth,
+    property_name,
   )
 }
 
@@ -984,6 +1011,7 @@ fn parse_if_function<'a, 'i, 't>(
   custom_properties: &'a CustomPropertyStore,
   stack: &mut Vec<String>,
   depth: usize,
+  property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
 where
   'a: 'i,
@@ -997,8 +1025,14 @@ where
   for branch in &branches {
     match branch.condition.as_deref() {
       Some(cond) => {
-        let cond_resolved =
-          resolve_value_tokens(cond, custom_properties, stack, depth + 1).map_err(|err| err)?;
+        let cond_resolved = resolve_value_tokens(
+          cond,
+          custom_properties,
+          stack,
+          depth + 1,
+          property_name,
+        )
+        .map_err(|err| err)?;
         if eval_if_condition(&cond_resolved) {
           selected = Some(branch.value.as_str());
           break;
@@ -1024,7 +1058,7 @@ where
     return Ok(selected.to_string());
   }
 
-  resolve_value_tokens(selected, custom_properties, stack, depth + 1)
+  resolve_value_tokens(selected, custom_properties, stack, depth + 1, property_name)
 }
 
 fn parse_attr_function<'a, 'i, 't>(
@@ -1032,6 +1066,7 @@ fn parse_attr_function<'a, 'i, 't>(
   custom_properties: &'a CustomPropertyStore,
   stack: &mut Vec<String>,
   depth: usize,
+  property_name: &str,
 ) -> Result<String, VarResolutionResult<'a>>
 where
   'a: 'i,
@@ -1074,7 +1109,7 @@ where
     {
       return Ok(fallback.to_string());
     }
-    resolve_value_tokens(fallback, custom_properties, stack, depth + 1)
+    resolve_value_tokens(fallback, custom_properties, stack, depth + 1, property_name)
   };
 
   let mut attr_value = current_style_element()
@@ -1099,7 +1134,7 @@ where
   if contains_ascii_case_insensitive_substitution_call(&attr_value)
     || (attr_value.as_bytes().contains(&b'\\') && attr_value.as_bytes().contains(&b'('))
   {
-    match resolve_value_tokens(&attr_value, custom_properties, stack, depth + 1) {
+    match resolve_value_tokens(&attr_value, custom_properties, stack, depth + 1, property_name) {
       Ok(resolved) => attr_value = resolved,
       Err(_) => {
         if let Some(fallback_text) = fallback_value.as_deref() {
@@ -1576,6 +1611,7 @@ fn resolve_variable_reference<'a>(
   custom_properties: &'a CustomPropertyStore,
   stack: &mut Vec<String>,
   depth: usize,
+  property_name: &str,
 ) -> Result<Cow<'a, str>, VarResolutionResult<'a>> {
   if depth >= MAX_RECURSION_DEPTH {
     return Err(VarResolutionResult::RecursionLimitExceeded);
@@ -1592,7 +1628,13 @@ fn resolve_variable_reference<'a>(
       return Ok(fallback_value);
     }
 
-    resolve_value_tokens(fallback_value.as_ref(), custom_properties, stack, depth + 1)
+    resolve_value_tokens(
+      fallback_value.as_ref(),
+      custom_properties,
+      stack,
+      depth + 1,
+      property_name,
+    )
       .map(Cow::Owned)
       .map_err(|err| match err {
         VarResolutionResult::NotFound(_) => VarResolutionResult::NotFound(name.to_string()),
@@ -1633,12 +1675,13 @@ fn resolve_variable_reference<'a>(
           custom_properties,
           stack,
           depth + 1,
+          property_name,
         )
       } else {
-        resolve_value_tokens(raw, custom_properties, stack, depth + 1).map(Cow::Owned)
+        resolve_value_tokens(raw, custom_properties, stack, depth + 1, property_name).map(Cow::Owned)
       }
     } else {
-      resolve_value_tokens(raw, custom_properties, stack, depth + 1).map(Cow::Owned)
+      resolve_value_tokens(raw, custom_properties, stack, depth + 1, property_name).map(Cow::Owned)
     };
     stack.pop();
 
@@ -1674,8 +1717,145 @@ fn resolve_variable_reference<'a>(
   Err(VarResolutionResult::NotFound(name.to_string()))
 }
 
+fn contains_var_or_if_substitution_function(value: &str) -> bool {
+  let bytes = value.as_bytes();
+  if bytes.len() < 3 {
+    return false;
+  }
+
+  #[inline]
+  fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_') || b >= 0x80
+  }
+
+  let mut in_string: Option<u8> = None;
+  let mut in_comment = false;
+  let mut has_backslash = false;
+  let mut has_open_paren = false;
+
+  let mut i = 0usize;
+  while i < bytes.len() {
+    let byte = bytes[i];
+
+    if in_comment {
+      if byte == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        in_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+
+    if let Some(quote) = in_string {
+      if byte == b'\\' {
+        i = (i + 2).min(bytes.len());
+        continue;
+      }
+      if byte == quote {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
+
+    // Not inside a string/comment.
+    if byte == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+      in_comment = true;
+      i += 2;
+      continue;
+    }
+
+    if byte == b'"' || byte == b'\'' {
+      in_string = Some(byte);
+      i += 1;
+      continue;
+    }
+
+    if byte == b'\\' {
+      has_backslash = true;
+    } else if byte == b'(' {
+      has_open_paren = true;
+    }
+
+    let prev = i.checked_sub(1).and_then(|idx| bytes.get(idx).copied());
+    let prev_is_ident = prev.is_some_and(is_ident_byte);
+
+    // `if(`
+    if !prev_is_ident
+      && i + 2 < bytes.len()
+      && byte.to_ascii_lowercase() == b'i'
+      && bytes[i + 1].to_ascii_lowercase() == b'f'
+      && bytes[i + 2] == b'('
+    {
+      return true;
+    }
+
+    // `var(`
+    if !prev_is_ident
+      && i + 3 < bytes.len()
+      && byte.to_ascii_lowercase() == b'v'
+      && bytes[i + 1].to_ascii_lowercase() == b'a'
+      && bytes[i + 2].to_ascii_lowercase() == b'r'
+      && bytes[i + 3] == b'('
+    {
+      return true;
+    }
+
+    i += 1;
+  }
+
+  if has_backslash && has_open_paren {
+    return contains_var_or_if_substitution_function_via_cssparser(value);
+  }
+
+  false
+}
+
+fn contains_var_or_if_substitution_function_via_cssparser(value: &str) -> bool {
+  let mut input = ParserInput::new(value);
+  let mut parser = Parser::new(&mut input);
+  contains_var_or_if_substitution_function_in_parser(&mut parser)
+}
+
+fn contains_var_or_if_substitution_function_in_parser<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> bool {
+  let mut found = false;
+
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::Function(name) if name.eq_ignore_ascii_case("var") || name.eq_ignore_ascii_case("if") => {
+        found = true;
+        let _ = parser.parse_nested_block(|nested| {
+          Ok::<_, ParseError<'i, ()>>(contains_var_or_if_substitution_function_in_parser(nested))
+        });
+      }
+      Token::Function(_)
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::CurlyBracketBlock => {
+        if let Ok(nested_found) = parser.parse_nested_block(|nested| {
+          Ok::<_, ParseError<'i, ()>>(contains_var_or_if_substitution_function_in_parser(nested))
+        }) {
+          if nested_found {
+            found = true;
+          }
+        }
+      }
+      _ => {}
+    }
+  }
+
+  found
+}
+
 fn parse_value_after_resolution(value: &str, property_name: &str) -> Option<PropertyValue> {
-  if contains_arbitrary_substitution_function(value) {
+  if property_name.eq_ignore_ascii_case("content") {
+    if contains_var_or_if_substitution_function(value) {
+      return None;
+    }
+  } else if contains_arbitrary_substitution_function(value) {
     return None;
   }
 
