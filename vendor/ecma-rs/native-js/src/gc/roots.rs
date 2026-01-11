@@ -40,8 +40,9 @@ use crate::gc::statepoint::StatepointEmitter;
 use crate::runtime_fn::GcEffect;
 use llvm_sys::core::{
   LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildLoad2, LLVMBuildStore, LLVMCreateBuilderInContext,
-  LLVMDisposeBuilder, LLVMGetPointerAddressSpace, LLVMGetReturnType, LLVMGetTypeKind,
-  LLVMGlobalGetValueType, LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMTypeOf,
+  LLVMDisposeBuilder, LLVMGetFirstInstruction, LLVMGetPointerAddressSpace, LLVMGetReturnType,
+  LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMPointerType, LLVMPositionBuilderAtEnd,
+  LLVMPositionBuilderBefore, LLVMTypeOf,
   LLVMVoidTypeInContext,
 };
 use llvm_sys::prelude::{
@@ -90,7 +91,18 @@ impl Drop for RootScope<'_> {
 impl GcFrame {
   pub unsafe fn new(ctx: LLVMContextRef, entry_block: LLVMBasicBlockRef) -> Self {
     let alloca_builder = LLVMCreateBuilderInContext(ctx);
-    LLVMPositionBuilderAtEnd(alloca_builder, entry_block);
+    // Ensure allocas dominate all uses, even if roots are created from within nested blocks.
+    //
+    // Inserting allocas at the end of the entry block is *usually* fine, but can produce invalid IR
+    // if a caller tries to root a value while the main builder is positioned earlier in the entry
+    // block (store would occur before alloca). Prefer inserting before the entry's first
+    // instruction, which guarantees dominance.
+    let first = LLVMGetFirstInstruction(entry_block);
+    if first.is_null() {
+      LLVMPositionBuilderAtEnd(alloca_builder, entry_block);
+    } else {
+      LLVMPositionBuilderBefore(alloca_builder, first);
+    }
 
     let gc_ptr_ty = LLVMPointerType(LLVMVoidTypeInContext(ctx), 1);
 
