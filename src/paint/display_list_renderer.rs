@@ -83,7 +83,7 @@ use crate::paint::optimize::DisplayListOptimizer;
 use crate::paint::painter::{
   paint_diagnostics_enabled, paint_diagnostics_session_id, PaintDiagnosticsThreadGuard,
 };
-use crate::paint::pixmap::{new_pixmap, reserve_buffer};
+use crate::paint::pixmap::{new_pixmap, new_pixmap_with_context, reserve_buffer};
 use crate::paint::projective_warp::{warp_pixmap_cached, WarpCache, WarpedPixmap};
 use crate::paint::rasterize::{
   box_shadow_blur_radius_to_sigma, estimate_box_shadow_work_pixels, render_box_shadow_cached_with_clamp,
@@ -16322,8 +16322,22 @@ impl DisplayListRenderer {
         continue;
       }
 
-      let Some(mut shadow_pixmap) = new_pixmap(shadow_width, shadow_height) else {
-        continue;
+      let mut shadow_pixmap = match new_pixmap_with_context(shadow_width, shadow_height, "text shadow")
+      {
+        Ok(pixmap) => pixmap,
+        Err(err) => {
+          // Render-control failures (deadline/budget) must bubble up; a cancelled render must not
+          // silently continue just because text shadows are best-effort.
+          if matches!(
+            &err,
+            RenderError::Timeout { .. }
+              | RenderError::StageMemoryBudgetExceeded { .. }
+              | RenderError::StageAllocationBudgetExceeded { .. }
+          ) {
+            return Err(Error::Render(err));
+          }
+          continue;
+        }
       };
       self.record_layer_allocation(shadow_width, shadow_height);
 
@@ -16337,8 +16351,8 @@ impl DisplayListRenderer {
       };
 
       // Ignore text rasterizer failures so shadows don't prevent painting the rest of the scene.
-      // However, deadline timeouts should always bubble up so paint-stage cancellation doesn't get
-      // silently ignored.
+      // However, render-control failures should always bubble up so paint-stage cancellation doesn't
+      // get silently ignored.
       let stroke = (item.stroke_width > 0.0 && item.stroke_color.a > 0.0).then_some(
         crate::paint::text_rasterize::TextStroke {
           width: item.stroke_width,
@@ -16364,7 +16378,11 @@ impl DisplayListRenderer {
         &mut shadow_pixmap,
       ) {
         Ok(_) => {}
-        Err(err @ Error::Render(RenderError::Timeout { .. })) => return Err(err),
+        Err(err @ Error::Render(
+          RenderError::Timeout { .. }
+          | RenderError::StageMemoryBudgetExceeded { .. }
+          | RenderError::StageAllocationBudgetExceeded { .. },
+        )) => return Err(err),
         Err(_) => continue,
       }
 
@@ -21228,7 +21246,9 @@ mod tests {
   use crate::paint::display_list::Transform3D;
   use crate::paint::display_list_builder::DisplayListBuilder;
   use crate::paint::rasterize::render_box_shadow;
-  use crate::render_control::{CancelCallback, RenderDeadline, StageGuard};
+  use crate::render_control::{
+    CancelCallback, RenderDeadline, StageAllocationBudget, StageAllocationBudgetGuard, StageGuard,
+  };
   use crate::style::color::{Color, Rgba};
   use crate::style::types::BackfaceVisibility;
   use crate::style::types::BackgroundImage;
@@ -21276,6 +21296,56 @@ mod tests {
     assert_eq!(snapped.y(), 20.0);
     assert_eq!(snapped.width(), 115.0);
     assert_eq!(snapped.height(), 115.0);
+  }
+
+  #[test]
+  fn text_shadow_allocation_budget_exceeded_propagates() {
+    let mut renderer =
+      DisplayListRenderer::new(64, 64, Rgba::TRANSPARENT, FontContext::new()).expect("renderer");
+
+    let budget = Arc::new(StageAllocationBudget::new(1));
+    let _budget_guard = StageAllocationBudgetGuard::install(Some(&budget));
+    let _stage_guard = StageGuard::install(Some(RenderStage::Paint));
+
+    let font = LoadedFont {
+      id: None,
+      data: Arc::new(Vec::new()),
+      index: 0,
+      face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      face_settings: crate::text::font_db::FontFaceShapingDescriptors::default(),
+      family: "Dummy".to_string(),
+      weight: crate::text::font_db::FontWeight::NORMAL,
+      style: crate::text::font_db::FontStyle::Normal,
+      stretch: crate::text::font_db::FontStretch::Normal,
+    };
+
+    let mut item = TextItem::default();
+    item.origin = Point::new(0.0, 20.0);
+    item.font_size = 10.0;
+    item.scale = 1.0;
+    item.glyphs = vec![GlyphInstance {
+      glyph_id: 1,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 10.0,
+      y_advance: 0.0,
+    }];
+    item.shadows = vec![TextShadowItem {
+      offset: Point::ZERO,
+      blur_radius: 0.0,
+      color: Rgba::BLACK,
+    }];
+
+    let err = renderer
+      .render_text_shadows(&font, &item)
+      .expect_err("expected allocation budget error");
+    match err {
+      Error::Render(RenderError::StageAllocationBudgetExceeded { stage, .. }) => {
+        assert_eq!(stage, RenderStage::Paint);
+      }
+      other => panic!("expected StageAllocationBudgetExceeded, got {other:?}"),
+    }
   }
 
   fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {

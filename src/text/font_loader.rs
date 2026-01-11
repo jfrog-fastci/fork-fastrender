@@ -3499,12 +3499,20 @@ fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
           ..HttpRetryPolicy::default()
         })
     });
-    let resource = fetcher.fetch(url).map_err(|e| {
-      Error::Font(crate::error::FontError::LoadFailed {
-        family: url.to_string(),
-        reason: e.to_string(),
-      })
-    })?;
+    let resource = match fetcher.fetch(url) {
+      Ok(resource) => resource,
+      Err(err) => {
+        // Preserve render-control errors (deadline/cancel/memory budgets) as `Error::Render` so
+        // callers can distinguish them from ordinary font load failures.
+        if matches!(&err, Error::Render(_)) {
+          return Err(err);
+        }
+        return Err(Error::Font(crate::error::FontError::LoadFailed {
+          family: url.to_string(),
+          reason: err.to_string(),
+        }));
+      }
+    };
     render_control::check_active(RenderStage::Css)?;
     if let Err(err) =
       ensure_http_success(&resource, url).and_then(|()| ensure_font_mime_sane(&resource, url))
@@ -3767,6 +3775,7 @@ pub struct TextMeasurement {
 mod tests {
   use super::*;
   use crate::debug::runtime::{set_runtime_toggles, RuntimeToggles};
+  use crate::error::RenderError;
   use crate::style::media::MediaContext;
   use crate::ComputedStyle;
   use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -4723,6 +4732,39 @@ mod tests {
     }
 
     handle.join().expect("server thread");
+  }
+
+  #[test]
+  fn fetch_font_bytes_propagates_render_control_error_from_http_fetcher() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Ensure `fetch_font_bytes` preserves render-control errors coming from the underlying
+    // HTTP fetcher (as opposed to wrapping them in `FontError::LoadFailed`).
+    //
+    // Trigger this by cancelling on the third deadline check:
+    // - `fetch_font_bytes` calls `check_active` twice before invoking the HTTP fetcher.
+    // - The HTTP fetcher checks again at the start of the request attempt.
+    let checks = Arc::new(AtomicUsize::new(0));
+    let checks_cb = Arc::clone(&checks);
+    let cancel: Arc<render_control::CancelCallback> = Arc::new(move || {
+      let prev = checks_cb.fetch_add(1, Ordering::Relaxed);
+      prev >= 2
+    });
+    let deadline = render_control::RenderDeadline::new(None, Some(cancel));
+
+    let url = "http://example.com/font.woff2";
+    let result = render_control::with_deadline(Some(&deadline), || fetch_font_bytes(url));
+    let err = result.expect_err("expected render cancellation");
+    assert!(
+      matches!(
+        err,
+        Error::Render(RenderError::Timeout {
+          stage: RenderStage::Css,
+          ..
+        })
+      ),
+      "expected render timeout, got {err:?}"
+    );
   }
 
   #[test]
