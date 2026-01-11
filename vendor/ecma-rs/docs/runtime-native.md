@@ -193,7 +193,8 @@ pub struct TaskId(pub u64);
 /// The async runtime must be able to store coroutine identities in OS/userdata
 /// (epoll/kqueue) and cross-thread wakers across awaits, so coroutine IDs must
 /// remain stable even under a moving/compacting GC.
-pub type HandleId = u64;
+#[repr(transparent)]
+pub struct HandleId(pub u64);
 
 /// Stable identifier for an async coroutine frame.
 pub type CoroutineId = HandleId;
