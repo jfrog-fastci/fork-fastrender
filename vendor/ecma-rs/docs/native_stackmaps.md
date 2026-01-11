@@ -18,15 +18,6 @@ must parse all blobs (see `runtime_native::stackmaps::StackMaps::parse`).
 This metadata is **not referenced by code**, so link-time and post-link size
 tools can accidentally remove it, breaking GC root discovery at runtime.
 
-## Multi-object linking: concatenated StackMap tables
-
-When linking multiple object files, linkers (GNU ld, lld) typically **concatenate**
-their `.llvm_stackmaps` input sections into one output section. The output bytes
-therefore commonly contain **multiple independent StackMap v3 blobs** back-to-back
-(one per object file), with optional 0-filled padding for alignment.
-
-At runtime you must parse the **entire** section, not just the first blob.
-
 ## Required sections
 
 - `.llvm_stackmaps` (StackMap v3; required for statepoints GC)
