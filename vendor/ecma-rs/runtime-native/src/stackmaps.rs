@@ -574,88 +574,16 @@ impl<'a> CallSite<'a> {
   /// LLVM statepoints encode GC relocation pairs after a small prefix:
   /// - 3 constant header locations (callconv, flags, deopt_count)
   /// - `deopt_count` deopt operand locations (not GC roots)
-  /// - `(base, derived)` pairs for each GC-live pointer
+  /// - `(base, derived)` pairs corresponding to `gc.relocate` uses
   ///
-  /// This helper decodes the statepoint header and then iterates only the trailing GC-live
-  /// locations. For other stackmap records, it yields an empty iterator.
-  /// - Filter `record.locations` down to pointer-bearing entries:
-  ///   - [`Location::Indirect`], [`Location::Register`], [`Location::Direct`]
-  /// - Exclude constants (`Constant`/`ConstIndex`) used for patchpoint metadata.
-  /// - Chunk into `(base, derived)` pairs, preserving the original order.
+  /// This helper uses [`crate::statepoints::StatepointRecord`] as the canonical decoder and
+  /// re-exports the decoded `(base, derived)` tail as [`RelocPair`]s.
+  ///
+  /// For non-statepoint records, it yields an empty iterator.
   pub fn reloc_pairs(&self) -> impl Iterator<Item = RelocPair> + '_ {
-    // `gc.relocate` pairing is only meaningful for LLVM statepoints. For other stackmap records
-    // (e.g. plain patchpoints), return an empty iterator.
-    //
-    // We detect statepoints by their structural prefix rather than by `patchpoint_id`. Our codegen
-    // uses `LLVM_STATEPOINT_PATCHPOINT_ID` as a convention, but that is not guaranteed by LLVM
-    // itself and other toolchains may emit different IDs.
-    let looks_like_statepoint = self.record.locations.len()
-      >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-      && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-        .iter()
-        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
-    if !looks_like_statepoint {
-      return RelocPairsIter::Empty;
-    }
-
-    let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
-      Ok(sp) => sp,
-      Err(err) => {
-        if self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
-          debug_assert!(
-            false,
-            "failed to decode statepoint stackmap record for reloc_pairs (err={err:?} record={:?})",
-            self.record
-          );
-        }
-        return RelocPairsIter::Empty;
-      }
-    };
-    let gc_locs = &self.record.locations[statepoint.gc_pairs_start()..];
-
-    #[derive(Clone)]
-    struct Iter<'a> {
-      locs: &'a [Location],
-      i: usize,
-    }
-
-    impl<'a> Iter<'a> {
-      fn next_ptr_loc(&mut self) -> Option<&'a Location> {
-        while let Some(loc) = self.locs.get(self.i) {
-          self.i += 1;
-          match loc {
-            Location::Indirect { .. } | Location::Register { .. } | Location::Direct { .. } => {
-              return Some(loc)
-            }
-            Location::Constant { .. } | Location::ConstIndex { .. } => {}
-          }
-        }
-        None
-      }
-    }
-
-    impl<'a> Iterator for Iter<'a> {
-      type Item = RelocPair;
-
-      fn next(&mut self) -> Option<Self::Item> {
-        let base = self.next_ptr_loc()?;
-        let derived = self.next_ptr_loc();
-        debug_assert!(
-          derived.is_some(),
-          "stackmap record has odd number of pointer-bearing locations (record={:?})",
-          self.locs
-        );
-        let derived = derived?;
-        Some(RelocPair {
-          base: base.clone(),
-          derived: derived.clone(),
-        })
-      }
-    }
-
     enum RelocPairsIter<'a> {
       Empty,
-      Pairs(Iter<'a>),
+      Pairs(core::slice::Iter<'a, crate::statepoints::GcLocationPair>),
     }
 
     impl<'a> Iterator for RelocPairsIter<'a> {
@@ -664,30 +592,32 @@ impl<'a> CallSite<'a> {
       fn next(&mut self) -> Option<Self::Item> {
         match self {
           RelocPairsIter::Empty => None,
-          RelocPairsIter::Pairs(iter) => iter.next(),
+          RelocPairsIter::Pairs(iter) => iter.next().map(|pair| RelocPair {
+            base: pair.base.clone(),
+            derived: pair.derived.clone(),
+          }),
         }
       }
     }
 
-    #[cfg(debug_assertions)]
-    {
-      let ptr_count = gc_locs
-        .iter()
-        .filter(|loc| {
-          matches!(
-            loc,
-            Location::Indirect { .. } | Location::Register { .. } | Location::Direct { .. }
-          )
-        })
-        .count();
-      debug_assert!(
-        ptr_count % 2 == 0,
-        "stackmap record has odd number of gc-live pointer-bearing locations (ptr_count={ptr_count}, record={:?})",
-        self.record
-      );
+    // `gc.relocate` pairing is only meaningful for LLVM statepoints. For other stackmap records
+    // (e.g. plain patchpoints), return an empty iterator.
+    if self.record.patchpoint_id != crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID {
+      return RelocPairsIter::Empty;
     }
 
-    RelocPairsIter::Pairs(Iter { locs: gc_locs, i: 0 })
+    let statepoint = match crate::statepoints::StatepointRecord::new(self.record) {
+      Ok(sp) => sp,
+      Err(err) => {
+        debug_assert!(
+          false,
+          "failed to decode statepoint stackmap record for reloc_pairs (err={err:?} record={:?})",
+          self.record
+        );
+        return RelocPairsIter::Empty;
+      }
+    };
+    RelocPairsIter::Pairs(statepoint.gc_pairs().iter())
   }
 
   /// Return a deduplicated list of GC root stack slots as offsets from the frame pointer (RBP/x29).
