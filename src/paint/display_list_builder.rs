@@ -6848,7 +6848,7 @@ impl DisplayListBuilder {
           if style.display.is_inline_level() {
             if style.display.establishes_formatting_context() {
               let mut fallback_decorations: Option<[ResolvedTextDecoration; 1]> = None;
-              let (ancestor_decorations, own_decorations) =
+              let (ancestor_decorations, _own_decorations) =
                 Self::split_text_decorations(style, &mut fallback_decorations);
 
               let rects = Self::background_rects(rect, style, self.viewport);
@@ -6877,24 +6877,10 @@ impl DisplayListBuilder {
                 );
               }
 
-              if !own_decorations.is_empty() {
-                let (inline_start, inline_len) = if ctx.inline_vertical {
-                  (rects.content.y(), rects.content.height())
-                } else {
-                  (rects.content.x(), rects.content.width())
-                };
-                let clip = self.line_decoration_clip_range(inline_start, inline_len);
-                self.emit_text_decorations_for_decorations(
-                  style,
-                  own_decorations,
-                  None,
-                  inline_start,
-                  inline_len,
-                  ctx.block_baseline,
-                  ctx.inline_vertical,
-                  clip,
-                );
-              }
+              // Atomic inlines (inline-block/inline-flex/...) establish their own formatting
+              // context. Browsers do not paint their own `text-decoration` as a full-width line for
+              // the atomic box itself (e.g. `<a style="display:inline-block"><img/></a>` should
+              // not be underlined). Instead, decorations are painted by descendant text runs.
             } else if matches!(fragment.content, FragmentContent::Inline { .. })
               && style.text_decoration_skip_box == TextDecorationSkipBox::None
             {
@@ -15170,6 +15156,33 @@ mod tests {
         .iter()
         .any(|i| matches!(i, DisplayItem::TextDecoration(_))),
       "display list should include text decoration items"
+    );
+  }
+
+  #[test]
+  fn atomic_inline_does_not_emit_text_decoration_items_without_text_runs() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::InlineBlock;
+    style.text_decoration.lines = TextDecorationLine::UNDERLINE;
+    style.text_decoration.color = Some(Rgba::BLACK);
+    style.font_size = 12.0;
+
+    let atomic = FragmentNode::new_inline_styled(
+      Rect::from_xywh(0.0, 0.0, 50.0, 16.0),
+      0,
+      vec![],
+      Arc::new(style),
+    );
+    let line = FragmentNode::new_line(Rect::from_xywh(0.0, 0.0, 50.0, 16.0), 12.0, vec![atomic]);
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 50.0, 16.0), vec![line]);
+
+    let list = DisplayListBuilder::new().build(&root);
+    assert!(
+      !list
+        .items()
+        .iter()
+        .any(|i| matches!(i, DisplayItem::TextDecoration(_))),
+      "atomic inlines should not emit full-width text decoration items without shaped text runs"
     );
   }
 
