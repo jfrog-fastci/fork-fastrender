@@ -119,6 +119,10 @@ I/O submission must acquire:
 Host-side non-I/O access must go through `try_with_slice` / `try_with_slice_mut`, which fail while
 any I/O borrow is active.
 
+These APIs take a callback that is generic over the slice lifetime (`for<'a>`), so safe Rust code
+cannot return the `&[u8]` / `&mut [u8]` and hold it beyond the call (which would allow aliasing
+across in-flight async I/O borrows).
+
 ## Invariants (turn these into asserts/tests)
 
 These invariants are the contract between the GC, buffer implementation, and

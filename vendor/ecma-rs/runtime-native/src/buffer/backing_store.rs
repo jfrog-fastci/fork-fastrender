@@ -702,3 +702,61 @@ static GLOBAL_BACKING_STORE_ALLOCATOR: OnceLock<GlobalBackingStoreAllocator> = O
 pub fn global_backing_store_allocator() -> &'static GlobalBackingStoreAllocator {
   GLOBAL_BACKING_STORE_ALLOCATOR.get_or_init(GlobalBackingStoreAllocator::default)
 }
+
+#[cfg(test)]
+mod borrow_tests {
+  use super::*;
+
+  #[test]
+  fn read_borrows_are_shared_and_block_write_borrow() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let store = alloc.alloc_zeroed(4).unwrap();
+
+    let g1 = store.try_borrow_io_read().unwrap();
+    let g2 = store.try_borrow_io_read().unwrap();
+    assert!(matches!(
+      store.try_borrow_io_write(),
+      Err(BorrowError::Borrowed)
+    ));
+    drop(g1);
+    drop(g2);
+
+    let _g3 = store.try_borrow_io_write().unwrap();
+  }
+
+  #[test]
+  fn write_borrow_is_exclusive_and_blocks_safe_slice_access() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let mut store = alloc.alloc_zeroed(4).unwrap();
+
+    let g = store.try_borrow_io_write().unwrap();
+    assert!(matches!(
+      store.try_borrow_io_write(),
+      Err(BorrowError::Borrowed)
+    ));
+    assert!(matches!(
+      store.try_borrow_io_read(),
+      Err(BorrowError::Borrowed)
+    ));
+    assert_eq!(store.try_with_slice(|_| ()), Err(BorrowError::Borrowed));
+    assert_eq!(store.try_with_slice_mut(|_| ()), Err(BorrowError::Borrowed));
+    drop(g);
+
+    assert_eq!(store.try_with_slice(|s| s.len()).unwrap(), 4);
+  }
+
+  #[test]
+  fn try_with_slice_mut_requires_unique_handle() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let store = alloc.alloc_zeroed(4).unwrap();
+
+    let mut s1 = store.clone();
+    let s2 = store.clone();
+    assert_eq!(s1.try_with_slice_mut(|_| ()), Err(BorrowError::NotUnique));
+
+    drop(store);
+    drop(s2);
+
+    assert_eq!(s1.try_with_slice_mut(|s| { s[0] = 1; s[0] }).unwrap(), 1);
+  }
+}
