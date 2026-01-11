@@ -18,9 +18,21 @@ if [[ -z "${AOM_TARGET_CPU:-}" ]]; then
   export AOM_TARGET_CPU="generic"
 fi
 if [[ -z "${CMAKE_ARGS:-}" ]]; then
-  export CMAKE_ARGS="-DAOM_TARGET_CPU=generic"
-elif [[ "${CMAKE_ARGS}" != *"AOM_TARGET_CPU"* ]]; then
-  export CMAKE_ARGS="${CMAKE_ARGS} -DAOM_TARGET_CPU=generic"
+  export CMAKE_ARGS="-DAOM_TARGET_CPU=generic -DENABLE_NASM=0 -DENABLE_YASM=0 -DENABLE_ASM=0"
+else
+  if [[ "${CMAKE_ARGS}" != *"AOM_TARGET_CPU"* ]]; then
+    CMAKE_ARGS="${CMAKE_ARGS} -DAOM_TARGET_CPU=generic"
+  fi
+  if [[ "${CMAKE_ARGS}" != *"ENABLE_NASM"* ]]; then
+    CMAKE_ARGS="${CMAKE_ARGS} -DENABLE_NASM=0"
+  fi
+  if [[ "${CMAKE_ARGS}" != *"ENABLE_YASM"* ]]; then
+    CMAKE_ARGS="${CMAKE_ARGS} -DENABLE_YASM=0"
+  fi
+  if [[ "${CMAKE_ARGS}" != *"ENABLE_ASM"* ]]; then
+    CMAKE_ARGS="${CMAKE_ARGS} -DENABLE_ASM=0"
+  fi
+  export CMAKE_ARGS
 fi
 
 # High-throughput cargo wrapper for multi-agent hosts.
