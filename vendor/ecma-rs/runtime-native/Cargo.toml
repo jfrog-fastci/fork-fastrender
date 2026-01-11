@@ -46,7 +46,7 @@ conservative_roots = []
 
 # Test-only feature:
 # - Enables Loom model-checking tests (`tests/loom_*.rs`)
-# - Swaps the small Loom-specific test harness' atomics/Arc/Mutex to loom types
+# - Swaps the small Loom-specific test harness' atomics/Mutex to loom types
 #
 # Run with:
 #   cargo test -p runtime-native --features loom loom_
@@ -118,3 +118,8 @@ harness = false
 name = "stackmaps_symbols_runtime"
 path = "tests/bin/stackmaps_symbols_runtime.rs"
 required-features = ["llvm_stackmaps_linker"]
+
+[[test]]
+name = "loom_promise_waiters"
+path = "tests/loom_promise_waiters.rs"
+required-features = ["loom"]

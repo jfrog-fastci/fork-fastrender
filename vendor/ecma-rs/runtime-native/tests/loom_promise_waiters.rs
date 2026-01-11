@@ -2,6 +2,7 @@
 //!
 //! Run with:
 //!   cargo test -p runtime-native --features loom loom_
+//!   cargo test -p runtime-native --features loom --test loom_promise_waiters
 
 #![cfg(feature = "loom")]
 
