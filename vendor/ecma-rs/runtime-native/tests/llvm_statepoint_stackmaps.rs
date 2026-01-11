@@ -16,6 +16,13 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+#[derive(Debug)]
+struct LlvmTools {
+  opt: String,
+  llc: String,
+  objcopy: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Location {
   loc_type: u8,
@@ -90,14 +97,61 @@ fn try_run(cmd: &mut Command) -> io::Result<()> {
   Ok(())
 }
 
-fn tool_available(tool: &str) -> bool {
-  Command::new(tool).arg("--version").output().is_ok()
+fn llvm_major_version_from_output(output: &str) -> Option<u32> {
+  let idx = output.find("LLVM version")?;
+  let mut rest = &output[idx + "LLVM version".len()..];
+  rest = rest.trim_start_matches(|c: char| c == ':' || c.is_whitespace());
+
+  let digits_end = rest
+    .find(|c: char| !c.is_ascii_digit())
+    .unwrap_or(rest.len());
+  rest[..digits_end].parse::<u32>().ok()
 }
 
-fn dump_section(obj: &std::path::Path, out: &std::path::Path) -> io::Result<()> {
+fn llvm_tool_major_version(tool: &str) -> io::Result<Option<u32>> {
+  let output = match Command::new(tool).arg("--version").output() {
+    Ok(out) => out,
+    Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+    Err(err) => return Err(err),
+  };
+  if !output.status.success() {
+    return Ok(None);
+  }
+
+  let mut text = String::new();
+  text.push_str(&String::from_utf8_lossy(&output.stdout));
+  text.push_str(&String::from_utf8_lossy(&output.stderr));
+  Ok(llvm_major_version_from_output(&text))
+}
+
+fn select_llvm18_tool(base: &str) -> Result<String, String> {
+  let preferred = format!("{base}-18");
+
+  for candidate in [&preferred[..], base] {
+    match llvm_tool_major_version(candidate) {
+      Ok(Some(18)) => return Ok(candidate.to_string()),
+      Ok(Some(_)) | Ok(None) => continue,
+      Err(_) => continue,
+    }
+  }
+
+  Err(format!(
+    "LLVM 18 `{base}` not available (tried `{preferred}` and `{base}`)"
+  ))
+}
+
+fn llvm18_tools() -> Result<LlvmTools, String> {
+  Ok(LlvmTools {
+    opt: select_llvm18_tool("opt")?,
+    llc: select_llvm18_tool("llc")?,
+    objcopy: select_llvm18_tool("llvm-objcopy")?,
+  })
+}
+
+fn dump_section(objcopy: &str, obj: &std::path::Path, out: &std::path::Path) -> io::Result<()> {
   // Linux/ELF.
   if try_run(
-    Command::new("llvm-objcopy")
+    Command::new(objcopy)
       .arg("--dump-section")
       .arg(format!(".llvm_stackmaps={}", out.display()))
       .arg(obj),
@@ -109,7 +163,7 @@ fn dump_section(obj: &std::path::Path, out: &std::path::Path) -> io::Result<()> 
 
   // macOS/Mach-O (for completeness).
   try_run(
-    Command::new("llvm-objcopy")
+    Command::new(objcopy)
       .arg("--dump-section")
       .arg(format!("__LLVM_STACKMAPS={}", out.display()))
       .arg(obj),
@@ -190,12 +244,13 @@ fn parse_first_record_locations(stackmaps: &[u8]) -> io::Result<Vec<Location>> {
 
 #[test]
 fn llvm_statepoint_stackmap_has_header_and_pairs() -> io::Result<()> {
-  for tool in ["opt", "llc", "llvm-objcopy"] {
-    if !tool_available(tool) {
-      eprintln!("skipping: `{tool}` not available");
+  let tools = match llvm18_tools() {
+    Ok(tools) => tools,
+    Err(reason) => {
+      eprintln!("skipping: {reason}");
       return Ok(());
     }
-  }
+  };
 
   let td = TempDir::new()?;
   let input_ll = td.path().join("input.ll");
@@ -214,7 +269,7 @@ source_filename = "statepoint"
 
 declare void @callee(ptr addrspace(1))
 
- define void @foo(ptr addrspace(1) %obj) gc "coreclr" {
+define void @foo(ptr addrspace(1) %obj) gc "coreclr" {
 entry:
   %derived = getelementptr i8, ptr addrspace(1) %obj, i64 16
   call void @callee(ptr addrspace(1) %derived) ["gc-live"(ptr addrspace(1) %derived)]
@@ -224,7 +279,7 @@ entry:
   )?;
 
   try_run(
-    Command::new("opt")
+    Command::new(&tools.opt)
       .arg("-passes=rewrite-statepoints-for-gc")
       .arg("-S")
       .arg(&input_ll)
@@ -233,14 +288,14 @@ entry:
   )?;
 
   try_run(
-    Command::new("llc")
+    Command::new(&tools.llc)
       .arg("-filetype=obj")
       .arg(&rewritten_ll)
       .arg("-o")
       .arg(&obj),
   )?;
 
-  dump_section(&obj, &stackmaps_bin)?;
+  dump_section(&tools.objcopy, &obj, &stackmaps_bin)?;
   let stackmaps = fs::read(&stackmaps_bin)?;
   let locs = parse_first_record_locations(&stackmaps)?;
 
@@ -251,6 +306,11 @@ entry:
   );
 
   let tail = &locs[3..];
+  assert!(
+    tail.len() >= 2,
+    "expected at least one GC pointer pair after header, got {} locations",
+    tail.len()
+  );
   assert!(
     tail.len() % 2 == 0,
     "expected an even number of locations after header, got {}",
