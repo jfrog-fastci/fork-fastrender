@@ -2412,7 +2412,7 @@ impl BrowserTabHost {
             let source_text = if spec.src_attr_present {
               let Some(url) = spec.src.as_deref().filter(|s| !s.is_empty()) else {
                 // Mirror the scheduler's invalid-src behavior (error event + no execution).
-                host.dispatch_script_event(script_node_id, "error")?;
+                host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
                 host.mutate_dom(|dom| {
                   dom.node_mut(script_node_id).script_already_started = true;
                   ((), false)
@@ -2425,7 +2425,7 @@ impl BrowserTabHost {
               match host.fetch_script_source(script_id, url, FetchDestination::ScriptCors) {
                 Ok(source_text) => source_text,
                 Err(err) => {
-                  host.dispatch_script_event(script_node_id, "error")?;
+                  host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
                   host.mutate_dom(|dom| {
                     dom.node_mut(script_node_id).script_already_started = true;
                     ((), false)
@@ -2448,7 +2448,7 @@ impl BrowserTabHost {
           }
 
           // Module graph failures dispatch an `error` event and must not execute.
-          host.dispatch_script_event(script_node_id, "error")?;
+          host.dispatch_script_event_in_event_loop(script_node_id, "error", event_loop)?;
           host.mutate_dom(|dom| {
             dom.node_mut(script_node_id).script_already_started = true;
             ((), false)
@@ -4617,6 +4617,103 @@ mod tests {
         ("https://example.com/b.js".to_string(), FetchDestination::ScriptCors),
         ("https://example.com/m.js".to_string(), FetchDestination::ScriptCors),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn module_script_error_event_installs_event_loop_for_js_listeners() -> Result<()> {
+    #[derive(Default)]
+    struct FailingFetcher;
+
+    impl ResourceFetcher for FailingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        Err(Error::Other(format!("fetch blocked in test for {url}")))
+      }
+
+      fn fetch_with_request(&self, req: crate::resource::FetchRequest<'_>) -> Result<FetchedResource> {
+        self.fetch(req.url)
+      }
+    }
+
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(FailingFetcher);
+    let renderer = crate::FastRender::builder().fetcher(fetcher).build()?;
+    let document = BrowserDocumentDom2::new(
+      renderer,
+      r#"<!doctype html>
+        <script type="module" src="https://example.com/m.js"></script>"#,
+      RenderOptions::default(),
+    )?;
+
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(NoopExecutor::default()),
+      TraceHandle::default(),
+      js_options,
+    )?;
+    host.reset_scripting_state(
+      Some("https://example.com/doc.html".to_string()),
+      ReferrerPolicy::default(),
+    )?;
+    let mut event_loop = EventLoop::new();
+
+    let mut discovered = host.discover_scripts_best_effort(Some("https://example.com/doc.html"));
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().expect("missing discovered module script");
+    assert_eq!(spec.script_type, ScriptType::Module);
+
+    struct MicrotaskInvoker {
+      log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl EventListenerInvoker for MicrotaskInvoker {
+      fn invoke(
+        &mut self,
+        _listener_id: ListenerId,
+        event: &mut Event,
+      ) -> std::result::Result<(), DomError> {
+        self.log.borrow_mut().push("listener".to_string());
+        assert_eq!(event.type_, "error");
+
+        let Some(event_loop) = crate::js::runtime::current_event_loop_mut::<BrowserTabHost>() else {
+          self.log.borrow_mut().push("missing_event_loop".to_string());
+          return Ok(());
+        };
+
+        let log_for_task = Rc::clone(&self.log);
+        event_loop
+          .queue_microtask(move |_host, _event_loop| {
+            log_for_task.borrow_mut().push("microtask".to_string());
+            Ok(())
+          })
+          .map_err(|err| DomError::new(err.to_string()))?;
+        Ok(())
+      }
+    }
+
+    host.set_event_invoker(Box::new(MicrotaskInvoker {
+      log: Rc::clone(&log),
+    }));
+    host.dom_mut().events_mut().add_event_listener(
+      EventTargetId::Node(node_id),
+      "error",
+      ListenerId::new(1),
+      AddEventListenerOptions::default(),
+    );
+
+    let base_url_at_discovery = spec.base_url.clone();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &["listener".to_string(), "microtask".to_string()],
+      "expected error listener to see a current event loop and schedule microtasks"
     );
     Ok(())
   }
