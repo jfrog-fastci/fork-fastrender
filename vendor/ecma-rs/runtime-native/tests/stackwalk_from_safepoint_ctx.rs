@@ -38,21 +38,22 @@ mod x86_64 {
     // FP_RECORD_SIZE=8 on x86_64.
     let caller_sp = (caller_fp as u64) - (callsite.stack_size - 8);
 
+    // `walk_gc_roots_from_*` yields only the *base* root slots. Derived slots (if any) are updated
+    // in-place by the walker after the base slot has potentially been relocated.
     let mut expected_slots: Vec<usize> = Vec::new();
     for pair in statepoint.gc_pairs() {
-      for loc in [&pair.base, &pair.derived] {
-        match loc {
-          Location::Indirect { dwarf_reg, offset, .. } => {
-            assert_eq!(
-              *dwarf_reg,
-              X86_64_DWARF_REG_SP,
-              "fixture roots must be [SP + off]"
-            );
-            let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
-            expected_slots.push(slot_addr as usize);
-          }
-          other => panic!("unexpected root location kind in fixture: {other:?}"),
+      let loc = &pair.base;
+      match loc {
+        Location::Indirect { dwarf_reg, offset, .. } => {
+          assert_eq!(
+            *dwarf_reg,
+            X86_64_DWARF_REG_SP,
+            "fixture roots must be [SP + off]"
+          );
+          let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
+          expected_slots.push(slot_addr as usize);
         }
+        other => panic!("unexpected root location kind in fixture: {other:?}"),
       }
     }
     expected_slots.sort_unstable();
@@ -129,23 +130,22 @@ mod aarch64 {
     // FP_RECORD_SIZE=16 on AArch64 (saved FP+LR).
     let caller_sp = (caller_fp as u64) - (callsite.stack_size - 16);
 
+    // `walk_gc_roots_from_*` yields only the *base* root slots. Derived slots (if any) are updated
+    // in-place by the walker after the base slot has potentially been relocated.
     let mut expected_slots: Vec<usize> = Vec::new();
     for pair in statepoint.gc_pairs() {
-      for loc in [&pair.base, &pair.derived] {
-        match loc {
-          Location::Indirect {
-            dwarf_reg, offset, ..
-          } => {
-            assert_eq!(
-              *dwarf_reg,
-              AARCH64_DWARF_REG_SP,
-              "fixture roots must be [SP + off]"
-            );
-            let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
-            expected_slots.push(slot_addr as usize);
-          }
-          other => panic!("unexpected root location kind in fixture: {other:?}"),
+      let loc = &pair.base;
+      match loc {
+        Location::Indirect { dwarf_reg, offset, .. } => {
+          assert_eq!(
+            *dwarf_reg,
+            AARCH64_DWARF_REG_SP,
+            "fixture roots must be [SP + off]"
+          );
+          let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
+          expected_slots.push(slot_addr as usize);
         }
+        other => panic!("unexpected root location kind in fixture: {other:?}"),
       }
     }
     expected_slots.sort_unstable();

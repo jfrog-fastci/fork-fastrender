@@ -311,8 +311,13 @@ pub unsafe fn walk_gc_roots_from_fp(
 /// when the mutator entered the safepoint slow path) and call this function to enumerate precise
 /// stack roots for that parked thread.
 ///
-/// The callback is invoked with the address of each *stack slot* that contains a managed pointer.
-/// A relocating GC should treat the slot as `*mut *mut u8` and may update it in-place.
+/// The callback is invoked with the address of each **base** root slot (the `base` half of each
+/// statepoint `(base, derived)` pair). A relocating GC should treat the slot as `*mut *mut u8` and
+/// may update it in-place.
+///
+/// If `base != derived`, this walker updates the derived slot in-place after the base slot has
+/// potentially been relocated:
+/// `derived_new = relocated_base + (derived_old - base_old)`.
 ///
 /// ## Statepoint-oriented walking
 ///
