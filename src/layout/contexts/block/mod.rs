@@ -3251,7 +3251,7 @@ impl BlockFormattingContext {
               self.viewport_size,
               &self.font_context,
               anchors_for_cb,
-              Some(query_parent_id),
+              anchor_query,
             )?;
           result = rerun_result;
           border_size_physical = Size::new(
@@ -10739,7 +10739,7 @@ impl FormattingContext for BlockFormattingContext {
               self.viewport_size,
               &self.font_context,
               anchors_for_cb,
-              Some(query_parent_id),
+              anchor_query,
             )?;
           result = rerun_result;
           border_size_physical = Size::new(

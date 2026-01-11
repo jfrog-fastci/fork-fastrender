@@ -14166,7 +14166,7 @@ impl InlineFormattingContext {
               viewport_size,
               &font_context,
               anchors_for_cb,
-              parent_box_id,
+              anchor_query,
             )?;
           border_size_physical = Size::new(
             result.size.width + actual_horizontal,

@@ -5070,7 +5070,10 @@ impl FormattingContext for FlexFormattingContext {
               self.viewport_size,
               &self.font_context,
               Some(&anchor_index),
-              Some(root_box_id),
+              crate::layout::anchor_positioning::AnchorQueryContext {
+                query_parent_box_id: Some(root_box_id),
+                implicit_anchor_box_id: candidate.implicit_anchor_box_id,
+              },
             )?;
           border_size = Size::new(
             result.size.width + actual_horizontal,
@@ -12548,7 +12551,10 @@ impl FlexFormattingContext {
               self.viewport_size,
               &self.font_context,
               Some(anchor_index),
-              Some(query_parent_box_id),
+              crate::layout::anchor_positioning::AnchorQueryContext {
+                query_parent_box_id: Some(query_parent_box_id),
+                implicit_anchor_box_id: candidate.implicit_anchor_box_id,
+              },
             )?;
           result = rerun;
           probe_size = Size::new(

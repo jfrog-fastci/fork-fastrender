@@ -7090,7 +7090,10 @@ impl FormattingContext for TableFormattingContext {
               self.viewport_size,
               self.factory.font_context(),
               Some(&anchor_index),
-              Some(root_box_id),
+              crate::layout::anchor_positioning::AnchorQueryContext {
+                query_parent_box_id: Some(root_box_id),
+                implicit_anchor_box_id,
+              },
             )?;
           border_size = crate::geometry::Size::new(
             result.size.width + actual_horizontal,
