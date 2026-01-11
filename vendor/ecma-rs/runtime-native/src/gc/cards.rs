@@ -6,6 +6,7 @@ use crate::trap;
 
 use super::obj_size;
 use super::for_each_ptr_slot;
+use super::card_table_word_count;
 use super::ObjHeader;
 use super::TypeDescriptor;
 use super::CARD_SIZE;
@@ -49,7 +50,7 @@ pub(crate) unsafe fn for_each_ptr_slot_in_dirty_cards(mut obj: *mut u8, mut f: i
   }
 
   let card_count = size.div_ceil(CARD_SIZE);
-  let word_count = card_count.div_ceil(64);
+  let word_count = card_table_word_count(size);
 
   if header.type_desc == &array::RT_ARRAY_TYPE_DESC as *const TypeDescriptor {
     let arr = &*(obj as *const array::RtArrayHeader);

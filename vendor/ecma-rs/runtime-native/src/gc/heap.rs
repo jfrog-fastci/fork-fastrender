@@ -1,8 +1,7 @@
-use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::marker::PhantomData;
 use std::ptr;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::config::{HeapConfig, HeapLimits};
@@ -67,70 +66,6 @@ pub enum AllocError {
   OutOfMemory,
 }
 
-/// Heap-owned arena for per-object card table bitsets.
-///
-/// Card tables live *outside* the GC heap (they are metadata, not traced
-/// objects). Today they are not reclaimed when an object is swept; instead, we
-/// free all card table allocations when the heap is dropped.
-///
-/// This is intentionally simple until object reclamation wiring learns how to
-/// free per-object card tables.
-#[derive(Default)]
-struct CardTableSpace {
-  allocs: Vec<CardTableAlloc>,
-}
-
-struct CardTableAlloc {
-  ptr: *mut AtomicU64,
-  layout: Layout,
-}
-
-impl CardTableSpace {
-  fn alloc_words(&mut self, words: usize) -> *mut AtomicU64 {
-    debug_assert!(words > 0);
-    let bytes = words
-      .checked_mul(core::mem::size_of::<AtomicU64>())
-      .unwrap_or_else(|| trap::rt_trap_invalid_arg("card table size overflow"));
-
-    // `ObjHeader` stores the card table pointer in the high bits of `meta`, so
-    // the pointer must be aligned enough that the low meta flag bits remain
-    // free. See `ObjHeader::set_card_table_ptr`.
-    const META_ALIGN: usize = (super::META_FLAGS_MASK + 1).next_power_of_two();
-    let align = META_ALIGN.max(core::mem::align_of::<AtomicU64>());
-    let layout = Layout::from_size_align(bytes, align).expect("invalid card table layout");
-
-    // SAFETY: layout is non-zero and well-formed.
-    let raw = unsafe { alloc_zeroed(layout) };
-    if raw.is_null() {
-      handle_alloc_error(layout);
-    }
-    let ptr = raw.cast::<AtomicU64>();
-
-    // Initialize the atomics (even though the memory is zeroed) so the values
-    // are fully-formed `AtomicU64`s.
-    for i in 0..words {
-      // SAFETY: `ptr` points to `words` `AtomicU64` slots.
-      unsafe {
-        ptr.add(i).write(AtomicU64::new(0));
-      }
-    }
-
-    self.allocs.push(CardTableAlloc { ptr, layout });
-    ptr
-  }
-}
-
-impl Drop for CardTableSpace {
-  fn drop(&mut self) {
-    for alloc in self.allocs.drain(..) {
-      // SAFETY: `ptr` was allocated with `layout` in `alloc_words`.
-      unsafe {
-        dealloc(alloc.ptr.cast::<u8>(), alloc.layout);
-      }
-    }
-  }
-}
-
 #[derive(Debug, Default)]
 pub struct GcStats {
   pub minor_collections: usize,
@@ -175,7 +110,6 @@ pub struct GcHeap {
 
   pub(crate) nursery: nursery::NurserySpace,
   pub(crate) nursery_tlab: ThreadNursery,
-  card_tables: CardTableSpace,
   pub(crate) immix: ImmixSpace,
   pub(crate) los: LargeObjectSpace,
   weak_handles: WeakHandles,
@@ -289,7 +223,6 @@ impl GcHeap {
       limits,
       nursery_tlab: ThreadNursery::new(),
       nursery,
-      card_tables: CardTableSpace::default(),
       immix: ImmixSpace::new(),
       los: LargeObjectSpace::new(),
       weak_handles: WeakHandles::new(),
@@ -771,10 +704,13 @@ impl GcHeap {
     if !header.card_table_ptr().is_null() {
       return;
     }
-    let words = super::card_table_word_count(obj_size);
-    let card_table = self.card_tables.alloc_words(words);
-    // SAFETY: `card_table` points to `words` `AtomicU64`s and is aligned so
-    // `ObjHeader` can store it in `meta`.
+    let card_table = super::alloc_card_table(obj_size);
+    if card_table.is_null() {
+      return;
+    }
+    // SAFETY: `card_table` points to
+    // `ceil(obj_size / CARD_SIZE).div_ceil(64)` `AtomicU64`s and is aligned so
+    // `ObjHeader` can store it in `meta` (low flag bits clear).
     unsafe {
       header.set_card_table_ptr(card_table);
     }

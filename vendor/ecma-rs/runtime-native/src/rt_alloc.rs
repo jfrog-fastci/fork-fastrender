@@ -260,8 +260,13 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
   let Some(spec) = array::decode_rt_array_elem_size(elem_size) else {
     crate::trap::rt_trap_invalid_arg("rt_alloc_array: invalid elem_size");
   };
+  let payload_bytes = array::checked_payload_bytes(len, spec.elem_size)
+    .unwrap_or_else(|| crate::trap::rt_trap_invalid_arg("rt_alloc_array: size overflow"));
   let size = array::checked_total_bytes(len, spec.elem_size)
     .unwrap_or_else(|| crate::trap::rt_trap_invalid_arg("rt_alloc_array: size overflow"));
+
+  let should_install_card_table = (spec.elem_flags & array::RT_ARRAY_FLAG_PTR_ELEMS) != 0
+    && payload_bytes >= crate::gc::CARD_TABLE_MIN_BYTES;
 
   let align = array::RT_ARRAY_TYPE_DESC.align.max(OBJ_ALIGN);
   let global = global_heap();
@@ -276,6 +281,16 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
         arr.len = len;
         arr.elem_size = spec.elem_size as u32;
         arr.elem_flags = spec.elem_flags;
+      }
+      if should_install_card_table {
+        let card_table = crate::gc::alloc_card_table(size);
+        if !card_table.is_null() {
+          // SAFETY: `card_table` was allocated with `alloc_card_table`, which
+          // guarantees the alignment + length required by `ObjHeader`.
+          unsafe {
+            (&mut *(obj as *mut ObjHeader)).set_card_table_ptr(card_table);
+          }
+        }
       }
       obj
     });
@@ -300,6 +315,16 @@ pub(crate) fn alloc_array(len: usize, elem_size: usize) -> *mut u8 {
     arr.len = len;
     arr.elem_size = spec.elem_size as u32;
     arr.elem_flags = spec.elem_flags;
+  }
+  if should_install_card_table {
+    let card_table = crate::gc::alloc_card_table(size);
+    if !card_table.is_null() {
+      // SAFETY: `card_table` was allocated with `alloc_card_table`, which
+      // guarantees the alignment + length required by `ObjHeader`.
+      unsafe {
+        (&mut *(obj as *mut ObjHeader)).set_card_table_ptr(card_table);
+      }
+    }
   }
   obj
 }

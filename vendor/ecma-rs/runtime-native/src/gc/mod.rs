@@ -77,10 +77,11 @@ pub const CARD_TABLE_MIN_BYTES: usize = 8 * CARD_SIZE;
 /// - `words = ceil(cards / 64)` 64-bit words
 #[inline]
 pub(crate) fn card_table_word_count(obj_size: usize) -> usize {
-  // `obj_size` should always be > 0, but be defensive in case callers route a
-  // malformed descriptor here.
-  let cards = obj_size.div_ceil(CARD_SIZE).max(1);
-  cards.div_ceil(64).max(1)
+  if obj_size == 0 {
+    return 0;
+  }
+  let card_count = obj_size.div_ceil(CARD_SIZE);
+  card_count.div_ceil(64)
 }
 
 /// Clear the card table bitset for `obj` if one is installed.
@@ -134,6 +135,77 @@ const META_MARK_MASK: usize = 1 << META_MARK_SHIFT;
 const META_REMEMBERED: usize = 1 << 2;
 const META_PINNED: usize = 1 << 3;
 const META_FLAGS_MASK: usize = META_FORWARDED | META_MARK_MASK | META_REMEMBERED | META_PINNED;
+/// Alignment required of card table pointers stored in [`ObjHeader::meta`].
+///
+/// Card table pointers are stored in the high bits of `meta`; the low [`META_FLAGS_MASK`] bits are
+/// reserved for flags. Requiring `ptr & META_FLAGS_MASK == 0` is equivalent to requiring
+/// `ptr` be aligned to `META_FLAGS_MASK + 1` bytes.
+const CARD_TABLE_PTR_ALIGN: usize = META_FLAGS_MASK + 1;
+const _: () = assert!(CARD_TABLE_PTR_ALIGN.is_power_of_two());
+
+#[inline]
+pub(crate) fn alloc_card_table(obj_size: usize) -> *mut AtomicU64 {
+  let word_count = card_table_word_count(obj_size);
+  if word_count == 0 {
+    return core::ptr::null_mut();
+  }
+  let bytes = word_count
+    .checked_mul(mem::size_of::<AtomicU64>())
+    .unwrap_or_else(|| trap::rt_trap_invalid_arg("card table size overflow"));
+
+  // Card tables must outlive their owning objects. Today we leak these mappings
+  // rather than wiring reclamation into sweeping.
+  //
+  // We use `mmap` on Unix so installing card tables during GC (e.g. promotion)
+  // does not rely on the Rust global allocator.
+  #[cfg(unix)]
+  let raw = unsafe {
+    libc::mmap(
+      core::ptr::null_mut(),
+      bytes,
+      libc::PROT_READ | libc::PROT_WRITE,
+      libc::MAP_PRIVATE | libc::MAP_ANON,
+      -1,
+      0,
+    )
+  };
+  #[cfg(unix)]
+  let ptr = {
+    if raw == libc::MAP_FAILED || raw.is_null() {
+      trap::rt_trap_oom(bytes, "card table");
+    }
+    raw as *mut AtomicU64
+  };
+
+  #[cfg(not(unix))]
+  let ptr = {
+    let align = CARD_TABLE_PTR_ALIGN.max(mem::align_of::<AtomicU64>());
+    let layout = std::alloc::Layout::from_size_align(bytes, align)
+      .unwrap_or_else(|_| trap::rt_trap_invalid_arg("invalid card table layout"));
+    // SAFETY: layout is non-zero and well-formed.
+    let raw = unsafe { std::alloc::alloc_zeroed(layout) };
+    if raw.is_null() {
+      trap::rt_trap_oom(bytes, "card table");
+    }
+    raw as *mut AtomicU64
+  };
+
+  debug_assert!(
+    (ptr as usize & META_FLAGS_MASK) == 0,
+    "card table pointer must satisfy ObjHeader::set_card_table_ptr alignment constraint"
+  );
+
+  // Initialize the atomics (even though the backing pages are zeroed) so the
+  // values are fully-formed `AtomicU64`s.
+  for i in 0..word_count {
+    // SAFETY: `ptr` points to `word_count` `AtomicU64` slots.
+    unsafe {
+      ptr.add(i).write(AtomicU64::new(0));
+    }
+  }
+
+  ptr
+}
 
 impl ObjHeader {
   #[inline]

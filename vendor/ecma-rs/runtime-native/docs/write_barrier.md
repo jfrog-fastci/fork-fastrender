@@ -12,7 +12,7 @@ It also specifies the semantics and policy defaults for **per-object card tables
 
 ## Implementation status (runtime-native today)
 
-`runtime-native` contains a stop-the-world generational GC under `src/gc/*` (exercised by Rust tests), and the exported runtime entrypoints are wired to it.
+`runtime-native` contains a stop-the-world generational GC under `src/gc/*` (exercised by Rust tests), and some exported runtime entrypoints are wired to it (notably `rt_alloc_array`).
 
 - The exported symbols **`rt_write_barrier`** and **`rt_write_barrier_range`** exist (see `src/exports.rs`).
   - `rt_write_barrier` loads the stored pointer value from `slot` and performs the young-range fast-path checks described in this document.
@@ -21,9 +21,15 @@ It also specifies the semantics and policy defaults for **per-object card tables
       transitions 0→1, it records `obj` into a fixed-capacity process-global remembered set without
       allocating (overflow aborts).
   - For objects with per-object card tables installed (`ObjHeader::card_table_ptr()` is non-null), it marks the relevant card dirty.
-  - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range (when a card table is present) and may over-mark cards (minor GC scanning + sticky rebuild keeps correctness).
+  - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range (when a card table is present) and may over-mark cards.
 - The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
-- `rt_gc_collect` triggers a stop-the-world collection and may relocate nursery objects.
+- The exported symbol **`rt_gc_collect`** performs a stop-the-world handshake and can enumerate roots (via stackmaps), but does **not** yet run a full GC algorithm (mark/copy/etc).
+  - `rt_alloc` / `rt_alloc_pinned` still use the milestone bump allocator.
+  - `rt_alloc_array` is GC-backed.
+- Per-object card tables are installed automatically for large old-generation pointer arrays:
+  - Only for array objects (`RT_ARRAY_TYPE_DESC`) with `RT_ARRAY_FLAG_PTR_ELEMS` payloads.
+  - Only when the pointer payload is at least **8× `CARD_SIZE`** (i.e. ≥ 4 KiB with the default 512 B cards).
+  - This makes the barrier’s card marking effective and allows minor GC to scan only the dirty regions of large old pointer arrays.
 
 ---
 
@@ -231,7 +237,7 @@ Per-object card tables are intended for large objects with contiguous pointer st
 
 ### Implementation status
 
-Card marking in the exported barrier is implemented today:
+Card marking in the exported barriers is implemented today:
 
 - `rt_write_barrier` marks the single card that contains `slot` when `ObjHeader::card_table_ptr()` is non-null.
 - `rt_write_barrier_range` conservatively marks **all cards covering** the written byte range (clamped to the object bounds) when a card table pointer is present. It does not inspect the values written and may over-mark.
@@ -250,10 +256,14 @@ Barrier behavior:
 
 Minor GC behavior:
 
+Minor GC treats card marks as a “may contain young” summary:
+
 * Card marks are **rebuilt at each minor GC**:
    * marked cards are scanned
    * the runtime recomputes which cards still contain young pointers
    * cards with no remaining young pointers are cleared
+
+In the current `GcHeap::collect_minor` implementation the entire nursery is evacuated, so after a minor GC there are no remaining young pointers and the card table can be cleared without recomputing “still-young” cards.
 
 This keeps scanning proportional to the number of old-array regions that actually reference the nursery.
 
@@ -296,6 +306,8 @@ Card tables are most valuable when:
 Suggested starting heuristic:
 
 - Enable a card table when a pointer buffer is at least **8× `CARD_SIZE`** (i.e. ≥ 4 KiB of pointers with the 512 B default), and the buffer is expected to survive into old-gen.
+
+This heuristic is **implemented today** for array objects: a per-object card table is installed for large pointer arrays once they reside in old-gen (either allocated directly into old-gen or installed when promoted from the nursery).
 
 For smaller pointer buffers, scanning the whole object is usually cheaper than maintaining card metadata and running the barrier.
 
