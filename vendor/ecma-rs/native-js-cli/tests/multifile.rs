@@ -86,6 +86,33 @@ fn runs_module_initializers_in_dependency_order() {
 }
 
 #[test]
+fn supports_non_number_function_signatures_across_modules() {
+  let dir = tempdir().unwrap();
+  let util = dir.path().join("util.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(
+    &util,
+    "export function not(x: boolean): boolean { return !x }\nexport function hello(): string { return \"hi\" }\n",
+  )
+  .unwrap();
+  fs::write(
+    &main,
+    "import {not, hello} from './util';\nexport function main(){console.log(not(false), hello());}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("true hi\n"));
+}
+
+#[test]
 fn errors_on_cycles_deterministically() {
   let dir = tempdir().unwrap();
   let a = dir.path().join("a.ts");
