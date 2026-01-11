@@ -64,6 +64,11 @@ See: `docs/resource-limits.md`
 
 **MANDATORY:**
 - **Always use `bash scripts/cargo_agent.sh`** for all cargo commands
+- For builds/tests of the **vendored `vendor/ecma-rs/` workspace**, use:
+  - `bash vendor/ecma-rs/scripts/cargo_agent.sh ...` (from repo root), or
+  - `bash scripts/cargo_agent.sh ...` (from within `vendor/ecma-rs/`)
+  so `cargo` runs against the correct nested workspace and picks up the pinned
+  `vendor/ecma-rs/rust-toolchain.toml`.
 - **Always scope test runs**: `-p <crate>`, `--test <name>`, `--lib`, or `--bin <name>`
   - Note: `scripts/cargo_agent.sh test` also caps `RUST_TEST_THREADS` on very large hosts to avoid
     spawning hundreds of concurrent test threads. Override with `FASTR_RUST_TEST_THREADS` /
