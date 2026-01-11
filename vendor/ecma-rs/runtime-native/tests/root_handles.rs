@@ -7,7 +7,7 @@ use runtime_native::gc::RootStack;
 use runtime_native::gc::TypeDescriptor;
 use runtime_native::GcHeap;
 
-static NO_PTR_OFFSETS: [usize; 0] = [];
+static NO_PTR_OFFSETS: [u32; 0] = [];
 
 #[repr(C)]
 struct Blob {
@@ -94,4 +94,3 @@ fn stale_handle_detection() {
   heap.root_remove(h1);
   assert_eq!(heap.root_get(h2).unwrap(), obj2);
 }
-

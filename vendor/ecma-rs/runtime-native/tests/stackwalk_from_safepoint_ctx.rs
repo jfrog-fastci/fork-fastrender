@@ -9,7 +9,7 @@ mod x86_64 {
   #[test]
   fn synthetic_stack_enumerates_roots_from_safepoint_context() {
     let stackmaps =
-      StackMaps::parse(include_bytes!("fixtures/statepoint_x86_64.bin")).expect("parse stackmaps");
+      StackMaps::parse(include_bytes!("fixtures/bin/statepoint_x86_64.bin")).expect("parse stackmaps");
  
     // Pick the first callsite record (BTreeMap iteration is sorted).
     let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
@@ -36,13 +36,16 @@ mod x86_64 {
     //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
     // FP_RECORD_SIZE=8 on x86_64.
     let caller_sp = (caller_fp as u64) - (callsite.stack_size - 8);
- 
+
     let mut expected_slots: Vec<usize> = Vec::new();
-    for pair in statepoint.gc_pairs() {
-      for loc in [pair.base, pair.derived] {
+    for (base, derived) in statepoint.gc_pairs() {
+      for loc in [base, derived] {
         match loc {
           Location::Indirect { dwarf_reg, offset, .. } => {
-            assert_eq!(*dwarf_reg, X86_64_DWARF_REG_SP, "fixture roots must be [SP + off]");
+            assert_eq!(
+              *dwarf_reg, X86_64_DWARF_REG_SP,
+              "fixture roots must be [SP + off]"
+            );
             let slot_addr = add_signed_u64(caller_sp, *offset).expect("slot addr");
             expected_slots.push(slot_addr as usize);
           }
@@ -94,7 +97,7 @@ mod aarch64 {
   #[test]
   fn synthetic_stack_enumerates_roots_from_safepoint_context() {
     let stackmaps =
-      StackMaps::parse(include_bytes!("fixtures/statepoint_aarch64.bin")).expect("parse stackmaps");
+      StackMaps::parse(include_bytes!("fixtures/bin/statepoint_aarch64.bin")).expect("parse stackmaps");
  
     // Pick the first callsite record (BTreeMap iteration is sorted).
     let (callsite_ra, callsite) = stackmaps.iter().next().expect("non-empty");
@@ -121,10 +124,10 @@ mod aarch64 {
     //   caller_sp = caller_fp - (stack_size - FP_RECORD_SIZE)
     // FP_RECORD_SIZE=16 on AArch64 (saved FP+LR).
     let caller_sp = (caller_fp as u64) - (callsite.stack_size - 16);
- 
+
     let mut expected_slots: Vec<usize> = Vec::new();
-    for pair in statepoint.gc_pairs() {
-      for loc in [pair.base, pair.derived] {
+    for (base, derived) in statepoint.gc_pairs() {
+      for loc in [base, derived] {
         match loc {
           Location::Indirect { dwarf_reg, offset, .. } => {
             assert_eq!(
@@ -170,4 +173,3 @@ mod aarch64 {
     }
   }
 }
-
