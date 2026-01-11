@@ -19248,6 +19248,8 @@ fn build_pre_layout_container_query_context(
           scroll_offset: Point::ZERO,
           scroll_bounds: None,
           stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
         });
       }
 
@@ -19266,6 +19268,8 @@ fn build_pre_layout_container_query_context(
             scroll_offset: Point::ZERO,
             scroll_bounds: None,
             stuck_mask: 0,
+            snapped_mask: 0,
+            scrolled_delta: Point::ZERO,
           });
           entry.width = content_width;
           entry.inline_size = content_width;
@@ -19307,6 +19311,7 @@ fn build_pre_layout_container_query_context(
 
   Some(ContainerQueryContext {
     base_media: media_ctx.clone(),
+    root_font_metrics: None,
     containers,
   })
 }
