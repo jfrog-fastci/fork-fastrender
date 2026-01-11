@@ -8313,7 +8313,7 @@ pub(crate) fn run_module_until_await(
           }
           abrupt => {
             scope.heap_mut().remove_root(last_root);
-            return Ok(match abrupt {
+            match abrupt {
               Completion::Normal(_) => unreachable!("covered above"),
               Completion::Throw(thrown) => {
                 return Err(VmError::ThrowWithStack {
@@ -8321,16 +8321,12 @@ pub(crate) fn run_module_until_await(
                   stack: thrown.stack,
                 })
               }
-              Completion::Return(_) => {
-                return Err(VmError::Unimplemented("return from module"));
-              }
-              Completion::Break(..) => {
-                return Err(VmError::Unimplemented("break outside of loop"));
-              }
+              Completion::Return(_) => return Err(VmError::Unimplemented("return from module")),
+              Completion::Break(..) => return Err(VmError::Unimplemented("break outside of loop")),
               Completion::Continue(..) => {
-                return Err(VmError::Unimplemented("continue outside of loop"));
+                return Err(VmError::Unimplemented("continue outside of loop"))
               }
-            });
+            }
           }
         }
       }
