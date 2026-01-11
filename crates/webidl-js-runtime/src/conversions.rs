@@ -94,18 +94,30 @@ pub fn convert_arguments<R: WebIdlJsRuntime>(
     return Err(rt.throw_type_error("Not enough arguments"));
   }
 
+  // Root `args` and any JS values produced by earlier conversions for the duration of later
+  // conversions.
+  //
+  // WebIDL conversions can allocate (e.g. `ToObject` wrappers), and under aggressive GC settings
+  // those newly-created objects are otherwise only referenced from this Rust stack frame. Maintain
+  // an explicit root list so values survive until we return them to the caller.
+  let mut roots: Vec<R::JsValue> = Vec::new();
+  roots.extend_from_slice(args);
+
   let mut out = Vec::with_capacity(params.len());
   for (idx, param) in params.iter().enumerate() {
-    let v = args.get(idx).copied().unwrap_or_else(|| rt.js_undefined());
-    if rt.is_undefined(v) {
-      if let Some(default) = &param.default {
-        let evaluated =
-          eval_default_value(&param.ty, default, ctx).map_err(|e| throw_webidl_exception(rt, e))?;
-        out.push(converted_from_webidl_value::<R::JsValue>(evaluated));
-        continue;
+    let converted = rt.with_stack_roots(&roots, |rt| {
+      let v = args.get(idx).copied().unwrap_or_else(|| rt.js_undefined());
+      if rt.is_undefined(v) {
+        if let Some(default) = &param.default {
+          let evaluated = eval_default_value(&param.ty, default, ctx)
+            .map_err(|e| throw_webidl_exception(rt, e))?;
+          return Ok(converted_from_webidl_value::<R::JsValue>(evaluated));
+        }
       }
-    }
-    out.push(convert_to_idl(rt, v, &param.ty, ctx)?);
+      convert_to_idl(rt, v, &param.ty, ctx)
+    })?;
+    append_converted_value_roots(&mut roots, &converted);
+    out.push(converted);
   }
   Ok(out)
 }
@@ -743,6 +755,48 @@ fn is_null_or_undefined<R: JsRuntime>(rt: &R, value: R::JsValue) -> bool {
     && !rt.is_symbol(value)
 }
 
+fn append_converted_value_roots<V: Copy>(roots: &mut Vec<V>, v: &ConvertedValue<V>) {
+  match v {
+    ConvertedValue::Any(value) | ConvertedValue::Object(value) => {
+      roots.push(*value);
+    }
+    ConvertedValue::Sequence { values, .. } => {
+      for v in values {
+        append_converted_value_roots(roots, v);
+      }
+    }
+    ConvertedValue::Record { entries, .. } => {
+      for (_, v) in entries {
+        append_converted_value_roots(roots, v);
+      }
+    }
+    ConvertedValue::Dictionary { members, .. } => {
+      for v in members.values() {
+        append_converted_value_roots(roots, v);
+      }
+    }
+    ConvertedValue::Union { value, .. } => append_converted_value_roots(roots, value),
+    ConvertedValue::Undefined
+    | ConvertedValue::Null
+    | ConvertedValue::Boolean(_)
+    | ConvertedValue::Byte(_)
+    | ConvertedValue::Octet(_)
+    | ConvertedValue::Short(_)
+    | ConvertedValue::UnsignedShort(_)
+    | ConvertedValue::Long(_)
+    | ConvertedValue::UnsignedLong(_)
+    | ConvertedValue::LongLong(_)
+    | ConvertedValue::UnsignedLongLong(_)
+    | ConvertedValue::Float(_)
+    | ConvertedValue::UnrestrictedFloat(_)
+    | ConvertedValue::Double(_)
+    | ConvertedValue::UnrestrictedDouble(_)
+    | ConvertedValue::String(_)
+    | ConvertedValue::Enum(_)
+    | ConvertedValue::PlatformObject(_) => {}
+  }
+}
+
 /// Convert an ECMAScript value to a WebIDL callback function value.
 ///
 /// Spec: <https://webidl.spec.whatwg.org/#es-callback-function>
@@ -773,14 +827,15 @@ pub fn to_callback_interface<R: WebIdlJsRuntime>(
   if !rt.is_object(value) {
     return Err(rt.throw_type_error("Value is not a callable callback interface"));
   }
-
-  let handle_event_key = rt.property_key_from_str("handleEvent")?;
-  match rt.get_method(value, handle_event_key)? {
-    Some(_) => Ok(value),
-    None => Err(rt.throw_type_error(
-      "Callback interface object is missing a callable handleEvent method",
-    )),
-  }
+  rt.with_stack_roots(&[value], |rt| {
+    let handle_event_key = rt.property_key_from_str("handleEvent")?;
+    match rt.get_method(value, handle_event_key)? {
+      Some(_) => Ok(value),
+      None => Err(rt.throw_type_error(
+        "Callback interface object is missing a callable handleEvent method",
+      )),
+    }
+  })
 }
 
 /// Convert an ECMAScript value to a WebIDL interface type.
@@ -958,15 +1013,24 @@ pub fn invoke_callback_interface<R: WebIdlJsRuntime>(
   if !rt.is_object(callback) {
     return Err(rt.throw_type_error("Callback interface value is not callable or an object"));
   }
+  // Root `callback` and `args` *together* for the duration of the operation.
+  //
+  // `with_stack_roots` can allocate/gc while growing the root stack; if we root `callback` first and
+  // then root `args`, a GC during the first call could collect values in `args` before they are
+  // added to the root set.
+  let mut roots: Vec<R::JsValue> = Vec::with_capacity(1 + args.len());
+  roots.push(callback);
+  roots.extend_from_slice(args);
+  rt.with_stack_roots(&roots, |rt| {
+    let handle_event_key = rt.property_key_from_str("handleEvent")?;
+    let Some(handle_event) = rt.get_method(callback, handle_event_key)? else {
+      return Err(rt.throw_type_error(
+        "Callback interface object is missing a callable handleEvent method",
+      ));
+    };
 
-  let handle_event_key = rt.property_key_from_str("handleEvent")?;
-  let Some(handle_event) = rt.get_method(callback, handle_event_key)? else {
-    return Err(rt.throw_type_error(
-      "Callback interface object is missing a callable handleEvent method",
-    ));
-  };
-
-  rt.call(handle_event, callback, args)
+    rt.call(handle_event, callback, args)
+  })
 }
 
 fn convert_to_sequence<R: WebIdlJsRuntime>(
@@ -1004,20 +1068,32 @@ fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
     ],
     |rt| {
       let mut values = Vec::<ConvertedValue<R::JsValue>>::new();
-      while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {
+      // Roots for any JS values stored in `values` so far. These are not otherwise visible to the GC.
+      let mut value_roots: Vec<R::JsValue> = Vec::new();
+
+      loop {
+        // Ensure any previously-converted JS values remain alive while we perform the next
+        // `IteratorStepValue` (which allocates and can trigger GC).
+        let next = rt.with_stack_roots(&value_roots, |rt| rt.iterator_step_value(&mut iterator_record))?;
+        let Some(next) = next else {
+          break;
+        };
         if values.len() >= rt.limits().max_sequence_length {
           return Err(rt.throw_range_error("sequence exceeds maximum length"));
         }
-        let converted = rt.with_stack_roots(&[next], |rt| {
-          convert_to_idl_inner(
-            rt,
-            next,
-            elem_ty,
-            ctx,
-            typedef_stack,
-            ConversionState::default(),
-          )
+        let converted = rt.with_stack_roots(&value_roots, |rt| {
+          rt.with_stack_roots(&[next], |rt| {
+            convert_to_idl_inner(
+              rt,
+              next,
+              elem_ty,
+              ctx,
+              typedef_stack,
+              ConversionState::default(),
+            )
+          })
         })?;
+        append_converted_value_roots(&mut value_roots, &converted);
         values.push(converted);
       }
       Ok(ConvertedValue::Sequence {
@@ -1039,45 +1115,62 @@ fn convert_to_record<R: WebIdlJsRuntime>(
   // Record conversions use `ToObject` (per WebIDL), so accept primitives here.
   let v = rt.to_object(v)?;
 
-  let keys = rt.own_property_keys(v)?;
+  // Root `v` and any JS values produced by earlier property conversions for the duration of later
+  // conversions. Record entries can contain `object` / `any` values, which may allocate wrappers
+  // that are otherwise only referenced from Rust.
+  let keys = rt.with_stack_roots(&[v], |rt| rt.own_property_keys(v))?;
+  let mut roots: Vec<R::JsValue> = Vec::new();
+  roots.push(v);
+
   let mut entries = Vec::<(String, ConvertedValue<R::JsValue>)>::new();
   // Records use map/set semantics; when a converted key already exists, the value is overwritten
   // without changing insertion order.
   let mut index_by_key = std::collections::HashMap::<String, usize>::new();
 
   for key in keys {
-    let Some(desc) = rt.get_own_property(v, key)? else {
+    let Some((typed_key, typed_value)) = rt.with_stack_roots(&roots, |rt| {
+      let Some(desc) = rt.get_own_property(v, key)? else {
+        return Ok(None);
+      };
+      if !desc.enumerable {
+        return Ok(None);
+      }
+
+      // WebIDL record conversion uses `PropertyKeyToString` / `ToString` on property keys:
+      // attempting to convert a Symbol key must throw a TypeError. (Non-enumerable properties have
+      // already been skipped above.)
+      let key_value = rt.property_key_to_js_string(key)?;
+      let typed_key = rt.with_stack_roots(&[key_value], |rt| {
+        convert_to_idl_inner(
+          rt,
+          key_value,
+          key_ty,
+          ctx,
+          typedef_stack,
+          ConversionState::default(),
+        )
+      })?;
+      let ConvertedValue::String(typed_key) = typed_key else {
+        return Err(rt.throw_type_error("Record key did not convert to a string"));
+      };
+
+      let value = rt.get(v, key)?;
+      let typed_value = rt.with_stack_roots(&[value], |rt| {
+        convert_to_idl_inner(
+          rt,
+          value,
+          value_ty,
+          ctx,
+          typedef_stack,
+          ConversionState::default(),
+        )
+      })?;
+      Ok(Some((typed_key, typed_value)))
+    })?
+    else {
       continue;
     };
-    if !desc.enumerable {
-      continue;
-    }
-
-    // WebIDL record conversion uses `PropertyKeyToString` / `ToString` on property keys:
-    // attempting to convert a Symbol key must throw a TypeError. (Non-enumerable properties have
-    // already been skipped above.)
-    let key_value = rt.property_key_to_js_string(key)?;
-    let typed_key = convert_to_idl_inner(
-      rt,
-      key_value,
-      key_ty,
-      ctx,
-      typedef_stack,
-      ConversionState::default(),
-    )?;
-    let ConvertedValue::String(typed_key) = typed_key else {
-      return Err(rt.throw_type_error("Record key did not convert to a string"));
-    };
-
-    let value = rt.get(v, key)?;
-    let typed_value = convert_to_idl_inner(
-      rt,
-      value,
-      value_ty,
-      ctx,
-      typedef_stack,
-      ConversionState::default(),
-    )?;
+    append_converted_value_roots(&mut roots, &typed_value);
     if let Some(&idx) = index_by_key.get(&typed_key) {
       entries[idx].1 = typed_value;
     } else {
@@ -1112,6 +1205,8 @@ fn convert_to_dictionary<R: WebIdlJsRuntime>(
   };
 
   let mut out = BTreeMap::<String, ConvertedValue<R::JsValue>>::new();
+  let mut roots: Vec<R::JsValue> = Vec::new();
+  roots.push(v);
   for DictionaryMemberSchema {
     name,
     required,
@@ -1119,34 +1214,43 @@ fn convert_to_dictionary<R: WebIdlJsRuntime>(
     default,
   } in members
   {
-    let js_member_value = if rt.is_undefined(v) || rt.is_null(v) {
-      rt.js_undefined()
-    } else {
-      let key = rt.property_key_from_str(&name)?;
-      rt.get(v, key)?
-    };
+    let maybe_converted = rt.with_stack_roots(&roots, |rt| {
+      let js_member_value = if rt.is_undefined(v) || rt.is_null(v) {
+        rt.js_undefined()
+      } else {
+        let key = rt.property_key_from_str(&name)?;
+        rt.get(v, key)?
+      };
 
-    if !rt.is_undefined(js_member_value) {
-      let converted = convert_to_idl_inner(
-        rt,
-        js_member_value,
-        &ty,
-        ctx,
-        typedef_stack,
-        ConversionState::default(),
-      )?;
+      if !rt.is_undefined(js_member_value) {
+        let converted = rt.with_stack_roots(&[js_member_value], |rt| {
+          convert_to_idl_inner(
+            rt,
+            js_member_value,
+            &ty,
+            ctx,
+            typedef_stack,
+            ConversionState::default(),
+          )
+        })?;
+        return Ok(Some(converted));
+      }
+
+      if let Some(default) = default {
+        let evaluated =
+          eval_default_value(&ty, &default, ctx).map_err(|e| throw_webidl_exception(rt, e))?;
+        return Ok(Some(converted_from_webidl_value::<R::JsValue>(evaluated)));
+      }
+
+      if required {
+        return Err(rt.throw_type_error("Missing required dictionary member"));
+      }
+      Ok(None)
+    })?;
+
+    if let Some(converted) = maybe_converted {
+      append_converted_value_roots(&mut roots, &converted);
       out.insert(name, converted);
-      continue;
-    }
-
-    if let Some(default) = default {
-      let evaluated = eval_default_value(&ty, &default, ctx).map_err(|e| throw_webidl_exception(rt, e))?;
-      out.insert(name, converted_from_webidl_value::<R::JsValue>(evaluated));
-      continue;
-    }
-
-    if required {
-      return Err(rt.throw_type_error("Missing required dictionary member"));
     }
   }
 
@@ -1157,6 +1261,16 @@ fn convert_to_dictionary<R: WebIdlJsRuntime>(
 }
 
 fn convert_to_union<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  v: R::JsValue,
+  members: &[IdlType],
+  ctx: &TypeContext,
+  typedef_stack: &mut Vec<String>,
+) -> Result<ConvertedValue<R::JsValue>, R::Error> {
+  rt.with_stack_roots(&[v], |rt| convert_to_union_inner(rt, v, members, ctx, typedef_stack))
+}
+
+fn convert_to_union_inner<R: WebIdlJsRuntime>(
   rt: &mut R,
   v: R::JsValue,
   members: &[IdlType],
@@ -1636,14 +1750,24 @@ fn converted_from_webidl_value<V: Copy>(value: WebIdlValue) -> ConvertedValue<V>
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::VmJsRuntime;
-  use vm_js::Value;
+  use crate::{VmJsRuntime, WebIdlBindingsRuntime};
+  use vm_js::{HeapLimits, PropertyKey, VmError, Value};
+  use webidl_ir::{parse_idl_type_complete, DictionarySchema};
 
   fn as_utf8_lossy(rt: &VmJsRuntime, v: Value) -> String {
     let Value::String(s) = v else {
       panic!("expected string");
     };
     rt.heap().get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  fn raw_symbol_iterator_key(rt: &mut VmJsRuntime) -> Result<PropertyKey, VmError> {
+    // Avoid `VmJsRuntime::symbol_iterator()` so tests exercise the GC-safety of conversions that call
+    // it internally.
+    let mut scope = rt.heap_mut().scope();
+    let key = scope.alloc_string("Symbol.iterator")?;
+    let sym = scope.heap_mut().symbol_for(key)?;
+    Ok(PropertyKey::Symbol(sym))
   }
 
   #[test]
@@ -1746,5 +1870,383 @@ mod tests {
       to_unsigned_long_long(&mut rt, Value::Number(-1.0), attrs).unwrap(),
       u64::MAX
     );
+  }
+
+  #[test]
+  fn dictionary_conversion_is_gc_safe_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut ctx = TypeContext::default();
+    ctx.add_dictionary(DictionarySchema {
+      name: "Dict".to_string(),
+      inherits: None,
+      members: vec![
+        DictionaryMemberSchema {
+          name: "a".to_string(),
+          required: false,
+          ty: parse_idl_type_complete("object")?,
+          default: None,
+        },
+        DictionaryMemberSchema {
+          name: "b".to_string(),
+          required: false,
+          ty: parse_idl_type_complete("object")?,
+          default: None,
+        },
+      ],
+    });
+
+    let ty = parse_idl_type_complete("Dict")?;
+    // Force a GC before every allocation to stress rooting in `convert_to_dictionary`.
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+    let dict_obj = rt.alloc_object()?;
+    rt.with_stack_roots(&[dict_obj], |rt| {
+      let a_value = rt.alloc_string("x")?;
+      rt.with_stack_roots(&[a_value], |rt| {
+        let key = rt.property_key_from_str("a")?;
+        rt.define_data_property(dict_obj, key, a_value, true)?;
+        Ok(())
+      })?;
+
+      let b_value = rt.alloc_string("y")?;
+      rt.with_stack_roots(&[b_value], |rt| {
+        let key = rt.property_key_from_str("b")?;
+        rt.define_data_property(dict_obj, key, b_value, true)?;
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    let converted = convert_to_idl(&mut rt, dict_obj, &ty, &ctx)?;
+    let ConvertedValue::Dictionary { members, .. } = converted else {
+      return Err("expected dictionary conversion".into());
+    };
+
+    let Some(ConvertedValue::Object(a_obj)) = members.get("a") else {
+      return Err("expected dictionary member `a`".into());
+    };
+    let Some(ConvertedValue::Object(b_obj)) = members.get("b") else {
+      return Err("expected dictionary member `b`".into());
+    };
+    assert_ne!(*a_obj, *b_obj, "object wrappers should not alias");
+
+    rt.with_stack_roots(&[*a_obj, *b_obj], |rt| {
+      let a_str = rt.to_string(*a_obj)?;
+      assert_eq!(rt.string_to_utf8_lossy(a_str)?, "x");
+
+      let b_str = rt.to_string(*b_obj)?;
+      assert_eq!(rt.string_to_utf8_lossy(b_str)?, "y");
+      Ok(())
+    })?;
+
+    Ok(())
+  }
+
+  #[test]
+  fn record_conversion_is_gc_safe_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TypeContext::default();
+    let ty = parse_idl_type_complete("record<DOMString, object>")?;
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+    let record_obj = rt.alloc_object()?;
+    rt.with_stack_roots(&[record_obj], |rt| {
+      let a_value = rt.alloc_string("x")?;
+      rt.with_stack_roots(&[a_value], |rt| {
+        let key = rt.property_key_from_str("a")?;
+        rt.define_data_property(record_obj, key, a_value, true)?;
+        Ok(())
+      })?;
+
+      let b_value = rt.alloc_string("y")?;
+      rt.with_stack_roots(&[b_value], |rt| {
+        let key = rt.property_key_from_str("b")?;
+        rt.define_data_property(record_obj, key, b_value, true)?;
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    let converted = convert_to_idl(&mut rt, record_obj, &ty, &ctx)?;
+    let ConvertedValue::Record { entries, .. } = converted else {
+      return Err("expected record conversion".into());
+    };
+    assert_eq!(entries.len(), 2);
+
+    let mut a_obj: Option<Value> = None;
+    let mut b_obj: Option<Value> = None;
+    for (k, v) in &entries {
+      match (k.as_str(), v) {
+        ("a", ConvertedValue::Object(obj)) => a_obj = Some(*obj),
+        ("b", ConvertedValue::Object(obj)) => b_obj = Some(*obj),
+        _ => {}
+      }
+    }
+    let a_obj = a_obj.ok_or("missing record entry `a`")?;
+    let b_obj = b_obj.ok_or("missing record entry `b`")?;
+    assert_ne!(a_obj, b_obj, "object wrappers should not alias");
+
+    rt.with_stack_roots(&[a_obj, b_obj], |rt| {
+      let a_str = rt.to_string(a_obj)?;
+      assert_eq!(rt.string_to_utf8_lossy(a_str)?, "x");
+      let b_str = rt.to_string(b_obj)?;
+      assert_eq!(rt.string_to_utf8_lossy(b_str)?, "y");
+      Ok(())
+    })?;
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct SeqHost {
+    next_calls: usize,
+  }
+
+  fn iterator_method(
+    rt: &mut VmJsRuntime,
+    host: &mut SeqHost,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    host.next_calls = 0;
+
+    let iterator = rt.alloc_object()?;
+    rt.with_stack_roots(&[iterator], |rt| {
+      let next =
+        <VmJsRuntime as WebIdlBindingsRuntime<SeqHost>>::create_function(rt, "next", 0, iterator_next)?;
+      rt.with_stack_roots(&[next], |rt| {
+        let next_key = rt.property_key_from_str("next")?;
+        rt.define_data_property(iterator, next_key, next, true)?;
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    Ok(iterator)
+  }
+
+  fn iterator_next(
+    rt: &mut VmJsRuntime,
+    host: &mut SeqHost,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let (done, value) = match host.next_calls {
+      0 => (false, Some("x")),
+      1 => (false, Some("y")),
+      _ => (true, None),
+    };
+    host.next_calls += 1;
+
+    let result = rt.alloc_object()?;
+    rt.with_stack_roots(&[result], |rt| {
+      let done_key = rt.property_key_from_str("done")?;
+      rt.define_data_property(result, done_key, rt.js_boolean(done), true)?;
+
+      if let Some(value) = value {
+        let value = rt.alloc_string(value)?;
+        rt.with_stack_roots(&[value], |rt| {
+          let value_key = rt.property_key_from_str("value")?;
+          rt.define_data_property(result, value_key, value, true)?;
+          Ok(())
+        })?;
+      }
+      Ok(())
+    })?;
+    Ok(result)
+  }
+
+  fn make_iterable(rt: &mut VmJsRuntime) -> Result<Value, VmError> {
+    let iterable = rt.alloc_object()?;
+    rt.with_stack_roots(&[iterable], |rt| {
+      let iterator =
+        <VmJsRuntime as WebIdlBindingsRuntime<SeqHost>>::create_function(rt, "iterator", 0, iterator_method)?;
+      rt.with_stack_roots(&[iterator], |rt| {
+        let key = raw_symbol_iterator_key(rt)?;
+        rt.define_data_property(iterable, key, iterator, true)?;
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+    Ok(iterable)
+  }
+
+  #[test]
+  fn sequence_conversion_is_gc_safe_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TypeContext::default();
+    let ty = parse_idl_type_complete("sequence<object>")?;
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+    let mut host = SeqHost::default();
+    let iterable = make_iterable(&mut rt)?;
+    let converted = rt.with_host_context(&mut host, |rt| convert_to_idl(rt, iterable, &ty, &ctx))?;
+    let ConvertedValue::Sequence { values, .. } = converted else {
+      return Err("expected sequence conversion".into());
+    };
+    assert_eq!(values.len(), 2);
+
+    let ConvertedValue::Object(first) = values[0] else {
+      return Err("expected first element to be an object".into());
+    };
+    let ConvertedValue::Object(second) = values[1] else {
+      return Err("expected second element to be an object".into());
+    };
+
+    rt.with_stack_roots(&[first, second], |rt| {
+      let a_str = rt.to_string(first)?;
+      assert_eq!(rt.string_to_utf8_lossy(a_str)?, "x");
+      let b_str = rt.to_string(second)?;
+      assert_eq!(rt.string_to_utf8_lossy(b_str)?, "y");
+      Ok(())
+    })?;
+    Ok(())
+  }
+
+  #[test]
+  fn union_sequence_conversion_roots_input_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TypeContext::default();
+    let ty = parse_idl_type_complete("(sequence<object> or long)")?;
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+    let mut host = SeqHost::default();
+    let iterable = make_iterable(&mut rt)?;
+    let converted = rt.with_host_context(&mut host, |rt| convert_to_idl(rt, iterable, &ty, &ctx))?;
+    let ConvertedValue::Union { value, .. } = converted else {
+      return Err("expected union conversion".into());
+    };
+    let ConvertedValue::Sequence { values, .. } = value.as_ref() else {
+      return Err("expected union to select the sequence member".into());
+    };
+    assert_eq!(values.len(), 2);
+    Ok(())
+  }
+
+  fn noop_handle_event(
+    rt: &mut VmJsRuntime,
+    _host: &mut (),
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    Ok(rt.js_undefined())
+  }
+
+  #[test]
+  fn to_callback_interface_is_gc_safe_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+    let cb_obj = rt.alloc_object()?;
+    rt.with_stack_roots(&[cb_obj], |rt| {
+      let handle_event =
+        <VmJsRuntime as WebIdlBindingsRuntime<()>>::create_function(rt, "handleEvent", 0, noop_handle_event)?;
+      rt.with_stack_roots(&[handle_event], |rt| {
+        let key = rt.property_key_from_str("handleEvent")?;
+        rt.define_data_property(cb_obj, key, handle_event, true)?;
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    let out = to_callback_interface(&mut rt, cb_obj)?;
+    assert_eq!(out, cb_obj);
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct CallbackHost {
+    called: usize,
+    saw_arg0: Option<String>,
+  }
+
+  fn handle_event_recording(
+    rt: &mut VmJsRuntime,
+    host: &mut CallbackHost,
+    _this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    host.called += 1;
+    if let Some(v) = args.first() {
+      let s = rt.to_string(*v)?;
+      host.saw_arg0 = Some(rt.string_to_utf8_lossy(s)?);
+    }
+    Ok(rt.js_number(123.0))
+  }
+
+  #[test]
+  fn invoke_callback_interface_is_gc_safe_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+    let cb_obj = rt.alloc_object()?;
+    rt.with_stack_roots(&[cb_obj], |rt| {
+      let handle_event = <VmJsRuntime as WebIdlBindingsRuntime<CallbackHost>>::create_function(
+        rt,
+        "handleEvent",
+        1,
+        handle_event_recording,
+      )?;
+      rt.with_stack_roots(&[handle_event], |rt| {
+        let key = rt.property_key_from_str("handleEvent")?;
+        rt.define_data_property(cb_obj, key, handle_event, true)?;
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    // Root the callback object while allocating args: under aggressive GC, the callback object must
+    // stay alive so it can keep its `handleEvent` method alive too.
+    let arg0 = rt.with_stack_roots(&[cb_obj], |rt| rt.alloc_string("arg"))?;
+    let mut host = CallbackHost::default();
+    let out =
+      rt.with_host_context(&mut host, |rt| invoke_callback_interface(rt, cb_obj, &[arg0]))?;
+    assert_eq!(out, Value::Number(123.0));
+    assert_eq!(host.called, 1);
+    assert_eq!(host.saw_arg0.as_deref(), Some("arg"));
+    Ok(())
+  }
+
+  #[test]
+  fn convert_arguments_roots_earlier_converted_values_under_extreme_gc_pressure(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = TypeContext::default();
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+    let arg0 = rt.alloc_string("x")?;
+    // Root the first string while allocating the second: under extreme GC pressure, local Rust
+    // variables are not automatically treated as GC roots.
+    let arg1 = rt.with_stack_roots(&[arg0], |rt| rt.alloc_string("y"))?;
+    let params = [
+      ArgumentSchema {
+        name: "a",
+        ty: parse_idl_type_complete("object")?,
+        optional: false,
+        default: None,
+      },
+      ArgumentSchema {
+        name: "b",
+        ty: parse_idl_type_complete("object")?,
+        optional: false,
+        default: None,
+      },
+    ];
+
+    let converted = convert_arguments(&mut rt, &[arg0, arg1], &params, &ctx)?;
+    assert_eq!(converted.len(), 2);
+    let ConvertedValue::Object(obj0) = converted[0] else {
+      return Err("expected first argument to convert to an object".into());
+    };
+    let ConvertedValue::Object(obj1) = converted[1] else {
+      return Err("expected second argument to convert to an object".into());
+    };
+
+    rt.with_stack_roots(&[obj0, obj1], |rt| {
+      let s0 = rt.to_string(obj0)?;
+      assert_eq!(rt.string_to_utf8_lossy(s0)?, "x");
+      let s1 = rt.to_string(obj1)?;
+      assert_eq!(rt.string_to_utf8_lossy(s1)?, "y");
+      Ok(())
+    })?;
+    Ok(())
   }
 }
