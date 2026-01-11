@@ -33,7 +33,7 @@ exclude = ["vendor/ecma-rs"]
 resolver = "2"
 
 [features]
-default = ["preserve3d_warp"]
+default = ["preserve3d_warp", "avif"]
 avif = ["dep:avif-decode", "dep:avif-parse"]
 box_generation_demo = []
 disk_cache = ["fs2"]

@@ -686,6 +686,60 @@ fn grid_container_allows_stretch_block_size_override(
   grid_track_is_definite(track, containing_block_definite)
 }
 
+fn grid_item_allows_stretch_block_size_override(
+  container_style: &ComputedStyle,
+  container_constraints: &LayoutConstraints,
+  item_style: &ComputedStyle,
+) -> bool {
+  // Preserve the existing behaviour for non-horizontal writing modes; determining which physical
+  // axis maps to grid rows/columns is more complex than the current needs.
+  let inline_is_horizontal = crate::style::inline_axis_is_horizontal(container_style.writing_mode);
+  if !inline_is_horizontal {
+    return true;
+  }
+
+  // Fall back to the container-level heuristic when we can't determine which tracks the item spans
+  // (e.g. placement via named lines or auto-placement).
+  let fallback = grid_container_allows_stretch_block_size_override(container_style, container_constraints);
+
+  let mut row_start = item_style.grid_row_start;
+  let mut row_end = item_style.grid_row_end;
+  if row_start > 0 && row_end == 0 {
+    // An explicit start with an auto end implies a 1-track span.
+    row_end = row_start.saturating_add(1);
+  }
+  if row_start <= 0 || row_end <= 0 || row_end <= row_start {
+    return fallback;
+  }
+
+  let containing_block_definite = container_constraints.height().is_some()
+    || container_constraints.used_border_box_height.is_some()
+    || container_style
+      .height
+      .as_ref()
+      .is_some_and(|len| !len.has_percentage());
+  let auto_track_fallback = GridTrack::Auto;
+  let implicit_track = container_style
+    .grid_auto_rows
+    .get(0)
+    .unwrap_or(&auto_track_fallback);
+
+  // Track indices are 0-based while grid lines are 1-based.
+  let start_track = (row_start - 1) as usize;
+  let end_track_exclusive = (row_end - 1) as usize;
+  for track_idx in start_track..end_track_exclusive {
+    let track = container_style
+      .grid_template_rows
+      .get(track_idx)
+      .unwrap_or(implicit_track);
+    if !grid_track_is_definite(track, containing_block_definite) {
+      return false;
+    }
+  }
+
+  true
+}
+
 fn node_or_in_flow_children_depend_on_available_height(node: &BoxNode) -> bool {
   if height_depends_on_available_height(&node.style) {
     return true;
@@ -9552,7 +9606,8 @@ impl GridFormattingContext {
     known_dimensions: taffy::geometry::Size<Option<f32>>,
     available_space: taffy::geometry::Size<taffy::style::AvailableSpace>,
     parent_inline_base: Option<f32>,
-    allow_stretch_block_size_override: bool,
+    container_style: &ComputedStyle,
+    container_constraints: &LayoutConstraints,
     taffy_style: &taffy::style::Style,
     auto_unskipped: &FxHashSet<*const BoxNode>,
     factory: &crate::layout::contexts::factory::FormattingContextFactory,
@@ -9565,6 +9620,12 @@ impl GridFormattingContext {
     let style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
+
+    let trace_measure_id =
+      crate::debug::runtime::runtime_toggles().usize("FASTR_TRACE_GRID_MEASURE_ID");
+
+    let allow_stretch_block_size_override =
+      grid_item_allows_stretch_block_size_override(container_style, container_constraints, style);
 
     // Taffy sometimes reports the grid area's block size as a "known" size for stretched items.
     // For content-sized grid tracks we must *not* treat that stretched size as a definite basis for
@@ -9608,6 +9669,29 @@ impl GridFormattingContext {
       known_dimensions.height,
       available_space.height,
     );
+    // When the grid item's block-axis tracks are content-sized (`auto`, `min-content`, etc.), the
+    // grid area block size is *not* definite for percentage resolution (CSS2.1 §10.5 / CSS Grid
+    // §6.5). Taffy still probes leaf nodes with the current track size estimate, which can be much
+    // smaller than the item's max-content size.
+    //
+    // Keep the definite height in the cache key (for conservatism) but treat it as effectively
+    // indefinite for nested layout so intrinsic sizing keywords like `height:fit-content` don't
+    // clamp to a transient track size and incorrectly prevent the item from contributing to track
+    // sizing.
+    let treat_definite_height_probe_as_indefinite_for_layout = !allow_stretch_block_size_override
+      && known_dimensions.height.is_none()
+      && matches!(
+        available_space.height,
+        taffy::style::AvailableSpace::Definite(h) if h.is_finite() && h > 1.0
+      )
+      && matches!(
+        fc_type,
+        FormattingContextType::Block
+          | FormattingContextType::Inline
+          | FormattingContextType::Table
+          | FormattingContextType::Flex
+      )
+      && node_or_in_flow_children_depend_on_available_height(box_node);
     // Taffy expresses intrinsic height probes (min-/max-content contributions) by setting
     // `available_space.height` to `MinContent`/`MaxContent`.
     //
@@ -9641,6 +9725,30 @@ impl GridFormattingContext {
     if drop_intrinsic_height_probe {
       drop_available_height = true;
     }
+    let drop_intrinsic_height_probe_for_fit_content = !allow_stretch_block_size_override
+      && known_dimensions.height.is_none()
+      && matches!(
+        available_space.height,
+        taffy::style::AvailableSpace::MinContent | taffy::style::AvailableSpace::MaxContent
+      )
+      && (known_dimensions.width.is_some()
+        || matches!(
+          available_space.width,
+          taffy::style::AvailableSpace::Definite(w) if w.is_finite() && w > 1.0
+        ))
+      && matches!(
+        fc_type,
+        FormattingContextType::Block
+          | FormattingContextType::Inline
+          | FormattingContextType::Table
+          | FormattingContextType::Flex
+      )
+      && style
+        .height_keyword
+        .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }));
+    if drop_intrinsic_height_probe_for_fit_content {
+      drop_available_height = true;
+    }
     if !drop_available_height
       && !allow_stretch_block_size_override
       && known_dimensions.height.is_none()
@@ -9648,7 +9756,9 @@ impl GridFormattingContext {
         available_space.height,
         taffy::style::AvailableSpace::Definite(h) if h > 1.0
       )
-      && (style.height_keyword.is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
+      && (style
+        .height_keyword
+        .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
         || style
           .min_height_keyword
           .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
@@ -9672,6 +9782,29 @@ impl GridFormattingContext {
       self.viewport_size,
       drop_available_height,
     );
+    let mut layout_available_space = available_space;
+    if treat_definite_height_probe_as_indefinite_for_layout
+      && matches!(layout_available_space.height, taffy::style::AvailableSpace::Definite(_))
+    {
+      // Use a tiny definite so `constraints_from_taffy` normalizes it to an indefinite height.
+      layout_available_space.height = taffy::style::AvailableSpace::Definite(0.0);
+    }
+    if trace_measure_id.is_some_and(|id| id == box_node.id) {
+      eprintln!(
+        "[grid-measure-item] box_id={} node_id={:?} known={:?} avail={:?} layout_avail={:?} fc={:?} height={:?} height_kw={:?} allow_stretch={} treat_height_probe_indef={} drop_avail_height={}",
+        box_node.id,
+        node_id,
+        known_dimensions,
+        available_space,
+        layout_available_space,
+        fc_type,
+        style.height,
+        style.height_keyword,
+        allow_stretch_block_size_override,
+        treat_definite_height_probe_as_indefinite_for_layout,
+        drop_available_height
+      );
+    }
     let has_calc_percentage_edges = Self::length_has_calc_percentage(&style.padding_left)
       || Self::length_has_calc_percentage(&style.padding_right)
       || Self::length_has_calc_percentage(&style.padding_top)
@@ -9690,7 +9823,7 @@ impl GridFormattingContext {
       let constraints = constraints_from_taffy(
         self.viewport_size,
         known_dimensions,
-        available_space,
+        layout_available_space,
         style.writing_mode,
         parent_inline_base,
       );
@@ -9715,7 +9848,7 @@ impl GridFormattingContext {
     let mut constraints = constraints_from_taffy(
       self.viewport_size,
       known_dimensions,
-      available_space,
+      layout_available_space,
       style.writing_mode,
       parent_inline_base,
     );
@@ -10098,13 +10231,18 @@ impl GridFormattingContext {
           Axis::Vertical => fit_inset_h,
         };
 
+        // In our Taffy integration, `AvailableSpace::Definite` sizes `<= 1px` represent "unknown"
+        // (see `constraints_from_taffy`). When sizing `fit-content`, treat those probes as
+        // effectively indefinite so we don't clamp to a transient 0/1px track estimate.
+        let definite_space = match avail_dim {
+          taffy::style::AvailableSpace::Definite(v) if v.is_finite() && v > 1.0 => Some(v.max(0.0)),
+          _ => None,
+        };
+
         let available_border_box = match avail_dim {
-          // A definite `AvailableSpace` value of 0px/1px is a sentinel used throughout the grid
-          // integration to represent an "effectively indefinite" probe (see `constraints_from_taffy`
-          // and `MeasureAvailKey::Indefinite`). Treat these as indefinite here as well so
-          // `fit-content` resolves to max-content instead of clamping to 0px.
-          taffy::style::AvailableSpace::Definite(v) if v > 1.0 => Some((v + axis_inset).max(0.0)),
-          taffy::style::AvailableSpace::Definite(_) => None,
+          taffy::style::AvailableSpace::Definite(_v) => {
+            definite_space.map(|v| (v + axis_inset).max(0.0))
+          }
           taffy::style::AvailableSpace::MinContent => Some(min_intrinsic),
           taffy::style::AvailableSpace::MaxContent => Some(max_intrinsic),
         };
@@ -10112,10 +10250,9 @@ impl GridFormattingContext {
         let preferred_border_box = match limit {
           None => None,
           Some(arg) => {
-            let base_content = match avail_dim {
-              taffy::style::AvailableSpace::Definite(v) if v > 1.0 => v.max(0.0),
-              _ => (available_border_box.unwrap_or(max_intrinsic) - axis_inset).max(0.0),
-            };
+            let base_content = definite_space.unwrap_or_else(|| {
+              (available_border_box.unwrap_or(max_intrinsic) - axis_inset).max(0.0)
+            });
             let resolved = self
               .resolve_length_for_width(arg, base_content, style)
               .max(0.0);
@@ -10160,10 +10297,7 @@ impl GridFormattingContext {
             IntrinsicSizeKeyword::CalcSize(_) => None,
           }
         };
-        let percentage_base_opt = match avail_dim {
-          taffy::style::AvailableSpace::Definite(v) if v > 1.0 => Some(v.max(0.0)),
-          _ => None,
-        };
+        let percentage_base_opt = definite_space;
         let resolve_length_px = |len: Length| -> Option<f32> {
           if len.has_percentage() && percentage_base_opt.is_none() {
             return None;
@@ -10216,8 +10350,8 @@ impl GridFormattingContext {
 
       if let Some(limit) = fit_height_limit {
         let can_use_available_height = matches!(
-          available_space.height,
-          taffy::style::AvailableSpace::Definite(h) if h > 1.0
+          layout_available_space.height,
+          taffy::style::AvailableSpace::Definite(h) if h.is_finite() && h > 1.0
         );
         if limit.is_none() && !can_use_available_height {
           // `height: fit-content` without an explicit limit falls back to max-content when the
@@ -10226,7 +10360,7 @@ impl GridFormattingContext {
           // precomputed border-box size based on intrinsic probes (which can ignore the actual
           // column width and collapse content).
         } else {
-          match compute_fit_border_box(Axis::Vertical, limit, available_space.height) {
+          match compute_fit_border_box(Axis::Vertical, limit, layout_available_space.height) {
             Ok(border_box) if border_box.is_finite() => {
               let border_box = border_box.max(0.0);
               fit_border_box_height = Some(border_box);
@@ -10258,9 +10392,9 @@ impl GridFormattingContext {
                   resolved.max(0.0)
                 };
                 constraints.used_border_box_width = Some(border_box.min(max_border_box));
-                } else if let Some(keyword) = style.width_keyword {
-                  match keyword {
-                    IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => {
+              } else if let Some(keyword) = style.width_keyword {
+                match keyword {
+                  IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => {
                     let use_min = matches!(keyword, IntrinsicSizeKeyword::MinContent);
                     match intrinsic_range_for_physical_axis(Axis::Horizontal) {
                       Ok((min_intrinsic, max_intrinsic)) => {
@@ -10275,7 +10409,7 @@ impl GridFormattingContext {
                       Err(_) => {}
                     }
                   }
-                    IntrinsicSizeKeyword::FillAvailable => {
+                  IntrinsicSizeKeyword::FillAvailable => {
                     let base = constraints
                       .inline_percentage_base
                       .unwrap_or(percentage_base)
@@ -10285,13 +10419,13 @@ impl GridFormattingContext {
                     } else {
                       base.max(0.0)
                     };
-                      constraints.used_border_box_width = Some(border_box.min(max_border_box));
-                    }
-                    IntrinsicSizeKeyword::FitContent { .. } => {}
-                    IntrinsicSizeKeyword::CalcSize(_) => {}
+                    constraints.used_border_box_width = Some(border_box.min(max_border_box));
                   }
+                  IntrinsicSizeKeyword::FitContent { .. } => {}
+                  IntrinsicSizeKeyword::CalcSize(_) => {}
                 }
               }
+            }
             Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
             Err(_) => {}
             _ => {}
@@ -10301,7 +10435,7 @@ impl GridFormattingContext {
 
       if resolve_fit_max_height {
         if let Some(limit) = fit_max_height_limit {
-          match compute_fit_border_box(Axis::Vertical, limit, available_space.height) {
+          match compute_fit_border_box(Axis::Vertical, limit, layout_available_space.height) {
             Ok(max_border_box) if max_border_box.is_finite() => {
               let max_border_box = max_border_box.max(0.0);
               if let Some(existing) = constraints.used_border_box_height {
@@ -10653,6 +10787,12 @@ impl GridFormattingContext {
 
       let size = taffy::geometry::Size { width, height };
       let output = taffy::tree::MeasureOutput::from_size(size);
+      if trace_measure_id.is_some_and(|id| id == box_node.id) {
+        eprintln!(
+          "[grid-measure-item-out] box_id={} node_id={:?} key={:?} (intrinsic) -> size={:?}",
+          box_node.id, node_id, key, output.size
+        );
+      }
       grid_measure_size_cache_store(key, output);
       measure_cache.insert(key, output);
       return output;
@@ -10717,35 +10857,44 @@ impl GridFormattingContext {
     }
 
     record_measure_layout_call();
-    let clear_fit_content_height_keyword = matches!(
-      style.height_keyword,
-      Some(IntrinsicSizeKeyword::FitContent { limit: None })
-    ) && !matches!(constraints.available_height, CrateAvailableSpace::Definite(_));
-    let mut fragment = match if clear_fit_content_height_keyword {
-      // When the block-axis available size is indefinite, `height: fit-content` behaves like
-      // max-content. For typical grid items this is equivalent to `auto`, so clear the keyword to
-      // avoid nested formatting contexts (notably flex) resolving the keyword using intrinsic probes
-      // that ignore the actual column width.
-      let mut override_style: ComputedStyle = (*style).clone();
-      override_style.height = None;
-      override_style.height_keyword = None;
-      let override_style = Arc::new(override_style);
-      if box_node.id != 0 {
-        crate::layout::style_override::with_style_override(box_node.id, override_style, || {
-          fc.layout(box_node, &constraints)
-        })
+    // `height: fit-content` uses the available height as its clamp target when that height is
+    // definite; when the available height is indefinite, it should behave like max-content sizing.
+    //
+    // During grid track sizing, Taffy represents "unknown" heights as intrinsic probes (min/max
+    // content) or as a tiny definite `0px/1px` probe (see `constraints_from_taffy`). In those cases,
+    // treat the fit-content keyword as `auto` so we measure the true content height at the current
+    // definite inline size (matching browser behaviour and avoiding overestimation from formatting
+    // context intrinsic block sizes).
+    let clear_fit_content_height_for_layout = style
+      .height_keyword
+      .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { limit: None }))
+      && !matches!(constraints.available_height, CrateAvailableSpace::Definite(_));
+    let fragment = {
+      let run_layout = |node: &BoxNode| fc.layout(node, &constraints);
+      let result = if clear_fit_content_height_for_layout {
+        let mut override_style: ComputedStyle = (*style).clone();
+        override_style.height = None;
+        override_style.height_keyword = None;
+        let override_style = Arc::new(override_style);
+        if box_node.id != 0 {
+          crate::layout::style_override::with_style_override(box_node.id, override_style, || {
+            run_layout(box_node)
+          })
+        } else {
+          let mut cloned = box_node.clone();
+          cloned.style = override_style;
+          run_layout(&cloned)
+        }
       } else {
-        let mut cloned = box_node.clone();
-        cloned.style = override_style;
-        fc.layout(&cloned, &constraints)
+        run_layout(box_node)
+      };
+      match result {
+        Ok(fragment) => fragment,
+        Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+        Err(_) => return taffy::tree::MeasureOutput::ZERO,
       }
-    } else {
-      fc.layout(box_node, &constraints)
-    } {
-      Ok(fragment) => fragment,
-      Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-      Err(_) => return taffy::tree::MeasureOutput::ZERO,
     };
+    let mut fragment = fragment;
     if trace_measure {
       eprintln!(
         "[grid-measure] laid node_id={:?} border_box={:?} used_border_box_width={:?}",
@@ -10826,6 +10975,12 @@ impl GridFormattingContext {
         y: baseline_y,
       },
     );
+    if trace_measure_id.is_some_and(|id| id == box_node.id) {
+      eprintln!(
+        "[grid-measure-item-out] box_id={} node_id={:?} key={:?} (layout) -> size={:?}",
+        box_node.id, node_id, key, output.size
+      );
+    }
     grid_measure_size_cache_store(key, output);
     if let Some(evicted) = push_measured_key(measured_node_keys.entry(node_id).or_default(), key) {
       measured_fragments.remove(&evicted);
@@ -12775,8 +12930,6 @@ impl FormattingContext for GridFormattingContext {
     };
 
     let parent_inline_base = constraints.inline_percentage_base;
-    let allow_stretch_block_size_override =
-      grid_container_allows_stretch_block_size_override(style, constraints);
     for pass_idx in 0..max_passes {
       if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
         return Err(LayoutError::Timeout { elapsed });
@@ -12898,7 +13051,8 @@ impl FormattingContext for GridFormattingContext {
               known_dimensions,
               available_space,
               parent_inline_base,
-              allow_stretch_block_size_override,
+              style,
+              constraints,
               taffy_style,
               auto_unskipped_for_pass,
               &this.factory,
@@ -15604,6 +15758,8 @@ mod tests {
     let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
     let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
     let auto_unskipped: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
 
     let size = fc.measure_grid_item(
       node_ptr,
@@ -15611,7 +15767,8 @@ mod tests {
       known_dimensions,
       available_space,
       Some(260.0),
-      false,
+      container_style.as_ref(),
+      &container_constraints,
       &taffy::style::Style::default(),
       &auto_unskipped,
       &fc.factory,
@@ -15652,6 +15809,8 @@ mod tests {
     let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
     let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
     let auto_unskipped: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
 
     let unconstrained = fc.measure_grid_item(
       node_ptr,
@@ -15665,7 +15824,8 @@ mod tests {
         height: taffy::style::AvailableSpace::Definite(0.0),
       },
       Some(260.0),
-      false,
+      container_style.as_ref(),
+      &container_constraints,
       &taffy::style::Style::default(),
       &auto_unskipped,
       &fc.factory,
@@ -15686,7 +15846,8 @@ mod tests {
         height: taffy::style::AvailableSpace::Definite(1040.0),
       },
       Some(260.0),
-      false,
+      container_style.as_ref(),
+      &container_constraints,
       &taffy::style::Style::default(),
       &auto_unskipped,
       &fc.factory,
@@ -15707,7 +15868,8 @@ mod tests {
         height: taffy::style::AvailableSpace::Definite(1040.0),
       },
       Some(260.0),
-      false,
+      container_style.as_ref(),
+      &container_constraints,
       &taffy::style::Style::default(),
       &auto_unskipped,
       &fc.factory,
@@ -15759,6 +15921,8 @@ mod tests {
     let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
     let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
     let auto_unskipped: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
 
     let narrow = fc.measure_grid_item(
       node_ptr,
@@ -15772,7 +15936,8 @@ mod tests {
         height: taffy::style::AvailableSpace::MinContent,
       },
       Some(400.0),
-      false,
+      container_style.as_ref(),
+      &container_constraints,
       &taffy::style::Style::default(),
       &auto_unskipped,
       &fc.factory,
@@ -15793,7 +15958,8 @@ mod tests {
         height: taffy::style::AvailableSpace::MinContent,
       },
       Some(400.0),
-      false,
+      container_style.as_ref(),
+      &container_constraints,
       &taffy::style::Style::default(),
       &auto_unskipped,
       &fc.factory,
@@ -15853,6 +16019,8 @@ mod tests {
     let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
     let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
     let auto_unskipped: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
 
     let size = fc.measure_grid_item(
       node_ptr,
@@ -15860,7 +16028,8 @@ mod tests {
       known_dimensions,
       available_space,
       Some(100.0),
-      false,
+      container_style.as_ref(),
+      &container_constraints,
       &taffy::style::Style::default(),
       &auto_unskipped,
       &fc.factory,
@@ -17446,6 +17615,8 @@ mod tests {
       height: None,
     };
     let taffy_style: taffy::style::Style = taffy::style::Style::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
 
     let avail_a = taffy::geometry::Size {
       width: AvailableSpace::Definite(100.4),
@@ -17474,7 +17645,8 @@ mod tests {
           known,
           avail_a,
           None,
-          false,
+          container_style.as_ref(),
+          &container_constraints,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -17495,7 +17667,8 @@ mod tests {
           known,
           avail_b,
           None,
-          false,
+          container_style.as_ref(),
+          &container_constraints,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -17751,6 +17924,8 @@ mod tests {
       height: None,
     };
     let taffy_style: taffy::style::Style = taffy::style::Style::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
 
     for i in 0..(MAX_MEASURED_KEYS_PER_NODE + 5) {
       let avail = taffy::geometry::Size {
@@ -17763,7 +17938,8 @@ mod tests {
         known,
         avail,
         None,
-        false,
+        container_style.as_ref(),
+        &container_constraints,
         &taffy_style,
         &FxHashSet::default(),
         &factory,
@@ -17866,6 +18042,8 @@ mod tests {
       height: None,
     };
     let taffy_style: taffy::style::Style = taffy::style::Style::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
     let widths = [300.2, 300.6, 300.1, 300.8, 300.4];
     let heights = [150.7, 150.4, 150.9];
 
@@ -17888,7 +18066,8 @@ mod tests {
             known,
             avail,
             None,
-            false,
+            container_style.as_ref(),
+            &container_constraints,
             &taffy_style,
             &FxHashSet::default(),
             &factory,
@@ -17924,6 +18103,8 @@ mod tests {
       height: None,
     };
     let taffy_style: taffy::style::Style = taffy::style::Style::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
     let width = 300.0;
     let heights = [150.0, 400.0, 650.0];
 
@@ -17945,7 +18126,8 @@ mod tests {
           known,
           avail,
           None,
-          false,
+          container_style.as_ref(),
+          &container_constraints,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -17981,6 +18163,8 @@ mod tests {
       height: None,
     };
     let taffy_style: taffy::style::Style = taffy::style::Style::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
     let width = 300.0;
     let heights = [150.0, 400.0, 650.0];
 
@@ -18006,7 +18190,8 @@ mod tests {
           known,
           avail,
           None,
-          false,
+          container_style.as_ref(),
+          &container_constraints,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -18042,6 +18227,8 @@ mod tests {
       height: None,
     };
     let taffy_style: taffy::style::Style = taffy::style::Style::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
     let width = 300.0;
     let heights = [150.0, 400.0, 650.0];
 
@@ -18074,7 +18261,8 @@ mod tests {
           known,
           avail,
           None,
-          false,
+          container_style.as_ref(),
+          &container_constraints,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -18110,6 +18298,8 @@ mod tests {
       height: None,
     };
     let taffy_style: taffy::style::Style = taffy::style::Style::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
     let width = 300.0;
     let heights = [150.0, 400.0, 650.0];
 
@@ -18142,7 +18332,8 @@ mod tests {
           known,
           avail,
           None,
-          false,
+          container_style.as_ref(),
+          &container_constraints,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -18172,6 +18363,8 @@ mod tests {
         gc.viewport_size,
         gc.nearest_positioned_cb,
       );
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
     let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
     let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
     let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
@@ -18208,7 +18401,8 @@ mod tests {
             height: probe_height,
           },
           Some(wide_width),
-          false,
+          container_style.as_ref(),
+          &container_constraints,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -18240,7 +18434,8 @@ mod tests {
             height: probe_height,
           },
           Some(narrow_width),
-          false,
+          container_style.as_ref(),
+          &container_constraints,
           &taffy_style,
           &FxHashSet::default(),
           &factory,
@@ -18274,6 +18469,8 @@ mod tests {
         gc.viewport_size,
         gc.nearest_positioned_cb,
       );
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
     let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
     let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
     let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
@@ -18306,7 +18503,8 @@ mod tests {
           height: probe_height,
         },
         Some(wide_width),
-        false,
+        container_style.as_ref(),
+        &container_constraints,
         &taffy_style,
         &FxHashSet::default(),
         &factory,
@@ -18338,7 +18536,8 @@ mod tests {
           height: probe_height,
         },
         Some(narrow_width),
-        false,
+        container_style.as_ref(),
+        &container_constraints,
         &taffy_style,
         &FxHashSet::default(),
         &factory,
@@ -18378,6 +18577,8 @@ mod tests {
     let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
     let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
     let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
 
     let mut fixed_style = ComputedStyle::default();
     fixed_style.display = CssDisplay::Block;
@@ -18420,7 +18621,8 @@ mod tests {
         height: AvailableSpace::Definite(200.0),
       },
       Some(100.0),
-      false,
+      container_style.as_ref(),
+      &container_constraints,
       &taffy_style,
       &FxHashSet::default(),
       &factory,
@@ -18441,15 +18643,28 @@ mod tests {
     use taffy::style::AvailableSpace;
 
     let gc = GridFormattingContext::new();
-    let factory = gc.factory.clone();
+    let factory =
+      crate::layout::contexts::factory::FormattingContextFactory::with_font_context_viewport_and_cb(
+        gc.font_context.clone(),
+        gc.viewport_size,
+        gc.nearest_positioned_cb,
+      );
+    let container_style = make_grid_style();
+    let container_constraints = LayoutConstraints::indefinite();
 
     let width = 200.0;
     let stretched_height = 500.0;
 
+    let mut child_style = ComputedStyle::default();
+    child_style.display = CssDisplay::Block;
+    child_style.height = Some(Length::px(10.0));
+    child_style.height_keyword = None;
+    let child =
+      BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
     let mut style = ComputedStyle::default();
-    style.padding_top = Length::px(10.0);
-    style.padding_bottom = Length::px(10.0);
-    let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+    style.display = CssDisplay::Block;
+    let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![child]);
     node.id = 1;
     let node_ptr = &node as *const _;
 
@@ -18473,7 +18688,8 @@ mod tests {
           height: AvailableSpace::Definite(stretched_height),
         },
         Some(width),
-        false,
+        container_style.as_ref(),
+        &container_constraints,
         &taffy_style,
         &FxHashSet::default(),
         &factory,
@@ -18484,7 +18700,7 @@ mod tests {
     };
 
     assert!(
-      baseline.size.height > 0.0 && baseline.size.height < 100.0,
+      (baseline.size.height - 10.0).abs() < 0.5,
       "expected auto-height grid item to remain content-sized, got {:.2}px",
       baseline.size.height
     );
@@ -18506,7 +18722,8 @@ mod tests {
           height: AvailableSpace::Definite(stretched_height),
         },
         Some(width),
-        false,
+        container_style.as_ref(),
+        &container_constraints,
         &taffy_style,
         &FxHashSet::default(),
         &factory,
@@ -18521,6 +18738,102 @@ mod tests {
       "stretched known height should not change measurement when overrides are disabled (baseline={:.2}px, stretched={:.2}px)",
       baseline.size.height,
       stretched.size.height
+    );
+  }
+
+  #[test]
+  fn grid_spanning_item_fit_content_height_does_not_clamp_to_auto_track_probe() {
+    use crate::style::types::FlexDirection;
+
+    // Regression: Taffy may probe spanning items with a definite available height equal to the
+    // current auto-track estimate (e.g. the height of other items in the first row). When the grid
+    // area's block size is *not* definite, `height: fit-content` must not clamp to that probe size,
+    // otherwise the spanning item can fail to contribute to track sizing (and end up clipped by an
+    // `overflow:hidden` ancestor).
+    //
+    // This matches a pattern on howtogeek.com where the hero card spans multiple auto rows and uses
+    // `display:flex` + `height:fit-content`.
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.width = Some(Length::px(200.0));
+    grid_style.grid_template_columns =
+      vec![GridTrack::Length(Length::px(100.0)), GridTrack::Length(Length::px(100.0))];
+    grid_style.grid_template_rows = vec![GridTrack::Auto, GridTrack::Auto];
+    grid_style.justify_items = AlignItems::Start;
+    grid_style.align_items = AlignItems::Start;
+    let grid_style = Arc::new(grid_style);
+
+    let mut tall_child_style = ComputedStyle::default();
+    tall_child_style.display = CssDisplay::Block;
+    tall_child_style.height = Some(Length::px(200.0));
+    tall_child_style.height_keyword = None;
+    let tall_child = BoxNode::new_block(
+      Arc::new(tall_child_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let mut spanning_style = ComputedStyle::default();
+    spanning_style.display = CssDisplay::Flex;
+    spanning_style.flex_direction = FlexDirection::Column;
+    spanning_style.height = None;
+    spanning_style.height_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    spanning_style.align_self = Some(AlignItems::Start);
+    spanning_style.overflow_x = Overflow::Hidden;
+    spanning_style.overflow_y = Overflow::Hidden;
+    spanning_style.grid_column_start = 1;
+    spanning_style.grid_column_end = 2;
+    spanning_style.grid_row_start = 1;
+    spanning_style.grid_row_end = 3;
+    let spanning_item = BoxNode::new_block(
+      Arc::new(spanning_style),
+      FormattingContextType::Flex,
+      vec![tall_child],
+    );
+
+    let mut small_style = ComputedStyle::default();
+    small_style.display = CssDisplay::Block;
+    small_style.height = Some(Length::px(20.0));
+    small_style.height_keyword = None;
+    small_style.grid_column_start = 2;
+    small_style.grid_column_end = 3;
+    small_style.grid_row_start = 1;
+    small_style.grid_row_end = 2;
+    let small_item =
+      BoxNode::new_block(Arc::new(small_style), FormattingContextType::Block, vec![]);
+
+    let grid = BoxNode::new_block(
+      grid_style,
+      FormattingContextType::Grid,
+      vec![spanning_item, small_item],
+    );
+    let fragment = fc
+      .layout(&grid, &LayoutConstraints::definite(200.0, 500.0))
+      .expect("layout should succeed");
+
+    assert_eq!(fragment.children.len(), 2);
+    let (left, right) = if fragment.children[0].bounds.x() <= fragment.children[1].bounds.x() {
+      (&fragment.children[0], &fragment.children[1])
+    } else {
+      (&fragment.children[1], &fragment.children[0])
+    };
+
+    assert!(
+      (right.bounds.height() - 20.0).abs() < 0.5,
+      "expected non-spanning item height≈20px, got {:.2}",
+      right.bounds.height()
+    );
+    assert!(
+      (left.bounds.height() - 200.0).abs() < 0.5,
+      "expected spanning fit-content item height≈200px, got {:.2}",
+      left.bounds.height()
+    );
+    assert!(
+      (fragment.bounds.height() - 200.0).abs() < 0.5,
+      "expected grid auto height≈200px, got {:.2}",
+      fragment.bounds.height()
     );
   }
 
