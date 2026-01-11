@@ -8319,7 +8319,7 @@ pub(crate) fn run_module_until_await(
                 return Err(VmError::ThrowWithStack {
                   value: thrown.value,
                   stack: thrown.stack,
-                })
+                });
               }
               Completion::Return(_) => return Err(VmError::Unimplemented("return from module")),
               Completion::Break(..) => return Err(VmError::Unimplemented("break outside of loop")),
