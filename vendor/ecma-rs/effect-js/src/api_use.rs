@@ -48,7 +48,7 @@ fn resolve_call_api_use(
   }
 
   let callee_path = resolve_expr_path(file, body, call.callee, true, names)?;
-  let entry = kb.get(&callee_path)?;
+  let entry = lookup_kb_entry(kb, &callee_path)?;
 
   Some(ResolvedApiUse {
     api: entry.id,
@@ -73,7 +73,7 @@ fn resolve_member_api_use(
   }
 
   let path = resolve_expr_path(file, body, expr, true, names)?;
-  let entry = kb.get(&path)?;
+  let entry = lookup_kb_entry(kb, &path)?;
 
   let use_kind = match entry.kind {
     ApiKind::Getter | ApiKind::Value => ApiUseKind::Get,
@@ -95,7 +95,7 @@ fn resolve_ident_api_use(
   kb: &KnowledgeBase,
 ) -> Option<ResolvedApiUse> {
   let path = resolve_expr_path(file, body, expr, false, names)?;
-  let entry = kb.get(&path)?;
+  let entry = lookup_kb_entry(kb, &path)?;
   Some(ResolvedApiUse {
     api: entry.id,
     kind: ApiUseKind::Value,
@@ -114,7 +114,7 @@ fn resolve_assignment_api_use(
     return None;
   };
   let path = resolve_expr_path(file, body, target_expr, true, names)?;
-  let entry = kb.get(&path)?;
+  let entry = lookup_kb_entry(kb, &path)?;
   match entry.kind {
     ApiKind::Setter | ApiKind::Value => Some(ResolvedApiUse {
       api: entry.id,
@@ -122,6 +122,32 @@ fn resolve_assignment_api_use(
     }),
     _ => None,
   }
+}
+
+fn lookup_kb_entry<'a>(kb: &'a KnowledgeBase, path: &str) -> Option<&'a knowledge_base::ApiSemantics> {
+  kb.get(path).or_else(|| {
+    let canonical = strip_global_prefixes(path)?;
+    kb.get(canonical)
+  })
+}
+
+fn strip_global_prefixes<'a>(mut path: &'a str) -> Option<&'a str> {
+  let mut changed = false;
+  loop {
+    let mut did_strip = false;
+    for prefix in ["globalThis.", "window.", "self.", "global."] {
+      if let Some(rest) = path.strip_prefix(prefix) {
+        path = rest;
+        did_strip = true;
+        changed = true;
+        break;
+      }
+    }
+    if !did_strip {
+      break;
+    }
+  }
+  changed.then_some(path)
 }
 
 fn resolve_expr_path(
@@ -820,6 +846,55 @@ mod tests {
       })
     );
 
+    assert_eq!(
+      resolve_api_use(file, body, pathname_member, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("URL.prototype.pathname"),
+        kind: ApiUseKind::Get,
+      })
+    );
+  }
+
+  #[test]
+  fn resolves_global_this_constructor_and_getter() {
+    let source = r#"const p = new globalThis.URL("https://example.com").pathname;"#;
+    let lowered = hir_js::lower_from_source(source).expect("lower");
+    let file = lowered.hir.as_ref();
+    let names = &lowered.names;
+    let body = lowered.body(file.root_body).expect("root body");
+
+    let new_call = find_expr(body, |kind| match kind {
+      ExprKind::Call(call) => {
+        call.is_new
+          && matches!(
+            body.exprs.get(call.callee.0 as usize).map(|e| &e.kind),
+            Some(ExprKind::Member(mem))
+              if matches!(&mem.property, ObjectKey::Ident(id) if names.resolve(*id) == Some("URL"))
+                && matches!(
+                  body.exprs.get(mem.object.0 as usize).map(|e| &e.kind),
+                  Some(ExprKind::Ident(id)) if names.resolve(*id) == Some("globalThis")
+                )
+          )
+      }
+      _ => false,
+    });
+
+    let pathname_member = find_expr(body, |kind| match kind {
+      ExprKind::Member(member) => matches!(
+        &member.property,
+        ObjectKey::Ident(id) if names.resolve(*id) == Some("pathname")
+      ),
+      _ => false,
+    });
+
+    let kb = kb_for_tests();
+    assert_eq!(
+      resolve_api_use(file, body, new_call, names, &kb),
+      Some(ResolvedApiUse {
+        api: ApiId::from_name("URL"),
+        kind: ApiUseKind::Construct,
+      })
+    );
     assert_eq!(
       resolve_api_use(file, body, pathname_member, names, &kb),
       Some(ResolvedApiUse {
