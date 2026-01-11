@@ -13831,6 +13831,7 @@ impl FastRender {
     budget: StylesheetInlineBudget,
   ) -> std::result::Result<String, RenderError> {
     let inlining_start = stats.as_deref().and_then(|rec| rec.timer());
+    let _deadline_guard = DeadlineGuard::install(deadline);
     let fetch_link_css = runtime_toggles.truthy_with_default("FASTR_FETCH_LINK_CSS", true);
     let extract_links_timer = stats.as_deref().and_then(|rec| rec.timer());
     let mut css_links = extract_css_links_with_meta_for_scripting_enabled(
@@ -14140,6 +14141,7 @@ impl FastRender {
             break;
           }
         }
+        Err(Error::Render(err)) => return Err(err),
         Err(err) => {
           if let Some(rec) = stats.as_deref_mut() {
             RenderStatsRecorder::add_ms(
@@ -22450,6 +22452,32 @@ mod tests {
         assert_eq!(elapsed, Duration::from_millis(1));
       }
       other => panic!("expected Error::Render(RenderError::Timeout), got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn inline_stylesheets_for_html_propagates_render_errors_from_fetcher() {
+    let html =
+      "<!doctype html><html><head><link rel=\"stylesheet\" href=\"a.css\"></head><body></body></html>";
+    let mut diagnostics = RenderDiagnostics::default();
+    let err = FastRender::inline_stylesheets_for_html(
+      &RenderTimeoutFetcher,
+      html,
+      "https://example.com/page.html",
+      MediaType::Screen,
+      None,
+      &mut diagnostics,
+      None,
+    )
+    .expect_err("expected render error from stylesheet fetch");
+    match err {
+      RenderError::Timeout {
+        stage: RenderStage::Css,
+        elapsed,
+      } => {
+        assert_eq!(elapsed, Duration::from_millis(1));
+      }
+      other => panic!("expected RenderError::Timeout, got {other:?}"),
     }
   }
 
