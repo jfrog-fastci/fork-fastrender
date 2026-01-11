@@ -7,8 +7,10 @@ pub enum ApiId {
   ArrayPrototypeFilter,
   ArrayPrototypeReduce,
   StringPrototypeToLowerCase,
+  PromiseAll,
   PromisePrototypeThen,
   MapPrototypeGet,
+  Fetch,
   JsonParse,
 }
 
@@ -19,8 +21,10 @@ impl ApiId {
       ApiId::ArrayPrototypeFilter => "Array.prototype.filter",
       ApiId::ArrayPrototypeReduce => "Array.prototype.reduce",
       ApiId::StringPrototypeToLowerCase => "String.prototype.toLowerCase",
+      ApiId::PromiseAll => "Promise.all",
       ApiId::PromisePrototypeThen => "Promise.prototype.then",
       ApiId::MapPrototypeGet => "Map.prototype.get",
+      ApiId::Fetch => "fetch",
       ApiId::JsonParse => "JSON.parse",
     }
   }
@@ -31,4 +35,3 @@ impl fmt::Display for ApiId {
     f.write_str(self.as_str())
   }
 }
-

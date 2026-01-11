@@ -1,7 +1,7 @@
-use hir_js::{BodyId, ExprId, LowerResult, StmtId, StmtKind};
+use hir_js::{ArrayElement, BodyId, ExprId, ExprKind, LowerResult, ObjectKey, StmtId, StmtKind};
 
 #[cfg(feature = "typed")]
-use hir_js::{BinaryOp, ExprKind};
+use hir_js::BinaryOp;
 
 use crate::api::ApiId;
 use crate::resolve::resolve_api_call_untyped;
@@ -11,12 +11,18 @@ pub enum RecognizedPattern {
   /// A call site that could be resolved to a canonical API identifier.
   CanonicalCall { call: ExprId, api: ApiId },
 
-  /// `arr.map(f).filter(g).reduce(h, init)` (typed only).
+  /// `arr.map(f).filter(g).reduce(h, init)` (typed or best-effort).
   MapFilterReduce {
     base: ExprId,
     map_call: ExprId,
     filter_call: ExprId,
     reduce_call: ExprId,
+  },
+
+  /// `Promise.all([fetch(...), ...])` (best-effort; untyped).
+  PromiseAllFetch {
+    all_call: ExprId,
+    fetch_calls: Vec<ExprId>,
   },
 
   /// `map.get(key) ?? default` / `map.get(key) || default` (typed only).
@@ -132,7 +138,6 @@ pub fn recognize_patterns_untyped(lowered: &LowerResult, body: BodyId) -> Vec<Re
   patterns
 }
 
-#[cfg(feature = "typed")]
 fn call_chain(lowered: &LowerResult, body: BodyId, call_expr: ExprId) -> Option<(ExprId, Vec<(ExprId, String)>)> {
   let body_ref = lowered.body(body)?;
   let mut methods = Vec::new();
@@ -170,6 +175,127 @@ fn call_chain(lowered: &LowerResult, body: BodyId, call_expr: ExprId) -> Option<
       None => return None,
     }
   }
+}
+
+/// Like [`recognize_patterns_untyped`], but includes additional best-effort
+/// patterns that can be inferred without type information.
+pub fn recognize_patterns_best_effort_untyped(
+  lowered: &LowerResult,
+  body: BodyId,
+) -> Vec<RecognizedPattern> {
+  let Some(body_ref) = lowered.body(body) else {
+    return Vec::new();
+  };
+
+  let mut patterns = recognize_patterns_untyped(lowered, body);
+
+  for (idx, expr) in body_ref.exprs.iter().enumerate() {
+    let expr_id = ExprId(idx as u32);
+    if !matches!(expr.kind, ExprKind::Call(_)) {
+      continue;
+    }
+
+    // MapFilterReduce: recognize only at the terminal `reduce(...)` call.
+    if let Some((base, chain)) = call_chain(lowered, body, expr_id) {
+      if chain.len() == 3
+        && chain[2].1 == "reduce"
+        && chain[0].1 == "map"
+        && chain[1].1 == "filter"
+      {
+        patterns.push(RecognizedPattern::MapFilterReduce {
+          base,
+          map_call: chain[0].0,
+          filter_call: chain[1].0,
+          reduce_call: chain[2].0,
+        });
+      }
+    }
+
+    if let Some(fetch_calls) = promise_all_fetch_calls(body_ref, lowered, expr_id) {
+      patterns.push(RecognizedPattern::PromiseAllFetch {
+        all_call: expr_id,
+        fetch_calls,
+      });
+    }
+  }
+
+  patterns
+}
+
+fn promise_all_fetch_calls(
+  body: &hir_js::Body,
+  lowered: &LowerResult,
+  call_expr: ExprId,
+) -> Option<Vec<ExprId>> {
+  let call = body.exprs.get(call_expr.0 as usize)?;
+  let ExprKind::Call(call) = &call.kind else {
+    return None;
+  };
+  if call.optional || call.is_new {
+    return None;
+  }
+
+  // Promise.all(...)
+  let callee_expr = body.exprs.get(call.callee.0 as usize)?;
+  let ExprKind::Member(member) = &callee_expr.kind else {
+    return None;
+  };
+  if member.optional {
+    return None;
+  }
+  let ObjectKey::Ident(prop) = member.property else {
+    return None;
+  };
+  if lowered.names.resolve(prop)? != "all" {
+    return None;
+  }
+  let recv = body.exprs.get(member.object.0 as usize)?;
+  let ExprKind::Ident(recv_name) = recv.kind else {
+    return None;
+  };
+  if lowered.names.resolve(recv_name)? != "Promise" {
+    return None;
+  }
+
+  // Argument must be a non-spread array literal.
+  let arg0 = call.args.first()?;
+  if arg0.spread {
+    return None;
+  }
+  let arg_expr = body.exprs.get(arg0.expr.0 as usize)?;
+  let ExprKind::Array(array) = &arg_expr.kind else {
+    return None;
+  };
+
+  let mut fetch_calls = Vec::new();
+  for element in array.elements.iter() {
+    let ArrayElement::Expr(expr_id) = element else {
+      continue;
+    };
+    if is_fetch_call(body, lowered, *expr_id) {
+      fetch_calls.push(*expr_id);
+    }
+  }
+  (!fetch_calls.is_empty()).then_some(fetch_calls)
+}
+
+fn is_fetch_call(body: &hir_js::Body, lowered: &LowerResult, expr_id: ExprId) -> bool {
+  let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+    return false;
+  };
+  let ExprKind::Call(call) = &expr.kind else {
+    return false;
+  };
+  if call.optional || call.is_new {
+    return false;
+  }
+  let Some(callee) = body.exprs.get(call.callee.0 as usize) else {
+    return false;
+  };
+  let ExprKind::Ident(name) = callee.kind else {
+    return false;
+  };
+  lowered.names.resolve(name) == Some("fetch")
 }
 
 #[cfg(feature = "typed")]

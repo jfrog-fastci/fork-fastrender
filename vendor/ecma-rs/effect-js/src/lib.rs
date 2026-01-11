@@ -18,11 +18,15 @@ pub use encoding::{analyze_string_encodings, EncodingResult, StringEncoding};
 #[cfg(feature = "typed")]
 pub use encoding::analyze_string_encodings_typed;
 pub use kb::load_default_api_database;
-pub use recognize::{recognize_patterns_untyped, RecognizedPattern};
+pub use recognize::{
+  recognize_patterns_best_effort_untyped, recognize_patterns_untyped, RecognizedPattern,
+};
 pub use resolver::{collect_require_bindings, resolve_api_call, RequireBindings};
 
 #[cfg(feature = "typed")]
 pub use recognize::recognize_patterns_typed;
+
+pub use resolve::{resolve_api_call_best_effort_untyped, resolve_api_call_untyped};
 
 pub use knowledge_base::{parse_api_semantics_yaml_str, ApiDatabase, ApiSemantics};
 

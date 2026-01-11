@@ -18,6 +18,7 @@ members = [
   "effect-model",
   "knowledge-base",
   "effect-js",
+  "effect-js-cli",
   "emit-js",
   "runtime-native",
   "vm-js",
