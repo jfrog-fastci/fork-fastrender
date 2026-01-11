@@ -134,6 +134,10 @@ The API is intentionally small and currently consists of:
   - `emit::emit_asm(&Module, TargetConfig) -> Vec<u8>`
   - `emit::emit_asm_with_statepoints(&Module, TargetConfig) -> Result<Vec<u8>, EmitError>`
   - `emit::EmitError`: error type for the `_with_statepoints` helpers
+- `link`: linking helpers for producing executables that preserve LLVM stack maps:
+  - `link::link_object_buffers_to_elf_executable(...)`
+  - `link::LinkOpts` (defaults to non-PIE on Linux to avoid stackmap relocation issues)
+  - exported symbols: `link::FASTR_STACKMAPS_START_SYM` / `link::FASTR_STACKMAPS_END_SYM`
 - `validate::validate_strict_subset(...)`: validator for the **strict compilation
   subset** currently supported by the native backend (syntax + type restrictions;
   used by the `native-js` binary in `native-js-cli`).
