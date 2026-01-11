@@ -108,6 +108,21 @@ Some embeddings require stable object addresses (FFI / host references). The run
 Pinned objects are still expected to be traced and collectible when the GC-backed allocator is
 wired up.
 
+## ArrayBuffer / TypedArray backing stores (stable I/O buffers)
+
+Native I/O APIs require buffer pointers remain valid at a stable address (e.g. until an `io_uring`
+submission completes). Under a moving GC this means `ArrayBuffer` bytes cannot live in the moving
+heap.
+
+`runtime-native` provides a movable header + non-moving backing store split for JS buffer types in
+`src/buffer/`:
+
+- `buffer::ArrayBuffer` — movable header containing length + backing store handle.
+- `buffer::Uint8Array` — bounds-checked view with `as_ptr_range()` for kernel I/O.
+- `buffer::BackingStoreAllocator` — allocator abstraction for stable, non-moving byte storage.
+
+Design notes and invariants are documented in `docs/buffers-and-io.md`.
+
 ## Safepoint ABI
 
 The runtime coordinates stop-the-world GC using an exported global epoch,
