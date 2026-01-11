@@ -609,6 +609,7 @@ mod tests {
 
   extern "C" {
     fn rt_gc_safepoint_slow(epoch: u64);
+    fn rt_keep_alive_gc_ref(gc_ref: *mut u8);
   }
 
   #[test]
@@ -852,6 +853,8 @@ mod tests {
       "void rt_thread_unregister(void);",
       "void rt_register_current_thread(void);",
       "void rt_unregister_current_thread(void);",
+      "void rt_register_thread(void);",
+      "void rt_unregister_thread(void);",
       "Thread* rt_thread_attach(Runtime* runtime);",
       "void rt_thread_detach(Thread* thread);",
       "GcPtr rt_alloc(size_t size, RtShapeId shape);",
@@ -864,19 +867,28 @@ mod tests {
       "void rt_gc_safepoint(void);",
       "GcPtr rt_gc_safepoint_relocate_h(GcHandle slot);",
       "void rt_gc_safepoint_slow(uint64_t epoch);",
+      "void rt_keep_alive_gc_ref(GcPtr gc_ref);",
       "bool rt_gc_poll(void);",
       "void rt_write_barrier(GcPtr obj, uint8_t* slot);",
       "void rt_write_barrier_range(GcPtr obj, uint8_t* start_slot, size_t len);",
       "void rt_gc_collect(void);",
       "size_t rt_backing_store_external_bytes(void);",
+      "bool rt_stackmaps_register(const uint8_t* start, const uint8_t* end);",
+      "bool rt_stackmaps_unregister(const uint8_t* start);",
       "void rt_root_push(GcHandle slot);",
       "void rt_root_pop(GcHandle slot);",
+      "void rt_global_root_register(size_t* slot);",
+      "void rt_global_root_unregister(size_t* slot);",
       "uint32_t rt_gc_register_root_slot(GcHandle slot);",
       "void rt_gc_unregister_root_slot(uint32_t handle);",
       "uint32_t rt_gc_pin(GcPtr ptr);",
       "void rt_gc_unpin(uint32_t handle);",
       "GcPtr rt_gc_root_get(uint32_t handle);",
       "bool rt_gc_root_set(uint32_t handle, GcPtr ptr);",
+      "HandleId rt_handle_alloc(GcPtr ptr);",
+      "void rt_handle_free(HandleId handle);",
+      "GcPtr rt_handle_load(HandleId handle);",
+      "void rt_handle_store(HandleId handle, GcPtr ptr);",
       "void rt_gc_set_young_range(uint8_t* start, uint8_t* end);",
       "void rt_gc_get_young_range(GcPtr* out_start, GcPtr* out_end);",
       "uint64_t rt_weak_add(GcPtr value);",
@@ -888,6 +900,7 @@ mod tests {
       "void rt_string_pin_interned(InternedId id);",
       "TaskId rt_parallel_spawn(void (*task)(uint8_t*), uint8_t* data);",
       "TaskId rt_parallel_spawn_rooted(void (*task)(uint8_t*), uint8_t* data);",
+      "LegacyPromiseRef rt_parallel_spawn_promise_legacy(void (*task)(uint8_t* data, LegacyPromiseRef promise), uint8_t* data);",
       "void rt_parallel_join(const TaskId* tasks, size_t count);",
       "void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), uint8_t* data);",
       "PromiseRef rt_parallel_spawn_promise(void (*task)(uint8_t*, PromiseRef), uint8_t* data, PromiseLayout layout);",
@@ -915,6 +928,9 @@ mod tests {
       "void rt_promise_then_rooted(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
       "LegacyPromiseRef rt_promise_new_legacy(void);",
       "void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);",
+      "void rt_promise_resolve_into_legacy(LegacyPromiseRef p, PromiseResolveInput value);",
+      "void rt_promise_resolve_promise_legacy(LegacyPromiseRef p, LegacyPromiseRef other);",
+      "void rt_promise_resolve_thenable_legacy(LegacyPromiseRef p, ThenableRef thenable);",
       "void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);",
       "void rt_promise_then_legacy(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
       "void rt_promise_then_rooted(LegacyPromiseRef p, void (*on_settle)(uint8_t*), uint8_t* data);",
@@ -946,6 +962,7 @@ mod tests {
       "void rt_io_update(IoWatcherId id, uint32_t interests);",
       "void rt_io_unregister(IoWatcherId id);",
       "void rt_coro_await_legacy(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);",
+      "void rt_coro_await_value_legacy(RtCoroutineHeader* coro, PromiseResolveInput awaited, uint32_t next_state);",
       "void rt_coro_await(RtCoroutineHeader* coro, LegacyPromiseRef awaited, uint32_t next_state);",
     ];
 
@@ -965,11 +982,26 @@ mod tests {
       }
     }
 
+    if cfg!(feature = "gc_debug") {
+      for decl in [
+        "size_t rt_debug_shape_count(void);",
+        "const RtShapeDescriptor* rt_debug_shape_descriptor(RtShapeId id);",
+        "void rt_debug_validate_heap(void);",
+      ] {
+        assert!(
+          normalized_header.contains(&normalize_ws(decl)),
+          "`runtime_native.h` is missing expected gc_debug declaration: {decl}"
+        );
+      }
+    }
+
     // Ensure the Rust exports match the declared ABI shape.
     let _thread_init: extern "C" fn(u32) = rt_thread_init;
     let _thread_deinit: extern "C" fn() = rt_thread_deinit;
     let _register_current: extern "C" fn() = rt_register_current_thread;
     let _unregister_current: extern "C" fn() = rt_unregister_current_thread;
+    let _register_thread: extern "C" fn() = rt_register_thread;
+    let _unregister_thread: extern "C" fn() = rt_unregister_thread;
     let _thread_attach: unsafe extern "C" fn(*mut Runtime) -> *mut Thread = rt_thread_attach;
     let _thread_detach: unsafe extern "C" fn(*mut Thread) = rt_thread_detach;
     let _alloc: extern "C" fn(usize, abi::RtShapeId) -> *mut u8 = rt_alloc;
@@ -995,12 +1027,21 @@ mod tests {
     #[cfg(not(target_arch = "aarch64"))]
     let _safepoint: extern "C" fn() = rt_gc_safepoint;
     let _slow: unsafe extern "C" fn(u64) = rt_gc_safepoint_slow;
+    let _keep_alive: unsafe extern "C" fn(*mut u8) = rt_keep_alive_gc_ref;
     let _gc_poll: extern "C" fn() -> bool = rt_gc_poll;
     let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = rt_write_barrier;
     let _write_barrier_range: unsafe extern "C" fn(*mut u8, *mut u8, usize) = rt_write_barrier_range;
     let _collect: extern "C" fn() = rt_gc_collect;
     let _set_young_range: extern "C" fn(*mut u8, *mut u8) = rt_gc_set_young_range;
     let _get_young_range: unsafe extern "C" fn(*mut *mut u8, *mut *mut u8) = rt_gc_get_young_range;
+    let _stackmaps_register: extern "C" fn(*const u8, *const u8) -> bool = rt_stackmaps_register;
+    let _stackmaps_unregister: extern "C" fn(*const u8) -> bool = rt_stackmaps_unregister;
+    let _global_root_register: extern "C" fn(*mut usize) = rt_global_root_register;
+    let _global_root_unregister: extern "C" fn(*mut usize) = rt_global_root_unregister;
+    let _handle_alloc: extern "C" fn(*mut u8) -> u64 = rt_handle_alloc;
+    let _handle_free: extern "C" fn(u64) = rt_handle_free;
+    let _handle_load: extern "C" fn(u64) -> *mut u8 = rt_handle_load;
+    let _handle_store: extern "C" fn(u64, *mut u8) = rt_handle_store;
     let _root_get: extern "C" fn(u32) -> *mut u8 = rt_gc_root_get;
     let _root_set: extern "C" fn(u32, *mut u8) -> bool = rt_gc_root_set;
     let _weak_add: extern "C" fn(*mut u8) -> u64 = rt_weak_add;
@@ -1014,6 +1055,8 @@ mod tests {
     let _pin_interned: extern "C" fn(abi::InternedId) = rt_string_pin_interned;
     let _spawn: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn;
     let _spawn_rooted: extern "C" fn(extern "C" fn(*mut u8), *mut u8) -> abi::TaskId = rt_parallel_spawn_rooted;
+    let _spawn_promise_legacy: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8) -> abi::PromiseRef =
+      rt_parallel_spawn_promise_legacy;
     let _join: extern "C" fn(*const abi::TaskId, usize) = rt_parallel_join;
     let _for: extern "C" fn(usize, usize, extern "C" fn(usize, *mut u8), *mut u8) = rt_parallel_for;
     let _spawn_promise: extern "C" fn(extern "C" fn(*mut u8, abi::PromiseRef), *mut u8, PromiseLayout) -> abi::PromiseRef =
@@ -1043,6 +1086,9 @@ mod tests {
     let _promise_then: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then;
     let _promise_new_legacy: extern "C" fn() -> abi::PromiseRef = rt_promise_new_legacy;
     let _promise_resolve_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve_legacy;
+    let _promise_resolve_into_legacy: extern "C" fn(abi::PromiseRef, abi::PromiseResolveInput) = rt_promise_resolve_into_legacy;
+    let _promise_resolve_promise_legacy: extern "C" fn(abi::PromiseRef, abi::PromiseRef) = rt_promise_resolve_promise_legacy;
+    let _promise_resolve_thenable_legacy: extern "C" fn(abi::PromiseRef, abi::ThenableRef) = rt_promise_resolve_thenable_legacy;
     let _promise_reject_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
     let _promise_then_legacy: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) = rt_promise_then_legacy;
     let _promise_then_rooted_legacy: extern "C" fn(abi::PromiseRef, extern "C" fn(*mut u8), *mut u8) =
@@ -1089,6 +1135,8 @@ mod tests {
     let _io_unregister: extern "C" fn(abi::IoWatcherId) = rt_io_unregister;
     let _coro_await_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await_legacy;
     let _coro_await: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseRef, u32) = rt_coro_await;
+    let _coro_await_value_legacy: extern "C" fn(*mut abi::RtCoroutineHeader, abi::PromiseResolveInput, u32) =
+      rt_coro_await_value_legacy;
 
     #[cfg(feature = "gc_stats")]
     let _stats_snapshot: unsafe extern "C" fn(*mut abi::RtGcStatsSnapshot) = rt_gc_stats_snapshot;
@@ -1097,11 +1145,23 @@ mod tests {
     #[cfg(feature = "gc_stats")]
     let _ = (_stats_snapshot, _stats_reset);
 
+    #[cfg(feature = "gc_debug")]
+    let _debug_shape_count: extern "C" fn() -> usize = crate::shape_table::rt_debug_shape_count;
+    #[cfg(feature = "gc_debug")]
+    let _debug_shape_descriptor: extern "C" fn(abi::RtShapeId) -> *const abi::RtShapeDescriptor =
+      crate::shape_table::rt_debug_shape_descriptor;
+    #[cfg(feature = "gc_debug")]
+    let _debug_validate_heap: extern "C" fn() = crate::shape_table::rt_debug_validate_heap;
+    #[cfg(feature = "gc_debug")]
+    let _ = (_debug_shape_count, _debug_shape_descriptor, _debug_validate_heap);
+
     let _ = (
       _thread_init,
       _thread_deinit,
       _register_current,
       _unregister_current,
+      _register_thread,
+      _unregister_thread,
       _thread_attach,
       _thread_detach,
       _alloc,
@@ -1115,12 +1175,21 @@ mod tests {
       _thread_unregister,
       _safepoint,
       _slow,
+      _keep_alive,
       _gc_poll,
       _write_barrier,
       _write_barrier_range,
       _collect,
       _set_young_range,
       _get_young_range,
+      _stackmaps_register,
+      _stackmaps_unregister,
+      _global_root_register,
+      _global_root_unregister,
+      _handle_alloc,
+      _handle_free,
+      _handle_load,
+      _handle_store,
       _weak_add,
       _weak_get,
       _weak_remove,
@@ -1133,6 +1202,8 @@ mod tests {
       _intern,
       _pin_interned,
       _spawn,
+      _spawn_rooted,
+      _spawn_promise_legacy,
       _join,
       _spawn_promise,
       _for,
@@ -1160,6 +1231,9 @@ mod tests {
       _async_free_c_string,
       _promise_new_legacy,
       _promise_resolve_legacy,
+      _promise_resolve_into_legacy,
+      _promise_resolve_promise_legacy,
+      _promise_resolve_thenable_legacy,
       _promise_reject_legacy,
       _promise_then_legacy,
       _promise_then_rooted_legacy,
@@ -1183,6 +1257,8 @@ mod tests {
       _io_update,
       _io_unregister,
       _coro_await_legacy,
+      _coro_await,
+      _coro_await_value_legacy,
     );
   }
   #[test]
