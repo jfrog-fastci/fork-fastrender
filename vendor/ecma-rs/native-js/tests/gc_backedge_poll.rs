@@ -4,7 +4,9 @@ use inkwell::IntPredicate;
 use inkwell::OptimizationLevel;
 use native_js::codegen::safepoint;
 use native_js::llvm::{gc, passes};
-use object::Object;
+use object::{Object, ObjectSection};
+use runtime_native::stackmaps::StackMap;
+use runtime_native::statepoints::StatepointRecord;
 use std::collections::{HashMap, HashSet};
 use tempfile::tempdir;
 
@@ -174,6 +176,22 @@ fn inserts_backedge_poll_and_rewrites_safepoint_to_statepoint() {
   assert!(
     file.section_by_name(".llvm_stackmaps").is_some(),
     "expected .llvm_stackmaps section in emitted object"
+  );
+  let section = file.section_by_name(".llvm_stackmaps").expect("stackmaps section");
+  let stackmap = StackMap::parse(section.data().expect("read .llvm_stackmaps"))
+    .expect("parse stackmap v3");
+  assert_eq!(
+    stackmap.records.len(),
+    1,
+    "expected exactly one stackmap record for the rewritten poll statepoint; got {}\n\nstackmap={stackmap:?}\n\nIR:\n{ir}",
+    stackmap.records.len()
+  );
+  let record = &stackmap.records[0];
+  let sp = StatepointRecord::new(record).expect("decode statepoint record");
+  assert_eq!(
+    sp.gc_pair_count(),
+    1,
+    "expected poll statepoint to have exactly one (base,derived) relocation pair for `%obj`"
   );
 
   // Fast-path poll should inline the exported `RT_GC_EPOCH` flag in the backedge

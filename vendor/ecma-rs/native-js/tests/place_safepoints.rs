@@ -1,7 +1,10 @@
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
+use inkwell::targets::{CodeModel, FileType, RelocMode, Target, TargetMachine};
 use inkwell::{IntPredicate, OptimizationLevel};
 use native_js::llvm::{gc, passes};
+use object::{Object, ObjectSection};
+use runtime_native::stackmaps::StackMap;
+use runtime_native::statepoints::StatepointRecord;
 
 fn host_target_machine() -> TargetMachine {
   native_js::llvm::init_native_target().expect("failed to init native target");
@@ -135,6 +138,33 @@ fn place_safepoints_polls_are_rewritten_into_statepoints() {
     !ir.contains("call void @gc.safepoint_poll"),
     "expected poll calls to be rewritten (no direct call remains):\n{ir}"
   );
+
+  // Emit an object file and validate the resulting stackmaps contain GC root slots for `%obj` at
+  // every inserted poll.
+  let obj = tm
+    .write_to_memory_buffer(&module, FileType::Object)
+    .expect("emit object")
+    .as_slice()
+    .to_vec();
+  let file = object::File::parse(&*obj).expect("parse object file");
+  let section = file
+    .section_by_name(".llvm_stackmaps")
+    .expect("missing .llvm_stackmaps section");
+  let stackmap = StackMap::parse(section.data().expect("read .llvm_stackmaps")).expect("parse stackmap v3");
+  assert!(
+    stackmap.records.len() >= 2,
+    "expected at least 2 stackmap records (entry + loop backedge polls), got {}\n\nstackmap={stackmap:?}\n\nIR:\n{ir}",
+    stackmap.records.len()
+  );
+  for record in &stackmap.records {
+    let sp = StatepointRecord::new(record).expect("decode statepoint record");
+    assert_eq!(
+      sp.gc_pair_count(),
+      1,
+      "expected exactly one (base,derived) pair for `%obj` at each poll, got {} (record={record:?})\n\nIR:\n{ir}",
+      sp.gc_pair_count(),
+    );
+  }
 }
 
 #[test]

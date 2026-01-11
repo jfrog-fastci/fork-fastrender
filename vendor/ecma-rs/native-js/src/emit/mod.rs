@@ -49,8 +49,9 @@ pub enum EmitError {
 /// Safepoint polls are required for GC progress: relying on call-site statepoints
 /// alone can deadlock stop-the-world GC in long-running loops with no calls.
 ///
-/// During object emission, LLVM emits a `.llvm_stackmaps` section describing GC
-/// roots at each statepoint.
+/// The rewrite pass is what causes LLVM to emit `llvm.experimental.gc.statepoint.*`
+/// intrinsics and, during object emission, a `.llvm_stackmaps` section describing
+/// GC roots at each statepoint.
 pub fn write_object_file(
   module: &Module<'_>,
   target_machine: &TargetMachine,
