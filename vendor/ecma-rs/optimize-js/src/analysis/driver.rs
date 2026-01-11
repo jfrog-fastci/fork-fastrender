@@ -12,7 +12,7 @@ use crate::{FnId, Program};
 use ahash::HashMap;
 use ahash::HashMapExt;
 
-use super::{alias, effect};
+use super::{alias, effect, escape, nullability, ownership, range};
 
 /// Stable identifier for a function in a [`Program`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -24,32 +24,7 @@ pub enum FunctionKey {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct EscapeAnalysisResult {}
-
-#[derive(Clone, Debug, Default)]
-pub struct OwnershipAnalysisResult {}
-
-#[derive(Clone, Debug, Default)]
-pub struct RangeAnalysisResult {}
-
-#[derive(Clone, Debug, Default)]
 pub struct EncodingAnalysisResult {}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BranchNullabilityNarrowing {
-  pub block: u32,
-  pub inst_idx: usize,
-  pub narrowing: NullabilityNarrowing,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct NullabilityAnalysisResult {
-  /// Branch-local nullability refinements detected in this function.
-  ///
-  /// When using [`annotate_program`], the same information is also written to
-  /// [`InstMeta::nullability_narrowing`] for the corresponding `CondGoto`.
-  pub branch_narrowings: Vec<BranchNullabilityNarrowing>,
-}
 
 /// Program-wide analysis results.
 ///
@@ -63,11 +38,11 @@ pub struct ProgramAnalyses {
   pub purity: HashMap<FunctionKey, bool>,
 
   pub alias: HashMap<FunctionKey, alias::AliasResult>,
-  pub escape: HashMap<FunctionKey, EscapeAnalysisResult>,
-  pub ownership: HashMap<FunctionKey, OwnershipAnalysisResult>,
+  pub escape: HashMap<FunctionKey, escape::EscapeResult>,
+  pub ownership: HashMap<FunctionKey, ownership::OwnershipResult>,
 
-  pub range: HashMap<FunctionKey, RangeAnalysisResult>,
-  pub nullability: HashMap<FunctionKey, NullabilityAnalysisResult>,
+  pub range: HashMap<FunctionKey, range::RangeResult>,
+  pub nullability: HashMap<FunctionKey, nullability::NullabilityResult>,
   pub encoding: HashMap<FunctionKey, EncodingAnalysisResult>,
 }
 
@@ -132,51 +107,11 @@ fn extract_nullish_test(inst: &Inst) -> Option<(u32, bool)> {
   }
 }
 
-fn analyze_cfg_nullability(cfg: &Cfg) -> NullabilityAnalysisResult {
-  let mut result = NullabilityAnalysisResult::default();
-
-  for label in cfg_block_labels_sorted(cfg) {
-    let block = cfg.bblocks.get(label);
-    let mut cond_to_test: HashMap<u32, (u32, bool)> = HashMap::new();
-    for (inst_idx, inst) in block.iter().enumerate() {
-      if let Some((tested_var, is_eq)) = extract_nullish_test(inst) {
-        cond_to_test.insert(inst.tgts[0], (tested_var, is_eq));
-      }
-      if inst.t == InstTyp::CondGoto {
-        let Arg::Var(cond_var) = inst.args[0] else {
-          continue;
-        };
-        let Some(&(tested_var, is_eq)) = cond_to_test.get(&cond_var) else {
-          continue;
-        };
-        let (when_true, when_false) = if is_eq {
-          (Nullability::Nullish, Nullability::NonNullish)
-        } else {
-          (Nullability::NonNullish, Nullability::Nullish)
-        };
-        result.branch_narrowings.push(BranchNullabilityNarrowing {
-          block: label,
-          inst_idx,
-          narrowing: NullabilityNarrowing {
-            var: tested_var,
-            when_true,
-            when_false,
-          },
-        });
-      }
-    }
-  }
-
-  result
-}
-
-fn annotate_cfg_nullability(cfg: &mut Cfg) -> NullabilityAnalysisResult {
-  let mut result = NullabilityAnalysisResult::default();
-
+fn annotate_cfg_nullability_narrowings(cfg: &mut Cfg) {
   for label in cfg_block_labels_sorted(cfg) {
     let block = cfg.bblocks.get_mut(label);
     let mut cond_to_test: HashMap<u32, (u32, bool)> = HashMap::new();
-    for (inst_idx, inst) in block.iter_mut().enumerate() {
+    for inst in block.iter_mut() {
       if let Some((tested_var, is_eq)) = extract_nullish_test(inst) {
         cond_to_test.insert(inst.tgts[0], (tested_var, is_eq));
       }
@@ -201,15 +136,8 @@ fn annotate_cfg_nullability(cfg: &mut Cfg) -> NullabilityAnalysisResult {
         when_false,
       };
       inst.meta.nullability_narrowing = Some(narrowing);
-      result.branch_narrowings.push(BranchNullabilityNarrowing {
-        block: label,
-        inst_idx,
-        narrowing,
-      });
     }
   }
-
-  result
 }
 
 /// Compute all analyses for `program` without mutating it.
@@ -247,20 +175,32 @@ pub fn analyze_program(program: &Program) -> ProgramAnalyses {
 
   // 4) escape
   for &key in &keys {
-    analyses.escape.insert(key, EscapeAnalysisResult::default());
+    analyses
+      .escape
+      .insert(key, escape::analyze_cfg_escapes(cfg_for_key(program, key)));
   }
 
   // 5) ownership
   for &key in &keys {
-    analyses.ownership.insert(key, OwnershipAnalysisResult::default());
+    let cfg = cfg_for_key(program, key);
+    let escapes = analyses
+      .escape
+      .get(&key)
+      .expect("escape results should be populated before ownership");
+    analyses
+      .ownership
+      .insert(key, ownership::analyze_cfg_ownership_with_escapes(cfg, escapes));
   }
 
   // 6) nullability/range/encoding
   for &key in &keys {
+    analyses.nullability.insert(
+      key,
+      nullability::calculate_nullability(cfg_for_key(program, key)),
+    );
     analyses
-      .nullability
-      .insert(key, analyze_cfg_nullability(cfg_for_key(program, key)));
-    analyses.range.insert(key, RangeAnalysisResult::default());
+      .range
+      .insert(key, range::analyze_ranges(cfg_for_key(program, key)));
     analyses.encoding.insert(key, EncodingAnalysisResult::default());
   }
 
@@ -317,20 +257,35 @@ pub fn annotate_program(program: &mut Program) -> ProgramAnalyses {
 
   // 4) escape
   for &key in &keys {
-    analyses.escape.insert(key, EscapeAnalysisResult::default());
+    analyses
+      .escape
+      .insert(key, escape::analyze_cfg_escapes(cfg_for_key(program, key)));
   }
 
   // 5) ownership
   for &key in &keys {
-    analyses.ownership.insert(key, OwnershipAnalysisResult::default());
+    let ownership_result = {
+      let cfg = cfg_for_key(program, key);
+      let escapes = analyses
+        .escape
+        .get(&key)
+        .expect("escape results should be populated before ownership");
+      ownership::analyze_cfg_ownership_with_escapes(cfg, escapes)
+    };
+    ownership::annotate_cfg_ownership(cfg_for_key_mut(program, key), &ownership_result);
+    analyses.ownership.insert(key, ownership_result);
   }
 
   // 6) nullability/range/encoding
   for &key in &keys {
+    analyses.nullability.insert(
+      key,
+      nullability::calculate_nullability(cfg_for_key(program, key)),
+    );
     analyses
-      .nullability
-      .insert(key, annotate_cfg_nullability(cfg_for_key_mut(program, key)));
-    analyses.range.insert(key, RangeAnalysisResult::default());
+      .range
+      .insert(key, range::analyze_ranges(cfg_for_key(program, key)));
+    annotate_cfg_nullability_narrowings(cfg_for_key_mut(program, key));
     analyses.encoding.insert(key, EncodingAnalysisResult::default());
   }
 

@@ -167,7 +167,15 @@ fn infer_ownership_with_escapes(cfg: &Cfg, escapes: &EscapeResult) -> OwnershipR
 
 pub fn analyze_cfg_ownership(cfg: &Cfg) -> OwnershipResult {
   let escapes = analyze_cfg_escapes(cfg);
-  infer_ownership_with_escapes(cfg, &escapes)
+  analyze_cfg_ownership_with_escapes(cfg, &escapes)
+}
+
+/// Ownership analysis with precomputed escape information.
+///
+/// This is useful for program-wide drivers that already computed escapes (e.g.
+/// to expose them via a side table) and want to avoid recomputing them.
+pub fn analyze_cfg_ownership_with_escapes(cfg: &Cfg, escapes: &EscapeResult) -> OwnershipResult {
+  infer_ownership_with_escapes(cfg, escapes)
 }
 
 pub fn annotate_cfg_ownership(cfg: &mut Cfg, ownership: &OwnershipResult) {
