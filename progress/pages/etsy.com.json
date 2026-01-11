@@ -17,12 +17,12 @@
   "notes": "Etsy is behind DataDome bot protection (403 in CI); fixture is the interstitial page. Chrome diff is limited to minor text antialiasing. Fixture also vendors the DataDome c.js script so validate-page-fixtures --include-scripts passes.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 2354,
-    "diff_percent": 0.2452,
-    "perceptual": 0.1217,
+    "diff_pixels": 302126,
+    "diff_percent": 31.4715,
+    "perceptual": 0.116,
     "first_mismatch": {
-      "x": 0,
-      "y": 2,
+      "x": 264,
+      "y": 12,
       "baseline_rgba": [
         255,
         255,
@@ -30,15 +30,15 @@
         255
       ],
       "rendered_rgba": [
-        239,
-        239,
-        239,
+        241,
+        241,
+        241,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
   },
   "hotspot": "cascade",
   "failure_stage": null,
