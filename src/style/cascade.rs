@@ -19094,6 +19094,10 @@ mod tests {
   use crate::style::ComputedStyle;
   use crate::style::CursorKeyword;
   use crate::style::OutlineStyle;
+  use crate::tree::box_generation::generate_box_tree;
+  use crate::tree::box_tree::BoxNode;
+  use crate::tree::box_tree::BoxType;
+  use crate::tree::box_tree::GeneratedPseudoElement;
   use std::sync::{Mutex, MutexGuard, OnceLock};
 
   fn cascade_global_test_lock() -> MutexGuard<'static, ()> {
@@ -19288,6 +19292,57 @@ mod tests {
     };
     let styled_hidden_input = apply_styles(&hidden_input_dom, &stylesheet);
     assert_eq!(styled_hidden_input.styles.display, Display::None);
+  }
+
+  #[test]
+  fn ua_q_elements_generate_quotes_by_default() {
+    fn collect_pseudo_text(
+      node: &BoxNode,
+      styled_node_id: usize,
+      pseudo: GeneratedPseudoElement,
+      out: &mut String,
+    ) {
+      if node.styled_node_id == Some(styled_node_id) && node.generated_pseudo == Some(pseudo) {
+        if let BoxType::Text(text) = &node.box_type {
+          out.push_str(&text.text);
+        }
+      }
+      for child in node.children.iter() {
+        collect_pseudo_text(child, styled_node_id, pseudo, out);
+      }
+    }
+
+    fn pseudo_text(tree: &crate::tree::box_tree::BoxTree, styled_node_id: usize, pseudo: GeneratedPseudoElement) -> String {
+      let mut out = String::new();
+      collect_pseudo_text(&tree.root, styled_node_id, pseudo, &mut out);
+      out
+    }
+
+    let stylesheet = StyleSheet::new();
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "q".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Text {
+          content: "Hello".to_string(),
+        },
+        children: vec![],
+      }],
+    };
+    let styled = apply_styles(&dom, &stylesheet);
+    let tree = generate_box_tree(&styled).unwrap();
+
+    assert_eq!(
+      pseudo_text(&tree, styled.node_id, GeneratedPseudoElement::Before),
+      "“"
+    );
+    assert_eq!(
+      pseudo_text(&tree, styled.node_id, GeneratedPseudoElement::After),
+      "”"
+    );
   }
 
   #[test]
