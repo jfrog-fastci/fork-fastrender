@@ -36,6 +36,14 @@ extern "C" fn inc_drop_count(data: *mut u8) {
   ctr.fetch_add(1, Ordering::SeqCst);
 }
 
+static ROOTED_CB_FIRED: AtomicBool = AtomicBool::new(false);
+static ROOTED_CB_PTR: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn record_rooted_ptr(_events: u32, data: *mut u8) {
+  ROOTED_CB_PTR.store(data as usize, Ordering::SeqCst);
+  ROOTED_CB_FIRED.store(true, Ordering::SeqCst);
+}
+
 fn pipe_blocking() -> io::Result<(OwnedFd, OwnedFd)> {
   let mut fds = [0; 2];
   let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
@@ -527,6 +535,68 @@ fn rt_io_register_rooted_keeps_gc_object_alive_until_unregistered() {
     );
     std::thread::yield_now();
   }
+
+  let pending = poll_once_with_immediate_timer();
+  assert!(!pending, "runtime should be idle after unregistering the watcher");
+}
+
+#[test]
+fn rt_io_register_rooted_callback_receives_relocated_ptr_after_gc() {
+  let _rt = TestRuntimeGuard::new();
+  let (rfd, wfd) = pipe_nonblocking().unwrap();
+
+  ROOTED_CB_FIRED.store(false, Ordering::SeqCst);
+  ROOTED_CB_PTR.store(0, Ordering::SeqCst);
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_young(&ROOTED_OBJ_DESC);
+  let weak = runtime_native::rt_weak_add(obj);
+  let _weak_guard = WeakHandleGuard(weak);
+
+  let id = rt_io_register_rooted(rfd.as_raw_fd(), RT_IO_READABLE, record_rooted_ptr, obj);
+  assert_ne!(id, 0, "expected rooted registration to succeed");
+  assert_eq!(rt_io_debug_take_last_error(), rt_io_debug::OK);
+
+  // Force a major GC to promote/move the object so the rooted watcher must resolve the current
+  // pointer value via the persistent handle table.
+  collect_major(&mut heap);
+  let after_gc = runtime_native::rt_weak_get(weak);
+  assert!(!after_gc.is_null());
+  assert_ne!(
+    after_gc as usize,
+    obj as usize,
+    "expected major GC to move/promote the object"
+  );
+
+  // Ensure `rt_async_poll_legacy` will not block forever if the readiness edge is lost.
+  let timed_out = Box::new(AtomicBool::new(false));
+  let timed_out_ptr: *mut AtomicBool = Box::into_raw(timed_out);
+  let timer_id = runtime_native::async_rt::global().schedule_timer(
+    Instant::now() + Duration::from_secs(1),
+    runtime_native::async_rt::Task::new(set_timeout_flag, timed_out_ptr.cast::<u8>()),
+  );
+
+  write_byte(wfd.as_raw_fd());
+  while !ROOTED_CB_FIRED.load(Ordering::SeqCst) {
+    let _ = rt_async_poll();
+    if unsafe { &*timed_out_ptr }.load(Ordering::SeqCst) {
+      panic!("timed out waiting for rooted I/O watcher callback");
+    }
+  }
+
+  let _ = runtime_native::async_rt::global().cancel_timer(timer_id);
+  unsafe {
+    drop(Box::from_raw(timed_out_ptr));
+  }
+
+  assert_eq!(
+    ROOTED_CB_PTR.load(Ordering::SeqCst),
+    after_gc as usize,
+    "rooted callback must receive the current relocated pointer value"
+  );
+
+  rt_io_unregister(id);
+  runtime_native::rt_async_run_until_idle();
 
   let pending = poll_once_with_immediate_timer();
   assert!(!pending, "runtime should be idle after unregistering the watcher");
