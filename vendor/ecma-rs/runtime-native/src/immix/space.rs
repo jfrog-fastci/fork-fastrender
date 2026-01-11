@@ -61,6 +61,22 @@ impl ImmixSpace {
     self.available_by_hole[super::LINES_PER_BLOCK].len()
   }
 
+  pub fn block_id_for_ptr(&self, ptr: *mut u8) -> Option<usize> {
+    if ptr.is_null() {
+      return None;
+    }
+
+    let addr = ptr as usize;
+    let block_base = addr & !(BLOCK_SIZE - 1);
+    self.block_by_start.get(&block_base).copied()
+  }
+
+  pub fn clear_block_line_map(&mut self, block_id: usize) {
+    if let Some(block) = self.blocks.get_mut(block_id) {
+      block.clear_line_map();
+    }
+  }
+
   pub fn contains(&self, ptr: *mut u8) -> bool {
     if ptr.is_null() {
       return false;
@@ -121,6 +137,30 @@ impl ImmixSpace {
       bump: _,
     } = self;
     alloc_old_with_cursor(blocks, block_by_start, available_by_hole, bump, size, align)
+  }
+
+  pub fn alloc_old_with_cursor_excluding(
+    &mut self,
+    bump: &mut BumpCursor,
+    size: usize,
+    align: usize,
+    excluded_blocks: &[bool],
+  ) -> Option<*mut u8> {
+    let Self {
+      blocks,
+      block_by_start,
+      available_by_hole,
+      bump: _,
+    } = self;
+    alloc_old_with_cursor_excluding(
+      blocks,
+      block_by_start,
+      available_by_hole,
+      bump,
+      size,
+      align,
+      excluded_blocks,
+    )
   }
 
   /// Clear all line maps in preparation for a full-heap marking pass.
@@ -269,6 +309,102 @@ fn alloc_old_with_cursor(
   }
 }
 
+fn alloc_old_with_cursor_excluding(
+  blocks: &mut Vec<Block>,
+  block_by_start: &mut HashMap<usize, usize>,
+  available_by_hole: &mut Vec<Vec<usize>>,
+  bump: &mut BumpCursor,
+  size: usize,
+  align: usize,
+  excluded_blocks: &[bool],
+) -> Option<*mut u8> {
+  if size == 0 {
+    return None;
+  }
+  if align == 0 || !align.is_power_of_two() {
+    return None;
+  }
+
+  // Large objects should live in a separate large object space.
+  if size > BLOCK_SIZE {
+    return None;
+  }
+
+  let min_lines = size.div_ceil(LINE_SIZE);
+
+  loop {
+    if bump.block_id.is_none() {
+      acquire_hole_excluding(
+        blocks,
+        block_by_start,
+        available_by_hole,
+        bump,
+        min_lines,
+        excluded_blocks,
+      )?;
+    }
+
+    let cursor_addr = bump.cursor as usize;
+    let aligned_addr = align_up(cursor_addr, align);
+    let end_addr = aligned_addr.checked_add(size)?;
+
+    if end_addr <= bump.limit as usize {
+      let block_id = bump.block_id.expect("cursor has a block id");
+      let block = &blocks[block_id];
+      let block_start = block.start_addr();
+      let start_off = cursor_addr - block_start;
+      let end_off = end_addr - block_start;
+      let start_line = start_off / LINE_SIZE;
+      let end_line = end_off.div_ceil(LINE_SIZE);
+
+      // If this allocation would extend beyond the lines we've already
+      // allocated into, ensure the additional lines are still free. This keeps
+      // `alloc_old_with_cursor_excluding` safe to use with multiple interleaved
+      // cursors in a single `ImmixSpace`.
+      if end_line > bump.claimed_line_limit {
+        let check_start = bump.claimed_line_limit.max(start_line);
+        if let Some(conflict_line) = (check_start..end_line).find(|&line| bitmap::is_line_marked(&block.line_map, line))
+        {
+          if let Some((hole_start, hole_end)) = bitmap::find_hole(&block.line_map, conflict_line + 1, min_lines) {
+            let start = block_start + (hole_start * LINE_SIZE);
+            let limit = block_start + (hole_end * LINE_SIZE);
+            bump.cursor = start as *mut u8;
+            bump.limit = limit as *mut u8;
+            bump.claimed_line_limit = hole_start;
+            continue;
+          }
+          release_block(blocks, available_by_hole, bump);
+          bump.reset();
+          continue;
+        }
+      }
+
+      // Mark all lines consumed by the allocation, including alignment padding.
+      let block = &mut blocks[block_id];
+      block.mark_addr_range(cursor_addr, end_addr);
+      bump.claimed_line_limit = end_line;
+
+      bump.cursor = end_addr as *mut u8;
+      return Some(aligned_addr as *mut u8);
+    }
+
+    let block_id = bump.block_id.expect("cursor has a block id");
+    let block = &blocks[block_id];
+    let after_line = ((bump.limit as usize) - block.start_addr()) / LINE_SIZE;
+
+    if let Some((hole_start, hole_end)) = bitmap::find_hole(&block.line_map, after_line, min_lines) {
+      let start = block.start_addr() + (hole_start * LINE_SIZE);
+      let limit = block.start_addr() + (hole_end * LINE_SIZE);
+      bump.cursor = start as *mut u8;
+      bump.limit = limit as *mut u8;
+      bump.claimed_line_limit = hole_start;
+    } else {
+      release_block(blocks, available_by_hole, bump);
+      bump.reset();
+    }
+  }
+}
+
 fn acquire_hole(
   blocks: &mut Vec<Block>,
   block_by_start: &mut HashMap<usize, usize>,
@@ -330,6 +466,104 @@ fn acquire_hole(
   bump.cursor = start as *mut u8;
   bump.limit = (start + BLOCK_SIZE) as *mut u8;
   bump.claimed_line_limit = 0;
+  Some(())
+}
+
+fn acquire_hole_excluding(
+  blocks: &mut Vec<Block>,
+  block_by_start: &mut HashMap<usize, usize>,
+  available_by_hole: &mut Vec<Vec<usize>>,
+  bump: &mut BumpCursor,
+  min_lines: usize,
+  excluded_blocks: &[bool],
+) -> Option<()> {
+  let mut skipped: Vec<(usize, usize)> = Vec::new();
+
+  // Prefer fully-free blocks first, matching the main allocator.
+  while let Some(block_id) = available_by_hole[super::LINES_PER_BLOCK].pop() {
+    let block = &blocks[block_id];
+
+    if excluded_blocks.get(block_id).copied().unwrap_or(false) {
+      let largest = bitmap::largest_hole_lines(&block.line_map);
+      if largest > 0 {
+        skipped.push((largest, block_id));
+      }
+      continue;
+    }
+
+    if let Some((hole_start, hole_end)) = bitmap::find_hole(&block.line_map, 0, min_lines) {
+      let start = block.start_addr() + (hole_start * LINE_SIZE);
+      let limit = block.start_addr() + (hole_end * LINE_SIZE);
+      bump.block_id = Some(block_id);
+      bump.cursor = start as *mut u8;
+      bump.limit = limit as *mut u8;
+      bump.claimed_line_limit = hole_start;
+      for (bucket, id) in skipped.drain(..) {
+        available_by_hole[bucket].push(id);
+      }
+      return Some(());
+    }
+
+    // Stale entry: reinsert according to current metrics.
+    let largest = bitmap::largest_hole_lines(&block.line_map);
+    if largest > 0 {
+      available_by_hole[largest].push(block_id);
+    }
+  }
+
+  // Fall back to partially-free blocks.
+  for hole_lines in min_lines..super::LINES_PER_BLOCK {
+    while let Some(block_id) = available_by_hole[hole_lines].pop() {
+      let block = &blocks[block_id];
+
+      if excluded_blocks.get(block_id).copied().unwrap_or(false) {
+        let largest = bitmap::largest_hole_lines(&block.line_map);
+        if largest > 0 {
+          skipped.push((largest, block_id));
+        }
+        continue;
+      }
+
+      if let Some((hole_start, hole_end)) = bitmap::find_hole(&block.line_map, 0, min_lines) {
+        let start = block.start_addr() + (hole_start * LINE_SIZE);
+        let limit = block.start_addr() + (hole_end * LINE_SIZE);
+        bump.block_id = Some(block_id);
+        bump.cursor = start as *mut u8;
+        bump.limit = limit as *mut u8;
+        bump.claimed_line_limit = hole_start;
+        for (bucket, id) in skipped.drain(..) {
+          available_by_hole[bucket].push(id);
+        }
+        return Some(());
+      }
+
+      // Stale bucket entry: recompute and reinsert if the block still has space.
+      let largest = bitmap::largest_hole_lines(&block.line_map);
+      if largest > 0 {
+        available_by_hole[largest].push(block_id);
+      }
+    }
+  }
+
+  let block_id = blocks.len();
+  let Some(block) = Block::new(block_id) else {
+    for (bucket, id) in skipped.drain(..) {
+      available_by_hole[bucket].push(id);
+    }
+    return None;
+  };
+  let start = block.start_addr();
+  debug_assert_eq!(start % BLOCK_SIZE, 0);
+  block_by_start.insert(start, block_id);
+  blocks.push(block);
+
+  bump.block_id = Some(block_id);
+  bump.cursor = start as *mut u8;
+  bump.limit = (start + BLOCK_SIZE) as *mut u8;
+  bump.claimed_line_limit = 0;
+  for (bucket, id) in skipped.drain(..) {
+    available_by_hole[bucket].push(id);
+  }
   Some(())
 }
 

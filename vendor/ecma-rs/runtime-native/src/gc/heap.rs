@@ -45,6 +45,31 @@ pub struct GcStats {
   pub total_major_pause: Duration,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MajorCompactionConfig {
+  pub enabled: bool,
+  /// Candidate threshold based on Immix line occupancy.
+  ///
+  /// A block becomes a compaction candidate when:
+  /// `live_lines / IMMIX_LINES_PER_BLOCK < max_live_ratio_percent / 100`.
+  pub max_live_ratio_percent: u8,
+  /// Avoid selecting extremely sparse blocks with only a handful of live lines.
+  ///
+  /// This also excludes fully-dead blocks (`live_lines == 0`), which are already
+  /// reclaimed by normal mark-region sweeping.
+  pub min_live_lines: usize,
+}
+
+impl Default for MajorCompactionConfig {
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      max_live_ratio_percent: 25,
+      min_live_lines: 1,
+    }
+  }
+}
+
 pub struct GcHeap {
   pub(crate) nursery: nursery::NurserySpace,
   pub(crate) nursery_tlab: ThreadNursery,
@@ -55,6 +80,7 @@ pub struct GcHeap {
   /// Current mark epoch (toggled on every major GC).
   pub(crate) mark_epoch: u8,
 
+  pub(crate) major_compaction: MajorCompactionConfig,
   pub(crate) stats: GcStats,
 
   pub(crate) root_handles: RootHandles,
@@ -85,6 +111,7 @@ impl GcHeap {
       los: LargeObjectSpace::new(),
       weak_handles: WeakHandles::new(),
       mark_epoch: 0,
+      major_compaction: MajorCompactionConfig::default(),
       stats: GcStats::default(),
       root_handles: RootHandles::new(),
     }
@@ -92,6 +119,14 @@ impl GcHeap {
 
   pub fn stats(&self) -> &GcStats {
     &self.stats
+  }
+
+  pub fn major_compaction_config(&self) -> &MajorCompactionConfig {
+    &self.major_compaction
+  }
+
+  pub fn major_compaction_config_mut(&mut self) -> &mut MajorCompactionConfig {
+    &mut self.major_compaction
   }
 
   pub fn nursery_stats(&self) -> nursery::NurseryStats {
@@ -357,6 +392,10 @@ impl GcHeap {
 
   pub fn immix_block_count(&self) -> usize {
     self.immix.block_count()
+  }
+
+  pub fn immix_free_block_count(&self) -> usize {
+    self.immix.free_block_count()
   }
 
   pub fn immix_free_bytes(&self) -> usize {

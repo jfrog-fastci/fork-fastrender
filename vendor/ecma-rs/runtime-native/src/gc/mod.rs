@@ -95,7 +95,7 @@ impl ObjHeader {
 
   #[inline]
   pub fn is_remembered(&self) -> bool {
-    (self.meta & META_REMEMBERED) != 0
+    !self.is_forwarded() && (self.meta & META_REMEMBERED) != 0
   }
 
   #[inline]
@@ -107,6 +107,9 @@ impl ObjHeader {
 
   #[inline]
   pub(crate) fn set_remembered(&mut self, remembered: bool) {
+    if self.is_forwarded() {
+      return;
+    }
     if remembered {
       self.meta |= META_REMEMBERED;
     } else {
@@ -116,10 +119,9 @@ impl ObjHeader {
 
   #[inline]
   pub(crate) fn set_pinned(&mut self, pinned: bool) {
-    debug_assert!(
-      !self.is_forwarded(),
-      "pinned objects must not be forwarded"
-    );
+    if self.is_forwarded() {
+      return;
+    }
     if pinned {
       self.meta |= META_PINNED;
     } else {
@@ -142,8 +144,9 @@ impl ObjHeader {
   pub(crate) fn set_mark_epoch(&mut self, epoch: u8) {
     debug_assert!(epoch <= 1);
     if self.is_forwarded() {
-      // Forwarding pointers are only expected in the nursery during minor GC.
-      // They are not part of major-GC marking state.
+      // Forwarded objects store relocation pointers in `meta` (used during minor
+      // GC and optional major compaction). Mark bits are not meaningful on
+      // forwarded from-space objects.
       return;
     }
     self.meta = (self.meta & !META_MARK_MASK) | ((epoch as usize) << META_MARK_SHIFT);
@@ -224,8 +227,8 @@ pub trait Tracer {
 pub(crate) unsafe fn for_each_ptr_slot(mut obj: *mut u8, mut f: impl FnMut(*mut *mut u8)) {
   debug_assert!(!obj.is_null());
 
-  // Handle nursery forwarding transparently: tracing should always operate on
-  // the actual object body.
+  // Handle forwarding transparently: tracing should always operate on the
+  // actual object body.
   let header = &*(obj as *const ObjHeader);
   if header.is_forwarded() {
     obj = header.forwarding_ptr();
