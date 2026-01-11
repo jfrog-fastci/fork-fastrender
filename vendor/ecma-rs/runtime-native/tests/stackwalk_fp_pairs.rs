@@ -6,12 +6,23 @@ use runtime_native::stackmaps::StackMaps;
 use runtime_native::stackmaps::StackSize;
 use runtime_native::stackwalk::StackBounds;
 use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
+use runtime_native::WalkError;
 
 /// Minimal StackMap v3 blob:
 /// - one function record
 /// - one callsite record keyed by `instruction_offset`
 /// - statepoint layout: 3 constant header locations + one (base, derived) pair
 fn minimal_statepoint_stackmap(instruction_offset: u32, stack_size: u64) -> Vec<u8> {
+  minimal_statepoint_stackmap_with_offsets(instruction_offset, stack_size, 0, 8)
+}
+
+/// Like [`minimal_statepoint_stackmap`], but allows customizing the `(base, derived)` offsets.
+fn minimal_statepoint_stackmap_with_offsets(
+  instruction_offset: u32,
+  stack_size: u64,
+  base_off: i32,
+  derived_off: i32,
+) -> Vec<u8> {
   fn push_u8(out: &mut Vec<u8>, v: u8) {
     out.push(v);
   }
@@ -69,8 +80,73 @@ fn minimal_statepoint_stackmap(instruction_offset: u32, stack_size: u64) -> Vec<
 
   // One (base, derived) pair: Indirect [SP + 0], Indirect [SP + 8].
   let sp_reg = runtime_native::stackwalk::DWARF_SP_REG;
-  push_loc(&mut bytes, 3, 8, sp_reg, 0);
-  push_loc(&mut bytes, 3, 8, sp_reg, 8);
+  push_loc(&mut bytes, 3, 8, sp_reg, base_off);
+  push_loc(&mut bytes, 3, 8, sp_reg, derived_off);
+
+  // Align to 8 before live-out header.
+  align_to(&mut bytes, 8);
+  push_u16(&mut bytes, 0); // live-out padding
+  push_u16(&mut bytes, 0); // num_live_outs
+  align_to(&mut bytes, 8);
+
+  bytes
+}
+
+/// Minimal StackMap v3 blob with a single record that is intentionally **not** a statepoint.
+fn minimal_non_statepoint_stackmap(instruction_offset: u32, stack_size: u64) -> Vec<u8> {
+  fn push_u8(out: &mut Vec<u8>, v: u8) {
+    out.push(v);
+  }
+  fn push_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_u64(out: &mut Vec<u8>, v: u64) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn push_i32(out: &mut Vec<u8>, v: i32) {
+    out.extend_from_slice(&v.to_le_bytes());
+  }
+  fn align_to(out: &mut Vec<u8>, align: usize) {
+    while out.len() % align != 0 {
+      out.push(0);
+    }
+  }
+  fn push_loc(out: &mut Vec<u8>, kind: u8, size: u16, dwarf_reg: u16, offset: i32) {
+    push_u8(out, kind);
+    push_u8(out, 0); // reserved0
+    push_u16(out, size);
+    push_u16(out, dwarf_reg);
+    push_u16(out, 0); // reserved1
+    push_i32(out, offset);
+  }
+
+  let mut bytes = Vec::new();
+
+  // Header.
+  push_u8(&mut bytes, 3); // version
+  push_u8(&mut bytes, 0); // reserved0
+  push_u16(&mut bytes, 0); // reserved1
+  push_u32(&mut bytes, 1); // numFunctions
+  push_u32(&mut bytes, 0); // numConstants
+  push_u32(&mut bytes, 1); // numRecords
+
+  // Function record.
+  push_u64(&mut bytes, 0); // address
+  push_u64(&mut bytes, stack_size);
+  push_u64(&mut bytes, 1); // record_count
+
+  // Record header: 1 location (does not have the 3-constant prefix).
+  push_u64(&mut bytes, 0x1234); // patchpoint_id
+  push_u32(&mut bytes, instruction_offset);
+  push_u16(&mut bytes, 0); // reserved
+  push_u16(&mut bytes, 1); // num_locations
+
+  // One Register location.
+  let sp_reg = runtime_native::stackwalk::DWARF_SP_REG;
+  push_loc(&mut bytes, 1, 8, sp_reg, 0);
 
   // Align to 8 before live-out header.
   align_to(&mut bytes, 8);
@@ -137,6 +213,120 @@ fn root_pairs_use_callee_fp_callsite_sp_not_stack_size() {
   }
 
   assert_eq!(seen, vec![(base_slot_addr as usize, derived_slot_addr as usize)]);
+}
+
+#[test]
+fn root_pairs_skip_non_statepoint_records() {
+  let mut mem = AlignedStack([0usize; 64]);
+  let base = mem.0.as_mut_ptr() as usize;
+  let hi = base + mem.0.len() * core::mem::size_of::<usize>();
+
+  let callee_fp = base + 8 * core::mem::size_of::<usize>();
+  let caller_fp = base + 24 * core::mem::size_of::<usize>();
+  let return_address = 0x1234usize;
+
+  unsafe {
+    // Frame records.
+    (callee_fp as *mut usize).write(caller_fp);
+    (callee_fp as *mut usize).add(1).write(return_address);
+    (caller_fp as *mut usize).write(0);
+    (caller_fp as *mut usize).add(1).write(0);
+  }
+
+  let stackmaps = StackMaps::parse(&minimal_non_statepoint_stackmap(return_address as u32, 0x1000)).unwrap();
+  let bounds = StackBounds::new(base as u64, hi as u64).unwrap();
+
+  let mut called = false;
+  unsafe {
+    runtime_native::stackwalk_fp::walk_gc_root_pairs_from_fp(
+      callee_fp as u64,
+      Some(bounds),
+      &stackmaps,
+      |_ra, _pairs| called = true,
+    )
+    .expect("walk should succeed");
+  }
+  assert!(!called, "expected non-statepoint record to be skipped");
+}
+
+#[test]
+fn root_pairs_reject_misaligned_root_slot() {
+  let mut mem = AlignedStack([0usize; 64]);
+  let base = mem.0.as_mut_ptr() as usize;
+  let hi = base + mem.0.len() * core::mem::size_of::<usize>();
+
+  let callee_fp = base + 8 * core::mem::size_of::<usize>();
+  let caller_fp = base + 24 * core::mem::size_of::<usize>();
+  let return_address = 0x1234usize;
+  let caller_sp = callee_fp + 16;
+  let misaligned_slot = (caller_sp as u64) + 1;
+
+  unsafe {
+    (callee_fp as *mut usize).write(caller_fp);
+    (callee_fp as *mut usize).add(1).write(return_address);
+    (caller_fp as *mut usize).write(0);
+    (caller_fp as *mut usize).add(1).write(0);
+  }
+
+  let stackmaps =
+    StackMaps::parse(&minimal_statepoint_stackmap_with_offsets(return_address as u32, 0x1000, 1, 9)).unwrap();
+  let bounds = StackBounds::new(base as u64, hi as u64).unwrap();
+  let res = unsafe {
+    runtime_native::stackwalk_fp::walk_gc_root_pairs_from_fp(
+      callee_fp as u64,
+      Some(bounds),
+      &stackmaps,
+      |_ra, _pairs| {},
+    )
+  };
+  assert!(matches!(
+    res,
+    Err(WalkError::MisalignedRootSlot { slot_addr, .. }) if slot_addr == misaligned_slot
+  ));
+}
+
+#[test]
+fn root_pairs_reject_out_of_bounds_root_slot() {
+  let mut mem = AlignedStack([0usize; 64]);
+  let base = mem.0.as_mut_ptr() as usize;
+  let hi = base + mem.0.len() * core::mem::size_of::<usize>();
+
+  let callee_fp = base + 8 * core::mem::size_of::<usize>();
+  let caller_fp = base + 24 * core::mem::size_of::<usize>();
+  let return_address = 0x1234usize;
+  let caller_sp = callee_fp + 16;
+  let oob_off: i32 = 0x1000;
+  let expected_slot = (caller_sp as u64) + (oob_off as u64);
+
+  unsafe {
+    (callee_fp as *mut usize).write(caller_fp);
+    (callee_fp as *mut usize).add(1).write(return_address);
+    (caller_fp as *mut usize).write(0);
+    (caller_fp as *mut usize).add(1).write(0);
+  }
+
+  // Use a large stack_size so the verifier doesn't reject the SP-relative offset; we want the
+  // runtime walker to surface the out-of-bounds condition via `StackBounds`.
+  let stackmaps = StackMaps::parse(&minimal_statepoint_stackmap_with_offsets(
+    return_address as u32,
+    0x2000,
+    oob_off,
+    oob_off + 8,
+  ))
+  .unwrap();
+  let bounds = StackBounds::new(base as u64, hi as u64).unwrap();
+  let res = unsafe {
+    runtime_native::stackwalk_fp::walk_gc_root_pairs_from_fp(
+      callee_fp as u64,
+      Some(bounds),
+      &stackmaps,
+      |_ra, _pairs| {},
+    )
+  };
+  assert!(matches!(
+    res,
+    Err(WalkError::RootSlotOutOfBounds { slot_addr, .. }) if slot_addr == expected_slot
+  ));
 }
 
 #[cfg(target_arch = "x86_64")]
