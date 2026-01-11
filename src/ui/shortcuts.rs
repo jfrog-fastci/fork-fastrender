@@ -55,6 +55,7 @@ impl Modifiers {
 pub enum Key {
   A,
   C,
+  D,
   K,
   L,
   Minus,
@@ -147,6 +148,18 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
   };
 
   match (key, modifiers) {
+    // Many browsers on Windows/Linux also support Alt+D for focusing the address bar.
+    //
+    // Avoid mapping this on macOS because the Option/Alt key participates in text entry.
+    (
+      Key::D,
+      Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: true,
+        meta: false,
+      },
+    ) if matches!(platform, Platform::Other) => Some(ShortcutAction::FocusAddressBar),
     // Many browsers support both Ctrl/Cmd+L and Ctrl/Cmd+K for focusing the address bar.
     (Key::L | Key::K, _) if cmd => Some(ShortcutAction::FocusAddressBar),
     // Many browsers support F6 to focus the address bar.
@@ -257,6 +270,24 @@ mod tests {
         Platform::Other
       ),
       Some(ShortcutAction::FocusAddressBar)
+    );
+  }
+
+  #[test]
+  fn alt_d_focuses_address_bar_on_other_platforms() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::D, Modifiers::new(false, false, true, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::FocusAddressBar)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::D, Modifiers::new(false, false, true, false)),
+        Platform::Mac
+      ),
+      None
     );
   }
 

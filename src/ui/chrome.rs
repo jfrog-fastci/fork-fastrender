@@ -51,6 +51,7 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
   Some(match key {
     egui::Key::A => Key::A,
     egui::Key::C => Key::C,
+    egui::Key::D => Key::D,
     egui::Key::K => Key::K,
     egui::Key::L => Key::L,
     egui::Key::R => Key::R,
@@ -611,6 +612,26 @@ mod tests {
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::K, modifiers);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::FocusAddressBar)),
+      "expected ChromeAction::FocusAddressBar, got {actions:?}"
+    );
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  #[test]
+  fn alt_d_emits_focus_address_bar_action() {
+    let mut app = BrowserAppState::new();
+    let modifiers = egui::Modifiers {
+      alt: true,
+      ..Default::default()
+    };
+    let ctx = new_context_with_key(egui::Key::D, modifiers);
     let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 

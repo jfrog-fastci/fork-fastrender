@@ -3620,6 +3620,7 @@ fn map_winit_key_to_shortcuts_key(
   Some(match key {
     VirtualKeyCode::A => ShortcutKey::A,
     VirtualKeyCode::C => ShortcutKey::C,
+    VirtualKeyCode::D => ShortcutKey::D,
     VirtualKeyCode::K => ShortcutKey::K,
     VirtualKeyCode::L => ShortcutKey::L,
     VirtualKeyCode::R => ShortcutKey::R,
