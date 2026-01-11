@@ -335,12 +335,7 @@ impl<'a> Parser<'a> {
         yield_expr_allowed: false,
       });
       let simple_params = Parser::is_simple_parameter_list(&parameters);
-      // `new.target` is syntactically allowed in arrow functions (and is lexically
-      // resolved at runtime). Track this similarly to non-arrow function bodies so
-      // `new.target` parses correctly even when the arrow function is parsed as a
-      // standalone expression (e.g. when `vm-js` reparses an arrow function snippet).
-      let prev_new_target_allowed = p.new_target_allowed;
-      p.new_target_allowed += 1;
+      // Arrow functions don't introduce a `new.target` binding.
       let body = (|| -> SyntaxResult<_> {
         match p.peek().typ {
           TT::BraceOpen => {
@@ -372,7 +367,6 @@ impl<'a> Parser<'a> {
           }
         }
       })();
-      p.new_target_allowed = prev_new_target_allowed;
       let body = body?;
       if terminators.contains(&TT::Colon) && p.peek().typ != TT::Colon {
         return Err(
@@ -862,7 +856,80 @@ impl<'a> Parser<'a> {
         // - In modules, top-level `await` is allowed but `yield` is never allowed outside a
         //   generator function.
         match operator.name {
-          OperatorName::Await => ctx.rules.await_expr_allowed,
+          OperatorName::Await => {
+            if !ctx.rules.await_expr_allowed {
+              return false;
+            }
+            if self.is_typescript() && self.should_recover() {
+              // TypeScript-style recovery: allow `await` to be used as an identifier reference
+              // in places where an `AwaitExpression` would be missing its required operand.
+              //
+              // Example: `var x = [await];` in module contexts. This is invalid JS, but TS parser
+              // accepts it in recovery mode; our stmt JSON fixtures expect the same.
+              let next = t1.typ;
+              let has_operand = next != TT::EOF
+                && next != TT::Semicolon
+                && next != TT::Comma
+                && next != TT::ParenthesisClose
+                && next != TT::BracketClose
+                && next != TT::BraceClose
+                && !terminators.contains(&next)
+                && (is_valid_pattern_identifier(next, ctx.rules)
+                  // Await/Yield expressions can start with their respective keywords even when
+                  // they aren't allowed as identifiers.
+                  || (next == TT::KeywordAwait && ctx.rules.await_expr_allowed)
+                  || (next == TT::KeywordYield && ctx.rules.yield_expr_allowed)
+                  // Primary expressions.
+                  || matches!(
+                    next,
+                    TT::ParenthesisOpen
+                      | TT::BracketOpen
+                      | TT::BraceOpen
+                      | TT::KeywordThis
+                      | TT::KeywordSuper
+                      | TT::KeywordFunction
+                      | TT::KeywordClass
+                      | TT::KeywordNew
+                      | TT::KeywordImport
+                      | TT::PrivateMember
+                      | TT::LiteralBigInt
+                      | TT::LiteralTrue
+                      | TT::LiteralFalse
+                      | TT::LiteralNull
+                      | TT::LiteralNumber
+                      | TT::LiteralRegex
+                      | TT::LiteralString
+                      | TT::LiteralTemplatePartString
+                      | TT::LiteralTemplatePartStringEnd
+                      | TT::Invalid
+                  )
+                  // `<` can start JSX elements or TypeScript angle-bracket
+                  // assertions in dialects that support them.
+                  || (next == TT::ChevronLeft
+                    && (self.allows_jsx() || self.allows_angle_bracket_type_assertions()))
+                  // Unary operators.
+                  || matches!(
+                    next,
+                    TT::Plus
+                      | TT::Hyphen
+                      | TT::PlusPlus
+                      | TT::HyphenHyphen
+                      | TT::Exclamation
+                      | TT::Tilde
+                      | TT::KeywordDelete
+                      | TT::KeywordTypeof
+                      | TT::KeywordVoid
+                  )
+                  // In expression-operand context, `/` and `/=` begin a regular expression literal
+                  // (the lexer decides based on mode).
+                  || matches!(next, TT::Slash | TT::SlashEquals)
+                  || (self.should_recover() && next == TT::At));
+              if !has_operand {
+                return false;
+              }
+            }
+            true
+          }
           OperatorName::Yield => ctx.rules.yield_expr_allowed,
           _ => true,
         }
