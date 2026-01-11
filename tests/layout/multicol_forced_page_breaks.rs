@@ -715,6 +715,53 @@ fn multicol_break_after_always_does_not_force_page_break() {
     "expected B to appear in the second column (A={a_pos:?}, B={b_pos:?})",
   );
 }
+
+#[test]
+fn multicol_break_before_always_does_not_force_page_break() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .blk { height: 150px; margin: 0; }
+          #b { break-before: always; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <div class="blk" id="a">A</div>
+          <div class="blk" id="b">B</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 200, 200, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    1,
+    "break-before: always inside paged multicol should force a column break, not a page break",
+  );
+
+  let page = page_roots[0];
+  let a_pos = find_text_position(page, "A", (0.0, 0.0)).expect("page should contain A");
+  let b_pos = find_text_position(page, "B", (0.0, 0.0)).expect("page should contain B");
+
+  assert!(
+    b_pos.0 > a_pos.0 + 0.5,
+    "expected B to appear in the second column (A={a_pos:?}, B={b_pos:?})",
+  );
+}
+
 #[test]
 fn multicol_break_after_page_before_spanner_does_not_create_extra_column_set() {
   let html = r#"
