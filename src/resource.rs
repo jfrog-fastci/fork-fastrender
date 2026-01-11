@@ -8773,6 +8773,11 @@ pub struct CachingFetcherConfig {
   pub max_bytes: usize,
   /// Maximum number of cached entries. `0` disables the limit.
   pub max_items: usize,
+  /// Maximum number of redirect/canonical alias mappings retained. `0` disables alias caching.
+  ///
+  /// This bounds [`CachingFetcher`] memory usage even when many distinct URLs alias/redirect to the
+  /// same canonical resource (e.g. attacker-controlled query strings).
+  pub max_aliases: usize,
   /// Whether to cache failed fetch results (by error string) to avoid hammering endpoints.
   pub cache_errors: bool,
   /// Whether to use HTTP validators (ETag/Last-Modified) when present.
@@ -8804,6 +8809,7 @@ impl Default for CachingFetcherConfig {
     Self {
       max_bytes: 64 * 1024 * 1024,
       max_items: 512,
+      max_aliases: 4096,
       cache_errors: true,
       honor_http_cache_headers: true,
       honor_http_cache_freshness: false,
@@ -9642,6 +9648,7 @@ impl CacheState {
 }
 
 const MAX_ALIAS_HOPS: usize = 8;
+const MAX_ALIAS_VARIANTS_PER_KEY: usize = 16;
 
 #[derive(Clone)]
 enum SharedResult {
@@ -9799,6 +9806,14 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
   /// Updates the maximum number of cached entries.
   pub fn with_max_items(mut self, max_items: usize) -> Self {
     self.config.max_items = max_items;
+    self
+  }
+
+  /// Updates the maximum number of cached redirect/canonical alias mappings.
+  ///
+  /// Set to `0` to disable alias caching entirely.
+  pub fn with_max_aliases(mut self, max_aliases: usize) -> Self {
+    self.config.max_aliases = max_aliases;
     self
   }
 
@@ -10042,16 +10057,30 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     request_sig: String,
     canonical: &CacheKey,
   ) {
+    if self.config.max_aliases == 0 {
+      state.aliases.clear();
+      return;
+    }
+
     if alias == canonical {
       Self::remove_alias_mapping_locked(state, alias, &request_sig);
       return;
     }
 
-    state
-      .aliases
-      .entry(alias.clone())
-      .or_default()
-      .insert(request_sig, canonical.clone());
+    let max_aliases = self.config.max_aliases;
+    if state.aliases.len() > max_aliases {
+      state.aliases.clear();
+    } else if !state.aliases.contains_key(alias) && state.aliases.len() >= max_aliases {
+      // Hard-bound alias map size even when the canonical cache entry LRU is bounded.
+      // Deterministic eviction policy: clear all aliases when full.
+      state.aliases.clear();
+    }
+
+    let map = state.aliases.entry(alias.clone()).or_default();
+    if map.len() >= MAX_ALIAS_VARIANTS_PER_KEY && !map.contains_key(&request_sig) {
+      map.clear();
+    }
+    map.insert(request_sig, canonical.clone());
   }
 
   fn remove_aliases_targeting(&self, state: &mut CacheState, key: &CacheKey) {
@@ -10203,6 +10232,11 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     key: &CacheKey,
     base_request: FetchRequest<'_>,
   ) -> CacheKey {
+    if self.config.max_aliases == 0 {
+      state.aliases.clear();
+      return key.clone();
+    }
+
     let origin = key.clone();
     let mut current = origin.clone();
     let mut hops = 0usize;
@@ -10259,11 +10293,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
           credentials_mode: base_request.credentials_mode,
         },
       );
-      state
-        .aliases
-        .entry(origin)
-        .or_default()
-        .insert(origin_sig, current.clone());
+      self.set_alias_locked(state, &origin, origin_sig, &current);
     }
 
     current
@@ -21683,6 +21713,90 @@ mod tests {
         .get(&start_key)
         .and_then(|targets| targets.get(&request_sig_b)),
       Some(&canonical_b_key),
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_alias_map_is_bounded() {
+    #[derive(Clone)]
+    struct AliasingFetcher {
+      canonical_url: String,
+    }
+
+    impl ResourceFetcher for AliasingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        let mut resource = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+        resource.status = Some(200);
+        resource.final_url = Some(self.canonical_url.clone());
+        Ok(resource)
+      }
+    }
+
+    let cap = 8;
+    let canonical_url = "http://example.com/canonical";
+    let cache = CachingFetcher::with_config(
+      AliasingFetcher {
+        canonical_url: canonical_url.to_string(),
+      },
+      CachingFetcherConfig {
+        max_aliases: cap,
+        ..CachingFetcherConfig::default()
+      },
+    );
+
+    for idx in 0..100 {
+      let url = format!("http://example.com/alias?x={idx}");
+      let res = cache.fetch(&url).expect("fetch");
+      assert_eq!(res.final_url.as_deref(), Some(canonical_url));
+    }
+
+    let state = cache.state.lock().unwrap();
+    assert!(
+      state.aliases.len() <= cap,
+      "alias map should be bounded (len={}, cap={})",
+      state.aliases.len(),
+      cap
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_alias_caching_can_be_disabled() {
+    #[derive(Clone)]
+    struct AliasingFetcher {
+      canonical_url: String,
+    }
+
+    impl ResourceFetcher for AliasingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        let mut resource = FetchedResource::new(b"ok".to_vec(), Some("text/plain".to_string()));
+        resource.status = Some(200);
+        resource.final_url = Some(self.canonical_url.clone());
+        Ok(resource)
+      }
+    }
+
+    let canonical_url = "http://example.com/canonical";
+    let cache = CachingFetcher::with_config(
+      AliasingFetcher {
+        canonical_url: canonical_url.to_string(),
+      },
+      CachingFetcherConfig {
+        max_aliases: 0,
+        ..CachingFetcherConfig::default()
+      },
+    );
+
+    let _ = cache
+      .fetch("http://example.com/alias?a=1")
+      .expect("first fetch");
+    let _ = cache
+      .fetch("http://example.com/alias?a=2")
+      .expect("second fetch");
+
+    let state = cache.state.lock().unwrap();
+    assert!(
+      state.aliases.is_empty(),
+      "alias map should remain empty when max_aliases=0"
     );
   }
 
