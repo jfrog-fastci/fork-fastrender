@@ -228,6 +228,10 @@ jobs:
         working-directory: vendor/ecma-rs
         run: |
           set -euo pipefail
+          # `runtime-native` enforces frame pointers for FP-based stack walking (see runtime-native/build.rs).
+          if [[ "${RUSTFLAGS:-}" != *"force-frame-pointers=yes"* ]]; then
+            export RUSTFLAGS="${RUSTFLAGS:-} -C force-frame-pointers=yes"
+          fi
           cargo test -p runtime-native --test reactor_conformance --locked
           # Exercise the force-pipe wake fallback path on platforms that default to kqueue/EVFILT_USER.
           cargo test -p runtime-native --test reactor_conformance --locked --features force_pipe_wake
