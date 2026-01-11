@@ -4151,6 +4151,24 @@ fn strip_obj_pat(ctx: &mut StripContext, pat: Node<ObjPat>) -> Node<ObjPat> {
 fn strip_expr(ctx: &mut StripContext, expr: Node<Expr>) -> Node<Expr> {
   let loc = expr.loc;
   let assoc = expr.assoc;
+  if ctx.mode == TsEraseMode::StrictNative
+    && matches!(
+      expr.stx.as_ref(),
+      Expr::JsxElem(_)
+        | Expr::JsxExprContainer(_)
+        | Expr::JsxMember(_)
+        | Expr::JsxName(_)
+        | Expr::JsxSpreadAttr(_)
+        | Expr::JsxText(_)
+    )
+  {
+    unsupported_ts(
+      ctx,
+      loc,
+      "JSX syntax is not supported in strict native TypeScript erasure mode",
+    );
+    return new_node(loc, assoc, Expr::LitNull(Node::new(loc, LitNullExpr {})));
+  }
   match *expr.stx {
     Expr::ArrowFunc(func) => {
       let mut func = func;

@@ -171,6 +171,43 @@ fn strict_native_mode_rejects_decorators() {
 }
 
 #[test]
+fn strict_native_mode_rejects_jsx() {
+  let file = FileId(0);
+  let src = "const el = <div>{x}</div>;";
+  let mut ast = parse_with_options(
+    src,
+    ParseOptions {
+      dialect: Dialect::Tsx,
+      source_type: SourceType::Module,
+    },
+  )
+  .expect("input should parse as TSX");
+
+  let diagnostics = match erase_types_strict_native(file, SourceType::Module, &mut ast) {
+    Ok(()) => panic!("expected JSX to be rejected in strict-native mode"),
+    Err(diags) => diags,
+  };
+
+  assert!(
+    diagnostics.iter().any(|diag| diag.code.as_str() == "MINIFYTS0001"),
+    "expected MINIFYTS0001 diagnostic for JSX, got: {diagnostics:?}"
+  );
+
+  // Even though strict-native erasure returns an error, it should still clear JSX syntax so the
+  // partially-erased AST remains valid strict ECMAScript.
+  let output =
+    emit_top_level_diagnostic(file, &ast, EmitOptions::minified()).expect("emission should succeed");
+  parse_with_options(
+    &output,
+    ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Module,
+    },
+  )
+  .expect("JSX syntax should be erased from strict-native output");
+}
+
+#[test]
 fn strict_native_mode_erases_ambient_decls_and_this_params() {
   let src = r#"
     declare enum E { A }
