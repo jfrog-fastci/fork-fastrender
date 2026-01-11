@@ -496,8 +496,10 @@ impl EventLoop {
       // Loop to re-check queues and timers.
     }
   }
-  pub(crate) fn reset_for_tests(&self) {
+
+  pub(crate) fn cancel_all(&self) -> bool {
     let _guard = self.poll_lock.lock();
+    let had_work = self.has_pending_work();
 
     self.microtasks.lock().clear();
     self.macrotasks.lock().clear();
@@ -509,6 +511,12 @@ impl EventLoop {
     self.macrotasks.lock().clear();
     self.timers.clear();
     let _ = self.reactor.drain_wake();
+
+    had_work
+  }
+
+  pub(crate) fn reset_for_tests(&self) {
+    let _ = self.cancel_all();
   }
 
   pub(crate) fn debug_with_microtasks_lock<R>(&self, f: impl FnOnce() -> R) -> R {

@@ -87,7 +87,7 @@ fn run_microtask_checkpoint_end_hook() {
   }
 }
 
-pub fn rt_drain_microtasks() -> bool {
+fn run_microtask_checkpoint(drive: impl FnOnce() -> bool) -> bool {
   let Some(_guard) = MicrotaskCheckpointGuard::enter() else {
     return false;
   };
@@ -98,7 +98,7 @@ pub fn rt_drain_microtasks() -> bool {
     return false;
   }
 
-  let did_work = crate::async_rt::drain_microtasks_nonblocking();
+  let did_work = drive();
   crate::unhandled_rejection::microtask_checkpoint();
   run_microtask_checkpoint_end_hook();
   if has_error() {
@@ -108,28 +108,19 @@ pub fn rt_drain_microtasks() -> bool {
   }
 }
 
-pub fn rt_async_run_until_idle() -> bool {
-  let Some(_guard) = MicrotaskCheckpointGuard::enter() else {
-    return false;
-  };
+pub fn rt_drain_microtasks() -> bool {
+  run_microtask_checkpoint(|| crate::async_rt::drain_microtasks_nonblocking())
+}
 
+pub fn rt_async_run_until_idle() -> bool {
   // If the executor has entered an error state (runaway detection), it will no longer make forward
   // progress. Avoid spinning here (and aborting via the internal runaway turn limit) and instead
   // return so callers can retrieve the error via `rt_async_take_last_error`.
-  if has_error() {
-    crate::unhandled_rejection::microtask_checkpoint();
-    run_microtask_checkpoint_end_hook();
-    return false;
-  }
+  run_microtask_checkpoint(|| crate::async_rt::run_until_idle_nonblocking())
+}
 
-  let did_work = crate::async_rt::run_until_idle_nonblocking();
-  crate::unhandled_rejection::microtask_checkpoint();
-  run_microtask_checkpoint_end_hook();
-  if has_error() {
-    false
-  } else {
-    did_work
-  }
+pub(crate) fn rt_async_run_until_idle_under_driver_guard() -> bool {
+  run_microtask_checkpoint(|| crate::async_rt::run_until_idle_nonblocking_under_driver_guard())
 }
 
 /// Layout of the payload storage associated with a promise returned by

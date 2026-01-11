@@ -9,7 +9,6 @@ use crate::abi::ThenableRef;
 use crate::abi::ValueRef;
 use crate::abi::IoWatcherId;
 use crate::async_runtime::PromiseLayout;
-use crate::alloc;
 use crate::array;
 use crate::array::RtArrayHeader;
 use crate::async_runtime;
@@ -1268,18 +1267,20 @@ pub extern "C" fn rt_async_cancel_all() {
   abort_on_panic(|| {
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
-    crate::async_runtime::cancel_all();
+    // Treat cancellation as a "driving" operation: it destroys coroutine frames that may otherwise
+    // be resumed by the event loop.
+    let _ = async_rt::with_driver_guard("rt_async_cancel_all", || {
+      crate::async_runtime::cancel_all();
+    });
   })
 }
 
 /// Drive the runtime's async/event-loop queues.
 ///
-/// This runtime maintains process-global singleton state. `rt_async_poll_legacy` may be called from
-/// multiple threads, but calls are **globally serialized** (only one thread executes the poll loop
-/// at a time).
+/// The async runtime is single-driver: only one thread may execute the poll loop at a time.
 ///
-/// Returns `true` if there is still pending work after this poll turn (queued tasks, active
-/// timers, or I/O watchers). Returns `false` when the runtime is quiescent.
+/// - Concurrent driving from another thread aborts (fail-fast).
+/// - Re-entrant calls on the same thread are treated as a no-op and return `false`.
 #[no_mangle]
 pub extern "C" fn rt_async_poll_legacy() -> bool {
   abort_on_panic(|| {
@@ -1379,29 +1380,35 @@ pub unsafe extern "C" fn rt_async_block_on(p: PromiseRef) {
       return;
     }
 
-    // Fast path: already settled.
-    if !promise_is_pending(p) {
-      return;
-    }
-
-    // Ensure the event loop is woken when `p` is settled even if nothing else is
-    // awaiting it. Without this, `rt_async_wait` can sleep indefinitely.
-    register_block_on_waker(p);
-
-    loop {
-      let _ = crate::async_runtime::rt_async_run_until_idle();
-
+    // `rt_async_block_on` is itself a driving entrypoint: hold the driver guard for the entire
+    // blocking loop so other threads cannot concurrently call into `rt_async_poll` /
+    // `rt_async_run_until_idle` / etc. Same-thread re-entrancy becomes a no-op via
+    // `with_driver_guard`.
+    let _ = async_rt::with_driver_guard("rt_async_block_on", || {
+      // Fast path: already settled.
       if !promise_is_pending(p) {
         return;
       }
 
-      if async_runtime::has_error() {
-        return;
-      }
+      // Ensure the event loop is woken when `p` is settled even if nothing else is
+      // awaiting it. Without this, `rt_async_wait` can sleep indefinitely.
+      register_block_on_waker(p);
 
-      // No ready work; park until something wakes the runtime.
-      async_rt::wait_for_work();
-    }
+      loop {
+        let _ = crate::async_runtime::rt_async_run_until_idle_under_driver_guard();
+
+        if !promise_is_pending(p) {
+          return;
+        }
+
+        if async_runtime::has_error() {
+          return;
+        }
+
+        // No ready work; park until something wakes the runtime.
+        async_rt::wait_for_work_under_driver_guard();
+      }
+    });
   })
 }
 

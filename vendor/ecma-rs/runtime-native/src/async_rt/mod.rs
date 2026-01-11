@@ -11,10 +11,11 @@
 //! The C ABI entrypoint that drives this event loop is `rt_async_poll_legacy`.
 //!
 //! ## Concurrency
-//! The runtime is process-global (a singleton). Public entrypoints that drive or inspect the event
-//! loop are therefore **thread-safe but not concurrent**: they may be called from multiple threads,
-//! but only one thread is allowed to execute the poll loop at a time (calls are internally
-//! serialized by the global poll lock).
+//! The runtime is process-global (a singleton). Driving it is therefore **single-driver**:
+//!
+//! - Only one thread may be inside `rt_async_poll_legacy` (or other driving entrypoints) at a time.
+//! - If a second thread attempts to drive concurrently, the process aborts (fail-fast).
+//! - Re-entrant drive attempts on the same thread are treated as a no-op and return `false`.
 
 mod event_loop;
 mod reactor;
@@ -34,7 +35,7 @@ pub use timer::TimerId;
 pub use timer::Timers;
 
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Condvar;
 use std::sync::Once;
 use std::sync::OnceLock;
@@ -84,6 +85,103 @@ pub fn debug_set_hold_poll_lock(hold: bool) {
 #[doc(hidden)]
 pub fn debug_poll_lock_is_held() -> bool {
   POLL_LOCK.try_lock().is_none()
+}
+
+// -----------------------------------------------------------------------------
+// Single-driver guard for driving entrypoints.
+// -----------------------------------------------------------------------------
+
+/// Thread id (best-effort OS thread id / stable hash) of the currently-active async driver.
+///
+/// - `0` means "no active driver"
+/// - non-zero means "thread X is currently driving"
+static DRIVER_THREAD_ID: AtomicU64 = AtomicU64::new(0);
+
+fn current_thread_id_u64() -> u64 {
+  #[cfg(any(target_os = "linux", target_os = "android"))]
+  unsafe {
+    let tid = libc::syscall(libc::SYS_gettid) as u64;
+    if tid != 0 { tid } else { 1 }
+  }
+
+  #[cfg(not(any(target_os = "linux", target_os = "android")))]
+  {
+    use std::hash::Hash;
+    use std::hash::Hasher;
+
+    let tid = std::thread::current().id();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tid.hash(&mut hasher);
+    let hashed = hasher.finish();
+    if hashed != 0 { hashed } else { 1 }
+  }
+}
+
+struct ExecutorDriverGuard {
+  thread_id: u64,
+}
+
+impl ExecutorDriverGuard {
+  fn acquire(entrypoint: &'static str) -> Option<Self> {
+    let me = current_thread_id_u64();
+
+    // Fast path for same-thread re-entrancy.
+    let active = DRIVER_THREAD_ID.load(Ordering::Acquire);
+    if active == me && active != 0 {
+      return None;
+    }
+
+    match DRIVER_THREAD_ID.compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire) {
+      Ok(_) => Some(Self { thread_id: me }),
+      Err(active) => {
+        if active == me {
+          // Racy re-entrancy: treat as no-op.
+          None
+        } else {
+          eprintln!(
+            "runtime-native async executor is single-driver; {entrypoint} called from thread {me} \
+while thread {active} is already driving"
+          );
+          std::process::abort();
+        }
+      }
+    }
+  }
+}
+
+impl Drop for ExecutorDriverGuard {
+  fn drop(&mut self) {
+    let prev = DRIVER_THREAD_ID.swap(0, Ordering::Release);
+    if prev != self.thread_id {
+      eprintln!(
+        "runtime-native internal error: async driver guard drop mismatch (expected {}, saw {})",
+        self.thread_id, prev
+      );
+      std::process::abort();
+    }
+  }
+}
+
+/// Execute `f` while holding the single-driver guard for driving entrypoints.
+///
+/// Returns:
+/// - `Some(result)` if the caller became the active driver and `f` was executed.
+/// - `None` if the call was re-entrant on the same thread (treated as a no-op).
+pub(crate) fn with_driver_guard<R>(entrypoint: &'static str, f: impl FnOnce() -> R) -> Option<R> {
+  let _guard = ExecutorDriverGuard::acquire(entrypoint)?;
+  Some(f())
+}
+
+fn assert_driver_guard_held(entrypoint: &'static str) {
+  let active = DRIVER_THREAD_ID.load(Ordering::Acquire);
+  let me = current_thread_id_u64();
+  if active == 0 || active != me {
+    eprintln!(
+      "runtime-native internal error: {entrypoint} must be called while holding the async driver guard \
+(active={active}, me={me})"
+    );
+    std::process::abort();
+  }
 }
 
 /// When enabled, `await` follows JS microtask semantics even when the awaited promise is already
@@ -320,30 +418,52 @@ pub fn global() -> &'static AsyncRuntime {
 /// Returns `true` if there is still pending work after the turn.
 pub(crate) fn poll() -> bool {
   // Prevent nested calls into the event loop from tasks/microtasks (HTML-style microtask checkpoint
-  // semantics). This also avoids deadlocks on `POLL_LOCK` if code attempts to drive the runtime
-  // recursively.
+  // semantics).
   let Some(_checkpoint_guard) = crate::async_runtime::MicrotaskCheckpointGuard::enter() else {
     return false;
   };
 
-  // Serialize at the ABI boundary: the event loop itself is single-consumer.
-  let _guard = POLL_LOCK.lock();
-  debug_maybe_hold_poll_lock();
-  global().poll()
+  with_driver_guard("rt_async_poll", || {
+    // Serialize at the ABI boundary: the event loop itself is single-consumer.
+    let _guard = POLL_LOCK.lock();
+    debug_maybe_hold_poll_lock();
+    global().poll()
+  })
+  .unwrap_or(false)
 }
 
 pub(crate) fn drain_microtasks_nonblocking() -> bool {
-  let _guard = POLL_LOCK.lock();
-  global().loop_.drain_microtasks_for_external()
+  with_driver_guard("rt_drain_microtasks", || {
+    let _guard = POLL_LOCK.lock();
+    global().loop_.drain_microtasks_for_external()
+  })
+  .unwrap_or(false)
 }
 
 pub(crate) fn run_until_idle_nonblocking() -> bool {
+  with_driver_guard("rt_async_run_until_idle", || {
+    let _guard = POLL_LOCK.lock();
+    global().loop_.run_until_idle_nonblocking()
+  })
+  .unwrap_or(false)
+}
+
+pub(crate) fn run_until_idle_nonblocking_under_driver_guard() -> bool {
+  assert_driver_guard_held("run_until_idle_nonblocking_under_driver_guard");
   let _guard = POLL_LOCK.lock();
   global().loop_.run_until_idle_nonblocking()
 }
 
 /// Block the current thread until at least one task is ready.
 pub(crate) fn wait_for_work() {
+  let _ = with_driver_guard("rt_async_wait", || {
+    let _guard = POLL_LOCK.lock();
+    global().wait_for_work();
+  });
+}
+
+pub(crate) fn wait_for_work_under_driver_guard() {
+  assert_driver_guard_held("wait_for_work_under_driver_guard");
   let _guard = POLL_LOCK.lock();
   global().wait_for_work();
 }
@@ -367,9 +487,12 @@ pub(crate) fn clear_state_for_tests() {
   // so we don't block indefinitely on the poll lock during test cleanup.
   global().loop_.wake();
 
-  let _guard = POLL_LOCK.lock();
-  global().loop_.reset_for_tests();
-  crate::unhandled_rejection::clear_state_for_tests();
+  // Treat resets as "driving" operations: they mutate the process-global async runtime state.
+  let _ = with_driver_guard("clear_state_for_tests", || {
+    let _guard = POLL_LOCK.lock();
+    global().loop_.reset_for_tests();
+    crate::unhandled_rejection::clear_state_for_tests();
+  });
 
   // Tests should be isolated from configuration toggles.
   STRICT_AWAIT_YIELDS.store(false, Ordering::Release);

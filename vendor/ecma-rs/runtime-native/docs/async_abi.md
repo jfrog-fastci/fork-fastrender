@@ -282,6 +282,52 @@ Enqueuing microtasks is **thread-safe**:
 - If the event-loop thread is blocked in `rt_async_wait` / the reactor wait syscall, a cross-thread
   enqueue will wake it so pending microtasks can be observed.
 
+The native async runtime provides a small, JS-shaped event loop:
+
+- **macrotasks** (timers / I/O callbacks)
+- **microtasks** (promise continuations / `queueMicrotask`)
+- **coroutines** (LLVM-lowered `async`/`await`, resumed via microtasks/macrotasks)
+
+## Single-driver execution model (JS-like)
+
+Running microtasks/coroutines is **single-threaded**. Only one OS thread may *drive* the event loop
+at a time.
+
+### Driving entrypoints
+
+The following APIs execute queued microtasks/macrotasks and therefore are considered **driving**
+entrypoints:
+
+- `rt_async_poll` / `rt_async_poll_legacy`
+- `rt_async_run_until_idle`
+- `rt_drain_microtasks`
+- `rt_async_block_on`
+- `rt_async_cancel_all`
+
+### Policy
+
+- If a driving entrypoint is called **concurrently** from a different thread while another thread
+  is already driving, the runtime **aborts** with a clear error message.
+- If a driving entrypoint is called **re-entrantly** from the *same* thread (e.g. a microtask calls
+  `rt_async_poll`), the call is treated as a **no-op** and returns `false` (for `bool`-returning
+  functions).
+
+This avoids subtle races (e.g. resuming a coroutine concurrently) and prevents deadlocks from
+recursive event-loop driving.
+
+## Thread-safe producers
+
+Other threads are allowed to interact with the async runtime via **multi-producer** APIs:
+
+- resolving/rejecting promises
+- registering continuations
+- enqueueing microtasks (`rt_queue_microtask`)
+- scheduling timers (`rt_set_timeout` / `rt_set_interval` / `rt_clear_timer`)
+- I/O watcher registration/update/unregistration (`rt_io_register` / `rt_io_update` / `rt_io_unregister`)
+
+These operations are thread-safe and will wake a driver blocked inside `rt_async_poll` (via the
+reactor wake mechanism).
+
 ## Microtask checkpoint helpers
 
 Two Rust entry points execute pending work without blocking:
@@ -781,3 +827,13 @@ This project supports both behaviors for `await`:
 - **Strict yield mode:** always yield on `await`, matching ECMAScript’s microtask timing.
 
 The runtime exposes this as a configuration knob (`set_strict_await_yields` in `runtime-native`).
+
+## Parallelism
+
+Parallelism is expressed explicitly via:
+
+- `rt_parallel_spawn` / `rt_parallel_join`
+- `rt_parallel_spawn_promise`
+- `rt_spawn_blocking`
+
+It is **not** achieved by running the async driver on multiple threads.
