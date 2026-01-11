@@ -57,8 +57,9 @@ collect -n --no-heading --with-filename -g'*.rs' -o '\bdiagnostics::ice\(' --rep
 # parse-js parser codes are defined in a match and referenced via `SyntaxErrorType::code()`.
 collect -n --no-heading --with-filename -o '"(PS[0-9]{4})"' parse-js/src/error.rs --replace '$1'
 
-# emit-js defines codes in a match and threads them through a helper.
-collect -n --no-heading --with-filename -o '"([A-Z]{2,}[A-Z0-9]*[0-9]{4,5})"' emit-js/src/lib.rs --replace '$1'
+# emit-js defines some codes in matches/structs and some in consts (e.g. TS→JS erasure),
+# so scan its sources for code-shaped string literals.
+collect -n --no-heading --with-filename -g'*.rs' -o '"([A-Z]{2,}[A-Z0-9]*[0-9]{4,5})"' emit-js/src --replace '$1'
 
 # ts-erase stores its TS erase codes in consts (not directly in the diagnostic
 # constructors), so scan its sources for code-shaped string literals.
@@ -105,6 +106,7 @@ RULES = [
     Rule("TS", r"^TS\d{4,5}$", shared=True),
     Rule("OPT", r"^OPT\d{4}$", allowed_crates={"optimize-js"}),
     Rule("EMIT", r"^EMIT\d{4}$", allowed_crates={"emit-js"}),
+    Rule("EMITTS", r"^EMITTS\d{4}$", allowed_crates={"emit-js"}),
     Rule("MINIFYTS", r"^MINIFYTS\d{4}$", allowed_crates={"ts-erase"}),
     Rule("MINIFY", r"^MINIFY\d{4}$", allowed_crates={"bench/minify-js"}),
     Rule("CONF", r"^CONF\d{4}$", allowed_crates={"parse-js"}),
