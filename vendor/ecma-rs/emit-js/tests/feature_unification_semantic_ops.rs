@@ -43,7 +43,7 @@ fn feature_unification_semantic_ops_compiles() {
     .current_dir(ecma_rs_root)
     .env("CARGO_TARGET_DIR", target_dir)
     .output()
-    .expect("run cargo check for feature unification graph");
+    .expect("run wrapper check for feature unification graph");
 
   assert!(
     output.status.success(),
@@ -53,4 +53,3 @@ fn feature_unification_semantic_ops_compiles() {
     String::from_utf8_lossy(&output.stderr),
   );
 }
-

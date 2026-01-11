@@ -235,7 +235,7 @@ fn main() {
         .env("CARGO_TARGET_DIR", &target_dir)
         .env("RUSTFLAGS", rustflags)
         .status()?;
-    assert!(status.success(), "cargo build failed");
+    assert!(status.success(), "nested build failed");
 
     let exe_path = target_dir.join("debug/stackmaps_statepoint_pie_rt");
 

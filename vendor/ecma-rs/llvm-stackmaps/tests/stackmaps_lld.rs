@@ -100,8 +100,8 @@ fn main() {
         .env("CARGO_TARGET_DIR", &target_dir)
         .env("RUSTFLAGS", rustflags)
         .status()
-        .expect("run cargo build");
-    assert!(status.success(), "cargo build failed");
+        .expect("run nested build");
+    assert!(status.success(), "nested build failed");
 
     let exe_path = target_dir.join("debug/stackmaps_test_bin");
     let status = Command::new(&exe_path)

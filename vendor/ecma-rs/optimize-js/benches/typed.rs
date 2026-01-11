@@ -114,7 +114,7 @@ fn bench_typed_compile(c: &mut Criterion) {
   });
 
   // This variant includes full typechecking, which makes it much slower than the
-  // untyped baseline. Use fewer samples so `cargo bench` stays reasonably fast.
+  // untyped baseline. Use fewer samples so the bench run stays reasonably fast.
   group.sample_size(10);
   group.measurement_time(Duration::from_secs(10));
   group.bench_function(
