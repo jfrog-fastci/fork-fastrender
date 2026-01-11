@@ -26,7 +26,8 @@ return address and precise GC cannot recover the caller’s live roots.
 
 Therefore `native-js` must emit **calls between compiled functions** as statepoints whenever the
 callee may trigger GC. Until effect analysis is wired in, we conservatively assume compiled callees
-are *may-GC* unless explicitly annotated `no_gc` / `leaf_no_alloc`.
+are *may-GC* unless explicitly annotated as a GC leaf via LLVM’s `"gc-leaf-function"` attribute
+(future: `no_gc` / `leaf_no_alloc` derived from effect analysis).
 
 ## Two observed composition modes
 
