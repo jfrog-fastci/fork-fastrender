@@ -19,5 +19,11 @@ fn main() {
     .stdin(Stdio::null())
     .output()
     .expect("run compiled program");
+  if !output.status.success() {
+    eprintln!("compiled program failed: {}", output.status);
+    eprintln!("stdout:\n{}", String::from_utf8_lossy(&output.stdout));
+    eprintln!("stderr:\n{}", String::from_utf8_lossy(&output.stderr));
+    std::process::exit(1);
+  }
   print!("{}", String::from_utf8_lossy(&output.stdout));
 }
