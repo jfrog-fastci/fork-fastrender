@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use diagnostics::Diagnostic;
+use native_js::builtins::CHECKED_BUILTINS_D_TS;
 use native_js::validate::validate_strict_subset;
 use typecheck_ts::lib_support::FileKind;
 use typecheck_ts::lib_support::LibFile;
@@ -34,8 +35,10 @@ impl Host for TestHost {
   }
 
   fn lib_files(&self) -> Vec<LibFile> {
-    // Match the `native-js` binary: declare a tiny builtin surface that can be
-    // codegen'd by the current backend without introducing `any`.
+    // Match the `native-js` checked pipeline: start from the canonical intrinsic declarations and
+    // layer on any extra test-only ambient declarations.
+    let mut text = String::new();
+    text.push_str(CHECKED_BUILTINS_D_TS);
     vec![LibFile {
       key: FileKey::new("native-js:test-builtins.d.ts"),
       name: Arc::from("native-js test builtins"),
@@ -43,7 +46,10 @@ impl Host for TestHost {
       // `arguments` is a magic per-function binding in JS; we only declare it so `typecheck-ts`
       // accepts samples that reference it and the strict-subset validator can produce the intended
       // `NJS0009` diagnostic.
-      text: Arc::from("declare function print(value: number): void;\ndeclare const arguments: number;\n"),
+      text: Arc::from({
+        text.push_str("declare const arguments: number;\n");
+        text
+      }),
     }]
   }
 
