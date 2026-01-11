@@ -107,6 +107,28 @@ fn erases_export_lists_of_type_only_bindings() {
 }
 
 #[test]
+fn erases_export_lists_of_type_only_imports() {
+  let src = r#"
+    import { type Foo, baz } from "mod";
+    export { Foo, baz };
+  "#;
+
+  let output = erase_to_minified_js(src, Dialect::Ts, SourceType::Module);
+  assert!(
+    output.contains("import{baz}from") || output.contains("import {baz} from"),
+    "expected erased output to keep value import: {output}"
+  );
+  assert!(
+    output.contains("export{baz}") || output.contains("export {baz}"),
+    "expected erased output to keep value export: {output}"
+  );
+  assert!(
+    !output.contains("Foo"),
+    "expected erased output to drop type-only export list entries: {output}"
+  );
+}
+
+#[test]
 fn strict_native_mode_rejects_runtime_ts_constructs() {
   let cases = [
     ("enum E{A}", "enum"),
