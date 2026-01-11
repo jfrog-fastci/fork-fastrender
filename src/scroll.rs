@@ -1073,15 +1073,27 @@ pub(crate) fn build_scroll_metadata(tree: &mut FragmentTree) -> ScrollMetadata {
   // the root is the synthetic page box, with the document root nested under the first child.
   //
   // Walk down a few nodes along the first-child chain so paginated trees can still locate the
-  // document root without accidentally promoting unrelated element scrollers to viewport-level snap
-  // containers.
+  // document root. We intentionally *do not* search for the first snap container here: doing so
+  // would mis-classify an element scroller near the top of the document as the viewport snap
+  // container, causing scroll snap to consult viewport scroll offsets instead of element scroll
+  // offsets.
   let viewport_container = {
     let mut current: Option<&FragmentNode> = Some(&tree.root);
     let mut found: Option<Option<usize>> = None;
-    for _ in 0..4 {
+    for depth in 0..4 {
       let Some(node) = current else { break };
-      if is_snap_container(node) {
-        found = Some(fragment_box_id(node));
+      let box_id = fragment_box_id(node);
+      // Prefer the first fragment that corresponds to a real box (i.e. has a stable box id). This
+      // is typically the document root element (HTML) even when a synthetic wrapper (e.g. a page
+      // box) sits above it.
+      if box_id.is_some() {
+        found = Some(box_id);
+        break;
+      }
+      // If we never encounter a fragment with a box id (e.g. a synthetic root in tests), keep the
+      // root snap container using viewport scroll offsets when it is itself a snap container.
+      if depth == 0 && is_snap_container(node) {
+        found = Some(box_id);
         break;
       }
       current = node.children.iter().next();
