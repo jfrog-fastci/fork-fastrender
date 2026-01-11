@@ -1,4 +1,3 @@
-use core::ffi::c_void;
 use core::ptr::null_mut;
 use runtime_native::async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef,
@@ -11,7 +10,7 @@ use runtime_native::RtShapeId;
 use std::sync::Mutex;
 
 fn abi_promise_from_header(p: *mut PromiseHeader) -> AbiPromiseRef {
-  AbiPromiseRef(p.cast::<c_void>())
+  AbiPromiseRef(p as *mut _)
 }
 
 #[repr(C)]

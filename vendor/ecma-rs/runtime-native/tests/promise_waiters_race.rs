@@ -102,7 +102,7 @@ fn promise_waiter_race_does_not_lose_wakeup_or_retain_waiters() {
     let _promise = runtime_native::rt_async_spawn_legacy(coro_ptr);
   });
   let resolve_thread = std::thread::spawn(move || {
-    let awaited = PromiseRef(awaited_raw as *mut core::ffi::c_void);
+    let awaited = PromiseRef(awaited_raw as *mut _);
     runtime_native::rt_promise_resolve_legacy(awaited, 0xDEAD_BEEF as ValueRef);
   });
 

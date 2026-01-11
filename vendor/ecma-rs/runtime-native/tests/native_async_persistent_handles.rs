@@ -1,4 +1,3 @@
-use core::ffi::c_void;
 use core::ptr::null_mut;
 use runtime_native::async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader, CORO_FLAG_RUNTIME_OWNS_FRAME,
@@ -27,7 +26,7 @@ impl TestPromise {
 }
 
 fn abi_promise_from_header(p: *mut PromiseHeader) -> AbiPromiseRef {
-  AbiPromiseRef(p.cast::<c_void>())
+  AbiPromiseRef(p as *mut _)
 }
 
 // -------------------------------------------------------------------------------------------------

@@ -1,4 +1,3 @@
-use core::ffi::c_void;
 use core::mem::{align_of, size_of, MaybeUninit};
 use core::ptr::null_mut;
 use core::sync::atomic::Ordering;
@@ -74,7 +73,7 @@ fn promise_header_ptr(p: PromiseHandle) -> PromisePtr {
 }
 
 fn promise_handle_from_ptr(p: PromisePtr) -> PromiseHandle {
-  PromiseHandle(p.cast::<c_void>())
+  PromiseHandle(p as *mut _)
 }
 
 fn promise_state(p: PromisePtr) -> u8 {
