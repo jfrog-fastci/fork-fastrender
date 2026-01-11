@@ -6,6 +6,7 @@ use super::TypeDescriptor;
 use ahash::AHashSet;
 use once_cell::sync::Lazy;
 use crate::sync::GcAwareMutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::mem;
 
 /// Registry of type descriptors we've seen during allocation.
@@ -15,14 +16,58 @@ use std::mem;
 static KNOWN_TYPE_DESCRIPTORS: Lazy<GcAwareMutex<AHashSet<usize>>> =
   Lazy::new(|| GcAwareMutex::new(AHashSet::new()));
 
+static DEBUG_KNOWN_TYPE_DESCRIPTORS_CONTENDED: AtomicBool = AtomicBool::new(false);
+
+#[doc(hidden)]
+pub(crate) fn debug_reset_known_type_descriptors_contention() {
+  DEBUG_KNOWN_TYPE_DESCRIPTORS_CONTENDED.store(false, Ordering::Release);
+}
+
+#[doc(hidden)]
+pub(crate) fn debug_known_type_descriptors_was_contended() -> bool {
+  DEBUG_KNOWN_TYPE_DESCRIPTORS_CONTENDED.load(Ordering::Acquire)
+}
+
+#[doc(hidden)]
+pub(crate) fn debug_with_known_type_descriptors_lock<R>(f: impl FnOnce() -> R) -> R {
+  let _guard = KNOWN_TYPE_DESCRIPTORS.lock();
+  f()
+}
+
 pub(crate) fn register_type_descriptor(desc: &'static TypeDescriptor) {
   register_type_descriptor_ptr(desc as *const TypeDescriptor);
 }
 
 pub(crate) fn register_type_descriptor_ptr(desc: *const TypeDescriptor) {
-  KNOWN_TYPE_DESCRIPTORS
-    .lock()
-    .insert(desc as usize);
+  // This lock is touched on hot allocation paths in debug builds. If it becomes contended and a
+  // registered mutator thread blocks on it, stop-the-world GC can deadlock waiting for that thread
+  // to reach a cooperative safepoint poll.
+  //
+  // Avoid that by spinning on `try_lock()` and polling the safepoint barrier while waiting.
+  //
+  // Coordinator code should not call into the safepoint slow path, so fall back to a plain lock if
+  // we're currently the stop-the-world coordinator.
+  if crate::threading::safepoint::in_stop_the_world() {
+    KNOWN_TYPE_DESCRIPTORS.lock_for_gc().insert(desc as usize);
+    return;
+  }
+
+  // Unregistered threads do not participate in stop-the-world coordination, so blocking here cannot
+  // deadlock the GC coordinator.
+  if crate::threading::registry::current_thread_state().is_none() {
+    KNOWN_TYPE_DESCRIPTORS.lock_for_gc().insert(desc as usize);
+    return;
+  }
+
+  loop {
+    if let Some(mut guard) = KNOWN_TYPE_DESCRIPTORS.try_lock() {
+      guard.insert(desc as usize);
+      return;
+    }
+    DEBUG_KNOWN_TYPE_DESCRIPTORS_CONTENDED.store(true, Ordering::Release);
+    crate::threading::safepoint_poll();
+    std::hint::spin_loop();
+  }
 }
 
 pub(crate) fn is_known_type_descriptor(desc: *const TypeDescriptor) -> bool {
@@ -279,10 +324,12 @@ mod tests {
   static TEST_DESC: TypeDescriptor = TypeDescriptor::new(16, &[]);
 
   #[test]
-  fn known_type_descriptors_lock_is_gc_aware() {
+  fn known_type_descriptors_lock_contention_does_not_block_stop_the_world() {
     let _rt = crate::test_util::TestRuntimeGuard::new();
 
     const TIMEOUT: Duration = Duration::from_secs(2);
+
+    debug_reset_known_type_descriptors_contention();
 
     std::thread::scope(|scope| {
       // Thread A holds the descriptor registry lock.
@@ -321,28 +368,21 @@ mod tests {
         threading::unregister_current_thread();
       });
 
-      let c_id = c_registered_rx
+      let _c_id = c_registered_rx
         .recv_timeout(TIMEOUT)
         .expect("thread C should register with the thread registry");
 
       // Ensure thread C is actively contending on the registry lock before starting STW.
       c_start_tx.send(()).unwrap();
 
-      // Wait until thread C is marked NativeSafe (this is what prevents STW deadlocks).
+      // Wait until thread C has observed contention on the registry lock.
       let start = Instant::now();
       loop {
-        let mut native_safe = false;
-        threading::registry::for_each_thread(|t| {
-          if t.id() == c_id {
-            native_safe = t.is_native_safe();
-          }
-        });
-
-        if native_safe {
+        if debug_known_type_descriptors_was_contended() {
           break;
         }
         if start.elapsed() > TIMEOUT {
-          panic!("thread C did not enter a GC-safe region while blocked on the descriptor registry lock");
+          panic!("thread C did not contend on the descriptor registry lock");
         }
         std::thread::yield_now();
       }

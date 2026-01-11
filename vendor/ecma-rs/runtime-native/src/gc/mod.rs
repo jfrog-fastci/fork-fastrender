@@ -563,6 +563,30 @@ pub(crate) fn is_known_type_descriptor(desc: *const TypeDescriptor) -> bool {
   verify::is_known_type_descriptor(desc)
 }
 
+/// Test/debug hook: execute `f` while holding the global known-type-descriptor registry lock.
+///
+/// This exists to deterministically force contention on the descriptor registry lock for
+/// stop-the-world safepoint tests.
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+#[doc(hidden)]
+pub fn debug_with_known_type_descriptors_lock<R>(f: impl FnOnce() -> R) -> R {
+  verify::debug_with_known_type_descriptors_lock(f)
+}
+
+/// Test/debug hook: clear the "was contended" flag for the known-type-descriptor registry lock.
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+#[doc(hidden)]
+pub fn debug_reset_known_type_descriptors_contention() {
+  verify::debug_reset_known_type_descriptors_contention();
+}
+
+/// Test/debug hook: whether the known-type-descriptor registry lock has been observed contended.
+#[cfg(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots"))]
+#[doc(hidden)]
+pub fn debug_known_type_descriptors_was_contended() -> bool {
+  verify::debug_known_type_descriptors_was_contended()
+}
+
 #[cfg(not(any(debug_assertions, feature = "gc_debug", feature = "conservative_roots")))]
 pub(crate) fn is_known_type_descriptor(_desc: *const TypeDescriptor) -> bool {
   false

@@ -4,6 +4,7 @@ use runtime_native::threading::ThreadKind;
 use runtime_native::io::IoRuntime;
 use runtime_native::abi::PromiseRef;
 use runtime_native::promise_api::{Promise, PromiseExt};
+use runtime_native::TypeDescriptor;
 use std::future::Future;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -41,6 +42,21 @@ fn wait_until_thread_native_safe(thread_id: u64, timeout: Duration) {
     assert!(
       std::time::Instant::now() < deadline,
       "thread did not enter NativeSafe in time"
+    );
+    std::thread::yield_now();
+  }
+}
+
+fn wait_until_known_type_descriptors_contended(timeout: Duration) {
+  let deadline = std::time::Instant::now() + timeout;
+  loop {
+    if runtime_native::gc::debug_known_type_descriptors_was_contended() {
+      return;
+    }
+
+    assert!(
+      std::time::Instant::now() < deadline,
+      "known type descriptor registry lock was not observed contended in time"
     );
     std::thread::yield_now();
   }
@@ -442,6 +458,62 @@ fn stop_the_world_does_not_wait_for_thread_blocked_on_stackmap_registry_rwlock()
   );
 
   drop(hold);
+  handle.join().unwrap();
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn stop_the_world_does_not_wait_for_thread_contending_on_known_type_descriptors_mutex() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  #[repr(C)]
+  struct DummyObj {
+    _header: runtime_native::gc::ObjHeader,
+    value: usize,
+  }
+
+  const DUMMY_PTR_OFFSETS: [u32; 0] = [];
+  static DUMMY_DESC: TypeDescriptor = TypeDescriptor::new(core::mem::size_of::<DummyObj>(), &DUMMY_PTR_OFFSETS);
+
+  runtime_native::gc::debug_reset_known_type_descriptors_contention();
+
+  let handle = runtime_native::gc::debug_with_known_type_descriptors_lock(|| {
+    let (tx_id, rx_id) = mpsc::channel();
+    let started = Arc::new(Barrier::new(2));
+    let started_worker = started.clone();
+
+    let handle = std::thread::spawn(move || {
+      let id = threading::register_current_thread(ThreadKind::Worker);
+      tx_id.send(id.get()).unwrap();
+
+      started_worker.wait();
+
+      // This calls into `gc::verify::register_type_descriptor_ptr`, which should not block
+      // indefinitely as a mutator under stop-the-world.
+      let mut heap = runtime_native::GcHeap::new();
+      let _ = heap.alloc_old(&DUMMY_DESC);
+
+      threading::unregister_current_thread();
+    });
+
+    let _worker_id = rx_id.recv().unwrap();
+    started.wait();
+
+    // Wait until the worker has observed contention on the descriptor registry lock.
+    wait_until_known_type_descriptors_contended(Duration::from_secs(2));
+
+    runtime_native::rt_gc_request_stop_the_world();
+    let stopped = runtime_native::rt_gc_wait_for_world_stopped_timeout(Duration::from_millis(200));
+    runtime_native::rt_gc_resume_world();
+    assert!(
+      stopped,
+      "world did not stop while worker thread was contending on the known type descriptor mutex"
+    );
+
+    handle
+  });
+
   handle.join().unwrap();
   threading::unregister_current_thread();
 }
