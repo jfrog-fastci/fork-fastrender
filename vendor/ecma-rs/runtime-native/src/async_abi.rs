@@ -99,6 +99,13 @@ impl PromiseHeader {
   }
 }
 
+/// Runtime-internal flag bit in [`PromiseHeader::flags`] indicating the promise is tied to a piece
+/// of pending "external" work (e.g. a task spawned by `rt_parallel_spawn_promise`).
+///
+/// While this flag is set, the JS-shaped event loop should not report itself as fully idle, even if
+/// the task queues are empty.
+pub(crate) const PROMISE_FLAG_EXTERNAL_PENDING: u8 = 1 << 2;
+
 /// Opaque pointer to a promise header (and therefore the start of a generated `Promise<T>`).
 pub type PromiseRef = *mut PromiseHeader;
 

@@ -1,6 +1,8 @@
 use crate::abi::PromiseRef;
+use crate::async_abi::{PromiseHeader, PROMISE_FLAG_EXTERNAL_PENDING};
 use crate::async_runtime::PromiseLayout;
 use crate::threading::ThreadKind;
+use core::sync::atomic::Ordering;
 
 /// Heap-allocated wrapper passed through the join-based parallel scheduler.
 ///
@@ -34,6 +36,20 @@ pub(crate) fn spawn_promise(
   crate::threading::register_current_thread(ThreadKind::External);
 
   let promise = crate::async_rt::promise::promise_new_with_payload(layout);
+  // While the worker task is outstanding, keep the async runtime from reporting itself as fully
+  // idle. The flag is cleared (and the pending count decremented) when the promise settles.
+  if !promise.is_null() {
+    let header = promise.0.cast::<PromiseHeader>();
+    if header.is_null() {
+      std::process::abort();
+    }
+    unsafe {
+      (*header)
+        .flags
+        .fetch_or(PROMISE_FLAG_EXTERNAL_PENDING, Ordering::Release);
+    }
+    crate::async_rt::external_pending_inc();
+  }
   let wrapper = Box::new(PromiseTask {
     func,
     data,

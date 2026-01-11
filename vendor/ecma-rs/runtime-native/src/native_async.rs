@@ -3,6 +3,7 @@ use core::sync::atomic::Ordering;
 
 use crate::async_abi::{
   Coroutine, CoroutineRef, CoroutineStepTag, CoroutineVTable, PromiseHeader, PromiseState, CORO_FLAG_RUNTIME_OWNS_FRAME,
+  PROMISE_FLAG_EXTERNAL_PENDING,
 };
 use crate::ffi::abort_on_panic;
 use crate::promise_reactions::{enqueue_reaction_job, reverse_list, PromiseReactionNode, PromiseReactionVTable};
@@ -151,6 +152,19 @@ fn promise_register_reaction(p: *mut PromiseHeader, node: *mut PromiseReactionNo
   }
 }
 
+#[inline]
+fn maybe_clear_external_pending(promise: *mut PromiseHeader) {
+  let promise = validate_promise_ptr(promise);
+  if promise.is_null() {
+    return;
+  }
+
+  let prev = unsafe { &(*promise).flags }.fetch_and(!PROMISE_FLAG_EXTERNAL_PENDING, Ordering::AcqRel);
+  if (prev & PROMISE_FLAG_EXTERNAL_PENDING) != 0 {
+    crate::async_rt::external_pending_dec();
+  }
+}
+
 pub(crate) unsafe fn promise_try_fulfill(p: AbiPromiseRef) -> bool {
   let header = promise_header_ptr(p);
   if header.is_null() {
@@ -167,11 +181,13 @@ pub(crate) unsafe fn promise_try_fulfill(p: AbiPromiseRef) -> bool {
     )
     .is_err()
   {
+    maybe_clear_external_pending(header);
     return false;
   }
 
   state.store(PromiseHeader::FULFILLED, Ordering::Release);
   drain_reactions(header);
+  maybe_clear_external_pending(header);
   true
 }
 
@@ -195,6 +211,7 @@ pub(crate) unsafe fn promise_try_reject(p: AbiPromiseRef) -> bool {
     )
     .is_err()
   {
+    maybe_clear_external_pending(header);
     return false;
   }
 
@@ -205,6 +222,7 @@ pub(crate) unsafe fn promise_try_reject(p: AbiPromiseRef) -> bool {
     crate::unhandled_rejection::on_reject(p);
   }
   drain_reactions(header);
+  maybe_clear_external_pending(header);
   true
 }
 

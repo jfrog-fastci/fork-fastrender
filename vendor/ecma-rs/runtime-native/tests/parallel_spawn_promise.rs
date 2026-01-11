@@ -2,6 +2,7 @@ use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef}
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::PromiseLayout;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -183,8 +184,104 @@ fn promise_is_fulfilled_on_worker_thread_and_wakes_event_loop() {
   assert!(ran);
 }
 
+extern "C" fn inc_atomic(data: *mut u8) {
+  // Safety: caller passed `Arc::into_raw(counter.clone()) as *mut u8`.
+  let counter = unsafe { Arc::from_raw(data as *const AtomicUsize) };
+  counter.fetch_add(1, Ordering::AcqRel);
+}
+
+extern "C" fn inc_and_fulfill(data: *mut u8, promise: PromiseRef) {
+  // Safety: caller passed `Arc::into_raw(counter.clone()) as *mut u8`.
+  let counter = unsafe { Arc::from_raw(data as *const AtomicUsize) };
+  counter.fetch_add(1, Ordering::AcqRel);
+  unsafe {
+    runtime_native::rt_promise_fulfill(promise);
+  }
+}
+
+extern "C" fn sleep_then_inc_and_fulfill(data: *mut u8, promise: PromiseRef) {
+  // Safety: caller passed `Arc::into_raw(counter.clone()) as *mut u8`.
+  let counter = unsafe { Arc::from_raw(data as *const AtomicUsize) };
+  std::thread::sleep(Duration::from_millis(200));
+  counter.fetch_add(1, Ordering::AcqRel);
+  unsafe {
+    runtime_native::rt_promise_fulfill(promise);
+  }
+}
+
 #[test]
-fn stress_parallel_spawn_promise_promise_all_like() {
+fn parallel_spawn_promise_wakes_blocked_async_poll() {
+  let _rt = TestRuntimeGuard::new();
+  let work = Arc::new(AtomicUsize::new(0));
+  let continuations = Arc::new(AtomicUsize::new(0));
+
+  let promise = runtime_native::rt_parallel_spawn_promise(
+    sleep_then_inc_and_fulfill,
+    Arc::into_raw(work.clone()) as *mut u8,
+    PromiseLayout::of::<()>(),
+  );
+  runtime_native::rt_promise_then_legacy(
+    promise,
+    inc_atomic,
+    Arc::into_raw(continuations.clone()) as *mut u8,
+  );
+
+  let (tx, rx) = mpsc::channel();
+  std::thread::spawn(move || {
+    runtime_native::rt_async_poll_legacy();
+    tx.send(()).unwrap();
+  });
+
+  // The CPU task sleeps; `rt_async_poll_legacy` should block in `epoll_wait` and must not return
+  // immediately.
+  assert!(
+    rx.recv_timeout(Duration::from_millis(50)).is_err(),
+    "rt_async_poll_legacy returned before the parallel task completed"
+  );
+
+  rx.recv_timeout(Duration::from_secs(5))
+    .expect("rt_async_poll_legacy did not wake after the parallel task completed");
+
+  assert_eq!(work.load(Ordering::Acquire), 1);
+  assert_eq!(continuations.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn parallel_spawn_promise_stress() {
+  let _rt = TestRuntimeGuard::new();
+  const N: usize = 10_000;
+
+  let work = Arc::new(AtomicUsize::new(0));
+  let continuations = Arc::new(AtomicUsize::new(0));
+
+  for _ in 0..N {
+    let promise = runtime_native::rt_parallel_spawn_promise(
+      inc_and_fulfill,
+      Arc::into_raw(work.clone()) as *mut u8,
+      PromiseLayout::of::<()>(),
+    );
+    runtime_native::rt_promise_then_legacy(
+      promise,
+      inc_atomic,
+      Arc::into_raw(continuations.clone()) as *mut u8,
+    );
+  }
+
+  let start = Instant::now();
+  while continuations.load(Ordering::Acquire) < N {
+    runtime_native::rt_async_poll_legacy();
+    assert!(
+      start.elapsed() < Duration::from_secs(10),
+      "timeout waiting for {N} parallel promises to settle"
+    );
+  }
+
+  assert_eq!(work.load(Ordering::Acquire), N);
+  assert_eq!(continuations.load(Ordering::Acquire), N);
+}
+
+#[test]
+fn parallel_spawn_promise_promise_all_like() {
   let _rt = TestRuntimeGuard::new();
   const N: usize = 256;
 
@@ -247,19 +344,19 @@ fn stress_parallel_spawn_promise_promise_all_like() {
     assert!(!coro.is_null());
 
     unsafe {
-        match (*coro).header.state {
-          0 => {
-            runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
-            RtCoroStatus::Pending
-          }
-          1 => {
-            *(*coro).completed = true;
-            runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
-            RtCoroStatus::Done
-          }
-          other => panic!("unexpected coroutine state: {other}"),
+      match (*coro).header.state {
+        0 => {
+          runtime_native::rt_coro_await_legacy(&mut (*coro).header, (*coro).awaited, 1);
+          RtCoroStatus::Pending
         }
+        1 => {
+          *(*coro).completed = true;
+          runtime_native::rt_promise_resolve_legacy((*coro).header.promise, core::ptr::null_mut());
+          RtCoroStatus::Done
+        }
+        other => panic!("unexpected coroutine state: {other}"),
       }
+    }
   }
 
   let all_promise = runtime_native::rt_promise_new_legacy();
@@ -274,7 +371,8 @@ fn stress_parallel_spawn_promise_promise_all_like() {
   let all_state_ptr = Box::into_raw(all_state);
 
   for i in 0..N {
-    let promise = runtime_native::rt_parallel_spawn_promise(task, i as *mut u8, PromiseLayout::of::<u32>());
+    let promise =
+      runtime_native::rt_parallel_spawn_promise(task, i as *mut u8, PromiseLayout::of::<u32>());
     let one = Box::new(OneState {
       idx: i,
       promise,
@@ -323,3 +421,4 @@ fn stress_parallel_spawn_promise_promise_all_like() {
     drop(Box::from_raw(all_state_ptr));
   }
 }
+

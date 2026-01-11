@@ -198,7 +198,6 @@ impl StackMap {
 
       // StackMap v3 pads so the live-out header begins on an 8-byte boundary.
       c.align_to(8)?;
-
       let _padding = c.read_u16()?;
       let num_live_outs = c.read_u16()? as usize;
       if num_live_outs > c.remaining() / LiveOut::BYTE_SIZE {

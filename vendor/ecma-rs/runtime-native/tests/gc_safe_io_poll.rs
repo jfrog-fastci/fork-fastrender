@@ -1,5 +1,5 @@
-use runtime_native::io::IoRuntime;
 use runtime_native::buffer::{ArrayBuffer, Uint8Array};
+use runtime_native::io::IoRuntime;
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;

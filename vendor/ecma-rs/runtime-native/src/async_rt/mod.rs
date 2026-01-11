@@ -30,7 +30,7 @@ pub use timer::Timers;
 pub use teardown_queue::{Discard, TeardownQueue};
 
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -45,6 +45,36 @@ static POLL_LOCK: Lazy<crate::sync::GcAwareMutex<()>> =
 ///
 /// Default is `false` to allow a fast-path synchronous resumption (an EXEC.plan-allowed deviation).
 static STRICT_AWAIT_YIELDS: AtomicBool = AtomicBool::new(false);
+
+/// Number of pending "external" events that can make progress without an already-queued
+/// microtask/macrotask/timer/fd.
+///
+/// Today this is used by `rt_parallel_spawn_promise`:
+/// - after spawning a CPU task, the event loop should block in `rt_async_poll` even when the task
+///   queues are empty, and
+/// - completion on a worker thread must wake the event loop.
+static EXTERNAL_PENDING: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn has_external_pending() -> bool {
+  EXTERNAL_PENDING.load(Ordering::Acquire) > 0
+}
+
+pub(crate) fn external_pending_inc() {
+  EXTERNAL_PENDING.fetch_add(1, Ordering::AcqRel);
+  // Ensure a currently-blocking `epoll_wait` wakes to observe the new pending count.
+  global().loop_.wake();
+}
+
+pub(crate) fn external_pending_dec() {
+  let prev = EXTERNAL_PENDING.fetch_sub(1, Ordering::AcqRel);
+  if prev == 0 {
+    // Defensive: mismatched decrements are bugs; don't underflow into "huge pending".
+    EXTERNAL_PENDING.store(0, Ordering::Release);
+  }
+  // Wake the event loop so it can re-check `has_external_pending` and avoid sleeping forever when
+  // the last external task completes without queueing a microtask.
+  global().loop_.wake();
+}
 
 pub type TaskFn = extern "C" fn(*mut u8);
 pub type TaskDropFn = extern "C" fn(*mut u8);
@@ -276,9 +306,9 @@ pub(crate) fn wait_for_work() {
 /// - timers
 /// - I/O watchers
 /// - wake eventfd counter
+/// - external pending count
 ///
-/// It does **not** tear down any background worker threads (the current runtime
-/// doesn't spawn any; this is future-proofing for when it does).
+/// It does **not** tear down any background worker threads.
 pub(crate) fn clear_state_for_tests() {
   // If another thread is currently blocked in the reactor poll inside the event loop, ensure it wakes up
   // so we don't block indefinitely on the poll lock during test cleanup.
@@ -291,6 +321,7 @@ pub(crate) fn clear_state_for_tests() {
   // Tests should be isolated from configuration toggles.
   STRICT_AWAIT_YIELDS.store(false, Ordering::Release);
   crate::async_runtime::reset_for_tests();
+  EXTERNAL_PENDING.store(0, Ordering::Release);
 }
 
 // -----------------------------------------------------------------------------

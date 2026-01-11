@@ -934,6 +934,7 @@ mod tests {
       _pin_interned,
       _spawn,
       _join,
+      _spawn_promise,
       _for,
       _spawn_promise,
       _spawn_blocking,

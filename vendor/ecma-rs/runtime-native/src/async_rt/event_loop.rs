@@ -301,6 +301,9 @@ impl EventLoop {
     if self.timers.has_timers() {
       return true;
     }
+    if crate::async_rt::has_external_pending() {
+      return true;
+    }
     if !self.microtasks.lock().unwrap().is_empty() {
       return true;
     }
@@ -359,7 +362,10 @@ impl EventLoop {
       }
 
       // No ready work.
-      if !self.reactor.has_watchers() && !self.timers.has_timers() {
+      if !self.reactor.has_watchers()
+        && !self.timers.has_timers()
+        && !crate::async_rt::has_external_pending()
+      {
         // Even when no microtasks were queued, a "microtask checkpoint" is still an observable
         // boundary for promise rejection tracking.
         crate::unhandled_rejection::microtask_checkpoint();
