@@ -445,6 +445,58 @@ fn gc_result_for_gc_pointer_return_with_live_gc_pointer() {
 }
 
 #[test]
+fn gc_pointer_call_argument_is_in_gc_live_even_if_dead_after_call() {
+  // A GC pointer that is *only* passed as an argument to a safepoint call (and
+  // not used afterwards) still must be included in the `"gc-live"` list so the
+  // GC can find/relocate it during the call.
+  let before = r#"
+  declare void @callee(ptr addrspace(1))
+
+  define void @test(ptr addrspace(1) %obj) gc "coreclr" {
+  entry:
+    call void @callee(ptr addrspace(1) %obj)
+    ret void
+  }
+  "#;
+
+  let after = rewritten_ir(before);
+  let func = function_block(&after, "@test");
+
+  let statepoint_line = func
+    .lines()
+    .find(|l| l.contains("elementtype(void (ptr addrspace(1))) @callee"))
+    .unwrap_or_else(|| panic!("missing @callee statepoint call in function:\n{func}"));
+  assert!(
+    statepoint_line.contains("i32 1, i32 0, ptr addrspace(1) %obj"),
+    "expected statepoint call to include 1 call arg `%obj`, got:\n{statepoint_line}\n\n{func}"
+  );
+
+  let statepoint_token = assigned_ssa(statepoint_line)
+    .unwrap_or_else(|| panic!("unexpected statepoint line (not an assignment): {statepoint_line}"));
+
+  let gc_live_vars = parse_gc_live_vars(statepoint_line);
+  assert_eq!(
+    gc_live_vars,
+    vec!["%obj".to_string()],
+    "expected gc-live to contain only %obj, got {gc_live_vars:?}\n\n{func}"
+  );
+
+  let reloc_line = expect_relocate_line(&func, "%obj", "%obj");
+  assert!(
+    reloc_line.contains(&format!("token {statepoint_token}")),
+    "expected gc.relocate to reference statepoint token {statepoint_token}, got:\n{reloc_line}\n\n{func}"
+  );
+
+  let (base_idx, derived_idx) =
+    parse_relocate_indices(reloc_line).unwrap_or_else(|| panic!("failed to parse relocate indices: {reloc_line}"));
+  assert_eq!(
+    (base_idx, derived_idx),
+    (0, 0),
+    "expected base/derived indices (0,0) for %obj relocation, got ({base_idx},{derived_idx})\n\n{func}"
+  );
+}
+
+#[test]
 fn gc_result_pointer_used_across_later_safepoint_is_relocated() {
   // Important real-world pattern: allocate an object (pointer result from a
   // statepoint) and then keep it live across a later safepoint call.

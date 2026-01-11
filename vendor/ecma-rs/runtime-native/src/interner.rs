@@ -53,6 +53,12 @@ const INTERNED_PREFIX_SIZE: usize = std::mem::size_of::<ObjHeader>() + std::mem:
 
 static NO_PTR_OFFSETS: [u32; 0] = [];
 
+#[inline]
+fn align_up(addr: usize, align: usize) -> usize {
+  debug_assert!(align.is_power_of_two());
+  (addr + (align - 1)) & !(align - 1)
+}
+
 /// We allocate interned strings as *fixed-size* GC objects by rounding their inline byte storage up
 /// to a bucketed capacity (powers of two).
 ///
@@ -66,7 +72,7 @@ fn interned_object_size_for_len(len: usize) -> usize {
     len.next_power_of_two().max(16)
   };
 
-  gc::align_up(INTERNED_PREFIX_SIZE + cap, std::mem::align_of::<ObjHeader>())
+  align_up(INTERNED_PREFIX_SIZE + cap, std::mem::align_of::<ObjHeader>())
 }
 
 static INTERNED_DESC_CACHE: Lazy<GcAwareMutex<AHashMap<usize, &'static TypeDescriptor>>> =
