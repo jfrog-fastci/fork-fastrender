@@ -194,6 +194,9 @@ pub(crate) fn parse_svg_length(value: &str) -> Option<SvgLength> {
       number * (96.0 / 2.54)
     } else if unit.eq_ignore_ascii_case("mm") {
       number * (96.0 / 25.4)
+    } else if unit.eq_ignore_ascii_case("q") {
+      // CSS Values & Units: 1Q = 1/4mm.
+      number * (96.0 / 25.4) * 0.25
     } else if unit.eq_ignore_ascii_case("pt") {
       number * (96.0 / 72.0)
     } else if unit.eq_ignore_ascii_case("pc") {
@@ -228,6 +231,8 @@ pub(crate) fn parse_svg_length_px_with_font(
       number * (96.0 / 2.54)
     } else if unit.eq_ignore_ascii_case("mm") {
       number * (96.0 / 25.4)
+    } else if unit.eq_ignore_ascii_case("q") {
+      number * (96.0 / 25.4) * 0.25
     } else if unit.eq_ignore_ascii_case("pt") {
       number * (96.0 / 72.0)
     } else if unit.eq_ignore_ascii_case("pc") {
@@ -647,5 +652,39 @@ mod tests {
     assert_eq!(rem_only.width, Some(36.0));
     assert_eq!(rem_only.height, Some(36.0));
     assert_eq!(rem_only.aspect_ratio, Some(1.0));
+  }
+
+  #[test]
+  fn svg_length_supports_q_unit() {
+    let mm_px = 96.0 / 25.4;
+    match parse_svg_length("4Q") {
+      Some(super::SvgLength::Px(px)) => assert!((px - mm_px).abs() < 0.001),
+      other => panic!("expected 4Q to parse to Px, got {other:?}"),
+    }
+    match parse_svg_length("8q") {
+      Some(super::SvgLength::Px(px)) => assert!((px - (2.0 * mm_px)).abs() < 0.001),
+      other => panic!("expected 8q to parse to Px, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_intrinsic_dimensions_resolve_q() {
+    let mm_px = 96.0 / 25.4;
+    let dims = svg_intrinsic_dimensions_from_attributes(
+      Some("4Q"),
+      Some("8Q"),
+      Some("0 0 10 10"),
+      None,
+      16.0,
+      16.0,
+    );
+    let width = dims.width.expect("width");
+    let height = dims.height.expect("height");
+    assert!((width - mm_px).abs() < 0.001, "width {width} != {mm_px}");
+    assert!(
+      (height - (2.0 * mm_px)).abs() < 0.001,
+      "height {height} != {}",
+      2.0 * mm_px
+    );
   }
 }
