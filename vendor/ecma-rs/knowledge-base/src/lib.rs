@@ -2054,6 +2054,30 @@ console.log:
   }
 
   #[test]
+  fn ecosystem_aliases_resolve_to_canonical_entries() {
+    let kb = KnowledgeBase::load_default().expect("load bundled knowledge base");
+    kb.validate().expect("validate knowledge base");
+
+    // Lodash: per-method import entrypoints.
+    assert_eq!(kb.canonical_name("lodash/map"), Some("lodash.map"));
+    assert_eq!(kb.canonical_name("lodash-es/map"), Some("lodash.map"));
+    assert_eq!(kb.canonical_name("lodash-es.map"), Some("lodash.map"));
+    assert_eq!(kb.canonical_name("lodash.clonedeep"), Some("lodash.cloneDeep"));
+    assert_eq!(kb.canonical_name("lodash.camelcase"), Some("lodash.camelCase"));
+    assert_eq!(kb.canonical_name("lodash.each"), Some("lodash.forEach"));
+
+    // RxJS: `rxjs/operators` entrypoints and inherited prototype method aliases.
+    assert_eq!(kb.canonical_name("rxjs/operators/map"), Some("rxjs.operators.map"));
+    assert_eq!(kb.canonical_name("rxjs/operators.map"), Some("rxjs.operators.map"));
+    assert_eq!(kb.canonical_name("rxjs/interval"), Some("rxjs.interval"));
+    assert_eq!(kb.canonical_name("rxjs/Subject"), Some("rxjs.Subject"));
+    assert_eq!(
+      kb.canonical_name("rxjs.Subject.prototype.subscribe"),
+      Some("rxjs.Observable.prototype.subscribe")
+    );
+  }
+
+  #[test]
   fn properties_support_non_string_values() {
     let yaml = r#"
 name: x
