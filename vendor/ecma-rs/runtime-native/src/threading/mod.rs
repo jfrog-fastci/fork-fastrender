@@ -77,6 +77,12 @@ pub fn set_parked(parked: bool) {
   // resume mutator work without observing the request.
   if !parked && is_registered {
     safepoint_poll();
+    // `safepoint_poll` is a no-op on the fast path when no stop-the-world is active, and does not
+    // update `safepoint_epoch_observed`. For coordinator-side post-resume barriers (used by tests
+    // and GC plumbing) we still want threads that just unparked to publish that they have observed
+    // the current (even) epoch.
+    registry::set_current_thread_safepoint_epoch_observed(safepoint::current_epoch());
+    safepoint::notify_state_change();
   }
 }
 

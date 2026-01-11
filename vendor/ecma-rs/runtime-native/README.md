@@ -356,6 +356,16 @@ Pool sizing:
 - Override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` to a positive integer before first use
   (`RT_BLOCKING_THREADS` is also supported as a legacy alias).
 
+## C ABI notes
+
+The stable C ABI surface is declared in [`include/runtime_native.h`](include/runtime_native.h).
+
+### Shape IDs (`RtShapeId`)
+
+The runtime does not take the compiler's semantic `ShapeId` (`u128`) directly. Instead, compiled
+code passes a compact `RtShapeId` (`uint32_t`) which is a runtime-local index into the shape
+descriptor table registered via `rt_register_shape_table`.
+
 ## Legacy coroutine ABI (`RtCoroutineHeader`)
 
 Generated coroutine frames are `#[repr(C)]` structs whose **first field** (prefix) is

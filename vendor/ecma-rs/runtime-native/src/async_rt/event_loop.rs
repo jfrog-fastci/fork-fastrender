@@ -41,20 +41,23 @@ pub struct EventLoop {
   clock: ArcSwap<ClockState>,
 }
 
-struct ParkedGuard;
+struct ParkedGuard(bool);
 
 impl ParkedGuard {
   #[inline]
-  fn new() -> Self {
-    threading::set_parked(true);
-    Self
+  fn new(parked: bool) -> Self {
+    if parked {
+      threading::set_parked(true);
+    }
+    Self(parked)
   }
 }
 
 impl Drop for ParkedGuard {
-  #[inline]
   fn drop(&mut self) {
-    threading::set_parked(false);
+    if self.0 {
+      threading::set_parked(false);
+    }
   }
 }
 
@@ -457,17 +460,18 @@ impl EventLoop {
       // Poll safepoints immediately before and after the reactor wait syscall so stop-the-world
       // requests can interrupt the event loop promptly.
       threading::safepoint_poll();
-      // While blocked in the reactor wait syscall, the event loop is *parked* inside the runtime and should be
-      // treated as quiescent by stop-the-world GC (no untracked GC pointers are expected on the
-      // stack at this point).
-      let parked = if timeout_ms != 0 {
-        Some(ParkedGuard::new())
-      } else {
-        None
+      let ready = {
+        // While blocked in the reactor wait syscall, the event loop is idle inside the runtime
+        // scheduler and can be treated as quiescent by stop-the-world GC coordination (no untracked
+        // GC pointers are expected on the stack at this point).
+        //
+        // Keep the thread marked as parked until after the post-wait safepoint poll, so we don't
+        // resume mutator work without first observing any in-progress GC epoch.
+        let _parked = ParkedGuard::new(timeout_ms != 0);
+        let ready = self.reactor.wait(timeout_ms).expect("reactor wait failed");
+        threading::safepoint_poll();
+        ready
       };
-      let ready = self.reactor.wait(timeout_ms).expect("reactor wait failed");
-      threading::safepoint_poll();
-      drop(parked);
       if !ready.is_empty() {
         let mut mq = self.macrotasks.lock();
         if async_runtime::has_error() {
@@ -525,7 +529,7 @@ impl EventLoop {
 
       threading::safepoint_poll();
       let parked = if timeout_ms != 0 {
-        Some(ParkedGuard::new())
+        Some(ParkedGuard::new(true))
       } else {
         None
       };

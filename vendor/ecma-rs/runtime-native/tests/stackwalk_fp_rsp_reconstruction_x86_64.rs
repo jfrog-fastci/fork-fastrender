@@ -48,7 +48,7 @@ fn rsp_is_derived_from_callee_fp_for_rsp_based_locations() {
   // Model a consistent caller/callee FP relationship:
   //
   // - The stack walker derives the caller's callsite SP from the *callee* FP:
-  //   `caller_sp_callsite = callee_fp + 16`.
+  //   `caller_sp_callsite = callee_fp + 16` (return address + saved RBP).
   // - For a frame-pointer prologue, the caller's FP is related to its callsite SP
   //   by: `caller_fp = caller_sp_callsite + stack_size - 8`.
   //

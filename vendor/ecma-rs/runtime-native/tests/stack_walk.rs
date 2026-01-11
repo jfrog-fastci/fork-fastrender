@@ -55,19 +55,19 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
     base_slot_addr.write(0xAAA0);
     derived_slot_addr.write(0xAAA8);
 
-    let stackmaps = StackMaps::parse(&minimal_stackmap_section(return_address as u32)).unwrap();
-    let roots = StackRootEnumerator::new(&stackmaps);
+      let stackmaps = StackMaps::parse(&minimal_stackmap_section(return_address as u32)).unwrap();
+      let roots = StackRootEnumerator::new(&stackmaps);
 
-    let mut seen = vec![];
-    let bounds = StackBounds::new(
-      base as u64,
-      (base + stack.0.len() * std::mem::size_of::<usize>()) as u64,
-    )
-    .unwrap();
-    roots
-      .visit_reloc_pairs(callee_fp, Some(bounds), |pair| {
-        seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
-      })
+      let mut seen = vec![];
+      let bounds = StackBounds::new(
+        base as u64,
+        (base + stack.0.len() * std::mem::size_of::<usize>()) as u64,
+      )
+      .unwrap();
+      roots
+        .visit_reloc_pairs(callee_fp, Some(bounds), |pair| {
+          seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
+        })
       .unwrap();
 
     assert_eq!(seen, vec![(base_slot_addr as usize, derived_slot_addr as usize)]);

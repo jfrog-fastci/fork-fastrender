@@ -96,7 +96,7 @@ impl Drop for GcSafeGuard {
       epoch = safepoint::current_epoch();
     }
 
-    // Publish that we've observed the resumed epoch before clearing NativeSafe.
+    // Publish that we've observed the resumed (even) epoch before clearing NativeSafe.
     //
     // Threads in a GC-safe region are treated as "already quiescent" by the STW coordinator, so they
     // may not run the cooperative safepoint slow path that normally updates the observed epoch on

@@ -356,6 +356,7 @@ int main(void) {
   volatile int64_t a = sp_a((void*)0x1000, (void*)0x2000);
   volatile int64_t b = sp_b((void*)0x3000, (void*)0x4000);
   return (int)(a + b + g_data);
+  return (int)(a + b + g_data);
 }
 "#;
 

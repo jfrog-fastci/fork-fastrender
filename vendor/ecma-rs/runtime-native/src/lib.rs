@@ -762,8 +762,14 @@ mod tests {
     // Keep these strings in sync with `include/runtime_native.h` to ensure we
     // don't forget to update the header when changing the exported ABI.
     const DECLS: &[&str] = &[
+      "typedef uint32_t RtShapeId;",
+      "typedef struct RtShapeDescriptor {",
+      "typedef uint32_t InternedId;",
+      "typedef uint64_t TaskId;",
+      "typedef void* ValueRef;",
       "typedef uint8_t* GcPtr;",
       "typedef uint8_t** GcHandle;",
+      "typedef struct StringRef {",
       "void rt_thread_init(uint32_t kind);",
       "void rt_thread_deinit(void);",
       "uint64_t rt_thread_register(RtThreadKind kind);",
@@ -1447,6 +1453,94 @@ mod tests {
   fn array_size_overflow_is_detected() {
     assert!(array::decode_rt_array_elem_size(array::RT_ARRAY_ELEM_PTR_FLAG | 4).is_none());
     assert!(array::checked_total_bytes(usize::MAX, 16).is_none());
+  }
+
+  #[test]
+  fn c_header_compiles_as_c() {
+    use std::process::Command;
+
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let include_dir = manifest_dir.join("include");
+
+    let tmp_dir = std::env::temp_dir().join(format!(
+      "runtime_native_header_smoke_{}",
+      std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+
+    let c_path = tmp_dir.join("header_smoke.c");
+    let obj_path = tmp_dir.join("header_smoke.o");
+
+    std::fs::write(
+      &c_path,
+      br#"
+#include "runtime_native.h"
+
+static void task(uint8_t* data) { (void)data; }
+static void on_settle(uint8_t* data) { (void)data; }
+static void blocking_task(uint8_t* data, LegacyPromiseRef promise) {
+  (void)data;
+  rt_promise_resolve_legacy(promise, (ValueRef)0);
+}
+
+int main(void) {
+  RtShapeId shape = 0;
+  uint8_t* p = rt_alloc(1, shape);
+  uint8_t* a = rt_alloc_array(2, 4);
+  (void)p;
+  (void)a;
+
+  StringRef s = rt_string_concat((const uint8_t*)"foo", 3, (const uint8_t*)"bar", 3);
+  InternedId id = rt_string_intern(s.ptr, s.len);
+  (void)id;
+
+  TaskId t = rt_parallel_spawn(task, NULL);
+  rt_parallel_join(&t, 1);
+
+  // Native promise/coroutine ABI.
+  PromiseRef native_p = (PromiseRef)0;
+  rt_promise_init(native_p);
+  rt_promise_fulfill(native_p);
+  rt_promise_reject(native_p);
+  (void)rt_async_spawn((CoroutineId)0);
+  (void)rt_async_poll();
+
+  // Legacy promise/coroutine ABI (still used by runtime-native tests/utilities).
+  LegacyPromiseRef pr = rt_promise_new_legacy();
+  rt_promise_then_legacy(pr, on_settle, NULL);
+  rt_promise_resolve_legacy(pr, (ValueRef)0);
+  rt_promise_reject_legacy(pr, (ValueRef)0);
+
+  LegacyPromiseRef blocking = rt_spawn_blocking(blocking_task, NULL);
+  rt_promise_then_legacy(blocking, on_settle, NULL);
+
+  return 0;
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(std::env::var("CC").unwrap_or_else(|_| "cc".to_string()));
+    cmd
+      .arg("-std=c11")
+      .arg("-Wall")
+      .arg("-Wextra")
+      .arg("-Werror")
+      .arg("-c")
+      .arg(&c_path)
+      .arg(format!("-I{}", include_dir.display()))
+      .arg("-o")
+      .arg(&obj_path);
+
+    let output = cmd.output().unwrap_or_else(|e| panic!("failed to spawn C compiler: {e}"));
+    if !output.status.success() {
+      panic!(
+        "C header smoke compile failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+      );
+    }
   }
 
   #[derive(Default)]
