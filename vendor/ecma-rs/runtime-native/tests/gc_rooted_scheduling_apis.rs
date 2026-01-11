@@ -15,10 +15,13 @@ use runtime_native::threading::ThreadKind;
 use runtime_native::GcHeap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicU64;
 
 static OBSERVED: AtomicUsize = AtomicUsize::new(0);
 static DROPPED: AtomicUsize = AtomicUsize::new(0);
 static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+static TIMER_ID: AtomicU64 = AtomicU64::new(0);
+static WATCHER_ID: AtomicU64 = AtomicU64::new(0);
 
 extern "C" fn record_ptr(data: *mut u8) {
   OBSERVED.store(data as usize, Ordering::SeqCst);
@@ -31,6 +34,18 @@ extern "C" fn record_drop(data: *mut u8) {
 
 extern "C" fn record_ptr_io(_events: u32, data: *mut u8) {
   record_ptr(data);
+}
+
+extern "C" fn record_ptr_io_and_unregister(_events: u32, data: *mut u8) {
+  record_ptr(data);
+  let id = WATCHER_ID.load(Ordering::SeqCst);
+  runtime_native::rt_io_unregister(id);
+}
+
+extern "C" fn record_ptr_and_clear_timer(data: *mut u8) {
+  record_ptr(data);
+  let id = TIMER_ID.load(Ordering::SeqCst);
+  runtime_native::rt_clear_timer(id);
 }
 
 #[repr(C)]
@@ -254,6 +269,39 @@ fn set_interval_handle_keeps_userdata_rooted_until_cleared() {
 }
 
 #[test]
+fn clear_interval_handle_with_drop_inside_callback_frees_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+
+  let timer = runtime_native::rt_set_interval_handle_with_drop(record_ptr_and_clear_timer, h, record_drop, 0);
+  TIMER_ID.store(timer, Ordering::SeqCst);
+
+  simulate_relocation(obj1, obj2);
+
+  while runtime_native::rt_async_poll_legacy() {}
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+  assert!(
+    runtime_native::rt_handle_load(h).is_null(),
+    "runtime must free the consumed handle after the interval clears itself"
+  );
+
+  threading::unregister_current_thread();
+}
+
+#[test]
 fn clear_interval_handle_with_drop_invokes_drop_hook_and_frees_handle() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
@@ -372,6 +420,58 @@ fn io_register_handle_with_drop_invokes_drop_hook_on_unregister() {
     runtime_native::rt_handle_load(h).is_null(),
     "runtime must free the consumed handle after the watcher is unregistered"
   );
+
+  drop(rfd);
+  drop(wfd);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn io_register_handle_with_drop_can_unregister_inside_callback() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+
+  let (rfd, wfd) = pipe_nonblocking();
+
+  let h = runtime_native::rt_handle_alloc(obj1);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+
+  let watcher = runtime_native::rt_io_register_handle_with_drop(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io_and_unregister,
+    h,
+    record_drop,
+  );
+  assert_ne!(watcher, 0);
+  WATCHER_ID.store(watcher, Ordering::SeqCst);
+
+  simulate_relocation(obj1, obj2);
+
+  let byte = [0x2au8];
+  let rc = unsafe { libc::write(wfd.as_raw_fd(), byte.as_ptr().cast(), 1) };
+  assert_eq!(rc, 1, "write to pipe failed: {}", std::io::Error::last_os_error());
+
+  runtime_native::rt_async_poll_legacy();
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+  assert!(
+    runtime_native::rt_handle_load(h).is_null(),
+    "runtime must free the consumed handle after unregistering from within the callback"
+  );
+
+  // Drain any wakeups triggered by unregistering.
+  while runtime_native::rt_async_poll_legacy() {}
 
   drop(rfd);
   drop(wfd);
