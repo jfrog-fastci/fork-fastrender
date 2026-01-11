@@ -143,3 +143,52 @@ fn tsconfig_paths_are_resolved() {
   let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
   assert_eq!(status.code(), Some(42));
 }
+
+#[test]
+fn tsconfig_types_are_loaded_from_type_roots() {
+  let tmp = TempDir::new().unwrap();
+
+  let types_dir = tmp.path().join("types").join("mypkg");
+  fs::create_dir_all(&types_dir).unwrap();
+  fs::write(
+    types_dir.join("index.d.ts"),
+    "declare interface FromTypes { x: number }\n",
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    "type T = FromTypes;\nexport function main(): number { return 0; }\n",
+  )
+  .unwrap();
+
+  let tsconfig = tmp.path().join("tsconfig.json");
+  fs::write(
+    &tsconfig,
+    r#"{
+  "compilerOptions": {
+    "typeRoots": ["./types"],
+    "types": ["mypkg"]
+  },
+  "files": ["entry.ts"]
+}
+"#,
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("--project")
+    .arg(&tsconfig)
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(0));
+}

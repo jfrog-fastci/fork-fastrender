@@ -1,4 +1,5 @@
 use crate::tsconfig;
+use crate::type_libs;
 use diagnostics::paths::normalize_fs_path;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -34,6 +35,7 @@ pub struct DiskHost {
   resolver: ModuleResolver,
   compiler_options: CompilerOptions,
   lib_files: Vec<LibFile>,
+  type_roots: Vec<PathBuf>,
 }
 
 #[derive(Default, Clone)]
@@ -50,6 +52,7 @@ impl DiskHost {
     resolver: ModuleResolver,
     compiler_options: CompilerOptions,
     lib_files: Vec<LibFile>,
+    type_roots: Vec<PathBuf>,
   ) -> Result<(Self, Vec<FileKey>), String> {
     let mut state = DiskState::default();
     let mut roots = Vec::new();
@@ -66,6 +69,7 @@ impl DiskHost {
         resolver,
         compiler_options,
         lib_files,
+        type_roots,
       },
       roots,
     ))
@@ -121,9 +125,17 @@ impl Host for DiskHost {
     let base = self.path_for_key(from).or_else(|| {
       let candidate = PathBuf::from(from.as_str());
       candidate.is_file().then_some(candidate)
-    })?;
+    });
 
-    let resolved = self.resolver.resolve(&base, specifier)?;
+    if let Some(base) = base {
+      if let Some(resolved) = self.resolver.resolve(&base, specifier) {
+        let resolved = canonicalize_path(&resolved).unwrap_or(resolved);
+        let mut state = self.state.lock().unwrap();
+        return Some(state.intern_path(resolved));
+      }
+    }
+
+    let resolved = type_libs::resolve_at_types_entry(&self.type_roots, specifier)?;
     let resolved = canonicalize_path(&resolved).unwrap_or(resolved);
     let mut state = self.state.lock().unwrap();
     Some(state.intern_path(resolved))
@@ -273,4 +285,3 @@ fn file_kind_for(path: &Path) -> FileKind {
 
   FileKind::Ts
 }
-

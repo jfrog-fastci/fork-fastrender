@@ -16,6 +16,9 @@ mod tsconfig;
 #[path = "../host.rs"]
 mod host;
 
+#[path = "../type_libs.rs"]
+mod type_libs;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Compile TypeScript to native executables via native-js (LLVM)")]
 struct Cli {
@@ -185,10 +188,25 @@ fn load_program(
     Some(path) => Some(tsconfig::load_project_config(path)?),
     None => None,
   };
-  let compiler_options = project
+  let mut compiler_options = project
     .as_ref()
     .map(|cfg| cfg.compiler_options.clone())
     .unwrap_or_default();
+  let (type_roots, extra_libs) = match project.as_ref() {
+    Some(cfg) => {
+      let type_roots = cfg
+        .type_roots
+        .clone()
+        .unwrap_or_else(|| type_libs::default_type_roots(&cfg.root_dir));
+      let libs = type_libs::load_type_libs(cfg, &compiler_options, &type_roots)?;
+      // The CLI loads `typeRoots`/`types` packages as host-provided libs (ambient `.d.ts` inputs),
+      // matching `tsc` more closely. Clear the compiler option so `typecheck-ts` doesn't also try
+      // to resolve them via module resolution.
+      compiler_options.types.clear();
+      (type_roots, libs)
+    }
+    None => (Vec::new(), Vec::new()),
+  };
   let resolve_options = ResolveOptions {
     node_modules: true,
     package_imports: true,
@@ -210,7 +228,8 @@ fn load_program(
     tsconfig: project.as_ref().and_then(host::TsconfigResolver::from_project),
   };
 
-  let (host, roots) = host::DiskHost::new(&root_paths, resolver, compiler_options, Vec::new())?;
+  let (host, roots) =
+    host::DiskHost::new(&root_paths, resolver, compiler_options, extra_libs, type_roots)?;
   let program = Program::new(host.clone(), roots);
 
   let entry_key = host
