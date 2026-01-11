@@ -260,6 +260,12 @@ pub static RT_GC_EPOCH: u64;
 pub fn rt_gc_poll() -> bool;
 pub fn rt_gc_safepoint_slow(epoch: u64);
 pub fn rt_gc_safepoint();
+/// Keep a GC object alive until after the last use of a raw pointer derived from it.
+///
+/// This is the native equivalent of Go's `runtime.KeepAlive`. It is used when compiled code
+/// derives a non-GC pointer (e.g. an `ArrayBuffer` backing-store `uint8_t*`) from a GC-managed
+/// header and then may hit a safepoint/GC before the last raw-pointer use.
+pub fn rt_keep_alive_gc_ref(gc_ref: *mut u8);
 pub fn rt_write_barrier(obj: *mut u8, field: *mut u8);
 
 // Temporary roots (shadow stack for Rust/FFI code)
@@ -327,6 +333,7 @@ generation strategy.
 | `rt_gc_safepoint_relocate_h` | MayGC | Handle-based helper: safepoint + reload `*slot` for moving-GC safe runtime calls. |
 | `rt_root_push` | NoGC | Register an addressable root slot on the current thread's shadow stack. |
 | `rt_root_pop` | NoGC | Pop a root slot (must be called in strict LIFO order). |
+| `rt_keep_alive_gc_ref` | NoGC | Extends liveness of a GC reference until a specific program point (prevents UAF for derived raw pointers like backing-store `uint8_t*`). |
 | `rt_write_barrier` | NoGC | Must not allocate or safepoint; safe to call without statepoint. |
 | `rt_gc_collect` | MayGC | Explicit collection trigger (debug/forcing). |
 | `rt_string_concat` | MayGC | Allocates a new string buffer. |
