@@ -72,9 +72,7 @@ fn c_can_link_and_call_runtime_native() {
 
   assert!(build.success(), "cargo build failed: {build:?}");
 
-  let staticlib = build_target_dir
-    .join("release")
-    .join("libruntime_native.a");
+  let staticlib = build_target_dir.join("release").join("libruntime_native.a");
   assert!(
     staticlib.exists(),
     "missing staticlib at {} after build",
@@ -107,6 +105,16 @@ int main(void) {
   let include_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
   let stackmaps_ld = Path::new(env!("CARGO_MANIFEST_DIR")).join("stackmaps.ld");
 
+  // On Linux, `runtime-native` uses a linker-script based mechanism to expose the
+  // in-memory `.llvm_stackmaps` section via `__llvm_stackmaps_start/end` symbols.
+  // When linking from C directly (bypassing Cargo/rustc), we must pass the same
+  // script to the linker.
+  let stackmaps_ld = if cfg!(target_os = "linux") {
+    Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("stackmaps.ld"))
+  } else {
+    None
+  };
+
   let compile = Command::new(cc)
     .arg("-std=c99")
     .arg("-I")
@@ -118,6 +126,11 @@ int main(void) {
     .arg(format!("-Wl,-T,{}", stackmaps_ld.display()))
     .arg(&c_path)
     .arg(&staticlib)
+    .args(
+      stackmaps_ld
+        .as_ref()
+        .map(|p| format!("-Wl,-T,{}", p.display())),
+    )
     .arg("-o")
     .arg(&bin_path)
     .status()

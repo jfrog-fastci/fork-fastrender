@@ -112,3 +112,35 @@ fn multithread_allocations_do_not_overlap() {
     );
   }
 }
+
+#[test]
+fn large_alignment_uses_absolute_address() {
+  let _rt = TestRuntimeGuard::new();
+
+  // Choose a large alignment that is unlikely to match `mmap`'s base address
+  // alignment, so this test catches allocators that align the bump *offset*
+  // rather than the resulting absolute pointer address.
+  let align = 1usize << 20; // 1 MiB
+
+  // Try a few times to get a base address that's not already aligned.
+  for _ in 0..64 {
+    let nursery = NurserySpace::new(4 * 1024 * 1024).unwrap();
+    if (nursery.start() as usize) % align == 0 {
+      continue;
+    }
+
+    let mut tn = ThreadNursery::new();
+    let ptr = tn.alloc(8, align, &nursery).unwrap();
+    assert_eq!((ptr as usize) % align, 0);
+    assert!(nursery.contains(ptr));
+    return;
+  }
+
+  // Extremely unlikely fallback: still validate correctness even if we got
+  // "lucky" base alignment every time.
+  let nursery = NurserySpace::new(4 * 1024 * 1024).unwrap();
+  let mut tn = ThreadNursery::new();
+  let ptr = tn.alloc(8, align, &nursery).unwrap();
+  assert_eq!((ptr as usize) % align, 0);
+  assert!(nursery.contains(ptr));
+}

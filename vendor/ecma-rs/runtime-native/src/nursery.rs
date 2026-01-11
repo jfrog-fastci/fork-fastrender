@@ -189,10 +189,18 @@ impl NurserySpace {
     debug_assert!(is_pow2(align));
 
     let align = align.max(1);
+    let align_mask = align - 1;
+    let base = self.start as usize;
 
     loop {
       let current = self.bump_offset.load(Ordering::Relaxed);
-      let aligned = align_up_usize(current, align);
+      let current_addr = base.checked_add(current)?;
+      let misalign = current_addr & align_mask;
+      let aligned = if misalign == 0 {
+        current
+      } else {
+        current.checked_add(align - misalign)?
+      };
       let new = aligned.checked_add(size)?;
       if new > self.size_bytes {
         return None;
