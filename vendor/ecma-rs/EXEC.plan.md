@@ -90,7 +90,9 @@ cargo test
 ```
 
 For ecma-rs workspace builds (this nested workspace), use `bash vendor/ecma-rs/scripts/cargo_agent.sh ...`.
-It `cd`s into `vendor/ecma-rs/` and delegates to the top-level `scripts/cargo_agent.sh` wrapper, which enforces:
+If you are already in `vendor/ecma-rs/`, you can instead run `bash scripts/cargo_agent.sh ...`.
+
+This wrapper `cd`s into `vendor/ecma-rs/` and delegates to the top-level `scripts/cargo_agent.sh` wrapper, which enforces:
 - Slot-based concurrency limiting (prevents cargo stampedes)
 - Per-command RAM cap via `RLIMIT_AS` (default 64GB)
 - Reasonable test thread counts

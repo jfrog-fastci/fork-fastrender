@@ -62,7 +62,7 @@ bash vendor/ecma-rs/scripts/cargo_agent.sh test -p effect-js --lib
 Or, if you're already inside `vendor/ecma-rs/`:
 
 ```bash
-bash ../../scripts/cargo_agent.sh test -p effect-js --lib
+bash scripts/cargo_agent.sh test -p effect-js --lib
 ```
 
 `just ci` runs:
