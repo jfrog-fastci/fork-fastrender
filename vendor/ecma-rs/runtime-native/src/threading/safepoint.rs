@@ -123,7 +123,10 @@ fn gc_wakers() -> &'static Mutex<Vec<fn()>> {
 /// This is used to wake threads blocked in external wait primitives (e.g.
 /// the async reactor wait syscall inside `rt_async_poll_legacy` / `rt_async_wait`).
 pub fn register_gc_waker(waker: fn()) {
-  let mut wakers = gc_wakers().lock().unwrap();
+  // `gc_wakers` protects a best-effort list of wake callbacks; poisoning is not meaningful here
+  // (a panic while registering wakers shouldn't permanently prevent GC coordination from waking
+  // blocked threads).
+  let mut wakers = gc_wakers().lock().unwrap_or_else(|e| e.into_inner());
   if wakers.iter().any(|&w| w as usize == waker as usize) {
     return;
   }
@@ -134,7 +137,12 @@ fn wake_all_gc_wakers() {
   // Avoid allocating during GC coordination; copy out one function pointer at a time.
   let mut idx = 0usize;
   loop {
-    let Some(waker) = gc_wakers().lock().unwrap().get(idx).copied() else {
+    let Some(waker) = gc_wakers()
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .get(idx)
+      .copied()
+    else {
       break;
     };
     waker();
@@ -172,13 +180,14 @@ pub(crate) fn notify_state_change() {
 /// active.
 pub(crate) fn wait_while_stop_the_world() {
   let coord = coordinator();
-  let mut guard = coord.cv_mutex.lock().unwrap();
+  // `cv_mutex` only exists to synchronize notify/wait transitions; poisoning is irrelevant.
+  let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
   loop {
     let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     if epoch & 1 == 0 {
       return;
     }
-    guard = coord.cv.wait(guard).unwrap();
+    guard = coord.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
   }
 }
 
@@ -197,9 +206,10 @@ pub(crate) fn gc_world_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn wait_while_epoch_is(expected_epoch: u64) {
   let coord = coordinator();
-  let mut guard = coord.cv_mutex.lock().unwrap();
+  // `cv_mutex` only exists to synchronize notify/wait transitions; poisoning is irrelevant.
+  let mut guard = coord.cv_mutex.lock().unwrap_or_else(|e| e.into_inner());
   while RT_GC_EPOCH.load(Ordering::Acquire) == expected_epoch {
-    guard = coord.cv.wait(guard).unwrap();
+    guard = coord.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
   }
 }
 
