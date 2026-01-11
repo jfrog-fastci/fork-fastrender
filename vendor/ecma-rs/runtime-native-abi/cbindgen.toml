@@ -157,6 +157,7 @@ include = [
   "rt_coro_await_value_legacy",
   "RT_NATIVE_ABI_VERSION",
   "RT_ASYNC_ABI_VERSION",
+  "CORO_FLAG_RUNTIME_OWNS_FRAME",
   "RT_PTR_SIZE_BYTES",
   "RT_PTR_ALIGN_BYTES",
   "RT_SHAPE_ID_INVALID_RAW",

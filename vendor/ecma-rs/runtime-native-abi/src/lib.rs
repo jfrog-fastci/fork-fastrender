@@ -35,6 +35,12 @@ pub const RT_NATIVE_ABI_VERSION: u32 = 0;
 /// - `runtime-native/src/async_abi.rs` (`RT_ASYNC_ABI_VERSION`)
 pub const RT_ASYNC_ABI_VERSION: u32 = 1;
 
+/// `Coroutine.flags` bitfield: when set, the runtime owns the coroutine frame and will call
+/// `vtable->destroy(coro)` exactly once after completion or cancellation.
+///
+/// Must match `CORO_FLAG_RUNTIME_OWNS_FRAME` in `runtime-native/include/runtime_native.h`.
+pub const CORO_FLAG_RUNTIME_OWNS_FRAME: u32 = 1 << 0;
+
 // Pointer/usize assumptions (the ABI is currently 64-bit only).
 pub const RT_PTR_SIZE_BYTES: usize = 8;
 pub const RT_PTR_ALIGN_BYTES: usize = 8;
@@ -684,6 +690,7 @@ mod tests {
       "RT_CORO_PENDING",
       "RT_CORO_YIELD",
       "RT_ASYNC_ABI_VERSION",
+      "CORO_FLAG_RUNTIME_OWNS_FRAME",
     ] {
       assert!(header.contains(c), "missing constant `{c}` in generated header");
     }
