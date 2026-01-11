@@ -390,6 +390,11 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
   // Direct `Arg::Fn` return aliasing: if the callee may return an argument `k`, model the call
   // result as aliasing that argument so subsequent `return`/stores of the call result are tracked.
   let mut call_return_assigns: Vec<(u32, Arg)> = Vec::new();
+  // Call-induced stores: if the callee may store argument `k` into argument `j` (modeled as the
+  // callee reporting `ArgEscape(j)` for parameter `k`), model that as storing the caller's value
+  // into the caller's receiver. This enables container-based escape propagation across helper
+  // calls (e.g. `return ((x, obj) => { obj.p = x; return obj; })(x, obj)`).
+  let mut call_store_edges: Vec<(Arg, Arg)> = Vec::new(); // (receiver, value)
   if let Some(summaries) = summaries {
     for label in cfg_labels_sorted(cfg) {
       let Some(block) = cfg.bblocks.maybe_get(label) else {
@@ -399,19 +404,32 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
         if inst.t != InstTyp::Call {
           continue;
         }
-        let (tgt, callee, _this, args, _spreads) = inst.as_call();
-        let Some(tgt) = tgt else {
-          continue;
-        };
+        let (tgt, callee, _this, args, spreads) = inst.as_call();
         let Arg::Fn(id) = callee else {
           continue;
         };
         let Some(callee_summary) = summaries.get(*id) else {
           continue;
         };
-        for &k in callee_summary.returns_param.iter() {
-          if let Some(arg) = args.get(k) {
-            call_return_assigns.push((tgt, arg.clone()));
+        // Spreads make argument position mapping ambiguous; stay conservative for now.
+        if !spreads.is_empty() {
+          continue;
+        }
+
+        if let Some(tgt) = tgt {
+          for &k in callee_summary.returns_param.iter() {
+            if let Some(arg) = args.get(k) {
+              call_return_assigns.push((tgt, arg.clone()));
+            }
+          }
+        }
+
+        let max = callee_summary.param_escape.len().min(args.len());
+        for k in 0..max {
+          if let EscapeState::ArgEscape(j) = callee_summary.param_escape[k] {
+            if let (Some(receiver), Some(value)) = (args.get(j), args.get(k)) {
+              call_store_edges.push((receiver.clone(), value.clone()));
+            }
           }
         }
       }
@@ -541,6 +559,36 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
       }
     }
 
+    // Call-induced stores: treat `ArgEscape(j)` on a direct `Arg::Fn` call as storing the value into
+    // the receiver argument.
+    for (receiver, value) in call_store_edges.iter() {
+      let value_allocs = allocs_for_arg(&var_allocs, value);
+      let value_ext = ext_for_stored_value(&var_ext, value);
+      let container_allocs = allocs_for_arg(&var_allocs, receiver);
+      if container_allocs.is_empty() {
+        continue;
+      }
+      for container in container_allocs {
+        if !value_allocs.is_empty() {
+          let entry = stored_into.entry(container).or_default();
+          let before = entry.len();
+          entry.extend(value_allocs.iter().copied());
+          if entry.len() != before {
+            changed = true;
+          }
+        }
+
+        if value_ext != EscapeState::NoEscape {
+          let entry_ext = stored_external.entry(container).or_insert(EscapeState::NoEscape);
+          let next = entry_ext.join(value_ext);
+          if next != *entry_ext {
+            *entry_ext = next;
+            changed = true;
+          }
+        }
+      }
+    }
+
     // Property loads: `tgt = obj[prop]` may read any allocation stored into the receiver.
     for (tgt, obj) in facts.getprops.iter() {
       let container_allocs = allocs_for_arg(&var_allocs, obj);
@@ -602,8 +650,19 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
           }
         }
         InstTyp::Call => {
-          let (_tgt, callee, this, args, _spreads) = inst.as_call();
+          let (_tgt, callee, this, args, spreads) = inst.as_call();
           if marker_call_is_safe(callee) {
+            continue;
+          }
+
+          // Spread calls make argument position mapping ambiguous. Stay conservative by treating
+          // them as unknown calls (i.e. any passed allocation may escape).
+          if !spreads.is_empty() {
+            for arg in inst.args.iter() {
+              for alloc in allocs_for_arg(&var_allocs, arg) {
+                join_escape(&mut alloc_states, alloc, EscapeState::GlobalEscape);
+              }
+            }
             continue;
           }
 
@@ -648,10 +707,25 @@ pub fn analyze_cfg_escapes_with_params_and_summaries(
                 }
                 EscapeState::GlobalEscape | EscapeState::Unknown => callee_state,
                 EscapeState::ArgEscape(j) => {
-                  let receiver_ext = args.get(j).map(|a| ext_for_arg(&var_ext, a)).unwrap_or(EscapeState::GlobalEscape);
-                  match receiver_ext {
-                    EscapeState::ArgEscape(p) => EscapeState::ArgEscape(p),
-                    _ => EscapeState::GlobalEscape,
+                  match args.get(j) {
+                    Some(receiver_arg) => {
+                      let receiver_ext = ext_for_arg(&var_ext, receiver_arg);
+                      match receiver_ext {
+                        EscapeState::ArgEscape(p) => EscapeState::ArgEscape(p),
+                        EscapeState::GlobalEscape | EscapeState::Unknown => receiver_ext,
+                        EscapeState::NoEscape | EscapeState::ReturnEscape => {
+                          // If the receiver is a local allocation we can track, rely on
+                          // container-edge propagation (via `stored_into`) instead of forcing an
+                          // immediate escape.
+                          if allocs_for_arg(&var_allocs, receiver_arg).is_empty() {
+                            EscapeState::GlobalEscape
+                          } else {
+                            EscapeState::NoEscape
+                          }
+                        }
+                      }
+                    }
+                    None => EscapeState::GlobalEscape,
                   }
                 }
               };

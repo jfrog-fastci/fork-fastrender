@@ -26,6 +26,19 @@ fn caller_fn<'a>(program: &'a optimize_js::Program) -> &'a optimize_js::ProgramF
     .expect("expected one function to contain an object allocation")
 }
 
+fn object_alloc_escape_states(cfg: &optimize_js::cfg::cfg::Cfg) -> Vec<Option<EscapeState>> {
+  cfg
+    .bblocks
+    .all()
+    .flat_map(|(_, block)| block.iter())
+    .filter(|inst| {
+      inst.t == InstTyp::Call
+        && matches!(inst.args.get(0), Some(Arg::Builtin(name)) if name == "__optimize_js_object")
+    })
+    .map(|inst| inst.meta.result_escape)
+    .collect()
+}
+
 #[test]
 fn ssa_escape_does_not_force_global_escape_for_non_capturing_helper_call() {
   let program = compile_source(
@@ -101,5 +114,33 @@ fn ssa_escape_marks_global_escape_when_helper_stores_to_outer_scope() {
     alloc.meta.result_escape,
     Some(EscapeState::GlobalEscape),
     "expected allocation stored to outer variable to be GlobalEscape"
+  );
+}
+
+#[test]
+fn ssa_escape_propagates_receiver_escape_through_helper_arg_escape() {
+  let program = compile_source(
+    r#"
+      function caller() {
+        const x = {};
+        const y = {};
+        return ((a, b) => { b.p = a; return b; })(x, y);
+      }
+      caller();
+    "#,
+    TopLevelMode::Module,
+    false,
+  )
+  .expect("compile");
+
+  let func = caller_fn(&program);
+  let ssa_cfg = func.ssa_body.as_ref().expect("ssa_body should be populated");
+  let allocs = object_alloc_escape_states(ssa_cfg);
+  assert_eq!(allocs.len(), 2, "expected exactly two object allocations");
+  assert!(
+    allocs
+      .iter()
+      .all(|s| *s == Some(EscapeState::ReturnEscape)),
+    "expected both allocations to be ReturnEscape, got {allocs:?}"
   );
 }

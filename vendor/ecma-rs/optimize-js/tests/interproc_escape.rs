@@ -227,6 +227,72 @@ fn wrapper_call_chain_propagates_thrown_param() {
 }
 
 #[test]
+fn storing_into_local_receiver_arg_propagates_receiver_escape() {
+  // helper(x, y) { y.p = x; return y; }
+  let helper = func(
+    cfg_single_block(vec![
+      Inst::prop_assign(
+        Arg::Var(1),
+        Arg::Const(Const::Str("p".to_string())),
+        Arg::Var(0),
+      ),
+      Inst::ret(Some(Arg::Var(1))),
+    ]),
+    vec![0, 1],
+  );
+
+  // caller() { const x = {}; const y = {}; return helper(x, y); }
+  let caller = func(
+    cfg_single_block(vec![
+      Inst::call(
+        0,
+        Arg::Builtin("__optimize_js_object".to_string()),
+        Arg::Const(Const::Undefined),
+        Vec::new(),
+        Vec::new(),
+      ),
+      Inst::call(
+        1,
+        Arg::Builtin("__optimize_js_object".to_string()),
+        Arg::Const(Const::Undefined),
+        Vec::new(),
+        Vec::new(),
+      ),
+      Inst::call(
+        2,
+        Arg::Fn(0),
+        Arg::Const(Const::Undefined),
+        vec![Arg::Var(0), Arg::Var(1)],
+        Vec::new(),
+      ),
+      Inst::ret(Some(Arg::Var(2))),
+    ]),
+    Vec::new(),
+  );
+
+  let program = Program {
+    functions: vec![helper, caller],
+    top_level: func(cfg_single_block(Vec::new()), Vec::new()),
+    top_level_mode: TopLevelMode::Module,
+    symbols: None,
+  };
+
+  let summaries = interproc_escape::compute_program_escape_summaries(&program);
+  let caller_escape = escape::analyze_cfg_escapes_with_params_and_summaries(
+    &program.functions[1].body,
+    &program.functions[1].params,
+    Some(&summaries),
+    None,
+  );
+  assert_eq!(escape_of(&caller_escape, 1), EscapeState::ReturnEscape);
+  assert_eq!(
+    escape_of(&caller_escape, 0),
+    EscapeState::ReturnEscape,
+    "expected value stored into returned receiver arg to be ReturnEscape (not GlobalEscape)"
+  );
+}
+
+#[test]
 fn helper_storing_param_to_global_forces_global_escape() {
   // helper(x) { unknownGlobal = x; }
   let helper = func(
