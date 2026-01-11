@@ -516,7 +516,7 @@ extern "C" {
 
   // I/O watchers (epoll-backed readiness notifications).
   pub fn rt_io_register(
-    fd: i32,
+    fd: RtFd,
     interests: u32,
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
