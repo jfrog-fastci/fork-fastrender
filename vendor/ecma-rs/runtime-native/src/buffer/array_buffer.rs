@@ -27,11 +27,15 @@ impl From<BackingStoreAllocError> for ArrayBufferError {
 ///
 /// The header itself is expected to be allocated in the GC heap (and may move); the backing store
 /// lives outside the GC heap in a stable, non-moving allocation managed by [`BackingStoreAllocator`].
+///
+/// The backing store is an independently-owned, reference-counted object. This allows host pin
+/// guards to keep the allocation alive even if the owning `ArrayBuffer` header becomes unreachable
+/// and is finalized by the GC.
 #[derive(Debug)]
 #[repr(C)]
 pub struct ArrayBuffer {
   byte_len: usize,
-  backing_store: BackingStore,
+  backing_store: Option<BackingStore>,
 
   flags: u32,
 }
@@ -48,7 +52,7 @@ impl ArrayBuffer {
     let store = alloc.alloc_zeroed(len)?;
     Ok(Self {
       byte_len: len,
-      backing_store: store,
+      backing_store: Some(store),
       flags: 0,
     })
   }
@@ -65,7 +69,7 @@ impl ArrayBuffer {
     let store = alloc.adopt_vec(bytes)?;
     Ok(Self {
       byte_len,
-      backing_store: store,
+      backing_store: Some(store),
       flags: 0,
     })
   }
@@ -82,7 +86,7 @@ impl ArrayBuffer {
     let store = alloc.adopt_boxed_slice(bytes)?;
     Ok(Self {
       byte_len,
-      backing_store: store,
+      backing_store: Some(store),
       flags: 0,
     })
   }
@@ -93,26 +97,46 @@ impl ArrayBuffer {
   }
 
   #[inline]
-  pub fn backing_store(&self) -> &BackingStore {
-    &self.backing_store
-  }
-
-  #[inline]
-  pub fn backing_store_mut(&mut self) -> &mut BackingStore {
-    &mut self.backing_store
-  }
-
-  #[inline]
   pub fn is_detached(&self) -> bool {
-    self.backing_store.is_empty()
+    self.backing_store.is_none()
+  }
+
+  /// Current backing store pin count.
+  #[inline]
+  pub fn pin_count(&self) -> u32 {
+    self
+      .backing_store
+      .as_ref()
+      .map_or(0, BackingStore::pin_count)
   }
 
   #[inline]
   pub fn data_ptr(&self) -> Result<*mut u8, ArrayBufferError> {
+    let Some(store) = self.backing_store.as_ref() else {
+      return Err(ArrayBufferError::Detached);
+    };
+    Ok(store.as_ptr())
+  }
+
+  /// Pin the backing store bytes and return a stable pointer/length pair.
+  ///
+  /// While the returned guard is alive, detach/transfer/resize must be rejected.
+  pub fn pin(&self) -> Result<PinnedArrayBuffer, ArrayBufferError> {
     if self.is_detached() {
       return Err(ArrayBufferError::Detached);
     }
-    Ok(self.backing_store.as_ptr())
+
+    let store = self
+      .backing_store
+      .as_ref()
+      .expect("detached check above");
+
+    let (pinned, (ptr, len)) = store.pin().map_err(|err| match err {
+      BackingStorePinError::NotAlive => ArrayBufferError::Detached,
+      BackingStorePinError::OutOfBounds => ArrayBufferError::Range,
+    })?;
+
+    Ok(PinnedArrayBuffer { pinned, ptr, len })
   }
 
   pub fn slice(&self, start: usize, end: usize) -> Result<Self, ArrayBufferError> {
@@ -137,60 +161,38 @@ impl ArrayBuffer {
       return Ok(out);
     }
 
+    let src = self
+      .backing_store
+      .as_ref()
+      .expect("detached check above");
+    let dst = out
+      .backing_store
+      .as_ref()
+      .expect("new array buffer has a backing store");
+
     unsafe {
-      core::ptr::copy_nonoverlapping(
-        self.backing_store.as_ptr().add(start),
-        out.backing_store.as_ptr(),
-        slice_len,
-      );
+      core::ptr::copy_nonoverlapping(src.as_ptr().add(start), dst.as_ptr(), slice_len);
     }
     Ok(out)
-  }
-
-  /// Pin the backing store bytes and return a stable pointer/length pair.
-  ///
-  /// While the returned guard is alive, detach/transfer/resize must be rejected.
-  pub fn pin(&self) -> Result<PinnedArrayBuffer, ArrayBufferError> {
-    if self.is_detached() {
-      return Err(ArrayBufferError::Detached);
-    }
-    let (pinned, (ptr, len)) = self.backing_store.pin().map_err(|err| match err {
-      BackingStorePinError::NotAlive => ArrayBufferError::Detached,
-      BackingStorePinError::OutOfBounds => ArrayBufferError::Range,
-    })?;
-    Ok(PinnedArrayBuffer {
-      pinned,
-      ptr,
-      len,
-    })
   }
 
   /// Detach the backing store.
   ///
   /// Detach is idempotent: detaching an already-detached buffer is a no-op.
   pub fn detach(&mut self) -> Result<(), ArrayBufferError> {
-    self.detach_in(global_backing_store_allocator())
-  }
-
-  pub fn detach_in<A: BackingStoreAllocator + ?Sized>(
-    &mut self,
-    _alloc: &A,
-  ) -> Result<(), ArrayBufferError> {
     if self.is_detached() {
       return Ok(());
     }
-    if self.backing_store.is_pinned() {
+
+    let store = self
+      .backing_store
+      .as_ref()
+      .expect("detached check above");
+    if store.is_pinned() {
       return Err(ArrayBufferError::Pinned);
     }
-    // Detach is an eager free of the backing store. Unlike GC finalization, it must not proceed
-    // while pinned.
-    self
-      .backing_store
-      .try_detach()
-      .map_err(|err| match err {
-        super::backing_store::BackingStoreDetachError::Pinned => ArrayBufferError::Pinned,
-        super::backing_store::BackingStoreDetachError::NotAlive => ArrayBufferError::Detached,
-      })?;
+
+    drop(self.backing_store.take());
     self.byte_len = 0;
     self.flags = 0;
     Ok(())
@@ -204,16 +206,21 @@ impl ArrayBuffer {
     if self.is_detached() {
       return Ok(Self {
         byte_len: 0,
-        backing_store: BackingStore::empty(),
+        backing_store: None,
         flags: 0,
       });
     }
-    if self.backing_store.is_pinned() {
+
+    let store = self
+      .backing_store
+      .as_ref()
+      .expect("detached check above");
+    if store.is_pinned() {
       return Err(ArrayBufferError::Pinned);
     }
 
     let byte_len = self.byte_len;
-    let backing_store = std::mem::replace(&mut self.backing_store, BackingStore::empty());
+    let backing_store = self.backing_store.take();
 
     self.byte_len = 0;
     self.flags = 0;
@@ -230,22 +237,25 @@ impl ArrayBuffer {
   /// Resizable buffers are not supported in MVP, but the method exists so callers cannot
   /// accidentally ignore the pin-count rule once resize is wired up.
   pub fn resize(&mut self, _new_len: usize) -> Result<(), ArrayBufferError> {
-    if self.backing_store.is_pinned() {
+    if self.pin_count() != 0 {
       return Err(ArrayBufferError::Pinned);
     }
     Err(ArrayBufferError::Unimplemented)
   }
 
-  /// Releases the backing store memory.
+  /// Releases the backing store handle.
   ///
   /// In the moving-GC runtime, this is expected to be called by the GC finalizer once the
   /// `ArrayBuffer` header becomes unreachable.
+  ///
+  /// The backing store allocation itself is freed only when the last [`BackingStore`] handle is
+  /// dropped (e.g. after all host pin guards are released).
   pub fn finalize(&mut self) {
     self.finalize_in(global_backing_store_allocator())
   }
 
-  pub fn finalize_in<A: BackingStoreAllocator + ?Sized>(&mut self, alloc: &A) {
-    alloc.free(&mut self.backing_store);
+  pub fn finalize_in<A: BackingStoreAllocator + ?Sized>(&mut self, _alloc: &A) {
+    drop(self.backing_store.take());
     self.byte_len = 0;
     self.flags = 0;
   }
