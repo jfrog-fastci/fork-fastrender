@@ -216,11 +216,40 @@ pub unsafe extern "C" fn rt_write_barrier_range(obj: *mut u8, start_slot: *mut u
 
 /// Trigger a GC cycle.
 ///
-/// Milestone-1 runtime: no-op.
+/// Current milestone runtime:
+/// - Performs a cooperative stop-the-world handshake across registered threads.
+/// - Invokes the stackmap-based root enumeration hook (if stackmaps are available).
+/// - Does *not* yet run a full GC algorithm (mark/copy/etc).
 #[no_mangle]
 pub extern "C" fn rt_gc_collect() {
   #[cfg(feature = "gc_stats")]
   crate::gc_stats::record_gc_collect();
+
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    // If a stop-the-world is already active, join it as a mutator safepoint at
+    // this callsite (so we still publish a safepoint context for stack walking).
+    let epoch = crate::threading::safepoint::current_epoch();
+    if epoch & 1 == 1 {
+      crate::safepoint::enter_safepoint_at_current_callsite(epoch);
+      return;
+    }
+
+    // Attempt to become the stop-the-world coordinator.
+    let Some(stop_epoch) = crate::threading::safepoint::rt_gc_try_request_stop_the_world() else {
+      // Lost the race; if a GC is now active, join it.
+      let epoch = crate::threading::safepoint::current_epoch();
+      if epoch & 1 == 1 {
+        crate::safepoint::enter_safepoint_at_current_callsite(epoch);
+      }
+      return;
+    };
+
+    crate::safepoint::with_world_stopped_requested(stop_epoch, || {});
+  }));
+
+  if res.is_err() {
+    std::process::abort();
+  }
 }
 
 // -----------------------------------------------------------------------------

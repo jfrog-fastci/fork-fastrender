@@ -110,6 +110,29 @@ pub(crate) fn wait_while_stop_the_world() {
   }
 }
 
+/// Try to request a global stop-the-world safepoint.
+///
+/// Returns `Some(requested_epoch)` (odd) if this call successfully initiated the
+/// stop-the-world request, or `None` if another request is already in progress.
+pub fn rt_gc_try_request_stop_the_world() -> Option<u64> {
+  let coord = coordinator();
+  let mut cur = RT_GC_EPOCH.load(Ordering::Acquire);
+  loop {
+    if cur & 1 == 1 {
+      return None;
+    }
+    let next = cur + 1;
+    match RT_GC_EPOCH.compare_exchange(cur, next, Ordering::SeqCst, Ordering::Acquire) {
+      Ok(_) => {
+        coord.notify_all();
+        wake_all_gc_wakers();
+        return Some(next);
+      }
+      Err(actual) => cur = actual,
+    }
+  }
+}
+
 /// Fast-path safepoint poll used by compiler-inserted statepoints and runtime loops.
 ///
 /// - Fast path: one atomic load + branch.

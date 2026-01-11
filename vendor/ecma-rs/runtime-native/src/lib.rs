@@ -43,10 +43,12 @@ pub mod nursery;
 pub mod roots;
 pub mod stackmap;
 pub mod parallel;
+pub mod safepoint;
 pub mod sync;
 pub mod threading;
 pub mod runtime;
 pub mod thread;
+pub mod thread_registry;
 pub mod stackmaps;
 pub mod stackmaps_loader;
 pub mod statepoints;
@@ -80,6 +82,7 @@ pub use gc::RootSet;
 pub use gc::RootStack;
 pub use gc::TypeDescriptor;
 pub use async_rt::set_strict_await_yields;
+pub use thread_registry::{rt_register_current_thread, rt_unregister_current_thread};
 pub use stackmaps::StackMaps;
 pub use stackwalk_fp::{walk_gc_roots_from_fp, WalkError};
 pub use rt_trace::rt_debug_snapshot_counters;
@@ -87,6 +90,7 @@ pub use rt_trace::RtDebugCountersSnapshot;
 pub use string::*;
 pub use timer_wheel::{TimerKey, TimerWheel};
 pub use stackmaps_loader::{load_stackmaps_from_self, stackmaps_section};
+pub use safepoint::{visit_reloc_pairs, with_world_stopped};
 pub use runtime::{AttachError, DetachError, Runtime, StopTheWorldGuard, ThreadGuard};
 pub use thread::{
   current_thread, current_thread_mut, current_thread_ptr, current_thread_state, Thread, ThreadState, RT_THREAD,
@@ -376,6 +380,8 @@ mod tests {
     const DECLS: &[&str] = &[
       "void rt_thread_init(uint32_t kind);",
       "void rt_thread_deinit(void);",
+      "void rt_register_current_thread(void);",
+      "void rt_unregister_current_thread(void);",
       "Thread* rt_thread_attach(Runtime* runtime);",
       "void rt_thread_detach(Thread* thread);",
       "uint8_t* rt_alloc(size_t size, RtShapeId shape);",
@@ -431,6 +437,8 @@ mod tests {
     // Ensure the Rust exports match the declared ABI shape.
     let _thread_init: extern "C" fn(u32) = rt_thread_init;
     let _thread_deinit: extern "C" fn() = rt_thread_deinit;
+    let _register_current: extern "C" fn() = rt_register_current_thread;
+    let _unregister_current: extern "C" fn() = rt_unregister_current_thread;
     let _thread_attach: unsafe extern "C" fn(*mut Runtime) -> *mut Thread = rt_thread_attach;
     let _thread_detach: unsafe extern "C" fn(*mut Thread) = rt_thread_detach;
     let _alloc: extern "C" fn(usize, abi::RtShapeId) -> *mut u8 = rt_alloc;
@@ -478,6 +486,8 @@ mod tests {
     let _ = (
       _thread_init,
       _thread_deinit,
+      _register_current,
+      _unregister_current,
       _thread_attach,
       _thread_detach,
       _alloc,

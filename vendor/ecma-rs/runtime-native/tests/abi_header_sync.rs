@@ -14,6 +14,8 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_gc_get_young_range(",
     "rt_thread_init(",
     "rt_thread_deinit(",
+    "rt_register_current_thread(",
+    "rt_unregister_current_thread(",
   ] {
     assert!(
       HEADER.contains(sym),
@@ -42,6 +44,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   // Thread registration.
   let _thread_init: extern "C" fn(u32) = runtime_native::rt_thread_init;
   let _thread_deinit: extern "C" fn() = runtime_native::rt_thread_deinit;
+  let _register_current: extern "C" fn() = runtime_native::rt_register_current_thread;
+  let _unregister_current: extern "C" fn() = runtime_native::rt_unregister_current_thread;
 
   // GC write barrier entrypoints.
   let _write_barrier: unsafe extern "C" fn(*mut u8, *mut u8) = runtime_native::rt_write_barrier;
@@ -65,6 +69,8 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _ = (
     _thread_init,
     _thread_deinit,
+    _register_current,
+    _unregister_current,
     _write_barrier,
     _write_barrier_range,
     _register_root_slot,

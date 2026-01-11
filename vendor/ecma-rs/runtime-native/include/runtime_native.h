@@ -80,6 +80,9 @@ typedef struct StringRef {
 //   3 = external/unknown
 void rt_thread_init(uint32_t kind);
 void rt_thread_deinit(void);
+// Convenience registration API: equivalent to `rt_thread_init(1 /* worker */)`.
+void rt_register_current_thread(void);
+void rt_unregister_current_thread(void);
 
 // -----------------------------------------------------------------------------
 // Thread attach/detach (per-runtime thread registry)
