@@ -3,6 +3,7 @@ use runtime_native::{rt_parallel_join, rt_parallel_spawn};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
+use std::time::{Duration, Instant};
 
 static TEST_INIT: Once = Once::new();
 
@@ -73,6 +74,7 @@ fn nested_parallelism_does_not_deadlock() {
 
 #[repr(C)]
 struct ThreadRecord {
+    done: AtomicUsize,
     threads: Mutex<HashSet<std::thread::ThreadId>>,
 }
 
@@ -80,6 +82,7 @@ extern "C" fn record_thread(data: *mut u8) {
     let data = unsafe { &*(data as *const ThreadRecord) };
     let mut set = data.threads.lock().unwrap();
     set.insert(std::thread::current().id());
+    data.done.fetch_add(1, Ordering::Release);
 }
 
 #[test]
@@ -87,15 +90,26 @@ fn steal_behavior_smoke() {
     init();
 
     let record = ThreadRecord {
+        done: AtomicUsize::new(0),
         threads: Mutex::new(HashSet::new()),
     };
 
     let mut tasks = Vec::new();
+    let main_thread = std::thread::current().id();
     for _ in 0..10_000 {
         tasks.push(rt_parallel_spawn(
             record_thread,
             (&record as *const ThreadRecord) as *mut u8,
         ));
+    }
+
+    // Wait for all tasks to finish *before* joining. This keeps the joiner thread from also helping
+    // execute tasks, so the observed thread IDs should reflect work performed by the scheduler's
+    // worker pool.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while record.done.load(Ordering::Acquire) < tasks.len() {
+        assert!(Instant::now() < deadline, "timed out waiting for tasks to complete");
+        std::thread::yield_now();
     }
 
     rt_parallel_join(tasks.as_ptr(), tasks.len());
@@ -105,6 +119,10 @@ fn steal_behavior_smoke() {
         set.len() > 1,
         "expected >1 worker threads to execute tasks, got {}",
         set.len()
+    );
+    assert!(
+        !set.contains(&main_thread),
+        "expected joiner thread to not execute tasks when join happens after completion"
     );
 }
 
