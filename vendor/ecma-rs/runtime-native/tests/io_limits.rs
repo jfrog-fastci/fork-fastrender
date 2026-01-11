@@ -1,4 +1,6 @@
-use runtime_native::buffer::{global_backing_store_allocator, ArrayBuffer, ArrayBufferError, BackingStoreAllocator};
+use runtime_native::buffer::{
+  global_backing_store_allocator, ArrayBuffer, ArrayBufferError, BackingStoreAllocator, BorrowError,
+};
 use runtime_native::io::{IoLimitError, IoLimits, IoLimiter, IoOp, IoVecRange, PinnedIoVec};
 use runtime_native::Uint8Array;
 use std::panic::AssertUnwindSafe;
@@ -352,6 +354,64 @@ fn pin_vectored_produces_expected_kernel_ptrs() {
 
   drop(op);
   assert_eq!(limiter.counters().pinned_bytes_current, 0);
+}
+
+#[test]
+fn io_op_borrow_blocks_safe_buffer_access_and_is_released_on_drop() {
+  let limiter = Arc::new(IoLimiter::new(IoLimits {
+    max_pinned_bytes: 16,
+    max_inflight_ops: 8,
+    max_pinned_bytes_per_op: None,
+  }));
+
+  let mut buf = ArrayBuffer::new_zeroed(16).unwrap();
+  assert!(buf.data_ptr().is_ok());
+
+  let op = IoOp::pin_array_buffer_range(&limiter, &buf, 0..1).unwrap();
+
+  assert!(matches!(
+    buf.data_ptr(),
+    Err(ArrayBufferError::Borrow(BorrowError::Borrowed))
+  ));
+  assert!(matches!(
+    buf.try_with_slice(|_| ()),
+    Err(ArrayBufferError::Borrow(BorrowError::Borrowed))
+  ));
+  assert!(matches!(
+    buf.try_with_slice_mut(|_| ()),
+    Err(ArrayBufferError::Borrow(BorrowError::Borrowed))
+  ));
+
+  drop(op);
+
+  assert!(buf.data_ptr().is_ok());
+  assert!(buf.try_with_slice(|_| ()).is_ok());
+  assert!(buf.try_with_slice_mut(|_| ()).is_ok());
+}
+
+#[test]
+fn borrowed_buffer_rejects_io_op_without_leaking_counters() {
+  let limiter = Arc::new(IoLimiter::new(IoLimits {
+    max_pinned_bytes: 16,
+    max_inflight_ops: 8,
+    max_pinned_bytes_per_op: None,
+  }));
+
+  let buf = ArrayBuffer::new_zeroed(16).unwrap();
+  let _borrow = buf.try_borrow_io_write().unwrap();
+
+  let err = IoOp::pin_array_buffer_range(&limiter, &buf, 0..1).unwrap_err();
+  assert_eq!(err, IoLimitError::BufferBorrowed);
+  assert_eq!(
+    limiter.counters().pinned_bytes_current,
+    0,
+    "buffer borrow failures must not leak pinned-bytes accounting"
+  );
+  assert_eq!(
+    limiter.counters().inflight_ops_current,
+    0,
+    "buffer borrow failures must not leak inflight-op accounting"
+  );
 }
 
 #[test]
