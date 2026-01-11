@@ -1,8 +1,7 @@
 use crate::async_rt;
 use crate::abi::PromiseRef;
-use crate::threading::registry;
-use crate::threading::registry::ThreadKind;
-use crate::threading::safepoint;
+use crate::threading;
+use crate::threading::ThreadKind;
 use once_cell::sync::OnceCell;
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
@@ -91,10 +90,10 @@ impl BlockingPool {
 }
 
 fn worker_loop(shared: Arc<Shared>) {
-  registry::register_current_thread(ThreadKind::Io);
+  threading::register_current_thread(ThreadKind::Io);
 
   loop {
-    safepoint::rt_gc_safepoint();
+    threading::safepoint_poll();
 
     let work = {
       let mut q = shared.queue.lock().unwrap();
@@ -106,9 +105,9 @@ fn worker_loop(shared: Arc<Shared>) {
           break None;
         }
         // While idle, mark as parked so stop-the-world GC treats this thread as quiescent.
-        registry::set_current_thread_parked(true);
+        threading::set_parked(true);
         q = shared.cv.wait(q).unwrap();
-        registry::set_current_thread_parked(false);
+        threading::set_parked(false);
       }
     };
 
@@ -116,7 +115,8 @@ fn worker_loop(shared: Arc<Shared>) {
       break;
     };
 
-    safepoint::rt_gc_safepoint();
+    // Before running mutator code, poll the GC safepoint.
+    threading::safepoint_poll();
 
     // The task is responsible for settling the promise. It must not unwind across the FFI
     // boundary; in practice Rust will abort if it panics.
