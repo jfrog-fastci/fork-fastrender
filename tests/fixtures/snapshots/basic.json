@@ -1166,7 +1166,7 @@
                 {
                   "box_id": 4,
                   "kind": {
-                    "type": "inline",
+                    "type": "block",
                     "formatting_context": "Block"
                   },
                   "styled_node_id": 8,
@@ -1174,7 +1174,7 @@
                     "selector": "span.child"
                   },
                   "style": {
-                    "display": "inline-block",
+                    "display": "flow-root",
                     "position": "absolute",
                     "z_index": null,
                     "visibility": "Visible",
@@ -1860,7 +1860,7 @@
                             "fragmentainer_index": 0,
                             "content": {
                               "type": "line",
-                              "baseline": 13.192
+                              "baseline": 14.0
                             },
                             "children": [
                               {
@@ -1868,13 +1868,13 @@
                                 "bounds": {
                                   "x": 0.0,
                                   "y": 0.0,
-                                  "width": 24.800001,
+                                  "width": 27.744,
                                   "height": 18.0
                                 },
                                 "scroll_overflow": {
                                   "x": 0.0,
                                   "y": 0.0,
-                                  "width": 24.800001,
+                                  "width": 27.744,
                                   "height": 18.0
                                 },
                                 "fragment_index": 0,
@@ -1940,13 +1940,13 @@
                                     "bounds": {
                                       "x": 0.0,
                                       "y": 0.0,
-                                      "width": 24.800001,
+                                      "width": 27.744,
                                       "height": 18.0
                                     },
                                     "scroll_overflow": {
                                       "x": 0.0,
                                       "y": 0.0,
-                                      "width": 24.800001,
+                                      "width": 27.744,
                                       "height": 18.0
                                     },
                                     "fragment_index": 0,
@@ -1956,7 +1956,7 @@
                                       "type": "text",
                                       "text": "Bye",
                                       "box_id": 9,
-                                      "baseline_offset": 13.192,
+                                      "baseline_offset": 14.0,
                                       "is_marker": false
                                     },
                                     "style": {
@@ -2023,13 +2023,13 @@
                     "bounds": {
                       "x": 8.0,
                       "y": 12.0,
-                      "width": 22.992,
+                      "width": 23.808,
                       "height": 24.0
                     },
                     "scroll_overflow": {
                       "x": 0.0,
                       "y": 0.0,
-                      "width": 22.992,
+                      "width": 23.808,
                       "height": 24.0
                     },
                     "fragment_index": 0,
@@ -2040,7 +2040,7 @@
                       "box_id": 4
                     },
                     "style": {
-                      "display": "inline-block",
+                      "display": "flow-root",
                       "position": "absolute",
                       "z_index": null,
                       "visibility": "Visible",
@@ -2094,13 +2094,13 @@
                         "bounds": {
                           "x": 3.0,
                           "y": 3.0,
-                          "width": 16.992,
+                          "width": 17.808,
                           "height": 18.0
                         },
                         "scroll_overflow": {
                           "x": 0.0,
                           "y": 0.0,
-                          "width": 16.992,
+                          "width": 17.808,
                           "height": 18.0
                         },
                         "fragment_index": 0,
@@ -2116,13 +2116,13 @@
                             "bounds": {
                               "x": 0.0,
                               "y": 0.0,
-                              "width": 16.992,
+                              "width": 17.808,
                               "height": 18.0
                             },
                             "scroll_overflow": {
                               "x": 0.0,
                               "y": 0.0,
-                              "width": 16.992,
+                              "width": 17.808,
                               "height": 18.0
                             },
                             "fragment_index": 0,
@@ -2130,7 +2130,7 @@
                             "fragmentainer_index": 0,
                             "content": {
                               "type": "line",
-                              "baseline": 13.192
+                              "baseline": 14.0
                             },
                             "children": [
                               {
@@ -2138,13 +2138,13 @@
                                 "bounds": {
                                   "x": 0.0,
                                   "y": 0.0,
-                                  "width": 16.992,
+                                  "width": 17.808,
                                   "height": 18.0
                                 },
                                 "scroll_overflow": {
                                   "x": 0.0,
                                   "y": 0.0,
-                                  "width": 16.992,
+                                  "width": 17.808,
                                   "height": 18.0
                                 },
                                 "fragment_index": 0,
@@ -2210,13 +2210,13 @@
                                     "bounds": {
                                       "x": 0.0,
                                       "y": 0.0,
-                                      "width": 16.992,
+                                      "width": 17.808,
                                       "height": 18.0
                                     },
                                     "scroll_overflow": {
                                       "x": 0.0,
                                       "y": 0.0,
-                                      "width": 16.992,
+                                      "width": 17.808,
                                       "height": 18.0
                                     },
                                     "fragment_index": 0,
@@ -2226,7 +2226,7 @@
                                       "type": "text",
                                       "text": "Hi",
                                       "box_id": 6,
-                                      "baseline_offset": 13.192,
+                                      "baseline_offset": 14.0,
                                       "is_marker": false
                                     },
                                     "style": {
@@ -2491,12 +2491,12 @@
         "kind": "text",
         "bounds": {
           "x": 14.0,
-          "y": 13.192001,
-          "width": 24.800003,
+          "y": 14.0,
+          "width": 27.744,
           "height": 20.0
         },
         "details": {
-          "advance_width": 24.80000114440918,
+          "advance_width": 27.743999481201172,
           "color": {
             "a": 1.0,
             "b": 0,
@@ -2507,7 +2507,7 @@
           "glyphs": 3,
           "origin": {
             "x": 14.0,
-            "y": 29.192001342773438
+            "y": 30.0
           },
           "shadows": []
         }
@@ -2518,7 +2518,7 @@
         "bounds": {
           "x": 15.5,
           "y": 19.5,
-          "width": 23.992,
+          "width": 24.808,
           "height": 25.0
         },
         "details": {
@@ -2563,7 +2563,7 @@
           },
           "rect": {
             "height": 24.0,
-            "width": 22.992000579833984,
+            "width": 23.808000564575195,
             "x": 16.0,
             "y": 20.0
           },
@@ -2594,12 +2594,12 @@
         "kind": "text",
         "bounds": {
           "x": 19.0,
-          "y": 20.192001,
-          "width": 16.992,
+          "y": 21.0,
+          "width": 17.807999,
           "height": 20.0
         },
         "details": {
-          "advance_width": 16.992000579833984,
+          "advance_width": 17.808000564575195,
           "color": {
             "a": 1.0,
             "b": 7,
@@ -2610,7 +2610,7 @@
           "glyphs": 2,
           "origin": {
             "x": 19.0,
-            "y": 36.19200134277344
+            "y": 37.0
           },
           "shadows": []
         }

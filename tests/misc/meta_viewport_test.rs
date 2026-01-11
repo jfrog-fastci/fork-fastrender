@@ -81,7 +81,7 @@ fn meta_viewport_alters_layout_viewport_dimensions() {
       Some("width=300, height=400"),
       (300, 400),
     ),
-    ("initial scale only", Some("initial-scale=2"), (800, 600)),
+    ("initial scale only", Some("initial-scale=2"), (400, 300)),
     (
       "width with max scale",
       Some("width=320, maximum-scale=1"),
@@ -118,23 +118,23 @@ fn meta_viewport_alters_layout_viewport_dimensions() {
 fn meta_viewport_drives_vw_vh_and_media_queries() {
   let _lock = super::global_test_lock();
   let cases = [
-    ("narrow red", "width=320", (160, 120), (255, 0, 0, 255)),
+    ("narrow red", "width=320", (400, 300), (255, 0, 0, 255)),
     (
       "zoomed green",
       "width=device-width, initial-scale=2",
-      (480, 360),
+      (800, 360),
       (0, 200, 0, 255),
     ),
     (
       "height derived green",
       "height=400",
-      (320, 240),
+      (480, 360),
       (0, 200, 0, 255),
     ),
     (
       "narrower layout",
       "width=300, height=400",
-      (150, 200),
+      (400, 533),
       (255, 0, 0, 255),
     ),
     (

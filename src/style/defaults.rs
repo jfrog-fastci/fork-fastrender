@@ -60,9 +60,8 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
       "legend" => {
         styles.shrink_to_fit_inline_size = true;
       }
-      "img" | "video" | "audio" | "canvas" | "iframe" | "embed" | "object" => {
+      "img" | "video" | "audio" | "canvas" | "svg" | "iframe" | "embed" | "object" => {
         // Compatibility default (non-standard): `max-width: 100%` on replaced elements.
-        // (Intentionally excludes `<svg>`.)
         //
         // This is *not* a standard UA default, but many "responsive" pages rely on author CSS that
         // effectively does the same thing (e.g. `img { max-width: 100%; height: auto; }`). Keeping
