@@ -42,13 +42,16 @@ that uses `KEEP(*(.llvm_stackmaps ...))`:
 This works with both **GNU ld** and **lld** for retaining stackmaps under
 `--gc-sections`. The default fragment (`runtime-native/link/stackmaps.ld`)
 anchors at `INSERT AFTER .text;` because `.text` is guaranteed to exist, while
-some linkers (notably lld) can omit a `.data` output section in minimal links
-and error if the `INSERT` anchor does not exist.
+some linkers (notably lld) can omit empty `.rodata`/`.data` output sections in
+minimal links and error if the `INSERT` anchor does not exist.
 
 For GNU ld **PIE** builds where stackmaps must be writable for relocations,
-prefer `runtime-native/link/stackmaps_gnuld.ld` (selected automatically by the
-repo wrappers) to avoid GNU ld merging the writable stackmaps section into the
-text PT_LOAD (RWX).
+prefer `runtime-native/link/stackmaps_gnuld.ld` (anchored at
+`INSERT BEFORE .dynamic;` and selected automatically by the repo wrappers) to
+avoid GNU ld merging the writable stackmaps section into the text PT_LOAD
+(RWX).
+
+It also defines stable boundary symbols for runtime discovery (see below).
 
 > Note: `runtime-native/link/stackmaps.ld` is injected via the GNU ld/LLD linker-script
 > `INSERT` mechanism (anchored at `INSERT AFTER .text;`). If you use a linker that

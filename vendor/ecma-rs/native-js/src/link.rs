@@ -97,8 +97,8 @@ impl Default for LinkOpts {
 /// mechanism) so we don't have to replace the entire default script.
 ///
 /// The default fragment anchors at `INSERT AFTER .text;` because `.text` is guaranteed to exist in
-/// any non-empty link, while `.data`/`.rodata` may be absent in minimal executables (lld errors if
-/// an `INSERT` anchor does not exist).
+/// any runnable/non-empty link, while `.data`/`.rodata` may be absent in minimal executables (lld
+/// errors if an `INSERT` anchor does not exist).
 ///
 /// Keep this in sync with `runtime-native/link/stackmaps*.ld`.
 const LLVM_STACKMAPS_LD_FRAGMENT: &str = include_str!("../../runtime-native/link/stackmaps.ld");

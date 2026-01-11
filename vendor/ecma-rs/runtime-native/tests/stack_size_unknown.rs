@@ -45,14 +45,14 @@ fn stackmaps_section_bytes_from_obj(obj_bytes: &[u8]) -> Vec<u8> {
 }
 
 fn dyn_alloca_statepoint_ir(triple: &str) -> String {
-  // Use `llvm.gcroot` so `opt -passes=rewrite-statepoints-for-gc` will generate an LLVM 18
-  // `gc.statepoint` + stackmap record. Add a dynamic alloca to force `stack_size = -1`.
+  // Use a normal call in a `gc "coreclr"` function so `opt -passes=rewrite-statepoints-for-gc`
+  // will generate an LLVM 18 `gc.statepoint` + stackmap record. Add a dynamic alloca to force
+  // `stack_size = -1` (unknown).
   format!(
     r#"
 source_filename = "dyn_statepoint"
 target triple = "{triple}"
 
-declare void @llvm.gcroot(ptr, ptr)
 declare void @safepoint()
 
 define i64 @dyn_statepoint(ptr addrspace(1) %p1, ptr addrspace(1) %p2, i64 %n) gc "coreclr" {{
@@ -62,9 +62,6 @@ entry:
 
   %root1 = alloca ptr addrspace(1), align 8
   %root2 = alloca ptr addrspace(1), align 8
-  call void @llvm.gcroot(ptr %root1, ptr null)
-  call void @llvm.gcroot(ptr %root2, ptr null)
-
   store ptr addrspace(1) %p1, ptr %root1, align 8
   store ptr addrspace(1) %p2, ptr %root2, align 8
 
@@ -119,6 +116,12 @@ fn dynamic_alloca_function_reports_unknown_stack_size() {
       .arg("-filetype=obj")
       .arg(format!("-mtriple={triple}"))
       .arg(format!("-mcpu={cpu}"))
+      // Ensure statepoint roots are spilled to stack slots, not callee-saved registers (CSR).
+      //
+      // The runtime currently relies on SP-relative `Indirect` root locations for stack walking
+      // (no register roots).
+      .arg("--fixup-allow-gcptr-in-csr=false")
+      .arg("--fixup-max-csr-statepoints=0")
       .arg("-frame-pointer=all")
       .arg(&rewritten)
       .arg("-o")

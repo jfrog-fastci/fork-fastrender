@@ -4,7 +4,7 @@
  *
  * Why a separate fragment?
  * - `stackmaps.ld` anchors at `INSERT AFTER .text;` for lld compatibility (the
- *   anchor always exists, while `.rodata`/`.data` may be absent in minimal links).
+ *   anchor always exists; `.rodata`/`.data` may be absent in minimal links).
  * - GNU ld can merge the inserted, writable stackmaps section into the executable
  *   text PT_LOAD under PIE, producing an RWX segment once relocations require the
  *   segment to be writable.

@@ -715,10 +715,10 @@ addresses at runtime), but they will apply to a writable segment instead of requ
 
 One more hardening note: if a linker script inserts the (writable) stackmaps output section
 immediately after `.text` (common `INSERT AFTER .text` fragments), GNU ld may merge it into the
-executable text PT_LOAD under PIE, producing an **RWX** segment once relocations require the segment
-to be writable. For GNU ld + PIE, use the repo's `runtime-native/link/stackmaps_gnuld.ld` fragment
-(anchored at `INSERT BEFORE .dynamic;`) or `scripts/native_link.sh` (selects it automatically) to
-keep stackmaps in the RELRO/data region.
+executable text PT_LOAD under PIE, producing an **RWX** segment once relocations require the
+segment to be writable. For GNU ld + PIE, use the repo's `runtime-native/link/stackmaps_gnuld.ld`
+fragment (anchored at `INSERT BEFORE .dynamic;`) to keep stackmaps in the RELRO/data region. The
+repo wrappers (`scripts/native_link.sh`, `native_js::link`) select this fragment automatically.
 
 ## Example link commands
 

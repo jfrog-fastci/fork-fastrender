@@ -58,6 +58,13 @@ fn compile_obj(out_dir: &Path) -> PathBuf {
 
  .section .llvm_stackmaps,"a",@progbits
    .byte 1,2,3,4
+    xor %rdi, %rdi
+    syscall
+
+ .section .llvm_stackmaps,"a",@progbits
+   .byte 1,2,3,4
+
+ .section .note.GNU-stack,"",@progbits
   "#;
 
   let asm_path = out_dir.join("stackmaps.S");
@@ -121,11 +128,13 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let script = Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("link")
     .join("stackmaps.ld");
-
+ 
   // Link a minimal binary (no stdlib/CRT) using our linker script fragment.
   let status = Command::new(find_clang())
     .arg("-nostdlib")
     .arg(lld_flag)
+    .arg("-no-pie")
+    .arg("-Wl,-e,_start")
     // Ensure `.llvm_stackmaps` is still retained under dead-section elimination.
     // The linker script fragment uses `KEEP(*(.llvm_stackmaps ...))` to prevent
     // GC from discarding the section even if it's otherwise unreferenced.
