@@ -30,6 +30,21 @@ treated as GC references (“gc-live”) and relocated:
 
 This behavior is the same for both `coreclr` and `statepoint-example`.
 
+### Runtime ABI safety rule: MayGC calls must not take raw GC pointers
+
+Even if the *caller* wraps a runtime call in an LLVM statepoint, the runtime function itself may
+allocate / trigger GC and then continue executing while holding its pointer arguments in its own
+native stack/registers.
+
+LLVM stackmaps only describe LLVM-generated frames; they do **not** describe Rust/C runtime frames.
+Therefore, **MayGC** runtime entrypoints must either:
+
+- take **no GC pointer arguments**, or
+- take **handles** (or another runtime-managed rooting mechanism), or
+- explicitly root/pin any pointer arguments before triggering GC.
+
+`native-js` enforces this as a codegen-time invariant for registered runtime calls.
+
 ### Safepoint polls and lowering
 
 `rewrite-statepoints-for-gc` rewrites **existing calls** into statepoints; it does not insert loop

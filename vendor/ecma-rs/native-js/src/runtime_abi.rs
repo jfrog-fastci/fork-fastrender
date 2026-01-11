@@ -2,7 +2,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::types::{FunctionType, PointerType};
-use inkwell::values::FunctionValue;
+use inkwell::values::{BasicMetadataValueEnum, CallSiteValue, FunctionValue};
 use inkwell::AddressSpace;
 
 use crate::llvm::gc;
@@ -58,6 +58,7 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
       rt_alloc_gc: self.rt_alloc_gc(),
       rt_alloc_pinned_gc: self.rt_alloc_pinned_gc(),
       rt_gc_safepoint_gc: self.rt_gc_safepoint_gc(),
+      rt_gc_collect_gc: self.rt_gc_collect_gc(),
       rt_write_barrier_gc: self.rt_write_barrier_gc(),
       rt_parallel_spawn_raw: self.rt_parallel_spawn_raw(),
       rt_parallel_join_raw: self.rt_parallel_join_raw(),
@@ -130,6 +131,11 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
   fn rt_gc_safepoint_raw(&self) -> FunctionValue<'ctx> {
     let fn_ty = self.context.void_type().fn_type(&[], false);
     self.get_or_declare("rt_gc_safepoint", fn_ty)
+  }
+
+  fn rt_gc_collect_raw(&self) -> FunctionValue<'ctx> {
+    let fn_ty = self.context.void_type().fn_type(&[], false);
+    self.get_or_declare("rt_gc_collect", fn_ty)
   }
 
   fn rt_write_barrier_raw(&self) -> FunctionValue<'ctx> {
@@ -290,6 +296,21 @@ impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
     })
   }
 
+  fn rt_gc_collect_gc(&self) -> FunctionValue<'ctx> {
+    let fn_ty = self.context.void_type().fn_type(&[], false);
+
+    self.get_or_define_internal("rt_gc_collect_gc", fn_ty, |func| {
+      let raw = self.rt_gc_collect_raw();
+      let entry = self.context.append_basic_block(func, "entry");
+      self.builder.position_at_end(entry);
+      let _ = self
+        .builder
+        .build_call(raw, &[], "")
+        .expect("call rt_gc_collect");
+      self.builder.build_return(None).expect("return void");
+    })
+  }
+
   fn rt_write_barrier_gc(&self) -> FunctionValue<'ctx> {
     let fn_ty = self
       .context
@@ -337,8 +358,154 @@ pub struct RuntimeFns<'ctx> {
   pub rt_alloc_gc: FunctionValue<'ctx>,
   pub rt_alloc_pinned_gc: FunctionValue<'ctx>,
   pub rt_gc_safepoint_gc: FunctionValue<'ctx>,
+  pub rt_gc_collect_gc: FunctionValue<'ctx>,
   pub rt_write_barrier_gc: FunctionValue<'ctx>,
   pub rt_parallel_spawn_raw: FunctionValue<'ctx>,
   pub rt_parallel_join_raw: FunctionValue<'ctx>,
   pub rt_parallel_for_raw: FunctionValue<'ctx>,
+}
+
+// -----------------------------------------------------------------------------
+// Runtime call registry + ABI validation
+// -----------------------------------------------------------------------------
+
+/// Policy for how runtime functions handle GC pointer arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgRootingPolicy {
+  /// Default policy: runtime functions that may GC must not accept any raw GC pointers.
+  ///
+  /// Rationale: LLVM statepoints/stackmaps do not describe Rust/C runtime frames, so if the runtime
+  /// function triggers a GC while it has GC pointer arguments in its own native stack/registers,
+  /// those pointers will not be traced or relocated.
+  NoGcPointersAllowedIfMayGc,
+  /// The runtime guarantees it "roots" GC pointer arguments for the duration of the call (e.g.
+  /// shadow stack, handles, pinning, or an equivalent mechanism).
+  RuntimeRootsPointers,
+}
+
+impl Default for ArgRootingPolicy {
+  fn default() -> Self {
+    Self::NoGcPointersAllowedIfMayGc
+  }
+}
+
+/// Metadata describing a runtime function's GC-safety contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeFnSpec {
+  pub name: &'static str,
+  /// Whether this runtime function may allocate / safepoint / trigger GC.
+  pub may_gc: bool,
+  /// Number of arguments that are GC-managed pointers (i.e. raw pointers that refer to GC objects).
+  pub gc_ptr_args: usize,
+  pub arg_rooting: ArgRootingPolicy,
+}
+
+/// Known runtime functions used by `native-js` codegen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RuntimeFn {
+  Alloc,
+  AllocPinned,
+  GcSafepoint,
+  GcCollect,
+  WriteBarrier,
+}
+
+impl RuntimeFn {
+  pub const fn spec(self) -> RuntimeFnSpec {
+    match self {
+      RuntimeFn::Alloc => RuntimeFnSpec {
+        name: "rt_alloc",
+        may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::AllocPinned => RuntimeFnSpec {
+        name: "rt_alloc_pinned",
+        may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::GcSafepoint => RuntimeFnSpec {
+        name: "rt_gc_safepoint",
+        may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::GcCollect => RuntimeFnSpec {
+        name: "rt_gc_collect",
+        may_gc: true,
+        gc_ptr_args: 0,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+      RuntimeFn::WriteBarrier => RuntimeFnSpec {
+        name: "rt_write_barrier",
+        may_gc: false,
+        gc_ptr_args: 2,
+        arg_rooting: ArgRootingPolicy::NoGcPointersAllowedIfMayGc,
+      },
+    }
+  }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeCallError {
+  #[error(
+    "invalid runtime ABI for `{name}`: marked may_gc=true but takes {gc_ptr_args} GC pointer arg(s); \
+     LLVM statepoints/stackmaps do not describe runtime-native frames, so MayGC runtime fns must be \
+     pointer-free or use handles (ArgRootingPolicy::RuntimeRootsPointers)"
+  )]
+  MayGcWithGcPointerArgs { name: &'static str, gc_ptr_args: usize },
+
+  #[error("failed to build call to runtime function `{name}`: {message}")]
+  BuildCall { name: &'static str, message: String },
+}
+
+/// Emit a call to a runtime function, enforcing GC-safety rules for its ABI.
+pub fn emit_runtime_call<'ctx>(
+  builder: &Builder<'ctx>,
+  callee: FunctionValue<'ctx>,
+  spec: RuntimeFnSpec,
+  args: &[BasicMetadataValueEnum<'ctx>],
+  name: &str,
+) -> Result<CallSiteValue<'ctx>, RuntimeCallError> {
+  if spec.may_gc
+    && spec.gc_ptr_args > 0
+    && spec.arg_rooting != ArgRootingPolicy::RuntimeRootsPointers
+  {
+    return Err(RuntimeCallError::MayGcWithGcPointerArgs {
+      name: spec.name,
+      gc_ptr_args: spec.gc_ptr_args,
+    });
+  }
+
+  builder
+    .build_call(callee, args, name)
+    .map_err(|e| RuntimeCallError::BuildCall {
+      name: spec.name,
+      message: e.to_string(),
+    })
+}
+
+impl<'ctx, 'm> RuntimeAbi<'ctx, 'm> {
+  pub fn runtime_fn(&self, f: RuntimeFn) -> FunctionValue<'ctx> {
+    match f {
+      RuntimeFn::Alloc => self.rt_alloc_gc(),
+      RuntimeFn::AllocPinned => self.rt_alloc_pinned_gc(),
+      RuntimeFn::GcSafepoint => self.rt_gc_safepoint_gc(),
+      RuntimeFn::GcCollect => self.rt_gc_collect_gc(),
+      RuntimeFn::WriteBarrier => self.rt_write_barrier_gc(),
+    }
+  }
+
+  /// Convenience wrapper around [`emit_runtime_call`] for known runtime functions.
+  pub fn emit_runtime_call(
+    &self,
+    builder: &Builder<'ctx>,
+    f: RuntimeFn,
+    args: &[BasicMetadataValueEnum<'ctx>],
+    name: &str,
+  ) -> Result<CallSiteValue<'ctx>, RuntimeCallError> {
+    let callee = self.runtime_fn(f);
+    emit_runtime_call(builder, callee, f.spec(), args, name)
+  }
 }
