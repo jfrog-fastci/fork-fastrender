@@ -262,12 +262,10 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       let Some(lowered) = self.program.hir_lowered(*file) else {
         continue;
       };
-      let mut out: Vec<FileId> = file_import_deps(self.program, &lowered)
+      let out: Vec<FileId> = file_import_deps(self.program, &lowered)
         .into_iter()
         .filter(|dep| file_set.contains(dep))
         .collect();
-      out.sort_by_key(|id| id.0);
-      out.dedup();
       deps.insert(*file, out);
     }
 
@@ -1760,7 +1758,12 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 }
 
 fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<FileId> {
+  // Keep module dependencies in the same order as the source-level `import`
+  // statements. This matches JS module evaluation semantics and provides
+  // deterministic initialization order for sibling imports.
+  let from = lowered.hir.file;
   let mut deps = Vec::new();
+  let mut seen = HashSet::<FileId>::new();
   for import in &lowered.hir.imports {
     let ImportKind::Es(es) = &import.kind else {
       continue;
@@ -1768,34 +1771,13 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
     if es.is_type_only {
       continue;
     }
-
-    let mut defs = Vec::new();
-    if let Some(binding) = &es.default {
-      defs.push(binding.local_def);
-    }
-    if let Some(binding) = &es.namespace {
-      defs.push(binding.local_def);
-    }
-    for named in &es.named {
-      if named.is_type_only {
-        continue;
-      }
-      defs.push(named.local_def);
-    }
-
-    for def in defs.into_iter().flatten() {
-      let Some(kind) = program.def_kind(def) else {
-        continue;
-      };
-      if let typecheck_ts::DefKind::Import(import) = kind {
-        if let typecheck_ts::ImportTarget::File(target) = import.target {
-          deps.push(target);
-        }
-      }
+    let Some(dep) = program.resolve_module(from, es.specifier.value.as_str()) else {
+      continue;
+    };
+    if seen.insert(dep) {
+      deps.push(dep);
     }
   }
-  deps.sort_by_key(|id| id.0);
-  deps.dedup();
   deps
 }
 

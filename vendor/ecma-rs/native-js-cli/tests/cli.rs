@@ -221,8 +221,18 @@ fn build_with_emit_ir_writes_executable_and_ir_file() {
   assert!(ll.is_file(), "expected LLVM IR at {}", ll.display());
 
   let text = fs::read_to_string(&ll).unwrap();
-  assert!(text.contains("@ts_main"), "expected IR to mention ts_main");
-  assert!(text.contains("define"), "expected IR to contain function definitions");
+  assert!(
+    text.contains("define i32 @main"),
+    "expected IR to define a `main` function"
+  );
+  assert!(
+    text.contains("@__nativejs_def_"),
+    "expected IR to contain native-js definition symbols"
+  );
+  assert!(
+    text.contains("__nativejs_file_init_"),
+    "expected IR to contain module init symbols"
+  );
 
   let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
   assert_eq!(status.code(), Some(7));
@@ -595,4 +605,109 @@ fn checked_pipeline_emit_ir_contains_symbols() {
     text.contains("gc \"coreclr\""),
     "expected IR to use native-js GC strategy"
   );
+}
+
+#[test]
+fn imported_module_init_runs() {
+  let tmp = TempDir::new().unwrap();
+  let dep = tmp.path().join("dep.ts");
+  fs::write(
+    &dep,
+    r#"export let x: number = 40;
+x += 2;
+"#,
+  )
+  .unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"import { x } from "./dep";
+export function main(): number { return x; }
+"#,
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("build")
+    .arg(&entry)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(42));
+}
+
+#[test]
+fn side_effect_only_import_runs() {
+  let tmp = TempDir::new().unwrap();
+  let dep = tmp.path().join("dep.ts");
+  fs::write(&dep, "print(42);\n").unwrap();
+
+  let entry = tmp.path().join("entry.ts");
+  fs::write(
+    &entry,
+    r#"import "./dep";
+import "./dep";
+export function main(): number { return 0; }
+"#,
+  )
+  .unwrap();
+
+  native_js()
+    .timeout(Duration::from_secs(60))
+    .arg("run")
+    .arg(&entry)
+    .assert()
+    .success()
+    .stdout(predicate::eq("42\n"));
+}
+
+#[test]
+fn init_order_dependency_first() {
+  let tmp = TempDir::new().unwrap();
+
+  let c = tmp.path().join("c.ts");
+  fs::write(
+    &c,
+    r#"export let x: number = 0;
+x = 1;
+"#,
+  )
+  .unwrap();
+
+  let b = tmp.path().join("b.ts");
+  fs::write(
+    &b,
+    r#"import { x as cx } from "./c";
+export let x: number = cx + 1;
+"#,
+  )
+  .unwrap();
+
+  let a = tmp.path().join("a.ts");
+  fs::write(
+    &a,
+    r#"import { x } from "./b";
+export function main(): number { return x; }
+"#,
+  )
+  .unwrap();
+
+  let out = tmp.path().join("out-bin");
+  native_js()
+    .timeout(Duration::from_secs(120))
+    .arg("build")
+    .arg(&a)
+    .arg("-o")
+    .arg(&out)
+    .assert()
+    .success();
+
+  let status = run_with_timeout(&mut StdCommand::new(&out), Duration::from_secs(5)).unwrap();
+  assert_eq!(status.code(), Some(2));
 }
