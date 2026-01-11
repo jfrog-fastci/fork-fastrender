@@ -22,12 +22,12 @@
  * writable during relocation without requiring text relocations (DT_TEXTREL).
  *
  * RELRO + lld constraints:
- * - lld enforces that RELRO sections are contiguous in the final layout; placing
- *   custom `.data.rel.ro.*` output sections inside the RELRO range can trigger:
- *     "section: .dynamic is not contiguous with other relro sections"
- * - To remain lld-friendly while preserving the dedicated
- *   `.data.rel.ro.llvm_{stackmaps,faultmaps}` section names, we insert these
- *   output sections immediately before `.bss` (outside the RELRO range).
+ * - For PIE/DSO links we want stackmaps/faultmaps to be writable while the
+ *   dynamic loader applies relocations, then protected by RELRO (PT_GNU_RELRO).
+ * - lld is sensitive to RELRO section ordering/contiguity. The most robust
+ *   approach is to append the stackmaps/faultmaps payloads into the standard
+ *   `.data.rel.ro` output section (instead of creating dedicated output section
+ *   names) so they stay inside the existing RELRO block.
  *
  * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
  * small section definition without replacing the entire default linker script.
@@ -38,7 +38,9 @@
  */
 
 SECTIONS {
-  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
+  /* Keep stackmaps/faultmaps in RELRO-friendly data (writable during relocation,
+   * then protected by `PT_GNU_RELRO`). */
+  .data.rel.ro : ALIGN(8) {
     . = ALIGN(8);
     __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;
@@ -57,9 +59,7 @@ SECTIONS {
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
-  }
- 
-  .data.rel.ro.llvm_faultmaps : ALIGN(8) {
+
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))
@@ -69,4 +69,7 @@ SECTIONS {
     . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-} INSERT BEFORE .bss;
+/* Anchor at `.dynamic`: it is present in PIE/DSO links (even `-nostdlib`
+ * minimal links), and is inside the RELRO block so stackmaps stay covered by
+ * PT_GNU_RELRO. */
+} INSERT BEFORE .dynamic;
