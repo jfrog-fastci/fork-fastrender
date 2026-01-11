@@ -288,6 +288,9 @@ fields are reserved for the eventual LLVM-backed backend.
   even if the program later traps/aborts.
 - Numbers use libc formatting for finite values, but `NaN`/`Infinity`/`-Infinity` are printed in
   a JS-friendly form (instead of libc `nan`/`inf` strings).
+- `assert(cond, msg?)` aborts when `cond` is false:
+  - prints `msg` if provided (any printable value)
+  - otherwise prints a default `assertion failed` message
 
 Everything else currently fails with a coarse `native_js::codegen::CodegenError`
 (`unsupported statement`, `unsupported expression`, `unsupported operator: ...`,
