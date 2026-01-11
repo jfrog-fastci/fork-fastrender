@@ -611,8 +611,10 @@ impl<'a> CallSite<'a> {
   /// - `Indirect [FP + off]` becomes `fp_off = off`
   pub fn gc_root_rbp_offsets_strict(&self) -> Result<Vec<i32>, StackMapError> {
     let mut out: Vec<i32> = Vec::new();
-    let looks_like_statepoint = self.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-      && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
+    let looks_like_statepoint =
+      self.record.patchpoint_id == crate::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID
+        && self.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
+        && self.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
         .iter()
         .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
 
