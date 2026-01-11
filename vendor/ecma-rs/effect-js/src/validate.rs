@@ -340,12 +340,16 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
                "may_throw" | "throws" | "maythrow" => base_effects |= EffectSet::MAY_THROW,
                "unknown" => base_effects |= EffectSet::UNKNOWN,
                // Informational-only tags (no effect flags).
-               "async" | "depends_on_callback" | "depends_on_args" => {}
+               "async"
+               | "depends_on_callback"
+               | "depends_on_args"
+               | "dependsoncallback"
+               | "dependsonargs" => {}
                other => errors.push(ValidationError::UnknownEnumString {
                  api: api.name.clone(),
-              field: "effects.base".to_string(),
-              value: other.to_string(),
-            }),
+                 field: "effects.base".to_string(),
+                 value: other.to_string(),
+               }),
           }
         }
       } else {
@@ -532,6 +536,30 @@ mod tests {
       )],
     )]);
     validate(&db).expect("camelCase effects.base tokens are accepted");
+  }
+
+  #[test]
+  fn effects_base_accepts_depends_on_aliases() {
+    let db = ApiDatabase::from_entries([api(
+      "Array.prototype.map",
+      EffectTemplate::DependsOnArgs {
+        base: EffectSet::ALLOCATES,
+        args: vec![0],
+      },
+      PurityTemplate::DependsOnArgs {
+        base: Purity::Allocating,
+        args: vec![0],
+      },
+      &[(
+        "effects.base",
+        JsonValue::Array(vec![
+          JsonValue::String("dependsOnCallback".to_string()),
+          JsonValue::String("dependsOnArgs".to_string()),
+          JsonValue::String("async".to_string()),
+        ]),
+      )],
+    )]);
+    validate(&db).expect("informational dependsOn* tokens are accepted");
   }
 
   #[test]
