@@ -52,5 +52,6 @@ MEGATEST_FILTER=optimizable_0 \
 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p megatest-harness -- --update-baselines
 ```
 
-Note: `--update-baselines` always regenerates the **full** baseline file (it ignores `MEGATEST_FILTER`)
-to avoid accidentally committing a partial baseline.
+Note: `--update-baselines` always writes a baseline that covers the **full** corpus.
+If `MEGATEST_FILTER` (or `--filter`) is set, only the matching entries are recomputed; the rest are
+carried over from the existing baseline.

@@ -2,8 +2,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use megatest_harness::{
   baseline_path, compute_baseline_entry, discover_fixtures, filter_fixtures, load_baseline,
-  megatest_filter, parse_and_lower, read_source, source_sha256, write_baseline, Baseline,
-  BASELINE_VERSION,
+  megatest_filter, parse_and_lower, read_source, source_sha256, write_baseline, BaselineEntry,
+  Baseline, BASELINE_VERSION,
 };
 use std::collections::BTreeMap;
 
@@ -27,19 +27,47 @@ struct Args {
 
 fn main() -> Result<()> {
   let args = Args::parse();
-  let filter = if args.update_baselines {
-    None
-  } else {
-    args.filter.clone().or_else(megatest_filter)
-  };
-  let fixtures = filter_fixtures(discover_fixtures()?, filter.as_deref());
 
   if args.update_baselines {
+    // For baseline updates, we always write a baseline that covers *all* fixtures.
+    //
+    // When a filter is set, only recompute entries matching the filter (plus any entries whose
+    // source changed or were missing), and keep the rest from the existing baseline. This avoids
+    // accidentally committing a partial `baseline.json` while keeping update iterations fast.
+    let update_filter = args.filter.clone().or_else(megatest_filter);
+    let fixtures = discover_fixtures()?;
+
+    let existing: Option<Baseline> = load_baseline().ok();
     let mut files = BTreeMap::new();
+    let mut updated = 0usize;
+
     for fixture in fixtures {
       let source = read_source(&fixture.path)?;
-      let entry = compute_baseline_entry(&source)
-        .with_context(|| format!("compute baseline entry for {fixture}"))?;
+      let cur_source_sha256 = source_sha256(&source);
+
+      let should_recompute_for_filter = update_filter
+        .as_deref()
+        .is_some_and(|filter| fixture.name.contains(filter));
+      let existing_entry = existing
+        .as_ref()
+        .and_then(|baseline| baseline.files.get(&fixture.name))
+        .cloned();
+      let source_changed = existing_entry
+        .as_ref()
+        .is_some_and(|entry| entry.source_sha256 != cur_source_sha256);
+      let missing_entry = existing_entry.is_none();
+
+      let (entry, recomputed): (BaselineEntry, bool) =
+        if should_recompute_for_filter || source_changed || missing_entry || existing.is_none() {
+          let entry = compute_baseline_entry(&source)
+            .with_context(|| format!("compute baseline entry for {fixture}"))?;
+          (entry, true)
+        } else {
+          (existing_entry.expect("entry exists"), false)
+        };
+      if recomputed {
+        updated += 1;
+      }
       files.insert(fixture.name, entry);
     }
     let baseline = Baseline {
@@ -47,9 +75,22 @@ fn main() -> Result<()> {
       files,
     };
     write_baseline(&baseline)?;
-    println!("wrote {}", baseline_path().display());
+    if let Some(filter) = update_filter {
+      println!(
+        "wrote {} (updated {updated} file(s), filter={filter})",
+        baseline_path().display()
+      );
+    } else {
+      println!(
+        "wrote {} (updated {updated} file(s))",
+        baseline_path().display()
+      );
+    }
     return Ok(());
   }
+
+  let filter = args.filter.clone().or_else(megatest_filter);
+  let fixtures = filter_fixtures(discover_fixtures()?, filter.as_deref());
 
   let baseline = load_baseline()?;
   let total = fixtures.len();
