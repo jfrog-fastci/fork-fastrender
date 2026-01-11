@@ -131,11 +131,21 @@ impl EncodingAnalysis {
   }
 
   fn encoding_for_bin_add(&self, state: &EncodingState, left: &Arg, right: &Arg) -> StringEncoding {
-    let left = self.encoding_of_arg(state, left);
-    let right = self.encoding_of_arg(state, right);
-    // Best-effort: when either side might be string, concatenation widens the
-    // encoding to the most general one.
-    join_encoding(left, right)
+    let left_enc = self.encoding_of_arg(state, left);
+    let right_enc = self.encoding_of_arg(state, right);
+    let is_string_concat = matches!(left, Arg::Const(Const::Str(_)))
+      || matches!(right, Arg::Const(Const::Str(_)))
+      || (left_enc != StringEncoding::Unknown)
+      || (right_enc != StringEncoding::Unknown);
+    if !is_string_concat {
+      return StringEncoding::Unknown;
+    }
+    // If one side is definitely a string literal / tracked string, `+` performs
+    // string concatenation and coerces the other operand via `ToString`.
+    join_encoding(
+      encoding_for_template_arg(state, left),
+      encoding_for_template_arg(state, right),
+    )
   }
 
   fn encoding_for_template_call(&self, state: &EncodingState, args: &[Arg]) -> StringEncoding {
@@ -389,6 +399,28 @@ mod tests {
 
     let result = analyze_cfg_encoding(&cfg);
     assert_eq!(result.encoding_at_entry(1, 2), StringEncoding::Latin1);
+  }
+
+  #[test]
+  fn concatenation_with_bool_literal_is_ascii() {
+    let cfg = cfg_with_blocks(
+      &[
+        (
+          0,
+          vec![Inst::bin(
+            0,
+            Arg::Const(Const::Str("a".to_string())),
+            BinOp::Add,
+            Arg::Const(Const::Bool(true)),
+          )],
+        ),
+        (1, vec![]),
+      ],
+      &[(0, 1)],
+    );
+
+    let result = analyze_cfg_encoding(&cfg);
+    assert_eq!(result.encoding_at_entry(1, 0), StringEncoding::Ascii);
   }
 
   #[test]
