@@ -66,7 +66,7 @@ use crate::style::color::Rgba;
 use crate::style::types::{BorderStyle, Overflow};
 use crate::style::ComputedStyle;
 use crate::text::pipeline::ShapedRun;
-use crate::tree::box_tree::{BoxNode, BoxTree, ReplacedType};
+use crate::tree::box_tree::{BoxNode, BoxTree, FormControl, ReplacedType};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
@@ -1762,6 +1762,12 @@ pub struct FragmentTree {
   /// sibling `<svg>` roots without freezing `currentColor` to the sprite sheet's computed `color`.
   pub svg_id_defs_raw: Option<Arc<HashMap<String, String>>>,
 
+  /// Form-control metadata keyed by box id for `appearance: none` controls rendered as normal boxes.
+  ///
+  /// Replaced form controls embed this metadata in `ReplacedType::FormControl`; this side map lets
+  /// paint code render text-editing overlays (selection + caret) for non-replaced controls.
+  pub appearance_none_form_controls: Option<Arc<HashMap<usize, Arc<FormControl>>>>,
+
   /// The viewport size (may differ from root fragment bounds)
   viewport: Option<Size>,
 
@@ -1780,6 +1786,7 @@ impl FragmentTree {
       svg_filter_defs: None,
       svg_id_defs: None,
       svg_id_defs_raw: None,
+      appearance_none_form_controls: None,
       viewport: None,
       scroll_metadata: None,
     }
@@ -1798,6 +1805,7 @@ impl FragmentTree {
       svg_filter_defs: None,
       svg_id_defs: None,
       svg_id_defs_raw: None,
+      appearance_none_form_controls: None,
       viewport: Some(viewport),
       scroll_metadata: None,
     }
@@ -1820,6 +1828,7 @@ impl FragmentTree {
       svg_filter_defs: None,
       svg_id_defs: None,
       svg_id_defs_raw: None,
+      appearance_none_form_controls: None,
       viewport: Some(viewport),
       scroll_metadata: None,
     }

@@ -234,6 +234,12 @@ pub struct DisplayListBuilder {
   /// Used to inline same-document fragment references across sibling `<svg>` roots while
   /// preserving `currentColor` semantics.
   svg_id_defs_raw: Option<Arc<HashMap<String, String>>>,
+  /// Form-control metadata keyed by box id for `appearance: none` controls rendered as normal boxes.
+  ///
+  /// Replaced controls embed this metadata in `ReplacedType::FormControl`. When a control is laid
+  /// out as a normal element (to allow authored/pseudo content), we still need the metadata during
+  /// paint to render caret/selection overlays.
+  appearance_none_form_controls: Option<Arc<HashMap<usize, Arc<FormControl>>>>,
   /// Viewport size used for resolving viewport-relative units (e.g. vw/vh) during paint.
   viewport: Option<(f32, f32)>,
   /// Optional viewport size used for visibility/culling decisions while building the display list.
@@ -291,6 +297,12 @@ struct BackgroundRects {
   border: Rect,
   padding: Rect,
   content: Rect,
+}
+
+#[derive(Default)]
+struct TextEditOverlays {
+  selection_rects: Vec<Rect>,
+  caret_rect: Option<(Rect, Rgba)>,
 }
 
 #[derive(Clone)]
@@ -1016,6 +1028,25 @@ impl DisplayListBuilder {
       .unwrap_or(Point::ZERO)
   }
 
+  fn snap_form_control_caret_rect(&self, rect: Rect) -> Rect {
+    let dpr = self.device_pixel_ratio;
+    if !dpr.is_finite() || dpr <= f32::EPSILON {
+      return rect;
+    }
+    if !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
+    {
+      return rect;
+    }
+    let x = (rect.x() * dpr).round() / dpr;
+    let y = (rect.y() * dpr).round() / dpr;
+    let w = (rect.width() * dpr).round().max(1.0) / dpr;
+    let h = (rect.height() * dpr).round().max(1.0) / dpr;
+    Rect::from_xywh(x, y, w, h)
+  }
+
   fn line_decoration_clip_range(&self, inline_start: f32, inline_len: f32) -> Option<(f32, f32)> {
     let ctx = self.line_decoration_ctx?;
     if inline_len <= 0.0 {
@@ -1388,6 +1419,7 @@ impl DisplayListBuilder {
       svg_filter_defs: None,
       svg_id_defs: None,
       svg_id_defs_raw: None,
+      appearance_none_form_controls: None,
       viewport: None,
       culling_viewport: None,
       font_ctx: FontContext::new(),
@@ -1434,6 +1466,7 @@ impl DisplayListBuilder {
       svg_filter_defs: None,
       svg_id_defs: None,
       svg_id_defs_raw: None,
+      appearance_none_form_controls: None,
       viewport: None,
       culling_viewport: None,
       font_ctx: FontContext::new(),
@@ -1510,6 +1543,23 @@ impl DisplayListBuilder {
   /// Updates the raw SVG id registry used for inline SVG `<use>`/paint-server references.
   pub fn set_svg_id_defs_raw(&mut self, defs: Option<Arc<HashMap<String, String>>>) {
     self.svg_id_defs_raw = defs;
+  }
+
+  /// Sets appearance-none form-control metadata (box id → control) for text-edit overlays.
+  pub fn with_appearance_none_form_controls(
+    mut self,
+    controls: Option<Arc<HashMap<usize, Arc<FormControl>>>>,
+  ) -> Self {
+    self.appearance_none_form_controls = controls;
+    self
+  }
+
+  /// Updates appearance-none form-control metadata in place.
+  pub fn set_appearance_none_form_controls(
+    &mut self,
+    controls: Option<Arc<HashMap<usize, Arc<FormControl>>>>,
+  ) {
+    self.appearance_none_form_controls = controls;
   }
 
   /// Sets the font context for shaping text into the display list.
@@ -2350,14 +2400,69 @@ impl DisplayListBuilder {
           }
         }
 
+        let appearance_none_control = Self::get_box_id(fragment).and_then(|box_id| {
+          self
+            .appearance_none_form_controls
+            .as_ref()
+            .and_then(|map| map.get(&box_id))
+            .cloned()
+        });
+        let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
+        let overlays = match (appearance_none_control.as_deref(), style_opt) {
+          (Some(control), Some(style)) => {
+            self.appearance_none_text_edit_overlays(control, style, absolute_rect, scroll_delta)
+          }
+          _ => None,
+        };
+
+        let selection_color = Rgba {
+          r: 0,
+          g: 120,
+          b: 215,
+          a: 0.35,
+        };
+
         // CSS2.1 stacking levels 3-6: blocks → floats → inlines → positioned.
         let mut counter = 0usize;
-        for idx in blocks
-          .into_iter()
-          .chain(floats)
-          .chain(inlines)
-          .chain(positioned)
-        {
+        for idx in blocks {
+          if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+            break;
+          }
+          let child = &fragment.children[idx];
+          self.build_fragment_internal(child, child_offset, true, false, child_visibility);
+        }
+        for idx in floats {
+          if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+            break;
+          }
+          let child = &fragment.children[idx];
+          self.build_fragment_internal(child, child_offset, true, false, child_visibility);
+        }
+
+        if let Some(overlays) = overlays.as_ref() {
+          for rect in &overlays.selection_rects {
+            self.list.push(DisplayItem::FillRect(FillRectItem {
+              rect: *rect,
+              color: selection_color,
+            }));
+          }
+        }
+
+        for idx in inlines {
+          if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+            break;
+          }
+          let child = &fragment.children[idx];
+          self.build_fragment_internal(child, child_offset, true, false, child_visibility);
+        }
+
+        if let Some(overlays) = overlays.as_ref() {
+          if let Some((rect, color)) = overlays.caret_rect {
+            self.list.push(DisplayItem::FillRect(FillRectItem { rect, color }));
+          }
+        }
+
+        for idx in positioned {
           if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
             break;
           }
@@ -2890,6 +2995,28 @@ impl DisplayListBuilder {
     let root_fragment_rect =
       root_fragment.map(|fragment| fragment.bounds.translate(root_fragment_offset));
     let root_border_bounds = root_fragment_rect.unwrap_or(context_bounds);
+    let appearance_none_control = root_fragment.and_then(|fragment| {
+      Self::get_box_id(fragment).and_then(|box_id| {
+        self
+          .appearance_none_form_controls
+          .as_ref()
+          .and_then(|map| map.get(&box_id))
+          .cloned()
+      })
+    });
+    let scroll_delta = root_fragment
+      .map(|fragment| {
+        let scroll = self.element_scroll_offset(fragment);
+        Point::new(-scroll.x, -scroll.y)
+      })
+      .unwrap_or(Point::ZERO);
+    let appearance_none_overlays = match (appearance_none_control.as_deref(), root_style) {
+      (Some(control), Some(style)) => {
+        self.appearance_none_text_edit_overlays(control, style, root_border_bounds, scroll_delta)
+      }
+      _ => None,
+    };
+
     let mut mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
     if mask
       .as_ref()
@@ -3478,11 +3605,31 @@ impl DisplayListBuilder {
         descendant_content_offset,
         local_child_visibility,
       );
+
+      if let Some(overlays) = appearance_none_overlays.as_ref() {
+        let selection_color = Rgba {
+          r: 0,
+          g: 120,
+          b: 215,
+          a: 0.35,
+        };
+        for rect in &overlays.selection_rects {
+          self.list.push(DisplayItem::FillRect(FillRectItem {
+            rect: *rect,
+            color: selection_color,
+          }));
+        }
+      }
       self.emit_fragment_list(
         &context.layer5_inlines,
         descendant_content_offset,
         local_child_visibility,
       );
+      if let Some(overlays) = appearance_none_overlays.as_ref() {
+        if let Some((rect, color)) = overlays.caret_rect {
+          self.list.push(DisplayItem::FillRect(FillRectItem { rect, color }));
+        }
+      }
       for item in context.layer6_iter() {
         if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
           break;
@@ -3658,11 +3805,31 @@ impl DisplayListBuilder {
       descendant_content_offset,
       local_child_visibility,
     );
+
+    if let Some(overlays) = appearance_none_overlays.as_ref() {
+      let selection_color = Rgba {
+        r: 0,
+        g: 120,
+        b: 215,
+        a: 0.35,
+      };
+      for rect in &overlays.selection_rects {
+        self.list.push(DisplayItem::FillRect(FillRectItem {
+          rect: *rect,
+          color: selection_color,
+        }));
+      }
+    }
     self.emit_fragment_list(
       &context.layer5_inlines,
       descendant_content_offset,
       local_child_visibility,
     );
+    if let Some(overlays) = appearance_none_overlays.as_ref() {
+      if let Some((rect, color)) = overlays.caret_rect {
+        self.list.push(DisplayItem::FillRect(FillRectItem { rect, color }));
+      }
+    }
     for item in context.layer6_iter() {
       if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
         break;
@@ -5950,6 +6117,7 @@ impl DisplayListBuilder {
       svg_filter_defs: self.svg_filter_defs.clone(),
       svg_id_defs: self.svg_id_defs.clone(),
       svg_id_defs_raw: self.svg_id_defs_raw.clone(),
+      appearance_none_form_controls: self.appearance_none_form_controls.clone(),
       viewport: self.viewport,
       culling_viewport: self.culling_viewport,
       font_ctx: self.font_ctx.clone(),
@@ -11422,6 +11590,480 @@ impl DisplayListBuilder {
     Self::split_rect_inline_start(rect, style, inline_start_len)
   }
 
+  fn appearance_none_text_edit_overlays(
+    &mut self,
+    control: &FormControl,
+    style: &ComputedStyle,
+    border_rect: Rect,
+    scroll_delta: Point,
+  ) -> Option<TextEditOverlays> {
+    if !control.focused || control.disabled {
+      return None;
+    }
+
+    let rects = Self::background_rects(border_rect, style, self.viewport);
+    let content_rect = rects.content;
+    if content_rect.width() <= 0.0 || content_rect.height() <= 0.0 {
+      return None;
+    }
+
+    let text_rect = content_rect.translate(scroll_delta);
+
+    let shape_text_runs =
+      |builder: &mut Self, text: &str, style: &ComputedStyle| -> Option<Vec<ShapedRun>> {
+        if text.is_empty() {
+          return Some(Vec::new());
+        }
+        let shape_timer = builder.build_breakdown.as_ref().map(|_| Instant::now());
+        let shaped = builder.shaper.shape(text, style, &builder.font_ctx);
+        if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
+          breakdown.record_text_shape(start.elapsed());
+        }
+        let mut runs = shaped.ok()?;
+        InlineTextItem::apply_spacing_to_runs(
+          &mut runs,
+          text,
+          style.letter_spacing,
+          style.word_spacing,
+        );
+        Some(runs)
+      };
+
+    match &control.control {
+      FormControlKind::Text {
+        value,
+        placeholder,
+        placeholder_style,
+        kind,
+        caret,
+        caret_affinity,
+        selection,
+        ..
+      } => {
+        let preedit = control.ime_preedit.as_deref().filter(|t| !t.is_empty());
+        let committed_is_empty = value.is_empty();
+        let display_is_empty = committed_is_empty && preedit.is_none();
+        let mut paint_text_owned: Option<String> = None;
+        let mut paint_text: Option<&str> = None;
+        let mut is_placeholder = false;
+
+        match kind {
+          TextControlKind::Password => {
+            if !display_is_empty {
+              let committed_len = value.chars().count();
+              let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
+              let mask_len = committed_len.saturating_add(preedit_len).clamp(3, 50);
+              paint_text_owned = Some("•".repeat(mask_len));
+              paint_text = paint_text_owned.as_deref();
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              is_placeholder = true;
+            }
+          }
+          TextControlKind::Number | TextControlKind::Date | TextControlKind::Plain => {
+            if let Some(preedit) = preedit {
+              if committed_is_empty {
+                paint_text = Some(preedit);
+              } else {
+                let mut combined = value.clone();
+                combined.push_str(preedit);
+                paint_text_owned = Some(combined);
+                paint_text = paint_text_owned.as_deref();
+              }
+            } else if !committed_is_empty {
+              paint_text = Some(value.as_str());
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              is_placeholder = true;
+            } else if matches!(kind, TextControlKind::Date) {
+              // Date-like inputs render a UA placeholder when empty.
+              paint_text = Some("yyyy-mm-dd");
+              is_placeholder = true;
+            }
+          }
+        }
+
+        let placeholder_pseudo_style = if is_placeholder {
+          placeholder_style
+            .as_deref()
+            .or(control.placeholder_style.as_deref())
+        } else {
+          None
+        };
+        let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
+          let mut cloned = (*pseudo_style).clone();
+          let opacity = cloned.opacity.clamp(0.0, 1.0);
+          let alpha = (cloned.color.a * opacity).clamp(0.0, 1.0);
+          cloned.color = cloned.color.with_alpha(alpha);
+          cloned.opacity = 1.0;
+          cloned
+        } else {
+          style.clone()
+        };
+
+        let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
+        let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
+        let line_height = compute_line_height_with_metrics_viewport(
+          &text_style,
+          metrics_scaled.as_ref(),
+          viewport,
+          self.font_ctx.root_font_metrics(),
+        );
+        let baseline_offset_y = if line_height.is_finite() {
+          (content_rect.height() - line_height) / 2.0
+        } else {
+          0.0
+        };
+        let baseline_offset_y = if baseline_offset_y.is_finite() {
+          baseline_offset_y
+        } else {
+          0.0
+        };
+
+        let mut sample_text = paint_text.unwrap_or("M");
+        if trim_ascii_whitespace(sample_text).is_empty() {
+          sample_text = "M";
+        }
+        let metrics_runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
+        let metrics = InlineTextItem::metrics_from_runs(
+          &self.font_ctx,
+          &metrics_runs,
+          line_height,
+          text_style.font_size,
+        );
+        let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+        let baseline_y = text_rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
+        let top = baseline_y - metrics.ascent;
+        let bottom = baseline_y + metrics.descent;
+
+        let display_text = paint_text.unwrap_or("");
+        let text_runs = shape_text_runs(self, display_text, &text_style).unwrap_or_default();
+        let fallback_advance = display_text.chars().count() as f32 * text_style.font_size * 0.6;
+        let total_advance: f32 = if !text_runs.is_empty() {
+          text_runs.iter().map(|run| run.advance).sum()
+        } else {
+          fallback_advance
+        };
+        let start_x = Self::aligned_text_start_x(&text_style, text_rect, total_advance);
+        let max_chars = display_text.chars().count();
+        let fallback_char_advance = if max_chars > 0 {
+          (fallback_advance / max_chars as f32).max(0.0)
+        } else {
+          0.0
+        };
+        let caret_stops = caret_stops_for_runs(display_text, &text_runs, total_advance);
+
+        let mut overlays = TextEditOverlays::default();
+
+        if let Some((sel_start, sel_end)) = *selection {
+          let sel_start = sel_start.min(max_chars);
+          let sel_end = sel_end.min(max_chars);
+          if sel_start != sel_end {
+            let segments = if text_runs.is_empty() {
+              let x1 = fallback_char_advance * sel_start as f32;
+              let x2 = fallback_char_advance * sel_end as f32;
+              vec![(x1.min(x2), x1.max(x2))]
+            } else {
+              crate::text::caret::selection_segments_for_char_range(
+                display_text,
+                &text_runs,
+                sel_start,
+                sel_end,
+              )
+            };
+            for (seg_start, seg_end) in segments {
+              let rect = Rect::from_xywh(
+                start_x + seg_start,
+                top,
+                (seg_end - seg_start).max(0.0),
+                (bottom - top).max(0.0),
+              );
+              if let Some(clipped) =
+                rect.intersection(content_rect).filter(|r| r.width() > 0.0 && r.height() > 0.0)
+              {
+                overlays.selection_rects.push(clipped);
+              }
+            }
+          }
+        }
+
+        overlays
+          .selection_rects
+          .retain(|r| r.width() > 0.0 && r.height() > 0.0);
+
+        let caret_color = match style.caret_color {
+          CaretColor::Color(c) => c,
+          CaretColor::Auto => style.color,
+        };
+        if !caret_color.is_transparent() {
+          let caret_idx = if preedit.is_some() {
+            max_chars
+          } else {
+            (*caret).min(max_chars)
+          };
+          let caret_affinity_for_paint = if preedit.is_some() {
+            CaretAffinity::Downstream
+          } else {
+            *caret_affinity
+          };
+          let caret_x = start_x
+            + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint).unwrap_or(0.0);
+          let max_caret_x = (text_rect.max_x() - 1.0).max(text_rect.x());
+          let caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
+          let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+          let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
+          if let Some(clipped) = caret_rect_raw.intersection(content_rect) {
+            if clipped.width() > 0.0 && clipped.height() > 0.0 {
+              overlays.caret_rect = Some((clipped, caret_color));
+            }
+          }
+        }
+
+        if overlays.selection_rects.is_empty() && overlays.caret_rect.is_none() {
+          None
+        } else {
+          Some(overlays)
+        }
+      }
+      FormControlKind::TextArea {
+        value,
+        placeholder,
+        placeholder_style,
+        caret,
+        caret_affinity,
+        selection,
+        ..
+      } => {
+        let preedit = control.ime_preedit.as_deref().filter(|t| !t.is_empty());
+        let committed_is_empty = value.is_empty();
+
+        let mut paint_text_owned: Option<String> = None;
+        let mut paint_text: Option<&str> = None;
+        let mut is_placeholder = false;
+        if let Some(preedit) = preedit {
+          if committed_is_empty {
+            paint_text = Some(preedit);
+          } else {
+            let mut combined = value.clone();
+            combined.push_str(preedit);
+            paint_text_owned = Some(combined);
+            paint_text = paint_text_owned.as_deref();
+          }
+        } else if !committed_is_empty {
+          paint_text = Some(value.as_str());
+        } else if let Some(placeholder) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+          paint_text = Some(placeholder);
+          is_placeholder = true;
+        }
+
+        let placeholder_pseudo_style = if is_placeholder {
+          placeholder_style
+            .as_deref()
+            .or(control.placeholder_style.as_deref())
+        } else {
+          None
+        };
+        let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
+          let mut cloned = (*pseudo_style).clone();
+          let opacity = cloned.opacity.clamp(0.0, 1.0);
+          let alpha = (cloned.color.a * opacity).clamp(0.0, 1.0);
+          cloned.color = cloned.color.with_alpha(alpha);
+          cloned.opacity = 1.0;
+          cloned
+        } else {
+          style.clone()
+        };
+
+        let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
+        let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
+        let line_height = compute_line_height_with_metrics_viewport(
+          &text_style,
+          metrics_scaled.as_ref(),
+          viewport,
+          self.font_ctx.root_font_metrics(),
+        );
+
+        let display_text = paint_text.unwrap_or("");
+        let max_chars = display_text.chars().count();
+        let caret_idx = if preedit.is_some() {
+          max_chars
+        } else {
+          (*caret).min(max_chars)
+        };
+        let caret_affinity_for_paint = if preedit.is_some() {
+          CaretAffinity::Downstream
+        } else {
+          *caret_affinity
+        };
+        let selection = (*selection).map(|(start, end)| (start.min(max_chars), end.min(max_chars)));
+        let caret_color = match style.caret_color {
+          CaretColor::Color(c) => c,
+          CaretColor::Auto => style.color,
+        };
+
+        let mut overlays = TextEditOverlays::default();
+        let mut caret_rect: Option<Rect> = None;
+        let mut last_visible_line: Option<(
+          /*line*/ &str,
+          /*len*/ usize,
+          Rect,
+          f32,
+          f32,
+          f32,
+          f32,
+          f32,
+        )> = None;
+
+        let mut metrics_sample = display_text;
+        if trim_ascii_whitespace(metrics_sample).is_empty() {
+          metrics_sample = "M";
+        }
+        let metrics_runs = shape_text_runs(self, metrics_sample, &text_style).unwrap_or_default();
+        let metrics = InlineTextItem::metrics_from_runs(
+          &self.font_ctx,
+          &metrics_runs,
+          line_height,
+          text_style.font_size,
+        );
+        let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+
+        let mut y = text_rect.y();
+        let mut line_start = 0usize;
+        for line in display_text.split('\n') {
+          if y > text_rect.y() + text_rect.height() {
+            break;
+          }
+
+          let line_len = line.chars().count();
+          let line_end = line_start + line_len;
+          let line_rect = Rect::from_xywh(text_rect.x(), y, text_rect.width(), line_height);
+
+          let line_runs = shape_text_runs(self, line, &text_style).unwrap_or_default();
+          let fallback_advance = line_len as f32 * text_style.font_size * 0.6;
+          let total_advance: f32 = if !line_runs.is_empty() {
+            line_runs.iter().map(|run| run.advance).sum()
+          } else {
+            fallback_advance
+          };
+          let start_x = Self::aligned_text_start_x(&text_style, line_rect, total_advance);
+          let caret_stops = caret_stops_for_runs(line, &line_runs, total_advance);
+
+          let baseline_y = y + half_leading + metrics.baseline_offset;
+          let top = baseline_y - metrics.ascent;
+          let bottom = baseline_y + metrics.descent;
+
+          let caret_height = (bottom - top).max(0.0);
+          if caret_height > 0.0 {
+            let caret_band = Rect::from_xywh(line_rect.x(), top, 1.0, caret_height);
+            if let Some(intersection) = caret_band.intersection(content_rect) {
+              if intersection.height() > 0.0 {
+                last_visible_line = Some((
+                  line,
+                  line_len,
+                  line_rect,
+                  start_x,
+                  total_advance,
+                  top,
+                  bottom,
+                  fallback_advance,
+                ));
+              }
+            }
+          }
+
+          if let Some((sel_start, sel_end)) = selection {
+            let seg_start = sel_start.max(line_start).min(line_end);
+            let seg_end = sel_end.max(line_start).min(line_end);
+            if seg_start < seg_end {
+              let start_col = seg_start - line_start;
+              let end_col = seg_end - line_start;
+              let fallback_char_advance = if line_len > 0 {
+                (fallback_advance / line_len as f32).max(0.0)
+              } else {
+                0.0
+              };
+              let segments = if line_runs.is_empty() {
+                let x1 = fallback_char_advance * start_col as f32;
+                let x2 = fallback_char_advance * end_col as f32;
+                vec![(x1.min(x2), x1.max(x2))]
+              } else {
+                crate::text::caret::selection_segments_for_char_range(
+                  line,
+                  &line_runs,
+                  start_col,
+                  end_col,
+                )
+              };
+              for (seg_start, seg_end) in segments {
+                let sel_rect = Rect::from_xywh(
+                  start_x + seg_start,
+                  top,
+                  (seg_end - seg_start).max(0.0),
+                  (bottom - top).max(0.0),
+                );
+                if let Some(clipped) = sel_rect.intersection(content_rect) {
+                  if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                    overlays.selection_rects.push(clipped);
+                  }
+                }
+              }
+            }
+          }
+
+          if caret_rect.is_none()
+            && caret_idx <= line_end
+            && !caret_color.is_transparent()
+          {
+            let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
+            let caret_x = start_x
+              + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint).unwrap_or(0.0);
+            let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
+            let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
+            let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
+            caret_rect = caret_rect_raw
+              .intersection(content_rect)
+              .filter(|r| r.width() > 0.0 && r.height() > 0.0);
+          }
+
+          y += line_height;
+          line_start = line_end.saturating_add(1);
+        }
+
+        if caret_rect.is_none() && !caret_color.is_transparent() {
+          if let Some((line, line_len, line_rect, start_x, total_advance, top, bottom, _fallback)) =
+            last_visible_line
+          {
+            let line_runs = shape_text_runs(self, line, &text_style).unwrap_or_default();
+            let caret_x = start_x
+              + caret_x_for_position(
+                &caret_stops_for_runs(line, &line_runs, total_advance),
+                line_len,
+                CaretAffinity::Downstream,
+              )
+              .unwrap_or(0.0);
+            let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
+            let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
+            let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
+            caret_rect = caret_rect_raw
+              .intersection(content_rect)
+              .filter(|r| r.width() > 0.0 && r.height() > 0.0);
+          }
+        }
+
+        overlays.caret_rect = caret_rect.map(|rect| (rect, caret_color));
+
+        if overlays.selection_rects.is_empty() && overlays.caret_rect.is_none() {
+          None
+        } else {
+          Some(overlays)
+        }
+      }
+      _ => None,
+    }
+  }
+
   fn emit_form_control(
     &mut self,
     control: &FormControl,
@@ -11606,26 +12248,6 @@ impl DisplayListBuilder {
           }));
       }
     }
-
-    let caret_snap_dpr = self.device_pixel_ratio;
-    let snap_form_control_caret_rect = move |rect: Rect| -> Rect {
-      let dpr = caret_snap_dpr;
-      if !dpr.is_finite() || dpr <= f32::EPSILON {
-        return rect;
-      }
-      if !rect.x().is_finite()
-        || !rect.y().is_finite()
-        || !rect.width().is_finite()
-        || !rect.height().is_finite()
-      {
-        return rect;
-      }
-      let x = (rect.x() * dpr).round() / dpr;
-      let y = (rect.y() * dpr).round() / dpr;
-      let w = (rect.width() * dpr).round().max(1.0) / dpr;
-      let h = (rect.height() * dpr).round().max(1.0) / dpr;
-      Rect::from_xywh(x, y, w, h)
-    };
 
     match &control.control {
       FormControlKind::Text {
@@ -11939,7 +12561,7 @@ impl DisplayListBuilder {
             let caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
 
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-            let caret_rect_raw = snap_form_control_caret_rect(caret_rect_raw);
+            let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
             if let Some(clipped) = caret_rect_raw.intersection(padding_rect) {
               if clipped.width() > 0.0 && clipped.height() > 0.0 {
                 caret_rect = Some((clipped, caret_color));
@@ -12276,7 +12898,7 @@ impl DisplayListBuilder {
               let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
               let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
               let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-              let caret_rect_raw = snap_form_control_caret_rect(caret_rect_raw);
+              let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
               caret_rect = caret_rect_raw
                 .intersection(rect)
                 .filter(|r| r.width() > 0.0 && r.height() > 0.0);
@@ -12317,7 +12939,7 @@ impl DisplayListBuilder {
             let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
             let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
-            let caret_rect_raw = snap_form_control_caret_rect(caret_rect_raw);
+            let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
             caret_rect = caret_rect_raw
               .intersection(rect)
               .filter(|r| r.width() > 0.0 && r.height() > 0.0);

@@ -7237,13 +7237,14 @@ impl FastRender {
         let svg_id_defs = fragment_tree.svg_id_defs.clone();
         let svg_id_defs_raw = fragment_tree.svg_id_defs_raw.clone();
         let base_url = self.base_url.clone();
-        let build_display_list_for_root =
+          let build_display_list_for_root =
           |root: &FragmentNode| -> crate::Result<crate::paint::display_list::DisplayList> {
             let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
               .with_font_context(self.font_context.clone())
               .with_svg_filter_defs(svg_filter_defs.clone())
               .with_svg_id_defs(svg_id_defs.clone())
               .with_svg_id_defs_raw(svg_id_defs_raw.clone())
+              .with_appearance_none_form_controls(fragment_tree.appearance_none_form_controls.clone())
               .with_scroll_state(scroll_state_for_paint.clone())
               .with_device_pixel_ratio(self.device_pixel_ratio)
               .with_parallelism(&paint_parallelism)
@@ -9369,11 +9370,17 @@ impl FastRender {
       // stacking context bounds.
       let mut display_list = DisplayListBuilder::new()
         .with_viewport_size(viewport_size.width, viewport_size.height)
+        .with_appearance_none_form_controls(
+          intermediates.fragment_tree.appearance_none_form_controls.clone(),
+        )
         .with_scroll_state(scroll_state.clone())
         .build_with_stacking_tree(&intermediates.fragment_tree.root);
       for extra in &intermediates.fragment_tree.additional_fragments {
         let extra_list = DisplayListBuilder::new()
           .with_viewport_size(viewport_size.width, viewport_size.height)
+          .with_appearance_none_form_controls(
+            intermediates.fragment_tree.appearance_none_form_controls.clone(),
+          )
           .with_scroll_state(scroll_state.clone())
           .build_with_stacking_tree(extra);
         display_list.append(extra_list);

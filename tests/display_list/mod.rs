@@ -5,6 +5,7 @@ mod background_clip_text_rtl;
 mod bidi_split_caret_affinity;
 mod box_shadow_blur_cache;
 mod builder_clip_path_backdrop_root_test;
+mod form_control_appearance_none_caret;
 mod form_control_bidi_caret;
 mod form_control_caret_color;
 mod form_control_content_box_clip;

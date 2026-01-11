@@ -19401,6 +19401,7 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
         .with_svg_filter_defs(tree.svg_filter_defs.clone())
         .with_svg_id_defs(tree.svg_id_defs.clone())
         .with_svg_id_defs_raw(tree.svg_id_defs_raw.clone())
+        .with_appearance_none_form_controls(tree.appearance_none_form_controls.clone())
         .with_scroll_state(scroll_state.clone())
         .with_device_pixel_ratio(scale)
         .with_parallelism(&paint_parallelism)

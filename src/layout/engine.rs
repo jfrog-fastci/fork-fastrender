@@ -54,7 +54,7 @@ use rayon::ThreadPoolBuilder;
 use selectors::context::QuirksMode;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -1142,14 +1142,36 @@ impl LayoutEngine {
       .with_block_percentage_base(Some(block_percentage_base));
     let root_fragment = self.layout_subtree_internal(factory, &box_tree.root, &constraints, trace)?;
 
+    // Collect form-control metadata for `appearance: none` controls that were laid out as normal
+    // boxes. Replaced controls carry this metadata in `ReplacedType::FormControl`, but non-replaced
+    // controls need it later during paint to render selection/caret overlays.
+    let appearance_none_form_controls = {
+      let mut controls: HashMap<usize, Arc<crate::tree::box_tree::FormControl>> = HashMap::new();
+      let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+      while let Some(node) = stack.pop() {
+        if let Some(control) = node.form_control.clone() {
+          controls.insert(node.id, control);
+        }
+        if let Some(body) = node.footnote_body.as_deref() {
+          stack.push(body);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      (!controls.is_empty()).then(|| Arc::new(controls))
+    };
+
     if let Some(options) = &self.config.fragmentation {
       let fragments = fragmentation::fragment_tree(&root_fragment, options)?;
       let mut tree = FragmentTree::from_fragments(fragments, *icb);
+      tree.appearance_none_form_controls = appearance_none_form_controls;
       tree.ensure_scroll_metadata();
       Ok(tree)
     } else {
       // Create fragment tree with viewport size
       let mut tree = FragmentTree::with_viewport(root_fragment, *icb);
+      tree.appearance_none_form_controls = appearance_none_form_controls;
       tree.ensure_scroll_metadata();
       Ok(tree)
     }
