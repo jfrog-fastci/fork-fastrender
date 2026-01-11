@@ -3992,9 +3992,18 @@ pub fn rt_parallel_for(
 // Use a stable generational handle id (u64) that indexes a pinned handle table
 // cell, and the GC updates the cell's pointer when the coroutine relocates.
 pub fn rt_async_spawn(coro: CoroutineId /* = u64 */) -> PromiseRef;
+// Like `rt_async_spawn`, but schedules the first resume as a microtask instead of running
+// synchronously (strict microtask semantics / `queueMicrotask` behavior).
+pub fn rt_async_spawn_deferred(coro: CoroutineId /* = u64 */) -> PromiseRef;
 // Drive the async runtime for one event-loop turn.
 // Returns true iff there is still pending work after the turn; false when fully idle.
 pub fn rt_async_poll() -> bool;
+// Drain only the microtask queue (non-blocking microtask checkpoint).
+pub fn rt_drain_microtasks() -> bool;
+// Block the current thread until at least one async task becomes ready.
+pub fn rt_async_wait();
+// Tear down all pending async work without running it (drop hooks run).
+pub fn rt_async_cancel_all();
 ```
 
 See [`docs/runtime-native/buffers-and-io.md`](docs/runtime-native/buffers-and-io.md) for the

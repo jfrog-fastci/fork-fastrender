@@ -316,7 +316,11 @@ pub fn rt_parallel_for(
 // pinned handle-table cell; the GC updates the cell's pointer when the coroutine
 // relocates.
 pub fn rt_async_spawn(coro: CoroutineId /* = u64 */) -> PromiseRef;
+pub fn rt_async_spawn_deferred(coro: CoroutineId /* = u64 */) -> PromiseRef;
 pub fn rt_async_poll() -> bool;
+pub fn rt_drain_microtasks() -> bool;
+pub fn rt_async_wait();
+pub fn rt_async_cancel_all();
 ```
 
 GC also exports a global epoch `RT_GC_EPOCH` (an atomic `u64`) so compiler-generated code can
@@ -363,7 +367,11 @@ around `MayGC` calls (the runtime may safepoint/collect and relocate nursery obj
 | `rt_parallel_join` | MayGC | May block/safepoint while waiting. |
 | `rt_parallel_for` | MayGC | May spawn tasks and/or block while waiting. |
 | `rt_async_spawn` | MayGC | May allocate promise/async bookkeeping. |
+| `rt_async_spawn_deferred` | MayGC | May allocate promise/async bookkeeping. |
 | `rt_async_poll` | MayGC | Drives async runtime; may allocate/safepoint. |
+| `rt_drain_microtasks` | MayGC | Drains microtasks; may allocate/safepoint. |
+| `rt_async_wait` | MayGC | May block/safepoint while waiting for async work. |
+| `rt_async_cancel_all` | MayGC | Cancels pending work; may allocate/safepoint. |
 
 ### 3.2 Planned ABI (Milestone 3+)
 
@@ -395,14 +403,12 @@ with the runtime. One possible direction is a module registration API like:
   handle, if/when strings become fully GC-managed objects.
 
 #### Scheduler/async ABI (planned extensions)
-Milestone 1 exposes only `rt_parallel_spawn/join/for` and `rt_async_spawn/poll`. A
+Milestone 1 exposes `rt_parallel_spawn/join/for` and a minimal async surface (`rt_async_spawn*`,
+`rt_async_poll`, and microtask-only checkpoint via `rt_drain_microtasks`). A
 more complete scheduler/async surface may add:
 - Cooperative yielding (e.g. `rt_parallel_yield()`).
 - Promise/continuation primitives (e.g. `rt_promise_then`, `rt_promise_resolve`,
-  etc.) if the compiler lowers async/await in terms of explicit promise ops.
-- A microtask-only non-blocking checkpoint API (as a **new symbol**, e.g.
-  `rt_drain_microtasks`) rather than changing `rt_async_poll() -> bool`, which
-  drives a full event-loop turn and may block waiting for timers/I/O.
+   etc.) if the compiler lowers async/await in terms of explicit promise ops.
 
 ---
 
