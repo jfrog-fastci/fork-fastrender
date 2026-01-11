@@ -1,3 +1,22 @@
+//! Linking helpers for producing native executables that preserve LLVM stack maps.
+//!
+//! ## Why default to non-PIE on Linux?
+//! LLVM's `.llvm_stackmaps` section (emitted by statepoints / `llvm.experimental.stackmap`) often
+//! contains relocations against code addresses.
+//!
+//! When linking a PIE those relocations become dynamic relocations and can require the dynamic
+//! loader to apply text relocations (`DT_TEXTREL`) if `.llvm_stackmaps` is placed in a read-only
+//! segment. Many hardened toolchains reject this.
+//!
+//! `native-js` therefore links **non-PIE** (`-no-pie`) by default on Linux so stackmap relocations
+//! are resolved at link time. This also keeps stackmap lookup simple: return addresses are stable
+//! absolute addresses.
+//!
+//! ## Supporting PIE safely
+//! PIE can be enabled via [`LinkOpts::pie`], but **safe** PIE support requires the runtime stackmap
+//! reader to become relocation-aware (apply relocations / account for the load base) instead of
+//! relying on text relocations.
+
 use anyhow::Context;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,7 +52,7 @@ pub struct LinkOpts {
   /// it directly) is incompatible with PIE unless the linker is allowed to emit text relocations.
   ///
   /// We therefore default to `pie: false` and use `-no-pie` unless the caller explicitly opts into
-  /// PIE (and, when using LLD, also pass `-z notext`).
+  /// PIE.
   pub pie: bool,
 }
 
@@ -146,6 +165,8 @@ pub fn link_elf_executable_with_options(
 
   if opts.pie {
     if matches!(opts.linker, LinkerFlavor::Lld) {
+      // Allow text relocations for experimentation. Safe PIE support requires relocation-aware
+      // stackmap parsing; see module docs.
       cmd.arg("-Wl,-z,notext");
     }
   } else {
@@ -177,6 +198,24 @@ pub fn link_elf_executable_with_options(
   }
 
   Ok(())
+}
+
+/// Link one or more **in-memory** object buffers into an ELF executable.
+pub fn link_object_buffers_to_elf_executable(
+  output_path: &Path,
+  object_buffers: &[&[u8]],
+  opts: LinkOpts,
+) -> anyhow::Result<()> {
+  let td = tempfile::tempdir().context("failed to create tempdir for object linking")?;
+  let mut paths = Vec::with_capacity(object_buffers.len());
+  for (idx, bytes) in object_buffers.iter().enumerate() {
+    let path = td.path().join(format!("obj{idx}.o"));
+    fs::write(&path, bytes)
+      .with_context(|| format!("failed to write object to {}", path.display()))?;
+    paths.push(path);
+  }
+
+  link_elf_executable_with_options(output_path, &paths, opts)
 }
 
 /// Link an in-memory LLVM bitcode module into an ELF executable and return the resulting bytes.
