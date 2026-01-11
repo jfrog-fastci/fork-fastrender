@@ -89,13 +89,26 @@ impl EncodingResult {
 struct EncodingAnalysis;
 
 fn encoding_for_str(value: &str) -> StringEncoding {
-  if value.chars().all(|ch| (ch as u32) <= 0x7f) {
+  if value.is_ascii() {
     return StringEncoding::Ascii;
   }
   if value.chars().all(|ch| (ch as u32) <= 0xff) {
     return StringEncoding::Latin1;
   }
   StringEncoding::Utf8
+}
+
+fn encoding_for_template_arg(state: &EncodingState, arg: &Arg) -> StringEncoding {
+  match arg {
+    Arg::Const(Const::Str(s)) => encoding_for_str(s),
+    // Template literals coerce non-string primitives to string via `ToString`,
+    // which is guaranteed to use ASCII for these primitives.
+    Arg::Const(
+      Const::BigInt(_) | Const::Bool(_) | Const::Null | Const::Num(_) | Const::Undefined,
+    ) => StringEncoding::Ascii,
+    Arg::Var(var) => state.get(*var),
+    _ => StringEncoding::Unknown,
+  }
 }
 
 fn join_encoding(a: StringEncoding, b: StringEncoding) -> StringEncoding {
@@ -123,6 +136,23 @@ impl EncodingAnalysis {
     // Best-effort: when either side might be string, concatenation widens the
     // encoding to the most general one.
     join_encoding(left, right)
+  }
+
+  fn encoding_for_template_call(&self, state: &EncodingState, args: &[Arg]) -> StringEncoding {
+    let mut acc: Option<StringEncoding> = None;
+    for arg in args {
+      let enc = encoding_for_template_arg(state, arg);
+      acc = Some(match acc {
+        None => enc,
+        Some(existing) => join_encoding(existing, enc),
+      });
+      if matches!(acc, Some(StringEncoding::Unknown)) {
+        break;
+      }
+    }
+    // The lowering always supplies at least the template head string, but default
+    // to `Unknown` if we somehow see an empty arg list.
+    acc.unwrap_or(StringEncoding::Unknown)
   }
 }
 
@@ -199,9 +229,17 @@ impl DataFlowAnalysis for EncodingAnalysis {
         state.set(tgt, enc);
       }
       InstTyp::Call => {
-        if let Some(tgt) = inst.tgts.get(0).copied() {
-          state.set(tgt, StringEncoding::Unknown);
-        }
+        let Some(tgt) = inst.tgts.get(0).copied() else {
+          return;
+        };
+        let (_, callee, _, args, _) = inst.as_call();
+        let enc = match callee {
+          Arg::Builtin(path) if path == "__optimize_js_template" => {
+            self.encoding_for_template_call(state, args)
+          }
+          _ => StringEncoding::Unknown,
+        };
+        state.set(tgt, enc);
       }
       InstTyp::ForeignLoad | InstTyp::UnknownLoad => {
         let tgt = inst.tgts[0];
@@ -395,6 +433,53 @@ mod tests {
       inst.meta.result_type.string_encoding,
       Some(StringEncoding::Ascii)
     );
+  }
+
+  #[test]
+  fn template_call_tracks_constant_encoding() {
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![Inst::call(
+          0,
+          Arg::Builtin("__optimize_js_template".to_string()),
+          Arg::Const(Const::Undefined),
+          vec![Arg::Const(Const::Str("hello".to_string()))],
+          Vec::new(),
+        )],
+      )],
+      &[],
+    );
+
+    let result = analyze_cfg_encoding(&cfg);
+    assert_eq!(result.encoding_at_exit(0, 0), StringEncoding::Ascii);
+  }
+
+  #[test]
+  fn template_call_with_unknown_expr_is_unknown() {
+    let cfg = cfg_with_blocks(
+      &[(
+        0,
+        vec![
+          Inst::unknown_load(1, "x".to_string()),
+          Inst::call(
+            0,
+            Arg::Builtin("__optimize_js_template".to_string()),
+            Arg::Const(Const::Undefined),
+            vec![
+              Arg::Const(Const::Str("a".to_string())),
+              Arg::Var(1),
+              Arg::Const(Const::Str("b".to_string())),
+            ],
+            Vec::new(),
+          ),
+        ],
+      )],
+      &[],
+    );
+
+    let result = analyze_cfg_encoding(&cfg);
+    assert_eq!(result.encoding_at_exit(0, 0), StringEncoding::Unknown);
   }
 
   #[test]
