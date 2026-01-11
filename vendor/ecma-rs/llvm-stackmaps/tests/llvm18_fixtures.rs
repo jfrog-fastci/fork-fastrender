@@ -35,6 +35,12 @@ fn llvm18_fixture_two_statepoints_has_two_callsites_even_with_duplicate_record_i
     // LLVM 18 can emit multiple statepoint records with the same Record ID.
     assert_eq!(maps.records[0].id, maps.records[1].id);
 
+    // Callsite entries carry per-function metadata for stack walking.
+    assert_eq!(maps.callsites()[0].function_address, f.address);
+    assert_eq!(maps.callsites()[0].stack_size, f.stack_size);
+    assert_eq!(maps.callsites()[1].function_address, f.address);
+    assert_eq!(maps.callsites()[1].stack_size, f.stack_size);
+
     assert_eq!(maps.records[0].instruction_offset, 10);
     assert_eq!(maps.records[1].instruction_offset, 15);
 
@@ -97,4 +103,13 @@ fn llvm18_fixture_two_functions_associates_records_via_record_count_not_record_i
     // Both callsites are indexed by PC, despite identical record IDs.
     assert_eq!(maps.lookup(pc0).unwrap().callsite_pc, pc0);
     assert_eq!(maps.lookup(pc1).unwrap().callsite_pc, pc1);
+
+    // And the per-callsite metadata points back at the correct function.
+    let mut callsites = maps.callsites().iter().copied().collect::<Vec<_>>();
+    callsites.sort_by_key(|c| c.function_address);
+    assert_eq!(callsites.len(), 2);
+    assert_eq!(callsites[0].function_address, maps.functions[0].address);
+    assert_eq!(callsites[0].stack_size, maps.functions[0].stack_size);
+    assert_eq!(callsites[1].function_address, maps.functions[1].address);
+    assert_eq!(callsites[1].stack_size, maps.functions[1].stack_size);
 }
