@@ -161,6 +161,35 @@ fn queue_microtask_handle_with_drop_invokes_drop_hook() {
 }
 
 #[test]
+fn queue_microtask_handle_with_drop_stale_handle_is_noop() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  runtime_native::rt_queue_microtask_handle_with_drop(record_ptr, h, record_drop);
+
+  // Simulate ABI misuse: the embedding frees the handle even though the runtime now owns it. This
+  // should not crash; callbacks should treat the stale handle as a no-op.
+  runtime_native::rt_handle_free(h);
+
+  while runtime_native::rt_async_poll_legacy() {}
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+  assert!(runtime_native::rt_handle_load(h).is_null());
+
+  threading::unregister_current_thread();
+}
+
+#[test]
 fn set_timeout_handle_reloads_userdata_from_persistent_handle() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
@@ -226,6 +255,34 @@ fn clear_timeout_handle_with_drop_invokes_drop_hook_and_frees_handle() {
   // Ensure the cleared timeout does not fire later.
   while runtime_native::rt_async_poll_legacy() {}
   assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn set_timeout_handle_with_drop_stale_handle_is_noop() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_pinned(&LEAF_DESC);
+
+  let h = runtime_native::rt_handle_alloc(obj);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  let _timer = runtime_native::rt_set_timeout_handle_with_drop(record_ptr, h, record_drop, 0);
+
+  // Simulate ABI misuse: the embedding frees the handle even though the runtime now owns it.
+  runtime_native::rt_handle_free(h);
+
+  while runtime_native::rt_async_poll_legacy() {}
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+  assert!(runtime_native::rt_handle_load(h).is_null());
 
   threading::unregister_current_thread();
 }
@@ -447,6 +504,63 @@ fn io_register_handle_with_drop_invalid_interests_calls_drop_and_frees_handle() 
 }
 
 #[test]
+fn io_register_handle_with_drop_rejects_already_registered_fd_and_drops_handle() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj1 = heap.alloc_pinned(&LEAF_DESC);
+  let obj2 = heap.alloc_pinned(&LEAF_DESC);
+  let obj3 = heap.alloc_pinned(&LEAF_DESC);
+
+  let (rfd, wfd) = pipe_nonblocking();
+
+  let h1 = runtime_native::rt_handle_alloc(obj1);
+  let watcher1 = runtime_native::rt_io_register_handle(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io,
+    h1,
+  );
+  assert_ne!(watcher1, 0, "rt_io_register_handle should succeed");
+
+  let h2 = runtime_native::rt_handle_alloc(obj2);
+  simulate_relocation(obj2, obj3);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+  let watcher2 = runtime_native::rt_io_register_handle_with_drop(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io,
+    h2,
+    record_drop,
+  );
+  assert_eq!(watcher2, 0);
+  assert_eq!(
+    runtime_native::rt_io_debug_take_last_error(),
+    runtime_native::rt_io_debug::ERR_ALREADY_REGISTERED
+  );
+
+  assert!(runtime_native::rt_handle_load(h2).is_null());
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROPPED.load(Ordering::SeqCst), obj3 as usize);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+
+  runtime_native::rt_io_unregister(watcher1);
+  assert!(runtime_native::rt_handle_load(h1).is_null());
+
+  // Drain any wakeups triggered by unregistering the watcher.
+  while runtime_native::rt_async_poll_legacy() {}
+
+  drop(rfd);
+  drop(wfd);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
 fn io_register_handle_with_drop_rejects_blocking_fd_and_drops_handle() {
   let _rt = TestRuntimeGuard::new();
   threading::register_current_thread(ThreadKind::Main);
@@ -478,6 +592,61 @@ fn io_register_handle_with_drop_rejects_blocking_fd_and_drops_handle() {
   assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
   assert_eq!(DROPPED.load(Ordering::SeqCst), obj2 as usize);
   assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+
+  drop(rfd);
+  drop(wfd);
+
+  threading::unregister_current_thread();
+}
+
+#[test]
+fn io_register_handle_with_drop_stale_handle_is_noop() {
+  let _rt = TestRuntimeGuard::new();
+  threading::register_current_thread(ThreadKind::Main);
+
+  let mut heap = GcHeap::new();
+  let obj = heap.alloc_pinned(&LEAF_DESC);
+
+  let (rfd, wfd) = pipe_nonblocking();
+
+  let h = runtime_native::rt_handle_alloc(obj);
+
+  OBSERVED.store(0, Ordering::SeqCst);
+  DROPPED.store(0, Ordering::SeqCst);
+  DROP_COUNT.store(0, Ordering::SeqCst);
+
+  let watcher = runtime_native::rt_io_register_handle_with_drop(
+    rfd.as_raw_fd(),
+    runtime_native::abi::RT_IO_READABLE,
+    record_ptr_io,
+    h,
+    record_drop,
+  );
+  assert_ne!(watcher, 0);
+
+  // Simulate ABI misuse: handle freed while watcher still registered. The runtime should treat this
+  // as a no-op (no callback and no drop hook invocation).
+  runtime_native::rt_handle_free(h);
+
+  let byte = [0x2au8];
+  let rc = unsafe { libc::write(wfd.as_raw_fd(), byte.as_ptr().cast(), 1) };
+  assert_eq!(rc, 1, "write to pipe failed: {}", std::io::Error::last_os_error());
+
+  assert!(
+    runtime_native::rt_async_poll_legacy(),
+    "reactor should process readiness events even when userdata handle is stale"
+  );
+
+  assert_eq!(OBSERVED.load(Ordering::SeqCst), 0);
+
+  runtime_native::rt_io_unregister(watcher);
+
+  assert_eq!(DROPPED.load(Ordering::SeqCst), 0);
+  assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+  assert!(runtime_native::rt_handle_load(h).is_null());
+
+  // Drain any wakeups triggered by unregistering.
+  while runtime_native::rt_async_poll_legacy() {}
 
   drop(rfd);
   drop(wfd);
