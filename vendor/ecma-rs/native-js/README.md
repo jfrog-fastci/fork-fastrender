@@ -130,7 +130,10 @@ The API is intentionally small and currently consists of:
   - `emit::emit_llvm_ir(&Module) -> String`
   - `emit::emit_bitcode(&Module) -> Vec<u8>`
   - `emit::emit_object(&Module, TargetConfig) -> Vec<u8>`
+  - `emit::emit_object_with_statepoints(&Module, TargetConfig) -> Result<Vec<u8>, EmitError>`
   - `emit::emit_asm(&Module, TargetConfig) -> Vec<u8>`
+  - `emit::emit_asm_with_statepoints(&Module, TargetConfig) -> Result<Vec<u8>, EmitError>`
+  - `emit::EmitError`: error type for the `_with_statepoints` helpers
 - `validate::validate_strict_subset(...)`: validator for the **strict compilation
   subset** currently supported by the native backend (syntax + type restrictions;
   used by the `native-js` binary in `native-js-cli`).
