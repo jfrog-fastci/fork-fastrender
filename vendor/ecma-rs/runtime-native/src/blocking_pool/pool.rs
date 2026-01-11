@@ -45,10 +45,14 @@ impl BlockingPool {
       .unwrap_or(1)
       .min(32);
 
-    let threads = match std::env::var("RT_BLOCKING_THREADS") {
-      Ok(val) => val.parse::<usize>().ok().filter(|n| *n > 0).unwrap_or(default_threads),
-      Err(_) => default_threads,
-    };
+    // Prefer the namespaced env var (matches `ECMA_RS_RUNTIME_NATIVE_THREADS` used by the
+    // parallel scheduler) but keep `RT_BLOCKING_THREADS` as a backwards-compatible alias.
+    let threads = std::env::var("ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS")
+      .ok()
+      .or_else(|| std::env::var("RT_BLOCKING_THREADS").ok())
+      .and_then(|val| val.parse::<usize>().ok())
+      .filter(|n| *n > 0)
+      .unwrap_or(default_threads);
 
     let shared = Arc::new(Shared {
       queue: Mutex::new(VecDeque::new()),

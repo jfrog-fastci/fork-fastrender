@@ -104,7 +104,8 @@ Contract:
 Pool sizing:
 
 - Default: `min(std::thread::available_parallelism(), 32)`
-- Override: set `RT_BLOCKING_THREADS` to a positive integer before first use.
+- Override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` to a positive integer before first use
+  (`RT_BLOCKING_THREADS` is also supported as a legacy alias).
 
 ## Coroutine ABI
 

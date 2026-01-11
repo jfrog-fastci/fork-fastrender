@@ -186,6 +186,10 @@ void rt_parallel_for(size_t start, size_t end, void (*body)(size_t, uint8_t*), u
 // -----------------------------------------------------------------------------
 // Run `task(data, promise)` on the runtime's dedicated blocking thread pool (for I/O, crypto,
 // etc.). The task must resolve/reject `promise` via `rt_promise_resolve` / `rt_promise_reject`.
+//
+// Pool size:
+// - default: min(available_parallelism, 32)
+// - override: set `ECMA_RS_RUNTIME_NATIVE_BLOCKING_THREADS` (or legacy `RT_BLOCKING_THREADS`)
 PromiseRef rt_spawn_blocking(void (*task)(uint8_t*, PromiseRef), uint8_t* data);
 
 // -----------------------------------------------------------------------------
