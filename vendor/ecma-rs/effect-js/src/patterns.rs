@@ -23,6 +23,81 @@ impl ArrayOpKind {
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{parse_api_semantics_yaml_str, ApiDatabase, CallSiteInfo};
+
+  fn array_db() -> ApiDatabase {
+    let yaml = include_str!("../../knowledge-base/core/array.yaml");
+    ApiDatabase::from_entries(parse_api_semantics_yaml_str(yaml).unwrap())
+  }
+
+  fn pure_callsite() -> CallSiteInfo {
+    CallSiteInfo {
+      callback_is_pure: Some(true),
+      callback_uses_index: Some(false),
+      callback_uses_array: Some(false),
+      callback_is_associative: Some(false),
+    }
+  }
+
+  #[test]
+  fn recognizes_map_filter_reduce_pipeline() {
+    let db = array_db();
+    let map = db.get("Array.prototype.map").unwrap().clone();
+    let filter = db.get("Array.prototype.filter").unwrap().clone();
+    let reduce = db.get("Array.prototype.reduce").unwrap().clone();
+
+    let callsite = pure_callsite();
+    let pipeline = MapFilterReduce::recognize(vec![
+      (map, callsite),
+      (filter, callsite),
+      (reduce, callsite),
+    ])
+    .expect("recognize pipeline");
+
+    assert_eq!(pipeline.ops.len(), 3);
+
+    assert_eq!(pipeline.ops[0].kind, ArrayOpKind::Map);
+    assert!(pipeline.ops[0].meta.fusable);
+    assert!(pipeline.ops[0].meta.parallelizable);
+    assert_eq!(
+      pipeline.ops[0].meta.output_length_relation,
+      crate::properties::OutputLengthRelation::SameAsInput
+    );
+
+    assert_eq!(pipeline.ops[1].kind, ArrayOpKind::Filter);
+    assert!(pipeline.ops[1].meta.fusable);
+    assert!(pipeline.ops[1].meta.parallelizable);
+    assert_eq!(
+      pipeline.ops[1].meta.output_length_relation,
+      crate::properties::OutputLengthRelation::LeInput
+    );
+
+    assert_eq!(pipeline.ops[2].kind, ArrayOpKind::Reduce);
+    assert!(pipeline.ops[2].meta.fusable);
+    assert!(!pipeline.ops[2].meta.parallelizable);
+    assert_eq!(
+      pipeline.ops[2].meta.output_length_relation,
+      crate::properties::OutputLengthRelation::Unknown
+    );
+  }
+
+  #[test]
+  fn rejects_chain_without_reduce_tail() {
+    let db = array_db();
+    let map = db.get("Array.prototype.map").unwrap().clone();
+    let filter = db.get("Array.prototype.filter").unwrap().clone();
+
+    let callsite = pure_callsite();
+    assert!(
+      MapFilterReduce::recognize(vec![(map, callsite), (filter, callsite)]).is_none(),
+      "expected non-reduce tail to be rejected"
+    );
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrayOpMetadata {
   pub fusable: bool,

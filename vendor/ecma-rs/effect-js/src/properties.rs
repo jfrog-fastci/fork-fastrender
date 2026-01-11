@@ -1,4 +1,4 @@
-use serde_json::Value as JsonValue;
+use knowledge_base::JsonValue;
 use std::collections::BTreeMap;
 
 use crate::{Api, CallSiteInfo};

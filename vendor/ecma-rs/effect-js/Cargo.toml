@@ -15,7 +15,6 @@ anyhow = { workspace = true }
 effect-model = { workspace = true }
 knowledge-base = { workspace = true }
 hir-js = { workspace = true }
-serde_json = { workspace = true }
 smallvec = { workspace = true }
 
 typecheck-ts = { workspace = true, optional = true }
@@ -23,7 +22,6 @@ types-ts-interned = { workspace = true, optional = true }
 
 [dev-dependencies]
 diagnostics = { workspace = true }
-serde_json = { workspace = true }
 
 [[example]]
 name = "recognize"

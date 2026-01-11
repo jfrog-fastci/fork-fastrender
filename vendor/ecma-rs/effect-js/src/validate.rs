@@ -242,7 +242,7 @@ mod tests {
   use super::*;
   use effect_model::{EffectSet, Purity};
   use knowledge_base::ApiKind;
-  use serde_json::Value as JsonValue;
+  use knowledge_base::JsonValue;
   use std::collections::BTreeMap;
 
   fn effect_template_to_summary(template: &EffectTemplate) -> EffectSet {
