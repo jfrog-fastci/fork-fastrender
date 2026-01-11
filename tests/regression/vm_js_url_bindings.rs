@@ -253,6 +253,21 @@ fn setting_and_clearing_hash() {
 }
 
 #[test]
+fn url_origin_reflects_serialized_origin() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  let url = new_url(&mut rt, global, "https://example.com/path", None);
+  let origin = get(&mut rt, url, "origin");
+  assert_eq!(as_rust_string(&rt, origin), "https://example.com");
+
+  let url = new_url(&mut rt, global, "http://example.com:8080/path", None);
+  let origin = get(&mut rt, url, "origin");
+  assert_eq!(as_rust_string(&rt, origin), "http://example.com:8080");
+}
+
+#[test]
 fn searchparams_cached_object_survives_gc() {
   let mut rt = VmJsRuntime::new();
   let global = rt.alloc_object_value().unwrap();
