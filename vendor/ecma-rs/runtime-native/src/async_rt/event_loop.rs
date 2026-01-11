@@ -20,15 +20,6 @@ pub struct EventLoop {
   reactor: Reactor,
 }
 
-struct UnparkOnDrop;
-
-impl Drop for UnparkOnDrop {
-  fn drop(&mut self) {
-    crate::threading::set_parked(false);
-    crate::threading::safepoint_poll();
-  }
-}
-
 impl EventLoop {
   pub fn new() -> std::io::Result<Self> {
     Ok(Self {
@@ -192,22 +183,11 @@ impl EventLoop {
 
       // 4. Block until I/O readiness, timer, or wakeup.
       let timeout_ms = self.compute_timeout_ms();
-      // Integrate with the stop-the-world safepoint coordinator: while blocked
-      // in `epoll_wait`, treat this thread as quiescent so GC doesn't need to
-      // wake it.
-      let ready = if timeout_ms == 0 {
-        self.reactor.wait(timeout_ms).expect("epoll_wait failed")
-      } else {
-        threading::set_parked(true);
-        let unpark = UnparkOnDrop;
-        // If a GC is already requested, don't enter a blocking syscall while marked as parked.
-        threading::safepoint_poll();
-        let ready = self.reactor.wait(timeout_ms).expect("epoll_wait failed");
-        // If a GC request arrived while we were blocked, stop before executing any callbacks.
-        threading::safepoint_poll();
-        drop(unpark);
-        ready
-      };
+      // Poll safepoints immediately before and after `epoll_wait` so stop-the-world
+      // requests can interrupt the event loop promptly.
+      threading::safepoint_poll();
+      let ready = self.reactor.wait(timeout_ms).expect("epoll_wait failed");
+      threading::safepoint_poll();
       if !ready.is_empty() {
         self.macrotasks.lock().unwrap().extend(ready);
       }

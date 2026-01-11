@@ -43,9 +43,34 @@ impl SafepointCoordinator {
 }
 
 static COORDINATOR: OnceLock<SafepointCoordinator> = OnceLock::new();
+static GC_WAKERS: OnceLock<Mutex<Vec<fn()>>> = OnceLock::new();
 
 fn coordinator() -> &'static SafepointCoordinator {
   COORDINATOR.get_or_init(SafepointCoordinator::new)
+}
+
+fn gc_wakers() -> &'static Mutex<Vec<fn()>> {
+  GC_WAKERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Register a callback that should be invoked whenever the GC requests a
+/// stop-the-world safepoint.
+///
+/// This is used to wake threads blocked in external wait primitives (e.g.
+/// `epoll_wait` inside `rt_async_poll`).
+pub fn register_gc_waker(waker: fn()) {
+  let mut wakers = gc_wakers().lock().unwrap();
+  if wakers.iter().any(|&w| w as usize == waker as usize) {
+    return;
+  }
+  wakers.push(waker);
+}
+
+fn wake_all_gc_wakers() {
+  let wakers = { gc_wakers().lock().unwrap().clone() };
+  for w in wakers {
+    w();
+  }
 }
 
 /// Current global safepoint epoch (monotonically increasing).
@@ -138,6 +163,7 @@ pub fn rt_gc_request_stop_the_world() -> u64 {
     {
       Ok(_) => {
         coord.notify_all();
+        wake_all_gc_wakers();
         return next;
       }
       Err(actual) => cur = actual,

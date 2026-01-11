@@ -19,6 +19,14 @@ pub use registry::ThreadState;
 
 pub use crate::gc_safe::enter_gc_safe_region;
 pub use crate::gc_safe::GcSafeGuard;
+/// Register a callback that should be invoked whenever the GC requests a
+/// stop-the-world safepoint.
+///
+/// This is used to wake threads blocked in external wait primitives (e.g.
+/// `epoll_wait` inside `rt_async_poll`).
+pub fn register_reactor_waker(waker: fn()) {
+  safepoint::register_gc_waker(waker);
+}
 
 /// Mark/unmark the current thread as parked (idle) inside the runtime.
 ///

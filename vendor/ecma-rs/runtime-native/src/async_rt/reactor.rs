@@ -15,6 +15,17 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+static IN_EPOLL_WAIT: AtomicBool = AtomicBool::new(false);
+
+/// Test-only signal indicating whether some thread is currently blocked in `epoll_wait`.
+///
+/// This is not a synchronization primitive; it only exists to make it possible
+/// to deterministically reproduce and test the "GC request while blocked in
+/// epoll_wait" scenario.
+pub(crate) fn debug_in_epoll_wait() -> bool {
+  IN_EPOLL_WAIT.load(Ordering::Relaxed)
+}
+
 bitflags! {
   #[derive(Clone, Copy, Debug, PartialEq, Eq)]
   pub struct Interest: u32 {
@@ -223,7 +234,11 @@ impl Reactor {
   pub fn wait(&self, timeout_ms: i32) -> io::Result<Vec<Task>> {
     const MAX_EVENTS: usize = 64;
     let mut events: [libc::epoll_event; MAX_EVENTS] = unsafe { std::mem::zeroed() };
-    let n = self.epoll.wait(&mut events, timeout_ms)?;
+
+    IN_EPOLL_WAIT.store(true, Ordering::Release);
+    let res = self.epoll.wait(&mut events, timeout_ms);
+    IN_EPOLL_WAIT.store(false, Ordering::Release);
+    let n = res?;
 
     if n == 0 {
       return Ok(Vec::new());

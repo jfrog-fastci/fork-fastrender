@@ -28,6 +28,7 @@ pub use timer::TimerId;
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
@@ -149,9 +150,24 @@ impl AsyncRuntime {
 }
 
 static GLOBAL: OnceLock<AsyncRuntime> = OnceLock::new();
+static SAFEPOINT_REACTOR_WAKER_ONCE: Once = Once::new();
+
+fn wake_event_loop_for_safepoint() {
+  // Wake the global event loop so a thread blocked in `epoll_wait` can observe
+  // a stop-the-world safepoint request.
+  global().loop_.wake();
+}
 
 pub fn global() -> &'static AsyncRuntime {
-  GLOBAL.get_or_init(|| AsyncRuntime::new().expect("failed to initialize runtime-native async runtime"))
+  let rt = GLOBAL.get_or_init(|| AsyncRuntime::new().expect("failed to initialize runtime-native async runtime"));
+
+  // Register the reactor wake function exactly once so GC stop-the-world
+  // requests can wake a thread blocked in `epoll_wait`.
+  SAFEPOINT_REACTOR_WAKER_ONCE.call_once(|| {
+    crate::threading::register_reactor_waker(wake_event_loop_for_safepoint);
+  });
+
+  rt
 }
 
 // -----------------------------------------------------------------------------
@@ -218,4 +234,10 @@ pub fn register_fd(
   data: *mut u8,
 ) -> std::io::Result<WatcherId> {
   global().register_fd(fd, interest, Task::new(callback, data))
+}
+
+/// Test-only signal indicating whether some thread is currently blocked in `epoll_wait`.
+#[doc(hidden)]
+pub fn debug_in_epoll_wait() -> bool {
+  reactor::debug_in_epoll_wait()
 }
