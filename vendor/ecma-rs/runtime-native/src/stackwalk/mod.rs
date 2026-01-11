@@ -232,7 +232,7 @@ impl StackBounds {
   }
 
   /// Returns the stack bounds for the current pthread.
-  #[cfg(target_os = "linux")]
+  #[cfg(any(target_os = "linux", target_os = "android"))]
   pub fn current_thread() -> Result<Self, StackBoundsError> {
     // SAFETY: `pthread_getattr_np` fills the attr struct; we destroy it afterwards.
     unsafe {
@@ -281,7 +281,7 @@ impl StackBounds {
   }
 
   /// Returns the stack bounds for the current thread (unsupported on this platform).
-  #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+  #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
   pub fn current_thread() -> Result<Self, StackBoundsError> {
     Err(StackBoundsError::UnsupportedPlatform)
   }

@@ -1,6 +1,9 @@
 // The FP stack walker is architecture/ABI-specific.
 
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+  any(target_os = "linux", target_os = "macos"),
+  any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod fp_stack_walk {
   use runtime_native::arch::capture_safepoint_context;
   use runtime_native::stackwalk::{StackBounds, StackWalker, ThreadContext};
@@ -49,7 +52,10 @@ mod fp_stack_walk {
 }
 
 // On other platforms we don't currently assert anything about FP walking.
-#[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+#[cfg(not(all(
+  any(target_os = "linux", target_os = "macos"),
+  any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
 #[test]
 fn fp_chain_can_walk_multiple_frames() {
   // Nothing to do.

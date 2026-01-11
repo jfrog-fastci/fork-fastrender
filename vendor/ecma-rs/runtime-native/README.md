@@ -194,7 +194,7 @@ and slot addresses stay within the stack mapping.
 
 Stack bounds capture is supported on:
 
-- Linux: `pthread_getattr_np` / `pthread_attr_getstack`
+- Linux/Android: `pthread_getattr_np` / `pthread_attr_getstack`
 - macOS: `pthread_get_stackaddr_np` / `pthread_get_stacksize_np`
 
 ## Pinned allocations

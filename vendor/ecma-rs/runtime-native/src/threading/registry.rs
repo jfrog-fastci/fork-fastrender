@@ -53,9 +53,12 @@ impl ThreadKind {
 
 /// Optional stack bounds metadata for precise stack scanning.
 ///
-/// This is populated on platforms where we can query thread stack bounds (Linux
-/// via `pthread_getattr_np`). It is used by future precise GC stack scanning and
-/// by tests that validate safepoint context capture.
+/// This is populated on platforms where we can query thread stack bounds:
+/// - Linux/Android via `pthread_getattr_np` + `pthread_attr_getstack`
+/// - macOS via `pthread_get_stackaddr_np` + `pthread_get_stacksize_np`
+///
+/// It is used by future precise GC stack scanning and by tests that validate safepoint context
+/// capture.
 #[derive(Clone, Copy, Debug)]
 pub struct StackBounds {
   pub lo: usize,
