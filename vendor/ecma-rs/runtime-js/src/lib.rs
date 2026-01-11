@@ -185,18 +185,18 @@ impl<'a> Engine<'a> {
 
       // Keep core handles alive regardless of what JS code does.
       let heap_mut = scope.heap_mut();
-      heap_mut.add_root(Value::Object(global_env));
-      heap_mut.add_root(Value::Object(global_this));
-      heap_mut.add_root(Value::Object(object_prototype));
-      heap_mut.add_root(Value::String(key_prototype));
-      heap_mut.add_root(Value::String(key_constructor));
-      heap_mut.add_root(Value::String(key_name));
-      heap_mut.add_root(Value::String(key_object));
-      heap_mut.add_root(Value::String(key_undefined));
-      heap_mut.add_root(Value::Symbol(sym_function_id));
-      heap_mut.add_root(Value::Symbol(sym_function_env));
-      heap_mut.add_root(Value::String(type_error_str));
-      heap_mut.add_root(Value::Object(object_ctor));
+      heap_mut.add_root(Value::Object(global_env))?;
+      heap_mut.add_root(Value::Object(global_this))?;
+      heap_mut.add_root(Value::Object(object_prototype))?;
+      heap_mut.add_root(Value::String(key_prototype))?;
+      heap_mut.add_root(Value::String(key_constructor))?;
+      heap_mut.add_root(Value::String(key_name))?;
+      heap_mut.add_root(Value::String(key_object))?;
+      heap_mut.add_root(Value::String(key_undefined))?;
+      heap_mut.add_root(Value::Symbol(sym_function_id))?;
+      heap_mut.add_root(Value::Symbol(sym_function_env))?;
+      heap_mut.add_root(Value::String(type_error_str))?;
+      heap_mut.add_root(Value::Object(object_ctor))?;
 
       (
         global_env,
@@ -868,8 +868,8 @@ impl<'a> Engine<'a> {
 
     // Root the new environment + this for the duration of the call.
     let mut call_scope = scope.reborrow();
-    call_scope.push_root(Value::Object(local_env));
-    call_scope.push_root(this_arg);
+    call_scope.push_root(Value::Object(local_env))?;
+    call_scope.push_root(this_arg)?;
 
     // Bind parameters.
     for (idx, param) in func.stx.parameters.iter().enumerate() {
