@@ -9850,6 +9850,11 @@ impl FastRender {
             request = request.with_referrer_policy(request_referrer_policy);
             let resource = match fetcher.fetch_with_request(request) {
               Ok(resource) => resource,
+              Err(err @ Error::Render(_)) => {
+                // Render-control errors (deadline/cancellation) must abort the render; do not treat
+                // them as ignorable stylesheet fetch failures.
+                return Err(err);
+              }
               Err(err) => {
                 // Per spec, stylesheet loads are best-effort. On failure, continue.
                 if let Some(diag) = diagnostics.as_ref() {
@@ -10328,6 +10333,11 @@ impl FastRender {
               } else {
                 combined_rules.extend(sheet.rules);
               }
+            }
+            Err(err @ Error::Render(_)) => {
+              // Render-control errors (deadline/cancellation) must abort the render; do not treat
+              // them as ignorable stylesheet fetch failures.
+              return Err(err);
             }
             Err(err) => {
               // Per spec, stylesheet loads are best-effort. On failure, continue.
@@ -22380,6 +22390,66 @@ mod tests {
       resource.status = Some(404);
       resource.final_url = Some(url.to_string());
       Ok(resource)
+    }
+  }
+
+  #[derive(Clone, Default)]
+  struct RenderTimeoutFetcher;
+
+  impl ResourceFetcher for RenderTimeoutFetcher {
+    fn fetch(&self, _url: &str) -> crate::error::Result<FetchedResource> {
+      Err(Error::Render(RenderError::Timeout {
+        stage: RenderStage::Css,
+        elapsed: Duration::from_millis(1),
+      }))
+    }
+  }
+
+  #[test]
+  fn collect_document_stylesheets_propagate_render_errors_from_fetcher() {
+    let config = FastRenderConfig::default()
+      .with_runtime_toggles(RuntimeToggles::default())
+      .with_font_sources(FontConfig::bundled_only())
+      .with_paint_parallelism(PaintParallelism::disabled())
+      .with_layout_parallelism(LayoutParallelism::disabled())
+      .with_base_url("https://example.com/page.html");
+    let renderer =
+      FastRender::with_config_and_fetcher(config, Some(Arc::new(RenderTimeoutFetcher)))
+        .expect("renderer");
+
+    let dom = renderer
+      .parse_html(
+        "<!doctype html><html><head><link rel=\"stylesheet\" href=\"a.css\"></head><body></body></html>",
+      )
+      .expect("parse_html");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let mut cache = crate::style::media::MediaQueryCache::default();
+    let err = renderer
+      .collect_document_style_set(&dom, &media_ctx, &mut cache, None)
+      .expect_err("expected render error from stylesheet fetch");
+    match err {
+      Error::Render(RenderError::Timeout {
+        stage: RenderStage::Css,
+        elapsed,
+      }) => {
+        assert_eq!(elapsed, Duration::from_millis(1));
+      }
+      other => panic!("expected Error::Render(RenderError::Timeout), got {other:?}"),
+    }
+
+    let mut cache = crate::style::media::MediaQueryCache::default();
+    let err = renderer
+      .collect_document_stylesheet(&dom, &media_ctx, &mut cache, None)
+      .expect_err("expected render error from stylesheet fetch");
+    match err {
+      Error::Render(RenderError::Timeout {
+        stage: RenderStage::Css,
+        elapsed,
+      }) => {
+        assert_eq!(elapsed, Duration::from_millis(1));
+      }
+      other => panic!("expected Error::Render(RenderError::Timeout), got {other:?}"),
     }
   }
 
