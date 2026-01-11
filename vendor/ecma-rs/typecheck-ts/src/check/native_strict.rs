@@ -77,6 +77,23 @@ pub fn validate_native_strict_body(
     }
   }
 
+  fn array_literal_exprs(body: &Body, expr_id: hir_js::ExprId) -> Option<Vec<hir_js::ExprId>> {
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      return None;
+    };
+    let ExprKind::Array(arr) = &expr.kind else {
+      return None;
+    };
+    let mut out = Vec::with_capacity(arr.elements.len());
+    for elem in &arr.elements {
+      match elem {
+        hir_js::ArrayElement::Expr(expr) => out.push(*expr),
+        hir_js::ArrayElement::Spread(_) | hir_js::ArrayElement::Empty => return None,
+      }
+    }
+    Some(out)
+  }
+
   fn expr_is_object_literal_with_proto_key(
     body: &Body,
     expr_id: hir_js::ExprId,
@@ -508,6 +525,206 @@ pub fn validate_native_strict_body(
                   Span::new(file, span),
                 ));
               }
+
+              if is_call_or_apply {
+                let prop_is_call =
+                  object_key_is_ident(&member.property, call_name)
+                    || object_key_is_string(&member.property, "call")
+                    || object_key_is_literal_string(body, &member.property, "call");
+                let prop_is_apply =
+                  object_key_is_ident(&member.property, apply_name)
+                    || object_key_is_string(&member.property, "apply")
+                    || object_key_is_literal_string(body, &member.property, "apply");
+
+                let obj_is_object_define_property = expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  object_name,
+                  "Object",
+                  define_property_name,
+                  "defineProperty",
+                );
+                let obj_is_reflect_define_property = expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  reflect_name,
+                  "Reflect",
+                  define_property_name,
+                  "defineProperty",
+                );
+                let obj_is_object_define_properties = expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  object_name,
+                  "Object",
+                  define_properties_name,
+                  "defineProperties",
+                );
+                let obj_is_object_assign = expr_is_builtin_member(
+                  body,
+                  member.object,
+                  global_this_name,
+                  object_name,
+                  "Object",
+                  assign_name,
+                  "assign",
+                );
+
+                let mut mark_proto_mutation = |is_proto_mutation: bool| {
+                  if is_proto_mutation {
+                    let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                    diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                      "prototype mutation is forbidden when `native_strict` is enabled",
+                      Span::new(file, span),
+                    ));
+                  }
+                };
+
+                if prop_is_call {
+                  // `.call(thisArg, ...args)`
+                  if let Some(target_obj) =
+                    call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                  {
+                    if obj_is_object_define_property || obj_is_reflect_define_property {
+                      let key_arg =
+                        call.args.get(2).filter(|arg| !arg.spread).map(|arg| arg.expr);
+                      let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                        body,
+                        target_obj,
+                        prototype_name,
+                        proto_name,
+                      );
+                      if !is_proto_mutation {
+                        if let Some(key_arg) = key_arg {
+                          if expr_is_const_string(body, key_arg, "prototype")
+                            || expr_is_const_string(body, key_arg, "__proto__")
+                          {
+                            is_proto_mutation = true;
+                          }
+                        }
+                      }
+                      mark_proto_mutation(is_proto_mutation);
+                    }
+
+                    if obj_is_object_define_properties {
+                      if let Some(props_arg) =
+                        call.args.get(2).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                      {
+                        let is_proto_mutation = expr_chain_contains_proto_mutation(
+                          body,
+                          target_obj,
+                          prototype_name,
+                          proto_name,
+                        ) || expr_is_object_literal_with_proto_key(
+                          body,
+                          props_arg,
+                          prototype_name,
+                          proto_name,
+                        );
+                        mark_proto_mutation(is_proto_mutation);
+                      }
+                    }
+
+                    if obj_is_object_assign {
+                      let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                        body,
+                        target_obj,
+                        prototype_name,
+                        proto_name,
+                      );
+                      if !is_proto_mutation {
+                        for source_arg in call.args.iter().skip(2) {
+                          if source_arg.spread {
+                            continue;
+                          }
+                          if expr_is_object_literal_with_proto_key(
+                            body,
+                            source_arg.expr,
+                            prototype_name,
+                            proto_name,
+                          ) {
+                            is_proto_mutation = true;
+                            break;
+                          }
+                        }
+                      }
+                      mark_proto_mutation(is_proto_mutation);
+                    }
+                  }
+                } else if prop_is_apply {
+                  // `.apply(thisArg, argsArray)`
+                  if let Some(args_array) =
+                    call.args.get(1).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                  {
+                    if let Some(args_list) = array_literal_exprs(body, args_array) {
+                      if let Some(target_obj) = args_list.first().copied() {
+                        if obj_is_object_define_property || obj_is_reflect_define_property {
+                          let key_arg = args_list.get(1).copied();
+                          let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                            body,
+                            target_obj,
+                            prototype_name,
+                            proto_name,
+                          );
+                          if !is_proto_mutation {
+                            if let Some(key_arg) = key_arg {
+                              if expr_is_const_string(body, key_arg, "prototype")
+                                || expr_is_const_string(body, key_arg, "__proto__")
+                              {
+                                is_proto_mutation = true;
+                              }
+                            }
+                          }
+                          mark_proto_mutation(is_proto_mutation);
+                        }
+
+                        if obj_is_object_define_properties {
+                          if let Some(props_arg) = args_list.get(1).copied() {
+                            let is_proto_mutation = expr_chain_contains_proto_mutation(
+                              body,
+                              target_obj,
+                              prototype_name,
+                              proto_name,
+                            ) || expr_is_object_literal_with_proto_key(
+                              body,
+                              props_arg,
+                              prototype_name,
+                              proto_name,
+                            );
+                            mark_proto_mutation(is_proto_mutation);
+                          }
+                        }
+
+                        if obj_is_object_assign {
+                          let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                            body,
+                            target_obj,
+                            prototype_name,
+                            proto_name,
+                          );
+                          if !is_proto_mutation {
+                            for source_arg in args_list.iter().skip(1).copied() {
+                              if expr_is_object_literal_with_proto_key(
+                                body,
+                                source_arg,
+                                prototype_name,
+                                proto_name,
+                              ) {
+                                is_proto_mutation = true;
+                                break;
+                              }
+                            }
+                          }
+                          mark_proto_mutation(is_proto_mutation);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
             }
 
             // `Reflect.apply(eval, ...)` / `Reflect.apply(Function, ...)` etc.
@@ -599,6 +816,110 @@ pub fn validate_native_strict_body(
                       "prototype mutation is forbidden when `native_strict` is enabled",
                       Span::new(file, span),
                     ));
+                  }
+
+                  let target_is_object_define_property = expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    object_name,
+                    "Object",
+                    define_property_name,
+                    "defineProperty",
+                  );
+                  let target_is_reflect_define_property = expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    reflect_name,
+                    "Reflect",
+                    define_property_name,
+                    "defineProperty",
+                  );
+                  let target_is_object_define_properties = expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    object_name,
+                    "Object",
+                    define_properties_name,
+                    "defineProperties",
+                  );
+                  let target_is_object_assign = expr_is_builtin_member(
+                    body,
+                    target_arg,
+                    global_this_name,
+                    object_name,
+                    "Object",
+                    assign_name,
+                    "assign",
+                  );
+
+                  if target_is_object_define_property
+                    || target_is_reflect_define_property
+                    || target_is_object_define_properties
+                    || target_is_object_assign
+                  {
+                    if let Some(args_list_expr) =
+                      call.args.get(2).filter(|arg| !arg.spread).map(|arg| arg.expr)
+                    {
+                      if let Some(args_list) = array_literal_exprs(body, args_list_expr) {
+                        if let Some(target_obj) = args_list.first().copied() {
+                          let mut is_proto_mutation = expr_chain_contains_proto_mutation(
+                            body,
+                            target_obj,
+                            prototype_name,
+                            proto_name,
+                          );
+
+                          if !is_proto_mutation
+                            && (target_is_object_define_property || target_is_reflect_define_property)
+                          {
+                            if let Some(key_arg) = args_list.get(1).copied() {
+                              if expr_is_const_string(body, key_arg, "prototype")
+                                || expr_is_const_string(body, key_arg, "__proto__")
+                              {
+                                is_proto_mutation = true;
+                              }
+                            }
+                          }
+
+                          if !is_proto_mutation && target_is_object_define_properties {
+                            if let Some(props_arg) = args_list.get(1).copied() {
+                              if expr_is_object_literal_with_proto_key(
+                                body,
+                                props_arg,
+                                prototype_name,
+                                proto_name,
+                              ) {
+                                is_proto_mutation = true;
+                              }
+                            }
+                          }
+                          if !is_proto_mutation && target_is_object_assign {
+                            for source_arg in args_list.iter().skip(1).copied() {
+                              if expr_is_object_literal_with_proto_key(
+                                body,
+                                source_arg,
+                                prototype_name,
+                                proto_name,
+                              ) {
+                                is_proto_mutation = true;
+                                break;
+                              }
+                            }
+                          }
+
+                          if is_proto_mutation {
+                            let span = result.expr_spans.get(idx).copied().unwrap_or(expr.span);
+                            diagnostics.push(codes::NATIVE_STRICT_PROTOTYPE_MUTATION.error(
+                              "prototype mutation is forbidden when `native_strict` is enabled",
+                              Span::new(file, span),
+                            ));
+                          }
+                        }
+                      }
+                    }
                   }
                 }
               }
