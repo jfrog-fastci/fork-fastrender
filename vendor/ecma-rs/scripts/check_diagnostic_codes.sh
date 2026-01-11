@@ -58,12 +58,12 @@ collect -n --no-heading --with-filename -g'*.rs' -o '\bdiagnostics::ice\(' --rep
 collect -n --no-heading --with-filename -o '"(PS[0-9]{4})"' parse-js/src/error.rs --replace '$1'
 
 # emit-js defines some codes in matches/structs and some in consts (e.g. TS→JS erasure),
-# so scan its sources for code-shaped string literals.
-collect -n --no-heading --with-filename -g'*.rs' -o '"([A-Z]{2,}[A-Z0-9]*[0-9]{4,5})"' emit-js/src --replace '$1'
+# so scan its sources for EMIT* code-shaped string literals.
+collect -n --no-heading --with-filename -g'*.rs' -o '"(EMITTS[0-9]{4}|EMIT[0-9]{4})"' emit-js/src --replace '$1'
 
 # ts-erase stores its TS erase codes in consts (not directly in the diagnostic
-# constructors), so scan its sources for code-shaped string literals.
-collect -n --no-heading --with-filename -g'*.rs' -o '"([A-Z]{2,}[A-Z0-9]*[0-9]{4,5})"' ts-erase/src --replace '$1'
+# constructors), so scan its sources for MINIFYTS code-shaped string literals.
+collect -n --no-heading --with-filename -g'*.rs' -o '"(MINIFYTS[0-9]{4})"' ts-erase/src --replace '$1'
 
 # native-js stores many of its codes in `const CODE_*: &str = "NJS0001"` style
 # definitions, so scan its sources for NJS code-shaped string literals.
