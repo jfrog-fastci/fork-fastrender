@@ -3,6 +3,7 @@ use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, Targe
 use inkwell::OptimizationLevel;
 use native_js::{emit, llvm::gc};
 use object::Object;
+use std::process::{Command, Stdio};
 use tempfile::tempdir;
 
 #[test]
@@ -83,5 +84,33 @@ fn rewrite_statepoints_emits_stackmaps() {
   assert!(
     file.section_by_name(".llvm_stackmaps").is_some(),
     "expected .llvm_stackmaps section in emitted object\nIR:\n{ir}"
+  );
+
+  // Cross-check via llvm-readobj (matches how we debug stackmap emission in
+  // practice and ensures the external tool sees the section).
+  let readobj = match Command::new("llvm-readobj-18")
+    .arg("--sections")
+    .arg(&obj)
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+  {
+    Ok(out) => out,
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+      eprintln!("skipping llvm-readobj-18 check: llvm-readobj-18 not found in PATH");
+      return;
+    }
+    Err(err) => panic!("failed to run llvm-readobj-18: {err}"),
+  };
+  assert!(
+    readobj.status.success(),
+    "llvm-readobj-18 failed:\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&readobj.stdout),
+    String::from_utf8_lossy(&readobj.stderr)
+  );
+  let stdout = String::from_utf8_lossy(&readobj.stdout);
+  assert!(
+    stdout.contains(".llvm_stackmaps"),
+    "expected `.llvm_stackmaps` in llvm-readobj-18 output:\n{stdout}"
   );
 }
