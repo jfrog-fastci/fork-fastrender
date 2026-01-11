@@ -24,8 +24,9 @@ without having to reverse-engineer assumptions from codegen.
 >   - rewrite input objects to rename `.llvm_stackmaps` / `.llvm_faultmaps` →
 >     `.data.rel.ro.llvm_stackmaps` / `.data.rel.ro.llvm_faultmaps`
 >     (via `llvm-objcopy --rename-section ...`)
->   - retain the section + export `__fastr_stackmaps_start/__fastr_stackmaps_end`
->     via a tiny linker-script fragment.
+>   - retain the section + export `__start_llvm_stackmaps/__stop_llvm_stackmaps`
+>     (plus aliases like `__fastr_stackmaps_start/__fastr_stackmaps_end`) via a tiny linker-script
+>     fragment.
 >
 > See: `scripts/native_js_link_linux.sh` and `runtime-native/link/stackmaps.ld`
 > (`runtime-native/stackmaps.ld` is a compatibility alias).
@@ -549,12 +550,12 @@ directly from memory using pointer arithmetic; no ELF parsing and no
 
 ```rust
 extern "C" {
-  static __fastr_stackmaps_start: u8;
-  static __fastr_stackmaps_end: u8;
+  static __start_llvm_stackmaps: u8;
+  static __stop_llvm_stackmaps: u8;
 }
 
-let start = unsafe { &__fastr_stackmaps_start as *const u8 };
-let end = unsafe { &__fastr_stackmaps_end as *const u8 };
+let start = unsafe { &__start_llvm_stackmaps as *const u8 };
+let end = unsafe { &__stop_llvm_stackmaps as *const u8 };
 let len = unsafe { end.offset_from(start) as usize };
 let stackmaps = unsafe { core::slice::from_raw_parts(start, len) };
 ```
@@ -562,11 +563,11 @@ let stackmaps = unsafe { core::slice::from_raw_parts(start, len) };
 #### Runtime usage (C)
 
 ```c
-extern const unsigned char __fastr_stackmaps_start;
-extern const unsigned char __fastr_stackmaps_end;
+extern const unsigned char __start_llvm_stackmaps;
+extern const unsigned char __stop_llvm_stackmaps;
 
-const uint8_t* start = &__fastr_stackmaps_start;
-const uint8_t* end = &__fastr_stackmaps_end;
+const uint8_t* start = &__start_llvm_stackmaps;
+const uint8_t* end = &__stop_llvm_stackmaps;
 size_t len = (size_t)(end - start);
 ```
 
