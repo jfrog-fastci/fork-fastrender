@@ -3897,6 +3897,12 @@ pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
 // Parallel
 pub fn rt_parallel_spawn(task: fn(*mut u8), data: *mut u8) -> TaskId;
 pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
+pub fn rt_parallel_for(
+  start: usize,
+  end: usize,
+  body: extern "C" fn(usize, *mut u8),
+  data: *mut u8,
+);
 
 // Async
 // NOTE: GC is moving/compacting (Immix + opportunistic copying).

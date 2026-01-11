@@ -205,6 +205,12 @@ pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
 // Parallel
 pub fn rt_parallel_spawn(task: extern "C" fn(*mut u8), data: *mut u8) -> TaskId;
 pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
+pub fn rt_parallel_for(
+  start: usize,
+  end: usize,
+  body: extern "C" fn(usize, *mut u8),
+  data: *mut u8,
+);
 
 // Async
 pub fn rt_async_spawn(coro: *mut core::ffi::c_void) -> PromiseRef; // opaque for now
@@ -214,6 +220,10 @@ pub fn rt_async_poll() -> bool;
 `rt_parallel_spawn` contract:
 - `data` must remain valid until the returned `TaskId` is passed to `rt_parallel_join`.
 - Each `TaskId` must be joined exactly once.
+
+`rt_parallel_for` contract:
+- Executes `body(i, data)` for each `i` in `[start, end)`.
+- `data` must remain valid for the duration of the call.
 
 Parallel runtime configuration:
 - `ECMA_RS_RUNTIME_NATIVE_THREADS`: overrides the size of the global worker pool (must be a
@@ -236,6 +246,7 @@ generation strategy.
 | `rt_string_intern` | MayGC | May allocate/update interner tables. |
 | `rt_parallel_spawn` | MayGC | May allocate task metadata / interact with scheduler. |
 | `rt_parallel_join` | MayGC | May block/safepoint while waiting. |
+| `rt_parallel_for` | MayGC | May spawn tasks and/or block while waiting. |
 | `rt_async_spawn` | MayGC | May allocate promise/async bookkeeping. |
 | `rt_async_poll` | MayGC | Drives async runtime; may allocate/safepoint. |
 
@@ -269,7 +280,7 @@ with the runtime. One possible direction is a module registration API like:
   handle, if/when strings become fully GC-managed objects.
 
 #### Scheduler/async ABI (planned extensions)
-Milestone 1 exposes only `rt_parallel_spawn/join` and `rt_async_spawn/poll`. A
+Milestone 1 exposes only `rt_parallel_spawn/join/for` and `rt_async_spawn/poll`. A
 more complete scheduler/async surface may add:
 - Cooperative yielding (e.g. `rt_parallel_yield()`).
 - Promise/continuation primitives (e.g. `rt_promise_then`, `rt_promise_resolve`,
