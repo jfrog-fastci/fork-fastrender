@@ -185,6 +185,9 @@ The API is intentionally small and currently consists of:
   `native-js-cli`).
 - `compile_program(&Program, FileId, &CompilerOptions) -> Result<Artifact, NativeJsError>`:
   typechecked compilation entrypoint (creates an LLVM module + emits an artifact).
+- `compile(&Program, &CompilerOptions) -> Result<CompilationOutput, NativeJsError>`:
+  legacy wrapper that only works when the `Program` has exactly one configured
+  root file; prefer `compile_program` and pass an explicit `FileId`.
 - `CompilerOptions`: codegen configuration (with `CompileOptions` as a backwards-compatible alias)
 - `Artifact`: emitted output (path + kind)
 - `OptLevel`: optimization level (`O0`/`O1`/`O2`/`O3`/`Os`/`Oz`)

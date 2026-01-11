@@ -6,6 +6,15 @@ impl Program {
     Program::with_lib_manager(host, roots, Arc::new(LibManager::new()))
   }
 
+  /// Root files configured for this program.
+  ///
+  /// This is the (sorted, deduplicated) `roots` list passed to [`Program::new`]
+  /// / [`Program::with_lib_manager`]. It does not include any implicit lib files
+  /// pulled in via compiler options.
+  pub fn roots(&self) -> &[FileKey] {
+    &self.roots
+  }
+
   /// Create a new program with a provided lib manager (useful for observing invalidation in tests).
   pub fn with_lib_manager(
     host: impl Host,

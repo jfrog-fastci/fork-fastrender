@@ -181,21 +181,63 @@ pub fn compile_program(
 /// pipeline, use [`compile_program`]. For a project-based workflow, use
 /// [`compile_project_to_llvm_ir`].
 ///
-/// This function is kept as a small stub so downstream crates can start wiring
-/// up to the native backend without depending on the full driver interface yet.
+/// This wrapper attempts to infer the entry file when the [`Program`] has
+/// **exactly one** configured root file (i.e. it was created with `roots.len()
+/// == 1`). If the program has multiple roots, this returns
+/// [`NativeJsError::UnsupportedFeature`] and callers should use
+/// [`compile_program`] and pass an explicit [`FileId`].
+///
+/// The returned [`CompilationOutput::llvm_ir`] is populated only when
+/// `options.emit == EmitKind::LlvmIr`.
 pub fn compile(
   program: &Program,
-  _options: &CompilerOptions,
+  options: &CompilerOptions,
 ) -> Result<CompilationOutput, NativeJsError> {
   let diagnostics = program.check();
   if diagnostics.iter().any(|diag| diag.severity == Severity::Error) {
     return Err(NativeJsError::TypecheckFailed { diagnostics });
   }
 
-  Err(NativeJsError::UnsupportedFeature(
-    "native-js AOT compilation entrypoint is not implemented yet; use compile_program(...) instead"
-      .to_string(),
-  ))
+  let roots = program.roots();
+  let [entry_key] = roots else {
+    let message = if roots.is_empty() {
+      "native_js::compile requires a Program with exactly one root file (got 0 roots); \
+use native_js::compile_program(program, entry, opts) and pass an explicit FileId"
+        .to_string()
+    } else {
+      format!(
+        "native_js::compile requires a Program with exactly one root file (got {} roots); \
+use native_js::compile_program(program, entry, opts) and pass an explicit FileId",
+        roots.len()
+      )
+    };
+    return Err(NativeJsError::UnsupportedFeature(message));
+  };
+
+  let entry = program.file_id(entry_key).ok_or_else(|| {
+    NativeJsError::UnsupportedFeature(format!(
+      "native_js::compile failed to resolve root file `{}` to a FileId; \
+use native_js::compile_program(program, entry, opts) and pass an explicit FileId",
+      entry_key.as_str()
+    ))
+  })?;
+
+  let artifact = compile_program(program, entry, options)?;
+  let llvm_ir = if options.emit == EmitKind::LlvmIr {
+    Some(
+      std::fs::read_to_string(&artifact.path).map_err(|source| NativeJsError::Io {
+        path: artifact.path.clone(),
+        source,
+      })?,
+    )
+  } else {
+    None
+  };
+
+  Ok(CompilationOutput {
+    artifact: artifact.path,
+    llvm_ir,
+  })
 }
 
 /// Parse and compile a single TypeScript module to LLVM IR.
@@ -304,5 +346,40 @@ mod tests {
         module.print_to_string()
       );
     }
+  }
+
+  #[test]
+  fn compile_single_root_program() {
+    use crate::{compile, CompilerOptions, EmitKind};
+    use typecheck_ts::{FileKey, MemoryHost, Program};
+
+    let mut host = MemoryHost::new();
+    let key = FileKey::new("main.ts");
+    host.insert(
+      key.clone(),
+      r#"
+export function main() {
+  return 1 + 2;
+}
+"#,
+    );
+
+    let program = Program::new(host, vec![key]);
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let out_path = tmp.path().join("out.ll");
+
+    let mut opts = CompilerOptions::default();
+    opts.emit = EmitKind::LlvmIr;
+    opts.output = Some(out_path.clone());
+
+    let out = compile(&program, &opts).expect("compile");
+    assert_eq!(out.artifact, out_path);
+
+    let ir = out.llvm_ir.expect("llvm_ir");
+    assert!(
+      ir.contains("ts_main"),
+      "expected generated IR to mention `ts_main`, got:\n{ir}"
+    );
   }
 }
