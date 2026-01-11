@@ -285,6 +285,34 @@ if (( NOP_LEN < PATCH_BYTES_B )); then
   die "fixture B: expected contiguous NOP region length >= ${PATCH_BYTES_B}, got ${NOP_LEN} (nop_start_off=${NOP_START_OFF}, nop_end_off=${NOP_END_OFF})"
 fi
 
+# Ensure `flags=3` (both currently-valid bits) is accepted and recorded.
+FLAGS3_IR="${tmpdir}/flags3.ll"
+cat >"${FLAGS3_IR}" <<'EOF'
+target triple = "x86_64-pc-linux-gnu"
+
+declare void @callee()
+declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
+
+define void @test(ptr %obj) gc "coreclr" {
+entry:
+  %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
+    i64 0, i32 0,
+    ptr elementtype(void ()) @callee,
+    i32 0, i32 3,
+    i32 0, i32 0) [ "gc-live"(ptr %obj) ]
+  ret void
+}
+EOF
+
+FLAGS3_OBJ="${tmpdir}/flags3.o"
+run_llc "${FLAGS3_IR}" "${FLAGS3_OBJ}"
+FLAGS3_STACKMAP="$("${LLVM_READOBJ}" --stackmap "${FLAGS3_OBJ}")"
+FLAGS3_GOT="$(extract_location2_constant "${FLAGS3_STACKMAP}")"
+if [[ "${FLAGS3_GOT}" != "3" ]]; then
+  echo "${FLAGS3_STACKMAP}" >&2
+  die "flags=3 fixture: expected stackmap constant #2 (flags) to be 3, got ${FLAGS3_GOT}"
+fi
+
 # Guard LLVM 18 verifier behaviour: only bits 0 and 1 are accepted (flags 0..3).
 INVALID_FLAGS_IR="${tmpdir}/invalid_flags.ll"
 cat >"${INVALID_FLAGS_IR}" <<'EOF'
