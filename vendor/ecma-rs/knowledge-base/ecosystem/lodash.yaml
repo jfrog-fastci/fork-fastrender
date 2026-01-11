@@ -313,6 +313,8 @@
     - lodash-es/forEach
     - lodash-es.each
     - lodash-es/each
+    - lodash.foreach
+    - lodash.each
   semantics: ForEach
   since: "v0.1.0"
   purity:
@@ -520,7 +522,7 @@
     output: new_array
 
 - name: lodash.flattenDeep
-  aliases: [_.flattenDeep, lodash/flattenDeep, lodash-es.flattenDeep, lodash-es/flattenDeep]
+  aliases: [_.flattenDeep, lodash/flattenDeep, lodash-es.flattenDeep, lodash-es/flattenDeep, lodash.flattendeep]
   semantics: FlattenDeep
   since: "v0.1.0"
   purity:
@@ -612,7 +614,7 @@
     kind: aggregation
 
 - name: lodash.sumBy
-  aliases: [_.sumBy, lodash/sumBy, lodash-es.sumBy, lodash-es/sumBy]
+  aliases: [_.sumBy, lodash/sumBy, lodash-es.sumBy, lodash-es/sumBy, lodash.sumby]
   semantics: SumBy
   since: "v0.1.0"
   purity:
@@ -812,6 +814,7 @@
     - lodash-es/assign
     - lodash-es.extend
     - lodash-es/extend
+    - lodash.extend
   semantics: Assign
   since: "v0.1.0"
   purity:
@@ -889,7 +892,7 @@
     callback_optional: true
 
 - name: lodash.camelCase
-  aliases: [_.camelCase, lodash/camelCase, lodash-es.camelCase, lodash-es/camelCase]
+  aliases: [_.camelCase, lodash/camelCase, lodash-es.camelCase, lodash-es/camelCase, lodash.camelcase]
   semantics: CamelCase
   since: "v0.1.0"
   purity:
@@ -907,7 +910,7 @@
     output: string
 
 - name: lodash.kebabCase
-  aliases: [_.kebabCase, lodash/kebabCase, lodash-es.kebabCase, lodash-es/kebabCase]
+  aliases: [_.kebabCase, lodash/kebabCase, lodash-es.kebabCase, lodash-es/kebabCase, lodash.kebabcase]
   semantics: KebabCase
   since: "v0.1.0"
   purity:
@@ -925,7 +928,7 @@
     output: string
 
 - name: lodash.snakeCase
-  aliases: [_.snakeCase, lodash/snakeCase, lodash-es.snakeCase, lodash-es/snakeCase]
+  aliases: [_.snakeCase, lodash/snakeCase, lodash-es.snakeCase, lodash-es/snakeCase, lodash.snakecase]
   semantics: SnakeCase
   since: "v0.1.0"
   purity:
@@ -943,7 +946,7 @@
     output: string
 
 - name: lodash.startCase
-  aliases: [_.startCase, lodash/startCase, lodash-es.startCase, lodash-es/startCase]
+  aliases: [_.startCase, lodash/startCase, lodash-es.startCase, lodash-es/startCase, lodash.startcase]
   semantics: StartCase
   since: "v0.1.0"
   purity:
@@ -961,7 +964,7 @@
     output: string
 
 - name: lodash.upperFirst
-  aliases: [_.upperFirst, lodash/upperFirst, lodash-es.upperFirst, lodash-es/upperFirst]
+  aliases: [_.upperFirst, lodash/upperFirst, lodash-es.upperFirst, lodash-es/upperFirst, lodash.upperfirst]
   semantics: UpperFirst
   since: "v0.1.0"
   purity:
@@ -979,7 +982,7 @@
     output: string
 
 - name: lodash.lowerFirst
-  aliases: [_.lowerFirst, lodash/lowerFirst, lodash-es.lowerFirst, lodash-es/lowerFirst]
+  aliases: [_.lowerFirst, lodash/lowerFirst, lodash-es.lowerFirst, lodash-es/lowerFirst, lodash.lowerfirst]
   semantics: LowerFirst
   since: "v0.1.0"
   purity:
@@ -997,7 +1000,7 @@
     output: string
 
 - name: lodash.escapeRegExp
-  aliases: [_.escapeRegExp, lodash/escapeRegExp, lodash-es.escapeRegExp, lodash-es/escapeRegExp]
+  aliases: [_.escapeRegExp, lodash/escapeRegExp, lodash-es.escapeRegExp, lodash-es/escapeRegExp, lodash.escaperegexp]
   semantics: EscapeRegExp
   since: "v0.1.0"
   purity:
@@ -1015,7 +1018,7 @@
     output: string
 
 - name: lodash.isEmpty
-  aliases: [_.isEmpty, lodash/isEmpty, lodash-es.isEmpty, lodash-es/isEmpty]
+  aliases: [_.isEmpty, lodash/isEmpty, lodash-es.isEmpty, lodash-es/isEmpty, lodash.isempty]
   semantics: IsEmpty
   since: "v0.1.0"
   purity:
@@ -1032,7 +1035,7 @@
     kind: predicate
 
 - name: lodash.isNil
-  aliases: [_.isNil, lodash/isNil, lodash-es.isNil, lodash-es/isNil]
+  aliases: [_.isNil, lodash/isNil, lodash-es.isNil, lodash-es/isNil, lodash.isnil]
   semantics: IsNil
   since: "v0.1.0"
   purity:
@@ -1049,7 +1052,7 @@
     kind: predicate
 
 - name: lodash.isArray
-  aliases: [_.isArray, lodash/isArray, lodash-es.isArray, lodash-es/isArray]
+  aliases: [_.isArray, lodash/isArray, lodash-es.isArray, lodash-es/isArray, lodash.isarray]
   semantics: IsArray
   since: "v0.1.0"
   purity:
@@ -1066,7 +1069,7 @@
     kind: predicate
 
 - name: lodash.isPlainObject
-  aliases: [_.isPlainObject, lodash/isPlainObject, lodash-es.isPlainObject, lodash-es/isPlainObject]
+  aliases: [_.isPlainObject, lodash/isPlainObject, lodash-es.isPlainObject, lodash-es/isPlainObject, lodash.isplainobject]
   semantics: IsPlainObject
   since: "v0.1.0"
   purity:
@@ -1211,7 +1214,7 @@
     output: number
 
 - name: lodash.uniqueId
-  aliases: [_.uniqueId, lodash/uniqueId, lodash-es.uniqueId, lodash-es/uniqueId]
+  aliases: [_.uniqueId, lodash/uniqueId, lodash-es.uniqueId, lodash-es/uniqueId, lodash.uniqueid]
   semantics: UniqueId
   since: "v0.1.0"
   purity:
@@ -1338,7 +1341,7 @@
     output: string
 
 - name: lodash.trimStart
-  aliases: [_.trimStart, lodash/trimStart, lodash-es.trimStart, lodash-es/trimStart]
+  aliases: [_.trimStart, lodash/trimStart, lodash-es.trimStart, lodash-es/trimStart, lodash.trimstart]
   semantics: TrimStart
   since: "v0.1.0"
   purity:
@@ -1356,7 +1359,7 @@
     output: string
 
 - name: lodash.trimEnd
-  aliases: [_.trimEnd, lodash/trimEnd, lodash-es.trimEnd, lodash-es/trimEnd]
+  aliases: [_.trimEnd, lodash/trimEnd, lodash-es.trimEnd, lodash-es/trimEnd, lodash.trimend]
   semantics: TrimEnd
   since: "v0.1.0"
   purity:
@@ -1428,7 +1431,7 @@
     output: new_array
 
 - name: lodash.toLower
-  aliases: [_.toLower, lodash/toLower, lodash-es.toLower, lodash-es/toLower]
+  aliases: [_.toLower, lodash/toLower, lodash-es.toLower, lodash-es/toLower, lodash.tolower]
   semantics: ToLower
   since: "v0.1.0"
   purity:
@@ -1446,7 +1449,7 @@
     output: string
 
 - name: lodash.toUpper
-  aliases: [_.toUpper, lodash/toUpper, lodash-es.toUpper, lodash-es/toUpper]
+  aliases: [_.toUpper, lodash/toUpper, lodash-es.toUpper, lodash-es/toUpper, lodash.toupper]
   semantics: ToUpper
   since: "v0.1.0"
   purity:
@@ -1464,7 +1467,7 @@
     output: string
 
 - name: lodash.lowerCase
-  aliases: [_.lowerCase, lodash/lowerCase, lodash-es.lowerCase, lodash-es/lowerCase]
+  aliases: [_.lowerCase, lodash/lowerCase, lodash-es.lowerCase, lodash-es/lowerCase, lodash.lowercase]
   semantics: LowerCase
   since: "v0.1.0"
   purity:
@@ -1482,7 +1485,7 @@
     output: string
 
 - name: lodash.upperCase
-  aliases: [_.upperCase, lodash/upperCase, lodash-es.upperCase, lodash-es/upperCase]
+  aliases: [_.upperCase, lodash/upperCase, lodash-es.upperCase, lodash-es/upperCase, lodash.uppercase]
   semantics: UpperCase
   since: "v0.1.0"
   purity:
@@ -1572,7 +1575,7 @@
     output: number
 
 - name: lodash.isNumber
-  aliases: [_.isNumber, lodash/isNumber, lodash-es.isNumber, lodash-es/isNumber]
+  aliases: [_.isNumber, lodash/isNumber, lodash-es.isNumber, lodash-es/isNumber, lodash.isnumber]
   semantics: IsNumber
   since: "v0.1.0"
   purity:
@@ -1589,7 +1592,7 @@
     kind: predicate
 
 - name: lodash.isString
-  aliases: [_.isString, lodash/isString, lodash-es.isString, lodash-es/isString]
+  aliases: [_.isString, lodash/isString, lodash-es.isString, lodash-es/isString, lodash.isstring]
   semantics: IsString
   since: "v0.1.0"
   purity:
@@ -1606,7 +1609,7 @@
     kind: predicate
 
 - name: lodash.isBoolean
-  aliases: [_.isBoolean, lodash/isBoolean, lodash-es.isBoolean, lodash-es/isBoolean]
+  aliases: [_.isBoolean, lodash/isBoolean, lodash-es.isBoolean, lodash-es/isBoolean, lodash.isboolean]
   semantics: IsBoolean
   since: "v0.1.0"
   purity:
@@ -1623,7 +1626,7 @@
     kind: predicate
 
 - name: lodash.isFunction
-  aliases: [_.isFunction, lodash/isFunction, lodash-es.isFunction, lodash-es/isFunction]
+  aliases: [_.isFunction, lodash/isFunction, lodash-es.isFunction, lodash-es/isFunction, lodash.isfunction]
   semantics: IsFunction
   since: "v0.1.0"
   purity:
@@ -1640,7 +1643,7 @@
     kind: predicate
 
 - name: lodash.isObject
-  aliases: [_.isObject, lodash/isObject, lodash-es.isObject, lodash-es/isObject]
+  aliases: [_.isObject, lodash/isObject, lodash-es.isObject, lodash-es/isObject, lodash.isobject]
   semantics: IsObject
   since: "v0.1.0"
   purity:
@@ -1657,7 +1660,7 @@
     kind: predicate
 
 - name: lodash.isObjectLike
-  aliases: [_.isObjectLike, lodash/isObjectLike, lodash-es.isObjectLike, lodash-es/isObjectLike]
+  aliases: [_.isObjectLike, lodash/isObjectLike, lodash-es.isObjectLike, lodash-es/isObjectLike, lodash.isobjectlike]
   semantics: IsObjectLike
   since: "v0.1.0"
   purity:
@@ -1674,7 +1677,7 @@
     kind: predicate
 
 - name: lodash.isDate
-  aliases: [_.isDate, lodash/isDate, lodash-es.isDate, lodash-es/isDate]
+  aliases: [_.isDate, lodash/isDate, lodash-es.isDate, lodash-es/isDate, lodash.isdate]
   semantics: IsDate
   since: "v0.1.0"
   purity:
@@ -1691,7 +1694,7 @@
     kind: predicate
 
 - name: lodash.isRegExp
-  aliases: [_.isRegExp, lodash/isRegExp, lodash-es.isRegExp, lodash-es/isRegExp]
+  aliases: [_.isRegExp, lodash/isRegExp, lodash-es.isRegExp, lodash-es/isRegExp, lodash.isregexp]
   semantics: IsRegExp
   since: "v0.1.0"
   purity:
@@ -1726,7 +1729,7 @@
     output: boolean
 
 - name: lodash.hasIn
-  aliases: [_.hasIn, lodash/hasIn, lodash-es.hasIn, lodash-es/hasIn]
+  aliases: [_.hasIn, lodash/hasIn, lodash-es.hasIn, lodash-es/hasIn, lodash.hasin]
   semantics: HasIn
   since: "v0.1.0"
   purity:
