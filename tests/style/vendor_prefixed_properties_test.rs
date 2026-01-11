@@ -1,4 +1,6 @@
+use fastrender::css::properties::parse_property_value;
 use fastrender::css::parser::parse_stylesheet;
+use fastrender::css::types::PropertyValue;
 use fastrender::css::types::Transform;
 use fastrender::dom;
 use fastrender::style::cascade::apply_styles_with_media;
@@ -6,9 +8,11 @@ use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::AlignContent;
 use fastrender::style::types::FilterFunction;
+use fastrender::style::types::TextSizeAdjust;
 use fastrender::style::types::UserSelect;
 use fastrender::ComputedStyle;
 use fastrender::Length;
+use fastrender::LengthUnit;
 use std::sync::Arc;
 
 fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
@@ -139,4 +143,37 @@ fn vendor_prefixed_webkit_logical_padding_end_applies() {
 fn vendor_prefixed_ms_flex_line_pack_maps_to_align_content() {
   let styles = div_styles("<div></div>", "div { -ms-flex-line-pack: justify; }");
   assert_eq!(styles.align_content, AlignContent::SpaceBetween);
+}
+
+#[test]
+fn vendor_prefixed_text_size_adjust_applies() {
+  let styles = div_styles("<div></div>", "div { -webkit-text-size-adjust: none; }");
+  assert_eq!(styles.text_size_adjust, TextSizeAdjust::None);
+}
+
+#[test]
+fn parse_property_value_accepts_vendor_prefixed_text_size_adjust() {
+  let value = parse_property_value("-webkit-text-size-adjust", "none").expect("value parsed");
+  match value {
+    PropertyValue::Keyword(kw) => assert!(kw.eq_ignore_ascii_case("none")),
+    other => panic!("expected keyword, got {other:?}"),
+  }
+
+  let value = parse_property_value("-webkit-text-size-adjust", "125%").expect("value parsed");
+  match value {
+    PropertyValue::Percentage(pct) => assert!((pct - 125.0).abs() < 1e-6),
+    PropertyValue::Length(len) if len.unit == LengthUnit::Percent => {
+      assert!((len.value - 125.0).abs() < 1e-6)
+    }
+    other => panic!("expected percentage, got {other:?}"),
+  }
+}
+
+#[test]
+fn parse_property_value_vendor_prefixed_property_name_is_case_insensitive() {
+  let value = parse_property_value("-WeBkIt-TeXt-SiZe-AdJuSt", "none").expect("value parsed");
+  match value {
+    PropertyValue::Keyword(kw) => assert!(kw.eq_ignore_ascii_case("none")),
+    other => panic!("expected keyword, got {other:?}"),
+  }
 }

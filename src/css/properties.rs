@@ -1427,9 +1427,26 @@ fn parse_property_value_in_context_internal(
     return parse_simple_value(trim_css_whitespace(value_str));
   }
 
+  // CSS property names are ASCII case-insensitive. Normalize to lowercase so caller-facing helpers
+  // like `parse_property_value("-WeBkIt-TrAnSfOrM", ...)` behave the same as stylesheet parsing.
+  let property_lower: std::borrow::Cow<'_, str> = if property
+    .as_bytes()
+    .iter()
+    .any(|b| b.is_ascii_uppercase())
+  {
+    std::borrow::Cow::Owned(property.to_ascii_lowercase())
+  } else {
+    std::borrow::Cow::Borrowed(property)
+  };
+  let mut property = property_lower.as_ref();
+
   // Unknown properties are ignored per the CSS error-handling rules.
   if !skip_allowed_check && !property_allowed_in_context(context, property) {
-    return None;
+    if let Some(alias) = vendor_prefixed_property_alias(property) {
+      property = alias;
+    } else {
+      return None;
+    }
   }
 
   if is_raw_only_property(property) {
