@@ -498,8 +498,7 @@ Current runtime contract (v1):
 Operationally, for each `(base, derived)` pair:
 
 - Evaluate the stack slots for both locations (`base_slot`, `derived_slot`).
-- Treat `base_slot` as a GC root slot:
-  - relocate the pointer in-place (moving/compacting collector)
+- Treat `base_slot` as a GC root slot (the GC relocates it in-place).
 - If `base_slot != derived_slot`, update the derived slot after base relocation:
   - `derived_new = relocated_base + (derived_old - base_old)`
 
