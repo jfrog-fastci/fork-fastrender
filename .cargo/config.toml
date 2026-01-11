@@ -32,8 +32,8 @@ CMAKE_ARGS = "-DAOM_TARGET_CPU=generic"
 rustc-wrapper = ""
 rustc-workspace-wrapper = ""
 [target.'cfg(target_os = "linux")']
+# Use clang as the linker driver on Linux.
 linker = "clang"
-# Use `clang` as the linker driver on Linux.
 #
 # We intentionally avoid pinning a specific linker implementation via `-fuse-ld=...` because:
 # - Some environments (including CI) don't ship with newer linkers like `mold`.

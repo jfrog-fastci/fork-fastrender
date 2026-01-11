@@ -19,6 +19,7 @@
 pub mod abi;
 pub mod arch;
 pub mod gc_safe;
+pub mod async_rt;
 pub mod gc;
 pub mod immix;
 pub mod los;
@@ -27,13 +28,17 @@ pub mod stackmap;
 pub mod parallel;
 pub mod sync;
 pub mod threading;
-pub mod async_rt;
 pub mod stackmaps;
 pub mod stackmaps_loader;
 pub mod statepoints;
 pub mod stackwalk_fp;
 pub mod test_util;
 pub mod statepoint_verify;
+
+// Core object model used by the planned Immix + generational collector.
+pub mod metadata;
+pub mod object;
+pub mod shape_table;
 
 mod alloc;
 #[cfg(feature = "gc_stats")]
