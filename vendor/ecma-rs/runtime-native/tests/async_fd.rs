@@ -1,6 +1,6 @@
 use runtime_native::io::AsyncFd;
 use runtime_native::test_util::TestRuntimeGuard;
-use runtime_native::{async_rt, rt_async_poll};
+use runtime_native::{async_rt, rt_async_poll_legacy as rt_async_poll};
 use std::future::Future;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -34,6 +34,20 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
   let rfd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
   let wfd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
   Ok((rfd, wfd))
+}
+
+fn socketpair() -> io::Result<(OwnedFd, OwnedFd)> {
+  let mut fds = [0; 2];
+  let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+  if rc != 0 {
+    return Err(io::Error::last_os_error());
+  }
+  set_nonblocking(fds[0])?;
+  set_nonblocking(fds[1])?;
+  // Safety: `socketpair` returns new, owned file descriptors.
+  let a = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+  let b = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+  Ok((a, b))
 }
 
 extern "C" fn set_timeout_flag(data: *mut u8) {
@@ -129,6 +143,19 @@ fn writable_is_immediately_ready_for_pipe() {
   block_on_rt(async { afd.writable().await.unwrap() }, Duration::from_secs(1));
 
   drop(rfd);
+}
+
+#[test]
+fn hup_counts_as_writable_readiness() {
+  let _rt = TestRuntimeGuard::new();
+  let (a, b) = socketpair().unwrap();
+  let afd = AsyncFd::new(a);
+
+  // Closing the peer end should cause epoll to report HUP/ERR. `AsyncFd` treats those events as
+  // readiness, so writable() must resolve even though an eventual write would fail (EPIPE).
+  drop(b);
+
+  block_on_rt(async { afd.writable().await.unwrap() }, Duration::from_secs(1));
 }
 
 #[test]
