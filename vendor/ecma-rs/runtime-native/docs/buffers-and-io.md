@@ -76,3 +76,28 @@ fail deterministically with `*Error::Pinned` until the guard is dropped.
 The byte pointer itself comes from the non-moving backing store, so it is stable
 for as long as the backing store remains alive and is not detached/transferred/resized;
 pinning is what makes that lifetime explicit for async I/O.
+
+## Vectored I/O (`iovec[]` / `msghdr`)
+
+Some syscalls and async APIs require **descriptor structs** in addition to the underlying byte
+buffers:
+
+- `readv` / `writev` take an `iovec[]` array.
+- `sendmsg` / `recvmsg` (and io_uring `SendMsg`/`RecvMsg`) take an `msghdr` which contains:
+  - an `iovec[]` array (`msg_iov`)
+  - optional `msg_name` (sockaddr bytes) and `msg_control` (ancillary data) buffers.
+
+Even if the kernel copies *some* metadata, implementations differ; the safest contract for async
+I/O is:
+
+> the in-flight op owns all descriptor memory **and** pins all underlying buffers.
+
+`runtime-native` provides GC/io_uring-safe helpers in `io::`:
+
+- `io::PinnedIoVec` / `io::IoVecList`: owns a heap-allocated `Box<[libc::iovec]>` and holds pin
+  guards for each referenced `ArrayBuffer`/`Uint8Array` range.
+- `io::PinnedMsgHdr` (unix-only): owns a heap-allocated `Box<libc::msghdr>` and the `PinnedIoVec` it
+  points to, plus optional `msg_name` / `msg_control` buffers.
+
+These types are designed to be stored inside an in-flight `io::IoOp` so descriptor/buffer lifetimes
+are tied to completion/cancellation.
