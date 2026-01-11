@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use effect_model::{EffectSet, EffectSummary, EffectTemplate, PurityTemplate, ThrowBehavior};
+use effect_model::{EffectSet, EffectSummary, EffectTemplate, PurityTemplate};
 use knowledge_base::{ApiDatabase, ApiSemantics, JsonValue};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,17 +106,6 @@ fn normalize_ident(raw: &str) -> String {
     .trim()
     .to_ascii_lowercase()
     .replace(['-', ' '], "_")
-}
-
-fn effect_set_to_summary(effects: EffectSet) -> EffectSummary {
-  EffectSummary {
-    flags: effects & !EffectSet::MAY_THROW,
-    throws: if effects.contains(EffectSet::MAY_THROW) {
-      ThrowBehavior::Maybe
-    } else {
-      ThrowBehavior::Never
-    },
-  }
 }
 
 fn parse_usize_list(raw: &JsonValue) -> Result<Vec<usize>, ()> {
@@ -367,7 +356,7 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
           errors.push(ValidationError::InconsistentPurityEffects {
             api: api.name.clone(),
             purity: PurityTemplate::Pure,
-            effects: effect_set_to_summary(base_effects),
+            effects: base_effects.to_effect_summary(),
           });
         }
       } else {
