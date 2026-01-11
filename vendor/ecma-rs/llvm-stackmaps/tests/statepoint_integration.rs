@@ -10,7 +10,7 @@ declare ptr addrspace(1) @allocate(i64)
 declare void @use(ptr addrspace(1)) #0
 attributes #0 = { "gc-leaf-function" }
 
-define ptr addrspace(1) @test(ptr addrspace(1) %p) gc "statepoint-example" {
+define ptr addrspace(1) @test(ptr addrspace(1) %p) gc "coreclr" {
 entry:
   %obj = call ptr addrspace(1) @allocate(i64 16)
   call void @use(ptr addrspace(1) %p)
