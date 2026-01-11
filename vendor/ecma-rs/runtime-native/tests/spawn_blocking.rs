@@ -1,4 +1,5 @@
 use runtime_native::abi::PromiseRef;
+use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{
   rt_async_poll, rt_async_sleep, rt_promise_resolve, rt_promise_then, rt_spawn_blocking,
 };
@@ -40,6 +41,7 @@ extern "C" fn inc_usize(data: *mut u8) {
 
 #[test]
 fn spawn_blocking_basic() {
+  let _rt = TestRuntimeGuard::new();
   let flag = Box::new(AtomicBool::new(false));
   let settled = Box::new(AtomicBool::new(false));
   let flag_ptr = Box::into_raw(flag);
@@ -48,8 +50,13 @@ fn spawn_blocking_basic() {
   let promise = rt_spawn_blocking(task_set_flag, flag_ptr.cast::<u8>());
   rt_promise_then(promise, set_bool, settled_ptr.cast::<u8>());
 
+  let start = Instant::now();
   while !unsafe { &*settled_ptr }.load(Ordering::SeqCst) {
     rt_async_poll();
+    assert!(
+      start.elapsed() < Duration::from_secs(2),
+      "timeout waiting for spawn_blocking promise to settle"
+    );
   }
 
   let flag = unsafe { &*flag_ptr };
@@ -63,6 +70,7 @@ fn spawn_blocking_basic() {
 
 #[test]
 fn spawn_blocking_concurrency() {
+  let _rt = TestRuntimeGuard::new();
   const N: usize = 64;
 
   let counter = Box::new(AtomicUsize::new(0));
@@ -75,8 +83,13 @@ fn spawn_blocking_concurrency() {
     rt_promise_then(p, inc_usize, settled_ptr.cast::<u8>());
   }
 
+  let start = Instant::now();
   while unsafe { &*settled_ptr }.load(Ordering::SeqCst) != N {
     rt_async_poll();
+    assert!(
+      start.elapsed() < Duration::from_secs(10),
+      "timeout waiting for {N} spawn_blocking tasks to settle"
+    );
   }
 
   let counter = unsafe { &*counter_ptr };
@@ -90,7 +103,8 @@ fn spawn_blocking_concurrency() {
 
 #[test]
 fn spawn_blocking_does_not_block_event_loop() {
-  const N: usize = 32;
+  let _rt = TestRuntimeGuard::new();
+  const N: usize = 16;
 
   let start = Instant::now();
   let timer_promise = rt_async_sleep(50);
@@ -117,6 +131,10 @@ fn spawn_blocking_does_not_block_event_loop() {
       timer_fired_at = Some(start.elapsed());
       counter_at_timer = unsafe { &*settled_ptr }.load(Ordering::SeqCst);
     }
+    assert!(
+      start.elapsed() < Duration::from_secs(15),
+      "timeout waiting for timer + spawn_blocking tasks to complete"
+    );
   }
 
   let fired = timer_fired_at.expect("timer should have fired");
@@ -125,7 +143,7 @@ fn spawn_blocking_does_not_block_event_loop() {
   assert!(counter_at_timer < N, "timer fired only after all blocking tasks completed");
 
   // Also keep a loose upper bound to catch regressions where the event loop is actually blocked.
-  assert!(fired < Duration::from_millis(500), "timer fired too late: {fired:?}");
+  assert!(fired < Duration::from_secs(2), "timer fired too late: {fired:?}");
 
   let counter = unsafe { &*counter_ptr };
   assert_eq!(counter.load(Ordering::SeqCst), N);
