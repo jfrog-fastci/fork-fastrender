@@ -117,6 +117,7 @@ include = [
   "rt_string_pin_interned",
   "rt_parallel_spawn",
   "rt_parallel_spawn_rooted",
+  "rt_parallel_spawn_promise_legacy",
   "rt_parallel_join",
   "rt_parallel_for",
   "rt_parallel_spawn_promise",

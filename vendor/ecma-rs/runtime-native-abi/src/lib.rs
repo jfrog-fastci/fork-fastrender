@@ -581,6 +581,10 @@ extern "C" {
   // Parallel
   pub fn rt_parallel_spawn(task: RtTaskFn, data: *mut u8) -> TaskId;
   pub fn rt_parallel_spawn_rooted(task: RtTaskFn, data: GcPtr) -> TaskId;
+  pub fn rt_parallel_spawn_promise_legacy(
+    task: extern "C" fn(*mut u8, LegacyPromiseRef),
+    data: *mut u8,
+  ) -> LegacyPromiseRef;
   pub fn rt_parallel_join(tasks: *const TaskId, count: usize);
   pub fn rt_parallel_for(start: usize, end: usize, body: RtParallelForBodyFn, data: *mut u8);
   pub fn rt_parallel_spawn_promise(
@@ -1013,6 +1017,7 @@ mod tests {
       "rt_string_pin_interned(",
       "rt_parallel_spawn(",
       "rt_parallel_spawn_rooted(",
+      "rt_parallel_spawn_promise_legacy(",
       "rt_parallel_join(",
       "rt_parallel_for(",
       "rt_parallel_spawn_promise(",
