@@ -10,6 +10,13 @@ This crate currently ships two binaries:
   `native_js::validate::validate_strict_subset` + HIR → LLVM + object emission +
   `clang` link).
 
+If you have the `native-js` binary installed on your `PATH`, common commands are:
+
+```bash
+native-js check input.ts
+native-js run input.ts
+```
+
 ## `native-js-cli` (minimal emitter)
 
 The `native-js-cli` binary is intentionally narrow in scope: it compiles a
@@ -227,8 +234,8 @@ It expects the entry file to export a `main()` function.
 
 ### Usage
 
-Preflight-check the entry file (typecheck + legacy strict validation + codegen), without producing
-an executable:
+Preflight-check the entry file (typecheck + strict subset validation + entrypoint checks), without
+producing an executable:
 
 ```bash
 # From the repo root:
@@ -236,10 +243,8 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
   check path/to/entry.ts
 ```
 
-> Note: `native-js check` currently runs the legacy `native_js::strict::validate`
-> pass, which rejects unsafe escape hatches (including TS-only wrappers like `as`
-> and `!`). `native-js build`/`run` use the backend subset validator
-> (`native_js::validate::validate_strict_subset`) instead.
+> Note: `native-js check` performs the same typechecking + subset validation as
+> `native-js build`/`run`, but stops before producing/linking an executable.
 
 If you have the binary installed on your `PATH`, the equivalent invocation is:
 
@@ -305,7 +310,7 @@ renders source-context diagnostics (file/line caret spans) from:
 - `typecheck-ts` (TypeScript type errors)
 - `native-js` validators (`NJS####` codes):
   - strict subset (`native_js::validate::validate_strict_subset`): `NJS0009` / `NJS0010`
-  - legacy strict validator (`native_js::strict::validate`): `NJS0001..NJS0008`
+  - entrypoint checks (`native_js::strict::entrypoint`): `NJS0108..NJS0111`
 - `native-js` HIR-based code generation (when it fails)
 
 Diagnostics are rendered via `diagnostics::render` in a rustc-like format:
