@@ -256,11 +256,20 @@ void rt_gc_collect(void);
 size_t rt_backing_store_external_bytes(void);
 
 // -----------------------------------------------------------------------------
-// GC roots / handles (non-stack roots)
+// GC roots / handles
 // -----------------------------------------------------------------------------
 // LLVM stackmaps cover mutator stack/register roots, but the runtime must also
-// track global/static roots and long-lived handles.
+// track:
+// - temporary roots created by runtime-native/FFI code (shadow stack), and
+// - global/static roots and long-lived handles.
 //
+// Temporary roots on the current thread (shadow stack).
+//
+// `slot` must point to a caller-owned `GcPtr` slot and must be popped in strict
+// LIFO order.
+void rt_root_push(GcHandle slot);
+void rt_root_pop(GcHandle slot);
+
 // Register an addressable root slot. `slot` must remain valid and writable
 // until unregistered.
 uint32_t rt_gc_register_root_slot(GcHandle slot);

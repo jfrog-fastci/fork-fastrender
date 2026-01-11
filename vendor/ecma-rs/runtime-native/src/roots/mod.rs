@@ -53,6 +53,78 @@ pub use persistent_handle_table::{global_persistent_handle_table, PersistentHand
 pub mod conservative;
 pub use conservative::conservative_scan_words;
 
+// -----------------------------------------------------------------------------
+// Per-thread shadow stack roots (for Rust runtime code)
+// -----------------------------------------------------------------------------
+
+/// A temporary GC root handle for runtime-native Rust code.
+///
+/// Unlike TypeScript/LLVM-generated code, Rust code does not have stackmaps/statepoints on stable
+/// Rust. Any GC-managed pointer held across a potential safepoint/GC must be explicitly rooted.
+///
+/// `Root<T>` stores the pointer in an internal, addressable slot and registers that slot in the
+/// current thread's shadow stack (the per-thread handle stack in the thread registry). A relocating
+/// GC updates the slot in-place.
+///
+/// # Panics
+/// Panics if the current thread is not registered with `rt_thread_init` / `threading::register_current_thread`.
+#[must_use]
+pub struct Root<T> {
+  slot: GcHandle,
+  _marker: std::marker::PhantomData<T>,
+  // Not Send/Sync: roots are tied to the current thread's shadow stack.
+  _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl<T> Root<T> {
+  pub fn new(ptr: *mut T) -> Self {
+    let slot_box = Box::new(ptr as GcPtr);
+    let slot: GcHandle = Box::into_raw(slot_box);
+
+    let thread = crate::threading::registry::current_thread_state()
+      .expect("Root<T> requires the current thread to be registered (call rt_thread_init)");
+    thread.handle_stack_push(slot);
+
+    Self {
+      slot,
+      _marker: std::marker::PhantomData,
+      _not_send: std::marker::PhantomData,
+    }
+  }
+
+  #[inline]
+  pub fn get(&self) -> *mut T {
+    // SAFETY: `self.slot` is a valid addressable slot for a `GcPtr`.
+    unsafe { load_handle(self.slot) as *mut T }
+  }
+
+  #[inline]
+  pub fn set(&mut self, new_ptr: *mut T) {
+    // SAFETY: `self.slot` is a valid addressable slot for a `GcPtr`.
+    unsafe {
+      store_handle(self.slot, new_ptr as GcPtr);
+    }
+  }
+
+  /// Returns the raw handle (address of the root slot).
+  #[inline]
+  pub fn handle(&self) -> GcHandle {
+    self.slot
+  }
+}
+
+impl<T> Drop for Root<T> {
+  fn drop(&mut self) {
+    if let Some(thread) = crate::threading::registry::current_thread_state() {
+      thread.handle_stack_pop_checked(self.slot);
+    }
+    // SAFETY: `self.slot` was allocated by `Box::into_raw` in `new`.
+    unsafe {
+      drop(Box::from_raw(self.slot));
+    }
+  }
+}
+
 /// An address range (half-open `[start, end)`) representing (at least) the active GC heap.
 ///
 /// Used by conservative root scanning to filter candidate pointers.

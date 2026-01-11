@@ -559,6 +559,8 @@ mod tests {
       "void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);",
       "void rt_gc_collect(void);",
       "size_t rt_backing_store_external_bytes(void);",
+      "void rt_root_push(GcHandle slot);",
+      "void rt_root_pop(GcHandle slot);",
       "uint32_t rt_gc_register_root_slot(GcHandle slot);",
       "void rt_gc_unregister_root_slot(uint32_t handle);",
       "uint32_t rt_gc_pin(GcPtr ptr);",
@@ -640,6 +642,8 @@ mod tests {
     let _weak_add: extern "C" fn(*mut u8) -> u64 = rt_weak_add;
     let _weak_get: extern "C" fn(u64) -> *mut u8 = rt_weak_get;
     let _weak_remove: extern "C" fn(u64) = rt_weak_remove;
+    let _root_push: unsafe extern "C" fn(crate::roots::GcHandle) = rt_root_push;
+    let _root_pop: unsafe extern "C" fn(crate::roots::GcHandle) = rt_root_pop;
     let _thread_register: extern "C" fn(u32) -> u64 = rt_thread_register;
     let _thread_unregister: extern "C" fn() = rt_thread_unregister;
     let _thread_set_parked: extern "C" fn(bool) = rt_thread_set_parked;
@@ -702,6 +706,8 @@ mod tests {
       _weak_add,
       _weak_get,
       _weak_remove,
+      _root_push,
+      _root_pop,
       _thread_register,
       _thread_unregister,
       _thread_set_parked,

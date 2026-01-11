@@ -664,6 +664,48 @@ pub extern "C" fn rt_backing_store_external_bytes() -> usize {
 }
 
 // -----------------------------------------------------------------------------
+// Per-thread shadow stack roots (temporary roots)
+// -----------------------------------------------------------------------------
+
+/// Push a root slot onto the current thread's shadow stack.
+///
+/// The slot address is stored in the per-thread handle stack inside the runtime thread registry so
+/// the stop-the-world GC can enumerate and update it during relocation.
+///
+/// # Safety
+/// - `slot` must be a valid, writable pointer to a `GcPtr` slot (`*mut *mut u8`).
+/// - Callers must later pop the slot in strict LIFO order (see [`rt_root_pop`]).
+/// - The current thread must be registered with `rt_thread_init`.
+#[no_mangle]
+pub unsafe extern "C" fn rt_root_push(slot: crate::roots::GcHandle) {
+  if slot.is_null() {
+    crate::trap::rt_trap_invalid_arg("rt_root_push: slot was null");
+  }
+  let Some(thread) = registry::current_thread_state() else {
+    crate::trap::rt_trap_invalid_arg("rt_root_push: current thread is not registered");
+  };
+  thread.handle_stack_push(slot);
+}
+
+/// Pop a root slot from the current thread's shadow stack.
+///
+/// In debug builds this enforces strict LIFO order.
+///
+/// # Safety
+/// - `slot` must be the most recently pushed slot on the current thread.
+/// - The current thread must be registered with `rt_thread_init`.
+#[no_mangle]
+pub unsafe extern "C" fn rt_root_pop(slot: crate::roots::GcHandle) {
+  if slot.is_null() {
+    crate::trap::rt_trap_invalid_arg("rt_root_pop: slot was null");
+  }
+  let Some(thread) = registry::current_thread_state() else {
+    crate::trap::rt_trap_invalid_arg("rt_root_pop: current thread is not registered");
+  };
+  thread.handle_stack_pop_debug(slot);
+}
+
+// -----------------------------------------------------------------------------
 // Global roots / handles (non-stack roots)
 // -----------------------------------------------------------------------------
 

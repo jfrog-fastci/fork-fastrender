@@ -11,6 +11,8 @@ fn runtime_native_c_header_contains_expected_abi_symbols() {
     "rt_gc_unregister_root_slot(",
     "rt_gc_pin(",
     "rt_gc_unpin(",
+    "rt_root_push(",
+    "rt_root_pop(",
     "rt_gc_set_young_range(",
     "rt_gc_get_young_range(",
     "rt_gc_poll(",
@@ -71,6 +73,10 @@ fn runtime_native_exports_match_expected_abi_signatures() {
   let _pin: extern "C" fn(*mut u8) -> u32 = runtime_native::rt_gc_pin;
   let _unpin: extern "C" fn(u32) = runtime_native::rt_gc_unpin;
 
+  // Per-thread shadow stack root push/pop.
+  let _root_push: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_push;
+  let _root_pop: unsafe extern "C" fn(runtime_native::roots::GcHandle) = runtime_native::rt_root_pop;
+
   #[cfg(feature = "gc_stats")]
   {
     let _stats_snapshot: unsafe extern "C" fn(*mut runtime_native::abi::RtGcStatsSnapshot) =
@@ -96,5 +102,7 @@ fn runtime_native_exports_match_expected_abi_signatures() {
     _unregister_root_slot,
     _pin,
     _unpin,
+    _root_push,
+    _root_pop,
   );
 }

@@ -145,6 +145,31 @@ impl ThreadState {
     self.handle_stack.lock().unwrap().0.truncate(len);
   }
 
+  pub(crate) fn handle_stack_pop_debug(&self, expected: *mut *mut u8) {
+    let mut stack = self.handle_stack.lock().unwrap();
+    #[cfg(debug_assertions)]
+    {
+      let top = stack.0.last().copied();
+      debug_assert_eq!(
+        top,
+        Some(expected),
+        "rt_root_pop must be called in strict LIFO order"
+      );
+    }
+    stack.0.pop();
+  }
+
+  pub(crate) fn handle_stack_pop_checked(&self, expected: *mut *mut u8) {
+    let mut stack = self.handle_stack.lock().unwrap();
+    let top = stack.0.last().copied();
+    assert_eq!(
+      top,
+      Some(expected),
+      "roots must be dropped/popped in strict LIFO order"
+    );
+    stack.0.pop();
+  }
+
   pub(crate) fn for_each_handle_slot(&self, mut f: impl FnMut(*mut *mut u8)) {
     // GC must not allocate, so avoid cloning the Vec. Copy out one slot pointer at a time under
     // the mutex, then invoke the callback after releasing the lock.
