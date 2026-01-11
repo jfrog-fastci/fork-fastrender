@@ -145,6 +145,18 @@ fn edge_trigger_requires_drain() {
 }
 
 #[test]
+fn register_requires_nonblocking() {
+  let (read, _write) = pipe().unwrap();
+
+  let mut reactor = Reactor::new().unwrap();
+  let err = reactor
+    .register(read.as_fd(), Token(11), Interest::READABLE)
+    .expect_err("expected registering a blocking fd to fail");
+
+  assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "got {err:?}");
+}
+
+#[test]
 fn read_ready_pipe() {
   let (read, write) = pipe().unwrap();
   set_nonblocking(read.as_raw_fd()).unwrap();
