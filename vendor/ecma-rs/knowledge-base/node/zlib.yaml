@@ -1,0 +1,89 @@
+- name: node:zlib.gzipSync
+  kind: function
+  aliases:
+    - zlib.gzipSync
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:zlib.gunzipSync
+  kind: function
+  aliases:
+    - zlib.gunzipSync
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:zlib.deflateSync
+  kind: function
+  aliases:
+    - zlib.deflateSync
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:zlib.inflateSync
+  kind: function
+  aliases:
+    - zlib.inflateSync
+  since: "v0.1.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:zlib.brotliCompressSync
+  kind: function
+  aliases:
+    - zlib.brotliCompressSync
+  since: "v11.7.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: node:zlib.brotliDecompressSync
+  kind: function
+  aliases:
+    - zlib.brotliDecompressSync
+  since: "v11.7.0"
+  effects:
+    template: pure
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

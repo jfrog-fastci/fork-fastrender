@@ -1,0 +1,47 @@
+- name: node:stream.pipeline
+  kind: function
+  aliases:
+    - stream.pipeline
+  since: "v0.10.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:stream.finished
+  kind: function
+  aliases:
+    - stream.finished
+  since: "v10.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:stream/promises.pipeline
+  kind: function
+  aliases:
+    - stream/promises.pipeline
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:stream/promises.finished
+  kind: function
+  aliases:
+    - stream/promises.finished
+  since: "v15.0.0"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
