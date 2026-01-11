@@ -241,13 +241,36 @@ fn enumerate_roots_for_frame(
   }
 
   let locals_size = stack_size - arch::FP_RECORD_SIZE;
-  let caller_sp = caller_fp
+  let caller_sp_checked = caller_fp
     .checked_sub(locals_size)
     .ok_or(WalkError::StackPointerUnderflow {
       caller_fp,
       stack_size,
       fp_record_size: arch::FP_RECORD_SIZE,
     })?;
+
+  // LLVM StackMaps v3 (LLVM 18) frequently use DWARF RSP (R#7) as the base register even when
+  // frame pointers are enabled (`-frame-pointer=all`). In that case, the reported `stack_size`
+  // includes the pushed old RBP but *not* the return address pushed by `call`.
+  //
+  // For a canonical prologue:
+  //   push rbp
+  //   mov  rbp, rsp
+  //   sub  rsp, locals
+  //
+  // LLVM reports:
+  //   stack_size = locals + 8  (includes `push rbp`)
+  //
+  // So the caller's stack pointer value at the callsite return address is:
+  //   rsp_at_callsite = rbp - locals = rbp + 8 - stack_size
+  #[cfg(target_arch = "x86_64")]
+  let caller_sp = {
+    let sp = compute_rsp_x86_64(caller_fp as usize, stack_size) as u64;
+    debug_assert_eq!(sp, caller_sp_checked);
+    sp
+  };
+  #[cfg(target_arch = "aarch64")]
+  let caller_sp = caller_sp_checked;
 
   let statepoint = crate::statepoints::StatepointRecord::new(callsite.record).map_err(|source| {
     WalkError::InvalidStatepoint {
@@ -338,4 +361,12 @@ fn check_fp_alignment(fp: u64) -> Result<(), WalkError> {
     });
   }
   Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn compute_rsp_x86_64(fp: usize, stack_size: u64) -> usize {
+  // See the derivation in `enumerate_roots_for_frame`: with frame pointers enabled, LLVM's
+  // `stack_size` includes the pushed old RBP, so the caller-frame RSP at the statepoint callsite
+  // return address is `RBP + 8 - stack_size`.
+  fp + (arch::WORD as usize) - (stack_size as usize)
 }
