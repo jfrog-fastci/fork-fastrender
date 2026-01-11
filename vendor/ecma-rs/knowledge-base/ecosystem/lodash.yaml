@@ -11,10 +11,10 @@
   semantics: Map
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -24,16 +24,18 @@
     kind: collection_operator
     output: new_array
     preserves_order: true
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.filter
   aliases: [_.filter]
   semantics: Filter
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -43,16 +45,18 @@
     kind: collection_operator
     output: new_array
     preserves_order: true
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.reduce
   aliases: [_.reduce]
   semantics: Reduce
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: false
     io: false
     network: false
@@ -61,6 +65,8 @@
   properties:
     kind: collection_operator
     output: accumulated_value
+    callback_arg: 1
+    callback_optional: false
 
 - name: lodash.cloneDeep
   aliases: [_.cloneDeep]
@@ -236,10 +242,10 @@
   semantics: SortBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -248,16 +254,18 @@
   properties:
     kind: collection_operator
     output: new_array
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.groupBy
   aliases: [_.groupBy]
   semantics: GroupBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -266,16 +274,18 @@
   properties:
     kind: collection_operator
     output: object
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.keyBy
   aliases: [_.keyBy]
   semantics: KeyBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -284,16 +294,18 @@
   properties:
     kind: collection_operator
     output: object
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.forEach
   aliases: [_.forEach, _.each]
   semantics: ForEach
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: false
     io: false
     network: false
@@ -302,16 +314,18 @@
   properties:
     kind: collection_operator
     output: input
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.find
   aliases: [_.find]
   semantics: Find
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: false
     io: false
     network: false
@@ -320,16 +334,18 @@
   properties:
     kind: collection_operator
     output: element_or_undefined
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.some
   aliases: [_.some]
   semantics: Some
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: false
     io: false
     network: false
@@ -338,16 +354,18 @@
   properties:
     kind: collection_operator
     output: boolean
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.every
   aliases: [_.every]
   semantics: Every
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: false
     io: false
     network: false
@@ -356,6 +374,8 @@
   properties:
     kind: collection_operator
     output: boolean
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.includes
   aliases: [_.includes]
@@ -582,10 +602,10 @@
   semantics: SumBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: false
     io: false
     network: false
@@ -593,6 +613,8 @@
     nondeterministic: false
   properties:
     kind: aggregation
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.chunk
   aliases: [_.chunk]
@@ -655,10 +677,10 @@
   semantics: UniqBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -668,16 +690,18 @@
     kind: collection_operator
     output: new_array
     preserves_order: true
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.differenceBy
   aliases: [_.differenceBy]
   semantics: DifferenceBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -687,16 +711,18 @@
     kind: collection_operator
     output: new_array
     preserves_order: true
+    callback_arg: 2
+    callback_optional: true
 
 - name: lodash.unionBy
   aliases: [_.unionBy]
   semantics: UnionBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -706,16 +732,19 @@
     kind: collection_operator
     output: new_array
     preserves_order: true
+    callback_arg: last
+    callback_optional: true
+    callback_variadic: true
 
 - name: lodash.intersectionBy
   aliases: [_.intersectionBy]
   semantics: IntersectionBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -725,16 +754,19 @@
     kind: collection_operator
     output: new_array
     preserves_order: true
+    callback_arg: last
+    callback_optional: true
+    callback_variadic: true
 
 - name: lodash.orderBy
   aliases: [_.orderBy]
   semantics: OrderBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -743,6 +775,8 @@
   properties:
     kind: collection_operator
     output: new_array
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.assign
   aliases: [_.assign, _.extend]
@@ -787,10 +821,10 @@
   semantics: PickBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -799,16 +833,18 @@
   properties:
     kind: object_operator
     output: new_object
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.omitBy
   aliases: [_.omitBy]
   semantics: OmitBy
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -817,6 +853,8 @@
   properties:
     kind: object_operator
     output: new_object
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.camelCase
   aliases: [_.camelCase]
@@ -1071,10 +1109,10 @@
   semantics: Times
   since: "v0.1.0"
   purity:
-    template: depends_on_callback
+    template: impure
   throws: maybe
   effects:
-    template: depends_on_callback
+    template: unknown
     allocates: true
     io: false
     network: false
@@ -1083,6 +1121,8 @@
   properties:
     kind: collection_operator
     output: new_array
+    callback_arg: 1
+    callback_optional: true
 
 - name: lodash.range
   aliases: [_.range]
@@ -1208,7 +1248,7 @@
     nondeterministic: false
   properties:
     kind: function_wrapper
-    stateful: "true"
+    stateful: true
     returns: function
 
 - name: lodash.escape

@@ -963,7 +963,7 @@
   properties:
     kind: operator
     operator_type: combinator
-    depends_on_scheduling: "true"
+    depends_on_scheduling: true
 
 - name: rxjs.operators.zipWith
   aliases: []
@@ -1000,7 +1000,7 @@
   properties:
     kind: operator
     operator_type: scheduling
-    depends_on_scheduling: "true"
+    depends_on_scheduling: true
 
 - name: rxjs.operators.subscribeOn
   aliases: []
@@ -1019,7 +1019,7 @@
   properties:
     kind: operator
     operator_type: scheduling
-    depends_on_scheduling: "true"
+    depends_on_scheduling: true
 
 - name: rxjs.operators.auditTime
   aliases: []
