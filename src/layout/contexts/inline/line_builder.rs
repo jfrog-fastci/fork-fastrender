@@ -164,7 +164,7 @@ impl InlineItem {
       InlineItem::SoftBreak => 0.0,
       InlineItem::Tab(t) => t.width(),
       InlineItem::HardBreak(_) => 0.0,
-      InlineItem::InlineBox(b) => b.width(),
+      InlineItem::InlineBox(b) => b.total_width(),
       InlineItem::InlineBlock(b) => b.total_width(),
       InlineItem::Ruby(r) => r.width(),
       InlineItem::Replaced(r) => r.total_width(),
@@ -326,6 +326,8 @@ impl InlineItem {
           justify_gaps: _,
           start_edge,
           end_edge,
+          margin_left,
+          margin_right,
           content_offset_y,
           border_left,
           border_right,
@@ -378,6 +380,8 @@ impl InlineItem {
             let end_edge = if is_last { end_edge } else { 0.0 };
             let border_left = if is_first { border_left } else { 0.0 };
             let border_right = if is_last { border_right } else { 0.0 };
+            let margin_left = if is_first { margin_left } else { 0.0 };
+            let margin_right = if is_last { margin_right } else { 0.0 };
 
             let metrics = super::compute_inline_box_metrics(
               &segment_children,
@@ -392,6 +396,8 @@ impl InlineItem {
               justify_gaps: Vec::new(),
               start_edge,
               end_edge,
+              margin_left,
+              margin_right,
               content_offset_y,
               border_left,
               border_right,
@@ -2313,6 +2319,10 @@ pub struct InlineBoxItem {
   /// Closing edge width (right border + padding)
   pub end_edge: f32,
 
+  /// Horizontal margins (only apply to the outermost fragments for `box-decoration-break: slice`)
+  pub margin_left: f32,
+  pub margin_right: f32,
+
   /// Vertical offset applied to children (padding + borders on top)
   pub content_offset_y: f32,
 
@@ -2363,6 +2373,8 @@ impl InlineBoxItem {
       justify_gaps: Vec::new(),
       start_edge,
       end_edge,
+      margin_left: 0.0,
+      margin_right: 0.0,
       content_offset_y,
       border_left: 0.0,
       border_right: 0.0,
@@ -2437,6 +2449,10 @@ impl InlineBoxItem {
     let content_width: f32 = self.children.iter().map(|c| c.width()).sum();
     let gap_width: f32 = self.justify_gaps.iter().copied().sum();
     self.start_edge + content_width + gap_width + self.end_edge
+  }
+
+  pub fn total_width(&self) -> f32 {
+    self.margin_left + self.width() + self.margin_right
   }
 }
 
@@ -3265,11 +3281,12 @@ impl<'a> LineBuilder<'a> {
   fn line_is_at_start_for_whitespace_trim(&self) -> bool {
     // Leading collapsible whitespace is suppressed even if the line begins with placeholder items
     // like static-position anchors.
-    self
-      .current_line
-      .items
-      .iter()
-      .all(|p| matches!(p.item, InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)))
+    self.current_line.items.iter().all(|p| {
+      matches!(
+        p.item,
+        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
+      )
+    })
   }
 
   fn start_new_line(&mut self) {
@@ -3679,7 +3696,7 @@ impl<'a> LineBuilder<'a> {
       InlineItem::Text(text) => self.min_required_width_for_text_item(text),
       InlineItem::InlineBox(inline_box) => {
         if !allows_soft_wrap(inline_box.style.as_ref()) {
-          return inline_box.width();
+          return inline_box.total_width();
         }
         self.min_required_width_for_inline_box_item(inline_box)
       }
@@ -3689,7 +3706,7 @@ impl<'a> LineBuilder<'a> {
 
   fn min_required_width_for_inline_box_item(&self, inline_box: &InlineBoxItem) -> f32 {
     if !allows_soft_wrap(inline_box.style.as_ref()) {
-      return inline_box.width();
+      return inline_box.total_width();
     }
 
     // Inline boxes can be fragmented across lines. When floats shorten a line box so the *entire*
@@ -3701,6 +3718,8 @@ impl<'a> LineBuilder<'a> {
     // spuriously "clear" below floats even though the inline box would wrap.
     let start_edge = inline_box.start_edge.max(0.0);
     let end_edge = inline_box.end_edge.max(0.0);
+    let margin_left = inline_box.margin_left.max(0.0);
+    let margin_right = inline_box.margin_right.max(0.0);
 
     let mut iter = inline_box.children.iter().filter(|child| {
       !matches!(
@@ -3711,7 +3730,7 @@ impl<'a> LineBuilder<'a> {
     let first_child = iter.next();
     let has_multiple_children = iter.next().is_some();
 
-    let mut required = start_edge;
+    let mut required = margin_left + start_edge;
     if let Some(first_child) = first_child {
       required += self.min_required_width_for_inline_item_for_float_reposition(first_child);
     }
@@ -3726,7 +3745,7 @@ impl<'a> LineBuilder<'a> {
       false
     };
     if !can_fragment {
-      required += end_edge;
+      required += end_edge + margin_right;
     }
 
     required
@@ -3893,7 +3912,7 @@ impl<'a> LineBuilder<'a> {
         }
         InlineItem::InlineBox(inline_box) => {
           let remaining_width = (self.current_line_width() - self.current_x).max(0.0);
-          let total_width = inline_box.width();
+          let total_width = inline_box.total_width();
 
           if total_width <= remaining_width {
             self.place_item_with_width(InlineItem::InlineBox(inline_box), total_width);
@@ -3946,6 +3965,8 @@ impl<'a> LineBuilder<'a> {
 
     let start_edge = inline_box.start_edge;
     let end_edge = inline_box.end_edge;
+    let margin_left = inline_box.margin_left;
+    let margin_right = inline_box.margin_right;
     let border_left = inline_box.border_left;
     let border_right = inline_box.border_right;
 
@@ -3965,7 +3986,7 @@ impl<'a> LineBuilder<'a> {
     let mut force_break = false;
     let mut used_width: f32 = 0.0;
 
-    let available_children_width = (available_width - start_edge).max(0.0);
+    let available_children_width = (available_width - margin_left - start_edge).max(0.0);
 
     while let Some(next) = remaining.pop_front() {
       check_layout_deadline(&mut self.deadline_counter)?;
@@ -3981,7 +4002,7 @@ impl<'a> LineBuilder<'a> {
           break;
         }
         next => {
-          let start_x = box_start_x + start_edge + used_width;
+          let start_x = box_start_x + margin_left + start_edge + used_width;
           let (next, next_width) = next.resolve_width_at(start_x);
 
           let fit_epsilon = match &next {
@@ -4062,6 +4083,8 @@ impl<'a> LineBuilder<'a> {
                     unicode_bidi,
                   );
                   inline_box.box_id = box_id;
+                  inline_box.margin_left = margin_left;
+                  inline_box.margin_right = margin_right;
                   inline_box.border_left = border_left;
                   inline_box.border_right = border_right;
                   inline_box.border_top = border_top;
@@ -4136,6 +4159,8 @@ impl<'a> LineBuilder<'a> {
                       unicode_bidi,
                     );
                     inline_box.box_id = box_id;
+                    inline_box.margin_left = margin_left;
+                    inline_box.margin_right = margin_right;
                     inline_box.border_left = border_left;
                     inline_box.border_right = border_right;
                     inline_box.border_top = border_top;
@@ -4331,6 +4356,8 @@ impl<'a> LineBuilder<'a> {
                     unicode_bidi,
                   );
                   inline_box.box_id = box_id;
+                  inline_box.margin_left = margin_left;
+                  inline_box.margin_right = margin_right;
                   inline_box.border_left = border_left;
                   inline_box.border_right = border_right;
                   inline_box.border_top = border_top;
@@ -4360,6 +4387,7 @@ impl<'a> LineBuilder<'a> {
     let has_remainder = !remaining_children.is_empty();
     let fragment_end_edge = if has_remainder { 0.0 } else { end_edge };
     let fragment_border_right = if has_remainder { 0.0 } else { border_right };
+    let fragment_margin_right = if has_remainder { 0.0 } else { margin_right };
 
     let fragment_metrics = super::compute_inline_box_metrics(
       &fragment_children,
@@ -4378,6 +4406,8 @@ impl<'a> LineBuilder<'a> {
       unicode_bidi,
     );
     fragment.box_id = box_id;
+    fragment.margin_left = margin_left;
+    fragment.margin_right = fragment_margin_right;
     fragment.border_left = border_left;
     fragment.border_right = fragment_border_right;
     fragment.border_top = border_top;
@@ -4405,6 +4435,8 @@ impl<'a> LineBuilder<'a> {
         unicode_bidi,
       );
       remainder.box_id = box_id;
+      remainder.margin_left = 0.0;
+      remainder.margin_right = margin_right;
       remainder.border_left = 0.0;
       remainder.border_right = border_right;
       remainder.border_top = border_top;
@@ -4458,7 +4490,7 @@ impl<'a> LineBuilder<'a> {
         }
       };
 
-      let fragment_width = fragment.width();
+      let fragment_width = fragment.total_width();
       self.place_item_with_width(InlineItem::InlineBox(fragment), fragment_width);
 
       if ends_with_hard_break {
@@ -5375,6 +5407,7 @@ fn reorder_paragraph(
             if prev.box_id == curr.box_id && prev.box_index == curr.box_index {
               prev.children.append(&mut curr.children);
               prev.end_edge = curr.end_edge;
+              prev.margin_right = curr.margin_right;
               prev.border_right = curr.border_right;
               continue;
             }
@@ -5412,6 +5445,8 @@ fn reorder_paragraph(
         } else {
           0.0
         };
+        let margin_left = if vis_pos == first { ctx.margin_left } else { 0.0 };
+        let margin_right = if vis_pos == last { ctx.margin_right } else { 0.0 };
 
         let mut inline_box = InlineBoxItem::new(
           start_edge,
@@ -5424,6 +5459,8 @@ fn reorder_paragraph(
           ctx.unicode_bidi,
         );
         inline_box.box_id = ctx.box_id;
+        inline_box.margin_left = margin_left;
+        inline_box.margin_right = margin_right;
         inline_box.border_left = border_left;
         inline_box.border_right = border_right;
         inline_box.border_top = ctx.border_top;
@@ -5656,6 +5693,8 @@ struct BoxContext {
   box_id: usize,
   start_edge: f32,
   end_edge: f32,
+  margin_left: f32,
+  margin_right: f32,
   content_offset_y: f32,
   border_left: f32,
   border_right: f32,
@@ -5699,6 +5738,8 @@ fn flatten_positioned_item(
         box_id: inline_box.box_id,
         start_edge: inline_box.start_edge,
         end_edge: inline_box.end_edge,
+        margin_left: inline_box.margin_left,
+        margin_right: inline_box.margin_right,
         content_offset_y: inline_box.content_offset_y,
         border_left: inline_box.border_left,
         border_right: inline_box.border_right,
@@ -5990,8 +6031,16 @@ mod tests {
 
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 2);
-    let line0_text: String = lines[0].items.iter().map(|p| flatten_text(&p.item)).collect();
-    let line1_text: String = lines[1].items.iter().map(|p| flatten_text(&p.item)).collect();
+    let line0_text: String = lines[0]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    let line1_text: String = lines[1]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
     assert_eq!(line0_text, "when");
     assert_eq!(line1_text, "writing");
   }
