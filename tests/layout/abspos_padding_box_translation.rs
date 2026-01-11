@@ -382,3 +382,129 @@ fn viewport_fixed_children_do_not_inherit_padding_translation() {
     fixed_fragment.bounds.y()
   );
 }
+
+#[test]
+fn abspos_child_origin_is_relative_to_padding_box_not_border_box() {
+  // Regression test for absolutely positioned descendants inside a bordered containing block.
+  //
+  // CSS 2.1 §10.1: the containing block for `position: absolute` descendants is the padding box.
+  // The padding box origin is *inside* the border. So `top: 0; left: 0` should align with the
+  // padding edge, not the border edge.
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(150.0));
+  container_style.border_left_width = Length::px(10.0);
+  container_style.border_top_width = Length::px(10.0);
+  container_style.border_right_width = Length::px(10.0);
+  container_style.border_bottom_width = Length::px(10.0);
+  container_style.border_left_style = BorderStyle::Solid;
+  container_style.border_top_style = BorderStyle::Solid;
+  container_style.border_right_style = BorderStyle::Solid;
+  container_style.border_bottom_style = BorderStyle::Solid;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Block;
+  abs_style.position = Position::Absolute;
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Block,
+    vec![abs_child],
+  );
+
+  let constraints = LayoutConstraints::definite(400.0, 400.0);
+  let fc = BlockFormattingContext::new();
+  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+
+  let abs_fragment = fragment
+    .children
+    .iter()
+    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .expect("absolute positioned fragment present");
+
+  assert!(
+    (abs_fragment.bounds.x() - 10.0).abs() < 0.1,
+    "expected abspos child x to align with the padding edge (got x = {})",
+    abs_fragment.bounds.x()
+  );
+  assert!(
+    (abs_fragment.bounds.y() - 10.0).abs() < 0.1,
+    "expected abspos child y to align with the padding edge (got y = {})",
+    abs_fragment.bounds.y()
+  );
+}
+
+#[test]
+fn abspos_inset_stretch_fills_padding_box_without_double_border_offset() {
+  // Similar to `abspos_inset_stretch_fills_padding_box_without_extra_padding_offset`, but for
+  // borders. Ensure `inset: 0` fills the padding box and starts at the padding edge, not shifted
+  // inward by the border widths twice.
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(150.0));
+  container_style.border_left_width = Length::px(10.0);
+  container_style.border_top_width = Length::px(10.0);
+  container_style.border_right_width = Length::px(10.0);
+  container_style.border_bottom_width = Length::px(10.0);
+  container_style.border_left_style = BorderStyle::Solid;
+  container_style.border_top_style = BorderStyle::Solid;
+  container_style.border_right_style = BorderStyle::Solid;
+  container_style.border_bottom_style = BorderStyle::Solid;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Inline;
+  abs_style.position = Position::Absolute;
+  abs_style.left = InsetValue::Length(Length::px(0.0));
+  abs_style.right = InsetValue::Length(Length::px(0.0));
+  abs_style.top = InsetValue::Length(Length::px(0.0));
+  abs_style.bottom = InsetValue::Length(Length::px(0.0));
+
+  let abs_child = BoxNode::new_inline(Arc::new(abs_style), vec![]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Block,
+    vec![abs_child],
+  );
+
+  let constraints = LayoutConstraints::definite(400.0, 400.0);
+  let fc = BlockFormattingContext::new();
+  let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+
+  let abs_fragment = fragment
+    .children
+    .iter()
+    .find(|child| matches!(child.style.as_ref().map(|s| s.position), Some(Position::Absolute)))
+    .expect("absolute positioned fragment present");
+
+  assert!(
+    (abs_fragment.bounds.x() - 10.0).abs() < 0.1,
+    "expected inset stretch child to start at padding edge (got x = {})",
+    abs_fragment.bounds.x()
+  );
+  assert!(
+    (abs_fragment.bounds.y() - 10.0).abs() < 0.1,
+    "expected inset stretch child to start at padding edge (got y = {})",
+    abs_fragment.bounds.y()
+  );
+  assert!(
+    (abs_fragment.bounds.width() - 200.0).abs() < 0.1,
+    "expected inset stretch child to fill padding box width (expected 200, got {})",
+    abs_fragment.bounds.width()
+  );
+  assert!(
+    (abs_fragment.bounds.height() - 150.0).abs() < 0.1,
+    "expected inset stretch child to fill padding box height (expected 150, got {})",
+    abs_fragment.bounds.height()
+  );
+}
