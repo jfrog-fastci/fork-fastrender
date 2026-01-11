@@ -622,6 +622,10 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
       .unwrap_or_else(|| self.i32_ty.const_zero());
     // Chosen convention: the value returned from `export function main()` becomes the process
     // exit code (truncated by the OS to 8 bits on Unix).
+    //
+    // This keeps the wrapper free of libc/vararg calls (e.g. `printf`) which are
+    // not rewritten into statepoints by LLVM and therefore violate our GC callsite
+    // invariants.
     builder
       .build_return(Some(&ret_val))
       .expect("failed to build return");
