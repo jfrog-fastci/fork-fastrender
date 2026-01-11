@@ -1,95 +1,110 @@
 # native-js-cli
 
-`native-js-cli` is a small command-line frontend for the native TypeScript→LLVM
-pipeline (`native-js`).
+`native-js-cli` is a small, developer-facing CLI for the `native-js` crate.
 
-> Status: this crate/binary is not implemented yet in this repository. This
-> README documents the intended CLI surface so it can be kept stable as the
-> implementation lands.
+Today it is intentionally narrow in scope: it compiles a **single TypeScript
+file** to textual LLVM IR (via a small `parse-js`-driven IR emitter in
+`native-js`), invokes `clang` to produce a temporary executable, and then runs
+it.
 
-It is intended as a developer tool:
+This is primarily useful for:
 
-- compile a TypeScript entrypoint to LLVM IR (`.ll`) or an object file (`.o`)
-- load real-world projects via `tsconfig.json`
-- render typechecking / compilation diagnostics in a human-friendly format
+- smoke-testing the native pipeline end-to-end (TS → LLVM IR → native executable)
+- iterating on the IR emitter and builtin lowering
+- dumping IR for debugging (`--emit-llvm`)
 
 ## Usage
 
 > LLVM builds are memory-hungry. In this repo, prefer the LLVM wrapper:
 >
 > ```bash
-> # From the repo root:
+> # From the repo root (recommended):
 > bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- <args...>
 >
 > # Or, from within vendor/ecma-rs/:
 > bash scripts/cargo_llvm.sh run -p native-js-cli -- <args...>
 > ```
->
-> The plain `cargo run -p native-js-cli -- ...` examples below assume your
-> current working directory is `vendor/ecma-rs/` (the ecma-rs workspace root).
 
-### Build
+### Run a TypeScript file
 
-Once implemented, compile an entry file:
+Create a small program:
 
 ```bash
-# Emit textual LLVM IR
-cargo run -p native-js-cli -- build path/to/main.ts --emit=llvm-ir -o out.ll
-
-# Emit an object file
-cargo run -p native-js-cli -- build path/to/main.ts --emit=obj -o out.o
+cat > /tmp/main.ts <<'TS'
+console.log(1 + 2);
+TS
 ```
 
-### Run
-
-Once implemented, `run` compiles the program (typically via an object file) and executes it.
-Arguments after `--` are forwarded to the compiled program:
+Compile + run it:
 
 ```bash
-cargo run -p native-js-cli -- run path/to/main.ts -- --help
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- /tmp/main.ts
 ```
 
-## `--emit`
-
-`--emit` controls what the compiler writes to disk during `build`:
-
-- `--emit=llvm-ir`: write textual LLVM IR (`.ll`)
-- `--emit=obj`: write a target object file (`.o`)
-
-If `--emit` is omitted, the CLI defaults to a format appropriate for the chosen
-subcommand (e.g. `obj` for `run`).
-
-## Loading a project with `tsconfig.json`
-
-Use `--project` / `-p` to point at a `tsconfig.json` and enable project-style
-file discovery and module resolution (similar to `tsc -p`):
-
-```bash
-# Compile the project entrypoint using tsconfig settings
-cargo run -p native-js-cli -- build --project ./tsconfig.json src/main.ts --emit=obj -o out.o
-```
-
-## Diagnostics
-
-Diagnostics are printed to stderr with file/line context using the shared
-`diagnostics` renderer (same style as `typecheck-ts-cli`):
+Expected output:
 
 ```text
-error[NJS0001]: `any` is not allowed in native-js strict mode
- --> main.ts:1:1
-  |
-1 | function f(): any { return 1; }
-  |               ^^^
-  = note: add a precise type annotation or refactor to avoid `any`
+3
 ```
 
-On compilation errors:
+## Options
 
-- the CLI exits with a non-zero exit code
-- emitted outputs (IR/object) are not written (or are removed if partially written)
+### `--emit-llvm <path>`
 
-Diagnostics include:
+Write the generated LLVM IR (`.ll`) to a file for debugging:
 
-- parse errors (`parse-js`)
-- type errors (`typecheck-ts`)
-- native codegen errors (`native-js`)
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli -- \
+  --emit-llvm /tmp/out.ll \
+  /tmp/main.ts
+
+opt-18 -verify -disable-output /tmp/out.ll
+```
+
+### `--no-builtins`
+
+Disable recognition of small builtin APIs. By default, the IR emitter recognizes
+and lowers a handful of builtins:
+
+- `console.log(...)` and `print(...)` (prints values to stdout)
+- `assert(cond, msg?)` (aborts on failure, optionally printing `msg`)
+- `panic(msg?)` (prints message and aborts)
+- `trap()` (emits `llvm.trap`)
+
+Passing `--no-builtins` makes these calls fail with `builtins disabled` so you
+can test the non-builtin path.
+
+## Supported language subset (current)
+
+This CLI exercises the **minimal** IR emitter in `native-js` (it is not the
+future typechecked/HIR-based backend yet). Supported today:
+
+- Top-level statements:
+  - empty statements (`;`)
+  - expression statements (`expr;`)
+- Expressions:
+  - number / boolean / string literals
+  - numeric `+` (only for numbers)
+  - `===` (only for numbers and booleans; both sides must be the same type)
+  - builtin calls listed above (unless `--no-builtins`)
+
+All other statements/expressions/operators currently fail compilation with a
+simple error (e.g. `unsupported statement`, `unsupported expression`, or
+`unsupported operator: ...`).
+
+## Diagnostics / errors
+
+Errors are printed to stderr using the `Display` formatting of `native-js` error
+types:
+
+- parse errors come from `parse-js` (syntax errors)
+- codegen failures come from `native-js::codegen` (`unsupported statement`, etc)
+
+The CLI does not currently render source-context diagnostics (file/line caret
+spans). For source-level debugging, consider using `parse-js-cli` or
+`typecheck-ts-cli`.
+
+## `tsconfig.json` support
+
+`native-js-cli` currently takes a single input file and does not load
+`tsconfig.json` or perform module resolution.

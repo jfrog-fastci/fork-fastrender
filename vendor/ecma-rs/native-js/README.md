@@ -10,6 +10,10 @@ At the moment, the crate is a **skeleton**: it wires up LLVM and defines the
 public API surface that future TS/HIR lowering will target. `Compiler::compile`
 currently returns `NativeJsError::Unimplemented`.
 
+For bring-up and testing, the crate also includes a small `parse-js`-driven LLVM
+IR emitter (`compile_typescript_to_llvm_ir`) that supports a tiny expression-only
+subset. `native-js-cli` uses this path to compile and run small snippets.
+
 This crate is not a general-purpose JavaScript engine and it does not try to
 support the full JavaScript/TypeScript language.
 
@@ -29,6 +33,10 @@ TypeScript source
 `native-js` starts from the typechecked program and produces an LLVM module
 representing the program (usually a single entry function plus any referenced
 helpers/runtime stubs).
+
+> Note: the long-term plan is typechecked/HIR-based codegen, but the currently
+> implemented `compile_typescript_to_llvm_ir` entrypoint is **parse-js-only** and
+> does not perform type checking.
 
 ## Build prerequisites
 
@@ -85,6 +93,9 @@ The API is intentionally small and currently consists of:
 - `strict::validate(...)`: strict TypeScript-subset validator that rejects
   unsafe constructs (`any`, `eval`, type assertions, etc) even if the TypeScript
   typechecker accepts them.
+- `compile_typescript_to_llvm_ir(&str, CompileOptions) -> Result<String, NativeJsError>`:
+  compile a single TypeScript module to textual LLVM IR (very small subset; used
+  by `native-js-cli`).
 - `Compiler`: entry point (configured with `CompileOptions`)
 - `Compiler::compile() -> Result<(), NativeJsError>`: compilation entrypoint
   (currently unimplemented)
@@ -126,6 +137,15 @@ cg.define_trivial_function("trivial");
 println!("{}", cg.module_ir());
 ```
 
+Example (compiling TS to textual IR with the minimal emitter):
+
+```rust
+use native_js::{compile_typescript_to_llvm_ir, CompileOptions};
+
+let ir = compile_typescript_to_llvm_ir("console.log(1 + 2);", CompileOptions::default())?;
+std::fs::write("out.ll", ir)?;
+```
+
 ## GC stack walking (current invariant)
 
 The native runtime is expected to perform **precise GC** using LLVM statepoints.
@@ -152,6 +172,36 @@ for the repo-wide policy).
 
 The intended place to define new native-js diagnostics is
 [`src/codes.rs`](./src/codes.rs).
+
+## Minimal LLVM IR emitter (`compile_typescript_to_llvm_ir`)
+
+`compile_typescript_to_llvm_ir` currently implements a very small, `parse-js`-only
+compiler that lowers a single TypeScript module to textual LLVM IR.
+
+It exists to make it easy to debug the LLVM plumbing and basic lowering logic,
+and is the backend used by `native-js-cli`.
+
+Only `CompileOptions::builtins` is currently honored by this path; the remaining
+fields are reserved for the eventual LLVM-backed backend.
+
+### Supported subset (current)
+
+- Top-level statements:
+  - empty statements (`;`)
+  - expression statements (`expr;`)
+- Expressions:
+  - number / boolean / string literals
+  - numeric `+` (only for numbers)
+  - `===` (only for numbers and booleans; both sides must be the same type)
+  - builtin calls (when `CompileOptions { builtins: true, .. }`):
+    - `console.log(...)` / `print(...)`
+    - `assert(cond, msg?)`
+    - `panic(msg?)`
+    - `trap()`
+
+Everything else currently fails with a coarse `native_js::codegen::CodegenError`
+(`unsupported statement`, `unsupported expression`, `unsupported operator: ...`,
+etc).
 
 ## Strict TypeScript subset (`native_js::strict`)
 
