@@ -10,6 +10,7 @@ pub struct BumpCursor {
   pub cursor: *mut u8,
   pub limit: *mut u8,
   pub block_id: Option<usize>,
+  claimed_line_limit: usize,
 }
 
 impl BumpCursor {
@@ -18,6 +19,7 @@ impl BumpCursor {
       cursor: std::ptr::null_mut(),
       limit: std::ptr::null_mut(),
       block_id: None,
+      claimed_line_limit: 0,
     }
   }
 
@@ -185,10 +187,41 @@ fn alloc_old_with_cursor(
 
     if end_addr <= bump.limit as usize {
       let block_id = bump.block_id.expect("cursor has a block id");
-      let block = &mut blocks[block_id];
+      let block = &blocks[block_id];
+      let block_start = block.start_addr();
+      let start_off = cursor_addr - block_start;
+      let end_off = end_addr - block_start;
+      let start_line = start_off / LINE_SIZE;
+      let end_line = end_off.div_ceil(LINE_SIZE);
+
+      // If this allocation would extend beyond the lines we've already
+      // allocated into, ensure the additional lines are still free. This keeps
+      // `alloc_old_with_cursor` safe to use with multiple interleaved cursors
+      // in a single `ImmixSpace`.
+      if end_line > bump.claimed_line_limit {
+        let check_start = bump.claimed_line_limit.max(start_line);
+        if let Some(conflict_line) = (check_start..end_line)
+          .find(|&line| bitmap::is_line_marked(&block.line_map, line))
+        {
+          if let Some((hole_start, hole_end)) =
+            bitmap::find_hole(&block.line_map, conflict_line + 1, min_lines)
+          {
+            let start = block_start + (hole_start * LINE_SIZE);
+            let limit = block_start + (hole_end * LINE_SIZE);
+            bump.cursor = start as *mut u8;
+            bump.limit = limit as *mut u8;
+            bump.claimed_line_limit = hole_start;
+            continue;
+          }
+          bump.reset();
+          continue;
+        }
+      }
 
       // Mark all lines consumed by the allocation, including alignment padding.
+      let block = &mut blocks[block_id];
       block.mark_addr_range(cursor_addr, end_addr);
+      bump.claimed_line_limit = end_line;
 
       bump.cursor = end_addr as *mut u8;
       return Some(aligned_addr as *mut u8);
@@ -203,6 +236,7 @@ fn alloc_old_with_cursor(
       let limit = block.start_addr() + (hole_end * LINE_SIZE);
       bump.cursor = start as *mut u8;
       bump.limit = limit as *mut u8;
+      bump.claimed_line_limit = hole_start;
     } else {
       bump.reset();
     }
@@ -221,6 +255,7 @@ fn acquire_hole(
     bump.block_id = Some(block_id);
     bump.cursor = start as *mut u8;
     bump.limit = (start + BLOCK_SIZE) as *mut u8;
+    bump.claimed_line_limit = 0;
     return Some(());
   }
 
@@ -232,6 +267,7 @@ fn acquire_hole(
       bump.block_id = Some(block_id);
       bump.cursor = start as *mut u8;
       bump.limit = limit as *mut u8;
+      bump.claimed_line_limit = hole_start;
       return Some(());
     }
   }
@@ -246,6 +282,7 @@ fn acquire_hole(
   bump.block_id = Some(block_id);
   bump.cursor = start as *mut u8;
   bump.limit = (start + BLOCK_SIZE) as *mut u8;
+  bump.claimed_line_limit = 0;
   Some(())
 }
 
@@ -253,6 +290,7 @@ fn acquire_hole(
 mod tests {
   use std::collections::HashSet;
 
+  use super::BumpCursor;
   use super::ImmixSpace;
   use crate::immix::BLOCK_SIZE;
   use crate::immix::LINE_SIZE;
@@ -322,5 +360,32 @@ mod tests {
     assert_eq!(ptr, objs[10]);
     assert_eq!((ptr as usize) & !(BLOCK_SIZE - 1), block0);
     assert_eq!(space.block_count(), 2);
+  }
+
+  #[test]
+  fn multiple_cursors_do_not_produce_overlapping_allocations() {
+    let mut space = ImmixSpace::new();
+    let mut a = BumpCursor::new();
+    let mut b = BumpCursor::new();
+
+    let _a1 = space
+      .alloc_old_with_cursor(&mut a, 24, 8)
+      .expect("alloc a1");
+    let b1 = space
+      .alloc_old_with_cursor(&mut b, 100, 8)
+      .expect("alloc b1");
+
+    let a2 = space
+      .alloc_old_with_cursor(&mut a, 200, 8)
+      .expect("alloc a2");
+
+    let a2_start = a2 as usize;
+    let a2_end = a2_start + 200;
+    let b1_start = b1 as usize;
+    let b1_end = b1_start + 100;
+    assert!(
+      a2_end <= b1_start || b1_end <= a2_start,
+      "allocations overlap: a2={a2_start:#x}..{a2_end:#x} b1={b1_start:#x}..{b1_end:#x}"
+    );
   }
 }
