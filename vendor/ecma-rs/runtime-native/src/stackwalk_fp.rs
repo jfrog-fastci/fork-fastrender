@@ -1,5 +1,7 @@
 use crate::stackmaps::{CallSite, Location, StackMaps};
 use crate::stackwalk::StackBounds;
+use crate::gc_roots::RelocPair;
+use crate::statepoints::RootSlot;
 
 #[cfg(any(debug_assertions, feature = "conservative_roots"))]
 use crate::roots::{conservative_scan_words, HeapRange};
@@ -289,16 +291,20 @@ pub unsafe fn relocate_pair(pair: StatepointRootPair, relocate_base: impl FnOnce
 ///   register locations (`Register R#N`), which require rewriting the stopped
 ///   thread's register file when resuming (see `statepoints::RootSlot` and the
 ///   `stackmap-context` crate).
-/// - Derived pointers (statepoint `(base, derived)` pairs) are supported. The
-///   walker visits only the **base** root slots (for tracing) and then updates
-///   each derived slot in-place after the base slot has potentially been
-///   relocated:
+/// - Derived pointers (statepoint `(base, derived)` pairs where `base != derived`) are supported.
+///   The walker visits only the **base** root slots (derived slots are not traced as independent
+///   roots). If the callback relocates a base slot in-place, the walker updates any derived slots
+///   that reference it to preserve the interior offset.
+///
+///   For a pair-oriented API (useful for moving collectors that want to apply relocation with
+///   [`crate::gc_roots::relocate_reloc_pairs_in_place`]), see
+///   [`walk_gc_root_pairs_from_safepoint_context`] / [`walk_gc_reloc_pairs_from_safepoint_context`].
 ///
 ///   `derived_new = relocated_base + (derived_old - base_old)`
 ///
 ///   Null convention: if either `base_old` or `derived_old` is `0` (or if the GC
 ///   relocates `base` to `0`), the derived slot is written as `0`.
-/// 
+///
 /// ## Statepoint-oriented walking
 ///
 /// This walker is statepoint-oriented: the return address stored in the current
@@ -626,7 +632,6 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
       return_addr: caller_ra,
     });
   }
-
   if let Some(callsite) = stackmaps.lookup(caller_ra) {
     let looks_like_statepoint =
       callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
@@ -651,6 +656,33 @@ pub unsafe fn walk_gc_root_pairs_from_safepoint_context(
   }
 
   walk_gc_root_pairs_from_fp(caller_fp, bounds, stackmaps, visit_frame_reloc_pairs)
+}
+
+/// Walk GC relocation pairs for a thread parked in a stop-the-world safepoint.
+///
+/// This is a [`RelocPair`]-typed wrapper around [`walk_gc_root_pairs_from_safepoint_context`].
+/// It is intended for moving collectors that want to apply relocation in-place using
+/// [`crate::gc_roots::relocate_reloc_pairs_in_place`].
+///
+/// For base pointers, `base_slot == derived_slot`. For interior pointers, the derived slot must be
+/// updated relative to the base slot by preserving the interior offset.
+///
+/// # Safety
+/// Same as [`walk_gc_roots_from_safepoint_context`].
+pub unsafe fn walk_gc_reloc_pairs_from_safepoint_context(
+  ctx: &crate::arch::SafepointContext,
+  bounds: Option<StackBounds>,
+  stackmaps: &crate::StackMaps,
+  mut visit_pair: impl FnMut(RelocPair),
+) -> Result<(), WalkError> {
+  walk_gc_root_pairs_from_safepoint_context(ctx, bounds, stackmaps, |_return_addr, pairs| {
+    for &(base_slot, derived_slot) in pairs {
+      visit_pair(RelocPair {
+        base_slot: RootSlot::StackAddr(base_slot.cast::<u8>()),
+        derived_slot: RootSlot::StackAddr(derived_slot.cast::<u8>()),
+      })
+    }
+  })
 }
 
 #[inline]

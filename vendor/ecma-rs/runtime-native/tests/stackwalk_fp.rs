@@ -83,15 +83,14 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
 
     let mut slots: Vec<usize> = Vec::new();
     for pair in statepoint.gc_pairs() {
-      for loc in [&pair.base, &pair.derived] {
-        match loc {
-          Location::Indirect { dwarf_reg, offset, .. } => {
-            assert_eq!(*dwarf_reg, 7, "fixture roots must be [SP + off]");
-            let slot_addr = add_signed_u64(frame_sp as u64, *offset).expect("slot addr");
-            slots.push(slot_addr as usize);
-          }
-          other => panic!("unexpected root location kind in fixture: {other:?}"),
+      let loc = &pair.base;
+      match loc {
+        Location::Indirect { dwarf_reg, offset, .. } => {
+          assert_eq!(*dwarf_reg, 7, "fixture roots must be [SP + off]");
+          let slot_addr = add_signed_u64(frame_sp as u64, *offset).expect("slot addr");
+          slots.push(slot_addr as usize);
         }
+        other => panic!("unexpected root location kind in fixture: {other:?}"),
       }
     }
     slots.sort_unstable();
@@ -140,9 +139,11 @@ fn derived_pointers_are_relocated_from_base() {
   let caller_sp_callsite = start_fp + 16;
 
   unsafe {
+    // runtime frame -> caller
     write_u64(start_fp + 0, caller_fp as u64);
     write_u64(start_fp + 8, callsite_ra);
 
+    // caller -> null
     write_u64(caller_fp + 0, 0);
     write_u64(caller_fp + 8, 0);
   }
@@ -188,6 +189,90 @@ fn derived_pointers_are_relocated_from_base() {
   let derived_after = unsafe { read_u64(caller_sp_callsite + 8) };
   assert_eq!(base_after, base_val + 0x1000);
   assert_eq!(derived_after, (base_val + 0x1000) + delta);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn derived_pointers_are_traced_via_base_and_relocated_via_pairs() {
+  use runtime_native::arch::SafepointContext;
+  use runtime_native::gc_roots::relocate_reloc_pairs_in_place;
+  use runtime_native::stackwalk_fp::{
+    walk_gc_reloc_pairs_from_safepoint_context, walk_gc_roots_from_safepoint_context,
+  };
+  use runtime_native::statepoints::RootSlot;
+  use stackmap_context::ThreadContext;
+
+  let bytes = build_stackmaps_with_derived_pointer();
+  let stackmaps = StackMaps::parse(&bytes).expect("parse stackmaps");
+
+  let (callsite_ra, _callsite) = stackmaps.iter().next().expect("callsite");
+
+  let mut stack = vec![0u8; 512];
+  let base = stack.as_mut_ptr() as usize;
+
+  let caller_fp = align_up(base + 256, 16);
+  let start_fp = align_up(base + 128, 16);
+  let caller_sp_callsite = start_fp + 16;
+
+  unsafe {
+    // caller -> null
+    write_u64(caller_fp + 0, 0);
+    write_u64(caller_fp + 8, 0);
+  }
+
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
+
+  // Stackmap uses:
+  //   base   = [SP + 0]
+  //   derived = [SP + 8]
+  let old_base = 0x1000usize;
+  let offset = 0x10usize;
+  unsafe {
+    write_u64(caller_sp_callsite + 0, old_base as u64);
+    write_u64(caller_sp_callsite + 8, (old_base + offset) as u64);
+  }
+
+  let ctx = SafepointContext {
+    sp_entry: caller_sp_callsite - 8,
+    sp: caller_sp_callsite,
+    fp: caller_fp,
+    ip: callsite_ra as usize,
+  };
+
+  // Marking/tracing uses base slots only.
+  let mut root_slots: Vec<usize> = Vec::new();
+  unsafe {
+    walk_gc_roots_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |slot| {
+      root_slots.push(slot as usize);
+    })
+    .expect("walk roots");
+  }
+  root_slots.sort_unstable();
+  assert_eq!(root_slots, vec![caller_sp_callsite]);
+
+  // Relocation uses (base, derived) slot pairs.
+  let mut pairs: Vec<runtime_native::gc_roots::RelocPair> = Vec::new();
+  unsafe {
+    walk_gc_reloc_pairs_from_safepoint_context(&ctx, Some(bounds), &stackmaps, |pair| {
+      pairs.push(pair);
+    })
+    .expect("walk reloc pairs");
+  }
+  assert_eq!(pairs.len(), 1);
+  let pair0 = pairs[0];
+  match pair0.base_slot {
+    RootSlot::StackAddr(p) => assert_eq!(p as usize, caller_sp_callsite),
+    other => panic!("expected stack slot for base, got {other:?}"),
+  }
+  match pair0.derived_slot {
+    RootSlot::StackAddr(p) => assert_eq!(p as usize, caller_sp_callsite + 8),
+    other => panic!("expected stack slot for derived, got {other:?}"),
+  }
+
+  let mut ctx = ThreadContext::default();
+  relocate_reloc_pairs_in_place(&mut ctx, pairs, |old| old + 0x1000);
+  assert_eq!(pair0.base_slot.read_u64(&ctx), 0x2000);
+  assert_eq!(pair0.derived_slot.read_u64(&ctx), 0x2000 + offset as u64);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -899,16 +984,15 @@ fn synthetic_stack_enumerates_roots_from_stackmaps() {
 
   let mut slots: Vec<usize> = Vec::new();
   for pair in statepoint.gc_pairs() {
-    for loc in [&pair.base, &pair.derived] {
-      match loc {
-        Location::Indirect { dwarf_reg, offset, .. } => {
-          assert_eq!(*dwarf_reg, 31, "fixture roots must be [SP + off]");
-          let slot_addr = add_signed_u64(caller_sp_callsite as u64, *offset).expect("slot addr");
-          slots.push(slot_addr as usize);
-        }
-        other => panic!("unexpected root location kind in fixture: {other:?}"),
+    let loc = &pair.base;
+    match loc {
+      Location::Indirect { dwarf_reg, offset, .. } => {
+        assert_eq!(*dwarf_reg, 31, "fixture roots must be [SP + off]");
+        let slot_addr = add_signed_u64(caller_sp_callsite as u64, *offset).expect("slot addr");
+        slots.push(slot_addr as usize);
       }
-    }
+      other => panic!("unexpected root location kind in fixture: {other:?}"),
+    };
   }
   slots.sort_unstable();
   slots.dedup();

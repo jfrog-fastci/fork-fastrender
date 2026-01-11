@@ -354,24 +354,26 @@ LLVM supports relocating derived (interior) pointers by rooting **both** the bas
 
 `runtime-native` supports derived pointers at safepoints when they are encoded as `(base, derived)` pairs (per `gc.relocate`) in the stackmap record.
 
-Runtime contract:
+GC/runtime model:
 
-- Both `base` and `derived` locations must be **addressable spill slots** (`Location::Indirect`).
-- The `Location::Indirect` base register must be either the caller-frame **SP** or **FP**:
-  - x86_64: DWARF reg 7 (`RSP`) or 6 (`RBP`)
-  - AArch64: DWARF reg 31 (`SP`) or 29 (`X29`)
-- The runtime treats the **base slot** as the GC root (for tracing + moving); the derived slot is *not* a root.
-- If `base_slot != derived_slot`, the runtime preserves the interior offset and updates the derived slot in-place after relocating the base slot:
+- **Tracing/marking:** only the **base slot** is treated as a GC root (derived slots are *not* traced as independent roots).
+- **Relocation/pointer update:** the GC updates pointers using the stackmap’s `(base_slot, derived_slot)` relocation pairs, preserving the interior offset:
 
   ```text
   delta       = derived_old - base_old
   derived_new = base_new + delta
   ```
 
-  Notes:
+Runtime contract:
+
+- Both `base` and `derived` locations must be **addressable spill slots** (`Location::Indirect`).
+- The `Location::Indirect` base register must be either the caller-frame **SP** or **FP**:
+  - x86_64: DWARF reg 7 (`RSP`) or 6 (`RBP`)
+  - AArch64: DWARF reg 31 (`SP`) or 29 (`X29`)
+- Notes:
   - The runtime must read both `base_old` and `derived_old` before overwriting the base slot (or use equivalent per-frame fixup logic).
   - LLVM can emit duplicate relocation pairs; the runtime dedups repeated base slots / derived fixups within the same frame.
-  - Null convention: if `base_old == 0` or `derived_old == 0`, `derived_new` is forced to `0` (null is preserved).
+- Null convention: if `base_old == 0` or `derived_old == 0`, `derived_new` is forced to `0` (null is preserved).
 
 This behavior is locked down by tests:
 

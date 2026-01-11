@@ -744,6 +744,105 @@ fn stackmaps_for_self() -> Option<&'static crate::StackMaps> {
   crate::stackmap::try_stackmaps()
 }
 
+/// Enumerate all GC relocation pairs while the world is stopped.
+///
+/// This is the relocation/update-phase counterpart to
+/// [`for_each_root_slot_world_stopped`]:
+///
+/// - Root enumeration for tracing visits **base** root slots.
+/// - Relocation pair enumeration yields `(base_slot, derived_slot)` so a moving
+///   GC can update derived (interior) pointers while preserving offsets.
+///
+/// Root sources (in order):
+/// 1) Per-thread root scopes (runtime-native handle stack): `(slot, slot)`.
+/// 2) Global/persistent roots registered via `rt_gc_register_root_slot` / `rt_gc_pin`:
+///    `(slot, slot)`.
+/// 3) Persistent roots stored in the global handle table (`roots::PersistentHandleTable`):
+///    `(slot, slot)`.
+/// 4) Stack roots described by LLVM statepoint stackmaps for each stopped mutator thread:
+///    `(base_slot, derived_slot)` pairs.
+///
+/// # Panics
+/// Panics if `stop_epoch` is not an odd (stop-the-world) epoch.
+pub fn for_each_reloc_pair_world_stopped(
+  stop_epoch: u64,
+  mut f: impl FnMut(crate::gc_roots::RelocPair),
+) -> Result<(), crate::WalkError> {
+  assert_eq!(
+    stop_epoch & 1,
+    1,
+    "for_each_reloc_pair_world_stopped called with non-stop epoch {stop_epoch}"
+  );
+
+  // 1) Thread-local handle stacks.
+  for thread in registry::all_threads() {
+    thread.for_each_handle_slot(|slot| {
+      let slot = slot.cast::<u8>();
+      f(crate::gc_roots::RelocPair {
+        base_slot: crate::statepoints::RootSlot::StackAddr(slot),
+        derived_slot: crate::statepoints::RootSlot::StackAddr(slot),
+      })
+    });
+  }
+
+  // 2) Global roots.
+  crate::roots::global_root_registry().for_each_root_slot(|slot| {
+    let slot = slot.cast::<u8>();
+    f(crate::gc_roots::RelocPair {
+      base_slot: crate::statepoints::RootSlot::StackAddr(slot),
+      derived_slot: crate::statepoints::RootSlot::StackAddr(slot),
+    })
+  });
+
+  // 3) Persistent handle-table roots.
+  crate::roots::global_persistent_handle_table().for_each_root_slot(|slot| {
+    let slot = slot.cast::<u8>();
+    f(crate::gc_roots::RelocPair {
+      base_slot: crate::statepoints::RootSlot::StackAddr(slot),
+      derived_slot: crate::statepoints::RootSlot::StackAddr(slot),
+    })
+  });
+
+  // 4) Stack roots from stackmaps.
+  let Some(stackmaps) = stackmaps_for_self() else {
+    return Ok(());
+  };
+
+  let coordinator_id = registry::current_thread_id();
+  for thread in registry::all_threads() {
+    if Some(thread.id()) == coordinator_id {
+      continue;
+    }
+    if thread.is_parked() || thread.is_native_safe() {
+      continue;
+    }
+    if thread.safepoint_epoch_observed() != stop_epoch {
+      continue;
+    }
+
+    let ctx = thread
+      .safepoint_context()
+      .expect("stopped thread must have a published safepoint context");
+
+    let stack_bounds = thread
+      .stack_bounds()
+      .and_then(|b| crate::stackwalk::StackBounds::new(b.lo as u64, b.hi as u64).ok());
+
+    // SAFETY: The caller guarantees the world is stopped and the thread's stack
+    // is stable to read.
+    unsafe {
+      crate::stackwalk_fp::walk_gc_reloc_pairs_from_safepoint_context(
+        &ctx,
+        stack_bounds,
+        stackmaps,
+        |pair| f(pair),
+      )?;
+    }
+  }
+
+  Ok(())
+}
+
 /// Enumerate all GC root slots while the world is stopped.
 ///
 /// Root sources (in order):
