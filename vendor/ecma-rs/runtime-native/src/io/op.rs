@@ -101,6 +101,43 @@ impl IoOp {
     })
   }
 
+  /// Pins a list of backing-store rooted buffers described by a [`PinnedIoVec`].
+  ///
+  /// This is useful for operations that work with JS `ArrayBuffer`/`TypedArray` backing stores: the
+  /// returned [`PinnedIoVec`] owns pin guards that prevent detach/transfer/resize while in flight.
+  ///
+  /// The `PinnedIoVec` also provides stable `iov_base` pointers; this method charges the
+  /// corresponding byte ranges against the [`IoLimiter`] and exposes the buffers as [`IoBuf`]s.
+  pub fn pin_iovecs(
+    limiter: &Arc<IoLimiter>,
+    pinned_iovecs: PinnedIoVec,
+  ) -> Result<Self, IoLimitError> {
+    let mut total_pinned_bytes: usize = 0;
+    for iov in pinned_iovecs.as_iovecs() {
+      total_pinned_bytes = total_pinned_bytes
+        .checked_add(iov.iov_len)
+        .ok_or(IoLimitError::LimitExceeded("max pinned bytes"))?;
+    }
+
+    let permit = limiter.try_acquire(total_pinned_bytes)?;
+
+    let mut io_bufs: Vec<IoBuf> = Vec::with_capacity(pinned_iovecs.len());
+    for iov in pinned_iovecs.as_iovecs() {
+      io_bufs.push(IoBuf {
+        ptr: iov.iov_base as *const u8,
+        len: iov.iov_len,
+      });
+    }
+
+    Ok(Self {
+      bufs: io_bufs,
+      _backings: Vec::new(),
+      pinned_iovecs: Some(pinned_iovecs),
+      pinned_msghdr: None,
+      _permit: permit,
+    })
+  }
+
   /// Attaches a pinned `iovec[]` descriptor list to this op.
   ///
   /// This is intended for io_uring and other async APIs that require the `iovec[]` array itself to

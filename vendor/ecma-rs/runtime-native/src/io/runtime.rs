@@ -152,6 +152,14 @@ impl IoRuntime {
     self.write_with_debug_hooks(fd, backing, range, &[], None)
   }
 
+  /// Submit a non-blocking `write(2)` using pinned `ArrayBuffer`/`TypedArray` backing stores.
+  ///
+  /// The caller supplies a [`super::PinnedIoVec`] (which owns backing-store pin guards). The pinned
+  /// buffers are charged against the I/O limiter and are released on completion/cancellation.
+  pub fn write_iovecs(&self, fd: OwnedFd, iovecs: super::PinnedIoVec) -> io::Result<PromiseRef> {
+    self.write_iovecs_with_debug_hooks(fd, iovecs, &[], None)
+  }
+
   #[doc(hidden)]
   pub fn write_with_debug_hooks(
     &self,
@@ -169,6 +177,55 @@ impl IoRuntime {
     let cancel = super::op_registry::CancellationToken::new()?;
 
     let pinned = super::op::IoOp::pin_range(&self.inner.limiter, backing, range)?;
+    let root_pins = roots.iter().copied().map(RootPin::new).collect::<Vec<_>>();
+
+    let (id, op) = {
+      let mut reg = self.inner.registry.lock();
+      let id = reg.alloc_id();
+      let op = Arc::new(IoOpRecord::new(
+        id,
+        IoOpKind::Write { fd },
+        pinned,
+        promise,
+        cancel,
+        root_pins,
+        debug,
+      ));
+      reg.insert(Arc::clone(&op));
+      (id, op)
+    };
+
+    let rt_weak = Arc::downgrade(&self.inner);
+    let spawn_res = std::thread::Builder::new()
+      .name(format!("rt-io-op-{}", id.as_u64()))
+      .spawn(move || io_worker(op, rt_weak));
+
+    match spawn_res {
+      Ok(_) => Ok(promise),
+      Err(e) => {
+        // Best-effort cleanup: if the thread wasn't spawned, remove the op from the registry.
+        let _ = self.inner.registry.lock().remove(id);
+        Err(io::Error::new(io::ErrorKind::Other, e))
+      }
+    }
+  }
+
+  #[doc(hidden)]
+  pub fn write_iovecs_with_debug_hooks(
+    &self,
+    fd: OwnedFd,
+    iovecs: super::PinnedIoVec,
+    roots: &[*mut u8],
+    debug: Option<IoOpDebugHooks>,
+  ) -> io::Result<PromiseRef> {
+    if self.inner.state() != RuntimeState::Running {
+      return Err(io::Error::new(io::ErrorKind::Other, "I/O runtime is torn down"));
+    }
+
+    let promise = async_rt::promise::promise_new();
+    let cancel = super::op_registry::CancellationToken::new()?;
+
+    let pinned = super::op::IoOp::pin_iovecs(&self.inner.limiter, iovecs)?;
     let root_pins = roots.iter().copied().map(RootPin::new).collect::<Vec<_>>();
 
     let (id, op) = {
@@ -282,14 +339,28 @@ fn run_io(op: &IoOpRecord) -> IoOpOutcome {
   ];
 
   let bufs = op.pinned.bufs();
-  if bufs.len() != 1 {
-    return IoOpOutcome::Err(libc::EINVAL);
-  }
-
-  let buf = bufs[0];
+  let mut buf_idx: usize = 0;
   let mut offset: usize = 0;
+  let mut total_written: usize = 0;
 
-  while offset < buf.len() {
+  while buf_idx < bufs.len() {
+    // Skip empty segments.
+    while buf_idx < bufs.len() && bufs[buf_idx].len() == 0 {
+      buf_idx += 1;
+      offset = 0;
+    }
+    if buf_idx >= bufs.len() {
+      break;
+    }
+
+    let buf = bufs[buf_idx];
+    debug_assert!(offset <= buf.len());
+    if offset == buf.len() {
+      buf_idx += 1;
+      offset = 0;
+      continue;
+    }
+
     if op.cancel.is_cancelled() {
       return IoOpOutcome::Canceled;
     }
@@ -303,7 +374,9 @@ fn run_io(op: &IoOpRecord) -> IoOpOutcome {
     };
 
     if rc > 0 {
-      offset += rc as usize;
+      let n = rc as usize;
+      offset += n;
+      total_written = total_written.saturating_add(n);
       continue;
     }
 
@@ -346,7 +419,7 @@ fn run_io(op: &IoOpRecord) -> IoOpOutcome {
     }
   }
 
-  IoOpOutcome::Ok(offset)
+  IoOpOutcome::Ok(total_written)
 }
 
 #[cfg(unix)]

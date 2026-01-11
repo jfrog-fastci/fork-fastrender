@@ -1,4 +1,5 @@
-use runtime_native::io::{IoOpDebugHooks, IoRuntime};
+use runtime_native::buffer::ArrayBufferError;
+use runtime_native::io::{IoOpDebugHooks, IoRuntime, IoVecRange, PinnedIoVec};
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::{rt_async_poll_legacy as rt_async_poll, rt_promise_then_legacy as rt_promise_then};
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -136,6 +137,65 @@ fn teardown_detaches_queued_completion_tasks() {
     let _ = rt_async_poll();
   }
   assert!(!unsafe { &*settled_ptr }.load(Ordering::SeqCst));
+
+  drop(rfd);
+  unsafe {
+    drop(Box::from_raw(root_obj));
+    drop(Box::from_raw(settled_ptr));
+  }
+}
+
+#[test]
+fn teardown_keeps_backing_store_pins_until_cancel_ack() {
+  let _rt = TestRuntimeGuard::new();
+  let io_rt = IoRuntime::new();
+
+  // Keep the read end open but never read from it, so the write eventually blocks.
+  let (rfd, wfd) = pipe();
+
+  // Allocate a JS-style backing store that enforces pin-count rules for detach/transfer/resize.
+  let mut buffer = Box::new(runtime_native::ArrayBuffer::new_zeroed(1024 * 1024).unwrap());
+  let view = runtime_native::Uint8Array::view(&*buffer, 0, buffer.byte_len()).unwrap();
+
+  let iovecs = PinnedIoVec::try_from_ranges(&[IoVecRange::uint8_array(&view)]).unwrap();
+  let root_obj = Box::into_raw(Box::new(0u8)) as *mut u8;
+
+  let debug = IoOpDebugHooks::pause_before_finish();
+  let promise = io_rt
+    .write_iovecs_with_debug_hooks(wfd, iovecs, &[root_obj], Some(debug.clone()))
+    .unwrap();
+
+  let settled = Box::new(AtomicBool::new(false));
+  let settled_ptr = Box::into_raw(settled);
+  rt_promise_then(promise, set_bool, settled_ptr.cast::<u8>());
+
+  assert_eq!(buffer.pin_count(), 1);
+  assert_eq!(io_rt.debug_counters().inflight_ops_current, 1);
+  assert_eq!(io_rt.debug_counters().pinned_bytes_current, buffer.byte_len());
+  assert_eq!(root_registry_len(), 1);
+
+  // Detach/transfer must be rejected while the backing store is pinned.
+  assert_eq!(buffer.detach(), Err(ArrayBufferError::Pinned));
+
+  io_rt.teardown();
+  assert_eq!(io_rt.debug_registry_len(), 0);
+
+  let start = Instant::now();
+  wait_until(start + Duration::from_secs(2), || debug.reached_finish());
+
+  // Still pinned until the op record is dropped.
+  assert_eq!(buffer.pin_count(), 1);
+  assert_eq!(buffer.detach(), Err(ArrayBufferError::Pinned));
+
+  debug.release_finish();
+  wait_until(start + Duration::from_secs(2), || io_rt.debug_counters().inflight_ops_current == 0);
+
+  assert_eq!(buffer.pin_count(), 0);
+  assert_eq!(root_registry_len(), 0);
+  assert!(!unsafe { &*settled_ptr }.load(Ordering::SeqCst));
+
+  // Once unpinned, detach succeeds and frees the backing store.
+  buffer.detach().unwrap();
 
   drop(rfd);
   unsafe {
