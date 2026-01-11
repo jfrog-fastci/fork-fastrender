@@ -5,7 +5,10 @@
 //! legally encode roots in registers, so we keep a runtime verifier to fail fast
 //! if codegen or LLVM changes break that assumption.
 
-use crate::stackmaps::{Location, StackMap, StackMapError, StackMapRecord, StackSizeRecord};
+use crate::stackmaps::{
+  parse_all_stackmaps, Location, StackMap, StackMapError, StackMapRecord, StackSizeRecord,
+  STACKMAP_VERSION,
+};
 use crate::statepoints::{StatepointError, StatepointRecord, AARCH64_DWARF_REG_SP, X86_64_DWARF_REG_SP};
 use std::error::Error;
 use std::fmt;
@@ -205,7 +208,8 @@ impl Error for LoadError {
 /// In debug builds (or when compiled with the `verify-statepoints` feature), this enforces the
 /// spill-to-stack convention for all statepoint records.
 pub fn load_stackmap(section: &[u8], arch: DwarfArch) -> Result<StackMap, LoadError> {
-  let stackmap = StackMap::parse(section).map_err(LoadError::Parse)?;
+  let stackmaps = parse_all_stackmaps(section).map_err(LoadError::Parse)?;
+  let stackmap = merge_stackmap_tables(stackmaps).map_err(LoadError::Parse)?;
 
   #[cfg(any(debug_assertions, feature = "verify-statepoints"))]
   {
@@ -225,6 +229,50 @@ pub fn load_stackmap(section: &[u8], arch: DwarfArch) -> Result<StackMap, LoadEr
   }
 
   Ok(stackmap)
+}
+
+fn merge_stackmap_tables(mut tables: Vec<StackMap>) -> Result<StackMap, StackMapError> {
+  if tables.is_empty() {
+    return Err(StackMapError::UnexpectedEof);
+  }
+  if tables.len() == 1 {
+    return Ok(tables.pop().unwrap());
+  }
+
+  let total_functions: usize = tables.iter().map(|t| t.functions.len()).sum();
+  let total_constants: usize = tables.iter().map(|t| t.constants.len()).sum();
+  let total_records: usize = tables.iter().map(|t| t.records.len()).sum();
+
+  let mut out = StackMap {
+    version: STACKMAP_VERSION,
+    functions: Vec::with_capacity(total_functions),
+    constants: Vec::with_capacity(total_constants),
+    records: Vec::with_capacity(total_records),
+  };
+
+  for mut table in tables {
+    debug_assert_eq!(table.version, STACKMAP_VERSION);
+
+    let const_base = out.constants.len();
+    out.constants.extend(table.constants);
+
+    if const_base != 0 {
+      for rec in &mut table.records {
+        for loc in &mut rec.locations {
+          if let Location::ConstIndex { index, .. } = loc {
+            let new_index = (const_base as u64) + (*index as u64);
+            let new_index = u32::try_from(new_index).map_err(|_| StackMapError::UnexpectedEof)?;
+            *index = new_index;
+          }
+        }
+      }
+    }
+
+    out.functions.extend(table.functions);
+    out.records.extend(table.records);
+  }
+
+  Ok(out)
 }
 
 pub fn verify_statepoint_stackmap(
@@ -260,6 +308,110 @@ pub fn verify_statepoint_stackmap(
   }
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::DwarfArch;
+  use super::load_stackmap;
+  use crate::stackmaps::Location;
+
+  fn push_u8(buf: &mut Vec<u8>, v: u8) {
+    buf.push(v);
+  }
+
+  fn push_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_le_bytes());
+  }
+
+  fn push_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+  }
+
+  fn push_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+  }
+
+  fn push_i32(buf: &mut Vec<u8>, v: i32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+  }
+
+  fn align_to_8(buf: &mut Vec<u8>) {
+    while buf.len() % 8 != 0 {
+      buf.push(0);
+    }
+  }
+
+  fn build_one_table(patchpoint_id: u64, constant: u64) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    // Header.
+    push_u8(&mut bytes, 3);
+    push_u8(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u32(&mut bytes, 1); // num_functions
+    push_u32(&mut bytes, 1); // num_constants
+    push_u32(&mut bytes, 1); // num_records
+
+    // Function record.
+    push_u64(&mut bytes, 0x1000);
+    push_u64(&mut bytes, 0);
+    push_u64(&mut bytes, 1); // record_count
+
+    // Constants table.
+    push_u64(&mut bytes, constant);
+
+    // Record header.
+    push_u64(&mut bytes, patchpoint_id);
+    push_u32(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 1); // num_locations
+
+    // Location: ConstIndex[0].
+    push_u8(&mut bytes, 5); // kind
+    push_u8(&mut bytes, 0);
+    push_u16(&mut bytes, 8); // size
+    push_u16(&mut bytes, 0); // dwarf reg (unused)
+    push_u16(&mut bytes, 0);
+    push_i32(&mut bytes, 0); // constants[0]
+
+    align_to_8(&mut bytes);
+    // Live-out header.
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0); // num_liveouts
+    align_to_8(&mut bytes);
+
+    bytes
+  }
+
+  #[test]
+  fn load_stackmap_merges_concatenated_tables_and_rewrites_const_indices() {
+    let mut bytes = Vec::new();
+    bytes.extend(build_one_table(111, 0xAAAA));
+    bytes.extend([0u8; 8]);
+    bytes.extend(build_one_table(222, 0xBBBB));
+
+    let merged = load_stackmap(&bytes, DwarfArch::X86_64).expect("load stackmap");
+    assert_eq!(merged.constants, vec![0xAAAA, 0xBBBB]);
+    assert_eq!(merged.functions.len(), 2);
+    assert_eq!(merged.records.len(), 2);
+
+    match &merged.records[0].locations[0] {
+      Location::ConstIndex { index, value, .. } => {
+        assert_eq!(*index, 0);
+        assert_eq!(*value, 0xAAAA);
+      }
+      other => panic!("expected ConstIndex, got {other:?}"),
+    }
+
+    match &merged.records[1].locations[0] {
+      Location::ConstIndex { index, value, .. } => {
+        assert_eq!(*index, 1);
+        assert_eq!(*value, 0xBBBB);
+      }
+      other => panic!("expected ConstIndex, got {other:?}"),
+    }
+  }
 }
 
 fn verify_statepoint_record(
