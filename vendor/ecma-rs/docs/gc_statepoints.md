@@ -110,9 +110,12 @@ stackmap records at the poll PCs and `gc.relocate` for any live `ptr addrspace(1
 ### Runtime contract for `gc.safepoint_poll`
 
 The runtime must provide a symbol named `gc.safepoint_poll` compatible with `void ()`. In this repo,
-`runtime-native` exports `gc.safepoint_poll` and implements it by calling `rt_gc_safepoint()` (fast path:
-check a global epoch flag and return; slow path: publish the thread's safepoint context and park until
-GC completes).
+`runtime-native` exports `gc.safepoint_poll` and implements it in per-architecture assembly so it can:
+
+- inline an (Acquire) load of the exported `RT_GC_EPOCH` and return immediately when no GC is requested, and
+- on the slow path, capture the *managed* caller's `(SP, FP, return address)` at the poll callsite and
+  call into the safepoint slow path (`rt_gc_safepoint_slow_impl`) so the published context matches the
+  stackmap record for the poll callsite.
 
 ---
 
