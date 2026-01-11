@@ -25,27 +25,12 @@ glob = "language/expressions/bitwise-and/**"
 status = "pass"
 
 [[expectations]]
-id = "language/expressions/bitwise-and/bigint.js"
-status = "xfail"
-reason = "vm-js BigInt bitwise ops are bounded (i128); test exercises larger BigInt values."
-
-[[expectations]]
 glob = "language/expressions/bitwise-or/**"
 status = "pass"
 
 [[expectations]]
-id = "language/expressions/bitwise-or/bigint.js"
-status = "xfail"
-reason = "vm-js BigInt bitwise ops are bounded (i128); test exercises larger BigInt values."
-
-[[expectations]]
 glob = "language/expressions/bitwise-xor/**"
 status = "pass"
-
-[[expectations]]
-id = "language/expressions/bitwise-xor/bigint.js"
-status = "xfail"
-reason = "vm-js BigInt bitwise ops are bounded (i128); test exercises larger BigInt values."
 
 [[expectations]]
 glob = "language/expressions/bitwise-not/**"

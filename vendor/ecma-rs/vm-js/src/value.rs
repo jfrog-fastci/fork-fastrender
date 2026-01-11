@@ -112,10 +112,133 @@ impl JsBigInt {
     })
   }
 
+  fn magnitude_bit_len(self) -> u32 {
+    if self.magnitude == 0 {
+      0
+    } else {
+      128 - self.magnitude.leading_zeros()
+    }
+  }
+
+  fn twos_complement_mask(width: u32) -> u128 {
+    debug_assert!((1..=128).contains(&width));
+    if width == 128 {
+      u128::MAX
+    } else {
+      (1u128 << width) - 1
+    }
+  }
+
+  fn to_twos_complement_u128(self, width: u32) -> u128 {
+    debug_assert!((1..=128).contains(&width));
+    let mask = Self::twos_complement_mask(width);
+    let raw = if self.is_negative() {
+      if width == 128 {
+        (0u128).wrapping_sub(self.magnitude)
+      } else {
+        (1u128 << width) - self.magnitude
+      }
+    } else {
+      self.magnitude
+    };
+    raw & mask
+  }
+
+  fn from_twos_complement_u128(value: u128, width: u32) -> Self {
+    debug_assert!((1..=128).contains(&width));
+    let mask = Self::twos_complement_mask(width);
+    let value = value & mask;
+    let sign_bit = 1u128 << (width - 1);
+    if (value & sign_bit) == 0 {
+      Self {
+        negative: false,
+        magnitude: value,
+      }
+    } else {
+      let magnitude = if width == 128 {
+        (0u128).wrapping_sub(value)
+      } else {
+        (1u128 << width) - value
+      };
+      debug_assert!(magnitude != 0);
+      Self {
+        negative: true,
+        magnitude,
+      }
+    }
+  }
+
+  fn to_twos_complement_129(self) -> (bool, u128) {
+    if self.is_negative() {
+      (true, (0u128).wrapping_sub(self.magnitude))
+    } else {
+      (false, self.magnitude)
+    }
+  }
+
+  fn from_twos_complement_129(high: bool, low: u128) -> Option<Self> {
+    if !high {
+      return Some(Self {
+        negative: false,
+        magnitude: low,
+      });
+    }
+    let magnitude = (0u128).wrapping_sub(low);
+    if magnitude == 0 {
+      return None;
+    }
+    Some(Self {
+      negative: true,
+      magnitude,
+    })
+  }
+
+  fn checked_bitwise_binary_op(
+    self,
+    other: Self,
+    op_low: fn(u128, u128) -> u128,
+    op_high: fn(bool, bool) -> bool,
+  ) -> Option<Self> {
+    let width = self.magnitude_bit_len().max(other.magnitude_bit_len()) + 1;
+    if width <= 128 {
+      let a = self.to_twos_complement_u128(width);
+      let b = other.to_twos_complement_u128(width);
+      Some(Self::from_twos_complement_u128(op_low(a, b), width))
+    } else {
+      debug_assert_eq!(width, 129);
+      let (a_high, a_low) = self.to_twos_complement_129();
+      let (b_high, b_low) = other.to_twos_complement_129();
+      let out_high = op_high(a_high, b_high);
+      let out_low = op_low(a_low, b_low);
+      Self::from_twos_complement_129(out_high, out_low)
+    }
+  }
+
+  pub fn checked_bitwise_not(self) -> Option<Self> {
+    self
+      .negate()
+      .checked_add(Self {
+        negative: true,
+        magnitude: 1,
+      })
+  }
+
+  pub fn checked_bitwise_and(self, other: Self) -> Option<Self> {
+    self.checked_bitwise_binary_op(other, |a, b| a & b, |a, b| a & b)
+  }
+
+  pub fn checked_bitwise_or(self, other: Self) -> Option<Self> {
+    self.checked_bitwise_binary_op(other, |a, b| a | b, |a, b| a | b)
+  }
+
+  pub fn checked_bitwise_xor(self, other: Self) -> Option<Self> {
+    self.checked_bitwise_binary_op(other, |a, b| a ^ b, |a, b| a ^ b)
+  }
+
   /// Converts this BigInt to `i128` if it fits.
   ///
-  /// This is used by `vm-js` for integer operations like `~`/`&`/`<<` while its BigInt
-  /// implementation remains intentionally bounded to 128 bits.
+  /// This is used by `vm-js` for shift operators (`<<`, `>>`) while its BigInt implementation
+  /// remains intentionally bounded to 128 bits.
   pub fn try_to_i128(self) -> Option<i128> {
     if self.is_zero() {
       return Some(0);

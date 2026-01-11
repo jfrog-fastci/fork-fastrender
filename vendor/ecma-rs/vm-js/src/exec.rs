@@ -4535,10 +4535,10 @@ impl<'a> Evaluator<'a> {
         Ok(match num {
           NumericValue::Number(n) => Value::Number((!to_int32(n)) as f64),
           NumericValue::BigInt(b) => {
-            let Some(i) = b.try_to_i128() else {
+            let Some(out) = b.checked_bitwise_not() else {
               return Err(VmError::Unimplemented("BigInt bitwise not out of range"));
             };
-            Value::BigInt(JsBigInt::from_i128(!i))
+            Value::BigInt(out)
           }
         })
       }
@@ -5109,19 +5109,16 @@ impl<'a> Evaluator<'a> {
             Ok(Value::Number(out as f64))
           }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let Some(a) = a.try_to_i128() else {
-              return Err(VmError::Unimplemented("BigInt bitwise out of range"));
-            };
-            let Some(b) = b.try_to_i128() else {
-              return Err(VmError::Unimplemented("BigInt bitwise out of range"));
-            };
             let out = match expr.operator {
-              OperatorName::BitwiseAnd => a & b,
-              OperatorName::BitwiseOr => a | b,
-              OperatorName::BitwiseXor => a ^ b,
+              OperatorName::BitwiseAnd => a.checked_bitwise_and(b),
+              OperatorName::BitwiseOr => a.checked_bitwise_or(b),
+              OperatorName::BitwiseXor => a.checked_bitwise_xor(b),
               _ => unreachable!(),
             };
-            Ok(Value::BigInt(JsBigInt::from_i128(out)))
+            let Some(out) = out else {
+              return Err(VmError::Unimplemented("BigInt bitwise out of range"));
+            };
+            Ok(Value::BigInt(out))
           }
           _ => Err(throw_type_error(
             self.vm,

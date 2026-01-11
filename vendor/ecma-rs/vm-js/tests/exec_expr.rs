@@ -400,20 +400,29 @@ fn bitwise_and_shift_and_comma_operators_work() {
         && (1 << -1) === -2147483648;
       var x = 0;
       ok = ok && ((x = 1, x + 1) === 2);
-      ok = ok
-        && ((5n & 3n) === 1n)
-        && ((5n | 2n) === 7n)
-       && ((5n ^ 1n) === 4n)
-       && ((~1n) === -2n)
-       && ((1n << 3n) === 8n)
-        && ((5n << -1n) === 2n)
-        && ((-5n << -1n) === -3n)
-        && ((5n >> -1n) === 10n)
-        && ((-8n >> 1n) === -4n);
-       var mix = false;
-       try { 1n & 1; } catch(e) { mix = e.name === "TypeError"; }
-       ok = ok && mix;
-       var bad = false;
+        ok = ok
+         && ((5n & 3n) === 1n)
+         && ((5n | 2n) === 7n)
+        && ((5n ^ 1n) === 4n)
+        && ((~1n) === -2n)
+        && ((1n << 3n) === 8n)
+         && ((5n << -1n) === 2n)
+         && ((-5n << -1n) === -3n)
+         && ((5n >> -1n) === 10n)
+         && ((-8n >> 1n) === -4n);
+        var a = 0xbf2ed51ff75d380fd3be813ec6185780n;
+        var b = 0x4aabef2324cedff5387f1f65n;
+        ok = ok
+          && ((a & b) === 0x42092803008e813400181700n)
+          && ((a | b) === 0xbf2ed51fffffff2ff7fedffffe7f5fe5n)
+          && ((a ^ b) === 0xbf2ed51fbdf6d72cf7705ecbfe6748e5n)
+          && ((a & -b) === 0xbf2ed51fb554100cd330000ac6004080n)
+          && ((~a) === -0xbf2ed51ff75d380fd3be813ec6185781n)
+          && ((~(-a)) === 0xbf2ed51ff75d380fd3be813ec618577fn);
+        var mix = false;
+        try { 1n & 1; } catch(e) { mix = e.name === "TypeError"; }
+        ok = ok && mix;
+        var bad = false;
        try { 1n >>> 1n; } catch(e) { bad = e.name === "TypeError"; }
        ok && bad"#,
     )
