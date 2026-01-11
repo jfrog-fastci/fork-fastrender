@@ -751,6 +751,52 @@ mod tests {
   }
 
   #[test]
+  fn home_clears_selection_in_text_controls() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    let len = "abc".chars().count();
+
+    // Create a selection anchored at the end by extending the caret leftwards.
+    set_text_selection_caret(&mut engine, &mut dom, input_id, len);
+    assert!(engine.key_action(&mut dom, KeyAction::ShiftArrowLeft));
+    assert!(engine.text_edit.as_ref().unwrap().selection().is_some());
+
+    // Home (without shift) should collapse the selection and clear the selection anchor.
+    assert!(engine.key_action(&mut dom, KeyAction::Home));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, 0);
+    assert_eq!(edit.selection(), None);
+  }
+
+  #[test]
+  fn end_clears_selection_in_text_controls() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    let len = "abc".chars().count();
+
+    // Create a selection anchored at the start by extending the caret rightwards.
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 0);
+    assert!(engine.key_action(&mut dom, KeyAction::ShiftArrowRight));
+    assert!(engine.text_edit.as_ref().unwrap().selection().is_some());
+
+    // End (without shift) should collapse the selection and clear the selection anchor.
+    assert!(engine.key_action(&mut dom, KeyAction::End));
+    let edit = engine.text_edit.as_ref().unwrap();
+    assert_eq!(edit.caret, len);
+    assert_eq!(edit.selection(), None);
+  }
+
+  #[test]
   fn backspace_deletes_previous_character_and_updates_caret() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
@@ -4197,7 +4243,7 @@ impl InteractionEngine {
           } else {
             current_len
           };
-          edit.set_caret(next);
+          edit.set_caret_and_maybe_extend_selection(next, false);
         }
         KeyAction::ShiftHome | KeyAction::ShiftEnd => {
           let next = if matches!(key, KeyAction::ShiftHome) {
