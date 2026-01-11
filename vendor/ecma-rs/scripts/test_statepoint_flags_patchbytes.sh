@@ -83,6 +83,67 @@ run_llc "${IR_B}" "${OBJ_B}"
 STACKMAP_A="$("${LLVM_READOBJ}" --stackmap "${OBJ_A}")"
 STACKMAP_B="$("${LLVM_READOBJ}" --stackmap "${OBJ_B}")"
 
+extract_call_return_offset_from_objdump() {
+  local objdump_out="$1"
+  local func="$2"
+  local call_re="$3"
+
+  local start_hex
+  start_hex="$(
+    printf '%s\n' "${objdump_out}" |
+      awk -v f="${func}" '$0 ~ "<"f">:" {print $1; exit}'
+  )"
+  [[ -n "${start_hex}" ]] || die "failed to locate function header for ${func} in objdump output"
+
+  local next_hex
+  next_hex="$(
+    printf '%s\n' "${objdump_out}" |
+      awk -v f="${func}" -v call_re="${call_re}" '
+        $0 ~ "<"f">:" {in_func=1; next}
+        in_func && /^[0-9a-fA-F]+ <.*>:/ {exit}
+        in_func && $1 ~ /^[0-9a-fA-F]+:$/ {
+          addr=$1
+          sub(":", "", addr)
+          if (want_next) {print addr; exit}
+          if ($0 ~ call_re) {want_next=1}
+        }
+      '
+  )"
+  [[ -n "${next_hex}" ]] || die "failed to locate call + following instruction in ${func} disassembly"
+
+  printf '%d' "$((0x${next_hex} - 0x${start_hex}))"
+}
+
+extract_nop_run_start_end_hex_from_objdump() {
+  local objdump_out="$1"
+  local func="$2"
+
+  local out
+  out="$(
+    printf '%s\n' "${objdump_out}" |
+      awk -v f="${func}" '
+        $0 ~ "<"f">:" {in_func=1; next}
+        in_func && /^[0-9a-fA-F]+ <.*>:/ {exit}
+        in_func && $1 ~ /^[0-9a-fA-F]+:$/ {
+          addr=$1
+          sub(":", "", addr)
+          inst=$2
+          if (!in_nops && inst ~ /^nop/) {
+            nop_start=addr
+            in_nops=1
+            next
+          }
+          if (in_nops && inst !~ /^nop/) {
+            print nop_start " " addr
+            exit
+          }
+        }
+      '
+  )"
+  [[ -n "${out}" ]] || die "failed to find a contiguous NOP region in ${func} disassembly"
+  printf '%s' "${out}"
+}
+
 extract_instruction_offset() {
   local stackmap="$1"
   local off
@@ -104,6 +165,7 @@ extract_location2_constant() {
 OFF_A="$(extract_instruction_offset "${STACKMAP_A}")"
 OFF_B="$(extract_instruction_offset "${STACKMAP_B}")"
 
+PATCH_BYTES_B=16
 FLAGS_B_EXPECTED=2
 FLAGS_B_GOT="$(extract_location2_constant "${STACKMAP_B}")"
 if [[ "${FLAGS_B_GOT}" != "${FLAGS_B_EXPECTED}" ]]; then
@@ -129,8 +191,8 @@ if (( DELTA < MIN_DELTA )); then
   die "expected fixture B instruction offset to increase by at least ${MIN_DELTA}; got delta=${DELTA} (A=${OFF_A}, B=${OFF_B})"
 fi
 
-DIS_A="$("${LLVM_OBJDUMP}" -d "${OBJ_A}")"
-DIS_B="$("${LLVM_OBJDUMP}" -d "${OBJ_B}")"
+DIS_A="$("${LLVM_OBJDUMP}" -d --no-show-raw-insn "${OBJ_A}")"
+DIS_B="$("${LLVM_OBJDUMP}" -d --no-show-raw-insn "${OBJ_B}")"
 
 if ! grep -Eq '[[:space:]]call' <<<"${DIS_A}"; then
   echo "${DIS_A}" >&2
@@ -145,6 +207,36 @@ fi
 if ! grep -Eq '\bnop' <<<"${DIS_B}"; then
   echo "${DIS_B}" >&2
   die "expected fixture B to contain NOP padding at the statepoint site"
+fi
+
+# Stronger ABI checks:
+# - Baseline instruction offset should match the call return address.
+# - Patch-bytes instruction offset should match the end of the reserved NOP region, and the reserved
+#   region should be at least PATCH_BYTES_B bytes.
+RET_A="$(extract_call_return_offset_from_objdump "${DIS_A}" "test" '[[:space:]]call')"
+if (( RET_A != OFF_A )); then
+  echo "=== disassembly A ===" >&2
+  echo "${DIS_A}" >&2
+  echo "=== stackmap A ===" >&2
+  echo "${STACKMAP_A}" >&2
+  die "fixture A: expected stackmap instruction offset to equal call return address; got stackmap=${OFF_A}, disasm=${RET_A}"
+fi
+
+read -r NOP_START_HEX NOP_END_HEX <<<"$(extract_nop_run_start_end_hex_from_objdump "${DIS_B}" "test")"
+NOP_START_DEC="$((0x${NOP_START_HEX}))"
+NOP_END_DEC="$((0x${NOP_END_HEX}))"
+NOP_LEN="$((NOP_END_DEC - NOP_START_DEC))"
+if (( NOP_LEN < PATCH_BYTES_B )); then
+  echo "=== disassembly B ===" >&2
+  echo "${DIS_B}" >&2
+  die "fixture B: expected contiguous NOP region length >= ${PATCH_BYTES_B}, got ${NOP_LEN} (start=0x${NOP_START_HEX}, end=0x${NOP_END_HEX})"
+fi
+if (( NOP_END_DEC != OFF_B )); then
+  echo "=== disassembly B ===" >&2
+  echo "${DIS_B}" >&2
+  echo "=== stackmap B ===" >&2
+  echo "${STACKMAP_B}" >&2
+  die "fixture B: expected stackmap instruction offset to match end of NOP region; got stackmap=${OFF_B}, nop_end=${NOP_END_DEC}"
 fi
 
 # Guard LLVM 18 verifier behaviour: only bits 0 and 1 are accepted (flags 0..3).
