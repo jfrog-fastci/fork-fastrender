@@ -46,7 +46,6 @@ impl GcHeap {
       let mut marker = Marker {
         heap: self,
         epoch,
-        worklist: Vec::new(),
       };
 
       roots.for_each_root_slot(&mut |slot| {
@@ -58,10 +57,6 @@ impl GcHeap {
         marker.visit_slot(slot);
       });
       marker.heap.root_handles = root_handles;
-
-      while let Some(obj) = marker.worklist.pop() {
-        marker.visit_obj(obj);
-      }
     }
 
     let mut candidate_blocks = vec![false; self.immix.block_count()];
@@ -136,7 +131,6 @@ impl GcHeap {
 struct Marker<'a> {
   heap: &'a mut GcHeap,
   epoch: u8,
-  worklist: Vec<*mut u8>,
 }
 
 impl Marker<'_> {
@@ -176,8 +170,9 @@ impl Marker<'_> {
         debug_assert!(self.heap.is_in_los(obj), "unknown heap object location");
       }
     }
-
-    self.worklist.push(obj);
+    // Depth-first marking: immediately scan the object's outgoing edges.
+    // This avoids heap allocations for a worklist (GC must not allocate).
+    self.visit_obj(obj);
   }
 }
 

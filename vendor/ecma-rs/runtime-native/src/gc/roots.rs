@@ -25,6 +25,10 @@ impl RootStack {
   pub fn push(&mut self, slot: *mut *mut u8) {
     self.slots.push(slot);
   }
+
+  pub fn pop(&mut self) -> *mut *mut u8 {
+    self.slots.pop().expect("RootStack::pop: empty root stack")
+  }
 }
 
 impl RootSet for RootStack {

@@ -952,4 +952,117 @@ mod tests {
     assert!(array::decode_rt_array_elem_size(array::RT_ARRAY_ELEM_PTR_FLAG | 4).is_none());
     assert!(array::checked_total_bytes(usize::MAX, 16).is_none());
   }
+
+  #[derive(Default)]
+  struct NullRememberedSet;
+
+  impl RememberedSet for NullRememberedSet {
+    fn for_each_remembered_obj(&mut self, _f: &mut dyn FnMut(*mut u8)) {}
+
+    fn clear(&mut self) {}
+
+    fn on_promoted_object(&mut self, _obj: *mut u8, _has_young_refs: bool) {}
+  }
+
+  #[repr(C)]
+  struct Node {
+    _header: crate::gc::ObjHeader,
+    left: *mut u8,
+    right: *mut u8,
+    value: usize,
+  }
+
+  const NODE_PTR_OFFSETS: [u32; 2] = [
+    std::mem::offset_of!(Node, left) as u32,
+    std::mem::offset_of!(Node, right) as u32,
+  ];
+
+  static NODE_DESC: TypeDescriptor = TypeDescriptor::new(std::mem::size_of::<Node>(), &NODE_PTR_OFFSETS);
+
+  #[repr(C)]
+  struct BigNode {
+    _header: crate::gc::ObjHeader,
+    next: *mut u8,
+    payload: [u8; 32],
+  }
+
+  const BIG_NODE_PTR_OFFSETS: [u32; 1] = [std::mem::offset_of!(BigNode, next) as u32];
+
+  static BIG_NODE_DESC: TypeDescriptor = TypeDescriptor::new(std::mem::size_of::<BigNode>(), &BIG_NODE_PTR_OFFSETS);
+
+  #[test]
+  fn major_gc_traces_by_type_descriptor_and_reclaims_unreachable() {
+    let mut heap = GcHeap::new();
+    let mut roots = RootStack::new();
+    let mut remembered = NullRememberedSet::default();
+
+    let big1 = heap.alloc_pinned(&BIG_NODE_DESC);
+    let big0 = heap.alloc_pinned(&BIG_NODE_DESC);
+    let node = heap.alloc_old(&NODE_DESC);
+
+    // SAFETY: `alloc_*` returns valid, properly-sized objects, and the types
+    // here are `#[repr(C)]` with `ObjHeader` as the first field.
+    unsafe {
+      (*(big0 as *mut BigNode)).next = big1;
+
+      (*(node as *mut Node)).left = big0;
+      (*(node as *mut Node)).right = std::ptr::null_mut();
+      (*(node as *mut Node)).value = 123;
+    }
+
+    let mut root = node;
+    roots.push(&mut root as *mut *mut u8);
+
+    heap.collect_major(&mut roots, &mut remembered);
+    assert_eq!(heap.los_object_count(), 2);
+
+    // Ensure live objects remain intact after a major GC and that the collector
+    // follows pointer fields described by [`TypeDescriptor`].
+    let node = root as *mut Node;
+    unsafe {
+      assert_eq!((*node).value, 123);
+      let left = (*node).left;
+      assert!(!left.is_null());
+      assert_eq!((*(left as *mut BigNode)).next, big1);
+    }
+
+    // Drop the only reference to the LOS object chain and ensure it is swept.
+    unsafe {
+      (*(root as *mut Node)).left = std::ptr::null_mut();
+    }
+    heap.collect_major(&mut roots, &mut remembered);
+    assert_eq!(heap.los_object_count(), 0);
+
+    // RootStack must support explicit pop for callers that manage stack
+    // discipline manually.
+    let popped = roots.pop();
+    assert_eq!(popped, (&mut root as *mut *mut u8));
+    root = std::ptr::null_mut();
+    assert!(root.is_null());
+
+    heap.collect_major(&mut roots, &mut remembered);
+  }
+
+  #[test]
+  fn repeated_major_collections_make_progress() {
+    let mut heap = GcHeap::new();
+    let mut roots = RootStack::new();
+    let mut remembered = NullRememberedSet::default();
+
+    for _ in 0..32 {
+      let obj = heap.alloc_pinned(&BIG_NODE_DESC);
+      let mut root = obj;
+      roots.push(&mut root as *mut *mut u8);
+
+      heap.collect_major(&mut roots, &mut remembered);
+      assert_eq!(heap.los_object_count(), 1);
+
+      roots.pop();
+      root = std::ptr::null_mut();
+      assert!(root.is_null());
+
+      heap.collect_major(&mut roots, &mut remembered);
+      assert_eq!(heap.los_object_count(), 0);
+    }
+  }
 }
