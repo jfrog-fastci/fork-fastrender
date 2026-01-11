@@ -195,6 +195,7 @@ mod table_row_striping;
 mod text_cache_test;
 mod text_justify_display_list_test;
 mod text_decoration_line_through_golden_test;
+mod text_decoration_auto_snapping;
 mod text_decoration_skip_display_list_test;
 mod text_decoration_skip_ink_offset_golden_test;
 mod text_decoration_skip_ink_rtl_golden_test;

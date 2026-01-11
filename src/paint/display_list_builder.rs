@@ -9865,13 +9865,7 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
   ) -> Option<f32> {
     match thickness {
-      // `auto` uses the UA default thickness, which is derived from font size rather than the
-      // font-provided underline metrics. (See CSS Text Decoration Level 4.)
-      //
-      // Chrome's behavior is effectively `0.1em` with a `1px` minimum (validated by diffing
-      // `text-decoration-thickness: auto` vs an explicit thickness while holding underline
-      // position constant via `text-underline-position: from-font`).
-      TextDecorationThickness::Auto => Some((style.font_size * 0.1).max(1.0)),
+      TextDecorationThickness::Auto => None,
       // `from-font` uses per-font underline/strikeout thickness, so let the caller fall back to
       // `DecorationMetrics::{underline_thickness,strike_thickness}`.
       TextDecorationThickness::FromFont => None,

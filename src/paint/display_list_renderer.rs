@@ -14883,12 +14883,47 @@ impl DisplayListRenderer {
       if thickness <= 0.0 || len <= 0.0 {
         return;
       }
+      const NEAR_INTEGER_EPSILON_PX: f32 = 1e-3;
       let rect = if inline_vertical {
         tiny_skia::Rect::from_xywh(center - thickness * 0.5, start, thickness, len)
       } else {
         tiny_skia::Rect::from_xywh(start, center - thickness * 0.5, len, thickness)
       };
       if let Some(rect) = rect {
+        let translation_only = (transform.sx - 1.0).abs() <= 1e-6
+          && (transform.sy - 1.0).abs() <= 1e-6
+          && transform.kx.abs() <= 1e-6
+          && transform.ky.abs() <= 1e-6;
+        if translation_only {
+          let tx_round = transform.tx.round();
+          let ty_round = transform.ty.round();
+          if (transform.tx - tx_round).abs() <= NEAR_INTEGER_EPSILON_PX
+            && (transform.ty - ty_round).abs() <= NEAR_INTEGER_EPSILON_PX
+          {
+            let x0 = rect.x() + tx_round;
+            let y0 = rect.y() + ty_round;
+            let x1 = x0 + rect.width();
+            let y1 = y0 + rect.height();
+            let start_x = (x0.min(x1) - 0.5).ceil();
+            let end_x = (x0.max(x1) - 0.5).ceil();
+            let start_y = (y0.min(y1) - 0.5).ceil();
+            let end_y = (y0.max(y1) - 0.5).ceil();
+            if let Some(snapped) =
+              tiny_skia::Rect::from_xywh(start_x, start_y, end_x - start_x, end_y - start_y)
+            {
+              let path = PathBuilder::from_rect(snapped);
+              pixmap.fill_path(
+                &path,
+                paint,
+                tiny_skia::FillRule::Winding,
+                Transform::identity(),
+                clip.as_deref(),
+              );
+              return;
+            }
+          }
+        }
+
         let path = PathBuilder::from_rect(rect);
         pixmap.fill_path(
           &path,
