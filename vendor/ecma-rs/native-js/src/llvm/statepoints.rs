@@ -94,7 +94,9 @@ pub struct StatepointConfig {
 impl Default for StatepointConfig {
   fn default() -> Self {
     Self {
-      id: 0,
+      // Match LLVM's `rewrite-statepoints-for-gc` default patchpoint ID so `runtime-native` can
+      // recognize and verify statepoint-shaped stackmap records in debug builds.
+      id: 0xABCDEF00,
       num_patch_bytes: 0,
       flags: 0,
     }
