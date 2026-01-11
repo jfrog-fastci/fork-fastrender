@@ -1,6 +1,10 @@
 use runtime_native::abi::{PromiseRef, RtCoroStatus, RtCoroutineHeader, ValueRef};
+use runtime_native::async_abi::{
+  Coroutine, CoroutineStep, CoroutineVTable, PromiseHeader, CORO_FLAG_RUNTIME_OWNS_FRAME,
+  RT_ASYNC_ABI_VERSION,
+};
 use runtime_native::test_util::TestRuntimeGuard;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 #[repr(C)]
@@ -176,4 +180,149 @@ fn reentrant_then_handlers_observe_microtask_checkpoint_ordering() {
   // `first` runs, queues a new microtask (id=3). The second handler (id=2) was already queued and
   // must run before the newly-queued handler.
   assert_eq!(&*log.lock().unwrap(), &[1, 2, 3]);
+}
+
+#[repr(C)]
+struct AbiPromise {
+  header: PromiseHeader,
+  payload: u64,
+}
+
+#[test]
+fn promise_fulfill_abi_drains_then_reactions() {
+  let _rt = TestRuntimeGuard::new();
+
+  let promise = Box::new(AbiPromise {
+    header: PromiseHeader {
+      state: AtomicU8::new(123),
+      reactions: AtomicUsize::new(456),
+      flags: AtomicU8::new(7),
+    },
+    payload: 0,
+  });
+  let promise = PromiseRef(Box::into_raw(promise).cast());
+
+  unsafe {
+    runtime_native::rt_promise_init(promise);
+  }
+
+  let fired: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+  extern "C" fn set_fired(data: *mut u8) {
+    let flag = unsafe { &*(data as *const AtomicBool) };
+    flag.store(true, Ordering::SeqCst);
+  }
+
+  runtime_native::rt_promise_then_legacy(promise, set_fired, fired as *const AtomicBool as *mut u8);
+  unsafe {
+    runtime_native::rt_promise_fulfill(promise);
+  }
+
+  while runtime_native::rt_async_poll() {}
+
+  assert!(fired.load(Ordering::SeqCst));
+  let state = unsafe { &*(promise.0 as *const PromiseHeader) }
+    .state
+    .load(Ordering::Acquire);
+  assert_eq!(state, PromiseHeader::FULFILLED);
+}
+
+#[repr(C)]
+struct AbiResultPromise {
+  header: PromiseHeader,
+  payload: u32,
+}
+
+#[repr(C)]
+struct AbiCoroutineFrame {
+  header: Coroutine,
+  state: u32,
+  awaited: *mut PromiseHeader,
+  completed: *const AtomicBool,
+}
+
+unsafe extern "C" fn abi_coro_resume(coro: *mut Coroutine) -> CoroutineStep {
+  let coro = coro as *mut AbiCoroutineFrame;
+  match unsafe { (*coro).state } {
+    0 => {
+      unsafe {
+        (*coro).state = 1;
+      }
+      CoroutineStep::await_(unsafe { (*coro).awaited })
+    }
+    1 => {
+      let completed = unsafe { &*(*coro).completed };
+      completed.store(true, Ordering::SeqCst);
+      unsafe {
+        runtime_native::rt_promise_fulfill(PromiseRef((*coro).header.promise.cast()));
+      }
+      unsafe {
+        (*coro).state = 2;
+      }
+      CoroutineStep::complete()
+    }
+    _ => std::process::abort(),
+  }
+}
+
+unsafe extern "C" fn abi_coro_destroy(coro: *mut Coroutine) {
+  if coro.is_null() {
+    return;
+  }
+  unsafe {
+    drop(Box::from_raw(coro as *mut AbiCoroutineFrame));
+  }
+}
+
+static ABI_CORO_VTABLE: CoroutineVTable = CoroutineVTable {
+  resume: abi_coro_resume,
+  destroy: abi_coro_destroy,
+  promise_size: core::mem::size_of::<AbiResultPromise>() as u32,
+  promise_align: core::mem::align_of::<AbiResultPromise>() as u32,
+  promise_shape_id: runtime_native::RtShapeId::INVALID,
+  abi_version: RT_ASYNC_ABI_VERSION,
+  reserved: [0; 4],
+};
+
+#[test]
+fn async_spawn_abi_resumes_on_awaited_promise_settlement() {
+  let _rt = TestRuntimeGuard::new();
+
+  let awaited = runtime_native::rt_promise_new_legacy();
+  let awaited_header = awaited.0.cast::<PromiseHeader>();
+
+  let completed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+  let then_ran: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+
+  let coro = Box::new(AbiCoroutineFrame {
+    header: Coroutine {
+      vtable: &ABI_CORO_VTABLE,
+      promise: core::ptr::null_mut(),
+      next_waiter: core::ptr::null_mut(),
+      flags: CORO_FLAG_RUNTIME_OWNS_FRAME,
+    },
+    state: 0,
+    awaited: awaited_header,
+    completed,
+  });
+  let coro_ptr = Box::into_raw(coro);
+
+  let result_promise = unsafe { runtime_native::rt_async_spawn(coro_ptr.cast()) };
+  assert!(!completed.load(Ordering::SeqCst));
+
+  extern "C" fn set_then(data: *mut u8) {
+    let flag = unsafe { &*(data as *const AtomicBool) };
+    flag.store(true, Ordering::SeqCst);
+  }
+  runtime_native::rt_promise_then_legacy(result_promise, set_then, then_ran as *const AtomicBool as *mut u8);
+
+  runtime_native::rt_promise_resolve_legacy(awaited, core::ptr::null_mut());
+  while runtime_native::rt_async_poll() {}
+
+  assert!(completed.load(Ordering::SeqCst));
+  assert!(then_ran.load(Ordering::SeqCst));
+
+  let state = unsafe { &*(result_promise.0 as *const PromiseHeader) }
+    .state
+    .load(Ordering::Acquire);
+  assert_eq!(state, PromiseHeader::FULFILLED);
 }
