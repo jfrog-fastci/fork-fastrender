@@ -1,4 +1,5 @@
 use crate::abi::{RT_IO_ERROR, RT_IO_READABLE, RT_IO_WRITABLE};
+use crate::async_rt::gc;
 use crate::async_rt::{Task, TaskDropFn};
 use crate::reactor::{
   Event as ReactorEvent, Interest as ReactorInterest, Reactor as SysReactor, Token as ReactorToken,
@@ -113,6 +114,7 @@ struct IoWatcherShared {
   cb: extern "C" fn(u32, *mut u8),
   data: *mut u8,
   drop: Option<TaskDropFn>,
+  gc_root: Option<gc::Root>,
   active: AtomicBool,
   in_flight: AtomicUsize,
   /// Drop hook state machine:
@@ -187,7 +189,13 @@ extern "C" fn run_io_task(data: *mut u8) {
   let task = unsafe { &*(data as *const IoTask) };
   task.shared.in_flight.fetch_add(1, Ordering::AcqRel);
   if task.shared.active.load(Ordering::Acquire) {
-    crate::ffi::invoke_cb2_u32(task.shared.cb, task.events, task.shared.data);
+    let data = task
+      .shared
+      .gc_root
+      .as_ref()
+      .map(|r| r.ptr())
+      .unwrap_or(task.shared.data);
+    crate::ffi::invoke_cb2_u32(task.shared.cb, task.events, data);
   }
   let prev = task.shared.in_flight.fetch_sub(1, Ordering::AcqRel);
   if prev == 1 {
@@ -279,7 +287,18 @@ impl Reactor {
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
   ) -> io::Result<WatcherId> {
-    self.register_io_with_drop(fd, interests, cb, data, None)
+    self.register_io_with_drop_and_root(fd, interests, cb, data, None, None)
+  }
+
+  pub fn register_io_rooted(
+    &self,
+    fd: RawFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+    gc_root: gc::Root,
+  ) -> io::Result<WatcherId> {
+    self.register_io_with_drop_and_root(fd, interests, cb, data, None, Some(gc_root))
   }
 
   pub fn register_io_with_drop(
@@ -289,6 +308,18 @@ impl Reactor {
     cb: extern "C" fn(u32, *mut u8),
     data: *mut u8,
     drop: Option<TaskDropFn>,
+  ) -> io::Result<WatcherId> {
+    self.register_io_with_drop_and_root(fd, interests, cb, data, drop, None)
+  }
+
+  fn register_io_with_drop_and_root(
+    &self,
+    fd: RawFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+    drop: Option<TaskDropFn>,
+    gc_root: Option<gc::Root>,
   ) -> io::Result<WatcherId> {
     let interest = rt_interests_to_interest(interests);
     if interest.is_empty() {
@@ -315,6 +346,7 @@ impl Reactor {
       cb,
       data,
       drop,
+      gc_root,
       active: AtomicBool::new(true),
       in_flight: AtomicUsize::new(0),
       drop_state: AtomicUsize::new(IoWatcherShared::DROP_NONE),

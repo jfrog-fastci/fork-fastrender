@@ -228,6 +228,17 @@ impl EventLoop {
       .register_io_with_drop(fd, interests, cb, data, Some(drop))
   }
 
+  pub fn register_io_rooted(
+    &self,
+    fd: RawFd,
+    interests: u32,
+    cb: extern "C" fn(u32, *mut u8),
+    data: *mut u8,
+    gc_root: crate::async_rt::gc::Root,
+  ) -> io::Result<WatcherId> {
+    self.reactor.register_io_rooted(fd, interests, cb, data, gc_root)
+  }
+
   pub fn update_io(&self, id: WatcherId, interests: u32) -> bool {
     self.reactor.update_io(id, interests)
   }

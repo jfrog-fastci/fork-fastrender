@@ -868,12 +868,22 @@ bool rt_drain_microtasks(void);
 // clamp) is handled at higher layers.
 TimerId rt_set_timeout(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);
 // Like `rt_set_timeout`, but `data` is a GC-managed object that the runtime will keep alive until
-// the timer fires (or is cleared).
+// the timeout fires (or is cleared).
+//
+// Contract:
+// - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
+// - The runtime registers a strong GC root for `data` until the timeout executes or is cleared.
+// - The callback receives the current relocated pointer.
 TimerId rt_set_timeout_rooted(void (*cb)(uint8_t*), uint8_t* data, uint64_t delay_ms);
 TimerId rt_set_timeout_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t delay_ms);
 TimerId rt_set_interval(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);
 // Like `rt_set_interval`, but `data` is a GC-managed object that the runtime will keep alive until
-// the interval is cleared.
+// the interval is cleared with `rt_clear_timer`.
+//
+// Contract:
+// - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
+// - The runtime registers a strong GC root for `data` until `rt_clear_timer` is called.
+// - Each callback receives the current relocated pointer.
 TimerId rt_set_interval_rooted(void (*cb)(uint8_t*), uint8_t* data, uint64_t interval_ms);
 TimerId rt_set_interval_with_drop(void (*cb)(uint8_t*), uint8_t* data, void (*drop_data)(uint8_t*), uint64_t interval_ms);
 void rt_clear_timer(TimerId id);
@@ -922,10 +932,15 @@ IoWatcherId rt_io_register_handle_with_drop(
 //   until they return `EAGAIN`/`WouldBlock`.
 // - `rt_io_register*` returns 0 on failure.
 IoWatcherId rt_io_register(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
-IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));
 // Like `rt_io_register`, but `data` is a GC-managed object that the runtime will keep alive until
-// the watcher is unregistered.
+// the watcher is unregistered with `rt_io_unregister`.
+//
+// Contract:
+// - `data` must be a pointer to the base of a GC-managed object (start of ObjHeader).
+// - The runtime registers a strong GC root for `data` until `rt_io_unregister` is called.
+// - Each callback receives the current relocated pointer.
 IoWatcherId rt_io_register_rooted(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data);
+IoWatcherId rt_io_register_with_drop(int32_t fd, uint32_t interests, void (*cb)(uint32_t events, uint8_t* data), uint8_t* data, void (*drop_data)(uint8_t* data));
 void rt_io_update(IoWatcherId id, uint32_t interests);
 void rt_io_unregister(IoWatcherId id);
 

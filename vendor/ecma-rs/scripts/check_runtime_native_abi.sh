@@ -140,6 +140,10 @@ required_syms_file="$(mktemp)"
 tmp_files+=("${required_syms_file}")
 derive_required_symbols "${required_syms_file}" -U RUNTIME_NATIVE_GC_STATS -U RUNTIME_NATIVE_GC_DEBUG
 check_missing_exports "default build" "${required_syms_file}" "${nm_syms_file}"
+if ! command -v clang-18 >/dev/null 2>&1; then
+  echo "clang-18 not found in PATH" >&2
+  exit 1
+fi
 
 out_dir="${ECMA_RS_ROOT}/target/runtime-native-abi-check"
 mkdir -p "${out_dir}"

@@ -2070,12 +2070,13 @@ enum WebTimerKind {
   Interval,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct WebTimerState {
   kind: WebTimerKind,
   cb: async_rt::TaskFn,
   data: *mut u8,
   drop_data: Option<async_rt::TaskDropFn>,
+  gc_root: Option<async_rt::gc::Root>,
   interval: Duration,
   internal_id: async_rt::TimerId,
   /// True while the timer's callback is executing.
@@ -2087,10 +2088,12 @@ struct WebTimerState {
   cancelled: bool,
 }
 
-// Safety: `WebTimerState` is stored behind a mutex in a process-global map and contains only opaque
-// pointers + Copy types. The runtime never dereferences `data`; it is passed back to user callbacks
-// on the event-loop thread. Allowing it to cross thread boundaries is therefore safe as far as the
-// runtime is concerned (FFI callers are responsible for ensuring their pointers remain valid).
+// Safety: `WebTimerState` is stored behind a mutex in a process-global map. The runtime never
+// dereferences `data`; it is passed back to user callbacks on the event-loop thread. Allowing it to
+// cross thread boundaries is therefore safe as far as the runtime is concerned (FFI callers are
+// responsible for ensuring their pointers remain valid). When `gc_root` is present, the GC-managed
+// object is kept alive via the global persistent handle table and callbacks are invoked with the
+// current relocated pointer.
 unsafe impl Send for WebTimerState {}
 
 static NEXT_WEB_TIMER_ID: AtomicU64 = AtomicU64::new(1);
@@ -2145,30 +2148,45 @@ fn timer_id_from_ptr(data: *mut u8) -> TimerId {
 extern "C" fn web_timer_fire(data: *mut u8) {
   let id = timer_id_from_ptr(data);
 
-  let (kind, cb, cb_data, interval, drop_data) = {
+  let (kind, cb, data_ptr, gc_root, interval, drop_data) = {
     let mut timers = WEB_TIMERS.lock();
-    let Some(snapshot) = timers.get(&id).copied() else {
+    let Some(snapshot) = timers.get(&id).cloned() else {
       return;
     };
 
     match snapshot.kind {
       WebTimerKind::Timeout => {
         let st = timers.remove(&id).expect("timer entry disappeared");
-        (WebTimerKind::Timeout, st.cb, st.data, Duration::ZERO, st.drop_data)
+        (
+          WebTimerKind::Timeout,
+          st.cb,
+          st.data,
+          st.gc_root,
+          Duration::ZERO,
+          st.drop_data,
+        )
       }
       WebTimerKind::Interval => {
         let st = timers.get_mut(&id).expect("timer entry disappeared");
         st.firing = true;
-        (WebTimerKind::Interval, snapshot.cb, snapshot.data, snapshot.interval, snapshot.drop_data)
+        (
+          WebTimerKind::Interval,
+          snapshot.cb,
+          snapshot.data,
+          snapshot.gc_root,
+          snapshot.interval,
+          snapshot.drop_data,
+        )
       }
     }
   };
 
+  let cb_data = gc_root.as_ref().map(|r| r.ptr()).unwrap_or(data_ptr);
   crate::ffi::invoke_cb1(cb, cb_data);
 
   if kind == WebTimerKind::Timeout {
     if let Some(drop_data) = drop_data {
-      drop_data(cb_data);
+      drop_data(data_ptr);
     }
     return;
   }
@@ -2377,6 +2395,7 @@ pub extern "C" fn rt_set_timeout(cb: extern "C" fn(*mut u8), data: *mut u8, dela
         cb,
         data,
         drop_data: None,
+        gc_root: None,
         interval: Duration::ZERO,
         internal_id,
         firing: false,
@@ -2422,6 +2441,7 @@ pub extern "C" fn rt_set_timeout_rooted(
         cb: rooted_web_timer_cb,
         data: ctx_ptr,
         drop_data: Some(drop_rooted_web_timer_data),
+        gc_root: None,
         interval: Duration::ZERO,
         internal_id,
         firing: false,
@@ -2455,6 +2475,7 @@ pub extern "C" fn rt_set_timeout_with_drop(
         cb,
         data,
         drop_data: Some(drop_data),
+        gc_root: None,
         interval: Duration::ZERO,
         internal_id,
         firing: false,
@@ -2562,6 +2583,7 @@ pub extern "C" fn rt_set_interval(
         cb,
         data,
         drop_data: None,
+        gc_root: None,
         interval,
         internal_id,
         firing: false,
@@ -2607,6 +2629,7 @@ pub extern "C" fn rt_set_interval_rooted(
         cb: rooted_web_timer_cb,
         data: ctx_ptr,
         drop_data: Some(drop_rooted_web_timer_data),
+        gc_root: None,
         interval,
         internal_id,
         firing: false,
@@ -2640,6 +2663,7 @@ pub extern "C" fn rt_set_interval_with_drop(
         cb,
         data,
         drop_data: Some(drop_data),
+        gc_root: None,
         interval,
         internal_id,
         firing: false,
@@ -2731,16 +2755,19 @@ pub extern "C" fn rt_clear_timer(id: TimerId) {
     ensure_event_loop_thread_registered();
     let (st, should_drop) = {
       let mut timers = WEB_TIMERS.lock();
-      let Some(st) = timers.get(&id).copied() else {
+      let Some(st) = timers.get(&id) else {
         return;
       };
-      if st.kind == WebTimerKind::Interval && st.firing {
+      let kind = st.kind;
+      let firing = st.firing;
+      if kind == WebTimerKind::Interval && firing {
         let st = timers.get_mut(&id).expect("timer entry disappeared");
         st.cancelled = true;
         return;
       }
       let st = timers.remove(&id).expect("timer entry disappeared");
-      (st, st.drop_data.map(|f| (f, st.data)))
+      let should_drop = st.drop_data.map(|f| (f, st.data));
+      (st, should_drop)
     };
     let _ = async_rt::global().cancel_timer(st.internal_id);
     if let Some((drop_data, cb_data)) = should_drop {
