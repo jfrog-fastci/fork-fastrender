@@ -224,4 +224,42 @@ mod linux {
 
         Ok(())
     }
+
+    #[test]
+    fn dropping_ioop_handle_still_holds_pins_until_cqe() -> io::Result<()> {
+        let Some(mut driver) = try_driver()? else {
+            return Ok(());
+        };
+
+        let (read_fd, write_fd) = pipe()?;
+
+        let gc = MockGc::new();
+        let handle = gc.alloc_zeroed(8);
+
+        let buf: GcIoBuf<_> = GcIoBuf::from_gc(&gc, handle);
+        let read_op = driver.submit_read(read_fd.0, buf, 0)?;
+        drop(read_op);
+
+        assert_eq!(gc.root_count(handle), 1);
+        assert_eq!(gc.pin_count(handle), 1);
+        assert_eq!(gc.root_drops(handle), 0);
+        assert_eq!(gc.pin_drops(handle), 0);
+
+        unsafe {
+            libc::write(write_fd.0, b"z".as_ptr() as *const _, 1);
+        }
+
+        // Drive CQEs until the read's closure runs, dropping the buffer and therefore the GC
+        // root+pin guards.
+        while gc.root_count(handle) != 0 {
+            driver.wait_for_cqe()?;
+        }
+
+        assert_eq!(gc.root_count(handle), 0);
+        assert_eq!(gc.pin_count(handle), 0);
+        assert_eq!(gc.root_drops(handle), 1);
+        assert_eq!(gc.pin_drops(handle), 1);
+
+        Ok(())
+    }
 }
