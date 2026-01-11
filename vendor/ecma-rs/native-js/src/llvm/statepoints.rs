@@ -31,6 +31,14 @@
 //!
 //! See `vendor/ecma-rs/docs/llvm_statepoints_llvm18.md` for a full description of the required IR
 //! shape.
+//!
+//! ## Important: GC pointer call arguments are roots
+//! LLVM does **not** implicitly treat `ptr addrspace(1)` call arguments to a statepoint as GC
+//! roots for stack map emission. Any GC pointer passed as a call argument must also appear in the
+//! `"gc-live"` operand bundle, or it may be missing from the stack map record.
+//!
+//! This module therefore automatically extends `"gc-live"` with any `ptr addrspace(1)` call
+//! arguments so callers can't accidentally omit them.
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;

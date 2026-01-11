@@ -55,6 +55,7 @@ Notes:
 
 - With opaque pointers, LLVM 18 requires the statepoint **callee operand** to include an `elementtype(...)` annotation (otherwise the IR verifier rejects it).
 - We use the `"gc-live"` **operand bundle** to list pointers that must be reported in the stack map.
+- **Important:** LLVM does not implicitly treat `ptr addrspace(1)` call arguments as GC roots for stack maps. Any GC pointer passed as a call argument must also appear in `"gc-live"` or it may be missing from the emitted stackmap record.
 
 ## GC pointers must use a GC address space
 
