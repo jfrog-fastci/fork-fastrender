@@ -30,12 +30,18 @@ fn container_type_folds_implied_containment_into_computed_style() {
       #size { container-type: size; }
       #inline { container-type: inline-size; }
       #scroll { container-type: scroll-state; }
+      #size_scroll { container-type: size scroll-state; }
+      #inline_scroll { container-type: inline-size scroll-state; }
       #combo { contain: layout; container-type: inline-size; }
+      #normal { container-type: normal; }
     </style>
     <div id="size"></div>
     <div id="inline"></div>
     <div id="scroll"></div>
+    <div id="size_scroll"></div>
+    <div id="inline_scroll"></div>
     <div id="combo"></div>
+    <div id="normal"></div>
   "#;
 
   let styled = styled_tree_for(html);
@@ -57,11 +63,27 @@ fn container_type_folds_implied_containment_into_computed_style() {
   let scroll = find_by_id(&styled, "scroll").expect("scroll element");
   assert_eq!(scroll.styles.containment, fastrender::style::types::Containment::none());
 
+  let size_scroll = find_by_id(&styled, "size_scroll").expect("size_scroll element");
+  assert!(size_scroll.styles.containment.size);
+  assert!(!size_scroll.styles.containment.inline_size);
+  assert!(size_scroll.styles.containment.style);
+  assert!(!size_scroll.styles.containment.layout);
+  assert!(!size_scroll.styles.containment.paint);
+
+  let inline_scroll = find_by_id(&styled, "inline_scroll").expect("inline_scroll element");
+  assert!(!inline_scroll.styles.containment.size);
+  assert!(inline_scroll.styles.containment.inline_size);
+  assert!(inline_scroll.styles.containment.style);
+  assert!(!inline_scroll.styles.containment.layout);
+  assert!(!inline_scroll.styles.containment.paint);
+
   let combo = find_by_id(&styled, "combo").expect("combo element");
   assert!(combo.styles.containment.layout);
   assert!(combo.styles.containment.style);
   assert!(combo.styles.containment.inline_size);
   assert!(!combo.styles.containment.size);
   assert!(!combo.styles.containment.paint);
-}
 
+  let normal = find_by_id(&styled, "normal").expect("normal element");
+  assert_eq!(normal.styles.containment, fastrender::style::types::Containment::none());
+}
