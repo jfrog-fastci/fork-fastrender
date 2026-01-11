@@ -1167,3 +1167,135 @@
   parallelizable: false
   idempotent: false
   deterministic: false
+
+- name: node:fs.mkdtemp
+  kind: function
+  aliases:
+    - fs.mkdtemp
+  since: "v0.1.0"
+  effects:
+    base: [io, async, nondeterministic, may_throw]
+    depends_on_args: [0]
+    io: true
+    nondeterministic: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.mkdtempSync
+  kind: function
+  aliases:
+    - fs.mkdtempSync
+  since: "v0.1.0"
+  effects:
+    base: [io, nondeterministic, may_throw]
+    depends_on_args: [0]
+    io: true
+    nondeterministic: true
+    may_throw: true
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.promises.mkdtemp
+  kind: function
+  aliases:
+    - fs.promises.mkdtemp
+  since: "v10.0.0"
+  effects:
+    base: [io, async, nondeterministic, may_throw]
+    depends_on_args: [0]
+    io: true
+    nondeterministic: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs/promises.mkdtemp
+  kind: function
+  aliases:
+    - fs/promises.mkdtemp
+  since: "v10.0.0"
+  effects:
+    base: [io, async, nondeterministic, may_throw]
+    depends_on_args: [0]
+    io: true
+    nondeterministic: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.cp
+  kind: function
+  aliases:
+    - fs.cp
+  since: "v16.7.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.cpSync
+  kind: function
+  aliases:
+    - fs.cpSync
+  since: "v16.7.0"
+  effects:
+    base: [io, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs.promises.cp
+  kind: function
+  aliases:
+    - fs.promises.cp
+  since: "v16.7.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: node:fs/promises.cp
+  kind: function
+  aliases:
+    - fs/promises.cp
+  since: "v16.7.0"
+  effects:
+    base: [io, async, may_throw]
+    depends_on_args: [0, 1]
+    io: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
