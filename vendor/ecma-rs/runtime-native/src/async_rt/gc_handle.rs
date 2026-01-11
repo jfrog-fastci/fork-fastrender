@@ -3,7 +3,6 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use crate::gc::{HandleId, HandleTable};
-use crate::sync::GcAwareMutex;
 
 /// A copyable, typed handle to an entry in a [`HandleTable`].
 ///
@@ -105,7 +104,7 @@ impl<T> From<AsyncHandle<T>> for u64 {
 /// - On wake/run/cancel/shutdown, call [`OwnedAsyncHandle::discard`] exactly once
 ///   to free the persistent root.
 pub struct OwnedAsyncHandle<'table, T> {
-  table: &'table GcAwareMutex<HandleTable<T>>,
+  table: &'table HandleTable<T>,
   id: HandleId,
   discarded: bool,
 }
@@ -115,8 +114,8 @@ impl<'table, T> OwnedAsyncHandle<'table, T> {
   ///
   /// The handle table stores a stable, relocatable pointer to a GC-managed
   /// object. The pointee is **not** owned by the handle table.
-  pub fn new(table: &'table GcAwareMutex<HandleTable<T>>, ptr: NonNull<T>) -> Self {
-    let id = table.lock().alloc(ptr);
+  pub fn new(table: &'table HandleTable<T>, ptr: NonNull<T>) -> Self {
+    let id = table.alloc(ptr);
     Self {
       table,
       id,
@@ -128,7 +127,7 @@ impl<'table, T> OwnedAsyncHandle<'table, T> {
   ///
   /// # Safety
   /// `ptr` must be non-null and point to a valid GC-managed object.
-  pub unsafe fn new_unchecked(table: &'table GcAwareMutex<HandleTable<T>>, ptr: *mut T) -> Self {
+  pub unsafe fn new_unchecked(table: &'table HandleTable<T>, ptr: *mut T) -> Self {
     debug_assert!(!ptr.is_null(), "OwnedAsyncHandle::new_unchecked: ptr must not be null");
     Self::new(table, NonNull::new_unchecked(ptr))
   }
@@ -158,7 +157,7 @@ impl<'table, T> OwnedAsyncHandle<'table, T> {
     // Ignore failure: a generational handle might have been invalidated already
     // by the runtime (e.g. if ownership was transferred), and discard should be
     // idempotent.
-    let _ = self.table.lock().free(self.id);
+    let _ = self.table.free(self.id);
     self.discarded = true;
   }
 }
@@ -189,7 +188,7 @@ pub struct MustDiscardOwnedAsyncHandle<'table, T> {
 }
 
 impl<'table, T> MustDiscardOwnedAsyncHandle<'table, T> {
-  pub fn new(table: &'table GcAwareMutex<HandleTable<T>>, ptr: NonNull<T>) -> Self {
+  pub fn new(table: &'table HandleTable<T>, ptr: NonNull<T>) -> Self {
     Self {
       inner: OwnedAsyncHandle::new(table, ptr),
       explicitly_discarded: false,

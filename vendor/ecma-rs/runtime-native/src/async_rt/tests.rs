@@ -3,22 +3,21 @@ use core::ptr::NonNull;
 use crate::async_rt::gc_handle::AsyncHandle;
 use crate::async_rt::gc_handle::OwnedAsyncHandle;
 use crate::gc::HandleTable;
-use crate::sync::GcAwareMutex;
 
 #[test]
 fn owning_handle_keeps_value_reachable() {
-  let table: GcAwareMutex<HandleTable<usize>> = GcAwareMutex::new(HandleTable::new());
+  let table: HandleTable<usize> = HandleTable::new();
   let mut value = Box::new(123usize);
   let ptr = NonNull::from(value.as_mut());
   let owned: OwnedAsyncHandle<'_, usize> = OwnedAsyncHandle::new(&table, ptr);
 
   let raw: AsyncHandle<usize> = owned.raw();
-  assert_eq!(table.lock().get(raw.into()).unwrap().as_ptr(), ptr.as_ptr());
+  assert_eq!(table.get(raw.into()).unwrap().as_ptr(), ptr.as_ptr());
 }
 
 #[test]
 fn discard_frees_entry() {
-  let table: GcAwareMutex<HandleTable<usize>> = GcAwareMutex::new(HandleTable::new());
+  let table: HandleTable<usize> = HandleTable::new();
   let mut value = Box::new(123usize);
   let ptr = NonNull::from(value.as_mut());
 
@@ -26,12 +25,12 @@ fn discard_frees_entry() {
   let raw: AsyncHandle<usize> = owned.raw();
   owned.discard();
 
-  assert_eq!(table.lock().get(raw.into()), None);
+  assert_eq!(table.get(raw.into()), None);
 }
 
 #[test]
 fn drop_frees_entry() {
-  let table: GcAwareMutex<HandleTable<usize>> = GcAwareMutex::new(HandleTable::new());
+  let table: HandleTable<usize> = HandleTable::new();
   let mut value = Box::new(123usize);
   let ptr = NonNull::from(value.as_mut());
 
@@ -40,12 +39,12 @@ fn drop_frees_entry() {
     owned.raw()
   };
 
-  assert_eq!(table.lock().get(raw.into()), None);
+  assert_eq!(table.get(raw.into()), None);
 }
 
 #[test]
 fn u64_round_trip() {
-  let table: GcAwareMutex<HandleTable<usize>> = GcAwareMutex::new(HandleTable::new());
+  let table: HandleTable<usize> = HandleTable::new();
   let mut value = Box::new(123usize);
   let ptr = NonNull::from(value.as_mut());
   let owned: OwnedAsyncHandle<'_, usize> = OwnedAsyncHandle::new(&table, ptr);
