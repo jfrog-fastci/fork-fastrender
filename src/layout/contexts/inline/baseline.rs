@@ -202,6 +202,13 @@ pub struct LineBaselineAccumulator {
   /// Strut height (minimum from root inline box)
   pub strut_ascent: f32,
   pub strut_descent: f32,
+
+  /// Whether any inline-level items have contributed to this line.
+  ///
+  /// The CSS2.1 line box algorithm determines line height from the inline-level boxes
+  /// on that line. The "strut" (root inline box metrics) only applies when the line is
+  /// effectively empty (e.g. a line produced by `<br>`).
+  pub has_items: bool,
 }
 
 impl LineBaselineAccumulator {
@@ -215,12 +222,17 @@ impl LineBaselineAccumulator {
     let strut_descent = strut_metrics.descent + half_leading;
 
     Self {
-      max_ascent: strut_ascent,
-      max_descent: strut_descent,
+      // Seed with 0 and only fall back to the strut when the line has no inline-level items.
+      //
+      // This matches browser behavior for lines that contain only replaced elements:
+      // a line with `<img height=10>` should be 10px tall rather than the parent's line-height.
+      max_ascent: 0.0,
+      max_descent: 0.0,
       top_aligned_height: 0.0,
       bottom_aligned_height: 0.0,
       strut_ascent,
       strut_descent,
+      has_items: false,
     }
   }
 
@@ -232,12 +244,13 @@ impl LineBaselineAccumulator {
     let half_leading = (line_height - font_size) / 2.0;
 
     Self {
-      max_ascent: ascent + half_leading,
-      max_descent: descent + half_leading,
+      max_ascent: 0.0,
+      max_descent: 0.0,
       top_aligned_height: 0.0,
       bottom_aligned_height: 0.0,
       strut_ascent: ascent + half_leading,
       strut_descent: descent + half_leading,
+      has_items: false,
     }
   }
 
@@ -250,6 +263,7 @@ impl LineBaselineAccumulator {
     alignment: VerticalAlign,
     parent_metrics: Option<&BaselineMetrics>,
   ) -> f32 {
+    self.has_items = true;
     // The returned shift is a **Y offset from the line baseline**, where positive values move the
     // item *down* (CSS coordinate system: y grows downward). This matches how inline layout later
     // positions fragments:
@@ -279,6 +293,7 @@ impl LineBaselineAccumulator {
   /// These items don't affect the baseline calculation but may extend
   /// the line box height.
   pub fn add_line_relative(&mut self, metrics: &BaselineMetrics, alignment: VerticalAlign) {
+    self.has_items = true;
     match alignment {
       VerticalAlign::Top => {
         self.top_aligned_height = self.top_aligned_height.max(metrics.height);
@@ -363,6 +378,9 @@ impl LineBaselineAccumulator {
 
   /// Computes the final line height
   pub fn line_height(&self) -> f32 {
+    if !self.has_items {
+      return self.strut_ascent + self.strut_descent;
+    }
     let baseline_height = self.max_ascent + self.max_descent;
     let top_bottom_height = self.top_aligned_height.max(self.bottom_aligned_height);
     baseline_height.max(top_bottom_height)
@@ -370,6 +388,9 @@ impl LineBaselineAccumulator {
 
   /// Computes the baseline position from the top of the line box
   pub fn baseline_position(&self) -> f32 {
+    if !self.has_items {
+      return self.strut_ascent;
+    }
     self.max_ascent
   }
 
@@ -784,7 +805,8 @@ mod tests {
     let shift = acc.add_baseline_relative(&item, VerticalAlign::Baseline, None);
 
     assert_eq!(shift, 0.0);
-    // Strut should still dominate: ascent=12+half_lead, descent=4+half_lead
+    // The line box height/baseline is determined by the items on the line; the strut only
+    // applies when the line is otherwise empty.
   }
 
   #[test]

@@ -8193,6 +8193,40 @@ mod tests {
   }
 
   #[test]
+  fn replaced_item_does_not_force_strut_line_height() {
+    // Regression: lines containing only a (small) replaced element should size to the replaced
+    // element's height, not the containing block's strut/line-height. This affects patterns like
+    // `<img height=10 width=0><table ...>` used as spacers.
+    let mut builder = make_builder(200.0);
+
+    let replaced = ReplacedItem::new(
+      1,
+      Size::new(0.0, 10.0),
+      ReplacedType::Image {
+        src: String::new(),
+        alt: None,
+        loading: Default::default(),
+        decoding: ImageDecodingAttribute::Auto,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      Arc::new(ComputedStyle::default()),
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+    );
+    builder.add_item(InlineItem::Replaced(replaced)).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    assert!((lines[0].height - 10.0).abs() < 1e-3, "line height was {}", lines[0].height);
+  }
+
+  #[test]
   fn test_inline_block_item() {
     let mut builder = make_builder(200.0);
 
