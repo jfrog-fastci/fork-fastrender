@@ -11,8 +11,10 @@ Today the repo contains:
 - **Native codegen (in progress)**: `native-js` (strict TS subset → LLVM IR/object code)
 - **Native runtime (in progress)**: `runtime-native` (GC + async runtime ABI for `native-js`)
 - **Emitter/printer**: `emit-js` (AST → text, deterministic formatting)
+- **TypeScript erasure/lowering**: `ts-erase` (shared TS→JS erasure for tooling)
 - **Minifier**: `minify-js` (+ `minify-js-cli`, + `minify-js-nodejs` package)
 - **Optimizer**: `optimize-js` (SSA-based optimizer and decompiler)
+- **VM oracle harness**: `native-oracle-harness` (erase TS fixtures → JS and execute under `vm-js`)
 
 ## Architecture docs (start here)
 
