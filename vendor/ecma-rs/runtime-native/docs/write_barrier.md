@@ -6,7 +6,7 @@ This document specifies the **compiler/runtime ABI contract** for the generation
 - For the authoritative stable C ABI declarations, see `include/runtime_native.h`.
 - This document is the source of truth for the *write barrier itself* (arguments, required ordering, young-range mechanism).
 
-It also records proposed policy defaults for **per-object card tables** intended for large pointer arrays (card size + representation); card tables are not yet wired up in the exported runtime.
+It also specifies the semantics and policy defaults for **per-object card tables** intended for large pointer arrays (card size + representation). The exported barriers mark cards when a per-object card table pointer is installed on an object. The GC prototype installs card tables for large old pointer arrays and can scan/clear dirty cards, but the exported runtime ABI is not yet fully GC-integrated (e.g. `rt_gc_collect` does not yet run a full GC algorithm).
 
 ---
 
@@ -17,13 +17,13 @@ It also records proposed policy defaults for **per-object card tables** intended
 - The exported symbols **`rt_write_barrier`** and **`rt_write_barrier_range`** exist (see `src/exports.rs`).
   - `rt_write_barrier` loads the stored pointer value from `slot` and performs the young-range fast-path checks described in this document.
   - On an old→young store it sets the `REMEMBERED` bit in the object header.
-    - The exported barrier is **`NoGC`** and must not allocate. When the `REMEMBERED` bit
-      transitions 0→1, it records `obj` into a fixed-capacity process-global remembered set without
-      allocating (overflow aborts).
-  - For objects with per-object card tables installed, it marks the relevant card dirty.
-  - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range (when a card table is present) and may over-mark cards (minor GC scanning + sticky rebuild keeps correctness).
-- The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
-- The exported symbol **`rt_gc_collect`** is still a no-op. The GC prototype is not fully wired up to the exported ABI surface yet (e.g. `rt_alloc` / `rt_alloc_pinned` still use the milestone bump allocator; only `rt_alloc_array` is currently GC-allocated).
+    - The exported barrier is **`NoGC`** and must not allocate. When the `REMEMBERED` bit transitions 0→1, it records `obj` into a fixed-capacity process-global remembered set without allocating (overflow aborts).
+  - For objects with per-object card tables installed (`ObjHeader::card_table_ptr()` is non-null), it marks the relevant card dirty.
+  - `rt_write_barrier_range` is a conservative post-bulk-write barrier: it marks all cards covering the written byte range (when a card table is present) and may over-mark cards.
+ - The young-space range used by the barrier is configured via **`rt_gc_set_young_range`** / **`rt_gc_get_young_range`** (see below).
+ - The exported symbol **`rt_gc_collect`** performs a stop-the-world handshake and can enumerate roots (via stackmaps), but does **not** yet run a full GC algorithm (mark/copy/etc).
+   - `rt_alloc` / `rt_alloc_pinned` still use the milestone bump allocator.
+   - `rt_alloc_array` is GC-backed.
 
 ---
 
@@ -174,7 +174,7 @@ Slow path (old object):
 - If the object has a per-object card table, mark **all cards covering** the written range dirty (atomically).
 - Ensure the object is in the remembered set (idempotently via the header `REMEMBERED` flag).
 
-`rt_write_barrier_range` is **conservative**: it does not inspect the values that were written and may over-mark cards. This is correct because minor GC scanning + sticky rebuild filters out cards/objects that contain no young pointers.
+`rt_write_barrier_range` is **conservative**: it does not inspect the values that were written and may over-mark cards. This is correct as long as the minor GC treats card marks as “may contain young” and scans/rebuilds/clears cards as needed.
 
 If an object does not have a card table, `rt_write_barrier_range` falls back to remembering the whole object (idempotently).
 
@@ -221,45 +221,51 @@ Full GC wiring for the exported runtime (`rt_gc_collect` and integration with th
 
 ---
 
-## (Future) Per-object card table semantics (pointer arrays)
+## Per-object card table semantics (pointer arrays)
 
-`runtime-native` implements card marking in the exported write barrier when a per-object card table is installed, but does not yet allocate/install card tables automatically. This section records the intended design and benchmark-driven defaults.
+Per-object card tables are intended for large objects with contiguous pointer storage (arrays, backing stores, etc.) to avoid rescanning the entire buffer on every minor GC. The exported barriers can mark cards when a per-object card table is installed, and the GC prototype can use dirty cards to scan only the relevant pointer-array regions. This section records the intended design and benchmark-driven defaults.
 
-Large arrays whose elements are GC pointers would use per-object **card marking** to avoid rescanning the entire array on every minor GC.
+### Implementation status
 
-* The array’s element storage is subdivided into fixed-size **cards** (implementation-defined).
-* A marked card means: **this card may currently contain one or more young pointers**.
-  * It does **not** mean “this card has been written since the last GC”.
+Card marking in the exported barrier is implemented today:
 
-Planned barrier behavior:
+- `rt_write_barrier` marks the single card that contains `slot` when `ObjHeader::card_table_ptr()` is non-null.
+- `rt_write_barrier_range` conservatively marks **all cards covering** the written byte range (clamped to the object bounds) when a card table pointer is present. It does not inspect the values written and may over-mark.
 
-* On an old→young store into a pointer array, the barrier would mark the corresponding card.
+The GC prototype auto-installs card tables for large old-generation pointer arrays (see `CARD_TABLE_MIN_BYTES`) and the minor collector can consult and clear dirty cards when scanning remembered objects. Card tables are not yet installed for all object kinds, and the exported runtime (`rt_gc_collect`) is still missing end-to-end GC integration.
 
-Planned minor GC behavior:
+### Semantics
 
-* Card marks would be **rebuilt at each minor GC**:
-   * marked cards are scanned
-   * the runtime recomputes which cards still contain young pointers
-   * cards with no remaining young pointers are cleared
+Per-object card marking uses the following semantics:
+
+- The object’s pointer storage is subdivided into fixed-size **cards**.
+- A marked card means: **this card may currently contain one or more young pointers**.
+  - It does **not** mean “this card has been written since the last GC”.
+
+Intended minor GC behavior is to treat card marks as a “may contain young” summary:
+
+- marked cards are scanned
+- the runtime recomputes which cards still contain young pointers
+- cards with no remaining young pointers are cleared
 
 This keeps scanning proportional to the number of old-array regions that actually reference the nursery.
 
-### Proposed policy defaults
+### Policy defaults
 
 #### Card size
 
-**Proposed default:** `CARD_SIZE = 512 B`
+**Default:** `CARD_SIZE = 512 B`
 
 We benchmarked 128 B (Immix line-sized), 512 B (common generational choice), and 1 KiB cards. In the `runtime-native/benches/card_table.rs` microbench, 512 B cards were consistently faster than 128 B for both marking and scanning due to:
 
 - fewer card indices to compute and iterate
 - less card-table metadata to walk per object
 
-1 KiB was sometimes faster still, but it increases over-scanning when writes are sparse (each dirty mark forces scanning a larger region), so 512 B is the proposed default compromise.
+1 KiB was sometimes faster still, but it increases over-scanning when writes are sparse (each dirty mark forces scanning a larger region), so 512 B is the default compromise.
 
 #### Representation
 
-**Proposed default:** **bitset** (1 bit per card)
+**Default:** **bitset** (1 bit per card, stored as `AtomicU64` words)
 
 We benchmarked:
 
@@ -271,7 +277,7 @@ The microbench showed:
 - **Marking:** byte-per-card is cheaper (single store) than bitset (read/OR/write). In the benchmark (1 MiB buffer, 16k random slot marks), bitset was ~1.7× slower.
 - **Scanning / rebuilding:** bitset is significantly faster at low dirty rates because it scans far less metadata and can skip all-zero words quickly. At 1% dirty, bitset was ~6× faster than byte-per-card for 512 B cards.
 
-Minor GC performance is dominated by scanning, and large old objects typically have low dirty rates between minor collections, so the proposed default is bitset.
+Minor GC performance is dominated by scanning, and large old objects typically have low dirty rates between minor collections, so the default is bitset.
 
 ### When to enable per-object card tables
 
