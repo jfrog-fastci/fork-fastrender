@@ -311,7 +311,7 @@ pub extern "C-unwind" fn rt_async_test_panic() {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
   use std::time::{Duration, Instant};
 
   extern "C" {
@@ -922,6 +922,7 @@ mod tests {
   struct ConcurrencyData {
     active: AtomicUsize,
     max_active: AtomicUsize,
+    release: AtomicBool,
   }
 
   extern "C" fn concurrency_probe(data: *mut u8) {
@@ -930,12 +931,10 @@ mod tests {
     let active = data.active.fetch_add(1, Ordering::SeqCst) + 1;
     data.max_active.fetch_max(active, Ordering::SeqCst);
 
-    // Give another worker a generous window to overlap execution.
-    if active == 1 {
-      let start = Instant::now();
-      while data.max_active.load(Ordering::SeqCst) < 2 && start.elapsed() < Duration::from_secs(1) {
-        std::thread::yield_now();
-      }
+    // Keep the task alive until the test releases it so other workers have a chance to overlap.
+    let start = Instant::now();
+    while !data.release.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(2) {
+      std::thread::yield_now();
     }
 
     data.active.fetch_sub(1, Ordering::SeqCst);
@@ -951,34 +950,31 @@ mod tests {
       return;
     }
 
-    // Worker threads are spawned lazily on first use. Under heavy load, a single attempt can race
-    // with thread startup / scheduling and observe no overlap even though the pool is correctly
-    // multi-threaded. Retry a few times before failing to keep this test stable in CI.
-    const ATTEMPTS: usize = 5;
-    let mut max_active = 0usize;
-    for _ in 0..ATTEMPTS {
-      let data = Box::new(ConcurrencyData {
-        active: AtomicUsize::new(0),
-        max_active: AtomicUsize::new(0),
-      });
-      let data_ptr = (&*data as *const ConcurrencyData).cast_mut().cast::<u8>();
+    let data = Box::new(ConcurrencyData {
+      active: AtomicUsize::new(0),
+      max_active: AtomicUsize::new(0),
+      release: AtomicBool::new(false),
+    });
+    let data_ptr = (&*data as *const ConcurrencyData).cast_mut().cast::<u8>();
 
-      let tasks = [
-        rt_parallel_spawn(concurrency_probe, data_ptr),
-        rt_parallel_spawn(concurrency_probe, data_ptr),
-      ];
-      rt_parallel_join(tasks.as_ptr(), tasks.len());
+    let tasks = [
+      rt_parallel_spawn(concurrency_probe, data_ptr),
+      rt_parallel_spawn(concurrency_probe, data_ptr),
+    ];
 
-      max_active = data.max_active.load(Ordering::SeqCst);
-      if max_active >= 2 {
-        return;
-      }
-
+    // Worker threads are spawned lazily on first use. Avoid calling `rt_parallel_join` immediately:
+    // the joiner thread can legitimately execute tasks itself, which makes overlap a race. Give
+    // the worker pool time to start both tasks so we can observe overlap reliably.
+    let start = Instant::now();
+    while data.max_active.load(Ordering::SeqCst) < 2 && start.elapsed() < Duration::from_secs(2) {
       std::thread::yield_now();
     }
+    data.release.store(true, Ordering::SeqCst);
+    rt_parallel_join(tasks.as_ptr(), tasks.len());
 
-    panic!(
-      "expected at least two tasks to overlap after {ATTEMPTS} attempts; worker_count={workers} max_active={max_active}"
+    assert!(
+      data.max_active.load(Ordering::SeqCst) >= 2,
+      "expected at least two tasks to overlap; worker_count={workers}"
     );
   }
 
