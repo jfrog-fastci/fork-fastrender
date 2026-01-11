@@ -1006,6 +1006,15 @@ impl CallbackAnalyzer<'_> {
         // nondeterministic + may_throw.
         self.visit_expr(body, *value);
       }
+      ExprKind::Unary {
+        op: hir_js::UnaryOp::Delete,
+        expr,
+      } => {
+        // `delete` can mutate objects and may throw (e.g. deleting non-configurable properties in
+        // strict mode), so treat it as impure.
+        self.mark_unknown();
+        self.visit_expr(body, *expr);
+      }
       ExprKind::Unary { expr, .. } | ExprKind::Await { expr } | ExprKind::NonNull { expr } => {
         self.visit_expr(body, *expr);
       }
@@ -2222,6 +2231,24 @@ mod tests {
     let cb_expr = first_callback_arg(body_ref, call_expr);
     let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
 
+    assert!(cb.effects.contains(EffectSet::MAY_THROW));
+  }
+
+  #[test]
+  fn callback_delete_is_impure_and_unknown() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(x => delete x.foo);",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert_eq!(cb.purity, Purity::Impure);
+    assert!(cb.effects.contains(EffectSet::UNKNOWN));
     assert!(cb.effects.contains(EffectSet::MAY_THROW));
   }
 
