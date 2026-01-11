@@ -26,6 +26,10 @@ Requirements:
 - `llc-18`
 - `llvm-objcopy-18`
 
+Note: the generator scripts pass `llc-18` fixup flags to avoid register-held GC roots
+(`--fixup-allow-gcptr-in-csr=false` / `--fixup-max-csr-statepoints=0`) so the fixtures match the
+runtime-native stack-walking contract and remain stable across LLVM register allocation changes.
+
 ## `llvm18_stackmaps/` fixtures
 
 `fixtures/llvm18_stackmaps/*.stackmaps.bin` are separate fixtures extracted from a *linked* ELF
