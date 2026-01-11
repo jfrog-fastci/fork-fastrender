@@ -187,6 +187,30 @@ the rationale and how to change it.
 > string-based emitter (`compile_typescript_to_llvm_ir`) does **not** emit GC
 > strategy / stack-walking attributes.
 
+### LLVM GC statepoints (LLVM 18)
+
+The GC integration strategy is based on LLVM **statepoints** and **stack maps**.
+In LLVM 18, manually constructing `llvm.experimental.gc.statepoint.*` is
+error-prone due to intrinsic signature constraints (e.g. `immarg` parameters,
+`elementtype(<fn-ty>)` requirements, and extra trailing `i32` fields).
+
+`native-js` therefore prefers emitting ordinary `call`s in IR and then relying
+on LLVM's `rewrite-statepoints-for-gc` pass to rewrite them into correct
+statepoints, add the `"gc-live"` operand bundle, and insert `gc.relocate` calls.
+
+The helper surface lives under `native_js::llvm`:
+
+- `native_js::llvm::gc`
+  - `gc_ptr_type(&Context) -> ptr addrspace(1)` for GC references
+  - `set_default_gc_strategy(&FunctionValue)` to mark a function `gc "coreclr"`
+- `native_js::llvm::passes`
+  - `rewrite_statepoints_for_gc(&Module, &TargetMachine)` (runs via `llvm-sys`
+    `LLVMRunPasses`, plus `verify<safepoint-ir>` in debug builds)
+
+See `native-js/tests/statepoint_stackmap.rs` for a minimal end-to-end example
+that asserts statepoint/relocate rewriting and that the emitted object contains a
+`.llvm_stackmaps` section.
+
 For the broader runtime ABI + GC/statepoints integration plan, see:
 
 - [`docs/runtime-native.md`](../docs/runtime-native.md)

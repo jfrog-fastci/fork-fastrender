@@ -95,7 +95,6 @@ if check_cmd_optional lld-18 "lld-18"; then
 elif check_cmd_optional lld "lld"; then
   :
 fi
-
 if check_cmd_optional llc-18 "llvm-18"; then
   :
 elif check_cmd_optional llc "llvm"; then
