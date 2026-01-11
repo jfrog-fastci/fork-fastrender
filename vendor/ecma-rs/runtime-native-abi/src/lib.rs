@@ -1012,6 +1012,10 @@ mod tests {
       header.contains("typedef struct PromiseHeader PromiseHeader;") || header.contains("struct PromiseHeader;"),
       "missing PromiseHeader forward declaration"
     );
+    assert!(
+      header.contains("RT_THREAD;"),
+      "missing RT_THREAD TLS symbol declaration"
+    );
 
     // Optional ABI surfaces are guarded in the handwritten C header; keep the generated header
     // consistent so consumers don't accidentally call missing symbols in non-feature builds.

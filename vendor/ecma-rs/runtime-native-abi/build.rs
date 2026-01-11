@@ -188,6 +188,38 @@ fn main() {
     modified = true;
   }
 
+  // cbindgen does not currently emit foreign `extern` statics. The stable C ABI exports `RT_THREAD`
+  // as a TLS pointer to the current thread record; inject its declaration so the generated header
+  // matches `runtime_native.h`.
+  if !header.contains("RT_THREAD;") {
+    if let Some(pos) = header.find("typedef struct Runtime Runtime;") {
+      if let Some(line_end) = header[pos..].find('\n') {
+        let insert_at = pos + line_end + 1;
+        header.insert_str(
+          insert_at,
+          concat!(
+            "\n// TLS pointer to the current thread record (set by `rt_thread_attach`).\n",
+            "//\n",
+            "// Generated code may load this symbol directly to access per-thread state with\n",
+            "// minimal overhead.\n",
+            "#if defined(__cplusplus)\n",
+            "extern thread_local Thread* RT_THREAD;\n",
+            "#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)\n",
+            "extern _Thread_local Thread* RT_THREAD;\n",
+            "#elif defined(__GNUC__) || defined(__clang__)\n",
+            "extern __thread Thread* RT_THREAD;\n",
+            "#else\n",
+            "// No TLS storage specifier available; declare as a normal extern as a best-effort fallback.\n",
+            "// Consumers that rely on per-thread state must compile with TLS support.\n",
+            "extern Thread* RT_THREAD;\n",
+            "#endif\n",
+          ),
+        );
+        modified = true;
+      }
+    }
+  }
+
   // Mirror `runtime_native.h` feature guards for optional GC stats/debug APIs.
   //
   // These entrypoints are only exported when `runtime-native` is built with the corresponding
