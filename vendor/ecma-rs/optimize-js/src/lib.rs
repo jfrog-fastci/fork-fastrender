@@ -93,6 +93,33 @@ const SOURCE_FILE: FileId = FileId(0);
 
 pub type OptimizeResult<T> = Result<T, Vec<Diagnostic>>;
 
+/// Options controlling the CFG/IL pipeline during compilation.
+///
+/// The default behaviour matches the existing `compile_source` pipeline: build
+/// SSA, run optimisation passes, then deconstruct SSA back into a non-SSA CFG.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompileCfgOptions {
+  /// Retain SSA form (including `InstTyp::Phi`) in the resulting CFG.
+  ///
+  /// When this is `false` (default), SSA is always deconstructed before the CFG
+  /// is stored on the returned [`Program`].
+  pub keep_ssa: bool,
+  /// Run optimisation passes after SSA construction.
+  ///
+  /// This is enabled by default. Turning it off can be useful for experimenting
+  /// with downstream backends/analyses on the unoptimised SSA graph.
+  pub run_opt_passes: bool,
+}
+
+impl Default for CompileCfgOptions {
+  fn default() -> Self {
+    Self {
+      keep_ssa: false,
+      run_opt_passes: true,
+    }
+  }
+}
+
 fn parse_source(source: &str, file: FileId, mode: TopLevelMode) -> OptimizeResult<Node<TopLevel>> {
   let source_type = match mode {
     TopLevelMode::Module => SourceType::Module,
@@ -466,9 +493,27 @@ impl DomCache {
 pub(crate) fn build_program_function(
   program: &ProgramCompiler,
   insts: Vec<Inst>,
+  c_label: Counter,
+  c_temp: Counter,
+  params: Vec<u32>,
+) -> ProgramFunction {
+  build_program_function_with_options(
+    program,
+    insts,
+    c_label,
+    c_temp,
+    params,
+    CompileCfgOptions::default(),
+  )
+}
+
+pub(crate) fn build_program_function_with_options(
+  program: &ProgramCompiler,
+  insts: Vec<Inst>,
   mut c_label: Counter,
   mut c_temp: Counter,
   params: Vec<u32>,
+  options: CompileCfgOptions,
 ) -> ProgramFunction {
   let mut dbg = program.debug.then(|| OptimizerDebug::new());
   let mut dbg_checkpoint = |name: &str, cfg: &Cfg| {
@@ -499,35 +544,41 @@ pub(crate) fn build_program_function(
   // - Trivial dead code elimination.
   // Drop defs as it likely will be invalid after even one pass.
   drop(defs);
-  for i in 1.. {
-    stats.record_iteration();
-    let dom = dom_cache.ensure(&cfg, &mut stats);
-    let mut iteration_result = PassResult::default();
+  if options.run_opt_passes {
+    for i in 1.. {
+      stats.record_iteration();
+      let dom = dom_cache.ensure(&cfg, &mut stats);
+      let mut iteration_result = PassResult::default();
 
-    iteration_result.merge(optpass_dvn(&mut cfg, dom));
-    dbg_checkpoint(&format!("opt{}_dvn", i), &cfg);
-    iteration_result.merge(optpass_trivial_dce(&mut cfg));
-    dbg_checkpoint(&format!("opt{}_dce", i), &cfg);
-    // TODO Isn't this really const/copy propagation to child Phi insts?
-    iteration_result.merge(optpass_redundant_assigns(&mut cfg));
-    dbg_checkpoint(&format!("opt{}_redundant_assigns", i), &cfg);
-    let impossible_result = optpass_impossible_branches(&mut cfg);
-    dom_cache.maybe_invalidate(&impossible_result);
-    iteration_result.merge(impossible_result);
-    dbg_checkpoint(&format!("opt{}_impossible_branches", i), &cfg);
-    let cfg_prune_result = optpass_cfg_prune(&mut cfg);
-    dom_cache.maybe_invalidate(&cfg_prune_result);
-    iteration_result.merge(cfg_prune_result);
-    dbg_checkpoint(&format!("opt{}_cfg_prune", i), &cfg);
+      iteration_result.merge(optpass_dvn(&mut cfg, dom));
+      dbg_checkpoint(&format!("opt{}_dvn", i), &cfg);
+      iteration_result.merge(optpass_trivial_dce(&mut cfg));
+      dbg_checkpoint(&format!("opt{}_dce", i), &cfg);
+      // TODO Isn't this really const/copy propagation to child Phi insts?
+      iteration_result.merge(optpass_redundant_assigns(&mut cfg));
+      dbg_checkpoint(&format!("opt{}_redundant_assigns", i), &cfg);
+      let impossible_result = optpass_impossible_branches(&mut cfg);
+      dom_cache.maybe_invalidate(&impossible_result);
+      iteration_result.merge(impossible_result);
+      dbg_checkpoint(&format!("opt{}_impossible_branches", i), &cfg);
+      let cfg_prune_result = optpass_cfg_prune(&mut cfg);
+      dom_cache.maybe_invalidate(&cfg_prune_result);
+      iteration_result.merge(cfg_prune_result);
+      dbg_checkpoint(&format!("opt{}_cfg_prune", i), &cfg);
 
-    if !iteration_result.any_change() {
-      break;
+      if !iteration_result.any_change() {
+        break;
+      }
     }
   }
 
-  // It's safe to calculate liveliness before removing Phi insts; after deconstructing, they always lie exactly between all parent bblocks and the head of the bblock, so their lifetimes are identical.
-  deconstruct_ssa(&mut cfg, &mut c_label);
-  dbg_checkpoint("ssa_deconstruct", &cfg);
+  if !options.keep_ssa {
+    // It's safe to calculate liveliness before removing Phi insts; after deconstructing, they
+    // always lie exactly between all parent bblocks and the head of the bblock, so their
+    // lifetimes are identical.
+    deconstruct_ssa(&mut cfg, &mut c_label);
+    dbg_checkpoint("ssa_deconstruct", &cfg);
+  }
 
   ProgramFunction {
     debug: dbg,
@@ -542,7 +593,12 @@ pub(crate) fn compile_hir_body(
   body: BodyId,
 ) -> OptimizeResult<ProgramFunction> {
   let (insts, c_label, c_temp, params) = crate::il::s2i::stmt::translate_body(program, body)?;
-  Ok(build_program_function(program, insts, c_label, c_temp, params))
+  let options = program.cfg_options;
+  Ok(if options == CompileCfgOptions::default() {
+    build_program_function(program, insts, c_label, c_temp, params)
+  } else {
+    build_program_function_with_options(program, insts, c_label, c_temp, params, options)
+  })
 }
 
 pub type FnId = usize;
@@ -556,6 +612,7 @@ pub struct ProgramCompilerInner {
   pub functions: DashMap<FnId, ProgramFunction>,
   pub next_fn_id: AtomicUsize,
   pub debug: bool,
+  pub cfg_options: CompileCfgOptions,
   pub lower: Arc<LowerResult>,
   pub(crate) bindings: HirSymbolBindings,
   pub names: Arc<NameInterner>,
@@ -616,6 +673,17 @@ pub fn compile_source(source: &str, mode: TopLevelMode, debug: bool) -> Optimize
   Program::compile(top_level_node, mode, debug)
 }
 
+/// Parse, symbolize, and compile source text with explicit CFG pipeline options.
+pub fn compile_source_with_cfg_options(
+  source: &str,
+  mode: TopLevelMode,
+  debug: bool,
+  options: CompileCfgOptions,
+) -> OptimizeResult<Program> {
+  let top_level_node = parse_source(source, SOURCE_FILE, mode)?;
+  Program::compile_with_cfg_options(top_level_node, mode, debug, options)
+}
+
 /// Compile source text with optional `typecheck-ts` type information.
 ///
 /// This helper is only available when the crate is built with the `typed`
@@ -671,12 +739,26 @@ pub fn compile_file_with_typecheck(
       file,
       lowered.as_ref(),
     );
-    Program::compile_with_lower(top_level_node, lowered, mode, debug, types)
+    Program::compile_with_lower(
+      top_level_node,
+      lowered,
+      mode,
+      debug,
+      types,
+      CompileCfgOptions::default(),
+    )
   } else {
     let lower = hir_js::lower_file(file, HirFileKind::Ts, &top_level_node);
     let types =
       crate::types::TypeContext::from_typecheck_program(Arc::clone(&program), file, &lower);
-    Program::compile_with_lower(top_level_node, Arc::new(lower), mode, debug, types)
+    Program::compile_with_lower(
+      top_level_node,
+      Arc::new(lower),
+      mode,
+      debug,
+      types,
+      CompileCfgOptions::default(),
+    )
   }
 }
 
@@ -785,6 +867,7 @@ impl Program {
     top_level_mode: TopLevelMode,
     debug: bool,
     types: crate::types::TypeContext,
+    cfg_options: CompileCfgOptions,
   ) -> OptimizeResult<Self> {
     let source_file = lower.hir.file;
     let (semantics, diagnostics) =
@@ -822,6 +905,7 @@ impl Program {
       functions: DashMap::new(),
       next_fn_id: AtomicUsize::new(0),
       debug,
+      cfg_options,
       lower: Arc::clone(&lower),
       bindings,
       names: Arc::clone(&lower.names),
@@ -879,6 +963,28 @@ impl Program {
       top_level_mode,
       debug,
       Default::default(),
+      CompileCfgOptions::default(),
+    )
+  }
+
+  pub fn compile_with_cfg_options(
+    top_level_node: Node<TopLevel>,
+    top_level_mode: TopLevelMode,
+    debug: bool,
+    cfg_options: CompileCfgOptions,
+  ) -> OptimizeResult<Self> {
+    let lower = Arc::new(hir_js::lower_file(
+      SOURCE_FILE,
+      HirFileKind::Ts,
+      &top_level_node,
+    ));
+    Self::compile_with_lower(
+      top_level_node,
+      lower,
+      top_level_mode,
+      debug,
+      Default::default(),
+      cfg_options,
     )
   }
 
@@ -896,6 +1002,7 @@ impl Program {
       top_level_mode,
       debug,
       Default::default(),
+      CompileCfgOptions::default(),
     )
   }
 }
@@ -961,7 +1068,9 @@ mod tests {
     let err = super::parse_source("export {};", SOURCE_FILE, TopLevelMode::Global)
       .expect_err("export should not be allowed in global scripts");
     assert!(
-      err.iter().any(|diag| diag.message.contains("export not allowed in scripts")),
+      err
+        .iter()
+        .any(|diag| diag.message.contains("export not allowed in scripts")),
       "expected parse diagnostic about export not allowed in scripts, got {err:?}"
     );
 
