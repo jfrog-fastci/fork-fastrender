@@ -169,6 +169,16 @@ fn parse_stackmap_blob(data: &[u8]) -> Result<(StackMapBlob, usize), StackMapPar
     c.read_u64()?;
   }
 
+  // Each record is at least 24 bytes, even with 0 locations and 0 live-outs.
+  // Validate the record count against the remaining bytes to avoid huge
+  // allocations on malformed inputs (e.g. `num_records = u32::MAX` in a short
+  // buffer).
+  const MIN_RECORD_SIZE: usize = 24;
+  let remaining = data.len().saturating_sub(c.offset());
+  if num_records as usize > remaining / MIN_RECORD_SIZE {
+    return Err(StackMapParseError::UnexpectedEof(c.offset()));
+  }
+
   let mut record_ids = Vec::with_capacity(num_records as usize);
   for _ in 0..num_records {
     let record_id = c.read_u64()?;
@@ -796,5 +806,24 @@ mod tests {
     let blobs = parse_stackmap_blobs(&bytes).expect("parse concatenated blobs");
     let ids: Vec<u64> = blobs.iter().flat_map(|b| b.record_ids.iter().copied()).collect();
     assert_eq!(ids, vec![1, 2]);
+  }
+
+  #[test]
+  fn rejects_overlarge_num_records_without_allocating() {
+    // Header claims an absurd number of records but provides no record table. This should error
+    // deterministically without attempting to allocate `record_ids` for `u32::MAX` entries.
+    let mut bytes = Vec::new();
+    push_u8(&mut bytes, 3); // version
+    push_u8(&mut bytes, 0); // reserved0
+    push_u16(&mut bytes, 0); // reserved1
+    push_u32(&mut bytes, 0); // num_functions
+    push_u32(&mut bytes, 0); // num_constants
+    push_u32(&mut bytes, u32::MAX); // num_records
+
+    let err = parse_stackmap_blobs(&bytes).unwrap_err();
+    match err {
+      super::StackMapParseError::UnexpectedEof(off) => assert_eq!(off, 16),
+      other => panic!("expected UnexpectedEof(16), got {other:?}"),
+    }
   }
 }
