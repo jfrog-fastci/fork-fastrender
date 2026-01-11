@@ -321,9 +321,12 @@
   aliases:
     - URLSearchParams.prototype.forEach
   since: "baseline"
-  effects: DependsOnCallback
-  purity: DependsOnCallback
-
+  effects:
+    depends_on_args:
+      base: 0
+      args: [0]
+  purity: Impure
+ 
 - name: URLSearchParams.prototype.toString
   kind: function
   aliases:

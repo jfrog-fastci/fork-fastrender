@@ -573,7 +573,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
 #[cfg(test)]
   mod tests {
   use super::*;
-  use effect_model::{EffectSummary, EffectTemplate, PurityTemplate};
+  use effect_model::{EffectSet, EffectTemplate, PurityTemplate};
   use hir_js::ExprKind;
   use knowledge_base::{ApiDatabase, ApiKind, ApiSemantics};
 
@@ -585,7 +585,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
         kind: ApiKind::Constructor,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSummary::PURE,
+        effect_summary: EffectSet::empty(),
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -603,7 +603,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
         kind: ApiKind::Getter,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSummary::PURE,
+        effect_summary: EffectSet::empty(),
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -621,7 +621,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
         kind: ApiKind::Function,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSummary::PURE,
+        effect_summary: EffectSet::empty(),
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -639,7 +639,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
         kind: ApiKind::Function,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSummary::PURE,
+        effect_summary: EffectSet::empty(),
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,
@@ -657,7 +657,7 @@ fn is_allowed_global_member_root(name: &str) -> bool {
         kind: ApiKind::Function,
         aliases: vec![],
         effects: EffectTemplate::Pure,
-        effect_summary: EffectSummary::PURE,
+        effect_summary: EffectSet::empty(),
         purity: PurityTemplate::Pure,
         async_: None,
         idempotent: None,

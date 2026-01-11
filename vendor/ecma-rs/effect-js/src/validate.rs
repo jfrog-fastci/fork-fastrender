@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use effect_model::{EffectFlags, EffectSummary, EffectTemplate, PurityTemplate};
+use effect_model::{EffectFlags, EffectSet, EffectTemplate, PurityTemplate};
 use knowledge_base::{ApiDatabase, ApiSemantics};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +18,7 @@ pub enum ValidationError {
   },
   InvalidDependsOnArgsIndex {
     api: String,
-    index: i64,
+    index: usize,
   },
   EmptyDependsOnArgs {
     api: String,
@@ -26,7 +26,7 @@ pub enum ValidationError {
   InconsistentPurityEffects {
     api: String,
     purity: PurityTemplate,
-    effects: EffectSummary,
+    effects: EffectSet,
   },
   PropertyGetHasArgs {
     api: String,
@@ -77,26 +77,6 @@ fn semantics_match(a: &ApiSemantics, b: &ApiSemantics) -> bool {
     && a.properties == b.properties
 }
 
-fn parse_int_list(raw: &str) -> Result<Vec<i64>, ()> {
-  let raw = raw.trim();
-  if raw.is_empty() {
-    return Ok(Vec::new());
-  }
-
-  let raw = raw.trim_matches(|ch| matches!(ch, '[' | ']' | '(' | ')' | '{' | '}'));
-  let mut out = Vec::new();
-
-  for token in raw.split(|ch: char| ch == ',' || ch.is_whitespace()) {
-    let token = token.trim();
-    if token.is_empty() {
-      continue;
-    }
-    out.push(token.parse::<i64>().map_err(|_| ())?);
-  }
-
-  Ok(out)
-}
-
 fn validate_encoding_enum(
   api: &ApiSemantics,
   field: &str,
@@ -116,7 +96,7 @@ fn validate_encoding_enum(
 }
 
 pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
-  const MAX_DEPENDS_ON_ARG_INDEX: i64 = 10_000;
+  const MAX_DEPENDS_ON_ARG_INDEX: usize = 10_000;
 
   let mut errors = Vec::new();
 
@@ -212,70 +192,34 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
       }
     }
 
-    // Validate callback-dependence metadata when present.
-    if matches!(api.effects, EffectTemplate::DependsOnCallback)
-      || matches!(api.purity, PurityTemplate::DependsOnCallback)
-    {
-      if let Some(raw) = api.properties.get("depends_on_args") {
-        let depends = {
-          let from_array = raw.as_array().map(|arr| {
-            let mut out = Vec::new();
-            for item in arr {
-              if let Some(n) = item.as_i64() {
-                out.push(n);
-              } else if let Some(s) = item.as_str() {
-                out.extend(parse_int_list(s)?);
-              } else {
-                return Err(());
-              }
-            }
-            Ok(out)
-          });
-          if let Some(from_array) = from_array {
-            from_array
-          } else if let Some(n) = raw.as_i64() {
-            Ok(vec![n])
-          } else if let Some(s) = raw.as_str() {
-            parse_int_list(s)
-          } else {
-            Err(())
-          }
-        };
-
-        let depends = match depends {
-          Ok(list) => list,
-          Err(_) => {
-            errors.push(ValidationError::UnknownEnumString {
-              api: api.name.clone(),
-              field: "depends_on_args".to_string(),
-              value: raw.to_string(),
-            });
-            Vec::new()
-          }
-        };
-
-        if depends.is_empty() {
-          errors.push(ValidationError::EmptyDependsOnArgs {
+    // Validate callback-dependent templates (encoded as `depends_on_args`).
+    let mut validate_depends = |args: &[usize]| {
+      if args.is_empty() {
+        errors.push(ValidationError::EmptyDependsOnArgs {
+          api: api.name.clone(),
+        });
+      }
+      for &index in args {
+        if index > MAX_DEPENDS_ON_ARG_INDEX {
+          errors.push(ValidationError::InvalidDependsOnArgsIndex {
             api: api.name.clone(),
+            index,
           });
-        }
-
-        for index in depends {
-          if index < 0 || index > MAX_DEPENDS_ON_ARG_INDEX {
-            errors.push(ValidationError::InvalidDependsOnArgsIndex {
-              api: api.name.clone(),
-              index,
-            });
-          }
         }
       }
+    };
+
+    if let EffectTemplate::DependsOnArgs { args, .. } = &api.effects {
+      validate_depends(args);
+    }
+    if let PurityTemplate::DependsOnArgs { args, .. } = &api.purity {
+      validate_depends(args);
     }
 
     // Catch obvious semantic contradictions.
     if matches!(api.purity, PurityTemplate::Pure) {
       if api
         .effect_summary
-        .flags
         .intersects(EffectFlags::IO | EffectFlags::NETWORK)
       {
         errors.push(ValidationError::InconsistentPurityEffects {
@@ -297,10 +241,20 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
 #[cfg(test)]
   mod tests {
   use super::*;
-  use effect_model::{EffectFlags, EffectSummary, ThrowBehavior};
+  use effect_model::{EffectSet, Purity};
   use knowledge_base::ApiKind;
   use serde_json::Value as JsonValue;
   use std::collections::BTreeMap;
+
+  fn effect_template_to_summary(template: &EffectTemplate) -> EffectSet {
+    match template {
+      EffectTemplate::Pure => EffectSet::empty(),
+      EffectTemplate::Io => EffectSet::IO | EffectSet::MAY_THROW,
+      EffectTemplate::Custom(base) => *base,
+      EffectTemplate::DependsOnArgs { base, .. } => *base,
+      EffectTemplate::Unknown => EffectSet::UNKNOWN | EffectSet::MAY_THROW,
+    }
+  }
 
   fn api(
     name: &str,
@@ -308,7 +262,7 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
     purity: PurityTemplate,
     properties: &[(&str, JsonValue)],
   ) -> ApiSemantics {
-    let effect_summary = crate::effect_template_to_summary(&effects);
+    let effect_summary = effect_template_to_summary(&effects);
     ApiSemantics {
       id: knowledge_base::ApiId::from_name(name),
       name: name.to_string(),
@@ -352,10 +306,7 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
   fn validates_encoding_output_enum() {
     let db = ApiDatabase::from_entries([api(
       "String.prototype.slice",
-      EffectTemplate::Custom(EffectSummary {
-        flags: EffectFlags::ALLOCATES,
-        throws: ThrowBehavior::Never,
-      }),
+      EffectTemplate::Custom(EffectSet::ALLOCATES),
       PurityTemplate::Pure,
       &[("encoding.output", JsonValue::String("bogus".to_string()))],
     )]);
@@ -371,16 +322,18 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
   fn validates_depends_on_args_indices() {
     let db = ApiDatabase::from_entries([api(
       "Array.prototype.map",
-      EffectTemplate::DependsOnCallback,
-      PurityTemplate::DependsOnCallback,
-      &[("depends_on_args", JsonValue::Array(vec![JsonValue::from(-1), JsonValue::from(10001)]))],
+      EffectTemplate::DependsOnArgs {
+        base: EffectSet::empty(),
+        args: vec![10001],
+      },
+      PurityTemplate::DependsOnArgs {
+        base: Purity::Pure,
+        args: vec![10001],
+      },
+      &[],
     )]);
 
     let errs = validate(&db).unwrap_err();
-    assert!(errs.iter().any(|e| matches!(
-      e,
-      ValidationError::InvalidDependsOnArgsIndex { index: -1, .. }
-    )));
     assert!(errs.iter().any(|e| matches!(
       e,
       ValidationError::InvalidDependsOnArgsIndex { index: 10001, .. }
@@ -391,9 +344,15 @@ pub fn validate(db: &ApiDatabase) -> Result<(), Vec<ValidationError>> {
   fn validates_depends_on_args_empty_list() {
     let db = ApiDatabase::from_entries([api(
       "Array.prototype.map",
-      EffectTemplate::DependsOnCallback,
-      PurityTemplate::DependsOnCallback,
-      &[("depends_on_args", JsonValue::Array(Vec::new()))],
+      EffectTemplate::DependsOnArgs {
+        base: EffectSet::empty(),
+        args: Vec::new(),
+      },
+      PurityTemplate::DependsOnArgs {
+        base: Purity::Pure,
+        args: Vec::new(),
+      },
+      &[],
     )]);
 
     let errs = validate(&db).unwrap_err();
