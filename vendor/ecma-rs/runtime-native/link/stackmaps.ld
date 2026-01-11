@@ -24,15 +24,16 @@
  *
  * Placement:
  * - This output section is writable (to allow dynamic relocations under PIE/DSO).
- *   Inserting it immediately after `.text` is unsafe: some linkers may merge it
- *   into the executable text PT_LOAD, forcing that segment to become RWX.
- * - We anchor the fragment at `INSERT AFTER .text;` for lld. `.text` always
- *   exists, while `.rodata` and `.data` may be absent in minimal binaries and
- *   cause lld to error if used as an `INSERT` anchor.
+ * - We anchor the fragment at `INSERT AFTER .text;` because `.text` is always
+ *   present (while `.rodata`/`.data` can be absent in minimal links and cause
+ *   lld/ld errors when used as `INSERT` anchors).
  *
- * GNU ld needs a different fragment in the PIE configuration to avoid placing
- * `.data.rel.ro.llvm_stackmaps` into the text PT_LOAD (which would become RWX
- * during relocation). See `stackmaps_gnuld.ld`.
+ *   Inserting a writable stackmaps section immediately after `.text` can be unsafe
+ *   with GNU ld under PIE: the linker may merge it into the executable text
+ *   PT_LOAD, producing an RWX segment once relocations require the segment to be
+ *   writable. When using lld, the flags change forces a new PT_LOAD segment, so
+ *   this anchor is safe. For GNU ld + PIE, use the repo's `stackmaps_gnuld.ld`
+ *   fragment anchored in the RELRO/data region.
  *
  * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
  * small section definition without replacing the entire default linker script.

@@ -14,7 +14,7 @@ fn clang_available() -> bool {
 }
 
 #[test]
-fn entrypoint_number_prints_result() {
+fn entrypoint_number_returns_exit_code() {
   if !cfg!(target_os = "linux") {
     eprintln!("skipping native-js entrypoint test: executable emission is linux-only");
     return;
@@ -43,12 +43,12 @@ fn entrypoint_number_prints_result() {
   assert_eq!(artifact.path, exe);
 
   let out = Command::new(&artifact.path).output().unwrap();
-  assert!(out.status.success());
-  assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
+  assert_eq!(out.status.code(), Some(42));
+  assert!(out.stdout.is_empty());
 }
 
 #[test]
-fn entrypoint_boolean_prints_result() {
+fn entrypoint_boolean_returns_exit_code() {
   if !cfg!(target_os = "linux") {
     eprintln!("skipping native-js entrypoint test: executable emission is linux-only");
     return;
@@ -77,12 +77,12 @@ fn entrypoint_boolean_prints_result() {
   assert_eq!(artifact.path, exe);
 
   let out = Command::new(&artifact.path).output().unwrap();
-  assert!(out.status.success());
-  assert_eq!(String::from_utf8_lossy(&out.stdout), "true\n");
+  assert_eq!(out.status.code(), Some(1));
+  assert!(out.stdout.is_empty());
 }
 
 #[test]
-fn entrypoint_void_prints_undefined() {
+fn entrypoint_void_returns_exit_code() {
   if !cfg!(target_os = "linux") {
     eprintln!("skipping native-js entrypoint test: executable emission is linux-only");
     return;
@@ -111,8 +111,8 @@ fn entrypoint_void_prints_undefined() {
   assert_eq!(artifact.path, exe);
 
   let out = Command::new(&artifact.path).output().unwrap();
-  assert!(out.status.success());
-  assert_eq!(String::from_utf8_lossy(&out.stdout), "undefined\n");
+  assert_eq!(out.status.code(), Some(0));
+  assert!(out.stdout.is_empty());
 }
 
 #[test]

@@ -4,13 +4,11 @@
  *
  * Why a separate fragment?
  * - Prefer `runtime-native/link/stackmaps.ld`: it anchors at `INSERT AFTER .text;`
- *   for lld. lld keeps the writable stackmaps output section in the data PT_LOAD
- *   (avoiding RWX) and preserves stackmaps under `--gc-sections`.
- * - This file is a GNU ld-specific alternative that anchors at `INSERT BEFORE .dynamic;`
- *   to force the stackmaps output section into the RELRO/data region in
- *   dynamically-linked binaries. This avoids GNU ld merging the injected
- *   writable section into the text PT_LOAD in PIE mode (which would become RWX
- *   during relocation).
+ *   for lld. lld keeps writable stackmaps out of the text PT_LOAD (avoiding RWX)
+ *   and works even when `.rodata`/`.data` are absent in minimal links.
+ * - GNU ld can merge writable stackmaps into the text PT_LOAD under PIE, producing
+ *   RWX once relocations require the segment to be writable. This fragment anchors
+ *   at `INSERT BEFORE .dynamic;` to keep writable stackmaps in the RELRO/data region.
  *
  * Note: `.dynamic` must exist for this fragment to be usable. This is true for
  * the dynamically-linked PIE/non-PIE binaries produced by our toolchain.

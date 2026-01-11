@@ -2095,9 +2095,18 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
 }
 
 fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<FileId> {
+  // Keep module dependencies in the same order as the source-level module
+  // requests (`import ...` and `export ... from ...` statements). This matches JS
+  // module evaluation semantics and provides deterministic initialization order
+  // for sibling dependencies.
   let from = lowered.hir.file;
-  let mut module_requests: Vec<(u32, String)> = Vec::new();
+  #[derive(Clone, Copy)]
+  struct ModuleRequest<'a> {
+    span: TextRange,
+    specifier: &'a str,
+  }
 
+  let mut module_requests: Vec<ModuleRequest<'_>> = Vec::new();
   for import in &lowered.hir.imports {
     let ImportKind::Es(es) = &import.kind else {
       continue;
@@ -2117,7 +2126,10 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
     if !has_value_bindings && !is_side_effect_import {
       continue;
     }
-    module_requests.push((import.span.start, es.specifier.value.clone()));
+    module_requests.push(ModuleRequest {
+      span: import.span,
+      specifier: es.specifier.value.as_str(),
+    });
   }
 
   // Re-exports like `export { x } from "./dep"` or `export * from "./dep"` also
@@ -2136,24 +2148,30 @@ fn file_import_deps(program: &Program, lowered: &hir_js::LowerResult) -> Vec<Fil
         if !has_value_specifiers && !is_side_effect_export {
           continue;
         }
-        module_requests.push((export.span.start, source.value.clone()));
+        module_requests.push(ModuleRequest {
+          span: export.span,
+          specifier: source.value.as_str(),
+        });
       }
       hir_js::ExportKind::ExportAll(all) => {
         if all.is_type_only {
           continue;
         }
-        module_requests.push((export.span.start, all.source.value.clone()));
+        module_requests.push(ModuleRequest {
+          span: export.span,
+          specifier: all.source.value.as_str(),
+        });
       }
       _ => {}
     }
   }
 
-  module_requests.sort_by_key(|(start, _)| *start);
+  module_requests.sort_by_key(|req| (req.span.start, req.span.end));
 
   let mut deps = Vec::new();
   let mut seen = HashSet::<FileId>::new();
-  for (_, specifier) in module_requests {
-    let Some(dep) = program.resolve_module(from, specifier.as_str()) else {
+  for req in module_requests {
+    let Some(dep) = program.resolve_module(from, req.specifier) else {
       continue;
     };
     if seen.insert(dep) {

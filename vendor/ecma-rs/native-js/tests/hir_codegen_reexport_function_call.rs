@@ -19,7 +19,7 @@ fn find_clang() -> Option<&'static str> {
 }
 
 #[test]
-fn hir_codegen_supports_calls_to_imported_functions() {
+fn hir_codegen_supports_calls_to_reexported_functions() {
   let Some(clang) = find_clang() else {
     eprintln!("skipping: clang not found");
     return;
@@ -27,41 +27,49 @@ fn hir_codegen_supports_calls_to_imported_functions() {
 
   let a_key = FileKey::new("a.ts");
   let b_key = FileKey::new("b.ts");
+  let main_key = FileKey::new("main.ts");
 
   let a_src = r#"
-export function addOne(x: number): number {
-  return x + 1;
+export function foo(): number {
+  return 7;
 }
 "#;
 
   let b_src = r#"
-import { addOne } from "./a.ts";
+export { foo } from "./a.ts";
+"#;
+
+  let main_src = r#"
+import { foo } from "./b.ts";
 
 export function main(): number {
-  return addOne(2);
+  return foo();
 }
 "#;
 
   let mut host = MemoryHost::new();
   host.insert(a_key.clone(), a_src);
   host.insert(b_key.clone(), b_src);
+  host.insert(main_key.clone(), main_src);
   host.link(b_key.clone(), "./a.ts", a_key.clone());
+  host.link(main_key.clone(), "./b.ts", b_key.clone());
 
-  let program = Program::new(host, vec![b_key.clone()]);
+  let program = Program::new(host, vec![main_key.clone()]);
   let diags = program.check();
   assert!(diags.is_empty(), "{diags:#?}");
 
   let file_a = program.file_id(&a_key).expect("file a id");
   let file_b = program.file_id(&b_key).expect("file b id");
-  let strict_diags = strict::validate(&program, &[file_a, file_b]);
+  let file_main = program.file_id(&main_key).expect("file main id");
+  let strict_diags = strict::validate(&program, &[file_a, file_b, file_main]);
   assert!(strict_diags.is_empty(), "{strict_diags:#?}");
-  let entrypoint = strict::entrypoint(&program, file_b).expect("valid entrypoint");
+  let entrypoint = strict::entrypoint(&program, file_main).expect("valid entrypoint");
 
   let context = Context::create();
   let module = codegen::codegen(
     &context,
     &program,
-    file_b,
+    file_main,
     entrypoint,
     codegen::CodegenOptions::default(),
   )
@@ -85,6 +93,6 @@ export function main(): number {
   assert!(status.success(), "clang failed with {status}");
 
   let out = Command::new(&exe_path).output().expect("run exe");
-  assert_eq!(out.status.code(), Some(3));
+  assert_eq!(out.status.code(), Some(7));
   assert!(out.stdout.is_empty());
 }

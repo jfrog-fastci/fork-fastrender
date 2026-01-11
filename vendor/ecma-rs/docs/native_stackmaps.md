@@ -40,12 +40,12 @@ that uses `KEEP(*(.llvm_stackmaps ...))`:
 ```
 
 This works with both **GNU ld** and **lld**. The default fragment anchors at
-`INSERT BEFORE .data;` to keep the writable stackmaps output section out of the
-executable text PT_LOAD (avoiding RWX) and inside the RELRO/data region.
+`INSERT AFTER .text;` because `.text` is always present (while `.rodata`/`.data`
+can be absent in minimal links and cause `INSERT` failures).
 It also defines stable boundary symbols for runtime discovery (see below).
 
 > Note: `runtime-native/link/stackmaps.ld` is injected via the GNU ld/LLD linker-script
-> `INSERT` mechanism (anchored at `INSERT BEFORE .data;`). If you use a linker that
+> `INSERT` mechanism (anchored at `INSERT AFTER .text;`). If you use a linker that
 > doesn't support `INSERT` (some
 > alternative linkers do not), switch to GNU ld or lld (e.g. `clang-18 -fuse-ld=lld-18`),
 > or avoid `--gc-sections`.
@@ -106,8 +106,9 @@ Naively linking a PIE with GNU ld can succeed but emit `DT_TEXTREL` warnings if
 Another hardening pitfall: if stackmaps are made writable for PIE relocation and a linker script
 inserts the output section immediately after `.text` (common `INSERT AFTER .text` fragments), some
 linkers (notably GNU ld) can merge that writable stackmaps section into the `.text` LOAD segment,
-producing an **RWX** segment. The repo's `runtime-native/link/stackmaps.ld` avoids this by anchoring
-the stackmaps output section at `INSERT BEFORE .data;`.
+producing an **RWX** segment. For GNU ld + PIE, use the repo's
+`runtime-native/link/stackmaps_gnuld.ld` fragment (anchored at `INSERT BEFORE .dynamic;`) to keep
+writable stackmaps in the RELRO/data region.
 
 To support PIE safely (without `DT_TEXTREL`), the stackmap section must be **writable during
 relocation**.
