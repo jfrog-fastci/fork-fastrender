@@ -11,11 +11,12 @@
 pub mod abi;
 pub mod gc;
 pub mod threading;
+pub mod async_rt;
 
 mod alloc;
-mod async_rt;
 mod exports;
 mod interner;
+mod platform;
 mod string;
 mod trap;
 
