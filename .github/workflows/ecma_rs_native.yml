@@ -134,6 +134,12 @@ jobs:
           FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
         run: bash scripts/cargo_agent.sh test -p typecheck-ts
 
+      - name: typecheck-ts-harness (strict-native fixtures)
+        working-directory: vendor/ecma-rs
+        env:
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: bash scripts/cargo_agent.sh test -p typecheck-ts-harness --test strict_native
+
       - name: emit-js (TS erasure groundwork)
         working-directory: vendor/ecma-rs
         env:
