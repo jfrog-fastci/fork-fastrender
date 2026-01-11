@@ -2,7 +2,7 @@
 
 use core::arch::global_asm;
 
-// Define a tiny but valid StackMap v3 blob (0 functions / 0 records).
+// Define a tiny but valid StackMap v3 blob (0 functions / 1 constant / 0 records).
 //
 // Note: runtime-native's build script injects `link/stackmaps.ld` for *tests*, which:
 // - keeps `.llvm_stackmaps` under `--gc-sections`, and
@@ -19,18 +19,13 @@ global_asm!(
   .byte 0
   .short 0
   .long 0
+  .long 1
   .long 0
-  .long 0
+  .quad 0x0123456789abcdef
 "#
 );
 
-const FIXTURE: &[u8] = &[
-  3, 0, // Version, Reserved0
-  0, 0, // Reserved1
-  0, 0, 0, 0, // NumFunctions
-  0, 0, 0, 0, // NumConstants
-  0, 0, 0, 0, // NumRecords
-];
+const MAGIC_CONST: u64 = 0x0123_4567_89ab_cdef;
 
 #[test]
 fn stackmaps_discovered_via_exported_symbols() {
@@ -44,15 +39,14 @@ fn stackmaps_discovered_via_exported_symbols() {
   // that, so check the first non-zero byte is the stackmap version.
   let version = bytes.iter().copied().find(|&b| b != 0).unwrap_or(0);
   assert_eq!(version, runtime_native::stackmaps::STACKMAP_VERSION);
-  // `runtime-native`'s test build links an additional `.llvm_stackmaps` object (see `build.rs`) so
-  // the symbol range may contain multiple concatenated StackMap v3 blobs.
-  //
-  // Assert that our tiny fixture is present somewhere in that byte range (and therefore that the
-  // exported start/end symbols really delimit the `.llvm_stackmaps` output section).
-  assert!(!bytes.is_empty(), "expected non-empty stackmaps symbol range");
+
+  // The output section may contain multiple concatenated StackMap v3 blobs. Assert that our
+  // injected blob is present somewhere in that byte range (and therefore that the exported
+  // start/end symbols really delimit the `.llvm_stackmaps` output section).
+  let needle = MAGIC_CONST.to_le_bytes();
   assert!(
-    bytes.windows(FIXTURE.len()).any(|w| w == FIXTURE),
-    "expected .llvm_stackmaps bytes to contain the test fixture (len={})",
+    bytes.windows(needle.len()).any(|w| w == needle),
+    "expected .llvm_stackmaps bytes to contain the injected stackmap blob (len={})",
     bytes.len()
   );
 
@@ -64,4 +58,12 @@ fn stackmaps_discovered_via_exported_symbols() {
 
   let sm = runtime_native::stackmaps_symbols::stackmaps_from_exe().expect("parse stackmaps");
   assert_eq!(sm.raw().version, runtime_native::stackmaps::STACKMAP_VERSION);
+  assert!(
+    sm.raws().iter().any(|raw| {
+      raw.functions.is_empty()
+        && raw.records.is_empty()
+        && raw.constants.as_slice() == &[MAGIC_CONST]
+    }),
+    "expected parsed stackmaps to include the injected blob"
+  );
 }
