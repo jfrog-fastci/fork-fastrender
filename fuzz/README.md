@@ -27,6 +27,9 @@ cargo install cargo-fuzz
 - `render_pipeline`: Runs the full HTML+CSS → pixels pipeline (DOM parse →
   cascade → box tree → layout → paint) under strict timeouts with network
   fetching disabled.
+- `accessibility_tree`: Generates an accessibility tree for HTML (DOM parse →
+  cascade → ARIA/name/state traversal) under strict timeouts with network
+  fetching disabled.
 - `html_scanners`: Feeds random HTML into lightweight string-based scanners
   (template stripping, client redirect inference, and HTML asset discovery).
 - `image_decoding`: Feeds arbitrary bytes into the image probing + decode
@@ -40,6 +43,7 @@ Quick smoke runs:
 cargo fuzz run css_parser -- -runs=1000
 cargo fuzz run selectors tests/fuzz_corpus -- -max_total_time=10
 cargo fuzz run render_pipeline tests/fuzz_corpus -- -runs=1000
+cargo fuzz run accessibility_tree tests/fuzz_corpus -- -runs=1000
 cargo fuzz run html_scanners -- -runs=1000
 cargo fuzz run image_decoding -- -runs=1000
 ```

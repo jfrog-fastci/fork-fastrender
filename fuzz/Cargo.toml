@@ -87,3 +87,10 @@ path = "fuzz_targets/image_decoding.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "accessibility_tree"
+path = "fuzz_targets/accessibility_tree.rs"
+test = false
+doc = false
+bench = false

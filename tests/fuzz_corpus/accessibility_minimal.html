@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Accessibility seed corpus</title>
+  </head>
+  <body>
+    <h1 id="title">Hello</h1>
+
+    <div id="label1">Name</div>
+    <span id="label2">(required)</span>
+    <div id="desc1">Enter your name.</div>
+    <label id="label-for" for="input1">Form Label</label>
+    <input
+      id="input1"
+      type="text"
+      aria-labelledby="label1 label2 label-for"
+      aria-describedby="desc1"
+    />
+
+    <div id="owns-src" role="group" aria-owns="owned1 owned2">Owner</div>
+    <div id="owned1" role="button" tabindex="0" aria-label="Owned button">Owned 1</div>
+    <div id="owned2" role="link" tabindex="0" aria-labelledby="title">Owned 2</div>
+
+    <div id="cycle-a" aria-labelledby="cycle-b">A</div>
+    <div id="cycle-b" aria-labelledby="cycle-a">B</div>
+
+    <div id="host">
+      <template shadowrootmode="open">
+        <div id="shadow-title">Shadow Title</div>
+        <label id="shadow-label" for="shadow-input">Shadow Label</label>
+        <input id="shadow-input" aria-labelledby="shadow-title shadow-label" />
+        <slot name="slot1"></slot>
+        <button id="shadow-btn" aria-describedby="shadow-desc">Shadow Button</button>
+        <div id="shadow-desc">Shadow description</div>
+      </template>
+      <span slot="slot1" id="slotted">Slotted text</span>
+    </div>
+
+    <button id="btn" aria-labelledby="title slotted" aria-pressed="false">OK</button>
+  </body>
+</html>
+
