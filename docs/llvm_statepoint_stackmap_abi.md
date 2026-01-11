@@ -69,7 +69,7 @@ In our pipeline we use a dedicated GC address space; the fixture demonstrates th
 
 ## StackMap record key: return address (next instruction)
 
-Empirically on LLVM 18.1.3, each `gc.statepoint` produces a stackmap record keyed by the **return address**:
+Empirically on LLVM 18.1.x (tested on Ubuntu LLVM 18.1.8), each `gc.statepoint` produces a stackmap record keyed by the **return address**:
 
 - `llvm-readobj --stackmap` reports an `instruction offset`
 - that offset corresponds to the **next instruction** (i.e. the address the CPU would return to)
@@ -103,11 +103,11 @@ the value must match the IR `flags` immarg either way.
 
 - `patch_bytes = 0`: LLVM emits a normal call instruction.
 - `patch_bytes > 0`: LLVM reserves a patchable region at the statepoint site.
-  On x86_64 (LLVM 18.1.3), this becomes a NOP sled and shifts the stackmap instruction offset forward accordingly.
+  On x86_64 (LLVM 18.1.x), this becomes a NOP sled and shifts the stackmap instruction offset forward accordingly.
 
 ## Stack slot base register: caller-frame SP
 
-On LLVM 18.1.3, spilled stack roots are reported as `Indirect [...]` locations based on the **stack pointer in the caller’s frame**, using DWARF register numbers:
+On LLVM 18.1.x, spilled stack roots are reported as `Indirect [...]` locations based on the **stack pointer in the caller’s frame**, using DWARF register numbers:
 
 - x86_64: `RSP` (DWARF reg `7`)
 - AArch64: `SP` (DWARF reg `31`)
