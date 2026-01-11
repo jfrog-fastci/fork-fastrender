@@ -243,7 +243,13 @@ assert_nop_at_offset() {
     in_func && $1 ~ /^[0-9a-fA-F]+:$/ {
       addr=$1
       sub(":", "", addr)
-      if (tolower(addr) == tolower(want)) {
+      want_norm = tolower(want)
+      addr_norm = tolower(addr)
+      sub(/^0+/, "", want_norm)
+      sub(/^0+/, "", addr_norm)
+      if (want_norm == "") want_norm = "0"
+      if (addr_norm == "") addr_norm = "0"
+      if (addr_norm == want_norm) {
         found=1
         inst=$2
         if (inst ~ /^nop/) {exit 0}
