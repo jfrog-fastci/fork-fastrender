@@ -313,10 +313,21 @@ mod tests {
       fn gc_safepoint_poll();
     }
 
+    // `gc.safepoint_poll` calls into `rt_gc_safepoint`, which expects the current
+    // thread to be registered with `rt_thread_init`.
+    let was_registered = crate::threading::registry::current_thread_id().is_some();
+    if !was_registered {
+      rt_thread_init(0);
+    }
+
     // Safety: the symbol is exported by this crate and is safe to call. When no
     // stop-the-world GC is requested, the fast path returns immediately.
     unsafe {
       gc_safepoint_poll();
+    }
+
+    if !was_registered {
+      rt_thread_deinit();
     }
   }
 
