@@ -117,9 +117,18 @@ fn cfg_block_labels_sorted(cfg: &Cfg) -> Vec<u32> {
 fn reset_cfg_meta(cfg: &mut Cfg) {
   for label in cfg_block_labels_sorted(cfg) {
     for inst in cfg.bblocks.get_mut(label).iter_mut() {
+      // Preserve metadata produced during lowering/typechecking. These fields are
+      // orthogonal to analysis results and are expected to remain stable even
+      // when we re-run analysis annotations.
       let type_id = inst.meta.type_id;
+      let hir_expr = inst.meta.hir_expr;
+      let type_summary = inst.meta.type_summary;
+      let excludes_nullish = inst.meta.excludes_nullish;
       inst.meta = InstMeta::default();
       inst.meta.type_id = type_id;
+      inst.meta.hir_expr = hir_expr;
+      inst.meta.type_summary = type_summary;
+      inst.meta.excludes_nullish = excludes_nullish;
     }
   }
 }
@@ -494,6 +503,11 @@ mod tests {
     assert!(
       any_inst(&program, |inst| inst.t == InstTyp::CondGoto && inst.meta.nullability_narrowing.is_some()),
       "expected at least one CondGoto to record nullability narrowing"
+    );
+
+    assert!(
+      any_inst(&program, |inst| inst.meta.result_escape.is_some()),
+      "expected at least one instruction to record escape information in InstMeta.result_escape"
     );
 
     assert!(
