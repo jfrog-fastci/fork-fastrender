@@ -1979,9 +1979,23 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
     // because a realm may already have some (handwritten) globals installed.
     if !global_iface {
       out.push_str(&format!(
-        "  let key = rt.property_key({name_lit})?;\n  if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {{\n    return Ok(());\n  }}\n\n",
+        "  let key = rt.property_key({name_lit})?;\n  if rt.scope.heap().object_get_own_property(global, &key)?.is_some() {{\n",
         name_lit = rust_string_literal(&iface.name),
       ));
+      if config.prototype_chains {
+        if let Some(parent) = iface.inherits.as_deref() {
+          if !is_global_iface(parent) {
+            out.push_str(
+              "    let existing_proto = {\n      let ctor_value = rt\n        .scope\n        .heap()\n        .object_get_own_data_property_value(global, &key)?\n        .unwrap_or(Value::Undefined);\n      if let Value::Object(ctor_obj) = ctor_value {\n        let proto_key = rt.property_key(\"prototype\")?;\n        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {\n          Value::Object(obj) => Some(obj),\n          _ => None,\n        }\n      } else {\n        None\n      }\n    };\n    if let Some(existing_proto) = existing_proto {\n",
+            );
+            out.push_str(&format!(
+              "      let parent_proto = {{\n        let ctor_key = rt.property_key({parent_lit})?;\n        let ctor_value = rt\n          .scope\n          .heap()\n          .object_get_own_data_property_value(global, &ctor_key)?\n          .unwrap_or(Value::Undefined);\n        if let Value::Object(ctor_obj) = ctor_value {{\n          let proto_key = rt.property_key(\"prototype\")?;\n          match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {{\n            Value::Object(obj) => Some(obj),\n            _ => None,\n          }}\n        }} else {{\n          None\n        }}\n      }};\n      if let Some(parent_proto) = parent_proto {{\n        rt.set_prototype(existing_proto, Some(parent_proto))?;\n      }}\n    }}\n",
+              parent_lit = rust_string_literal(parent),
+            ));
+          }
+        }
+      }
+      out.push_str("    return Ok(());\n  }\n\n");
     }
 
     out.push_str("  let global_var_attrs = DataPropertyAttributes::new(true, false, true);\n");
@@ -2020,7 +2034,7 @@ fn generate_bindings_module_for_target_vmjs_unformatted(
 
     if config.prototype_chains {
       if let Some(parent) = iface.inherits.as_deref() {
-        if selected.contains_key(parent) && !is_global_iface(parent) {
+        if !is_global_iface(parent) {
           // Look up the parent prototype object from the existing global bindings (installed earlier
           // by the aggregator or supplied by the embedder).
           out.push_str(&format!(

@@ -973,6 +973,50 @@ mod tests {
   }
 
   #[test]
+  fn generated_vmjs_node_installer_can_patch_prototype_chain_after_event_target_install() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    {
+      // Ensure we start from a clean slate even if other tests installed these bindings.
+      let window = host.host_mut().window_mut();
+      let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .map_err(|err| Error::Other(err.to_string()))?;
+      for name in ["EventTarget", "Node"] {
+        let key_s = scope.alloc_string(name).map_err(|err| Error::Other(err.to_string()))?;
+        scope
+          .push_root(Value::String(key_s))
+          .map_err(|err| Error::Other(err.to_string()))?;
+        let key = PropertyKey::from_string(key_s);
+        scope
+          .delete_property_or_throw(global, key)
+          .map_err(|err| Error::Other(err.to_string()))?;
+      }
+    }
+    {
+      let window = host.host_mut().window_mut();
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      // Install Node first (without EventTarget present), then install EventTarget, then rerun the
+      // Node installer. The second run should patch `Node.prototype` to inherit from
+      // `EventTarget.prototype`.
+      crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      crate::js::bindings::install_event_target_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      crate::js::bindings::install_node_bindings_vm_js(vm, heap, realm)
+        .map_err(|err| Error::Other(err.to_string()))?;
+    }
+
+    let out = host.exec_script("Object.getPrototypeOf(Node.prototype) === EventTarget.prototype")?;
+    assert_eq!(out, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
   fn window_host_state_exec_script_in_event_loop_sets_webidl_bindings_host_slot() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;

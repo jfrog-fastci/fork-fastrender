@@ -1835,6 +1835,44 @@ pub mod window {
       .object_get_own_property(global, &key)?
       .is_some()
     {
+      let existing_proto = {
+        let ctor_value = rt
+          .scope
+          .heap()
+          .object_get_own_data_property_value(global, &key)?
+          .unwrap_or(Value::Undefined);
+        if let Value::Object(ctor_obj) = ctor_value {
+          let proto_key = rt.property_key("prototype")?;
+          match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+            Value::Object(obj) => Some(obj),
+            _ => None,
+          }
+        } else {
+          None
+        }
+      };
+      if let Some(existing_proto) = existing_proto {
+        let parent_proto = {
+          let ctor_key = rt.property_key("EventTarget")?;
+          let ctor_value = rt
+            .scope
+            .heap()
+            .object_get_own_data_property_value(global, &ctor_key)?
+            .unwrap_or(Value::Undefined);
+          if let Value::Object(ctor_obj) = ctor_value {
+            let proto_key = rt.property_key("prototype")?;
+            match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+              Value::Object(obj) => Some(obj),
+              _ => None,
+            }
+          } else {
+            None
+          }
+        };
+        if let Some(parent_proto) = parent_proto {
+          rt.set_prototype(existing_proto, Some(parent_proto))?;
+        }
+      }
       return Ok(());
     }
 
