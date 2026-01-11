@@ -1,10 +1,8 @@
-#![cfg(target_os = "linux")]
-
 use runtime_native::async_rt::Interest;
 use runtime_native::async_rt::Task;
+use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::threading;
 use runtime_native::threading::ThreadKind;
-use runtime_native::test_util::TestRuntimeGuard;
 use std::os::fd::RawFd;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -29,7 +27,10 @@ fn timer_fires() {
 
   let start = Instant::now();
   while !fired.load(Ordering::SeqCst) {
-    assert!(start.elapsed() < Duration::from_secs(1), "timer did not fire");
+    assert!(
+      start.elapsed() < Duration::from_secs(1),
+      "timer did not fire"
+    );
     runtime_native::rt_async_poll_legacy();
   }
 
@@ -54,15 +55,54 @@ extern "C" fn on_readable(data: *mut u8) {
   ctx.fired.store(true, Ordering::SeqCst);
 }
 
+fn pipe_nonblock_cloexec() -> std::io::Result<(RawFd, RawFd)> {
+  let mut fds = [0i32; 2];
+
+  #[cfg(target_os = "linux")]
+  {
+    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    if rc != 0 {
+      return Err(std::io::Error::last_os_error());
+    }
+  }
+
+  #[cfg(not(target_os = "linux"))]
+  {
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if rc != 0 {
+      return Err(std::io::Error::last_os_error());
+    }
+
+    // Mimic `pipe2(O_CLOEXEC|O_NONBLOCK)` for platforms without `pipe2`.
+    for &fd in &fds {
+      let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+      if fd_flags == -1 {
+        return Err(std::io::Error::last_os_error());
+      }
+      let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC) };
+      if rc == -1 {
+        return Err(std::io::Error::last_os_error());
+      }
+
+      let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+      if flags == -1 {
+        return Err(std::io::Error::last_os_error());
+      }
+      let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+      if rc == -1 {
+        return Err(std::io::Error::last_os_error());
+      }
+    }
+  }
+
+  Ok((fds[0], fds[1]))
+}
+
 #[test]
 fn epoll_readiness() {
   let _rt = TestRuntimeGuard::new();
 
-  let mut fds = [0i32; 2];
-  let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
-  assert_eq!(rc, 0, "pipe2 failed: {}", std::io::Error::last_os_error());
-  let read_fd = fds[0];
-  let write_fd = fds[1];
+  let (read_fd, write_fd) = pipe_nonblock_cloexec().expect("pipe failed");
 
   let ctx: &'static ReadCtx = Box::leak(Box::new(ReadCtx {
     fired: AtomicBool::new(false),
@@ -70,7 +110,11 @@ fn epoll_readiness() {
   }));
 
   let watcher_id = runtime_native::async_rt::global()
-    .register_fd(read_fd, Interest::READABLE, Task::new(on_readable, ctx as *const ReadCtx as *mut u8))
+    .register_fd(
+      read_fd,
+      Interest::READABLE,
+      Task::new(on_readable, ctx as *const ReadCtx as *mut u8),
+    )
     .unwrap();
 
   let timed_out: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
@@ -121,7 +165,10 @@ fn wake_from_epoll_wait() {
     let ran_ref: &'static AtomicBool = ran;
     move || {
       std::thread::sleep(Duration::from_millis(20));
-      runtime_native::async_rt::global().enqueue_microtask(Task::new(set_atomic_bool, ran_ref as *const AtomicBool as *mut u8));
+      runtime_native::async_rt::global().enqueue_microtask(Task::new(
+        set_atomic_bool,
+        ran_ref as *const AtomicBool as *mut u8,
+      ));
     }
   });
 
@@ -137,7 +184,10 @@ fn wake_from_epoll_wait() {
     elapsed < Duration::from_millis(500),
     "rt_async_poll did not wake promptly (elapsed={elapsed:?})"
   );
-  assert!(!timer_fired.load(Ordering::SeqCst), "poll returned only after timer fired");
+  assert!(
+    !timer_fired.load(Ordering::SeqCst),
+    "poll returned only after timer fired"
+  );
   assert!(!runtime_native::rt_async_poll_legacy());
 }
 

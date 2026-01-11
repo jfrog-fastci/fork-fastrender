@@ -8,10 +8,44 @@ extern "C" fn noop_task(_data: *mut u8) {}
 
 fn make_pipe() -> (OwnedFd, OwnedFd) {
   let mut fds = [0; 2];
-  // Safety: libc call; `fds` is valid for writes.
-  let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
-  if rc != 0 {
-    panic!("pipe2() failed: {}", std::io::Error::last_os_error());
+
+  #[cfg(target_os = "linux")]
+  {
+    // Safety: libc call; `fds` is valid for writes.
+    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    if rc != 0 {
+      panic!("pipe2() failed: {}", std::io::Error::last_os_error());
+    }
+  }
+
+  #[cfg(not(target_os = "linux"))]
+  {
+    // Safety: libc call; `fds` is valid for writes.
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if rc != 0 {
+      panic!("pipe() failed: {}", std::io::Error::last_os_error());
+    }
+
+    // Mimic `pipe2(O_CLOEXEC|O_NONBLOCK)` for platforms without `pipe2`.
+    for &fd in &fds {
+      let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+      if fd_flags == -1 {
+        panic!("fcntl(F_GETFD) failed: {}", std::io::Error::last_os_error());
+      }
+      let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC) };
+      if rc == -1 {
+        panic!("fcntl(F_SETFD) failed: {}", std::io::Error::last_os_error());
+      }
+
+      let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+      if flags == -1 {
+        panic!("fcntl(F_GETFL) failed: {}", std::io::Error::last_os_error());
+      }
+      let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+      if rc == -1 {
+        panic!("fcntl(F_SETFL) failed: {}", std::io::Error::last_os_error());
+      }
+    }
   }
 
   // Safety: `pipe` returns owned fds on success.
