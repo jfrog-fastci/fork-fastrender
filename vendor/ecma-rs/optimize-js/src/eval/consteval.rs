@@ -86,22 +86,30 @@ pub fn parse_bigint(raw: &str) -> Option<BigInt> {
   if trimmed.is_empty() {
     return None;
   }
-  let (sign, body) = match trimmed.strip_prefix('+') {
-    Some(rest) => (1, rest),
-    None => match trimmed.strip_prefix('-') {
-      Some(rest) => (-1, rest),
-      None => (1, trimmed),
-    },
-  };
+  let mut sign = 1;
+  let mut had_sign = false;
+  let mut body = trimmed;
+  if let Some(rest) = body.strip_prefix('+') {
+    had_sign = true;
+    body = rest;
+  } else if let Some(rest) = body.strip_prefix('-') {
+    had_sign = true;
+    sign = -1;
+    body = rest;
+  }
   if body.is_empty() {
     return None;
   }
-  let (radix, digits) = match body {
-    s if s.starts_with("0b") || s.starts_with("0B") => (2, &s[2..]),
-    s if s.starts_with("0o") || s.starts_with("0O") => (8, &s[2..]),
-    s if s.starts_with("0x") || s.starts_with("0X") => (16, &s[2..]),
-    s => (10, s),
+  let (radix, digits, had_prefix) = match body {
+    s if s.starts_with("0b") || s.starts_with("0B") => (2, &s[2..], true),
+    s if s.starts_with("0o") || s.starts_with("0O") => (8, &s[2..], true),
+    s if s.starts_with("0x") || s.starts_with("0X") => (16, &s[2..], true),
+    s => (10, s, false),
   };
+  // `BigInt("0xF")` is accepted, but `BigInt("-0xF")` / `BigInt("+0xF")` throw.
+  if had_prefix && had_sign {
+    return None;
+  }
   let mut value = parse_int_digits_to_bigint(digits, radix)?;
   if sign == -1 {
     value = -value;

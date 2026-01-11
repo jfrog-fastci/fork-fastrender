@@ -43,6 +43,23 @@ fn bigint_and_string_loose_equality_follows_string_to_bigint() {
     &ConstBigInt(BigInt::from(1)),
     &ConstStr("1n".into())
   ));
+
+  assert!(js_loose_eq(
+    &ConstBigInt(BigInt::from(15)),
+    &ConstStr("0xF".into())
+  ));
+  assert!(js_loose_eq(
+    &ConstBigInt(BigInt::from(2)),
+    &ConstStr("0b10".into())
+  ));
+  assert!(!js_loose_eq(
+    &ConstBigInt(BigInt::from(-15)),
+    &ConstStr("-0xF".into())
+  ));
+  assert!(!js_loose_eq(
+    &ConstBigInt(BigInt::from(15)),
+    &ConstStr("+0xF".into())
+  ));
 }
 
 #[test]
