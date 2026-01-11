@@ -739,33 +739,6 @@ fn caller_sp_from_stack_size(
   Ok(caller_sp)
 }
 
-fn enumerate_roots_for_frame(
-  caller_fp: u64,
-  caller_ra: u64,
-  callsite: CallSite<'_>,
-  bounds: Option<StackBounds>,
-  visit: &mut impl FnMut(*mut u8),
-) -> Result<(), WalkError> {
-  // `.llvm_stackmaps` may contain other records (e.g. from `llvm.experimental.stackmap`) in
-  // addition to GC statepoints. Identify statepoints by their layout (LLVM 18 observed): the first
-  // three locations are constant header entries (callconv, flags, deopt_count).
-  //
-  // Important: the StackMap record `patchpoint_id` is **not** a stable marker (LLVM supports
-  // overriding it via the `"statepoint-id"` callsite attribute), so do not rely on it to detect
-  // statepoints.
-  let looks_like_statepoint =
-    callsite.record.locations.len() >= crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS
-      && callsite.record.locations[..crate::statepoints::LLVM18_STATEPOINT_HEADER_CONSTANTS]
-        .iter()
-        .all(|loc| matches!(loc, Location::Constant { .. } | Location::ConstIndex { .. }));
-  if !looks_like_statepoint {
-    return Ok(());
-  }
-
-  let caller_sp = caller_sp_from_stack_size(caller_fp, caller_ra, callsite.stack_size)?;
-  enumerate_roots_for_frame_with_caller_sp(caller_fp, caller_sp, caller_ra, callsite, bounds, visit)
-}
-
 fn enumerate_roots_for_frame_with_caller_sp(
   caller_fp: u64,
   caller_sp: u64,
