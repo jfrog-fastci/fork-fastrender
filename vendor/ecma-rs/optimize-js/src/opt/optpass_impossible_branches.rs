@@ -104,6 +104,7 @@ mod tests {
   use super::*;
   use crate::cfg::cfg::{Cfg, CfgBBlocks, CfgGraph};
   use crate::il::inst::{Arg, BinOp, Const, Inst, InstTyp};
+  use num_bigint::BigInt;
 
   fn cfg(edges: &[(u32, u32)], blocks: &[(u32, Vec<Inst>)]) -> Cfg {
     let mut graph = CfgGraph::default();
@@ -134,6 +135,35 @@ mod tests {
             Inst::bin(1, Arg::Var(0), BinOp::NotStrictEq, Arg::Const(Const::Null)),
             Inst::cond_goto(Arg::Var(1), 1, 2),
           ],
+        ),
+        (1, vec![]),
+        (2, vec![]),
+      ],
+    );
+
+    let pass = optpass_impossible_branches(&mut cfg);
+    assert!(pass.cfg_changed);
+    assert_eq!(cfg.graph.children_sorted(0), vec![2]);
+    assert!(cfg.bblocks.maybe_get(1).is_none());
+    assert_ne!(
+      cfg.bblocks.get(0).last().map(|inst| inst.t.clone()),
+      Some(InstTyp::CondGoto)
+    );
+  }
+
+  #[test]
+  fn prunes_edge_for_bigint_const_conditions_using_js_truthiness() {
+    // if (0n) goto 1 else 2  => always false, so 1 becomes unreachable.
+    let mut cfg = cfg(
+      &[(0, 1), (0, 2)],
+      &[
+        (
+          0,
+          vec![Inst::cond_goto(
+            Arg::Const(Const::BigInt(BigInt::from(0))),
+            1,
+            2,
+          )],
         ),
         (1, vec![]),
         (2, vec![]),

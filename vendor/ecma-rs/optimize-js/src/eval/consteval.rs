@@ -5,7 +5,7 @@ use crate::il::inst::Const::*;
 use crate::il::inst::UnOp;
 use crate::il::inst::UnOp::*;
 use num_bigint::{BigInt, Sign};
-use num_traits::ToPrimitive;
+use num_traits::{ToPrimitive, Zero};
 use parse_js::char::{ECMASCRIPT_LINE_TERMINATORS, ECMASCRIPT_WHITESPACE};
 use parse_js::num::JsNumber as JN;
 use std::cmp::Ordering;
@@ -210,7 +210,7 @@ fn coerce_to_int32(v: &Const) -> Option<i32> {
 // https://developer.mozilla.org/en-US/docs/Glossary/Falsy
 pub fn coerce_to_bool(v: &Const) -> bool {
   match v {
-    BigInt(v) => v == &BigInt::from(0),
+    BigInt(v) => !v.is_zero(),
     Bool(b) => *b,
     Null => false,
     Num(JN(v)) => !v.is_nan() && *v != 0.0,

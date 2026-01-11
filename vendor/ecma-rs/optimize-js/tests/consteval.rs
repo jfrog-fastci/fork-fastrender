@@ -1,6 +1,6 @@
 use num_bigint::BigInt;
 use optimize_js::eval::consteval::{
-  coerce_str_to_num, js_cmp, js_div, js_loose_eq, maybe_eval_const_bin_expr,
+  coerce_str_to_num, coerce_to_bool, js_cmp, js_div, js_loose_eq, maybe_eval_const_bin_expr,
   maybe_eval_const_builtin_call, maybe_eval_const_builtin_val, maybe_eval_const_un_expr,
 };
 use optimize_js::il::inst::Const::{BigInt as ConstBigInt, Num as ConstNum, Str as ConstStr};
@@ -47,6 +47,13 @@ fn bigint_and_string_comparisons_follow_string_to_bigint() {
     js_cmp(&ConstBigInt(BigInt::from(3)), &ConstStr(" 4 ".into())),
     Some(Ordering::Less)
   );
+}
+
+#[test]
+fn bigint_truthiness_follows_spec() {
+  assert!(!coerce_to_bool(&ConstBigInt(BigInt::from(0))));
+  assert!(coerce_to_bool(&ConstBigInt(BigInt::from(1))));
+  assert!(coerce_to_bool(&ConstBigInt(BigInt::from(-1))));
 }
 
 #[test]
