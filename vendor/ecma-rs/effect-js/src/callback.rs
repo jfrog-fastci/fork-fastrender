@@ -323,6 +323,22 @@ pub fn analyze_inline_callback(
     purity: Purity::Pure,
   };
 
+  // Parameter binding (default initializers, destructuring defaults/computed keys,
+  // rest params) happens before the function body executes, but is still part of
+  // the callback's runtime behavior.
+  //
+  // Be conservative and assume parameter initializers may run (callers can pass
+  // `undefined` or omit args).
+  for param in &func.params {
+    if let Some(default) = param.default {
+      analyzer.visit_expr(cb_body_data, default);
+    }
+    analyzer.visit_binding_pat(cb_body_data, param.pat);
+    if param.rest {
+      analyzer.effects |= EffectSet::ALLOCATES;
+    }
+  }
+
   match &func.body {
     FunctionBody::Block(stmts) => {
       // The function body is a lexical scope; declarations inside it are hoisted
@@ -1670,6 +1686,24 @@ mod tests {
     let lowered = hir_js::lower_from_source_with_kind(
       hir_js::FileKind::Js,
       "arr.map(url => fetch(url));",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert_eq!(cb.purity, Purity::Impure);
+    assert!(cb.effects.contains(EffectSet::IO));
+    assert!(cb.effects.contains(EffectSet::NETWORK));
+  }
+
+  #[test]
+  fn callback_default_param_calling_fetch_is_impure() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map((x, i, a, d = fetch(\"x\")) => x);",
     )
     .unwrap();
     let (body, call_expr) = first_stmt_expr(&lowered);
