@@ -26,12 +26,13 @@
  * - This output section is writable (to allow dynamic relocations under PIE/DSO).
  *   Inserting it immediately after `.text` is unsafe: some linkers may merge it
  *   into the executable text PT_LOAD, forcing that segment to become RWX.
- * - We anchor the fragment at `INSERT BEFORE .data;` instead. `.data` is a
- *   stable output-section name across linkers (and is present even in minimal
- *   dynamic links), and inserting before it keeps `.data.rel.ro.llvm_stackmaps`
- *   in the RELRO-covered data region (`PT_GNU_RELRO`) rather than the text
- *   segment. This is also more robust than anchoring on `.rodata`, which may be
- *   absent in minimal links (lld errors if an `INSERT` anchor does not exist).
+ * - We anchor the fragment at `INSERT AFTER .text;` for lld. `.text` always
+ *   exists, while `.rodata` and `.data` may be absent in minimal binaries and
+ *   cause lld to error if used as an `INSERT` anchor.
+ *
+ * GNU ld needs a different fragment in the PIE configuration to avoid placing
+ * `.data.rel.ro.llvm_stackmaps` into the text PT_LOAD (which would become RWX
+ * during relocation). See `stackmaps_gnuld.ld`.
  *
  * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
  * small section definition without replacing the entire default linker script.
@@ -66,4 +67,4 @@ SECTIONS {
     KEEP(*(.llvm_faultmaps.*))
     __llvm_faultmaps_end = .;
   }
-} INSERT BEFORE .data;
+} INSERT AFTER .text;

@@ -3,8 +3,10 @@ use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
 use std::process::Command as StdCommand;
+use std::process::ExitStatus;
 use std::time::Duration;
 use tempfile::TempDir;
+use wait_timeout::ChildExt;
 
 // These tests spawn `native-js` / `native-js-cli` binaries which perform LLVM codegen and system
 // linking. Under heavy CI/agent contention this can take tens of seconds, so keep the timeout
@@ -17,6 +19,17 @@ fn native_js() -> Command {
 
 fn native_js_cli() -> Command {
   assert_cmd::cargo::cargo_bin_cmd!("native-js-cli")
+}
+
+fn run_with_timeout(cmd: &mut StdCommand, timeout: Duration) -> std::io::Result<ExitStatus> {
+  let mut child = cmd.spawn()?;
+  match child.wait_timeout(timeout)? {
+    Some(status) => Ok(status),
+    None => {
+      let _ = child.kill();
+      child.wait()
+    }
+  }
 }
 
 #[test]
@@ -185,8 +198,12 @@ fn build_and_run_returns_exit_code() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert!(output.status.success(), "unexpected status {:?}", output.status);
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -226,8 +243,12 @@ fn build_with_emit_ir_writes_executable_and_ir_file() {
   );
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert!(output.status.success(), "unexpected status {:?}", output.status);
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
+  assert_eq!(output.status.code(), Some(7), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -274,8 +295,9 @@ fn run_exits_with_program_exit_code() {
     .arg("--")
     .arg("--dummy-arg")
     .assert()
-    .success()
-    .stdout(predicate::eq("42\n"));
+    .failure()
+    .code(42)
+    .stdout(predicate::eq(""));
 }
 
 #[test]
@@ -303,8 +325,12 @@ fn relative_imports_are_resolved() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert!(output.status.success(), "unexpected status {:?}", output.status);
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -352,8 +378,12 @@ fn tsconfig_paths_are_resolved() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert!(output.status.success(), "unexpected status {:?}", output.status);
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -384,8 +414,12 @@ fn ts_runtime_inert_wrappers_succeed_in_check_and_build() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert!(output.status.success(), "unexpected status {:?}", output.status);
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+  assert_eq!(output.status.code(), Some(1), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -466,8 +500,12 @@ fn tsconfig_types_are_loaded_from_type_roots() {
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert!(output.status.success(), "unexpected status {:?}", output.status);
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "0\n");
+  assert_eq!(output.status.code(), Some(0), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -486,7 +524,7 @@ fn print_builtin_writes_stdout() {
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq("3\n0\n"));
+    .stdout(predicate::eq("3\n"));
 }
 
 #[test]
@@ -507,7 +545,7 @@ fn checked_pipeline_run_prints_stdout() {
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq("3\n0\n"));
+    .stdout(predicate::eq("3\n"));
 }
 
 #[test]
@@ -627,8 +665,9 @@ fn checked_pipeline_run_exits_with_program_exit_code() {
     .arg("run")
     .arg(&entry)
     .assert()
-    .success()
-    .stdout(predicate::eq("3\n42\n"));
+    .failure()
+    .code(42)
+    .stdout(predicate::eq("3\n"));
 }
 
 #[test]
@@ -696,8 +735,12 @@ export function main(): number { return x; }
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert!(output.status.success(), "unexpected status {:?}", output.status);
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -722,7 +765,7 @@ export function main(): number { return 0; }
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq("42\n0\n"));
+    .stdout(predicate::eq("42\n"));
 }
 
 #[test]
@@ -767,8 +810,12 @@ export function main(): number { return x; }
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert!(output.status.success(), "unexpected status {:?}", output.status);
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+  assert_eq!(output.status.code(), Some(2), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -799,7 +846,7 @@ export function main(): number { return 0; }
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq("0\n"));
+    .stdout(predicate::eq(""));
 }
 
 #[test]
@@ -838,8 +885,12 @@ x += 2;
     .success();
 
   let output = StdCommand::new(&out).output().unwrap();
-  assert!(output.status.success(), "unexpected status {:?}", output.status);
-  assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+  assert_eq!(output.status.code(), Some(42), "unexpected status {:?}", output.status);
+  assert!(
+    output.stdout.is_empty(),
+    "expected stdout to be empty, got: {}",
+    String::from_utf8_lossy(&output.stdout)
+  );
 }
 
 #[test]
@@ -872,8 +923,9 @@ export function main(): number { return x; }
     .arg("run")
     .arg(&entry)
     .assert()
-    .success()
-    .stdout(predicate::eq("42\n"));
+    .failure()
+    .code(42)
+    .stdout(predicate::eq(""));
 }
 
 #[test]
@@ -904,7 +956,7 @@ print(42);
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq("0\n"));
+    .stdout(predicate::eq(""));
 }
 
 #[test]
@@ -936,7 +988,7 @@ export function main(): number { return 0; }
     .arg(&entry)
     .assert()
     .success()
-    .stdout(predicate::eq("0\n1\n2\n0\n"));
+    .stdout(predicate::eq("0\n1\n2\n"));
 }
 
 #[test]
