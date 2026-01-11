@@ -116,6 +116,33 @@ fn runs_module_initializers_in_import_order() {
 }
 
 #[test]
+fn runs_module_initializers_in_import_order_with_transitive_deps() {
+  let dir = tempdir().unwrap();
+  let a = dir.path().join("a.ts");
+  let b = dir.path().join("b.ts");
+  let c = dir.path().join("c.ts");
+  let main = dir.path().join("main.ts");
+
+  fs::write(&c, "console.log(\"c\");\n").unwrap();
+  fs::write(&b, "import './c';\nconsole.log(\"b\");\n").unwrap();
+  fs::write(&a, "console.log(\"a\");\n").unwrap();
+  fs::write(
+    &main,
+    "import './b';\nimport './a';\nexport function main(){console.log(\"main\");}\n",
+  )
+  .unwrap();
+
+  native_js_cli()
+    .timeout(CLI_TIMEOUT)
+    .arg("--entry-fn")
+    .arg("main")
+    .arg(main)
+    .assert()
+    .success()
+    .stdout(predicate::eq("c\nb\na\nmain\n"));
+}
+
+#[test]
 fn runs_reexports_and_imports_in_declaration_order() {
   let dir = tempdir().unwrap();
   let b = dir.path().join("b.ts");
