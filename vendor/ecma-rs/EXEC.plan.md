@@ -3885,6 +3885,9 @@ impl<'ctx> CodeGen<'ctx> {
 // GC integration
 fn insert_gc_safepoint(&mut self);
 fn insert_write_barrier(&mut self, obj: PointerValue, field: PointerValue);
+// NOTE: `ShapeId` is a semantic (analysis/codegen) id; it is *not* passed into the runtime
+// directly. Codegen maps `ShapeId -> RtShapeId(u32)` and registers the shape descriptor table at
+// startup (see runtime-native ABI below).
 fn compile_allocation(&mut self, shape: ShapeId) -> PointerValue<'ctx>;
 ```
 
@@ -3893,8 +3896,25 @@ fn compile_allocation(&mut self, shape: ShapeId) -> PointerValue<'ctx>;
 ```rust
 // Native runtime library (compiled separately, linked with generated code)
 
+// Shapes are registered into a global runtime table and referenced by a compact runtime-local id.
+// The semantic `types_ts_interned::ShapeId (u128)` is *not* part of the runtime ABI.
+#[repr(transparent)]
+pub struct RtShapeId(pub u32); // 1-indexed; 0 is reserved invalid/sentinel.
+
+#[repr(C)]
+pub struct RtShapeDescriptor {
+  pub size: u32, // total object size in bytes (including header)
+  pub align: u16,
+  pub flags: u16, // reserved; must be 0
+  pub ptr_offsets: *const u32,
+  pub ptr_offsets_len: u32,
+  pub reserved: u32,
+}
+
 // Memory
-pub fn rt_alloc(size: usize, shape: ShapeId) -> *mut u8;
+pub fn rt_register_shape_table(ptr: *const RtShapeDescriptor, len: usize);
+pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
+pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8;
 pub fn rt_alloc_array(len: usize, elem_size: usize) -> *mut u8;
 
 // GC
