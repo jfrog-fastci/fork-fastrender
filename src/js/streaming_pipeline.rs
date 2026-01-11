@@ -1148,7 +1148,7 @@ mod tests {
       .expect("remove_attribute");
     let classic_text = dyn_host.dom.create_text("RUN");
     dyn_host.dom.append_child(script, classic_text).expect("append_child");
- 
+
     crate::js::dom_integration::prepare_dynamic_script_on_children_changed(
       &mut dyn_host,
       &mut scheduler,

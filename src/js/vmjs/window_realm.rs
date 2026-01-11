@@ -48,6 +48,32 @@ use webidl_vm_js::VmJsHostHooksPayload;
 pub type ConsoleSink =
   Arc<dyn Fn(ConsoleMessageLevel, &mut vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
 
+/// Lightweight `VmHost` context used by `WindowRealm` helpers that need a stable downcast target.
+///
+/// `vm-js` passes a `&mut dyn VmHost` into every native call/construct handler. In full browser
+/// embeddings this is typically a document/tab host type (e.g. [`DocumentHostState`]), but some
+/// `WindowRealm` entrypoints create an internal host context instead.
+///
+/// We keep a dedicated type so helpers like `current_script_state_handle_from_vm_host` can reliably
+/// recover shared host-side state (currently: `Document.currentScript` bookkeeping) even when the
+/// embedder passes a unit `()` host or other opaque type.
+#[derive(Debug, Default)]
+struct VmJsHostContext {
+  current_script_state: Option<CurrentScriptStateHandle>,
+}
+
+impl VmJsHostContext {
+  fn with_current_script_state(current_script_state: CurrentScriptStateHandle) -> Self {
+    Self {
+      current_script_state: Some(current_script_state),
+    }
+  }
+
+  fn current_script_state(&self) -> Option<&CurrentScriptStateHandle> {
+    self.current_script_state.as_ref()
+  }
+}
+
 // Compile-time guard: `vm-js` must keep exposing the borrow-splitting accessor used by FastRender
 // embeddings (see `WindowRealm::new`).
 #[allow(dead_code)]
@@ -16223,6 +16249,20 @@ mod tests {
 
   impl vm_js::VmHostHooks for NoopHostHooks {
     fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
+  }
+
+  #[test]
+  fn current_script_state_handle_from_vm_host_supports_vmjs_host_context() {
+    let handle = CurrentScriptStateHandle::default();
+    let mut host_ctx = VmJsHostContext::with_current_script_state(handle.clone());
+    let mut hooks = NoopHostHooks::default();
+
+    let found = current_script_state_handle_from_vm_host(&mut host_ctx, &mut hooks)
+      .expect("expected current script handle");
+
+    let id = NodeId::from_index(42);
+    found.borrow_mut().current_script = Some(id);
+    assert_eq!(handle.borrow().current_script, Some(id));
   }
 
   fn get_string(heap: &Heap, value: Value) -> String {
