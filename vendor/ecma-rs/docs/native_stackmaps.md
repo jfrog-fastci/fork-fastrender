@@ -55,6 +55,22 @@ The repository’s wrapper does this for you:
 bash vendor/ecma-rs/scripts/native_link.sh -o myapp <objs...>
 ```
 
+## Optional: identical code folding (ICF)
+
+When linking with **lld**, you can optionally enable identical code folding:
+
+```bash
+-Wl,--icf=all
+```
+
+This is compatible with LTO and `--gc-sections` as long as stackmaps are still kept via the linker
+script fragment.
+
+Note: ICF can fold identical functions and produce **duplicate callsite PCs** in the final
+`.llvm_stackmaps` section (two records with the same `function_address + instruction_offset`).
+The parsers in this repository (`runtime_native::stackmaps::StackMaps` and `llvm_stackmaps::StackMaps`)
+deduplicate such entries when the records are identical, and reject conflicting duplicates.
+
 `native-js` users should prefer the Rust API helpers in `native_js::link`, which
 always inject a linker-script fragment and export:
 

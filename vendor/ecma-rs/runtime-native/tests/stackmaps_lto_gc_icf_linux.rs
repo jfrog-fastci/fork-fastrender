@@ -266,6 +266,7 @@ fn validate_exe(exe: &Path, expect_linker_symbols: bool) {
   );
 
   let index = StackMaps::parse(&stackmaps_bytes).expect("parse + index stackmaps");
+  runtime_native::validate_stackmaps(&index).expect("validate_stackmaps failed");
   for (pc, patchpoint_id) in expected_callsites {
     let callsite = index
       .lookup(pc)

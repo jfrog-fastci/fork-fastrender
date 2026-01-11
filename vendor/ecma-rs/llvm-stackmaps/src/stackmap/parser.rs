@@ -234,17 +234,58 @@ impl StackMaps {
                 .map_err(|_| ParseError::new(0, "num_records exceeds u32"))?,
         };
 
-        // If multiple functions have overlapping address ranges (e.g. in an object file with
-        // relocations stripped), the computed callsite PC may collide. That's ambiguous at runtime,
-        // so treat duplicates as an error.
+        // The runtime lookup key is the callsite PC (return address). We generally require this to
+        // be unique to avoid ambiguous GC root enumeration.
+        //
+        // However, lld's identical code folding (`--icf=all`) can fold identical functions into the
+        // same machine code address. When those functions each contain a statepoint/patchpoint,
+        // LLVM may emit multiple stackmap records whose `function_address + instruction_offset`
+        // resolves to the same PC.
+        //
+        // This is safe iff the records are identical (they describe the same machine instruction).
+        // In that case, deduplicate so `lookup(pc)` stays unambiguous.
         callsites.sort_by_key(|e| e.pc);
-        for w in callsites.windows(2) {
-            if w[0].pc == w[1].pc {
-                return Err(ParseError::new(
-                    0,
-                    format!("duplicate callsite pc 0x{:x}", w[0].pc),
-                ));
+        if callsites.len() > 1 {
+            let mut out: Vec<Callsite> = Vec::with_capacity(callsites.len());
+            let mut i: usize = 0;
+            while i < callsites.len() {
+                let base = callsites[i];
+                let base_rec = records
+                    .get(base.record_index)
+                    .ok_or_else(|| ParseError::new(0, "callsite record_index out of bounds"))?;
+
+                let mut j = i + 1;
+                while j < callsites.len() && callsites[j].pc == base.pc {
+                    let other = callsites[j];
+                    if base.function_address != other.function_address || base.stack_size != other.stack_size {
+                        return Err(ParseError::new(
+                            0,
+                            format!("duplicate callsite pc 0x{:x}", base.pc),
+                        ));
+                    }
+                    let other_rec = records
+                        .get(other.record_index)
+                        .ok_or_else(|| ParseError::new(0, "callsite record_index out of bounds"))?;
+
+                    let same_record = base_rec.id == other_rec.id
+                        && base_rec.instruction_offset == other_rec.instruction_offset
+                        && base_rec.callsite_pc == other_rec.callsite_pc
+                        && base_rec.locations == other_rec.locations
+                        && base_rec.live_outs == other_rec.live_outs;
+                    if !same_record {
+                        return Err(ParseError::new(
+                            0,
+                            format!("duplicate callsite pc 0x{:x}", base.pc),
+                        ));
+                    }
+                    j += 1;
+                }
+
+                out.push(base);
+                i = j;
             }
+
+            callsites = out;
         }
 
         Ok(Self {
@@ -836,6 +877,88 @@ mod tests {
         assert_eq!(maps.callsites.len(), 2);
         assert_eq!(maps.lookup(0x1010).unwrap().id, 1);
         assert_eq!(maps.lookup(0x2020).unwrap().id, 2);
+    }
+
+    #[test]
+    fn deduplicates_identical_duplicate_callsite_pcs() {
+        fn build_blob(func_addr: u64, rec_id: u64, inst_off: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&[3, 0, 0, 0]);
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+            bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+            bytes.extend_from_slice(&(func_addr).to_le_bytes());
+            bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+            bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+            bytes.extend_from_slice(&(rec_id).to_le_bytes());
+            bytes.extend_from_slice(&(inst_off).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes()); // num locations
+
+            // Live-out header (already aligned): padding + num_liveouts.
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            // Align record end: 16 + 4 = 20 => +4.
+            bytes.extend_from_slice(&[0u8; 4]);
+
+            bytes
+        }
+
+        let blob_a = build_blob(0x1000, 1, 0x10);
+        let blob_b = build_blob(0x1000, 1, 0x10);
+
+        let mut section = Vec::new();
+        section.extend_from_slice(&blob_a);
+        section.extend_from_slice(&blob_b);
+
+        let maps = StackMaps::parse(&section).unwrap();
+        // Both blobs still contribute records, but the callsite index is deduplicated.
+        assert_eq!(maps.records.len(), 2);
+        assert_eq!(maps.callsites.len(), 1);
+        assert_eq!(maps.lookup(0x1010).unwrap().id, 1);
+    }
+
+    #[test]
+    fn rejects_conflicting_duplicate_callsite_pcs() {
+        fn build_blob(func_addr: u64, rec_id: u64, inst_off: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&[3, 0, 0, 0]);
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num functions
+            bytes.extend_from_slice(&(0u32).to_le_bytes()); // num constants
+            bytes.extend_from_slice(&(1u32).to_le_bytes()); // num records
+
+            bytes.extend_from_slice(&(func_addr).to_le_bytes());
+            bytes.extend_from_slice(&(0u64).to_le_bytes()); // stack size
+            bytes.extend_from_slice(&(1u64).to_le_bytes()); // record count
+
+            bytes.extend_from_slice(&(rec_id).to_le_bytes());
+            bytes.extend_from_slice(&(inst_off).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes()); // num locations
+
+            // Live-out header (already aligned): padding + num_liveouts.
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            bytes.extend_from_slice(&(0u16).to_le_bytes());
+            // Align record end: 16 + 4 = 20 => +4.
+            bytes.extend_from_slice(&[0u8; 4]);
+
+            bytes
+        }
+
+        let blob_a = build_blob(0x1000, 1, 0x10);
+        let blob_b = build_blob(0x1000, 2, 0x10);
+
+        let mut section = Vec::new();
+        section.extend_from_slice(&blob_a);
+        section.extend_from_slice(&blob_b);
+
+        let err = StackMaps::parse(&section).unwrap_err();
+        assert!(
+            err.message.contains("duplicate callsite pc 0x1010"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
