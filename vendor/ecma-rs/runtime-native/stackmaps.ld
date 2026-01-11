@@ -38,8 +38,7 @@ SECTIONS {
     . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-/* Anchor at `.dynamic` so the writable RELRO data doesn't end up merged into the
- * executable text PT_LOAD (which would create an RWX segment). `.data` is not a
- * reliable anchor for lld: it does not create empty output sections for minimal
- * links. */
-} INSERT BEFORE .dynamic;
+/* Anchor at `.got` so the fragment can be injected even for minimal lld links
+ * (lld may omit optional output sections like `.dynamic` entirely). `.got` is
+ * also inside the RELRO block, keeping lld happy about relro contiguity. */
+} INSERT BEFORE .got;

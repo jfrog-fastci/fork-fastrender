@@ -26,12 +26,13 @@
  *   "section: .dynamic is not contiguous with other relro sections"
  *
  * To keep the dedicated `.data.rel.ro.llvm_stackmaps` section name **and** avoid
- * lld's RELRO contiguity errors, we insert these sections after `.data` (outside
- * the RELRO range) instead of before `.dynamic`.
+ * lld's RELRO contiguity errors, we insert these sections immediately before
+ * `.bss` (outside the RELRO range) instead of before `.dynamic`.
  *
  * Notes:
- * - `.data` must exist for this fragment to be usable: lld omits empty output
- *   sections and will error if the `INSERT` anchor does not exist.
+ * - `.bss` must exist for this fragment to be usable. lld can omit empty output
+ *   sections like `.data` for minimal links, but it still defines `.bss`, making
+ *   it a more reliable `INSERT` anchor.
  * - Avoid defining a second `.data.rel.ro` output section here: even outside
  *   the RELRO range, duplicating `.data.rel.ro` can still lead to confusing
  *   layout differences across linkers.
@@ -68,4 +69,4 @@ SECTIONS {
     . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-} INSERT AFTER .data;
+} INSERT BEFORE .bss;
