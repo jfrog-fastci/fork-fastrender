@@ -242,11 +242,19 @@ mod imp {
             let weak: Weak<OpShared<B>> = Arc::downgrade(&shared);
 
             let ptr = buf.stable_mut_ptr().as_ptr();
-            let len = buf.len();
+            let len = u32::try_from(buf.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "buffer length exceeds u32::MAX",
+                )
+            })?;
             let stability = crate::debug_stability::record(id, |rec| {
-                rec.ptr(crate::debug_stability::PtrKind::IoBufData { index: 0 }, ptr as *const u8);
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IoBufData { index: 0 },
+                    ptr as *const u8,
+                );
             });
-            let entry = opcode::Read::new(types::Fd(fd), ptr, len as _)
+            let entry = opcode::Read::new(types::Fd(fd), ptr, len)
                 .offset(offset as _)
                 .build()
                 .user_data(id.0);
@@ -285,11 +293,19 @@ mod imp {
             let weak: Weak<OpShared<B>> = Arc::downgrade(&shared);
 
             let ptr = buf.stable_ptr().as_ptr() as *const u8;
-            let len = buf.len();
+            let len = u32::try_from(buf.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "buffer length exceeds u32::MAX",
+                )
+            })?;
             let stability = crate::debug_stability::record(id, |rec| {
-                rec.ptr(crate::debug_stability::PtrKind::IoBufData { index: 0 }, ptr as *const u8);
+                rec.ptr(
+                    crate::debug_stability::PtrKind::IoBufData { index: 0 },
+                    ptr as *const u8,
+                );
             });
-            let entry = opcode::Write::new(types::Fd(fd), ptr, len as _)
+            let entry = opcode::Write::new(types::Fd(fd), ptr, len)
                 .offset(offset as _)
                 .build()
                 .user_data(id.0);
