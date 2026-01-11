@@ -56,6 +56,30 @@ fn async_await_promise_resolve() -> Result<(), VmError> {
 }
 
 #[test]
+fn await_in_variable_declarator_initializer() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        const v = await Promise.resolve("ok");
+        return v;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "ok");
+  Ok(())
+}
+
+#[test]
 fn await_yields_to_microtasks() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

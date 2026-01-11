@@ -6059,6 +6059,14 @@ fn alloc_string_from_lit_str(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AsyncResumeKind {
   Continue { next_stmt_index: usize },
+  /// Resume after `await` in a variable declarator initializer.
+  ///
+  /// When resumed with the awaited value, initialize the declarator at `declarator_index` in the
+  /// `Stmt::VarDecl` statement at `stmt_index`, then continue execution from that statement.
+  VarDecl {
+    stmt_index: usize,
+    declarator_index: usize,
+  },
   Return,
 }
 
@@ -6176,6 +6184,232 @@ pub(crate) fn async_resume_call(
       async_teardown_continuation(&mut call_scope, cont);
       res.map(|_| Value::Undefined)
     }
+    AsyncResumeKind::VarDecl {
+      stmt_index,
+      declarator_index,
+    } => {
+      let this = scope
+        .heap()
+        .get_root(cont.this_root)
+        .ok_or(VmError::InvariantViolation(
+          "async continuation missing this root",
+        ))?;
+      let new_target = scope
+        .heap()
+        .get_root(cont.new_target_root)
+        .ok_or(VmError::InvariantViolation(
+          "async continuation missing new.target root",
+        ))?;
+      let global_object = cont.env.global_object();
+
+      let result = (|| -> Result<AsyncBodyResult, VmError> {
+        let mut evaluator = Evaluator {
+          vm,
+          host,
+          hooks,
+          env: &mut cont.env,
+          strict: cont.strict,
+          this,
+          new_target,
+        };
+
+        // Root the awaited value while initializing bindings and evaluating subsequent declarators,
+        // which can allocate and trigger GC.
+        let mut root_scope = scope.reborrow();
+        root_scope.push_root(arg0)?;
+
+        let stmts = match &cont.func.stx.body {
+          Some(FuncBody::Block(stmts)) => stmts,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "async var decl continuation used for non-block body",
+            ))
+          }
+        };
+        let stmt = stmts.get(stmt_index).ok_or(VmError::InvariantViolation(
+          "async var decl continuation out of bounds",
+        ))?;
+        let var_decl = match &*stmt.stx {
+          Stmt::VarDecl(var_decl) => var_decl,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "async var decl continuation expected VarDecl statement",
+            ))
+          }
+        };
+
+        async_bind_var_declarator_value(
+          &mut evaluator,
+          &mut root_scope,
+          &var_decl.stx,
+          declarator_index,
+          arg0,
+        )?;
+
+        if let Some(result) = async_eval_var_decl_until_await(
+          &mut evaluator,
+          &mut root_scope,
+          &var_decl.stx,
+          stmt_index,
+          declarator_index + 1,
+        )? {
+          return Ok(result);
+        }
+
+        run_async_body(&mut evaluator, &mut root_scope, &cont.func, stmt_index + 1)
+      })();
+
+      match result {
+        Ok(AsyncBodyResult::CompleteOk(v)) => {
+          let mut call_scope = scope.reborrow();
+          if let Err(err) = call_scope.push_roots(&[resolve, v]) {
+            async_teardown_continuation(&mut call_scope, cont);
+            return Err(err);
+          }
+          let res = vm.call_with_host_and_hooks(
+            host,
+            &mut call_scope,
+            hooks,
+            resolve,
+            Value::Undefined,
+            &[v],
+          );
+          async_teardown_continuation(&mut call_scope, cont);
+          res.map(|_| Value::Undefined)
+        }
+        Ok(AsyncBodyResult::CompleteThrow(reason)) => {
+          let mut call_scope = scope.reborrow();
+          if let Err(err) = call_scope.push_roots(&[reject, reason]) {
+            async_teardown_continuation(&mut call_scope, cont);
+            return Err(err);
+          }
+          let res = vm.call_with_host_and_hooks(
+            host,
+            &mut call_scope,
+            hooks,
+            reject,
+            Value::Undefined,
+            &[reason],
+          );
+          async_teardown_continuation(&mut call_scope, cont);
+          res.map(|_| Value::Undefined)
+        }
+        Ok(AsyncBodyResult::Await {
+          await_value,
+          resume,
+        }) => {
+          // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
+          cont.resume = resume;
+
+          let mut await_scope = scope.reborrow();
+          if let Err(err) = await_scope.push_roots(&[await_value]) {
+            async_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+          let awaited_promise_res = crate::promise_ops::promise_resolve_with_host_and_hooks(
+            vm,
+            &mut await_scope,
+            host,
+            hooks,
+            await_value,
+          );
+          let awaited_promise = match awaited_promise_res {
+            Ok(p) => p,
+            Err(e) => {
+              async_teardown_continuation(&mut await_scope, cont);
+              return Err(e);
+            }
+          };
+          if let Err(err) = await_scope.push_root(awaited_promise) {
+            async_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+
+          let awaited_root = match await_scope.heap_mut().add_root(awaited_promise) {
+            Ok(root) => root,
+            Err(e) => {
+              async_teardown_continuation(&mut await_scope, cont);
+              return Err(e);
+            }
+          };
+          cont.awaited_promise_root = Some(awaited_root);
+
+          // Reinsert continuation before scheduling any resumption callbacks.
+          if let Err(err) = vm.reserve_async_continuations(1) {
+            async_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+          vm.replace_async_continuation(id, cont)?;
+
+          let then_res = (|| -> Result<(), VmError> {
+            let call_id = vm.async_resume_call_id()?;
+            let intr = vm
+              .intrinsics()
+              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+            let job_realm = vm.current_realm();
+
+            let name = await_scope.alloc_string("")?;
+            let slots_fulfill = [Value::Number(id as f64), Value::Bool(false)];
+            let on_fulfilled = await_scope.alloc_native_function_with_slots(
+              call_id,
+              None,
+              name,
+              1,
+              &slots_fulfill,
+            )?;
+            await_scope.push_root(Value::Object(on_fulfilled))?;
+
+            let name = await_scope.alloc_string("")?;
+            let slots_reject = [Value::Number(id as f64), Value::Bool(true)];
+            let on_rejected = await_scope.alloc_native_function_with_slots(
+              call_id,
+              None,
+              name,
+              1,
+              &slots_reject,
+            )?;
+            await_scope.push_root(Value::Object(on_rejected))?;
+
+            for cb in [on_fulfilled, on_rejected] {
+              await_scope
+                .heap_mut()
+                .object_set_prototype(cb, Some(intr.function_prototype()))?;
+              await_scope
+                .heap_mut()
+                .set_function_realm(cb, global_object)?;
+              if let Some(realm) = job_realm {
+                await_scope.heap_mut().set_function_job_realm(cb, realm)?;
+              }
+            }
+
+            let _ = crate::promise_ops::perform_promise_then_with_host_and_hooks(
+              vm,
+              &mut await_scope,
+              host,
+              hooks,
+              awaited_promise,
+              Some(Value::Object(on_fulfilled)),
+              Some(Value::Object(on_rejected)),
+            )?;
+            Ok(())
+          })();
+
+          if let Err(err) = then_res {
+            if let Some(cont) = vm.take_async_continuation(id) {
+              async_teardown_continuation(&mut await_scope, cont);
+            }
+            return Err(err);
+          }
+
+          Ok(Value::Undefined)
+        }
+        Err(err) => {
+          // Fatal error during resumption: clean up roots/env to avoid leaks.
+          async_teardown_continuation(scope, cont);
+          Err(err)
+        }
+      }
+    }
     AsyncResumeKind::Continue { next_stmt_index } => {
       let this = scope
         .heap()
@@ -6205,7 +6439,7 @@ pub(crate) fn async_resume_call(
         run_async_body(&mut evaluator, scope, &cont.func, next_stmt_index)
       };
 
-      match result {
+        match result {
         Ok(AsyncBodyResult::CompleteOk(v)) => {
           let mut call_scope = scope.reborrow();
           if let Err(err) = call_scope.push_roots(&[resolve, v]) {
@@ -6368,6 +6602,166 @@ enum AsyncBodyResult {
   },
 }
 
+fn async_bind_var_declarator_value(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  decl: &VarDecl,
+  declarator_index: usize,
+  value: Value,
+) -> Result<(), VmError> {
+  let declarator = decl.declarators.get(declarator_index).ok_or(
+    VmError::InvariantViolation("async var decl continuation out of bounds"),
+  )?;
+
+  match decl.mode {
+    VarDeclMode::Var => {
+      bind_pattern(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        scope,
+        evaluator.env,
+        &declarator.pattern.stx.pat.stx,
+        value,
+        BindingKind::Var,
+        evaluator.strict,
+        evaluator.this,
+      )?;
+    }
+    VarDeclMode::Let => {
+      let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
+        bind_pattern(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          evaluator.env,
+          &declarator.pattern.stx.pat.stx,
+          value,
+          BindingKind::Let,
+          evaluator.strict,
+          evaluator.this,
+        )?;
+        return Ok(());
+      };
+
+      let name = id.stx.name.as_str();
+      if !scope.heap().env_has_binding(evaluator.env.lexical_env, name)? {
+        // Non-block statement contexts may not have performed lexical hoisting yet.
+        scope.env_create_mutable_binding(evaluator.env.lexical_env, name)?;
+      }
+      scope
+        .heap_mut()
+        .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
+    }
+    VarDeclMode::Const => {
+      if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+        bind_pattern(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          evaluator.env,
+          &declarator.pattern.stx.pat.stx,
+          value,
+          BindingKind::Const,
+          evaluator.strict,
+          evaluator.this,
+        )?;
+        return Ok(());
+      }
+
+      let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
+        debug_assert!(false, "expected Pat::Id after matches! guard");
+        return Err(VmError::InvariantViolation(
+          "internal error: const declaration pattern mismatch",
+        ));
+      };
+      let name = id.stx.name.as_str();
+
+      if !scope.heap().env_has_binding(evaluator.env.lexical_env, name)? {
+        scope.env_create_immutable_binding(evaluator.env.lexical_env, name)?;
+      }
+      scope
+        .heap_mut()
+        .env_initialize_binding(evaluator.env.lexical_env, name, value)?;
+    }
+
+    _ => return Err(VmError::Unimplemented("var declaration kind")),
+  }
+
+  Ok(())
+}
+
+fn async_eval_var_decl_until_await(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  decl: &VarDecl,
+  stmt_index: usize,
+  start_declarator_index: usize,
+) -> Result<Option<AsyncBodyResult>, VmError> {
+  for (declarator_index, declarator) in decl
+    .declarators
+    .iter()
+    .enumerate()
+    .skip(start_declarator_index)
+  {
+    let Some(init) = &declarator.initializer else {
+      match decl.mode {
+        VarDeclMode::Var => {
+          evaluator.tick()?;
+          // Destructuring declarations require an initializer (early error in real JS).
+          if !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+            return Err(VmError::Unimplemented(
+              "destructuring var without initializer",
+            ));
+          }
+          continue;
+        }
+        VarDeclMode::Let => {
+          let Pat::Id(id) = &*declarator.pattern.stx.pat.stx else {
+            return Err(VmError::Unimplemented(
+              "destructuring let without initializer",
+            ));
+          };
+          evaluator.tick()?;
+          let name = id.stx.name.as_str();
+          if !scope.heap().env_has_binding(evaluator.env.lexical_env, name)? {
+            scope.env_create_mutable_binding(evaluator.env.lexical_env, name)?;
+          }
+          scope
+            .heap_mut()
+            .env_initialize_binding(evaluator.env.lexical_env, name, Value::Undefined)?;
+          continue;
+        }
+        VarDeclMode::Const => {
+          return Err(VmError::Unimplemented("const without initializer"));
+        }
+        _ => return Err(VmError::Unimplemented("var declaration kind")),
+      }
+    };
+
+    if let Expr::Unary(unary) = &*init.stx {
+      if unary.stx.operator == OperatorName::Await {
+        // Suspend: we will initialize this declarator with the awaited value on resume.
+        let v = evaluator.eval_expr(scope, &unary.stx.argument)?;
+        return Ok(Some(AsyncBodyResult::Await {
+          await_value: v,
+          resume: AsyncResumeKind::VarDecl {
+            stmt_index,
+            declarator_index,
+          },
+        }));
+      }
+    }
+
+    let value = evaluator.eval_expr(scope, init)?;
+    async_bind_var_declarator_value(evaluator, scope, decl, declarator_index, value)?;
+  }
+
+  Ok(None)
+}
+
 fn run_async_body(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -6406,6 +6800,33 @@ fn run_async_body(
     }
     FuncBody::Block(stmts) => {
       for (idx, stmt) in stmts.iter().enumerate().skip(start_stmt_index) {
+        // Top-level `var`/`let`/`const` declaration containing an `await` initializer.
+        //
+        // We handle this here (instead of relying on `eval_var_decl`) because `await` is not
+        // implemented in the general expression evaluator yet.
+        if let Stmt::VarDecl(var_decl) = &*stmt.stx {
+          let has_await = var_decl.stx.declarators.iter().any(|declarator| {
+            declarator.initializer.as_ref().is_some_and(|init| {
+              matches!(
+                &*init.stx,
+                Expr::Unary(unary) if unary.stx.operator == OperatorName::Await
+              )
+            })
+          });
+          if has_await {
+            // One tick per statement (normally handled by `eval_stmt`).
+            evaluator.tick()?;
+            if let Some(result) =
+              async_eval_var_decl_until_await(evaluator, scope, &var_decl.stx, idx, 0)?
+            {
+              return Ok(result);
+            }
+            // No `await` was encountered while processing declarators after `start_declarator_index`
+            // (e.g. we've completed the statement after resuming from a prior `await`).
+            continue;
+          }
+        }
+
         // Top-level `await` expression statement: `await expr;`
         if let Stmt::Expr(expr_stmt) = &*stmt.stx {
           if let Expr::Unary(unary) = &*expr_stmt.stx.expr.stx {

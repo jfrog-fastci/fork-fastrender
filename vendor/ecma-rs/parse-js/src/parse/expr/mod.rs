@@ -335,8 +335,11 @@ impl<'a> Parser<'a> {
         yield_expr_allowed: false,
       });
       let simple_params = Parser::is_simple_parameter_list(&parameters);
-      // Arrow functions don't introduce a `new.target` binding.
-      let body = (|| -> SyntaxResult<_> {
+      // Arrow functions have a lexical `new.target` binding and can therefore contain `new.target`
+      // expressions (which resolve to the surrounding `new.target` at runtime).
+      let prev_new_target_allowed = p.new_target_allowed;
+      p.new_target_allowed += 1;
+      let body_res = (|| -> SyntaxResult<_> {
         match p.peek().typ {
           TT::BraceOpen => {
             let contains_use_strict =
@@ -367,7 +370,8 @@ impl<'a> Parser<'a> {
           }
         }
       })();
-      let body = body?;
+      p.new_target_allowed = prev_new_target_allowed;
+      let body = body_res?;
       if terminators.contains(&TT::Colon) && p.peek().typ != TT::Colon {
         return Err(
           p.peek()
@@ -393,16 +397,42 @@ impl<'a> Parser<'a> {
     terminators: [TT; N],
     asi: &mut Asi,
   ) -> SyntaxResult<Node<Expr>> {
-    // Try and parse as arrow function signature first.
-    // If we fail, backtrack and parse as grouping instead.
-    // After we see `=>`, we assume it's definitely an arrow function and do not backtrack.
-
     // NOTE: We originally implemented conversion from parameters to expression to prevent the need
     // for backtracking. However, this ended up being too complex for little performance gain,
     // as most usages of grouping involve a non-comma binary operator (such as `+`) and so parsing
     // as arrow function fails quickly. Complex patterns like `{a, b: { c: [d, e] } = f }` are
     // unlikely to be used as operands in a grouping.
 
+    // In strict ECMAScript mode, disambiguate `(<...>)` by looking for `=>` after the matching
+    // parenthesis.
+    //
+    // This avoids incorrect "definitely arrow function" heuristics (e.g. `(<expr containing =>>)`)
+    // and keeps parsing deterministic for `vm-js`'s lazy function snippet reparsing.
+    if self.is_strict_ecmascript() {
+      let checkpoint = self.checkpoint();
+      // Consume the opening `(` and scan to the matching `)`.
+      self.require(TT::ParenthesisOpen)?;
+      let mut depth: usize = 1;
+      while depth > 0 {
+        let t = self.consume();
+        match t.typ {
+          TT::ParenthesisOpen => depth += 1,
+          TT::ParenthesisClose => depth = depth.saturating_sub(1),
+          TT::EOF => break,
+          _ => {}
+        }
+      }
+      let is_arrow = self.peek().typ == TT::EqualsChevronRight;
+      self.reset_to(checkpoint.next_tok_i);
+      return if is_arrow {
+        Ok(self.arrow_func_expr(ctx, terminators)?.into_wrapped())
+      } else {
+        self.grouping(ctx, asi)
+      };
+    }
+
+    // Try and parse as arrow function signature first.
+    // If we fail, backtrack and parse as grouping instead.
     self
       .rewindable::<Node<Expr>, _>(|p| match p.arrow_func_expr(ctx, terminators) {
         Ok(expr) => Ok(Some(expr.into_wrapped())),
