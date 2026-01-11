@@ -400,6 +400,12 @@ mod linux {
     struct Inner {
         ring: Option<IoUring>,
         next_id: u64,
+        /// Number of in-flight internal ops submitted with `user_data == INTERNAL_USER_DATA`.
+        ///
+        /// These ops are not tracked in `ops`/`multishots`, but they can still cause the kernel to
+        /// write CQEs into the ring mappings after submission (e.g. `IORING_OP_PROVIDE_BUFFERS`).
+        /// We must therefore keep the ring alive until their CQEs have been observed.
+        internal_in_flight: usize,
         ops: HashMap<OpId, OpState>,
         multishots: HashMap<OpId, MultiShotRecvMsgState>,
         ready: VecDeque<Completion>,
@@ -417,6 +423,11 @@ mod linux {
                 let id = OpId::from_u64(cqe.user_data());
                 let res = cqe.result();
                 let flags = cqe.flags();
+
+                if id.as_u64() == INTERNAL_USER_DATA {
+                    self.internal_in_flight = self.internal_in_flight.saturating_sub(1);
+                    continue;
+                }
 
                 if self.multishots.contains_key(&id) {
                     let event = self
@@ -502,7 +513,7 @@ mod linux {
             // Best-effort: process any already-ready CQEs so completed ops don't force a leak.
             self.poll_completions();
 
-            if self.ops.is_empty() && self.multishots.is_empty() {
+            if self.ops.is_empty() && self.multishots.is_empty() && self.internal_in_flight == 0 {
                 return;
             }
 
@@ -511,9 +522,10 @@ mod linux {
             // op resources to preserve memory safety.
             #[cfg(debug_assertions)]
             eprintln!(
-                "runtime-io-uring: dropping legacy Driver with {} in-flight ops ({} multishots); leaking ring + op state",
+                "runtime-io-uring: dropping legacy Driver with {} in-flight ops ({} multishots, {} internal); leaking ring + op state",
                 self.ops.len(),
-                self.multishots.len()
+                self.multishots.len(),
+                self.internal_in_flight
             );
 
             if let Some(ring) = self.ring.take() {
@@ -572,6 +584,7 @@ mod linux {
                 inner: Arc::new(Mutex::new(Inner {
                     ring: Some(IoUring::new(entries)?),
                     next_id: 1,
+                    internal_in_flight: 0,
                     ops: HashMap::new(),
                     multishots: HashMap::new(),
                     ready: VecDeque::new(),
@@ -634,6 +647,7 @@ mod linux {
                 unsafe {
                     sq.push(&entry).unwrap();
                 }
+                inner.internal_in_flight = inner.internal_in_flight.saturating_add(1);
             }
 
             inner
@@ -669,6 +683,7 @@ mod linux {
                 unsafe {
                     sq.push(&entry).unwrap();
                 }
+                inner.internal_in_flight = inner.internal_in_flight.saturating_add(1);
             }
 
             inner
@@ -971,6 +986,11 @@ mod linux {
                     let id = OpId::from_u64(cqe.user_data());
                     let res = cqe.result();
                     let flags = cqe.flags();
+
+                    if id.as_u64() == INTERNAL_USER_DATA {
+                        inner.internal_in_flight = inner.internal_in_flight.saturating_sub(1);
+                        continue;
+                    }
 
                     if inner.multishots.contains_key(&id) {
                         let event = inner
