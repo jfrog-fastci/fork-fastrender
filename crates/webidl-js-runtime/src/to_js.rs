@@ -344,25 +344,37 @@ fn to_js_sequence<R: WebIdlJsRuntime>(
   }
 
   let array = rt.alloc_array()?;
-  for (idx, item) in values.iter().enumerate() {
-    let idx_u32: u32 = idx
-      .try_into()
-      .map_err(|_| rt.throw_range_error("sequence index exceeds u32"))?;
-    let js_value = to_js_with_limits_inner(rt, ctx, elem_ty, item, limits, typedef_stack)?;
-    let key = rt.property_key_from_u32(idx_u32)?;
-    rt.define_data_property(array, key, js_value, true)?;
-  }
+  // Root `array` while converting elements and finalizing `length`: `to_js_with_limits_inner` and
+  // key/property definitions may allocate and trigger GC, and the freshly-allocated array must
+  // remain alive until we return it.
+  rt.with_stack_roots(&[array], |rt| {
+    for (idx, item) in values.iter().enumerate() {
+      let idx_u32: u32 = idx
+        .try_into()
+        .map_err(|_| rt.throw_range_error("sequence index exceeds u32"))?;
+      let js_value = to_js_with_limits_inner(rt, ctx, elem_ty, item, limits, typedef_stack)?;
+      // Root the element value while allocating the index property key. Allocating the key can
+      // trigger GC, and without rooting the newly-created value can be collected before we define
+      // it onto `array`.
+      rt.with_stack_roots(&[js_value], |rt| {
+        let key = rt.property_key_from_u32(idx_u32)?;
+        rt.define_data_property(array, key, js_value, true)?;
+        Ok(())
+      })?;
+    }
 
-  // Arrays expose a non-enumerable `length` data property.
-  //
-  // Some runtimes may choose to return an Array exotic object from `alloc_array` (preferred), in
-  // which case `length` already exists with the correct attributes. If `alloc_array` returns an
-  // ordinary object, define `length` manually.
-  let length_key = rt.property_key_from_str("length")?;
-  if rt.get_own_property(array, length_key)?.is_none() {
-    rt.define_data_property(array, length_key, rt.js_number(values.len() as f64), false)?;
-  }
-  Ok(array)
+    // Arrays expose a non-enumerable `length` data property.
+    //
+    // Some runtimes may choose to return an Array exotic object from `alloc_array` (preferred), in
+    // which case `length` already exists with the correct attributes. If `alloc_array` returns an
+    // ordinary object, define `length` manually.
+    let length_key = rt.property_key_from_str("length")?;
+    if rt.get_own_property(array, length_key)?.is_none() {
+      rt.define_data_property(array, length_key, rt.js_number(values.len() as f64), false)?;
+    }
+
+    Ok(array)
+  })
 }
 
 fn to_js_named<R: WebIdlJsRuntime>(
@@ -527,23 +539,32 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
   let obj = rt.alloc_object()?;
   // Define properties in WebIDL dictionary serialization order: inherited dictionaries from least
   // to most derived, and members in lexicographical order.
-  for member in &schema {
-    let v = if let Some(v) = members.get(&member.name) {
-      Some(std::borrow::Cow::Borrowed(v))
-    } else if let Some(default) = &member.default {
-      let v = eval_default_value(&member.ty, default, ctx)
-        .map_err(|e| throw_webidl_exception(rt, e))?;
-      Some(std::borrow::Cow::Owned(v))
-    } else {
-      None
-    };
-    let Some(v) = v else {
-      continue;
-    };
-    let js_value = to_js_with_limits_inner(rt, ctx, &member.ty, &v, limits, typedef_stack)?;
-    let prop_key = rt.property_key_from_str(&member.name)?;
-    rt.define_data_property(obj, prop_key, js_value, true)?;
-  }
+  // Root `obj` while converting dictionary members. Converting member values can allocate and
+  // trigger GC, so the not-yet-returned object must be treated as a root.
+  rt.with_stack_roots(&[obj], |rt| {
+    for member in &schema {
+      let v = if let Some(v) = members.get(&member.name) {
+        Some(std::borrow::Cow::Borrowed(v))
+      } else if let Some(default) = &member.default {
+        let v = eval_default_value(&member.ty, default, ctx)
+          .map_err(|e| throw_webidl_exception(rt, e))?;
+        Some(std::borrow::Cow::Owned(v))
+      } else {
+        None
+      };
+      let Some(v) = v else {
+        continue;
+      };
+      let js_value = to_js_with_limits_inner(rt, ctx, &member.ty, &v, limits, typedef_stack)?;
+      // Root the member value while allocating its property key. Allocating the key can trigger GC.
+      rt.with_stack_roots(&[js_value], |rt| {
+        let prop_key = rt.property_key_from_str(&member.name)?;
+        rt.define_data_property(obj, prop_key, js_value, true)?;
+        Ok(())
+      })?;
+    }
+    Ok(())
+  })?;
 
   Ok(obj)
 }
@@ -582,11 +603,20 @@ fn to_js_record<R: WebIdlJsRuntime>(
   }
 
   let obj = rt.alloc_object()?;
-  for (key, v) in entries.iter() {
-    let js_value = to_js_with_limits_inner(rt, ctx, value_ty, v, limits, typedef_stack)?;
-    let prop_key = rt.property_key_from_str(key)?;
-    rt.define_data_property(obj, prop_key, js_value, true)?;
-  }
+  // Root `obj` while converting record entries: converting values can allocate and trigger GC, so
+  // the object must remain alive until returned.
+  rt.with_stack_roots(&[obj], |rt| {
+    for (key, v) in entries.iter() {
+      let js_value = to_js_with_limits_inner(rt, ctx, value_ty, v, limits, typedef_stack)?;
+      // Root the entry value while allocating its property key.
+      rt.with_stack_roots(&[js_value], |rt| {
+        let prop_key = rt.property_key_from_str(key)?;
+        rt.define_data_property(obj, prop_key, js_value, true)?;
+        Ok(())
+      })?;
+    }
+    Ok(())
+  })?;
   Ok(obj)
 }
 
@@ -627,7 +657,7 @@ mod tests {
   use crate::JsRuntime;
   use crate::VmJsRuntime;
   use std::collections::BTreeMap;
-  use vm_js::Value;
+  use vm_js::{HeapLimits, Value};
   use webidl_ir::{
     parse_default_value, parse_idl_type_complete, DictionaryMemberSchema, DictionarySchema, NamedType,
     NamedTypeKind, PlatformObject,
@@ -700,6 +730,36 @@ mod tests {
   }
 
   #[test]
+  fn sequence_to_array_is_gc_safe_under_extreme_gc_pressure() -> Result<(), Box<dyn std::error::Error>> {
+    // Force a GC before every allocation to stress rooting in `to_js_sequence`.
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+    let ctx = TypeContext::default();
+    let ty = parse_idl_type_complete("sequence<DOMString>")?;
+    let elem_ty = parse_idl_type_complete("DOMString")?;
+    let value = WebIdlValue::Sequence {
+      elem_ty: Box::new(elem_ty),
+      values: vec![
+        WebIdlValue::String("a".to_string()),
+        WebIdlValue::String("b".to_string()),
+      ],
+    };
+
+    let array = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert!(rt.is_object(array));
+
+    rt.with_stack_roots(&[array], |rt| {
+      for (idx, expected) in [(0u32, "a"), (1u32, "b")] {
+        let key = rt.property_key_from_u32(idx)?;
+        let got = rt.get(array, key)?;
+        assert_eq!(rt.string_to_utf8_lossy(got)?, expected);
+      }
+      Ok(())
+    })?;
+
+    Ok(())
+  }
+
+  #[test]
   fn dictionary_to_object_defines_enumerable_own_properties() -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = TypeContext::default();
     ctx.add_dictionary(DictionarySchema {
@@ -754,6 +814,55 @@ mod tests {
       return Err("expected label to be a JS string".into());
     };
     assert_eq!(rt.heap().get_string(handle)?.to_utf8_lossy(), "ok");
+
+    Ok(())
+  }
+
+  #[test]
+  fn dictionary_to_object_is_gc_safe_under_extreme_gc_pressure() -> Result<(), Box<dyn std::error::Error>> {
+    let mut ctx = TypeContext::default();
+    ctx.add_dictionary(DictionarySchema {
+      name: "Options".to_string(),
+      inherits: None,
+      members: vec![
+        DictionaryMemberSchema {
+          name: "count".to_string(),
+          required: false,
+          ty: parse_idl_type_complete("long")?,
+          default: None,
+        },
+        DictionaryMemberSchema {
+          name: "label".to_string(),
+          required: false,
+          ty: parse_idl_type_complete("DOMString")?,
+          default: None,
+        },
+      ],
+    });
+
+    let ty = parse_idl_type_complete("Options")?;
+    let value = WebIdlValue::Dictionary {
+      name: "Options".to_string(),
+      members: BTreeMap::from([
+        ("count".to_string(), WebIdlValue::Long(3)),
+        ("label".to_string(), WebIdlValue::String("ok".to_string())),
+      ]),
+    };
+
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+    let obj = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert!(rt.is_object(obj));
+
+    rt.with_stack_roots(&[obj], |rt| {
+      let count_key = rt.property_key_from_str("count")?;
+      let count_value = rt.get(obj, count_key)?;
+      assert_eq!(rt.to_number(count_value)?, 3.0);
+
+      let label_key = rt.property_key_from_str("label")?;
+      let label_value = rt.get(obj, label_key)?;
+      assert_eq!(rt.string_to_utf8_lossy(label_value)?, "ok");
+      Ok(())
+    })?;
 
     Ok(())
   }
@@ -958,6 +1067,42 @@ mod tests {
         .ok_or_else(|| "missing record property")?;
       assert!(desc.enumerable);
     }
+
+    Ok(())
+  }
+
+  #[test]
+  fn record_to_object_is_gc_safe_under_extreme_gc_pressure() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("record<DOMString, DOMString>")?;
+    let key_ty = parse_idl_type_complete("DOMString")?;
+    let value_ty = parse_idl_type_complete("DOMString")?;
+
+    let entries = vec![
+      ("a".to_string(), WebIdlValue::String("x".to_string())),
+      ("b".to_string(), WebIdlValue::String("y".to_string())),
+    ];
+    let value = WebIdlValue::Record {
+      key_ty: Box::new(key_ty),
+      value_ty: Box::new(value_ty),
+      entries,
+    };
+
+    let obj = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert!(rt.is_object(obj));
+
+    rt.with_stack_roots(&[obj], |rt| {
+      let a_key = rt.property_key_from_str("a")?;
+      let a_value = rt.get(obj, a_key)?;
+      assert_eq!(rt.string_to_utf8_lossy(a_value)?, "x");
+
+      let b_key = rt.property_key_from_str("b")?;
+      let b_value = rt.get(obj, b_key)?;
+      assert_eq!(rt.string_to_utf8_lossy(b_value)?, "y");
+      Ok(())
+    })?;
 
     Ok(())
   }
