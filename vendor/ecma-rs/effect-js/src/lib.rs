@@ -101,6 +101,8 @@ mod tests {
       "Object.keys",
       "Object.values",
       "Object.entries",
+      "Object.fromEntries",
+      "Object.create",
       "fetch",
       "MutationObserver",
       "MutationObserver.prototype.observe",

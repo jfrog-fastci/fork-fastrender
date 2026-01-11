@@ -38,3 +38,31 @@
     network: false
     nondeterministic: false
   purity: Pure
+
+- name: Object.fromEntries
+  semantics: ObjectFromEntries
+  signature: "(iterable) => object"
+  since: "baseline"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity:
+    template: allocating
+
+- name: Object.create
+  semantics: ObjectCreate
+  signature: "(proto, properties?) => object"
+  since: "baseline"
+  effects:
+    template: pure
+    may_throw: true
+    allocates: true
+    io: false
+    network: false
+    nondeterministic: false
+  purity:
+    template: allocating
