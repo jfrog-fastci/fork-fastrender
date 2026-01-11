@@ -347,12 +347,15 @@ fn visit_callsite_reloc_pairs(
   f: &mut dyn FnMut(RelocPair),
 ) -> bool {
   // LLVM StackMaps `Indirect [SP + off]` locations are based on the caller function's stack pointer
-  // at the safepoint call site. When walking via frame pointers, we can recover that callsite SP
-  // from the callee frame pointer; [`StackWalker`] exposes it as `FrameView::caller_cfa`.
+  // at the safepoint call site. For frame-pointer walking we typically only have FP, so use the
+  // stackmap function record's `stack_size` to reconstruct that SP.
   let Ok(caller_fp) = u64::try_from(frame.caller_fp) else {
     return false;
   };
-  let Ok(caller_sp) = u64::try_from(frame.caller_cfa) else {
+  let Some(stack_size) = callsite.stack_size.as_u64() else {
+    return false;
+  };
+  let Some(caller_sp) = crate::stackwalk::compute_sp(caller_fp, stack_size) else {
     return false;
   };
 
