@@ -78,3 +78,38 @@ fn linear_gradient_pattern_with_rounded_clip_respects_scale_transform() {
     "expected constant-white region under scaleY transform (with rounded clip), got rgba=({r},{g},{b},{a})"
   );
 }
+
+#[test]
+fn linear_gradient_pattern_does_not_bleed_outside_dest_rect_at_fractional_edges() {
+  // Regression for python.org: the main header background uses a repeating linear-gradient pattern
+  // and starts at a fractional device pixel. The pattern renderer must not expand the painted
+  // region to the `floor/ceil` bounds of the destination rect, otherwise it overwrites the scanline
+  // immediately above the element (hiding the preceding section's 1px border).
+  let html = r#"
+    <style>
+      body { margin: 0; background: rgb(31, 59, 71); }
+      #target {
+        position: absolute;
+        left: 0;
+        top: 120.944534px;
+        width: 100px;
+        height: 50px;
+        background-color: rgb(43, 91, 132);
+        /* Default background-repeat is `repeat`, which exercises the Pattern display item path. */
+        background-image: linear-gradient(180deg, rgb(30, 65, 94) 10%, rgb(43, 91, 132) 90%);
+      }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let pixmap = render_display_list(html, 120, 200);
+
+  // Pixel y=120 is above the element's top edge (120.9445px), so it must remain the body
+  // background color.
+  let (r, g, b, a) = rgba_at(&pixmap, 0, 120);
+  assert_eq!(
+    (r, g, b, a),
+    (31, 59, 71, 255),
+    "expected background above the element to remain unchanged, got rgba=({r},{g},{b},{a})"
+  );
+}

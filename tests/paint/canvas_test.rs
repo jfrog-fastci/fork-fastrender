@@ -213,6 +213,37 @@ fn opaque_axis_aligned_rect_fills_are_pixel_snapped() {
 }
 
 #[test]
+fn opaque_axis_aligned_rect_fills_do_not_overpaint_adjacent_fractional_strips() {
+  let mut canvas = Canvas::new(10, 200, Rgba::WHITE).unwrap();
+
+  // Regression test for python.org: the top bar ends at a fractional device pixel and has a 1px
+  // bottom border. The next section background starts at the same fractional edge and must not
+  // "bleed" upward and overwrite the border scanline.
+  //
+  // Coordinates taken from the python.org display list dump:
+  // - border strip: y=119.944534 h=1
+  // - next background: y=120.944534
+  let border_color = Rgba::rgb(31, 59, 71); // #1f3b47
+  let bg_color = Rgba::rgb(43, 91, 132); // #2b5b84
+
+  canvas.draw_rect(
+    Rect::from_xywh(0.0, 119.94453430175781, 10.0, 1.0),
+    border_color,
+  );
+  canvas.draw_rect(
+    Rect::from_xywh(0.0, 120.94453430175781, 10.0, 10.0),
+    bg_color,
+  );
+
+  let p120 = canvas.pixmap().pixel(0, 120).unwrap();
+  assert_eq!(
+    (p120.red(), p120.green(), p120.blue(), p120.alpha()),
+    (31, 59, 71, 255),
+    "expected the border scanline to remain visible"
+  );
+}
+
+#[test]
 fn near_opaque_axis_aligned_rect_fills_are_pixel_snapped() {
   let mut canvas = Canvas::new(10, 60, Rgba::WHITE).unwrap();
 
