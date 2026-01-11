@@ -5,7 +5,9 @@ use crate::resource::{
   origin_from_url, validate_cors_allow_origin, DocumentOrigin, FetchCredentialsMode,
   FetchDestination, FetchRequest, HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
-use crate::url_normalize::{normalize_http_url_for_resolution, normalize_url_reference_for_resolution};
+use crate::url_normalize::{
+  normalize_http_url_for_resolution, normalize_url_reference_for_resolution,
+};
 use http::{header::HeaderName, Method};
 use std::collections::HashSet;
 use url::Url;
@@ -52,7 +54,10 @@ fn effective_referrer_url<'a>(
   Some(request.referrer.as_str())
 }
 
-fn effective_referrer_policy(request: &Request, ctx: WebFetchExecutionContext<'_>) -> ReferrerPolicy {
+fn effective_referrer_policy(
+  request: &Request,
+  ctx: WebFetchExecutionContext<'_>,
+) -> ReferrerPolicy {
   if request.referrer_policy != ReferrerPolicy::EmptyString {
     request.referrer_policy
   } else {
@@ -546,9 +551,7 @@ pub fn execute_web_fetch<'a>(
           )));
         }
         if runtime::runtime_toggles().truthy("FASTR_WEB_FETCH_DEBUG") {
-          eprintln!(
-            "web fetch: skipping invalid response header {name:?}: {value:?} ({err})"
-          );
+          eprintln!("web fetch: skipping invalid response header {name:?}: {value:?} ({err})");
         }
       }
     }
@@ -558,9 +561,15 @@ pub fn execute_web_fetch<'a>(
     None
   } else {
     Some(
-      Body::new_response(std::mem::take(&mut resource.bytes), request.headers.limits()).map_err(
-        |err| Error::Other(format!("web fetch response body exceeds configured limits: {err}")),
-      )?,
+      Body::new_response(
+        std::mem::take(&mut resource.bytes),
+        request.headers.limits(),
+      )
+      .map_err(|err| {
+        Error::Other(format!(
+          "web fetch response body exceeds configured limits: {err}"
+        ))
+      })?,
     )
   };
 
@@ -604,7 +613,10 @@ pub fn execute_web_fetch<'a>(
     }
   };
 
-  if matches!(response_type, ResponseType::Opaque | ResponseType::OpaqueRedirect) {
+  if matches!(
+    response_type,
+    ResponseType::Opaque | ResponseType::OpaqueRedirect
+  ) {
     return Ok(opaque_response(response_type));
   }
 
@@ -805,7 +817,10 @@ mod tests {
       .lines()
       .find(|line| line.starts_with("content-length:"))
     {
-      let len = len_line["content-length:".len()..].trim().parse::<usize>().unwrap();
+      let len = len_line["content-length:".len()..]
+        .trim()
+        .parse::<usize>()
+        .unwrap();
       while body.len() < len {
         let read = loop {
           match stream.read(&mut tmp) {
@@ -1112,7 +1127,9 @@ mod tests {
     let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect_err("expected error");
     assert!(matches!(err, Error::Resource(_)));
-    assert!(err.to_string().contains("does not support arbitrary HTTP requests"));
+    assert!(err
+      .to_string()
+      .contains("does not support arbitrary HTTP requests"));
   }
 
   #[test]
@@ -1343,8 +1360,7 @@ mod tests {
       client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
     };
-    let err =
-      execute_web_fetch(&fetcher, &request, ctx).expect_err("expected wildcard CORS fail");
+    let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected wildcard CORS fail");
     assert!(err
       .to_string()
       .contains("Access-Control-Allow-Origin * is not allowed"));
@@ -1428,10 +1444,19 @@ mod tests {
     let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected CORS response");
 
     assert_eq!(response.r#type, ResponseType::Cors);
-    assert_eq!(response.headers.get("content-type").unwrap().as_deref(), Some("text/plain"));
-    assert_eq!(response.headers.get("x-exposed").unwrap().as_deref(), Some("yes"));
+    assert_eq!(
+      response.headers.get("content-type").unwrap().as_deref(),
+      Some("text/plain")
+    );
+    assert_eq!(
+      response.headers.get("x-exposed").unwrap().as_deref(),
+      Some("yes")
+    );
     assert_eq!(response.headers.get("x-hidden").unwrap(), None);
-    assert_eq!(response.headers.get("access-control-allow-origin").unwrap(), None);
+    assert_eq!(
+      response.headers.get("access-control-allow-origin").unwrap(),
+      None
+    );
   }
 
   #[test]
@@ -1463,7 +1488,10 @@ mod tests {
       response.headers.get("content-type").unwrap().as_deref(),
       Some("text/plain")
     );
-    assert_eq!(response.headers.get("x-test").unwrap().as_deref(), Some("a"));
+    assert_eq!(
+      response.headers.get("x-test").unwrap().as_deref(),
+      Some("a")
+    );
 
     let mut unexposed_resource = FetchedResource::new(b"ok".to_vec(), None);
     unexposed_resource.access_control_allow_origin = Some("*".to_string());
@@ -1506,8 +1534,12 @@ mod tests {
       client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
     };
-    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected wildcard expose pass");
-    assert_eq!(response.headers.get("x-hidden").unwrap().as_deref(), Some("no"));
+    let response =
+      execute_web_fetch(&fetcher, &request, ctx).expect("expected wildcard expose pass");
+    assert_eq!(
+      response.headers.get("x-hidden").unwrap().as_deref(),
+      Some("no")
+    );
 
     let fetcher = StaticFetcher { resource };
     let mut request = Request::new("GET", "https://other.example/res");
@@ -1519,6 +1551,154 @@ mod tests {
     let response =
       execute_web_fetch(&fetcher, &request, ctx).expect("expected credentialed CORS response");
     assert_eq!(response.headers.get("x-hidden").unwrap(), None);
+  }
+
+  #[test]
+  fn cors_preflight_wildcard_allow_headers_allows_non_credentialed_request() {
+    if skip_if_curl_backend_missing(
+      "cors_preflight_wildcard_allow_headers_allows_non_credentialed_request",
+    ) {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_wildcard_allow_headers_allows_non_credentialed_request")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      // Preflight request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push(headers);
+      let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: http://client.example\r\nAccess-Control-Allow-Methods: *\r\nAccess-Control-Allow-Headers: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push(headers);
+      let body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/preflight");
+    let mut request = Request::new("PUT", &url);
+    request.headers.append("X-Test", "hello").unwrap();
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let mut response =
+      execute_web_fetch(&fetcher, &request, ctx).expect("expected CORS preflight to pass");
+    assert_eq!(response.status, 200);
+    assert_eq!(
+      response.body.as_mut().unwrap().consume_bytes().unwrap(),
+      b"ok"
+    );
+    handle.join().unwrap();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 2, "expected two requests, got {captured:?}");
+    let first = captured[0].to_ascii_lowercase();
+    let second = captured[1].to_ascii_lowercase();
+    assert!(
+      first.starts_with("options /preflight"),
+      "first request: {first}"
+    );
+    assert!(
+      second.starts_with("put /preflight"),
+      "second request: {second}"
+    );
+    assert!(
+      second.contains("x-test: hello"),
+      "expected user header, got:\n{second}"
+    );
+  }
+
+  #[test]
+  fn cors_preflight_wildcard_allow_headers_rejected_for_credentialed_request() {
+    if skip_if_curl_backend_missing(
+      "cors_preflight_wildcard_allow_headers_rejected_for_credentialed_request",
+    ) {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_wildcard_allow_headers_rejected_for_credentialed_request")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      // Preflight request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      assert!(
+        headers
+          .to_ascii_lowercase()
+          .starts_with("options /preflight"),
+        "unexpected request:\n{headers}"
+      );
+      let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: http://client.example\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Methods: *\r\nAccess-Control-Allow-Headers: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Ensure no follow-up request arrives.
+      listener.set_nonblocking(true).unwrap();
+      let start = std::time::Instant::now();
+      while start.elapsed() < Duration::from_millis(200) {
+        match listener.accept() {
+          Ok(_) => panic!("unexpected follow-up request after failed CORS preflight"),
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept after preflight: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/preflight");
+    let mut request = Request::new("PUT", &url);
+    request.headers.append("X-Test", "hello").unwrap();
+    request.credentials = RequestCredentials::Include;
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let err =
+      execute_web_fetch(&fetcher, &request, ctx).expect_err("expected CORS preflight to fail");
+    let msg = err.to_string().to_ascii_lowercase();
+    assert!(
+      msg.contains("preflight")
+        && msg.contains("wildcard")
+        && msg.contains("allow-methods")
+        && msg.contains("allow-headers"),
+      "unexpected error: {msg}"
+    );
+    handle.join().unwrap();
   }
 
   #[test]
@@ -1812,11 +1992,17 @@ mod tests {
     let mut response =
       execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
     assert_eq!(response.status, 200);
-    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    assert_eq!(
+      response.body.as_mut().unwrap().consume_bytes().unwrap(),
+      b"ok"
+    );
     handle.join().unwrap();
 
     let req = captured.lock().unwrap().to_ascii_lowercase();
-    assert!(req.contains("x-test: hello"), "expected header, got:\n{req}");
+    assert!(
+      req.contains("x-test: hello"),
+      "expected header, got:\n{req}"
+    );
   }
 
   #[test]
@@ -1853,7 +2039,10 @@ mod tests {
     let mut response =
       execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
     assert_eq!(response.status, 200);
-    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    assert_eq!(
+      response.body.as_mut().unwrap().consume_bytes().unwrap(),
+      b"ok"
+    );
     handle.join().unwrap();
     assert_eq!(&*captured.lock().unwrap(), b"hello");
   }
@@ -1896,7 +2085,10 @@ mod tests {
     let mut response =
       execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
     assert_eq!(response.status, 200);
-    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+    assert_eq!(
+      response.body.as_mut().unwrap().consume_bytes().unwrap(),
+      b"ok"
+    );
     handle.join().unwrap();
 
     let req = captured_headers.lock().unwrap().to_ascii_lowercase();
@@ -1904,7 +2096,10 @@ mod tests {
       req.starts_with("put /custom"),
       "expected PUT request line, got:\n{req}"
     );
-    assert!(req.contains("x-test: hello"), "expected user header, got:\n{req}");
+    assert!(
+      req.contains("x-test: hello"),
+      "expected user header, got:\n{req}"
+    );
     assert_eq!(&*captured_body.lock().unwrap(), b"payload");
   }
 
@@ -1955,8 +2150,15 @@ mod tests {
       execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
     assert_eq!(response.status, 200);
     assert!(response.redirected);
-    assert!(response.url.ends_with("/final"), "unexpected url: {}", response.url);
-    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"done");
+    assert!(
+      response.url.ends_with("/final"),
+      "unexpected url: {}",
+      response.url
+    );
+    assert_eq!(
+      response.body.as_mut().unwrap().consume_bytes().unwrap(),
+      b"done"
+    );
     handle.join().unwrap();
 
     let captured = captured.lock().unwrap();
@@ -2365,7 +2567,10 @@ mod tests {
     assert!(matches!(err, Error::Other(_)));
     let message = err.to_string();
     assert!(message.contains("no-cors"), "unexpected error: {message}");
-    assert!(message.contains("CORS-safelisted"), "unexpected error: {message}");
+    assert!(
+      message.contains("CORS-safelisted"),
+      "unexpected error: {message}"
+    );
   }
 
   #[test]
@@ -2408,8 +2613,7 @@ mod tests {
       client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
     };
-    let response =
-      execute_web_fetch(&fetcher, &request, ctx).expect("expected opaque response");
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected opaque response");
     assert_eq!(fetcher.hits.load(Ordering::SeqCst), 1);
     assert_eq!(response.r#type, ResponseType::Opaque);
     assert_eq!(response.status, 0);

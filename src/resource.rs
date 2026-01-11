@@ -245,7 +245,12 @@ impl ResourceAccessPolicy {
     let parsed = match Url::parse(effective_url_raw) {
       Ok(parsed) => parsed,
       Err(_) => {
-        if enforce_same_origin && matches!(classify_scheme(effective_url_raw), ResourceScheme::Http | ResourceScheme::Https) {
+        if enforce_same_origin
+          && matches!(
+            classify_scheme(effective_url_raw),
+            ResourceScheme::Http | ResourceScheme::Https
+          )
+        {
           if let Some(normalized) = normalize_http_url_for_fetch(effective_url_raw) {
             effective_url = Cow::Owned(normalized);
             Url::parse(effective_url.as_ref()).map_err(|_| PolicyError {
@@ -255,7 +260,9 @@ impl ResourceAccessPolicy {
             })?
           } else {
             return Err(PolicyError {
-              reason: format!("Blocked subresource with invalid or missing host: {effective_url_raw}"),
+              reason: format!(
+                "Blocked subresource with invalid or missing host: {effective_url_raw}"
+              ),
             });
           }
         } else {
@@ -442,6 +449,105 @@ fn merge_user_request_headers(
     headers.push((name.clone(), sanitize_request_header_value(value)));
   }
   Ok(())
+}
+
+fn is_cors_unsafe_request_header_byte(byte: u8) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-unsafe-request-header-byte
+  if byte < 0x20 && byte != 0x09 {
+    return true;
+  }
+  matches!(
+    byte,
+    0x22 | 0x28 | 0x29 | 0x3A | 0x3C | 0x3E | 0x3F | 0x40 | 0x5B | 0x5C | 0x5D | 0x7B | 0x7D | 0x7F
+  )
+}
+
+fn is_cors_safelisted_language_byte(byte: u8) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header
+  matches!(
+    byte,
+    b'0'..=b'9'
+      | b'A'..=b'Z'
+      | b'a'..=b'z'
+      | b' '
+      | b'*'
+      | b','
+      | b'-'
+      | b'.'
+      | b';'
+      | b'='
+  )
+}
+
+fn is_safelisted_range_header_value(value: &str) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header (range case)
+  let trimmed = trim_http_whitespace(value);
+  let Some(rest) = trimmed
+    .strip_prefix("bytes=")
+    .or_else(|| trimmed.strip_prefix("Bytes="))
+    .or_else(|| trimmed.strip_prefix("BYTES="))
+  else {
+    return false;
+  };
+
+  // Only allow `bytes=<start>-<end>` or `bytes=<start>-`.
+  let Some((start, end)) = rest.split_once('-') else {
+    return false;
+  };
+
+  if start.is_empty() {
+    return false;
+  }
+
+  if !start.chars().all(|c| c.is_ascii_digit()) {
+    return false;
+  }
+
+  if !end.is_empty() && !end.chars().all(|c| c.is_ascii_digit()) {
+    return false;
+  }
+
+  true
+}
+
+fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-request-header
+  if value.as_bytes().len() > 128 {
+    return false;
+  }
+
+  match name {
+    "accept" => !value
+      .as_bytes()
+      .iter()
+      .copied()
+      .any(is_cors_unsafe_request_header_byte),
+    "accept-language" | "content-language" => value
+      .as_bytes()
+      .iter()
+      .copied()
+      .all(is_cors_safelisted_language_byte),
+    "content-type" => {
+      if value
+        .as_bytes()
+        .iter()
+        .copied()
+        .any(is_cors_unsafe_request_header_byte)
+      {
+        return false;
+      }
+
+      let essence =
+        trim_http_whitespace(value.split(';').next().unwrap_or("")).to_ascii_lowercase();
+
+      matches!(
+        essence.as_str(),
+        "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
+      )
+    }
+    "range" => is_safelisted_range_header_value(value),
+    _ => false,
+  }
 }
 
 fn validate_http_method(url: &str, method: &str) -> Result<()> {
@@ -1449,7 +1555,10 @@ fn fetch_http_request_header_forbidden(name: &str, value: &str) -> bool {
         "x-http-method" | "x-http-method-override" | "x-method-override"
       ) {
         for method in value.split(',').map(trim_http_whitespace) {
-          if matches!(method.to_ascii_uppercase().as_str(), "CONNECT" | "TRACE" | "TRACK") {
+          if matches!(
+            method.to_ascii_uppercase().as_str(),
+            "CONNECT" | "TRACE" | "TRACK"
+          ) {
             return true;
           }
         }
@@ -3463,8 +3572,8 @@ pub trait ResourceFetcher: Send + Sync {
   /// body (and `redirect=follow`) by delegating to [`ResourceFetcher::fetch_with_request`]. Other
   /// requests return an error.
   fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
-    let legacy_fast_path = req.method.eq_ignore_ascii_case("GET")
-      || req.method.eq_ignore_ascii_case("HEAD");
+    let legacy_fast_path =
+      req.method.eq_ignore_ascii_case("GET") || req.method.eq_ignore_ascii_case("HEAD");
 
     if legacy_fast_path
       && req.headers.is_empty()
@@ -4436,10 +4545,29 @@ impl HttpFetcher {
     let mut effective_url = Cow::Borrowed(url);
     let mut attempted_www_fallback = false;
     let mut www_fallback_error: Option<Error> = None;
+    let mut preflight_completed_for: Option<String> = None;
 
     loop {
       render_control::check_active(render_stage_hint_for_context(kind, effective_url.as_ref()))
         .map_err(Error::Render)?;
+
+      if preflight_completed_for.as_deref() != Some(effective_url.as_ref()) {
+        self.perform_cors_preflight_if_needed(
+          kind,
+          destination,
+          effective_url.as_ref(),
+          method,
+          user_headers,
+          client_origin,
+          referrer_url,
+          referrer_policy,
+          credentials_mode,
+          deadline,
+          started,
+        )?;
+        preflight_completed_for = Some(effective_url.to_string());
+      }
+
       let result = match http_backend_mode() {
         HttpBackendMode::Curl => curl_backend::fetch_http_with_accept_inner(
           self,
@@ -4672,6 +4800,304 @@ impl HttpFetcher {
         }
       }
     }
+  }
+
+  fn perform_cors_preflight_if_needed(
+    &self,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    url: &str,
+    method: &str,
+    user_headers: &[(String, String)],
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
+    referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
+    deadline: &Option<render_control::RenderDeadline>,
+    started: Instant,
+  ) -> Result<()> {
+    // CORS preflight requests only apply to CORS-mode fetches.
+    if destination.sec_fetch_mode() != "cors" {
+      return Ok(());
+    }
+    // Avoid issuing preflights when we don't know the initiating origin.
+    let Some(client_origin) = client_origin else {
+      return Ok(());
+    };
+
+    // Only preflight cross-origin requests.
+    let Some(target_origin) =
+      origin_from_url(url).or_else(|| http_browser_tolerant_origin_from_url(url))
+    else {
+      return Ok(());
+    };
+    if client_origin.same_origin(&target_origin) {
+      return Ok(());
+    }
+
+    // Avoid pathological recursion / nonsense: a preflight request is itself an OPTIONS request.
+    if method.eq_ignore_ascii_case("OPTIONS") {
+      return Ok(());
+    }
+
+    let method_is_safelisted = method.eq_ignore_ascii_case("GET")
+      || method.eq_ignore_ascii_case("HEAD")
+      || method.eq_ignore_ascii_case("POST");
+
+    // Determine which user-specified headers are CORS-unsafe and would therefore need to be
+    // included in `Access-Control-Request-Headers`.
+    let mut sanitized_user_headers: Vec<(String, String)> = Vec::new();
+    merge_user_request_headers(url, &mut sanitized_user_headers, user_headers)?;
+
+    let mut unsafe_header_names: HashSet<String> = HashSet::new();
+    for (name, value) in &sanitized_user_headers {
+      let Ok(parsed_name) = http::header::HeaderName::from_bytes(name.as_bytes()) else {
+        // `merge_user_request_headers` should have already validated names; treat as unsafe.
+        unsafe_header_names.insert(name.to_ascii_lowercase());
+        continue;
+      };
+      let canonical = parsed_name.as_str();
+      if !is_cors_safelisted_request_header(canonical, value) {
+        unsafe_header_names.insert(canonical.to_string());
+      }
+    }
+
+    let mut unsafe_header_names: Vec<String> = unsafe_header_names.into_iter().collect();
+    unsafe_header_names.sort();
+
+    let needs_preflight = !method_is_safelisted || !unsafe_header_names.is_empty();
+    if !needs_preflight {
+      return Ok(());
+    }
+
+    self.perform_cors_preflight_request(
+      kind,
+      destination,
+      url,
+      method,
+      &unsafe_header_names,
+      Some(client_origin),
+      referrer_url,
+      referrer_policy,
+      credentials_mode,
+      deadline,
+      started,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn perform_cors_preflight_request(
+    &self,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    url: &str,
+    method: &str,
+    unsafe_header_names: &[String],
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
+    referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
+    deadline: &Option<render_control::RenderDeadline>,
+    started: Instant,
+  ) -> Result<()> {
+    // Determine a request timeout consistent with the main fetch path (best-effort; preflight
+    // responses should be small).
+    let timeout_budget = self.timeout_budget(deadline);
+    let per_request_timeout = self.deadline_aware_timeout(kind, deadline.as_ref(), url)?;
+    let mut effective_timeout = per_request_timeout.unwrap_or(self.policy.request_timeout);
+    if let Some(budget) = timeout_budget {
+      match budget.checked_sub(started.elapsed()) {
+        Some(remaining) if remaining > HTTP_DEADLINE_BUFFER => {
+          let budget_timeout = remaining.saturating_sub(HTTP_DEADLINE_BUFFER);
+          effective_timeout = effective_timeout.min(budget_timeout);
+        }
+        _ => {
+          return Err(Error::Resource(
+            ResourceError::new(
+              url.to_string(),
+              "overall HTTP timeout budget exceeded before CORS preflight request".to_string(),
+            )
+            .with_final_url(url.to_string()),
+          ));
+        }
+      }
+    }
+
+    let mut headers = build_http_header_pairs(
+      url,
+      &self.user_agent,
+      &self.accept_language,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      destination,
+      client_origin,
+      referrer_url,
+      referrer_policy,
+    );
+    headers.push((
+      "Access-Control-Request-Method".to_string(),
+      method.to_string(),
+    ));
+    if !unsafe_header_names.is_empty() {
+      headers.push((
+        "Access-Control-Request-Headers".to_string(),
+        unsafe_header_names.join(", "),
+      ));
+    }
+
+    let mut request = self.reqwest_client.request(reqwest::Method::OPTIONS, url);
+    for (name, value) in &headers {
+      request = request.header(name, value);
+    }
+    if !effective_timeout.is_zero() {
+      request = request.timeout(effective_timeout);
+    }
+
+    let response = request.send().map_err(|err| {
+      Error::Resource(
+        ResourceError::new(
+          url.to_string(),
+          format!("CORS preflight request failed: {err}"),
+        )
+        .with_final_url(url.to_string())
+        .with_source(err),
+      )
+    })?;
+
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+      return Err(Error::Resource(
+        ResourceError::new(
+          url.to_string(),
+          format!("CORS preflight request failed: HTTP status {status}"),
+        )
+        .with_status(status)
+        .with_final_url(url.to_string()),
+      ));
+    }
+
+    let headers = response.headers();
+    let (access_control_allow_origin, access_control_allow_credentials) =
+      parse_cors_response_headers(headers);
+    let mut preflight_resource = FetchedResource::new(Vec::new(), None);
+    preflight_resource.final_url = Some(url.to_string());
+    preflight_resource.access_control_allow_origin = access_control_allow_origin;
+    preflight_resource.access_control_allow_credentials = access_control_allow_credentials;
+    if let Err(message) =
+      validate_cors_allow_origin(&preflight_resource, url, client_origin, credentials_mode)
+    {
+      return Err(Error::Resource(
+        ResourceError::new(
+          url.to_string(),
+          format!("blocked by CORS preflight: {message}"),
+        )
+        .with_status(status)
+        .with_final_url(url.to_string()),
+      ));
+    }
+
+    let allow_wildcard = credentials_mode != FetchCredentialsMode::Include;
+
+    let allow_methods_raw = header_values_joined(headers, "access-control-allow-methods");
+    let allow_headers_raw = header_values_joined(headers, "access-control-allow-headers");
+
+    let mut failures: Vec<String> = Vec::new();
+
+    // Validate `Access-Control-Allow-Methods`.
+    let method_allowed = allow_methods_raw.as_deref().is_some_and(|raw| {
+      let tokens = raw
+        .split(',')
+        .map(trim_http_whitespace)
+        .filter(|t| !t.is_empty());
+      let mut saw_star = false;
+      for token in tokens {
+        if token == "*" {
+          saw_star = true;
+          if allow_wildcard {
+            return true;
+          }
+          continue;
+        }
+        if token.eq_ignore_ascii_case(method) {
+          return true;
+        }
+      }
+      // When the response contained `*` but wildcard semantics are disabled, include the
+      // literal-match check for the (theoretical) `method="*"` case.
+      saw_star && !allow_wildcard && method == "*"
+    });
+
+    if !method_allowed {
+      let raw = allow_methods_raw.unwrap_or_else(|| "<missing>".to_string());
+      if raw.split(',').any(|t| trim_http_whitespace(t) == "*") && !allow_wildcard {
+        failures.push(format!(
+          "Access-Control-Allow-Methods wildcard does not apply for credentialed requests (got {raw:?})"
+        ));
+      } else {
+        failures.push(format!(
+          "Access-Control-Allow-Methods does not allow {method:?} (got {raw:?})"
+        ));
+      }
+    }
+
+    // Validate `Access-Control-Allow-Headers`.
+    if !unsafe_header_names.is_empty() {
+      let mut allow_all_headers = false;
+      let mut allowed_headers: HashSet<String> = HashSet::new();
+      if let Some(raw) = allow_headers_raw.as_deref() {
+        for token in raw
+          .split(',')
+          .map(trim_http_whitespace)
+          .filter(|t| !t.is_empty())
+        {
+          if token == "*" {
+            if allow_wildcard {
+              allow_all_headers = true;
+              continue;
+            }
+            allowed_headers.insert("*".to_string());
+            continue;
+          }
+          if let Ok(name) = http::header::HeaderName::from_bytes(token.as_bytes()) {
+            allowed_headers.insert(name.as_str().to_string());
+          }
+        }
+      }
+
+      if !allow_all_headers {
+        let mut missing: Vec<&str> = Vec::new();
+        for name in unsafe_header_names {
+          if !allowed_headers.contains(name) {
+            missing.push(name.as_str());
+          }
+        }
+        if !missing.is_empty() {
+          let raw = allow_headers_raw.unwrap_or_else(|| "<missing>".to_string());
+          if raw.split(',').any(|t| trim_http_whitespace(t) == "*") && !allow_wildcard {
+            failures.push(format!(
+              "Access-Control-Allow-Headers wildcard does not apply for credentialed requests (got {raw:?})"
+            ));
+          } else {
+            failures.push(format!(
+              "Access-Control-Allow-Headers does not allow {missing:?} (got {raw:?})"
+            ));
+          }
+        }
+      }
+    }
+
+    if !failures.is_empty() {
+      return Err(Error::Resource(
+        ResourceError::new(
+          url.to_string(),
+          format!("blocked by CORS preflight: {}", failures.join("; ")),
+        )
+        .with_status(status)
+        .with_final_url(url.to_string()),
+      ));
+    }
+
+    Ok(())
   }
 
   fn fetch_http_with_context_inner<'a>(
@@ -5232,7 +5658,8 @@ impl HttpFetcher {
         let vary = parse_vary_headers(response.headers());
         let final_url = response.get_uri().to_string();
         let response_headers = collect_response_headers(response.headers());
-        let allows_empty_body = http_response_allows_empty_body(kind, status_code, response.headers());
+        let allows_empty_body =
+          http_response_allows_empty_body(kind, status_code, response.headers());
 
         let substitute_empty_image_body =
           should_substitute_empty_image_body(kind, status_code, response.headers())
@@ -5753,7 +6180,8 @@ impl HttpFetcher {
         let vary = parse_vary_headers(response.headers());
         let final_url = response.url().to_string();
         let response_headers = collect_response_headers(response.headers());
-        let allows_empty_body = http_response_allows_empty_body(kind, status_code, response.headers());
+        let allows_empty_body =
+          http_response_allows_empty_body(kind, status_code, response.headers());
 
         let substitute_empty_image_body =
           should_substitute_empty_image_body(kind, status_code, response.headers())
@@ -6357,7 +6785,8 @@ impl HttpFetcher {
                 {
                   current_method = "GET";
                   current_body = None;
-                } else if matches!(status_code, 301 | 302) && current_method.eq_ignore_ascii_case("POST")
+                } else if matches!(status_code, 301 | 302)
+                  && current_method.eq_ignore_ascii_case("POST")
                 {
                   current_method = "GET";
                   current_body = None;
@@ -6376,9 +6805,7 @@ impl HttpFetcher {
                 let final_url = response.get_uri().to_string();
                 let err = ResourceError::new(
                   current.clone(),
-                  format!(
-                    "redirect encountered but redirect mode is error (status {status_code})"
-                  ),
+                  format!("redirect encountered but redirect mode is error (status {status_code})"),
                 )
                 .with_status(status_code)
                 .with_final_url(final_url);
@@ -6940,15 +7367,16 @@ impl HttpFetcher {
           }
         }
 
-        let reqwest_method = reqwest::Method::from_bytes(current_method.as_bytes()).map_err(|_| {
-          Error::Resource(
-            ResourceError::new(
-              current.clone(),
-              format!("invalid HTTP method: {}", current_method),
+        let reqwest_method =
+          reqwest::Method::from_bytes(current_method.as_bytes()).map_err(|_| {
+            Error::Resource(
+              ResourceError::new(
+                current.clone(),
+                format!("invalid HTTP method: {}", current_method),
+              )
+              .with_final_url(current.clone()),
             )
-            .with_final_url(current.clone()),
-          )
-        })?;
+          })?;
         let mut request = client.request(reqwest_method, &current);
         for (name, value) in &headers {
           request = request.header(name, value);
@@ -7067,7 +7495,8 @@ impl HttpFetcher {
                 {
                   current_method = "GET";
                   current_body = None;
-                } else if matches!(status_code, 301 | 302) && current_method.eq_ignore_ascii_case("POST")
+                } else if matches!(status_code, 301 | 302)
+                  && current_method.eq_ignore_ascii_case("POST")
                 {
                   current_method = "GET";
                   current_body = None;
@@ -7086,9 +7515,7 @@ impl HttpFetcher {
                 let final_url = response.url().to_string();
                 let err = ResourceError::new(
                   current.clone(),
-                  format!(
-                    "redirect encountered but redirect mode is error (status {status_code})"
-                  ),
+                  format!("redirect encountered but redirect mode is error (status {status_code})"),
                 )
                 .with_status(status_code)
                 .with_final_url(final_url);
@@ -7854,8 +8281,7 @@ impl ResourceFetcher for HttpFetcher {
     let kind: FetchContextKind = req.fetch.destination.into();
     let normalized = normalize_http_url_for_fetch(req.fetch.url);
     let url = normalized.as_deref().unwrap_or(req.fetch.url);
-    render_control::check_root(render_stage_hint_for_context(kind, url))
-      .map_err(Error::Render)?;
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     validate_http_method(url, req.method)?;
     let scheme = self.policy.ensure_url_allowed(url)?;
 
@@ -11117,10 +11543,11 @@ pub(crate) fn content_type_is_offline_placeholder_png(content_type: Option<&str>
   if !content_type_mime(content_type).eq_ignore_ascii_case(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME) {
     return false;
   }
-  content_type
-    .split(';')
-    .skip(1)
-    .any(|part| part.trim().eq_ignore_ascii_case(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MARKER_PARAM))
+  content_type.split(';').skip(1).any(|part| {
+    part
+      .trim()
+      .eq_ignore_ascii_case(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MARKER_PARAM)
+  })
 }
 
 /// Deterministic WOFF2 placeholder font used for offline fixtures.
@@ -11897,10 +12324,8 @@ mod tests {
       "1".to_string(),
     )])));
     runtime::with_thread_runtime_toggles(toggles, || {
-      let mut resource = FetchedResource::new(
-        Vec::new(),
-        Some("text/html; charset=utf-8".to_string()),
-      );
+      let mut resource =
+        FetchedResource::new(Vec::new(), Some("text/html; charset=utf-8".to_string()));
       resource.status = Some(200);
       let url = "https://example.com/photo.jpg";
       let err = ensure_image_mime_sane(&resource, url)
@@ -14639,8 +15064,7 @@ mod tests {
     assert_eq!(doc.sec_fetch_user(), Some("?1"));
     assert_eq!(doc.upgrade_insecure_requests(), Some("1"));
 
-    let font =
-      http_browser_request_profile_for_url("https://www.example.com/fonts/font.woff2");
+    let font = http_browser_request_profile_for_url("https://www.example.com/fonts/font.woff2");
     assert_eq!(font, FetchDestination::Font);
     assert_eq!(font.accept(), BROWSER_ACCEPT_ALL);
     assert_eq!(font.sec_fetch_dest(), "font");
@@ -20200,8 +20624,12 @@ mod tests {
       .with_client_origin(&origin)
       .with_credentials_mode(FetchCredentialsMode::Include);
 
-    let first = cache.fetch_with_request(req_same_origin).expect("same-origin fetch");
-    let second = cache.fetch_with_request(req_include).expect("include fetch");
+    let first = cache
+      .fetch_with_request(req_same_origin)
+      .expect("same-origin fetch");
+    let second = cache
+      .fetch_with_request(req_include)
+      .expect("include fetch");
 
     assert_eq!(
       calls.load(Ordering::SeqCst),
@@ -20251,7 +20679,9 @@ mod tests {
       .with_client_origin(&origin)
       .with_credentials_mode(FetchCredentialsMode::Omit);
 
-    let first = cache.fetch_with_request(req_same_origin).expect("same-origin fetch");
+    let first = cache
+      .fetch_with_request(req_same_origin)
+      .expect("same-origin fetch");
     let second = cache.fetch_with_request(req_omit).expect("omit fetch");
 
     assert_eq!(
@@ -21556,7 +21986,9 @@ mod tests {
 
   #[test]
   fn expires_uses_date_value_for_freshness() {
-    let date = UNIX_EPOCH.checked_add(Duration::from_secs(1_000_000)).unwrap();
+    let date = UNIX_EPOCH
+      .checked_add(Duration::from_secs(1_000_000))
+      .unwrap();
     let expires = date.checked_add(Duration::from_secs(10)).unwrap();
     let stored_at = date.checked_add(Duration::from_secs(5)).unwrap();
 
@@ -21590,7 +22022,9 @@ mod tests {
     let last_modified = UNIX_EPOCH
       .checked_add(Duration::from_secs(1_000_000))
       .unwrap();
-    let date = last_modified.checked_add(Duration::from_secs(1000)).unwrap();
+    let date = last_modified
+      .checked_add(Duration::from_secs(1000))
+      .unwrap();
     let stored_at = date;
 
     let meta = CachedHttpMetadata {
@@ -21745,7 +22179,9 @@ mod tests {
     let url = "http://example.com/must-revalidate-no-stale-if-error";
 
     cache.fetch(url).expect("seed fetch");
-    let err = cache.fetch(url).expect_err("expected refresh to fail without stale-if-error");
+    let err = cache
+      .fetch(url)
+      .expect_err("expected refresh to fail without stale-if-error");
     assert!(
       matches!(err, Error::Other(_)),
       "expected the underlying network error to be surfaced"
