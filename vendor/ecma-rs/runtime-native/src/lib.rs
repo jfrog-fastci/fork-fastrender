@@ -135,6 +135,79 @@ mod tests {
   }
 
   #[test]
+  fn type_descriptor_ptr_offsets_are_from_object_base() {
+    // This is a "sanity check" test that encodes the contract documented in
+    // `vendor/ecma-rs/docs/runtime-native.md`:
+    // - `TypeDescriptor.size` includes the `ObjHeader`
+    // - `TypeDescriptor.ptr_offsets[]` are byte offsets from the object base
+    //   pointer (the start of the `ObjHeader`), not from a payload pointer.
+    const DOCS: &str = include_str!("../../docs/runtime-native.md");
+    assert!(
+      DOCS.contains("object base pointer"),
+      "docs should describe base-pointer object references"
+    );
+    assert!(
+      !DOCS.contains("returns a pointer to the start of the *payload*"),
+      "docs must not describe payload-pointer object references"
+    );
+
+    #[repr(C)]
+    struct DummyPayload {
+      non_ptr0: usize,
+      ptr0: *mut u8,
+      non_ptr1: u32,
+      ptr1: *mut u8,
+    }
+
+    const PTR_OFFSETS: [usize; 2] = [
+      crate::gc::OBJ_HEADER_SIZE + std::mem::offset_of!(DummyPayload, ptr0),
+      crate::gc::OBJ_HEADER_SIZE + std::mem::offset_of!(DummyPayload, ptr1),
+    ];
+
+    const TOTAL_SIZE: usize = crate::gc::OBJ_HEADER_SIZE + std::mem::size_of::<DummyPayload>();
+    static DESC: crate::gc::TypeDescriptor = crate::gc::TypeDescriptor::new(TOTAL_SIZE, &PTR_OFFSETS);
+
+    #[repr(C)]
+    struct DummyObject {
+      header: crate::gc::ObjHeader,
+      payload: DummyPayload,
+    }
+
+    let mut obj = DummyObject {
+      header: crate::gc::ObjHeader {
+        type_desc: &DESC,
+        meta: 0,
+      },
+      payload: DummyPayload {
+        non_ptr0: 123,
+        ptr0: 0x1111usize as *mut u8,
+        non_ptr1: 456,
+        ptr1: 0x2222usize as *mut u8,
+      },
+    };
+
+    assert_eq!(DESC.size, std::mem::size_of::<DummyObject>());
+
+    let obj_base = (&mut obj as *mut DummyObject) as *mut u8;
+
+    // Verify that the computed pointer offsets match the actual field locations.
+    let ptr0_addr = (&mut obj.payload.ptr0 as *mut *mut u8) as usize;
+    let ptr1_addr = (&mut obj.payload.ptr1 as *mut *mut u8) as usize;
+    let base_addr = obj_base as usize;
+    assert_eq!(ptr0_addr - base_addr, PTR_OFFSETS[0]);
+    assert_eq!(ptr1_addr - base_addr, PTR_OFFSETS[1]);
+
+    // And ensure `for_each_ptr_slot` visits the right addresses given the base pointer.
+    let mut seen = Vec::<usize>::new();
+    unsafe {
+      crate::gc::for_each_ptr_slot(obj_base, |slot| {
+        seen.push(slot as usize);
+      });
+    }
+    assert_eq!(seen, vec![ptr0_addr, ptr1_addr]);
+  }
+
+  #[test]
   fn c_header_matches_exported_entrypoints() {
     const HEADER: &str = include_str!("../include/runtime_native.h");
 

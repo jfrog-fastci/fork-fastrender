@@ -257,26 +257,30 @@ more complete scheduler/async surface may add:
 ## 4. Memory model
 
 ### 4.1 What `rt_alloc` returns
-**`rt_alloc` returns a pointer to the start of the *payload*, not the header.**
+**`rt_alloc` returns a pointer to the start of the object** (the base address of
+the runtime GC header, i.e. `ObjHeader` in `runtime-native`).
 
-The runtime is free to place an internal header immediately before the payload:
+The allocation layout is:
 
 ```
-           +--------------------+
-obj_header | RtGcHeader         |
-           +--------------------+
-obj        | payload bytes...   |  <- returned pointer (void*)
-           +--------------------+
+obj (returned)  +--------------------+
+                | ObjHeader          |
+                +--------------------+
+                | payload bytes...   |
+                +--------------------+
 ```
 
-Codegen rules:
-- Treat the returned pointer as the canonical object reference.
-- Do **not** assume anything about header size/layout in compiled code.
-- Any operation that needs header access must go through runtime helpers
-  (or compiler-inserted constants derived from the ABI version).
+Contract:
+- `rt_alloc(size, shape)` returns the **object base pointer** (points to the
+  start of `ObjHeader`).
+- `size` is the **total allocation size** in bytes (**including** the header):
+  `ObjHeader + payload`.
+- All field offsets and pointer-map offsets are addressed relative to this base
+  pointer (no “hidden header before payload”).
 
-Rationale: returning the payload pointer keeps field offsets stable and avoids
-leaking runtime header layout into codegen.
+This matches the object layout described in `EXEC.plan.md`, e.g.:
+`struct MyObject { header: ObjectHeader, field1, ... }` — the header is the
+first field in memory.
 
 ### 4.2 Alignment guarantees
 Milestone 1 only requires that `rt_alloc(size, shape)` returns a pointer aligned
@@ -504,8 +508,8 @@ implementation, keep register support minimal: only what LLVM emits for statepoi
 To trace and potentially move objects, the GC needs:
 
 1) A way to identify the **shape** of each object.
-2) For each shape, a **pointer map** describing which payload offsets contain
-   GC pointers.
+2) For each shape, a **pointer map** describing which object offsets contain GC
+   pointers.
 
 #### 5.5.1 Header layout (runtime-private, but must exist)
 Each GC allocation conceptually starts with:
@@ -519,10 +523,10 @@ typedef struct RtGcHeader {
 } RtGcHeader;
 ```
 
-The header must be reachable from a payload pointer by a fixed negative offset
-known to the runtime. The runtime may also store the `shape_id` in the payload
-itself for some object kinds; the key requirement is: **given an object
-reference, GC can find its shape and enumerate pointer fields**.
+The object reference passed around by compiled code is the **base pointer** to
+this header (i.e. `rt_alloc` returns a pointer to the header, not to the payload
+after it). The key requirement is: **given an object reference, GC can find its
+shape and enumerate pointer fields**.
 
 #### 5.5.2 Shape descriptors
 The runtime maintains a table:
@@ -532,11 +536,10 @@ ShapeId -> { size, align, ptr_offsets[] }
 ```
 
 Where:
-- `size` is payload byte size for fixed-size objects (variable-size objects
-  store their length in payload and have a shape describing their pointer
-  structure).
-- `ptr_offsets[]` is a list of byte offsets from the payload pointer to each GC
-  pointer field.
+- `size` is the **total object size in bytes**, including the header.
+  - i.e. `ObjHeader + payload`.
+- `ptr_offsets[]` is a list of byte offsets from the **object base pointer**
+  (the address returned by `rt_alloc`) to each GC pointer field.
 
 This “offset list” representation is intentionally simple for the initial GC.
 Later we can switch to bitmaps/range encoding for compactness without changing

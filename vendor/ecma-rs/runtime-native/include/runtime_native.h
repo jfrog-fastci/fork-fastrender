@@ -60,6 +60,11 @@ void rt_thread_deinit(void);
 // -----------------------------------------------------------------------------
 // Memory
 // -----------------------------------------------------------------------------
+// Allocate a GC-managed object.
+//
+// Contract: returns the **object base pointer** (points to the start of the
+// runtime GC header / ObjHeader). `size` is the total allocation size in bytes
+// including the header and payload.
 uint8_t* rt_alloc(size_t size, ShapeId shape);
 // Allocate a pinned (non-moving) object. Pinned objects are intended for FFI /
 // host embeddings that require stable addresses.
@@ -70,6 +75,11 @@ uint8_t* rt_alloc_array(size_t len, size_t elem_size);
 // GC entrypoints (milestone runtime: mostly no-ops)
 // -----------------------------------------------------------------------------
 void rt_gc_safepoint(void);
+// Generational write barrier for an object field store.
+//
+// Contract: `obj` must be the same object base pointer that was returned from
+// `rt_alloc` (i.e. pointer to the start of the object's header), and `slot` must
+// point to the field being written.
 void rt_write_barrier(uint8_t* obj, uint8_t* slot);
 void rt_write_barrier_range(uint8_t* obj, uint8_t* start_slot, size_t len);
 void rt_gc_collect(void);
