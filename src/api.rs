@@ -11323,6 +11323,16 @@ impl FastRender {
       }
     }
 
+    // For static renders (no external interaction state), honor HTML autofocus by synthesizing a
+    // minimal focus [`InteractionState`]. This enables correct `:focus` selector matching and
+    // caret/selection painting for pages that rely on autofocus-driven styling.
+    let autofocus_state = if interaction_state.is_none() {
+      crate::interaction::autofocus::interaction_state_for_autofocus(&dom_with_state)
+    } else {
+      None
+    };
+    let interaction_state = interaction_state.or(autofocus_state.as_ref());
+
     let meta_color_scheme = if self.apply_meta_color_scheme {
       crate::html::color_scheme::extract_color_scheme_with_deadline(&dom_with_state)?
     } else {
@@ -19601,6 +19611,18 @@ mod tests {
     None
   }
 
+  fn find_styled_node_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
+    if node.node.get_attribute_ref("id") == Some(id) {
+      return Some(node);
+    }
+    for child in node.children.iter() {
+      if let Some(found) = find_styled_node_by_id(child, id) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
   #[test]
   fn render_pipeline_parses_html_with_scripting_enabled_semantics_by_default() {
     // `<noscript>` parsing semantics are controlled by html5ever's `scripting_enabled` flag:
@@ -19648,6 +19670,49 @@ mod tests {
     assert!(
       find_node_by_id(&dom_for_render, "noscript").is_some(),
       "expected render parse toggle to enable scripting-disabled <noscript> parsing"
+    );
+  }
+
+  #[test]
+  fn render_pipeline_honors_autofocus_for_focus_pseudo_class_matching() {
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            #skip, #target { box-shadow: none; }
+            #skip:focus { box-shadow: 0 0 1px rgb(9, 9, 9); }
+            #target:focus { box-shadow: 0 0 1px rgb(1, 2, 3); }
+          </style>
+        </head>
+        <body>
+          <input id="skip" autofocus disabled>
+          <input id="target" autofocus>
+        </body>
+      </html>"#;
+
+    let config = FastRenderConfig::default()
+      // Avoid inheriting ambient FASTR_* env vars in the test runner.
+      .with_runtime_toggles(RuntimeToggles::default())
+      .with_font_sources(FontConfig::bundled_only())
+      .with_paint_parallelism(PaintParallelism::disabled())
+      .with_layout_parallelism(LayoutParallelism::disabled());
+    let mut renderer = FastRender::with_config(config).expect("renderer");
+    let prepared = renderer
+      .prepare_html(html, RenderOptions::new().with_viewport(200, 100))
+      .expect("prepare_html");
+
+    let skip = find_styled_node_by_id(prepared.styled_tree(), "skip").expect("skip node");
+    let target = find_styled_node_by_id(prepared.styled_tree(), "target").expect("target node");
+
+    assert_eq!(
+      skip.styles.box_shadow.len(),
+      0,
+      "disabled autofocus controls should not match :focus"
+    );
+    assert_eq!(
+      target.styles.box_shadow.len(),
+      1,
+      "expected autofocus to apply :focus styles to the first eligible element"
     );
   }
 
