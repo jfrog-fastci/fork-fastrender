@@ -11,6 +11,10 @@ Related IR reproducers live in:
 
 - `investigation/llvm_stackmaps/`
 
+See also:
+
+- `docs/llvm_statepoint_stackmap_abi.md` — statepoint-specific ABI assumptions we rely on (return PC keying, flags range, and `patch_bytes` semantics) + regression scripts.
+
 ## Reproducing the examples
 
 All examples are intended to be runnable with:
@@ -257,4 +261,3 @@ Even if current `rewrite-statepoints-for-gc` output tends to spill most non-cons
 - `ConstantIndex` (5)
 
 Additionally, statepoint consumers must understand the **meta prefix** and deopt count described above; otherwise the GC root list will be mis-parsed.
-

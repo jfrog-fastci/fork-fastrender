@@ -11,6 +11,10 @@ The automated check is:
   - `vendor/ecma-rs/fixtures/llvm_stackmap_abi/gc_statepoint_patch_bytes_0_flags_0.ll`
   - `vendor/ecma-rs/fixtures/llvm_stackmap_abi/gc_statepoint_patch_bytes_16_flags_2.ll`
 
+See also:
+
+- `docs/llvm_stackmaps.md` — StackMap v3 binary decoding notes (LocationKind encoding, record layout, etc.).
+
 ## Correct LLVM 18 textual IR shape
 
 LLVM 18 requires the `@llvm.experimental.gc.statepoint` call to include **both**:
