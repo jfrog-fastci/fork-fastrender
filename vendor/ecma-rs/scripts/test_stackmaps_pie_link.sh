@@ -42,11 +42,23 @@ cat > "${tmpdir}/main.c" <<'EOF'
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 extern const unsigned char __fastr_stackmaps_start[];
 extern const unsigned char __fastr_stackmaps_end[];
 
 extern void foo(void);
+
+static int contains_u64(const unsigned char* bytes, size_t len, uint64_t needle) {
+  unsigned char tmp[8];
+  memcpy(tmp, &needle, 8);
+  for (size_t i = 0; i + 8 <= len; i++) {
+    if (memcmp(bytes + i, tmp, 8) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
 
 int main(void) {
   size_t size = (size_t)(__fastr_stackmaps_end - __fastr_stackmaps_start);
@@ -59,6 +71,14 @@ int main(void) {
   if (version != 3) {
     fprintf(stderr, "unexpected stackmap version: %u\n", version);
     return 2;
+  }
+
+  // PIE correctness: `.llvm_stackmaps` function addresses must be relocated at runtime.
+  // Ensure the in-memory stackmaps bytes contain the actual relocated address of `foo`.
+  uint64_t foo_addr = (uint64_t)(uintptr_t)(void*)&foo;
+  if (!contains_u64(__fastr_stackmaps_start, size, foo_addr)) {
+    fprintf(stderr, "stackmaps missing relocated foo address: %p\n", (void*)(uintptr_t)foo_addr);
+    return 3;
   }
 
   foo();
@@ -93,4 +113,3 @@ echo "${output}" | grep -q 'stackmaps: version=3' || {
   echo "error: expected stackmaps version output, got: ${output}" >&2
   exit 1
 }
-
