@@ -55,6 +55,15 @@ typedef uint64_t TimerId;
 typedef void* ValueRef;
 
 // -----------------------------------------------------------------------------
+// GC handle ABI helpers
+// -----------------------------------------------------------------------------
+// Under a moving GC, runtime entrypoints that may safepoint/GC must not accept raw
+// GC pointers unless they are pinned. Instead they take a handle: a pointer to a
+// caller-owned root slot (`*mut *mut u8` in Rust).
+typedef uint8_t* GcPtr;
+typedef uint8_t** GcHandle;
+
+// -----------------------------------------------------------------------------
 // Native async/await ABI (Promise/Coroutine)
 // -----------------------------------------------------------------------------
 // Native codegen represents `async` functions as coroutines that produce a
@@ -162,7 +171,7 @@ void rt_gc_safepoint(void);
 //
 // This is an ABI helper for `may_gc` runtime entrypoints that accept GC-managed pointers as
 // pointer-to-slot handles.
-uint8_t* rt_gc_safepoint_relocate_h(uint8_t** slot);
+GcPtr rt_gc_safepoint_relocate_h(GcHandle slot);
 // Safepoint slow path entered only when `RT_GC_EPOCH` is odd (stop-the-world requested).
 // Callers should pass the observed odd epoch value.
 void rt_gc_safepoint_slow(uint64_t epoch);
@@ -193,11 +202,11 @@ size_t rt_backing_store_external_bytes(void);
 //
 // Register an addressable root slot. `slot` must remain valid and writable
 // until unregistered.
-uint32_t rt_gc_register_root_slot(uint8_t** slot);
+uint32_t rt_gc_register_root_slot(GcHandle slot);
 void rt_gc_unregister_root_slot(uint32_t handle);
 // Convenience: allocate an internal slot initialized to `ptr` and register it
 // as a root. The returned handle must later be passed to `rt_gc_unpin`.
-uint32_t rt_gc_pin(uint8_t* ptr);
+uint32_t rt_gc_pin(GcPtr ptr);
 void rt_gc_unpin(uint32_t handle);
 
 // Update the active nursery (young generation) address range used by the write barrier.
@@ -205,7 +214,7 @@ void rt_gc_unpin(uint32_t handle);
 void rt_gc_set_young_range(uint8_t* start, uint8_t* end);
 
 // Debug/test helper: read the current young-space range.
-void rt_gc_get_young_range(uint8_t** out_start, uint8_t** out_end);
+void rt_gc_get_young_range(GcPtr* out_start, GcPtr* out_end);
 
 // Optional GC/runtime stats APIs.
 //

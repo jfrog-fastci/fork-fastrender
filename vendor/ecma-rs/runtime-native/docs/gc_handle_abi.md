@@ -50,24 +50,10 @@ Note: `no_gc` describes *GC behavior*, not "never calls `malloc`". A `no_gc`
 function may still allocate in the Rust/system heap, but it must not execute a
 safepoint that could relocate GC-managed objects while it is using raw pointers.
 
-### Current exported functions (initial classification)
+For the **codegen-facing** classification table used by `native-js` (which may be
+conservative), see:
 
-This is the intended classification for the current exported surface (see
-`include/runtime_native.h`):
-
-`may_gc`:
-
-- `rt_alloc`, `rt_alloc_array`, `rt_alloc_pinned`
-- `rt_gc_safepoint`, `rt_gc_safepoint_slow`, `rt_gc_collect`
-- `rt_gc_safepoint_relocate_h` (handle-based helper)
-
-`no_gc`:
-
-- `rt_gc_poll`
-- `rt_gc_set_young_range`, `rt_gc_get_young_range`
-- `rt_write_barrier`, `rt_write_barrier_range`
-- `rt_gc_register_root_slot`, `rt_gc_unregister_root_slot`, `rt_gc_pin`, `rt_gc_unpin`
-- `rt_string_concat`, `rt_string_intern`
+- `docs/runtime-native.md` (“GC classification for codegen”)
 
 ---
 

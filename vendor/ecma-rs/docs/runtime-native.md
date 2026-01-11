@@ -117,6 +117,20 @@ This classification matters because **compiled code must use LLVM statepoints**
 around *MayGC* calls so live references are relocated correctly if the GC moves
 objects.
 
+### 2.2.1 GC-managed pointer arguments across MayGC calls (Handle ABI)
+`runtime-native` is Rust code and is not compiled with LLVM GC statepoints. Under
+a moving collector, this has an important consequence:
+
+- Any runtime entrypoint that may safepoint/GC must **not** accept GC-managed
+  pointers as raw `*mut u8` arguments unless they are pinned.
+- Instead, GC pointers must be passed as **handles** (`*mut *mut u8`): a pointer
+  to a caller-owned root slot. The runtime can reload the slot after any
+  safepoint, and the GC updates the slot during relocation using the caller's
+  stackmap.
+
+See `runtime-native/docs/gc_handle_abi.md` for the detailed rule-set and design
+options.
+
 ### 2.3 Error and OOM strategy
 For the first implementation we intentionally keep the ABI simple:
 
