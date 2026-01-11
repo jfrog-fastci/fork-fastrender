@@ -143,6 +143,8 @@ effects:
   io: false
   network: false
   nondeterministic: false
+  reads_global: false
+  writes_global: false
   may_throw: true
 purity:
   template: depends_on_callback
