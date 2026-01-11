@@ -253,24 +253,39 @@ impl ArrayBuffer {
       return Err(ArrayBufferError::Range);
     }
     let slice_len = end - start;
-    let out = Self::new_zeroed_in(alloc, slice_len).map_err(ArrayBufferError::Alloc)?;
-    if slice_len == 0 {
-      return Ok(out);
-    }
-
     let src = self
       .backing_store
       .as_ref()
       .expect("detached check above");
-    let dst = out
-      .backing_store
-      .as_ref()
-      .expect("new array buffer has a backing store");
 
-    unsafe {
-      core::ptr::copy_nonoverlapping(src.as_ptr().add(start), dst.as_ptr(), slice_len);
+    // Take an exclusive borrow for the duration of the copy. This ensures we don't race with a
+    // concurrent async I/O borrow (and kernel access) while performing safe reads of the backing
+    // bytes.
+    let res = src.try_with_slice(|bytes| {
+      let out = Self::new_zeroed_in(alloc, slice_len).map_err(ArrayBufferError::Alloc)?;
+      if slice_len == 0 {
+        return Ok(out);
+      }
+
+      let Some(src_bytes) = bytes.get(start..end) else {
+        return Err(ArrayBufferError::Range);
+      };
+      let dst = out
+        .backing_store
+        .as_ref()
+        .expect("new array buffer has a backing store");
+
+      unsafe {
+        core::ptr::copy_nonoverlapping(src_bytes.as_ptr(), dst.as_ptr(), slice_len);
+      }
+      Ok(out)
+    });
+
+    match res {
+      Ok(Ok(out)) => Ok(out),
+      Ok(Err(err)) => Err(err),
+      Err(err) => Err(ArrayBufferError::Borrow(err)),
     }
-    Ok(out)
   }
 
   /// Detach the backing store.

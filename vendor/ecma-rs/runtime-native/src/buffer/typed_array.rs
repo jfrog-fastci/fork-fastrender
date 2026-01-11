@@ -176,20 +176,13 @@ impl Uint8Array {
       return Ok(None);
     }
 
-    let buffer = self.buffer();
-    let base_ptr = buffer.data_ptr()?;
-
     let abs = self
       .byte_offset
       .checked_add(index)
       .ok_or(TypedArrayError::Range)?;
-    if abs >= buffer.byte_len() {
-      return Ok(None);
-    }
 
-    // SAFETY: bounds checked above.
-    let byte = unsafe { *base_ptr.add(abs) };
-    Ok(Some(byte))
+    let buffer = self.buffer();
+    Ok(buffer.try_with_slice(|bytes| bytes.get(abs).copied())?)
   }
 
   /// Returns a raw pointer + length for this view (not pinned).
