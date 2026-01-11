@@ -1,5 +1,6 @@
 use runtime_native::async_abi::{
-  Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef, CORO_FLAG_RUNTIME_OWNS_FRAME,
+  Coroutine, CoroutineRef, CoroutineStep, CoroutineVTable, PromiseHeader, PromiseRef,
+  CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
 use runtime_native::test_util::TestRuntimeGuard;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -39,7 +40,7 @@ static COMPLETE_VTABLE: CoroutineVTable = CoroutineVTable {
   promise_size: core::mem::size_of::<PromiseHeader>() as u32,
   promise_align: core::mem::align_of::<PromiseHeader>() as u32,
   promise_shape_id: runtime_native::RtShapeId::INVALID,
-  abi_version: 0,
+  abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
 
@@ -49,7 +50,7 @@ static AWAIT_VTABLE: CoroutineVTable = CoroutineVTable {
   promise_size: core::mem::size_of::<PromiseHeader>() as u32,
   promise_align: core::mem::align_of::<PromiseHeader>() as u32,
   promise_shape_id: runtime_native::RtShapeId::INVALID,
-  abi_version: 0,
+  abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
 
@@ -59,7 +60,7 @@ static STACK_VTABLE: CoroutineVTable = CoroutineVTable {
   promise_size: core::mem::size_of::<PromiseHeader>() as u32,
   promise_align: core::mem::align_of::<PromiseHeader>() as u32,
   promise_shape_id: runtime_native::RtShapeId::INVALID,
-  abi_version: 0,
+  abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
 

@@ -2,7 +2,7 @@ use core::ffi::c_void;
 use core::ptr::null_mut;
 use runtime_native::async_abi::{
   Coroutine, CoroutineRef, CoroutineStep, CoroutineStepTag, CoroutineVTable, PromiseHeader,
-  CORO_FLAG_RUNTIME_OWNS_FRAME,
+  CORO_FLAG_RUNTIME_OWNS_FRAME, RT_ASYNC_ABI_VERSION,
 };
 use runtime_native::test_util::TestRuntimeGuard;
 use runtime_native::PromiseRef as AbiPromiseRef;
@@ -62,7 +62,7 @@ static COUNTER_VTABLE: CoroutineVTable = CoroutineVTable {
   promise_size: core::mem::size_of::<TestPromise>() as u32,
   promise_align: core::mem::align_of::<TestPromise>() as u32,
   promise_shape_id: RtShapeId::INVALID,
-  abi_version: 0,
+  abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
 
@@ -159,7 +159,7 @@ static YIELD_ONCE_VTABLE: CoroutineVTable = CoroutineVTable {
   promise_size: core::mem::size_of::<TestPromise>() as u32,
   promise_align: core::mem::align_of::<TestPromise>() as u32,
   promise_shape_id: RtShapeId::INVALID,
-  abi_version: 0,
+  abi_version: RT_ASYNC_ABI_VERSION,
   reserved: [0; 4],
 };
 
