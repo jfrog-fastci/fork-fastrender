@@ -781,13 +781,13 @@ mod tests {
     align_to_8_with(&mut bytes, 0xAB);
 
     // Include an even number of liveouts so the record-end padding path is exercised.
+    push_u16(&mut bytes, 0); // padding
     push_u16(&mut bytes, 2); // num_liveouts
-    push_u16(&mut bytes, 0);
 
     // LiveOut[0]: reg=0,reserved=0,size=8.
     push_u16(&mut bytes, 0);
-    push_u8(&mut bytes, 8);
     push_u8(&mut bytes, 0);
+    push_u8(&mut bytes, 8);
 
     // LiveOut[1]: reg=1,reserved=0,size=8.
     push_u16(&mut bytes, 1);

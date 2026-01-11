@@ -1,8 +1,9 @@
 use std::cell::Cell;
 use std::collections::HashSet;
+use std::ops::Range;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -13,7 +14,39 @@ use crossbeam_utils::sync::{Parker, Unparker};
 use crate::abi::TaskId;
 use crate::threading::{self, ThreadKind};
 
-mod parallel_for;
+#[path = "parallel_for.rs"]
+mod parallel_for_impl;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Chunking {
+  Auto,
+  Fixed(usize),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WorkEstimate {
+  pub items: usize,
+  pub cost: u64,
+}
+
+pub type CostModelFn = fn(WorkEstimate) -> bool;
+
+fn default_cost_model(work: WorkEstimate) -> bool {
+  // Stub: parallelize only when the range is large enough to amortize spawn/join overhead.
+  work.items >= parallel_for_impl::min_grain() && work.cost >= parallel_for_impl::min_grain() as u64
+}
+
+static COST_MODEL: AtomicPtr<()> = AtomicPtr::new(default_cost_model as *mut ());
+
+pub fn set_cost_model(f: CostModelFn) {
+  COST_MODEL.store(f as *mut (), Ordering::Release);
+}
+
+pub fn should_parallelize(work: WorkEstimate) -> bool {
+  let f = COST_MODEL.load(Ordering::Acquire);
+  let f: CostModelFn = unsafe { std::mem::transmute(f) };
+  f(work)
+}
 
 thread_local! {
   static LOCAL_WORKER: Cell<*const Worker<Arc<TaskState>>> = Cell::new(ptr::null());
@@ -153,7 +186,18 @@ impl ParallelRuntime {
     body: extern "C" fn(usize, *mut u8),
     data: *mut u8,
   ) {
-    parallel_for::parallel_for(self, start, end, body, data);
+    self.parallel_for_with_chunking(start, end, body, data, Chunking::Auto);
+  }
+
+  pub(crate) fn parallel_for_with_chunking(
+    &self,
+    start: usize,
+    end: usize,
+    body: extern "C" fn(usize, *mut u8),
+    data: *mut u8,
+    chunking: Chunking,
+  ) {
+    parallel_for_impl::parallel_for(self, start, end, body, data, chunking);
   }
 
   fn worker_count(&self) -> usize {
@@ -286,56 +330,78 @@ impl Scheduler {
   }
 
   fn try_pop(&self) -> Option<Arc<TaskState>> {
-    if let Some((ptr, idx)) = local_worker_ptr() {
-      let local = unsafe { &*ptr };
-      if let Some(task) = local.pop() {
-        return Some(task);
-      }
+    enum Outcome {
+      Task(Arc<TaskState>),
+      Retry,
+      Empty,
+    }
 
-      match self.inner.injector.steal_batch_and_pop(local) {
-        Steal::Success(task) => return Some(task),
-        Steal::Retry => return None,
-        Steal::Empty => {}
-      }
+    let try_once = || {
+      if let Some((ptr, idx)) = local_worker_ptr() {
+        let local = unsafe { &*ptr };
+        if let Some(task) = local.pop() {
+          return Outcome::Task(task);
+        }
 
-      let n = self.inner.stealers.len();
-      if n > 1 {
-        for offset in 1..n {
-          let victim = (idx + offset) % n;
+        match self.inner.injector.steal_batch_and_pop(local) {
+          Steal::Success(task) => return Outcome::Task(task),
+          Steal::Retry => return Outcome::Retry,
+          Steal::Empty => {}
+        }
+
+        let n = self.inner.stealers.len();
+        if n > 1 {
+          for offset in 1..n {
+            let victim = (idx + offset) % n;
+            crate::rt_trace::steals_attempted_inc();
+            match self.inner.stealers[victim].steal_batch_and_pop(local) {
+              Steal::Success(task) => {
+                crate::rt_trace::steals_succeeded_inc();
+                return Outcome::Task(task);
+              }
+              Steal::Retry => return Outcome::Retry,
+              Steal::Empty => {}
+            }
+          }
+        }
+
+        Outcome::Empty
+      } else {
+        match self.inner.injector.steal() {
+          Steal::Success(task) => return Outcome::Task(task),
+          Steal::Retry => return Outcome::Retry,
+          Steal::Empty => {}
+        }
+
+        for stealer in &self.inner.stealers {
           crate::rt_trace::steals_attempted_inc();
-          match self.inner.stealers[victim].steal_batch_and_pop(local) {
+          match stealer.steal() {
             Steal::Success(task) => {
               crate::rt_trace::steals_succeeded_inc();
-              return Some(task);
+              return Outcome::Task(task);
             }
-            Steal::Retry => return None,
+            Steal::Retry => return Outcome::Retry,
             Steal::Empty => {}
           }
         }
-      }
 
-      None
-    } else {
-      match self.inner.injector.steal() {
-        Steal::Success(task) => return Some(task),
-        Steal::Retry => return None,
-        Steal::Empty => {}
+        Outcome::Empty
       }
+    };
 
-      for stealer in &self.inner.stealers {
-        crate::rt_trace::steals_attempted_inc();
-        match stealer.steal() {
-          Steal::Success(task) => {
-            crate::rt_trace::steals_succeeded_inc();
-            return Some(task);
-          }
-          Steal::Retry => return None,
-          Steal::Empty => {}
-        }
+    // `Steal::Retry` indicates a concurrent steal in progress. Treat it as a
+    // transient state and retry a few times before declaring the pool empty; this
+    // avoids joiner threads parking while work is available but temporarily
+    // contended.
+    for _ in 0..4 {
+      match try_once() {
+        Outcome::Task(task) => return Some(task),
+        Outcome::Retry => continue,
+        Outcome::Empty => return None,
       }
-
-      None
     }
+
+    None
   }
 }
 
@@ -402,4 +468,124 @@ fn worker_loop(
     // Before running mutator code, poll the GC safepoint.
     threading::safepoint_poll();
   }
+}
+
+#[repr(C)]
+struct ClosureTask {
+  f: Box<dyn FnOnce() + Send + 'static>,
+}
+
+extern "C" fn run_closure_task(data: *mut u8) {
+  let task = unsafe { Box::from_raw(data as *mut ClosureTask) };
+  (task.f)();
+}
+
+/// Spawn a Rust closure as a runtime-native task.
+///
+/// This is a Rust-only convenience API; compiler-generated code should use the
+/// exported `rt_parallel_spawn` symbol.
+pub fn spawn<F>(f: F) -> TaskId
+where
+  F: FnOnce() + Send + 'static,
+{
+  let task = Box::new(ClosureTask { f: Box::new(f) });
+  crate::rt_parallel_spawn(run_closure_task, Box::into_raw(task) as *mut u8)
+}
+
+/// Join a slice of task ids spawned by `rt_parallel_spawn` / [`spawn`].
+pub fn join(tasks: &[TaskId]) {
+  crate::rt_parallel_join(tasks.as_ptr(), tasks.len());
+}
+
+#[repr(C)]
+struct ParForChunk {
+  start: usize,
+  end: usize,
+  body: Arc<dyn Fn(usize) + Send + Sync + 'static>,
+}
+
+extern "C" fn par_for_chunk_task(data: *mut u8) {
+  let chunk = unsafe { Box::from_raw(data as *mut ParForChunk) };
+  for i in chunk.start..chunk.end {
+    (chunk.body)(i);
+  }
+}
+
+/// Parallelize a simple for-loop over `range`.
+///
+/// This is intended for runtime-native internal use and for future compiler
+/// codegen helpers (e.g. array map/filter fusion) where the compiler can
+/// guarantee no shared mutable state between iterations.
+pub fn parallel_for<F>(range: Range<usize>, body: F, chunking: Chunking)
+where
+  F: Fn(usize) + Send + Sync + 'static,
+{
+  threading::register_current_thread(ThreadKind::External);
+
+  if range.end <= range.start {
+    return;
+  }
+
+  let len = range.end - range.start;
+  let rt = crate::rt_ensure_init();
+  let workers = rt.parallel.worker_count();
+
+  let estimate = WorkEstimate {
+    items: len,
+    cost: len as u64,
+  };
+  if workers <= 1 || !should_parallelize(estimate) {
+    for i in range {
+      body(i);
+    }
+    return;
+  }
+
+  let min_grain = parallel_for_impl::min_grain();
+  let chunk_size = match chunking {
+    Chunking::Fixed(size) => size.max(1),
+    Chunking::Auto => {
+      let target_chunks = workers.saturating_mul(4).max(1);
+      (len.div_ceil(target_chunks)).max(min_grain)
+    }
+  };
+
+  if chunk_size >= len {
+    for i in range {
+      body(i);
+    }
+    return;
+  }
+
+  let body: Arc<dyn Fn(usize) + Send + Sync + 'static> = Arc::new(body);
+  let mut tasks: Vec<TaskId> = Vec::new();
+
+  let mut chunk_start = range.start;
+  while chunk_start < range.end {
+    let chunk_end = range.end.min(chunk_start.saturating_add(chunk_size));
+    let chunk = Box::new(ParForChunk {
+      start: chunk_start,
+      end: chunk_end,
+      body: body.clone(),
+    });
+    tasks.push(crate::rt_parallel_spawn(
+      par_for_chunk_task,
+      Box::into_raw(chunk) as *mut u8,
+    ));
+    chunk_start = chunk_end;
+  }
+
+  join(&tasks);
+}
+
+/// Like [`ParallelRuntime::parallel_for`] / `rt_parallel_for`, but allows an
+/// explicit chunking strategy.
+pub fn parallel_for_raw(
+  range: Range<usize>,
+  body: extern "C" fn(usize, *mut u8),
+  data: *mut u8,
+  chunking: Chunking,
+) {
+  let rt = crate::rt_ensure_init();
+  rt.parallel.parallel_for_with_chunking(range.start, range.end, body, data, chunking);
 }

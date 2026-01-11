@@ -102,7 +102,7 @@ pub(crate) fn wait_while_stop_the_world() {
   let coord = coordinator();
   let mut guard = coord.cv_mutex.lock().unwrap();
   loop {
-    let epoch = coord.epoch.load(Ordering::Acquire);
+    let epoch = RT_GC_EPOCH.load(Ordering::Acquire);
     if epoch & 1 == 0 {
       return;
     }

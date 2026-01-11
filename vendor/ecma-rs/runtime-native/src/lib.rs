@@ -557,6 +557,46 @@ mod tests {
   }
 
   #[repr(C)]
+  struct CounterTaskData {
+    counters: *const AtomicUsize,
+    idx: usize,
+  }
+
+  extern "C" fn bump_indexed_counter(data: *mut u8) {
+    let data = unsafe { Box::from_raw(data as *mut CounterTaskData) };
+    let counter = unsafe { &*data.counters.add(data.idx) };
+    counter.fetch_add(1, Ordering::Relaxed);
+  }
+
+  #[test]
+  fn parallel_spawn_stress_runs_each_task_exactly_once() {
+    const TASKS: usize = 50_000;
+
+    let counters: Vec<AtomicUsize> = (0..TASKS).map(|_| AtomicUsize::new(0)).collect();
+    let mut tasks: Vec<abi::TaskId> = Vec::with_capacity(TASKS);
+    for idx in 0..TASKS {
+      let data = Box::new(CounterTaskData {
+        counters: counters.as_ptr(),
+        idx,
+      });
+      tasks.push(rt_parallel_spawn(
+        bump_indexed_counter,
+        Box::into_raw(data).cast::<u8>(),
+      ));
+    }
+
+    rt_parallel_join(tasks.as_ptr(), tasks.len());
+
+    for (idx, counter) in counters.iter().enumerate() {
+      assert_eq!(
+        counter.load(Ordering::Relaxed),
+        1,
+        "task {idx} ran unexpected number of times"
+      );
+    }
+  }
+
+  #[repr(C)]
   struct FillData {
     ptr: *mut u8,
     len: usize,

@@ -687,12 +687,17 @@ mod tests {
     push_location_indirect(&mut out, 8, 7, base_off);
     push_location_indirect(&mut out, 8, 7, derived_off);
 
-    // Padding before NumLiveOuts so that after reading NumLiveOuts (2 bytes) we're 8-byte aligned.
-    // With 5 locations, the record header+locations ends at mod8=4, so we need 2 bytes here.
-    push_u16(&mut out, 0);
+    // StackMap v3 aligns the live-out header (u16 Padding + u16 NumLiveOuts) to an 8-byte boundary
+    // after the locations array.
+    while out.len() % 8 != 0 {
+      push_u8(&mut out, 0);
+    }
+    push_u16(&mut out, 0); // Padding
     push_u16(&mut out, 0); // NumLiveOuts = 0
-
-    // No live-outs; record ends aligned.
+    // Records are 8-byte aligned after the live-out array too.
+    while out.len() % 8 != 0 {
+      push_u8(&mut out, 0);
+    }
     out
   }
 
