@@ -253,6 +253,84 @@ fn main() {
     }
   }
 
+  // Prefer typedef names (no `struct`/`enum`/`union` tags) in signatures and struct fields so the
+  // generated header matches `runtime_native.h` more closely. This is mostly cosmetic but helps
+  // bindings generators that match on exact substrings.
+  for (from, to) in [
+    ("struct Runtime *", "Runtime* "),
+    ("struct Thread *", "Thread* "),
+    ("struct PromiseHeader *", "PromiseHeader* "),
+    ("struct RtPromise *", "RtPromise* "),
+    ("struct RtCoroutineHeader *", "RtCoroutineHeader* "),
+    ("struct RtCoroutineHeader*", "RtCoroutineHeader*"),
+    ("struct Coroutine *", "Coroutine* "),
+    ("struct Coroutine*", "Coroutine*"),
+    ("struct ThenableVTable *", "ThenableVTable* "),
+    ("struct CoroutineVTable *", "CoroutineVTable* "),
+    ("struct RtShapeDescriptor *", "RtShapeDescriptor* "),
+    ("struct RtGcStatsSnapshot *", "RtGcStatsSnapshot* "),
+  ] {
+    if header.contains(from) {
+      header = header.replace(from, to);
+      modified = true;
+    }
+  }
+  if header.contains("union PromiseResolvePayload payload") {
+    header = header.replace(
+      "union PromiseResolvePayload payload",
+      "PromiseResolvePayload payload",
+    );
+    modified = true;
+  }
+  if header.contains("struct ThenableRef thenable") {
+    header = header.replace("struct ThenableRef thenable", "ThenableRef thenable");
+    modified = true;
+  }
+  if header.contains("struct PromiseLayout layout") {
+    header = header.replace("struct PromiseLayout layout", "PromiseLayout layout");
+    modified = true;
+  }
+  if header.contains("struct PromiseResolveInput)") {
+    header = header.replace("struct PromiseResolveInput)", "PromiseResolveInput)");
+    modified = true;
+  }
+  if header.contains("struct PromiseResolveInput value") {
+    header = header.replace(
+      "struct PromiseResolveInput value",
+      "PromiseResolveInput value",
+    );
+    modified = true;
+  }
+  if header.contains("struct PromiseResolveInput awaited") {
+    header = header.replace(
+      "struct PromiseResolveInput awaited",
+      "PromiseResolveInput awaited",
+    );
+    modified = true;
+  }
+  if header.contains("typedef enum RtCoroStatus (*RtCoroResumeFn)") {
+    header = header.replace(
+      "typedef enum RtCoroStatus (*RtCoroResumeFn)",
+      "typedef RtCoroStatus (*RtCoroResumeFn)",
+    );
+    modified = true;
+  }
+  if header.contains("typedef struct CoroutineStep (*CoroutineResumeFn)") {
+    header = header.replace(
+      "typedef struct CoroutineStep (*CoroutineResumeFn)",
+      "typedef CoroutineStep (*CoroutineResumeFn)",
+    );
+    modified = true;
+  }
+  if header.contains("enum CoroutineStepTag tag") {
+    header = header.replace("enum CoroutineStepTag tag", "CoroutineStepTag tag");
+    modified = true;
+  }
+  if header.contains("extern struct StringRef") {
+    header = header.replace("extern struct StringRef", "extern StringRef");
+    modified = true;
+  }
+
   // Mirror `runtime_native.h` feature guards for optional GC stats/debug APIs.
   //
   // These entrypoints are only exported when `runtime-native` is built with the corresponding
