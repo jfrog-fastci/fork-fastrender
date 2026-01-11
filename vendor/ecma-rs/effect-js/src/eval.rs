@@ -28,13 +28,24 @@ pub struct CallSemantics {
 pub fn eval_api_call(api: &knowledge_base::Api, site: &CallSiteInfo) -> CallSemantics {
   let (arg_effects, arg_purity) = build_arg_models(api, site);
 
-  let effects = api.effects_for_call(&arg_effects);
+  // `effect_summary` preserves author-provided base flags even when `effects`
+  // is a runtime-dependent template.
+  let effects = api.effects_for_call(&arg_effects) | api.effect_summary;
   let purity_from_template = api.purity_for_call(&arg_purity);
   let purity_from_effects = effects.inferred_purity();
 
   CallSemantics {
     effects,
     purity: Purity::join(purity_from_template, purity_from_effects),
+  }
+}
+
+fn callback_effects_from_purity(purity: Purity) -> EffectSet {
+  match purity {
+    Purity::Pure => EffectSet::empty(),
+    Purity::ReadOnly => EffectSet::READS_GLOBAL,
+    Purity::Allocating => EffectSet::ALLOCATES,
+    Purity::Impure => unknown_effects(),
   }
 }
 
@@ -60,10 +71,16 @@ fn build_arg_models(api: &knowledge_base::Api, site: &CallSiteInfo) -> (Vec<Effe
 
   // We only model argument 0 (the callback) via `CallSiteInfo`. All other args are
   // treated as unknown/impure.
-  let cb_effects = site.callback_effects.unwrap_or_else(unknown_effects);
-  let cb_purity = site
-    .callback_purity
-    .unwrap_or_else(|| site.callback_effects.map(|e| e.inferred_purity()).unwrap_or(Purity::Impure));
+  let cb_effects = site
+    .callback_effects
+    .or_else(|| site.callback_purity.map(callback_effects_from_purity))
+    .unwrap_or_else(unknown_effects);
+  let cb_purity = match (site.callback_purity, site.callback_effects) {
+    (Some(p), Some(e)) => Purity::join(p, e.inferred_purity()),
+    (Some(p), None) => p,
+    (None, Some(e)) => e.inferred_purity(),
+    (None, None) => Purity::Impure,
+  };
 
   arg_effects[0] = cb_effects;
   arg_purity[0] = cb_purity;

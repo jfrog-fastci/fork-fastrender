@@ -3,6 +3,7 @@ use hir_js::{Body, BodyId, ExprId, ExprKind, LowerResult, ObjectKey};
 use knowledge_base::{ApiSemantics, KnowledgeBase};
 
 use crate::callback::analyze_inline_callback;
+use crate::eval::{eval_api_call, CallSiteInfo as EvalCallSiteInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CallEval {
@@ -60,45 +61,31 @@ pub(crate) fn eval_call_expr(
       .and_then(|arg| analyze_inline_callback(lowered, body, arg.expr, kb))
   });
 
-  let mut arg_effects = Vec::with_capacity(call.args.len());
-  let mut arg_purity = Vec::with_capacity(call.args.len());
-  for (idx, arg) in call.args.iter().enumerate() {
-    if arg.spread {
-      arg_effects.push(unknown_effects());
-      arg_purity.push(Purity::Impure);
-      continue;
-    }
-    if idx == 0 {
-      if let Some(cb) = callback {
-        arg_effects.push(cb.effects);
-        arg_purity.push(cb.purity);
-        continue;
-      }
-    }
-    arg_effects.push(unknown_effects());
-    arg_purity.push(Purity::Impure);
-  }
+  let sem = api.map(|api| {
+    // NOTE: `eval_api_call` models callback behavior in argument 0. This matches
+    // the current KB encoding for callback-dependent templates
+    // (`depends_on_callback` => `DependsOnArgs { args: [0] }`).
+    let site = EvalCallSiteInfo {
+      callback_purity: callback.map(|cb| cb.purity),
+      callback_effects: callback.map(|cb| cb.effects),
+      callback_uses_index: callback.map(|cb| cb.uses_index).unwrap_or(false),
+      callback_uses_array: callback.map(|cb| cb.uses_array).unwrap_or(false),
+    };
+    eval_api_call(api, &site)
+  });
 
-  // `effect_summary` allows KB authors to attach base flags even when `effects`
-  // uses a runtime-dependent template (e.g. callback-dependent APIs).
-  let mut effects = match api {
-    Some(api) => api.effects_for_call(&arg_effects) | api.effect_summary,
-    None => unknown_effects(),
-  };
+  let mut effects = sem.map(|s| s.effects).unwrap_or_else(unknown_effects);
   if call.is_new {
     effects |= EffectSet::ALLOCATES;
   }
 
-  let mut purity = match api {
-    Some(api) => api.purity_for_call(&arg_purity),
-    None => {
-      if call.is_new {
-        Purity::Allocating
-      } else {
-        Purity::Impure
-      }
+  let mut purity = sem.map(|s| s.purity).unwrap_or_else(|| {
+    if call.is_new {
+      Purity::Allocating
+    } else {
+      Purity::Impure
     }
-  };
+  });
 
   purity = Purity::join(purity, effects.inferred_purity());
 
@@ -132,24 +119,9 @@ fn resolve_api_semantics<'a>(
   // user actually shadowed the name with something pure, this is conservative.
   // Resolving the other way (assuming a pure built-in when the user shadowed it
   // with something impure) would be unsound.
-  let is_arg_dependent = matches!(api.effects, EffectTemplate::DependsOnArgs { .. })
-    || matches!(api.purity, PurityTemplate::DependsOnArgs { .. });
-  if !is_arg_dependent {
-    // Only treat *definitely pure* APIs as unsafe to resolve by name. For
-    // arg-dependent templates, we conservatively assume the call may depend on
-    // runtime argument behavior.
-    let effects = api.effect_summary;
-    let purity = match &api.purity {
-      PurityTemplate::Pure => Purity::Pure,
-      PurityTemplate::ReadOnly => Purity::ReadOnly,
-      PurityTemplate::Allocating => Purity::Allocating,
-      PurityTemplate::Impure => Purity::Impure,
-      PurityTemplate::DependsOnArgs { base, .. } => *base,
-      PurityTemplate::Unknown => Purity::Impure,
-    };
-    if Purity::join(purity, effects.inferred_purity()) == Purity::Pure {
-      return None;
-    }
+  let sem = eval_api_call(api, &EvalCallSiteInfo::default());
+  if sem.purity == Purity::Pure {
+    return None;
   }
 
   Some(api)
