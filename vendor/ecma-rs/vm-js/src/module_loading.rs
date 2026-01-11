@@ -464,6 +464,7 @@ impl GraphLoadingState {
     Ok(())
   }
 
+  #[allow(dead_code)]
   fn teardown_roots(&self, heap: &mut crate::Heap) {
     let (roots, dynamic_import) = {
       let mut inner = self.0.borrow_mut();
@@ -674,6 +675,7 @@ impl ModuleLoadPayload {
     Self(ModuleLoadPayloadInner::PromiseCapability(state))
   }
 
+  #[allow(dead_code)]
   pub(crate) fn kind(&self) -> ModuleLoadPayloadKind {
     match &self.0 {
       ModuleLoadPayloadInner::GraphLoadingState(_) => ModuleLoadPayloadKind::GraphLoadingState,
@@ -685,6 +687,7 @@ impl ModuleLoadPayload {
   ///
   /// This is intended for embedder/runtime teardown paths to avoid leaking roots if module loading
   /// is abandoned mid-flight.
+  #[allow(dead_code)]
   pub(crate) fn teardown_roots(&self, heap: &mut crate::Heap) {
     match &self.0 {
       ModuleLoadPayloadInner::GraphLoadingState(state) => state.teardown_roots(heap),
@@ -694,6 +697,7 @@ impl ModuleLoadPayload {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum ModuleLoadPayloadKind {
   GraphLoadingState,
   PromiseCapability,

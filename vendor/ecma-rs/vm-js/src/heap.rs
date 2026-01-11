@@ -1027,6 +1027,7 @@ impl Heap {
   ///
   /// Returns [`VmError::InvalidHandle`] if `env` is stale or points to a non-environment heap
   /// object.
+  #[allow(dead_code)]
   pub(crate) fn get_env_record_mut(&mut self, env: GcEnv) -> Result<&mut EnvRecord, VmError> {
     self.get_env_mut(env)
   }
@@ -3337,6 +3338,7 @@ impl Heap {
     }
   }
 
+  #[allow(dead_code)]
   pub(crate) fn get_function_this_mode(&self, func: GcObject) -> Result<ThisMode, VmError> {
     match self.get_heap_object(func.0)? {
       HeapObject::Function(f) => Ok(f.this_mode),
@@ -4717,6 +4719,7 @@ impl JsArrayBuffer {
     data.len()
   }
 
+  #[allow(dead_code)]
   fn heap_size_bytes(&self) -> usize {
     Self::heap_size_bytes_for_property_count(self.base.properties.len())
   }

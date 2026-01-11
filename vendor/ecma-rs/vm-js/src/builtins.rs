@@ -1654,11 +1654,13 @@ fn throw_type_error(
   Err(VmError::Throw(err))
 }
 
+#[allow(dead_code)]
 fn new_promise(vm: &mut Vm, scope: &mut Scope<'_>) -> Result<GcObject, VmError> {
   let intr = require_intrinsics(vm)?;
   scope.alloc_promise_with_prototype(Some(intr.promise_prototype()))
 }
 
+#[allow(dead_code)]
 pub(crate) fn new_promise_capability(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

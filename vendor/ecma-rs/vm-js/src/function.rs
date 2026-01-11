@@ -179,6 +179,7 @@ impl JsFunction {
     }
   }
 
+  #[allow(dead_code)]
   pub(crate) fn new_native_with_slots(
     call: NativeFunctionId,
     construct: Option<NativeConstructId>,

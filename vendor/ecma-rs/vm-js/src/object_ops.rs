@@ -966,6 +966,7 @@ impl<'a> Scope<'a> {
     Ok(true)
   }
 
+  #[allow(dead_code)]
   fn string_object_data(&self, obj: GcObject) -> Result<Option<GcString>, VmError> {
     let mut tick = || Ok(());
     self.string_object_data_with_tick(obj, &mut tick)
@@ -1024,6 +1025,7 @@ impl<'a> Scope<'a> {
     Ok(Some((string_data, index)))
   }
 
+  #[allow(dead_code)]
   fn string_object_get_index_value(
     &mut self,
     obj: GcObject,
