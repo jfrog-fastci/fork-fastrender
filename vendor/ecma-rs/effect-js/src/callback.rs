@@ -969,70 +969,6 @@ impl CallbackAnalyzer<'_> {
         }
       }
 
-      // Semantic ops are higher-level "call-like" expressions introduced by
-      // `hir-js/semantic-ops`. Until we have full modeling for them in `effect-js`,
-      // treat them conservatively as unknown effects while still visiting their
-      // child expressions for identifier tracking.
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayMap { array, callback }
-      | ExprKind::ArrayFilter { array, callback }
-      | ExprKind::ArrayFind { array, callback }
-      | ExprKind::ArrayEvery { array, callback }
-      | ExprKind::ArraySome { array, callback } => {
-        self.mark_unknown();
-        self.visit_expr(body, *array);
-        self.visit_expr(body, *callback);
-      }
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayReduce {
-        array,
-        callback,
-        init,
-      } => {
-        self.mark_unknown();
-        self.visit_expr(body, *array);
-        self.visit_expr(body, *callback);
-        if let Some(init) = init {
-          self.visit_expr(body, *init);
-        }
-      }
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::ArrayChain { array, ops } => {
-        self.mark_unknown();
-        self.visit_expr(body, *array);
-        for op in ops {
-          match op {
-            ArrayChainOp::Map(callback)
-            | ArrayChainOp::Filter(callback)
-            | ArrayChainOp::Find(callback)
-            | ArrayChainOp::Every(callback)
-            | ArrayChainOp::Some(callback) => {
-              self.visit_expr(body, *callback);
-            }
-            ArrayChainOp::Reduce(callback, init) => {
-              self.visit_expr(body, *callback);
-              if let Some(init) = init {
-                self.visit_expr(body, *init);
-              }
-            }
-          }
-        }
-      }
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
-        self.mark_unknown();
-        for promise in promises {
-          self.visit_expr(body, *promise);
-        }
-      }
-      #[cfg(feature = "hir-semantic-ops")]
-      ExprKind::KnownApiCall { args, .. } => {
-        self.mark_unknown();
-        for arg in args {
-          self.visit_expr(body, *arg);
-        }
-      }
-
       ExprKind::Conditional {
         test,
         consequent,
@@ -1115,6 +1051,123 @@ impl CallbackAnalyzer<'_> {
         }
       }
 
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayMap { array, callback }
+      | ExprKind::ArrayFilter { array, callback }
+      | ExprKind::ArrayFind { array, callback }
+      | ExprKind::ArrayEvery { array, callback }
+      | ExprKind::ArraySome { array, callback } => {
+        let api = match &expr.kind {
+          ExprKind::ArrayMap { .. } => "Array.prototype.map",
+          ExprKind::ArrayFilter { .. } => "Array.prototype.filter",
+          ExprKind::ArrayFind { .. } => "Array.prototype.find",
+          ExprKind::ArrayEvery { .. } => "Array.prototype.every",
+          ExprKind::ArraySome { .. } => "Array.prototype.some",
+          _ => unreachable!("match arm only includes array semantic ops"),
+        };
+
+        self.visit_expr(body, *array);
+        self.visit_expr(body, *callback);
+        self.merge_semantic_op_call(api, Some(*callback));
+      }
+
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayReduce {
+        array,
+        callback,
+        init,
+      } => {
+        self.visit_expr(body, *array);
+        self.visit_expr(body, *callback);
+        if let Some(init) = init {
+          self.visit_expr(body, *init);
+        }
+
+        self.merge_semantic_op_call("Array.prototype.reduce", Some(*callback));
+      }
+
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::ArrayChain { array, ops } => {
+        self.visit_expr(body, *array);
+        for op in ops {
+          match *op {
+            ArrayChainOp::Map(callback) => {
+              self.visit_expr(body, callback);
+              self.merge_semantic_op_call("Array.prototype.map", Some(callback));
+            }
+            ArrayChainOp::Filter(callback) => {
+              self.visit_expr(body, callback);
+              self.merge_semantic_op_call("Array.prototype.filter", Some(callback));
+            }
+            ArrayChainOp::Find(callback) => {
+              self.visit_expr(body, callback);
+              self.merge_semantic_op_call("Array.prototype.find", Some(callback));
+            }
+            ArrayChainOp::Every(callback) => {
+              self.visit_expr(body, callback);
+              self.merge_semantic_op_call("Array.prototype.every", Some(callback));
+            }
+            ArrayChainOp::Some(callback) => {
+              self.visit_expr(body, callback);
+              self.merge_semantic_op_call("Array.prototype.some", Some(callback));
+            }
+            ArrayChainOp::Reduce(callback, init) => {
+              self.visit_expr(body, callback);
+              if let Some(init) = init {
+                self.visit_expr(body, init);
+              }
+              self.merge_semantic_op_call("Array.prototype.reduce", Some(callback));
+            }
+          }
+        }
+      }
+
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+        let api = match &expr.kind {
+          ExprKind::PromiseAll { .. } => "Promise.all",
+          ExprKind::PromiseRace { .. } => "Promise.race",
+          _ => unreachable!("match arm only includes Promise.* semantic ops"),
+        };
+
+        for promise in promises {
+          self.visit_expr(body, *promise);
+        }
+
+        self.merge_semantic_op_call(api, None);
+      }
+
+      #[cfg(feature = "hir-semantic-ops")]
+      ExprKind::KnownApiCall { api, args } => {
+        for arg in args {
+          self.visit_expr(body, *arg);
+        }
+
+        let api_id = knowledge_base::ApiId::from_raw(api.raw());
+        let Some(api) = self.kb.get_by_id(api_id) else {
+          self.mark_unknown();
+          return;
+        };
+
+        // Most known API calls do not require callsite-specific modeling; when
+        // they do (e.g. `Array.prototype.map`), they conventionally use arg0 as
+        // the callback.
+        let callback = args.first().copied();
+        let callback = callback.and_then(|expr| analyze_inline_callback(self.lowered, self.body, expr, self.kb));
+        let site = callback
+          .map(|cb| crate::eval::CallSiteInfo {
+            callback_purity: Some(cb.purity),
+            callback_effects: Some(cb.effects),
+            callback_uses_index: cb.uses_index,
+            callback_uses_array: cb.uses_array,
+          })
+          .unwrap_or_default();
+
+        let sem = eval_api_call(api, &site);
+        self.merge_effects(sem.effects);
+        self.merge_purity(sem.purity);
+      }
+
       ExprKind::Jsx(_) => {
         self.effects |= EffectSet::ALLOCATES;
       }
@@ -1129,6 +1182,28 @@ impl CallbackAnalyzer<'_> {
         self.uses_array = true;
       }
     }
+  }
+
+  #[cfg(feature = "hir-semantic-ops")]
+  fn merge_semantic_op_call(&mut self, api_name: &str, callback_expr: Option<ExprId>) {
+    let Some(api) = self.kb.get(api_name) else {
+      self.mark_unknown();
+      return;
+    };
+
+    let cb = callback_expr.and_then(|expr| analyze_inline_callback(self.lowered, self.body, expr, self.kb));
+    let site = cb
+      .map(|cb| crate::eval::CallSiteInfo {
+        callback_purity: Some(cb.purity),
+        callback_effects: Some(cb.effects),
+        callback_uses_index: cb.uses_index,
+        callback_uses_array: cb.uses_array,
+      })
+      .unwrap_or_default();
+
+    let sem = eval_api_call(api, &site);
+    self.merge_effects(sem.effects);
+    self.merge_purity(sem.purity);
   }
 
   fn record_ident(&mut self, name: NameId) {
@@ -1767,6 +1842,50 @@ mod tests {
 
     assert!(cb.effects.contains(EffectSet::UNKNOWN));
     assert_eq!(cb.purity, Purity::Impure);
+  }
+
+  #[cfg(feature = "hir-semantic-ops")]
+  #[test]
+  fn callback_models_nested_array_semantic_ops() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(() => arr2.map(x => x + 1));",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert!(
+      !cb.effects.contains(EffectSet::UNKNOWN),
+      "expected nested semantic ops to be modeled, got {:?}",
+      cb.effects
+    );
+    assert_eq!(cb.purity, Purity::Allocating);
+  }
+
+  #[cfg(feature = "hir-semantic-ops")]
+  #[test]
+  fn callback_models_nested_array_chain_semantic_ops() {
+    let kb = crate::load_default_api_database();
+    let lowered = hir_js::lower_from_source_with_kind(
+      hir_js::FileKind::Js,
+      "arr.map(() => arr2.map(x => x).filter(y => y));",
+    )
+    .unwrap();
+    let (body, call_expr) = first_stmt_expr(&lowered);
+    let body_ref = lowered.body(body).unwrap();
+    let cb_expr = first_callback_arg(body_ref, call_expr);
+    let cb = analyze_inline_callback(&lowered, body, cb_expr, &kb).expect("callback");
+
+    assert!(
+      !cb.effects.contains(EffectSet::UNKNOWN),
+      "expected ArrayChain semantic op to be modeled, got {:?}",
+      cb.effects
+    );
+    assert_eq!(cb.purity, Purity::Allocating);
   }
 
   #[test]

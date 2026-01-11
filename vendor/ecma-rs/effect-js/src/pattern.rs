@@ -2,7 +2,6 @@ use hir_js::{
   Body, BodyId, ExprId, ExprKind, LowerResult, NameId, NameInterner, ObjectKey, ObjectProperty,
   PatId, PatKind, StmtId, StmtKind, TypeExprId, UnaryOp, VarDeclarator,
 };
-
 #[cfg(feature = "hir-semantic-ops")]
 use hir_js::ArrayChainOp;
 
@@ -424,6 +423,60 @@ fn visit_expr(
         visit_expr(lowered, names, body_id, body, arg.expr, out);
       }
     }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayMap { array, callback }
+    | ExprKind::ArrayFilter { array, callback }
+    | ExprKind::ArrayFind { array, callback }
+    | ExprKind::ArrayEvery { array, callback }
+    | ExprKind::ArraySome { array, callback } => {
+      visit_expr(lowered, names, body_id, body, *array, out);
+      visit_expr(lowered, names, body_id, body, *callback, out);
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayReduce {
+      array,
+      callback,
+      init,
+    } => {
+      visit_expr(lowered, names, body_id, body, *array, out);
+      visit_expr(lowered, names, body_id, body, *callback, out);
+      if let Some(init) = init {
+        visit_expr(lowered, names, body_id, body, *init, out);
+      }
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::ArrayChain { array, ops } => {
+      visit_expr(lowered, names, body_id, body, *array, out);
+      for op in ops {
+        match *op {
+          ArrayChainOp::Map(callback)
+          | ArrayChainOp::Filter(callback)
+          | ArrayChainOp::Find(callback)
+          | ArrayChainOp::Every(callback)
+          | ArrayChainOp::Some(callback) => visit_expr(lowered, names, body_id, body, callback, out),
+          ArrayChainOp::Reduce(callback, init) => {
+            visit_expr(lowered, names, body_id, body, callback, out);
+            if let Some(init) = init {
+              visit_expr(lowered, names, body_id, body, init, out);
+            }
+          }
+        }
+      }
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
+      for promise in promises {
+        visit_expr(lowered, names, body_id, body, *promise, out);
+      }
+    }
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::AwaitExpr { value, .. } => visit_expr(lowered, names, body_id, body, *value, out),
+    #[cfg(feature = "hir-semantic-ops")]
+    ExprKind::KnownApiCall { args, .. } => {
+      for arg in args {
+        visit_expr(lowered, names, body_id, body, *arg, out);
+      }
+    }
     ExprKind::Member(member) => {
       visit_expr(lowered, names, body_id, body, member.object, out);
       if let ObjectKey::Computed(expr) = member.property {
@@ -490,62 +543,6 @@ fn visit_expr(
       visit_expr(lowered, names, body_id, body, *argument, out);
       if let Some(attributes) = attributes {
         visit_expr(lowered, names, body_id, body, *attributes, out);
-      }
-    }
-    #[cfg(feature = "hir-semantic-ops")]
-    ExprKind::ArrayMap { array, callback }
-    | ExprKind::ArrayFilter { array, callback }
-    | ExprKind::ArrayFind { array, callback }
-    | ExprKind::ArrayEvery { array, callback }
-    | ExprKind::ArraySome { array, callback } => {
-      visit_expr(lowered, names, body_id, body, *array, out);
-      visit_expr(lowered, names, body_id, body, *callback, out);
-    }
-    #[cfg(feature = "hir-semantic-ops")]
-    ExprKind::ArrayReduce {
-      array,
-      callback,
-      init,
-    } => {
-      visit_expr(lowered, names, body_id, body, *array, out);
-      visit_expr(lowered, names, body_id, body, *callback, out);
-      if let Some(init) = init {
-        visit_expr(lowered, names, body_id, body, *init, out);
-      }
-    }
-    #[cfg(feature = "hir-semantic-ops")]
-    ExprKind::ArrayChain { array, ops } => {
-      visit_expr(lowered, names, body_id, body, *array, out);
-      for op in ops {
-        match op {
-          ArrayChainOp::Map(callback)
-          | ArrayChainOp::Filter(callback)
-          | ArrayChainOp::Find(callback)
-          | ArrayChainOp::Every(callback)
-          | ArrayChainOp::Some(callback) => {
-            visit_expr(lowered, names, body_id, body, *callback, out);
-          }
-          ArrayChainOp::Reduce(callback, init) => {
-            visit_expr(lowered, names, body_id, body, *callback, out);
-            if let Some(init) = init {
-              visit_expr(lowered, names, body_id, body, *init, out);
-            }
-          }
-        }
-      }
-    }
-    #[cfg(feature = "hir-semantic-ops")]
-    ExprKind::PromiseAll { promises } | ExprKind::PromiseRace { promises } => {
-      for promise in promises {
-        visit_expr(lowered, names, body_id, body, *promise, out);
-      }
-    }
-    #[cfg(feature = "hir-semantic-ops")]
-    ExprKind::AwaitExpr { value, .. } => visit_expr(lowered, names, body_id, body, *value, out),
-    #[cfg(feature = "hir-semantic-ops")]
-    ExprKind::KnownApiCall { args, .. } => {
-      for arg in args {
-        visit_expr(lowered, names, body_id, body, *arg, out);
       }
     }
     ExprKind::Jsx(_) => {}
