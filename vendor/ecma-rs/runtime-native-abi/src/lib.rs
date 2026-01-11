@@ -521,6 +521,10 @@ extern "C" {
     layout: PromiseLayout,
   ) -> PromiseRef;
   pub fn rt_spawn_blocking(task: extern "C" fn(*mut u8, LegacyPromiseRef), data: *mut u8) -> LegacyPromiseRef;
+  pub fn rt_spawn_blocking_rooted(
+    task: extern "C" fn(*mut u8, LegacyPromiseRef),
+    data: GcPtr,
+  ) -> LegacyPromiseRef;
 
   // Async
   pub fn rt_promise_init(p: PromiseRef);
@@ -604,6 +608,11 @@ extern "C" {
   pub fn rt_async_free_c_string(s: *mut c_char);
 
   // Legacy promise/coroutine ABI (temporary; will be removed once codegen migrates).
+  pub fn rt_promise_new() -> LegacyPromiseRef;
+  pub fn rt_promise_resolve(p: LegacyPromiseRef, value: ValueRef);
+  pub fn rt_promise_then(p: LegacyPromiseRef, on_settle: extern "C" fn(*mut u8), data: *mut u8);
+  pub fn rt_coro_await(coro: *mut RtCoroutineHeader, awaited: LegacyPromiseRef, next_state: u32);
+
   pub fn rt_promise_new_legacy() -> LegacyPromiseRef;
   pub fn rt_promise_resolve_legacy(p: LegacyPromiseRef, value: ValueRef);
   pub fn rt_promise_resolve_into_legacy(p: LegacyPromiseRef, value: PromiseResolveInput);
@@ -617,6 +626,7 @@ extern "C" {
     data: *mut u8,
     drop_data: extern "C" fn(*mut u8),
   );
+  pub fn rt_promise_drop_legacy(p: LegacyPromiseRef);
 
   pub fn rt_async_spawn_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef;
   pub fn rt_async_spawn_deferred_legacy(coro: *mut RtCoroutineHeader) -> LegacyPromiseRef;
@@ -902,6 +912,7 @@ mod tests {
       "rt_parallel_for(",
       "rt_parallel_spawn_promise(",
       "rt_spawn_blocking(",
+      "rt_spawn_blocking_rooted(",
       "rt_promise_init(",
       "rt_promise_fulfill(",
       "rt_promise_try_fulfill(",
@@ -937,6 +948,10 @@ mod tests {
       "rt_async_set_limits(",
       "rt_async_take_last_error(",
       "rt_async_free_c_string(",
+      "rt_promise_new(",
+      "rt_promise_resolve(",
+      "rt_promise_then(",
+      "rt_coro_await(",
       "rt_promise_new_legacy(",
       "rt_promise_resolve_legacy(",
       "rt_promise_resolve_into_legacy(",
@@ -945,6 +960,7 @@ mod tests {
       "rt_promise_reject_legacy(",
       "rt_promise_then_legacy(",
       "rt_promise_then_with_drop_legacy(",
+      "rt_promise_drop_legacy(",
       "rt_async_spawn_legacy(",
       "rt_async_spawn_deferred_legacy(",
       "rt_async_poll_legacy(",
