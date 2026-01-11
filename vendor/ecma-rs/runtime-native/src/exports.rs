@@ -455,9 +455,15 @@ pub extern "C" fn rt_spawn_blocking(
   task: extern "C" fn(*mut u8, PromiseRef),
   data: *mut u8,
 ) -> PromiseRef {
-  let _ = crate::rt_ensure_init();
-  ensure_event_loop_thread_registered();
-  crate::blocking_pool::spawn(task, data)
+  let res = catch_unwind(AssertUnwindSafe(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::blocking_pool::spawn(task, data)
+  }));
+  match res {
+    Ok(p) => p,
+    Err(_) => std::process::abort(),
+  }
 }
 
 #[no_mangle]
