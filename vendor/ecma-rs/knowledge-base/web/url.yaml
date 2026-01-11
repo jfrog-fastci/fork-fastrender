@@ -4,12 +4,9 @@
     - URL
   since: "baseline"
   effects:
-    base: [alloc, may_throw]
     allocates: true
     may_throw: true
-  purity:
-    kind: pure
-    template: pure
+  purity: Pure
 
 - name: URLSearchParams
   kind: constructor
@@ -19,12 +16,9 @@
     - globalThis.URLSearchParams
   since: "baseline"
   effects:
-    base: [alloc, may_throw]
     allocates: true
     may_throw: true
-  purity:
-    kind: pure
-    template: pure
+  purity: Pure
 
 - name: URL.createObjectURL
   kind: function
@@ -32,12 +26,9 @@
     - URL.createObjectURL
   since: "baseline"
   effects:
-    base: [alloc, may_throw]
     allocates: true
     may_throw: true
-  purity:
-    kind: impure
-    template: impure
+  purity: Impure
 
 - name: URL.canParse
   aliases:
@@ -62,12 +53,9 @@
     - URL.prototype.toString
   since: "baseline"
   effects:
-    base: [alloc]
     allocates: true
     may_throw: false
-  purity:
-    kind: pure
-    template: pure
+  purity: Pure
   properties:
     encoding.output: ascii
 
@@ -90,12 +78,9 @@
   kind: getter
   since: "baseline"
   effects:
-    base: [alloc]
     allocates: true
     may_throw: false
-  purity:
-    kind: pure
-    template: pure
+  purity: Pure
   properties:
     encoding.output: ascii
 
@@ -105,12 +90,9 @@
   kind: getter
   since: "baseline"
   effects:
-    base: [alloc]
     allocates: true
     may_throw: false
-  purity:
-    kind: pure
-    template: pure
+  purity: Pure
   properties:
     encoding.output: ascii
 
@@ -204,12 +186,9 @@
   kind: getter
   since: "baseline"
   effects:
-    base: [alloc]
     allocates: true
     may_throw: false
-  purity:
-    kind: pure
-    template: pure
+  purity: Pure
 
 - name: URLSearchParams.prototype.get
   kind: function
@@ -217,12 +196,9 @@
     - URLSearchParams.prototype.get
   since: "baseline"
   effects:
-    base: [alloc]
     allocates: true
     may_throw: false
-  purity:
-    kind: pure
-    template: pure
+  purity: Pure
 
 - name: URLSearchParams.prototype.getAll
   aliases:
@@ -257,12 +233,9 @@
     - URLSearchParams.prototype.set
   since: "baseline"
   effects:
-    base: [alloc]
     allocates: true
     may_throw: false
-  purity:
-    kind: impure
-    template: impure
+  purity: Impure
 
 - name: URLSearchParams.prototype.append
   kind: function
@@ -270,12 +243,9 @@
     - URLSearchParams.prototype.append
   since: "baseline"
   effects:
-    base: [alloc]
     allocates: true
     may_throw: false
-  purity:
-    kind: impure
-    template: impure
+  purity: Impure
 
 - name: URLSearchParams.prototype.sort
   aliases:
@@ -333,11 +303,8 @@
     - URLSearchParams.prototype.toString
   since: "baseline"
   effects:
-    base: [alloc]
     allocates: true
     may_throw: false
-  purity:
-    kind: pure
-    template: pure
+  purity: Pure
   properties:
     encoding.output: ascii
