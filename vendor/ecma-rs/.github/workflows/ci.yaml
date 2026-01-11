@@ -175,6 +175,9 @@ jobs:
     env:
       # `runtime-native` enforces frame pointers for FP-based stack walking (see runtime-native/build.rs).
       RUSTFLAGS: -C force-frame-pointers=yes
+      # The runtime-native integration tests serialize global state; keep test concurrency low for
+      # stability on GitHub-hosted macOS runners.
+      RUST_TEST_THREADS: 2
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

@@ -197,6 +197,10 @@ jobs:
   ecma-rs-native-macos:
     name: ecma-rs native reactor (macOS, Rust 1.92.0)
     runs-on: macos-latest
+    env:
+      # These integration tests serialize on a global runtime lock; running too many test threads
+      # adds contention and can make timing-based tests flaky on GitHub-hosted macOS runners.
+      RUST_TEST_THREADS: 2
     defaults:
       run:
         shell: bash
