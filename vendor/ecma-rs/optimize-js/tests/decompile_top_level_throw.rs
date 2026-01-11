@@ -47,10 +47,8 @@ fn top_level_throw_is_decompiled() {
   let bytes = program_to_js(&program, &opts, emit).expect("decompile manual program");
   assert_throw_output(bytes);
 
-  // Once Task 222 lands (top-level throw supported by the compiler), also ensure
-  // `compile_source` round-trips through the decompiler.
-  if let Ok(program) = optimize_js::compile_source("throw 1;", TopLevelMode::Module, false) {
-    let bytes = program_to_js(&program, &opts, emit).expect("decompile compiled throw");
-    assert_throw_output(bytes);
-  }
+  let program =
+    optimize_js::compile_source("throw 1;", TopLevelMode::Module, false).expect("compile throw");
+  let bytes = program_to_js(&program, &opts, emit).expect("decompile compiled throw");
+  assert_throw_output(bytes);
 }
