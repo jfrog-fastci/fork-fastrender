@@ -264,7 +264,6 @@ fn pin_uint8_array_range_converts_view_relative_range_and_charges_alloc_len() {
   assert_eq!(limiter.counters().pinned_bytes_current, alloc_len);
   assert_eq!(op.bufs().len(), 1);
   assert_eq!(op.bufs()[0].len(), 4);
-
   assert_eq!(op.bufs()[0].as_ptr(), expected_ptr);
 
   drop(op);
@@ -288,7 +287,6 @@ fn pin_array_buffer_range_produces_expected_kernel_ptr() {
   assert_eq!(limiter.counters().pinned_bytes_current, 16);
   assert_eq!(op.bufs().len(), 1);
   assert_eq!(op.bufs()[0].len(), 6);
-
   assert_eq!(op.bufs()[0].as_ptr(), expected_ptr);
   drop(op);
 
@@ -313,6 +311,44 @@ fn pin_backing_store_range_produces_expected_kernel_ptr() {
   assert_eq!(op.bufs().len(), 1);
   assert_eq!(op.bufs()[0].len(), 4);
   assert_eq!(op.bufs()[0].as_ptr(), expected_ptr);
+
+  drop(op);
+  assert_eq!(limiter.counters().pinned_bytes_current, 0);
+}
+
+#[test]
+fn pin_vectored_produces_expected_kernel_ptrs() {
+  let limiter = Arc::new(IoLimiter::new(IoLimits {
+    max_pinned_bytes: 24,
+    max_inflight_ops: 8,
+    max_pinned_bytes_per_op: None,
+  }));
+
+  let store_a = global_backing_store_allocator().alloc_zeroed(8).unwrap();
+  let store_b = global_backing_store_allocator().alloc_zeroed(16).unwrap();
+
+  let base_a = store_a.as_ptr() as *const u8;
+  let base_b = store_b.as_ptr() as *const u8;
+
+  let op = IoOp::pin_vectored(
+    &limiter,
+    vec![
+      (store_a.clone(), 1..3),
+      (store_b.clone(), 4..10),
+      (store_a, 0..1),
+    ],
+  )
+  .unwrap();
+
+  assert_eq!(limiter.counters().pinned_bytes_current, 24);
+  assert_eq!(op.bufs().len(), 3);
+
+  assert_eq!(op.bufs()[0].len(), 2);
+  assert_eq!(op.bufs()[0].as_ptr(), unsafe { base_a.add(1) });
+  assert_eq!(op.bufs()[1].len(), 6);
+  assert_eq!(op.bufs()[1].as_ptr(), unsafe { base_b.add(4) });
+  assert_eq!(op.bufs()[2].len(), 1);
+  assert_eq!(op.bufs()[2].as_ptr(), base_a);
 
   drop(op);
   assert_eq!(limiter.counters().pinned_bytes_current, 0);
