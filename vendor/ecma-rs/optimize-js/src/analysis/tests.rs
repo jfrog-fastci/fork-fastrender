@@ -274,6 +274,35 @@ fn infinite_loop_virtual_exit_from_sink_scc() {
 }
 
 #[test]
+fn infinite_loop_virtual_exit_ignores_unreachable_terminal_block() {
+  // Block 3 is unreachable from entry, but present in the graph as a disconnected node.
+  // Virtual-exit construction should still seed from the sink SCC of the reachable loop.
+  let mut graph = CfgGraph::default();
+  graph.connect(0, 1);
+  graph.connect(1, 2);
+  graph.connect(2, 1);
+  graph.ensure_label(3);
+
+  let mut bblocks = CfgBBlocks::default();
+  for label in [0u32, 1, 2, 3] {
+    bblocks.add(label, Vec::new());
+  }
+  let cfg = Cfg {
+    graph,
+    bblocks,
+    entry: 0,
+  };
+
+  let backward_result = backward(&cfg, AnalysisBoundary::VirtualExit);
+  match &backward_result.boundary {
+    ResolvedAnalysisBoundary::VirtualExit { predecessors, .. } => {
+      assert_eq!(predecessors, &vec![1, 2]);
+    }
+    ResolvedAnalysisBoundary::Entry(label) => panic!("expected virtual exit, got entry {label}"),
+  };
+}
+
+#[test]
 fn virtual_exit_label_does_not_collide_with_unconnected_bblock() {
   let cfg = cfg(&[0, 1, 2], &[(0, 1)]);
   let backward_result = backward(&cfg, AnalysisBoundary::VirtualExit);

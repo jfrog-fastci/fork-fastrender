@@ -295,23 +295,42 @@ impl<'cfg> FlowGraph<'cfg> {
 fn calculate_virtual_exit(cfg: &Cfg) -> VirtualExit {
   // Connect the virtual exit to every natural exit, or to every node in a sink
   // SCC if the graph has no terminal nodes (e.g. infinite loops).
+  //
+  // We only consider nodes reachable from `cfg.entry`. Unreachable terminal
+  // blocks (e.g. skipped over by a `goto`) must not suppress sink-SCC seeding
+  // for the reachable portion of the CFG.
   let predecessors = {
-    let mut terminals = cfg
-      .graph
-      .labels()
+    let reachable = reachable_labels_sorted(cfg);
+    let terminals = reachable
+      .iter()
+      .copied()
       .filter(|&l| cfg.graph.children(l).next().is_none())
       .collect_vec();
-    terminals.sort_unstable();
     if !terminals.is_empty() {
       terminals
     } else {
-      sink_scc_nodes(cfg)
+      sink_scc_nodes(cfg, &reachable)
     }
   };
   VirtualExit {
     label: next_unused_label(cfg),
     predecessors,
   }
+}
+
+fn reachable_labels_sorted(cfg: &Cfg) -> Vec<u32> {
+  let mut seen = HashSet::from_iter([cfg.entry]);
+  let mut to_visit = VecDeque::from([cfg.entry]);
+  while let Some(node) = to_visit.pop_front() {
+    for child in cfg.graph.children_sorted(node) {
+      if seen.insert(child) {
+        to_visit.push_back(child);
+      }
+    }
+  }
+  let mut labels = seen.into_iter().collect_vec();
+  labels.sort_unstable();
+  labels
 }
 
 fn next_unused_label(cfg: &Cfg) -> u32 {
@@ -335,7 +354,7 @@ fn next_unused_label(cfg: &Cfg) -> u32 {
   panic!("exhausted all possible CFG labels while searching for a virtual exit");
 }
 
-fn sink_scc_nodes(cfg: &Cfg) -> Vec<u32> {
+fn sink_scc_nodes(cfg: &Cfg, nodes: &[u32]) -> Vec<u32> {
   let mut index: u32 = 0;
   let mut indices = HashMap::<u32, u32>::default();
   let mut lowlinks = HashMap::<u32, u32>::default();
@@ -395,9 +414,7 @@ fn sink_scc_nodes(cfg: &Cfg) -> Vec<u32> {
     }
   }
 
-  let mut nodes = cfg.graph.labels().collect_vec();
-  nodes.sort_unstable();
-  for node in nodes {
+  for &node in nodes {
     if !indices.contains_key(&node) {
       strongconnect(
         cfg,
@@ -420,6 +437,10 @@ fn sink_scc_nodes(cfg: &Cfg) -> Vec<u32> {
   let mut is_sink_component = vec![true; components.len()];
   for (&node, &component) in node_to_component.iter() {
     for succ in cfg.graph.children(node) {
+      debug_assert!(
+        node_to_component.contains_key(&succ),
+        "reachable node {node} has successor {succ} missing from SCC input set"
+      );
       if node_to_component[&succ] != component {
         is_sink_component[component] = false;
         break;
