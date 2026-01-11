@@ -4,6 +4,17 @@ use runtime_native::gc_roots::StackRootEnumerator;
 use runtime_native::stackmaps::StackMaps;
 use runtime_native::stackwalk::StackBounds;
 use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
+use runtime_native::statepoints::RootSlot;
+
+const DWARF_REG_SP: u16 = 7;
+
+fn slot_addr(slot: RootSlot) -> usize {
+  match slot {
+    RootSlot::StackAddr(addr) => addr as usize,
+    RootSlot::Reg { dwarf_reg } => panic!("expected stack slot, got register dwarf_reg={dwarf_reg}"),
+    RootSlot::Const { value } => panic!("expected stack slot, got const value={value}"),
+  }
+}
 
 #[test]
 fn frame_pointer_stack_walker_and_slot_addressing() {
@@ -41,7 +52,7 @@ fn frame_pointer_stack_walker_and_slot_addressing() {
     let bounds =
       StackBounds::new(base as u64, (base + stack.len() * std::mem::size_of::<usize>()) as u64).unwrap();
     roots.visit_reloc_pairs(callee_fp, Some(bounds), |pair| {
-      seen.push((pair.base_slot as usize, pair.derived_slot as usize));
+      seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
     });
 
     assert_eq!(seen, vec![(base_slot_addr as usize, derived_slot_addr as usize)]);
@@ -67,7 +78,7 @@ fn stack_root_enumerator_stops_on_corrupt_fp_chain() {
 
     let mut seen = vec![];
     roots.visit_reloc_pairs(callee_fp, Some(bounds), |pair| {
-      seen.push((pair.base_slot as usize, pair.derived_slot as usize));
+      seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
     });
     assert!(seen.is_empty());
   }
@@ -88,7 +99,7 @@ fn stack_root_enumerator_stops_on_out_of_bounds_fp() {
 
   let mut seen = vec![];
   roots.visit_reloc_pairs(bogus_fp, Some(bounds), |pair| {
-    seen.push((pair.base_slot as usize, pair.derived_slot as usize));
+    seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
   });
   assert!(seen.is_empty());
 }
@@ -125,7 +136,7 @@ fn stack_root_enumerator_stops_on_out_of_bounds_slot() {
 
   let mut seen = vec![];
   roots.visit_reloc_pairs(callee_fp, Some(bounds), |pair| {
-    seen.push((pair.base_slot as usize, pair.derived_slot as usize));
+    seen.push((slot_addr(pair.base_slot), slot_addr(pair.derived_slot)));
   });
   assert!(seen.is_empty());
 }
@@ -191,8 +202,8 @@ fn minimal_stackmap_section(instruction_offset: u32) -> Vec<u8> {
   push_loc(&mut bytes, 4, 8, 0, 0);
 
   // One (base, derived) pair: Indirect [RSP+0], Indirect [RSP+8].
-  push_loc(&mut bytes, 3, 8, 7, 0);
-  push_loc(&mut bytes, 3, 8, 7, 8);
+  push_loc(&mut bytes, 3, 8, DWARF_REG_SP, 0);
+  push_loc(&mut bytes, 3, 8, DWARF_REG_SP, 8);
 
   // Align to 8 before live-out header.
   align_to(&mut bytes, 8);

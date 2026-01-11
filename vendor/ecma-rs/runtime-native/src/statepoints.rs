@@ -185,7 +185,7 @@ impl RegFile for ThreadContext {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RootSlot {
   /// An addressable stack slot containing the pointer value.
   StackAddr(*mut u8),

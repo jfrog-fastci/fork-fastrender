@@ -22,23 +22,23 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::ptr;
 
 use crate::stack_walk::{FrameView, StackWalker};
 use crate::stackmaps::{CallSite, Location, StackMapRecord, StackMaps};
 use crate::stackwalk::StackBounds;
-use crate::statepoints::StatepointRecord;
+use crate::statepoints::{eval_location, RegFile, RootSlot, StatepointRecord};
+use stackmap_context::ThreadContext;
 
 /// A `(base, derived)` relocation pair.
 ///
-/// `base_slot` and `derived_slot` are pointers to machine-word slots (usually stack slots or
-/// spilled-register slots) that contain pointer-sized values.
+/// `base_slot` and `derived_slot` identify mutable locations that contain pointer-sized values:
+/// either addressable stack slots or registers (DWARF register numbers).
 ///
 /// A value of `0` in either slot is treated as a null pointer.
 #[derive(Clone, Copy, Debug)]
 pub struct RelocPair {
-  pub base_slot: *mut usize,
-  pub derived_slot: *mut usize,
+  pub base_slot: RootSlot,
+  pub derived_slot: RootSlot,
 }
 
 impl RelocPair {
@@ -54,18 +54,23 @@ impl RelocPair {
   ///
   /// # Safety
   /// The slots must be valid and writable.
-  pub unsafe fn update_derived_after_base_moved(&self, old_base: usize, new_base: usize) {
-    let old_derived = self.derived_slot.read();
+  pub unsafe fn update_derived_after_base_moved(
+    &self,
+    ctx: &mut ThreadContext,
+    old_base: usize,
+    new_base: usize,
+  ) {
+    let old_derived = self.derived_slot.read_u64(ctx) as usize;
 
     // Preserve nulls to avoid underflow and to treat null pointers as non-roots.
     if old_base == 0 || old_derived == 0 || new_base == 0 {
-      self.derived_slot.write(0);
+      self.derived_slot.write_u64(ctx, 0);
       return;
     }
 
     let offset = old_derived.wrapping_sub(old_base);
     let new_derived = new_base.wrapping_add(offset);
-    self.derived_slot.write(new_derived);
+    self.derived_slot.write_u64(ctx, new_derived as u64);
   }
 }
 
@@ -78,9 +83,11 @@ impl RelocPair {
 /// A slot value of `0` is treated as null and is not passed to `relocate`.
 ///
 /// ## Safety
-/// Callers must ensure that every `base_slot` and `derived_slot` in `pairs` is a valid, writable
-/// pointer to a `usize` slot for the duration of the call.
+/// Callers must ensure that every `RootSlot::StackAddr` in `pairs` is a valid, writable pointer for
+/// the duration of the call, and that `ctx` contains a complete register file for any
+/// `RootSlot::Reg` entries.
 pub fn relocate_reloc_pairs_in_place(
+  ctx: &mut ThreadContext,
   pairs: impl IntoIterator<Item = RelocPair>,
   mut relocate: impl FnMut(usize) -> usize,
 ) {
@@ -88,24 +95,21 @@ pub fn relocate_reloc_pairs_in_place(
   //
   // Cache at least `old_base` per unique `base_slot` so repeated base slots don't observe our own
   // in-place writes.
-  let mut old_base_by_slot: HashMap<*mut usize, usize> = HashMap::new();
-  let mut old_derived_by_slot: HashMap<*mut usize, usize> = HashMap::new();
+  let mut old_base_by_slot: HashMap<RootSlot, usize> = HashMap::new();
+  let mut old_derived_by_slot: HashMap<RootSlot, usize> = HashMap::new();
   let mut pairs_vec: Vec<RelocPair> = Vec::new();
 
   for pair in pairs {
-    if pair.base_slot.is_null() || pair.derived_slot.is_null() {
-      // Invalid slot pointers are a caller bug; skip to avoid UB in release builds.
-      debug_assert!(
-        false,
-        "relocate_reloc_pairs_in_place received null base_slot/derived_slot pointer"
-      );
+    // Invalid stack slot pointers are a caller bug; skip to avoid UB.
+    if matches!(pair.base_slot, RootSlot::StackAddr(p) if p.is_null())
+      || matches!(pair.derived_slot, RootSlot::StackAddr(p) if p.is_null())
+    {
+      debug_assert!(false, "relocate_reloc_pairs_in_place received null stack slot pointer");
       continue;
     }
 
-    // SAFETY: caller guarantees slots are valid; use unaligned access to avoid imposing alignment
-    // constraints on stackmap encodings.
-    let old_base = unsafe { ptr::read_unaligned(pair.base_slot) };
-    let old_derived = unsafe { ptr::read_unaligned(pair.derived_slot) };
+    let old_base = pair.base_slot.read_u64(ctx) as usize;
+    let old_derived = pair.derived_slot.read_u64(ctx) as usize;
 
     match old_base_by_slot.entry(pair.base_slot) {
       Entry::Vacant(e) => {
@@ -137,8 +141,7 @@ pub fn relocate_reloc_pairs_in_place(
   }
 
   // Phase 2: relocate each unique base slot once.
-  let mut new_base_by_slot: HashMap<*mut usize, usize> =
-    HashMap::with_capacity(old_base_by_slot.len());
+  let mut new_base_by_slot: HashMap<RootSlot, usize> = HashMap::with_capacity(old_base_by_slot.len());
   for (&slot, &old_base) in &old_base_by_slot {
     let new_base = if old_base == 0 { 0 } else { relocate(old_base) };
     new_base_by_slot.insert(slot, new_base);
@@ -146,10 +149,7 @@ pub fn relocate_reloc_pairs_in_place(
 
   // Phase 3a: write relocated base pointers.
   for (&slot, &new_base) in &new_base_by_slot {
-    // SAFETY: caller guarantees slots are valid and writable.
-    unsafe {
-      ptr::write_unaligned(slot, new_base);
-    }
+    slot.write_u64(ctx, new_base as u64);
   }
 
   // Phase 3b: write relocated derived pointers using the *snapshotted* old values.
@@ -172,10 +172,7 @@ pub fn relocate_reloc_pairs_in_place(
       new_base.wrapping_add(delta)
     };
 
-    // SAFETY: caller guarantees slots are valid and writable.
-    unsafe {
-      ptr::write_unaligned(pair.derived_slot, new_derived);
-    }
+    pair.derived_slot.write_u64(ctx, new_derived as u64);
   }
 }
 
@@ -196,8 +193,8 @@ impl<'a> StackRootEnumerator<'a> {
   /// Notes/assumptions:
   /// - We currently assume LLVM 18 statepoint lowering, where the stackmap record's `locations`
   ///   are: a prefix of constant header entries (metadata), followed by `(base, derived)` pairs for
-  ///   each `gc.relocate` in the frame.
-  /// - Only `Location::Indirect` is supported for slot addressing (with DWARF reg RSP/RBP).
+  ///   each `gc.relocate` in the frame. Deopt operands (if any) are skipped.
+  /// - Root locations may be either stack slots (`Location::Indirect`) or registers (`Location::Register`).
   pub fn visit_reloc_pairs(
     &self,
     top_callee_fp: usize,
@@ -213,6 +210,9 @@ impl<'a> StackRootEnumerator<'a> {
         };
 
         if !visit_callsite_reloc_pairs(callsite, &frame, bounds, &mut f) {
+          // Either a stack slot was out-of-bounds, or the record used an unsupported
+          // location kind. Treat this as the end of the managed stack to avoid
+          // potentially unsafe memory access.
           break;
         }
       }
@@ -233,58 +233,80 @@ fn visit_callsite_reloc_pairs(
       frame.return_address, record.patchpoint_id
     )
   });
- 
+
   // LLVM 18 statepoint lowering emits locations in (base, derived) order for each `gc.relocate`
-  // call. `gc_pairs()` is already offset past the 3-entry statepoint header and any deopt
-  // operands.
+  // call. `gc_pairs()` is already offset past the 3-entry statepoint header and any deopt operands.
   for pair in statepoint.gc_pairs() {
-    let Some(base_slot) = location_to_slot(frame, &pair.base, bounds) else {
+    let Some(base_slot) = location_to_root_slot(frame, &pair.base, bounds) else {
       return false;
     };
-    let Some(derived_slot) = location_to_slot(frame, &pair.derived, bounds) else {
+    let Some(derived_slot) = location_to_root_slot(frame, &pair.derived, bounds) else {
       return false;
     };
-    f(RelocPair {
-      base_slot,
-      derived_slot,
-    });
+    f(RelocPair { base_slot, derived_slot });
   }
+
   true
 }
 
-fn location_to_slot(frame: &FrameView, loc: &Location, bounds: Option<StackBounds>) -> Option<*mut usize> {
-  match *loc {
-    Location::Indirect { dwarf_reg, offset, size } => {
-      if size as usize != std::mem::size_of::<usize>() {
+#[derive(Clone, Copy)]
+struct FrameRegs {
+  sp: u64,
+  fp: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+const DWARF_REG_SP: u16 = 7;
+#[cfg(target_arch = "x86_64")]
+const DWARF_REG_FP: u16 = 6;
+#[cfg(target_arch = "aarch64")]
+const DWARF_REG_SP: u16 = 31;
+#[cfg(target_arch = "aarch64")]
+const DWARF_REG_FP: u16 = 29;
+
+impl RegFile for FrameRegs {
+  fn get(&self, dwarf_reg: u16) -> Option<u64> {
+    match dwarf_reg {
+      DWARF_REG_SP => Some(self.sp),
+      DWARF_REG_FP => Some(self.fp),
+      _ => None,
+    }
+  }
+}
+
+fn location_to_root_slot(
+  frame: &FrameView,
+  loc: &Location,
+  bounds: Option<StackBounds>,
+) -> Option<RootSlot> {
+  let ptr_size = std::mem::size_of::<usize>() as u16;
+  if loc.size() != ptr_size {
+    return None;
+  }
+
+  let regs = FrameRegs {
+    sp: frame.caller_sp as u64,
+    fp: frame.caller_fp as u64,
+  };
+
+  let slot = eval_location(loc, &regs).ok()?;
+  match slot {
+    RootSlot::Const { .. } => None,
+    RootSlot::StackAddr(addr) => {
+      if addr.is_null() {
         return None;
       }
-      let base = match dwarf_reg {
-        // x86_64 DWARF reg numbers.
-        7 => frame.caller_sp, // RSP
-        6 => frame.caller_fp, // RBP
-        // aarch64 DWARF reg numbers.
-        31 => frame.caller_sp, // SP
-        29 => frame.caller_fp, // FP
-        _ => return None,
-      };
-      let addr = add_signed_usize(base, offset)?;
-      if addr % std::mem::align_of::<usize>() != 0 {
+      let addr_usize = addr as usize;
+      if addr_usize % std::mem::align_of::<usize>() != 0 {
         return None;
       }
       if let Some(bounds) = bounds {
-        if !bounds.contains_range(addr as u64, size as u64) {
+        if !bounds.contains_range(addr_usize as u64, ptr_size as u64) {
           return None;
         }
       }
-      Some(addr as *mut usize)
+      Some(slot)
     }
-    _ => None,
-  }
-}
-fn add_signed_usize(base: usize, offset: i32) -> Option<usize> {
-  if offset >= 0 {
-    base.checked_add(offset as usize)
-  } else {
-    base.checked_sub((-offset) as usize)
+    RootSlot::Reg { .. } => Some(slot),
   }
 }

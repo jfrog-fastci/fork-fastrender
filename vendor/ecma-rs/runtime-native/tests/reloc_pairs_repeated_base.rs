@@ -1,4 +1,6 @@
 use runtime_native::gc_roots::{relocate_reloc_pairs_in_place, RelocPair};
+use runtime_native::statepoints::RootSlot;
+use stackmap_context::ThreadContext;
 
 #[test]
 fn reloc_pairs_handles_repeated_base_slots() {
@@ -11,9 +13,9 @@ fn reloc_pairs_handles_repeated_base_slots() {
   frame[2] = base + 0x20;
   frame[3] = 0xDEAD_BEEF;
 
-  let base_slot = &mut frame[0] as *mut usize;
-  let derived1_slot = &mut frame[1] as *mut usize;
-  let derived2_slot = &mut frame[2] as *mut usize;
+  let base_slot = RootSlot::StackAddr((&mut frame[0] as *mut usize).cast::<u8>());
+  let derived1_slot = RootSlot::StackAddr((&mut frame[1] as *mut usize).cast::<u8>());
+  let derived2_slot = RootSlot::StackAddr((&mut frame[2] as *mut usize).cast::<u8>());
 
   // Ordering intentionally puts the base slot's own relocate first, then derived pointers that
   // reference the same base. A naive in-place algorithm would relocate the base slot multiple times
@@ -39,7 +41,8 @@ fn reloc_pairs_handles_repeated_base_slots() {
   ];
 
   let mut calls = 0usize;
-  relocate_reloc_pairs_in_place(pairs, |old| {
+  let mut ctx = ThreadContext::default();
+  relocate_reloc_pairs_in_place(&mut ctx, pairs, |old| {
     calls += 1;
     old + 0x1000
   });
@@ -60,12 +63,13 @@ fn reloc_pairs_treats_zero_as_null() {
   let derived_slot = &mut frame[1] as *mut usize;
 
   let pairs = [RelocPair {
-    base_slot,
-    derived_slot,
+    base_slot: RootSlot::StackAddr(base_slot.cast::<u8>()),
+    derived_slot: RootSlot::StackAddr(derived_slot.cast::<u8>()),
   }];
 
   let mut calls = 0usize;
-  relocate_reloc_pairs_in_place(pairs, |old| {
+  let mut ctx = ThreadContext::default();
+  relocate_reloc_pairs_in_place(&mut ctx, pairs, |old| {
     calls += 1;
     old + 0x1000
   });
@@ -73,4 +77,3 @@ fn reloc_pairs_treats_zero_as_null() {
   assert_eq!(calls, 0);
   assert_eq!(frame, [0, 0]);
 }
-
