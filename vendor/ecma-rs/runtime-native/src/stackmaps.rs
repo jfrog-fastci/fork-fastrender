@@ -464,7 +464,11 @@ impl<'a> Cursor<'a> {
 
   fn align_to(&mut self, align: usize) -> Result<(), StackMapError> {
     debug_assert!(align.is_power_of_two());
-    let new_off = (self.off + (align - 1)) & !(align - 1);
+    let add = self
+      .off
+      .checked_add(align - 1)
+      .ok_or(StackMapError::UnexpectedEof)?;
+    let new_off = add & !(align - 1);
     if new_off > self.bytes.len() {
       return Err(StackMapError::UnexpectedEof);
     }
@@ -473,12 +477,16 @@ impl<'a> Cursor<'a> {
   }
 
   fn read_exact<const N: usize>(&mut self) -> Result<[u8; N], StackMapError> {
-    if self.off + N > self.bytes.len() {
+    let end = self
+      .off
+      .checked_add(N)
+      .ok_or(StackMapError::UnexpectedEof)?;
+    if end > self.bytes.len() {
       return Err(StackMapError::UnexpectedEof);
     }
     let mut out = [0u8; N];
-    out.copy_from_slice(&self.bytes[self.off..self.off + N]);
-    self.off += N;
+    out.copy_from_slice(&self.bytes[self.off..end]);
+    self.off = end;
     Ok(out)
   }
 }
