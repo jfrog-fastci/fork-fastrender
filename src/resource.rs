@@ -4001,13 +4001,6 @@ fn cors_preflight_cache_entry_match(
   !(credentialed && !entry.credentials)
 }
 
-fn cors_preflight_method_cache_entry_token_match(entry_method: Option<&str>, method: &str) -> bool {
-  let Some(entry_method) = entry_method else {
-    return false;
-  };
-  entry_method.eq_ignore_ascii_case(method)
-}
-
 fn cors_preflight_method_cache_entry_match(
   entry_method: Option<&str>,
   method: &str,
@@ -4022,16 +4015,6 @@ fn cors_preflight_method_cache_entry_match(
     return true;
   }
   entry_method == "*" && !credentialed
-}
-
-fn cors_preflight_header_name_cache_entry_token_match(
-  entry_header: Option<&str>,
-  header_name: &str,
-) -> bool {
-  let Some(entry_header) = entry_header else {
-    return false;
-  };
-  entry_header.eq_ignore_ascii_case(header_name)
 }
 
 fn cors_preflight_header_name_cache_entry_match(
@@ -4108,7 +4091,7 @@ impl CorsPreflightCache {
     let mut updated_any = false;
     for entry in &mut self.entries {
       if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
-        && cors_preflight_method_cache_entry_token_match(entry.method.as_deref(), &method)
+        && cors_preflight_method_cache_entry_match(entry.method.as_deref(), &method, credentialed)
       {
         entry.expires_at = expiry;
         updated_any = true;
@@ -4150,9 +4133,10 @@ impl CorsPreflightCache {
     let mut updated_any = false;
     for entry in &mut self.entries {
       if cors_preflight_cache_entry_match(entry, partition_key, origin, url, credentialed)
-        && cors_preflight_header_name_cache_entry_token_match(
+        && cors_preflight_header_name_cache_entry_match(
           entry.header_name.as_deref(),
           &header_name,
+          credentialed,
         )
       {
         entry.expires_at = expiry;
@@ -12399,6 +12383,58 @@ mod tests {
       }
       Err(err) => panic!("bind {context}: {err}"),
     }
+  }
+
+  #[test]
+  fn cors_preflight_cache_updates_wildcard_method_entry() {
+    let now = Instant::now();
+    let mut cache = CorsPreflightCache::default();
+    let origin = "https://client.example";
+    let url = "http://example.com/";
+    let initial_expiry = cors_preflight_expiry(now, 1);
+    cache.entries.push(CorsPreflightCacheEntry {
+      partition_key: None,
+      origin: origin.to_string(),
+      url: url.to_string(),
+      expires_at: initial_expiry,
+      credentials: false,
+      method: Some("*".to_string()),
+      header_name: None,
+    });
+
+    // `*` method entries should match non-credentialed requests and be updated instead of inserting
+    // a new method entry.
+    cache.update_or_insert_method(now, 60, None, origin, url, false, "PUT");
+    assert_eq!(cache.entries.len(), 1);
+    let entry = &cache.entries[0];
+    assert_eq!(entry.method.as_deref(), Some("*"));
+    assert!(entry.expires_at > initial_expiry);
+  }
+
+  #[test]
+  fn cors_preflight_cache_updates_wildcard_header_entry() {
+    let now = Instant::now();
+    let mut cache = CorsPreflightCache::default();
+    let origin = "https://client.example";
+    let url = "http://example.com/";
+    let initial_expiry = cors_preflight_expiry(now, 1);
+    cache.entries.push(CorsPreflightCacheEntry {
+      partition_key: None,
+      origin: origin.to_string(),
+      url: url.to_string(),
+      expires_at: initial_expiry,
+      credentials: false,
+      method: None,
+      header_name: Some("*".to_string()),
+    });
+
+    // `*` header-name entries should match non-credentialed requests and be updated instead of
+    // inserting a new header-name entry.
+    cache.update_or_insert_header_name(now, 60, None, origin, url, false, "X-Test");
+    assert_eq!(cache.entries.len(), 1);
+    let entry = &cache.entries[0];
+    assert_eq!(entry.header_name.as_deref(), Some("*"));
+    assert!(entry.expires_at > initial_expiry);
   }
 
   #[test]
