@@ -57,3 +57,23 @@ fn return_statements_lower_to_return_insts() {
     });
   assert!(saw_return_one, "expected Return inst returning 1");
 }
+
+#[test]
+fn return_void_lower_to_return_undefined() {
+  let src = r#"
+    const make = () => {
+      return;
+    };
+    make();
+  "#;
+  let program = compile_source(src, TopLevelMode::Module, false);
+  assert_eq!(program.functions.len(), 1);
+
+  let saw_return_undefined = program.functions[0]
+    .body
+    .bblocks
+    .all()
+    .flat_map(|(_, b)| b.iter())
+    .any(|inst| inst.t == InstTyp::Return && inst.args.as_slice() == [Arg::Const(Const::Undefined)]);
+  assert!(saw_return_undefined, "expected Return inst returning undefined for `return;`");
+}
