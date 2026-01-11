@@ -64,12 +64,36 @@ fn main() -> Result<()> {
   let file = std::fs::read(&cli.path)
     .with_context(|| format!("failed to read input file: {}", cli.path.display()))?;
 
-  const SECTION_NAME: &str = ".llvm_stackmaps";
+  // Stackmaps can live in different output sections depending on link mode. For PIE builds we
+  // often rewrite the input section to `.data.rel.ro.llvm_stackmaps` so relocations can be
+  // applied safely.
+  const STACKMAP_SECTION_NAMES: [&str; 2] = [".data.rel.ro.llvm_stackmaps", ".llvm_stackmaps"];
   let section_bytes = if cli.raw_section {
     file.as_slice()
   } else if file.starts_with(b"\x7fELF") {
-    let section = elf::extract_section(&file, SECTION_NAME)
-      .with_context(|| format!("failed to extract {SECTION_NAME} from {}", cli.path.display()))?;
+    let mut last_err: Option<anyhow::Error> = None;
+    let mut section = None;
+    for name in STACKMAP_SECTION_NAMES {
+      match elf::extract_section(&file, name) {
+        Ok(s) => {
+          section = Some(s);
+          break;
+        }
+        Err(err) => last_err = Some(err),
+      }
+    }
+    let section = section.ok_or_else(|| {
+      let names = STACKMAP_SECTION_NAMES.join(", ");
+      match last_err {
+        Some(err) => {
+          anyhow::anyhow!("failed to extract any stackmap section ({names}) from {}: {err}", cli.path.display())
+        }
+        None => anyhow::anyhow!(
+          "failed to extract any stackmap section ({names}) from {}",
+          cli.path.display()
+        ),
+      }
+    })?;
     if section.endian != endian::Endian::Little {
       bail!("only little-endian ELF is supported (got {:?})", section.endian);
     }
