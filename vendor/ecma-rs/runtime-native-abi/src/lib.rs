@@ -331,10 +331,11 @@ pub struct PromiseResolveInput {
 /// Status code returned by a legacy coroutine `resume` function.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
 pub enum RtCoroStatus {
-  Done = 0,
-  Pending = 1,
-  Yield = 2,
+  RT_CORO_DONE = 0,
+  RT_CORO_PENDING = 1,
+  RT_CORO_YIELD = 2,
 }
 
 pub type RtCoroResumeFn = extern "C" fn(*mut RtCoroutineHeader) -> RtCoroStatus;
@@ -635,6 +636,9 @@ mod tests {
       "RT_PROMISE_RESOLVE_VALUE",
       "RT_PROMISE_RESOLVE_PROMISE",
       "RT_PROMISE_RESOLVE_THENABLE",
+      "RT_CORO_DONE",
+      "RT_CORO_PENDING",
+      "RT_CORO_YIELD",
       "RT_ASYNC_ABI_VERSION",
     ] {
       assert!(header.contains(c), "missing constant `{c}` in generated header");
