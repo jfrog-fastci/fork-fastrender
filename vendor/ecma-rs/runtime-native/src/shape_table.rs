@@ -221,7 +221,6 @@ fn validate_descriptor(index: usize, desc: &RtShapeDescriptor) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::alloc::{alloc, dealloc, Layout};
 
   #[test]
   fn register_table_and_trace_uses_offsets() {
@@ -277,36 +276,19 @@ mod tests {
 
     // Shape ids are 1-indexed.
     let leaf = RtShapeId(1);
-    let single = RtShapeId(2);
     let weird = RtShapeId(3);
 
     let weird_desc = lookup_type_descriptor(weird);
     assert_eq!(weird_desc.ptr_offsets(), WEIRD_PTR_OFFSETS);
 
     unsafe {
-      // Allocate objects manually and encode the type descriptor pointer in the header.
-      let layout = Layout::from_size_align(weird_desc.size, mem::align_of::<ObjHeader>()).unwrap();
-      let wrapper = alloc(layout);
+      // Allocate objects via the runtime ABI (`rt_alloc`) so we exercise the shape table wiring.
+      let wrapper = crate::rt_alloc(weird_desc.size, weird);
+      let should_live = crate::rt_alloc(mem::size_of::<ObjHeader>(), leaf);
+      let should_die = crate::rt_alloc(mem::size_of::<ObjHeader>(), leaf);
       assert!(!wrapper.is_null());
-      wrapper.cast::<ObjHeader>().write(ObjHeader {
-        type_desc: weird_desc as *const TypeDescriptor,
-        meta: 0,
-      });
-
-      let leaf_desc = lookup_type_descriptor(leaf);
-      let leaf_layout = Layout::from_size_align(leaf_desc.size, mem::align_of::<ObjHeader>()).unwrap();
-      let should_live = alloc(leaf_layout);
-      let should_die = alloc(leaf_layout);
       assert!(!should_live.is_null());
       assert!(!should_die.is_null());
-      should_live.cast::<ObjHeader>().write(ObjHeader {
-        type_desc: leaf_desc as *const TypeDescriptor,
-        meta: 0,
-      });
-      should_die.cast::<ObjHeader>().write(ObjHeader {
-        type_desc: leaf_desc as *const TypeDescriptor,
-        meta: 0,
-      });
 
       // Wrapper has two pointer-sized slots at offsets header+0 and header+ptr_size, but the
       // descriptor only lists the second one (WEIRD_PTR_OFFSETS).
@@ -325,14 +307,6 @@ mod tests {
         .add(mem::size_of::<ObjHeader>() + mem::size_of::<*mut u8>())
         .cast::<*mut u8>() as usize;
       assert_eq!(seen, vec![expected_slot]);
-
-      dealloc(wrapper, layout);
-      dealloc(should_live, leaf_layout);
-      dealloc(should_die, leaf_layout);
-
-      // Silence unused warnings for ids in this test (future tests may allocate by shape).
-      let _ = single;
     }
   }
 }
-
