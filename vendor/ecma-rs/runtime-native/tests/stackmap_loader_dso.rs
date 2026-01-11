@@ -46,6 +46,17 @@ fn find_llvm_readobj() -> Option<&'static str> {
   find_tool(&["llvm-readobj-18", "llvm-readobj"])
 }
 
+fn find_lld_fuse_arg() -> Option<&'static str> {
+  // Prefer the version-suffixed binary when available (matches our exec plan install).
+  if command_works("ld.lld-18") {
+    Some("lld-18")
+  } else if command_works("ld.lld") {
+    Some("lld")
+  } else {
+    None
+  }
+}
+
 fn run(cmd: &mut Command) {
   let out = cmd.output().unwrap();
   assert!(
@@ -55,6 +66,20 @@ fn run(cmd: &mut Command) {
     String::from_utf8_lossy(&out.stdout),
     String::from_utf8_lossy(&out.stderr),
   );
+}
+
+fn try_run(cmd: &mut Command) -> Result<(), String> {
+  let out = cmd.output().unwrap();
+  if out.status.success() {
+    Ok(())
+  } else {
+    Err(format!(
+      "command failed (status={}):\n  cmd={cmd:?}\n  stdout:\n{}\n  stderr:\n{}\n",
+      out.status,
+      String::from_utf8_lossy(&out.stdout),
+      String::from_utf8_lossy(&out.stderr),
+    ))
+  }
 }
 
 fn write_ir(out_dir: &Path, module_name: &str, patchpoint_id: u64) -> PathBuf {
@@ -124,24 +149,73 @@ fn rename_stackmaps_section_to_data_rel_ro(objcopy: &str, readobj: &str, obj: &P
   );
 }
 
-fn link_shared(clang: &str, out_dir: &Path, objs: &[PathBuf], linker_script: &Path) -> PathBuf {
+#[derive(Clone, Copy, Debug)]
+enum StackmapsLinkerScript {
+  /// GNU ld-only fragment (`INSERT BEFORE .dynamic`) to avoid RWX in PIE/DSO mode.
+  GnuLd,
+  /// lld-friendly fragment (`INSERT AFTER .text`).
+  Lld,
+}
+
+fn link_shared(
+  clang: &str,
+  out_dir: &Path,
+  objs: &[PathBuf],
+  lld_script: &Path,
+  gnuld_script: &Path,
+) -> Option<(PathBuf, StackmapsLinkerScript)> {
   let so_path = out_dir.join("libstackmaps.so");
+
+  // Prefer GNU ld + stackmaps_gnuld.ld when available to avoid RWX in PIE/DSO mode.
+  // If the system linker is not GNU ld (e.g. lld or mold), this script may fail
+  // to link; fall back to lld + stackmaps.ld in that case.
   let mut cmd = Command::new(clang);
   cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so_path);
   // Regression guard: section GC can drop unreferenced `.llvm_stackmaps` unless
   // the linker script explicitly `KEEP()`s it.
   cmd.arg("-Wl,--gc-sections");
-  // Force stackmaps into a dedicated output section (`.data.rel.ro.llvm_stackmaps`) with stable
-  // boundaries. This mirrors the native-js link pipeline and avoids the default linker script
-  // folding `.data.rel.ro.*` into `.data.rel.ro` (which would hide stackmaps behind a generic
-  // section name).
-  cmd.arg(format!("-Wl,-T,{}", linker_script.display()));
+  cmd.arg(format!("-Wl,-T,{}", gnuld_script.display()));
   for obj in objs {
     cmd.arg(obj);
   }
-  run(&mut cmd);
-  assert!(so_path.exists());
-  so_path
+  match try_run(&mut cmd) {
+    Ok(()) => {
+      assert!(so_path.exists());
+      return Some((so_path, StackmapsLinkerScript::GnuLd));
+    }
+    Err(gnuld_err) => {
+      let Some(lld_fuse) = find_lld_fuse_arg() else {
+        eprintln!(
+          "skipping: failed to link shared library with system linker + stackmaps_gnuld.ld, and ld.lld not found\n{gnuld_err}"
+        );
+        return None;
+      };
+
+      let mut cmd2 = Command::new(clang);
+      cmd2
+        .arg(format!("-fuse-ld={lld_fuse}"))
+        .arg("-shared")
+        .arg("-fPIC")
+        .arg("-o")
+        .arg(&so_path)
+        .arg("-Wl,--gc-sections")
+        .arg(format!("-Wl,-T,{}", lld_script.display()));
+      for obj in objs {
+        cmd2.arg(obj);
+      }
+      if let Err(lld_err) = try_run(&mut cmd2) {
+        panic!(
+          "failed to link shared library with either:\n\
+           - system linker + stackmaps_gnuld.ld\n\
+           - lld + stackmaps.ld\n\n\
+           system linker attempt:\n{gnuld_err}\n\
+           lld attempt:\n{lld_err}"
+        );
+      }
+      assert!(so_path.exists());
+      Some((so_path, StackmapsLinkerScript::Lld))
+    }
+  }
 }
 
 fn has_wx_segment(elf: &object::File<'_>) -> bool {
@@ -215,23 +289,25 @@ fn discovers_stackmaps_in_dlopened_shared_library() {
   rename_stackmaps_section_to_data_rel_ro(objcopy, readobj, &obj_b);
 
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-  // Shared libraries are PIE-like; when using GNU ld, inserting the stackmaps
-  // section "after .text" can produce an RWX LOAD segment. Use the GNU ld
-  // fragment that inserts into the RELRO/data region instead.
-  let linker_script = manifest_dir.join("link/stackmaps_gnuld.ld");
+  let lld_script = manifest_dir.join("link/stackmaps.ld");
+  let gnuld_script = manifest_dir.join("link/stackmaps_gnuld.ld");
+  assert!(lld_script.exists(), "missing linker script at {lld_script:?}");
   assert!(
-    linker_script.exists(),
-    "missing linker script at {linker_script:?}"
+    gnuld_script.exists(),
+    "missing linker script at {gnuld_script:?}"
   );
 
-  let so = link_shared(clang, td.path(), &[obj_a, obj_b], &linker_script);
+  let Some((so, script_used)) = link_shared(clang, td.path(), &[obj_a, obj_b], &lld_script, &gnuld_script)
+  else {
+    return;
+  };
 
   // Ensure we didn't accidentally introduce an RWX segment (hardening regression).
   let so_bytes = fs::read(&so).expect("read shared library");
   let elf = object::File::parse(&*so_bytes).expect("parse shared library");
   assert!(
     !has_wx_segment(&elf),
-    "expected shared library to have no W+X segments (stackmaps_gnuld.ld should avoid RWX)"
+    "expected shared library to have no W+X segments (linked with {script_used:?})"
   );
 
   // Load the shared library so it appears in `dl_iterate_phdr` output.
