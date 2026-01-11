@@ -2,7 +2,7 @@
 //!
 //! On Linux/ELF we support three strategies:
 //! 1) **Fast path (zero I/O):** use linker-defined start/stop symbols emitted by
-//!    `runtime-native/link/stackmaps.ld`.
+//!    `runtime-native/stackmaps.ld`.
 //! 2) **Fallback (zero I/O):** scan mapped PT_LOAD segments via `dl_iterate_phdr`
 //!    and look for StackMap v3 blobs.
 //! 3) **Fallback (I/O):** parse `/proc/self/exe` to locate the section in the ELF
@@ -27,7 +27,7 @@ mod linux {
   // We intentionally define *non-absolute* symbols (in `.bss`) so referencing them is valid even
   // when building `cdylib` artifacts (absolute symbols can trigger disallowed relocations).
   //
-  // When `runtime-native/link/stackmaps.ld` defines the real range symbols, those strong
+  // When `runtime-native/stackmaps.ld` defines the real range symbols, those strong
   // definitions override these weak fallbacks.
   global_asm!(
     r#"
@@ -39,11 +39,15 @@ mod linux {
     // - symbols absent (start=end=sentinel) -> fall back to other discovery
     // - symbols present but empty (start=end!=sentinel) -> return empty slice
     .weak __runtime_native_stackmaps_fallback
+    .weak __stackmaps_start
+    .weak __stackmaps_end
     .weak __llvm_stackmaps_start
     .weak __llvm_stackmaps_end
     .weak __fastr_stackmaps_start
     .weak __fastr_stackmaps_end
     __runtime_native_stackmaps_fallback:
+    __stackmaps_start:
+    __stackmaps_end:
     __llvm_stackmaps_start:
     __llvm_stackmaps_end:
     __fastr_stackmaps_start:
@@ -56,6 +60,8 @@ mod linux {
 
   extern "C" {
     pub static __runtime_native_stackmaps_fallback: u8;
+    pub static __stackmaps_start: u8;
+    pub static __stackmaps_end: u8;
     pub static __llvm_stackmaps_start: u8;
     pub static __llvm_stackmaps_end: u8;
     pub static __fastr_stackmaps_start: u8;
@@ -169,9 +175,15 @@ pub fn try_load_via_linker_symbols() -> Option<&'static [u8]> {
     };
 
     try_pair(
-      core::ptr::addr_of!(linux::__llvm_stackmaps_start),
-      core::ptr::addr_of!(linux::__llvm_stackmaps_end),
+      core::ptr::addr_of!(linux::__stackmaps_start),
+      core::ptr::addr_of!(linux::__stackmaps_end),
     )
+    .or_else(|| {
+      try_pair(
+        core::ptr::addr_of!(linux::__llvm_stackmaps_start),
+        core::ptr::addr_of!(linux::__llvm_stackmaps_end),
+      )
+    })
     .or_else(|| {
       try_pair(
         core::ptr::addr_of!(linux::__fastr_stackmaps_start),
