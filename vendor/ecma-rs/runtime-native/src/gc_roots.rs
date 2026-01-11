@@ -69,8 +69,8 @@ impl RelocPair {
       return;
     }
 
-    let delta = (old_derived as isize) - (old_base as isize);
-    let new_derived = (new_base as isize + delta) as usize;
+    let delta = old_derived.wrapping_sub(old_base);
+    let new_derived = new_base.wrapping_add(delta);
     self.derived_slot.write_u64(ctx, new_derived as u64);
   }
 }
@@ -172,8 +172,8 @@ pub fn relocate_reloc_pairs_in_place(
     let new_derived = if old_base == 0 || old_derived == 0 || new_base == 0 {
       0
     } else {
-      let delta = (old_derived as isize) - (old_base as isize);
-      (new_base as isize + delta) as usize
+      let delta = old_derived.wrapping_sub(old_base);
+      new_base.wrapping_add(delta)
     };
 
     pair.derived_slot.write_u64(ctx, new_derived as u64);
@@ -273,8 +273,8 @@ pub fn relocate_reloc_pairs_in_place(
     let derived_new = if pair.base_old == 0 || pair.derived_old == 0 || base_new == 0 {
       0
     } else {
-      let delta = (pair.derived_old as isize) - (pair.base_old as isize);
-      (base_new as isize + delta) as usize
+      let delta = pair.derived_old.wrapping_sub(pair.base_old);
+      base_new.wrapping_add(delta)
     };
 
     unsafe {

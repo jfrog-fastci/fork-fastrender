@@ -41,3 +41,30 @@ fn reloc_pairs_can_update_register_roots() {
   assert_eq!(ctx.get_dwarf_reg_u64(1).unwrap(), 0x2010);
 }
 
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn reloc_pairs_preserve_wrapping_delta_without_isize_overflow() {
+  let base_old = isize::MIN as usize;
+  let derived_old = isize::MAX as usize;
+
+  let mut ctx = ThreadContext::default();
+  ctx.set_dwarf_reg_u64(0, base_old as u64).unwrap();
+  ctx.set_dwarf_reg_u64(1, derived_old as u64).unwrap();
+
+  let base = RootSlot::Reg { dwarf_reg: 0 };
+  let derived = RootSlot::Reg { dwarf_reg: 1 };
+
+  let pairs = [RelocPair {
+    base_slot: base,
+    derived_slot: derived,
+  }];
+
+  relocate_reloc_pairs_in_place(&mut ctx, pairs, |old| old.wrapping_add(0x10));
+
+  let base_new = base_old.wrapping_add(0x10);
+  let delta = derived_old.wrapping_sub(base_old);
+  let derived_new = base_new.wrapping_add(delta);
+
+  assert_eq!(ctx.get_dwarf_reg_u64(0).unwrap(), base_new as u64);
+  assert_eq!(ctx.get_dwarf_reg_u64(1).unwrap(), derived_new as u64);
+}

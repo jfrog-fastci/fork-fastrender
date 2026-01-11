@@ -159,3 +159,20 @@ fn relocate_derived_pairs_handles_base_reloc_pair_and_shared_base() {
   assert_eq!(derived1, 0x2008);
   assert_eq!(derived2, 0x2010);
 }
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn relocate_derived_pairs_handles_wrapping_delta_across_isize_boundary() {
+  let base_old = isize::MIN as usize;
+  let derived_old = isize::MAX as usize;
+  let mut base = base_old;
+  let mut derived = derived_old;
+
+  let pairs = [(&mut base as *mut usize, &mut derived as *mut usize)];
+
+  relocate_derived_pairs(&pairs, |base| base.wrapping_add(0x10));
+
+  let base_new = base_old.wrapping_add(0x10);
+  assert_eq!(base, base_new);
+  assert_eq!(derived, base_new.wrapping_sub(1));
+}

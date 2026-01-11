@@ -100,3 +100,33 @@ fn relocate_pair_forces_null_derived_if_base_relocates_to_zero() {
   assert_eq!(base, 0);
   assert_eq!(derived, 0);
 }
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn relocate_pair_handles_wrapping_delta_without_isize_overflow() {
+  let base_old: usize = isize::MIN as usize;
+  let derived_old: usize = isize::MAX as usize;
+
+  let mut base = base_old;
+  let mut derived = derived_old;
+
+  unsafe {
+    relocate_pair(
+      StatepointRootPair {
+        base_slot: (&mut base) as *mut usize,
+        derived_slot: (&mut derived) as *mut usize,
+      },
+      |old| {
+        assert_eq!(old, base_old);
+        old.wrapping_add(0x10)
+      },
+    );
+  }
+
+  let base_new = base_old.wrapping_add(0x10);
+  let delta = derived_old.wrapping_sub(base_old);
+  let derived_new = base_new.wrapping_add(delta);
+
+  assert_eq!(base, base_new);
+  assert_eq!(derived, derived_new);
+}
