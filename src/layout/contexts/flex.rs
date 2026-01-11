@@ -1694,6 +1694,54 @@ impl FormattingContext for FlexFormattingContext {
                         {
                             avail.height = AvailableSpace::MaxContent;
                         }
+                        // Taffy can forward a bogus "known" size of 0–1px during intrinsic sizing
+                        // probes. Treat these as unknown when the physical size is `auto` so nested
+                        // formatting contexts (notably grid/flex containers) can grow to fit
+                        // their in-flow content.
+                        //
+                        // This is exercised by real pages like wired.com: sticky nav rows are
+                        // flex items whose inner grid containers are auto-sized. If a 0px known
+                        // block size is treated as definite, grid `fr` tracks collapse and
+                        // overflow-hidden descendants clip the nav content.
+                        if physical_width_is_auto(box_node.style.as_ref()) {
+                            if let Some(w) = known_dimensions.width {
+                                if w <= 1.0
+                                    && matches!(avail.width, AvailableSpace::MinContent | AvailableSpace::MaxContent)
+                                {
+                                    known_dimensions.width = None;
+                                }
+                            }
+                        }
+                        if physical_height_is_auto(box_node.style.as_ref()) {
+                            if let Some(h) = known_dimensions.height {
+                                if h <= 1.0
+                                    && matches!(avail.height, AvailableSpace::MinContent | AvailableSpace::MaxContent)
+                                {
+                                    known_dimensions.height = None;
+                                }
+                            }
+                        }
+                        // CSS2.1 §10.5: Percentage `height` values compute to `auto` when the
+                        // containing block height is not specified explicitly (i.e. it depends on
+                        // content height). In flex layout, Taffy may still pass a *definite*
+                        // available height (often the viewport height or a tiny probe) even when
+                        // the flex container's own used height is `auto`.
+                        //
+                        // If we forward that definite height into nested formatting contexts, a
+                        // `height:100%` child can collapse to 0–1px (or expand to the viewport)
+                        // rather than sizing to its content, breaking sticky nav rows such as the
+                        // WIRED header.
+                        if container_content_height_for_children.is_none()
+                          && box_node
+                            .style
+                            .height
+                            .as_ref()
+                            .is_some_and(Length::has_percentage)
+                          && box_node.style.position.is_in_flow()
+                        {
+                          known_dimensions.height = None;
+                          avail.height = AvailableSpace::MaxContent;
+                        }
                         if log_small_avail {
                             if let AvailableSpace::Definite(w) = avail.width {
                                 if w > 0.0 && w <= 100.0 {
@@ -3123,12 +3171,26 @@ impl FormattingContext for FlexFormattingContext {
                           content_h = max_h_bound.max(0.0);
                         }
 
-                        flex_profile::record_measure_time(measure_timer);
-                        return taffy::geometry::Size {
-                          width: content_w.max(0.0),
-                          height: content_h.max(0.0),
-                        };
-                      }
+                        // Intrinsic sizing fast paths are allowed to skip fragment construction,
+                        // but they must not return a bogus 0px block size for elements that have
+                        // in-flow content. Doing so can collapse flex lines and clip overflow
+                        // content (e.g. sticky headers with `grid-template-rows: 1fr`).
+                        let has_in_flow_children = measure_box.children.iter().any(|child| {
+                          child.style.running_position.is_none() && child.style.position.is_in_flow()
+                        });
+                        if content_h <= eps && has_in_flow_children {
+                          // Fall back to the full layout path below so the measured height is based
+                          // on the actual laid out subtree rather than an intrinsic block-size
+                          // query that may be unable to account for nested layout (e.g. grid `fr`
+                          // tracks).
+                        } else {
+                          flex_profile::record_measure_time(measure_timer);
+                          return taffy::geometry::Size {
+                            width: content_w.max(0.0),
+                            height: content_h.max(0.0),
+                          };
+                        }
+                      } else {
                       #[cfg(test)]
                       if !log_measure_ids.is_empty() && log_measure_ids.contains(&measure_box.id) {
                         // Mirror the debug-only max-content hint accounting used by the full
@@ -3313,17 +3375,26 @@ impl FormattingContext for FlexFormattingContext {
                             content_h = max_h_bound.max(0.0);
                           }
 
-                          flex_profile::record_measure_time(measure_timer);
-                          return taffy::geometry::Size {
-                            width: content_w.max(0.0),
-                            height: content_h.max(0.0),
-                          };
+                          let has_in_flow_children = measure_box.children.iter().any(|child| {
+                            child.style.running_position.is_none()
+                              && child.style.position.is_in_flow()
+                          });
+                          if content_h <= eps && has_in_flow_children {
+                            // Fall through to the full layout path below.
+                          } else {
+                            flex_profile::record_measure_time(measure_timer);
+                            return taffy::geometry::Size {
+                              width: content_w.max(0.0),
+                              height: content_h.max(0.0),
+                            };
+                          }
                         }
                         Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
                         Err(_) => {
                           // Fall through to the full layout path below.
                         }
                       }
+                    }
                     }
                     let node_timer = flex_profile::node_timer();
                     let selector_for_profile = node_timer

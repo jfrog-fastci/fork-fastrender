@@ -904,9 +904,10 @@ fn constraints_from_taffy(
   // Percentages on grid items resolve against the available size offered by the grid area.
   //
   // Prefer that over any parent percentage base so `width: 100%` does not incorrectly resolve
-  // against the grid container's full width during track sizing. When the grid area width is not
-  // definite (e.g. intrinsic sizing probes like min/max-content), keep the base unset so
-  // percentages behave like `auto` per CSS Sizing.
+  // against the grid container's full width during track sizing.
+  //
+  // When the grid area width is not definite (e.g. intrinsic sizing probes like min/max-content),
+  // keep the base unset so percentages behave like `auto` per CSS sizing rules.
   constraints.inline_percentage_base = constraints.inline_percentage_base.or(match available.width {
     taffy::style::AvailableSpace::Definite(w) if w > 1.0 => Some(w),
     _ => None,
@@ -3096,6 +3097,38 @@ impl GridFormattingContext {
         Axis::Vertical,
       ),
     };
+
+    // Percentage sizes on grid items resolve against the *grid area* size, not the grid container.
+    // Taffy resolves percentage dimensions relative to the node's parent, so if we pass percentage
+    // widths/heights through directly, intrinsic track sizing can end up treating `width:100%`
+    // items as if they were as wide as the whole grid container. This can incorrectly inflate
+    // `fr` tracks and cause grids to overflow instead of distributing remaining space.
+    //
+    // Represent percentage-based sizes as `auto` in the Taffy tree for grid items, and let our
+    // measure callback (which receives the resolved grid area size via `available_space`) handle
+    // percentage resolution with the correct base.
+    let is_grid_item = containing_grid.is_some() && !is_grid_node;
+    if is_grid_item {
+      let has_percent = |length: &Option<Length>| length.as_ref().is_some_and(|len| len.has_percentage());
+      if has_percent(&style.width) {
+        taffy_style.size.width = Dimension::auto();
+      }
+      if has_percent(&style.height) {
+        taffy_style.size.height = Dimension::auto();
+      }
+      if has_percent(&style.min_width) {
+        taffy_style.min_size.width = Dimension::auto();
+      }
+      if has_percent(&style.min_height) {
+        taffy_style.min_size.height = Dimension::auto();
+      }
+      if has_percent(&style.max_width) {
+        taffy_style.max_size.width = Dimension::auto();
+      }
+      if has_percent(&style.max_height) {
+        taffy_style.max_size.height = Dimension::auto();
+      }
+    }
 
     // Margin
     let margin_left_auto = style.margin_left.is_none();
@@ -8406,6 +8439,119 @@ impl GridFormattingContext {
 
     Ok(())
   }
+
+  fn taffy_layout_subtree_size(
+    taffy: &TaffyTree<*const BoxNode>,
+    root_id: TaffyNodeId,
+    deadline_counter: &mut usize,
+  ) -> Result<Size, LayoutError> {
+    fn sanitize(val: f32) -> f32 {
+      if val.is_finite() {
+        val
+      } else {
+        0.0
+      }
+    }
+
+    let mut min = Point::new(0.0, 0.0);
+    let mut max = Point::new(0.0, 0.0);
+    let mut stack: Vec<(TaffyNodeId, Point)> = vec![(root_id, Point::ZERO)];
+    while let Some((node_id, offset)) = stack.pop() {
+      check_layout_deadline(deadline_counter)?;
+
+      let layout = taffy
+        .layout(node_id)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy layout error: {:?}", e)))?;
+      let origin = Point::new(
+        sanitize(layout.location.x) + offset.x,
+        sanitize(layout.location.y) + offset.y,
+      );
+      let bounds = Rect::from_xywh(
+        origin.x,
+        origin.y,
+        sanitize(layout.size.width).max(0.0),
+        sanitize(layout.size.height).max(0.0),
+      );
+      min.x = min.x.min(bounds.x());
+      min.y = min.y.min(bounds.y());
+      max.x = max.x.max(bounds.max_x());
+      max.y = max.y.max(bounds.max_y());
+
+      let children = taffy
+        .children(node_id)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy children error: {:?}", e)))?;
+      for &child_id in children.iter() {
+        stack.push((child_id, origin));
+      }
+    }
+
+    Ok(Size::new(
+      (max.x - min.x).max(0.0),
+      (max.y - min.y).max(0.0),
+    ))
+  }
+
+  /// Returns the tight bounds of all in-flow descendants, excluding the root node's own bounds.
+  ///
+  /// This is used as a fallback during Taffy measurement: some probe paths can force the measured
+  /// fragment's border box to 0px even though it contains non-zero in-flow descendants. When that
+  /// happens, using the descendant span produces a more accurate intrinsic contribution for track
+  /// sizing (notably for nested grids).
+  fn fragment_descendant_span(
+    fragment: &FragmentNode,
+    deadline_counter: &mut usize,
+  ) -> Result<Option<Size>, LayoutError> {
+    #[inline]
+    fn is_out_of_flow_positioned(fragment: &FragmentNode) -> bool {
+      fragment.style.as_deref().is_some_and(|style| {
+        style.running_position.is_some()
+          || matches!(
+            style.position,
+            crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+          )
+      })
+    }
+
+    fn walk(
+      node: &FragmentNode,
+      offset: Point,
+      min: &mut Point,
+      max: &mut Point,
+      found: &mut bool,
+      deadline_counter: &mut usize,
+    ) -> Result<(), LayoutError> {
+      check_layout_deadline(deadline_counter)?;
+      for child in node.children.iter() {
+        if is_out_of_flow_positioned(child) {
+          continue;
+        }
+        let origin = Point::new(child.bounds.x() + offset.x, child.bounds.y() + offset.y);
+        let bounds = Rect::new(origin, child.bounds.size);
+        *found = true;
+        min.x = min.x.min(bounds.x());
+        min.y = min.y.min(bounds.y());
+        max.x = max.x.max(bounds.max_x());
+        max.y = max.y.max(bounds.max_y());
+        walk(child, origin, min, max, found, deadline_counter)?;
+      }
+      Ok(())
+    }
+
+    let mut min = Point::new(f32::INFINITY, f32::INFINITY);
+    let mut max = Point::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+    let mut found = false;
+    walk(
+      fragment,
+      Point::ZERO,
+      &mut min,
+      &mut max,
+      &mut found,
+      deadline_counter,
+    )?;
+    Ok(found.then(|| {
+      Size::new((max.x - min.x).max(0.0), (max.y - min.y).max(0.0))
+    }))
+  }
   /// Computes intrinsic size using Taffy
   fn compute_intrinsic_size(
     &self,
@@ -8530,6 +8676,35 @@ impl GridFormattingContext {
       &intrinsic_constraints,
     )?;
     self.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, &intrinsic_constraints)?;
+
+    // CSS2.1 §10.5: Percentage `height` values compute to `auto` when the containing block height
+    // is not definite for in-flow elements.
+    //
+    // The regular `layout()` path applies this normalization for the grid container root, but the
+    // intrinsic sizing fast-path (`compute_intrinsic_size`) also needs it. Without it,
+    // `height:100%` can incorrectly resolve to 0px during max-content measurement (e.g. WIRED's
+    // sticky nav rows), collapsing `fr` tracks and clipping overflow-hidden descendants.
+    if intrinsic_constraints.used_border_box_height.is_none()
+      && intrinsic_constraints.height().is_none()
+      && style
+        .height
+        .as_ref()
+        .is_some_and(crate::style::values::Length::has_percentage)
+      && !matches!(
+        style.position,
+        crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+      )
+    {
+      if let Ok(existing) = taffy.style(root_id) {
+        if existing.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG {
+          let mut updated = existing.clone();
+          updated.size.height = Dimension::auto();
+          taffy
+            .set_style(root_id, updated)
+            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        }
+      }
+    }
 
     // Use appropriate available space for intrinsic sizing
     let available_space = match mode {
@@ -8821,12 +8996,24 @@ impl GridFormattingContext {
       .map_err(|e| LayoutError::MissingContext(format!("Taffy layout error: {:?}", e)))?;
 
     let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
-    let result = if inline_is_horizontal {
+    let mut result = if inline_is_horizontal {
       layout.size.width
     } else {
       layout.size.height
     }
     .max(0.0);
+
+    let eps = 0.01;
+    if result <= eps || !result.is_finite() {
+      let mut deadline_counter = 0usize;
+      if let Ok(size) = Self::taffy_layout_subtree_size(&taffy, root_id, &mut deadline_counter) {
+        let subtree = if inline_is_horizontal { size.width } else { size.height };
+        if subtree.is_finite() && subtree > result {
+          result = subtree;
+        }
+      }
+    }
+
     intrinsic_cache_store(box_node, mode, result);
     Ok(result)
   }
@@ -9031,11 +9218,28 @@ impl GridFormattingContext {
         box_id: Some(box_node.id),
       };
       fragment.style = Some(box_node.style.clone());
-      let content_size = Self::content_box_size_for_taffy_style(
+      let mut content_size = Self::content_box_size_for_taffy_style(
         Size::new(fragment.bounds.width(), fragment.bounds.height()),
         taffy_style,
         percentage_base,
       );
+      let eps = 0.01;
+      if content_size.width <= eps || content_size.height <= eps {
+        let mut deadline_counter = 0usize;
+        let span = match Self::fragment_descendant_span(&fragment, &mut deadline_counter) {
+          Ok(span) => span,
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => None,
+        };
+        if let Some(span) = span {
+          if content_size.width <= eps && span.width > eps {
+            content_size.width = span.width;
+          }
+          if content_size.height <= eps && span.height > eps {
+            content_size.height = span.height;
+          }
+        }
+      }
       let size = taffy::geometry::Size {
         width: content_size.width.max(0.0),
         height: content_size.height.max(0.0),
@@ -9863,11 +10067,28 @@ impl GridFormattingContext {
       box_id: Some(box_node.id),
     };
     fragment.style = Some(box_node.style.clone());
-    let content_size = Self::content_box_size_for_taffy_style(
+    let mut content_size = Self::content_box_size_for_taffy_style(
       Size::new(fragment.bounds.width(), fragment.bounds.height()),
       taffy_style,
       percentage_base,
     );
+    let eps = 0.01;
+    if content_size.width <= eps || content_size.height <= eps {
+      let mut deadline_counter = 0usize;
+      let span = match Self::fragment_descendant_span(&fragment, &mut deadline_counter) {
+        Ok(span) => span,
+        Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+        Err(_) => None,
+      };
+      if let Some(span) = span {
+        if content_size.width <= eps && span.width > eps {
+          content_size.width = span.width;
+        }
+        if content_size.height <= eps && span.height > eps {
+          content_size.height = span.height;
+        }
+      }
+    }
     let size = taffy::geometry::Size {
       width: content_size.width.max(0.0),
       height: content_size.height.max(0.0),
@@ -13085,6 +13306,35 @@ impl FormattingContext for GridFormattingContext {
 
     self.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, &intrinsic_constraints)?;
 
+    // CSS2.1 §10.5: Percentage `height` values compute to `auto` when the containing block height
+    // is not definite for in-flow elements.
+    //
+    // `GridFormattingContext` overrides `compute_intrinsic_block_size` to avoid constructing full
+    // fragment trees, but still relies on Taffy for sizing. Normalizing percent heights here keeps
+    // `height:100%` from collapsing to 0px during intrinsic measurement, which would in turn
+    // collapse `fr` tracks (e.g. WIRED's sticky nav rows).
+    if intrinsic_constraints.used_border_box_height.is_none()
+      && intrinsic_constraints.height().is_none()
+      && style
+        .height
+        .as_ref()
+        .is_some_and(crate::style::values::Length::has_percentage)
+      && !matches!(
+        style.position,
+        crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+      )
+    {
+      if let Ok(existing) = taffy.style(root_id) {
+        if existing.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG {
+          let mut updated = existing.clone();
+          updated.size.height = Dimension::auto();
+          taffy
+            .set_style(root_id, updated)
+            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        }
+      }
+    }
+
     // Convert constraints to Taffy available space. The intrinsic sizing probes for block-size
     // mirror the default `FormattingContext::compute_intrinsic_block_size` implementation:
     // intrinsic available space in the inline axis, indefinite in the block axis.
@@ -13354,12 +13604,24 @@ impl FormattingContext for GridFormattingContext {
       .layout(root_id)
       .map_err(|e| LayoutError::MissingContext(format!("Taffy layout error: {:?}", e)))?;
 
-    let result = if inline_is_horizontal {
+    let mut result = if inline_is_horizontal {
       layout.size.height
     } else {
       layout.size.width
     }
     .max(0.0);
+
+    let eps = 0.01;
+    if result <= eps || !result.is_finite() {
+      let mut deadline_counter = 0usize;
+      if let Ok(size) = Self::taffy_layout_subtree_size(&taffy, root_id, &mut deadline_counter) {
+        let subtree = if inline_is_horizontal { size.height } else { size.width };
+        if subtree.is_finite() && subtree > result {
+          result = subtree;
+        }
+      }
+    }
+
     intrinsic_block_cache_store(box_node, mode, result);
     Ok(result)
   }
@@ -14315,7 +14577,7 @@ mod tests {
     item.id = 1;
     let node_ptr: *const BoxNode = &item;
 
-    // Use a dummy node id for the measured item (only used for per-node key tracking).
+    // Dummy node id for the measured item (only used for per-node key tracking).
     let mut taffy: TaffyTree<*const BoxNode> = TaffyTree::new();
     let node_id = taffy
       .new_leaf(taffy::style::Style::default())
@@ -14482,6 +14744,119 @@ mod tests {
     assert!(
       narrow.size.height > wide.size.height + 1.0,
       "expected intrinsic height probe to depend on the definite available width (narrow={narrow:?} wide={wide:?})"
+    );
+  }
+
+  #[test]
+  fn grid_measure_falls_back_to_descendant_span_when_layout_forced_to_zero_height() {
+    // Regression test for cases where the measurement layout is forced to 0px (via known sizes)
+    // even though the box contains non-zero in-flow descendants. Track sizing should still see the
+    // descendant contribution so 1fr/auto rows don't collapse and clip overflow-hidden content
+    // (wired.com sticky header).
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut child_style = ComputedStyle::default();
+    child_style.height = Some(Length::px(80.0));
+    let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.overflow_x = Overflow::Hidden;
+    item_style.overflow_y = Overflow::Hidden;
+    let mut item =
+      BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![child]);
+    item.id = 1;
+    let node_ptr: *const BoxNode = &item;
+
+    // Dummy node id for the measured item (only used for per-node key tracking).
+    let mut taffy: TaffyTree<*const BoxNode> = TaffyTree::new();
+    let node_id = taffy
+      .new_leaf(taffy::style::Style::default())
+      .expect("create leaf node");
+
+    // Force the measurement layout height to 0px while leaving the available height unconstrained.
+    // This produces a fragment with a 0px border box but non-zero children.
+    let known_dimensions = taffy::geometry::Size {
+      width: Some(100.0),
+      height: Some(0.0),
+    };
+    let available_space = taffy::geometry::Size {
+      width: taffy::style::AvailableSpace::Definite(100.0),
+      height: taffy::style::AvailableSpace::MaxContent,
+    };
+
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+    let auto_unskipped: FxHashSet<*const BoxNode> = FxHashSet::default();
+
+    let size = fc.measure_grid_item(
+      node_ptr,
+      node_id,
+      known_dimensions,
+      available_space,
+      Some(100.0),
+      false,
+      &taffy::style::Style::default(),
+      &auto_unskipped,
+      &fc.factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    assert!(
+      size.size.height > 10.0,
+      "expected measure to use descendant span when fragment bounds are 0 (got {size:?})"
+    );
+  }
+
+  #[test]
+  fn grid_percent_height_in_auto_height_flex_container_computes_to_auto() {
+    // Regression test for `height: 100%` on a grid container inside an auto-height flex container.
+    //
+    // In CSS2.1 §10.5, percentage heights compute to `auto` when the containing block height is not
+    // specified explicitly. In flex layout, the container can have a definite *available* height
+    // (viewport), but an auto used height; the percentage must still behave like `auto` to avoid
+    // collapsing sticky headers like wired.com's nav rows.
+    use crate::layout::constraints::AvailableSpace;
+    use crate::layout::contexts::flex::FlexFormattingContext;
+    use crate::style::types::FlexDirection;
+
+    let mut flex_style = ComputedStyle::default();
+    flex_style.display = CssDisplay::Flex;
+    flex_style.flex_direction = FlexDirection::Column;
+    let flex_style = Arc::new(flex_style);
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.width = Some(Length::px(100.0));
+    grid_style.height = Some(Length::percent(100.0));
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+    grid_style.grid_template_rows = vec![GridTrack::Fr(1.0)];
+    let grid_style = Arc::new(grid_style);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.height = Some(Length::px(80.0));
+    let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![child]);
+    let container = BoxNode::new_block(flex_style, FormattingContextType::Flex, vec![grid]);
+
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    let fragment = fc
+      .layout(
+        &container,
+        &LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Definite(500.0))
+          .with_used_border_box_size(Some(100.0), None),
+      )
+      .expect("layout succeeds");
+
+    assert_eq!(fragment.children.len(), 1);
+    let grid_fragment = &fragment.children[0];
+    assert!(
+      (grid_fragment.bounds.height() - 80.0).abs() <= 0.5,
+      "expected grid percent height to behave like auto (80px), got {:.2}",
+      grid_fragment.bounds.height()
     );
   }
 

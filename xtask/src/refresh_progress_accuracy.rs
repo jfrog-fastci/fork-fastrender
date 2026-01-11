@@ -187,10 +187,10 @@ fn print_plan(
       }
     }
   } else {
-  println!("  selection: default fixture set (pages_regression)");
+    println!("  selection: default fixture set (pages_regression)");
   }
   println!("  viewport: {DEFAULT_VIEWPORT} (pageset progress baseline)");
-  println!("  timeout: {DEFAULT_TIMEOUT_SECS}s");
+  println!("  timeout: {}s", args.timeout);
   println!(
     "  diff: tolerance={} max_diff_percent={} ignore_alpha={} max_perceptual_distance={}",
     args.tolerance,
@@ -227,8 +227,6 @@ fn build_fixture_chrome_diff_args(
 
   argv.push("--viewport".into());
   argv.push(DEFAULT_VIEWPORT.into());
-  argv.push("--timeout".into());
-  argv.push(DEFAULT_TIMEOUT_SECS.to_string().into());
 
   if let Some(fixtures) = &args.fixtures {
     argv.push("--fixtures".into());
