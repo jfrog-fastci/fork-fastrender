@@ -2,7 +2,8 @@
 mod common;
 
 use common::compile_source;
-use optimize_js::analysis::analyze_cfg;
+use optimize_js::analysis::{analyze_cfg, annotate_program};
+use optimize_js::il::inst::{InstTyp, StringEncoding};
 use optimize_js::TopLevelMode;
 #[cfg(feature = "serde")]
 use serde_json::to_string;
@@ -54,5 +55,44 @@ fn analyses_driver_smoke_is_deterministic() {
   assert!(
     first.encoding.block_entry(cfg.entry).is_some(),
     "encoding analysis should contain an entry state for the CFG entry block"
+  );
+}
+
+#[test]
+fn annotate_program_populates_inst_meta() {
+  let source = r#"
+    let s = maybeNull();
+
+    // Ensure we have a non-constant string whose encoding can still be proven as Utf8.
+    // `typeof` always produces ASCII output, and concatenating with a non-ASCII literal
+    // forces the result encoding to Utf8.
+    let encoded = typeof s + "π";
+
+    if (s == null) {
+      console.log(encoded);
+    } else {
+      console.log(s);
+    }
+  "#;
+
+  let mut program = compile_source(source, TopLevelMode::Module, false);
+  let _analyses = annotate_program(&mut program);
+
+  let mut saw_narrowing = false;
+  let mut saw_utf8_encoding = false;
+  for (_label, block) in program.top_level.body.bblocks.all() {
+    for inst in block {
+      saw_narrowing |= inst.t == InstTyp::CondGoto && inst.meta.nullability_narrowing.is_some();
+      saw_utf8_encoding |= inst.meta.result_type.string_encoding == Some(StringEncoding::Utf8);
+    }
+  }
+
+  assert!(
+    saw_narrowing,
+    "expected at least one CondGoto to record InstMeta.nullability_narrowing"
+  );
+  assert!(
+    saw_utf8_encoding,
+    "expected at least one instruction to record Utf8 in InstMeta.result_type.string_encoding"
   );
 }
