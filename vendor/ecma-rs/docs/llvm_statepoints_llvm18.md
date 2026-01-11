@@ -169,6 +169,7 @@ Notes:
   * `patch_bytes > 0`: reserves a patchable region (x86_64: a NOP sled) and shifts
     the stackmap `instruction offset` to the end of that reserved region (the
     "return address" if/when a call is patched in).
+    The reserved patch region start offset is `instruction_offset - patch_bytes`.
   This behavior is regression-tested by:
   * `scripts/test_statepoint_flags_patchbytes.sh`
 * For varargs intrinsics (like statepoint/stackmap), LLVM 18 is strict about

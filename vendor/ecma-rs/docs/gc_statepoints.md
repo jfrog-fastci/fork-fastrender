@@ -503,6 +503,7 @@ After `rewrite-statepoints-for-gc` in LLVM 18:
   - For `NumPatchBytes = 0`, this is the PC after the `call` instruction.
   - For `NumPatchBytes > 0`, LLVM reserves a patchable region at the callsite (x86_64: a NOP sled)
     and the return address is the PC after that reserved region.
+    The reserved region start offset is `instruction_offset - NumPatchBytes`.
 
 `runtime-native` uses the return address captured at a safepoint to look up the corresponding stackmap record.
 

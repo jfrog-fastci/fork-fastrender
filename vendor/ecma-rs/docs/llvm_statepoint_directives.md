@@ -31,6 +31,7 @@ These are **string attributes** (not enum attributes):
   - On x86_64 (LLVM 18.1.x), `patch_bytes=0` emits a real `call`, while
     `patch_bytes>0` reserves a patchable region (NOP sled) and shifts the stackmap
     `instruction offset` to the end of that reserved region.
+    The reserved region start offset is `instruction_offset - patch_bytes`.
     Any runtime patcher must ensure the call return address matches that end-of-region address.
 
 ## native-js support

@@ -15,6 +15,7 @@ sled and the stackmap record key (`instruction offset`) points to the *end* of
 that reserved region. Any runtime patcher must ensure the call return address
 matches that end-of-region address, otherwise stackmap lookup by return PC will
 fail.
+The reserved patch region start offset is `instruction_offset - patch_bytes`.
 
 ## Current strategy: frame-pointer chain (Linux x86_64 + AArch64)
 
