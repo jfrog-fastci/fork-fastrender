@@ -1,3 +1,4 @@
+// @lib: es5
 export interface Foo {
   x: number;
 }

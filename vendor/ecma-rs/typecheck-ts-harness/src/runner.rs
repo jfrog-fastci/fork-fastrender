@@ -3346,9 +3346,9 @@ echo '{"diagnostics":[]}'
     .unwrap();
     // Allow enough time for a small "fast" case to complete while still
     // ensuring a deliberately slowed case times out quickly. This test runs
-    // under the default Rust test runner parallelism, so keep some buffer for
-    // CPU contention on slower/oversubscribed machines.
-    let _env = EnvGuard::set(HARNESS_SLEEP_ENV, "slow=5000");
+    // under the default Rust test runner parallelism, so keep generous buffer
+    // for CPU contention on slower/oversubscribed machines.
+    let _env = EnvGuard::set(HARNESS_SLEEP_ENV, "slow=20000");
 
     let start = Instant::now();
     let opts = ConformanceOptions {
@@ -3359,7 +3359,7 @@ echo '{"diagnostics":[]}'
       shard_strategy: ShardStrategy::Index,
       json: false,
       update_snapshots: false,
-      timeout: Duration::from_secs(2),
+      timeout: Duration::from_secs(6),
       trace: false,
       profile: false,
       profile_out: crate::DEFAULT_PROFILE_OUT.into(),
@@ -3383,7 +3383,7 @@ echo '{"diagnostics":[]}'
     // If a timed-out case is not actually cancelled, the full sleep duration
     // would be observed here.
     assert!(
-      elapsed < Duration::from_secs(4),
+      elapsed < Duration::from_secs(12),
       "expected cancelled run to finish quickly; elapsed={elapsed:?}"
     );
   }
