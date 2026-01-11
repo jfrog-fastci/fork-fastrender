@@ -1,5 +1,6 @@
 use crate::error::{RenderError, RenderStage};
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -196,6 +197,20 @@ pub enum StageHeartbeat {
 
 impl StageHeartbeat {
   const VARIANT_COUNT: usize = 12;
+  const ALL: [StageHeartbeat; Self::VARIANT_COUNT] = [
+    StageHeartbeat::ReadCache,
+    StageHeartbeat::FollowRedirects,
+    StageHeartbeat::CssInline,
+    StageHeartbeat::DomParse,
+    StageHeartbeat::Script,
+    StageHeartbeat::CssParse,
+    StageHeartbeat::Cascade,
+    StageHeartbeat::BoxTree,
+    StageHeartbeat::Layout,
+    StageHeartbeat::PaintBuild,
+    StageHeartbeat::PaintRasterize,
+    StageHeartbeat::Done,
+  ];
 
   fn as_index(self) -> usize {
     match self {
@@ -294,7 +309,7 @@ impl StageHeartbeat {
 
 impl std::fmt::Display for StageHeartbeat {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.write_str(self.as_str())
+    f.write_str((*self).as_str())
   }
 }
 
@@ -681,6 +696,8 @@ pub fn active_heartbeat() -> Option<StageHeartbeat> {
 pub(crate) struct StageAllocationBudget {
   budget_bytes: u64,
   allocated: [AtomicU64; StageHeartbeat::VARIANT_COUNT],
+  exceeded: AtomicBool,
+  first_error: Mutex<Option<RenderError>>,
 }
 
 impl StageAllocationBudget {
@@ -688,6 +705,8 @@ impl StageAllocationBudget {
     Self {
       budget_bytes,
       allocated: std::array::from_fn(|_| AtomicU64::new(0)),
+      exceeded: AtomicBool::new(false),
+      first_error: Mutex::new(None),
     }
   }
 
@@ -705,6 +724,41 @@ impl StageAllocationBudget {
     }
     let prev = self.allocated[heartbeat.as_index()].fetch_add(bytes, Ordering::Relaxed);
     prev.saturating_add(bytes)
+  }
+
+  fn record_error(&self, err: RenderError) -> RenderError {
+    self.exceeded.store(true, Ordering::Relaxed);
+    let mut guard = self
+      .first_error
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = guard.as_ref() {
+      return existing.clone();
+    }
+    *guard = Some(err.clone());
+    err
+  }
+
+  pub(crate) fn current_error(&self) -> Option<RenderError> {
+    if !self.exceeded.load(Ordering::Relaxed) {
+      return None;
+    }
+    self
+      .first_error
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone()
+  }
+
+  pub(crate) fn snapshot_allocations(&self) -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    for stage in StageHeartbeat::ALL {
+      let bytes = self.allocated_bytes(stage);
+      if bytes > 0 {
+        out.insert(stage.as_str().to_string(), bytes);
+      }
+    }
+    out
   }
 }
 
@@ -746,7 +800,23 @@ pub(crate) fn with_allocation_budget<T>(
   f()
 }
 
+pub(crate) fn active_allocation_budget_error() -> Option<RenderError> {
+  ACTIVE_ALLOCATION_BUDGET.with(|cell| {
+    cell
+      .borrow()
+      .as_ref()
+      .and_then(|budget| budget.current_error())
+  })
+}
+
 pub(crate) fn reserve_allocation(bytes: u64, context: &str) -> Result<(), RenderError> {
+  reserve_allocation_with(bytes, || context.to_string())
+}
+
+pub(crate) fn reserve_allocation_with(
+  bytes: u64,
+  context: impl FnOnce() -> String,
+) -> Result<(), RenderError> {
   if bytes == 0 {
     return Ok(());
   }
@@ -755,6 +825,9 @@ pub(crate) fn reserve_allocation(bytes: u64, context: &str) -> Result<(), Render
     let Some(budget) = guard.as_ref() else {
       return Ok(());
     };
+    if let Some(err) = budget.current_error() {
+      return Err(err);
+    }
 
     let stage_opt = active_stage();
     let heartbeat_opt = active_stage_heartbeat();
@@ -771,13 +844,51 @@ pub(crate) fn reserve_allocation(bytes: u64, context: &str) -> Result<(), Render
     let allocated_bytes = budget.reserve(heartbeat, bytes);
     let budget_bytes = budget.budget_bytes();
     if allocated_bytes > budget_bytes {
-      return Err(RenderError::StageAllocationBudgetExceeded {
+      let err = RenderError::StageAllocationBudgetExceeded {
         stage,
         heartbeat,
         allocated_bytes,
         budget_bytes,
-        context: context.to_string(),
-      });
+        context: context(),
+      };
+      return Err(budget.record_error(err));
+    }
+    Ok(())
+  })
+}
+
+pub(crate) fn reserve_allocation_with_heartbeat(
+  heartbeat: StageHeartbeat,
+  bytes: u64,
+  context: impl FnOnce() -> String,
+) -> Result<(), RenderError> {
+  if bytes == 0 {
+    return Ok(());
+  }
+  ACTIVE_ALLOCATION_BUDGET.with(|cell| {
+    let guard = cell.borrow();
+    let Some(budget) = guard.as_ref() else {
+      return Ok(());
+    };
+    if let Some(err) = budget.current_error() {
+      return Err(err);
+    }
+
+    let allocated_bytes = budget.reserve(heartbeat, bytes);
+    let budget_bytes = budget.budget_bytes();
+    if allocated_bytes > budget_bytes {
+      let stage = heartbeat
+        .render_stage()
+        .or_else(active_stage)
+        .unwrap_or(RenderStage::Paint);
+      let err = RenderError::StageAllocationBudgetExceeded {
+        stage,
+        heartbeat,
+        allocated_bytes,
+        budget_bytes,
+        context: context(),
+      };
+      return Err(budget.record_error(err));
     }
     Ok(())
   })

@@ -26,7 +26,6 @@ RUST_MIN_STACK = "4194304"
 # Setting it at the repo root ensures `cargo test --manifest-path vendor/ecma-rs/...` works when
 # invoked from this workspace.
 RUSTC_BOOTSTRAP = "1"
-
 [build]
 # Some of our agent/CI environments configure a global `build.rustc-wrapper` (often `sccache`).
 # Under `scripts/run_limited.sh` (RLIMIT_AS), that wrapper can fail before Cargo even starts

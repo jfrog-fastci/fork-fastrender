@@ -290,6 +290,12 @@ fn parse_stylesheet_internal(
   media_query_cache: Option<&mut MediaQueryCache>,
   mode: ParseMode,
 ) -> Result<(StyleSheet, Option<Vec<CssParseError>>)> {
+  crate::render_control::reserve_allocation_with_heartbeat(
+    crate::render_control::StageHeartbeat::CssParse,
+    css.len() as u64,
+    || format!("css parse stylesheet len={}", css.len()),
+  )
+  .map_err(Error::Render)?;
   let _namespace_ctx = NamespaceContextGuard::new();
   reset_css_deadline_state();
   let mut input = ParserInput::new(css);
@@ -6835,12 +6841,15 @@ mod tests {
   use crate::css::types::CssImportLoader;
   use crate::css::types::FontFaceStyle;
   use crate::css::types::FontSourceFormat;
+  use crate::error::{Error, RenderError, RenderStage};
+  use crate::render_control::{StageAllocationBudget, StageAllocationBudgetGuard, StageHeartbeat};
   use crate::style::color::{Color as CssColor, Rgba};
   use crate::style::custom_properties::CustomPropertyRegistry;
   use crate::style::custom_properties::PropertyRule as RegisteredPropertyRule;
   use crate::style::media::{MediaFeature, MediaType};
   use crate::style::values::{CustomPropertyTypedValue, Length};
   use crate::PropertyValue;
+  use std::sync::Arc;
 
   #[test]
   fn debug_parse_rule_body_style() {
@@ -6903,6 +6912,25 @@ mod tests {
       1,
       "parse_stylesheet should return 1 rule"
     );
+  }
+
+  #[test]
+  fn css_parse_allocation_budget_exceeded() {
+    let css = "body { color: red; }";
+    let budget = Arc::new(StageAllocationBudget::new(8));
+    let _guard = StageAllocationBudgetGuard::install(Some(&budget));
+    let err = parse_stylesheet(css).unwrap_err();
+    match err {
+      Error::Render(RenderError::StageAllocationBudgetExceeded {
+        stage,
+        heartbeat,
+        ..
+      }) => {
+        assert_eq!(stage, RenderStage::Css);
+        assert_eq!(heartbeat, StageHeartbeat::CssParse);
+      }
+      other => panic!("expected StageAllocationBudgetExceeded, got {other:?}"),
+    }
   }
 
   #[test]

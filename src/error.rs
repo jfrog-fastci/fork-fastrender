@@ -15,7 +15,6 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-
 use crate::render_control::StageHeartbeat;
 
 /// Result type alias for FastRender operations

@@ -113,10 +113,10 @@ The render-driving CLIs (`pageset_progress`, `render_pages`, `fetch_and_render`)
   - When the sampled RSS exceeds the configured budget, the render aborts with a structured
     `RenderError::StageMemoryBudgetExceeded { stage, rss_bytes, budget_bytes }`.
 - `--stage-alloc-budget-mb <N>`: **best-effort per-stage allocation budget** in MiB (`0` disables).
-  - This is a best-effort counter for known allocation hotspots (currently pixmap/buffer allocations
-    in paint).
-  - When the allocation counter exceeds the configured budget, the render aborts with a structured
-    `RenderError::StageAllocationBudgetExceeded { stage, heartbeat, allocated_bytes, budget_bytes, context }`.
+   - Tracks coarse allocation counters for known hotspots (pixmap allocations in paint, CSS parse
+     input, decoded image buffers, display list build).
+   - When exceeded, the render aborts with a structured
+     `RenderError::StageAllocationBudgetExceeded { stage: RenderStage, heartbeat: StageHeartbeat, allocated_bytes, budget_bytes, context }`.
 
 Examples:
 
@@ -139,11 +139,14 @@ When diagnostics/stats output is enabled (e.g. `pageset_progress --diagnostics b
 - `diagnostics.stats.memory.dom_parse.rss_end_bytes`
 - …and the same fields for `css`, `cascade`, `box_tree`, `layout`, `paint`.
 
+When the stage allocation budget is enabled, JSON diagnostics also include per-stage allocation counters:
+
+- `diagnostics.stats.allocations.<stage>` = bytes
+  - where `<stage>` is a `StageHeartbeat` string like `css_parse`, `paint_build`, `paint_rasterize`.
+
 ### What to implement next (repo plan)
 
-- **Expand per-stage “allocation budget” counters** beyond pixmap/buffer allocations (images, CSS parse, display list build).
-  - Goal: fail with a diagnostic like “paint rasterize exceeded 512MB budget” instead of OOM across
-    more allocation hotspots.
+- **Expand per-stage allocation budget coverage** beyond the current hotspots (pixmaps, images, CSS parse, display list build).
 - **Make every unbounded cache bounded** (items and/or bytes) with explicit configuration knobs.
 - **Bench safety**: benches must never allocate unboundedly by default (see below).
 

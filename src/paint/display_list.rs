@@ -43,6 +43,7 @@ use crate::paint::clip_path::ResolvedClipPath;
 use crate::paint::homography::Homography;
 use crate::paint::optimize::DisplayListOptimizer;
 use crate::paint::rasterize::box_shadow_blur_radius_to_sigma;
+use crate::render_control::StageHeartbeat;
 use crate::style::color::Rgba;
 use crate::style::PhysicalSide;
 use crate::style::types::BackfaceVisibility;
@@ -2761,6 +2762,19 @@ impl DisplayList {
   ///
   /// Items are added in paint order (first added = painted first = behind).
   pub fn push(&mut self, item: DisplayItem) {
+    let bytes = std::mem::size_of::<DisplayItem>() as u64;
+    if crate::render_control::reserve_allocation_with_heartbeat(
+      StageHeartbeat::PaintBuild,
+      bytes,
+      || format!("display list items={}", self.items.len() + 1),
+    )
+    .is_err()
+    {
+      // Returning early avoids growing the backing Vec further once the configured budget has been
+      // exceeded. The first allocation budget error is stored in the shared `StageAllocationBudget`
+      // and can be surfaced by the `DisplayListBuilder` that owns this list.
+      return;
+    }
     // Invalidate cached bounds
     self.bounds = None;
     self.items.push(item);

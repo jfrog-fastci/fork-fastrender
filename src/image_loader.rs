@@ -4713,19 +4713,23 @@ impl ImageCache {
       return Ok(None);
     }
 
-    let Some(bytes) = u64::from(width)
+    let Some(bytes_u64) = u64::from(width)
       .checked_mul(u64::from(height))
       .and_then(|px| px.checked_mul(4))
     else {
       return Ok(None);
     };
-    if bytes > MAX_PIXMAP_BYTES {
+    if bytes_u64 > MAX_PIXMAP_BYTES {
       return Ok(None);
     }
-    let bytes = match usize::try_from(bytes) {
+    let bytes = match usize::try_from(bytes_u64) {
       Ok(bytes) => bytes,
       Err(_) => return Ok(None),
     };
+    render_control::reserve_allocation_with(bytes_u64, || {
+      format!("image raster pixmap {}x{} url={}", width, height, resolved_url)
+    })
+    .map_err(Error::Render)?;
 
     let rgba = image.to_oriented_rgba(orientation);
     let (rgba_w, rgba_h) = rgba.dimensions();
@@ -4806,19 +4810,23 @@ impl ImageCache {
       return Ok(None);
     }
 
-    let Some(bytes) = u64::from(width)
+    let Some(bytes_u64) = u64::from(width)
       .checked_mul(u64::from(height))
       .and_then(|px| px.checked_mul(4))
     else {
       return Ok(None);
     };
-    if bytes > MAX_PIXMAP_BYTES {
+    if bytes_u64 > MAX_PIXMAP_BYTES {
       return Ok(None);
     }
-    let bytes = match usize::try_from(bytes) {
+    let bytes = match usize::try_from(bytes_u64) {
       Ok(bytes) => bytes,
       Err(_) => return Ok(None),
     };
+    render_control::reserve_allocation_with(bytes_u64, || {
+      format!("image raster pixmap {}x{} url={}", width, height, resolved_url)
+    })
+    .map_err(Error::Render)?;
 
     let rgba = image.to_oriented_rgba(orientation);
     let (rgba_w, rgba_h) = rgba.dimensions();
@@ -4923,19 +4931,26 @@ impl ImageCache {
       return self.load_raster_pixmap(&resolved_url, orientation, decorative);
     }
 
-    let Some(bytes) = u64::from(target_width)
+    let Some(bytes_u64) = u64::from(target_width)
       .checked_mul(u64::from(target_height))
       .and_then(|px| px.checked_mul(4))
     else {
       return Ok(None);
     };
-    if bytes > MAX_PIXMAP_BYTES {
+    if bytes_u64 > MAX_PIXMAP_BYTES {
       return Ok(None);
     }
-    let bytes = match usize::try_from(bytes) {
+    let bytes = match usize::try_from(bytes_u64) {
       Ok(bytes) => bytes,
       Err(_) => return Ok(None),
     };
+    render_control::reserve_allocation_with(bytes_u64, || {
+      format!(
+        "image raster pixmap {}x{} url={} resampled=true",
+        target_width, target_height, resolved_url
+      )
+    })
+    .map_err(Error::Render)?;
 
     let filter = match quality {
       FilterQuality::Nearest => image::imageops::FilterType::Nearest,
@@ -5073,19 +5088,26 @@ impl ImageCache {
       );
     }
 
-    let Some(bytes) = u64::from(target_width)
+    let Some(bytes_u64) = u64::from(target_width)
       .checked_mul(u64::from(target_height))
       .and_then(|px| px.checked_mul(4))
     else {
       return Ok(None);
     };
-    if bytes > MAX_PIXMAP_BYTES {
+    if bytes_u64 > MAX_PIXMAP_BYTES {
       return Ok(None);
     }
-    let bytes = match usize::try_from(bytes) {
+    let bytes = match usize::try_from(bytes_u64) {
       Ok(bytes) => bytes,
       Err(_) => return Ok(None),
     };
+    render_control::reserve_allocation_with(bytes_u64, || {
+      format!(
+        "image raster pixmap {}x{} url={} resampled=true",
+        target_width, target_height, resolved_url
+      )
+    })
+    .map_err(Error::Render)?;
 
     let filter = match quality {
       FilterQuality::Nearest => image::imageops::FilterType::Nearest,
@@ -7175,6 +7197,20 @@ impl ImageCache {
 
   fn finish_bitmap_decode(&self, img: DynamicImage, url: &str) -> Result<DynamicImage> {
     self.enforce_decode_limits(img.width(), img.height(), url)?;
+    if let Some(bytes) = u64::from(img.width())
+      .checked_mul(u64::from(img.height()))
+      .and_then(|px| px.checked_mul(4))
+    {
+      render_control::reserve_allocation_with(bytes, || {
+        format!(
+          "image decode pixel buffer {}x{} url={}",
+          img.width(),
+          img.height(),
+          url
+        )
+      })
+      .map_err(Error::Render)?;
+    }
     Ok(img)
   }
 
@@ -9378,6 +9414,8 @@ impl Clone for ImageCache {
 #[cfg(test)]
   mod tests {
   use super::*;
+  use crate::error::{Error, RenderError, RenderStage};
+  use crate::render_control::{record_stage, StageAllocationBudget, StageAllocationBudgetGuard, StageHeartbeat};
   use crate::render_control::RenderDeadline;
   use crate::style::types::OrientationTransform;
   use base64::Engine;
@@ -9544,6 +9582,35 @@ impl Clone for ImageCache {
       .write_image(pixels.as_raw(), 1, 1, ColorType::Rgba8.into())
       .expect("encode png");
     png
+  }
+
+  #[test]
+  fn raster_pixmap_allocation_budget_exceeded() {
+    let url = "test://alloc-budget.png";
+    let bytes = encode_single_pixel_png([0, 0, 0, 255]);
+    let mut res = FetchedResource::new(bytes, Some("image/png".to_string()));
+    res.status = Some(200);
+    res.final_url = Some(url.to_string());
+    let fetcher = Arc::new(MapFetcher::with_entries([(url.to_string(), res)]));
+    let cache = ImageCache::with_fetcher(fetcher);
+
+    record_stage(StageHeartbeat::PaintRasterize);
+    let budget = Arc::new(StageAllocationBudget::new(5));
+    let _guard = StageAllocationBudgetGuard::install(Some(&budget));
+    let err = cache
+      .load_raster_pixmap(url, OrientationTransform::IDENTITY, false)
+      .unwrap_err();
+    match err {
+      Error::Render(RenderError::StageAllocationBudgetExceeded {
+        stage,
+        heartbeat,
+        ..
+      }) => {
+        assert_eq!(stage, RenderStage::Paint);
+        assert_eq!(heartbeat, StageHeartbeat::PaintRasterize);
+      }
+      other => panic!("expected StageAllocationBudgetExceeded, got {other:?}"),
+    }
   }
 
   #[test]

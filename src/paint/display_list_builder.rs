@@ -859,6 +859,10 @@ impl DisplayListBuilder {
     if self.error.is_some() {
       return true;
     }
+    if let Some(err) = crate::render_control::active_allocation_budget_error() {
+      self.error = Some(err);
+      return true;
+    }
     if let Err(err) = check_active(RenderStage::Paint) {
       self.error = Some(err);
       return true;
@@ -869,6 +873,13 @@ impl DisplayListBuilder {
   fn deadline_reached_periodic(&mut self, counter: &mut usize, stride: usize) -> bool {
     if stride == 0 {
       return self.deadline_reached();
+    }
+    if self.error.is_some() {
+      return true;
+    }
+    if let Some(err) = crate::render_control::active_allocation_budget_error() {
+      self.error = Some(err);
+      return true;
     }
     if let Err(err) = check_active_periodic(counter, stride, RenderStage::Paint) {
       self.error = Some(err);
@@ -943,6 +954,11 @@ impl DisplayListBuilder {
             diag.build_svg_filter_calls += snapshot.svg_filter_calls;
           });
         }
+      }
+    }
+    if self.error.is_none() {
+      if let Some(err) = crate::render_control::active_allocation_budget_error() {
+        self.error = Some(err);
       }
     }
     if let Some(err) = self.error.take() {
@@ -14185,6 +14201,7 @@ mod tests {
   use crate::css::types::Declaration;
   use crate::css::types::PropertyValue;
   use crate::css::types::Transform;
+  use crate::error::{Error, RenderError, RenderStage};
   use crate::image_loader::ImageCache;
   use crate::paint::display_list::text_bounds;
   use crate::paint::display_list::ResolvedMaskImage;
@@ -14192,6 +14209,7 @@ mod tests {
   use crate::paint::stacking::StackingContext;
   use crate::paint::stacking::StackingContextReason;
   use crate::render_control::RenderDeadline;
+  use crate::render_control::{StageAllocationBudget, StageAllocationBudgetGuard, StageHeartbeat};
   use crate::style::color::Color;
   use crate::style::color::Rgba;
   use crate::style::content::parse_content;
@@ -14256,6 +14274,26 @@ mod tests {
 
   fn create_text_fragment(x: f32, y: f32, width: f32, height: f32, text: &str) -> FragmentNode {
     FragmentNode::new_text(Rect::from_xywh(x, y, width, height), text.to_string(), 12.0)
+  }
+
+  #[test]
+  fn display_list_build_allocation_budget_exceeded() {
+    let budget = Arc::new(StageAllocationBudget::new(0));
+    let _guard = StageAllocationBudgetGuard::install(Some(&budget));
+    let mut builder = DisplayListBuilder::new();
+    builder.emit_background(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), Rgba::RED);
+    let err = builder.finish().unwrap_err();
+    match err {
+      Error::Render(RenderError::StageAllocationBudgetExceeded {
+        stage,
+        heartbeat,
+        ..
+      }) => {
+        assert_eq!(stage, RenderStage::Paint);
+        assert_eq!(heartbeat, StageHeartbeat::PaintBuild);
+      }
+      other => panic!("expected StageAllocationBudgetExceeded, got {other:?}"),
+    }
   }
 
   #[test]

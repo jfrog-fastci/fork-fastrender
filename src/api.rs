@@ -1098,9 +1098,9 @@ pub struct RenderOptions {
   pub stage_mem_budget_bytes: Option<u64>,
   /// Optional best-effort per-stage allocation budget in bytes.
   ///
-  /// When set, known large allocation sites (currently pixmap/buffer allocations in paint) are
-  /// accounted against the active stage heartbeat and the render aborts with
-  /// [`RenderError::StageAllocationBudgetExceeded`] when the counter exceeds this budget.
+  /// When set, known large allocation sites (pixmaps, images, CSS parsing, display list build)
+  /// charge best-effort byte estimates to the active stage heartbeat and abort with
+  /// [`RenderError::StageAllocationBudgetExceeded`] when the per-stage total exceeds this budget.
   pub stage_alloc_budget_bytes: Option<u64>,
   /// Optional cooperative cancellation callback.
   pub cancel_callback: Option<Arc<CancelCallback>>,
@@ -1324,10 +1324,9 @@ impl RenderOptions {
 
   /// Set a best-effort per-stage allocation budget for the render pipeline.
   ///
-  /// Pass `None` to disable. When set, allocations through known large hot paths (currently
-  /// pixmap/buffer allocations during paint) will abort with
-  /// [`RenderError::StageAllocationBudgetExceeded`] when the stage-local counter exceeds the
-  /// configured budget.
+  /// Pass `None` to disable. When set, renders will abort with
+  /// [`RenderError::StageAllocationBudgetExceeded`] when a stage's best-effort allocation counter
+  /// exceeds the configured budget.
   pub fn with_stage_alloc_budget_bytes(mut self, budget_bytes: Option<u64>) -> Self {
     self.stage_alloc_budget_bytes = budget_bytes;
     self
@@ -3071,6 +3070,8 @@ pub struct RenderStats {
   pub timings: RenderStageTimings,
   #[serde(default)]
   pub memory: RenderStageMemory,
+  #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+  pub allocations: BTreeMap<String, u64>,
   #[serde(default)]
   pub counts: RenderCounts,
   #[serde(default)]
@@ -6203,11 +6204,17 @@ impl FastRender {
     options: RenderOptions,
     artifacts: Option<&mut RenderArtifacts>,
     deadline: Option<&RenderDeadline>,
-    stats: Option<&mut RenderStatsRecorder>,
+    mut stats: Option<&mut RenderStatsRecorder>,
     initial_referrer_policy: ReferrerPolicy,
     initial_csp: Option<CspPolicy>,
     trace: &TraceHandle,
   ) -> Result<RenderOutputs> {
+    let stage_alloc_budget = options
+      .stage_alloc_budget_bytes
+      .filter(|bytes| *bytes > 0)
+      .map(|bytes| Arc::new(crate::render_control::StageAllocationBudget::new(bytes)));
+    let _stage_alloc_budget_guard =
+      crate::render_control::StageAllocationBudgetGuard::install(stage_alloc_budget.as_ref());
     let (width, height) = options
       .viewport
       .unwrap_or((self.default_width, self.default_height));
@@ -6250,13 +6257,15 @@ impl FastRender {
       options.capture_accessibility,
       deadline,
       options.stage_mem_budget_bytes,
-      options.stage_alloc_budget_bytes,
       artifacts,
-      stats,
+      stats.as_deref_mut(),
       paint_parallelism,
       layout_parallelism,
       trace,
     );
+    if let (Some(stats), Some(budget)) = (stats.as_deref_mut(), stage_alloc_budget.as_ref()) {
+      stats.stats.allocations = budget.snapshot_allocations();
+    }
     self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
     let result = match result {
       Ok(outputs) => Ok(outputs),
@@ -6734,7 +6743,6 @@ impl FastRender {
     capture_accessibility: bool,
     deadline: Option<&RenderDeadline>,
     stage_mem_budget_bytes: Option<u64>,
-    stage_alloc_budget_bytes: Option<u64>,
     mut artifacts: Option<&mut RenderArtifacts>,
     mut stats: Option<&mut RenderStatsRecorder>,
     paint_parallelism: PaintParallelism,
@@ -6749,11 +6757,6 @@ impl FastRender {
     }
 
     let _deadline_guard = DeadlineGuard::install(deadline);
-    let stage_alloc_budget = stage_alloc_budget_bytes
-      .filter(|bytes| *bytes > 0)
-      .map(|bytes| Arc::new(crate::render_control::StageAllocationBudget::new(bytes)));
-    let _stage_alloc_budget_guard =
-      crate::render_control::StageAllocationBudgetGuard::install(stage_alloc_budget.as_ref());
 
     let toggles = runtime::runtime_toggles();
     let timings_enabled = toggles.truthy("FASTR_RENDER_TIMINGS");
@@ -7567,6 +7570,12 @@ impl FastRender {
     options: RenderOptions,
     trace: &TraceHandle,
   ) -> Result<PreparedDocument> {
+    let stage_alloc_budget = options
+      .stage_alloc_budget_bytes
+      .filter(|bytes| *bytes > 0)
+      .map(|bytes| Arc::new(crate::render_control::StageAllocationBudget::new(bytes)));
+    let _stage_alloc_budget_guard =
+      crate::render_control::StageAllocationBudgetGuard::install(stage_alloc_budget.as_ref());
     let (width, height) = options
       .viewport
       .unwrap_or((self.default_width, self.default_height));
@@ -7878,6 +7887,12 @@ impl FastRender {
     options: RenderOptions,
     trace: &TraceHandle,
   ) -> Result<PreparedDocument> {
+    let stage_alloc_budget = options
+      .stage_alloc_budget_bytes
+      .filter(|bytes| *bytes > 0)
+      .map(|bytes| Arc::new(crate::render_control::StageAllocationBudget::new(bytes)));
+    let _stage_alloc_budget_guard =
+      crate::render_control::StageAllocationBudgetGuard::install(stage_alloc_budget.as_ref());
     let (width, height) = options
       .viewport
       .unwrap_or((self.default_width, self.default_height));
@@ -9726,6 +9741,8 @@ impl FastRender {
     let resource_context = self.resource_context.clone();
     let diagnostics = self.diagnostics.clone();
     let deadline = crate::render_control::active_deadline();
+    let allocation_budget = crate::render_control::active_allocation_budget();
+    let heartbeat = crate::render_control::active_stage_heartbeat();
     let preload_stylesheets_enabled = self
       .runtime_toggles
       .truthy_with_default("FASTR_FETCH_PRELOAD_STYLESHEETS", true);
@@ -9764,10 +9781,15 @@ impl FastRender {
         diagnostics: &Option<Arc<Mutex<RenderDiagnostics>>>,
         deadline: &Option<RenderDeadline>,
         stylesheet_fetch_counter: &Option<Arc<AtomicUsize>>,
+        allocation_budget: Option<Arc<crate::render_control::StageAllocationBudget>>,
+        heartbeat: Option<StageHeartbeat>,
       ) -> Result<(Option<StyleSheet>, MediaQueryCache)> {
         // Parallel work runs on rayon threads; propagate any active deadline to keep cancellation
         // effective inside stylesheet parsing/import resolution and resource fetch timeouts.
         let _deadline_guard = DeadlineGuard::install(deadline.as_ref());
+        let _alloc_budget_guard =
+          crate::render_control::StageAllocationBudgetGuard::install(allocation_budget.as_ref());
+        let _heartbeat_guard = crate::render_control::StageHeartbeatGuard::install(heartbeat);
         let mut local_media_cache = MediaQueryCache::default();
 
         match self {
@@ -10035,6 +10057,8 @@ impl FastRender {
                 &diagnostics,
                 &deadline,
                 &stylesheet_fetch_counter,
+                allocation_budget.clone(),
+                heartbeat,
               )
             })
             .collect()
@@ -10050,6 +10074,8 @@ impl FastRender {
                 &diagnostics,
                 &deadline,
                 &stylesheet_fetch_counter,
+                allocation_budget.clone(),
+                heartbeat,
               )
             })
             .collect()
@@ -11201,34 +11227,35 @@ impl FastRender {
     layout_parallelism: LayoutParallelism,
     stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
-    let needs_large_stack = matches!(media_type, MediaType::Print) || cfg!(debug_assertions);
-    if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get()) {
-      let deadline_stack = crate::render_control::deadline_stack_snapshot();
-      let stage_listener_stack = crate::render_control::stage_listener_stack_snapshot();
-      let stage = crate::render_control::active_stage();
-      let stage_heartbeat = crate::render_control::active_stage_heartbeat();
-      let allocation_budget = crate::render_control::active_allocation_budget();
-      let parallel_debug_collector =
-        crate::layout::engine::current_layout_parallel_debug_collector();
-      return std::thread::scope(|scope| {
-        let handle = std::thread::Builder::new()
-          .name("fastr-layout".to_string())
-          .stack_size(8 * 1024 * 1024)
-          .spawn_scoped(scope, || {
-            let _deadline_stack_guard =
-              crate::render_control::DeadlineStackGuard::install(deadline_stack);
-            let _stage_listener_stack_guard =
-              crate::render_control::StageListenerStackGuard::install(stage_listener_stack);
-            let _stage_guard = StageGuard::install(stage);
-            let _stage_heartbeat_guard =
-              crate::render_control::StageHeartbeatGuard::install(stage_heartbeat);
-            let _stage_alloc_budget_guard = crate::render_control::StageAllocationBudgetGuard::install(
-              allocation_budget.as_ref(),
-            );
-            let _stack_guard = LayoutStackThreadGuard::install();
-            let _parallel_debug_guard =
-              crate::layout::engine::LayoutParallelDebugCollectorThreadGuard::install(
-                parallel_debug_collector.clone(),
+      let needs_large_stack = matches!(media_type, MediaType::Print) || cfg!(debug_assertions);
+      if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get()) {
+        let deadline_stack = crate::render_control::deadline_stack_snapshot();
+        let stage_listener_stack = crate::render_control::stage_listener_stack_snapshot();
+        let stage = crate::render_control::active_stage();
+        let stage_heartbeat = crate::render_control::active_stage_heartbeat();
+        let allocation_budget = crate::render_control::active_allocation_budget();
+        let parallel_debug_collector =
+          crate::layout::engine::current_layout_parallel_debug_collector();
+        return std::thread::scope(|scope| {
+          let handle = std::thread::Builder::new()
+            .name("fastr-layout".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+              let _deadline_stack_guard =
+                crate::render_control::DeadlineStackGuard::install(deadline_stack);
+              let _stage_listener_stack_guard =
+                crate::render_control::StageListenerStackGuard::install(stage_listener_stack);
+              let _stage_guard = StageGuard::install(stage);
+              let _stage_heartbeat_guard =
+                crate::render_control::StageHeartbeatGuard::install(stage_heartbeat);
+              let _stage_alloc_budget_guard =
+                crate::render_control::StageAllocationBudgetGuard::install(
+                  allocation_budget.as_ref(),
+                );
+              let _stack_guard = LayoutStackThreadGuard::install();
+              let _parallel_debug_guard =
+                crate::layout::engine::LayoutParallelDebugCollectorThreadGuard::install(
+                  parallel_debug_collector.clone(),
               );
             self.layout_document_for_media_with_artifacts_inner(
               dom,
@@ -20038,7 +20065,6 @@ pub(crate) fn render_html_with_shared_resources(
       false,
       false,
       deadline.as_ref(),
-      None,
       None,
       None,
       None,
