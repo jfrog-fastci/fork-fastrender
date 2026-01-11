@@ -406,6 +406,12 @@ mod linux {
         /// write CQEs into the ring mappings after submission (e.g. `IORING_OP_PROVIDE_BUFFERS`).
         /// We must therefore keep the ring alive until their CQEs have been observed.
         internal_in_flight: usize,
+        /// Keep-alive for pointer-carrying internal ops.
+        ///
+        /// `IORING_OP_PROVIDE_BUFFERS` stores user pointers in the SQE. Even though these ops are
+        /// internal (and their CQEs are not surfaced), the pointed-to pool storage must remain
+        /// valid until the CQE is observed.
+        internal_keepalive_pools: Vec<ProvidedBufPool>,
         ops: HashMap<OpId, OpState>,
         multishots: HashMap<OpId, MultiShotRecvMsgState>,
         ready: VecDeque<Completion>,
@@ -426,6 +432,9 @@ mod linux {
 
                 if id.as_u64() == INTERNAL_USER_DATA {
                     self.internal_in_flight = self.internal_in_flight.saturating_sub(1);
+                    if self.internal_in_flight == 0 {
+                        self.internal_keepalive_pools.clear();
+                    }
                     continue;
                 }
 
@@ -531,6 +540,7 @@ mod linux {
             if let Some(ring) = self.ring.take() {
                 mem::forget(ring);
             }
+            mem::forget(mem::take(&mut self.internal_keepalive_pools));
             mem::forget(mem::take(&mut self.ops));
             mem::forget(mem::take(&mut self.multishots));
         }
@@ -579,6 +589,7 @@ mod linux {
                     ring: Some(IoUring::new(entries)?),
                     next_id: 1,
                     internal_in_flight: 0,
+                    internal_keepalive_pools: Vec::new(),
                     ops: HashMap::new(),
                     multishots: HashMap::new(),
                     ready: VecDeque::new(),
@@ -610,6 +621,7 @@ mod linux {
             nbufs: u16,
             buf_group: u16,
             buf_id: u16,
+            keepalive_pool: ProvidedBufPool,
         ) -> io::Result<()> {
             let len_i32: i32 = len.try_into().map_err(|_| {
                 io::Error::new(
@@ -642,6 +654,7 @@ mod linux {
                     sq.push(&entry).unwrap();
                 }
                 inner.internal_in_flight = inner.internal_in_flight.saturating_add(1);
+                inner.internal_keepalive_pools.push(keepalive_pool);
             }
 
             inner
@@ -983,6 +996,9 @@ mod linux {
 
                     if id.as_u64() == INTERNAL_USER_DATA {
                         inner.internal_in_flight = inner.internal_in_flight.saturating_sub(1);
+                        if inner.internal_in_flight == 0 {
+                            inner.internal_keepalive_pools.clear();
+                        }
                         continue;
                     }
 

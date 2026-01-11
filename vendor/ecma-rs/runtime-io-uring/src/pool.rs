@@ -102,6 +102,7 @@ mod linux {
                 nbufs,
                 buf_group,
                 0,
+                pool.clone(),
             )?;
             pool.inner.in_kernel.store(nbufs as usize, Ordering::Relaxed);
 
@@ -193,6 +194,7 @@ mod linux {
                         1,
                         self.inner.buf_group,
                         buf_id,
+                        self.clone(),
                     ),
                     true,
                 ),
