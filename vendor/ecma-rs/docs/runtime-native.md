@@ -132,6 +132,22 @@ a moving collector, this has an important consequence:
 See `runtime-native/docs/gc_handle_abi.md` for the detailed rule-set and design
 options.
 
+### 2.2.2 Rust/FFI shadow stack roots (non-scanned Rust frames)
+LLVM stackmaps/statepoints only describe roots for **compiled** (`native-js`)
+frames. Rust frames are not stackmap-scanned, so any GC-managed pointer held in
+runtime-native Rust code (or in embedding/FFI code) across a potential GC must be
+explicitly registered as a **root slot**.
+
+The runtime provides two mechanisms for this:
+
+- **Rust RAII:** `runtime_native::roots::Root<T>`
+  - stores the pointer in an addressable slot and pushes that slot onto the
+    current thread's shadow stack.
+  - `get()` always reloads through the slot so relocation updates are observed.
+- **C ABI:** `rt_root_push(GcHandle slot)` / `rt_root_pop(GcHandle slot)`
+  - registers a caller-owned addressable slot (`GcHandle = uint8_t**`).
+  - `rt_root_pop` must be called in strict LIFO order.
+
 ### 2.3 Error and OOM strategy
 For the first implementation we intentionally keep the ABI simple:
 

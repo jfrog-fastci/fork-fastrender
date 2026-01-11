@@ -34,7 +34,16 @@ int main(void) {
   RtShapeId shape = (RtShapeId)1;
   uint8_t* pinned = rt_alloc_pinned(16, shape);
   (void)pinned;
+
+  // Temporary shadow-stack roots: embedders/native glue can register addressable
+  // GC pointer slots so a moving GC can update them in-place.
+  //
+  // This smoke test doesn't exercise relocation (pinned objects never move),
+  // but it ensures the symbol is present and callable from C.
+  GcPtr tmp = pinned;
+  rt_root_push(&tmp);
   rt_gc_safepoint();
+  rt_root_pop(&tmp);
 
   InternedId id1 = rt_string_intern(BYTES_LIT("hello"));
   InternedId id2 = rt_string_intern(BYTES_LIT("hello"));

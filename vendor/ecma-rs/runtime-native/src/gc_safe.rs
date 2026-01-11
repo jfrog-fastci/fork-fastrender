@@ -46,9 +46,7 @@ impl Drop for GcSafeGuard {
     debug_assert!(depth > 0, "GcSafeGuard underflow");
 
     if depth > 1 {
-      thread
-        .native_safe_depth
-        .store(depth - 1, Ordering::Relaxed);
+      thread.native_safe_depth.store(depth - 1, Ordering::Relaxed);
       return;
     }
 
@@ -79,6 +77,21 @@ pub fn enter_gc_safe_region() -> GcSafeGuard {
   // Only the outermost transition needs to publish a safepoint context and mark
   // the thread as NativeSafe.
   if thread.native_safe_depth.load(Ordering::Relaxed) == 0 {
+    // A thread in a GC-safe region is treated as already quiescent by the STW coordinator and its
+    // stack/registers are not scanned. Entering the region while holding temporary shadow-stack
+    // roots is likely a bug: those roots imply the thread has GC pointers in locals that may still
+    // be live in registers.
+    //
+    // Keep this a debug assertion: production builds should still attempt to make progress.
+    let roots = thread.handle_stack_len();
+    debug_assert_eq!(
+      roots,
+      0,
+      "thread {:?} entered GC-safe region while holding {roots} handle-stack roots; \
+       store GC references in persistent handles (RootRegistry/HandleTable) before blocking",
+      thread.id()
+    );
+
     // Publish a safepoint context *before* advertising NativeSafe to the GC.
     //
     // If we entered the GC-safe region from within runtime code, the current

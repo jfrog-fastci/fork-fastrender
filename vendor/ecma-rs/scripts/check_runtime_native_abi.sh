@@ -71,6 +71,8 @@ required_symbols=(
   rt_write_barrier_range
   rt_gc_collect
   rt_backing_store_external_bytes
+  rt_root_push
+  rt_root_pop
   rt_gc_register_root_slot
   rt_gc_unregister_root_slot
   rt_gc_pin

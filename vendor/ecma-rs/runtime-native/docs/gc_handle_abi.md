@@ -91,6 +91,19 @@ Limitations:
   as `rt_gc_register_root_slot` / `rt_gc_pin` (see `include/runtime_native.h`) or
   the runtime's handle table (`gc::HandleTable`).
 
+### Temporary roots for runtime-native Rust/FFI code (shadow stack)
+
+The handle ABI above is about *passing arguments into* `may_gc` runtime calls.
+Runtime-native itself is Rust and does not have stackmaps, so when Rust/FFI code
+needs to *hold* GC pointers across a potential safepoint/GC, it must explicitly
+register root slots.
+
+Use:
+
+- `runtime_native::roots::Root<T>` for Rust code (RAII).
+- `rt_root_push(GcHandle slot)` / `rt_root_pop(GcHandle slot)` for C/FFI callers
+  (addressable root slots; must be popped in LIFO order).
+
 ### B) Preflight GC / non-GC allocation fastpath
 
 Avoid GC while inside runtime-native helpers:
