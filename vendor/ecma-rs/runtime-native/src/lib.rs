@@ -31,6 +31,7 @@
 pub mod abi;
 pub mod arch;
 pub mod gc_safe;
+pub mod async_abi;
 pub mod async_rt;
 pub mod reactor;
 pub mod timer_wheel;
@@ -69,6 +70,7 @@ mod string;
 mod trap;
 
 pub use exports::*;
+pub use async_abi::*;
 pub use gc::GcHeap;
 pub use gc::RememberedSet;
 pub use gc::RootHandle;
@@ -100,6 +102,29 @@ fn rt_ensure_init() -> &'static GlobalRuntime {
   RUNTIME.get_or_init(|| GlobalRuntime {
     parallel: parallel::ParallelRuntime::new(),
   })
+}
+
+/// Initialize a newly allocated promise header to the pending state.
+///
+/// This is part of the stable native async ABI defined in [`async_abi`]. The
+/// promise's payload begins immediately after the [`PromiseHeader`] prefix.
+///
+/// # Safety
+/// `p` must point to a valid [`PromiseHeader`] at offset 0 of a promise allocation.
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_init(_p: PromiseRef) {
+  todo!("rt_promise_init is not implemented yet")
+}
+
+/// Mark a promise as fulfilled.
+///
+/// The promise's payload must already have been written by the caller.
+///
+/// # Safety
+/// `p` must point to a valid promise allocation.
+#[no_mangle]
+pub unsafe extern "C" fn rt_promise_fulfill(_p: PromiseRef) {
+  todo!("rt_promise_fulfill is not implemented yet")
 }
 
 /// Request a stop-the-world GC safepoint.
