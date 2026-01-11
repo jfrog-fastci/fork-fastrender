@@ -107,6 +107,6 @@ fn aot_rejects_cyclic_module_dependencies_deterministically() {
     .arg(&out)
     .assert()
     .failure()
-    .stderr(predicate::str::contains("NJS0125"))
+    .stderr(predicate::str::contains("NJS0146"))
     .stderr(predicate::str::contains("cyclic module dependency"));
 }
