@@ -10429,9 +10429,6 @@ fn current_script_state_handle_from_vm_host(
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       return Some(document.current_script_handle().clone());
     }
-    if let Some(ctx) = host.as_any_mut().downcast_mut::<VmJsHostContext>() {
-      return ctx.current_script_state().cloned();
-    }
     None
   }
 

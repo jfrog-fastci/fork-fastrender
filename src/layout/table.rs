@@ -2183,7 +2183,12 @@ impl TableStructure {
               col.author_max_width = child.style.max_width.clone();
               col.font_size = child.style.font_size;
               if let Some(width) = &child.style.width {
-                col.specified_width = Some(Self::length_to_specified_width(width));
+                col.specified_width = Some(Self::length_to_specified_width(
+                  width,
+                  child.style.font_size,
+                  child.style.root_font_size,
+                  root_metrics,
+                ));
               }
             }
             col_cursor += 1;
@@ -2222,8 +2227,20 @@ impl TableStructure {
                       .clone()
                       .or_else(|| child.style.max_width.clone());
                     col.font_size = group_child.style.font_size;
-                    if let Some(width) = group_child.style.width.as_ref().or(child.style.width.as_ref()) {
-                      col.specified_width = Some(Self::length_to_specified_width(width));
+                    if let Some(width) = &group_child.style.width {
+                      col.specified_width = Some(Self::length_to_specified_width(
+                        width,
+                        group_child.style.font_size,
+                        group_child.style.root_font_size,
+                        root_metrics,
+                      ));
+                    } else if let Some(width) = &child.style.width {
+                      col.specified_width = Some(Self::length_to_specified_width(
+                        width,
+                        child.style.font_size,
+                        child.style.root_font_size,
+                        root_metrics,
+                      ));
                     }
                   }
                   col_cursor += 1;
@@ -2244,7 +2261,12 @@ impl TableStructure {
                 col.author_max_width = child.style.max_width.clone();
                 col.font_size = child.style.font_size;
                 if let Some(width) = &child.style.width {
-                  col.specified_width = Some(Self::length_to_specified_width(width));
+                  col.specified_width = Some(Self::length_to_specified_width(
+                    width,
+                    child.style.font_size,
+                    child.style.root_font_size,
+                    root_metrics,
+                  ));
                 }
               }
               col_cursor += 1;
@@ -2685,11 +2707,19 @@ impl TableStructure {
     self.border_spacing.1 * (self.row_count as f32 + 1.0)
   }
 
-  fn length_to_specified_width(length: &crate::style::values::Length) -> SpecifiedWidth {
+  fn length_to_specified_width(
+    length: &crate::style::values::Length,
+    font_size: f32,
+    root_font_size: f32,
+    root_metrics: Option<RootFontMetrics>,
+  ) -> SpecifiedWidth {
     use crate::style::values::LengthUnit;
     match length.unit {
       LengthUnit::Percent => SpecifiedWidth::Percent(length.value),
-      _ => SpecifiedWidth::Fixed(length.to_px()),
+      _ => resolve_length_against(length, font_size, root_font_size, None, root_metrics)
+        .filter(|value| value.is_finite())
+        .map(|value| SpecifiedWidth::Fixed(value.max(0.0)))
+        .unwrap_or(SpecifiedWidth::Auto),
     }
   }
 
@@ -5759,32 +5789,29 @@ impl TableFormattingContext {
         }
       }
       let effective_max = if has_max_cap { max_w } else { f32::INFINITY };
-      let specified_width = cell_box
-        .style
-        .width
-        .as_ref()
-        .and_then(|width| match width.unit {
-          LengthUnit::Percent => percent_base.map(|base| {
-            crate::layout::utils::clamp_with_order(
-              crate::layout::utils::border_size_from_box_sizing(
-                (width.value / 100.0) * base,
-                width_padding,
-                cell_box.style.box_sizing,
-              ),
-              min_w,
-              effective_max,
-            )
-          }),
-          _ => Some(crate::layout::utils::clamp_with_order(
+      let specified_width = cell_box.style.width.as_ref().and_then(|width| {
+        crate::layout::utils::resolve_length_with_percentage_metrics(
+          *width,
+          percent_base,
+          self.viewport_size,
+          cell_box.style.font_size,
+          cell_box.style.root_font_size,
+          Some(&cell_box.style),
+          Some(self.factory.font_context()),
+        )
+        .filter(|value| value.is_finite())
+        .map(|value| {
+          crate::layout::utils::clamp_with_order(
             crate::layout::utils::border_size_from_box_sizing(
-              width.to_px(),
+              value.max(0.0),
               width_padding,
               cell_box.style.box_sizing,
             ),
             min_w,
             effective_max,
-          )),
-        });
+          )
+        })
+      });
       let span_specified_width = if width_is_percent && cell.colspan > 1 {
         None
       } else {
