@@ -40,14 +40,13 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
   
       let inst = &mut cfg.bblocks.get_mut(label)[inst_idx];
       inst.meta.in_place_hint = None;
- 
+
       if inst.args.is_empty() {
         inst.meta.arg_use_modes.clear();
         continue;
       }
 
-      let mut modes = vec![ArgUseMode::Borrow; inst.args.len()];
-      let mut any_consume = false;
+      let mut modes: Option<Vec<ArgUseMode>> = None;
 
       for (idx, arg) in inst.args.iter().enumerate() {
         if !is_consume_site(inst, idx) {
@@ -57,18 +56,25 @@ pub fn annotate_cfg_consumption(cfg: &mut Cfg, ownership: &OwnershipResult) {
           continue;
         };
         if should_consume_var(*var, &live_out, ownership) {
-          modes[idx] = ArgUseMode::Consume;
-          any_consume = true;
+          let modes_vec = modes.get_or_insert_with(|| vec![ArgUseMode::Borrow; inst.args.len()]);
+          modes_vec[idx] = ArgUseMode::Consume;
         }
       }
 
-      if inst.t == InstTyp::VarAssign && modes.get(0) == Some(&ArgUseMode::Consume) {
-        if let (Some(Arg::Var(src)), Some(&tgt)) = (inst.args.get(0), inst.tgts.get(0)) {
-          inst.meta.in_place_hint = Some(InPlaceHint::MoveNoClone { src: *src, tgt });
-        }
-      }
-      if any_consume {
+      if let Some(modes) = modes {
+        let is_move = inst.t == InstTyp::VarAssign && modes.get(0) == Some(&ArgUseMode::Consume);
         inst.meta.arg_use_modes = modes;
+        debug_assert_eq!(
+          inst.meta.arg_use_modes.len(),
+          inst.args.len(),
+          "InstMeta.arg_use_modes must be aligned with Inst.args when present"
+        );
+
+        if is_move {
+          if let (Some(Arg::Var(src)), Some(&tgt)) = (inst.args.get(0), inst.tgts.get(0)) {
+            inst.meta.in_place_hint = Some(InPlaceHint::MoveNoClone { src: *src, tgt });
+          }
+        }
       } else {
         inst.meta.arg_use_modes.clear();
       }
