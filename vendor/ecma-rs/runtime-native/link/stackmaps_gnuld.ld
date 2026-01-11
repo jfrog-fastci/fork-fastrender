@@ -3,15 +3,13 @@
  * This is the GNU ld counterpart to `runtime-native/link/stackmaps.ld`.
  *
  * Why a separate fragment?
- * - `stackmaps.ld` anchors at `INSERT AFTER .text;` for lld compatibility (the
- *   anchor always exists; `.rodata`/`.data` may be absent in minimal links).
- * - GNU ld can merge the inserted, writable stackmaps section into the executable
- *   text PT_LOAD under PIE, producing an RWX segment once relocations require the
- *   segment to be writable.
- * - This fragment anchors at `INSERT BEFORE .dynamic;` to keep writable
- *   stackmaps/faultmaps in the RELRO/data region for dynamically-linked binaries.
- *   (`scripts/native_link.sh` selects this fragment automatically for GNU ld PIE
- *   builds.)
+ * - Prefer `runtime-native/link/stackmaps.ld`: it anchors at `INSERT BEFORE .dynamic;`
+ *   so stackmaps/faultmaps remain RELRO-friendly and do not risk being merged into
+ *   the executable text PT_LOAD (RWX).
+ * - GNU ld differs in how it assigns output sections to PT_LOAD segments. This
+ *   fragment keeps stackmaps/faultmaps in dedicated `.data.rel.ro.llvm_*` output
+ *   sections for GNU ld PIE builds (`scripts/native_link.sh` selects this fragment
+ *   automatically when `ECMA_RS_NATIVE_LINKER=ld` and `ECMA_RS_NATIVE_PIE=1`).
  *
  * Note: `.dynamic` must exist for this fragment to be usable. This is true for
  * the dynamically-linked PIE/non-PIE binaries produced by our toolchain.
@@ -27,6 +25,7 @@ SECTIONS {
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
+    . = ALIGN(8);
     __stop_llvm_stackmaps = .;
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
@@ -39,6 +38,7 @@ SECTIONS {
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))
     KEEP(*(.llvm_faultmaps))
     KEEP(*(.llvm_faultmaps.*))
+    . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
 }

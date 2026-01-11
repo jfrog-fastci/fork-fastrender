@@ -179,10 +179,8 @@ int main() {
 
   let segments = output("readelf", &["-W", "-l", exe.to_str().unwrap()]);
 
-  // Parse program headers in order so we can map a PT_GNU_RELRO entry to the
-  // corresponding "Section to Segment mapping" index.
-  let mut phdr_types: Vec<String> = Vec::new();
   let mut load_lines: Vec<String> = Vec::new();
+  let mut relro_line: Option<String> = None;
   let mut in_phdrs = false;
   for line in segments.lines() {
     if line.trim() == "Program Headers:" {
@@ -211,21 +209,29 @@ int main() {
     let Some(typ) = trimmed.split_whitespace().next() else {
       continue;
     };
-    phdr_types.push(typ.to_string());
     if typ == "LOAD" {
       load_lines.push(trimmed.to_string());
     }
+    if typ == "GNU_RELRO" {
+      relro_line = Some(trimmed.to_string());
+    }
   }
 
+  let relro_line = relro_line
+    .unwrap_or_else(|| panic!("expected a PT_GNU_RELRO program header; got:\n{segments}"));
+  let relro_parts: Vec<&str> = relro_line.split_whitespace().collect();
+  // Columns: Type, Offset, VirtAddr, PhysAddr, FileSiz, MemSiz, Flg..., Align
   assert!(
-    !phdr_types.is_empty(),
-    "failed to parse readelf -l program headers; got:\n{segments}"
+    relro_parts.len() >= 6,
+    "failed to parse GNU_RELRO program header line: {relro_line}"
   );
-
-  let relro_index = phdr_types
-    .iter()
-    .position(|t| t == "GNU_RELRO")
-    .expect("expected a PT_GNU_RELRO program header");
+  let relro_vaddr = u64::from_str_radix(relro_parts[2].trim_start_matches("0x"), 16)
+    .unwrap_or_else(|e| panic!("invalid GNU_RELRO vaddr in {relro_line:?}: {e}"));
+  let relro_memsz = u64::from_str_radix(relro_parts[5].trim_start_matches("0x"), 16)
+    .unwrap_or_else(|e| panic!("invalid GNU_RELRO memsz in {relro_line:?}: {e}"));
+  let relro_end = relro_vaddr
+    .checked_add(relro_memsz)
+    .expect("GNU_RELRO vaddr+memsz overflow");
 
   for load in &load_lines {
     let parts: Vec<&str> = load.split_whitespace().collect();
@@ -242,57 +248,31 @@ int main() {
     );
   }
 
-  let mut in_mapping = false;
-  let mut current_seg: Option<usize> = None;
-  let mut seg_to_sections: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
-  for line in segments.lines() {
-    if line.trim() == "Section to Segment mapping:" {
-      in_mapping = true;
-      continue;
+  let syms = output("readelf", &["-W", "-s", exe.to_str().unwrap()]);
+  let find_sym = |name: &str| -> u64 {
+    for line in syms.lines() {
+      let trimmed = line.trim();
+      if trimmed.is_empty() {
+        continue;
+      }
+      let parts: Vec<&str> = trimmed.split_whitespace().collect();
+      if parts.len() < 2 || parts.last().copied() != Some(name) {
+        continue;
+      }
+      return u64::from_str_radix(parts[1].trim_start_matches("0x"), 16)
+        .unwrap_or_else(|e| panic!("invalid symbol value for {name} in {trimmed:?}: {e}"));
     }
-    if !in_mapping {
-      continue;
-    }
+    panic!("missing {name} symbol; readelf -s output:\n{syms}");
+  };
 
-    let trimmed = line.trim_start();
-    if trimmed.is_empty() {
-      continue;
-    }
-    if trimmed.starts_with("Segment") {
-      continue;
-    }
-
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-    if tokens.is_empty() {
-      continue;
-    }
-
-    if tokens[0].chars().all(|c| c.is_ascii_digit()) {
-      let idx = tokens[0]
-        .parse::<usize>()
-        .unwrap_or_else(|e| panic!("invalid segment index in readelf mapping line {trimmed:?}: {e}"));
-      current_seg = Some(idx);
-      seg_to_sections.insert(idx, tokens[1..].join(" "));
-    } else if let Some(idx) = current_seg {
-      seg_to_sections
-        .entry(idx)
-        .and_modify(|s| {
-          if !s.is_empty() {
-            s.push(' ');
-          }
-          s.push_str(trimmed);
-        })
-        .or_insert_with(|| trimmed.to_string());
-    }
-  }
-
-  let relro_sections = seg_to_sections.get(&relro_index).unwrap_or_else(|| {
-    panic!(
-      "failed to find segment index {relro_index} (PT_GNU_RELRO) in section mapping; got:\n{segments}"
-    )
-  });
+  let start = find_sym("__start_llvm_stackmaps");
+  let stop = find_sym("__stop_llvm_stackmaps");
   assert!(
-    relro_sections.contains(".data.rel.ro.llvm_stackmaps"),
-    "expected `.data.rel.ro.llvm_stackmaps` to be covered by PT_GNU_RELRO; segment {relro_index} sections were:\n{relro_sections}\n\nfull readelf -l output:\n{segments}"
+    stop > start,
+    "invalid stackmaps symbol range (start=0x{start:x} stop=0x{stop:x})"
+  );
+  assert!(
+    relro_vaddr <= start && stop <= relro_end,
+    "expected stackmaps range to be within PT_GNU_RELRO (relro=[0x{relro_vaddr:x},0x{relro_end:x}) start=0x{start:x} stop=0x{stop:x});\n\nfull readelf -l output:\n{segments}"
   );
 }

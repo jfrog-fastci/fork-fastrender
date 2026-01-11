@@ -631,13 +631,14 @@ at the same range:
 They are defined by a small linker-script fragment (the `KEEP` is important so
 `--gc-sections` does not discard stackmaps). See:
 
-- `runtime-native/link/stackmaps.ld` (lld-friendly, inserted `AFTER .text`)
+- `runtime-native/link/stackmaps.ld` (lld-friendly, anchored at `INSERT BEFORE .dynamic;`)
 - `runtime-native/link/stackmaps_gnuld.ld` (GNU ld PIE/DSO hardening; avoids RWX text segments)
 
 ```ld
 SECTIONS {
-  /* Place stackmaps in writable data so PIE/DSO relocations don't require DT_TEXTREL. */
-  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
+  /* Keep stackmaps in RELRO-friendly data so PIE/DSO relocations don't require DT_TEXTREL. */
+  .data.rel.ro : ALIGN(8) {
+    . = ALIGN(8);
     __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;
     __stackmaps_start = .;
@@ -646,12 +647,13 @@ SECTIONS {
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
+    . = ALIGN(8);
     __stop_llvm_stackmaps = .;
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
   }
-} INSERT AFTER .text;
+} INSERT BEFORE .dynamic;
 ```
 
 Note: GNU ld PIE/shared-library links should use `runtime-native/link/stackmaps_gnuld.ld` to avoid

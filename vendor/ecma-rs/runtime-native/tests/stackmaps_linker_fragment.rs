@@ -147,13 +147,16 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   let bytes = fs::read(&exe).unwrap();
   let file = object::File::parse(&*bytes).unwrap();
 
+  // lld does not reliably accept custom `.data.rel.ro.*` output sections in the
+  // RELRO region; `link/stackmaps.ld` therefore places stackmaps inside the
+  // standard `.data.rel.ro` output section.
   let section = file
-    .section_by_name(".data.rel.ro.llvm_stackmaps")
-    .expect("missing .data.rel.ro.llvm_stackmaps section (was it GC'd?)");
+    .section_by_name(".data.rel.ro")
+    .expect("missing .data.rel.ro section (was stackmaps GC'd?)");
 
   let section_addr = section.address();
   let section_size = section.size();
-  assert!(section_size > 0, "expected non-empty .data.rel.ro.llvm_stackmaps");
+  assert!(section_size > 0, "expected non-empty .data.rel.ro");
 
   let (start, start_scope) = find_symbol(&file, START_SYM).expect("missing __start_llvm_stackmaps");
   let (stop, stop_scope) = find_symbol(&file, STOP_SYM).expect("missing __stop_llvm_stackmaps");
@@ -210,14 +213,13 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     "{LEGACY_FASTR_END_SYM} must be globally linkable (not a local symbol)"
   );
 
-  assert_eq!(
-    start, section_addr,
-    "start symbol must equal the .data.rel.ro.llvm_stackmaps section virtual address"
+  assert!(
+    stop > start,
+    "invalid stackmaps symbol range: start=0x{start:x} stop=0x{stop:x}"
   );
-  assert_eq!(
-    stop.checked_sub(start).unwrap(),
-    section_size,
-    "stop-start must equal the .data.rel.ro.llvm_stackmaps section size"
+  assert!(
+    section_addr <= start && stop <= section_addr + section_size,
+    "stackmaps symbol range must be contained in .data.rel.ro (section_addr=0x{section_addr:x} size=0x{section_size:x} start=0x{start:x} stop=0x{stop:x})"
   );
 
   assert_eq!(generic_start, start, "generic start symbol must match");
@@ -227,21 +229,31 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
   assert_eq!(fastr_start, start, "fastr start symbol must match");
   assert_eq!(fastr_end, stop, "fastr end symbol must match");
 
+  // Ensure the linker script actually retained our bytes (not just the symbols).
+  let data = section.data().expect("read .data.rel.ro bytes");
+  let off = usize::try_from(start - section_addr).expect("offset fits usize");
+  let len = usize::try_from(stop - start).expect("len fits usize");
+  assert!(off + len <= data.len(), "stackmaps range out of bounds");
+  assert!(
+    data[off..].starts_with(&[1, 2, 3, 4]),
+    "expected .llvm_stackmaps payload to be preserved"
+  );
+
   // Ensure the section is backed by a readable load segment so the runtime can
   // read the bytes directly from memory.
   let mut in_readable_segment = false;
-  let section_end = section_addr + section_size;
+  let section_end = stop;
   for seg in file.segments() {
     let seg_addr = seg.address();
     let seg_end = seg_addr + seg.size();
     let flags = seg.flags();
-    if seg_addr <= section_addr && section_end <= seg_end && segment_is_readable(flags) {
+    if seg_addr <= start && section_end <= seg_end && segment_is_readable(flags) {
       in_readable_segment = true;
       break;
     }
   }
   assert!(
     in_readable_segment,
-    ".data.rel.ro.llvm_stackmaps not in a readable segment"
+    "stackmaps range not in a readable segment"
   );
 }

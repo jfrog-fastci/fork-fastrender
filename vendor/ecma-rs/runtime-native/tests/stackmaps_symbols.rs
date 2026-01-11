@@ -7,7 +7,7 @@ use runtime_native::stackmaps::STACKMAP_VERSION;
 //
 // Note: runtime-native's build script injects `link/stackmaps.ld` for *tests*, which:
 // - keeps `.llvm_stackmaps` under `--gc-sections`, and
-// - defines `__fastr_stackmaps_start/end` at the output-section boundaries.
+// - defines `__fastr_stackmaps_start/end` to delimit the in-memory stackmaps byte range.
 //
 // This blob ensures the section is non-empty even in minimal environments that don't have LLVM
 // tools installed (and therefore don't build the stackmap test artifact). The output section may

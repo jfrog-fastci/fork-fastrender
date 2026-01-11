@@ -22,25 +22,20 @@
  * The runtime can then read the section bytes directly from memory without
  * parsing `/proc/self/exe`.
  *
- * We place the output section in `.data.rel.ro.llvm_stackmaps` so PIE/DSO
- * relocations can be applied in writable memory without requiring `DT_TEXTREL`.
- * Depending on the linker and where this fragment is inserted, the section may
- * or may not end up inside `PT_GNU_RELRO` (RELRO).
+ * We place stackmaps in RELRO-friendly data so the dynamic loader can relocate
+ * them for PIE/DSO binaries (writable during relocation, then protected by
+ * `PT_GNU_RELRO`).
  *
  * Placement:
- * - This output section is writable (to allow dynamic relocations under PIE/DSO).
- * - We anchor the fragment at `INSERT AFTER .text;`.
- *   - `.text` is always present (while `.rodata`/`.data` can be absent in minimal
- *     links and cause lld/ld errors when used as `INSERT` anchors).
- *   - lld enforces that its RELRO sections (`.dynamic`, `.got`, `.relro_padding`,
- *     ...) are contiguous, and it errors if an `INSERT` tries to place any other
- *     output section inside that block, so `.dynamic`/`.got` are not usable anchors.
- *
- *   GNU ld note: inserting a writable stackmaps section immediately after `.text`
- *   can be unsafe under PIE — GNU ld may merge it into the executable text PT_LOAD,
- *   producing an RWX segment once relocations require the segment to be writable.
- *   For GNU ld + PIE, use `runtime-native/link/stackmaps_gnuld.ld` (or
- *   `scripts/native_link.sh`, which selects the appropriate fragment).
+ * - The stackmaps payload is writable under PIE/DSO (it contains relocated
+ *   function addresses). Inserting a writable section immediately after `.text`
+ *   is unsafe: some linkers may merge it into the executable text PT_LOAD,
+ *   forcing that segment to become RWX.
+ * - lld has stricter RELRO layout rules than GNU ld and can reject custom
+ *   `.data.rel.ro.*` output sections as "relro sections not contiguous".
+ *   To remain lld-friendly while still using RELRO, this fragment places
+ *   stackmaps/faultmaps into the standard `.data.rel.ro` output section and
+ *   anchors the insertion point at `INSERT BEFORE .dynamic;`.
  *
  * This fragment relies on the GNU ld/LLD `INSERT` mechanism so we can inject a
  * small section definition without replacing the entire default linker script.
@@ -48,7 +43,13 @@
  */
 
 SECTIONS {
-  .data.rel.ro.llvm_stackmaps : ALIGN(8) {
+  /* Place stackmaps inside `.data.rel.ro` (RELRO-friendly) so PIE/DSO relocations
+   * do not require DT_TEXTREL, while remaining compatible with lld:
+   * lld treats `.data.rel.ro` as a special RELRO section, but it can reject
+   * custom `.data.rel.ro.*` output sections as "relro sections not contiguous".
+   */
+  .data.rel.ro : ALIGN(8) {
+    . = ALIGN(8);
     __start_llvm_stackmaps = .;
     __fastr_stackmaps_start = .;
     __stackmaps_start = .;
@@ -57,22 +58,25 @@ SECTIONS {
     KEEP(*(.data.rel.ro.llvm_stackmaps.*))
     KEEP(*(.llvm_stackmaps))
     KEEP(*(.llvm_stackmaps.*))
+    /* StackMap v3 uses 64-bit fields and is 8-byte aligned; keep the exported
+     * symbol range 8-byte aligned even if the linker inserts padding between
+     * concatenated blobs. */
+    . = ALIGN(8);
     __stop_llvm_stackmaps = .;
     __fastr_stackmaps_end = .;
     __stackmaps_end = .;
     __llvm_stackmaps_end = .;
-  }
 
-  /* Faultmaps are emitted by some patchpoint configurations. Keep them for
-   * parity with `.llvm_stackmaps` and to avoid accidental removal under
-   * `--gc-sections`. */
-  .data.rel.ro.llvm_faultmaps : ALIGN(8) {
+    /* Faultmaps are emitted by some patchpoint configurations. Keep them for
+     * parity with `.llvm_stackmaps` and to avoid accidental removal under
+     * `--gc-sections`. */
     __llvm_faultmaps_start = .;
     KEEP(*(.data.rel.ro.llvm_faultmaps))
     KEEP(*(.data.rel.ro.llvm_faultmaps.*))
     /* Legacy: older LLVM/object files may still emit `.llvm_faultmaps`. */
     KEEP(*(.llvm_faultmaps))
     KEEP(*(.llvm_faultmaps.*))
+    . = ALIGN(8);
     __llvm_faultmaps_end = .;
   }
-} INSERT AFTER .text;
+} INSERT BEFORE .dynamic;

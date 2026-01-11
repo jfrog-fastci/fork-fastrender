@@ -126,8 +126,13 @@ fi
 # stackmap sections are never dropped under `--gc-sections`.
 link_args+=("-Wl,-T,${stackmaps_ld}")
 
-# PIE (Linux/ELF): ensure `.llvm_stackmaps` / `.llvm_faultmaps` relocations are
-# allowed by making the sections writable in the *input* objects.
+# Ensure `.llvm_stackmaps` / `.llvm_faultmaps` (and their `.data.rel.ro.*`
+# variants) are writable in the *input* objects.
+#
+# - PIE/DSO: required so runtime relocations don't force DT_TEXTREL / `-z notext`.
+# - lld: also required even for some minimal non-PIE links when stackmaps are
+#   placed in RELRO-friendly data; otherwise lld can error with "relro sections
+#   not contiguous" diagnostics.
 patched_dir=""
 cleanup() {
   if [[ -n "${patched_dir}" ]]; then
@@ -136,7 +141,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ "${PIE}" == "1" ]]; then
+if [[ "${PIE}" == "1" || "${LINKER}" == "lld" ]]; then
   objcopy=""
   for cand in llvm-objcopy-18 llvm-objcopy objcopy; do
     if command -v "${cand}" >/dev/null 2>&1; then
@@ -145,7 +150,7 @@ if [[ "${PIE}" == "1" ]]; then
     fi
   done
   if [[ -z "${objcopy}" ]]; then
-    echo "native_link.sh: PIE requires llvm-objcopy/objcopy to patch .llvm_stackmaps flags" >&2
+    echo "native_link.sh: PIE or lld requires llvm-objcopy/objcopy to patch .llvm_stackmaps flags" >&2
     exit 2
   fi
 

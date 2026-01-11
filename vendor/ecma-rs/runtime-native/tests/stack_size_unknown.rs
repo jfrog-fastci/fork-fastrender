@@ -45,33 +45,35 @@ fn stackmaps_section_bytes_from_obj(obj_bytes: &[u8]) -> Vec<u8> {
 }
 
 fn dyn_alloca_statepoint_ir(triple: &str) -> String {
-  // Use a normal call in a `gc "coreclr"` function so `opt -passes=rewrite-statepoints-for-gc`
-  // will generate an LLVM 18 `gc.statepoint` + stackmap record. Add a dynamic alloca to force
-  // `stack_size = -1` (unknown).
+  // Emit an LLVM 18 `gc.statepoint` directly (using the repo-standard `gc "coreclr"` strategy) so
+  // the object contains a `.llvm_stackmaps` record.
+  //
+  // Add a dynamic alloca to force `stack_size = -1` (unknown) in the stackmap function record.
   format!(
     r#"
 source_filename = "dyn_statepoint"
 target triple = "{triple}"
 
-declare void @safepoint()
+declare void @callee()
+declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
+declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32, i32)
 
 define i64 @dyn_statepoint(ptr addrspace(1) %p1, ptr addrspace(1) %p2, i64 %n) gc "coreclr" {{
 entry:
   %dyn = alloca i8, i64 %n, align 16
   store i8 0, ptr %dyn, align 1
 
-  %root1 = alloca ptr addrspace(1), align 8
-  %root2 = alloca ptr addrspace(1), align 8
-  store ptr addrspace(1) %p1, ptr %root1, align 8
-  store ptr addrspace(1) %p2, ptr %root2, align 8
+  %tok = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(
+      i64 2882400000, i32 0,
+      ptr elementtype(void ()) @callee,
+      i32 0, i32 0,
+      i32 0, i32 0
+    ) [ "gc-live"(ptr addrspace(1) %p1, ptr addrspace(1) %p2) ]
+  %p1r = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token %tok, i32 0, i32 0)
+  %p2r = call coldcc ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token %tok, i32 1, i32 1)
 
-  %v1 = load ptr addrspace(1), ptr %root1, align 8
-  %v2 = load ptr addrspace(1), ptr %root2, align 8
-
-  call void @safepoint()
-
-  %i1 = ptrtoint ptr addrspace(1) %v1 to i64
-  %i2 = ptrtoint ptr addrspace(1) %v2 to i64
+  %i1 = ptrtoint ptr addrspace(1) %p1r to i64
+  %i2 = ptrtoint ptr addrspace(1) %p2r to i64
   %sum = add i64 %i1, %i2
   ret i64 %sum
 }}
@@ -81,7 +83,7 @@ entry:
 
 #[test]
 fn dynamic_alloca_function_reports_unknown_stack_size() {
-  for tool in ["opt-18", "llc-18"] {
+  for tool in ["llc-18"] {
     if !tool_available(tool) {
       eprintln!("skipping: {tool} not available in PATH");
       return;
@@ -95,25 +97,16 @@ fn dynamic_alloca_function_reports_unknown_stack_size() {
     ("aarch64-unknown-linux-gnu", "generic"),
   ] {
     let ir_path = tmp.path().join(format!("dyn_statepoint_{cpu}.ll"));
-    let rewritten = tmp.path().join(format!("dyn_statepoint_{cpu}.rewrite.ll"));
     let obj = tmp.path().join(format!("dyn_statepoint_{cpu}.o"));
 
     fs::write(&ir_path, dyn_alloca_statepoint_ir(triple)).expect("write IR");
-
-    let mut opt = Command::new("opt-18");
-    opt
-      .arg(format!("-mtriple={triple}"))
-      .arg("-passes=rewrite-statepoints-for-gc")
-      .arg("-S")
-      .arg(&ir_path)
-      .arg("-o")
-      .arg(&rewritten);
-    run_success(opt);
 
     let mut llc = Command::new("llc-18");
     llc
       .arg("-O0")
       .arg("-filetype=obj")
+      // Force addressable spill slots for GC roots at statepoints.
+      .args(["--fixup-allow-gcptr-in-csr=false", "--fixup-max-csr-statepoints=0"])
       .arg(format!("-mtriple={triple}"))
       .arg(format!("-mcpu={cpu}"))
       // Ensure statepoint roots are spilled to stack slots, not callee-saved registers (CSR).
@@ -123,7 +116,7 @@ fn dynamic_alloca_function_reports_unknown_stack_size() {
       .arg("--fixup-allow-gcptr-in-csr=false")
       .arg("--fixup-max-csr-statepoints=0")
       .arg("-frame-pointer=all")
-      .arg(&rewritten)
+      .arg(&ir_path)
       .arg("-o")
       .arg(&obj);
     run_success(llc);

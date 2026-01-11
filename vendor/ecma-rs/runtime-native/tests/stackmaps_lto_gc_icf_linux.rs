@@ -1,9 +1,11 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol};
+use object::{Object, ObjectSegment, ObjectSymbol};
+use runtime_native::stackmap_loader;
 use runtime_native::stackmaps::{parse_all_stackmaps, StackMap, StackMaps};
 use runtime_native::statepoint_verify::LLVM_STATEPOINT_PATCHPOINT_ID;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -50,6 +52,15 @@ fn find_clang() -> Option<&'static str> {
   None
 }
 
+fn find_objcopy() -> Option<&'static str> {
+  for cand in ["llvm-objcopy-18", "llvm-objcopy", "objcopy"] {
+    if command_works(cand) {
+      return Some(cand);
+    }
+  }
+  None
+}
+
 fn lld_flag() -> Option<&'static str> {
   // Prefer version-suffixed lld if installed.
   if command_works("ld.lld-18") {
@@ -74,6 +85,45 @@ fn run_ok(mut cmd: Command, what: &str) {
 
 fn write_file(path: &Path, contents: &str) {
   fs::write(path, contents).unwrap();
+}
+
+fn patch_stackmap_section_flags(objcopy: &str, obj_path: &Path, what: &str) {
+  // LTO inputs may be raw LLVM bitcode files (not ELF). lld can link them, but
+  // objcopy cannot patch their section flags. Those stackmaps are generated
+  // during link-time codegen anyway, so skip patching for non-ELF inputs.
+  let mut magic = [0u8; 4];
+  let Ok(mut f) = fs::File::open(obj_path) else {
+    return;
+  };
+  if f.read_exact(&mut magic).is_err() || magic != *b"\x7fELF" {
+    return;
+  }
+
+  // lld's RELRO layout checks assume that sections placed into `.data.rel.ro` are
+  // writable during relocation. LLVM's `.llvm_stackmaps` section is typically
+  // emitted as read-only (`"a"`). If we force it into `.data.rel.ro` via our
+  // linker fragment, lld can error with:
+  //   "section: .dynamic is not contiguous with other relro sections"
+  //
+  // Patch the input section flags so lld treats stackmaps/faultmaps as data.
+  for sec in [
+    ".llvm_stackmaps",
+    ".llvm_faultmaps",
+    ".data.rel.ro.llvm_stackmaps",
+    ".data.rel.ro.llvm_faultmaps",
+  ] {
+    let mut cmd = Command::new(objcopy);
+    if objcopy.contains("llvm-objcopy") {
+      cmd.arg(format!(
+        "--set-section-flags={sec}=alloc,load,contents,data"
+      ));
+    } else {
+      cmd.arg("--set-section-flags")
+        .arg(format!("{sec}=alloc,load,contents,data"));
+    }
+    cmd.arg(obj_path);
+    run_ok(cmd, &format!("patch {what} ({sec})"));
+  }
 }
 
 fn compile_ir(clang: &str, out_dir: &Path, name: &str, ir: &str, lto: LtoMode) -> PathBuf {
@@ -116,6 +166,73 @@ fn compile_c(clang: &str, out_dir: &Path, name: &str, c: &str, lto: LtoMode) -> 
   obj_path
 }
 
+fn materialize_lto_objects(
+  clang: &str,
+  out_dir: &Path,
+  lld_flag: &str,
+  lto: LtoMode,
+  inputs: &[PathBuf],
+) -> Vec<PathBuf> {
+  let lto_flag = lto
+    .clang_flag()
+    .unwrap_or_else(|| panic!("materialize_lto_objects called with {lto:?}"));
+  let stage_out = out_dir.join(format!("materialize{}{}.out", lto.suffix(), lto_flag.replace("=", "_")));
+
+  // Run a regular link with `--save-temps` so lld writes the LTO-generated object
+  // files to disk. We'll patch those objects and then perform the final link
+  // without LTO (so objcopy can operate on the inputs).
+  //
+  // This is necessary because clang's `-flto` inputs may be raw LLVM bitcode
+  // (not ELF). The stackmaps section is generated during LTO codegen, so we
+  // can't pre-patch it in the original bitcode inputs.
+  let mut cmd = Command::new(clang);
+  cmd.arg("-no-pie")
+    .arg(lld_flag)
+    .arg(lto_flag)
+    .arg("-Wl,--save-temps")
+    .arg("-o")
+    .arg(&stage_out);
+  for inp in inputs {
+    cmd.arg(inp);
+  }
+  run_ok(cmd, &format!("materialize {lto:?} objects"));
+  assert!(
+    stage_out.exists(),
+    "expected LTO materialization output to exist: {}",
+    stage_out.display()
+  );
+
+  let mut out = Vec::new();
+  match lto {
+    LtoMode::Thin => {
+      for inp in inputs {
+        let file_name = inp.file_name().expect("input filename");
+        let mut p = stage_out.clone().into_os_string();
+        p.push(".lto.");
+        p.push(file_name);
+        let p = PathBuf::from(p);
+        assert!(
+          p.exists(),
+          "missing ThinLTO object {} (from input {})",
+          p.display(),
+          inp.display()
+        );
+        out.push(p);
+      }
+    }
+    LtoMode::Full => {
+      let mut p = stage_out.clone().into_os_string();
+      p.push(".lto.o");
+      let p = PathBuf::from(p);
+      assert!(p.exists(), "missing FullLTO object {}", p.display());
+      out.push(p);
+    }
+    LtoMode::None => unreachable!("handled above"),
+  }
+
+  out
+}
+
 fn find_symbol<'data>(file: &object::File<'data>, name: &str) -> Option<u64> {
   for sym in file.symbols() {
     if sym.name().ok() == Some(name) {
@@ -138,19 +255,6 @@ fn segment_is_readable(flags: object::SegmentFlags) -> bool {
   }
 }
 
-fn llvm_stackmaps_section(exe: &Path) -> Vec<u8> {
-  let bytes = fs::read(exe).expect("read linked executable");
-  let file = object::File::parse(&*bytes).expect("parse linked executable");
-  let section = file
-    .section_by_name(".data.rel.ro.llvm_stackmaps")
-    .or_else(|| file.section_by_name(".llvm_stackmaps"))
-    .expect("missing stackmaps section (linker GC?)");
-  section
-    .data()
-    .expect("read stackmaps section bytes")
-    .to_vec()
-}
-
 fn callsites_for_stackmap(sm: &StackMap) -> Vec<(u64, u64)> {
   let mut out = Vec::new();
   let mut record_index: usize = 0;
@@ -170,16 +274,21 @@ fn callsites_for_stackmap(sm: &StackMap) -> Vec<(u64, u64)> {
 }
 
 fn validate_exe(exe: &Path, expect_linker_symbols: bool) {
-  // Section present + readable.
   let bytes = fs::read(exe).expect("read linked executable");
   let file = object::File::parse(&*bytes).expect("parse linked executable");
-  let section = file
-    .section_by_name(".data.rel.ro.llvm_stackmaps")
-    .or_else(|| file.section_by_name(".llvm_stackmaps"))
+  let section = stackmap_loader::find_stackmap_section(&bytes)
+    .expect("load stackmaps section")
     .expect("missing stackmaps section (linker GC?)");
-  let section_addr = section.address();
-  let section_size = section.size();
-  assert!(section_size > 0, "expected non-empty stackmaps section");
+  if expect_linker_symbols {
+    assert_eq!(
+      section.source,
+      stackmap_loader::StackMapSectionSource::LinkerSymbols,
+      "expected stackmaps to be discovered via linker symbols when stackmaps.ld is injected"
+    );
+  }
+
+  let stackmaps_bytes = section.bytes.to_vec();
+  assert!(!stackmaps_bytes.is_empty(), "expected non-empty stackmaps section");
 
   if expect_linker_symbols {
     const START_SYM: &str = "__start_llvm_stackmaps";
@@ -204,14 +313,15 @@ fn validate_exe(exe: &Path, expect_linker_symbols: bool) {
     let fastr_end =
       find_symbol(&file, LEGACY_FASTR_END_SYM).expect("missing __fastr_stackmaps_end");
 
-    assert_eq!(
-      start, section_addr,
-      "start symbol must equal the stackmaps section virtual address"
+    assert!(
+      stop > start,
+      "invalid stackmaps symbol range (start=0x{start:x} stop=0x{stop:x})"
     );
+    let expected_len = usize::try_from(stop - start).expect("symbol range length fits usize");
     assert_eq!(
-      stop.checked_sub(start).unwrap(),
-      section_size,
-      "stop-start must equal the stackmaps section size"
+      expected_len,
+      stackmaps_bytes.len(),
+      "linker symbol range length must match extracted stackmaps slice length"
     );
 
     assert_eq!(generic_start, start, "generic start symbol must match");
@@ -224,12 +334,12 @@ fn validate_exe(exe: &Path, expect_linker_symbols: bool) {
     // Ensure the section is backed by a readable load segment so the runtime can
     // read the bytes directly from memory.
     let mut in_readable_segment = false;
-    let section_end = section_addr + section_size;
+    let section_end = stop;
     for seg in file.segments() {
       let seg_addr = seg.address();
       let seg_end = seg_addr + seg.size();
       let flags = seg.flags();
-      if seg_addr <= section_addr && section_end <= seg_end && segment_is_readable(flags) {
+      if seg_addr <= start && section_end <= seg_end && segment_is_readable(flags) {
         in_readable_segment = true;
         break;
       }
@@ -241,10 +351,6 @@ fn validate_exe(exe: &Path, expect_linker_symbols: bool) {
   }
 
   // Parse + validate (this runs statepoint verification in debug builds).
-  let stackmaps_bytes = section
-    .data()
-    .expect("read stackmaps section bytes")
-    .to_vec();
   let blobs = parse_all_stackmaps(&stackmaps_bytes).expect("parse concatenated stackmap blobs");
   assert!(!blobs.is_empty(), "expected at least one stackmap blob");
 
@@ -278,8 +384,10 @@ fn validate_exe(exe: &Path, expect_linker_symbols: bool) {
   }
 
   // Also ensure we can independently load the bytes via the helper.
-  let bytes2 = llvm_stackmaps_section(exe);
-  assert_eq!(bytes2, stackmaps_bytes);
+  let bytes2 = stackmap_loader::find_stackmap_section(&bytes)
+    .expect("load stackmaps section again")
+    .expect("missing stackmaps section on second load");
+  assert_eq!(bytes2.bytes, &stackmaps_bytes[..]);
 }
 
 const MOD_A: &str = r#"
@@ -379,6 +487,7 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
 
   let lld_flag = lld_flag();
   let lld = lld_flag.is_some();
+  let objcopy = if lld { find_objcopy() } else { None };
 
   let cfgs: &[LinkConfig] = &[
     LinkConfig {
@@ -464,6 +573,35 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
   let b_full_o = compile_ir(clang, out_dir, "b", MOD_B, LtoMode::Full);
   let main_full_o = compile_c(clang, out_dir, "main", MAIN_C, LtoMode::Full);
 
+  // lld+LTO: materialize ELF objects so we can patch stackmap section flags.
+  //
+  // Without this, the `-flto` inputs are raw LLVM bitcode. lld generates the
+  // `.llvm_stackmaps` section during codegen, but it is emitted read-only. When
+  // we force it into RELRO via `stackmaps.ld`, lld rejects the link unless the
+  // section is writable.
+  let thin_materialized = if let Some(lld_flag) = lld_flag {
+    Some(materialize_lto_objects(
+      clang,
+      out_dir,
+      lld_flag,
+      LtoMode::Thin,
+      &[main_thin_o.clone(), a_thin_o.clone(), b_thin_o.clone()],
+    ))
+  } else {
+    None
+  };
+  let full_materialized = if let Some(lld_flag) = lld_flag {
+    Some(materialize_lto_objects(
+      clang,
+      out_dir,
+      lld_flag,
+      LtoMode::Full,
+      &[main_full_o.clone(), a_full_o.clone(), b_full_o.clone()],
+    ))
+  } else {
+    None
+  };
+
   let script = Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("link")
     .join("stackmaps.ld");
@@ -485,9 +623,6 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
       }
     }
 
-    if let Some(flag) = cfg.lto.clang_flag() {
-      cmd.arg(flag);
-    }
     if cfg.gc_sections {
       cmd.arg("-Wl,--gc-sections");
     }
@@ -500,17 +635,51 @@ fn stackmaps_survive_lto_gc_sections_and_icf() {
 
     cmd.arg("-o").arg(&exe);
 
+    let mut inputs: Vec<PathBuf> = Vec::new();
     match cfg.lto {
       LtoMode::None => {
-        cmd.arg(&main_o).arg(&a_o).arg(&b_o);
+        inputs.push(main_o.clone());
+        inputs.push(a_o.clone());
+        inputs.push(b_o.clone());
       }
       LtoMode::Thin => {
-        cmd.arg(&main_thin_o).arg(&a_thin_o).arg(&b_thin_o);
+        let Some(mats) = &thin_materialized else {
+          eprintln!("skipping {}: ThinLTO materialization unavailable (lld missing?)", cfg.name);
+          continue;
+        };
+        inputs.extend(mats.iter().cloned());
       }
       LtoMode::Full => {
-        cmd.arg(&main_full_o).arg(&a_full_o).arg(&b_full_o);
+        let Some(mats) = &full_materialized else {
+          eprintln!("skipping {}: FullLTO materialization unavailable (lld missing?)", cfg.name);
+          continue;
+        };
+        inputs.extend(mats.iter().cloned());
       }
     };
+
+    // If we injected the stackmaps linker fragment and are using lld, patch the
+    // input objects so `.llvm_stackmaps` participates in RELRO.
+    if cfg.keep_stackmaps && cmd.get_args().any(|a| a.to_string_lossy().contains("fuse-ld=lld")) {
+      let Some(objcopy) = objcopy else {
+        eprintln!("skipping {}: objcopy not found in PATH (need llvm-objcopy-18/llvm-objcopy/objcopy for lld+stackmaps.ld)", cfg.name);
+        continue;
+      };
+
+      let mut patched: Vec<PathBuf> = Vec::new();
+      for (i, src) in inputs.iter().enumerate() {
+        let file_name = src.file_name().expect("obj filename");
+        let dst = out_dir.join(format!("{}.patched.{i}.{}", cfg.name, file_name.to_string_lossy()));
+        fs::copy(src, &dst).expect("copy input object for patching");
+        patch_stackmap_section_flags(objcopy, &dst, cfg.name);
+        patched.push(dst);
+      }
+      inputs = patched;
+    }
+
+    for obj in &inputs {
+      cmd.arg(obj);
+    }
 
     run_ok(cmd, &format!("link {}", cfg.name));
     assert!(exe.exists(), "missing output executable {}", exe.display());
