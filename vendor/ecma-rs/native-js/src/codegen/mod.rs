@@ -2097,7 +2097,7 @@ fn declare_printf<'ctx>(context: &'ctx Context, module: &Module<'ctx>) -> Functi
     return existing;
   }
   let i32_ty = context.i32_type();
-  let ptr_ty = context.i8_type().ptr_type(AddressSpace::default());
+  let ptr_ty = context.ptr_type(AddressSpace::default());
   module.add_function("printf", i32_ty.fn_type(&[ptr_ty.into()], true), None)
 }
 
