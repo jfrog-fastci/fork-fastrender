@@ -924,21 +924,22 @@ For compiler-generated code that wants to pass GC-managed task contexts, the
 runtime provides *additive* “rooted” variants that explicitly treat `data` as a
 GC object pointer and keep it alive while queued:
 
-- `rt_parallel_spawn_rooted(task, data)`
+- `rt_parallel_spawn_rooted(task, data)` / `rt_parallel_spawn_rooted_h(task, data)`
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until `task` finishes.
-- `rt_queue_microtask_rooted(cb, data)`
+- `rt_queue_microtask_rooted(cb, data)` / `rt_queue_microtask_rooted_h(cb, data)`
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the microtask runs.
-- `rt_promise_then_rooted_legacy(p, on_settle, data)`
+- `rt_promise_then_rooted_legacy(p, on_settle, data)` / `rt_promise_then_rooted_h_legacy(p, on_settle, data)`
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the promise settles and the callback
     runs.
   - When invoking `on_settle`, the runtime passes the *current* pointer (after any relocation).
-- `rt_set_timeout_rooted(cb, data, delay_ms)` / `rt_set_interval_rooted(cb, data, interval_ms)`
+- `rt_set_timeout_rooted(cb, data, delay_ms)` / `rt_set_timeout_rooted_h(cb, data, delay_ms)` /
+  `rt_set_interval_rooted(cb, data, interval_ms)` / `rt_set_interval_rooted_h(cb, data, interval_ms)`
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
   - The runtime registers a strong GC root for `data` until the timer fires or is cleared.
-- `rt_io_register_rooted(fd, interests, cb, data)`
+- `rt_io_register_rooted(fd, interests, cb, data)` / `rt_io_register_rooted_h(fd, interests, cb, data)`
   - `fd` must be set to `O_NONBLOCK` before registration (edge-triggered reactor contract).
   - `interests` must include `RT_IO_READABLE` and/or `RT_IO_WRITABLE` (it must not be 0).
   - `data` must be the base pointer of a GC-managed object (start of `ObjHeader`).
@@ -946,6 +947,10 @@ GC object pointer and keep it alive while queued:
 
 These APIs are additive: the existing unrooted scheduling entrypoints keep their
 original contract (“`data` is opaque; the caller owns the lifetime”).
+
+The `_h` (“handle”) variants take `data` as a `GcHandle` (`uint8_t**`, a pointer to a caller-owned
+root slot). This is preferred under a moving GC: the runtime can reload `*data` after internal lock
+acquisition during registration, ensuring it observes relocations.
 
 ### 6.5 Handle-based scheduling entrypoints (persistent handles)
 For async/OS/thread boundaries, `runtime-native` also exposes “handle-based”
@@ -964,8 +969,8 @@ Entry points:
 - Microtasks:
   - `rt_queue_microtask_handle(cb, data)` / `rt_queue_microtask_handle_with_drop(cb, data, drop_data)`
 - Timers:
-  - `rt_set_timeout_handle(cb, data, delay_ms)` / `rt_set_timeout_handle_with_drop(cb, data, delay_ms, drop_data)`
-  - `rt_set_interval_handle(cb, data, interval_ms)` / `rt_set_interval_handle_with_drop(cb, data, interval_ms, drop_data)`
+  - `rt_set_timeout_handle(cb, data, delay_ms)` / `rt_set_timeout_handle_with_drop(cb, data, drop_data, delay_ms)`
+  - `rt_set_interval_handle(cb, data, interval_ms)` / `rt_set_interval_handle_with_drop(cb, data, drop_data, interval_ms)`
 - I/O watchers:
   - `rt_io_register_handle(fd, interests, cb, data)` / `rt_io_register_handle_with_drop(fd, interests, cb, data, drop_data)`
     - `fd` must be set to `O_NONBLOCK` before registration (edge-triggered reactor contract).
