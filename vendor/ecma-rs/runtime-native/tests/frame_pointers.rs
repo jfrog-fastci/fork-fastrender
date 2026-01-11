@@ -239,6 +239,13 @@ entry:
   ret ptr addrspace(1) %pair.relocated
 }
 
+; Leaf function: without `--frame-pointer=all`, LLVM is free to omit the frame pointer chain.
+define i64 @managed_fp_leaf(i64 %x) {
+entry:
+  %y = add i64 %x, 1
+  ret i64 %y
+}
+
 declare token @llvm.experimental.gc.statepoint.p0(i64 immarg, i32 immarg, ptr, i32 immarg, i32 immarg, ...)
 declare ptr addrspace(1) @llvm.experimental.gc.result.p1(token) #0
 declare ptr addrspace(1) @llvm.experimental.gc.relocate.p1(token, i32 immarg, i32 immarg) #0
@@ -260,4 +267,5 @@ attributes #0 = { nocallback nofree nosync nounwind willreturn memory(none) }
 
   let disasm = disassemble(&obj_path);
   assert_has_fp_prologue(&disasm, "managed_fp_test");
+  assert_has_fp_prologue(&disasm, "managed_fp_leaf");
 }
