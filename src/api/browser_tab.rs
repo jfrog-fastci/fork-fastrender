@@ -39,6 +39,9 @@ use url::Url;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason};
 
+const MODULE_GRAPH_FETCH_UNSUPPORTED_MESSAGE: &str =
+  "module graph fetching is not supported by this BrowserTabJsExecutor";
+
 pub trait BrowserTabJsExecutor {
   fn execute_classic_script(
     &mut self,
@@ -79,7 +82,7 @@ pub trait BrowserTabJsExecutor {
     _event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<()> {
     Err(Error::Other(
-      "module graph fetching is not supported by this BrowserTabJsExecutor".to_string(),
+      MODULE_GRAPH_FETCH_UNSUPPORTED_MESSAGE.to_string(),
     ))
   }
 
@@ -2405,8 +2408,7 @@ impl BrowserTabHost {
           // request destination classification).
           let prefetch_unsupported = matches!(
             &err,
-            Error::Other(message)
-              if message == "module graph fetching is not supported by this BrowserTabJsExecutor"
+            Error::Other(message) if message == MODULE_GRAPH_FETCH_UNSUPPORTED_MESSAGE
           );
           if prefetch_unsupported {
             let source_text = if spec.src_attr_present {
