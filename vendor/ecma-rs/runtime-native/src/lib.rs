@@ -601,6 +601,8 @@ mod tests {
       "bool rt_async_poll(void);",
       "void rt_async_wait(void);",
       "void rt_async_set_strict_await_yields(bool strict);",
+      "bool rt_async_run_until_idle(void);",
+      "void rt_async_block_on(PromiseRef p);",
       "LegacyPromiseRef rt_promise_new_legacy(void);",
       "void rt_promise_resolve_legacy(LegacyPromiseRef p, ValueRef value);",
       "void rt_promise_reject_legacy(LegacyPromiseRef p, ValueRef err);",
@@ -679,6 +681,8 @@ mod tests {
     let _async_poll: extern "C" fn() -> bool = rt_async_poll;
     let _async_wait: extern "C" fn() = rt_async_wait;
     let _async_set_strict_await_yields: extern "C" fn(bool) = rt_async_set_strict_await_yields;
+    let _async_run_until_idle: unsafe extern "C" fn() -> bool = rt_async_run_until_idle_abi;
+    let _async_block_on: unsafe extern "C" fn(PromiseRef) = rt_async_block_on;
     let _promise_new_legacy: extern "C" fn() -> abi::PromiseRef = rt_promise_new_legacy;
     let _promise_resolve_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_resolve_legacy;
     let _promise_reject_legacy: extern "C" fn(abi::PromiseRef, abi::ValueRef) = rt_promise_reject_legacy;
@@ -744,6 +748,8 @@ mod tests {
       _async_poll,
       _async_wait,
       _async_set_strict_await_yields,
+      _async_run_until_idle,
+      _async_block_on,
       _promise_new_legacy,
       _promise_resolve_legacy,
       _promise_reject_legacy,

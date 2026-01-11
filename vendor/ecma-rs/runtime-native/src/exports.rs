@@ -14,6 +14,7 @@ use crate::array::RtArrayHeader;
 use crate::async_rt;
 use crate::async_rt::WatcherId;
 use crate::ffi::abort_on_panic;
+use crate::async_rt::promise::PromiseOutcome;
 use crate::gc::ObjHeader;
 use crate::gc::TypeDescriptor;
 use crate::gc::WeakHandle;
@@ -951,6 +952,46 @@ pub extern "C" fn rt_async_wait() {
     let _ = crate::rt_ensure_init();
     ensure_event_loop_thread_registered();
     async_rt::wait_for_work();
+  })
+}
+
+/// Drive the executor until there is no immediately-ready work remaining (microtask checkpoint).
+///
+/// Returns `true` if any work was executed, `false` if the runtime was already idle.
+#[export_name = "rt_async_run_until_idle"]
+pub unsafe extern "C" fn rt_async_run_until_idle_abi() -> bool {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+    crate::async_runtime::rt_async_run_until_idle()
+  })
+}
+
+/// Block the current thread until `p` is settled.
+///
+/// This is a convenience helper for generated programs (and embedders) to drive the runtime
+/// without re-implementing the poll/wait loop.
+#[no_mangle]
+pub unsafe extern "C" fn rt_async_block_on(p: PromiseRef) {
+  abort_on_panic(|| {
+    let _ = crate::rt_ensure_init();
+    ensure_event_loop_thread_registered();
+
+    // Fast path: already settled (or null).
+    if !matches!(async_rt::promise::promise_outcome(p), PromiseOutcome::Pending) {
+      return;
+    }
+
+    loop {
+      let _ = crate::async_runtime::rt_async_run_until_idle();
+
+      if !matches!(async_rt::promise::promise_outcome(p), PromiseOutcome::Pending) {
+        return;
+      }
+
+      // No ready work; park until something wakes the runtime.
+      async_rt::wait_for_work();
+    }
   })
 }
 

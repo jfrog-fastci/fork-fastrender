@@ -479,6 +479,13 @@ void rt_async_wait(void);
 // Default is false.
 void rt_async_set_strict_await_yields(bool strict);
 
+// Drive the async runtime until there is no immediately-ready work remaining (microtask checkpoint).
+// Returns true if any work was executed, false if already idle.
+bool rt_async_run_until_idle(void);
+
+// Block the current thread until the promise is settled.
+void rt_async_block_on(PromiseRef p);
+
 // -----------------------------------------------------------------------------
 // Legacy promise/coroutine ABI (temporary; will be removed once codegen migrates)
 // -----------------------------------------------------------------------------

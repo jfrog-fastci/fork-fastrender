@@ -38,6 +38,16 @@ impl Drop for ParkedGuard {
   }
 }
 
+/// Maximum number of microtasks allowed to run in a single microtask checkpoint.
+///
+/// This prevents pathological promise chains from livelocking the event loop forever. The limit is
+/// intentionally large so normal workloads are unaffected.
+const MAX_MICROTASKS_PER_CHECKPOINT: usize = 1_000_000;
+
+/// Maximum number of event-loop turns that `run_until_idle` will execute before treating the
+/// runtime as runaway.
+const MAX_RUN_UNTIL_IDLE_TURNS: usize = 1_000_000;
+
 impl EventLoop {
   pub fn new() -> std::io::Result<Self> {
     Ok(Self {
@@ -147,6 +157,7 @@ impl EventLoop {
   fn drain_microtasks_inner(&self) -> bool {
     let mut did_work = false;
     let mut batch: VecDeque<Task> = VecDeque::new();
+    let mut ran = 0usize;
     loop {
       {
         let mut q = self.microtasks.lock().unwrap();
@@ -158,6 +169,13 @@ impl EventLoop {
       while let Some(task) = batch.pop_front() {
         did_work = true;
         threading::safepoint_poll();
+        ran += 1;
+        if ran > MAX_MICROTASKS_PER_CHECKPOINT {
+          eprintln!(
+            "runtime-native: runaway microtask queue (>{MAX_MICROTASKS_PER_CHECKPOINT} microtasks in one checkpoint)"
+          );
+          std::process::abort();
+        }
         task.run();
       }
     }
@@ -173,11 +191,19 @@ impl EventLoop {
     let _guard = self.poll_lock.lock();
 
     let mut did_work = false;
+    let mut turns = 0usize;
     loop {
       threading::safepoint_poll();
       self.flush_due_timers();
 
       if let Some(task) = self.pop_macrotask() {
+        turns += 1;
+        if turns > MAX_RUN_UNTIL_IDLE_TURNS {
+          eprintln!(
+            "runtime-native: runaway async runtime (>{MAX_RUN_UNTIL_IDLE_TURNS} turns without becoming idle)"
+          );
+          std::process::abort();
+        }
         did_work = true;
         threading::safepoint_poll();
         task.run();
@@ -186,6 +212,13 @@ impl EventLoop {
       }
 
       if self.has_microtasks() {
+        turns += 1;
+        if turns > MAX_RUN_UNTIL_IDLE_TURNS {
+          eprintln!(
+            "runtime-native: runaway async runtime (>{MAX_RUN_UNTIL_IDLE_TURNS} turns without becoming idle)"
+          );
+          std::process::abort();
+        }
         did_work |= self.drain_microtasks_inner();
         continue;
       }

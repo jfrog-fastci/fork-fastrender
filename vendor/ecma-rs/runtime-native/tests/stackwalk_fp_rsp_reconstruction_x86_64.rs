@@ -26,6 +26,7 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   // Fake stack memory (addresses increase upward; stack grows downward).
   let mut stack = vec![0u8; 256];
   let base = stack.as_mut_ptr() as usize;
+  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
 
   // Layout a single managed frame with:
   //   [fp + 0]  = saved previous fp
@@ -56,7 +57,6 @@ fn rsp_is_reconstructed_from_fp_and_stack_size_for_rsp_based_locations() {
   }
 
   let mut visited: Vec<usize> = Vec::new();
-  let bounds = StackBounds::new(base as u64, (base + stack.len()) as u64).unwrap();
   unsafe {
     walk_gc_roots_from_fp(start_fp as u64, Some(bounds), &stackmaps, |slot| {
       visited.push(slot as usize);
