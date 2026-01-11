@@ -1220,15 +1220,6 @@ pub(super) fn emit_llvm_module(
 
   let mut cg = Codegen::new(opts);
 
-  if ast
-    .stx
-    .body
-    .iter()
-    .any(|stmt| matches!(stmt.stx.as_ref(), Stmt::Import(_)))
-  {
-    return Err(CodegenError::UnsupportedStmt);
-  }
-
   cg.collect_function_signatures(ast)?;
   cg.compile_function_decls(ast)?;
 

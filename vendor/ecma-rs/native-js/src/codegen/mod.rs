@@ -262,8 +262,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
 
     let main_def = entrypoint.main_def;
     let main_sig = ts_function_sig_kind(self.program, main_def, entry_file, 0, true)?;
-    let main_ret_kind = main_sig.ret;
-    let allow_void_main_return = main_ret_kind == TsAbiKind::Void;
+    let allow_void_main_return = main_sig.ret == TsAbiKind::Void;
 
     let files = self.runtime_files(entry_file);
     self.collect_exported_defs(&files);
@@ -326,7 +325,7 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
     }
 
     // Build C entrypoint wrapper that runs module initializers and then calls TS main.
-    self.build_c_main(main_fn, main_ret_kind, &init_order);
+    self.build_c_main(main_fn, &init_order);
 
     Ok(())
   }
@@ -579,7 +578,6 @@ impl<'ctx, 'p> ProgramCodegen<'ctx, 'p> {
   fn build_c_main(
     &mut self,
     ts_main: FunctionValue<'ctx>,
-    _main_ret_kind: TsAbiKind,
     init_order: &[FileId],
   ) {
     // Define `main` with no parameters (`int main(void)`), since our generated
