@@ -27,6 +27,12 @@ pub const RT_NATIVE_ABI_VERSION: u32 = 0;
 pub const RT_PTR_SIZE_BYTES: usize = 8;
 pub const RT_PTR_ALIGN_BYTES: usize = 8;
 
+// Thread kind constants (match `runtime-native/include/runtime_native.h`).
+pub const RT_THREAD_KIND_MAIN: u32 = 0;
+pub const RT_THREAD_KIND_WORKER: u32 = 1;
+pub const RT_THREAD_KIND_IO: u32 = 2;
+pub const RT_THREAD_KIND_EXTERNAL: u32 = 3;
+
 /// Raw pointer to a GC-managed object.
 pub type GcPtr = *mut u8;
 
@@ -159,6 +165,13 @@ pub type RtTaskFn = extern "C" fn(*mut u8);
 pub type RtParallelForBodyFn = extern "C" fn(usize, *mut u8);
 
 extern "C" {
+  // Thread registration / state
+  pub fn rt_thread_init(kind: u32);
+  pub fn rt_thread_deinit();
+  pub fn rt_thread_register(kind: u32) -> u64;
+  pub fn rt_thread_unregister();
+  pub fn rt_thread_set_parked(parked: bool);
+
   // Memory
   pub fn rt_alloc(size: usize, shape: RtShapeId) -> *mut u8;
   pub fn rt_alloc_pinned(size: usize, shape: RtShapeId) -> *mut u8;
@@ -181,6 +194,7 @@ extern "C" {
   // Strings
   pub fn rt_string_concat(a: *const u8, a_len: usize, b: *const u8, b_len: usize) -> StringRef;
   pub fn rt_string_intern(s: *const u8, len: usize) -> InternedId;
+  pub fn rt_string_pin_interned(id: InternedId);
 
   // Parallel
   pub fn rt_parallel_spawn(task: RtTaskFn, data: *mut u8) -> TaskId;
@@ -239,6 +253,16 @@ mod tests {
     let header = std::fs::read_to_string(&header_path)
       .unwrap_or_else(|err| panic!("failed to read {}: {err}", header_path.display()));
 
+    // Thread kind constants.
+    for c in [
+      "RT_THREAD_KIND_MAIN",
+      "RT_THREAD_KIND_WORKER",
+      "RT_THREAD_KIND_IO",
+      "RT_THREAD_KIND_EXTERNAL",
+    ] {
+      assert!(header.contains(c), "missing constant `{c}` in generated header");
+    }
+
     // Types.
     assert!(
       header.contains("typedef struct StringRef") || header.contains("typedef struct StringRef {"),
@@ -254,6 +278,11 @@ mod tests {
 
     // Functions (key entrypoints).
     for func in [
+      "rt_thread_init(",
+      "rt_thread_deinit(",
+      "rt_thread_register(",
+      "rt_thread_unregister(",
+      "rt_thread_set_parked(",
       "rt_alloc(",
       "rt_alloc_pinned(",
       "rt_alloc_array(",
@@ -268,6 +297,7 @@ mod tests {
       "rt_gc_collect(",
       "rt_string_concat(",
       "rt_string_intern(",
+      "rt_string_pin_interned(",
       "rt_parallel_spawn(",
       "rt_parallel_join(",
       "rt_parallel_for(",

@@ -6,6 +6,10 @@ documentation = true
 [export]
 # Keep the header focused: only the ABI surface (types + exported runtime entrypoints).
 include = [
+  "RT_THREAD_KIND_MAIN",
+  "RT_THREAD_KIND_WORKER",
+  "RT_THREAD_KIND_IO",
+  "RT_THREAD_KIND_EXTERNAL",
   "RtShapeId",
   "RtShapeDescriptor",
   "GcPtr",
@@ -17,6 +21,11 @@ include = [
   "Coroutine",
   "RtTaskFn",
   "RtParallelForBodyFn",
+  "rt_thread_init",
+  "rt_thread_deinit",
+  "rt_thread_register",
+  "rt_thread_unregister",
+  "rt_thread_set_parked",
   "rt_alloc",
   "rt_alloc_pinned",
   "rt_alloc_array",
@@ -31,6 +40,7 @@ include = [
   "rt_gc_collect",
   "rt_string_concat",
   "rt_string_intern",
+  "rt_string_pin_interned",
   "rt_parallel_spawn",
   "rt_parallel_join",
   "rt_parallel_for",
