@@ -44,13 +44,15 @@ fn compile_obj(clang: &str, out_dir: &Path) -> PathBuf {
   // output section does not exist.
   let asm = r#"
  .text
- .globl f
- f:
-   ret
-
+  .globl _start
+  _start:
+   mov $60, %rax
+   xor %rdi, %rdi
+   syscall
+ 
  .section .llvm_stackmaps,"a",@progbits
    .byte 1,2,3,4
-
+ 
  .section .note.GNU-stack,"",@progbits
  "#;
 
@@ -130,14 +132,14 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
     .join("stackmaps.ld");
 
   // Link a minimal PIE executable (no stdlib/CRT) using our linker script
-  // fragment. The lld-oriented stackmaps fragment anchors at `.dynamic`, but
+  // fragment. `link/stackmaps.ld` is applied via `INSERT BEFORE .dynamic;`, but
   // non-PIE `-nostdlib` links can omit `.dynamic` entirely, so we ensure the
   // anchor is present by linking as PIE.
   let status = Command::new(clang)
     .arg("-nostdlib")
     .arg(lld_flag)
     .arg("-pie")
-    .arg("-Wl,-e,f")
+    .arg("-Wl,-e,_start")
     // Ensure `.llvm_stackmaps` is still retained under dead-section elimination.
     // The linker script fragment uses `KEEP(*(.llvm_stackmaps ...))` to prevent
     // GC from discarding the section even if it's otherwise unreferenced.
@@ -152,6 +154,12 @@ fn stackmaps_ld_fragment_links_without_rodata_and_exports_symbols() {
 
   let bytes = fs::read(&exe).unwrap();
   let file = object::File::parse(&*bytes).unwrap();
+
+  // Regression guard: we link as PIE to ensure `.dynamic` exists, because
+  // `link/stackmaps.ld` uses `INSERT BEFORE .dynamic`.
+  file
+    .section_by_name(".dynamic")
+    .expect("missing .dynamic section (link output must be PIE/DSO)");
 
   // lld does not reliably accept custom `.data.rel.ro.*` output sections in the
   // RELRO region; `link/stackmaps.ld` therefore places stackmaps inside the
@@ -296,13 +304,12 @@ fn stackmaps_nopie_ld_fragment_links_without_rodata_and_exports_symbols() {
     .join("stackmaps_nopie.ld");
 
   // Link a minimal non-PIE executable (no stdlib/CRT) using the non-PIE stackmaps
-  // script fragment. We set the entrypoint to our `f` symbol since we never run
-  // the binary; we only inspect its sections/symbols.
+  // script fragment.
   let status = Command::new(clang)
     .arg("-nostdlib")
     .arg(lld_flag)
     .arg("-no-pie")
-    .arg("-Wl,-e,f")
+    .arg("-Wl,-e,_start")
     // Ensure `.llvm_stackmaps` is still retained under dead-section elimination.
     // The linker script fragment uses `KEEP(*(.llvm_stackmaps ...))` to prevent
     // GC from discarding the section even if it's otherwise unreferenced.
