@@ -311,6 +311,88 @@ impl IoOp {
     })
   }
 
+  /// Pins multiple ranges for a single read-like vectored I/O operation.
+  ///
+  /// This is intended for ops where the kernel may write into user-provided buffers (`read(2)`,
+  /// `recv(2)`, ...). It acquires an exclusive write borrow on each referenced backing store for the
+  /// lifetime of the op.
+  pub fn pin_vectored_for_read(
+    limiter: &Arc<IoLimiter>,
+    bufs: Vec<(BackingStore, Range<usize>)>,
+  ) -> Result<Self, IoLimitError> {
+    // Validate ranges and compute total bytes up-front so error paths don't affect counters.
+    let mut total_pinned_bytes: usize = 0;
+    let mut seen_store_ids: HashSet<usize> = HashSet::with_capacity(bufs.len());
+    for (store, range) in bufs.iter() {
+      if range.start > range.end || range.end > store.byte_len() {
+        return Err(IoLimitError::InvalidRange);
+      }
+
+      if seen_store_ids.insert(store.id()) {
+        total_pinned_bytes = total_pinned_bytes
+          .checked_add(store.alloc_len())
+          .ok_or(IoLimitError::LimitExceeded("max pinned bytes"))?;
+      }
+    }
+
+    let permit = limiter.try_acquire(total_pinned_bytes)?;
+
+    // Acquire exclusive borrows for each unique backing store in a deterministic order.
+    let mut borrow_order: Vec<BackingStore> = Vec::with_capacity(seen_store_ids.len());
+    let mut seen_for_borrow: HashSet<usize> = HashSet::with_capacity(seen_store_ids.len());
+    for (store, _) in bufs.iter() {
+      if seen_for_borrow.insert(store.id()) {
+        borrow_order.push(store.clone());
+      }
+    }
+    borrow_order.sort_by_key(|s| s.id());
+
+    let mut borrows: Vec<BorrowGuardWrite> = Vec::with_capacity(borrow_order.len());
+    for store in borrow_order {
+      let guard = store.try_borrow_io_write().map_err(|err| match err {
+        BorrowError::Borrowed => IoLimitError::BufferBorrowed,
+        BorrowError::ReadBorrowOverflow => IoLimitError::LimitExceeded("max read borrows"),
+        BorrowError::NotUnique => IoLimitError::BufferBorrowed,
+      })?;
+      borrows.push(guard);
+    }
+
+    let mut io_bufs: Vec<IoBuf> = Vec::with_capacity(bufs.len());
+    let mut pinned: Vec<PinnedBackingStore> = Vec::with_capacity(seen_store_ids.len());
+    let mut pinned_index: HashMap<usize, usize> = HashMap::with_capacity(seen_store_ids.len());
+
+    for (store, _) in bufs.iter() {
+      let id = store.id();
+      if pinned_index.contains_key(&id) {
+        continue;
+      }
+      pinned_index.insert(id, pinned.len());
+      pinned.push(store.pin_guard());
+    }
+
+    for (store, range) in bufs {
+      let id = store.id();
+      let idx = *pinned_index.get(&id).expect("store pinned above");
+
+      let base = pinned[idx].as_ptr();
+      // SAFETY: bounds checked above.
+      let ptr = unsafe { base.add(range.start) } as *const u8;
+      let len = range.end - range.start;
+      io_bufs.push(IoBuf { ptr, len });
+    }
+
+    Ok(Self {
+      bufs: io_bufs,
+      _pinned: pinned,
+      _borrows_read: Vec::new(),
+      _borrows_write: borrows,
+      pinned_iovecs: None,
+      #[cfg(unix)]
+      pinned_msghdr: None,
+      _permit: permit,
+    })
+  }
+
   /// Pins a list of backing-store rooted buffers described by a [`PinnedIoVec`].
   ///
   /// This is useful for operations that work with JS `ArrayBuffer`/`TypedArray` backing stores: the
@@ -638,6 +720,74 @@ mod tests {
     assert_eq!(counters.pinned_bytes_current, 0);
     assert_eq!(counters.inflight_ops_current, 0);
 
+    assert_eq!(buf.pin_count(), 0);
+  }
+
+  #[test]
+  fn pin_vectored_for_read_dedupes_backing_store_for_limiter_and_pins_once() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf = ArrayBuffer::new_zeroed_in(&alloc, 16).unwrap();
+    let store = buf.backing_store_handle().unwrap();
+    let alloc_len = store.alloc_len();
+
+    let limiter = limiter_with_max_bytes(1024);
+
+    assert_eq!(buf.pin_count(), 0);
+    assert!(!store.is_io_borrowed());
+
+    let op = IoOp::pin_vectored_for_read(
+      &limiter,
+      vec![(store.clone(), 0..1), (store.clone(), 1..2)],
+    )
+    .unwrap();
+
+    assert_eq!(op.bufs().len(), 2);
+    assert_eq!(buf.pin_count(), 1, "IoOp should pin each unique store once");
+    assert!(store.is_io_borrowed(), "IoOp must hold I/O borrows until dropped");
+
+    let counters = limiter.counters();
+    assert_eq!(counters.pinned_bytes_current, alloc_len);
+    assert_eq!(counters.inflight_ops_current, 1);
+
+    // Safe access should be blocked while the op is in flight.
+    assert_eq!(
+      buf.data_ptr().unwrap_err(),
+      ArrayBufferError::Borrow(BorrowError::Borrowed)
+    );
+
+    drop(op);
+
+    let counters = limiter.counters();
+    assert_eq!(counters.pinned_bytes_current, 0);
+    assert_eq!(counters.inflight_ops_current, 0);
+    assert_eq!(buf.pin_count(), 0);
+    assert!(!store.is_io_borrowed());
+    assert!(buf.data_ptr().is_ok());
+  }
+
+  #[test]
+  fn pin_vectored_for_read_rolls_back_permit_when_borrow_fails() {
+    let alloc = GlobalBackingStoreAllocator::default();
+    let buf = ArrayBuffer::new_zeroed_in(&alloc, 16).unwrap();
+    let store = buf.backing_store_handle().unwrap();
+
+    let limiter = limiter_with_max_bytes(1024);
+
+    // Hold a shared read borrow; this should block the write borrow IoOp tries to take.
+    let _read = store.try_borrow_io_read().unwrap();
+    assert!(store.is_io_borrowed());
+
+    assert_eq!(
+      IoOp::pin_vectored_for_read(&limiter, vec![(store.clone(), 0..1)]).unwrap_err(),
+      IoLimitError::BufferBorrowed
+    );
+
+    // Permit must have been dropped on the error path (no leaked accounting).
+    let counters = limiter.counters();
+    assert_eq!(counters.pinned_bytes_current, 0);
+    assert_eq!(counters.inflight_ops_current, 0);
+
+    // The store should not have been pinned (borrow acquisition happens before pinning).
     assert_eq!(buf.pin_count(), 0);
   }
 }
