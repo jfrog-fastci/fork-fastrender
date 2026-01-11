@@ -163,16 +163,16 @@ All other statements/expressions/operators currently fail compilation with a
 simple error (e.g. `unsupported statement`, `unsupported expression`, or
 `unsupported operator: ...`).
 
-## Diagnostics / errors
+## Diagnostics / errors (`native-js-cli`)
 
-Errors are printed to stderr using the `Display` formatting of `native-js` error
-types:
+The minimal `native-js-cli` binary prints errors to stderr using the `Display`
+formatting of `native-js` error types:
 
 - parse errors come from `parse-js` (syntax errors)
 - codegen failures come from `native-js::codegen` (`unsupported statement`, etc)
 
-The CLI does not currently render source-context diagnostics (file/line caret
-spans). For source-level debugging, consider using `parse-js-cli` or
+This binary does not currently render source-context diagnostics (file/line
+caret spans). For source-level debugging, consider using `parse-js-cli` or
 `typecheck-ts-cli`.
 
 Exit codes:
@@ -189,6 +189,14 @@ The `native-js-cli` binary currently takes a single input file and does not load
 For a typechecked pipeline with module resolution (including `baseUrl`/`paths`),
 use the `native-js` binary.
 
+Example:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  --project path/to/tsconfig.json \
+  build path/to/entry.ts -o /tmp/out
+```
+
 ## `native-js` (typechecked AOT pipeline)
 
 The `native-js` binary is an early proof-of-concept for a typechecked AOT path.
@@ -201,6 +209,22 @@ Build a TypeScript file into a native executable:
 ```bash
 # From the repo root:
 bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  build path/to/entry.ts -o /tmp/out
+```
+
+Also emit LLVM IR (for debugging):
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  --emit llvm-ir --emit-path /tmp/out.ll \
+  build path/to/entry.ts -o /tmp/out
+```
+
+Also emit the intermediate object file:
+
+```bash
+bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -- \
+  --emit obj --emit-path /tmp/out.o \
   build path/to/entry.ts -o /tmp/out
 ```
 
@@ -217,6 +241,15 @@ bash vendor/ecma-rs/scripts/cargo_llvm.sh run -p native-js-cli --bin native-js -
   for module resolution.
 - `--emit=llvm-ir|bc|obj|asm --emit-path <PATH>`: write an intermediate artifact.
 - `--opt=0|1|2|3`: set the LLVM target machine optimization level.
+
+### Diagnostics
+
+Unlike the minimal `native-js-cli` binary, the typechecked `native-js` pipeline
+renders source-context diagnostics (file/line caret spans) from:
+
+- `typecheck-ts` (TypeScript type errors)
+- `native-js` strict validation (`NJS####` codes)
+- `native-js` HIR-based code generation (when it fails)
 
 ### Notes
 
