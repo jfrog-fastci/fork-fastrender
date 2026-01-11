@@ -4,6 +4,7 @@ use crate::async_rt::Interest;
 use crate::async_rt::Task;
 use crate::async_rt::TimerId;
 use crate::async_rt::WatcherId;
+use crate::threading;
 use std::collections::VecDeque;
 use std::io;
 use std::os::fd::RawFd;
@@ -119,6 +120,7 @@ impl EventLoop {
         q.drain(..).collect()
       };
       for task in tasks {
+        threading::safepoint_poll();
         task.run();
       }
     }
@@ -163,11 +165,13 @@ impl EventLoop {
     let _guard = self.poll_lock.lock().unwrap();
 
     loop {
+      threading::safepoint_poll();
       // 1. Promote due timers into the macrotask queue.
       self.flush_due_timers();
 
       // 2. Execute at most one macrotask (if any).
       if let Some(task) = self.pop_macrotask() {
+        threading::safepoint_poll();
         task.run();
 
         // 3. Microtask checkpoint.
@@ -194,9 +198,15 @@ impl EventLoop {
       let ready = if timeout_ms == 0 {
         self.reactor.wait(timeout_ms).expect("epoll_wait failed")
       } else {
-        crate::threading::set_parked(true);
-        let _unpark = UnparkOnDrop;
-        self.reactor.wait(timeout_ms).expect("epoll_wait failed")
+        threading::set_parked(true);
+        let unpark = UnparkOnDrop;
+        // If a GC is already requested, don't enter a blocking syscall while marked as parked.
+        threading::safepoint_poll();
+        let ready = self.reactor.wait(timeout_ms).expect("epoll_wait failed");
+        // If a GC request arrived while we were blocked, stop before executing any callbacks.
+        threading::safepoint_poll();
+        drop(unpark);
+        ready
       };
       if !ready.is_empty() {
         self.macrotasks.lock().unwrap().extend(ready);
