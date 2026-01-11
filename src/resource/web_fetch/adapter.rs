@@ -2739,6 +2739,283 @@ mod tests {
   }
 
   #[test]
+  fn cors_preflight_not_sent_for_simple_get_with_safelisted_header() {
+    if skip_if_curl_backend_missing("cors_preflight_not_sent_for_simple_get_with_safelisted_header") {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_not_sent_for_simple_get_with_safelisted_header")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      captured_req.lock().unwrap().push(headers);
+      let body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+      drop(stream);
+
+      // Ensure no preflight request arrives (only a single GET should be sent).
+      listener.set_nonblocking(true).unwrap();
+      let start = Instant::now();
+      while start.elapsed() < Duration::from_millis(200) {
+        match listener.accept() {
+          Ok(_) => panic!("unexpected second request (preflight should not be sent)"),
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept after request: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/simple");
+    let mut request = Request::new("GET", &url);
+    request.set_mode(RequestMode::Cors);
+    // `Accept` is CORS-safelisted when it contains only safe bytes.
+    request.headers.append("Accept", "text/plain").unwrap();
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle.join().unwrap();
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1, "expected one request, got {captured:?}");
+    let req = captured[0].to_ascii_lowercase();
+    assert!(
+      req.starts_with("get /simple"),
+      "expected GET request line, got:\n{req}"
+    );
+  }
+
+  #[test]
+  fn cors_preflight_rejects_redirect_and_does_not_send_actual_request() {
+    if skip_if_curl_backend_missing("cors_preflight_rejects_redirect_and_does_not_send_actual_request") {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_rejects_redirect_and_does_not_send_actual_request")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let req = headers.to_ascii_lowercase();
+      assert!(
+        req.starts_with("options /redir"),
+        "expected preflight OPTIONS request line, got:\n{req}"
+      );
+      let response = "HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Ensure no follow-up request arrives (no redirect-follow, no actual request).
+      listener.set_nonblocking(true).unwrap();
+      let start = Instant::now();
+      while start.elapsed() < Duration::from_millis(200) {
+        match listener.accept() {
+          Ok(_) => panic!("unexpected follow-up request after preflight redirect"),
+          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept after redirect: {err}"),
+        }
+      }
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/redir");
+    let mut request = Request::new("PUT", &url);
+    request.set_mode(RequestMode::Cors);
+    // Add a non-safelisted header so the request is definitely non-simple.
+    request.headers.append("X-Test", "1").unwrap();
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let err =
+      execute_web_fetch(&fetcher, &request, ctx).expect_err("expected preflight redirect error");
+    let message = err.to_string().to_ascii_lowercase();
+    assert!(
+      message.contains("preflight") && message.contains("redirect"),
+      "unexpected error: {err}"
+    );
+
+    handle.join().unwrap();
+  }
+
+  #[test]
+  fn cors_preflight_access_control_request_headers_is_sorted_and_deduped() {
+    if skip_if_curl_backend_missing(
+      "cors_preflight_access_control_request_headers_is_sorted_and_deduped",
+    ) {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_access_control_request_headers_is_sorted_and_deduped")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      // Preflight request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      *captured_req.lock().unwrap() = headers;
+      let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: http://client.example\r\nAccess-Control-Allow-Methods: PUT\r\nAccess-Control-Allow-Headers: x-a, x-b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let req = headers.to_ascii_lowercase();
+      assert!(
+        req.starts_with("put /hdrs"),
+        "expected PUT request line, got:\n{req}"
+      );
+      let body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/hdrs");
+    let mut request = Request::new("PUT", &url);
+    request.set_mode(RequestMode::Cors);
+    // Add two unsafe headers out of order (and a duplicate) so the preflight request must sort and
+    // de-duplicate the Access-Control-Request-Headers list.
+    request.headers.append("X-B", "1").unwrap();
+    request.headers.append("X-A", "2").unwrap();
+    request.headers.append("X-A", "3").unwrap();
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle.join().unwrap();
+
+    let preflight = captured.lock().unwrap().to_ascii_lowercase();
+    let mut lines = preflight
+      .lines()
+      .map(|line| line.trim_end_matches('\r'))
+      .filter(|line| line.starts_with("access-control-request-headers:"))
+      .collect::<Vec<_>>();
+    assert_eq!(
+      lines.len(),
+      1,
+      "expected exactly one Access-Control-Request-Headers header, got:\n{preflight}"
+    );
+    assert_eq!(lines.pop().unwrap(), "access-control-request-headers: x-a, x-b");
+  }
+
+  #[test]
+  fn cors_preflight_omits_access_control_request_headers_when_empty() {
+    if skip_if_curl_backend_missing("cors_preflight_omits_access_control_request_headers_when_empty") {
+      return;
+    }
+    let Some(listener) =
+      try_bind_localhost("cors_preflight_omits_access_control_request_headers_when_empty")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      // Preflight request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      *captured_req.lock().unwrap() = headers;
+      let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: http://client.example\r\nAccess-Control-Allow-Methods: PUT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      stream.write_all(response.as_bytes()).unwrap();
+      drop(stream);
+
+      // Actual request.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let (headers, _body) = read_http_request(&mut stream);
+      let req = headers.to_ascii_lowercase();
+      assert!(
+        req.starts_with("put /methodonly"),
+        "expected PUT request line, got:\n{req}"
+      );
+      let body = b"ok";
+      let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: http://client.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(response.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = test_http_fetcher();
+    let url = format!("http://{addr}/methodonly");
+    let mut request = Request::new("PUT", &url);
+    request.set_mode(RequestMode::Cors);
+    let origin = origin_from_url("http://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.as_mut().unwrap().consume_bytes().unwrap(), b"ok");
+
+    handle.join().unwrap();
+    let preflight = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      !preflight.contains("access-control-request-headers:"),
+      "unexpected Access-Control-Request-Headers in preflight request:\n{preflight}"
+    );
+  }
+
+  #[test]
   fn redirect_follow_follows() {
     if skip_if_curl_backend_missing("redirect_follow_follows") {
       return;

@@ -4192,16 +4192,29 @@ fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
 
 fn cors_unsafe_request_header_names(headers: &[(String, String)]) -> Vec<String> {
   // https://fetch.spec.whatwg.org/#cors-unsafe-request-header-names
+  // Combine duplicate header names before checking safelist semantics. This matches how the Fetch
+  // `Headers` API exposes values (comma+space concatenation) and ensures size/byte checks are
+  // applied to the effective value.
+  let mut combined_values: HashMap<String, String> = HashMap::new();
+  for (name, value) in headers {
+    let name = name.to_ascii_lowercase();
+    if let Some(existing) = combined_values.get_mut(&name) {
+      existing.push_str(", ");
+      existing.push_str(value);
+    } else {
+      combined_values.insert(name, value.clone());
+    }
+  }
+
   let mut unsafe_names: HashSet<String> = HashSet::new();
   let mut potentially_unsafe: Vec<String> = Vec::new();
   let mut safelist_value_size: usize = 0;
 
-  for (name, value) in headers {
-    let name = name.to_ascii_lowercase();
-    if !web_fetch::is_cors_safelisted_request_header(name.as_str(), value) {
+  for (name, combined_value) in combined_values {
+    if !web_fetch::is_cors_safelisted_request_header(name.as_str(), &combined_value) {
       unsafe_names.insert(name);
     } else {
-      safelist_value_size = safelist_value_size.saturating_add(value.as_bytes().len());
+      safelist_value_size = safelist_value_size.saturating_add(combined_value.as_bytes().len());
       potentially_unsafe.push(name);
     }
   }
@@ -5513,7 +5526,7 @@ impl HttpFetcher {
     if !unsafe_header_names.is_empty() {
       headers.push((
         "Access-Control-Request-Headers".to_string(),
-        unsafe_header_names.join(","),
+        unsafe_header_names.join(", "),
       ));
     }
 
@@ -5538,11 +5551,13 @@ impl HttpFetcher {
 
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
+      let message = if (300..400).contains(&status) {
+        format!("CORS preflight request failed: redirect encountered (status {status})")
+      } else {
+        format!("CORS preflight request failed: HTTP status {status}")
+      };
       return Err(Error::Resource(
-        ResourceError::new(
-          url.to_string(),
-          format!("CORS preflight request failed: HTTP status {status}"),
-        )
+        ResourceError::new(url.to_string(), message)
         .with_status(status)
         .with_final_url(url.to_string()),
       ));
