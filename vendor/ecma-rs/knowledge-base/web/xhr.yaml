@@ -1,0 +1,108 @@
+# XMLHttpRequest (legacy HTTP client API).
+
+- name: XMLHttpRequest
+  kind: constructor
+  aliases:
+    - XMLHttpRequest
+    - window.XMLHttpRequest
+    - globalThis.XMLHttpRequest
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: true
+
+- name: XMLHttpRequest.prototype.open
+  kind: function
+  aliases:
+    - XMLHttpRequest.prototype.open
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: true
+
+- name: XMLHttpRequest.prototype.send
+  kind: function
+  aliases:
+    - XMLHttpRequest.prototype.send
+  since: "baseline"
+  effects:
+    base: [io, network, may_throw]
+    io: true
+    network: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: true
+  idempotent: false
+  deterministic: false
+
+- name: XMLHttpRequest.prototype.abort
+  kind: function
+  aliases:
+    - XMLHttpRequest.prototype.abort
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
+
+- name: XMLHttpRequest.prototype.setRequestHeader
+  kind: function
+  aliases:
+    - XMLHttpRequest.prototype.setRequestHeader
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ""
+      throws: Maybe
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: false
+  deterministic: true
+
+- name: XMLHttpRequest.prototype.getResponseHeader
+  kind: function
+  aliases:
+    - XMLHttpRequest.prototype.getResponseHeader
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false
+
+- name: XMLHttpRequest.prototype.getAllResponseHeaders
+  kind: function
+  aliases:
+    - XMLHttpRequest.prototype.getAllResponseHeaders
+  since: "baseline"
+  effects:
+    Custom:
+      flags: ALLOCATES
+      throws: Maybe
+  purity: ReadOnly
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: false

@@ -1,0 +1,61 @@
+# XML parsing/serialization helpers.
+
+- name: DOMParser
+  kind: constructor
+  aliases:
+    - DOMParser
+    - window.DOMParser
+    - globalThis.DOMParser
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: true
+
+- name: DOMParser.prototype.parseFromString
+  kind: function
+  aliases:
+    - DOMParser.prototype.parseFromString
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true
+
+- name: XMLSerializer
+  kind: constructor
+  aliases:
+    - XMLSerializer
+    - window.XMLSerializer
+    - globalThis.XMLSerializer
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: false
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: false
+  deterministic: true
+
+- name: XMLSerializer.prototype.serializeToString
+  kind: function
+  aliases:
+    - XMLSerializer.prototype.serializeToString
+  since: "baseline"
+  effects:
+    allocates: true
+    may_throw: true
+  purity: Allocating
+  async: false
+  parallelizable: true
+  idempotent: true
+  deterministic: true

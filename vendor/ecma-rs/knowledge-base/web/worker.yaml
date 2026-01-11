@@ -1,0 +1,44 @@
+# Web Workers.
+
+- name: Worker
+  kind: constructor
+  aliases:
+    - Worker
+    - window.Worker
+    - globalThis.Worker
+  since: "baseline"
+  effects:
+    base: [io, network, alloc, may_throw]
+    io: true
+    network: true
+    allocates: true
+    may_throw: true
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: Worker.prototype.postMessage
+  kind: function
+  aliases:
+    - Worker.prototype.postMessage
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+  async: true
+  parallelizable: false
+  idempotent: false
+  deterministic: false
+
+- name: Worker.prototype.terminate
+  kind: function
+  aliases:
+    - Worker.prototype.terminate
+  since: "baseline"
+  effects: Unknown
+  purity: Impure
+  async: false
+  parallelizable: false
+  idempotent: true
+  deterministic: false
