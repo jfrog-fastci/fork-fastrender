@@ -88,7 +88,7 @@ fn date_to_iso_string_is_ascii_via_kb() {
 }
 
 #[test]
-fn url_pathname_is_ascii_via_kb_getter() {
+fn url_pathname_is_ascii_via_kb_property_get() {
   let lower = hir_js::lower_from_source("new URL(\"https://example.com\").pathname;").unwrap();
   let root_body_id = lower.hir.root_body;
   let root_body = &lower.bodies[*lower.body_index.get(&root_body_id).unwrap()];
@@ -98,7 +98,7 @@ fn url_pathname_is_ascii_via_kb_getter() {
   let entries = parse_api_semantics_yaml_str(
     r#"
 - name: URL.prototype.pathname
-  kind: getter
+  kind: property_get
   properties:
     encoding.output: ascii
 "#,

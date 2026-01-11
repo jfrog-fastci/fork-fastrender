@@ -80,6 +80,7 @@
     may_throw: false
   purity: Pure
   properties:
+    returns: string
     encoding.output: ascii
 
 - name: URL.prototype.pathname
@@ -92,6 +93,7 @@
     may_throw: false
   purity: Pure
   properties:
+    returns: string
     encoding.output: ascii
 
 - name: URL.prototype.origin

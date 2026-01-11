@@ -69,7 +69,7 @@ Common fields:
 
 - `name`: stable API name (see naming conventions above)
 - `aliases`: list of alternate spellings
-- `kind`: `function|constructor|getter|setter|value`
+- `kind`: `function|constructor|getter|property_get|setter|value`
 - `semantics`: short semantics identifier (e.g. `Map`, `Filter`, `Reduce`)
 - `signature`: optional signature hint
 - `since` / `until`: version / availability metadata
