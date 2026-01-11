@@ -6,6 +6,7 @@ use super::roots::RememberedSet;
 use super::roots::RootSet;
 use super::weak::process_global_weak_handles_minor;
 use super::weak::run_weak_cleanups;
+use super::cards::for_each_ptr_slot_in_dirty_cards;
 use super::ObjHeader;
 use super::Tracer;
 use crate::gc::heap::GcHeap;
@@ -43,7 +44,9 @@ impl GcHeap {
       evac.heap.root_handles = root_handles;
 
       remembered.for_each_remembered_obj(&mut |obj| {
-        evac.visit_obj(obj);
+        unsafe {
+          for_each_ptr_slot_in_dirty_cards(obj, |slot| evac.visit_slot(slot));
+        }
       });
 
       while let Some(obj) = evac.heap.work_stack.pop() {
