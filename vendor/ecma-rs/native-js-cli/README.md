@@ -118,10 +118,20 @@ future typechecked/HIR-based backend yet). Supported today:
 - Top-level statements:
   - empty statements (`;`)
   - expression statements (`expr;`)
+  - variable declarations (`const`/`let`/`var`) with simple identifier bindings
 - Expressions:
-  - number / boolean / string literals
-  - numeric `+` (only for numbers)
-  - `===` (only for numbers and booleans; both sides must be the same type)
+  - number / boolean / string / null literals
+  - identifiers:
+    - local bindings introduced by `const`/`let`/`var`
+    - globals: `undefined`, `NaN`, `Infinity`
+  - unary operators:
+    - `-` / `+` (numbers only)
+    - `!` (booleans only)
+  - numeric `+` (numbers only)
+  - assignment:
+    - `x = expr` (identifier targets only; allows changing the binding type in the minimal emitter)
+    - `x += expr` (number variables only)
+  - `===` (numbers / booleans / `null` / `undefined`; both sides must be the same type)
   - builtin calls listed above (unless `--no-builtins`)
 
 All other statements/expressions/operators currently fail compilation with a

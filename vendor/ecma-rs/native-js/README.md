@@ -174,6 +174,11 @@ All generated functions are also marked with the LLVM GC strategy attribute
 (`gc "coreclr"`). See [`docs/llvm_gc_strategy.md`](./docs/llvm_gc_strategy.md) for
 the rationale and how to change it.
 
+> Note: these function attributes are applied by `native_js::CodeGen` (and
+> therefore by the planned inkwell-based backend). The current minimal
+> string-based emitter (`compile_typescript_to_llvm_ir`) does **not** emit GC
+> strategy / stack-walking attributes.
+
 For the broader runtime ABI + GC/statepoints integration plan, see:
 
 - [`docs/runtime-native.md`](../docs/runtime-native.md)
