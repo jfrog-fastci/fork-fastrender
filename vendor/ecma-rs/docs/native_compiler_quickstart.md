@@ -74,6 +74,12 @@ Strict-native rejects (hard error, not warning):
 - `TC4008`: `Proxy` (incl `Proxy.revocable(...)`)
 - `TC4009`: prototype mutation (`__proto__` assignments, `Object/Reflect.setPrototypeOf`, etc.)
 
+`typecheck-ts` can also emit `TN####` strict-native dialect diagnostics (today `TN0001`–`TN0003`), primarily for type/lowering checks:
+
+- `TN0001`: `any` type is forbidden
+- `TN0002`: unsafe type assertions (expression type must be assignable to asserted type)
+- `TN0003`: invalid non-null assertions (only allowed when they are a no-op after narrowing)
+
 > Strict-native enforcement is intentionally incremental. Expect this list to grow as native compilation work
 > proceeds.
 
@@ -330,7 +336,6 @@ Guidelines for fixtures:
   - a sibling `*.out` file with the same basename.
   The harness evaluates `String(globalThis.__native_result)` after a microtask checkpoint and compares it to the expected output.
 - For `*.js` fixtures intended to be used with `native_oracle_harness::run_fixture*`, ensure the script completion value is a
-  For `*.js` fixtures intended to be used with `native_oracle_harness::run_fixture*`, ensure the script completion value is a
   `string` or `Promise<string>` (the harness does not currently provide a macro-task/event loop).
 
 To add a new fixture:
@@ -348,8 +353,10 @@ For exact execution rules, see `native-oracle-harness/src/lib.rs` (TS→JS erasu
 
 Strict-native checks can come from multiple layers:
 
-- `TC40xx` / `TN####` codes: emitted by `typecheck-ts` when strict-native is enabled (`--native-strict` / `--strict-native`).
-  - Today this is `TC4000`–`TC4009` plus `TN0001`–`TN0003`, and is expected to grow.
+- `TC40xx` codes: emitted by `typecheck-ts` when strict-native is enabled (`--native-strict` / `--strict-native`).
+  - Today this is `TC4000`–`TC4009` and is expected to grow.
+- `TN####` codes: emitted by `typecheck-ts` when strict-native type/lowering checks are enabled.
+  - Today this is `TN0001`–`TN0003` and is expected to grow.
 - `NJS####` codes: emitted by `native-js` strict subset validation.
   - `native_js::validate::validate_strict_subset` is used by the typechecked `native-js` AOT CLI.
   - `native_js::strict::validate` is a legacy validator that still emits `NJS####` codes for tests/tooling.
