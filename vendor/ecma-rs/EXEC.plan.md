@@ -3908,6 +3908,9 @@ pub fn rt_async_spawn(coro: CoroutineId /* = HandleId(u64) */) -> PromiseRef;
 pub fn rt_async_poll() -> bool;
 ```
 
+See [`docs/runtime-native/buffers-and-io.md`](docs/runtime-native/buffers-and-io.md) for the
+non-moving backing store + pinning invariants required to make async I/O safe under a moving GC.
+
 ### vm-js/ and emit-js/ (unchanged)
 
 ```
