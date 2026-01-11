@@ -3,39 +3,6 @@
   "default_budget_ms": 5000.0,
   "fixtures": [
     {
-      "name": "aliexpress.com_p_blog_home.html",
-      "url": "https://www.aliexpress.com/p/blog/home.html",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 5000.0
-    },
-    {
-      "name": "craigslist.org_about_sites",
-      "url": "https://www.craigslist.org/about/sites",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 5000.0
-    },
-    {
-      "name": "en.wikipedia.org",
-      "url": "https://en.wikipedia.org",
-      "viewport": [
-        1200,
-        800
-      ],
-      "dpr": 1.0,
-      "media": "screen",
-      "budget_ms": 5000.0
-    },
-    {
       "name": "discord.com",
       "url": "https://discord.com/",
       "viewport": [
@@ -533,6 +500,39 @@
     {
       "name": "stackoverflow.com",
       "url": "https://stackoverflow.com/questions",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "wsj.com",
+      "url": "https://www.wsj.com/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "openbsd.org",
+      "url": "https://www.openbsd.org/",
+      "viewport": [
+        1200,
+        800
+      ],
+      "dpr": 1.0,
+      "media": "screen",
+      "budget_ms": 5000.0
+    },
+    {
+      "name": "abcnews.go.com",
+      "url": "https://abcnews.go.com/",
       "viewport": [
         1200,
         800

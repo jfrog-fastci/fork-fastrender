@@ -26,7 +26,9 @@ pub struct UpdatePagesetGuardrailsArgs {
   /// Minimum number of pages to include (defaults to the existing manifest length, or 10 if empty)
   ///
   /// Pages that are currently failing in the pageset scoreboard (status `timeout`, `panic`, or
-  /// `error`) are always included even if that exceeds this value. When the failing pages are
+  /// `error`) are always included even if that exceeds this value (excluding `pageset_progress sync`
+  /// placeholders where `status=error` but `auto_notes` is "not run" / "missing cache"). When the
+  /// failing pages are
   /// fewer than `--count`, the remaining slots are filled with `ok` pages according to
   /// `--strategy`.
   #[arg(long)]
@@ -109,19 +111,22 @@ pub struct UpdatePagesetGuardrailsArgs {
 pub enum PagesetGuardrailsSelectionStrategy {
   /// Pick the globally slowest pages by total_ms.
   ///
-  /// Timeout/panic/error pages are always included first; remaining slots (up to `--count`) are
-  /// filled with the slowest OK pages.
+  /// Timeout/panic/error pages are always included first (excluding `pageset_progress sync`
+  /// placeholders with `auto_notes` "not run" / "missing cache"); remaining slots (up to `--count`)
+  /// are filled with the slowest OK pages.
   Slowest,
   /// Pick the OK pages with the worst visual correctness metrics (Chrome-vs-FastRender diffs).
   ///
-  /// Timeout/panic/error pages are always included first; remaining slots (up to `--count`) are
-  /// filled with the worst-accuracy OK pages by `accuracy.diff_percent` (desc), tie-breaking by
+  /// Timeout/panic/error pages are always included first (excluding `pageset_progress sync`
+  /// placeholders with `auto_notes` "not run" / "missing cache"); remaining slots (up to `--count`)
+  /// are filled with the worst-accuracy OK pages by `accuracy.diff_percent` (desc), tie-breaking by
   /// `accuracy.perceptual` (desc) then fixture name.
   WorstAccuracy,
   /// Prioritize coverage across OK-page hotspots.
   ///
-  /// Timeout/panic/error pages are always included first, and a small number of OK pages are
-  /// selected to cover hotspot categories even when failures exceed `--count`.
+  /// Timeout/panic/error pages are always included first (excluding `pageset_progress sync`
+  /// placeholders with `auto_notes` "not run" / "missing cache"), and a small number of OK pages
+  /// are selected to cover hotspot categories even when failures exceed `--count`.
   Coverage,
 }
 
@@ -168,6 +173,8 @@ struct PageProgress {
   url: String,
   status: ProgressStatus,
   #[serde(default)]
+  auto_notes: Option<String>,
+  #[serde(default)]
   total_ms: Option<f64>,
   #[serde(default)]
   hotspot: Option<String>,
@@ -192,6 +199,23 @@ struct ProgressEntry {
   hotspot: Option<String>,
   accuracy_diff_percent: Option<f64>,
   accuracy_perceptual: Option<f64>,
+  auto_notes: Option<String>,
+}
+
+impl ProgressEntry {
+  fn is_sync_placeholder(&self) -> bool {
+    if self.status != ProgressStatus::Error {
+      return false;
+    }
+    match self.auto_notes.as_deref().map(|s| s.trim()) {
+      Some("not run") | Some("missing cache") => true,
+      _ => false,
+    }
+  }
+
+  fn is_real_failure(&self) -> bool {
+    self.status.is_failure() && !self.is_sync_placeholder()
+  }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -248,14 +272,14 @@ pub fn run_update_pageset_guardrails(mut args: UpdatePagesetGuardrailsArgs) -> R
 
   let progress = read_progress_entries(&args.progress_dir)?;
   let selected = select_pages(&progress, count, args.strategy);
-  let failing_pages = progress.iter().filter(|e| e.status.is_failure()).count();
+  let failing_pages = progress.iter().filter(|e| e.is_real_failure()).count();
   if failing_pages > count {
     let ok_pages = selected
       .iter()
       .filter(|e| e.status == ProgressStatus::Ok)
       .count();
     eprintln!(
-      "Warning: progress contains {failing_pages} failing page(s) (timeout/panic/error), which exceeds \
+      "Warning: progress contains {failing_pages} real failing page(s) (timeout/panic/error), which exceeds \
 requested --count={count}. The manifest will include all failures and {ok_pages} ok page(s) \
 ({} total).",
       selected.len()
@@ -589,6 +613,7 @@ fn read_progress_entries(progress_dir: &Path) -> Result<Vec<ProgressEntry>> {
       name,
       url: parsed.url,
       status: parsed.status,
+      auto_notes: parsed.auto_notes,
       total_ms,
       hotspot: parsed.hotspot,
       accuracy_diff_percent,
@@ -664,7 +689,7 @@ fn entry_worst_accuracy_first(a: &ProgressEntry, b: &ProgressEntry) -> std::cmp:
 fn select_pages_slowest(entries: &[ProgressEntry], count: usize) -> Vec<ProgressEntry> {
   let mut failures: Vec<ProgressEntry> = entries
     .iter()
-    .filter(|e| e.status.is_failure())
+    .filter(|e| e.is_real_failure())
     .cloned()
     .collect();
   failures.sort_by(entry_failure_first);
@@ -687,7 +712,7 @@ fn select_pages_slowest(entries: &[ProgressEntry], count: usize) -> Vec<Progress
 fn select_pages_worst_accuracy(entries: &[ProgressEntry], count: usize) -> Vec<ProgressEntry> {
   let mut failures: Vec<ProgressEntry> = entries
     .iter()
-    .filter(|e| e.status.is_failure())
+    .filter(|e| e.is_real_failure())
     .cloned()
     .collect();
   failures.sort_by(entry_failure_first);
@@ -740,7 +765,7 @@ impl HotspotCategory {
 fn select_pages_coverage(entries: &[ProgressEntry], count: usize) -> Vec<ProgressEntry> {
   let mut failures: Vec<ProgressEntry> = entries
     .iter()
-    .filter(|e| e.status.is_failure())
+    .filter(|e| e.is_real_failure())
     .cloned()
     .collect();
   failures.sort_by(entry_failure_first);
@@ -894,6 +919,68 @@ mod tests {
   }
 
   #[test]
+  fn sync_placeholder_errors_are_not_treated_as_failures_when_ok_pages_are_available() {
+    let placeholder = ProgressEntry {
+      name: "placeholder.test".to_string(),
+      url: "https://placeholder.test/".to_string(),
+      status: ProgressStatus::Error,
+      auto_notes: Some(" not run ".to_string()),
+      total_ms: 0.0,
+      hotspot: None,
+      accuracy_diff_percent: None,
+      accuracy_perceptual: None,
+    };
+
+    let entries = vec![
+      placeholder,
+      mk_entry("ok-fast.test", ProgressStatus::Ok, 10.0, None),
+      mk_entry("ok-slow.test", ProgressStatus::Ok, 20.0, None),
+    ];
+
+    for strategy in [
+      PagesetGuardrailsSelectionStrategy::Slowest,
+      PagesetGuardrailsSelectionStrategy::WorstAccuracy,
+      PagesetGuardrailsSelectionStrategy::Coverage,
+    ] {
+      let selected = select_pages(&entries, 1, strategy);
+      assert_eq!(selected.len(), 1);
+      assert_eq!(selected[0].status, ProgressStatus::Ok);
+      assert_ne!(selected[0].name, "placeholder.test");
+    }
+  }
+
+  #[test]
+  fn sync_placeholder_errors_do_not_get_forced_in_when_real_failures_exist() {
+    let placeholder = ProgressEntry {
+      name: "placeholder.test".to_string(),
+      url: "https://placeholder.test/".to_string(),
+      status: ProgressStatus::Error,
+      auto_notes: Some("missing cache".to_string()),
+      total_ms: 0.0,
+      hotspot: None,
+      accuracy_diff_percent: None,
+      accuracy_perceptual: None,
+    };
+
+    let entries = vec![
+      placeholder,
+      mk_entry("panic.test", ProgressStatus::Panic, 0.0, None),
+      mk_entry("ok.test", ProgressStatus::Ok, 10.0, None),
+    ];
+
+    for strategy in [
+      PagesetGuardrailsSelectionStrategy::Slowest,
+      PagesetGuardrailsSelectionStrategy::WorstAccuracy,
+      PagesetGuardrailsSelectionStrategy::Coverage,
+    ] {
+      let selected = select_pages(&entries, 1, strategy);
+      let names: BTreeSet<&str> = selected.iter().map(|e| e.name.as_str()).collect();
+      assert!(names.contains("panic.test"));
+      assert!(!names.contains("placeholder.test"));
+    }
+  }
+
+  #[test]
   fn rewrites_manifest_deterministically_preserving_schema_version_and_existing_fixtures() {
     let tempdir = TempDir::new().expect("tempdir");
     let manifest_path = tempdir.path().join("pageset_guardrails.json");
@@ -983,6 +1070,7 @@ mod tests {
       name: name.to_string(),
       url: format!("https://{name}/"),
       status,
+      auto_notes: None,
       total_ms,
       hotspot: hotspot.map(|s| s.to_string()),
       accuracy_diff_percent: None,
@@ -1045,6 +1133,7 @@ mod tests {
     assert_eq!(parsed[0].name, "missing-fields");
     assert_eq!(parsed[0].url, "https://example.test");
     assert_eq!(parsed[0].status, ProgressStatus::Ok);
+    assert_eq!(parsed[0].auto_notes, None);
     assert_eq!(parsed[0].total_ms, 123.0);
     assert_eq!(parsed[0].hotspot, None);
     assert_eq!(parsed[0].accuracy_diff_percent, None);
@@ -1069,6 +1158,7 @@ mod tests {
     let parsed = read_progress_entries(progress_dir).expect("read progress entries");
     assert_eq!(parsed.len(), 1);
     assert_eq!(parsed[0].name, "with-accuracy");
+    assert_eq!(parsed[0].auto_notes, None);
     assert_eq!(parsed[0].accuracy_diff_percent, Some(42.5));
     assert_eq!(parsed[0].accuracy_perceptual, Some(0.1234));
   }
@@ -1081,6 +1171,7 @@ mod tests {
         name: "a".to_string(),
         url: "https://a/".to_string(),
         status: ProgressStatus::Ok,
+        auto_notes: None,
         total_ms: 10.0,
         hotspot: None,
         accuracy_diff_percent: Some(20.0),
@@ -1090,6 +1181,7 @@ mod tests {
         name: "c".to_string(),
         url: "https://c/".to_string(),
         status: ProgressStatus::Ok,
+        auto_notes: None,
         total_ms: 10.0,
         hotspot: None,
         accuracy_diff_percent: Some(20.0),
@@ -1099,6 +1191,7 @@ mod tests {
         name: "b".to_string(),
         url: "https://b/".to_string(),
         status: ProgressStatus::Ok,
+        auto_notes: None,
         total_ms: 10.0,
         hotspot: None,
         accuracy_diff_percent: Some(20.0),
@@ -1108,6 +1201,7 @@ mod tests {
         name: "worse-diff".to_string(),
         url: "https://worse-diff/".to_string(),
         status: ProgressStatus::Ok,
+        auto_notes: None,
         total_ms: 10.0,
         hotspot: None,
         accuracy_diff_percent: Some(30.0),
@@ -1117,6 +1211,7 @@ mod tests {
         name: "no-accuracy".to_string(),
         url: "https://no-accuracy/".to_string(),
         status: ProgressStatus::Ok,
+        auto_notes: None,
         total_ms: 9999.0,
         hotspot: None,
         accuracy_diff_percent: None,
@@ -1154,7 +1249,7 @@ mod tests {
 
     let failing: BTreeSet<String> = progress
       .iter()
-      .filter(|entry| entry.status.is_failure())
+      .filter(|entry| entry.is_real_failure())
       .map(|entry| entry.name.clone())
       .collect();
     let fixtures: BTreeSet<String> = manifest
