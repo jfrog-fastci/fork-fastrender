@@ -1,8 +1,9 @@
 use llvm_sys::core::{
   LLVMAddCallSiteAttribute, LLVMBuildCall2, LLVMBuildCallWithOperandBundles, LLVMConstInt,
   LLVMCreateOperandBundle, LLVMCreateTypeAttribute, LLVMDisposeOperandBundle,
-  LLVMGetEnumAttributeKindForName, LLVMGetIntrinsicDeclaration, LLVMGetReturnType, LLVMGetTypeKind,
-  LLVMGlobalGetValueType, LLVMIntTypeInContext, LLVMLookupIntrinsicID, LLVMTypeOf,
+  LLVMGetEnumAttributeKindForName, LLVMGetIntrinsicDeclaration, LLVMGetPointerAddressSpace,
+  LLVMGetReturnType, LLVMGetTypeKind, LLVMGlobalGetValueType, LLVMIntTypeInContext,
+  LLVMLookupIntrinsicID, LLVMTypeOf,
 };
 use llvm_sys::prelude::{
   LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMOperandBundleRef, LLVMTypeRef, LLVMValueRef,
@@ -38,6 +39,15 @@ pub struct StatepointCall {
 /// For *indirect* calls (a runtime function pointer value like `%fp`), callers
 /// must provide the callee function type explicitly via
 /// [`StatepointEmitter::emit_statepoint_call_indirect`].
+///
+/// ## Important: GC pointer call arguments are roots
+/// LLVM does **not** automatically treat `ptr addrspace(1)` call arguments to a statepointed call
+/// as GC roots for stack map emission. Any GC pointer passed as a call argument must also appear in
+/// the `"gc-live"` operand bundle (and have corresponding `gc.relocate` users) or it may be absent
+/// from the stack map record.
+///
+/// This emitter therefore automatically extends `"gc-live"` with any `ptr addrspace(1)` values
+/// found in `call_args`, so callers can't accidentally omit them.
 pub struct StatepointEmitter {
   ctx: LLVMContextRef,
   module: LLVMModuleRef,
@@ -251,16 +261,43 @@ impl StatepointEmitter {
       let callee_ptr_ty = LLVMTypeOf(callee_ptr);
       self.get_statepoint_decl(callee_ptr_ty)
     };
+    // Build a `gc-live` list that includes explicit roots plus any GC pointer call arguments.
+    //
+    // Deterministic ordering:
+    //   1) all explicit `gc_live` values (caller-provided order),
+    //   2) then unique `ptr addrspace(1)` call args in call-arg order.
+    let mut gc_live_values: Vec<LLVMValueRef> = gc_live.to_vec();
+    let mut gc_live_index: HashMap<LLVMValueRef, u32> = HashMap::with_capacity(gc_live_values.len());
+    for (idx, &v) in gc_live_values.iter().enumerate() {
+      gc_live_index.insert(v, idx as u32);
+    }
+
+    let mut extra_base_indices: Vec<u32> = Vec::new();
+    for &arg in call_args {
+      let ty = LLVMTypeOf(arg);
+      if LLVMGetTypeKind(ty) == LLVMTypeKind::LLVMPointerTypeKind
+        && LLVMGetPointerAddressSpace(ty) == 1
+      {
+        if gc_live_index.contains_key(&arg) {
+          continue;
+        }
+        let idx = gc_live_values.len() as u32;
+        gc_live_values.push(arg);
+        gc_live_index.insert(arg, idx);
+        // Base == derived for call arguments (we don't track interior ptrs here).
+        extra_base_indices.push(idx);
+      }
+    }
 
     let mut bundles: Vec<LLVMOperandBundleRef> = Vec::new();
-    if !gc_live.is_empty() {
+    if !gc_live_values.is_empty() {
       // `gc-live` operand bundle.
       let name = CString::new("gc-live").unwrap();
       let bundle = LLVMCreateOperandBundle(
         name.as_ptr(),
         name.as_bytes().len(),
-        gc_live.as_ptr().cast_mut(),
-        gc_live.len() as u32,
+        gc_live_values.as_ptr().cast_mut(),
+        gc_live_values.len() as u32,
       );
       bundles.push(bundle);
     }
@@ -301,16 +338,20 @@ impl StatepointEmitter {
       ))
     };
 
-    let mut relocated = Vec::with_capacity(gc_live.len());
-    for (derived_idx, &base_idx) in base_indices.iter().enumerate() {
+    let mut relocated_all = Vec::with_capacity(gc_live_values.len());
+    let mut combined_base_indices: Vec<u32> = Vec::with_capacity(gc_live_values.len());
+    combined_base_indices.extend_from_slice(base_indices);
+    combined_base_indices.extend_from_slice(&extra_base_indices);
+
+    for (derived_idx, &base_idx) in combined_base_indices.iter().enumerate() {
       debug_assert!(
-        (base_idx as usize) < gc_live.len(),
+        (base_idx as usize) < gc_live_values.len(),
         "base index {base_idx} out of bounds for gc_live length {}",
-        gc_live.len()
+        gc_live_values.len()
       );
       let base_idx_const = LLVMConstInt(self.i32_ty, base_idx as u64, 0);
       let derived_idx_const = LLVMConstInt(self.i32_ty, derived_idx as u64, 0);
-      let derived_ptr_ty = LLVMTypeOf(gc_live[derived_idx]);
+      let derived_ptr_ty = LLVMTypeOf(gc_live_values[derived_idx]);
       let gc_relocate = self.get_gc_relocate_decl(derived_ptr_ty);
       let relocate = LLVMBuildCall2(
         builder,
@@ -323,13 +364,13 @@ impl StatepointEmitter {
           .as_ptr(),
       );
       llvm_sys::core::LLVMSetInstructionCallConv(relocate, LLVMCallConv::LLVMColdCallConv as u32);
-      relocated.push(relocate);
+      relocated_all.push(relocate);
     }
 
     StatepointCall {
       token,
       result,
-      relocated,
+      relocated: relocated_all.into_iter().take(gc_live.len()).collect(),
     }
   }
 
