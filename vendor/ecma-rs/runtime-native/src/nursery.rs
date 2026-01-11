@@ -81,7 +81,13 @@ impl NurserySpace {
     }
 
     let page = page_size();
-    let size_bytes = align_up_usize(size_bytes, page);
+    let size_bytes = size_bytes
+      .checked_add(page - 1)
+      .and_then(|v| {
+        v.checked_div(page)
+          .and_then(|pages| pages.checked_mul(page))
+      })
+      .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nursery size overflow"))?;
 
     #[cfg(unix)]
     unsafe {
