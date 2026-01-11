@@ -192,9 +192,12 @@ fields are reserved for the eventual LLVM-backed backend.
 - Top-level statements:
   - empty statements (`;`)
   - expression statements (`expr;`)
+  - variable declarations (`const`/`let`/`var`) with simple identifier bindings
 - Expressions:
   - number / boolean / string / null literals
-  - identifiers: `undefined`, `NaN`, `Infinity`
+  - identifiers:
+    - local bindings introduced by `const`/`let`/`var`
+    - globals: `undefined`, `NaN`, `Infinity`
   - unary operators:
     - `-` / `+` (numbers only)
     - `!` (booleans only)

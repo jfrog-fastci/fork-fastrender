@@ -23,6 +23,36 @@ fn console_log_prints_number_expression() {
 }
 
 #[test]
+fn const_binding_can_be_printed() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "const x = 1 + 2;\nconsole.log(x);\n").unwrap();
+
+  let assert = native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success();
+
+  assert.stdout(predicate::eq("3\n"));
+}
+
+#[test]
+fn let_binding_without_initializer_defaults_to_undefined() {
+  let dir = tempdir().unwrap();
+  let path = dir.path().join("main.ts");
+  std::fs::write(&path, "let x;\nconsole.log(x);\n").unwrap();
+
+  let assert = native_js_cli()
+    .timeout(Duration::from_secs(30))
+    .arg(&path)
+    .assert()
+    .success();
+
+  assert.stdout(predicate::eq("undefined\n"));
+}
+
+#[test]
 fn console_log_supports_multiple_args() {
   let dir = tempdir().unwrap();
   let path = dir.path().join("main.ts");

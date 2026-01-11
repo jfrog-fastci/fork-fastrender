@@ -1,5 +1,6 @@
 use crate::CompileOptions;
 use parse_js::ast::expr::{CallArg, Expr};
+use parse_js::ast::expr::pat::Pat;
 use parse_js::ast::node::Node;
 use parse_js::ast::stmt::Stmt;
 use parse_js::ast::stx::TopLevel;
@@ -89,6 +90,7 @@ struct Codegen {
   strings: StringPool,
   tmp_counter: usize,
   block_counter: usize,
+  vars: HashMap<String, (Ty, String)>,
   main_body: Vec<String>,
 }
 
@@ -99,6 +101,7 @@ impl Codegen {
       strings: StringPool::default(),
       tmp_counter: 0,
       block_counter: 0,
+      vars: HashMap::new(),
       main_body: Vec::new(),
     }
   }
@@ -117,6 +120,68 @@ impl Codegen {
 
   fn emit(&mut self, line: impl Into<String>) {
     self.main_body.push(line.into());
+  }
+
+  fn llvm_type_of(ty: Ty) -> &'static str {
+    match ty {
+      Ty::Number => "double",
+      Ty::Bool => "i1",
+      Ty::String => "ptr",
+      Ty::Null | Ty::Undefined => "i1",
+      Ty::Void => "void",
+    }
+  }
+
+  fn llvm_align_of(ty: Ty) -> u32 {
+    match ty {
+      Ty::Number => 8,
+      Ty::Bool => 1,
+      Ty::String => 8,
+      Ty::Null | Ty::Undefined => 1,
+      Ty::Void => 1,
+    }
+  }
+
+  fn emit_alloca(&mut self, ty: Ty) -> Result<String, CodegenError> {
+    if ty == Ty::Void {
+      return Err(CodegenError::TypeError(
+        "cannot allocate storage for void".to_string(),
+      ));
+    }
+    let llvm_ty = Self::llvm_type_of(ty);
+    let align = Self::llvm_align_of(ty);
+    let out = self.tmp();
+    self.emit(format!("  {out} = alloca {llvm_ty}, align {align}"));
+    Ok(out)
+  }
+
+  fn emit_store(&mut self, ty: Ty, value_ir: &str, ptr_ir: &str) -> Result<(), CodegenError> {
+    if ty == Ty::Void {
+      return Err(CodegenError::TypeError(
+        "cannot store a void value".to_string(),
+      ));
+    }
+    let llvm_ty = Self::llvm_type_of(ty);
+    let align = Self::llvm_align_of(ty);
+    self.emit(format!(
+      "  store {llvm_ty} {value_ir}, ptr {ptr_ir}, align {align}"
+    ));
+    Ok(())
+  }
+
+  fn emit_load(&mut self, ty: Ty, ptr_ir: &str) -> Result<String, CodegenError> {
+    if ty == Ty::Void {
+      return Err(CodegenError::TypeError(
+        "cannot load a void value".to_string(),
+      ));
+    }
+    let llvm_ty = Self::llvm_type_of(ty);
+    let align = Self::llvm_align_of(ty);
+    let out = self.tmp();
+    self.emit(format!(
+      "  {out} = load {llvm_ty}, ptr {ptr_ir}, align {align}"
+    ));
+    Ok(out)
   }
 
   fn emit_string_ptr(&mut self, bytes: &[u8]) -> String {
@@ -330,6 +395,32 @@ impl Codegen {
         let _ = self.compile_expr(&expr_stmt.stx.expr)?;
         Ok(())
       }
+      Stmt::VarDecl(decl) => {
+        for declarator in &decl.stx.declarators {
+          let name = match declarator.pattern.stx.pat.stx.as_ref() {
+            Pat::Id(id) => id.stx.name.clone(),
+            _ => return Err(CodegenError::UnsupportedStmt),
+          };
+
+          let value = if let Some(init) = declarator.initializer.as_ref() {
+            self.compile_expr(init)?
+          } else {
+            Value {
+              ty: Ty::Undefined,
+              ir: "0".to_string(),
+            }
+          };
+
+          let slot = self.emit_alloca(value.ty)?;
+          let store_val = match value.ty {
+            Ty::Null | Ty::Undefined => "0",
+            _ => value.ir.as_str(),
+          };
+          self.emit_store(value.ty, store_val, &slot)?;
+          self.vars.insert(name, (value.ty, slot));
+        }
+        Ok(())
+      }
       _ => Err(CodegenError::UnsupportedStmt),
     }
   }
@@ -353,19 +444,38 @@ impl Codegen {
         Ok(Value { ty: Ty::String, ir: ptr })
       }
       Expr::Id(id) => match id.stx.name.as_str() {
-        "undefined" => Ok(Value {
-          ty: Ty::Undefined,
-          ir: String::new(),
-        }),
-        "NaN" => Ok(Value {
-          ty: Ty::Number,
-          ir: f64_to_llvm_const(f64::NAN),
-        }),
-        "Infinity" => Ok(Value {
-          ty: Ty::Number,
-          ir: f64_to_llvm_const(f64::INFINITY),
-        }),
-        _ => Err(CodegenError::UnsupportedExpr),
+        name => {
+          if let Some((ty, slot)) = self.vars.get(name).cloned() {
+            match ty {
+              Ty::Null | Ty::Undefined => {
+                return Ok(Value {
+                  ty,
+                  ir: "0".to_string(),
+                });
+              }
+              _ => {
+                let loaded = self.emit_load(ty, &slot)?;
+                return Ok(Value { ty, ir: loaded });
+              }
+            }
+          }
+
+          match name {
+            "undefined" => Ok(Value {
+              ty: Ty::Undefined,
+              ir: String::new(),
+            }),
+            "NaN" => Ok(Value {
+              ty: Ty::Number,
+              ir: f64_to_llvm_const(f64::NAN),
+            }),
+            "Infinity" => Ok(Value {
+              ty: Ty::Number,
+              ir: f64_to_llvm_const(f64::INFINITY),
+            }),
+            _ => Err(CodegenError::UnsupportedExpr),
+          }
+        }
       },
 
       Expr::Binary(bin) => {
