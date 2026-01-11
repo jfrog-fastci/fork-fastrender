@@ -750,11 +750,15 @@ mod tests {
   use parse_js::num::JsNumber;
 
   fn empty_program_function() -> ProgramFunction {
+    let mut graph = CfgGraph::default();
+    graph.ensure_label(0);
+    let mut bblocks = CfgBBlocks::default();
+    bblocks.add(0, Vec::new());
     ProgramFunction {
       debug: None,
       body: Cfg {
-        graph: CfgGraph::default(),
-        bblocks: CfgBBlocks::default(),
+        graph,
+        bblocks,
         entry: 0,
       },
       params: Vec::new(),
@@ -839,12 +843,14 @@ mod tests {
 
   #[test]
   fn lower_return_undefined_emits_return_void_0() {
+    let mut graph = CfgGraph::default();
+    graph.ensure_label(0);
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(0, vec![Inst::ret(Some(Arg::Const(Const::Undefined)))]);
     let func = ProgramFunction {
       debug: None,
       body: Cfg {
-        graph: CfgGraph::default(),
+        graph,
         bblocks,
         entry: 0,
       },

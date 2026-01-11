@@ -366,7 +366,8 @@ mod tests {
 
   #[test]
   fn terminator_leaf_block() {
-    let graph = CfgGraph::default();
+    let mut graph = CfgGraph::default();
+    graph.ensure_label(0);
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(0, vec![]);
 

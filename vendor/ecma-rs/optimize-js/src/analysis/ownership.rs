@@ -534,9 +534,10 @@ mod tests {
   use crate::il::inst::Const;
   use crate::il::inst::UnOp;
   use crate::symbol::semantics::SymbolId;
- 
+  
   fn cfg_with_block0(insts: Vec<Inst>) -> Cfg {
-    let graph = CfgGraph::default();
+    let mut graph = CfgGraph::default();
+    graph.ensure_label(0);
     let mut bblocks = CfgBBlocks::default();
     bblocks.add(0, insts);
     Cfg {
