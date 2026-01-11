@@ -7421,9 +7421,41 @@ impl BlockFormattingContext {
       let page_progression_is_ltr = crate::layout::formatting_context::fragmentainer_axes_hint()
         .unwrap_or(axes)
         .page_progression_is_ltr();
+      // `break-before/after: always` forces a break in the *immediately containing* fragmentation
+      // context (CSS Break 4). In paged multi-column layout that is the column context, not the
+      // outer page context. The forced-boundary collector used for pagination treats `always` as a
+      // generic page break, so strip it before collecting page/side breaks to promote; otherwise we
+      // would incorrectly promote an `always` column break to a column-set boundary (and thus a
+      // page break).
+      let mut pagination_flow_root = physical_flow_root.clone();
+      fn strip_always_breaks_in_place(fragment: &mut FragmentNode) {
+        if fragment
+          .style
+          .as_ref()
+          .is_some_and(|style| matches!(style.break_before, BreakBetween::Always))
+        {
+          if let Some(style) = fragment.style.as_mut() {
+            Arc::make_mut(style).break_before = BreakBetween::Auto;
+          }
+        }
+        if fragment
+          .style
+          .as_ref()
+          .is_some_and(|style| matches!(style.break_after, BreakBetween::Always))
+        {
+          if let Some(style) = fragment.style.as_mut() {
+            Arc::make_mut(style).break_after = BreakBetween::Auto;
+          }
+        }
+        for child in fragment.children_mut() {
+          strip_always_breaks_in_place(child);
+        }
+      }
+      strip_always_breaks_in_place(&mut pagination_flow_root);
+
       forced_pagination_boundaries =
         collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
-          &physical_flow_root,
+          &pagination_flow_root,
           0.0,
           axes,
           page_progression_is_ltr,
